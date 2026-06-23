@@ -29,7 +29,6 @@ const RECIPES = [
     status: 'active',
     authorRole: 'operator',
     promotedTool: null,
-    hiveSlug: 'papercusp',
   },
   {
     id: 'old-oneoff',
@@ -42,7 +41,6 @@ const RECIPES = [
     status: 'retired',
     authorRole: 'bee',
     promotedTool: null,
-    hiveSlug: 'papercusp',
   },
 ];
 

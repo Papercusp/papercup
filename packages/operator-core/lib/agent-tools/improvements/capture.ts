@@ -16,7 +16,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveAgentRole } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
-import type { IssueSeverity } from '../../issues-engineer';
+import { notifyAgents } from '../coordination/notify-agents';
+import { issueRef, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 
@@ -48,6 +49,13 @@ export default defineTool({
     scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),
     foundDuring: z.string().max(120).optional(),
     paths: z.array(z.string().min(1).max(300)).max(20).optional().describe('repo-relative file paths the improvement touches, when known — feeds the protected-path gate'),
+    notifyAgents: z
+      .array(z.string().min(1))
+      .max(8)
+      .optional()
+      .describe(
+        "@-mention SPECIFIC agents: ownerId prefixes / handles (resolve via coord:presence). Each is SUBSCRIBED to the captured item (gets every future update) AND pinged now, pointing at it — a DIRECTED handoff to a known owner. Distinct from the auto-topic broadcast (which reaches whoever subscribed to the area) and from claiming. Ignored for lane:observation. Use when you know exactly who should see/own this.",
+      ),
     force: z.boolean().optional().describe('file even if a likely duplicate exists (default false → search-first declines)'),
     checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
     origin: z.enum(['organic', 'drill', 'replay', 'shadow']).optional().describe('signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners'),
@@ -125,7 +133,30 @@ export default defineTool({
         filedByRole,
         source,
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      // Directed @-mention — only when we actually CREATED a claimable item (not a
+      // dedup-decline / checkDuplicatesOnly / observation-lane reflection).
+      const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
+      const notified =
+        args.notifyAgents?.length && captured.created && captured.issue?.id && args.lane !== 'observation'
+          ? await notifyAgents(id, {
+              addressees: args.notifyAgents,
+              objectRef: issueRef(captured.issue.id),
+              summary: `🔖 ${id.ownerLabel} tagged you on ${captured.issue.id}: ${(captured.issue.title ?? args.title).slice(0, 80)}`,
+              body:
+                `${id.ownerLabel} tagged you on improvement ${captured.issue.id}: ${captured.issue.title ?? args.title}` +
+                (args.body ? `\n\n${args.body.slice(0, 600)}` : '') +
+                `\n\n— it's on your radar: issues:get ${captured.issue.id} (comment / claim there).`,
+              harnessSlug: args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : undefined,
+            }).catch(() => null)
+          : null;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(notified ? { ...result, notified: notified.notified } : result),
+          },
+        ],
+      };
     } catch (err) {
       // Surface a rubric-rating contract violation (missing evidence / rubricRef)
       // as a clean tool error instead of an opaque throw (D-002 evidence gate).

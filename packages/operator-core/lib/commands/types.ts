@@ -28,6 +28,7 @@ export type Concurrency =
 /** Tier classification used by voice prompt builder + UI grouping. */
 export type Tier =
   | 'reflexive'   // commands: panel.*, navigate, voice.set-mode
+  | 'short'       // commands: short server-side actions
   | 'fast-query'  // queries: harness.status, chat.list
   | 'delegation'; // retired delegate tier retained for historical rows
 
@@ -65,7 +66,8 @@ export interface CommandDef<Args = unknown, Result = unknown> {
   agents: AgentId[];                   // who's allowed to invoke
   browser: BrowserRequirement;
   concurrent?: Concurrency;            // default 'allow'
-  tier: 'reflexive' | 'delegation';
+  tier: 'reflexive' | 'short' | 'delegation';
+  audit?: QueryAuditPolicy;            // commands still audit; retained as command metadata
   paletteEntry?: { section: string; title: string; icon?: string; keywords?: string };
   handler: (args: Args, ctx: CommandContext) => Promise<Result> | Result;
 }
@@ -82,7 +84,7 @@ export interface QueryDef<Args = unknown, Result = unknown> {
   handler: (args: Args, ctx: CommandContext) => Promise<Result> | Result;
 }
 
-export type Definition = CommandDef | QueryDef;
+export type Definition = CommandDef<any, unknown> | QueryDef<any, unknown>;
 
 /** Result shape returned to all callers. Errors are values, never thrown. */
 export type CommandResult<T = unknown> =

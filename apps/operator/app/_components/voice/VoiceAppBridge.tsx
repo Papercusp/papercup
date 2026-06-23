@@ -31,7 +31,7 @@ import {
   cancelAllSpeech,
   type VoiceState,
 } from './voice-mode';
-import { routeVoiceUtteranceToConverse } from './voice-converse-bridge';
+import { routeVoiceToSentinelPane } from './voice-sentinel-bridge';
 
 /**
  * Voice consumer priority registry (v4 §2b).
@@ -253,18 +253,19 @@ export function VoiceAppBridge(): null {
       // off the transcript and stops. This restores "voice ≡ text on one
       // brain" (sentinel-tui-shared-backend-and-cards Phase 1, Decision A).
       //
-      // The legacy Oracle fallback (POST /api/oracle/chat) was removed
-      // here 2026-06-22: it was the WRONG backend (a separate concierge
-      // brain, not the conversation), and /api/oracle/chat 404s on the
-      // desktop host. If no provider is mounted, routeVoiceUtteranceToConverse
-      // returns false and we drop the turn silently rather than reviving
-      // the dead Oracle leg.
+      // Phase C (sentinel-as-claude-tui-2026-06-22): route the final transcript
+      // to the dock's 🛡 Sentinel pane (a psu/Claude-Code TUI) by POSTing
+      // /api/operator/sentinel-input, which writes it into the pane's stdin.
+      // LOCAL APP USER ONLY — not the P2P voice channels. (Supersedes the old
+      // voice→operator:converse route; routeVoiceUtteranceToConverse stays in
+      // voice-converse-bridge for the webview chat pending the converse-fate
+      // decision. If the dock isn't up the POST fails and the turn drops.)
       //
       // Guard: when a full-agent engine owns the session it is the brain
-      // (and the EL/Realtime paths in voice-mode already feed their own
-      // turn handlers), so don't double-dispatch into converse.
+      // (the EL/Realtime paths feed their own turn handlers), so don't
+      // double-dispatch.
       if (fullAgentActive) return;
-      routeVoiceUtteranceToConverse(text);
+      void routeVoiceToSentinelPane(text);
     });
 
     return () => {

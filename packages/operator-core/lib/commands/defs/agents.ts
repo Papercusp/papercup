@@ -35,6 +35,7 @@ const acrossWorkspace: QueryDef<ArgsT, AgentRow[]> = {
   schema: Args,
   agents: ['oracle', 'operator', 'palette'],
   audit: 'sample',
+  tier: 'fast-query',
   handler: async (args, ctx) => {
     void ctx;
     if (typeof window !== 'undefined') {

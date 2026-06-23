@@ -9,7 +9,7 @@
  */
 import { hostname } from 'node:os';
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   reclaimOrphanedSpawns,
@@ -107,9 +107,14 @@ async function runningCount(): Promise<number> {
 beforeAll(async () => {
   db = await createFreshPgDb('spawn-reclaim');
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
+  await db.sql.unsafe(FEATURES_DDL);
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
-beforeEach(async () => { await db.sql`TRUNCATE harness_shared.spawned_agents`; alivePids.clear(); });
+beforeEach(async () => {
+  await db.sql`TRUNCATE harness_shared.spawned_agents`;
+  await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
+  alivePids.clear();
+});
 
 describe('reclaimOrphanedSpawns (P-011, real PG)', () => {
   it('reclaims a running row whose heartbeat is stale beyond the threshold', async () => {
@@ -464,6 +469,137 @@ describe('reconcileSpawnAdmissionOnBoot (EI-2186 boot reconcile)', () => {
     const r = await reconcileSpawnAdmissionOnBoot(db.sql);
     expect(r.reclaimed).toBe(0);
     expect(await statusOf('doneRow')).toBe('done');
+  });
+});
+
+/**
+ * EI-85 (restart-kills): reconcileSpawnAdmissionOnBoot RE-LAUNCHES a reclaimed
+ * queen/bee whose durable work-item is non-terminal, instead of losing the work.
+ * The dead row is still settled `failed` (ceiling debit freed); a fresh row is
+ * launched via the INJECTED relaunch seam. A terminal/missing work-item is
+ * reclaimed-only (the legacy behaviour). The relaunch seam is captured (no live
+ * operator), so these pin the BRANCHING + the row-settlement, not a real re-fire.
+ */
+describe('reconcileSpawnAdmissionOnBoot RE-LAUNCH (EI-85 restart-kills)', () => {
+  const ME = hostname();
+  const PRIOR = { host: ME, bootId: 'boot-prior' };
+  let original: string;
+  beforeAll(() => { original = launcherBootId(); });
+  beforeEach(() => { __setLauncherBootIdForTests('boot-current'); });
+  afterAll(() => { __setLauncherBootIdForTests(original); });
+
+  /** A capturing relaunch seam: records every spawn it was asked to re-fire and
+   *  returns `accept` (default true → "re-launched"). */
+  function captureRelaunch(accept = true) {
+    const seen: { spawnId: string; childRole: string; workItemId: string | null; workItemStatus: string | null }[] = [];
+    const relaunch = async (s: {
+      spawnId: string; childRole: string; workItemId: string | null; workItemStatus: string | null;
+    }) => {
+      seen.push({ spawnId: s.spawnId, childRole: s.childRole, workItemId: s.workItemId, workItemStatus: s.workItemStatus });
+      return accept;
+    };
+    return { seen, relaunch };
+  }
+
+  it('RE-LAUNCHES a bee whose work-item is non-terminal (in_progress) — and still settles the dead row failed', async () => {
+    await insertWorkItem('F-1', 'in_progress');
+    await insertSpawn('bee1', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen', featureId: 'F-1' });
+    const { seen, relaunch } = captureRelaunch();
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { relaunch });
+    // dead row settled (ceiling freed) AND re-launched
+    expect(r.reclaimed).toBe(1);
+    expect(await statusOf('bee1')).toBe('failed');
+    expect(r.relaunched).toEqual(['bee1']);
+    // the seam saw the bee with its resolved work-item status
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ spawnId: 'bee1', childRole: 'bee', workItemId: 'F-1', workItemStatus: 'in_progress' });
+    // the reason records the boot reclaim (debit freed even though re-launched)
+    const [row] = await db.sql<{ error_message: string }[]>`
+      SELECT error_message FROM harness_shared.spawned_agents WHERE spawn_id = 'bee1'`;
+    expect(row.error_message).toMatch(/reclaimed at operator boot/);
+  });
+
+  it('RECLAIMS-ONLY (no re-launch) a bee whose work-item is TERMINAL (passed)', async () => {
+    await insertWorkItem('F-done', 'passed');
+    await insertSpawn('beeDone', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen', featureId: 'F-done' });
+    const { seen, relaunch } = captureRelaunch();
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { relaunch });
+    expect(r.reclaimed).toBe(1);
+    expect(await statusOf('beeDone')).toBe('failed');
+    expect(r.relaunched).toEqual([]); // terminal work → no re-launch
+    expect(seen).toHaveLength(0);
+  });
+
+  it('RECLAIMS-ONLY a bee with NO work-item id (nothing durable to resume)', async () => {
+    await insertSpawn('beeNoItem', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen' });
+    const { seen, relaunch } = captureRelaunch();
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { relaunch });
+    expect(r.relaunched).toEqual([]);
+    expect(seen).toHaveLength(0);
+    expect(await statusOf('beeNoItem')).toBe('failed');
+  });
+
+  it('RE-LAUNCHES a queen unconditionally (the hive driver, no single work-item)', async () => {
+    await insertSpawn('queen1', 'running', 1, { ...PRIOR, childRole: 'queen', runId: 'blueprint-run:default:coding:1' });
+    const { seen, relaunch } = captureRelaunch();
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { relaunch });
+    expect(r.relaunched).toEqual(['queen1']);
+    expect(seen[0]).toMatchObject({ childRole: 'queen' });
+    expect(await statusOf('queen1')).toBe('failed');
+  });
+
+  it('a relaunch seam that DECLINES (returns false) leaves the row reclaimed, not in `relaunched`', async () => {
+    await insertWorkItem('F-2', 'validating');
+    await insertSpawn('beeDeclined', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen', featureId: 'F-2' });
+    const { relaunch } = captureRelaunch(false); // seam declines
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { relaunch });
+    expect(r.reclaimed).toBe(1);
+    expect(r.relaunched).toEqual([]); // declined → not counted as relaunched
+    expect(await statusOf('beeDeclined')).toBe('failed'); // still settled (debit freed)
+  });
+
+  it('a throwing relaunch seam never aborts the reconcile — the row stays reclaimed', async () => {
+    await insertWorkItem('F-3', 'in_progress');
+    await insertSpawn('beeThrow', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen', featureId: 'F-3' });
+    const relaunch = async () => { throw new Error('boom'); };
+    // The reconcile catches + logs the re-fire failure (a warn is EXPECTED here);
+    // mock it so vitest-fail-on-console doesn't trip, and assert it was logged.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await reconcileSpawnAdmissionOnBoot(db.sql, { relaunch });
+      expect(r.reclaimed).toBe(1);
+      expect(r.relaunched).toEqual([]);
+      expect(await statusOf('beeThrow')).toBe('failed');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/boot re-launch failed for bee beeThrow/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('WITHOUT a relaunch seam (flag OFF), the reconcile is reclaim-only (legacy, byte-identical)', async () => {
+    await insertWorkItem('F-4', 'in_progress');
+    await insertSpawn('beeNoSeam', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen', featureId: 'F-4' });
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql); // no relaunch passed
+    expect(r.reclaimed).toBe(1);
+    expect(r.relaunched).toEqual([]);
+    expect(await statusOf('beeNoSeam')).toBe('failed');
+  });
+
+  it('mixed batch: re-launches the non-terminal bee + the queen, reclaims-only the terminal + non-queen/bee rows', async () => {
+    await insertWorkItem('F-live', 'in_progress');
+    await insertWorkItem('F-dead', 'deprecated');
+    await insertSpawn('beeLive', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen', featureId: 'F-live' });
+    await insertSpawn('beeDead', 'running', 1, { ...PRIOR, childRole: 'bee', parentRole: 'queen', featureId: 'F-dead' });
+    await insertSpawn('queenX', 'running', 1, { ...PRIOR, childRole: 'queen' });
+    await insertSpawn('workerX', 'running', 1, { ...PRIOR, childRole: 'worker', featureId: 'F-live' });
+    const { seen, relaunch } = captureRelaunch();
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { relaunch });
+    expect(r.reclaimed).toBe(4); // all four dead rows settled (ceiling fully freed)
+    expect(new Set(r.relaunched)).toEqual(new Set(['beeLive', 'queenX'])); // only these re-launch
+    expect(new Set(seen.map((s) => s.spawnId))).toEqual(new Set(['beeLive', 'queenX']));
+    for (const id of ['beeLive', 'beeDead', 'queenX', 'workerX']) {
+      expect(await statusOf(id)).toBe('failed');
+    }
   });
 });
 

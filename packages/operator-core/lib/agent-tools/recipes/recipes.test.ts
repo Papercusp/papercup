@@ -209,7 +209,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
   });
 
   it('ids:[…] runs MANY recipes; a missing one fails only itself (keyed by id)', async () => {
-    getRecipeMock.mockImplementation(async (_sql: unknown, _ws: string, id: string) =>
+    getRecipeMock.mockImplementation(async (_sql: unknown, id: string) =>
       id === 'gone'
         ? null
         : {
@@ -254,7 +254,7 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
   });
 
   it('ids:[…] → many; a not-found id fails only itself', async () => {
-    getRecipeMock.mockImplementation(async (_sql: unknown, _ws: string, id: string) =>
+    getRecipeMock.mockImplementation(async (_sql: unknown, id: string) =>
       id === 'x' ? null : {
         id, workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
         script: 's', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,

@@ -13,7 +13,7 @@
  *   • a `queen` → re-fire the `coding` hive blueprint for its workspace
  *     (`fireLaunchBlueprint`), the same root Queen-wake the `system:blueprint-run`
  *     routine fires — only sooner, closing the restart→next-tick gap.
- *   • a `bee`  → re-place it onto its work-item (`operatorSpawn role:'bee'`),
+ *   • a `bee`  → re-place it onto its work-item (`spawnAgentInHarness role:'bee'`),
  *     carrying its parent lineage / brief / model so the new bee is equivalent.
  *
  * Kept OUT of spawn-reclaim.ts on purpose: that module is a pure-sql unit with no
@@ -58,8 +58,8 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
       // A bee with no work-item never reaches here (shouldRelaunchReclaimedSpawn
       // filters it), but guard so a null can never spawn a featureless bee.
       if (!spawn.workItemId) return false;
-      const { operatorSpawn } = await import('./operator-spawn');
-      const res = await operatorSpawn({
+      const { spawnAgentInHarness } = await import('./operator-spawn');
+      const res = await spawnAgentInHarness({
         workspaceId: spawn.workspaceId,
         harness: spawn.harnessSlug,
         role: 'bee',

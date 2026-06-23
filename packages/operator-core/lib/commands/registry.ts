@@ -205,8 +205,8 @@ function err(
   return { ok: false, error: { code, message, retryable, hint } };
 }
 
-function formatZodError(zerr: { issues: ReadonlyArray<{ path: ReadonlyArray<string | number>; message: string }> }): string {
+function formatZodError(zerr: { issues: ReadonlyArray<{ path: ReadonlyArray<unknown>; message: string }> }): string {
   return zerr.issues
-    .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+    .map((i) => `${i.path.map(String).join('.') || '<root>'}: ${i.message}`)
     .join('; ');
 }

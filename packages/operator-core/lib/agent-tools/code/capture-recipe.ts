@@ -213,8 +213,6 @@ export async function captureRecipe(
       similarRecipes = await searchSimilarRecipes(
         deps.sql,
         {
-          workspaceId: input.workspaceId,
-          hiveSlug,
           title,
           description,
           toolsUsed,
@@ -230,8 +228,6 @@ export async function captureRecipe(
 
     const row = await upsertRecipe(deps.sql, {
       id,
-      workspaceId: input.workspaceId,
-      hiveSlug,
       title,
       description,
       script: input.script,

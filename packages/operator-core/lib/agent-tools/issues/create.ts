@@ -8,7 +8,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { createIssue } from '../../issues-engineer';
+import { notifyAgents } from '../coordination/notify-agents';
+import { createIssue, issueRef } from '../../issues-engineer';
 
 export default defineTool({
   name: 'issues:create',
@@ -30,6 +31,13 @@ export default defineTool({
     kind: z.enum(['bug', 'change']).optional().describe('work-item kind (unify-work-items): bug (default; something broken) | change (a desired one-off / DX ask)'),
     scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),
     topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list to see them)'),
+    notifyAgents: z
+      .array(z.string().min(1))
+      .max(8)
+      .optional()
+      .describe(
+        "@-mention SPECIFIC agents: ownerId prefixes / handles (resolve via coord:presence). Each is SUBSCRIBED to the issue (gets every future update) AND pinged now, pointing at it — a DIRECTED handoff to a known owner. Distinct from `topics` (broadcast to whoever subscribed to an area) and from assigning (ownership). Use when you know exactly who should see/own this.",
+      ),
     foundDuring: z.string().max(120).optional().describe('optional context — a feature/plan ref'),
   }),
   async handler(args, ctx) {
@@ -46,6 +54,26 @@ export default defineTool({
       createdBy: id.ownerId,
       source,
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, issue }) }] };
+    // Directed @-mention: subscribe + ping the named agents on the new issue.
+    const notified = args.notifyAgents?.length
+      ? await notifyAgents(id, {
+          addressees: args.notifyAgents,
+          objectRef: issueRef(issue.id),
+          summary: `🔖 ${id.ownerLabel} tagged you on ${issue.id}: ${issue.title.slice(0, 80)}`,
+          body:
+            `${id.ownerLabel} tagged you on issue ${issue.id} (${issue.severity}): ${issue.title}` +
+            (args.body ? `\n\n${args.body.slice(0, 600)}` : '') +
+            `\n\n— it's on your radar: issues:get ${issue.id} (comment / claim / close there).`,
+          harnessSlug: args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : undefined,
+        }).catch(() => null)
+      : null;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ ok: true, issue, ...(notified ? { notified: notified.notified } : {}) }),
+        },
+      ],
+    };
   },
 });
