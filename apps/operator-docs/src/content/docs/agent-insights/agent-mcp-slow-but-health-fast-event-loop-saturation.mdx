@@ -5,11 +5,11 @@ discovered: 2026-06-14
 tags: [operator, hono-host, performance, event-loop, agent-mcp, hyperbee, diagnostics]
 status: active
 documents:
-  - "packages/operator-core/lib/event-loop-lag-monitor.ts: startEventLoopLagMonitor / monitorEventLoopDelay (gauge, log line at :153, default warnP95Ms=100 / intervalMs=10_000)"
-  - "apps/operator/bin/hono-host.ts: startEventLoopLagMonitor wiring at boot (:113, imported :22)"
-  - "packages/operator-core/lib/sync/hyperbee/boot.ts: mergeNow (:1110) + MERGE_POLL_MS=1000 1Hz poll (:115,:1398-1408) + mergeAdmittedLogsIncremental call + mergeCursor steady-state skip (:1198-1214)"
-  - "libs/papercusp/libs/db/sql/181-hyperbee-projection-fed-ts-guard.sql: mig 181 fed_ts LWW guard (EI-79 residual step 2)"
-  - "packages/operator-core/lib/sync/hyperbee/read-merge.ts: mergeAdmittedLogsIncremental (incremental [cursor,length) merge)"
+  - packages/operator-core/lib/event-loop-lag-monitor.ts
+  - apps/operator/bin/hono-host.ts
+  - packages/operator-core/lib/sync/hyperbee/boot.ts
+  - libs/papercusp/libs/db/sql/181-hyperbee-projection-fed-ts-guard.sql
+  - "packages/operator-core/lib/sync/hyperbee/read-merge.ts :: mergeAdmittedLogsIncremental"
 plans:
   - p2p-performance-suite-2026-06-07
   - operator-scalability-event-loop-2026-06-16

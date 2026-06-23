@@ -823,7 +823,7 @@ describe('resolveNamedQueryV2 — fleetAssignments.byHarness (workspace scoping)
   // sessions roster). Mirrors the sibling hiveRoster.byHarness, which already
   // scopes this way.
   it('threads the active workspace into the fleet read (not just the harness slug)', async () => {
-    const listFleetAssignments = vi.fn(async () => []);
+    const listFleetAssignments = vi.fn(async (_opts: { harness: string; workspaceId: string }) => []);
     vi.doMock('../fleet/assignments', () => ({
       listFleetAssignments,
       groupByAgent: vi.fn(() => []),

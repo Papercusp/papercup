@@ -81,7 +81,13 @@ export default defineTool({
       return new Response(null, { status: 499 });
     }
 
-    const payload = JSON.stringify({ results });
+    // Defense-in-depth (data-sync-push-completion D-010): a resolver row may carry a
+    // BigInt — a bigserial({ mode: 'bigint' }) PK is ~35 tables — which plain
+    // JSON.stringify THROWS on ("Do not know how to serialize a BigInt") → a 500 for the
+    // WHOLE batch (a sparse-table 500 that hid in userActions for ages). Resolvers SHOULD
+    // return clean rows (sync-resolver's jsonSafeRows), but this boundary replacer is the
+    // net so no present/future resolver can 500 the sync transport on a stray BigInt.
+    const payload = JSON.stringify({ results }, (_k, v) => (typeof v === 'bigint' ? Number(v) : v));
     const acceptsGzip = (req.headers.get('accept-encoding') ?? '').toLowerCase().includes('gzip');
     if (acceptsGzip && payload.length >= 1024) {
       return new Response(gzipSync(payload), {

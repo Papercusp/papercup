@@ -1242,7 +1242,7 @@ export function OracleDock() {
           className="oracle-dock oracle-dock--maximal-hud pc-animate-in pc-animate-in--right"
           data-oracle-dock
           data-target-kind={active.target.kind}
-          role="dialog"
+          role="region"
           aria-label="Oracle"
         >
           <div className="oracle-hud-overlay" aria-hidden="true">

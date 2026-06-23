@@ -5,15 +5,9 @@ discovered: 2026-05-31
 tags: [claude-code, permissions, orchestrator, fleet, security, allowed-tools, dontAsk]
 status: active
 documents:
-  - "libs/papercusp/packages/orchestrator/src/invoke.ts:claudeMcpArgs (1287-1342)"
-  - "libs/papercusp/packages/orchestrator/src/invoke.ts:FLEET_ALLOWED_TOOLS (470-480)"
-  - "libs/papercusp/packages/orchestrator/src/invoke.ts:FLEET_DISALLOWED_TOOLS (509-525)"
-  - "libs/papercusp/packages/orchestrator/src/invoke.ts:FLEET_NO_WRITE_ROLES (545)"
-  - "libs/papercusp/packages/orchestrator/src/invoke.ts:fleetAllowedToolsForRole (619-632)"
-  - "libs/papercusp/packages/orchestrator/src/invoke.ts:gitConfigNoPushEnv (1410-1421) + FLEET_PRE_PUSH_HOOK (1354-1358)"
-  - "libs/papercusp/packages/orchestrator/src/invoke.ts:fleetSandboxEnabled (895-898) / fleetSandboxSettingsForRole (922-947) / FLEET_SANDBOX_DENY_READ (728-735) / resolveFleetAllowedDomains (795-803)"
-  - "libs/generic/tooldef/src/tool-projection.ts:listMcpProjections (1229-1233)"
-  - "libs/generic/tooldef/src/dispatch-stack.ts:roleAllowlistStep (204-217)"
+  - libs/papercusp/packages/orchestrator/src/invoke.ts
+  - "libs/generic/tooldef/src/tool-projection.ts :: listMcpProjections"
+  - "libs/generic/tooldef/src/dispatch-stack.ts :: roleAllowlistStep"
 plans:
   - fleet-spawn-sandbox-2026-06-01
   - agent-capability-confinement-2026-06-13

@@ -74,7 +74,7 @@ export interface LoopFireDeps {
 export interface LoopFireResult {
   fired: boolean;
   /** Why a fire was withheld (when fired=false). */
-  reason?: 'no-target' | 'fire-gate' | 'cost-cap';
+  reason?: 'no-target' | 'fire-gate' | 'cost-cap' | 'dead-man';
   woken?: number;
   staged?: number;
   detail?: string;
@@ -92,6 +92,15 @@ export function readLoopCostCapCents(payloadTemplate: Record<string, unknown> | 
   return typeof c === 'number' && Number.isFinite(c) && c > 0 ? c : null;
 }
 
+/** Read a positive-number dead-man bound (`maxFires` / `maxDurationSec`) from payload_template. */
+export function readLoopPositiveBound(
+  payloadTemplate: Record<string, unknown> | null,
+  key: 'maxFires' | 'maxDurationSec',
+): number | null {
+  const v = payloadTemplate?.[key];
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+}
+
 /**
  * Fire one loop iteration: gate (failure-streak → cost-cap) then deliver the warm coord wake.
  * Never throws — every failure is a result (the routine engine's fire path is fail-soft; a
@@ -102,6 +111,8 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const recordFire = deps.recordFire ?? defaultRecordFire;
   const wake = deps.wake ?? defaultWakeRecipients;
   const costCap = deps.costCap ?? defaultCheckLoopCostCap;
+  const deadMan = deps.deadMan ?? defaultCheckLoopDeadMan;
+  const incrementFireCount = deps.incrementFireCount ?? defaultIncrementLoopFireCount;
 
   if (!input.targetOwnerId) {
     return { fired: false, reason: 'no-target', detail: 'loop routine has no target_owner_id to wake' };
@@ -140,6 +151,21 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     }
   }
 
+  // Guard 3 — the dead-man bound (loop-wake-rate-limit-robustness P2a): a runaway / forgotten /
+  // permanently-dead loop auto-pauses when its total fires or wall-clock-since-arm crosses an
+  // optional bound. Config rides payload_template (maxFires / maxDurationSec); no bound ⇒ no read.
+  const maxFires = readLoopPositiveBound(input.payloadTemplate, 'maxFires');
+  const maxDurationSec = readLoopPositiveBound(input.payloadTemplate, 'maxDurationSec');
+  if (maxFires != null || maxDurationSec != null) {
+    const dm = await deadMan({ sql: input.sql, routineId: input.routineId, maxFires, maxDurationSec });
+    if (dm.breach) {
+      // The breach auto-paused the routine; record it as a fire-path error so it is visible in
+      // autoloop:status / fire history, and withhold the wake.
+      await recordFire(input.installSlug, input.routineName, `dead-man ${dm.reason}`, 'error').catch(() => {});
+      return { fired: false, reason: 'dead-man', detail: `dead-man guard tripped: ${dm.reason} — loop auto-paused` };
+    }
+  }
+
   // Fire — the WARM coord wake. `wakeRecipients` fires `coord:inbox-wake:<targetOwnerId>` and
   // rides the wake-executor liveness ladder (inject-if-live / `--resume`-if-exited); the loop
   // adds NO resume code (D-005). Pre-record the attempt (preserves the streak counter), then
@@ -166,6 +192,12 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     reached ? 'queued' : 'no-session-now',
     'attempt',
   ).catch(() => {});
+
+  // P2a: bump the live fire counter so the dead-man `maxFires` bound can read it on the next
+  // fire. Only when a fire-count bound is configured (otherwise zero extra writes). Best-effort.
+  if (maxFires != null) {
+    await incrementFireCount(input.sql ?? undefined, input.routineId).catch(() => {});
+  }
 
   return { fired: true, woken: fan.woken, staged: fan.staged };
 }

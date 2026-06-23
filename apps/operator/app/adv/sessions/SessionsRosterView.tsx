@@ -9,9 +9,9 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * `planFilters` and scopes the plan-grouped section, while the No-plan and
  * presence-only groups always show (D-005).
  *
- * Data: polls GET /api/adv/roster (presence-primary + adv_sessions enrichment;
+ * Data: advRoster.list sync query (presence-primary + adv_sessions enrichment;
  * P-003). Liveness is server-derived per entry. The detail dossier (P-007) and
- * the files-in-play map (P-008) come later; this is the grouped rich-row list.
+ * the files-in-play map (P-008) share the same provider-backed roster snapshot.
  */
 
 import { useCallback, useMemo } from 'react';

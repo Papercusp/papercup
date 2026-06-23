@@ -18,11 +18,11 @@
  * reuses CLAIM_STATUS_COPY — the SINGLE copy source it shares with the
  * claim-badge tooltips (P-003).
  *
- * Sections use native <details> (the approved content-disclosure primitive —
- * design/gotchas: lazy-mount, Ctrl+F, print), not Radix Collapsible.
+ * Sections use Radix Collapsible per the app design primitives.
  */
 
 import { type CSSProperties, type ReactNode } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { Modal } from '../harness/Modal';
 import { useLexicon } from '@/lib/useLexicon';
@@ -69,8 +69,8 @@ export function HowSharingWorks({
 
 function Section({ summary, children, open }: { summary: string; children: ReactNode; open?: boolean }) {
   return (
-    <details
-      open={open}
+    <Collapsible.Root
+      defaultOpen={open}
       style={{
         background: 'var(--bg-2)',
         border: '1px solid var(--border)',
@@ -79,22 +79,28 @@ function Section({ summary, children, open }: { summary: string; children: React
         marginBottom: 8,
       }}
     >
-      <summary
+      <Collapsible.Trigger
         style={{
+          width: '100%',
+          background: 'none',
+          border: 'none',
           cursor: 'pointer',
           fontSize: 13,
           fontWeight: 600,
           color: 'var(--fg)',
           padding: '10px 0',
-          listStyle: 'revert',
+          textAlign: 'left',
+          fontFamily: 'inherit',
         }}
       >
         {summary}
-      </summary>
-      <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--fg-dim)', padding: '0 0 12px' }}>
-        {children}
-      </div>
-    </details>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--fg-dim)', padding: '0 0 12px' }}>
+          {children}
+        </div>
+      </Collapsible.Content>
+    </Collapsible.Root>
   );
 }
 

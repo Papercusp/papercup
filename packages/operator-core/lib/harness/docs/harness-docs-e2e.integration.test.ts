@@ -1,6 +1,6 @@
 /**
  * harness-docs-e2e.integration.test.ts — the whole server-side harness-docs flow
- * end-to-end against REAL Postgres (mig 172) + a REAL fixture git repo, per
+ * end-to-end against REAL Postgres (migs 172 + 386) + a REAL fixture git repo, per
  * harness-docs-integration-2026-06-05 (P-011 server half; validates P-004/5/6/7).
  *
  * generated provenance → merged read → git-sync drift sweep (stale/review +
@@ -71,6 +71,9 @@ beforeAll(async () => {
     DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   `);
   await db.sql.unsafe(readMigration('172-harness-docs.sql')).simple();
+  // 386 adds the doc-steward retry counters (regen_attempts/reverify_attempts) the
+  // sweep's mark/verify/setStatus helpers now write.
+  await db.sql.unsafe(readMigration('386-harness-docs-steward-retry-attempts.sql')).simple();
   h.sql = db.sql;
 
   repo = mkdtempSync(join(tmpdir(), 'docs-e2e-'));

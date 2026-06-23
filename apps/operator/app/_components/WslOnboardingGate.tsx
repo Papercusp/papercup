@@ -23,6 +23,7 @@
  */
 
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import {
   isTauri,
@@ -208,49 +209,53 @@ export default function WslOnboardingGate({ children }: Props) {
 
         <Step status={status} busy={busy} onAction={refresh} logTail={logTail} askConfirm={askConfirm} />
 
-        <details style={{ marginTop: 24, fontSize: 12, color: 'var(--fg-mute, #9a9aa3)' }}>
-          <summary style={{ cursor: 'pointer' }}>Diagnostics</summary>
-          <pre
-            style={{
-              fontSize: 11,
-              padding: 12,
-              background: 'rgba(0,0,0,0.25)',
-              borderRadius: 6,
-              overflow: 'auto',
-              maxHeight: 200,
-              marginTop: 8,
-            }}
-          >
-            {JSON.stringify(status, null, 2)}
-            {logTail ? '\n\n' + logTail : ''}
-          </pre>
-          <button
-            type="button"
-            onClick={async () => {
-              const ok = await askConfirm({
-                title: 'Reset the papercup runtime?',
-                body: 'This removes the WSL distro and you will have to reinstall.',
-                confirmLabel: 'Reset',
-                destructive: true,
-              });
-              if (!ok) return;
-              await wslUninstall();
-              await refresh();
-            }}
-            style={{
-              marginTop: 8,
-              padding: '6px 12px',
-              fontSize: 12,
-              background: 'transparent',
-              border: '1px solid var(--border, #2a2a32)',
-              color: 'var(--fg-mute, #9a9aa3)',
-              borderRadius: 6,
-              cursor: 'pointer',
-            }}
-          >
-            Reset runtime
-          </button>
-        </details>
+        <Collapsible.Root style={{ marginTop: 24, fontSize: 12, color: 'var(--fg-mute, #9a9aa3)' }}>
+          <Collapsible.Trigger style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', font: 'inherit' }}>
+            Diagnostics
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <pre
+              style={{
+                fontSize: 11,
+                padding: 12,
+                background: 'rgba(0,0,0,0.25)',
+                borderRadius: 6,
+                overflow: 'auto',
+                maxHeight: 200,
+                marginTop: 8,
+              }}
+            >
+              {JSON.stringify(status, null, 2)}
+              {logTail ? '\n\n' + logTail : ''}
+            </pre>
+            <button
+              type="button"
+              onClick={async () => {
+                const ok = await askConfirm({
+                  title: 'Reset the papercup runtime?',
+                  body: 'This removes the WSL distro and you will have to reinstall.',
+                  confirmLabel: 'Reset',
+                  destructive: true,
+                });
+                if (!ok) return;
+                await wslUninstall();
+                await refresh();
+              }}
+              style={{
+                marginTop: 8,
+                padding: '6px 12px',
+                fontSize: 12,
+                background: 'transparent',
+                border: '1px solid var(--border, #2a2a32)',
+                color: 'var(--fg-mute, #9a9aa3)',
+                borderRadius: 6,
+                cursor: 'pointer',
+              }}
+            >
+              Reset runtime
+            </button>
+          </Collapsible.Content>
+        </Collapsible.Root>
       </div>
       {confirmEl}
     </div>

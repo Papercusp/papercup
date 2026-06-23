@@ -1,6 +1,6 @@
 /**
  * doc-record.integration.test.ts — the harness_docs record helpers against REAL
- * Postgres (migration 172 applied to a throwaway DB), per
+ * Postgres (migrations 172 + 386 applied to a throwaway DB), per
  * harness-docs-integration-2026-06-05 (P-002).
  *
  * Proves: upsert insert+conflict; subject_ref jsonb + anchor_paths text[] round-trip;
@@ -44,6 +44,9 @@ beforeAll(async () => {
     DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   `);
   await db.sql.unsafe(readMigration('172-harness-docs.sql')).simple();
+  // 386 adds regen_attempts/reverify_attempts (doc-steward retry counters) that
+  // verifyDoc/setDocStatus/markRegenEnqueued/markReverifyFlagged now write.
+  await db.sql.unsafe(readMigration('386-harness-docs-steward-retry-attempts.sql')).simple();
   h.sql = db.sql;
 }, 60_000);
 

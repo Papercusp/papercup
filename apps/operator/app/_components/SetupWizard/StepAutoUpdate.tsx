@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
 import { isTauri } from './tauri-detect';
 
@@ -168,10 +169,12 @@ export function StepAutoUpdate() {
         </div>
       )}
       {update.notes && (
-        <details className="pc-release-notes">
-          <summary>Release notes</summary>
+        <Collapsible.Root className="pc-release-notes">
+          <Collapsible.Trigger>Release notes</Collapsible.Trigger>
+          <Collapsible.Content>
           <pre>{update.notes}</pre>
-        </details>
+          </Collapsible.Content>
+        </Collapsible.Root>
       )}
 
       <p className="pc-step__hint">

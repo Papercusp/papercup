@@ -1312,8 +1312,8 @@ function LiveFleetPanel({ live }: { live: BenchRunLive }) {
 
 // ── Coordination timeline (P-008) — the Queen's orchestration, event by event ─
 const COORD_COLOR: Record<string, string> = {
-  placement: 'var(--accent, #38bdf8)', complete: '#34d399', rework: '#fbbf24', stranded_item: '#fb7185',
-  evicted: '#fb7185', spawn: '#a78bfa', handoff: '#a78bfa', claim: 'var(--accent, #38bdf8)', wake: '#eab308',
+  placement: 'var(--accent)', complete: 'var(--good)', rework: 'var(--warn)', stranded_item: 'var(--bad)',
+  evicted: 'var(--bad)', spawn: 'var(--accent-strong)', handoff: 'var(--accent-strong)', claim: 'var(--accent)', wake: 'var(--warn)',
 };
 function CoordTimeline({ events }: { events: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> }) {
   if (events.length === 0) return null;
@@ -1891,7 +1891,7 @@ function EvalsStyles() {
       .pc-evals__copy h1 { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: 0; color: var(--fg, #e7f7ff); }
       .pc-evals__copy p { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--fg-dim, #b9d4e8); }
       .pc-evals__copy em { font-style: italic; color: var(--fg, #e7f7ff); }
-      .pc-evals__link { color: var(--accent, #38bdf8); text-decoration: none; }
+      .pc-evals__link { color: var(--accent); text-decoration: none; }
       .pc-evals__link:hover { text-decoration: underline; }
 
       .pc-evals__legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; flex-shrink: 0; }
@@ -1903,7 +1903,7 @@ function EvalsStyles() {
       .pc-evals__subtab { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 9px; border: 1px solid var(--border, rgba(125,211,252,0.18)); background: var(--bg-2, rgba(255,255,255,0.04)); color: var(--fg-mute, #7f9bb4); font-size: 12px; font-weight: 650; cursor: pointer; }
       .pc-evals__subtab em { display: block; font-style: normal; font-size: 9.5px; font-weight: 600; opacity: 0.72; margin-top: 1px; }
       .pc-evals__subtab:hover { color: var(--fg, #e7f7ff); }
-      .pc-evals__subtab.is-active { color: var(--fg, #e7f7ff); border-color: color-mix(in oklab, #eab308, transparent 30%); background: color-mix(in oklab, #eab308, transparent 86%); }
+      .pc-evals__subtab.is-active { color: var(--fg, #e7f7ff); border-color: color-mix(in oklab, var(--warn), transparent 30%); background: color-mix(in oklab, var(--warn), transparent 86%); }
       .pc-evals__controlsright { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       .pc-evals__suitepick { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-mute, #7f9bb4); }
       .pc-evals__suitelabel { font-size: 10px; font-weight: 760; letter-spacing: 0; text-transform: uppercase; }

@@ -4,7 +4,7 @@
  * SessionsRosterView (P-006) — the grouped rich-row live roster. Verifies the
  * grouping rule (plan / No-plan / presence-only with D-005 always-show) and that
  * the rendered rows carry the liveness dot, client/role/feature, intent, and
- * file chips, fed by a mocked /api/adv/roster.
+ * file chips, fed by a mocked advRoster.list sync query.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
@@ -19,6 +19,31 @@ import {
   type RosterEntry,
 } from '../SessionsRosterView';
 import { SessionsRosterProvider } from '../SessionsRosterContext';
+
+const syncState = vi.hoisted(() => ({
+  roster: null as unknown,
+  detail: null as unknown,
+  calls: [] as Array<{ queryName: string; args?: unknown }>,
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: (opts: { queryName: string; args?: unknown; enabled?: boolean }) => {
+    syncState.calls.push(opts);
+    return {
+      data:
+        opts.enabled === false
+          ? null
+          : opts.queryName === 'advRoster.list'
+            ? (syncState.roster ? [syncState.roster] : null)
+            : opts.queryName === 'agentDetail.byOwner'
+              ? (syncState.detail ? [syncState.detail] : null)
+              : null,
+      loading: false,
+      error: null,
+      fetching: false,
+      invalidate: vi.fn(),
+    };
+  },
+}));
 
 /**
  * The roster is now a split 2-pane (list + detail) sharing one poll via the
@@ -156,12 +181,14 @@ describe('applyRosterFilters (P-010)', () => {
 });
 
 describe('SessionsRosterView', () => {
-  const fetchMock = vi.fn();
   beforeEach(() => {
-    vi.stubGlobal('fetch', fetchMock);
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    syncState.calls = [];
+    syncState.detail = {
+      ownerId: 'a',
+      locks: { held: [], waiting: [], error: null },
+      coord: { lastMessage: null, unreadCount: 0, openHandoffs: [], openEscalations: [], error: null },
+    };
+    syncState.roster = {
         active: [
           entry({
             ownerId: 'a',
@@ -179,13 +206,10 @@ describe('SessionsRosterView', () => {
         ended: [
           { id: 9, label: 'old', role: null, feature: null, agent: 'omp', planSlug: null, endedAt: new Date().toISOString() },
         ],
-      }),
-    });
+      };
   });
   afterEach(() => {
     cleanup();
-    vi.unstubAllGlobals();
-    fetchMock.mockReset();
   });
 
   it('renders the plan group, presence-only group, intent + file chips, and the ended section', async () => {
@@ -224,10 +248,15 @@ describe('SessionsRosterView', () => {
     expect(container.querySelector('.pc-roster__group-sub')).toBeNull();
   });
 
-  it('scopes the fetch URL to the workspace', async () => {
+  it('scopes the roster query to the workspace', async () => {
     render(<SessionsRosterView planFilters={[]} workspaceId="ws9" />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/adv/roster?workspace=ws9');
+    await waitFor(() =>
+      expect(syncState.calls.some((c) => c.queryName === 'advRoster.list')).toBe(true),
+    );
+    expect(syncState.calls.find((c) => c.queryName === 'advRoster.list')?.args).toEqual({
+      workspaceId: 'ws9',
+      endedLimit: 50,
+    });
   });
 
   it('clicking a row calls onSelectAgent with the owner id (P-007 selection)', async () => {
@@ -242,26 +271,10 @@ describe('SessionsRosterView', () => {
   });
 
   it('renders the dossier pane when an agent is selected', async () => {
-    // The dossier lazy-fetches /api/adv/roster/agent — branch the mock by URL.
-    fetchMock.mockImplementation((url: string) => {
-      if (String(url).includes('/api/adv/roster/agent')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            ownerId: 'a',
-            locks: { held: [], waiting: [], error: null },
-            coord: { lastMessage: null, unreadCount: 0, openHandoffs: [], openEscalations: [], error: null },
-          }),
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({
-          active: [entry({ ownerId: 'a', label: 'worker-188', intent: 'doing X' })],
-          ended: [],
-        }),
-      });
-    });
+    syncState.roster = {
+      active: [entry({ ownerId: 'a', label: 'worker-188', intent: 'doing X' })],
+      ended: [],
+    };
     const { container, findByLabelText } = render(
       <SessionsRosterView planFilters={[]} selectedAgent="a" onSelectAgent={vi.fn()} />,
     );
@@ -295,16 +308,13 @@ describe('SessionsRosterView', () => {
   });
 
   it('hides stale agents by default and surfaces a toggle (perf fix)', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        active: [
-          entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
-          entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
-        ],
-        ended: [],
-      }),
-    });
+    syncState.roster = {
+      active: [
+        entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
+        entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
+      ],
+      ended: [],
+    };
     const onToggleStale = vi.fn();
     const { findByText, queryByText } = render(
       <SessionsRosterView planFilters={[]} onToggleStale={onToggleStale} />,
@@ -317,16 +327,13 @@ describe('SessionsRosterView', () => {
   });
 
   it('shows stale agents when showStale is on', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        active: [
-          entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
-          entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
-        ],
-        ended: [],
-      }),
-    });
+    syncState.roster = {
+      active: [
+        entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
+        entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
+      ],
+      ended: [],
+    };
     const { findByText } = render(<SessionsRosterView planFilters={[]} showStale />);
     expect(await findByText('stale-one')).toBeTruthy();
   });

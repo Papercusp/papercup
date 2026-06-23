@@ -11,6 +11,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 
+const syncState = vi.hoisted(() => ({
+  contributors: [] as unknown[],
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+    data: queryName === 'contributors.byHarness' ? syncState.contributors : null,
+    loading: false,
+    error: null,
+    fetching: false,
+    invalidate: vi.fn(),
+  }),
+}));
+
 // nuqs: useQueryState → a plain useState seeded with the parser default.
 vi.mock('nuqs', () => ({
   useQueryState: (_key: string, opts?: { defaultValue?: unknown }) => {
@@ -40,6 +53,7 @@ const CONTRIBUTORS = [
 ];
 
 beforeEach(() => {
+  syncState.contributors = CONTRIBUTORS;
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (String(url).includes('/contributor-usage')) {
       return new Response(
@@ -63,9 +77,6 @@ beforeEach(() => {
         }),
         { status: 200 },
       );
-    }
-    if (String(url).includes('/contributors')) {
-      return new Response(JSON.stringify({ contributors: CONTRIBUTORS }), { status: 200 });
     }
     return new Response('{}', { status: 200 });
   }));

@@ -81,6 +81,18 @@ export default defineTool({
       .positive()
       .optional()
       .describe('Auto-pause the loop if its cumulative cost crosses this many cents (best-effort).'),
+    maxFires: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('Dead-man guard: auto-pause the loop after this many total wake fires (a bound on a runaway loop).'),
+    maxDurationSec: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('Dead-man guard: auto-pause the loop this many seconds after it was armed (a bound on a forgotten / permanently-dead loop).'),
   }),
   async handler(args, ctx) {
     // Feature gate (papercusp-loops). Default OFF until the full loop engine
@@ -139,6 +151,8 @@ export default defineTool({
       intervalSec: args.intervalSec,
       kickoff,
       costCapCents: args.costCapCents ?? null,
+      maxFires: args.maxFires ?? null,
+      maxDurationSec: args.maxDurationSec ?? null,
     });
 
     return {

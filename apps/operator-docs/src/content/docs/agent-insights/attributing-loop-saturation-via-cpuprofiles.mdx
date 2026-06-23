@@ -5,10 +5,10 @@ discovered: 2026-06-19
 tags: [operator, performance, event-loop, cpuprofile, attribution, diagnostics, child_process, caching]
 status: active
 documents:
-  - "packages/operator-core/lib/event-loop-lag-monitor.ts: captureCpuProfile (writes ~/.papercusp/loop-profiles/loop-saturation-*.cpuprofile via node:inspector, lines 204-264) and startEventLoopLagMonitor (lines 113-194)"
-  - "packages/operator-core/lib/dev-deploy-state.ts: devDeployState() short-TTL single-flight cache (lines 238-255), computeDevDeployState() ~10 git execs (lines 166-186), git() child_process fan-out (lines 29-34)"
-  - "packages/operator-core/lib/system-health/compute.ts:538-539 (devDeployState caller, hot read path)"
-  - "packages/operator-core/lib/sync-resolver/index.ts:2869-2870 (dev.deployState collection caller, hot read path)"
+  - packages/operator-core/lib/event-loop-lag-monitor.ts
+  - packages/operator-core/lib/dev-deploy-state.ts
+  - packages/operator-core/lib/system-health/compute.ts
+  - packages/operator-core/lib/sync-resolver/index.ts
 plans:
   - infra-perf-reliability-audit-2026-06-19
   - infra-perf-reliability-audit-round3-2026-06-19

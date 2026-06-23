@@ -378,7 +378,15 @@ autonomous-fleet agent.
   exhaustion does. (The shared `CONCURRENCY_FIRST_NOTE` every harness agent also
   carries.)
 - **Collapse a multi-step tool flow into ONE `code:run` — don't pay a round-trip
-  per call.** When `code:run` is in your toolset and a task needs MANY tool calls
+  per call.** Before a burst of calls, ASK: can I get this result in FEWER calls?
+  Tokens are real cost — each call re-reads your whole context. Bundle the calls you
+  can determine UP FRONT (independent ones, a mechanical loop/branch/filter over
+  results, or a fetch whose result several later calls reuse — fetch ONCE) into one
+  script; keep separate ONLY the steps where you must read a result and DECIDE (the
+  cutoff is YOUR judgment mid-flow, NOT whether one call uses another's result — a
+  script threads results fine). Batch what you hold THIS turn; don't stash work to
+  batch later (that re-loads context + risks dropping it). When `code:run` is in
+  your toolset and a task needs MANY tool calls
   with control flow — loop / branch / filter over results, fan-out reads,
   retry-until, "do X for each of N" — orchestrate them in a SINGLE `code:run`
   script instead of issuing the calls one at a time. Each separate call is its own

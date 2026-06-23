@@ -8,17 +8,15 @@
  * via the pure `compareContributors`. Unverified/pending bindings render
  * greyed with ZEROED stats (P-048d) — `statsAggregateForStatus`.
  *
- * Data: `GET /api/harness/:slug/contributors` (the existing P-048 endpoint).
- * NOTE: that endpoint derives tier-A/B from `harness_feature_prs` /
- * `harness_features.shipped_by_github_id`, while the user-profile loader
- * (P-072b) + `load-contributors-tab.ts` use `auto_review_audit` /
- * `harness_features_consolidated.taken_by`. Reconciling the endpoint to the
- * latter (so the tab + profile agree) is a flagged follow-up; this panel
- * applies the P-048d zeroing client-side regardless.
+ * Data: `contributors.byHarness` sync query. The resolver mirrors the
+ * user-profile tier sources (`auto_review_audit`,
+ * `harness_features_consolidated.taken_by`) and applies P-048d zeroing.
  */
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { parseAsInteger, parseAsStringEnum, useQueryState } from 'nuqs';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { BindingStatusBadge, type BindingStatus } from '../../_components/BindingStatusBadge';
 import { statsAggregateForStatus } from '@papercusp/operator-core/lib/identity/binding-verifier-types';
@@ -115,9 +113,8 @@ function renderUsageBreakdown(entry: UsageEntry): ReactNode {
 }
 
 export default function AdvContributorsPanel({ params, api }: PanelComponentProps) {
+  const workspaceId = useWorkspaceId();
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
-  const [rows, setRows] = useState<ContributorTabRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useQueryState(
     'csort',
     parseAsStringEnum<ContributorSortKey>(SORTS.map((s) => s.key)).withDefault('joined'),
@@ -127,6 +124,16 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
   const [expandedId, setExpandedId] = useQueryState('cusage', parseAsInteger);
   const [usageById, setUsageById] = useState<Record<number, UsageEntry>>({});
   const { isMe } = useViewer();
+  const contributorsQuery = useSyncQuery<ApiRow>({
+    queryName: 'contributors.byHarness',
+    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
+    enabled: !!slug && !!workspaceId,
+  });
+  const rows = useMemo(
+    () => (contributorsQuery.data ? contributorsQuery.data.map(toTabRow) : null),
+    [contributorsQuery.data],
+  );
+  const error = contributorsQuery.error ? String(contributorsQuery.error) : null;
 
   useEffect(() => {
     if (expandedId == null || !slug) return;
@@ -149,29 +156,6 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
       cancelled = true;
     };
   }, [expandedId, slug]);
-
-  useEffect(() => {
-    if (!slug) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/contributors`, { cache: 'no-store' });
-        if (!res.ok) {
-          if (!cancelled) setError(`HTTP ${res.status}`);
-          return;
-        }
-        const body = (await res.json().catch(() => ({}))) as { contributors?: ApiRow[] };
-        if (cancelled) return;
-        setRows((body.contributors ?? []).map(toTabRow));
-        setError(null);
-      } catch (e) {
-        if (!cancelled) setError(String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [slug]);
 
   useEffect(() => {
     if (rows) api.setTitle(`Contributors · ${slug} (${rows.length})`);

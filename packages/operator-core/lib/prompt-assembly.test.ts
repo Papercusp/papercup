@@ -391,6 +391,10 @@ describe('assembleRolePrompt — code-run note (code-execution-tool-orchestratio
     expect(out.text).toContain('## Collapse a multi-step tool flow into ONE `code:run`');
     expect(out.text).toContain('round-trip');
     expect(out.text).toContain('SUMMARIZE CONSERVATIVELY');
+    // owner refinement 2026-06-23: the conscious "fewer calls?" token framing + the corrected
+    // bundle cutoff (judgment mid-flow, NOT data dependency).
+    expect(out.text).toContain('can I get this result in FEWER calls');
+    expect(out.text).toContain("NOT whether one call uses another's result");
     expect(out.sections.some((s) => s.name === 'code-run-note')).toBe(true);
   });
 });

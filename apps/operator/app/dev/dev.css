@@ -762,9 +762,9 @@
   margin-top: 4px;
   padding: 9px 22px;
   border-radius: 6px;
-  background: linear-gradient(180deg, #7c6bff 0%, #6b5be5 100%);
-  color: #fff;
-  border: none;
+  background: var(--accent);
+  color: var(--accent-ink, var(--bg-deep));
+  border: 1px solid var(--accent);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
@@ -1283,9 +1283,9 @@
 }
 .pc-tables-composer-apply {
   padding: 4px 14px;
-  background: linear-gradient(180deg, #7c6bff 0%, #6b5be5 100%);
-  border: none;
-  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--accent-ink, var(--bg-deep));
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
@@ -1369,9 +1369,9 @@
 }
 .pc-sql-run {
   padding: 6px 18px;
-  background: linear-gradient(180deg, #7c6bff 0%, #6b5be5 100%);
-  color: #fff;
-  border: none;
+  background: var(--accent);
+  color: var(--accent-ink, var(--bg-deep));
+  border: 1px solid var(--accent);
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
@@ -1732,7 +1732,7 @@
 .pc-studio-start-btn:hover:not(:disabled),
 .pc-tables-composer-apply:hover {
   filter: none;
-  background: #67d8ff;
+  background: color-mix(in srgb, var(--accent), var(--fg) 12%);
 }
 
 .pc-dev-btn-mini,

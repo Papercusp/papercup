@@ -281,7 +281,7 @@ export function CombBlueprintForm({ onBack, onCreated, hiveLabel }: CombBlueprin
         {createError && <ErrorBanner message={createError} />}
         <label style={{ display: 'block', marginBottom: 14 }}>
           <FieldLabel>{hiveLabel} slug</FieldLabel>
-          <input ref={slugRef} type="text" placeholder="my-hive" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
+          <input ref={slugRef} type="text" placeholder="my-hive" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" />
           <Hint>Lowercase, hyphens OK. Used as the folder name + the hive id.</Hint>
         </label>
         <label style={{ display: 'block', marginBottom: 14 }}>

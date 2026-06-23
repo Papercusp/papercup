@@ -1503,7 +1503,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // engine (fire + completion-rebase) is in-flight, so the warm-wake round-trip is
   // unverified; owner flips ON after the B-LOOP-1..5 chain is green + the manual e2e
   // passes. KNOWN_DARK_FLAGS.
-  [FLAGS.LOOPS]: false,
+  [FLAGS.LOOPS]: true,
   // DEFAULT ON: mints work-items on the live plans:start path (unified-work-item-ledger P-003 /
   // D-002). Dogfood-verified (D-007 backfilled 14 work-items); flipped default-ON 2026-06-22
   // (owner-directed — finished work ships ON, not dark).

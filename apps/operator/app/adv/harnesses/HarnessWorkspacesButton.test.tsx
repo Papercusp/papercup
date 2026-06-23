@@ -11,6 +11,19 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 const { toastSpies } = vi.hoisted(() => ({ toastSpies: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('sonner', () => ({ toast: toastSpies }));
+const syncState = vi.hoisted(() => ({
+  members: [] as string[],
+  invalidate: vi.fn(),
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ enabled }: { enabled?: boolean }) => ({
+    data: enabled ? syncState.members.map((workspaceId) => ({ workspaceId })) : null,
+    loading: false,
+    error: null,
+    fetching: false,
+    invalidate: syncState.invalidate,
+  }),
+}));
 
 // Render the Popover trigger + panel inline so the menu is always queryable.
 // The real Popover owns the open toggle via onOpenChange; the parent's `open`
@@ -53,16 +66,14 @@ vi.mock('@papercusp/operator-core/lib/workspaces-tauri', () => ({
 
 import HarnessWorkspacesButton from './HarnessWorkspacesButton';
 
-/** Stub fetch: the membership GET returns `members`; the POST returns ok. */
+/** Stub fetch: membership reads come from sync; POST returns ok. */
 function stubFetch(members: string[]) {
+  syncState.members = members;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-      if (String(url).includes('/workspaces')) {
-        return new Response(JSON.stringify({ workspaces: members }), { status: 200 });
       }
       return new Response('{}', { status: 200 });
     }),
@@ -70,6 +81,8 @@ function stubFetch(members: string[]) {
 }
 
 beforeEach(() => {
+  syncState.members = [];
+  syncState.invalidate.mockReset();
   toastSpies.success.mockReset();
   toastSpies.error.mockReset();
 });
@@ -164,11 +177,11 @@ describe('HarnessWorkspacesButton', () => {
   });
 
   it('toasts an error and does not crash when the membership POST fails', async () => {
+    syncState.members = ['ws-a', 'ws-b'];
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: RequestInit) => {
         if (init?.method === 'POST') return new Response(JSON.stringify({ ok: false, error: 'denied' }), { status: 400 });
-        if (String(url).includes('/workspaces')) return new Response(JSON.stringify({ workspaces: ['ws-a', 'ws-b'] }), { status: 200 });
         return new Response('{}', { status: 200 });
       }),
     );

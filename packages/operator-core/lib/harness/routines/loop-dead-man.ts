@@ -87,8 +87,9 @@ export async function checkLoopDeadMan(
  * loop (parked at 'infinity' while a turn runs), so no concurrent-increment race. Stored as a
  * jsonb number; read back via `(metadata->>'fire_count')::int`.
  */
-export async function incrementLoopFireCount(sql: Sql, routineId: string): Promise<void> {
-  await sql`
+export async function incrementLoopFireCount(sql: Sql | undefined, routineId: string): Promise<void> {
+  const db = sql ?? getOrgPg().sql;
+  await db`
     UPDATE harness_shared.routines
        SET metadata = COALESCE(metadata, '{}'::jsonb)
                     || jsonb_build_object('fire_count', COALESCE((metadata->>'fire_count')::int, 0) + 1)

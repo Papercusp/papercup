@@ -2,6 +2,7 @@
 
 
 import { Tooltip } from '@/app/harness/Tooltip';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { useEffect, useState, useCallback, useMemo, type ReactElement } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
@@ -552,14 +553,16 @@ export default function MemoryPage() {
           </p>
         )}
         {stats?.learning_instructions && (
-          <details style={{ marginTop: 12, padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
-            <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--fg-mute)' }}>
+          <Collapsible.Root style={{ marginTop: 12, padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
+            <Collapsible.Trigger style={{ width: '100%', background: 'none', border: 'none', padding: 0, textAlign: 'left', cursor: 'pointer', fontSize: 13, color: 'var(--fg-mute)', fontFamily: 'inherit' }}>
               Active extraction-prompt adaptation (from your feedback)
-            </summary>
-            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, marginTop: 8, color: 'var(--fg)' }}>
-              {stats.learning_instructions}
-            </pre>
-          </details>
+            </Collapsible.Trigger>
+            <Collapsible.Content>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, marginTop: 8, color: 'var(--fg)' }}>
+                {stats.learning_instructions}
+              </pre>
+            </Collapsible.Content>
+          </Collapsible.Root>
         )}
       </header>
 

@@ -333,7 +333,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
       )}
       <Label>
         <FieldLabel>{t('pot')} slug</FieldLabel>
-        <input ref={slugRef} type="text" placeholder={isWork ? 'my-work-hive' : 'my-project'} style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
+        <input ref={slugRef} type="text" placeholder={isWork ? 'my-work-hive' : 'my-project'} style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" />
         <HintText>Lowercase, hyphens OK. Used as the folder name created inside the parent directory.</HintText>
       </Label>
       <Label>
@@ -501,7 +501,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
       )}
       <Label>
         <FieldLabel>{t('pot')} slug</FieldLabel>
-        <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
+        <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" />
         <HintText>Lowercase, hyphens OK.</HintText>
       </Label>
       <Label>

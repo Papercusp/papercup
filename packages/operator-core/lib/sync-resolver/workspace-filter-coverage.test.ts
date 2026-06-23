@@ -72,17 +72,35 @@ const INDEX = resolve(HERE, 'index.ts');
  * stale-entry test the moment its `workspace_id` filter lands, tracking remediation to
  * zero. The guard still fails CI for any NEW unfiltered resolver beyond this baseline.
  */
-// EI-1763 REMEDIATED TO ZERO (su-d2230, 2026-06-20). All getOrgPg harness_slug-only
-// reads now thread `workspaceId` (eq(t.workspaceId, workspaceId) when present) per the
-// AD-owner call (su-860d3): the workspace-context source is the caller's request/sync
-// context threaded EXPLICITLY through argsSchema — NOT a global/ALS fallback (that
-// global-default is the EI-126 write-side mis-route trap). The open set is now EMPTY,
-// so the guard fails CI for ANY new unfiltered getOrgPg slug-only resolver.
+// EI-1763 history: su-d2230 (2026-06-20) threaded `workspaceId` through most getOrgPg
+// slug-only reads and declared the set ZERO — but the guard's `hasWorkspace` check ran
+// over the RAW block body, which bleeds the NEXT resolver's leading doc-comment (almost
+// all mention `workspaceId`) into this block, so THREE still-unfiltered resolvers
+// (featurePrs.byHarness, harnessBrainstorm.byHarness, chunkPlans.byFeature) read as
+// "safe" and were silently missed. The blind spot is now fixed (`stripComments` above —
+// tokens matched in CODE, not comments) and those three thread `workspaceId` via
+// argsSchema (the AD-owner pattern: explicit arg, NOT a global/ALS fallback — the EI-126
+// write-side mis-route trap). The remaining flagged entry is genuinely un-scopable:
 //
 // To DOCUMENT a future resolver here: for a genuinely NOT-workspace-scoped table use a
 // 'SAFE: <why the table has no workspace_id>' reason; for a still-open cross-tenant read
 // use 'OPEN: getOrgPg (BYPASSRLS) read filters harness_slug only … fix = thread workspaceId'.
-const OPEN_UNFILTERED: Record<string, string> = {};
+//
+// KNOWN LIMITATION (block-grained): a slug-only read whose `eq(...harnessSlug...)` lives in
+// a SHARED HELPER called from the block (e.g. agentRunsConsolidated.* → resolveRunsWithOutcome,
+// which filters `eq(s.harnessSlug, harnessSlug)` on an alias, in a top-level fn outside any
+// block) is invisible to this guard. agent_runs_consolidated + spawned_agents ARE
+// workspace-scoped, so those are a real but separately-tracked cross-tenant read (EI-1763
+// follow-up): the helper must thread workspaceId into both the spawn subquery and the
+// coalesce join. Not fixed here (a 2-table JOIN change), flagged so it isn't lost.
+const OPEN_UNFILTERED: Record<string, string> = {
+  'snapshotsConsolidated.bySlug':
+    'SAFE: harness_snapshots_consolidated has NO workspace_id column (keyed by harness_slug + ' +
+    'snapshot_id) — the harness-snapshot system is RETIRED (_retired/snapshot-system). The table ' +
+    'is not workspace-partitioned at the schema grain, so no workspace_id predicate is possible; ' +
+    'documented rather than filtered. If the snapshot system is ever revived multi-tenant, add a ' +
+    'workspace_id column + filter (and drop this entry).',
+};
 
 /** Split index.ts into resolver blocks keyed by their `'name.method':` registry key. */
 function resolverBlocks(src: string): Array<{ name: string; body: string }> {
@@ -96,9 +114,21 @@ function resolverBlocks(src: string): Array<{ name: string; body: string }> {
   }));
 }
 
+/** Strip `//` line comments + `/* … *\/` block comments. A resolver block's body
+ *  runs to the NEXT registry key, so it INCLUDES the leading doc-comment of the next
+ *  resolver — and if that comment mentions `workspaceId` (most do: `…where(workspaceId)…`),
+ *  the raw-text `hasWorkspace` check read the unfiltered block as "safe" (EI-1763: this
+ *  masked featurePrs/harnessBrainstorm/chunkPlans from su-d2230's "remediated to zero"
+ *  pass). Tokens must be matched in CODE, not comments. Over-stripping can only ADD a
+ *  flag (fail-safe for a security guard), never hide one. */
+function stripComments(s: string): string {
+  return s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
 function flaggedResolvers(src: string): string[] {
   const flagged: string[] = [];
-  for (const { name, body } of resolverBlocks(src)) {
+  for (const { name, body: raw } of resolverBlocks(src)) {
+    const body = stripComments(raw);
     const usesBypassConn = body.includes('getOrgPg(');
     const filtersBySlug = /eq\(\s*t\.harnessSlug\s*,\s*harnessSlug\s*\)/.test(body);
     const hasWorkspace = /workspaceId|workspace_id/.test(body);

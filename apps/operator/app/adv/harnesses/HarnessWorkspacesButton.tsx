@@ -4,9 +4,9 @@
  * HarnessWorkspacesButton — the /adv harness-scoped "Workspaces" affordance
  * (Phase 4 of harnesses-across-workspaces). Surfaces which workspaces the
  * current harness is linked into, and the link / move / remove membership
- * actions, over the HTTP membership endpoints:
+ * actions:
  *
- *   GET  /api/harness/:slug/workspaces        → { workspaces: string[] }
+ *   read:  harnessWorkspaces.byHarness sync query
  *   POST /api/harness/:slug/membership        → { op:'add'|'remove'|'move', … }
  *
  * Semantics (all registry-only — the folder is never moved/copied; D-1):
@@ -20,7 +20,8 @@
  *
  * Popover anchored to the trigger button.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { Boxes } from 'lucide-react';
 import { toast } from 'sonner';
 import { Popover } from '../../harness/Popover';
@@ -35,18 +36,19 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
   const [open, setOpen] = useState(false);
   const [all, setAll] = useState<Workspace[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
-  const [members, setMembers] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const membershipQuery = useSyncQuery<{ workspaceId: string }>({
+    queryName: 'harnessWorkspaces.byHarness',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug && open,
+  });
+  const members = useMemo(
+    () => (membershipQuery.data ? membershipQuery.data.map((row) => row.workspaceId) : null),
+    [membershipQuery.data],
+  );
 
   const refresh = () => {
-    // Two independent sources — deliberately NOT gated on each other. The
-    // membership ids drive the loading state, so the list shows as soon as it
-    // returns even if the workspace-name lookup lags; `nameOf` falls back to
-    // the id until names arrive.
-    fetch(`/api/harness/${encodeURIComponent(slug)}/workspaces`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ workspaces?: string[] }>) : null))
-      .then((j) => setMembers(j?.workspaces ?? []))
-      .catch(() => setMembers([]));
+    membershipQuery.invalidate?.();
     listWorkspaces()
       .then((reg) => {
         setAll(reg.workspaces);
@@ -77,7 +79,7 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
         return;
       }
       toast.success(okMsg);
-      await refresh();
+      refresh();
     } catch (e) {
       toast.error(`membership: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

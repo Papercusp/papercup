@@ -22,6 +22,7 @@ import { join, resolve as resolvePath } from 'node:path';
 import { resolveAgentBin, resolveBackend } from '@papercusp/papercusp-shared/agent';
 
 import { papercuspPathForWorkspace } from './papercusp-root';
+import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import {
   resolveContextEnv,
   resolveProjectDir,
@@ -125,7 +126,9 @@ export function buildSuperuserMcpUrl(
   workspaceId: string,
   allWorkspaces = false,
 ): string {
-  const url = new URL(`${operatorBaseUrl}/api/mcp`);
+  // WI-573: route the console's superuser MCP through the resilient proxy when the env opts in
+  // (PAPERCUSP_MCP_PROXY_BASE) so it survives a :3070 deploy restart; else the operator base.
+  const url = new URL(`${resolveAgentMcpBaseUrl(operatorBaseUrl)}/api/mcp`);
   url.searchParams.set('superuser', '1');
   url.searchParams.set('workspace', allWorkspaces ? '*' : workspaceId);
   return url.toString();

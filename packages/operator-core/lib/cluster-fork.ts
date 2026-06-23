@@ -32,6 +32,10 @@ export interface ClusterLike {
   readonly isPrimary: boolean;
   fork(env?: Record<string, string>): ClusterWorkerLike;
   on(event: 'exit', cb: (worker: ClusterWorkerLike, code: number, signal: string | null) => void): void;
+  // The cluster-lag-watchdog (EI-1598/1608) listens for worker heartbeat IPC on the
+  // primary; node:cluster satisfies this structurally. Additive overload — startCluster
+  // itself only uses the 'exit' form.
+  on(event: 'message', cb: (worker: ClusterWorkerLike, message: unknown) => void): void;
 }
 export interface ClusterWorkerLike {
   readonly id: number;
@@ -67,6 +71,10 @@ export interface ClusterHandle {
   /** PRIMARY only: stop respawning + signal every worker to exit (graceful drain).
    *  Wire to SIGTERM/SIGINT at the call site. No-op in worker/single roles. */
   drain?: (signal?: string) => void;
+  /** PRIMARY only: resolve a LIVE forked worker by id (removed on exit), so an external
+   *  supervisor (cluster-lag-watchdog, EI-1598/1608) can SIGKILL a wedged worker and let
+   *  the respawn handler recover it. Undefined in worker/single roles. */
+  workerById?: (id: number) => ClusterWorkerLike | undefined;
 }
 
 /**
@@ -148,12 +156,21 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
   opts.onPrimary?.();
   const maxRespawns = opts.maxRespawns ?? workers * 5;
   const forked: ClusterWorkerLike[] = [];
+  // Live id → worker, for drain (kill all) + the watchdog's workerById lookup. Removed
+  // on exit so the lookup never hands back a dead worker (the respawn gets a fresh id).
+  const byId = new Map<number, ClusterWorkerLike>();
+  const track = (w: ClusterWorkerLike): ClusterWorkerLike => {
+    forked.push(w);
+    byId.set(w.id, w);
+    return w;
+  };
   let respawns = 0;
   let draining = false;
 
-  for (let i = 0; i < workers; i++) forked.push(cluster.fork(opts.workerEnv));
+  for (let i = 0; i < workers; i++) track(cluster.fork(opts.workerEnv));
 
   cluster.on('exit', (worker, code, signal) => {
+    byId.delete(worker.id);
     if (draining) return; // intentional shutdown — let workers go
     if (respawns >= maxRespawns) {
       log(`[cluster] worker ${worker.id} exited (code=${code} signal=${signal}); respawn budget exhausted (${maxRespawns}) — NOT respawning`);
@@ -161,7 +178,7 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
     }
     respawns += 1;
     log(`[cluster] worker ${worker.id} exited (code=${code} signal=${signal}); respawning (${respawns}/${maxRespawns})`);
-    forked.push(cluster.fork(opts.workerEnv));
+    track(cluster.fork(opts.workerEnv));
   });
 
   return {
@@ -177,5 +194,6 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
         }
       }
     },
+    workerById: (id) => byId.get(id),
   };
 }

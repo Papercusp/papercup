@@ -229,7 +229,15 @@ export async function evaluateSetContent(
   // rewrite still passes through the legacy-boundary guard + lint unchanged.
   let body = content;
   let proposed = parsePlan(body, { filePath });
-  if (!currentParsed.isLegacy && proposed.isLegacy && !/^\s*---\r?\n/.test(body)) {
+  // A CLEAN PG-canonical body omits frontmatter entirely and starts with markdown (`# …`).
+  // A body that STRIPPED only its opening `---` fence is corruption, not omission: it begins
+  // with the former frontmatter KEYS and still carries the orphaned CLOSING `---`
+  // (`title: …\nstatus: …\n---\n# body`). Re-attaching would silently produce a plan with
+  // DUPLICATED frontmatter keys + a stray fence, so detect that signature and let the
+  // legacy-boundary guard reject it (would_orphan_frontmatter) instead of rescuing it.
+  const looksLikeStrippedFrontmatter =
+    /^[ \t]*[A-Za-z0-9_][\w-]*:[ \t]/.test(body) && /(^|\r?\n)---[ \t]*\r?\n/.test(body);
+  if (!currentParsed.isLegacy && proposed.isLegacy && !/^\s*---\r?\n/.test(body) && !looksLikeStrippedFrontmatter) {
     const fm = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/.exec(current)?.[1];
     if (fm) {
       const reattached = fm + body;

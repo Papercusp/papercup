@@ -448,14 +448,16 @@ export default function AdvShell({
             {/* Sub-harness union is meaningless under "all" (everything is
                 already included), so the toggle only shows for a single pick. */}
             {!allMode && (
-              <label className="pc-advshell__scope-toggle" title={`Include sub-${t('pot', { plural: true, lower: true })} in list views (plans, sessions). Editor views still focus a single ${t('pot')}.`}>
-                <Checkbox
-                  checked={scopeMode === 'expanded'}
-                  onChange={(checked) => void setScopeMode(checked ? 'expanded' : 'self')}
-                  ariaLabel={`Include sub-${t('pot', { plural: true, lower: true })}`}
-                />
-                <span>sub-{t('pot', { plural: true, lower: true })}</span>
-              </label>
+              <Tooltip label={`Include sub-${t('pot', { plural: true, lower: true })} in list views (plans, sessions). Editor views still focus a single ${t('pot')}.`}>
+                <label className="pc-advshell__scope-toggle">
+                  <Checkbox
+                    checked={scopeMode === 'expanded'}
+                    onChange={(checked) => void setScopeMode(checked ? 'expanded' : 'self')}
+                    ariaLabel={`Include sub-${t('pot', { plural: true, lower: true })}`}
+                  />
+                  <span>sub-{t('pot', { plural: true, lower: true })}</span>
+                </label>
+              </Tooltip>
             )}
             <Tooltip label={`Create or add a new ${t('pot')}`}>
               <button

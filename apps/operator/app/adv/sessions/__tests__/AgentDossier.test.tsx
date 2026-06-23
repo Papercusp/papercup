@@ -3,13 +3,30 @@
  *
  * AgentDossier (P-007) — the right-pane agent detail. Verifies it renders the
  * Tier-1/2 facts from the passed RosterEntry immediately, lazy-fetches the
- * Tier-3 dossier from /api/adv/roster/agent, cross-marks files with the agent's
+ * Tier-3 dossier from agentDetail.byOwner, cross-marks files with the agent's
  * lock state, and renders the coord trail.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
 import AgentDossier, { type AgentDetail } from '../AgentDossier';
 import type { RosterEntry } from '../SessionsRosterView';
+
+const syncState = vi.hoisted(() => ({
+  detail: null as AgentDetail | null,
+  calls: [] as Array<{ queryName: string; args?: unknown }>,
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: (opts: { queryName: string; args?: unknown; enabled?: boolean }) => {
+    syncState.calls.push(opts);
+    return {
+      data: opts.enabled === false || !syncState.detail ? null : [syncState.detail],
+      loading: false,
+      error: null,
+      fetching: false,
+      invalidate: vi.fn(),
+    };
+  },
+}));
 
 function entry(over: Partial<RosterEntry> = {}): RosterEntry {
   return {
@@ -91,15 +108,12 @@ const DETAIL: AgentDetail = {
 };
 
 describe('AgentDossier', () => {
-  const fetchMock = vi.fn();
   beforeEach(() => {
-    vi.stubGlobal('fetch', fetchMock);
-    fetchMock.mockResolvedValue({ ok: true, json: async () => DETAIL });
+    syncState.detail = DETAIL;
+    syncState.calls = [];
   });
   afterEach(() => {
     cleanup();
-    vi.unstubAllGlobals();
-    fetchMock.mockReset();
   });
 
   it('renders Tier-1/2 facts from the entry immediately', () => {
@@ -112,10 +126,12 @@ describe('AgentDossier', () => {
     expect(getByText('dbos-retire')).toBeTruthy(); // plan meta
   });
 
-  it('lazy-fetches the dossier keyed by owner id', async () => {
+  it('loads the dossier keyed by owner id', async () => {
     render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/adv/roster/agent?owner=su-1');
+    await waitFor(() =>
+      expect(syncState.calls.some((c) => c.queryName === 'agentDetail.byOwner')).toBe(true),
+    );
+    expect(syncState.calls.find((c) => c.queryName === 'agentDetail.byOwner')?.args).toEqual({ ownerId: 'su-1' });
   });
 
   it('renders Tier-3 locks + coord after the fetch resolves', async () => {
@@ -153,21 +169,18 @@ describe('AgentDossier', () => {
   });
 
   it('prefers the lazy detail native session when it has a Codex rollout id', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        ...DETAIL,
-        nativeSession: {
-          backend: 'codex',
-          source: 'adv_sessions',
-          ownerId: 'su-codex',
-          codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
-          rolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
-          exactResumeSupported: true,
-          missingReason: null,
-        },
-      } satisfies AgentDetail),
-    });
+    syncState.detail = {
+      ...DETAIL,
+      nativeSession: {
+        backend: 'codex',
+        source: 'adv_sessions',
+        ownerId: 'su-codex',
+        codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
+        rolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
+        exactResumeSupported: true,
+        missingReason: null,
+      },
+    } satisfies AgentDetail;
     const { findByText, getByText } = render(
       <AgentDossier
         ownerId="su-codex"
@@ -193,20 +206,18 @@ describe('AgentDossier', () => {
   });
 
   it('renders Codex runtime diagnostics when the selected agent has a tracked CODEX_HOME', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        ...DETAIL,
-        nativeSession: {
-          backend: 'codex',
-          source: 'adv_sessions',
-          ownerId: 'su-codex',
-          codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
-          rolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
-          exactResumeSupported: true,
-          missingReason: null,
-        },
-        codex: {
+    syncState.detail = {
+      ...DETAIL,
+      nativeSession: {
+        backend: 'codex',
+        source: 'adv_sessions',
+        ownerId: 'su-codex',
+        codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
+        rolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
+        exactResumeSupported: true,
+        missingReason: null,
+      },
+      codex: {
           codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
           exists: true,
           agentsPath: '/home/user/.papercusp/su-codex-homes/session-77/AGENTS.md',
@@ -233,8 +244,7 @@ describe('AgentDossier', () => {
           resumeCommand: "CODEX_HOME='/home/user/.papercusp/su-codex-homes/session-77' codex resume --last",
           error: null,
         },
-      } satisfies AgentDetail),
-    });
+    } satisfies AgentDetail;
     const { findByText, getByText, getAllByText } = render(
       <AgentDossier ownerId="su-codex" entry={entry({ ownerId: 'su-codex', agent: 'codex', source: 'codex' })} onClose={() => {}} />,
     );

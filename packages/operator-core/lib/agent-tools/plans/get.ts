@@ -15,53 +15,74 @@
  * same precedent as plans:items). `full` keeps rawLine for surgical edits.
  */
 
-import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { withWorkspace } from '@papercusp/db-org';
-import { readPlanBySlug } from './source';
-import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from './_ctx-opts';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
-import { resolveEffectiveStatus } from './effective-status';
-import { hashPlanContent } from './content-hash';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
-import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
-import { boundRowField } from '../_bound-output';
-import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { z } from "zod";
+import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
+import { withWorkspace } from "@papercusp/db-org";
+import { readPlanBySlug } from "./source";
+import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from "./_ctx-opts";
+import { harnessArg, harnessScopedCtx } from "../_harness-scope";
+import { resolveEffectiveStatus } from "./effective-status";
+import { hashPlanContent } from "./content-hash";
+import { DEFAULT_WORKSPACE_ID } from "../../workspace-registry";
+import {
+  computePlanItemTestStatus,
+  type PlanItemTestStatus,
+} from "../../harness-test-rollup";
+import { overlayIssueBlocksForPlan } from "../../issue-blocks-merge";
+import { operatorHomeHarnessSlug } from "../../harness/operator-home-harness";
+import { boundRowField } from "../_bound-output";
+import { bulkContent, mergeIds, runBulk } from "../_bulk";
+import { cachedRead, type CachedReadCtx } from "../../cache";
+
+/**
+ * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
+ * Mirrors plans:list: the plan tables (harness_plans/plan_revisions/plan_runs) are
+ * trigger-covered, so any plan write auto-invalidates the entry via the cache-ECA;
+ * this short soft TTL only bounds staleness for the un-triggered DECORATIONS the
+ * per-slug read folds in (issue-block overlay via coord_links, linkedFeatures via
+ * harness_features_consolidated, planItemTests via harness_plan_assertions/tests).
+ * The read is PURE + non-principal-scoped (depends only on workspace+harness+slug+mode).
+ */
+const PLANS_GET_SOFT_TTL_MS = 45_000;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
-const ALL_ROLES = [...SU_ROLES, 'promote', 'overwatch'] as const;
+const ALL_ROLES = [...SU_ROLES, "promote", "overwatch"] as const;
 
-const argsSchema = z.object({
-  harness: harnessArg,
-  slug: z
-    .string()
-    .min(1)
-    .optional()
-    .describe('Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.'),
-  slugs: z
-    .array(z.string().min(1))
-    .min(1)
-    .max(100)
-    .optional()
-    .describe('Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.'),
-  mode: z
-    .enum(['meta', 'sections', 'full'])
-    .optional()
-    .describe(
-      "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine; long decision bodies are EXCERPTED to keep the default read bounded — each carries body_truncated + body_full_chars, and decisionBodiesTruncated flags when any were cut — use mode:'full' for complete bodies), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose`, per-item rawLine, and full decision bodies (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
-    ),
-  heading: z
-    .string()
-    .optional()
-    .describe(
-      "Return only the body of the section whose heading matches (case-insensitive), plus meta — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Overrides mode.",
-    ),
-}).refine((v) => !!v.slug || !!v.slugs?.length, {
-  message: 'Provide slug or slugs.',
-});
+const argsSchema = z
+  .object({
+    harness: harnessArg,
+    slug: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.",
+      ),
+    slugs: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        "Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.",
+      ),
+    mode: z
+      .enum(["meta", "sections", "full"])
+      .optional()
+      .describe(
+        "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine; long decision bodies are EXCERPTED to keep the default read bounded — each carries body_truncated + body_full_chars, and decisionBodiesTruncated flags when any were cut — use mode:'full' for complete bodies), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose`, per-item rawLine, and full decision bodies (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
+      ),
+    heading: z
+      .string()
+      .optional()
+      .describe(
+        "Return only the body of the section whose heading matches (case-insensitive), plus meta — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Overrides mode.",
+      ),
+  })
+  .refine((v) => !!v.slug || !!v.slugs?.length, {
+    message: "Provide slug or slugs.",
+  });
 
 interface PlanSection {
   heading: string;
@@ -80,8 +101,15 @@ export const DECISIONS_TOTAL_BUDGET = 15_000;
 
 // EI-1597: a thin semantic wrapper over the shared budget-aware bound — single
 // source of truth for the per-field excerpt (was an inlined copy of the loop).
-export function boundDecisionBodies<T extends { body: string }>(decisions: T[]): T[] {
-  return boundRowField(decisions, 'body', DECISION_BODY_CAP, DECISIONS_TOTAL_BUDGET);
+export function boundDecisionBodies<T extends { body: string }>(
+  decisions: T[],
+): T[] {
+  return boundRowField(
+    decisions,
+    "body",
+    DECISION_BODY_CAP,
+    DECISIONS_TOTAL_BUDGET,
+  );
 }
 
 /** Split a plan's markdown body into level-1/2 sections, tracking fenced code
@@ -89,14 +117,14 @@ export function boundDecisionBodies<T extends { body: string }>(decisions: T[]):
  *  section index (mode meta/sections) + the `heading` narrowing without pulling
  *  the full prose. */
 function splitSections(md: string): Array<PlanSection & { body: string }> {
-  const lines = md.split('\n');
+  const lines = md.split("\n");
   const out: Array<PlanSection & { body: string }> = [];
   let cur: (PlanSection & { body: string }) | null = null;
   let buf: string[] = [];
   let inFence = false;
   const flush = () => {
     if (cur) {
-      cur.body = buf.join('\n').trim();
+      cur.body = buf.join("\n").trim();
       cur.chars = cur.body.length;
       out.push(cur);
     }
@@ -111,7 +139,12 @@ function splitSections(md: string): Array<PlanSection & { body: string }> {
     if (m) {
       flush();
       buf = [];
-      cur = { heading: (m[2] ?? '').trim(), level: (m[1] ?? '').length, chars: 0, body: '' };
+      cur = {
+        heading: (m[2] ?? "").trim(),
+        level: (m[1] ?? "").length,
+        chars: 0,
+        body: "",
+      };
     } else if (cur) {
       buf.push(line);
     }
@@ -133,19 +166,20 @@ function findSection(
 }
 
 export default defineTool({
-  name: 'plans:get',
+  name: "plans:get",
   description:
-    'Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too.',
+    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too.",
   guidance: {
-    when: 'You have a slug from plans:list and need the plan contents.',
+    when: "You have a slug from plans:list and need the plan contents.",
     notWhen:
       "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
-    chaining: 'plans:list → plans:get { slug } → optionally plans:items for cross-plan picks.',
+    chaining:
+      "plans:list → plans:get { slug } → optionally plans:items for cross-plan picks.",
   },
-  capability: 'plans:read',
+  capability: "plans:read",
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],
-  modality: ['text'],
+  modality: ["text"],
   args: argsSchema,
   // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-002): plans:get
   // returns a single plan's full detail (content + items + decisions) — a COMPOSITE object,
@@ -155,8 +189,8 @@ export default defineTool({
   // read — an 18KB unchanged plan re-read returns `not_modified` instead of replaying it.
   // Dormant until a delta-aware client sends `_meta.delta` (WI-514 / Phase 2-3).
   delta: {
-    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
-    schemaVersion: 'plans-get-v1',
+    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
+    schemaVersion: "plans-get-v1",
     maxDeltaAge: 5 * 60_000,
   },
   async handler(args, ctx) {
@@ -166,178 +200,243 @@ export default defineTool({
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,
-      async (slug) => {
-        const result = await readPlanBySlug(slug, opts);
-        if (!result) return { ok: false as const, slug, error: 'not_found' };
+      async (slug) =>
+        cachedRead(
+          ctx as CachedReadCtx,
+          {
+            tool: "plans:get",
+            // Folds EVERY output-determining dimension: slug + resolved harness +
+            // mode + heading. workspace scope is added by cachedRead from ctx.
+            key: {
+              slug,
+              harness: opts.harnessSlug,
+              mode: args.mode ?? "sections",
+              heading: args.heading ?? null,
+            },
+            tags: ["harness_plans", "plan_revisions", "plan_runs"],
+            softTtlMs: PLANS_GET_SOFT_TTL_MS,
+          },
+          async () => {
+            const result = await readPlanBySlug(slug, opts);
+            if (!result)
+              return { ok: false as const, slug, error: "not_found" };
 
-        const { parsed, archived, row } = result;
-        ctxAny.metadata?.({ slug, archived, legacy: parsed.isLegacy });
+            const { parsed, archived, row } = result;
+            ctxAny.metadata?.({ slug, archived, legacy: parsed.isLegacy });
 
-        if (parsed.isLegacy) {
-          const sections = splitSections(parsed.prose);
-          const legacyBase = {
-            slug: parsed.slug,
-            archived,
-            legacy: true as const,
-            contentHash: hashPlanContent(parsed.raw),
-            // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
-            // contentHash kept for callers that still pass expectedHash.
-            version: row.version,
-            filename: parsed.filename,
-            sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
-            counts: { sections: sections.length },
-          };
-          let payload: Record<string, unknown> = legacyBase;
-          if (args.heading) {
-            const sec = findSection(sections, args.heading);
-            payload = {
-              ...legacyBase,
-              heading: args.heading,
-              section: sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null,
-            };
-          } else if ((args.mode ?? 'sections') === 'full') {
-            // Legacy plans are prose-only — full includes the body; meta/sections omit it.
-            // (No `raw` — for a legacy plan it's byte-identical to prose; plans:export has it.)
-            payload = { ...legacyBase, prose: parsed.prose };
-          }
-          return { ok: true as const, ...payload };
-        }
+            if (parsed.isLegacy) {
+              const sections = splitSections(parsed.prose);
+              const legacyBase = {
+                slug: parsed.slug,
+                archived,
+                legacy: true as const,
+                contentHash: hashPlanContent(parsed.raw),
+                // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
+                // contentHash kept for callers that still pass expectedHash.
+                version: row.version,
+                filename: parsed.filename,
+                sectionIndex: sections.map((s) => ({
+                  heading: s.heading,
+                  level: s.level,
+                  chars: s.chars,
+                })),
+                counts: { sections: sections.length },
+              };
+              let payload: Record<string, unknown> = legacyBase;
+              if (args.heading) {
+                const sec = findSection(sections, args.heading);
+                payload = {
+                  ...legacyBase,
+                  heading: args.heading,
+                  section: sec
+                    ? { heading: sec.heading, level: sec.level, body: sec.body }
+                    : null,
+                };
+              } else if ((args.mode ?? "sections") === "full") {
+                // Legacy plans are prose-only — full includes the body; meta/sections omit it.
+                // (No `raw` — for a legacy plan it's byte-identical to prose; plans:export has it.)
+                payload = { ...legacyBase, prose: parsed.prose };
+              }
+              return { ok: true as const, ...payload };
+            }
 
-        const resolved = resolveEffectiveStatus(parsed);
+            const resolved = resolveEffectiveStatus(parsed);
 
-        // engineer-issues D-005: overlay OPEN issue blocks (coord_links rel='blocks',
-        // dst=plan_item) onto effectiveStatus AFTER the pure resolver — an item blocked
-        // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
-        // (the closing of the issue unblocks every target atomically). The pure
-        // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
-        const { items: resolvedItems, blockingIssues } = await overlayIssueBlocksForPlan(
-          slug,
-          resolved.items,
-        );
+            // engineer-issues D-005: overlay OPEN issue blocks (coord_links rel='blocks',
+            // dst=plan_item) onto effectiveStatus AFTER the pure resolver — an item blocked
+            // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
+            // (the closing of the issue unblocks every target atomically). The pure
+            // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
+            const { items: resolvedItems, blockingIssues } =
+              await overlayIssueBlocksForPlan(slug, resolved.items);
 
-        // P-006: Build a map of plan-item-id → { featureId, status } so the UI
-        // can show live feature status badges next to each P-NNN item.
-        const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
-        let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
-        try {
-          const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-            return tx<{ feature_id: string; status: string; source_plan_item_ids: string[] | null; harness_slug: string }[]>`
+            // P-006: Build a map of plan-item-id → { featureId, status } so the UI
+            // can show live feature status badges next to each P-NNN item.
+            const harnessSlug =
+              resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
+            let linkedFeatures: Record<
+              string,
+              { featureId: string; status: string; harnessSlug: string }
+            > = {};
+            try {
+              const rows = await withWorkspace(
+                DEFAULT_WORKSPACE_ID,
+                async (tx) => {
+                  return tx<
+                    {
+                      feature_id: string;
+                      status: string;
+                      source_plan_item_ids: string[] | null;
+                      harness_slug: string;
+                    }[]
+                  >`
               SELECT feature_id, status, source_plan_item_ids, harness_slug
                 FROM harness_shared.harness_features_consolidated
                WHERE workspace_id   = ${DEFAULT_WORKSPACE_ID}
                  AND source_plan_slug = ${slug}
                  AND source_plan_item_ids IS NOT NULL
             `;
-          });
-          for (const row of rows) {
-            for (const itemId of row.source_plan_item_ids ?? []) {
-              linkedFeatures[itemId] = { featureId: row.feature_id, status: row.status, harnessSlug: row.harness_slug };
+                },
+              );
+              for (const row of rows) {
+                for (const itemId of row.source_plan_item_ids ?? []) {
+                  linkedFeatures[itemId] = {
+                    featureId: row.feature_id,
+                    status: row.status,
+                    harnessSlug: row.harness_slug,
+                  };
+                }
+              }
+            } catch {
+              // Non-fatal — UI degrades to no badges.
             }
-          }
-        } catch {
-          // Non-fatal — UI degrades to no badges.
-        }
 
-        // P-083: per-plan-item test coverage (the plan↔test rollup, through the
-        // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
-        // side by decoratePlanItemTestBadges. Skips the tests query when the plan
-        // has no inline-VAL assertions. Non-fatal.
-        let planItemTests: Record<string, PlanItemTestStatus> = {};
-        try {
-          planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-            const assertions = await tx<{ val_id: string; item_id: string; requires_test: boolean }[]>`
+            // P-083: per-plan-item test coverage (the plan↔test rollup, through the
+            // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
+            // side by decoratePlanItemTestBadges. Skips the tests query when the plan
+            // has no inline-VAL assertions. Non-fatal.
+            let planItemTests: Record<string, PlanItemTestStatus> = {};
+            try {
+              planItemTests = await withWorkspace(
+                DEFAULT_WORKSPACE_ID,
+                async (tx) => {
+                  const assertions = await tx<
+                    {
+                      val_id: string;
+                      item_id: string;
+                      requires_test: boolean;
+                    }[]
+                  >`
               SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
                WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
             `;
-            if (assertions.length === 0) return {};
-            const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
+                  if (assertions.length === 0) return {};
+                  const testRows = await tx<
+                    { status: string; payload: { coversVALs?: unknown } }[]
+                  >`
               SELECT status, payload FROM harness_shared.harness_tests
                WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
             `;
-            return computePlanItemTestStatus(
-              assertions,
-              testRows.map((r) => ({
-                status: r.status,
-                coversVALs: Array.isArray(r.payload?.coversVALs)
-                  ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-                  : [],
+                  return computePlanItemTestStatus(
+                    assertions,
+                    testRows.map((r) => ({
+                      status: r.status,
+                      coversVALs: Array.isArray(r.payload?.coversVALs)
+                        ? (r.payload.coversVALs as unknown[]).filter(
+                            (v): v is string => typeof v === "string",
+                          )
+                        : [],
+                    })),
+                  );
+                },
+              );
+            } catch {
+              // Non-fatal — UI degrades to no coverage badges.
+            }
+
+            const sections = splitSections(parsed.prose);
+            // `meta`: frontmatter + ## Now + counts + section index. Never the body.
+            const base = {
+              slug: parsed.frontmatter.slug ?? parsed.slug,
+              archived,
+              legacy: false as const,
+              frontmatter: parsed.frontmatter,
+              now: parsed.now,
+              contentHash: hashPlanContent(parsed.raw),
+              version: row.version,
+              // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
+              // agents read it here instead of parsing the `## Promote` markdown. null until mig-331 repopulate.
+              promotePolicy: row.promotePolicy,
+              sectionIndex: sections.map((s) => ({
+                heading: s.heading,
+                level: s.level,
+                chars: s.chars,
               })),
-            );
-          });
-        } catch {
-          // Non-fatal — UI degrades to no coverage badges.
-        }
+              counts: {
+                items: resolved.items.length,
+                decisions: parsed.decisions.length,
+                sections: sections.length,
+              },
+            };
 
-        const sections = splitSections(parsed.prose);
-        // `meta`: frontmatter + ## Now + counts + section index. Never the body.
-        const base = {
-          slug: parsed.frontmatter.slug ?? parsed.slug,
-          archived,
-          legacy: false as const,
-          frontmatter: parsed.frontmatter,
-          now: parsed.now,
-          contentHash: hashPlanContent(parsed.raw),
-          version: row.version,
-          // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
-          // agents read it here instead of parsing the `## Promote` markdown. null until mig-331 repopulate.
-          promotePolicy: row.promotePolicy,
-          sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
-          counts: {
-            items: resolved.items.length,
-            decisions: parsed.decisions.length,
-            sections: sections.length,
+            // `heading`: meta + just the requested section's body (overrides mode).
+            if (args.heading) {
+              const sec = findSection(sections, args.heading);
+              return {
+                ok: true as const,
+                ...base,
+                heading: args.heading,
+                section: sec
+                  ? { heading: sec.heading, level: sec.level, body: sec.body }
+                  : null,
+              };
+            }
+
+            const mode = args.mode ?? "sections";
+            if (mode === "meta") {
+              return { ok: true as const, ...base };
+            }
+
+            // `sections` (default): structured items/decisions + links — still WITHOUT
+            // the prose blob (the 90KB overflow) and WITHOUT per-item rawLine (it
+            // duplicates text/status/phase — P-008 payload diet). `full` adds both back.
+            // WI-274: in `sections` (the default) excerpt long decision bodies so a
+            // decision-heavy plan can't overflow the agent tool-output cap. `full` keeps
+            // complete bodies (alongside the prose blob).
+            const boundedDecisions =
+              mode === "full"
+                ? parsed.decisions
+                : boundDecisionBodies(parsed.decisions);
+            const decisionBodiesTruncated =
+              mode !== "full" &&
+              boundedDecisions.some((d) => "body_truncated" in d);
+            const structured = {
+              ...base,
+              items:
+                mode === "full"
+                  ? resolvedItems
+                  : resolvedItems.map(({ rawLine: _rawLine, ...rest }) => rest),
+              decisions: boundedDecisions,
+              ...(decisionBodiesTruncated
+                ? {
+                    decisionBodiesTruncated: true as const,
+                    decisionBodiesHint:
+                      'Some decision bodies are excerpted (see each decision\'s body_truncated/body_full_chars). Use mode:"full" for complete bodies.',
+                  }
+                : {}),
+              missingRefs: resolved.missingRefs,
+              cycleMembers: resolved.cycleMembers,
+              linkedFeatures,
+              planItemTests,
+              blockingIssues,
+            };
+            const payload =
+              mode === "full"
+                ? { ...structured, prose: parsed.prose }
+                : structured;
+            return { ok: true as const, ...payload };
           },
-        };
-
-        // `heading`: meta + just the requested section's body (overrides mode).
-        if (args.heading) {
-          const sec = findSection(sections, args.heading);
-          return {
-            ok: true as const,
-            ...base,
-            heading: args.heading,
-            section: sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null,
-          };
-        }
-
-        const mode = args.mode ?? 'sections';
-        if (mode === 'meta') {
-          return { ok: true as const, ...base };
-        }
-
-        // `sections` (default): structured items/decisions + links — still WITHOUT
-        // the prose blob (the 90KB overflow) and WITHOUT per-item rawLine (it
-        // duplicates text/status/phase — P-008 payload diet). `full` adds both back.
-        // WI-274: in `sections` (the default) excerpt long decision bodies so a
-        // decision-heavy plan can't overflow the agent tool-output cap. `full` keeps
-        // complete bodies (alongside the prose blob).
-        const boundedDecisions =
-          mode === 'full' ? parsed.decisions : boundDecisionBodies(parsed.decisions);
-        const decisionBodiesTruncated =
-          mode !== 'full' && boundedDecisions.some((d) => 'body_truncated' in d);
-        const structured = {
-          ...base,
-          items:
-            mode === 'full'
-              ? resolvedItems
-              : resolvedItems.map(({ rawLine: _rawLine, ...rest }) => rest),
-          decisions: boundedDecisions,
-          ...(decisionBodiesTruncated
-            ? {
-                decisionBodiesTruncated: true as const,
-                decisionBodiesHint:
-                  'Some decision bodies are excerpted (see each decision\'s body_truncated/body_full_chars). Use mode:"full" for complete bodies.',
-              }
-            : {}),
-          missingRefs: resolved.missingRefs,
-          cycleMembers: resolved.cycleMembers,
-          linkedFeatures,
-          planItemTests,
-          blockingIssues,
-        };
-        const payload = mode === 'full' ? { ...structured, prose: parsed.prose } : structured;
-        return { ok: true as const, ...payload };
-      },
+        ),
       { keyOf: (slug) => ({ slug }) },
     );
     return bulkContent(env);

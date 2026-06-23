@@ -5,21 +5,23 @@ discovered: 2026-06-14
 tags: [plans, harness_plans, frontmatter, federation, migrations, integration-tests]
 status: active
 documents:
-  - "libs/generic/plan-parser/src/parser.ts: PlanFrontmatter.initiative (line 66) + parse guard (line 232)"
-  - "packages/operator-core/lib/agent-tools/plans/source.ts: PlanRow.initiative (110), PlanDbRow.initiative (167), rowFromDb (207), deriveIndexFromContent (1129), PlanIndex.initiative (1102), and all four SELECT lists getPlanRow/listPlanRows/listPlanIndexRows/listPlanRowsMatchingAnyToken"
-  - "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts: INSERT column list (256), VALUES ${idx.initiative} (260), DO UPDATE SET initiative = EXCLUDED.initiative (273)"
-  - "packages/operator-core/lib/agent-tools/plans/list.ts: ListRow.initiative (106), pushed row initiative: row.initiative (376)"
-  - "packages/operator-core/lib/sync/hyperbee/projections/harness-plans.ts: HarnessPlanRow.initiative? optional wire field (70), tolerant isHarnessPlanRow (96-97), both INSERT paths (172/175 bootstrap, 190/194 full) + DO UPDATE SET (205)"
-  - "packages/operator-core/lib/sync/hyperbee/projections/harness-plan-parts.ts: defaultRecomposeSink initiative = ${fm.initiative ?? null} (109)"
-  - "packages/operator-core/lib/sync/hyperbee/feature-issue-op-keys.ts: toPlanValue initiative: strOrNull(row.initiative) (309)"
-  - "packages/operator-core/lib/sync/hyperbee/__tests__/plan-part-federation-cutover.integration.test.ts: column-faithful CREATE TABLE harness_plans stub with owner/initiative/supersedes (127-137)"
-  - "packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts: column-faithful stub (112-122)"
-  - "packages/operator-core/lib/sync/hyperbee/backfill-local-state.integration.test.ts: SUBSET stub omitting owner/initiative/supersedes (157-166) — confirmed leave-it"
-  - "packages/operator-core/lib/agent-tools/plans/transfer-owner.ts: exported setFrontmatterScalar (35); registered in agent-tools/index.ts (631)"
-  - "apps/operator/app/admin/plans/plans-api.ts PlanListRow.initiative (88); plan-filtering.ts PlanFilterState.initiative (31) + predicate (63-65); PlanFilters.tsx useQueryState('pInitiative', parseAsString) (69)"
-  - "libs/papercusp/libs/db/src/schema/generated.ts: harnessPlansInHarnessShared (5455) with initiative: text() (5488) after owner: text() (5463)"
-  - "scripts/lint-migrations.mjs: ENFORCED_FROM = 215 (40), top-level BEGIN/COMMIT forbidden for files >=215 — runner wraps each file (14-15)"
-  - "package.json: db:next-migration (127), lint:migrations (126)"
+  - libs/generic/plan-parser/src/parser.ts
+  - packages/operator-core/lib/agent-tools/plans/source.ts
+  - packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts
+  - packages/operator-core/lib/agent-tools/plans/list.ts
+  - packages/operator-core/lib/sync/hyperbee/projections/harness-plans.ts
+  - packages/operator-core/lib/sync/hyperbee/projections/harness-plan-parts.ts
+  - packages/operator-core/lib/sync/hyperbee/feature-issue-op-keys.ts
+  - packages/operator-core/lib/sync/hyperbee/__tests__/plan-part-federation-cutover.integration.test.ts
+  - packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts
+  - packages/operator-core/lib/sync/hyperbee/backfill-local-state.integration.test.ts
+  - "packages/operator-core/lib/agent-tools/plans/transfer-owner.ts :: setFrontmatterScalar"
+  - apps/operator/app/admin/plans/plans-api.ts
+  - apps/operator/app/admin/plans/plan-filtering.ts
+  - apps/operator/app/admin/plans/PlanFilters.tsx
+  - libs/papercusp/libs/db/src/schema/generated.ts
+  - scripts/lint-migrations.mjs
+  - package.json
 plans:
   - shared-hive-collaboration-2026-06-14
   - plans-pg-canonical-migration-2026-06-03

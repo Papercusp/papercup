@@ -5,11 +5,8 @@ discovered: 2026-05-25
 tags: [memory, injection, budget, fanout, regression-prone]
 status: active
 documents:
-  - "packages/operator-core/lib/memory/injection.ts: buildMemoryContextBlock"
-  - "packages/operator-core/lib/memory/injection.ts:182 (userLimit = input.limit ?? 6)"
-  - "packages/operator-core/lib/memory/injection.ts:101 (PER_HARNESS_LIMIT = 3)"
-  - "packages/operator-core/lib/memory/injection.ts:226-237 (user pull at limit, harness pull at PER_HARNESS_LIMIT, no workspaceLimit)"
-  - "packages/operator-core/lib/memory/injection.test.ts:139 (pulls user + harness scopes only — no deprecated workspace pull (D-005))"
+  - "packages/operator-core/lib/memory/injection.ts :: buildMemoryContextBlock"
+  - packages/operator-core/lib/memory/injection.test.ts
 plans:
   - memory-harness-scope-2026-05-24
   - docs-and-memory-as-projections-2026-06-05

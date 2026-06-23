@@ -48,6 +48,7 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
+import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { promptsDir } from './prompt-assembly';
 import {
   sessionClaudeConfigDir,
@@ -283,7 +284,9 @@ export async function buildRoleLaunchSpec(
   params.set('client', sid);
   if (featureId) params.set('feature', featureId);
   await signSpawnParams(params, input.ttlSec ? { ttlSec: input.ttlSec } : {});
-  const base = input.operatorBaseUrl.replace(/\/$/, '');
+  // WI-573: route the spawned agent's MCP through the resilient proxy when the env opts in
+  // (PAPERCUSP_MCP_PROXY_BASE), else the operator base unchanged. Survives a :3070 deploy restart.
+  const base = resolveAgentMcpBaseUrl(input.operatorBaseUrl);
   const mcpUrl = `${base}/api/mcp?${params.toString()}`;
   const mcpJsonContents = JSON.stringify(
     { mcpServers: { papercusp: { type: 'http', url: mcpUrl } } },
@@ -577,7 +580,8 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   //    ~/.papercusp/superuser-token. Same `.mcp.json` shape
   //    console-launcher writes for the "+" superuser console.
   const token = readSuperuserToken();
-  const mcpUrl = new URL(`${input.operatorBaseUrl.replace(/\/$/, '')}/api/mcp`);
+  // WI-573: prefer the resilient proxy base when the env opts in (see resolveAgentMcpBaseUrl).
+  const mcpUrl = new URL(`${resolveAgentMcpBaseUrl(input.operatorBaseUrl)}/api/mcp`);
   mcpUrl.searchParams.set('superuser', '1');
   mcpUrl.searchParams.set('workspace', input.workspaceId);
   const mcpUrlStr = mcpUrl.toString();

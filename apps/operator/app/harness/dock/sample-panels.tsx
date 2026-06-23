@@ -13,6 +13,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { panelRegistry, type PanelComponentProps } from './panel-registry';
 import { useNavHistory } from './useNavHistory';
 import { NavChevrons } from './NavChevrons';
@@ -40,21 +41,25 @@ function SamplePanel({ panelType, params }: PanelComponentProps) {
       <h3 style={{ margin: 0, marginBottom: 8, fontSize: 14, fontWeight: 600 }}>
         {panelType}
       </h3>
-      <details>
-        <summary style={{ cursor: 'pointer', marginBottom: 8 }}>params</summary>
-        <pre
-          style={{
-            margin: 0,
-            padding: 8,
-            background: 'var(--bg-2)',
-            fontSize: 11,
-            borderRadius: 4,
-            overflowX: 'auto',
-          }}
-        >
-          {JSON.stringify(params, null, 2)}
-        </pre>
-      </details>
+      <Collapsible.Root>
+        <Collapsible.Trigger style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit', cursor: 'pointer', marginBottom: 8 }}>
+          params
+        </Collapsible.Trigger>
+        <Collapsible.Content>
+          <pre
+            style={{
+              margin: 0,
+              padding: 8,
+              background: 'var(--bg-2)',
+              fontSize: 11,
+              borderRadius: 4,
+              overflowX: 'auto',
+            }}
+          >
+            {JSON.stringify(params, null, 2)}
+          </pre>
+        </Collapsible.Content>
+      </Collapsible.Root>
       <p style={{ marginTop: 16, color: 'var(--fg-mute)' }}>
         Sample panel. Drag the tab to split, drag outside group for floating,
         right-click the title for options.

@@ -32,6 +32,12 @@ import { gracefulHostRecycle, installGracefulShutdown } from '@papercusp/operato
 import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
 import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
+import {
+  startWorkerHeartbeat,
+  startClusterLagWatchdog,
+  clusterLagWatchdogArmed,
+} from '@papercusp/operator-core/lib/system-health/cluster-lag-watchdog';
+import nodeCluster from 'node:cluster';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 import {
@@ -311,6 +317,10 @@ const clusterHandle = startCluster({
     // onPrimary, so runBootstrap no-ops the second call.
     runBootstrap();
     startRequestServers();
+    // Heartbeat the primary so the cluster-lag-watchdog can detect a SYNCHRONOUS wedge
+    // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
+    // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
+    if (clusterWorkers > 1 && clusterLagWatchdogArmed()) startWorkerHeartbeat();
   },
 });
 
@@ -322,8 +332,20 @@ const clusterHandle = startCluster({
 //    but serves HTTP, so it must NOT take this 2s-exit path (it would preempt the HTTP
 //    drain) — hence the `clusterWorkers > 1` guard.
 if (clusterHandle.role === 'primary' && clusterWorkers > 1) {
+  // Cluster-lag watchdog (EI-1598/1608): the primary SIGKILLs a worker that stops
+  // heart-beating (a synchronous wedge the worker-side lag-self-restart can't catch);
+  // the startCluster exit handler then respawns it (respawn-budget-aware). DEFAULT-OFF
+  // — arm with PAPERCUSP_CLUSTER_LAG_WATCHDOG=1 once validated under load.
+  const watchdog =
+    clusterLagWatchdogArmed() && clusterHandle.workerById
+      ? startClusterLagWatchdog({
+          cluster: nodeCluster as unknown as Parameters<typeof startClusterLagWatchdog>[0]['cluster'],
+          workerById: clusterHandle.workerById,
+        })
+      : undefined;
   const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
     console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
+    watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
     clusterHandle.drain?.(sig);
     setTimeout(() => process.exit(0), 2000).unref?.();
   };

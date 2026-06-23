@@ -319,7 +319,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the feature is otherwise inert (no loop rows exist; loop:end/loop:status are ungated). Owner
   // flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes. Pending flip
   // surfaced in the plan's ## Now + the lane completion report.
-  FLAGS.LOOPS,
   // (TOOL_DELTA_PROTOCOL + STATE_SNAPSHOT_DELTAS graduated to default-ON 2026-06-22 — owner-directed
   // flip. TOOL_DELTA is INERT until a delta-aware client exists (WI-514 — nothing sends _meta.delta);
   // the delta-gate stays warn-only/un-armed so it doesn't block deploys. STATE_SNAPSHOT's live client
@@ -366,7 +365,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT, 'incomplete'],
   [FLAGS.WORKITEM_CLAIM_LEASE, 'incomplete'],
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
-  [FLAGS.LOOPS, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
   // cutover — reversible kill-switch the owner flips after an attended live verify
@@ -444,7 +442,7 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // an existing dark flag first (net-zero), or get EXPLICIT owner sign-off to raise the watermark.
     // Growth must be a deliberate, owner-visible act, never a quiet append. (Pairs with the
     // valid-reason guard below, which already bars the "finished, owner flips later" excuse.)
-    const DARK_FLAGS_HIGH_WATERMARK = 27;
+    const DARK_FLAGS_HIGH_WATERMARK = 25;
     expect(
       KNOWN_DARK_FLAGS.size <= DARK_FLAGS_HIGH_WATERMARK,
       `The dark allowlist GREW to ${KNOWN_DARK_FLAGS.size} (high-watermark ${DARK_FLAGS_HIGH_WATERMARK}). ` +

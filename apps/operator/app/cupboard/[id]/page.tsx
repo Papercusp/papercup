@@ -28,6 +28,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { useParams, useRouter } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
 import {
@@ -586,10 +587,14 @@ function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; list
             items
               .filter((f) => f.name !== 'README')
               .map((f) => (
-                <details key={f.name} style={{ marginBottom: 6 }}>
-                  <summary style={{ fontFamily: FONTS.mono, fontSize: 12, color: COLORS.text, cursor: 'pointer' }}>{f.name}</summary>
-                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: FONTS.mono, fontSize: 11.5, color: COLORS.textMuted, margin: '4px 0 0 14px' }}>{f.text}</pre>
-                </details>
+                <Collapsible.Root key={f.name} style={{ marginBottom: 6 }}>
+                  <Collapsible.Trigger style={{ background: 'none', border: 'none', padding: 0, fontFamily: FONTS.mono, fontSize: 12, color: COLORS.text, cursor: 'pointer', textAlign: 'left' }}>
+                    {f.name}
+                  </Collapsible.Trigger>
+                  <Collapsible.Content>
+                    <pre style={{ whiteSpace: 'pre-wrap', fontFamily: FONTS.mono, fontSize: 11.5, color: COLORS.textMuted, margin: '4px 0 0 14px' }}>{f.text}</pre>
+                  </Collapsible.Content>
+                </Collapsible.Root>
               ))
           )}
         </div>

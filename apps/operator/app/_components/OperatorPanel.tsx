@@ -1611,9 +1611,8 @@ export function OperatorPanel(): ReactElement | null {
       {state.open ? (
         <motion.div
           ref={panelRef}
-          role="dialog"
+          role="region"
           aria-label="Deck"
-          data-harness-modal="true"
           data-operator-state={effectiveIconState}
           data-scan-status={scanStatus}
           data-main-view={mainView}

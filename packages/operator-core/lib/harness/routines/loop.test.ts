@@ -13,9 +13,36 @@ import {
   materializeLoop,
   buildLoopWakePrompt,
   loopRoutineName,
+  computeLoopStall,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
 } from './loop';
+
+describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
+  const STUCK = 30 * 60_000; // max(30min, 4×interval) for a ≤7.5min interval
+  it('not parked → never stalled', () => {
+    expect(computeLoopStall({ parked: false, parkedMs: 99e9, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: false })).toEqual({ stalled: false, stalledSinceMs: null });
+  });
+  it('parked but recently (under the stuck threshold) → healthy in-flight', () => {
+    expect(computeLoopStall({ parked: true, parkedMs: 60_000, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(false);
+  });
+  it('parked long, no completion, no activity → STALLED with the parked duration', () => {
+    const r = computeLoopStall({ parked: true, parkedMs: STUCK + 1000, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: false });
+    expect(r.stalled).toBe(true);
+    expect(r.stalledSinceMs).toBe(STUCK + 1000);
+  });
+  it('parked long but a completion marker exists → NOT stalled (the turn finished)', () => {
+    expect(computeLoopStall({ parked: true, parkedMs: STUCK + 1000, intervalSec: 120, hasCompletionSinceFire: true, activeSinceFire: false }).stalled).toBe(false);
+  });
+  it('parked long but session ACTIVE since the fire → NOT stalled (a legitimately long turn)', () => {
+    expect(computeLoopStall({ parked: true, parkedMs: STUCK + 1000, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: true }).stalled).toBe(false);
+  });
+  it('the threshold scales to 4×interval for a long interval', () => {
+    // interval 1200s → 4× = 4800s = 80min > 30min, so 60min parked is NOT yet stalled.
+    expect(computeLoopStall({ parked: true, parkedMs: 60 * 60_000, intervalSec: 1200, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(false);
+    expect(computeLoopStall({ parked: true, parkedMs: 90 * 60_000, intervalSec: 1200, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(true);
+  });
+});
 
 beforeEach(() => {
   upsertRoutineSpy.mockReset();

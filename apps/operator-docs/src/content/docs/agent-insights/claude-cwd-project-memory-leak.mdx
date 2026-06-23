@@ -5,12 +5,12 @@ discovered: 2026-06-16
 tags: [memory, claude-file, psu, prompt-isolation, cwd]
 status: active
 documents:
-  - "packages/operator-core/lib/su-launch-cwd.ts: resolveSuLaunchCwd"
-  - "packages/operator-core/lib/su-launch-cwd.test.ts"
-  - "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts:484 (resolveSuLaunchCwd call site)"
-  - "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts:256,395 (spec.cwd)"
-  - "packages/operator-core/lib/interactive-claude-config.ts:64-67 (RESIDUAL header), :180 (P-002 skip-link)"
-  - "packages/operator-core/lib/psu-prompt-isolation.test.ts:90-103 (EI-202 cwd-vector cases, P-005)"
+  - "packages/operator-core/lib/su-launch-cwd.ts :: resolveSuLaunchCwd"
+  - packages/operator-core/lib/su-launch-cwd.test.ts
+  - packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts
+  - packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts
+  - packages/operator-core/lib/interactive-claude-config.ts
+  - packages/operator-core/lib/psu-prompt-isolation.test.ts
 plans:
   - claude-credential-sync-2026-06-10
   - papercusp-su-memory-2026-05-25

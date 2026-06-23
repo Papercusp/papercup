@@ -1,34 +1,31 @@
 'use client';
 
 /**
- * <details>-equivalent that defers mounting children until the first open.
+ * Collapsible disclosure that defers mounting children until the first open.
  *
- * Why: native <details> in React still renders its children into the DOM
- * regardless of `open`; the browser just toggles visibility. For sections
- * with large/expensive children (tables of N rows × M voice options) this
- * makes initial page render slow even when the section is collapsed.
+ * Why: always rendering large/expensive children (tables of N rows × M voice
+ * options) makes initial page render slow even when the section is collapsed.
  *
- * Drop-in replacement: same DOM (uses native <details> so OS-native
- * keyboard/a11y behaviour is preserved), but children only mount after
- * the user actually expands. Once mounted, children stay mounted across
- * subsequent collapse/expand cycles so internal state (open dropdowns,
- * input focus, etc.) survives.
+ * Children only mount after the user expands. Once mounted, children stay
+ * mounted across subsequent collapse/expand cycles so internal state (open
+ * dropdowns, input focus, etc.) survives.
  */
 
 import { useRef, useState, type ReactNode, type CSSProperties } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 
 interface LazyDetailsProps {
   summary: ReactNode;
   children: ReactNode;
   /** Open by default. Defaults to false. */
   defaultOpen?: boolean;
-  /** Style passed to the outer <details>. */
+  /** Style passed to the outer Collapsible root. */
   style?: CSSProperties;
-  /** Style passed to the <summary>. */
+  /** Style passed to the Collapsible trigger. */
   summaryStyle?: CSSProperties;
-  /** Class passed to the outer <details>. */
+  /** Class passed to the outer Collapsible root. */
   className?: string;
-  /** Class passed to the <summary>. */
+  /** Class passed to the Collapsible trigger. */
   summaryClassName?: string;
 }
 
@@ -42,19 +39,21 @@ export function LazyDetails({
   summaryClassName,
 }: LazyDetailsProps) {
   const [opened, setOpened] = useState(defaultOpen);
-  const ref = useRef<HTMLDetailsElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
   return (
-    <details
+    <Collapsible.Root
       ref={ref}
       className={className}
       style={style}
-      open={defaultOpen || undefined}
-      onToggle={() => {
-        if (ref.current?.open && !opened) setOpened(true);
+      defaultOpen={defaultOpen}
+      onOpenChange={(open) => {
+        if (open && !opened) setOpened(true);
       }}
     >
-      <summary className={summaryClassName} style={summaryStyle}>{summary}</summary>
-      {opened ? children : null}
-    </details>
+      <Collapsible.Trigger className={summaryClassName} style={summaryStyle}>{summary}</Collapsible.Trigger>
+      <Collapsible.Content>
+        {opened ? children : null}
+      </Collapsible.Content>
+    </Collapsible.Root>
   );
 }

@@ -5,11 +5,10 @@ discovered: 2026-06-14
 tags: [prompt, injection, system-reminder, cache, brief, hive, queen, prompt-caching, fresh-per-wake]
 status: active
 documents:
-  - "libs/papercusp/packages/orchestrator/src/prompt-build.ts: buildPromptParts (queenBrief volatile-tail injection, lines 957-972; SYSTEM_REMINDER_RE at line 78, applied at line 970)"
-  - "libs/papercusp/packages/orchestrator/src/prompt-build.ts: wrapUntrusted + DELIMITER_RE (lines 69, 113-120) — the peer-content sibling rule 2 mirrors"
-  - "libs/papercusp/packages/orchestrator/src/prompt-build.test.ts: 'QUEEN preamble is byte-identical across per-wake volatile inputs' (line 1525) and the prefix-hash preamble test (line 1471) — rule 1's preamble-byte-stability verification"
-  - "packages/operator-core/lib/hive/queen-brief.ts: renderQueenBrief skip-list intro (lines 193-196) + Inbox section (lines 371-374) — rule 3's skip-set/injected-set consistency"
-  - "packages/operator-core/lib/hive/queen-brief-launch.ts: gatherInbox (lines 96-107, watermark-free read-only digest) + computeQueenWakeBrief fail-soft (Promise.all per-section catches; outer catch returns null at line 214-220) — rules 4 and 5"
+  - "libs/papercusp/packages/orchestrator/src/prompt-build.ts :: buildPromptParts"
+  - libs/papercusp/packages/orchestrator/src/prompt-build.test.ts
+  - "packages/operator-core/lib/hive/queen-brief.ts :: renderQueenBrief"
+  - packages/operator-core/lib/hive/queen-brief-launch.ts
 plans:
   - queen-brief-cache-assembly-2026-06-13
 ---

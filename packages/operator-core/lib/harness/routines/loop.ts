@@ -122,6 +122,10 @@ export interface MaterializeLoopInput {
   kickoff: string;
   /** Optional cost-cap in cents — B-LOOP-3 auto-pauses the loop on breach. */
   costCapCents?: number | null;
+  /** Optional dead-man bounds (loop-wake-rate-limit-robustness P2a) — auto-pause the loop after
+   *  this many total fires / this many seconds since arm. Ride payload_template (no new columns). */
+  maxFires?: number | null;
+  maxDurationSec?: number | null;
   /** Seed active (armed). Default true. */
   active?: boolean;
   /**
@@ -156,6 +160,8 @@ export async function materializeLoop(
 
   const payloadTemplate: Record<string, unknown> = { kickoff: input.kickoff };
   if (input.costCapCents != null) payloadTemplate.costCapCents = input.costCapCents;
+  if (input.maxFires != null) payloadTemplate.maxFires = input.maxFires;
+  if (input.maxDurationSec != null) payloadTemplate.maxDurationSec = input.maxDurationSec;
 
   const row = await upsertRoutine(
     sql,
@@ -208,6 +214,40 @@ export interface LoopStatus {
   nextFireAt: string | null;
   lastFiredAt: string | null;
   costCapCents: number | null;
+  /** P2a dead-man bounds (if configured). */
+  maxFires: number | null;
+  maxDurationSec: number | null;
+  /** P2b (loop-wake-rate-limit-robustness): distinguish "parked, healthy in-flight" from
+   *  "parked, last fire produced NO completion in ≥max(30min,4×interval)" — i.e. the wake turn
+   *  likely died. `stalled` is the verdict; `stalledSinceMs` is how long it has been parked
+   *  past the fire (null when healthy); `lastDeliveryOutcome` is the autoloop fire-state's last
+   *  status (e.g. 'queued' / 'loop-lifecycle' / 'resume-turn-death:rate_limited'); and
+   *  `consecutiveErrors` is the failure-streak the circuit watches. */
+  stalled: boolean;
+  stalledSinceMs: number | null;
+  lastDeliveryOutcome: string | null;
+  consecutiveErrors: number;
+}
+
+/**
+ * Pure stall verdict (P2b): a loop is "stalled" when it is PARKED (turn in flight) far past its
+ * fire (≥ max(30min, 4×interval)) with NO completion marker AND no session activity since the
+ * fire — the signature of a dead wake turn, distinct from a legitimately long turn (which keeps
+ * producing activity). Mirrors the reconcile stuck-park backstop / the watchdog loop-stalled
+ * predicate. Injectable inputs keep it unit-testable.
+ */
+export function computeLoopStall(input: {
+  parked: boolean;
+  parkedMs: number | null;
+  intervalSec: number | null;
+  hasCompletionSinceFire: boolean;
+  activeSinceFire: boolean;
+}): { stalled: boolean; stalledSinceMs: number | null } {
+  const stuckParkMs = Math.max(30 * 60_000, (input.intervalSec ?? 60) * 4 * 1000);
+  if (!input.parked || input.parkedMs == null) return { stalled: false, stalledSinceMs: null };
+  if (input.hasCompletionSinceFire || input.activeSinceFire) return { stalled: false, stalledSinceMs: null };
+  if (input.parkedMs >= stuckParkMs) return { stalled: true, stalledSinceMs: input.parkedMs };
+  return { stalled: false, stalledSinceMs: null };
 }
 
 /**
@@ -223,33 +263,65 @@ export async function getLoopStatus(
   const sql = opts.sql ?? getOrgPg().sql;
   const name = loopRoutineName(ownerId);
   const rows = await sql<any[]>`
-    SELECT install_slug,
-           name,
-           active,
-           reschedule_interval_sec,
-           target_owner_id,
-           payload_template,
-           last_fired_at,
-           (next_fire_at = 'infinity'::timestamptz)                      AS parked,
-           CASE WHEN next_fire_at = 'infinity'::timestamptz THEN NULL
-                ELSE next_fire_at END                                    AS next_fire_at
-      FROM harness_shared.routines
-     WHERE name = ${name}
-     ORDER BY active DESC, updated_at DESC
+    SELECT r.install_slug,
+           r.name,
+           r.active,
+           r.reschedule_interval_sec,
+           r.target_owner_id,
+           r.payload_template,
+           r.last_fired_at,
+           (r.next_fire_at = 'infinity'::timestamptz)                    AS parked,
+           CASE WHEN r.next_fire_at = 'infinity'::timestamptz THEN NULL
+                ELSE r.next_fire_at END                                  AS next_fire_at,
+           -- P2b stall inputs: how long parked past the fire, last fire-state, completion + activity.
+           CASE WHEN r.last_fired_at IS NULL THEN NULL
+                ELSE (EXTRACT(EPOCH FROM (now() - r.last_fired_at)) * 1000)::bigint END AS parked_ms,
+           a.last_status         AS last_delivery_outcome,
+           a.consecutive_errors  AS consecutive_errors,
+           (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
+             WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
+               AND ag.summary ILIKE '%end%' AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
+           (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
+             WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at
+      FROM harness_shared.routines r
+      LEFT JOIN harness_shared.autoloop_state a
+        ON a.workspace_id = r.workspace_id AND a.harness_slug = r.install_slug AND a.role = r.name
+     WHERE r.name = ${name}
+     ORDER BY r.active DESC, r.updated_at DESC
      LIMIT 1
   `;
   if (rows.length === 0) return null;
   const r = rows[0];
-  const costCap = (r.payload_template ?? {})?.costCapCents;
+  const pt = r.payload_template ?? {};
+  const costCap = pt?.costCapCents;
+  const intervalSec = r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec);
+  const parked = Boolean(r.parked);
+  const parkedMs = r.parked_ms == null ? null : Number(r.parked_ms);
+  const lastFiredMs = r.last_fired_at ? new Date(r.last_fired_at).getTime() : null;
+  const completedMs = r.lifecycle_completed_at ? new Date(r.lifecycle_completed_at).getTime() : null;
+  const presenceMs = r.presence_last_active_at ? new Date(r.presence_last_active_at).getTime() : null;
+  const stall = computeLoopStall({
+    parked,
+    parkedMs,
+    intervalSec,
+    hasCompletionSinceFire: completedMs != null, // the subquery already bounds it to > last_fired
+    activeSinceFire: presenceMs != null && lastFiredMs != null && presenceMs > lastFiredMs,
+  });
   return {
     name: r.name,
     ownerId: r.target_owner_id ?? ownerId,
     harnessSlug: r.install_slug,
     active: r.active,
-    intervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
-    parked: Boolean(r.parked),
+    intervalSec,
+    parked,
     nextFireAt: r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
     costCapCents: typeof costCap === 'number' ? costCap : null,
+    maxFires: typeof pt?.maxFires === 'number' ? pt.maxFires : null,
+    maxDurationSec: typeof pt?.maxDurationSec === 'number' ? pt.maxDurationSec : null,
+    stalled: stall.stalled,
+    stalledSinceMs: stall.stalledSinceMs,
+    lastDeliveryOutcome: r.last_delivery_outcome ?? null,
+    consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),
   };
 }

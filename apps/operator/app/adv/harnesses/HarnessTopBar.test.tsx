@@ -11,8 +11,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
+const syncState = vi.hoisted(() => ({
+  statusRows: null as unknown[] | null,
+  laneRows: null as unknown[] | null,
+}));
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: null, loading: false, error: null, fetching: false, transport: 'sse' as const, invalidate: () => {} }),
+  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+    data:
+      queryName === 'harnessStatus.snapshot'
+        ? syncState.statusRows
+        : queryName === 'harnessLanes.snapshot'
+          ? syncState.laneRows
+          : null,
+    loading: false,
+    error: null,
+    fetching: false,
+    transport: 'sse' as const,
+    invalidate: () => {},
+  }),
 }));
 
 // StatCard → a marker echoing its label + value so the derivation is assertable.
@@ -37,9 +53,9 @@ const STATUS = { iteration: 12, alive: true, counts: { passed: 3, pending: 1 }, 
 const LANES = { lanes: [{ featureId: 'F-1', elapsedSeconds: 9, alive: true }, { featureId: 'F-2', elapsedSeconds: 4, alive: false }], max: 4 };
 
 beforeEach(() => {
+  syncState.statusRows = [STATUS];
+  syncState.laneRows = [LANES];
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (String(url).includes('/lanes')) return new Response(JSON.stringify(LANES), { status: 200 });
-    if (String(url).includes('/status')) return new Response(JSON.stringify(STATUS), { status: 200 });
     return new Response('{}', { status: 200 });
   }));
 });
@@ -53,6 +69,7 @@ afterEach(() => {
 
 describe('<HarnessTopBar />', () => {
   it('shows the loading placeholder until /status lands', () => {
+    syncState.statusRows = null;
     render(<HarnessTopBar slug="h" />);
     expect(screen.getByText(/loading…/i)).toBeTruthy();
   });
@@ -73,11 +90,7 @@ describe('<HarnessTopBar />', () => {
   });
 
   it('omits the cost card when missionCostUsd is 0', async () => {
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (String(url).includes('/lanes')) return new Response(JSON.stringify(LANES), { status: 200 });
-      if (String(url).includes('/status')) return new Response(JSON.stringify({ ...STATUS, missionCostUsd: 0 }), { status: 200 });
-      return new Response('{}', { status: 200 });
-    });
+    syncState.statusRows = [{ ...STATUS, missionCostUsd: 0 }];
     render(<HarnessTopBar slug="h" />);
     await waitFor(() => expect(screen.getByTestId('stat-pulse')).toBeTruthy());
     expect(screen.queryByTestId('stat-$ spent')).toBeNull();
@@ -105,8 +118,6 @@ describe('<HarnessTopBar /> RegisterSubsButton', () => {
           const r = extra(u);
           if (r) return r;
         }
-        if (u.includes('/lanes')) return new Response(JSON.stringify(LANES), { status: 200 });
-        if (u.includes('/status')) return new Response(JSON.stringify(STATUS), { status: 200 });
         return new Response('{}', { status: 200 });
       }),
     );

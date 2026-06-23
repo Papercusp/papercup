@@ -190,14 +190,6 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
   }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
-  // P-006: poll linkedFeatures every 10s while the plan is actively running
-  // so feature status badges stay current without a manual refresh.
-  useEffect(() => {
-    if (startStatus !== 'started') return;
-    const id = window.setInterval(() => { refresh(); }, 10_000);
-    return () => window.clearInterval(id);
-  }, [startStatus, refresh]);
-
   // Cross-plan inbox/actionable clicks deep-link here with ?jump=P-NNN.
   // Vditor preview rendering is async, so retry briefly until the
   // decorated markdown nodes exist, then clear the URL param.
@@ -987,19 +979,14 @@ function FeatureSlideOver({
   featureStatus: string | null;
   onClose: () => void;
 }) {
-  const [events, setEvents] = useState<TimelineEvent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/features/${encodeURIComponent(featureId)}/timeline`)
-      .then((r) => r.ok ? r.json() : r.json().then((j: any) => Promise.reject(j.error ?? 'fetch failed')))
-      .then((j: any) => setEvents((j.events ?? []).slice().reverse()))
-      .catch((e: unknown) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }, [featureId, harnessSlug]);
+  const timelineQuery = useSyncQuery<TimelineEvent>({
+    queryName: 'featureTimeline.byFeature',
+    args: { harnessSlug, featureId },
+    enabled: !!harnessSlug && !!featureId,
+  });
+  const events = useMemo(() => (timelineQuery.data ?? []).slice().reverse(), [timelineQuery.data]);
+  const loading = timelineQuery.loading;
+  const error = timelineQuery.error ? String(timelineQuery.error) : null;
 
   const statusMeta: Record<string, { color: string }> = {
     passed:     { color: 'var(--success)' },

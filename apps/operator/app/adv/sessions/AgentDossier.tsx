@@ -8,8 +8,8 @@
  *
  *   Tier-1/2 (free) — comes from the already-loaded RosterEntry: intent, files,
  *     host/pid, role/feature/plan, mode + terminal handles, session age.
- *   Tier-3 (lazy) — fetched from GET /api/adv/roster/agent?owner=<id> on
- *     selection (and polled while open): SU locks held + waiting (with blockers)
+ *   Tier-3 (lazy) — fetched through agentDetail.byOwner on selection:
+ *     SU locks held + waiting (with blockers)
  *     and coord state (last message, unread, open handoffs/escalations).
  *
  * The files list is cross-marked with the agent's own lock state (L = holds a
@@ -17,7 +17,7 @@
  * reads at a glance.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
@@ -137,46 +137,18 @@ function expiresIn(iso: string): string {
   return min < 1 ? '<1m left' : `${min}m left`;
 }
 
-/** Lazy-fetch (and poll while open) the Tier-3 dossier for one owner id. */
-function useAgentDetail(
-  ownerId: string | null,
-  intervalMs = 5000,
-): { detail: AgentDetail | null; error: string | null; loading: boolean } {
-  const [detail, setDetail] = useState<AgentDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const fetchDetail = useCallback(async (owner: string) => {
-    try {
-      const r = await fetch(`/api/adv/roster/agent?owner=${encodeURIComponent(owner)}`, {
-        cache: 'no-store',
-      });
-      if (!r.ok) throw new Error(`status ${r.status}`);
-      setDetail((await r.json()) as AgentDetail);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!ownerId) {
-      setDetail(null);
-      setError(null);
-      return;
-    }
-    setDetail(null);
-    setLoading(true);
-    void fetchDetail(ownerId);
-    const id = window.setInterval(() => {
-      if (!document.hidden) void fetchDetail(ownerId);
-    }, intervalMs);
-    return () => window.clearInterval(id);
-  }, [ownerId, intervalMs, fetchDetail]);
-
-  return { detail, error, loading };
+/** Lazy-load the Tier-3 dossier for one owner id through sync. */
+function useAgentDetail(ownerId: string | null): { detail: AgentDetail | null; error: string | null; loading: boolean } {
+  const query = useSyncQuery<AgentDetail>({
+    queryName: 'agentDetail.byOwner',
+    args: ownerId ? { ownerId } : undefined,
+    enabled: !!ownerId,
+  });
+  return {
+    detail: query.data?.[0] ?? null,
+    error: query.error ? String(query.error) : null,
+    loading: query.loading,
+  };
 }
 
 function MetaRow({ label, value }: { label: string; value: React.ReactNode }): React.JSX.Element | null {

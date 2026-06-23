@@ -1,4 +1,5 @@
 import RouteLink from '../_components/RouteLink';
+import * as Collapsible from '@radix-ui/react-collapsible';
 
 import { SupportChatButton } from '../_components/SupportChatButton';
 import { SupportAgentPanel } from '../_components/SupportAgentPanel';
@@ -164,7 +165,7 @@ export default function SupportPage() {
       <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>Frequently asked</h2>
       <div className="pc-support-faqs">
         {FAQS.map((f, i) => (
-          <details
+          <Collapsible.Root
             key={i}
             className="pc-support-faq"
             style={{
@@ -175,11 +176,11 @@ export default function SupportPage() {
               borderRadius: 8,
             }}
           >
-            <summary className="pc-support-faq-summary" style={{ cursor: 'pointer', fontSize: 15, fontWeight: 600, listStyle: 'none' }}>
+            <Collapsible.Trigger className="pc-support-faq-summary" style={{ width: '100%', background: 'none', border: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer', fontSize: 15, fontWeight: 600, fontFamily: 'inherit' }}>
               <span className="pc-support-faq-chevron" style={{ marginRight: 8, color: 'var(--fg-mute)' }}>›</span>
               {f.q}
-            </summary>
-            <div
+            </Collapsible.Trigger>
+            <Collapsible.Content
               className="pc-support-faq-answer"
               style={{
                 marginTop: 12,
@@ -189,8 +190,8 @@ export default function SupportPage() {
               }}
             >
               {f.a}
-            </div>
-          </details>
+            </Collapsible.Content>
+          </Collapsible.Root>
         ))}
       </div>
 

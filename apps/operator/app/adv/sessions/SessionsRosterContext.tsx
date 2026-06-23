@@ -1,16 +1,17 @@
 'use client';
 
 /**
- * SessionsRosterContext — shares the single `/api/adv/roster` poll between the
+ * SessionsRosterContext — shares the single `advRoster.list` sync read between the
  * roster LIST and the dossier DETAIL, which now live in two separate slots of
  * the shared `TwoPaneShell` (plan: unified-2-pane-shell). Without this they'd
- * each call `useRoster` and double-poll (and could show divergent snapshots).
+ * each call the roster resolver separately (and could show divergent snapshots).
  *
- * Mount `<SessionsRosterProvider>` only around the Sessions slots so it polls
+ * Mount `<SessionsRosterProvider>` only around the Sessions slots so it subscribes
  * only while the Sessions view is on screen.
  */
 
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useContext } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import type { RosterResponse } from './SessionsRosterView';
 
 export interface RosterState {
@@ -20,44 +21,21 @@ export interface RosterState {
   refresh: () => void;
 }
 
-/**
- * Poll /api/adv/roster while enabled and the tab is visible. `enabled` lets the
- * provider stay mounted across view switches (so the shared shell never
- * remounts) while polling only on the Sessions view.
- */
 function useRoster(
   workspaceId: string | null | undefined,
   enabled: boolean,
-  intervalMs = 4000,
 ): RosterState {
-  const url = `/api/adv/roster${workspaceId ? `?workspace=${encodeURIComponent(workspaceId)}` : ''}`;
-  const [data, setData] = useState<RosterResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const refresh = useCallback(async () => {
-    try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) throw new Error(`status ${r.status}`);
-      setData((await r.json()) as RosterResponse);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [url]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    refresh();
-    const id = window.setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, intervalMs);
-    return () => window.clearInterval(id);
-  }, [refresh, intervalMs, enabled]);
-
-  return { data, error, loading, refresh };
+  const query = useSyncQuery<RosterResponse>({
+    queryName: 'advRoster.list',
+    args: { workspaceId: workspaceId ?? null, endedLimit: 50 },
+    enabled,
+  });
+  return {
+    data: query.data?.[0] ?? null,
+    error: query.error ? String(query.error) : null,
+    loading: query.loading,
+    refresh: () => query.invalidate?.(),
+  };
 }
 
 const RosterCtx = createContext<RosterState | null>(null);

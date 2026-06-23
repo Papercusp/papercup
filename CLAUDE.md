@@ -294,6 +294,19 @@ plan's `## Now` + your completion report. The dark allowlist carries a
 `DARK_FLAGS_REVIEW_BY` expiry, so a dark flag can't linger silently. Reference:
 `/internal/docs/posthog` + `/internal/docs/posthog/feature-flags`.
 
+⛔ **The dark allowlist is SHRINK-ONLY — never reconstruct or grow it, and never build a parallel
+one (owner mandate 2026-06-23).** `KNOWN_DARK_FLAGS` exists ONLY to express the small set of
+genuinely-not-ready exceptions above (incomplete code / would-break-the-running-fleet /
+owner-authority / staged-cutover) — it is **NOT a parking lot for finished work**, and it was being
+abused as one. A high-watermark test (`DARK_FLAGS_HIGH_WATERMARK` in `production-defaults.test.ts`)
+**fails the build if the dark set grows**. So: flipping a flag ON *removes* its allowlist entry (the
+set shrinks ✓); shipping a NEW genuinely-incomplete flag dark requires first **graduating an existing
+dark flag** to make room (net-zero) or **explicit owner sign-off** to raise the watermark — never a
+quiet append. **Do NOT route around this guard** by re-introducing a second dark allowlist, a
+per-flag `process.env.PAPERCUSP_*` gate, a `darkReason` side-table, or any other parking-lot for
+finished-but-scary work: the temptation to park it dark "to verify later" is *exactly* the abuse this
+exists to stop — flipping it on and watching it work IS the task.
+
 ## Tests after editing
 
 ```bash

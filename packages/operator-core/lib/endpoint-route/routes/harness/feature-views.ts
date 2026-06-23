@@ -31,6 +31,102 @@ import { defineTool } from '@papercusp/agent-mcp';
 
 const execFileP = promisify(execFile);
 
+export type FeatureTimelineEvent = { ts: number; iso: string; kind: string; detail: string };
+
+export async function getFeatureTimeline(slug: string, rawFeatureId: string): Promise<{
+  ok: true;
+  featureId: string;
+  events: FeatureTimelineEvent[];
+} | { ok: false; status: number; error: string }> {
+  const project = await resolveProject(slug);
+  if (!project) return { ok: false, status: 404, error: 'unknown project' };
+  const fid = String(rawFeatureId).replace(/[^A-Za-z0-9_-]/g, '');
+  if (!fid) return { ok: false, status: 400, error: 'invalid feature id' };
+
+  const events: FeatureTimelineEvent[] = [];
+
+  // 1. Status transitions from snapshots/
+  const snapDir = join(harnessDir(project), 'snapshots');
+  if (existsSync(snapDir)) {
+    let prevStatus: string | null = null;
+    const snaps = readdirSync(snapDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort();
+    for (const snapName of snaps) {
+      const featPath = join(snapDir, snapName, 'features.json');
+      try {
+        const raw = readFileSync(featPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        const feats = (parsed.features ?? parsed) as Array<{ id?: string; status?: string }>;
+        const f = feats.find((x) => x.id === fid);
+        if (!f) continue;
+        if (prevStatus !== null && f.status !== prevStatus) {
+          const match = snapName.match(/^(\d+)-iter-(\d+)$/);
+          const ts = match ? Number(match[1]) * 1000 : 0;
+          events.push({
+            ts,
+            iso: new Date(ts).toISOString(),
+            kind: 'status_change',
+            detail: `${prevStatus} → ${f.status}`,
+          });
+        }
+        prevStatus = f.status ?? null;
+      } catch {}
+    }
+  }
+
+  // 2. Agent runs for this feature (filename contains -<FID>)
+  const logDir = join(harnessDir(project), 'logs');
+  if (existsSync(logDir)) {
+    for (const f of readdirSync(logDir)) {
+      if (!f.endsWith('.out')) continue;
+      const stem = f.replace(/\.out$/, '');
+      const match = stem.match(/^(\d+)-([a-z]+)(?:-(F-[A-Z0-9-]+))?$/);
+      if (!match) continue;
+      if (match[3] !== fid) continue;
+      const ts = Number(match[1]) * 1000;
+      events.push({
+        ts,
+        iso: new Date(ts).toISOString(),
+        kind: 'agent_run',
+        detail: `${match[2]} invoked`,
+      });
+    }
+  }
+
+  // 3. Debug note creation
+  const debugPath = join(harnessDir(project), 'debug', `${fid}.md`);
+  if (existsSync(debugPath)) {
+    try {
+      const s = statSync(debugPath);
+      events.push({
+        ts: s.mtimeMs,
+        iso: new Date(s.mtimeMs).toISOString(),
+        kind: 'debug_note',
+        detail: 'debugger role investigated',
+      });
+    } catch {}
+  }
+
+  // 4. PR URL creation
+  try {
+    const prs = JSON.parse(readFileSync(join(harnessDir(project), 'prs.json'), 'utf8'));
+    const entry = prs?.prs?.[fid];
+    if (entry?.url && typeof entry.created_at === 'number') {
+      events.push({
+        ts: entry.created_at * 1000,
+        iso: new Date(entry.created_at * 1000).toISOString(),
+        kind: 'pr_opened',
+        detail: entry.url,
+      });
+    }
+  } catch {}
+
+  events.sort((a, b) => a.ts - b.ts);
+  return { ok: true, featureId: fid, events };
+}
+
 const getLineage = defineTool({
   method: 'GET',
   path: '/harness/:slug/feature/:id/lineage',
@@ -123,94 +219,9 @@ const getTimeline = defineTool({
   path: '/harness/:slug/features/:id/timeline',
   auth: 'public',
   async handler(_req, ctx) {
-    const project = await resolveProject(ctx.params.slug as string);
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const fid = String(ctx.params.id).replace(/[^A-Za-z0-9_-]/g, '');
-    if (!fid) return Response.json({ error: 'invalid feature id' }, { status: 400 });
-
-    type Event = { ts: number; iso: string; kind: string; detail: string };
-    const events: Event[] = [];
-
-    // 1. Status transitions from snapshots/
-    const snapDir = join(harnessDir(project), 'snapshots');
-    if (existsSync(snapDir)) {
-      let prevStatus: string | null = null;
-      const snaps = readdirSync(snapDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .map((d) => d.name)
-        .sort();
-      for (const snapName of snaps) {
-        const featPath = join(snapDir, snapName, 'features.json');
-        try {
-          const raw = readFileSync(featPath, 'utf8');
-          const parsed = JSON.parse(raw);
-          const feats = (parsed.features ?? parsed) as any[];
-          const f = feats.find((x) => x.id === fid);
-          if (!f) continue;
-          if (prevStatus !== null && f.status !== prevStatus) {
-            const match = snapName.match(/^(\d+)-iter-(\d+)$/);
-            const ts = match ? Number(match[1]) * 1000 : 0;
-            events.push({
-              ts,
-              iso: new Date(ts).toISOString(),
-              kind: 'status_change',
-              detail: `${prevStatus} → ${f.status}`,
-            });
-          }
-          prevStatus = f.status;
-        } catch {}
-      }
-    }
-
-    // 2. Agent runs for this feature (filename contains -<FID>)
-    const logDir = join(harnessDir(project), 'logs');
-    if (existsSync(logDir)) {
-      for (const f of readdirSync(logDir)) {
-        if (!f.endsWith('.out')) continue;
-        const stem = f.replace(/\.out$/, '');
-        const match = stem.match(/^(\d+)-([a-z]+)(?:-(F-[A-Z0-9-]+))?$/);
-        if (!match) continue;
-        if (match[3] !== fid) continue;
-        const ts = Number(match[1]) * 1000;
-        events.push({
-          ts,
-          iso: new Date(ts).toISOString(),
-          kind: `agent_run`,
-          detail: `${match[2]} invoked`,
-        });
-      }
-    }
-
-    // 3. Debug note creation
-    const debugPath = join(harnessDir(project), 'debug', `${fid}.md`);
-    if (existsSync(debugPath)) {
-      try {
-        const s = statSync(debugPath);
-        events.push({
-          ts: s.mtimeMs,
-          iso: new Date(s.mtimeMs).toISOString(),
-          kind: 'debug_note',
-          detail: 'debugger role investigated',
-        });
-      } catch {}
-    }
-
-    // 4. PR URL creation
-    try {
-      const prs = JSON.parse(readFileSync(join(harnessDir(project), 'prs.json'), 'utf8'));
-      const entry = prs?.prs?.[fid];
-      if (entry?.url && typeof entry.created_at === 'number') {
-        events.push({
-          ts: entry.created_at * 1000,
-          iso: new Date(entry.created_at * 1000).toISOString(),
-          kind: 'pr_opened',
-          detail: entry.url,
-        });
-      }
-    } catch {}
-
-    events.sort((a, b) => a.ts - b.ts);
-    return Response.json({ featureId: fid, events });
+    const result = await getFeatureTimeline(ctx.params.slug as string, ctx.params.id as string);
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json({ featureId: result.featureId, events: result.events });
   },
 });
 

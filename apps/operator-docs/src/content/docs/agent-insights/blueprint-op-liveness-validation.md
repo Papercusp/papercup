@@ -5,16 +5,15 @@ discovered: 2026-06-18
 tags: [blueprints, validation, coord-ops, deterministic-steps, liveness, agent-roles, dbos]
 status: active
 documents:
-  - "libs/papercusp/packages/orchestrator/src/blueprint/validate.ts:validateBlueprint (knownOps gate at :265/:284; knownRoles suppression at :86)"
-  - "libs/papercusp/packages/orchestrator/src/blueprint/validate.ts:ValidateOptions (knownOps :52, knownRoles :68)"
-  - "packages/operator-core/lib/blueprint/registry-sets.ts:blueprintRegistrySets"
-  - "packages/operator-core/lib/agent-tools/blueprint/_resolve.ts:resolveAndValidate (:76)"
-  - "packages/operator-core/lib/cupboard/install-blueprint-core.ts:193 (resolveAndValidateBlueprint + blueprintRegistrySets)"
-  - "packages/operator-core/lib/blueprint/project-to-pg.ts:127 (loadBlueprintFromFile + blueprintRegistrySets)"
-  - "libs/papercusp/packages/orchestrator/src/blueprint/loader.ts:resolveBlueprint/loadBlueprintFromFile/loadBuiltinBlueprint (registry?: BlueprintValidateRegistry; type at :37)"
-  - "packages/operator-core/lib/coord-ops/registry.ts:coordOpNames (:40), requireCoordOp (:24)"
-  - "packages/operator-core/lib/known-roles.ts:getKnownRoles (:19)"
-  - "packages/operator-core/lib/blueprint/registry-validation.test.ts (built-in op-liveness regression guard)"
+  - libs/papercusp/packages/orchestrator/src/blueprint/validate.ts
+  - "packages/operator-core/lib/blueprint/registry-sets.ts :: blueprintRegistrySets"
+  - "packages/operator-core/lib/agent-tools/blueprint/_resolve.ts :: resolveAndValidate"
+  - packages/operator-core/lib/cupboard/install-blueprint-core.ts
+  - packages/operator-core/lib/blueprint/project-to-pg.ts
+  - libs/papercusp/packages/orchestrator/src/blueprint/loader.ts
+  - packages/operator-core/lib/coord-ops/registry.ts
+  - "packages/operator-core/lib/known-roles.ts :: getKnownRoles"
+  - packages/operator-core/lib/blueprint/registry-validation.test.ts
 plans:
   - deterministic-blueprints-migration-2026-06-13
   - harness-blueprint-orchestration-2026-06-03

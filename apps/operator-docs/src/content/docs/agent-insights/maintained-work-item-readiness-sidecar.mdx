@@ -5,11 +5,11 @@ discovered: 2026-06-22
 tags: [scheduler, work-items, readiness, federation, triggers, migrations, flags, work-item-deps]
 status: active
 documents:
-  - "libs/papercusp/libs/db/sql/379-maintained-ready-column.sql: the sidecar table work_item_blocked + work_item_is_blocked() oracle + sync_work_item_blocked() + the 4 wir_* one-hop triggers + backfill"
-  - "packages/operator-core/lib/work-items.ts: claimFloorsWhereSql opts.useMaintainedReady branch (the indexed work_item_blocked anti-join vs the inline NOT EXISTS) + schedulerMaintainedReadyEnabled() + claimNextWorkItem resolving the flag"
-  - "packages/operator-core/lib/scheduler/get-next.ts: getNextWorkItem resolves schedulerMaintainedReadyEnabled() + passes useMaintainedReady (the second claim entry point — both must agree)"
-  - "packages/operator-core/lib/scheduler/readiness-reconcile.ts: reconcileReadiness() — the drift detector (sidecar vs oracle, FULL OUTER JOIN)"
-  - "libs/flags/src/types.ts: FLAGS.SCHEDULER_MAINTAINED_READY (default false) + libs/flags/src/production-defaults.test.ts KNOWN_DARK_FLAGS 'cutover'"
+  - libs/papercusp/libs/db/sql/379-maintained-ready-column.sql
+  - packages/operator-core/lib/work-items.ts
+  - "packages/operator-core/lib/scheduler/get-next.ts :: getNextWorkItem"
+  - "packages/operator-core/lib/scheduler/readiness-reconcile.ts :: reconcileReadiness"
+  - libs/flags/src/types.ts
 ---
 
 ## TL;DR

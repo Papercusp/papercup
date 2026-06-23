@@ -108,6 +108,29 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.anything(), 'ok');
   });
 
+  it('Guard 3 (dead-man): a breach auto-pauses + withholds the wake + records an error (P2a)', async () => {
+    const deadMan = vi.fn(async () => ({ breach: true, reason: 'max-duration 7200s > 3600s (since arm)' }));
+    const deps = mkDeps({ deadMan: deadMan as never, incrementFireCount: vi.fn(async () => {}) as never });
+    const res = await fireLoopWake({ ...baseInput, payloadTemplate: { maxDurationSec: 3600 } }, deps);
+    expect(res).toMatchObject({ fired: false, reason: 'dead-man' });
+    expect(deps.wake).not.toHaveBeenCalled(); // the wake was withheld
+    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.stringContaining('dead-man'), 'error');
+  });
+
+  it('the fire counter is incremented ONLY when maxFires is configured (P2a)', async () => {
+    const incrementFireCount = vi.fn(async () => {});
+    const deps = mkDeps({
+      deadMan: vi.fn(async () => ({ breach: false })) as never,
+      incrementFireCount: incrementFireCount as never,
+    });
+    // A duration-only bound fires but does NOT count (no maxFires).
+    await fireLoopWake({ ...baseInput, payloadTemplate: { maxDurationSec: 3600 } }, deps);
+    expect(incrementFireCount).not.toHaveBeenCalled();
+    // A maxFires bound increments after the fire.
+    await fireLoopWake({ ...baseInput, payloadTemplate: { maxFires: 100 } }, deps);
+    expect(incrementFireCount).toHaveBeenCalledTimes(1);
+  });
+
   it('no target_owner_id → withheld with no gate/wake calls', async () => {
     const deps = mkDeps();
     const res = await fireLoopWake({ ...baseInput, targetOwnerId: '' }, deps);

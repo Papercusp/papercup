@@ -5,12 +5,14 @@
 // alive/escalated/smoke badges, project path, progress bar, status-bucket
 // counts, iteration + last-decision + mission cost. Phase lives in the
 // panel's params (so two overview panels can show different phases side by
-// side) and persists via /harness-phase-last-used. One-shot read + manual
-// Refresh — the legacy 5s interval is dropped per the /adv no-polling ethos.
+// side) and persists via /harness-phase-last-used. Status reads through sync
+// with manual invalidate for Refresh — no interval or ad-hoc REST data fetch.
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { RefreshCw } from 'lucide-react';
 import { useLexicon } from '@/lib/useLexicon';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Tooltip } from '../../harness/Tooltip';
 import { StatusPill } from '../../harness/primitives';
 import type { HarnessStatus } from '../../harness/theme';
@@ -51,12 +53,17 @@ export function computeStats(
 
 export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
   const t = useLexicon();
+  const workspaceId = useWorkspaceId();
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const phase = ((params.phase as Phase) ?? 'staging') as Phase;
-  const [data, setData] = useState<StatusResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
   const [phaseHydrated, setPhaseHydrated] = useState(false);
+  const statusQuery = useSyncQuery<StatusResponse>({
+    queryName: 'harnessStatus.snapshot',
+    args: slug ? { harnessSlug: slug, workspaceId, phase } : undefined,
+    enabled: !!slug && !!workspaceId,
+  });
+  const data = statusQuery.data?.[0] ?? null;
+  const error = statusQuery.error ? String(statusQuery.error) : null;
 
   // First-mount: if no explicit phase was seeded, adopt the user's
   // last-used phase for this slug. One-shot.
@@ -86,25 +93,9 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
-  // Status fetch (re-fires on slug/phase change + refresh()).
   useEffect(() => {
-    if (!slug) return;
-    let cancel = false;
-    setError(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=${encodeURIComponent(phase)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<StatusResponse>) : Promise.reject(new Error(`status ${r.status}`))))
-      .then((j) => {
-        if (cancel) return;
-        setData(j);
-        api.setTitle(`Overview: ${slug} (${phase})`);
-      })
-      .catch((e: Error) => {
-        if (!cancel) setError(e.message);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [slug, phase, tick, api]);
+    if (slug) api.setTitle(`Overview: ${slug} (${phase})`);
+  }, [slug, phase, api]);
 
   const stats = useMemo(() => computeStats(data?.counts), [data]);
 
@@ -141,7 +132,7 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
                 type="button"
                 className="pc-advpanel__iconbtn"
                 style={{ marginLeft: 'auto' }}
-                onClick={() => setTick((t) => t + 1)}
+                onClick={() => statusQuery.invalidate?.()}
                 aria-label="Refresh status"
               >
                 <RefreshCw size={13} aria-hidden />

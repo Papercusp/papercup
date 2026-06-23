@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { ChevronRight } from 'lucide-react';
@@ -235,8 +236,6 @@ const SU_AGENT_OPTIONS = [
 
 export default function AdvSessionsClient() {
   const t = useLexicon();
-  const [rows, setRows] = useState<SessionRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
   const [refreshTick, setRefreshTick] = useState(0);
   const [launchPlanSlug, setLaunchPlanSlug] = useQueryState('newPlan', parseAsString);
@@ -265,45 +264,21 @@ export default function AdvSessionsClient() {
   const [searchData, setSearchData] = useState<SessionSearchResponse | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const planList = usePlanList({ includeArchived: true, includeLegacy: true });
+  const sessionsQuery = useSyncQuery<SessionRow>({
+    queryName: 'advSessions.list',
+    args: { limit: 200 },
+  });
+  const rows = sessionsQuery.data ?? null;
+  const error = sessionsQuery.error ? String(sessionsQuery.error) : null;
 
   const activePanel = isSessionPanel(panel) ? panel : 'overview';
 
-  const fetchRows = useCallback(async () => {
-    try {
-      const r = await fetch('/api/adv/sessions', { headers: { accept: 'application/json' } });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = (await r.json()) as { rows: SessionRow[] };
-      setRows(data.rows ?? []);
-      setError(null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
   useEffect(() => {
-    fetchRows();
-  }, [fetchRows, refreshTick]);
-
-  // Auto-refresh while there are active terminals. The exit watcher
-  // on the server marks rows as ended in PG when a terminal closes,
-  // but the client doesn't learn about it without a fetch — without
-  // this poll a user could close a window and see the row stay
-  // "active" with a Focus button that doesn't work. 3s feels alive
-  // without hammering. Stops polling when no active rows are visible.
-  useEffect(() => {
-    // Poll every 3s while the tab is visible. Covers BOTH detecting a
-    // terminal close (active row → ended, server marks it in PG) AND a
-    // brand-new launch — including a terminal `psu` session — appearing
-    // in an otherwise-idle list within a few seconds without a manual
-    // refresh (psu-wrappers plan P-022). Pauses when the tab is hidden
-    // so it doesn't poll in the background.
-    const tick = () => {
-      if (typeof document !== 'undefined' && document.hidden) return;
-      void fetchRows();
-    };
-    const id = window.setInterval(tick, 3000);
-    return () => window.clearInterval(id);
-  }, [fetchRows]);
+    if (refreshTick > 0) sessionsQuery.invalidate?.();
+    // refreshTick is the explicit user/action invalidation signal; the query
+    // object identity is intentionally omitted to avoid repeated invalidates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshTick]);
 
   // Lazy-load token/cost/model summary for each OMP row so the main
   // Row-summary fields (model, tokens, cost, user-message count,

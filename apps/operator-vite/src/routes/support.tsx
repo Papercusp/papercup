@@ -3,6 +3,7 @@ import { SupportChatButton } from '@/app/_components/SupportChatButton';
 import { SupportAgentPanel } from '@/app/_components/SupportAgentPanel';
 import { useLexicon } from '@/lib/useLexicon';
 import { type BoundLexicon } from '@papercusp/lexicon';
+import * as Collapsible from '@radix-ui/react-collapsible';
 
 /**
  * /support — FAQ + chat. Translated from `apps/operator/app/support/page.tsx`.
@@ -171,7 +172,7 @@ function SupportPage() {
       <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>Frequently asked</h2>
       <div className="pc-support-faqs">
         {faqs.map((f, i) => (
-          <details
+          <Collapsible.Root
             key={i}
             className="pc-support-faq"
             style={{
@@ -182,11 +183,11 @@ function SupportPage() {
               borderRadius: 8,
             }}
           >
-            <summary className="pc-support-faq-summary" style={{ cursor: 'pointer', fontSize: 15, fontWeight: 600, listStyle: 'none' }}>
+            <Collapsible.Trigger className="pc-support-faq-summary" style={{ width: '100%', background: 'none', border: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer', fontSize: 15, fontWeight: 600, fontFamily: 'inherit' }}>
               <span className="pc-support-faq-chevron" style={{ marginRight: 8, color: 'var(--fg-mute)' }}>›</span>
               {f.q}
-            </summary>
-            <div
+            </Collapsible.Trigger>
+            <Collapsible.Content
               className="pc-support-faq-answer"
               style={{
                 marginTop: 12,
@@ -196,8 +197,8 @@ function SupportPage() {
               }}
             >
               {f.a}
-            </div>
-          </details>
+            </Collapsible.Content>
+          </Collapsible.Root>
         ))}
       </div>
 

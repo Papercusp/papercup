@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { Activity, CheckCircle2, Coins, LayoutGrid, Network } from 'lucide-react';
 import { FLAGS } from '@papercusp/flags';
@@ -47,48 +47,18 @@ export default function HarnessTopBar({ slug }: Props) {
   // registered always but only offered in the Add-panel catalog when the flag
   // is on (DEFAULT ON; inert outside a hive, so the gate is mostly a courtesy).
   const crossMemberBrowse = useFlag(FLAGS.CROSS_MEMBER_BROWSE);
-  const [status, setStatus] = useState<StatusPayload | null>(null);
-  const [lanes, setLanes] = useState<LanesPayload | null>(null);
-
-  // Push triggers replacing the legacy 4s poll (audit P-058): the /status +
-  // /lanes REST aggregates have no single sync row, so refetch them whenever
-  // the consolidated feature feed (counts/progress) or agent-run feed (lane
-  // starts/stops, alive) pushes. Server-side dedupe bounds the refetch rate.
-  const { data: featureRows } = useSyncQuery<unknown>({
-    queryName: 'featuresConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
-    enabled: !!slug,
+  const { data: statusRows } = useSyncQuery<StatusPayload>({
+    queryName: 'harnessStatus.snapshot',
+    args: slug ? { harnessSlug: slug, workspaceId, phase: 'staging' } : undefined,
+    enabled: !!slug && !!workspaceId,
   });
-  const { data: runRows } = useSyncQuery<unknown>({
-    queryName: 'agentRunsConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug } : undefined,
-    enabled: !!slug,
+  const { data: laneRows } = useSyncQuery<LanesPayload>({
+    queryName: 'harnessLanes.snapshot',
+    args: slug ? { harnessSlug: slug, workspaceId, phase: 'staging' } : undefined,
+    enabled: !!slug && !!workspaceId,
   });
-
-  useEffect(() => {
-    if (!slug) {
-      setStatus(null);
-      setLanes(null);
-      return;
-    }
-    let cancelled = false;
-    Promise.all([
-      fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=staging`).then((r) =>
-        r.ok ? (r.json() as Promise<StatusPayload>) : null,
-      ),
-      fetch(`/api/harness/${encodeURIComponent(slug)}/lanes?phase=staging`).then((r) =>
-        r.ok ? (r.json() as Promise<LanesPayload>) : null,
-      ),
-    ]).then(([s, l]) => {
-      if (cancelled) return;
-      setStatus(s);
-      setLanes(l);
-    });
-    return () => {
-      cancelled = true;
-    };
-    // featureRows/runRows identity changes on each sync push → refetch.
-  }, [slug, featureRows, runRows]);
+  const status = statusRows?.[0] ?? null;
+  const lanes = laneRows?.[0] ?? null;
 
   const passedCount = status?.counts?.passed ?? 0;
   const totalCount = useMemo(

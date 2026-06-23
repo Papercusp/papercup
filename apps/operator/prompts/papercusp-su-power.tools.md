@@ -264,7 +264,13 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   cap/backpressure) and **fix it robustly** (or `work_items:create` /
   `improvements:capture` + route it), then proceed. (The shared
   `CONCURRENCY_FIRST_NOTE` every harness agent also carries.)
-- **Collapse a multi-step tool flow into ONE `code:run`.** When `code:run` is in
+- **Collapse a multi-step tool flow into ONE `code:run`.** First ASK: can I get this
+  result in FEWER calls? — tokens are real cost (each call re-reads your whole
+  context). Bundle the calls you can determine up front (independent ones, a mechanical
+  loop/branch over results, or a fetch reused by several — fetch ONCE) into one script;
+  keep separate only steps where you must read a result and DECIDE (judgment mid-flow,
+  NOT mere data dependency). Batch what you hold THIS turn, not stashed for later.
+  When `code:run` is in
   your toolset and a task needs MANY tool calls with control flow — loop / branch /
   filter over results, fan-out reads, retry-until, "do X for each of N" —
   orchestrate them in a SINGLE `code:run` script, not one call at a time: each call

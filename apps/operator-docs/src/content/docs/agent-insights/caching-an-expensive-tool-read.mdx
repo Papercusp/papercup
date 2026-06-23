@@ -5,13 +5,14 @@ discovered: 2026-06-23
 tags: [cache, performance, defineTool, agent-tools, cache-eca, plans, work_items]
 status: active
 documents:
-  - "packages/operator-core/lib/cache/cached-read.ts: cachedRead(ctx, opts, factory) + stableKey + resolveCacheWorkspaceId + per-tool telemetry (snapshotCachedReadStats)"
-  - "packages/operator-core/lib/cache/instance.ts: getOperatorCache() singleton + CACHE_LAYER kill-switch (bypass seam)"
-  - "packages/operator-core/lib/events/cache-eca-rule.ts: tagsForTableChange + tableNameFromChangedEvent — the change-stream → cache.bumpTags ECA (CACHE_TAG_ECA)"
-  - "libs/generic/cache/src/cache.ts: Cache.getOrSet (L1 + single-flight + SWR) + the onOutcome hook (CacheOutcome)"
-  - "packages/operator-core/lib/agent-tools/plans/list.ts: the plans:list exemplar (cachedRead block + cacheKey)"
-  - "packages/operator-core/lib/agent-tools/plans/attention.ts: the plans:attention exemplar (aggregation over append-heavy sources; tag only the plan tables + short SWR)"
-  - "packages/operator-core/lib/agent-tools/work_items/list.ts + get.ts: the Tier-B exemplar (table tag for list; per-row harness_features_consolidated:<id> tag for get)"
+  - packages/operator-core/lib/cache/cached-read.ts
+  - packages/operator-core/lib/cache/instance.ts
+  - packages/operator-core/lib/events/cache-eca-rule.ts
+  - libs/generic/cache/src/cache.ts
+  - packages/operator-core/lib/agent-tools/plans/list.ts
+  - packages/operator-core/lib/agent-tools/plans/attention.ts
+  - packages/operator-core/lib/agent-tools/work_items/list.ts
+  - packages/operator-core/lib/agent-tools/work_items/get.ts
 ---
 
 # Caching an expensive read-mostly tool with `cachedRead`

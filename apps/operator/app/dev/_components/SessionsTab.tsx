@@ -3,6 +3,7 @@
 
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState, useCallback } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
@@ -558,17 +559,19 @@ function OmpSection({
       {loadingTranscript && <div className="pc-dev-muted">loading…</div>}
       {transcriptError && <div className="pc-dev-api-err">{transcriptError}</div>}
       {transcript && (
-        <details className="pc-dev-transcript">
-          <summary>
+        <Collapsible.Root className="pc-dev-transcript">
+          <Collapsible.Trigger>
             {transcript.turns.length} turns
             {transcript.truncated ? ` of ${transcript.totalLines} (truncated)` : ''}
-          </summary>
-          <pre className="pc-dev-pre">
-            {transcript.turns
-              .map((t) => `[${t.type}] ${JSON.stringify(t).slice(0, 200)}`)
-              .join('\n')}
-          </pre>
-        </details>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <pre className="pc-dev-pre">
+              {transcript.turns
+                .map((t) => `[${t.type}] ${JSON.stringify(t).slice(0, 200)}`)
+                .join('\n')}
+            </pre>
+          </Collapsible.Content>
+        </Collapsible.Root>
       )}
     </section>
   );
