@@ -64,6 +64,26 @@ const clampedLimit = (cap: number, def: number) =>
 const clampedLimitOpt = (cap: number) =>
   z.number().int().positive().transform((v) => Math.min(v, cap)).optional();
 
+// Coerce any top-level BigInt field on each row to a Number so the rows survive the
+// rest-query-batch serializer (a plain JSON.stringify, which THROWS on a BigInt → a 500
+// whenever the resolver returns rows). A bigserial({ mode: 'bigint' }) PK (user_actions.id
+// and ~34 other tables) is the common source; ids are well within 2^53. This mirrors the
+// explicit `typeof v === 'bigint' ? Number(v)` convention in harness-core / agent-chats-data
+// / projects-data. Returns the original row object untouched when it has no BigInt (no
+// allocation on the hot path). Exported for the unit guard. (data-sync-push-completion
+// D-010: found live on :3170 verifying the P-006 userActions.recent resolver — byHarness/
+// byKind shared the latent 500, masked by the sparse user_actions table.)
+export function jsonSafeRows(rows: unknown[]): unknown[] {
+  return rows.map((r) => {
+    if (!r || typeof r !== 'object') return r;
+    let out: Record<string, unknown> | null = null;
+    for (const [k, v] of Object.entries(r as Record<string, unknown>)) {
+      if (typeof v === 'bigint') (out ??= { ...(r as Record<string, unknown>) })[k] = Number(v);
+    }
+    return out ?? r;
+  });
+}
+
 // ─── Registry types ─────────────────────────────────────────────────
 
 export interface QueryEntry<TArgs = unknown> {
@@ -1635,12 +1655,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
+      return jsonSafeRows(await db
         .select()
         .from(t)
         .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId)))
         .orderBy(desc(t.startedAt))
-        .limit(limit)) as unknown[];
+        .limit(limit));
     },
   },
 
@@ -1665,7 +1685,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
+      return jsonSafeRows(await db
         .select()
         .from(t)
         .where(
@@ -1676,7 +1696,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           ),
         )
         .orderBy(desc(t.startedAt))
-        .limit(limit)) as unknown[];
+        .limit(limit));
     },
   },
 
@@ -1698,12 +1718,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
+      return jsonSafeRows(await db
         .select()
         .from(t)
         .where(eq(t.workspaceId, workspaceId))
         .orderBy(desc(t.startedAt))
-        .limit(limit)) as unknown[];
+        .limit(limit));
     },
   },
 
