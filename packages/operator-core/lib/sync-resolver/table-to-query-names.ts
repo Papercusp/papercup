@@ -100,6 +100,17 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // write lands on harness_plans under the author member's slug + fires the change
     // notify, so a peer member's new/edited plan live-refreshes the hive rollup.
     'plans.byHive',
+    // plans.schedule + plans.scheduledOccurrences (data-sync-push-completion P-002) —
+    // the schedule lives in COLUMNS on harness_plans (schedule jsonb / schedule_active /
+    // scheduled_at / expires_at / tzid — mig 299), NOT a separate plan_schedules table.
+    // Every schedule-write path writes harness_plans: plans:set-schedule (setPlanSchedule),
+    // plans:arm-schedule / disarm-schedule (UPDATE … SET schedule_active), and the routine
+    // engine's own one-shot/expiry deactivations. Bridging here pushes the Calendar
+    // (scheduledOccurrences, window-keyed → full-bust) + Routines (schedule) panes live on
+    // ANY of those writes — including raw SQL / FEDERATED — which an explicit
+    // notifySyncInvalidate in the 3 tools alone would miss.
+    'plans.schedule',
+    'plans.scheduledOccurrences',
   ],
   'harness_shared.plan_revisions': ['plans.revisions'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the

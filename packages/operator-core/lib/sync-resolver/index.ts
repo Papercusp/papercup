@@ -51,6 +51,19 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 // attachListMeta is the one place that convention lives. See ./list-meta.
 import { attachListMeta } from './list-meta';
 
+// CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
+// P-001 / D-002): a client-sent pagination `limit` must never make the resolver throw on
+// a client/server version skew (a newer UI bundle asking for more than an older deployed
+// resolver allowed → the panel-breaking "Too big" error workItems.byHarness had). A bare
+// Zod `.max()` REJECTS; these CLAMP via `.transform()` (the framework parses argsSchema and
+// passes the transformed value to resolve — query-registry.ts:57-58 — so args.limit is
+// already bounded in the body). `clampedLimit` has a default; `clampedLimitOpt` stays
+// optional (absent → undefined, the body's own `?? N` applies).
+const clampedLimit = (cap: number, def: number) =>
+  z.number().int().positive().default(def).transform((v) => Math.min(v, cap));
+const clampedLimitOpt = (cap: number) =>
+  z.number().int().positive().transform((v) => Math.min(v, cap)).optional();
+
 // ─── Registry types ─────────────────────────────────────────────────
 
 export interface QueryEntry<TArgs = unknown> {
@@ -394,7 +407,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // expects in `data`.
   'toastLog.recent': {
     argsSchema: z.object({
-      limit: z.number().int().positive().max(500).default(50),
+      limit: clampedLimit(500, 50),
     }),
     resolve: async (args) => {
       const { listToasts } = await import('../toast-log-data');
@@ -454,7 +467,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'auditLog.operatorDecisions': {
     argsSchema: z.object({
       workspaceId: z.string(),
-      limit: z.number().int().positive().max(500).default(20),
+      limit: clampedLimit(500, 20),
     }),
     resolve: async (args) => {
       const { workspaceId, limit } = args as { workspaceId: string; limit: number };
@@ -1010,7 +1023,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
     argsSchema: z.object({
       harnessSlug: z.string(),
-      limit: z.number().int().positive().max(500).default(50),
+      limit: clampedLimit(500, 50),
       workspaceId: z.string().optional(),
     }),
     resolve: async (args) => {
@@ -1610,7 +1623,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({
       harnessSlug: z.string(),
       workspaceId: z.string(),
-      limit: z.number().int().positive().max(500).default(50),
+      limit: clampedLimit(500, 50),
     }),
     resolve: async (args) => {
       const { harnessSlug, workspaceId, limit } = args as {
@@ -1639,7 +1652,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       harnessSlug: z.string(),
       workspaceId: z.string(),
       kind: z.string(),
-      limit: z.number().int().positive().max(500).default(50),
+      limit: clampedLimit(500, 50),
     }),
     resolve: async (args) => {
       const { harnessSlug, workspaceId, kind, limit } = args as {
@@ -1893,7 +1906,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z
       .object({
         state: z.enum(['open', 'resolved', 'closed']).optional(),
-        limit: z.number().int().positive().max(500).optional(),
+        limit: clampedLimitOpt(500),
         // (per-hive-learning-loops P-040) the per-Hive lens: a Hive HOME slug
         // narrows the feed to that Hive's member-harness scopes (D-008). Omit ⇒
         // the whole workspace (papercusp + every harness).
@@ -2068,7 +2081,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z
       .object({
         state: z.enum(['open', 'resolved', 'closed']).optional(),
-        limit: z.number().int().positive().max(500).optional(),
+        limit: clampedLimitOpt(500),
       })
       .optional(),
     resolve: async (args) => {
@@ -2483,7 +2496,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       category: z.string().min(1).max(60).optional(),
       disposition: z.enum(['act', 'defer', 'reject', 'route-to-research', 'no-op']).optional(),
       sinceHours: z.number().positive().max(24 * 90).optional(),
-      limit: z.number().int().positive().max(500).default(50),
+      limit: clampedLimit(500, 50),
     }),
     resolve: async (args) => {
       const a = args as {
@@ -2793,7 +2806,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'learning.experiments': {
     argsSchema: z.object({
       testId: z.string().optional(),
-      limit: z.number().int().positive().max(200).optional(),
+      limit: clampedLimitOpt(200),
     }),
     resolve: async (args) => {
       const a = (args ?? {}) as { testId?: string; limit?: number };
@@ -3033,7 +3046,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // idle-in-transaction wedge detection).
   'dev.pgActiveQueries': {
     argsSchema: z.object({
-      limit: z.number().int().positive().max(200).default(50),
+      limit: clampedLimit(200, 50),
     }),
     resolve: async (args) => {
       const { limit } = args as { limit: number };
@@ -3049,7 +3062,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'dev.telemetry': {
     argsSchema: z.object({
       hours: z.number().int().positive().max(336).default(24),
-      limit: z.number().int().positive().max(500).default(100),
+      limit: clampedLimit(500, 100),
     }),
     resolve: async (args) => {
       const { hours, limit } = args as { hours: number; limit: number };
@@ -3167,7 +3180,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       q: z.string().optional(),
       since_ts: z.string().optional(),
       before_ts: z.string().optional(),
-      limit: z.number().int().positive().max(500).optional(),
+      limit: clampedLimitOpt(500),
     }),
     resolve: async (args) => {
       const a = (args ?? {}) as {
@@ -3240,7 +3253,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'sidebar.conversations': {
     argsSchema: z.object({
       state: z.string().optional(),
-      limit: z.number().int().positive().max(200).default(50),
+      limit: clampedLimit(200, 50),
     }),
     resolve: async (args) => {
       const { state, limit } = args as { state?: string; limit: number };
@@ -3386,7 +3399,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'network.hive.beacons': {
     argsSchema: z.object({
       hiveKey: z.string(),
-      limit: z.number().int().positive().max(500).default(50),
+      limit: clampedLimit(500, 50),
     }),
     resolve: async (args) => {
       const { hiveKey, limit } = args as { hiveKey: string; limit: number };
@@ -3405,7 +3418,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'network.hive.asks': {
     argsSchema: z.object({
       peerPubkey: z.string().optional(),
-      limit: z.number().int().positive().max(500).default(100),
+      limit: clampedLimit(500, 100),
       workspace: z.string().optional(),
     }),
     resolve: async (args) => {
@@ -3622,7 +3635,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   codeRecipes: {
     argsSchema: z
       .object({
-        limit: z.number().int().positive().max(2000).default(1000),
+        limit: clampedLimit(2000, 1000),
       })
       .optional(),
     resolve: async (args) => {
