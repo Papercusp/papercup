@@ -31,7 +31,7 @@ const bootAll = vi.fn(async () => ({
   results: [],
 }));
 vi.mock('./boot-all', () => ({
-  bootAllHarnessesForActiveWorkspace: (...a: unknown[]) => bootAll(...a),
+  bootAllHarnessesForActiveWorkspace: () => bootAll(),
   enableSubstrateEvictionTracking: () => enableTracking(),
   gatherBootedHarnessFacts: () => [],
   evictBootedHarnessEngine: async () => false,
@@ -39,7 +39,7 @@ vi.mock('./boot-all', () => ({
 
 const startReaper = vi.fn(() => ({ stop: vi.fn(), tickOnce: vi.fn(async () => []) }));
 vi.mock('./substrate-eviction-reaper', () => ({
-  startSubstrateEvictionReaper: (...a: unknown[]) => startReaper(...a),
+  startSubstrateEvictionReaper: () => startReaper(),
 }));
 
 import {

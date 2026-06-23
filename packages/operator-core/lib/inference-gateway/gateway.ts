@@ -1794,9 +1794,49 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
             return;
           }
-          // No egress proxy → an Anthropic/network-side stall, not a dead proxy: preserve the existing
-          // fast-502 (the bee's CLI retries those; the next request lands on the failover-rotated
-          // active()). The upstream stall-guard already aborted the hang; do not penalize a healthy account.
+          // No egress proxy → an Anthropic/network-side stall, not a dead proxy. We do NOT penalize the
+          // (healthy) account or open a circuit — but we DO run the SU-3650 STALL ABSORPTION here too:
+          // REGRESSION FIX 2026-06-23 — the absorb block had been nested inside the proxy-ONLY branch above
+          // (the 2026-06-20 dead-proxy scoping swept it in), so a no-proxy stall (the `local`-fallback
+          // credential AND the SU-3650 single-account/no-proxy tests) fast-502'd WITHOUT absorbing — surfacing
+          // a hard error a bee/CLI can WEDGE on instead of holding the caller through a transient stall. The
+          // absorb is general stall-recovery, not proxy-specific; the circuit-breaker above stays proxy-scoped.
+          // (NB: duplicated from the proxy branch for a contained, low-risk fix; factoring into one helper is a
+          // tracked follow-up.) Release the slot (the wait holds NONE → cannot wedge), re-acquire on the pool's
+          // best account, retry; only if the absorb budget is spent do we keep the existing fast-502.
+          if (ABSORB_STALLS_ON && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
+            release();
+            release = () => {};
+            let cand = active;
+            let candGov = gov;
+            try {
+              cand = pool.active();
+              candGov = governorForAccount(model, cand.accountId);
+            } catch {
+              /* pool empty / all-exhausted → keep the current account; the re-acquire still waits for recovery */
+            }
+            const reacq = await candGov.acquire(est, {
+              maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()),
+              allowSoftPaused: serveSoft,
+              signal: reqAbort.signal,
+            });
+            if (reacq) {
+              release = reacq;
+              active = cand;
+              gov = candGov;
+              retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry
+              attempt = 0;
+              transientWaitedMs = 0;
+              log(
+                'warn',
+                `inference-gateway: stall-absorb (no egress proxy) on '${active.accountId}' — holding the caller through the upstream stall instead of a 502 (${Math.round((absorbDeadlineAt - Date.now()) / 1000)}s budget left)`,
+              );
+              continue;
+            }
+            // re-acquire timed out within the absorb budget → fall through to the existing fast-502.
+          }
+          // Absorb spent/unavailable → the existing fast-502 (the bee's CLI retries; the next request lands on
+          // the failover-rotated active()). The upstream stall-guard already aborted the hang; healthy account NOT penalized.
           sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream ${stalled ? 'stall timeout' : 'error'}: ${(e as Error).message}` }, gateway: true });
           return;
         }
