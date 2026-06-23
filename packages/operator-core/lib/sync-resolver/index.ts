@@ -1205,17 +1205,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       projectId: z.string(),
       // Generous bound — a local desktop app loads all of a project's revisions
       // in practice; the cap only exists so a runaway project can't blow the
-      // live read. When it IS capped the carried total keeps the count honest.
-      limit: z.number().int().positive().max(500).default(500),
+      // live read. CLAMP (in the body), don't `.max()`-REJECT: a hard max turns a
+      // client/server version skew into a panel-breaking error. When it IS capped
+      // the carried total keeps the count honest.
+      limit: z.number().int().positive().default(500),
     }),
     resolve: async (args) => {
       const { projectId, limit } = args as { projectId: string; limit: number };
+      const lim = Math.min(limit, 500); // clamp server-side; never reject
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { count, desc, eq } = await import('drizzle-orm');
       const t = generated.projectSpecRevisionsInHarnessShared;
       const { db } = getOrgPg();
       const [rows, totalRows] = await Promise.all([
-        db.select().from(t).where(eq(t.projectId, projectId)).orderBy(desc(t.ts)).limit(limit),
+        db.select().from(t).where(eq(t.projectId, projectId)).orderBy(desc(t.ts)).limit(lim),
         db.select({ n: count() }).from(t).where(eq(t.projectId, projectId)),
       ]);
       // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
@@ -1277,7 +1280,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       harnessSlug: z.string(),
       kind: z.string().optional(),
       state: z.string().optional(),
-      limit: z.number().int().positive().max(2000).default(2000),
+      // CLAMP, don't REJECT. A hard `.max()` makes the schema error on a client
+      // that requests more than the cap — turning a client/server version skew
+      // (a newer client asking for a higher limit than an older deployed resolver
+      // allowed) into a panel-breaking "Too big" error instead of graceful
+      // degradation. The resolver body already Math.min-clamps to
+      // WORK_ITEMS_MAX_LIMIT, so an over-large request is bounded server-side.
+      limit: z.number().int().positive().default(2000),
     }),
     resolve: async (args) => {
       const { harnessSlug, kind, state, limit } = args as {
