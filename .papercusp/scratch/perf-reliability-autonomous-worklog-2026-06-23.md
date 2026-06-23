@@ -46,8 +46,17 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 
 | 6 | `harness-seed.ts` | 5 ✓ | seedThrowawayHarness: validation BEFORE side effects (frozen-role/unknown-role override→throw, no deps called); effect order register→writeFile(s)→setOverride(s SORTED)→fileFeature; arg passthrough (basePath=repoOrClonePath); empty files/overrides skip; returns {harnessSlug}. Uses real AGENT_ROLES/FROZEN_OVERLAY_ROLES. |
 | 7 | `dbos/tick-load-shed.ts` | 11 ✓ | background-tick load-shed policy (P5-1/P5-3): shedUnderLoopPressure (sheds+warns iff isLoopSaturated); shedUnderPowerSave DETERMINISTIC counter (AC/mult≤0 never sheds; mult 3→[t,t,f]×; mult 2→[t,f]×; per-tickName INDEPENDENT counters); shouldShedHeavyTick OR + the `\|\|` SHORT-CIRCUIT (loop-pressure shed must NOT advance the power-save counter, else cadence desyncs under load). Mocks `../event-loop-lag-monitor` + `../resource-profile` via vi.hoisted; unique tickName per test vs the module-global counter Map. |
+| 8 | `agent-tools/_compound-dispatch.ts` | 12 ✓ | compound-tool in-process re-dispatch (B-CX-1B): inProcessCall GATE INTEGRITY (routes each sub-call through dispatchProjectedTool with the caller's exact ctx + host PROJECTED_DEPS — a compound can only compose tools the agent could call directly); FAILURE SURFACING (unregistered→throw, !ok→throw with code/message + `?? 'error'`/`?? 'unknown error'` fallbacks); UNWRAP precedence (structuredContent incl. null wins → first text item JSON-parsed → raw text on parse-fail → whole result → undefined). Mocks `@papercusp/agent-mcp` + `../projected-tool-deps` via vi.hoisted. |
 
-**Loop tally: 63 tests across 7 modules.**
+**Loop tally: 75 tests across 8 modules.**
+
+⚠ Verify-gate caught two non-targets this run (kept the loop honest): `hive-eval/speed-metrics.ts`
+(computeSpeedMetrics ALREADY covered by `speed-efficiency-metrics.test.ts`) and the PG-backed
+policy trio (`migrate-policy`/`hive-control-policy`/`scout/tick-ledger` — read/write wiring, low value).
+Good remaining leads in this vein (untested, sync-fn + low PG coupling, branchy): `ui/built-in-intents.ts`
+(registerBuiltInIntents — intent matchers, check the registered fns are pure), `endpoint-route/routes/plugins/updates.ts`,
+`rationale/service.ts`, `voice-node/screen-track/ivf.ts` (pure IVF binary writer — deterministic bytes),
+`agent-tools/_bound-output.ts` is DONE(sibling). Survey cmd: grep -rlE '^export function [a-z]' --include=*.ts (filter: no test, pgImports≤1, branches≥4, lines≤160).
 
 ## LOOP REOPENED 2026-06-23 (after "continue where you left off")
 The earlier "EXHAUSTED" call was scoped too narrowly — to the **`*Deps`-injectable-interface** subset. A
