@@ -103,4 +103,27 @@ describe('GET /api/discovery/hives route (P-007)', () => {
     expect(status).toBe(200);
     expect(body).toMatchObject({ count: 0, rows: [] });
   });
+
+  // WI-569 (su-34db4): the route's stated invariant "never leaks a private hive" was
+  // asserted in the doc comment but UNTESTED. The `visibility !== 'private'` filter in
+  // hives.ts is the defense-in-depth layer (the announce layer also withdraws private
+  // hives via hive-set-listing.ts P-015) — pin it so a refactor can't silently leak one.
+  it('NEVER leaks a private hive — the listing filters visibility:private even if one was ingested', async () => {
+    const dir = configureHiveDirectoryForTest(fakeDeps());
+    await dir.ingestAnnounce(await announce({ hive_id: 'pub', visibility: 'public' }));
+    await dir.ingestAnnounce(await announce({ hive_id: 'secret', visibility: 'private' }));
+    const { status, body } = await call('http://127.0.0.1/api/discovery/hives');
+    expect(status).toBe(200);
+    const ids = (body.rows as Array<{ hiveId: string }>).map((r) => r.hiveId);
+    expect(ids).toContain('pub');
+    expect(ids).not.toContain('secret');
+  });
+
+  it('maps an invite-visibility hive to visibility:"invite" (joinable-by-link, still listed)', async () => {
+    const dir = configureHiveDirectoryForTest(fakeDeps());
+    await dir.ingestAnnounce(await announce({ hive_id: 'inv', visibility: 'invite' }));
+    const { body } = await call('http://127.0.0.1/api/discovery/hives');
+    const row = (body.rows as Array<{ hiveId: string; visibility: string }>).find((r) => r.hiveId === 'inv');
+    expect(row?.visibility).toBe('invite');
+  });
 });
