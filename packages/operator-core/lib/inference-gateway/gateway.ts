@@ -1317,6 +1317,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // the bee's CLI retries those, and the next request lands on the failover-rotated active().
       let attempt = 0;
       let transientWaitedMs = 0; // total time spent WAITING out short transient throttles (budget #2)
+      // Did this request ROTATE to a different account (⇒ the pool has a serviceable ALTERNATIVE)? Gates the
+      // stall-absorb (#2): a lone permanently-dead proxy (no alternative) must shed FAST; only a multi-account
+      // stall storm — alternatives that flap/recover via the half-open probe — is worth holding the caller for.
+      let everRotated = false;
       // Wedge-prevention ladder: the wall-clock instant past which this request STOPS retrying, sheds a
       // retryable 429, and frees its admission slot — strictly before the self-heal valve (75s) / watchdog
       // (120s) would forcibly reclaim it. Computed from the slot-acquire moment (this is the same request
@@ -1460,6 +1464,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               const next = pool.onExhausted(active.accountId, resetAt);
               if (next && next.accountId !== active.accountId) {
                 failovers++;
+                everRotated = true;
                 active = next;
                 gov = governorForAccount(model, active.accountId);
                 attempt++;
@@ -1474,7 +1479,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // account (gov.acquire waits for a circuit-OPEN account's transport-pause to lift via the half-open
             // probe), and retry — so the caller WAITS through the storm and succeeds instead of erroring. Kill-
             // switch PAPERCUSP_GATEWAY_ABSORB_STALLS=0.
-            if (ABSORB_STALLS_ON && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
+            if (everRotated && ABSORB_STALLS_ON && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
               release();
               release = () => {};
               let cand = active;
@@ -1682,6 +1687,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
               if (next && next.accountId !== active.accountId) {
                 failovers++;
+                everRotated = true;
                 active = next;
                 gov = governorForAccount(model, active.accountId);
                 attempt++;

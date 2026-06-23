@@ -338,20 +338,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes. Pending flip
   // surfaced in the plan's ## Now + the lane completion report.
   FLAGS.LOOPS,
-  // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): the LLM-facing semantic-delta
-  // opt-in. INCOMPLETE on the path that matters — the silent-wrong-merge behaviour is
-  // unverified on a LIVE model (the Lane-C scenarios su-S23/S24/S25 must run green in the
-  // matrix, and the delta safety gate must clear). OFF ⇒ tools serve only the safe Lane-B
-  // full | not_modified responses, never a semantic delta. Owner flips ON once the Lane-C
-  // gate is green; the delta-gate (apps/operator/lib/release/delta-gate.ts) blocks the deploy
-  // if the flag is flipped on before the scenarios are proven. Pending flip surfaced in the
-  // plan's ## Now + the lane completion report.
-  FLAGS.TOOL_DELTA_PROTOCOL,
-  // agent-tool-delta-protocol-2026-06-22 P-009 (Lane D): the SSE state-snapshot DATA delta
-  // cutover. COMPLETE + round-trip-proven (state-delta), but a reversible cutover that wants an
-  // attended desktop verify (cards render via deltas) before going live; OFF ⇒ full snapshots
-  // as today. Owner flips at cutover. Pending flip surfaced in the plan's ## Now + the report.
-  FLAGS.STATE_SNAPSHOT_DELTAS,
+  // (TOOL_DELTA_PROTOCOL + STATE_SNAPSHOT_DELTAS graduated to default-ON 2026-06-22 — owner-directed
+  // flip. TOOL_DELTA is INERT until a delta-aware client exists (WI-514 — nothing sends _meta.delta);
+  // the delta-gate stays warn-only/un-armed so it doesn't block deploys. STATE_SNAPSHOT's live client
+  // is the desktop's use-state-snapshots. Both reversible — removed from the dark allowlist per the rule.)
 ]);
 
 /**
@@ -393,7 +383,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.WORKITEM_CLAIM_LEASE, 'incomplete'],
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   [FLAGS.LOOPS, 'incomplete'],
-  [FLAGS.TOOL_DELTA_PROTOCOL, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.WATCHDOG_AUTO_CLOSE, 'owner-authority'],
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, 'owner-authority'],
@@ -425,7 +414,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],
   [FLAGS.UI_WORKSPACE_GUARD, 'cutover'],
   [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
-  [FLAGS.STATE_SNAPSHOT_DELTAS, 'cutover'],
 ]);
 
 /**

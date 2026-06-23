@@ -1509,16 +1509,16 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // tested (13 module tests + 24 placement tests green; flag-OFF + gateway-unreachable byte-identical, fail-
   // safe, minHeadroom floor lets high-priority work flow). Flipped ON per owner directive 2026-06-22.
   [FLAGS.QUEEN_CAPACITY_DISPATCH]: true,
-  // DEFAULT OFF (agent-tool-delta-protocol-2026-06-22 P-016, D-007/D-008): the LLM-facing
-  // semantic-delta opt-in. The merge is unsafe until PROVEN on a live model — OFF until
-  // the Lane-C scenarios (su-S23/S24/S25) are recorded-green AND the delta safety gate
-  // clears. OFF ⇒ Lane-B behaviour only (full | not_modified). KNOWN_DARK_FLAGS.
-  [FLAGS.TOOL_DELTA_PROTOCOL]: false,
-  // DEFAULT OFF (agent-tool-delta-protocol P-009, Lane D): the SSE state-snapshot delta
-  // cutover. Complete + round-trip-proven (state-delta tests); OFF ⇒ /api/operator/state-snapshot
-  // serves full snapshots exactly as before. A reversible kill-switch the owner flips after an
-  // attended desktop verify (cards still render via deltas). KNOWN_DARK_FLAGS (case 'cutover').
-  [FLAGS.STATE_SNAPSHOT_DELTAS]: false,
+  // DEFAULT ON (agent-tool-delta-protocol-2026-06-22, owner-directed flip 2026-06-22): the
+  // LLM-facing semantic-delta opt-in. INERT until a delta-aware CLIENT exists (WI-514 — nothing
+  // sends _meta.delta yet), so ON enables the server capability ahead of the client; the
+  // delta-gate stays warn-only/un-armed so it never blocks deploys. Reversible (flip OFF).
+  [FLAGS.TOOL_DELTA_PROTOCOL]: true,
+  // DEFAULT ON (agent-tool-delta-protocol P-009, owner-directed flip 2026-06-22): the SSE
+  // state-snapshot DATA-delta path. Round-trip-proven (state-delta + reducer + server-policy
+  // tests); the desktop's use-state-snapshots is the LIVE client (always sends ?delta=1, applies
+  // deltas with a checksum/keep-stale fallback). Reversible kill-switch — OFF reverts to full snapshots.
+  [FLAGS.STATE_SNAPSHOT_DELTAS]: true,
   // DEFAULT ON (queen-bee-spawn-reclaim-relaunch-2026-06-22, EI-85): the boot reconcile
   // re-launches a reclaimed queen/bee whose durable work-item is non-terminal so the
   // work survives a host restart. Bounded (non-terminal work only, ceiling-gated re-fire)

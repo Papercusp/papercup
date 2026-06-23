@@ -191,6 +191,53 @@ test('EXTENDED ABSORB — also holds the caller through a 529 SERVER-OVERLOAD (n
   assert.ok(calls >= 3, `it backed off + re-acquired through the 529s until the 200 (calls=${calls})`);
 });
 
+test('STALL ABSORB (#2, su-3650b) — a MULTI-account transport-stall storm is held + succeeds instead of a 503 (2026-06-23)', async () => {
+  let calls = 0;
+  // Both proxy accounts transport-FAIL (stall/dead-proxy) the first few calls — the Anthropic-wide storm — then
+  // recover (200). The request rotates A→B (everRotated) so the stall-absorb is eligible; it releases the slot +
+  // re-acquires (waiting out the short transport pause) + retries instead of sheding the retryable 503.
+  const fetchImpl = (async () => {
+    calls++;
+    if (calls <= 3) throw new Error('socket hang up'); // transport failure
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A'), acct('B')]), // 2 proxy accounts → ROTATES → stall-absorb eligible
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 50,
+    internalRetryDeadlineMs: 50,
+    requestAbsorbMs: 8000, // absorb on
+  });
+  port = await gw.listen(0);
+  const res = await post();
+  assert.equal(res.status, 200, 'stall-absorb held the caller through the transport storm + returned the 200, not a 503');
+  assert.ok(calls >= 4, `it re-acquired + retried through the stalls until recovery (calls=${calls})`);
+});
+
+test('STALL ABSORB — a LONE dead proxy (no rotation alternative) still sheds FAST (no 60s hold) — the everRotated guard', async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls++;
+    throw new Error('socket hang up'); // permanently dead — never recovers
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('DEAD')]), // single account → never rotates → everRotated false → no stall-absorb
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 50,
+    internalRetryDeadlineMs: 50,
+    requestAbsorbMs: 8000, // absorb ON — but the guard must keep it from holding through a dead proxy
+  });
+  port = await gw.listen(0);
+  const t0 = Date.now();
+  const res = await post();
+  assert.equal(res.status, 503, 'a lone dead proxy sheds a retryable 503 fast, NOT held for the absorb budget');
+  assert.ok(Date.now() - t0 < 4000, `shed fast (no multi-second absorb hold): ${Date.now() - t0}ms`);
+});
+
 test('GET /admin/route?owner — reports the account that served an identified owner\'s most-recent turn (routed-account visibility, 2026-06-22)', async () => {
   gw = createInferenceGateway({
     pool: createFailoverPool([acct('OK')]),
