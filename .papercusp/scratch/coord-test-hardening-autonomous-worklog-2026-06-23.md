@@ -28,8 +28,12 @@
 | 2 | `topics-core.ts` | 10 ✓ | ensureBuiltinTopics idempotent; createTopicCore notify (creator-excluded, mention dropped, re-create/new_topic no-broadcast); mergeTopicsCore re-point to canonical head + delivery_mode preserved |
 | 3 | `plan-events.ts` | 9 ✓ | emitPlanEvent envelope (from/system, to=['*'], before/after/detail !==undefined so null kept); emitPlanEventForCaller best-effort swallow (identity-throw→system, append-throw→no-throw); readPlanEvents filesBack passthrough + filterPlanEvents (drop non-plan_event, planSlugs filter, ts-asc) |
 | 4 | `card-link.ts` | 7 ✓ | unblockLinkedCard: unlinked/non-string correlationId → no-op (resolver not called); submit picks:[choice]; expectedWorkspaceId conditional; res.ok passthrough; throw swallowed |
+| 5 | `log.ts` (coordLog seam) | 7 ✓ | configureCoordLog/resetCoordLog swap; coordWorkspaceId (impl.workspaceId ?? DEFAULT); coordHasPgFastPath (typeof getSql); coordSql returns backend handle; coordLog delegates every method; reset restores PG fast-path |
 
-**Tally: 41 tests across 4 modules (feed, topics-core, plan-events, card-link).**
+**Tally: 48 tests across 5 modules (feed, topics-core, plan-events, card-link, log).**
+
+## Near exhaustion
+Last genuine pure candidate: `audience-host.ts` (audienceMode() env-pure + listActivePresence filter via mock ./presence) — small. After it: everything left is covered (__tests__) or PG-only (messages.ts/topics.ts/subscription-store/gc/audience-host-resolvers) or a re-export shim (envelope.ts) → EXHAUSTION → final report.
 
 ## Backlog status (thinning — approaching exhaustion)
 Genuinely-uncovered remaining: `audience-host.ts` (mostly PG wiring; only `audienceMode()` env-pure + `listActivePresence` filter testable), `log.ts` (small pure `coordScopeWorkspace`/`coordWorkspaceId`), `agent-question-gate.ts` (207, check purity), `agent-question-decider-gate.ts` (74). PG-only (SKIP): `message-log-gc.ts`, `escalation-log-gc.ts`, `notify-gc.ts` (getOrgPg().sql, no seam). Covered under `__tests__/`: watermarks, promote, conversations-core/store.

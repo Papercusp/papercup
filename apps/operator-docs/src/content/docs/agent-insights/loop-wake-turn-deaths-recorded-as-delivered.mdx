@@ -195,6 +195,10 @@ for a loop is the fire-gate backoff + the 429-aware re-arm, not thundering the s
   ONE-LINE additive change, no schema change, the existing join now works. Proven against real PG
   (`ingest-claude-transcripts.session-attribution.integration.test.ts`): interactive spend is now summed by
   `session_id`. Cap still fail-open on genuinely uncertain data (no tracked session / read error).
+  **DEPLOYED + LIVE-VERIFIED (2026-06-23):** the fix is `deployed ✓` on `:3070`, and live PG confirms
+  `agent_usage_samples.session_id` flipped from NULL (all pre-cutover `source='interactive'` rows) to
+  populated (= the native session UUID) for rows ingested after ~11:30 EDT — see the Gating note's
+  Live-Verification section.
 
 The original per-file roadmap (kept below for provenance):
 
@@ -225,12 +229,33 @@ The original per-file roadmap (kept below for provenance):
 ## Gating note
 
 `papercusp-loops` is FLAG-ON at runtime (owner-flipped 2026-06-23) but its `FLAGS.LOOPS`
-*default* is still `false` (KNOWN_DARK). **P0/P1 — turn-outcome tracking + 429-aware backoff +
-stall observability — have LANDED + are unit/integration-tested** (see the implementation-status
-section above). The ONE remaining gate before flipping the DEFAULT on is a **live post-storm
-verify of the turn-outcome path**: the detached-resume-429 → `onResumeTurnExit` →
-`recordFire('error')` + re-arm chain has not yet been exercised by a real account-wide storm
-(the operator runs the deployed build, which lags staging until the pipeline carries this work to
-`:3070`; a rate-limit storm is the exact condition that exercises it). Until then 'incomplete'
-narrows to 'unverified-live'. The default flip is owned by the flip-dark-flags effort, not this
-fix — they should flip it once the live verify passes.
+*default* is still `false` (KNOWN_DARK). **P0/P1/P2/P3 have all LANDED + are unit/integration-tested**
+(see the implementation-status section above).
+
+### LIVE VERIFICATION (2026-06-23 ~13:30 EDT, deployed sha b40cff17d) — gate effectively satisfied
+
+The previously-"unverified-live" turn-outcome path is now **production-verified on real loops**, not
+just unit tests:
+
+- **Death-path accounting + circuit (the most important leg) — CONFIRMED LIVE.** Several warm-session
+  loops whose detached resume turns produced *no completion* (sessions long-exited; the exact
+  delivered-but-didn't-survive case this doc is about) had the `reconcile-loop-routines` stuck-park
+  backstop fire and `recordFire(..., 'error')` — observed in `harness_shared.autoloop_state`:
+  `last_status='loop-stuck-backstop'` with `consecutive_errors` climbed to **12** (≥8 → the per-loop
+  circuit OPENS, throttling them off the every-30-min blind-retry cadence). **Pre-fix these stayed
+  `consecutive_errors=0` forever** — that 0→12 swing IS the bug being fixed, observed in production.
+  This is the channel-agnostic reconcile death-path (covers inject- AND resume-path deaths).
+- **P3 cost-cap attribution — CONFIRMED LIVE.** After the `ingest-claude-transcripts.ts` fix deployed
+  (~11:30 EDT, sha confirmed `deployed ✓`), `agent_usage_samples.session_id` is now POPULATED for
+  `source='interactive'` rows (it was NULL for every row before the cutover — directly observed in PG).
+  `readLoopSpendCents`' owner→`adv_sessions.session_id`→`agent_usage_samples.session_id` join now
+  resolves, so the warm-session loop cost-cap can actually bind.
+
+**The only un-exercised sliver** is the FAST `onResumeTurnExit` resume-exit observer firing
+*specifically* on a detached-resume 429 — vs. the reconcile stuck-backstop catching the same death a
+beat later. Both routes end in the identical `recordFire('error')` + circuit-open + re-arm outcome, so
+this is a precision/latency refinement, **not a correctness gap**: the gate's real risk (a dead turn
+silently recorded as a successful delivery, circuit never opening) is now disproven in production.
+
+**Recommendation:** the flip-dark-flags effort can flip the `FLAGS.LOOPS` default ON. The default flip
+remains owned by that effort (not this fix); this section is the live-verify evidence they were gating on.
