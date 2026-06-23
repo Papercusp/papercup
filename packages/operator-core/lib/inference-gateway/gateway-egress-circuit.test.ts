@@ -238,6 +238,48 @@ test('STALL ABSORB — a LONE dead proxy (no rotation alternative) still sheds F
   assert.ok(Date.now() - t0 < 4000, `shed fast (no multi-second absorb hold): ${Date.now() - t0}ms`);
 });
 
+test('INTERACTIVE fail-fast — a human-labeled caller caps its absorb + sheds fast, while an autonomous role holds the full budget (no-pin-hang follow-up #2, 2026-06-23)', async () => {
+  // A never-recovering 529 storm. An AUTONOMOUS caller (x-papercusp-priority: queen) absorbs — releasing the
+  // slot + re-acquiring through OVERLOAD_529_BACKOFF (1s) each iteration — for the full requestAbsorbMs budget
+  // before shedding. A HUMAN-facing caller (x-papercusp-priority: interactive) must shed FAST: its absorb is
+  // capped at interactiveAbsorbMs, so a person at a prompt gets a quick retryable error instead of a multi-
+  // second hang. We count upstream attempts: the capped human makes strictly fewer than the full-budget hold.
+  const run = async (priority: string, closeAfter: boolean) => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return new Response(
+        JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'overloaded' } }),
+        { status: 529, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      pool: createFailoverPool([acct('A')]), // single account → the 529 path retries in place
+      fetchImpl,
+      governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+      selfHeal: { enabled: false },
+      maxQueueWaitMs: 50,
+      internalRetryDeadlineMs: 0, // hit the slot-hold deadline immediately → each 529 reaches the absorb
+      requestAbsorbMs: 3500, // autonomous hold budget (> several OVERLOAD_529_BACKOFF of 1s)
+      interactiveAbsorbMs: 20, // human cap: shed almost immediately
+    });
+    port = await gw.listen(0);
+    const res = await post({ 'x-papercusp-priority': priority });
+    const status = res.status;
+    await res.text();
+    if (closeAfter) await gw.close();
+    return { calls, status };
+  };
+
+  const human = await run('interactive', true); // capped → sheds after ~1 attempt
+  const auto = await run('queen', false); // full budget → absorbs through several attempts (afterEach closes it)
+  assert.ok([429, 502, 503].includes(human.status), `human interactive sheds a RETRYABLE error (got ${human.status})`);
+  assert.ok(
+    auto.calls > human.calls,
+    `the capped human shed fast (${human.calls} attempt(s)) while the autonomous 'queen' absorbed through more (${auto.calls})`,
+  );
+});
+
 test('GET /admin/route?owner — reports the account that served an identified owner\'s most-recent turn (routed-account visibility, 2026-06-22)', async () => {
   gw = createInferenceGateway({
     pool: createFailoverPool([acct('OK')]),

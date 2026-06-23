@@ -122,6 +122,15 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
             itemId: rec.itemId ?? null,
             status: 'running',
           });
+          // EI-85/P-033 false-reclaim fix: stamp the FIRING process's pid (THIS long-lived
+          // operator host, which holds the loopback /invoke connection for the agent's whole run)
+          // so the reclaim sweep can /proc-liveness-check this row (kind='launch' for durable-spawn
+          // rows — see spawn-reclaim.ts). Without a pid the sweep CANNOT verify liveness and
+          // UNCONDITIONALLY reclaims the row as "host presumed dead" the moment its heartbeat goes
+          // stale under load — false-reclaiming a still-alive durable launch (the Queen + the
+          // EI-403-A implement workers were the observed victims, 2026-06-23 D-011).
+          const { recordSpawnPid } = await import('../fleet/spawn-reclaim');
+          await recordSpawnPid(getOrgPg().sql, spawnId, process.pid);
         } catch (e) {
           console.warn(
             `[durable-spawn] record-spawn failed (${input.label ?? ''}): ${e instanceof Error ? e.message : String(e)}`,
