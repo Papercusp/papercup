@@ -72,6 +72,12 @@ export interface GatewaySample {
   totalRequests: number;
   shed429: number;
   shedAllThrottled: number;
+  /** Cumulative upstream TRANSPORT failures (stalls / connect-fails / token-refresh hangs). Its delta
+   *  surfaces a transport-STALL storm (fault #5) — the dominant gateway failure under an Anthropic-wide
+   *  hold-storm, which NEVER increments upstream429 (the gateway absorbs/rotates instead of 429-shedding)
+   *  and so is otherwise invisible to the throttle detector. Optional so a partial/legacy prior (one
+   *  built before this field existed) is simply skipped by trigger (d) rather than mis-compared. */
+  upstreamErrors?: number;
   at: number; // epoch ms the sample was taken
 }
 
@@ -93,6 +99,15 @@ export interface GatewayWedgeVerdict {
 /** A prior older than this can no longer CONFIRM a freeze (a long-quiet gateway legitimately has a
  *  flat `totalRequests`; only a RECENT flat-while-saturated reading is the wedge). */
 export const WEDGE_FREEZE_PRIOR_MAX_AGE_MS = 5 * 60_000;
+
+/** Min increase in cumulative upstream TRANSPORT failures between two samples to flag a transport-STALL
+ *  STORM (fault #5). Higher than the shed triggers' delta-of-1 because a lone proxy blip is normal churn —
+ *  only a CLUSTER is the storm. The stall storm is the DOMINANT gateway failure under an Anthropic-wide
+ *  hold-storm, yet it never increments `upstream429` (the gateway absorbs/rotates rather than 429-shedding)
+ *  and doesn't shrink AIMD (429-driven) — so without a dedicated trigger it slips past (a)-(c) and the
+ *  owner's health view reads "429-calm" while every account TTFB-stalls (the
+ *  rate-limit-is-account-routing-not-capacity insight, fault #5). Env-tunable. */
+export const STALL_STORM_DELTA = Number(process.env.PAPERCUSP_GATEWAY_STALL_STORM_DELTA) || 5;
 
 function n(v: number | undefined, dflt = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : dflt;
@@ -131,6 +146,7 @@ export function sampleGateway(metrics: GatewayMetrics, now: number): GatewaySamp
     totalRequests: metrics.totalRequests,
     shed429: metrics.shed429,
     shedAllThrottled: metrics.shedAllThrottled,
+    upstreamErrors: metrics.upstreamErrors,
     at: now,
   };
 }
@@ -188,6 +204,18 @@ export function detectGatewayWedge(
   if (prior && metrics.shed429 > prior.shed429) {
     sustainedThrottle = true;
     reasons.push(`load-shed ${metrics.shed429 - prior.shed429} request(s) — admission backlog full`);
+  }
+  // (d) Transport-STALL storm (fault #5): cumulative upstream TRANSPORT failures climbing by a CLUSTER
+  //     vs the prior. This is the DOMINANT gateway failure under an Anthropic-wide hold-storm, yet it
+  //     NEVER increments upstream429 (the gateway absorbs/rotates, not 429-sheds) and doesn't shrink AIMD
+  //     (429-driven) — so without this clause it slips past (a)-(c) and the health view reads "429-calm"
+  //     while every account TTFB-stalls. Surfacing it makes the real (capacity) fix — add account
+  //     headroom — actionable instead of buried in the journal (the documented fault-#5 blind spot).
+  if (prior && prior.upstreamErrors != null && metrics.upstreamErrors > prior.upstreamErrors + STALL_STORM_DELTA) {
+    sustainedThrottle = true;
+    reasons.push(
+      `transport-stall storm — ${metrics.upstreamErrors - prior.upstreamErrors} upstream stalls/transport-fails; pool throttled at the transport layer (not 429s — add account headroom)`,
+    );
   }
 
   return { saturated, wedge, sustainedThrottle, reasons };

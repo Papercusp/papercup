@@ -101,7 +101,7 @@ export async function sweepAppendHeavy(
  * (the host wrapper {@link startAppendHeavyInvalidatorHost} supplies the real ones).
  */
 export function startAppendHeavyInvalidator(deps: AppendHeavyInvalidatorDeps): () => void {
-  const tables = deps.tables ?? APPEND_HEAVY_TABLES;
+  const tables = deps.tables ?? APPEND_HEAVY_TABLES.map((s) => s.table);
   const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
   const dedupeWindowMs = deps.dedupeWindowMs ?? DEFAULT_DEDUPE_MS;
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
@@ -146,15 +146,20 @@ export function startAppendHeavyInvalidatorHost(opts?: {
   // Dedicated single connection on the BYPASSRLS admin URL (mig 016) so max(id) sees every
   // workspace's rows. max:1 — one long-lived poller connection, never per-call (perf-doc A-pattern).
   const sql = postgres(getHarnessAdminUrl(), { max: 1, idle_timeout: 0, connect_timeout: 30 });
+  // Per-table MONOTONIC change-key column (bigint) — NOT every table has a usable `id` (see
+  // APPEND_HEAVY_TABLES). Built from the hardcoded allow-list, never user input.
+  const changeKeyByTable = new Map(APPEND_HEAVY_TABLES.map((s) => [s.table, s.changeKey]));
   const stop = startAppendHeavyInvalidator({
+    tables: APPEND_HEAVY_TABLES.map((s) => s.table),
     pollMs: opts?.pollMs,
     dedupeWindowMs: opts?.dedupeWindowMs,
     isEnabled: opts?.isEnabled,
     maxId: async (table) => {
-      // table comes from the hardcoded APPEND_HEAVY_TABLES allow-list (never user input);
-      // sql(table) escapes the identifier regardless.
+      const changeKey = changeKeyByTable.get(table) ?? 'id';
+      // table + changeKey come from the hardcoded APPEND_HEAVY_TABLES allow-list (never user
+      // input); sql(...) escapes both identifiers regardless.
       const rows = await sql<{ m: string | number | null }[]>`
-        SELECT max(id) AS m FROM harness_shared.${sql(table)}`;
+        SELECT max(${sql(changeKey)}) AS m FROM harness_shared.${sql(table)}`;
       return rows[0]?.m ?? null;
     },
     emitChanged: (eventName, dedupeWindowMs) =>

@@ -132,6 +132,10 @@ const FIELD_MAP: Record<string, FieldMap> = {
   est_cost: { col: (sql) => sql`expected_cost_cents`, kind: 'scalar-num' },
   redundancy: { col: (sql) => sql`COALESCE(redundancy, 1)`, kind: 'scalar-num' },
   assignee: { col: (sql) => sql`taken_by`, kind: 'scalar-text' },
+  // `id` — the work-item id. A spec PINS a fixed set with `id in [...]` (scalar-text, so
+  // the `in` op compiles to `feature_id::text = ANY(...)`). A STATIC pin (no auto-inflow),
+  // the exception for a fixed wave; the floors (ready/lease/dedup) still apply on top.
+  id: { col: (sql) => sql`feature_id`, kind: 'scalar-text' },
   plan: { col: (sql) => sql`source_plan_slug`, kind: 'scalar-text' },
   plan_item: { col: (sql) => sql`source_plan_item_ids`, kind: 'text-array' },
   // Not first-class columns — projected out of payload jsonb (no schema change).

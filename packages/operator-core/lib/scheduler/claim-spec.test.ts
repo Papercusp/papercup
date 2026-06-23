@@ -16,8 +16,10 @@ import {
   SUPPORTED_SPEC_VERSIONS,
   ITEM_FIELDS,
   FILTERABLE_ITEM_FIELDS,
+  RANKABLE_ITEM_FIELDS,
   FILTER_OPS,
   RANK_FUNCTIONS,
+  isIdOnlySelector,
   type ClaimSpec,
 } from './claim-spec';
 
@@ -354,6 +356,57 @@ describe('claim-spec vocabulary exports', () => {
     expect(ITEM_FIELDS).toContain('cursed');
     expect(FILTERABLE_ITEM_FIELDS).not.toContain('blocked');
     expect(FILTERABLE_ITEM_FIELDS).not.toContain('cursed');
+  });
+
+  it('`id` is FILTERABLE (pin a set) but NOT rankable (ordering by id is meaningless)', () => {
+    expect(FILTERABLE_ITEM_FIELDS).toContain('id');
+    expect(RANKABLE_ITEM_FIELDS).not.toContain('id');
+  });
+
+  it('a spec can PIN a fixed set with `id in [...]`, composed with a property filter', () => {
+    const pin = validateClaimSpec({
+      specVersion: CURRENT_SPEC_VERSION,
+      specId: 'redrive-failed',
+      revision: 1,
+      view: {
+        filter: {
+          all: [
+            { field: 'id', op: 'in', value: ['F-12', 'EI-7'] },
+            { field: 'kind', op: '=', value: 'bug' },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(pin.ok).toBe(true);
+    // `id` is filterable but not a valid RANK term — ranking by id is rejected.
+    const rankById = validateClaimSpec({
+      specVersion: CURRENT_SPEC_VERSION,
+      specId: 'bad',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'id', dir: 'desc' }] },
+    });
+    expect(rankById.ok).toBe(false);
+  });
+});
+
+describe('isIdOnlySelector — the id-pin tripwire', () => {
+  const spec = (filter: unknown) => ({ view: filter === undefined ? {} : { filter } });
+  it('true when the filter selects on `id` ALONE', () => {
+    expect(isIdOnlySelector(spec({ field: 'id', op: 'in', value: ['F-1', 'F-2'] }))).toBe(true);
+    expect(isIdOnlySelector(spec({ all: [{ field: 'id', op: '=', value: 'F-1' }] }))).toBe(true);
+  });
+  it('false when any property selector is present (a real lane, even if id is also used)', () => {
+    expect(
+      isIdOnlySelector(spec({ all: [{ field: 'id', op: 'in', value: ['F-1'] }, { field: 'plan', op: '=', value: 'p' }] })),
+    ).toBe(false);
+    expect(isIdOnlySelector(spec({ field: 'plan', op: '=', value: 'p' }))).toBe(false);
+  });
+  it('false for no filter at all (the whole ready frontier — the opposite of a pin)', () => {
+    expect(isIdOnlySelector(spec(undefined))).toBe(false);
+    expect(isIdOnlySelector(null)).toBe(false);
+    expect(isIdOnlySelector(DEFAULT_CLAIM_SPEC)).toBe(false);
   });
 
   it('the schema parses the default spec directly (Zod layer agrees with the validator)', () => {

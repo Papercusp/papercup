@@ -104,8 +104,10 @@ export type FilterOp = (typeof FILTER_OPS)[number];
 export const RANK_FUNCTIONS = ['affinity', 'model_fit', 'tag_weight', 'redundancy_need'] as const;
 export type RankFunction = (typeof RANK_FUNCTIONS)[number];
 
-/** Item fields that may be used as a bare rank term (everything sortable). */
-export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS;
+/** Item fields that may be used as a bare rank term (everything sortable). `id` is
+ *  filterable (pin a set) but NOT rankable — ordering by id is meaningless, and an
+ *  id-pin is about WHICH items, never their order (use priority/age for that). */
+export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter((f) => f !== 'id');
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;
 /** Schema versions this validator understands. Bump + branch when the shape changes. */
@@ -409,6 +411,41 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
   // The semantic walk above guarantees `view.filter` (when present) is a valid
   // `FilterNode` once there are no errors; surface the narrowed `ClaimSpec` type.
   return { ok: errors.length === 0, errors, warnings, spec: spec as ClaimSpec };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Observability tripwire — id-only specs (a static pin, not a lane).
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Collect every item-field referenced anywhere in a filter node tree. Defensive
+ *  over the raw record shape so it works on a validated OR an as-stored filter. */
+function collectFilterFields(node: unknown, acc: Set<string>): void {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+  const obj = node as Record<string, unknown>;
+  if (typeof obj.field === 'string') { acc.add(obj.field); return; }
+  if (Array.isArray(obj.all)) { obj.all.forEach((n) => collectFilterFields(n, acc)); return; }
+  if (Array.isArray(obj.any)) { obj.any.forEach((n) => collectFilterFields(n, acc)); return; }
+  if ('not' in obj) collectFilterFields(obj.not, acc);
+}
+
+/**
+ * True when a spec's `view.filter` selects on the `id` field ALONE — a STATIC pin
+ * (a frozen, finite candidate set, e.g. `{ field:'id', op:'in', value:[...] }`), with
+ * no property selector (plan / paths / tags / priority / …) to make it a standing,
+ * auto-inflowing lane.
+ *
+ * The discipline tripwire: an id-pin is the intended EXCEPTION for a fixed wave
+ * (hotfix / cutover / re-drive); a Queen who pins by id for ONGOING work has quietly
+ * fallen back to hand-listing items. `setClaimSpec` records this per stored spec so
+ * over-reliance is countable (`bee_claim_specs.id_only`), not silent. No filter at
+ * all ⇒ false (the whole ready frontier — the opposite of a pin).
+ */
+export function isIdOnlySelector(spec: { view?: { filter?: unknown } } | null | undefined): boolean {
+  const filter = spec?.view?.filter;
+  if (filter == null) return false;
+  const fields = new Set<string>();
+  collectFilterFields(filter, fields);
+  return fields.size > 0 && [...fields].every((f) => f === 'id');
 }
 
 // ────────────────────────────────────────────────────────────────────────────

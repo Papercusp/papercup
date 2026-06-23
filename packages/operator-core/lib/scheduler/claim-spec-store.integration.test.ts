@@ -39,6 +39,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('beespecs');
   h.sql = db.sql;
   await db.sql.unsafe(mig('372-bee-claim-specs.sql'));
+  await db.sql.unsafe(mig('389-bee-claim-spec-id-only.sql')); // id-pin tripwire column
   // Minimal harness_features_consolidated (just the columns listRunningClaims reads) — self-contained.
   await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
     harness_slug text NOT NULL, feature_id text NOT NULL, item_kind text NOT NULL DEFAULT 'feature',

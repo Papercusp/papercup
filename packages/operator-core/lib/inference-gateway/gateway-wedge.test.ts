@@ -170,6 +170,31 @@ test('detectGatewayWedge — admission backlog load-shed climbing vs prior → s
   assert.ok(v.reasons.some((r) => r.includes('admission backlog full')));
 });
 
+test('detectGatewayWedge — transport-STALL storm (fault #5): upstreamErrors climbing past the delta vs prior → sustainedThrottle even with upstream429 FLAT + AIMD un-shrunk', () => {
+  // The dominant gateway failure: every account TTFB-stalls, the gateway absorbs/rotates → upstream429
+  // never moves and AIMD never shrinks, so triggers (a)-(c) all stay silent. Only the transport-stall
+  // delta surfaces it.
+  const stats = healthyStats({ upstreamErrors: 40, upstream429: 0, failovers: 18, aimd: { effective: 24, cap: 24, floor: 4, decreases: 0 } });
+  const prior = { totalRequests: 1000, shed429: 0, shedAllThrottled: 0, upstreamErrors: 30, at: NOW - 30_000 };
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), prior, NOW);
+  assert.equal(v.sustainedThrottle, true, 'a pure stall storm must surface even with upstream429 flat');
+  assert.ok(v.reasons.some((r) => r.includes('transport-stall storm')), 'names the transport-stall storm');
+});
+
+test('detectGatewayWedge — a few stray stalls UNDER the delta do NOT trip the stall-storm throttle (normal proxy churn)', () => {
+  const stats = healthyStats({ upstreamErrors: 32 }); // +2 vs prior, under STALL_STORM_DELTA (5)
+  const prior = { totalRequests: 1000, shed429: 0, shedAllThrottled: 0, upstreamErrors: 30, at: NOW - 30_000 };
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), prior, NOW);
+  assert.ok(!v.reasons.some((r) => r.includes('transport-stall storm')), 'a lone blip is not a storm');
+});
+
+test('detectGatewayWedge — DEPLOY-SKEW: a legacy prior WITHOUT upstreamErrors is skipped by the stall-storm trigger (no false fire)', () => {
+  const stats = healthyStats({ upstreamErrors: 999 });
+  const legacyPrior = { totalRequests: 1000, shed429: 0, shedAllThrottled: 0, at: NOW - 30_000 }; // no upstreamErrors field
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), legacyPrior, NOW);
+  assert.ok(!v.reasons.some((r) => r.includes('transport-stall storm')), 'an absent prior.upstreamErrors cannot fire (d)');
+});
+
 test('detectGatewayWedge — DEPLOY-SKEW: a pre-AIMD gateway never trips the AIMD throttle branch', () => {
   const legacy: RawGatewayStats = { totalRequests: 10, admission: { running: 3, queued: 0, maxConcurrent: 24 }, shed429: 0 };
   const v = detectGatewayWedge(summarizeGatewayMetrics(legacy), undefined, NOW);
@@ -183,5 +208,5 @@ test('detectGatewayWedge — DEPLOY-SKEW: a pre-AIMD gateway never trips the AIM
 test('sampleGateway — captures the minimal rolling sample for the next tick', () => {
   const m: GatewayMetrics = summarizeGatewayMetrics(healthyStats({ totalRequests: 77, shed429: 3, shedAllThrottled: 1 }));
   const s = sampleGateway(m, NOW);
-  assert.deepEqual(s, { totalRequests: 77, shed429: 3, shedAllThrottled: 1, at: NOW });
+  assert.deepEqual(s, { totalRequests: 77, shed429: 3, shedAllThrottled: 1, upstreamErrors: 0, at: NOW });
 });

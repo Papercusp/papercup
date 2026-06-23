@@ -39,11 +39,17 @@ export interface ProvisionSystemPrincipalArgs {
 export interface ProvisionResult {
   workspaceId: string;
   name: string;
-  bearer: string;
+  /** The freshly-minted bearer — present ONLY when a bearer was created (initial
+   *  provision) or rotated (`force`). ABSENT on a capabilities-only RECONCILE, which
+   *  leaves the existing bearer untouched (there is no new bearer to return). */
+  bearer?: string;
   /** Display label kept for log/UI surfaces; refers to where the bearer
    *  USED TO be written. The actual source of truth is now PG (token_index). */
   configPath: string;
   rotated: boolean;
+  /** True when an ALREADY-PROVISIONED principal's capabilities were brought up to the
+   *  code-defined set IN PLACE (additive, NO bearer rotation). EI-2048. */
+  reconciled?: boolean;
 }
 
 function genBearer(): string {
