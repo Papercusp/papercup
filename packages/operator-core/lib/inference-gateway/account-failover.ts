@@ -66,6 +66,19 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return live[idx];
   }
 
+  /** H3 (inference-gateway-audit-2026-06-23): the NON-advancing twin of active() — same "current best"
+   *  selection but it does NOT mutate rrIdx. Read-only callers (stats(), the startup log, the watchdog/health
+   *  pollers) must use this so OBSERVING the pool doesn't perturb the production round-robin. active() advances
+   *  on every call, so a frequent /stats poll — heaviest during an incident, when distribution matters most —
+   *  was silently biasing which account each real request landed on. */
+  function peek(): ActiveAccount {
+    for (let step = 0; step < live.length; step++) {
+      const idx = (rrIdx + step) % live.length;
+      if (available(live[idx])) return live[idx];
+    }
+    return live[rrIdx % live.length];
+  }
+
   /** Mark `exhaustedId` out of rotation until `resetAt`, and return the next DIFFERENT account that
    *  still has budget for the retry loop to rotate onto (null when none remain → egress pauses until
    *  a reset). Idempotent: re-exhausting an already-paused account just refreshes its reset. */
@@ -128,5 +141,5 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return live.reduce((n, e) => n + (available(e) && (!extra || extra(e.accountId)) ? 1 : 0), 0);
   }
 
-  return { active, onExhausted, select, reload, readmit, healthyCount };
+  return { active, onExhausted, select, reload, readmit, healthyCount, peek };
 }

@@ -27,6 +27,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // default-ON 2026-06-22 — owner ratified the owner-authority flips in-session.)
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
   FLAGS.CLOUDFLARE_PUBLISH, // cut for V1 — publish surface not shipping
+  // owner-preference ranking HELD dark (flip-dark-flags-default-on-2026-06-23 D-001): flipping
+  // re-ranks the owner's live queue and broke the B-08 equivalence baseline (score drift) —
+  // verify it degrades to a no-op without a trained model + add an on-behavior test before flip.
+  FLAGS.OWNER_PREFERENCE_RANKING,
   FLAGS.HARNESS_PHASES, // cut for V1
   FLAGS.DESIGN, // cut for V1
   FLAGS.TESTING, // cut for V1
@@ -387,6 +391,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.IDLE_SESSION_REAPER, 'owner-authority'],
   [FLAGS.IDLE_SESSION_REAPER_TERMINATE, 'owner-authority'],
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
+  [FLAGS.OWNER_PREFERENCE_RANKING, 'owner-authority'],
   [FLAGS.QUEEN_AUTONOMY_ARMED, 'owner-authority'],
   [FLAGS.QUEEN_FULL_AUTONOMY, 'owner-authority'],
   [FLAGS.OVERWATCH, 'owner-authority'],

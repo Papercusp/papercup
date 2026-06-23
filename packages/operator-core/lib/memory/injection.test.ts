@@ -256,11 +256,18 @@ describe('buildMemoryContextBlock', () => {
     ] as never[];
     const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_TRANSFER_HARNESS';
 
-    it('flag dark (the D-001 default) ⇒ byte-identical output, no markers', async () => {
-      useBackend(mockBackend(rows));
-      const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
-      expect(block).toContain('- [project] (id=p1) A probationary lesson');
-      expect(block).not.toContain('probationary]');
+    it('flag dark ⇒ byte-identical output, no markers', async () => {
+      // TRANSFER_HARNESS graduated to default-ON (flip-dark-flags-default-on-2026-06-23), so this
+      // off-path test pins the flag OFF explicitly rather than relying on the (now-ON) default.
+      process.env[FLAG_ENV] = '0';
+      try {
+        useBackend(mockBackend(rows));
+        const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
+        expect(block).toContain('- [project] (id=p1) A probationary lesson');
+        expect(block).not.toContain('probationary]');
+      } finally {
+        delete process.env[FLAG_ENV];
+      }
     });
 
     it('flag armed ⇒ probationary entries are marked, still injected (admission is free)', async () => {

@@ -5,6 +5,7 @@
  */
 import { StallWaker, type StallEvent, type StallWakerDeps } from './stall-waker';
 import { gatewayPort } from './spawn-env';
+import { fetchGatewayHeadroom } from './observability';
 import { getOrgPg } from '@papercusp/db-org';
 import { getSpawnPg } from '../fleet/pg-stores';
 import { accountStatus } from '../deployment/account-pool-store';
@@ -48,7 +49,19 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       if (lastActivity === 0) return false; // truly unknown owner (no bee row + no coord presence) → not wake-able
       return Date.now() - lastActivity > IDLE_SILENCE_MS;
     },
-    capacityBack: async (accountId) => {
+    capacityBack: async (accountId, soonestResetAt) => {
+      // H5 (inference-gateway-audit-2026-06-23): don't wake a stalled bee back onto a still-throttled pool.
+      // (1) Honor the soonestResetAt the gateway computed — the arg used to be silently DROPPED. For an
+      //     egress-class stall the gateway records a fabricated now+30s reset, so this is a real floor: never
+      //     wake before it.
+      if (soonestResetAt && Date.now() < soonestResetAt) return false;
+      // (2) The gateway pool must NOT be wholesale-throttled. The old check only read the ACCOUNT's pausedUntil,
+      //     so a fabricated 30s reset would wake the bee straight back into an all-accounts storm → re-stall →
+      //     wake-cap burn → bee abandoned. The gateway /stats is the shared capacity oracle; unreachable ⇒ fall
+      //     back to the per-account verdict (never strand a wake on a missing signal).
+      const gw = await fetchGatewayHeadroom({ timeoutMs: 1000 }).catch(() => null);
+      if (gw?.reachable && (gw.paused || gw.rejected)) return false; // whole pool throttled → keep waiting
+      // (3) ...and the account's OWN pause must be clear.
       const rows = await accountStatus(workspaceId).catch(() => [] as Awaited<ReturnType<typeof accountStatus>>);
       const a = rows.find((x) => x.id === accountId);
       return a ? a.available === true : true; // unknown account → trust the reset time we already waited out

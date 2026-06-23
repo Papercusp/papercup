@@ -368,6 +368,8 @@ export interface AccountPool {
    *  priority-tier `/stats` reports alongside the per-tier demand so an operator sees headroom vs queueing.
    *  Optional: a single-account pool omits it (the gateway then reports 1). */
   healthyCount?(extra?: (accountId: string) => boolean): number;
+  /** H3: non-advancing "current best" for read-only callers (stats/startup/health pollers) — see active(). */
+  peek?(): ActiveAccount;
 }
 
 export interface GatewayDeps {
@@ -1080,7 +1082,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
   function stats(): GatewayStats {
     // Reflect the active account's opus bucket (the fleet's class) for the headline unified window.
-    const active = pool.active();
+    const active = pool.peek ? pool.peek() : pool.active(); // H3: observe WITHOUT advancing the rr-cursor
     const gov = governorForAccount('claude-opus-4', active.accountId);
     const snap = gov.snapshot();
     const admission = queue.snapshot();
@@ -2279,7 +2281,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         server.listen(port, '127.0.0.1', () => {
           const addr = server.address();
           const p = typeof addr === 'object' && addr ? addr.port : port;
-          log('info', `inference-gateway listening on 127.0.0.1:${p} → ${upstreamBase} (account ${pool.active().accountId})`);
+          log('info', `inference-gateway listening on 127.0.0.1:${p} → ${upstreamBase} (account ${(pool.peek ? pool.peek() : pool.active()).accountId})`);
           resolve(p);
         });
       });

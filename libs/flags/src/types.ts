@@ -1299,7 +1299,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // arms only at P-001 (the flag flip is the arming act — no routine, no
   // governor budget: it computes inline in the digest read path, SQL-only).
   // Interaction capture stays on either way (substrate, not a loop).
-  [FLAGS.OWNER_PREFERENCE_RANKING]: true,
+  [FLAGS.OWNER_PREFERENCE_RANKING]: false,
   // OFF by default — same D-001 dark-ship rule as the loops above: calibration
   // markets is a frontier learning loop (SQL-only, zero LLM spend) whose flag
   // gates both the capture seams and the resolution sweep; the flag flip + an
