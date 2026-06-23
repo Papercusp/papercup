@@ -37,6 +37,14 @@ const SPAWNED_AGENTS_DDL = `
     last_output_at timestamptz,
     pid integer, launcher_host text, launcher_boot_id text)`;
 
+// Minimal stand-in for the prod `harness_features_consolidated` VIEW — the boot
+// reconcile LEFT JOINs it (feature_id, workspace_id, harness_slug → status) to
+// decide whether a reclaimed bee's work-item is non-terminal (EI-85 relaunch).
+const FEATURES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
+    feature_id text NOT NULL, workspace_id text NOT NULL, harness_slug text NOT NULL,
+    status text, PRIMARY KEY (feature_id, workspace_id, harness_slug))`;
+
 const WS = 'default';
 const STALE = { staleMs: 5 * 60_000 };
 // EI-85: same-host candidates whose pid is alive are kept; everything else is
@@ -55,14 +63,32 @@ async function insertSpawn(
   spawnId: string,
   status: string,
   heartbeatAgoSec: number,
-  rec: { pid?: number; host?: string; runId?: string; bootId?: string } = {},
+  rec: {
+    pid?: number;
+    host?: string;
+    runId?: string;
+    bootId?: string;
+    childRole?: string;
+    featureId?: string;
+    itemId?: string;
+    parentRole?: string;
+  } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.spawned_agents
-      (spawn_id, workspace_id, harness_slug, child_role, run_id, status, started_at, heartbeat_at, pid, launcher_host, launcher_boot_id)
-    VALUES (${spawnId}, ${WS}, 'papercup', 'worker', ${rec.runId ?? 'r-' + spawnId}, ${status},
+      (spawn_id, workspace_id, harness_slug, child_role, parent_role, feature_id, item_id, run_id, status, started_at, heartbeat_at, pid, launcher_host, launcher_boot_id)
+    VALUES (${spawnId}, ${WS}, 'papercup', ${rec.childRole ?? 'worker'}, ${rec.parentRole ?? null},
+            ${rec.featureId ?? null}, ${rec.itemId ?? null}, ${rec.runId ?? 'r-' + spawnId}, ${status},
             now() - interval '10 minutes', now() - ${heartbeatAgoSec}::int * interval '1 second',
             ${rec.pid ?? null}, ${rec.host ?? null}, ${rec.bootId ?? null})`;
+}
+
+/** Seed a work-item row so the reconcile's LEFT JOIN resolves a feature's status. */
+async function insertWorkItem(featureId: string, status: string) {
+  await db.sql`
+    INSERT INTO harness_shared.harness_features_consolidated (feature_id, workspace_id, harness_slug, status)
+    VALUES (${featureId}, ${WS}, 'papercup', ${status})
+    ON CONFLICT (feature_id, workspace_id, harness_slug) DO UPDATE SET status = EXCLUDED.status`;
 }
 
 async function statusOf(spawnId: string): Promise<string> {

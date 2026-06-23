@@ -129,7 +129,7 @@ export default defineTool({
     const env = await runBulk(
       list,
       async (it): Promise<BulkItemResult> => {
-        const recipe = await getRecipe(sql, workspaceId, it.id);
+        const recipe = await getRecipe(sql, it.id);
         if (!recipe) {
           return { ok: false, id: it.id, error: 'not_found' };
         }
@@ -150,7 +150,7 @@ export default defineTool({
           try {
             const hiveSlug = ctx.harnessSlug
               ? await hiveHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
-              : recipe.hiveSlug;
+              : null;
             await recordRecipeRun(sql, {
               recipeId: recipe.id,
               workspaceId,

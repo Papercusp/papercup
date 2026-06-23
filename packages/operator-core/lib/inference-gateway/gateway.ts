@@ -202,13 +202,16 @@ const LOADSHED_RETRY_AFTER_SEC = 5;
  *  activity-reset windows so a LEGITIMATELY long request is never clipped: a wait for response HEADERS
  *  and a per-chunk idle gap for the streamed BODY (reset on every byte — only a true stall trips it).
  *  The headers wait is split by mode (2026-06-20): a STREAMING request's first byte/headers arrive in
- *  seconds (the bee `claude` CLI streams), so it gets a SHORT TTFB deadline — a stalled Anthropic socket
- *  (healthy accounts, no throttle: an Anthropic-side flap) then aborts in ~60s instead of squatting its
- *  admission slot for the full 5min, which presented as a silent multi-minute wedge (4th outage tonight).
+ *  seconds (the bee `claude` CLI streams, + Anthropic emits `message_start` BEFORE it generates), so it gets
+ *  a SHORT TTFB deadline — a stalled Anthropic socket (a soft-throttle that HOLDS the request, or an
+ *  Anthropic-side flap) then aborts quickly instead of squatting its admission slot for the full 5min.
+ *  Cut 60→30s (2026-06-22): account-side stalls dominate under throttle, and a real first byte arrives in
+ *  seconds, so 30s is still a 6×+ margin — but it frees the slot + the retry budget twice as fast to route
+ *  around the stalling account (the dominant "pinned/low-activity account still errored" failure mode).
  *  A NON-streaming request's headers only arrive AFTER the full generation, so it keeps the generous
  *  deadline (a short one would falsely abort a long completion). All env-overridable. */
 const DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_HEADERS_MS) || 5 * 60 * 1000;
-const DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_STREAM_HEADERS_MS) || 60 * 1000;
+const DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_STREAM_HEADERS_MS) || 30 * 1000;
 const DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_BODY_IDLE_MS) || 90 * 1000;
 /** Max wait for an OAuth token refresh before the attempt is FAILED instead of hung (the 2026-06-20
  *  token-hang wedge). `active.token()` does a network refresh (grant_type=refresh_token) with NO deadline

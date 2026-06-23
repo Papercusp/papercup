@@ -17,7 +17,6 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
 import { recipeCandidates } from '../../code-recipes-candidates';
 import { buildQueryEmbedder } from '../search/embedder';
 // tool-call-batching-wrappers-2026-06-21 P-004 / D-016 — the deterministic co-occurrence scoring leg.
@@ -60,18 +59,14 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const hiveSlug = ctx.harnessSlug
-      ? await hiveHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
-      : null;
     const embedder = await buildQueryEmbedder().catch(() => null);
     // tool-call-batching-wrappers P-004 / D-016 — fold in the deterministic co-occurrence
     // leg: mean pairwise confidence of a recipe's tool-set, from dev:tool_cooccurrence.
+    // (workspace-scoped telemetry — recipes are global, but this signal is per-workspace.)
     const toolCooccurrence = await buildRecipeCooccurrenceDep(workspaceId).catch(() => null);
     const { promoteCandidates, mergeClusters } = await recipeCandidates(
       getOrgPg().sql,
       {
-        workspaceId,
-        hiveSlug,
         minRunCount: args.minRunCount,
         limit: args.limit,
       },
@@ -83,7 +78,6 @@ export default defineTool({
           type: 'text',
           text: JSON.stringify({
             ok: true,
-            hiveSlug,
             promoteCount: promoteCandidates.length,
             mergeClusterCount: mergeClusters.length,
             promoteCandidates,

@@ -968,6 +968,15 @@ export const FLAGS = {
   // TOOL_DELTA_PROTOCOL (the LLM tool-result delta) — proven by the state-delta
   // round-trip test, not the Lane-C LLM scenarios. OFF ⇒ full snapshots (today).
   STATE_SNAPSHOT_DELTAS: "papercusp-state-snapshot-deltas",
+  // queen-bee-spawn-reclaim-relaunch-2026-06-22 (EI-85 restart-kills): the boot
+  // spawn-admission reconcile RE-LAUNCHES a reclaimed queen/bee whose durable
+  // work-item is non-terminal, instead of marking it `failed` and losing the work.
+  // A host restart kills in-flight spawns before their admission-release runs; the
+  // reconcile frees the ceiling debit AND re-fires the survivor so a queen/bee
+  // survives ANY host restart. DEFAULT ON (alpha flags-default-on) — the relaunch
+  // is bounded (only non-terminal work, ceiling-gated re-fire) and reversible; OFF
+  // ⇒ the legacy reclaim-to-`failed` behaviour, byte-identical.
+  SPAWN_RECLAIM_RELAUNCH: "papercusp-spawn-reclaim-relaunch",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1510,6 +1519,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // serves full snapshots exactly as before. A reversible kill-switch the owner flips after an
   // attended desktop verify (cards still render via deltas). KNOWN_DARK_FLAGS (case 'cutover').
   [FLAGS.STATE_SNAPSHOT_DELTAS]: false,
+  // DEFAULT ON (queen-bee-spawn-reclaim-relaunch-2026-06-22, EI-85): the boot reconcile
+  // re-launches a reclaimed queen/bee whose durable work-item is non-terminal so the
+  // work survives a host restart. Bounded (non-terminal work only, ceiling-gated re-fire)
+  // and reversible; OFF ⇒ legacy reclaim-to-`failed`, byte-identical.
+  [FLAGS.SPAWN_RECLAIM_RELAUNCH]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

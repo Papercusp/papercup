@@ -65,8 +65,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     // ── HOT multi-tool, broadly-reused recipe — should rank TOP of promote. ──────
     await upsertRecipe(db.adminSql, {
       id: 'triage-and-block-stale',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Triage and block stale work-items',
       description: 'list open work-items, then mark the stale ones blocked',
       script: 's',
@@ -81,8 +79,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     // ── A 1-tool wrapper — TRIVIAL, must be EXCLUDED as redundant. ───────────────
     await upsertRecipe(db.adminSql, {
       id: 'just-list-plans',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'List the plans',
       description: 'just call plans list',
       script: 's',
@@ -97,8 +93,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     // ── A solo, low-reuse multi-tool recipe — present but should rank below hot. ──
     await upsertRecipe(db.adminSql, {
       id: 'deploy-and-announce',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Deploy and announce',
       description: 'deploy the harness then post to coord',
       script: 's',
@@ -114,8 +108,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     for (const id of ['summarize-feedback-a', 'summarize-feedback-b']) {
       await upsertRecipe(db.adminSql, {
         id,
-        workspaceId: ws,
-        hiveSlug: hive,
         title: 'Summarize the feedback queue',
         description: 'read the feedback queue and produce a digest',
         script: 's',
@@ -128,10 +120,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       });
     }
 
-    const { promoteCandidates, mergeClusters, signals } = await recipeCandidates(db.adminSql, {
-      workspaceId: ws,
-      hiveSlug: hive,
-    });
+    const { promoteCandidates, mergeClusters, signals } = await recipeCandidates(db.adminSql, {});
 
     // (a) the hot, broadly-reused, multi-tool recipe ranks top of promote candidates
     expect(promoteCandidates.length).toBeGreaterThan(0);
@@ -166,8 +155,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
       id: 'rarely-run',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Rarely run multi-tool recipe',
       description: 'a multi-tool recipe run only once',
       script: 's',
@@ -176,20 +163,14 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     });
     await seedRuns(db.adminSql, 'rarely-run', ws, hive, { runs: 1, agents: ['agent-a'] });
 
-    const { signals } = await recipeCandidates(db.adminSql, {
-      workspaceId: ws,
-      hiveSlug: hive,
-      minRunCount: 5,
-    });
+    const { signals } = await recipeCandidates(db.adminSql, { minRunCount: 5 });
     expect(signals.find((s) => s.id === 'rarely-run')).toBeUndefined();
   });
 
-  it('is hive-scoped — a recipe in another hive is not considered', async () => {
+  it('uses the global recipe corpus across hives', async () => {
     const ws = 'ws-cand-hive';
     await upsertRecipe(db.adminSql, {
       id: 'alpha-only',
-      workspaceId: ws,
-      hiveSlug: 'alpha',
       title: 'Alpha multi-tool recipe',
       description: 'two-tool recipe in alpha',
       script: 's',
@@ -198,8 +179,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     });
     await upsertRecipe(db.adminSql, {
       id: 'beta-only',
-      workspaceId: ws,
-      hiveSlug: 'beta',
       title: 'Beta multi-tool recipe',
       description: 'two-tool recipe in beta',
       script: 's',
@@ -209,9 +188,9 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     await seedRuns(db.adminSql, 'alpha-only', ws, 'alpha', { runs: 4, agents: ['a', 'b'] });
     await seedRuns(db.adminSql, 'beta-only', ws, 'beta', { runs: 4, agents: ['a', 'b'] });
 
-    const { signals } = await recipeCandidates(db.adminSql, { workspaceId: ws, hiveSlug: 'alpha' });
+    const { signals } = await recipeCandidates(db.adminSql, {});
     expect(signals.find((s) => s.id === 'alpha-only')).toBeDefined();
-    expect(signals.find((s) => s.id === 'beta-only')).toBeUndefined();
+    expect(signals.find((s) => s.id === 'beta-only')).toBeDefined();
   });
 
   it('a low-success multi-tool recipe scores below a high-success one of equal usage', async () => {
@@ -219,8 +198,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
       id: 'stable-recipe',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Stable two-tool recipe',
       description: 'reliable',
       script: 's',
@@ -229,8 +206,6 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     });
     await upsertRecipe(db.adminSql, {
       id: 'flaky-recipe',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Flaky two-tool recipe',
       description: 'unreliable',
       script: 's',
@@ -241,7 +216,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     await seedRuns(db.adminSql, 'stable-recipe', ws, hive, { runs: 8, agents: ['a', 'b', 'c'], successes: 8 });
     await seedRuns(db.adminSql, 'flaky-recipe', ws, hive, { runs: 8, agents: ['a', 'b', 'c'], successes: 2 });
 
-    const { signals } = await recipeCandidates(db.adminSql, { workspaceId: ws, hiveSlug: hive });
+    const { signals } = await recipeCandidates(db.adminSql, {});
     const stable = signals.find((s) => s.id === 'stable-recipe');
     const flaky = signals.find((s) => s.id === 'flaky-recipe');
     expect(stable).toBeDefined();

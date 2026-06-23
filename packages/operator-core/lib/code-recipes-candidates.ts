@@ -4,7 +4,7 @@
  * D-016 / D-017).
  *
  * `recipeCandidates(sql, opts)` reads `harness_shared.code_recipes` +
- * `harness_shared.code_recipe_runs` and, per ACTIVE recipe in scope, computes the
+ * `harness_shared.code_recipe_runs` and, per ACTIVE recipe, computes the
  * raw usage signals (run_count, distinct agents, success-rate, tool-set) AND a
  * deterministic **promotionScore** (0..1) against the recipe rubric — NO LLM. It
  * returns ranked PROMOTE candidates (worth building into a defineTool) plus the
@@ -105,7 +105,6 @@ export interface RecipeSignal {
   id: string;
   title: string;
   description: string;
-  hiveSlug: string | null;
   status: string;
   runCount: number;
   /** COUNT(DISTINCT agent_owner) over code_recipe_runs (the reuse-breadth signal). */
@@ -147,9 +146,6 @@ export interface RecipeCandidatesResult {
 }
 
 export interface RecipeCandidatesOpts {
-  workspaceId: string;
-  /** Sharing boundary (the hive). Omit ⇒ the whole workspace; null ⇒ the workspace-global bucket. */
-  hiveSlug?: string | null;
   /** Only consider recipes run at least this many times (default 2 — a single run is no signal). */
   minRunCount?: number;
   /** Max promote candidates to return (default 25). */
@@ -172,7 +168,6 @@ export interface RecipeCandidatesDeps {
 
 type RecipeRow = {
   id: string;
-  hive_slug: string | null;
   title: string;
   description: string;
   status: string;
@@ -206,7 +201,7 @@ function cohesionScore(toolCount: number): number {
 }
 
 /**
- * Compute graduation candidates for the active recipes in scope. Deterministic
+ * Compute graduation candidates for the active recipes. Deterministic
  * end-to-end except for the optional embedder/co-occurrence deps (which only
  * reorder, never gate). Returns ranked promote candidates + merge clusters.
  */
@@ -225,44 +220,16 @@ export async function recipeCandidates(
   // LEFT JOIN + GROUP BY computes COUNT(DISTINCT agent_owner) alongside. We trust
   // the denormalized run_count for the frequency signal (it's the source of truth
   // for the counter; the side-table is the source for distinct-agent breadth).
-  const hasHiveFilter = 'hiveSlug' in opts;
-  const rows = hasHiveFilter
-    ? opts.hiveSlug == null
-      ? await sql<(RecipeRow & { distinct_agents: number | string })[]>`
-          SELECT r.id, r.hive_slug, r.title, r.description, r.status, r.tools_used,
-                 r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
-                 COUNT(DISTINCT run.agent_owner) AS distinct_agents
-            FROM harness_shared.code_recipes r
-            LEFT JOIN harness_shared.code_recipe_runs run
-                   ON run.recipe_id = r.id AND run.workspace_id = r.workspace_id
-           WHERE r.workspace_id = ${opts.workspaceId}
-             AND r.status = 'active'
-             AND r.hive_slug IS NULL
-             AND r.run_count >= ${minRunCount}
-        GROUP BY r.id`
-      : await sql<(RecipeRow & { distinct_agents: number | string })[]>`
-          SELECT r.id, r.hive_slug, r.title, r.description, r.status, r.tools_used,
-                 r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
-                 COUNT(DISTINCT run.agent_owner) AS distinct_agents
-            FROM harness_shared.code_recipes r
-            LEFT JOIN harness_shared.code_recipe_runs run
-                   ON run.recipe_id = r.id AND run.workspace_id = r.workspace_id
-           WHERE r.workspace_id = ${opts.workspaceId}
-             AND r.status = 'active'
-             AND r.hive_slug = ${opts.hiveSlug}
-             AND r.run_count >= ${minRunCount}
-        GROUP BY r.id`
-    : await sql<(RecipeRow & { distinct_agents: number | string })[]>`
-        SELECT r.id, r.hive_slug, r.title, r.description, r.status, r.tools_used,
-               r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
-               COUNT(DISTINCT run.agent_owner) AS distinct_agents
-          FROM harness_shared.code_recipes r
-          LEFT JOIN harness_shared.code_recipe_runs run
-                 ON run.recipe_id = r.id AND run.workspace_id = r.workspace_id
-         WHERE r.workspace_id = ${opts.workspaceId}
-           AND r.status = 'active'
-           AND r.run_count >= ${minRunCount}
-      GROUP BY r.id`;
+  const rows = await sql<(RecipeRow & { distinct_agents: number | string })[]>`
+      SELECT r.id, r.title, r.description, r.status, r.tools_used,
+             r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
+             COUNT(DISTINCT run.agent_owner) AS distinct_agents
+        FROM harness_shared.code_recipes r
+   LEFT JOIN harness_shared.code_recipe_runs run
+          ON run.recipe_id = r.id
+       WHERE r.status = 'active'
+         AND r.run_count >= ${minRunCount}
+    GROUP BY r.id`;
 
   // Existing tool names (the redundancy name-collision check). A recipe id/slug that
   // matches an already-projected tool name would regenerate an existing tool (D-007).
@@ -324,7 +291,6 @@ export async function recipeCandidates(
       id: r.id,
       title: r.title,
       description: r.description,
-      hiveSlug: r.hive_slug,
       status: r.status,
       runCount,
       distinctAgents,
@@ -389,8 +355,8 @@ export async function recipeCandidates(
     }
     for (const peer of similar) {
       if (peer.similarity < MERGE_SIMILARITY) continue;
-      // Only cluster peers that are themselves in-scope active recipes (the search
-      // is hive-scoped, but a peer below minRunCount won't be in `signals`).
+      // Only cluster peers that are themselves active candidates (a peer below
+      // minRunCount won't be in `signals`).
       if (!adjacency.has(peer.id)) continue;
       adjacency.get(s.id)!.add(peer.id);
       adjacency.get(peer.id)!.add(s.id);

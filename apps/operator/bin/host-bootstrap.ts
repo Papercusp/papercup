@@ -695,7 +695,32 @@ export function runBootstrap(): void {
         try {
           const { getOrgPg } = await import('@papercusp/db-org');
           const { reconcileSpawnAdmissionOnBoot } = await import('@papercusp/operator-core/lib/fleet/spawn-reclaim');
-          const r = await reconcileSpawnAdmissionOnBoot(getOrgPg().sql);
+          // EI-85 (restart-kills): re-launch a reclaimed queen/bee whose durable
+          // work-item is still non-terminal, instead of just killing it — so the
+          // hive survives ANY host restart. Flag-gated: OFF ⇒ no relaunch seam ⇒
+          // legacy reclaim-to-`failed` (byte-identical). Resolve the flag with the
+          // host id as the distinct id (a host-level routine, not a per-user gate).
+          let relaunch:
+            | (typeof import('@papercusp/operator-core/lib/fleet/spawn-relaunch'))['relaunchReclaimedSpawn']
+            | undefined;
+          try {
+            const { hostname } = await import('node:os');
+            if (await getFlag(FLAGS.SPAWN_RECLAIM_RELAUNCH, `host:${hostname()}`)) {
+              ({ relaunchReclaimedSpawn: relaunch } = await import(
+                '@papercusp/operator-core/lib/fleet/spawn-relaunch'
+              ));
+            }
+          } catch (e) {
+            console.warn(
+              `[spawn-reclaim] relaunch seam unavailable (reclaim-only this boot): ${e instanceof Error ? e.message : e}`,
+            );
+          }
+          const r = await reconcileSpawnAdmissionOnBoot(getOrgPg().sql, relaunch ? { relaunch } : {});
+          if (r.relaunched && r.relaunched.length > 0) {
+            console.warn(
+              `[spawn-reclaim] boot reconcile RE-LAUNCHED ${r.relaunched.length} queen/bee(s) with non-terminal work after a host restart (EI-85): ${r.relaunched.join(', ')}`,
+            );
+          }
           if (r.reclaimed > 0) {
             console.warn(
               `[spawn-reclaim] boot reconcile freed ${r.reclaimed} stale admission debit(s) from a prior incarnation: ${r.spawnIds.join(', ')}`,

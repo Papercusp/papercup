@@ -13,8 +13,6 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
 import { searchSimilarRecipes } from '../../code-recipes-search';
 import { buildQueryEmbedder } from '../search/embedder';
 
@@ -43,10 +41,6 @@ export default defineTool({
     limit: z.number().int().min(1).max(20).optional().describe('Top-N to return (default 5).'),
   }),
   async handler(args, ctx) {
-    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const hiveSlug = ctx.harnessSlug
-      ? await hiveHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
-      : null;
     const embedder = await buildQueryEmbedder().catch(() => null);
     // The query carries no separate description / tool-set — feed it as the title
     // and let the lexical + cosine legs do the work (toolsUsed empty ⇒ the
@@ -54,8 +48,6 @@ export default defineTool({
     const recipes = await searchSimilarRecipes(
       getOrgPg().sql,
       {
-        workspaceId,
-        hiveSlug,
         title: args.query,
         description: '',
         toolsUsed: [],
@@ -65,7 +57,7 @@ export default defineTool({
       { embedder, log: (msg) => ctx.log(msg) },
     );
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, query: args.query, hiveSlug, recipes }) }],
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, query: args.query, recipes }) }],
     };
   },
 });

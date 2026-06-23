@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isPossiblyWedged, WEDGE_SILENT_MS } from './spawn-reclaim';
+import { isPossiblyWedged, WEDGE_SILENT_MS, shouldRelaunchReclaimedSpawn } from './spawn-reclaim';
 
 const NOW = Date.parse('2026-06-14T02:00:00.000Z');
 const opts = { now: NOW, staleMs: 60 * 60_000, silentMs: WEDGE_SILENT_MS }; // 60m stale, 10m silent
@@ -50,5 +50,41 @@ describe('isPossiblyWedged — Date/string heartbeat normalization (EI-482/EI-49
   it('is false when output is recent (fresh heartbeat, not silent past the threshold)', () => {
     const recentOutput = '2026-06-14T01:58:00.000Z'; // 2m ago < 10m silent
     expect(isPossiblyWedged({ status: 'running', heartbeatAt: fresh, lastOutputAt: recentOutput }, opts)).toBe(false);
+  });
+});
+
+/**
+ * shouldRelaunchReclaimedSpawn — the boot-reconcile RE-LAUNCH branch (EI-85
+ * restart-kills). A reclaimed queen/bee whose durable work-item is non-terminal is
+ * RE-LAUNCHED (so the work survives a host restart); a terminal/missing work-item,
+ * or a non-queen/bee role, keeps the plain reclaim-to-`failed` floor.
+ */
+describe('shouldRelaunchReclaimedSpawn — boot-reconcile relaunch branch (EI-85)', () => {
+  it('re-launches a queen unconditionally (the hive driver has no single work-item)', () => {
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'queen', workItemId: null, workItemStatus: null })).toBe(true);
+    // even with an (unused) work-item that happens to be terminal, a queen re-launches
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'queen', workItemId: 'F-1', workItemStatus: 'passed' })).toBe(true);
+  });
+
+  it('re-launches a bee whose work-item is NON-terminal (in_progress / validating / failing / wip)', () => {
+    for (const status of ['in_progress', 'validating', 'failing', 'wip', 'todo', 'needs-human', 'blocked']) {
+      expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-1', workItemStatus: status })).toBe(true);
+    }
+  });
+
+  it('RECLAIMS (does NOT re-launch) a bee whose work-item is TERMINAL (passed / deprecated)', () => {
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-1', workItemStatus: 'passed' })).toBe(false);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-1', workItemStatus: 'deprecated' })).toBe(false);
+  });
+
+  it('RECLAIMS a bee with NO work-item, or whose work-item row is gone (status null)', () => {
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: null, workItemStatus: null })).toBe(false);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-gone', workItemStatus: null })).toBe(false);
+  });
+
+  it('RECLAIMS every non-queen/bee role (the reclaim-to-failed floor is unchanged for them)', () => {
+    for (const role of ['worker', 'scoper', 'doc-steward', 'release-fixer', 'operator', 'architect']) {
+      expect(shouldRelaunchReclaimedSpawn({ childRole: role, workItemId: 'F-1', workItemStatus: 'in_progress' })).toBe(false);
+    }
   });
 });

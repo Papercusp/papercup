@@ -207,6 +207,82 @@ export interface ReclaimResult {
    *  (D-004 queue+await; the announce lives at the call sites, this module
    *  stays a pure sql unit). */
   workspaces: string[];
+  /** Boot reconcile only (EI-85): spawnIds whose dead row was settled `failed`
+   *  AND re-launched because its durable work-item is still non-terminal — i.e.
+   *  the work survived the host restart. Empty for the periodic sweep. */
+  relaunched?: string[];
+}
+
+/**
+ * The durable identity of a reclaimed spawn the boot reconcile may RE-LAUNCH
+ * (EI-85). Carries exactly the fields the re-fire needs to recreate an equivalent
+ * launch — the role decides the fire path (a `queen` re-fires its hive blueprint;
+ * a `bee` re-places onto its work-item), and the work-item id + its non-terminal
+ * status decide WHETHER to re-launch at all.
+ */
+export interface RelaunchableSpawn {
+  spawnId: string;
+  workspaceId: string;
+  harnessSlug: string;
+  childRole: string;
+  parentSpawnId: string | null;
+  parentRole: string | null;
+  /** The work-item the spawn was working (bee: `feature_id`/`item_id`). */
+  workItemId: string | null;
+  /** The work-item's current status, resolved by the reconcile's LEFT JOIN; null
+   *  when the spawn carried no work-item id or the row no longer exists. */
+  workItemStatus: string | null;
+  planSlug: string | null;
+  modelSpec: string | null;
+  modelTier: string | null;
+  brief: string | null;
+}
+
+/**
+ * The re-launch seam (EI-85) — INJECTED by the caller (host-bootstrap) so this
+ * module stays a pure sql unit and the integration test drives the
+ * non-terminal→relaunched / terminal→reclaimed branches without a live operator.
+ * Implementations re-fire the spawn (queen → fireLaunchBlueprint; bee →
+ * operatorSpawn) and resolve to `true` when the re-fire was accepted. A `false` or
+ * a throw leaves the row reclaimed-`failed` (the safe default — the next cadence
+ * tick / Queen wake still re-places it).
+ */
+export type RelaunchSpawnFn = (spawn: RelaunchableSpawn) => Promise<boolean>;
+
+/**
+ * Terminal feature-family work-item statuses (mirrors
+ * `work-item-dispatch-states.FEATURE_TERMINAL_STATES`, inlined to keep this
+ * pure-sql module dependency-free). A spawn whose work-item sits in one of these
+ * is DONE — its dead row is reclaimed, never re-launched.
+ */
+const TERMINAL_WORK_ITEM_STATES: ReadonlySet<string> = new Set(['passed', 'deprecated']);
+
+/**
+ * Pure: should the boot reconcile RE-LAUNCH this reclaimed spawn (vs reclaim it to
+ * `failed`)? Exported for the unit test of the branch logic.
+ *
+ *   • only `queen`/`bee` roles re-launch (the hive members whose loss is the EI-85
+ *     symptom); every other role keeps the reclaim-to-`failed` floor.
+ *   • a `queen` is the per-workspace hive DRIVER — it has no single work-item, so it
+ *     re-launches unconditionally (re-firing the hive blueprint is ceiling-bounded
+ *     and is exactly what the routine cadence does, only sooner — closing the gap
+ *     that lost orchestration between the restart and the next tick).
+ *   • a `bee` re-launches IFF it carried a work-item that is still NON-TERMINAL; a
+ *     bee with no work-item, or one whose work-item is already terminal/gone, has
+ *     nothing durable to resume → reclaim.
+ */
+export function shouldRelaunchReclaimedSpawn(spawn: {
+  childRole: string;
+  workItemId: string | null;
+  workItemStatus: string | null;
+}): boolean {
+  if (spawn.childRole === 'queen') return true;
+  if (spawn.childRole !== 'bee') return false;
+  if (!spawn.workItemId) return false;
+  // Unknown status (the join found no row — the work-item was deleted) is treated
+  // as terminal: nothing to resume.
+  if (!spawn.workItemStatus) return false;
+  return !TERMINAL_WORK_ITEM_STATES.has(spawn.workItemStatus);
 }
 
 /**
@@ -363,37 +439,132 @@ export async function reclaimOrphanedSpawns(
  * Call ONCE at host bootstrap, before arming the spawn paths. Idempotent + safe to
  * re-run. The caller announces `spawn-slot:freed:<ws>` per freed workspace so any
  * over-ceiling waiter wakes (the same contract as the periodic sweep).
+ *
+ * RE-LAUNCH (EI-85 — the restart-kills durability fix). Reclaiming to `failed`
+ * frees the ceiling debit but LOSES the work: a queen mid-orchestration and every
+ * bee it placed vanish on a host restart, doing zero work until the next routine
+ * cadence re-fires the queen. So when a re-launcher is supplied (and the relaunch
+ * is enabled), the reconcile re-launches each reclaimed spawn whose durable
+ * work-item is still NON-TERMINAL (`shouldRelaunchReclaimedSpawn`), instead of
+ * just killing it — the dead row is still settled `failed` (with a
+ * "superseded by boot relaunch" reason so the ceiling debit is freed and the
+ * diagnosis is accurate), and a fresh `running` row owned by THIS process takes
+ * its place. A spawn whose work-item is already terminal/gone (or a non-queen/bee
+ * role) keeps the plain reclaim-to-`failed` floor.
+ *
+ * @param opts.relaunch INJECTED re-fire seam (host-bootstrap); omitted ⇒ the legacy
+ *        reclaim-only behaviour (also the flag-OFF path).
  */
 export async function reconcileSpawnAdmissionOnBoot(
   sql: Db,
-  opts: { staleMs?: number } = {},
+  opts: { staleMs?: number; relaunch?: RelaunchSpawnFn } = {},
 ): Promise<ReclaimResult> {
   const staleSec = Math.max(1, Math.round((opts.staleMs ?? RECLAIM_STALE_MS) / 1000));
   const me = hostname();
 
-  const rows = await sql<{ spawn_id: string; workspace_id: string }[]>`
-    UPDATE harness_shared.spawned_agents
-       SET status = 'failed',
-           finished_at = now(),
-           duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
-           error_message = COALESCE(
-             error_message,
-             'reclaimed at operator boot: launched by a prior incarnation on '
-               || COALESCE(launcher_host, '?')
-               || ' (host/process restarted before its admission-release ran) — '
-               || 'stale spawn-ceiling debit freed by the boot reconcile (EI-2186)'
-           )
-     WHERE status IN ('running', 'restarting')
-       AND launcher_host = ${me}
-       AND (
-             (launcher_boot_id IS NOT NULL AND launcher_boot_id <> ${LAUNCHER_BOOT_ID})
-          OR (launcher_boot_id IS NULL AND heartbeat_at < now() - ${staleSec}::int * interval '1 second')
-       )
-    RETURNING spawn_id, workspace_id`;
+  // Settle every prior-incarnation row to `failed` (freeing the ceiling debit) and
+  // RETURN its durable identity + its work-item's current status, so we can decide
+  // per row whether to re-launch. The work-item id is `item_id` (the canonical
+  // work-item link) falling back to the legacy `feature_id`; its status is resolved
+  // from harness_features_consolidated keyed on (work-item id, workspace, harness)
+  // — a LEFT JOIN so a spawn with no work-item (or a deleted one) returns NULL and
+  // is reclaimed, never re-launched.
+  const rows = await sql<
+    {
+      spawn_id: string;
+      workspace_id: string;
+      harness_slug: string;
+      child_role: string;
+      parent_spawn_id: string | null;
+      parent_role: string | null;
+      work_item_id: string | null;
+      work_item_status: string | null;
+      plan_slug: string | null;
+      model_spec: string | null;
+      model_tier: string | null;
+      brief: string | null;
+    }[]
+  >`
+    WITH reclaimed AS (
+      UPDATE harness_shared.spawned_agents AS a
+         SET status = 'failed',
+             finished_at = now(),
+             duration_ms = (EXTRACT(EPOCH FROM (now() - a.started_at)) * 1000)::bigint,
+             error_message = COALESCE(
+               a.error_message,
+               'reclaimed at operator boot: launched by a prior incarnation on '
+                 || COALESCE(a.launcher_host, '?')
+                 || ' (host/process restarted before its admission-release ran) — '
+                 || 'stale spawn-ceiling debit freed by the boot reconcile (EI-2186)'
+             )
+       WHERE a.status IN ('running', 'restarting')
+         AND a.launcher_host = ${me}
+         AND (
+               (a.launcher_boot_id IS NOT NULL AND a.launcher_boot_id <> ${LAUNCHER_BOOT_ID})
+            OR (a.launcher_boot_id IS NULL AND a.heartbeat_at < now() - ${staleSec}::int * interval '1 second')
+         )
+      RETURNING a.spawn_id, a.workspace_id, a.harness_slug, a.child_role,
+                a.parent_spawn_id, a.parent_role,
+                COALESCE(a.item_id, a.feature_id) AS work_item_id,
+                a.plan_slug, a.model_spec, a.model_tier, a.brief
+    )
+    SELECT r.spawn_id, r.workspace_id, r.harness_slug, r.child_role,
+           r.parent_spawn_id, r.parent_role, r.work_item_id,
+           f.status AS work_item_status,
+           r.plan_slug, r.model_spec, r.model_tier, r.brief
+      FROM reclaimed r
+      LEFT JOIN harness_shared.harness_features_consolidated f
+        ON f.feature_id = r.work_item_id
+       AND f.workspace_id = r.workspace_id
+       AND f.harness_slug = r.harness_slug`;
 
-  // Wake parents of the reclaimed spawns (best-effort, concurrent — same as the
-  // periodic sweep; a parent awaiting a now-dead child should not hang).
+  // Re-launch the survivors whose durable work-item is still non-terminal (EI-85),
+  // BEFORE waking parents — a successful re-launch means the child did not really
+  // die, so we suppress the parent-death wake for it (a relaunched bee should not
+  // signal its queen that it failed). The relaunch seam is best-effort + serialised
+  // through the ceiling (operatorSpawn admits): a refusal/throw leaves the row
+  // reclaimed (the next cadence tick re-places it).
+  const relaunched: string[] = [];
+  if (opts.relaunch) {
+    for (const row of rows) {
+      if (
+        !shouldRelaunchReclaimedSpawn({
+          childRole: row.child_role,
+          workItemId: row.work_item_id,
+          workItemStatus: row.work_item_status,
+        })
+      ) {
+        continue;
+      }
+      try {
+        const ok = await opts.relaunch({
+          spawnId: row.spawn_id,
+          workspaceId: row.workspace_id,
+          harnessSlug: row.harness_slug,
+          childRole: row.child_role,
+          parentSpawnId: row.parent_spawn_id,
+          parentRole: row.parent_role,
+          workItemId: row.work_item_id,
+          workItemStatus: row.work_item_status,
+          planSlug: row.plan_slug,
+          modelSpec: row.model_spec,
+          modelTier: row.model_tier,
+          brief: row.brief,
+        });
+        if (ok) relaunched.push(row.spawn_id);
+      } catch (err) {
+        console.warn(
+          `[spawn-reclaim] boot re-launch failed for ${row.child_role} ${row.spawn_id} (${row.harness_slug}); left reclaimed: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+  }
+
+  // Wake parents of the spawns that genuinely died (NOT the relaunched ones — those
+  // live on in a fresh row). Best-effort, concurrent — same as the periodic sweep.
+  const relaunchedSet = new Set(relaunched);
   for (const row of rows) {
+    if (relaunchedSet.has(row.spawn_id)) continue;
     void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(
       () => { /* best-effort — logged inside wakeParentOnChildDeath */ },
     );
@@ -403,5 +574,6 @@ export async function reconcileSpawnAdmissionOnBoot(
     reclaimed: rows.length,
     spawnIds: rows.map((r) => r.spawn_id),
     workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+    relaunched,
   };
 }
