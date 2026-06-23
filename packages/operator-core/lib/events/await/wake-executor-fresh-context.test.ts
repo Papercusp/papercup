@@ -51,6 +51,7 @@ function makeDelivery(payload: unknown, over: Partial<DeliveryWork> = {}): Deliv
     urgent: false,
     minSleepSec: null,
     coalescedCount: 1,
+    source: null,
     wakeHandle: null,
     note: null,
     ...over,

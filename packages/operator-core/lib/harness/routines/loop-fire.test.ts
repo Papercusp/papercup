@@ -32,9 +32,14 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     const [recipients, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(recipients).toEqual(['su-pinned']);
     expect(opts).toMatchObject({ source: 'loop:rt_papercusp_loop_su-pinned', workspaceId: 'papercusp-workspace' });
-    // Fire history: a pre-fire attempt (preserves the streak) then an 'ok' (resets it).
+    // Fire history (loop-wake-rate-limit-robustness P0b): a pre-fire 'attempt' then a
+    // 'queued' 'attempt' — both PRESERVE the streak. The enqueue is NOT an 'ok': a queued
+    // wake is not a survived turn. The turn OUTCOME owns ok/error (reconcile records 'ok' on
+    // completion; the resume-exit handler / stuck-park backstop record 'error' on a death).
     expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'firing', 'attempt');
-    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'ok', 'ok');
+    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'queued', 'attempt');
+    // Crucially, the enqueue NEVER records an 'ok' outcome (that would prematurely reset the streak).
+    expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.anything(), 'ok');
   });
 
   it('delivers the routine kickoff as the wake-turn text, falling back to the default', async () => {
@@ -92,13 +97,15 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.anything(), 'error');
   });
 
-  it('a staged wake (manual wake-mode / hive pause) counts as reached → ok', async () => {
+  it('a staged wake (manual wake-mode / hive pause) counts as reached → queued (attempt, streak preserved)', async () => {
     const deps = mkDeps({
       wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 1 })) as never,
     });
     const res = await fireLoopWake(baseInput, deps);
     expect(res).toMatchObject({ fired: true, staged: 1 });
-    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'ok', 'ok');
+    // Reached (staged) ⇒ 'queued'/'attempt' (preserve the streak), NOT 'ok' — the turn outcome owns ok.
+    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'queued', 'attempt');
+    expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.anything(), 'ok');
   });
 
   it('no target_owner_id → withheld with no gate/wake calls', async () => {

@@ -146,16 +146,19 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     workspaceId: input.workspaceId,
   });
 
-  // `ok` (woke or staged) resets the streak (closes the circuit). A miss is `attempt`, NOT
-  // `error`: the inbox row persisted (a busy/parked session sees it on its next turn), so a
-  // single miss must not advance the failure-streak — only a genuinely dead session (which the
-  // wake-delivery layer DROPs visibly) or the cost-cap should pause a loop.
+  // The enqueue is recorded as `attempt`, NOT `ok` (loop-wake-rate-limit-robustness P0b):
+  // a queued wake is NOT yet a survived turn. The old `ok`-on-enqueue reset the failure
+  // streak the instant a delivery was queued, so a wake whose detached resume turn later
+  // 429'd-and-died kept consecutive_errors oscillating 0→1→0 and never opened the circuit.
+  // The TURN OUTCOME now owns ok/error: reconcile-loop-routines records `ok` when it sees
+  // the turn's completion marker, and the resume-turn-outcome handler / stuck-park backstop
+  // record `error` on a death. The enqueue just refreshes last_status (counter PRESERVED).
   const reached = (fan.woken ?? 0) > 0 || (fan.staged ?? 0) > 0;
   await recordFire(
     input.installSlug,
     input.routineName,
-    reached ? 'ok' : 'no-session-now',
-    reached ? 'ok' : 'attempt',
+    reached ? 'queued' : 'no-session-now',
+    'attempt',
   ).catch(() => {});
 
   return { fired: true, woken: fan.woken, staged: fan.staged };

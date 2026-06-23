@@ -55,6 +55,19 @@ export async function writePresence(
   }
   await store.write(identity, { ...input, agentRole, hiveSlug });
 
+  // WI-573 (honest-presence): a declared presence write is GENUINE activity — so if this owner's
+  // adv_sessions row still carries a stale `ended_at` from a PRIOR incarnation (resumed via a path
+  // that never re-POSTed bootstrap-su, e.g. harness compaction), clear it now so a LIVE agent never
+  // reads as `ended`. Generalizes psu-launcher's `reportSessionResumed` (psu --resume only) to ANY
+  // resume. Fully best-effort + idempotent (0-row no-op when already live); never affects the write
+  // above or the brief below.
+  try {
+    const { reactivateAdvSessionByOwner } = await import('../../adv-sessions');
+    await reactivateAdvSessionByOwner(identity.ownerId);
+  } catch {
+    /* best-effort: presence already wrote; honesty-reactivation must never block it */
+  }
+
   // EI-1742: persist a durable successor brief on this write path so the agent's last
   // declared lane survives the coord_presence reaper sweep + abrupt session death
   // (a continuing session reads it instead of doing transcript archaeology). Fully

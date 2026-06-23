@@ -72,6 +72,7 @@ function warmInjectDelivery(over: Partial<DeliveryWork> = {}): DeliveryWork {
     urgent: false,
     minSleepSec: null,
     coalescedCount: 1,
+    source: null,
     note: 'next task placed; drain into it',
     wakeHandle: {
       kind: 'adv-session',

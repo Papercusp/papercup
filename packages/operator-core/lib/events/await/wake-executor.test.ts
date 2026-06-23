@@ -68,6 +68,7 @@ function work(overrides: Partial<DeliveryWork> = {}): DeliveryWork {
     urgent: false,
     minSleepSec: null,
     coalescedCount: 1,
+    source: null,
     wakeHandle: null,
     note: 'waiting to edit foo.ts',
     ...overrides,

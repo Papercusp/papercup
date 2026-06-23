@@ -64,6 +64,8 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { recordFire as defaultRecordFire } from '../../autoloop';
+import { runWithWorkspace } from '../../workspace-als';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
@@ -124,6 +126,12 @@ interface LoopRow {
   target_owner_id: string;
   interval_sec: number;
   parked: boolean;
+  // Fire-gate key (loop-wake-rate-limit-robustness P0b): the completion-rebase feeds the
+  // EXISTING autoloop circuit — recordFire(install_slug, name, …, 'ok' on completion /
+  // 'error' on the stuck-park backstop) — keyed exactly as fireLoopWake/checkFireGate.
+  install_slug: string;
+  name: string;
+  routine_workspace_id: string;
   // timestamptz columns: a `Date` on a type-parsing connection, a STRING on the operator's
   // pooled `prepare:false` connection — always read through `tsMs()`, never `.getTime()` (EI-2549).
   last_fired_at: Date | string | null;
@@ -165,10 +173,11 @@ function completionSignal(
  * tests.
  */
 export async function reconcileLoopRoutines(
-  opts: { sql?: Sql; nowMs?: number } = {},
+  opts: { sql?: Sql; nowMs?: number; recordFire?: typeof defaultRecordFire } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
   const nowMs = opts.nowMs ?? Date.now();
+  const recordFire = opts.recordFire ?? defaultRecordFire;
 
   // Loop routines that may need a re-arm: a PARKED pure loop (rebase off completion) or an
   // armed cron+loop (fold the sooner). A pure loop still ARMED for its FIRST fire (a real
@@ -180,6 +189,9 @@ export async function reconcileLoopRoutines(
            r.target_owner_id,
            r.reschedule_interval_sec AS interval_sec,
            (r.next_fire_at = 'infinity'::timestamptz) AS parked,
+           r.install_slug,
+           r.name,
+           r.workspace_id AS routine_workspace_id,
            r.last_fired_at,
            (SELECT max(a.created_at)
               FROM harness_shared.agent_activity a
@@ -263,10 +275,25 @@ export async function reconcileLoopRoutines(
           nextFireAt: completedAt + intervalMs,
           via,
         });
+        // Feed the autoloop circuit (loop-wake-rate-limit-robustness P0b). A completed turn
+        // (lifecycle / presence-quiescence) is SUCCESS → recordFire('ok') resets the streak;
+        // a stuck-park re-arm is a dead / never-delivered turn → recordFire('error') feeds
+        // the existing backoff + circuit. CHANNEL-AGNOSTIC: this catches inject-path deaths
+        // the resume-exit observer can't see, and is the durable fallback when that observer
+        // is missed (operator restart between spawn and exit). Run under the loop's own
+        // workspace so the (ws, install_slug, name) key matches the fire side exactly.
+        const outcome: 'ok' | 'error' = via === 'stuck-backstop' ? 'error' : 'ok';
+        await runWithWorkspace(row.routine_workspace_id, () =>
+          recordFire(row.install_slug, row.name, `loop-${via}`, outcome),
+        ).catch((e) =>
+          console.warn(
+            `[loop-reconcile] recordFire('${outcome}') failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
+          ),
+        );
         if (via === 'stuck-backstop') {
           console.warn(
             `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) parked ` +
-              `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry`,
+              `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry (circuit fed 'error')`,
           );
         }
       }

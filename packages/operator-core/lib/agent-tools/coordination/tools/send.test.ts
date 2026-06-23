@@ -26,8 +26,11 @@ vi.mock('../../turn/interrupt', () => ({ forceEndTurn: vi.fn(async () => ({ ok: 
 
 import { sendMessage } from '../messages';
 import { resolveRecipients } from '../recipient-resolve';
+import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 const sendM = vi.mocked(sendMessage);
 const resolveM = vi.mocked(resolveRecipients);
+const wakeM = vi.mocked(wakeRecipients);
+const idleM = vi.mocked(reportIdleRecipients);
 const tool = (await import('./send')).default;
 
 type Out = { data: any };
@@ -88,5 +91,22 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[1]).toMatchObject({ ok: false, to: ['ghost'], error: 'unknown_recipient', unknown_recipients: ['ghost'] });
     // the bad message was NOT sent (the good one was)
     expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
+  it("wake:'required' miss on a DEAD recipient → recipient_dead + truthful black-hole note (WI-574)", async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['dead-bee'], keys: [], woken: 0, staged: 0 } as never);
+    idleM.mockResolvedValueOnce({ idle: ['dead-bee'] } as never);
+    const b = await body({ to: ['dead-bee'], summary: 'pick this up', wake: 'required' });
+    expect(b.results[0].wake).toMatchObject({ recipient_absent: true, recipient_dead: ['dead-bee'] });
+    expect(b.results[0].wake.note).toMatch(/NOT be seen|black-hole|not running/i);
+  });
+
+  it("wake:'required' miss on a PAUSED-but-alive recipient → recipient_absent, NO recipient_dead (WI-574)", async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['paused-bee'], keys: [], woken: 0, staged: 0 } as never);
+    idleM.mockResolvedValueOnce({ idle: [] } as never);
+    const b = await body({ to: ['paused-bee'], summary: 'hi', wake: 'required' });
+    expect(b.results[0].wake.recipient_absent).toBe(true);
+    expect(b.results[0].wake.recipient_dead).toBeUndefined();
+    expect(b.results[0].wake.note).toMatch(/next turn|actually running/i);
   });
 });

@@ -947,6 +947,10 @@ try {
 // all state in PG; fail-soft (a missing table pre-migration-163 must never
 // block boot — each sweep catches its own errors).
 import { startAwaitSweeper } from '../events/await/engine';
+// loop-wake-rate-limit-robustness P0b: side-effect import registers the resume-turn-outcome
+// handler (feeds a dead loop wake turn into the autoloop circuit + 429-aware re-arm). Mirrors
+// the lock-grant-bridge reconciler registration; must be imported at boot to take effect.
+import '../harness/routines/loop-turn-outcome';
 try {
   startAwaitSweeper();
 } catch {

@@ -40,6 +40,7 @@ import {
   recoverStuckDeliveries,
 } from './store';
 import { executeWake, type ExecuteWakeDeps } from './wake-executor';
+import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { AwaitRow, DeliveryWork } from './types';
 
 const log = (msg: string) => console.warn(`[await-event] ${msg}`);
@@ -293,7 +294,12 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         }
       }
 
-      const outcome = await executeWake(coalesceDeliveries(group), deps);
+      const outcome = await executeWake(coalesceDeliveries(group), {
+        ...deps,
+        // P0a: observe the detached resume turn's eventual exit (the loop turn-outcome
+        // handler registered the default). An explicit dep (tests) still wins.
+        onResumeTurnExit: deps.onResumeTurnExit ?? resumeTurnOutcomeHandler ?? undefined,
+      });
 
       if (outcome.kind === 'delivered') {
         if (outcome.channel === 'resume' || outcome.channel === 'resume-headless' || outcome.channel === 'plan-run-resume') resumes++;
@@ -367,6 +373,22 @@ const reconcilers = new Set<(workspaceId: string) => Promise<void>>();
 
 export function registerAwaitReconciler(fn: (workspaceId: string) => Promise<void>): void {
   reconcilers.add(fn);
+}
+
+/**
+ * The resume-turn-exit observer (loop-wake-rate-limit-robustness P0a/P0b). A
+ * `resume-headless` wake spawns a DETACHED turn whose later 429-death is otherwise
+ * invisible (the delivery is 'delivered' on spawn). When set, the pump passes this to
+ * `executeWake`, which fires it once the detached turn exits — the seam the loop
+ * turn-outcome handler (harness/routines/loop-turn-outcome.ts) uses to feed the autoloop
+ * circuit on a dead loop turn. A REGISTRATION seam (not a static import) so events/await
+ * never imports harness/routines (no cycle). Fire-and-forget + best-effort: a missed exit
+ * degrades to the reconcile stuck-park backstop (≥30min), exactly as today.
+ */
+let resumeTurnOutcomeHandler: ((d: DeliveryWork, exit: ResumeTurnExitRaw) => void) | null = null;
+
+export function registerResumeTurnOutcomeHandler(fn: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void): void {
+  resumeTurnOutcomeHandler = fn;
 }
 
 // ── the sweeper ───────────────────────────────────────────────────────────────

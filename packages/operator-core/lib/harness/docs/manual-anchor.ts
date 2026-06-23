@@ -8,6 +8,8 @@
  * hidden.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { repoHeadSha, runGit } from './git-runner';
 import { resolveHarnessDocPaths } from './harness-repo';
 import { readDocBody } from './doc-fs';
@@ -106,8 +108,20 @@ export async function anchorManualDoc(input: AnchorManualDocInput): Promise<Anch
     if (body) {
       documents = frontmatterDocuments(body);
       if (documents == null) {
+        // INFERENCE ONLY (no explicit `documents:`): a body code-span that looks like a
+        // path is a GUESS. Keep only guesses that resolve to a real repo file — else the
+        // inference scoops up placeholders (`lib/foo.ts`), illustrative examples
+        // (`utils/normalizeX.ts`), and untrackable home/env paths (`~/.claude/…`,
+        // `CODEX_HOME/…`) and stores them as dead anchors (docs-audit 2026-06-23, #4).
+        // Explicit `documents:` paths are NOT filtered — a wrong one there is an author
+        // bug we want surfaced, not silently dropped.
         const inferred = inferSubjectFromBody(body);
-        if (inferred.length) documents = inferred.flatMap((r) => (r.kind === 'path' ? r.globs : []));
+        if (inferred.length) {
+          const real = inferred
+            .flatMap((r) => (r.kind === 'path' ? r.globs : []))
+            .filter((g) => existsSync(join(repoRoot, g)));
+          if (real.length) documents = real;
+        }
       }
     }
   }

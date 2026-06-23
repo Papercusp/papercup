@@ -367,6 +367,37 @@ export async function reactivateAdvSession(id: number): Promise<boolean> {
   }
 }
 
+/**
+ * WI-573 (honest-presence): reactivate a resumed session's adv row keyed by its COORD owner id,
+ * for resume paths that never re-POST bootstrap-su (harness compaction, or any resume that is not
+ * `psu --resume`). Called from the declared-activity presence write so the instant a live agent
+ * declares intent / orients, a stale `ended_at` left by a prior incarnation is cleared and it reads
+ * LIVE instead of `ended`. Touches only the most-recent ENDED row for that owner; idempotent + cheap
+ * (a 0-row no-op when the session is already live). Generalizes `reactivateAdvSession` (by numeric id,
+ * psu-launcher only) so EVERY resume path is honest. Returns true when a row was re-activated.
+ */
+export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise<boolean> {
+  if (!coordOwnerId) return false;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET ended_at = NULL, exit_code = NULL, started_at = now()
+       WHERE id = (
+         SELECT id FROM harness_shared.adv_sessions
+          WHERE coord_owner_id = ${coordOwnerId} AND ended_at IS NOT NULL
+          ORDER BY started_at DESC
+          LIMIT 1
+       )
+      RETURNING id
+    `;
+    return rows.length > 0;
+  } catch (e) {
+    console.warn('[adv-sessions] reactivateAdvSessionByOwner failed:', (e as Error).message);
+    return false;
+  }
+}
+
 export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   try {
     const { sql } = getOrgPg();

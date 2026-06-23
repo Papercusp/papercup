@@ -435,6 +435,24 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     ).toBe(true);
   });
 
+  it('the dark allowlist only ever SHRINKS — agents may not reconstruct it (owner mandate 2026-06-23)', () => {
+    // ANTI-RECONSTRUCTION GUARD (owner-directed, plan flip-dark-flags-default-on-2026-06-23): the
+    // allowlist was being abused as a PARKING LOT — finished work left default-OFF "to be safe"
+    // because flipping it on made agents uncomfortable. After the owner's flags-default-ON sweep the
+    // dark set stands at the high-watermark below and may ONLY SHRINK. Adding a new dark flag FAILS
+    // here: ship finished work default-ON, or — for genuinely incomplete/unsafe NEW work — graduate
+    // an existing dark flag first (net-zero), or get EXPLICIT owner sign-off to raise the watermark.
+    // Growth must be a deliberate, owner-visible act, never a quiet append. (Pairs with the
+    // valid-reason guard below, which already bars the "finished, owner flips later" excuse.)
+    const DARK_FLAGS_HIGH_WATERMARK = 27;
+    expect(
+      KNOWN_DARK_FLAGS.size <= DARK_FLAGS_HIGH_WATERMARK,
+      `The dark allowlist GREW to ${KNOWN_DARK_FLAGS.size} (high-watermark ${DARK_FLAGS_HIGH_WATERMARK}). ` +
+        `Do NOT reconstruct the parking lot: ship finished work default-ON, or graduate an existing ` +
+        `dark flag to make room. Raising DARK_FLAGS_HIGH_WATERMARK needs explicit owner sign-off.`,
+    ).toBe(true);
+  });
+
   it('every dark flag declares a valid reason — closes the "finished-pending-verify" loophole', () => {
     // CLAUDE.md allows default-OFF ONLY for: incomplete | owner-authority | cutover | parked.
     // There is deliberately NO "finished, owner flips after verifying" case — a finished + tested

@@ -52,6 +52,16 @@ export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
   // Re-point the tools' app + admin connections (resolved from env) at the
   // baseline DB, then drop any cached pool + memoized URL so the next
   // getOrgPg*() call rebuilds against these URLs.
+  //
+  // The DSN points at a throwaway testcontainer with NO PgBouncer. On a SERVER-class host
+  // (the dev box / a dedicated CI server) pgbouncerEnabled() derives ON from hostClass, so
+  // getOrgPg()'s maybePgbouncer() would reroute these reads to 127.0.0.1:6432 — the WRONG
+  // Postgres — tripping a FATAL 08P01 under transaction pooling. Force the kill-switch OFF +
+  // skip PG discovery so getOrgPg honours the env DSN verbatim (mirrors _baseline-coord-fixture).
+  const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
+  const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+  process.env.PAPERCUSP_PGBOUNCER = '0';
+  process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   process.env.HARNESS_DATABASE_URL = withUser(dsn, 'harness_app', 'harness_app_pwd');
   process.env.HARNESS_ADMIN_DATABASE_URL = withUser(dsn, 'harness_admin', 'harness_admin_pwd');
   _resetUrlCacheForTests();
@@ -67,6 +77,10 @@ export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
     await admin.end({ timeout: 5 }).catch(() => {});
     delete process.env.HARNESS_DATABASE_URL;
     delete process.env.HARNESS_ADMIN_DATABASE_URL;
+    if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+    else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
+    if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+    else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
     _resetUrlCacheForTests();
     await _resetForTests();
   };

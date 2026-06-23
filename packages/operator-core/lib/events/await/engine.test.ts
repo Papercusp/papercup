@@ -76,6 +76,7 @@ function workRow(over: Partial<DeliveryWork> = {}): DeliveryWork {
     urgent: false,
     minSleepSec: null,
     coalescedCount: 1,
+    source: null,
     wakeHandle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 },
     note: null,
     ...over,
