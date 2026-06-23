@@ -139,6 +139,46 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
 }
 
 /**
+ * The epoch-ms timestamp of the most-recent SUCCESSFUL Scout cycle RUN
+ * (scout_ticks status='ran') for a workspace — the cadence min-interval floor's
+ * "last run" clock — or null when no cycle has ever run.
+ *
+ * EI-1600: the floor MUST measure from the last cycle that actually RAN, NOT from
+ * `autoloop_state.last_fired_at`. `recordFire` stamps `last_fired_at` on every
+ * fire ATTEMPT (and on an 'error' outcome — e.g. a 429 "rate-limit pause exceeds
+ * maxWait" cycle that generated 0 ideas), so reusing that clock as the floor let
+ * every doomed hourly fire reset the 60-min floor — leaving Scout effectively
+ * dark (every intervening tick gated 'min-interval', no real cycle ever clearing
+ * the floor). A 'ran' tick is recorded ONLY when a budgeted cycle completed, so it
+ * is the correct floor anchor; the autoloop clock stays the backoff/circuit anchor
+ * (consecutive errors) + the single-flight CAS token.
+ *
+ * `installSlugs` are the workspace-brain READ-FALLBACK keys (workspaceBrainReadKeys)
+ * — passing them reconciles the @singleton ↔ legacy-per-hive rows so the read picks
+ * up runs recorded under either key (the install slug the tick recorder writes
+ * under). Omit to read across all of the workspace's scout ticks.
+ */
+export async function readLastScoutRunAtMs(
+  opts: { workspaceId?: string; installSlugs?: string[] } = {},
+): Promise<number | null> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const slugs = (opts.installSlugs ?? []).filter((s) => typeof s === 'string' && s.length > 0);
+  const rows = await sql<Array<{ tick_at: string | Date }>>`
+    SELECT tick_at
+      FROM harness_shared.scout_ticks
+     WHERE workspace_id = ${ws}
+       AND status = 'ran'
+       ${slugs.length > 0 ? sql`AND install_slug IN ${sql(slugs)}` : sql``}
+     ORDER BY tick_at DESC
+     LIMIT 1`;
+  if (rows.length === 0) return null;
+  const t = rows[0].tick_at;
+  const ms = t instanceof Date ? t.getTime() : new Date(t).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
  * The epoch-ms timestamp of the last scout_ticks row that ACTUALLY RAN a cycle
  * (status IN ('ran','fired')) for the given install slug(s) — or null when a
  * cycle has never run. This is the cadence clock the scheduler measures the

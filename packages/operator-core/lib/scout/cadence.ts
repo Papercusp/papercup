@@ -88,6 +88,17 @@ export interface ScoutCadenceState {
    * Optional (pure-gate default false) — omit when there is no feedback channel.
    */
   queenWakePending?: boolean;
+  /**
+   * The autoloop fire-clock (`autoloop_state.last_fired_at`, epoch ms) the
+   * scheduler's single-flight CAS claims against (EI-304). DECOUPLED from
+   * {@link lastRunAtMs} (EI-1600): the cadence floor measures from the last cycle
+   * that actually RAN, while the single-flight claim must CAS against the autoloop
+   * clock `recordFire` stamps on every fire outcome. The gate never reads this —
+   * only the scheduler's `claimFire`. Optional: when omitted (the pure-gate /
+   * unit-test default) the claim falls back to {@link lastRunAtMs}, byte-identical
+   * to the pre-decouple behaviour.
+   */
+  lastFireClaimAtMs?: number | null;
 }
 
 export interface ScoutCadenceOptions {

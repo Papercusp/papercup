@@ -323,6 +323,64 @@ describe('runScoutTick — double-fire / overlapping ticks (scout-loop-test-plan
     expect(calls.ticks.filter((t) => t.status === 'gated' && t.gate === 'claim-lost')).toHaveLength(1);
   });
 
+  it('EI-1600: a RECENT fire-slot clock does NOT gate a real cycle — the floor measures the last RUN', async () => {
+    // The dormancy bug: lastRunAtMs was sourced from the autoloop fire-ATTEMPT clock
+    // (advanced by a hung/errored fire that never ran a cycle), so the min-interval
+    // floor gated every real cycle as 'min-interval' (~24h dark). Now the cadence
+    // floor measures the last RUN (lastRunAtMs = last scout_ticks 'ran') and the
+    // single-flight claim CAS's against the SEPARATE fire-slot clock (fireSlotLastMs).
+    const claimExpected: Array<number | null> = [];
+    const calls = { cycles: 0 };
+    const deps: ScoutTickDeps = {
+      // last RUN is long ago (3h), but the fire-slot was just stamped (1 min ago).
+      readCadenceState: async () => ({
+        idleRatio: 0,
+        frictionSignals: 0,
+        lastRunAtMs: NOW - 3 * 3600_000,
+        fireSlotLastMs: NOW - 60_000,
+        nowMs: NOW,
+      }),
+      runCycle: async () => {
+        calls.cycles += 1;
+        return { provenance: [] };
+      },
+      persistRouted: async () => {},
+      claimFire: async (expected) => {
+        claimExpected.push(expected);
+        return true;
+      },
+      recordFire: async () => {},
+      recordTick: async () => {},
+      newCycleId: () => 'cyc-1600',
+    };
+    const r = await runScoutTick(deps, { cadence: { minIntervalSec: 3600, maxIntervalSec: 3600 } });
+    // Floor is measured from the last RUN (3h ago) → fires (heartbeat), NOT gated.
+    expect(r.fired).toBe(true);
+    expect(r.reason).toBe('heartbeat');
+    expect(calls.cycles).toBe(1);
+    // The single-flight claim CAS'd against the FIRE-SLOT clock, not the cadence clock.
+    expect(claimExpected).toEqual([NOW - 60_000]);
+  });
+
+  it('EI-1600: claimFire falls back to lastRunAtMs when fireSlotLastMs is absent (unit-test fakes)', async () => {
+    const claimExpected: Array<number | null> = [];
+    const deps: ScoutTickDeps = {
+      readCadenceState: async () => ({ idleRatio: 1, frictionSignals: 0, lastRunAtMs: NOW - 3600_000, nowMs: NOW }),
+      runCycle: async () => ({ provenance: [] }),
+      persistRouted: async () => {},
+      claimFire: async (expected) => {
+        claimExpected.push(expected);
+        return true;
+      },
+      recordFire: async () => {},
+      recordTick: async () => {},
+      newCycleId: () => 'cyc-fallback',
+    };
+    const r = await runScoutTick(deps);
+    expect(r.fired).toBe(true);
+    expect(claimExpected).toEqual([NOW - 3600_000]); // fell back to lastRunAtMs (no fireSlotLastMs)
+  });
+
   it('production wiring includes the single-flight claim (buildScoutTickDeps)', async () => {
     const deps = buildScoutTickDeps({
       harnessSlug: 'papercup',

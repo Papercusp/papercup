@@ -221,7 +221,7 @@ export default function AdvConversationsTab() {
   );
 }
 
-// ─── Activity log — raw coordination events ──────────────────────────
+// ─── Raw events — the raw coordination event log ─────────────────────
 
 const FEED_KINDS = [
   'message',
@@ -677,7 +677,7 @@ function FeedView() {
         {head.loading && allRows.length === 0 ? (
           <LoadingRows rows={6} label="Loading the coordination feed" />
         ) : head.error ? (
-          <p className="pc-coord__empty pc-advconv__empty">Activity log unavailable: {head.error.message}</p>
+          <p className="pc-coord__empty pc-advconv__empty">Raw events log unavailable: {head.error.message}</p>
         ) : roots.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
             <strong>No matching traffic</strong>

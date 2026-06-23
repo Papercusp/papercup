@@ -19,7 +19,7 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => Promise.resolve() }));
 
 // Imported AFTER the mocks are declared (vi.mock is hoisted above imports).
-const { recordScoutTick, readScoutTicks } = await import('./tick-ledger');
+const { recordScoutTick, readScoutTicks, readLastRanTickAtMs } = await import('./tick-ledger');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 describe('scout_ticks ledger (real PG)', () => {
@@ -104,5 +104,49 @@ describe('scout_ticks ledger (real PG)', () => {
     const ws = 'ws-scout-limit';
     for (let i = 0; i < 3; i++) await recordScoutTick({ workspaceId: ws, status: 'gated', gate: `g${i}` });
     expect(await readScoutTicks({ workspaceId: ws, limit: 2 })).toHaveLength(2);
+  });
+
+  // EI-1600: the cadence floor must be measured from the last cycle that ACTUALLY
+  // RAN, not from later fire-attempt activity that never ran a cycle. These pin
+  // readLastRanTickAtMs: it returns the last 'ran'/'fired' tick and IGNORES the
+  // 'gated'/'error' ticks that followed it (the exact shape of the dormancy bug —
+  // an old 'ran' then a long tail of gated/error ticks).
+  describe('readLastRanTickAtMs (cadence clock = last RUN)', () => {
+    it('returns the last RAN tick, ignoring later gated/error ticks', async () => {
+      const ws = 'ws-scout-lastran';
+      const slug = '@singleton';
+      await recordScoutTick({ workspaceId: ws, installSlug: slug, status: 'ran', ideasGenerated: 3 });
+      await new Promise((r) => setTimeout(r, 25));
+      const ranAt = await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [slug] });
+      // …then a long tail of NON-run ticks (gated min-interval + an error) — the
+      // dormancy signature. The cadence clock must NOT advance past the real run.
+      await new Promise((r) => setTimeout(r, 25));
+      await recordScoutTick({ workspaceId: ws, installSlug: slug, status: 'gated', gate: 'min-interval' });
+      await recordScoutTick({ workspaceId: ws, installSlug: slug, status: 'error', detail: { error: 'boom' } });
+      const after = await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [slug] });
+      expect(ranAt).not.toBeNull();
+      // The later gated/error ticks did not move the cadence clock forward.
+      expect(after).toBe(ranAt);
+    });
+
+    it('returns null when a cycle has never run (only gated/error ticks)', async () => {
+      const ws = 'ws-scout-neverran';
+      await recordScoutTick({ workspaceId: ws, installSlug: 's', status: 'gated', gate: 'min-interval' });
+      await recordScoutTick({ workspaceId: ws, installSlug: 's', status: 'error', detail: { error: 'x' } });
+      expect(await readLastRanTickAtMs({ workspaceId: ws, installSlugs: ['s'] })).toBeNull();
+    });
+
+    it('reconciles across install_slug read-fallback keys (K1 sentinel/legacy split)', async () => {
+      const ws = 'ws-scout-reconcile';
+      // The true last run is under the legacy per-hive slug; the sentinel slug only
+      // has non-run ticks. A read across BOTH keys must still find the run.
+      await recordScoutTick({ workspaceId: ws, installSlug: 'legacy-hive', status: 'ran' });
+      await new Promise((r) => setTimeout(r, 25));
+      await recordScoutTick({ workspaceId: ws, installSlug: ws, status: 'gated', gate: 'min-interval' });
+      expect(await readLastRanTickAtMs({ workspaceId: ws, installSlugs: ['legacy-hive'] })).not.toBeNull();
+      expect(await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [ws] })).toBeNull();
+      // Reconciled across both keys → resolves the run under the legacy slug.
+      expect(await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [ws, 'legacy-hive'] })).not.toBeNull();
+    });
   });
 });
