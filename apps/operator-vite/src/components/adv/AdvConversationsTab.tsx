@@ -409,7 +409,7 @@ function FeedView() {
   // Group an ack/resolution/acceptance under its parent (related_msg_id chain),
   // so a reply collapses into its root row. A row whose related_msg_id points at
   // another loaded row is a CHILD; everything else is a root.
-  const { roots, childrenOf } = useMemo(() => {
+  const { roots, childrenOf, rootIdOf } = useMemo(() => {
     const byId = new Map(allRows.map((r) => [r.msg_id, r]));
     const childrenOf = new Map<string, FeedRow[]>();
     const roots: FeedRow[] = [];
@@ -425,7 +425,25 @@ function FeedView() {
     }
     // Children oldest-first under their parent (chronological reply order).
     for (const arr of childrenOf.values()) arr.sort((a, b) => a.ts.localeCompare(b.ts));
-    return { roots, childrenOf };
+    // Map every loaded msg_id → the topmost loaded ancestor it renders under. A
+    // reply/ack folds into its parent, so a deep-link (or Colony message click)
+    // targeting a child's msg_id must open the ROOT row — there is no top-level
+    // row for the child itself. Walk the related_msg_id chain, guarding cycles.
+    const rootIdOf = new Map<string, string>();
+    for (const r of allRows) {
+      let cur = r;
+      const seen = new Set<string>([r.msg_id]);
+      while (true) {
+        const pid = typeof cur.related_msg_id === 'string' ? cur.related_msg_id : null;
+        if (!pid || seen.has(pid)) break;
+        const parent = byId.get(pid);
+        if (!parent) break;
+        seen.add(pid);
+        cur = parent;
+      }
+      rootIdOf.set(r.msg_id, cur.msg_id);
+    }
+    return { roots, childrenOf, rootIdOf };
   }, [allRows]);
 
   // Day separators over the root rows (already newest-first from the server).
@@ -507,7 +525,44 @@ function FeedView() {
   // toggle only re-renders the two affected rows; `measureAll` re-measures the
   // newly-grown row. setOpenMsg uses the functional updater so the column set can
   // stay identity-stable (no `openMsg` in its deps) and per-row memo survives.
-  const openSet = useMemo(() => new Set(openMsg ? [`item:${openMsg}`] : []), [openMsg]);
+  // The row to open is the message's ROOT (a reply/ack has no top-level row of its
+  // own — it folds into its parent). Resolving child→root here is what makes a
+  // Colony message click land on the right conversation instead of nothing.
+  const rootForOpen = openMsg ? (rootIdOf.get(openMsg) ?? openMsg) : null;
+  const openSet = useMemo(() => new Set(rootForOpen ? [`item:${rootForOpen}`] : []), [rootForOpen]);
+
+  // Deep-link landing (Colony/Swarm message click sets ?conv=feed&fagent=&fmsg=):
+  // bring the target into view. Expansion is handled by `openSet`; here we (a) scroll
+  // the virtualized list to the row once, and (b) if the message is older than the
+  // loaded window, grow the window (bounded per target) until it appears. Without
+  // this the correct row expands off-screen at the newest head and reads as "it
+  // didn't open the right one."
+  const openLoadRef = useRef<{ id: string | null; tries: number }>({ id: null, tries: 0 });
+  const scrolledForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openMsg) {
+      scrolledForRef.current = null;
+      openLoadRef.current = { id: null, tries: 0 };
+      return;
+    }
+    const target = rootForOpen ?? openMsg;
+    const idx = feedEntries.findIndex((e) => e.kind === 'item' && e.row.msg_id === target);
+    if (idx >= 0) {
+      if (scrolledForRef.current !== openMsg) {
+        scrolledForRef.current = openMsg;
+        rowVirtualizer.scrollToIndex(idx, { align: 'center' });
+      }
+      return;
+    }
+    // Not in the loaded window yet — pull older pages, capped per target so a
+    // genuinely-absent id can't drive an unbounded fetch loop.
+    const st = openLoadRef.current;
+    if (st.id !== openMsg) openLoadRef.current = { id: openMsg, tries: 0 };
+    if (hasOlder && openLoadRef.current.tries < 5) {
+      openLoadRef.current.tries += 1;
+      loadOlder();
+    }
+  }, [openMsg, rootForOpen, feedEntries, hasOlder, loadOlder, rowVirtualizer]);
   const columns = useMemo<ColumnDef<FeedEntry>[]>(
     () => [
       {

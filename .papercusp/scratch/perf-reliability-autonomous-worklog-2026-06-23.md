@@ -38,10 +38,20 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 | 1 | `inference-gateway/egress-dispatcher.ts` | 13 ✓ | per-account egress routing: egressIsHttpProxy scheme handling, egressCacheKey (non-http collapses to empty), buildEgressDispatcher all branches (absent→{}, non-http→ignoredProxyUrl, http→ProxyAgent, localAddress→Agent, both→proxy-wins) via injectable importUndici |
 | 2 | `inference-gateway/egress-probe.ts` | 12 ✓ | clean-IP gate: subnet24 /24 extraction; probeEgress (hasEgress, exitIp+reputation+asn, fetch-throw→error, socks→ignoredProxyUrl, lookup-miss→null); testEgressForAccount (unknown→null, compareOthers=false, ASN collision, /24 subnet collision, distinct, flagged→clean:false) — all via injected ProbeDeps |
 
-**Loop tally: 25 tests across 2 modules. Gateway pure-untested helpers (egress-dispatcher, egress-probe) now done; the rest of the gateway dir has unit tests or is hot runtime.**
+| 3 | `authority/file-lock-routing.ts` | 7 ✓ | file-claim lock routing: resolver seams (configure/get/default domain+hive, _testing); routeFileLockOp D-009 scope guard (unmanaged→local), hot-path guard (no remote peers→local via injected fetchPresenceRows:[]), harness-vs-hive scope selection (spy which presence fetch is consulted). Module-global resolvers + remote-peers cache reset between tests. |
 
-## Next: broaden beyond the gateway dir
-Find untested reliability-critical PURE helpers elsewhere in operator-core (backoff/retry/dedup/cursor/circuit/AIMD math, idempotency, watermark/seq math) OR extend perf-anti-patterns.test.ts for a server-side anti-pattern (A18/A19). Verify uncovered + low-churn + genuinely pure before committing.
+| 4 | `external-bench/grader/swe-bench-pro.ts` | 9 ✓ | parseSweBenchProReport (PURE: resolved bool passthrough, missing/non-boolean→graderError); makeSweBenchProGrader.grade (injected exec+fs: no-diff→[], predictions.json content, eval-arg assembly + --use_local_docker toggle + pythonBin/numWorkers/dockerhub overrides, read-error→batchError w/ exit code, scratch rm in finally) |
+
+**Loop tally: 41 tests across 4 modules.**
+⚠ Verification caveat reaffirmed: `graduation/evidence.ts` was a candidate but evidenceItemsFromIssues is ALREADY tested in `graduation/scan.test.ts` — ALWAYS `grep -rl <export> **/*.test.ts` (incl. sibling test files, not just colocated) before committing.
+
+## Best target pattern: untested modules exporting a `*Deps` injectable-deps interface
+`grep -rlE "export interface [A-Za-z]+Deps" packages/operator-core/lib --include=*.ts | <filter to no colocated test>`.
+Next candidates (verify uncovered + low-churn + filter I/O): `graduation/evidence.ts` (evidenceItemsFromIssues PURE),
+`cross-hive-ask-send.ts` (SendCrossHiveAskDeps), `external-bench/grader/swe-bench-pro.ts` (SweBenchProGraderDeps),
+`sync/hyperbee/hive-epoch-boot-deps.ts` (HiveRekeyBootDeps), `harness-seed.ts` (SeedHarnessDeps). SKIP I/O-coupled
+(run-launcher, hive-eval/live-ops, bee-transcript-cap-action) + lock-guard (no injection seam, 6 hard imports).
+Also still open: extend perf-anti-patterns.test.ts for a server-side anti-pattern (A18/A19).
 
 ## Candidate backlog (verify uncovered + collision-safe per wake)
 - Pure untested gateway helpers: `egress-probe.ts` (215, NONE — check purity), `index.ts` (shim, skip).

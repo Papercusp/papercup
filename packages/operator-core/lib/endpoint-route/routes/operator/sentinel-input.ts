@@ -28,6 +28,14 @@ import { requireAllowedOriginOr403 } from '../../cors';
 
 const exec = promisify(execFile);
 
+/**
+ * How long after the Sentinel pane registers (launch start) to treat it as still
+ * "warming up" — psu bootstrap + Claude TUI boot before the composer accepts
+ * input. A voice-in inside this window is delayed (not dropped) so it lands in a
+ * ready composer. Sized to cover a typical psu+claude cold boot on the dev box.
+ */
+const SENTINEL_WARMUP_MS = 8000;
+
 /** The operator may not carry ~/.cargo/bin on PATH; prefer the known location. */
 function zellijBin(): string {
   const cargoBin = join(homedir(), '.cargo', 'bin', 'zellij');

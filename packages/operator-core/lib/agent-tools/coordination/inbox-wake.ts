@@ -53,6 +53,23 @@ export function ownerFromInboxWakeKey(key: string): string | null {
  *  so the no-wake report and the wake fan skip exactly the same addressees. */
 export const NON_WAKEABLE = new Set(['*', 'human', '']);
 
+/** A LOOP wake's source convention (loop-fire.ts: `loop:<routineId>`). */
+export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
+
+/**
+ * Is this wake a LOOP's self-wake? A loop wake is the agent driving ITSELF (loop:arm), so it
+ * must BYPASS the manual pause/edit gate below: there is no separate owner to release a staged
+ * wake — the asleep agent waiting on `coord:inbox-wake:<self>` is the ONLY one who could release
+ * it, so STAGING a self-wake DEADLOCKS the loop (fire → stage → nobody releases → never executes).
+ * Observed live 2026-06-23: a self-loop fired ~10× into a manual-mode session (global default was
+ * `manual` via hive:pause) and every wake staged → the loop did zero work. The manual gate exists
+ * for an OWNER reviewing a SUBORDINATE's wakes; a self-loop has neither, so its wake always fires.
+ * (loop:arm is su/interactive-only — never a fleet agent — so this never un-pauses a fleet bee.)
+ */
+export function isLoopWakeSource(source: string | undefined): boolean {
+  return (source ?? '').startsWith(LOOP_WAKE_SOURCE_PREFIX);
+}
+
 export interface WakeRecipientsResult {
   /** Concrete recipient ownerIds we fired a wake key for (post-filter). */
   targets: string[];
@@ -94,9 +111,13 @@ export async function wakeRecipients(
   const keys: string[] = [];
   let woken = 0;
   let staged = 0;
+  // A self-loop wake bypasses the manual gate entirely (staging it deadlocks — see
+  // isLoopWakeSource). The source is per-CALL, so compute once. Everything else still honors
+  // the per-agent manual pause/edit gate exactly as before (default-preserving).
+  const bypassManualGate = isLoopWakeSource(opts.source);
   for (const ownerId of targets) {
-    // Manual mode → STAGE instead of fire; the agent is not re-invoked.
-    {
+    // Manual mode → STAGE instead of fire; the agent is not re-invoked (EXCEPT a self-loop wake).
+    if (!bypassManualGate) {
       let manual = false;
       try {
         manual = (await resolveWakeMode(ownerId)) === 'manual';

@@ -153,6 +153,7 @@ vi.mock('@tanstack/react-virtual', () => ({
       getTotalSize: () => count * ROW,
       measureElement: () => {},
       measure: () => {},
+      scrollToIndex: () => {},
     };
   },
 }));
@@ -311,6 +312,21 @@ describe('AdvConversationsTab — simplified design', () => {
     expect(screen.getByText(/1 reply/i)).toBeTruthy();
     // The ack's own summary ("got it") is not a standalone root row.
     expect(screen.queryByText('got it')).toBeNull();
+  });
+
+  // Regression: a Colony/Swarm message click deep-links with ?conv=feed&fmsg=<msg>.
+  // When that message is a folded reply/ack (related_msg_id chain), there is no
+  // top-level row for the child id — so the expand-set must resolve child→ROOT and
+  // open the PARENT conversation. Before the fix, ?fmsg=<childId> matched no row and
+  // nothing expanded ("clicking the message brings up the wrong/no conversation").
+  it('expands the parent conversation when ?fmsg targets a folded reply (child→root)', () => {
+    nuqsState.conv = 'feed';
+    nuqsState.fmsg = 'm-ack'; // m-ack is a CHILD of m-direct (folded under it)
+    render(<AdvConversationsTab />);
+    // The parent root row is open…
+    expect(screen.getByText('please pick up the auth refactor')).toBeTruthy();
+    // …and the clicked reply is now revealed inside the expanded conversation.
+    expect(screen.getByText('got it')).toBeTruthy();
   });
 
   it('shows the empty state when no traffic matches', () => {

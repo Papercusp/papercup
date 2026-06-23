@@ -51,6 +51,27 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(r.staged).toBe(1);
   });
 
+  it('a LOOP self-wake (source loop:<routineId>) FIRES even in manual mode — staging a self-wake would DEADLOCK the loop', async () => {
+    // Live 2026-06-23: global default was `manual` (hive:pause), so a self-armed loop fired ~10×
+    // into a manual session and every wake STAGED → the loop never executed. A loop wake is the
+    // agent driving itself: the asleep agent waiting on the wake is the only one who could release
+    // a staged one, so it MUST bypass the manual pause/edit gate and fire.
+    vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
+    const r = await wakeRecipients(['s-1'], { source: 'loop:rt_abc123', summary: 'loop wake' });
+    expect(stagePendingWake).not.toHaveBeenCalled(); // NOT staged despite manual mode
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(1); // fired instead
+    expect(r.staged).toBe(0);
+    expect(r.woken).toBe(1);
+  });
+
+  it('a NON-loop wake in manual mode still STAGES (the bypass is scoped to loop sources only)', async () => {
+    vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
+    const r = await wakeRecipients(['s-1'], { source: 'coord:send', summary: 'peer message' });
+    expect(stagePendingWake).toHaveBeenCalledTimes(1);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(r.staged).toBe(1);
+  });
+
   it('filters non-wakeable selectors (*/human/empty)', async () => {
     const r = await wakeRecipients(['*', 'human', '', 's-1']);
     expect(r.targets).toEqual(['s-1']);
