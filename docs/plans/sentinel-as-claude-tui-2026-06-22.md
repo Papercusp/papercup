@@ -62,6 +62,14 @@ current state blocking `operator:converse`).
                      · asks structured choices via a card bridge
 ```
 
+> **Constraint (owner, 2026-06-22) — LOCAL APP USER ONLY.** The Sentinel
+> communicates *only* with the local user of the app, via the local **webview
+> STT/TTS pipeline ↔ the Claude-TUI pane**. The **P2P voice-channel system**
+> (`voice:join`/`leave`/`channels`/`transcript`) is **NOT** the path for
+> Sentinel↔user voice (that's a different, multi-peer system). So: voice-IN =
+> local STT → the pane's stdin; voice-OUT = the pane's reply → the local
+> `speak()`/TTS. Do not wire the Sentinel into P2P channels for user voice.
+
 - The **Sentinel brain = a full Claude-Code agent** (Sentinel persona), not
   `operator:converse`.
 - **Voice in:** STT final-utterances are written to the Sentinel pane's PTY stdin.

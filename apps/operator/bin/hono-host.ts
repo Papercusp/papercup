@@ -202,8 +202,24 @@ function startRequestServers(): void {
     // dead → routine-engine freeze. Resolved in code so a FRESH box is correct
     // without a box-local systemd drop-in; an explicit env still wins.
     const limitMb = resolveMemoryWatchdogLimitMb(process.env);
+    // Proactive GC (the ROOT bg-host-freeze fix): force a full GC in the safe band
+    // (default 60% of the recycle limit) so the heap never reaches the multi-GB
+    // old-gen regime where a V8 mark-compact pause freezes the single event loop —
+    // the "bg-host ticker frozen ~27 min" incident that reclaim-massacred queen/bee
+    // spawns (EI-2186). `--max-old-space-size=131072` (box-wide) defeats V8's own
+    // heap-paced GC, so this proactive sweep is what keeps the ticker alive. The
+    // watchdog runtime-enables `--expose-gc` if NODE_OPTIONS lacks it (fresh-box
+    // correct). Kill-switch: PAPERCUSP_MEMORY_PROACTIVE_GC=0. An explicit
+    // PAPERCUSP_MEMORY_PROACTIVE_GC_MB overrides the threshold.
+    const proactiveGcOff = process.env.PAPERCUSP_MEMORY_PROACTIVE_GC === '0';
+    const proactiveGcMbEnv = Number(process.env.PAPERCUSP_MEMORY_PROACTIVE_GC_MB);
     startMemoryWatchdog({
       rssLimitMb: limitMb,
+      proactiveGcMb: proactiveGcOff
+        ? 0
+        : Number.isFinite(proactiveGcMbEnv) && proactiveGcMbEnv > 0
+          ? proactiveGcMbEnv
+          : undefined,
       onTrip: ({ rssMb }) => {
         console.warn(
           '[memory-watchdog] RSS high-water mark tripped — draining + recycling host (systemd will restart)',

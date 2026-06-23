@@ -23,6 +23,8 @@
  * here in-process so it can drain HTTP gracefully before exiting.
  */
 
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { backgroundWorkersEnabled } from './background-workers';
 
 /**
@@ -67,6 +69,29 @@ export interface MemoryWatchdogOpts {
   intervalMs?: number;
   /** Consecutive over-limit samples before recycling (debounce). Default 2. */
   tripsToRecycle?: number;
+  /**
+   * PROACTIVE-GC threshold (MiB) — the ROOT bg-host-freeze fix. When RSS crosses
+   * this (well BELOW `rssLimitMb`) and `--expose-gc` made `global.gc` available,
+   * run ONE forced full GC to reclaim retained heap BEFORE V8's own
+   * heap-pressure GC kicks in. Why this matters: `NODE_OPTIONS` here carries
+   * `--max-old-space-size=131072` (128 GB — a box-wide setting for the 251 GB
+   * host), which DEFEATS V8's heap-limit-paced GC: the old generation grows into
+   * the multi-GB regime where a single mark-compact pause stalls the SINGLE event
+   * loop for seconds-to-minutes. On the BACKGROUND primary (the routine ticker)
+   * that stall IS the "bg-host frozen ~27 min, ticker stops firing, watchdog
+   * restarts a healthy host" incident (EI-2186 spawn-reclaim massacre). A cheap
+   * forced GC at ~60% of the recycle limit keeps the live heap small enough that
+   * V8's pauses stay sub-100ms, so the loop never freezes. Default = 0.6 ×
+   * rssLimitMb. Set <= 0 (or unset `global.gc`) to disable. The GC itself is
+   * debounced (`gcCooldownMs`) so a host parked above the threshold doesn't GC
+   * every tick. This is the cause-side fix; the recycle is the last-resort
+   * backstop, the watchdog the last-last-resort.
+   */
+  proactiveGcMb?: number;
+  /** Minimum gap between forced proactive GCs (ms). Default 120_000 (2 min). */
+  gcCooldownMs?: number;
+  /** Injectable forced-GC seam (tests). Defaults to `global.gc` when `--expose-gc`. */
+  forceGc?: (() => void) | null;
   /** Structured log sink. Default console.warn. */
   log?: (line: string, detail: Record<string, number>) => void;
   /**
@@ -96,6 +121,25 @@ export interface MemoryWatchdogHandle {
 const bytesToMb = (b: number) => Math.round(b / (1024 * 1024));
 
 /**
+ * Resolve a forced full-GC hook for the proactive-GC freeze fix, WITHOUT requiring
+ * `--expose-gc` in NODE_OPTIONS. Order: an already-exposed `global.gc`, else
+ * runtime-enable it via `v8.setFlagsFromString('--expose-gc')` and grab the `gc`
+ * binding through a fresh VM context. Returns null if neither works (never throws).
+ * Cached null/fn is fine — the binding is stable for the process lifetime.
+ */
+export function resolveForceGc(): (() => void) | null {
+  const exposed = (globalThis as { gc?: () => void }).gc;
+  if (typeof exposed === 'function') return exposed;
+  try {
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc');
+    return typeof gc === 'function' ? (gc as () => void) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Start the memory watchdog. Returns a handle; the timer is `unref`'d so it
  * never keeps the process alive on its own. Call once at host boot.
  */
@@ -104,6 +148,19 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
   const warnMb = opts.warnMb ?? Math.round(rssLimitMb * 0.75);
   const intervalMs = opts.intervalMs ?? 30_000;
   const tripsToRecycle = Math.max(1, opts.tripsToRecycle ?? 2);
+  // Proactive-GC config (the root bg-host-freeze fix). Default threshold = 60% of
+  // the recycle limit so a controlled GC runs in the safe band, long before the
+  // GC-stall zone or the recycle. Disabled if the threshold is non-positive OR no
+  // forced-GC hook is available (no `--expose-gc`).
+  const proactiveGcMb = opts.proactiveGcMb ?? Math.round(rssLimitMb * 0.6);
+  const gcCooldownMs = Math.max(0, opts.gcCooldownMs ?? 120_000);
+  // Resolve a forced-GC hook, fresh-box-correct (no dependency on `--expose-gc`
+  // being in NODE_OPTIONS): prefer an injected seam, else `global.gc` if exposed,
+  // else RUNTIME-enable it via `v8.setFlagsFromString('--expose-gc')` +
+  // `vm.runInNewContext('gc')`. The runtime path makes the freeze fix durable on
+  // any box (the production box happens to carry `--expose-gc` in a box-wide
+  // ~/.profile, but a fresh deploy must not silently lose proactive GC).
+  const forceGc = opts.forceGc !== undefined ? opts.forceGc : resolveForceGc();
   const log =
     opts.log ??
     ((line, detail) => {
@@ -127,6 +184,7 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
 
   let overCount = 0;
   let recycled = false;
+  let lastGcAt = 0;
 
   const rssMb = () => bytesToMb(process.memoryUsage().rss);
 
@@ -139,6 +197,36 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
         warnMb,
         rssLimitMb,
         overCount,
+      });
+    }
+    // PROACTIVE GC (root freeze fix) — runs in the SAFE band (≥ proactiveGcMb, <
+    // rssLimitMb) on a cooldown. A forced full GC here keeps the live heap out of
+    // the multi-GB old-gen regime where a mark-compact pause freezes the event
+    // loop (the bg-host ticker freeze). Cheap relative to a stall: a sub-second GC
+    // every few minutes vs a multi-minute loop freeze + watchdog restart storm.
+    // Skipped once over the recycle limit (the recycle owns that case) and when
+    // disabled (no `--expose-gc`, or proactiveGcMb <= 0).
+    if (
+      forceGc &&
+      proactiveGcMb > 0 &&
+      rss >= proactiveGcMb &&
+      rss < rssLimitMb &&
+      Date.now() - lastGcAt >= gcCooldownMs
+    ) {
+      lastGcAt = Date.now();
+      const before = rss;
+      try {
+        forceGc();
+      } catch {
+        /* a forced GC must never crash the watchdog */
+      }
+      const after = rssMb();
+      log('[memory-watchdog] proactive GC (heap kept out of the stall zone)', {
+        rssMbBefore: before,
+        rssMbAfter: after,
+        reclaimedMb: Math.max(0, before - after),
+        proactiveGcMb,
+        rssLimitMb,
       });
     }
     if (rss >= rssLimitMb) {

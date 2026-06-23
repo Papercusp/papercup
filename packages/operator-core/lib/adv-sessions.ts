@@ -523,6 +523,58 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
   return out;
 }
 
+/** Default recency bound for the live-recorded-session leg of the roster. A
+ *  session whose clean-exit `markAdvSessionEnded` never ran (killed/crashed
+ *  process) ages out of the live leg after this, instead of lingering as an
+ *  eternal `ended_at IS NULL` zombie. */
+export const RECORDED_LIVE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Live recorded sessions — the AUTHORITATIVE "what is running right now" leg of
+ * the presence roster (presence-derive-from-session-log-2026-06-22 P-001).
+ *
+ * Every session the system RECORDED — any CLI (claude/codex/omp), any launch
+ * mode (console/role/spawn/interactive) — that has NOT yet ended (ended_at IS
+ * NULL) and carries a coord owner id (the join key to coord_presence.owner_id).
+ * The presence snapshot synthesizes a roster row for any of these NOT already
+ * self-registered in coord_presence, so a session is VISIBLE + ADDRESSABLE the
+ * instant it is recorded — never gated on the agent volunteering a heartbeat
+ * (the structural gap this closes: a recorded live session with no presence row
+ * was invisible + undispatchable, worst for console/autonomous agents that
+ * never heartbeat at all).
+ *
+ * Recency-bounded (`maxAgeMs`, default 12h) so an unreaped zombie ages out.
+ * `DISTINCT ON (coord_owner_id)` most-recent row per owner (a resume reuses the
+ * SID). Workspace-scoped when given. Best-effort → [] on any DB error: the
+ * roster must render even if this leg fails.
+ */
+export async function listRecordedLiveSessions(
+  opts: { workspaceId?: string | null; maxAgeMs?: number; limit?: number } = {},
+): Promise<AdvSessionRow[]> {
+  const ws = opts.workspaceId ?? null;
+  const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? RECORDED_LIVE_MAX_AGE_MS) / 1000));
+  const limit = opts.limit ?? 500;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT DISTINCT ON (coord_owner_id)
+             id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE ended_at IS NULL
+         AND coord_owner_id IS NOT NULL
+         AND started_at > now() - make_interval(secs => ${maxAgeSec})
+         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+       ORDER BY coord_owner_id, started_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    console.warn('[adv-sessions] listRecordedLiveSessions failed:', (e as Error).message);
+    return [];
+  }
+}
+
 /**
  * The most recent adv_sessions row for ONE coord owner — the await-event
  * wake-handle capture (await-event-primitive-2026-06-05 D-003): events:await

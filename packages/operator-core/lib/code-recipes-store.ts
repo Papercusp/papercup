@@ -3,18 +3,21 @@
  * ("recipes": `harness_shared.code_recipes` + `harness_shared.code_recipe_runs`,
  * migration 349). Canonical store for the code-recipes-2026-06-21 feature; a
  * recipe is just a saved code:run script, captured on a successful run (D-002 /
- * D-012). Recipes are HIVE-scoped (`hive_slug` is the sharing boundary, D-005).
+ * D-012).
  *
- * Transport-agnostic: every function takes the `sql` handle so the same code
- * serves the code:run capture path's workspace-resolved `getOrgPg()` connection
- * and the integration test's testcontainer handle. Scope is explicit
- * (`hiveSlug` ⇒ the sharing boundary, NULL ⇒ workspace-global); rows are ALWAYS
- * filtered by workspace_id (RLS is defense-in-depth on top). Mirrors
- * saved-prompts-store.ts for style (D-008).
+ * Recipes are GLOBAL — a reusable capability like a tool DEFINITION, not scoped to
+ * a workspace or hive (data-scoping-audit-2026-06-22 P-001, reversing the earlier
+ * hive-scoping D-005: a good recipe should help every hive). `code_recipe_runs`
+ * KEEPS workspace_id + hive_slug — that is USAGE (which hive ran it), the mirror of
+ * tool_invocations being scoped while tool definitions are global.
  *
- * Pure PG: no embedding-provider / search dependency here — the caller computes
- * the embedding (a `number[] | null`, 384-dim) and passes it in (Phase-2 dedup
- * rides @papercusp/search over the columns this store writes, D-009).
+ * Transport-agnostic: every function takes the `sql` handle so the same code serves
+ * the code:run capture path's `getOrgPg()` connection and the integration test's
+ * testcontainer handle.
+ *
+ * Pure PG: no embedding-provider / search dependency here — the caller computes the
+ * embedding (a `number[] | null`, 384-dim) and passes it in (Phase-2 dedup rides
+ * @papercusp/search over the columns this store writes, D-009).
  *
  * Server-only.
  */
@@ -22,8 +25,6 @@ import type postgres from 'postgres';
 
 export interface CodeRecipeRow {
   id: string;
-  workspaceId: string;
-  hiveSlug: string | null;
   title: string;
   description: string;
   script: string;
@@ -46,9 +47,6 @@ export interface CodeRecipeRow {
 export interface UpsertCodeRecipeInput {
   /** Stable kebab slug derived from the title (the PRIMARY KEY). */
   id: string;
-  workspaceId: string;
-  /** Sharing boundary; null ⇒ workspace-global. */
-  hiveSlug: string | null;
   title: string;
   description: string;
   script: string;
@@ -63,7 +61,10 @@ export interface UpsertCodeRecipeInput {
 
 export interface RecordRecipeRunInput {
   recipeId: string;
+  /** The workspace that RAN the recipe — USAGE, stored on code_recipe_runs (the
+   *  recipe itself is global; this records which hive/workspace exercised it). */
   workspaceId: string;
+  /** The hive that ran it — usage; null ⇒ workspace-level run. */
   hiveSlug: string | null;
   /** The coord ownerId that ran it (distinct-agent signal). */
   agentOwner?: string | null;
@@ -75,8 +76,6 @@ export interface RecordRecipeRunInput {
 
 type DbRow = {
   id: string;
-  workspace_id: string;
-  hive_slug: string | null;
   title: string;
   description: string;
   script: string;
@@ -102,8 +101,6 @@ const asInt = (v: number | string): number => (typeof v === 'number' ? v : parse
 function mapRow(r: DbRow): CodeRecipeRow {
   return {
     id: r.id,
-    workspaceId: r.workspace_id,
-    hiveSlug: r.hive_slug,
     title: r.title,
     description: r.description,
     script: r.script,
@@ -127,7 +124,7 @@ function mapRow(r: DbRow): CodeRecipeRow {
  *  (the raw VECTOR is never serialized back into JS — only its presence).
  *  Accepts a plain Sql OR a TransactionSql so the merge transaction can reuse it. */
 const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
-  id, workspace_id, hive_slug, title, description, script, author_role,
+  id, title, description, script, author_role,
   tools_used, run_count, success_count, last_run_at, status, promoted_tool,
   merged_into, tags, (embedding IS NOT NULL) AS has_embedding,
   created_by, created_at, updated_at
@@ -150,16 +147,15 @@ export async function upsertRecipe(
     input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.code_recipes
-      (id, workspace_id, hive_slug, title, description, script, author_role,
+      (id, title, description, script, author_role,
        tools_used, tags, embedding, created_by, updated_at)
     VALUES (
-      ${input.id}, ${input.workspaceId}, ${input.hiveSlug}, ${input.title},
+      ${input.id}, ${input.title},
       ${input.description}, ${input.script}, ${input.authorRole ?? null},
       ${input.toolsUsed ?? []}, ${input.tags ?? []},
       ${embeddingLiteral}::vector, ${input.createdBy ?? null}, now()
     )
     ON CONFLICT (id) DO UPDATE SET
-      hive_slug   = EXCLUDED.hive_slug,
       title       = EXCLUDED.title,
       description = EXCLUDED.description,
       script      = EXCLUDED.script,
@@ -178,7 +174,8 @@ export async function upsertRecipe(
  * denormalized counters on the parent `code_recipes` row: run_count +1,
  * success_count +1 when success, last_run_at = now(). The side-table is the
  * source of truth for the Phase-3 distinct-agent + frequency signals; the
- * counters are a cheap-read denormalization (migration 349 header).
+ * counters are a cheap-read denormalization (migration 349 header). The RUN row
+ * carries workspace_id + hive_slug (usage); the recipe itself is global.
  */
 export async function recordRecipeRun(
   sql: postgres.Sql,
@@ -199,12 +196,11 @@ export async function recordRecipeRun(
          SET run_count     = run_count + 1,
              success_count = success_count + ${success ? 1 : 0},
              last_run_at   = now()
-       WHERE id = ${input.recipeId} AND workspace_id = ${input.workspaceId}`;
+       WHERE id = ${input.recipeId}`;
   });
 }
 
 export interface MergeRecipesInput {
-  workspaceId: string;
   /** The recipe every duplicate consolidates into. */
   survivorId: string;
   /** Near-duplicate recipe ids to fold into the survivor. */
@@ -214,7 +210,7 @@ export interface MergeRecipesInput {
 export interface MergeRecipesResult {
   /** The updated survivor (with the duplicates' run/success counts added). */
   survivor: CodeRecipeRow;
-  /** The ids actually merged (excludes the survivor itself + ids absent from the workspace). */
+  /** The ids actually merged (excludes the survivor itself + absent ids). */
   mergedIds: string[];
 }
 
@@ -224,17 +220,17 @@ export interface MergeRecipesResult {
  * duplicate: set `status='merged'`, `merged_into=survivorId`, AND add its
  * run_count/success_count onto the survivor so the consolidated recipe reflects
  * total usage. Idempotent + reversible (a pure status/pointer flip + counter
- * folding) and workspace-scoped — duplicate ids not in the workspace are skipped;
- * a recipe is NEVER merged into itself.
+ * folding); a recipe is NEVER merged into itself. Recipes are GLOBAL (P-001), so
+ * the merge is keyed purely by id.
  *
  * Returns the updated survivor plus the ids that were actually merged. Throws if
- * the survivor does not exist in the workspace (nothing to merge INTO).
+ * the survivor does not exist (nothing to merge INTO).
  */
 export async function mergeRecipes(
   sql: postgres.Sql,
   input: MergeRecipesInput,
 ): Promise<MergeRecipesResult> {
-  const { workspaceId, survivorId } = input;
+  const { survivorId } = input;
   // De-dupe the request + drop self-merge before touching the DB.
   const requested = [...new Set(input.duplicateIds)].filter((id) => id !== survivorId);
 
@@ -243,10 +239,10 @@ export async function mergeRecipes(
   return (await sql.begin(async (tx) => {
     const survivorRows = await tx<DbRow[]>`
       SELECT ${SELECT_COLS(tx)} FROM harness_shared.code_recipes
-       WHERE workspace_id = ${workspaceId} AND id = ${survivorId}
+       WHERE id = ${survivorId}
        FOR UPDATE`;
     if (!survivorRows[0]) {
-      throw new Error(`mergeRecipes: survivor ${survivorId} not found in workspace ${workspaceId}`);
+      throw new Error(`mergeRecipes: survivor ${survivorId} not found`);
     }
 
     if (requested.length === 0) {
@@ -255,7 +251,7 @@ export async function mergeRecipes(
 
     // Mark each duplicate merged, pointing at the survivor, and harvest its
     // counters in the SAME statement. RETURNING the ids confirms which rows
-    // actually existed in the workspace (others are silently skipped).
+    // actually existed (others are silently skipped).
     //
     // IDEMPOTENT: skip a duplicate ALREADY merged into THIS survivor — its
     // counters were folded on the first merge, so re-running must not re-add
@@ -266,8 +262,7 @@ export async function mergeRecipes(
          SET status      = 'merged',
              merged_into = ${survivorId},
              updated_at  = now()
-       WHERE workspace_id = ${workspaceId}
-         AND id = ANY(${requested})
+       WHERE id = ANY(${requested})
          AND id <> ${survivorId}
          AND NOT (status = 'merged' AND merged_into = ${survivorId})
        RETURNING id, run_count, success_count`;
@@ -281,7 +276,7 @@ export async function mergeRecipes(
          SET run_count     = run_count + ${addRuns},
              success_count = success_count + ${addSuccess},
              updated_at    = now()
-       WHERE workspace_id = ${workspaceId} AND id = ${survivorId}
+       WHERE id = ${survivorId}
       RETURNING ${SELECT_COLS(tx)}`;
 
     return { survivor: mapRow(updated[0]), mergedIds };
@@ -289,9 +284,6 @@ export async function mergeRecipes(
 }
 
 export interface SweepRecipesInput {
-  workspaceId: string;
-  /** Sharing boundary; omit ⇒ the whole workspace, explicit null ⇒ the workspace-global bucket. */
-  hiveSlug?: string | null;
   /** Retire active recipes whose last_run_at is older than this (default 30). */
   staleDays?: number;
   /** Only one-offs: run_count at or below this (default 1 — nobody reused it). */
@@ -308,44 +300,32 @@ export interface SweepRecipesResult {
 
 /**
  * Retire the stale long-tail of never-reused one-off recipes (mirror
- * learning_packs:sweep). Selects ACTIVE recipes whose `last_run_at` is older
- * than `staleDays` AND `run_count <= maxRunCount` (a one-off nobody reused) and
- * — on a real run — flips them to `status='retired'`. A `dryRun` returns the
- * candidates without mutating. NEVER touches a hot recipe (run_count over the
- * cap), a recipe run recently, or a promoted/merged/already-retired one (the
- * `status='active'` filter), so hygiene can't strand a graduated or consolidated
- * recipe. Reversible (a status flip) + workspace-scoped.
+ * learning_packs:sweep). Selects ACTIVE recipes whose `last_run_at` is older than
+ * `staleDays` AND `run_count <= maxRunCount` (a one-off nobody reused) and — on a
+ * real run — flips them to `status='retired'`. A `dryRun` returns the candidates
+ * without mutating. NEVER touches a hot recipe (run_count over the cap), a recipe
+ * run recently, or a promoted/merged/already-retired one (the `status='active'`
+ * filter), so hygiene can't strand a graduated or consolidated recipe. Reversible
+ * (a status flip). Recipes are GLOBAL (P-001) — the sweep is fleet-wide.
  *
  * A recipe with a NULL last_run_at (saved, never run) is NOT swept here — it has
  * no staleness clock yet; it ages in only once it's been run and then idled.
  */
 export async function sweepRecipes(
   sql: postgres.Sql,
-  input: SweepRecipesInput,
+  input: SweepRecipesInput = {},
 ): Promise<SweepRecipesResult> {
-  const { workspaceId } = input;
   const staleDays = input.staleDays ?? 30;
   const maxRunCount = input.maxRunCount ?? 1;
   const dryRun = input.dryRun ?? false;
-  const hasHiveFilter = 'hiveSlug' in input;
-
-  // The hive narrowing is shared by both the dry-run SELECT and the real UPDATE
-  // so the candidate set can never diverge between preview and commit.
-  const hiveClause = hasHiveFilter
-    ? input.hiveSlug == null
-      ? sql`AND hive_slug IS NULL`
-      : sql`AND hive_slug = ${input.hiveSlug}`
-    : sql``;
 
   if (dryRun) {
     const rows = await sql<DbRow[]>`
       SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
-       WHERE workspace_id = ${workspaceId}
-         AND status = 'active'
+       WHERE status = 'active'
          AND run_count <= ${maxRunCount}
          AND last_run_at IS NOT NULL
          AND last_run_at < now() - make_interval(days => ${staleDays})
-         ${hiveClause}
        ORDER BY last_run_at ASC NULLS LAST, run_count ASC, id`;
     return { swept: rows.map(mapRow), dryRun: true };
   }
@@ -355,32 +335,29 @@ export async function sweepRecipes(
   const rows = await sql<DbRow[]>`
     UPDATE harness_shared.code_recipes
        SET status = 'retired', updated_at = now()
-     WHERE workspace_id = ${workspaceId}
-       AND status = 'active'
+     WHERE status = 'active'
        AND run_count <= ${maxRunCount}
        AND last_run_at IS NOT NULL
        AND last_run_at < now() - make_interval(days => ${staleDays})
-       ${hiveClause}
     RETURNING ${SELECT_COLS(sql)}`;
   return { swept: rows.map(mapRow), dryRun: false };
 }
 
-/** Fetch one recipe by id, scoped to its workspace. Null when absent. */
+/** Fetch one recipe by id (global). Null when absent. */
 export async function getRecipe(
   sql: postgres.Sql,
-  workspaceId: string,
   id: string,
 ): Promise<CodeRecipeRow | null> {
   const rows = await sql<DbRow[]>`
     SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
-     WHERE workspace_id = ${workspaceId} AND id = ${id}
+     WHERE id = ${id}
      LIMIT 1`;
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** Default cap on a recipe list read — generous, so a normal hive's whole
- *  corpus comes back, but bounded so a runaway store can't ship 50k rows to the
- *  desktop. Clamped to MAX_LIST_LIMIT. */
+/** Default cap on a recipe list read — generous, so the whole corpus comes back,
+ *  but bounded so a runaway store can't ship 50k rows to the desktop. Clamped to
+ *  MAX_LIST_LIMIT. */
 export const DEFAULT_LIST_LIMIT = 1000;
 const MAX_LIST_LIMIT = 2000;
 
@@ -390,64 +367,32 @@ function clampLimit(limit: number | undefined): number {
 }
 
 /**
- * List recipes for a workspace, optionally narrowed to one hive (the sharing
- * boundary). Omitting `hiveSlug` returns the whole workspace; passing it
- * (incl. an explicit null for the workspace-global bucket) filters. Newest-run
+ * List recipes (GLOBAL — recipes are a fleet-wide capability, P-001). Newest-run
  * first, then most-run, so the hot recipes surface (matches the run_count idx).
  *
  * Capped at `limit` (default {@link DEFAULT_LIST_LIMIT}, clamped to
- * {@link MAX_LIST_LIMIT}) so a large corpus can't flood the sync transport;
- * pair with {@link countRecipes} for the true total (attachListMeta).
+ * {@link MAX_LIST_LIMIT}) so a large corpus can't flood the sync transport; pair
+ * with {@link countRecipes} for the true total (attachListMeta).
  */
 export async function listRecipes(
   sql: postgres.Sql,
-  workspaceId: string,
-  opts: { hiveSlug?: string | null; limit?: number } = {},
+  opts: { limit?: number } = {},
 ): Promise<CodeRecipeRow[]> {
   const lim = clampLimit(opts.limit);
-  const hasHiveFilter = 'hiveSlug' in opts;
-  const rows = hasHiveFilter
-    ? opts.hiveSlug == null
-      ? await sql<DbRow[]>`
-          SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
-           WHERE workspace_id = ${workspaceId} AND hive_slug IS NULL
-           ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
-           LIMIT ${lim}`
-      : await sql<DbRow[]>`
-          SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
-           WHERE workspace_id = ${workspaceId} AND hive_slug = ${opts.hiveSlug}
-           ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
-           LIMIT ${lim}`
-    : await sql<DbRow[]>`
-        SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
-         WHERE workspace_id = ${workspaceId}
-         ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
-         LIMIT ${lim}`;
+  const rows = await sql<DbRow[]>`
+    SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
+     ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
+     LIMIT ${lim}`;
   return rows.map(mapRow);
 }
 
 /**
- * Count recipes for a workspace under the SAME hive filter as {@link listRecipes}
- * (the true total, independent of any list LIMIT). Cheap `COUNT(*)` over the
- * run_count index — pair with listRecipes + attachListMeta so the UI shows
- * "N of TOTAL".
+ * Count all recipes (the true total, independent of any list LIMIT). Cheap
+ * `COUNT(*)` — pair with listRecipes + attachListMeta so the UI shows "N of
+ * TOTAL".
  */
-export async function countRecipes(
-  sql: postgres.Sql,
-  workspaceId: string,
-  opts: { hiveSlug?: string | null } = {},
-): Promise<number> {
-  const hasHiveFilter = 'hiveSlug' in opts;
-  const rows = hasHiveFilter
-    ? opts.hiveSlug == null
-      ? await sql<{ n: number }[]>`
-          SELECT count(*)::int AS n FROM harness_shared.code_recipes
-           WHERE workspace_id = ${workspaceId} AND hive_slug IS NULL`
-      : await sql<{ n: number }[]>`
-          SELECT count(*)::int AS n FROM harness_shared.code_recipes
-           WHERE workspace_id = ${workspaceId} AND hive_slug = ${opts.hiveSlug}`
-    : await sql<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM harness_shared.code_recipes
-         WHERE workspace_id = ${workspaceId}`;
+export async function countRecipes(sql: postgres.Sql): Promise<number> {
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM harness_shared.code_recipes`;
   return rows[0]?.n ?? 0;
 }

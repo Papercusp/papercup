@@ -39,7 +39,20 @@ import { getOrgPg } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS } from './presence';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
-export type SessionState = 'live' | 'parked' | 'ended';
+/**
+ * Coordinator-facing session state.
+ *   live     — a turn is running now (wakeable + recent activity).
+ *   parked   — wakeable but idle (the ideal coord:dispatch target).
+ *   ended    — NOT wakeable, no authoritative liveness signal → dead, relaunch.
+ *   recorded — authoritatively LIVE per the session log (`adv_sessions.ended_at
+ *              IS NULL`) but not (yet) inbox-wake-dispatchable. The state of a
+ *              session surfaced from the session log that has not self-registered
+ *              a coord await — every console/autonomous agent, and any
+ *              interactive session in its launch→first-await window. Distinct
+ *              from `ended`: it is alive, just not coord-wakeable
+ *              (presence-derive-from-session-log-2026-06-22 P-001).
+ */
+export type SessionState = 'live' | 'parked' | 'ended' | 'recorded';
 
 /** The raw per-agent signals `deriveSessionState` consumes. */
 export interface WakeabilitySignals {

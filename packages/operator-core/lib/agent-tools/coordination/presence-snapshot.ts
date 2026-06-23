@@ -18,8 +18,10 @@
  */
 
 import { activeWorkspaceId } from '../../workspace-registry';
+import { listRecordedLiveSessions } from '../../adv-sessions';
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
+import { synthesizeRecordedRosterRows, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
 import { toStableRosterRow, type RosterRow } from './presence-payload';
 import { fetchWakeability, deriveSessionState, type WakeabilitySignals } from './presence-wakeability';
@@ -62,7 +64,7 @@ export interface PresenceSnapshot {
     stale: number;
     federated: number;
     wakeable: number;
-    byState: { live: number; parked: number; ended: number };
+    byState: { live: number; parked: number; ended: number; recorded: number };
   };
   active: Record<string, unknown>[];
   stale?: Record<string, unknown>[];
@@ -120,12 +122,26 @@ export async function assemblePresenceSnapshot(
   opts: { includeStale?: boolean; nowMs?: number; detail?: { coordinationDomain: string } } = {},
 ): Promise<PresenceSnapshot> {
   const { wsId, hiveId, scope, scopeNote } = resolved;
-  const [records, federated] = await Promise.all([
+  const [records, federated, recordedLive] = await Promise.all([
     listPresence({ workspaceId: wsId, hiveSlug: hiveId }),
     listFederatedPresence({ workspaceId: wsId, hiveSlug: hiveId }),
+    // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
+    // CLI not yet self-registered in coord_presence — so a recorded session is
+    // visible the instant it launches, never gated on a self-heartbeat. Skipped
+    // for an explicit hive scope (adv_sessions carries no hive attribution yet →
+    // including it could leak cross-hive agents; P-002 adds hive_slug). Runs for
+    // the workspace/all views — the su/operator/admin roster where the gap lives.
+    // listRecordedLiveSessions is itself best-effort ([] on DB error).
+    hiveId == null
+      ? listRecordedLiveSessions({ workspaceId: wsId })
+      : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
     sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
   ]);
-  const all: RosterRow[] = [...records, ...federated];
+  // Synthesize roster rows for recorded live sessions NOT already self-registered
+  // (coord_presence + federated own the richer row when present). CLI-agnostic.
+  const presentIds = new Set<string>([...records, ...federated].map((r) => r.ownerId));
+  const synthesized = synthesizeRecordedRosterRows(recordedLive, presentIds);
+  const all: RosterRow[] = [...records, ...federated, ...synthesized];
   const active = all.filter((r) => !r.stale);
   const stale = all.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();
@@ -156,10 +172,18 @@ export async function assemblePresenceSnapshot(
   const withWakeability = (r: RosterRow): RosterRow => {
     const w = wakeability.get(r.ownerId);
     if (!w) return r;
+    // A session-log-derived row (P-001) is AUTHORITATIVELY live (its adv_sessions
+    // ended_at IS NULL) but, until it self-registers a coord await, has no
+    // inbox-wake → it is `recorded` (alive, not inbox-wake-dispatchable), NOT
+    // `ended` (which means dead/relaunch). A recorded session that HAS begun
+    // registering (a live await exists → wakeable) derives normally below.
+    const recordedLiveOnly = r.source === RECORDED_SESSION_SOURCE && !w.wakeable;
     return {
       ...r,
       wakeable: w.wakeable,
-      sessionState: deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn }),
+      sessionState: recordedLiveOnly
+        ? 'recorded'
+        : deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn }),
     };
   };
 
@@ -185,12 +209,12 @@ export async function assemblePresenceSnapshot(
   // the WHOLE roster (active + stale) — `wakeable` is the headline a coordinator
   // reads instead of `active`, and `byState` separates the dispatchable (parked)
   // from the busy (live) and the dead (ended).
-  const byState = { live: 0, parked: 0, ended: 0 };
+  const byState = { live: 0, parked: 0, ended: 0, recorded: 0 };
   let wakeable = 0;
   for (const r of [...activeEnriched, ...staleEnriched]) {
     if (r.wakeable === true) wakeable += 1;
     const state = r.sessionState;
-    if (state === 'live' || state === 'parked' || state === 'ended') {
+    if (state === 'live' || state === 'parked' || state === 'ended' || state === 'recorded') {
       byState[state] += 1;
     }
   }
