@@ -26,6 +26,12 @@
 | --- | --- | --- | --- |
 | 1 | `feed.ts` (readCoordFeed) | 15 ✓ | union/tag, broadcast, sort+tiebreak, limit clamp 1..500, nextCursor, kind/owner/plan/text/time filters, byKind pre-cap |
 | 2 | `topics-core.ts` | 10 ✓ | ensureBuiltinTopics idempotent; createTopicCore notify (creator-excluded, mention dropped, re-create/new_topic no-broadcast); mergeTopicsCore re-point to canonical head + delivery_mode preserved |
+| 3 | `plan-events.ts` | 9 ✓ | emitPlanEvent envelope (from/system, to=['*'], before/after/detail !==undefined so null kept); emitPlanEventForCaller best-effort swallow (identity-throw→system, append-throw→no-throw); readPlanEvents filesBack passthrough + filterPlanEvents (drop non-plan_event, planSlugs filter, ts-asc) |
+
+## Skipped + caveats
+- `presence.ts` — SKIPPED: PG host adapter, module-scoped PgPresenceStore (no injectable seam); only brittle-mock logic.
+- `conversations-core.ts` — ALREADY COVERED (`__tests__/conversations-core.test.ts` + 3 integration tests). Integration-flavored (no in-memory ConversationStoreLike double).
+- ⚠ **CAVEAT:** the colocated `<name>.test.ts` scan OVER-REPORTS gaps — some modules are tested under `__tests__/<name>.test.ts`. Before committing a module, check BOTH `ls <name>.test.ts __tests__/<name>.test.ts` AND `grep -rl <exportName> **/*.test.ts`.
 
 ## Candidate backlog (verify purity per-wake before committing)
 `presence.ts` (126), `log.ts` (pure surface: coordScopeWorkspace/coordWorkspaceId), `conversations-core.ts` (510),

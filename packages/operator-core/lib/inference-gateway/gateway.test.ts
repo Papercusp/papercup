@@ -1778,3 +1778,120 @@ test('[stall-autowake P-002] an UN-identified bee (no x-papercusp-owner) records
   assert.equal(((await (await ask('/admin/stalls')).json()) as { stalls: unknown[] }).stalls.length, 0);
 });
 
+// ---------------------------------------------------------------------------------------------------
+// STALL ABSORPTION (su-3650 incident): A 30s upstream stall + 429 rate-limit responses MUST be
+// absorbed within the extended-absorption budget, NOT surfaced as fatal errors to bees.
+// ---------------------------------------------------------------------------------------------------
+
+test('[stall-absorb SU-3650] upstream STALL on first attempt (single-account or initial fail) is ABSORBED + retried, not surfaced as 503', async () => {
+  // The gateway's extended-absorption mechanism (requestAbsorbMs, default 60s) permits holding the
+  // admission slot through a transient egress-proxy stall (30s+) while waiting for recovery, re-acquiring,
+  // and retrying — instead of surfacing a fatal 503 to the bee. PRE-FIX: the `everRotated &&` gate on line
+  // 1671 prevented absorption on the FIRST attempt or a single-account pool (everRotated stays false) → any
+  // stall surfaced immediately. POST-FIX: absorption fires unconditionally (subject to the deadline +
+  // absorption config) on EVERY stall, even the first one.
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls++;
+      if (calls === 1) return; // STALL: accept the socket, never respond
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 500 },
+  );
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'upstream stall on first attempt is ABSORBED + retried → 200, not surfaced as 503');
+  assert.equal((await r.json() as { ok: boolean }).ok, true);
+  assert.equal(calls, 2, 'first stall-aborted attempt + second success (absorption retained the slot + retried)');
+});
+
+test('[stall-absorb SU-3650] single-account pool: stall ABSORPTION works (no failover required)', async () => {
+  // Absorption is the SECOND mechanism for stalls (first is failover-rotate to a fresh account). With only
+  // one account in the pool there is nowhere to fail over TO → the stall-absorb path is the SOLE defense
+  // against surfacing the stall as a fatal error. PRE-FIX `everRotated &&` blocked this on single-account
+  // setups. POST-FIX it unconditionally absorbs the stall while waiting for the same account's recovery.
+  const A: ActiveAccount = { accountId: 'solo', token: async () => 'solo-tok' };
+  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id) => (id === 'solo' ? A : null) };
+  let calls = 0;
+  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
+  await boot(
+    (_req, res) => {
+      calls++;
+      if (calls === 1) return; // STALL on the solo account
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool, concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 800 },
+    gov,
+  );
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'single-account stall is ABSORBED (no failover) + retried → 200');
+  assert.equal(calls, 2, 'stall-absorb released + re-acquired on the SAME solo account, then succeeded');
+});
+
+test('[429-absorb SU-3650] upstream 429 (bare, transient) WITHIN absorption deadline is ABSORBED + retried, not forwarded', async () => {
+  // A bare 429 (no rate-limit-window headers, x-should-retry:true) signals CAPACITY EXISTS (a transient
+  // burst-throttle). The extended-absorption path HOLDS the slot while waiting for recovery. PRE-FIX: the
+  // `(transient || up.status === 529)` gate on line 1984 prevented absorption for 429s marked non-transient
+  // (e.g. a 429 with a 5h reset window) — only retrying immediately w/o absorption. POST-FIX: absorption
+  // fires for ALL 429 responses, letting the re-acquire logic's timeout handle truly non-recoverable cases.
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls++;
+      if (calls === 1) {
+        // A bare 429: rate_limit_error, no window headers.
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'burst' } }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    },
+    { concurrency: 1, requestAbsorbMs: 500 },
+  );
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'bare 429 within absorption deadline is ABSORBED + retried → 200, not forwarded');
+  assert.equal((await r.json() as { ok: boolean }).ok, true);
+  assert.equal(calls, 2, 'bare-429 + successful retry (absorption held the slot through the transient burst)');
+});
+
+test('[429-absorb SU-3650] all-accounts transient-429 under HIGH CONCURRENCY: absorbed + retried even on exhausted rotation, no slot-squat (wedge-prevention)', async () => {
+  // The hardest case: EVERY account in the pool returns a bare 429 simultaneously. The old code's rotation
+  // cycle burns through all accounts while on the internal-retry loop HOLDING the admission slot, then
+  // falls through to shed. Under concurrency:4 with 20-wide load, a single account holding the slot for the
+  // FULL rotation budget causes slot-squatting → the backlog grows unbounded → wedge. POST-FIX: extended
+  // absorption fires AFTER rotation exhausts, releasing + re-acquiring the slot so it's never held past
+  // the absorption budget, even when ALL accounts burst-throttle together.
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B')]);
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls++;
+      if (calls <= 2) {
+        // Both A and B hit the bare burst on the first attempt
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'burst' } }));
+      } else {
+        // Capacity recovered
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    },
+    { pool, concurrency: 4, requestAbsorbMs: 300 },
+  );
+  const N = 20;
+  const t0 = Date.now();
+  const rs = await Promise.all(
+    Array.from({ length: N }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
+  );
+  const elapsed = Date.now() - t0;
+  const ok = rs.filter((r) => r.status === 200).length;
+  assert.ok(ok > 0, `some requests absorbed the all-429 burst and recovered (got ${ok}/${N} 200)`);
+  assert.ok(elapsed < 15_000, `the 20-wide all-429 burst was handled fast (${elapsed}ms), no slot-squat wedge`);
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'all admission slots drained — no slot-squat even under the all-429 storm');
+}, 30_000);
+

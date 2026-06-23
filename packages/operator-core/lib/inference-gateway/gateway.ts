@@ -81,6 +81,17 @@ function absorbTierFactor(tier: number | undefined): number {
   if (tier === 3) return 1; // bee — the baseline
   return 0.6; // tier 4+ (unknown / batch) — sheds soonest, freeing the slot for the high tiers
 }
+// INTERACTIVE FAIL-FAST (no-pin-hang follow-up #2, 2026-06-23): a HUMAN-facing caller (priority label
+// `interactive` / `operator`) prefers a fast, clear retry-after over the long autonomous stall-absorb hold —
+// a bee benefits from held-then-succeed, a person at a prompt does not. Their absorb is CAPPED at this (a brief
+// transient blip is still absorbed; a sustained storm sheds quickly), while autonomous tier-1 roles (queen /
+// scout / overwatch) keep the full tier-scaled hold — so this OVERRIDES absorbTierFactor's 1.5 for the human
+// labels only. Env-tunable; 0 disables the cap (revert to the pure tier factor). The proactive health pick
+// (no-pin fix above) already keeps these requests OFF the absorb in the common case; this only bounds the
+// worst (whole-pool-throttled-but-recovering) case for a human.
+const INTERACTIVE_ABSORB_MS = Number(process.env.PAPERCUSP_GATEWAY_INTERACTIVE_ABSORB_MS) || 8_000;
+/** Priority labels that mark a HUMAN-facing caller (vs an autonomous role) → they get the fail-fast absorb cap. */
+const HUMAN_PRIORITY_LABELS = new Set(['interactive', 'operator']);
 // STALL ABSORPTION (2026-06-23, su-3650b incident fix #2): extend the in-request absorb to the dominant failure
 // — TRANSPORT STALLS (Anthropic holding the connection → egress circuit). The 429-absorb can't help (no 429);
 // under an Anthropic-wide stall storm every account TTFB-stalls, the gateway exhausts rotation + sheds a
@@ -401,6 +412,10 @@ export interface GatewayDeps {
   /** POST-admission extended-absorption budget (ms). >0 = on a slot-hold-deadline shed, release the slot +
    *  re-acquire + retry (no slot held during the wait → no wedge) instead of 429ing, up to this budget. 0 = OFF. */
   requestAbsorbMs?: number;
+  /** Cap on the extended-absorb budget for a HUMAN-facing caller (priority `interactive`/`operator`) so a
+   *  person fails fast with a clear retry-after instead of the long autonomous hold. Default
+   *  `INTERACTIVE_ABSORB_MS` (env `PAPERCUSP_GATEWAY_INTERACTIVE_ABSORB_MS`, 8s); 0 disables the cap. */
+  interactiveAbsorbMs?: number;
   /** Wall-clock ceiling on internal retrying before a request sheds + frees its slot (wedge-prevention
    *  ladder). Default 60s (`INTERNAL_RETRY_DEADLINE_MS`); tests inject a tiny value to exercise the shed. */
   internalRetryDeadlineMs?: number;
@@ -747,6 +762,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const doFetch = deps.fetchImpl ?? fetch;
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
   const requestAbsorbMs = deps.requestAbsorbMs ?? DEFAULT_REQUEST_ABSORB_MS;
+  const interactiveAbsorbMs = deps.interactiveAbsorbMs ?? INTERACTIVE_ABSORB_MS;
   const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
   const credential401DeadThreshold = deps.credential401DeadThreshold ?? DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
@@ -1515,8 +1531,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // park-retry loop and finally shed. 0 = OFF (the slot-hold deadline above is the only bound, as before).
       // P-003 (safe variant): scale the budget by the request's TIER so a high-priority caller out-waits a batch
       // one for the recovered account (the priority-throttle-park OUTCOME, no governor wait-queue). Identity off.
-      const reqTier = tierMap ? tierOf((req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined, tierMap) : undefined;
-      const effAbsorbMs = requestAbsorbMs > 0 ? Math.round(requestAbsorbMs * absorbTierFactor(reqTier)) : 0;
+      const priLabel = (req.headers[PRIORITY_HEADER] as string | undefined)?.trim().toLowerCase();
+      const reqTier = tierMap ? tierOf(priLabel ?? undefined, tierMap) : undefined;
+      let effAbsorbMs = requestAbsorbMs > 0 ? Math.round(requestAbsorbMs * absorbTierFactor(reqTier)) : 0;
+      // INTERACTIVE FAIL-FAST: a human-facing caller (interactive/operator) sheds fast instead of being held
+      // through the storm — cap their absorb (see INTERACTIVE_ABSORB_MS). Autonomous roles keep the full hold.
+      if (interactiveAbsorbMs > 0 && effAbsorbMs > interactiveAbsorbMs && priLabel !== undefined && HUMAN_PRIORITY_LABELS.has(priLabel)) {
+        effAbsorbMs = interactiveAbsorbMs;
+      }
       const absorbDeadlineAt = effAbsorbMs > 0 ? Date.now() + effAbsorbMs : 0;
       for (;;) {
         // Bound the OAuth token refresh (2026-06-20 token-hang wedge). active.token() does a deadline-less
@@ -1668,7 +1690,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // account (gov.acquire waits for a circuit-OPEN account's transport-pause to lift via the half-open
             // probe), and retry — so the caller WAITS through the storm and succeeds instead of erroring. Kill-
             // switch PAPERCUSP_GATEWAY_ABSORB_STALLS=0.
-            if (everRotated && ABSORB_STALLS_ON && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
+            if (ABSORB_STALLS_ON && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
               release();
               release = () => {};
               let cand = active;
@@ -1981,7 +2003,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // (Anthropic-side, retryable), and absorb budget remains, RELEASE the admission slot (the wait below holds
           // NO slot → it CANNOT wedge), wait the throttle/overload out, re-acquire, and retry — so the caller WAITS
           // and succeeds instead of erroring. Role-agnostic: any caller, not just a bee. absorbDeadlineAt=0 ⇒ off.
-          if (!proceed && (transient || up.status === 529) && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
+          if (!proceed && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
             clearStall();
             peekedRest?.destroy();
             release(); // free the slot NOW — the wait below admits nothing until an account has serviceable budget
