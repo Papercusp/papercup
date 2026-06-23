@@ -1577,6 +1577,18 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
     expect(buildObjectiveTitleOsc('wire objective display')).toBe(`${ESC}🔭 wire objective display${BEL}`);
   });
 
+  it('leads with the agent papercusp id (short su- + 5 hex) when an id is passed, objective after', () => {
+    expect(buildObjectiveTitleOsc('wire the title id', 'su-fcdb9bd8-dcf5-4a20-b5a6-ba78d1f2eb93')).toBe(
+      `${ESC}su-fcdb9 · 🔭 wire the title id${BEL}`,
+    );
+  });
+
+  it('with an id but no objective, the title is just the id (the terminal always shows its owner)', () => {
+    const id = 'su-fcdb9bd8-dcf5-4a20-b5a6-ba78d1f2eb93';
+    expect(buildObjectiveTitleOsc(null, id)).toBe(`${ESC}su-fcdb9${BEL}`);
+    expect(buildObjectiveTitleOsc('', id)).toBe(`${ESC}su-fcdb9${BEL}`);
+  });
+
   it('the fallback chain absences (null / undefined / blank) all yield no escape', () => {
     expect(buildObjectiveTitleOsc(null)).toBe('');
     expect(buildObjectiveTitleOsc(undefined)).toBe('');

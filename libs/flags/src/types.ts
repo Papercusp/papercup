@@ -1523,14 +1523,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // hybrid-bee-scheduler-work-stealing-2026-06-22: spec-driven claim ON (default); OFF degrades
   // scheduler:get_next to the default ordering (no breakage). Resolver + spec store complete + tested.
   [FLAGS.SCHEDULER_SPEC_CLAIM]: true,
-  // DEFAULT OFF (work-item-deps-and-readiness-2026-06-22 P-005): the maintained-readiness sidecar cutover.
-  // OFF ⇒ the claim uses the inline NOT EXISTS predicate (NO work_item_blocked dependency); ON ⇒ the
-  // indexed work_item_blocked anti-join. The sidecar is BUILT + LIVE + drift=0-verified and the flag-ON
-  // path is green (claim-respects-blocking 9/9). BUT flipping the DEFAULT makes work_item_blocked a HARD
-  // claim-path dependency — any env/test without migration 379 errors ("relation work_item_blocked does
-  // not exist", verified). So default-ON is a COORDINATED cutover: deploy mig 379 everywhere + migrate the
-  // claim-path tests to apply it FIRST, then flip. Left OFF until then. KNOWN_DARK_FLAGS 'cutover'.
-  [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
+  // DEFAULT ON (work-item-deps-and-readiness-2026-06-22 P-005, owner-directed flip 2026-06-23): the claim
+  // reads readiness from the maintained work_item_blocked sidecar (an indexed anti-join kept exact by the
+  // wir_* triggers) instead of the inline per-claim NOT EXISTS. Verified: live reconciliation drift=0
+  // sustained + the flag-ON claim path green end-to-end (claim-respects-blocking 9/9, both entry points).
+  // Cutover prerequisite MET: mig 379 is on the shared dev DB AND folded into the shared claim-test fixture
+  // (WORK_ITEM_DEPS_DDL) so every claim test has the maintained sidecar. OFF is the reversible kill-switch
+  // back to the byte-identical inline predicate.
+  [FLAGS.SCHEDULER_MAINTAINED_READY]: true,
   // DEFAULT ON (gateway-priority-tiers-2026-06-22): per-tier admission caps + a reserved tier-1 floor
   // (queen/scout/interactive never crowded out by batch bees). Complete + tested (19 module tests +
   // gateway suite green, flag-OFF byte-identical); flipped ON per owner directive 2026-06-22.

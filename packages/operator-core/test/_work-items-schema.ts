@@ -216,7 +216,104 @@ export const WORK_ITEM_DEPS_DDL = `
       CHECK (NOT (blocked_kind = blocker_kind AND blocked_ref = blocker_ref))
   );
   CREATE UNIQUE INDEX IF NOT EXISTS work_item_deps_edge_uniq
-    ON harness_shared.work_item_deps (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type);`;
+    ON harness_shared.work_item_deps (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type);
+
+  -- work-item-deps-and-readiness P-005 (migration 379): the maintained-readiness blocked-set sidecar
+  -- + oracle fn + one-hop triggers. Folded in HERE (not per-test) so that with SCHEDULER_MAINTAINED_READY
+  -- ON the claim's indexed anti-join (NOT EXISTS work_item_blocked) finds a MAINTAINED table in EVERY
+  -- claim integration test (applied alongside + AFTER HARNESS_FEATURES_CONSOLIDATED_DDL, which creates
+  -- work_items). Mirrors the frozen migration 379 — keep in sync if 379 ever changes.
+  CREATE TABLE IF NOT EXISTS harness_shared.work_item_blocked (
+      workspace_id text        NOT NULL DEFAULT 'default',
+      harness_slug text        NOT NULL,
+      feature_id   text        NOT NULL,
+      updated_at   timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, harness_slug, feature_id)
+  );
+  CREATE OR REPLACE FUNCTION harness_shared.work_item_is_blocked(p_harness text, p_feature text)
+      RETURNS boolean LANGUAGE sql STABLE AS $WIB$
+      SELECT EXISTS (
+          SELECT 1 FROM harness_shared.work_item_deps d
+           WHERE d.workspace_id = 'default' AND d.dep_type = 'blocks'
+             AND d.blocked_ref = p_harness || '#' || p_feature
+             AND ( EXISTS (SELECT 1 FROM harness_shared.work_items bf
+                            WHERE bf.item_kind <> ALL (ARRAY['bug','change','task'])
+                              AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                              AND bf.status NOT IN ('passed','deprecated'))
+                   OR EXISTS (SELECT 1 FROM harness_shared.work_items bi
+                            WHERE bi.item_kind = ANY (ARRAY['bug','change','task'])
+                              AND bi.workspace_id = 'default' AND bi.feature_id = d.blocker_ref
+                              AND bi.status NOT IN ('resolved','closed')) )
+      );
+  $WIB$;
+  CREATE OR REPLACE FUNCTION harness_shared.sync_work_item_blocked(p_ws text, p_harness text, p_feature text)
+      RETURNS void LANGUAGE plpgsql AS $SWB$
+  BEGIN
+      IF harness_shared.work_item_is_blocked(p_harness, p_feature) THEN
+          INSERT INTO harness_shared.work_item_blocked (workspace_id, harness_slug, feature_id, updated_at)
+          VALUES (p_ws, p_harness, p_feature, now())
+          ON CONFLICT (workspace_id, harness_slug, feature_id) DO UPDATE SET updated_at = now();
+      ELSE
+          DELETE FROM harness_shared.work_item_blocked
+           WHERE workspace_id = p_ws AND harness_slug = p_harness AND feature_id = p_feature;
+      END IF;
+  END;
+  $SWB$;
+  CREATE OR REPLACE FUNCTION harness_shared.wir_deps_sync() RETURNS trigger LANGUAGE plpgsql AS $WDS$
+  DECLARE v_ref text := COALESCE(NEW.blocked_ref, OLD.blocked_ref); r record;
+  BEGIN
+      IF COALESCE(NEW.dep_type, OLD.dep_type) <> 'blocks' THEN RETURN COALESCE(NEW, OLD); END IF;
+      FOR r IN SELECT f.workspace_id, f.harness_slug, f.feature_id FROM harness_shared.work_items f
+                WHERE f.item_kind <> ALL (ARRAY['bug','change','task'])
+                  AND (f.harness_slug || '#' || f.feature_id) = v_ref
+      LOOP PERFORM harness_shared.sync_work_item_blocked(r.workspace_id, r.harness_slug, r.feature_id); END LOOP;
+      RETURN COALESCE(NEW, OLD);
+  EXCEPTION WHEN OTHERS THEN RETURN COALESCE(NEW, OLD); END;
+  $WDS$;
+  DROP TRIGGER IF EXISTS wir_deps_sync_trg ON harness_shared.work_item_deps;
+  CREATE TRIGGER wir_deps_sync_trg AFTER INSERT OR UPDATE OR DELETE ON harness_shared.work_item_deps
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.wir_deps_sync();
+  CREATE OR REPLACE FUNCTION harness_shared.wir_status_sync_dependents() RETURNS trigger LANGUAGE plpgsql AS $WSS$
+  DECLARE r record;
+  BEGIN
+      FOR r IN SELECT f.workspace_id, f.harness_slug, f.feature_id
+                 FROM harness_shared.work_item_deps d
+                 JOIN harness_shared.work_items f
+                   ON f.item_kind <> ALL (ARRAY['bug','change','task'])
+                  AND (f.harness_slug || '#' || f.feature_id) = d.blocked_ref
+                WHERE d.workspace_id = 'default' AND d.dep_type = 'blocks'
+                  AND ( d.blocker_ref = NEW.harness_slug || '#' || NEW.feature_id
+                        OR (NEW.item_kind = ANY (ARRAY['bug','change','task']) AND d.blocker_ref = NEW.feature_id) )
+      LOOP PERFORM harness_shared.sync_work_item_blocked(r.workspace_id, r.harness_slug, r.feature_id); END LOOP;
+      RETURN NEW;
+  EXCEPTION WHEN OTHERS THEN RETURN NEW; END;
+  $WSS$;
+  DROP TRIGGER IF EXISTS wir_status_sync_dependents_trg ON harness_shared.work_items;
+  CREATE TRIGGER wir_status_sync_dependents_trg AFTER UPDATE OF status ON harness_shared.work_items
+      FOR EACH ROW WHEN ((OLD.status IN ('passed','deprecated','resolved','closed'))
+        IS DISTINCT FROM (NEW.status IN ('passed','deprecated','resolved','closed')))
+      EXECUTE FUNCTION harness_shared.wir_status_sync_dependents();
+  CREATE OR REPLACE FUNCTION harness_shared.wir_insert_sync_own() RETURNS trigger LANGUAGE plpgsql AS $WIS$
+  BEGIN
+      IF NEW.item_kind <> ALL (ARRAY['bug','change','task']) THEN
+          PERFORM harness_shared.sync_work_item_blocked(NEW.workspace_id, NEW.harness_slug, NEW.feature_id);
+      END IF;
+      RETURN NEW;
+  EXCEPTION WHEN OTHERS THEN RETURN NEW; END;
+  $WIS$;
+  DROP TRIGGER IF EXISTS wir_insert_sync_own_trg ON harness_shared.work_items;
+  CREATE TRIGGER wir_insert_sync_own_trg AFTER INSERT ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.wir_insert_sync_own();
+  CREATE OR REPLACE FUNCTION harness_shared.wir_delete_cleanup() RETURNS trigger LANGUAGE plpgsql AS $WDC$
+  BEGIN
+      DELETE FROM harness_shared.work_item_blocked
+       WHERE workspace_id = OLD.workspace_id AND harness_slug = OLD.harness_slug AND feature_id = OLD.feature_id;
+      RETURN OLD;
+  EXCEPTION WHEN OTHERS THEN RETURN OLD; END;
+  $WDC$;
+  DROP TRIGGER IF EXISTS wir_delete_cleanup_trg ON harness_shared.work_items;
+  CREATE TRIGGER wir_delete_cleanup_trg AFTER DELETE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.wir_delete_cleanup();`;
 
 /**
  * Minimal `engineer_issues` table for the claim path's readiness clause (P-005): its
