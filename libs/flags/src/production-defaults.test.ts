@@ -67,11 +67,16 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // OFF = escalate-only (today's behavior, byte-identical) — auto-closing real improvement
   // items autonomously is unsafe until the owner reviews the guards. Safe to ship dark.
   // shared-hive-rekey-2026-06-19 (C-001 read-plane revocation, S0-for-release): the hive
-  // epoch RE-KEY master gate. DARK because the boundary + op-path wiring is incomplete — the
-  // K-half crypto/serving/epoch/boundary/producer modules are landed + teeth-verified, but
-  // advanceEpochAndWrap + encrypt-on-write + decrypt-on-read are not yet in the live op path.
-  // OFF ⇒ resolveHiveEpochCrypto returns the notImplemented stub (no content encryption),
-  // byte-identical to today. Owner flips ON only after the P-008 live cut-off witness passes.
+  // epoch RE-KEY master gate. CODE-COMPLETE + UNIT-TESTED but DARK as an ATTENDED-CUTOVER gate
+  // (flipping it begins encrypting LIVE federated content — a bug would break federation, so it
+  // needs a live 2-machine K-CUT-on-content witness + owner ratification first, NOT more code).
+  // Verified wired end-to-end (su-34db4 2026-06-23, ~60 re-key unit tests green): boot-deps builds
+  // the real createHiveEpochCrypto + EpochKeyProvider + epochEncrypt; wire-outbox injects epochEncrypt
+  // into the live drain; outbox-drain encrypts-on-write (shouldEncryptOpForRekey, fail-closed
+  // exclude-set); boot decryptGate/rekeyOn decrypts-on-read; advanceEpochOnHiveBoundary wraps the new
+  // epoch key to REMAINING members only (K-CUT — removed device excluded + cannot unwrap). OFF ⇒
+  // resolveHiveEpochCrypto returns the notImplemented stub (plaintext, byte-identical to today). Owner
+  // flips ON only after the live cut-off witness (WI-560) passes.
   FLAGS.HIVE_REKEY,
   // inbox-cards-unification Phase D (P-031): durable-escalation mirror of
   // chat decision cards is still building; the live ctx.askUser path is
