@@ -52,12 +52,15 @@ export default defineTool({
   }),
   // Output schema (token-efficient-tool-result-formats P-011): a flat,
   // non-redundant PROJECTION of the send result — `recipients` + `kind` +
-  // the new `messageIds`. Declaring it advertises the MCP `outputSchema`
-  // and unlocks field projection / the compact wire formats. Replaces the
-  // old `executed: <raw ExecuteActionResult>` blob, which nested an always-
-  // empty `actionId` and a `recipient` already echoed in `recipients` —
-  // pure token tax (no caller reads the MCP tool's wrapper; OperatorPanel
-  // reads the raw HTTP `result.inserted` directly, not this).
+  // the new `messageIds`. Object-rooted, so it is advertised as the MCP
+  // `outputSchema` (tool-projection.ts); projectReadColumns skips CSV for a
+  // single object and the serializer falls back to TOON/JSON. Replaces the
+  // old `executed: <raw ExecuteActionResult>` blob, which nested `ok`, a
+  // server-minted `actionId` (executeAction stamps a fresh per-call UUID —
+  // real, but not reusable by the caller), and `result.inserted[]` whose
+  // `recipient` merely echoes `recipients`. The message-row ids — the actual
+  // traceability handle — surface directly in `messageIds`. No consumer reads
+  // this MCP wrapper (OperatorPanel reads the raw HTTP `result.inserted`).
   result: z.object({
     recipients: z.array(z.string()),
     kind: z.string(),
