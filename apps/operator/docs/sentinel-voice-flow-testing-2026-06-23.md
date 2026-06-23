@@ -155,7 +155,8 @@ because operator and sentinel are the SAME role-keyed converse brain.
   (judge: environment/SUT-health failure, NOT a behavioral finding). So now the
   blocker is a flaky brain LLM backend (likely 429 residual), not a clean 429.
   Loop keeps retrying; STOP only on a CLEAN non-errored verdict. Cadence restored
-  to 2-min per owner. Also: the two voice-bar UI trims are confirmed STILL in
+  to 2-min per owner. **Latest: 10:58 — ~9 attempts total, still
+  429/timeout/agent-backend-failure (env-blocked the whole window 08:45→10:58).** Also: the two voice-bar UI trims are confirmed STILL in
   source (brand JSX removed; "Voice" span removed) — owner not seeing them is
   DEPLOY-LAG (desktop serves a built bundle that lags staging), not a code issue;
   they land on the next deploy or a fresh `npm run dev` desktop.
