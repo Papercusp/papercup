@@ -52,6 +52,42 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 
 **Loop tally: 116 tests across 10 modules.**
 
+## LOOP CONCLUDED (2nd time, durably) — 2026-06-23, iter 11
+Iter 11 was VERIFICATION-ONLY (no net-new — correctly avoided 5 duplicates) and surfaced the final
+gate-hardening. **5 consecutive fresh candidates all turned out already-covered**, confirming the
+low-collision pure-module vein is genuinely exhausted across operator-core + libs/generic + agent-mcp +
+search-core + sse:
+- `packages/agent-mcp/src/_bulk.ts` — toList/mergeIds/runBulk covered via the operator-core re-export
+  test (`agent-tools/_bulk.test.ts`). Only trivial `scalarOrArray` (a Zod union) + `bulkContent` ({data}) uncovered.
+- `libs/generic/papergrid/bloom-grid/src/rowStore.ts` — covered by `rowStore.spec.ts` + `rowStore.persistence.spec.ts`.
+- `libs/generic/search-core/src/rewrite.ts` (rewriteQuery/defaultRewritePrompt/clearRewriteCache) — `rewrite.spec.ts`.
+- `libs/generic/sse/src/server/node-bridge.ts` (sseResponseToNode) — `__tests__/node-bridge-backpressure.test.ts`.
+- `packages/operator-core/lib/voice-node/wav.ts` (encode/decode/resamplePcm16) — `agent-peer.test.ts` `describe('wav codec')` roundtrip.
+
+### 🔑 VERIFY-GATE — final hardened form (2 gaps found+fixed this session)
+The coverage-grep MUST glob **all four**: `--include='*.test.ts' --include='*.test.tsx' --include='*.spec.ts' --include='*.spec.tsx'`
+AND check the package's `vitest.config` `include` glob to learn its convention (operator-core/agent-mcp = `.test.ts`;
+libs/generic/* + papergrid + search-core = `.spec.ts`). A SAME-basename `ls` check is insufficient — coverage often lives
+in a DIFFERENTLY-NAMED test (failure-detector.test.ts covers phi-accrual.ts) or a different EXTENSION (.tsx/.spec). Gaps
+this caused: shipped a `built-in-intents.test.ts` duplicate (.tsx existed); wrote a `rowStore.test.ts` that didn't even run
+(.spec convention) and duplicated 2 specs. The per-candidate `grep <firstExport>` is the real gate; the survey's basename
+filter is only a coarse pre-pass.
+
+### Remaining low-collision leftovers (deliberately NOT done — marginal / shared-file edits)
+- Trivial uncovered exports: `scalarOrArray`/`bulkContent` (agent-mcp _bulk — testing Zod/`{data}`, ~0 reliability value);
+  `aggregateByClass` (memory/bench/metrics.ts) + `rememberP` (memory/bench/scorecard.ts) — uncovered but bench-only,
+  and closing them means ADDING to the shared `bench.test.ts` (collision risk, not a reliability path).
+- Edge branches in covered modules (e.g. wav.ts multi-channel mono-mix + error paths; schemaRequiresArgs async/zod-fallback)
+  — would augment an existing dedicated describe block in a churned shared file; deferred to a coord-enabled session.
+
+### DEFERRED (need coordination / live-env this session lacks) — unchanged, carry forward
+- Gateway flaky timing tests (EI-2904) — may guard real WI-611 429 slowness; hot + high-stakes; needs coord.
+- Plan/work-item bookkeeping for this whole loop — papercusp MCP bound to `system:planner` (no coord/plans/memory write).
+- perf-anti-patterns.test.ts A18/A19 extension + any live anti-pattern fix — edits shared source, needs coord.
+- The other-form perf/reliability work (hot-runtime fixes) — all needs coordination, structurally unavailable this session.
+
+**FINAL TALLY: 116 net-new deterministic tests across 10 modules. Loop concluded — no further self-scheduled wakes.**
+
 ### Iter 10 — vein WIDENED to libs/generic (operator-core pure-no-sibling pool thin)
 Surveyed `libs/generic/*` for untested pure modules. Verify-gate ruled out (already covered): `failure-detector/phi-accrual.ts`
 (PhiAccrualDetector — 2 thorough describe blocks incl. F2/F3/F4 boundary in `failure-detector.test.ts`),
