@@ -35,9 +35,12 @@
  * internal `useTransportFallback` drops SSE → POLLING after sustained SSE
  * failure. That is the degraded mode, not the default.
  */
-import { type ReactNode } from 'react';
-import { SyncProvider } from '@papercusp/sync';
+import { useEffect, type ReactNode } from 'react';
+import { SyncProvider, setSyncDeltaCodec } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
+import { createSyncDeltaCodec } from './sync-delta-codec';
 
 const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
 // SSE drift-repair tick, NOT a freshness source (EI-278). Under SSE,
@@ -56,6 +59,10 @@ const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 // survives the provider unmount/remount that happens on some route swaps.
 const queryClient = new QueryClient();
 
+// One rows-delta codec for the app lifetime (P-006). Injected into @papercusp/sync only while
+// FLAGS.SYNC_RESOURCE_DELTA is ON (the effect below); OFF ⇒ no codec ⇒ full re-fetches, as today.
+const syncDeltaCodec = createSyncDeltaCodec();
+
 export function HarnessSyncProvider({
   children,
   userID = 'papercusp-anon',
@@ -66,6 +73,14 @@ export function HarnessSyncProvider({
   /** SSE drift-repair tick (see DEFAULT_SSE_DRIFT_REPAIR_MS). */
   ssePollIntervalMs?: number;
 }) {
+  // P-006: inject the rows-delta codec while the flag is on (the owner flips it after an attended
+  // desktop verify). OFF ⇒ setSyncDeltaCodec(null) ⇒ the batch fetcher serves full re-fetches.
+  const deltaOn = useFlag(FLAGS.SYNC_RESOURCE_DELTA);
+  useEffect(() => {
+    setSyncDeltaCodec(deltaOn ? syncDeltaCodec : null);
+    return () => setSyncDeltaCodec(null);
+  }, [deltaOn]);
+
   return (
     <QueryClientProvider client={queryClient}>
       <SyncProvider
