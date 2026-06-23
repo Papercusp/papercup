@@ -247,18 +247,21 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     };
     let operator_name = glyph_name("operator", "operator", AgentPaneKind::Sentinel);
     let brain_name = glyph_name("brain", "brain", AgentPaneKind::Queen);
-    // P-003 (hive-agent-tabs): the Sentinel pane is a REAL psu/Claude TUI
-    // (operator role) so it renders like the Queen (the `pui chat-pane` widget it
-    // replaced was retired by P-014). It MUST be a FULLY-SCOPED, no-picker launch
-    // (owner ask 2026-06-09): `psu --no-picker --agent=claude --role=operator`.
+    // The Sentinel pane is a REAL psu/Claude TUI — the FRONT-DOOR Sentinel the
+    // user talks to (sentinel-as-claude-tui-2026-06-22 Phase A): the `sentinel`
+    // role (Sentinel persona = sentinel.persona.md), NOT the `operator`
+    // placement/decider role it used to launch. It MUST be a FULLY-SCOPED,
+    // no-picker launch: `psu --no-picker --agent=claude --role=sentinel`.
     //   - `--no-picker` → strict scripting launch, no interactive picker.
     //   - `--agent=claude` → required by --no-picker; the Claude TUI backend.
-    //   - `--role=operator` → MUST use `=` (psu-launcher parses `--role=<v>`, NOT
-    //     space-separated — `--role operator` is silently dropped → role picker).
-    //   - workspace/harness/plan are omitted → psu falls back to the operator's
-    //     active-workspace defaults (selectionsFromArgs), which is the right scope.
-    let operator_cmd_block =
-        "command \"psu\"\n            args \"--no-picker\" \"--agent=claude\" \"--role=operator\"";
+    //   - `--role=sentinel` → MUST use `=` (psu-launcher parses `--role=<v>`, NOT
+    //     space-separated — `--role sentinel` is silently dropped → role picker).
+    //     `sentinel` resolves none/none consumes (DEFAULT) → harness-less, the
+    //     same launch profile the operator pane had.
+    //   - workspace/harness/plan are omitted → psu falls back to the active-
+    //     workspace defaults (selectionsFromArgs), which is the right scope.
+    let sentinel_cmd_block =
+        "command \"psu\"\n            args \"--no-picker\" \"--agent=claude\" \"--role=sentinel\"";
     // P-004 / D-009: the operator pane is psu, so the reactive agent stack has a
     // dedicated driver — the `pui dock-driver` pane runs the reactive loop
     // (dock_agent_panes) and renders the fleet roster as the dock's controller.
@@ -337,7 +340,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
         }}
         pane name="chat" stacked=true {{
             pane name="{operator_name}" focus=true expanded=true {{
-                {operator_cmd_block}
+                {sentinel_cmd_block}
             }}{driver_pane_block}{wake_pane_block}
         }}
     }}"#

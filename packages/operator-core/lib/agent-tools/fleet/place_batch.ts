@@ -162,7 +162,17 @@ export default defineTool({
     }
 
     const { getSpawnHeadroom } = await import('../../fleet/operator-spawn');
-    const { headroom } = await getSpawnHeadroom(workspaceId);
+    const { headroom: rawHeadroom } = await getSpawnHeadroom(workspaceId);
+
+    // QUEEN_CAPACITY_DISPATCH (capacity-aware dispatch — gateway-priority-tiers Phase 4): clamp the FRESH-spawn
+    // headroom to what the inference pool can SUSTAIN. When the gateway is saturated/paused (all accounts
+    // throttled), placing more bees just floods it with requests that park/fail. The frontier is importance-
+    // ranked, so clamping the headroom naturally DEFERS the lowest-priority tasks first; a minHeadroom floor
+    // always lets high-priority work flow (the gateway tiers then prioritize it). Flag-OFF or gateway-
+    // unreachable ⇒ no clamp (rawHeadroom).
+    const { queenCapacityHeadroom } = await import('../../fleet/capacity-dispatch');
+    const capacity = await queenCapacityHeadroom(rawHeadroom);
+    const headroom = capacity.headroom;
 
     const plan = planBatchPlacement({
       tasks,
@@ -180,7 +190,7 @@ export default defineTool({
       return json({
         ok: true,
         dry_run: true,
-        surveyed: { frontier: tasks.length, bees: bees.length, headroom },
+        surveyed: { frontier: tasks.length, bees: bees.length, headroom, ...(capacity.throttled ? { rawHeadroom, capacity: capacity.reason } : {}) },
         plan: summarizePlan(plan),
         skipped,
       });
@@ -195,7 +205,7 @@ export default defineTool({
     const warnings = buildPlacementWarnings({ spawned: exec.summary.spawned ?? 0, wakeMode });
     return json({
       ok: true,
-      surveyed: { frontier: tasks.length, bees: bees.length, headroom },
+      surveyed: { frontier: tasks.length, bees: bees.length, headroom, ...(capacity.throttled ? { rawHeadroom, capacity: capacity.reason } : {}) },
       ...exec,
       ...(warnings.length ? { warnings } : {}),
       skipped,

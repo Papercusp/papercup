@@ -338,10 +338,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes. Pending flip
   // surfaced in the plan's ## Now + the lane completion report.
   FLAGS.LOOPS,
-  // queen-capacity-aware-dispatch-2026-06-22: the Queen's capacity-aware dispatch is
-  // in-flight implementation; gating in-flight implementation; flips ON at rollout
-  // after :3170 verify. OFF ⇒ inert (byte-identical to today).
-  FLAGS.QUEEN_CAPACITY_DISPATCH,
   // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): the LLM-facing semantic-delta
   // opt-in. INCOMPLETE on the path that matters — the silent-wrong-merge behaviour is
   // unverified on a LIVE model (the Lane-C scenarios su-S23/S24/S25 must run green in the
@@ -397,7 +393,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.WORKITEM_CLAIM_LEASE, 'incomplete'],
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   [FLAGS.LOOPS, 'incomplete'],
-  [FLAGS.QUEEN_CAPACITY_DISPATCH, 'incomplete'],
   [FLAGS.TOOL_DELTA_PROTOCOL, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.WATCHDOG_AUTO_CLOSE, 'owner-authority'],

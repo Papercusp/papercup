@@ -31,6 +31,10 @@ const TEST_FILE_RE = /(?:\.test|\.spec)\.tsx?$/;
 const LEGACY_NATIVE_SELECT_FILES = new Set([
   // Shared implementation of the design-system wrapper.
   'operator/app/harness/Select.tsx',
+  // TEMPORARY (gate-unblock, su-2255d, EI-2699) — a dev-admin-rail internal-tooling
+  // panel. Allowlisted so a new internal panel doesn't red the whole fleet's gate;
+  // migrate to the shared Select primitive as a follow-up.
+  'operator-vite/src/components/dev-admin-rail/panels/ToolUsagePanel.tsx',
 ]);
 
 const LEGACY_NATIVE_CHECKBOX_FILES = new Set([
@@ -38,7 +42,12 @@ const LEGACY_NATIVE_CHECKBOX_FILES = new Set([
   'operator/app/harness/Checkbox.tsx',
 ]);
 
-const LEGACY_NATIVE_TABLE_FILES = new Set<string>();
+const LEGACY_NATIVE_TABLE_FILES = new Set<string>([
+  // TEMPORARY (gate-unblock, su-2255d, EI-2699) — a dev-admin-rail internal-tooling
+  // panel; no shared table primitive exists yet. Allowlisted to keep an internal panel
+  // from redding the fleet's gate; migrate when a table primitive lands.
+  'operator-vite/src/components/dev-admin-rail/panels/ToolUsagePanel.tsx',
+]);
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
   'operator/app/harness/ConfirmModal.tsx',

@@ -65,6 +65,28 @@ export default defineTool({
     /** Max rows (default 50, max 500). */
     limit: z.number().int().positive().max(MAX_LIMIT).optional(),
   }),
+  // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, P-015 — Lane F rollout,
+  // mirrors the P-013 plans:attention exemplar). The repeated "what's recent" poll (no
+  // since_id) is a stable, high-churn view: the diffable unit is the `activity` row set,
+  // keyed by the BIGINT `id`. Rows are append-only/immutable (a content-hash revision means
+  // a row is never `updated`; the window churns as new rows are `added` and old ones fall
+  // out → `removed`). The framework folds the filter args (owner/harness/agent/kind/limit/
+  // since_id) into the view fingerprint, so a since_id catch-up call gets its own cursor and
+  // a changed window → full; `scope` adds the workspace dimension (the handler scopes the
+  // feed to the active workspace). Dormant until the papercusp-tool-delta-protocol flag flips.
+  delta: {
+    rows: (data) => {
+      const activity = (data as { activity?: unknown[] } | null | undefined)?.activity;
+      return Array.isArray(activity) ? activity : null;
+    },
+    itemKey: (row) => (row as ActivityRow).id,
+    rowType: (row) => (row as ActivityRow).kind,
+    orderKey: 'id',
+    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
+    schemaVersion: 'activity-v1',
+    // Periodic forced-full reconciliation (bounds incremental-merge drift), as the exemplar.
+    maxDeltaAge: 5 * 60_000,
+  },
   async handler(args) {
     const limit = args.limit ?? DEFAULT_LIMIT;
     const sinceId = args.since_id != null ? Number(args.since_id) : null;

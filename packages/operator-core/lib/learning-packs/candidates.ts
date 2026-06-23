@@ -7,8 +7,9 @@
  * that belongs in the shared knowledge layer. This module is the missing edge
  * from that observation into the learning-pack system:
  *
- *   stage    one CANDIDATE row per signature (PG, migration 239) with full
- *            provenance — deduped structurally (UNIQUE workspace+signature,
+ *   stage    one CANDIDATE row per signature (PG, migration 239; GLOBAL since 377)
+ *            with full provenance — deduped structurally (UNIQUE signature — a
+ *            learning is a workspace-agnostic capability, data-scoping-audit P-002,
  *            so a dismissed lesson never re-nags) and capped (pending ≤
  *            {@link pendingCandidateCap}), like the lite promotion itself.
  *   list     the Learnings view + learning_packs:candidates read.
@@ -154,7 +155,6 @@ export interface StageCandidateInput {
   sourceItemIds?: string[];
   kind?: LearningKind;
   createdBy?: string;
-  workspaceId?: string;
 }
 
 export type StageCandidateResult =
@@ -171,19 +171,20 @@ export async function stageLearningPackCandidate(
   input: StageCandidateInput,
 ): Promise<StageCandidateResult> {
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
 
+  // Pending cap + structural dedup are GLOBAL now (learnings are workspace-agnostic
+  // capabilities, P-002) — the queue is fleet-wide, the signature unique fleet-wide.
   const [{ count }] = await sql<[{ count: string }]>`
     SELECT count(*)::text AS count FROM harness_shared.learning_pack_candidates
-    WHERE workspace_id = ${ws} AND status = 'pending'`;
+    WHERE status = 'pending'`;
   if (Number(count) >= pendingCandidateCap()) return { staged: false, reason: 'pending-cap' };
 
   const rows = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.learning_pack_candidates
-      (workspace_id, signature, title, draft_text, kind, scopes, recurrence_count,
+      (signature, title, draft_text, kind, scopes, recurrence_count,
        source_item_ids, created_by)
     VALUES
-      (${ws}, ${input.signature}, ${input.title}, ${input.draftText},
+      (${input.signature}, ${input.title}, ${input.draftText},
        ${input.kind ?? 'feedback'}, ${JSON.stringify(input.scopes)}::text::jsonb,
        ${input.recurrenceCount}, ${JSON.stringify(input.sourceItemIds ?? [])}::text::jsonb,
        ${input.createdBy ?? 'recurrence-escalation'})
@@ -200,15 +201,13 @@ export async function stageLearningPackCandidate(
  * ──────────────────────────────────────────────────────────────────────── */
 
 export async function listLearningPackCandidates(
-  opts: { status?: CandidateStatus; limit?: number; workspaceId?: string } = {},
+  opts: { status?: CandidateStatus; limit?: number } = {},
 ): Promise<LearningPackCandidate[]> {
   const { sql } = getOrgPg();
-  const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
   const rows = await sql<CandidateRow[]>`
     SELECT * FROM harness_shared.learning_pack_candidates
-    WHERE workspace_id = ${ws}
-      ${opts.status ? sql`AND status = ${opts.status}` : sql``}
+    ${opts.status ? sql`WHERE status = ${opts.status}` : sql``}
     ORDER BY created_at DESC
     LIMIT ${limit}`;
   return rows.map(rowToCandidate);
@@ -365,6 +364,9 @@ export interface DecideCandidateInput {
   text?: string;
   kind?: LearningKind;
   appliesTo?: AppliesTo[];
+  /** The adopting workspace — used ONLY for the transfer bar (its lessons are
+   *  workspace-scoped); the candidate itself is global (P-002). Defaults to the
+   *  active workspace. */
   workspaceId?: string;
   /** Test override of the installed packs root. */
   packsRoot?: string;
@@ -402,7 +404,7 @@ export async function decideLearningPackCandidate(
 
   const rows = await sql<CandidateRow[]>`
     SELECT * FROM harness_shared.learning_pack_candidates
-    WHERE workspace_id = ${ws} AND id = ${input.id}`;
+    WHERE id = ${input.id}`;
   const row = rows[0];
   if (!row) return { ok: false, reason: 'not_found' };
   if (row.status !== 'pending') return { ok: false, reason: 'not_pending' };
@@ -413,7 +415,7 @@ export async function decideLearningPackCandidate(
       UPDATE harness_shared.learning_pack_candidates
       SET status = 'dismissed', decided_at = now(), decided_by = ${input.by},
           decision_note = ${input.note ?? null}
-      WHERE workspace_id = ${ws} AND id = ${input.id} AND status = 'pending'`;
+      WHERE id = ${input.id} AND status = 'pending'`;
     invalidate(['learningPacks.candidates']);
     return { ok: true, action: 'dismiss', id: input.id };
   }
@@ -458,7 +460,7 @@ export async function decideLearningPackCandidate(
     SET status = 'adopted', decided_at = now(), decided_by = ${input.by},
         decision_note = ${input.note ?? null},
         pack_id = ${written.packId}, pack_item_id = ${written.packItemId}
-    WHERE workspace_id = ${ws} AND id = ${input.id} AND status = 'pending'`;
+    WHERE id = ${input.id} AND status = 'pending'`;
 
   // The version bump makes `updateAvailable` light up on every hive carrying
   // the pack (learning.hive computes it from the catalog) — the existing

@@ -7,7 +7,6 @@ import { listLearningPackCandidates } from '../../learning-packs/candidates';
 // gate, the status default ('pending' review queue), the conditional limit, and
 // the { count, candidates } envelope (self-improvement-consume-edges P-032 / B-11).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
 vi.mock('../../learning-packs/candidates', () => ({ listLearningPackCandidates: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
@@ -36,13 +35,13 @@ describe('learning_packs:candidates tool', () => {
   });
 
   it('defaults the status to "pending" (the review queue), no limit key', async () => {
-    await callTool({}, { principal: { workspaceId: 'ws-prin' } });
-    expect(mockList).toHaveBeenCalledWith({ status: 'pending', workspaceId: 'ws-prin' });
+    await callTool({});
+    expect(mockList).toHaveBeenCalledWith({ status: 'pending' });
   });
 
   it('forwards an explicit status + limit', async () => {
     await callTool({ status: 'adopted', limit: 5 });
-    expect(mockList).toHaveBeenCalledWith({ status: 'adopted', limit: 5, workspaceId: 'ws-active' });
+    expect(mockList).toHaveBeenCalledWith({ status: 'adopted', limit: 5 });
   });
 
   it('returns { ok, count, candidates }', async () => {

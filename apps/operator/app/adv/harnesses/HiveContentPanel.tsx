@@ -225,8 +225,8 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
         .pc-hivecontent__tabs { display: inline-flex; gap: 2px; }
         .pc-hivecontent__tab {
           display: inline-flex; align-items: center; gap: 5px;
-          padding: 3px 9px; border-radius: var(--radius-sm, 6px);
-          font-size: 12px; color: var(--text-muted); background: transparent;
+          padding: 3px 9px; border-radius: 6px;
+          font-size: 12px; color: var(--fg-mute); background: transparent;
           border: 1px solid transparent; cursor: pointer;
         }
         .pc-hivecontent__tab:hover { background: color-mix(in oklab, var(--accent), transparent 88%); }
@@ -235,7 +235,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
           border-color: color-mix(in oklab, var(--accent), transparent 70%);
         }
         .pc-hivecontent__tabcount { font-variant-numeric: tabular-nums; opacity: 0.7; font-size: 11px; }
-        .pc-hivecontent__meta { padding: 4px 8px; font-size: 11px; color: var(--text-muted); }
+        .pc-hivecontent__meta { padding: 4px 8px; font-size: 11px; color: var(--fg-mute); }
         .pc-hivecontent__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
         .pc-hivecontent__row {
           display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 8px;
@@ -250,7 +250,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
           background: color-mix(in oklab, var(--accent), transparent 86%);
           white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
         }
-        .pc-hivecontent__id { font-variant-numeric: tabular-nums; color: var(--text-muted); font-size: 11.5px; white-space: nowrap; }
+        .pc-hivecontent__id { font-variant-numeric: tabular-nums; color: var(--fg-mute); font-size: 11.5px; white-space: nowrap; }
         .pc-hivecontent__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       `}</style>
     </div>

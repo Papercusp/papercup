@@ -39,7 +39,7 @@ function toProseHit(h: SearchHit): ProseHit {
   return {
     source: h.source,
     source_id: h.source_id,
-    ...(h.harness_slug ? { harness_slug: h.harness_slug } : {}),
+    ...(h.scope ? { harness_slug: h.scope } : {}),
     excerpt: h.excerpt,
     highlight: h.highlight,
     rank: h.score,
@@ -57,6 +57,7 @@ async function searchProse(q: string, mode: 'bm25' | 'hybrid', limit: number): P
     query: q,
     workspaceId: activeWorkspaceId(),
     harnessFilter: null,
+    scopeFilter: null,
     limit,
   };
   let results: SearchHit[];

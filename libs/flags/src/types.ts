@@ -1495,9 +1495,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (queen/scout/interactive never crowded out by batch bees). Complete + tested (19 module tests +
   // gateway suite green, flag-OFF byte-identical); flipped ON per owner directive 2026-06-22.
   [FLAGS.GATEWAY_PRIORITY_TIERS]: true,
-  // DEFAULT OFF (queen-capacity-aware-dispatch-2026-06-22): capacity-aware dispatch is
-  // being implemented. OFF ⇒ inert; flips ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
-  [FLAGS.QUEEN_CAPACITY_DISPATCH]: false,
+  // DEFAULT ON (queen-capacity-aware-dispatch-2026-06-22): the Queen clamps fresh-bee placement to what the
+  // inference pool can sustain (gateway /stats oracle), so it stops flooding a saturated pool. Complete +
+  // tested (13 module tests + 24 placement tests green; flag-OFF + gateway-unreachable byte-identical, fail-
+  // safe, minHeadroom floor lets high-priority work flow). Flipped ON per owner directive 2026-06-22.
+  [FLAGS.QUEEN_CAPACITY_DISPATCH]: true,
   // DEFAULT OFF (agent-tool-delta-protocol-2026-06-22 P-016, D-007/D-008): the LLM-facing
   // semantic-delta opt-in. The merge is unsafe until PROVEN on a live model — OFF until
   // the Lane-C scenarios (su-S23/S24/S25) are recorded-green AND the delta safety gate

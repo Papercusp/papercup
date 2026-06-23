@@ -8,7 +8,6 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
 
 export default defineTool({
@@ -31,16 +30,14 @@ export default defineTool({
       .optional()
       .describe('Filter by status. Default pending (the review queue).'),
     limit: z.number().int().min(1).max(500).optional(),
-    workspace: z.string().max(120).optional(),
   }),
-  async handler(args, ctx) {
+  async handler(args) {
     if (!(await learningPacksEnabled())) return text(FLAG_OFF);
-    const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    // Candidates are GLOBAL (P-002) — no workspace filter; the queue is fleet-wide.
     const { listLearningPackCandidates } = await import('../../learning-packs/candidates');
     const candidates = await listLearningPackCandidates({
       status: args.status ?? 'pending',
       ...(args.limit ? { limit: args.limit } : {}),
-      workspaceId,
     });
     return text({ ok: true, count: candidates.length, candidates });
   },

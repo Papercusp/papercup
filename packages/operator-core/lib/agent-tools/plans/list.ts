@@ -203,6 +203,25 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'overwatch'],
   modality: ['text'],
   args: argsSchema,
+  // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, P-015 — Lane F rollout,
+  // pairs with the P-013 plans:attention exemplar). The diffable unit is the `plans` row
+  // set, keyed by the stable `slug`; a plan row carries `updated`, so the framework's
+  // content-hash revision flags a changed plan as `updated` and add/remove tracks plans
+  // entering/leaving the listed set. The framework folds the filter args (harness/order/
+  // limit/includeArchived/includeLegacy/compact) into the view fingerprint, so a compact
+  // or differently-filtered call gets its own cursor; `scope` adds the workspace dimension.
+  // Dormant until the papercusp-tool-delta-protocol flag flips.
+  delta: {
+    rows: (data) => {
+      const plans = (data as { plans?: unknown[] } | null | undefined)?.plans;
+      return Array.isArray(plans) ? plans : null;
+    },
+    itemKey: (row) => (row as { slug: string }).slug,
+    orderKey: 'updated',
+    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
+    schemaVersion: 'plans-list-v1',
+    maxDeltaAge: 5 * 60_000,
+  },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const includeArchived = args.includeArchived === true;

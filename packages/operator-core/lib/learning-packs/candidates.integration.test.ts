@@ -1,9 +1,10 @@
 /**
  * candidates.integration.test.ts — the PG half of the fleet→pack staging area
  * (self-improvement-consume-edges-2026-06-12 P-032, brief B-11) against real
- * migrated Postgres (migration 239): structural dedup (UNIQUE per
- * workspace+signature), the pending cap, list filtering, and the decide
- * state machine (dismiss / adopt-with-pack-write / not_pending / not_found).
+ * migrated Postgres (migration 239; global since 377): structural dedup (UNIQUE
+ * per signature — learnings are workspace-agnostic capabilities, P-002), the
+ * pending cap, list filtering, and the decide state machine (dismiss /
+ * adopt-with-pack-write / not_pending / not_found).
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -33,7 +34,6 @@ const stageInput = (signature: string, over: Record<string, unknown> = {}) => ({
   scopes: ['operator', 'harness:sheets'],
   recurrenceCount: 3,
   sourceItemIds: ['EI-1', 'EI-2'],
-  workspaceId: WS,
   ...over,
 });
 
@@ -63,7 +63,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     const retry = await stageLearningPackCandidate(stageInput('sig-dedup'));
     expect(retry).toEqual({ staged: false, reason: 'duplicate-signature' });
 
-    const rows = await listLearningPackCandidates({ workspaceId: WS, status: 'pending' });
+    const rows = await listLearningPackCandidates({ status: 'pending' });
     expect(rows.filter((r) => r.signature === 'sig-dedup')).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       scopes: ['operator', 'harness:sheets'],
@@ -103,7 +103,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     });
     expect(again).toEqual({ ok: false, reason: 'not_pending' });
 
-    const [row] = (await listLearningPackCandidates({ workspaceId: WS })).filter((r) => r.id === staged.id);
+    const [row] = (await listLearningPackCandidates({})).filter((r) => r.id === staged.id);
     expect(row).toMatchObject({ status: 'dismissed', decidedBy: 'owner', decisionNote: 'not a transferable lesson' });
 
     // The dismissed signature can never re-stage — owner decisions stick.
@@ -139,7 +139,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     expect(md).toContain('coordinates destructive shared actions');
     expect(md).toContain('sig-adopt'); // provenance footer
 
-    const [row] = (await listLearningPackCandidates({ workspaceId: WS, status: 'adopted' })).filter(
+    const [row] = (await listLearningPackCandidates({ status: 'adopted' })).filter(
       (r) => r.id === staged.id,
     );
     expect(row).toMatchObject({
@@ -167,7 +167,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     expect(refused).toEqual({ ok: false, reason: 'transfer_bar', error: 'transfer test failed this lesson' });
 
     // Still pending — the owner can fix/dismiss/re-decide; never a half state.
-    const [row] = (await listLearningPackCandidates({ workspaceId: WS, status: 'pending' })).filter(
+    const [row] = (await listLearningPackCandidates({ status: 'pending' })).filter(
       (r) => r.id === staged.id,
     );
     expect(row?.status).toBe('pending');
@@ -199,7 +199,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     expect(dismissed).toEqual({ ok: true, action: 'dismiss', id: staged.id });
   });
 
-  it('decide on an unknown id is not_found; workspaces are isolated', async () => {
+  it('decide on an unknown id is not_found', async () => {
     const missing = await decideLearningPackCandidate({
       id: '00000000-0000-0000-0000-000000000000',
       action: 'dismiss',
@@ -207,8 +207,14 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
       workspaceId: WS,
     });
     expect(missing).toEqual({ ok: false, reason: 'not_found' });
+  });
 
-    const elsewhere = await listLearningPackCandidates({ workspaceId: 'ws-other' });
-    expect(elsewhere).toEqual([]);
+  it('candidates are GLOBAL — staged in one place, visible fleet-wide (P-002)', async () => {
+    // No workspace arg anywhere: a candidate staged here is listed without any
+    // workspace filter (the whole point of the de-scoping — learnings are shared).
+    const staged = await stageLearningPackCandidate(stageInput('sig-global-visible'));
+    if (!staged.staged) throw new Error('stage failed');
+    const all = await listLearningPackCandidates({});
+    expect(all.map((r) => r.signature)).toContain('sig-global-visible');
   });
 });
