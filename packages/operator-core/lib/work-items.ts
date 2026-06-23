@@ -1369,7 +1369,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   // only" → never try issues. The issue branch lives in claimNextIssueWorkItem so the
   // feature claim stays a single, unmodified statement.
   if (!claimed && !filter.kind && (await schedulerIssuesClaimableEnabled())) {
-    claimed = await claimNextIssueWorkItem(filter, ws, useMaintainedReady);
+    claimed = await claimNextIssueWorkItem(filter, ws);
   }
   // plugin-system-hive-port P-004: same claimed-event as claimWorkItem.
   if (claimed) {
@@ -1396,7 +1396,6 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
 async function claimNextIssueWorkItem(
   filter: ClaimNextFilter,
   _ws: string,
-  useMaintainedReady: boolean,
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // Scope the issue-claim to the canonical ISSUE workspace (issuesScopeWorkspace — honors the
@@ -1423,18 +1422,13 @@ async function claimNextIssueWorkItem(
           AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
           AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
-          -- Readiness (P-005/P-007): never self-select a row with a PRESENT, NON-TERMINAL
-          -- blocker. The issue's blocked_ref is its BARE feature_id (issues:link). When the
-          -- maintained sidecar is on (useMaintainedReady), read it; else the inline NOT EXISTS
-          -- over work_item_deps + cross-family blocker statuses. Both forms equivalent.
-          AND ${useMaintainedReady
-            ? sql`NOT EXISTS (
-              SELECT 1 FROM harness_shared.work_item_blocked wb
-               WHERE wb.workspace_id = wi.workspace_id
-                 AND wb.harness_slug = wi.harness_slug
-                 AND wb.feature_id   = wi.feature_id
-            )`
-            : sql`NOT EXISTS (
+          -- Readiness (P-005/P-007): never self-select a row with a PRESENT, NON-TERMINAL blocker.
+          -- The issue's blocked_ref is its BARE feature_id (issues:link). The issue-claim path ALWAYS
+          -- uses the INLINE predicate over work_item_deps + cross-family blocker statuses — NOT the
+          -- maintained work_item_blocked sidecar, which is FEATURE-FAMILY ONLY (the wir_* triggers
+          -- don't track issues, so the sidecar would report a blocked issue as ready). The issue-claim
+          -- is the secondary feature-miss path, so the inline read (not the indexed sidecar) is fine.
+          AND NOT EXISTS (
               SELECT 1 FROM harness_shared.work_item_deps d
                WHERE d.workspace_id = 'default'
                  AND d.dep_type = 'blocks'
@@ -1452,7 +1446,7 @@ async function claimNextIssueWorkItem(
                         AND bi.state NOT IN ('resolved', 'closed')
                    )
                  )
-            )`}
+          )
         ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, wi.feature_order ASC NULLS LAST,` : sql``} wi.created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
