@@ -348,6 +348,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // flip. TOOL_DELTA is INERT until a delta-aware client exists (WI-514 — nothing sends _meta.delta);
   // the delta-gate stays warn-only/un-armed so it doesn't block deploys. STATE_SNAPSHOT's live client
   // is the desktop's use-state-snapshots. Both reversible — removed from the dark allowlist per the rule.)
+  // agent-tool-delta-client-rollout-2026-06-23 P-006: the sync RESOURCE rows-delta CUTOVER. OFF ⇒ no
+  // codec injected ⇒ the UI re-fetches full plans.attention/plans.list (byte-identical). A reversible
+  // kill-switch; the owner flips ON after an attended running-desktop verify that deltas merge correctly
+  // (the checksum/keep-stale guard makes a wrong merge degrade to a refetch). Pending flip in the plan ## Now.
+  FLAGS.SYNC_RESOURCE_DELTA,
 ]);
 
 /**
@@ -420,6 +425,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],
   [FLAGS.UI_WORKSPACE_GUARD, 'cutover'],
   [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
+  [FLAGS.SYNC_RESOURCE_DELTA, 'cutover'],
 ]);
 
 /**

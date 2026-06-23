@@ -977,6 +977,13 @@ export const FLAGS = {
   // TOOL_DELTA_PROTOCOL (the LLM tool-result delta) — proven by the state-delta
   // round-trip test, not the Lane-C LLM scenarios. OFF ⇒ full snapshots (today).
   STATE_SNAPSHOT_DELTAS: "papercusp-state-snapshot-deltas",
+  // agent-tool-delta-client-rollout-2026-06-23 P-006: gates the sync RESOURCE rows-delta —
+  // the UI's invalidate-driven re-fetch of plans.attention/plans.list sends a cursor and the
+  // server replies with only the changed rows (the ~327GB/3d win). A reversible CUTOVER
+  // kill-switch: OFF ⇒ no codec injected ⇒ full re-fetch (byte-identical). The owner flips it
+  // ON after an attended running-desktop verify (the checksum/keep-stale guard degrades a wrong
+  // merge to a refetch, never a wrong view).
+  SYNC_RESOURCE_DELTA: "papercusp-sync-resource-delta",
   // queen-bee-spawn-reclaim-relaunch-2026-06-22 (EI-85 restart-kills): the boot
   // spawn-admission reconcile RE-LAUNCHES a reclaimed queen/bee whose durable
   // work-item is non-terminal, instead of marking it `failed` and losing the work.
@@ -1550,6 +1557,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // tests); the desktop's use-state-snapshots is the LIVE client (always sends ?delta=1, applies
   // deltas with a checksum/keep-stale fallback). Reversible kill-switch — OFF reverts to full snapshots.
   [FLAGS.STATE_SNAPSHOT_DELTAS]: true,
+  // DEFAULT OFF (agent-tool-delta-client-rollout-2026-06-23 P-006): a reversible CUTOVER
+  // kill-switch for the sync resource rows-delta. OFF ⇒ no codec injected ⇒ full re-fetch
+  // (byte-identical). Owner flips ON after an attended running-desktop verify. KNOWN_DARK (cutover).
+  [FLAGS.SYNC_RESOURCE_DELTA]: false,
   // DEFAULT ON (queen-bee-spawn-reclaim-relaunch-2026-06-22, EI-85): the boot reconcile
   // re-launches a reclaimed queen/bee whose durable work-item is non-terminal so the
   // work survives a host restart. Bounded (non-terminal work only, ceiling-gated re-fire)
