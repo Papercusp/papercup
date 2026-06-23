@@ -1,12 +1,13 @@
 ---
 title: "\"We hit the rate limit\" is usually account-routing, not real capacity"
-description: "Papercusp runs LLM inference over a POOL of many Anthropic accounts behind an inference gateway with a per-account rate governor, so a true usage/quota wall is rare. Agents keep mis-reading a routing/config fault as exhaustion ('we hit the account limit', 'session limit', 'exceeded max wait', a 429) and give up. The two faults that masquerade as a limit: (1) the account-aware routing is gated behind INFERENCE_GATEWAY + INFERENCE_GATEWAY_MULTI_ACCOUNT flags — OFF → spawned bees get no PAPERCUSP_ACCOUNT_ID → the governor keys the account-BLIND global anthropic:opus bucket → one account's 429 pauses it fleet-wide even with 6 idle accounts ('rate-limit pause exceeded max wait', exit 1, ~30ms, $0); (2) the gateway pools only some accounts — selectSpawnAccount pins a bee to a healthy account via x-papercusp-account, but if that account isn't in the gateway's pool the header is ignored and it falls back to its exhausted active() account, so the bee HANGS at $0. Verify with dev:rate_governor_status / accounts:status / the bee's /proc env / the gateway /healthz before concluding a limit."
+description: "Papercusp runs LLM inference over a POOL of many Anthropic accounts behind an inference gateway with a per-account rate governor, so a true usage/quota wall is rare. Agents keep mis-reading a routing/config fault as exhaustion ('we hit the account limit', 'session limit', 'exceeded max wait', a 429) and give up. Several faults masquerade as a limit: (1) the account-aware routing is gated behind INFERENCE_GATEWAY + INFERENCE_GATEWAY_MULTI_ACCOUNT flags — OFF → spawned bees get no PAPERCUSP_ACCOUNT_ID → the governor keys the account-BLIND global anthropic:opus bucket → one account's 429 pauses it fleet-wide even with 6 idle accounts ('rate-limit pause exceeded max wait', exit 1, ~30ms, $0); (2) the gateway pools only some accounts — selectSpawnAccount pins a bee to a healthy account via x-papercusp-account, but if that account isn't in the gateway's pool the header is ignored and it falls back to its exhausted active() account, so the bee HANGS at $0. Verify with dev:rate_governor_status / accounts:status / the bee's /proc env / the gateway /healthz before concluding a limit."
 discovered: 2026-06-17
 tags: [llm, rate-limit, 429, multi-account, inference-gateway, account-routing, spawn, governor, capacity, debugging]
 status: active
 documents:
   - packages/operator-core/lib/fleet/operator-spawn.ts
   - packages/operator-core/lib/dbos/orchestrator-runner.ts
+  - packages/operator-core/lib/dbos/durable-spawn.ts
   - packages/operator-core/lib/inference-gateway/gateway.ts
   - packages/operator-core/lib/agent-governor-pg-store.ts
 plans:
@@ -96,6 +97,34 @@ governor buckets, and they otherwise self-expire only at `paused_until`):
 `UPDATE harness_shared.agent_rate_budget SET paused_until = 0, pace_delay_ms = 0 WHERE paused_until > <now_ms>`
 — scoped to the future-paused rows; the next `acquire` reads it fresh, fleet-wide, no restart needed.
 
+**5. The mid-turn death MISCLASSIFIED as a host fault (the GENUINE all-accounts throttle that never
+shows up as a 429).** Faults 1–4 are config/routing faults where idle capacity exists. This is the one
+case where the pool *is* (transiently) all-throttled at once — AND the only one that never reaches the
+debugger as a rate-limit string at all, so it slips past this whole doc's framing. The shape: a blueprint
+spawn (queen/worker) is recorded **`infra_loss: "<label> returned HTTP 200 but the agent produced no turn
+(ok=false, exitCode=1, timedOut=false, outLen=18) — launcher host dead/unstable; recorded failed, not
+retried (host stability is the fix)"`** (`durable-spawn.ts`, the HTTP-200-but-no-turn classifier). The
+label sends you hunting a phantom host bug — **the host is fine.** The flight-recorder transcript
+(`~/.papercusp/flight-recorder/unlabeled-claude-cfg-spawn-*/.../<sid>.jsonl`) shows the agent **ran
+normally**: its **1st** gateway call succeeded (real cache-creation tokens, a tool call), it got the first
+`tool_result` — then the process **exited 1 with EMPTY stderr mid-turn** on its **2nd** call. The gateway
+route log at that timestamp (`PAPERCUSP_GATEWAY_ROUTE_LOG=1`) explains it. Two storm shapes trigger the
+same death: (a) an all-accounts **429 storm** — `sustainedly limited … no-fresh-account` +
+`all accounts transiently throttled on <model> → wait Nms`; or (b) the **dominant** one — a **transport-STALL
+storm** (`upstream fetch STALLED (aborted) … no activity for Nms`), which does **NOT** increment
+`upstream429`, so the death can land in a window that looks 429-calm (`upstream429` flat). The
+1st call slipped through a calm window; the 2nd hit the storm; the in-request **stall-absorb** budget
+(`PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS`, ~120 s) ran out → the `claude` CLI got an error and died, producing
+only its bootstrap log lines (stripped by `extractAgentOutput`) → `outLen` ≈ 0. Tell: `spawned_agents`
+rows for blueprint roles all `failed` with the `infra_loss … no turn … host dead/unstable` string and
+**wildly varying `duration_ms`** (a few hundred ms to many minutes — the absorb hold), while the host's
+own services are healthy and the gateway `/healthz` `aimd.pressure` oscillates (calm when you check, but
+the route log shows storms at the death timestamps). Unlike 1–4 this genuinely is capacity — but it's
+**transient** (the pool recovers; `pressure` returns to 0 with a growing `cleanStreak`), so the fix is the
+same as always: **add accounts** (owner-authority) so `no-fresh-account` stops happening — NOT "stabilize
+the host," and NOT "wait for a multi-hour reset." A reserved/pinned account (`x-papercusp-account` +
+excluded from `selectSpawnAccount` rotation) gives a single workload a lane isolated from the fleet storm.
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 - **`dev:rate_governor_status`** — is the paused bucket the **global** `anthropic:opus`
@@ -109,7 +138,12 @@ governor buckets, and they otherwise self-expire only at `paused_until`):
   use?
 - **The gateway `/healthz`** (`:8788`) — its `accountId` + `unified.rejected`: is it stuck
   serving one exhausted account? Watch `upstream429` vs `failovers` (fault #3: 429s climb,
-  failovers flat).
+  failovers flat). For fault #5, `aimd.pressure`/`cleanStreak` oscillate — calm when you poll, but
+  the **route log** shows `no-fresh-account` storms at the death timestamps.
+- **A blueprint spawn recorded `infra_loss … no turn … host dead/unstable`?** (fault #5) Do NOT trust
+  the "host" label. Open the flight-recorder transcript (`~/.papercusp/flight-recorder/…/<sid>.jsonl`):
+  if the agent ran normally then stopped **mid-turn** (1st call OK, died on the 2nd), it's the gateway
+  storm, not the host — cross-check the gateway route log at that timestamp.
 - **`operator_rate_limit_config` (get)** — the fleet-wide `maxSimultaneousAgents` cap. If it's
   pinned LOW (e.g. **1**, the floor), the operator serializes governed spawns one-at-a-time —
   throughput looks "rate-limited" but it's a **config throttle**, not a quota wall, and with

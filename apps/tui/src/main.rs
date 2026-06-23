@@ -140,6 +140,16 @@ async fn main() -> Result<()> {
         Some("plans-pane") => Some(app::Tab::PlansBoard),
         _ => None,
     };
+    // Slim dock theme (owner ask 2026-06-23): a pinned dock pane renders base
+    // surfaces TRANSPARENT so the ratatui dock panes (Fleet/colony, the queen
+    // boards, wakes) inherit the user's plain Ghostty bg — matching the slim
+    // plain-text brain-view panes + the Claude TUI, instead of painting the
+    // opaque `frost` panel over the dock (the colony pane was the lone holdout
+    // that "didn't get the new theme"). Off in the standalone workbench
+    // (pinned == None), which keeps the opaque dashboard surfaces.
+    if pinned.is_some() {
+        crate::theme::Theme::set_transparent_surfaces(true);
+    }
     let agent_ctx_mode = match subcommand.as_deref() {
         Some("mail-pane") => app::AgentCtxMode::Mail,
         Some("work-pane") => app::AgentCtxMode::Work,

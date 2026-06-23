@@ -292,6 +292,41 @@ fn theme_idx(name: &str) -> Option<usize> {
 /// Atomic because the reducer thread flips it while the draw loop reads it.
 static ACTIVE_IDX: AtomicUsize = AtomicUsize::new(usize::MAX);
 
+/// Dock panes render base SURFACES with a transparent (terminal-inherited)
+/// background instead of the opaque `panel`/`status`/`tab_bar` fill (owner ask
+/// 2026-06-23 — "the colony pane is the only one that didn't get the new
+/// theme"). The chat dock dropped its forced Ghostty `--background` on
+/// 2026-06-22 so the slim plain-text panes (brain-view) + the Claude TUI show
+/// the user's plain Ghostty bg; the ratatui dock panes (Fleet/colony, the
+/// queen boards, wakes) were the holdouts still painting the `frost` panel
+/// over it. With this set they inherit the same bg, so the whole dock reads as
+/// one theme. Foreground ink/accents/borders are untouched; overlays
+/// (popup/input) stay opaque so they remain readable over content. Off in the
+/// standalone workbench (full TUI) — only `main.rs` flips it on for a pinned
+/// dock pane. Atomic because the reducer thread may read it while the draw
+/// loop renders.
+static TRANSPARENT_SURFACES: AtomicBool = AtomicBool::new(false);
+
+/// Pure core of [`surface_bg`] (the atomic read injected) so the
+/// transparent ⇒ `Reset`, opaque ⇒ slot mapping is unit-testable without
+/// touching the process-global flag (which sibling tests read concurrently).
+#[inline]
+fn resolve_surface_bg(transparent: bool, slot: Color) -> Color {
+    if transparent {
+        Color::Reset
+    } else {
+        slot
+    }
+}
+
+/// The background a base surface should paint: the theme slot normally, or
+/// `Color::Reset` (inherit the terminal bg) when [`Theme::set_transparent_surfaces`]
+/// is on.
+#[inline]
+fn surface_bg(slot: Color) -> Color {
+    resolve_surface_bg(TRANSPARENT_SURFACES.load(Ordering::Relaxed), slot)
+}
+
 pub struct Theme;
 
 impl Theme {
@@ -330,17 +365,25 @@ impl Theme {
         }
     }
 
+    /// Turn transparent (terminal-inherited) base surfaces on/off — see
+    /// [`TRANSPARENT_SURFACES`]. `main.rs` flips this on for a pinned dock pane
+    /// so the ratatui dock panes (Fleet/colony, queen boards, wakes) match the
+    /// slim plain-text panes + the user's plain Ghostty bg.
+    pub fn set_transparent_surfaces(on: bool) {
+        TRANSPARENT_SURFACES.store(on, Ordering::Relaxed);
+    }
+
     /// Base pane surface. Blocks use this so adjacent panes read as an intentional
     /// dashboard instead of raw terminal cells.
     pub fn panel() -> Style {
         let t = Self::active();
-        Style::default().fg(t.ink).bg(t.panel)
+        Style::default().fg(t.ink).bg(surface_bg(t.panel))
     }
 
     /// Active pane surface.
     pub fn panel_active() -> Style {
         let t = Self::active();
-        Style::default().fg(t.ink).bg(t.panel_active)
+        Style::default().fg(t.ink).bg(surface_bg(t.panel_active))
     }
 
     /// Modal and floating overlay surface.
@@ -379,16 +422,16 @@ impl Theme {
 
     pub fn status_bar() -> Style {
         let t = Self::active();
-        Style::default().fg(t.muted).bg(t.status)
+        Style::default().fg(t.muted).bg(surface_bg(t.status))
     }
 
     pub fn status_text(style: Style) -> Style {
-        style.bg(Self::active().status)
+        style.bg(surface_bg(Self::active().status))
     }
 
     pub fn tab_bar() -> Style {
         let t = Self::active();
-        Style::default().fg(t.muted).bg(t.tab_bar_bg)
+        Style::default().fg(t.muted).bg(surface_bg(t.tab_bar_bg))
     }
 
     /// Selected list row / active tab.
@@ -598,6 +641,21 @@ mod tests {
         );
         assert_eq!(Theme::tab_bar(), Style::default().fg(t.muted).bg(t.tab_bar_bg));
         assert_eq!(Theme::dim(), Style::default().fg(t.muted));
+    }
+
+    /// Transparent-surface mode (owner ask 2026-06-23): the pure mapping the
+    /// dock panes ride — transparent ⇒ inherit the terminal bg (`Reset`),
+    /// opaque ⇒ the theme slot. Tested through the pure core so it never
+    /// touches the process-global flag the parallel accessor tests read.
+    #[test]
+    fn transparent_surface_inherits_terminal_bg_else_keeps_slot() {
+        let slot = Color::Rgb(7, 16, 29); // frost panel
+        assert_eq!(resolve_surface_bg(true, slot), Color::Reset);
+        assert_eq!(resolve_surface_bg(false, slot), slot);
+        // Default (workbench): the flag is off, so the live accessors keep the
+        // opaque slot — the standalone TUI is unaffected.
+        assert!(!TRANSPARENT_SURFACES.load(Ordering::Relaxed));
+        assert_eq!(Theme::panel().bg, Some(Theme::active().panel));
     }
 
     #[test]
