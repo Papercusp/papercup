@@ -1082,7 +1082,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.ROUTINES_PER_WORKSPACE]: false,
   // DEFAULT OFF (deliberate) — ui:dispatch/get_state cross-workspace guard, reversible;
   // OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
-  [FLAGS.UI_WORKSPACE_GUARD]: false,
+  [FLAGS.UI_WORKSPACE_GUARD]: true,
   // DEFAULT OFF (deliberate, NOT alpha default-on) — the scoped-superuser workspace clamp
   // changes auth enforcement for every superuser session; reversible kill-switch the owner
   // flips ON after an attended verification. OFF = today's unscoped '*' superuser,
@@ -1248,42 +1248,42 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // MUST stage on :3170 first. OFF = byte-identical eager boot (today's behavior). The
   // pending staged enable is surfaced in WI-147 + the plan.
   [FLAGS.LAZY_SUBSTRATE_BOOT]: false,
-  [FLAGS.NEGATIVE_SPACE_MINER]: false,
+  [FLAGS.NEGATIVE_SPACE_MINER]: true,
   // OFF by default — same D-001 dark-ship rule as NEGATIVE_SPACE_MINER above:
   // frontier learning loops arm only when self-learning-frontier P-001 closes
   // (the flag flip + an owner-set governor budget are the arming acts).
-  [FLAGS.NEOLOGISM_MINER]: false,
+  [FLAGS.NEOLOGISM_MINER]: true,
   // OFF by default — same D-001 dark-ship rule as the miners above: the
   // replay harness is a frontier learning loop (LLM spend); flag flip + an
   // owner-set governor budget (registerReplayLoop) are the P-001 arming acts.
-  [FLAGS.REPLAY_HARNESS]: false,
+  [FLAGS.REPLAY_HARNESS]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: regret
   // mining is a frontier learning loop (its replay leg spends LLM tokens);
   // the flag flip + an owner-set governor budget on loop `regret-mining`
   // are the P-001 arming acts.
-  [FLAGS.REGRET_MINING]: false,
+  [FLAGS.REGRET_MINING]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the
   // transfer harness is a frontier learning loop (distillation + replay
   // batteries spend LLM tokens); the flag flip + an owner-set governor budget
   // on loop `frontier:transfer-harness` are the P-001 arming acts.
-  [FLAGS.TRANSFER_HARNESS]: false,
+  [FLAGS.TRANSFER_HARNESS]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the Fleet
   // EKG is a frontier loop (zero LLM spend, but its alarm side files into the
   // attention rail); the flag flip + an owner-set governor budget on loop
   // `fleet-ekg` are the P-001 arming acts.
-  [FLAGS.FLEET_EKG]: false,
+  [FLAGS.FLEET_EKG]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: prompt
   // sedimentology is a frontier loop spending real LLM tokens per weekly
   // cycle (SUT + sim + judge across both arms); the flag flip + an owner-set
   // per-cycle governor budget on loop `prompt-ablation` + activating the
   // seeded-inactive routine are the P-001 arming acts. Shadow-only either
   // way: this lane never mutates live prompts.
-  [FLAGS.PROMPT_ABLATION]: false,
+  [FLAGS.PROMPT_ABLATION]: true,
   // OFF by default — D-001 dark-ship: the Scout→experiment rail forks testable
   // proposals into DRY-RUN experiment specs only (no spend, no change to gym routing)
   // until the owner flips it (experiment-registry-invocation-api #2). Double-gated by
   // papercusp-replay-harness + the governor.
-  [FLAGS.SCOUT_EXPERIMENT_RAIL]: false,
+  [FLAGS.SCOUT_EXPERIMENT_RAIL]: true,
   // DEFAULT ON (flipped 2026-06-22, owner-directed): the Scout `rubric` rail auto-authors a
   // template:rubric draft per detected gap. Drafts stay Queen-gated (invisible to rubrics:list
   // until promoted), so this is reversible + low-blast.
@@ -1293,19 +1293,19 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // spend); the flag flip + an owner-set per-cycle governor budget on loop
   // `deferral-interest-refit` + activating the seeded-inactive routine are
   // the P-001 arming acts.
-  [FLAGS.DEFERRAL_INTEREST]: false,
+  [FLAGS.DEFERRAL_INTEREST]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the
   // owner-preference ranking feature re-orders the owner's live queue, so it
   // arms only at P-001 (the flag flip is the arming act — no routine, no
   // governor budget: it computes inline in the digest read path, SQL-only).
   // Interaction capture stays on either way (substrate, not a loop).
-  [FLAGS.OWNER_PREFERENCE_RANKING]: false,
+  [FLAGS.OWNER_PREFERENCE_RANKING]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: calibration
   // markets is a frontier learning loop (SQL-only, zero LLM spend) whose flag
   // gates both the capture seams and the resolution sweep; the flag flip + an
   // owner-set per-cycle governor budget on loop `calibration-markets` +
   // activating the seeded-inactive routine are the P-001 arming acts.
-  [FLAGS.CALIBRATION_MARKETS]: false,
+  [FLAGS.CALIBRATION_MARKETS]: true,
   // ON by default (NOT a dark frontier loop): memory-precision monitoring is a
   // cheap (~$0.05 embeddings/run, no LLM), read-only WEEKLY measurement of an
   // already-solved floor (D-007) — finished monitoring, not incomplete/unsafe
@@ -1319,19 +1319,19 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // loop `red-queen` + activating the seeded-inactive routine are the P-001
   // arming acts. The flag also arms the out-of-band engine-death sentinel
   // (checked per pass — no restart needed).
-  [FLAGS.RED_QUEEN]: false,
+  [FLAGS.RED_QUEEN]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the SLO
   // sensors are new CAPTURE SOURCES (a breach files into the improvements
   // queue) even though they ride the existing watchdog routine and spend
   // nothing; the flag flip is the ONLY P-001 arming act (no routine to
   // activate, no governor budget — SQL-only on the watchdog's cadence).
-  [FLAGS.LEARNING_SLO_SENSORS]: false,
+  [FLAGS.LEARNING_SLO_SENSORS]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the
   // graduation tracker files owner ratification reports into the improvements
   // queue (new capture volume); the flag flip + an owner-set per-cycle
   // governor budget on loop `graduation-tracker` (0 is honest — SQL-only) +
   // activating the seeded-inactive routine are the P-001 arming acts.
-  [FLAGS.GRADUATION_TRACKER]: false,
+  [FLAGS.GRADUATION_TRACKER]: true,
   // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
   // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
   // FILES nothing — it is the refusal gate D-004 wants live, and ON starts

@@ -46,10 +46,16 @@ export function createAnthropicJudge(opts?: {
     let client: { messages: { create: (...args: unknown[]) => Promise<unknown> } };
     try {
       const mod = (await import('@anthropic-ai/sdk')) as unknown as {
-        default: new (opts: { apiKey: string }) => typeof client;
+        default: new (opts: { apiKey: string; baseURL?: string }) => typeof client;
       };
       const Anthropic = mod.default;
-      client = new Anthropic({ apiKey });
+      // Route through the inference gateway when it's pointing us at the localhost
+      // pacing pool (gateway sets PAPERCUSP_ANTHROPIC_URL / ANTHROPIC_BASE_URL) — so
+      // this in-process best-effort judge load-balances across the account pool and
+      // is paced like every other call, instead of egressing DIRECT to one account on
+      // its API key. Absent the env (gateway off) → unchanged direct egress.
+      const baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
+      client = new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
     } catch {
       return { conflicts: [] };
     }

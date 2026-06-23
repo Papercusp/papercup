@@ -56,6 +56,7 @@ import { renderCodeRunNudge } from './code-run-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
 import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
 import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
+import { renderWaitLoopNote } from './wait-loop-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
@@ -151,6 +152,7 @@ export interface AssembledSection {
     | 'code-run-note'
     | 'finish-the-rollout-note'
     | 'agent-activity-truth-note'
+    | 'wait-loop-note'
     | 'runtime';
   chars: number;
 }
@@ -563,6 +565,17 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (agentActivityTruthNote) {
     parts.push(agentActivityTruthNote);
     sections.push({ name: 'agent-activity-truth-note', chars: agentActivityTruthNote.length });
+  }
+
+  // Wait-loop note (owner directive 2026-06-23) — the SHARED base every operator-launched role
+  // inherits, mirroring the spawned-bee base. When blocked on something that may never fire, arm a
+  // recurring self-wake (loop:arm / declare-wake) and FIX what's preventing the firing instead of
+  // sleeping forever on a bare event-await. Sourced from the one WAIT_LOOP_NOTE constant
+  // (orchestrator) so this base, the spawned-bee base, and the su playbooks can't desync.
+  const waitLoopNote = renderWaitLoopNote();
+  if (waitLoopNote) {
+    parts.push(waitLoopNote);
+    sections.push({ name: 'wait-loop-note', chars: waitLoopNote.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

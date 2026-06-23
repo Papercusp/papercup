@@ -357,6 +357,19 @@ describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibilit
   });
 });
 
+describe('assembleRolePrompt — wait-loop note (owner directive 2026-06-23)', () => {
+  it('injects the "waiting? arm a self-wake loop; never sleep on an event that may never fire" note into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Waiting on something? Arm a self-wake LOOP');
+    expect(out.text).toContain('NEVER-FIRING event');
+    expect(out.text).toContain('loop:arm');
+    expect(out.text).toContain('hive:declare-wake');
+    expect(out.sections.some((s) => s.name === 'wait-loop-note')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — concurrency-first note (owner directive 2026-06-20)', () => {
   it('injects the "never wait for a calm window; a non-resource block is a BUG to fix" note into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

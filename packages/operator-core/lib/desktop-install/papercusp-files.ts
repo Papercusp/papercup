@@ -21,6 +21,7 @@ import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROJECT_GUIDE_MARKER } from './splice-tooling-overlay';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
+import { renderWaitLoopNote } from '../wait-loop-policy';
 import { renderWorkspaceMapSection } from './workspace-map';
 import { renderWireSchemasSection } from '../prompt-assembly';
 import { renderCoordLegend } from '../coord-schema';
@@ -202,26 +203,28 @@ async function resolveProjectGuideText(
 }
 
 /**
- * Project the shared, cross-cutting BEHAVIORAL note(s) — canonical constants owned by
+ * Project the shared, cross-cutting BEHAVIORAL notes — canonical constants owned by
  * `@papercusp/orchestrator` (re-exported through operator-core's policy wrappers) — into the
  * su playbook from the SINGLE source. Currently `DEPLOY_PIPELINE_NOTE` (the "deploy pipeline is
- * async; a RED gate is EVERYONE's job to FIX, no owner-ask, even out of lane" directive), which
- * the su base playbook otherwise misses entirely while the spawned-bee + operator-launched bases
- * already inject it programmatically (prompt-build.ts / prompt-assembly.ts). This keeps such a
- * universal directive in ONE place that projects to EVERY base, model/provider-agnostic (a plain
- * string spliced regardless of model), ADDITIVELY — su's existing condensed notes and the `.md`
- * prompt files are left untouched. Inserted just before the project-guide section so it sits in
- * the playbook body, not buried under the 600-line guide.
+ * async; a RED gate is EVERYONE's job to FIX, no owner-ask, even out of lane" directive) and
+ * `WAIT_LOOP_NOTE` (the "waiting on something? arm a self-wake LOOP — never sleep on an event that
+ * may never fire; re-check + FIX what's preventing it" directive) — both of which the su base
+ * playbook otherwise misses entirely while the spawned-bee + operator-launched bases already inject
+ * them programmatically (prompt-build.ts / prompt-assembly.ts). This keeps such universal directives
+ * in ONE place that projects to EVERY base, model/provider-agnostic (plain strings spliced
+ * regardless of model), ADDITIVELY — su's existing condensed notes and the `.md` prompt files are
+ * left untouched. Inserted just before the project-guide section so they sit in the playbook body,
+ * not buried under the 600-line guide.
  */
 function injectSharedBaseNotes(text: string): string {
   // Anchor on the project-guide marker: it is the one marker still un-spliced at this point AND a
   // reliable "this is a real su playbook" signal (engineer/power carry it; minimal/test bases do
-  // not). Insert the note just BEFORE it; NEVER append, so a marker-less base is returned untouched
+  // not). Insert the notes just BEFORE it; NEVER append, so a marker-less base is returned untouched
   // (mirrors spliceGeneratedSection's no-append contract).
   if (!text.includes(PROJECT_GUIDE_MARKER)) return text;
-  const note = renderDeployPipelineNote();
-  if (!note) return text;
-  return text.split(PROJECT_GUIDE_MARKER).join(`${note}\n\n${PROJECT_GUIDE_MARKER}`);
+  const notes = [renderDeployPipelineNote(), renderWaitLoopNote()].filter((n) => n && n.trim());
+  if (notes.length === 0) return text;
+  return text.split(PROJECT_GUIDE_MARKER).join(`${notes.join('\n\n')}\n\n${PROJECT_GUIDE_MARKER}`);
 }
 
 /**

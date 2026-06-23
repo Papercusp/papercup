@@ -901,7 +901,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             probeSuccessStreak++;
             if (probeSuccessStreak >= EGRESS_PROBE_READMIT_STREAK) {
               egressFailStreak.delete(account.accountId);
-              gov.liftTransportPause(pausedUntil); // lift the transport pause NOW (no-op if a real 429 superseded it)
+              gov.liftTransportPause(egressPauseUntil.get(account.accountId) ?? pausedUntil); // C3: lift the LIVE pause (an escalated reopen extends it past the captured value); no-op if a real 429 superseded it
               pool.readmit?.(account.accountId); // rejoin the round-robin
               egressPauseUntil.delete(account.accountId);
               readmitted = true;
@@ -918,7 +918,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           log('warn', `inference-gateway: egress probe error for '${account.accountId}': ${(err as Error).message}`);
         } finally {
           // Keep probing until the proxy is CONFIRMED stable (readmitted) OR the circuit pause expires.
-          if (!readmitted && Date.now() < pausedUntil) runProbe();
+          // C3 (2026-06-23): compare against the LIVE deadline (egressPauseUntil), NOT the captured `pausedUntil`
+          // from the FIRST open. An escalated reopen extends egressPauseUntil to a LONGER deadline; the stale
+          // constant would stop the probe early, stranding a now-longer-paused account with NO active probe → it
+          // sits out the full escalated backoff even after the proxy recovers (defeating the half-open mechanism
+          // for exactly the chronically-flapping proxies it exists for). The live map is the source of truth.
+          if (!readmitted && Date.now() < (egressPauseUntil.get(account.accountId) ?? pausedUntil)) runProbe();
           else egressProbePending.delete(account.accountId);
         }
       })();
@@ -1202,14 +1207,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
       let softCand: ActiveAccount | null = null;
       let softGov: RateLimitGovernor | null = null;
       let softUtil = Infinity;
+      // H1 (inference-gateway-audit-2026-06-23): COLLECT the least-loaded healthy candidate across the bounded
+      // walk rather than early-returning the FIRST one. Under a mass-pause that flips N accounts paused in one
+      // tick, the in-flight wave scans the same paused prefix and would all converge on the SAME first-healthy
+      // account + 429 it → cascade (the observed aviynw→definitelyahuman chain). Routing to the account with the
+      // MOST residual budget (lowest unified utilization) — together with the admission clamp that caps the burst
+      // size — keeps the wave off a single account. (Mirrors the soft-pause lowest-util pick below.)
+      let healthyCand: ActiveAccount | null = null;
+      let healthyGov: RateLimitGovernor | null = null;
+      let healthyUtil = Infinity;
       for (let walk = 0; walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
         const cand = pool.active();
         const cgov = governorForAccount(model, cand.accountId);
         if (cgov.state.pausedUntil <= Date.now()) {
-          active = cand;
-          gov = cgov;
-          found = true;
-          break;
+          const u = cgov.snapshot().unified?.utilization ?? 0; // no util data ⇒ treat as idle (eligible)
+          if (u < healthyUtil) {
+            healthyUtil = u;
+            healthyCand = cand;
+            healthyGov = cgov;
+          }
+          continue; // keep walking — pick the LEAST-loaded healthy account, don't stack on the first
         }
         soonestPaused = Math.min(soonestPaused, cgov.state.pausedUntil);
         if (cgov.softPaused(Date.now()) && (egressPauseUntil.get(cand.accountId) ?? 0) <= Date.now()) {
@@ -1220,6 +1237,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             softGov = cgov;
           }
         }
+      }
+      if (healthyCand && healthyGov) {
+        active = healthyCand;
+        gov = healthyGov;
+        found = true;
       }
       if (found && chosenWasPin) {
         log('warn', `inference-gateway: pinned '${pinned!.accountId}' paused → routed to '${active.accountId}' (cache-affinity yields to liveness)`);

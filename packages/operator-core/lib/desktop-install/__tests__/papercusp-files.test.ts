@@ -181,6 +181,27 @@ describe('installPapercuspFiles', () => {
     expect(playbook.indexOf('do NOT ask the owner')).toBeLessThan(playbook.indexOf('## Tail'));
   });
 
+  it('projects the canonical wait-loop note into the ENGINEER playbook at the project-guide anchor', async () => {
+    // owner directive 2026-06-23: the "waiting? arm a self-wake LOOP — never sleep on an event that
+    // may never fire" directive lives in ONE source (WAIT_LOOP_NOTE) and is PROJECTED into su
+    // (engineer) alongside the deploy note — not hand-mirrored, not loose in CLAUDE.md.
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Base\n\n<!-- PAPERCUSP-SU:PROJECT-GUIDE -->\n\n## Tail\n`,
+    );
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+
+    // the canonical WAIT_LOOP_NOTE is projected in...
+    expect(playbook).toContain('## Waiting on something? Arm a self-wake LOOP');
+    expect(playbook).toContain('loop:arm');
+    // ...exactly once (one source, one projection)...
+    expect(playbook.split('## Waiting on something? Arm a self-wake LOOP').length - 1).toBe(1);
+    // ...sitting in the body BEFORE the project-guide slot, not appended at the very end.
+    expect(playbook.indexOf('Arm a self-wake LOOP')).toBeLessThan(playbook.indexOf('## Tail'));
+  });
+
   it('splices the GENERATED workspace map at its marker (staging-branch-pipeline-2026-06-06)', async () => {
     const MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
     await fs.writeFile(

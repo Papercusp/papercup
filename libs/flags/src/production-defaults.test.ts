@@ -153,65 +153,55 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // ratification). Covers the negative-space miner (P-010/FB-04) and the
   // neologism miner (P-011/FB-05); later frontier loop flags join this block
   // under the same decision.
-  FLAGS.NEGATIVE_SPACE_MINER,
-  FLAGS.NEOLOGISM_MINER,
+  // NEGATIVE_SPACE_MINER graduated to default-ON 2026-06-23 (owner-directed flags-default-on
+  // sweep, plan flip-dark-flags-default-on-2026-06-23): double-gated, so flag-ON stays inert
+  // until the learning governor is budgeted — flip only un-gates the SQL-only capture seams.
   // … the replay harness (P-020/FB-06) — double-gated: flag OFF here AND
   // unregistered/unbudgeted on the learning governor until the P-001 arming
   // act (registerReplayLoop with an owner-set budget).
-  FLAGS.REPLAY_HARNESS,
   // … and regret mining (P-021/FB-07) — same double gate: flag OFF here AND
   // unbudgeted on the learning governor (loop `regret-mining`) until P-001.
-  FLAGS.REGRET_MINING,
   // … and the transfer harness (P-022/FB-08) — same double gate: flag OFF
   // here AND unbudgeted on the learning governor (loop
   // `frontier:transfer-harness`) until P-001.
-  FLAGS.TRANSFER_HARNESS,
   // … and the Fleet EKG (P-030/FB-10) — same double gate: flag OFF here AND
   // unbudgeted on the learning governor (loop `fleet-ekg`) until P-001.
-  FLAGS.FLEET_EKG,
   // … and prompt sedimentology (P-023/FB-09) — triple gate: flag OFF here,
   // unbudgeted on the learning governor (loop `prompt-ablation`), AND the
   // weekly routine seeded inactive, until P-001. Real LLM spend per cycle;
   // shadow-only (never mutates live prompts) even when armed.
-  FLAGS.PROMPT_ABLATION,
   // … and deferral interest (P-042/FB-14) — same double gate: flag OFF here
   // AND unbudgeted on the learning governor (loop `deferral-interest-refit`)
   // until P-001. SQL-only zero-spend refit; the ranker feature reads any
   // already-trained model either way (degrades to zero-priced when none).
-  FLAGS.DEFERRAL_INTEREST,
   // … and the owner preference model (P-043/FB-15) — single gate: the flag
   // IS the arming act (no routine, no governor budget — inline SQL-only
   // re-ranking in the digest read path). Dark until P-001 because it
   // re-orders the owner's live queue; interaction capture is unflagged
   // substrate so history accumulates before arming.
-  FLAGS.OWNER_PREFERENCE_RANKING,
   // … and calibration markets (P-041/FB-13) — triple gate: flag OFF here
   // (gates the capture seams AND the resolution sweep), the routine seeded
   // INACTIVE, and unbudgeted on the learning governor (loop
   // `calibration-markets`) until P-001. SQL-only zero-spend; the ranker
   // feature contributes 0 while dark.
-  FLAGS.CALIBRATION_MARKETS,
   // … and the Red Queen vaccination drills (P-031/FB-20) — triple gate: flag
   // OFF here (gates the drill cadence AND the out-of-band engine-death
   // sentinel), the routine seeded INACTIVE, and unbudgeted on the learning
   // governor (loop `red-queen`) until P-001. SQL-only zero-spend, but every
   // drill files an origin=drill capture (new capture volume, drill-lane
   // partitioned) — the live MTTSH proof is itself a P-001 act.
-  FLAGS.RED_QUEEN,
   // … and the audit-as-sensors SLO collectors (P-047/FB-21) — single gate:
   // the flag IS the arming act (no routine of their own — they ride the
   // existing improvement-watchdog tick — and no governor budget: SQL-only,
   // zero LLM spend). Dark until P-001 because a breach FILES into the
   // improvements queue: new capture volume waits for the consume-edges
   // live proof like every other frontier capture source.
-  FLAGS.LEARNING_SLO_SENSORS,
   // … and the graduation evidence tracker (P-045/P-046/FB-19) — triple gate:
   // flag OFF here, the daily routine seeded INACTIVE, and unbudgeted on the
   // learning governor (loop `graduation-tracker`) until P-001. SQL-only
   // zero-spend, but it files owner ratification reports into the
   // improvements queue (new capture volume). The widening act itself (the
   // autoKinds/policy edit) is NEVER automated regardless of this flag.
-  FLAGS.GRADUATION_TRACKER,
   // agent-capability-confinement-2026-06-13 B-06 (P-012): the per-role capability
   // envelope ENFORCEMENT at the dispatch chokepoint. DELIBERATE dark ship (NOT the
   // alpha flags-default-on policy) — enabling would DENY autonomous-fleet MCP calls
@@ -246,7 +236,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // ON forks testable Scout proposals into DRY-RUN experiment specs (no spend, no change
   // to gym routing); the owner flips it after reviewing the mechanical proposal→arms
   // mapping (the LLM-polished candidate-overlay generation is the follow-on).
-  FLAGS.SCOUT_EXPERIMENT_RAIL,
   // (SCOUT_RUBRIC_RAIL graduated to default-ON 2026-06-22 — owner-directed; drafts stay Queen-gated.)
   // overwatch-role-2026-06-15 B-10 (D-002 / D-004): the OVERWATCH autonomous
   // system-health role. DELIBERATE dark ship (NOT the alpha default-on policy) —
@@ -314,7 +303,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.ROUTINES_PER_WORKSPACE,
   // workspace-data-isolation-leaks-2026-06-17 F-M7: ui:dispatch/get_state cross-workspace guard
   // (SU-only surface). DELIBERATE dark ship — reversible; OFF = today's behavior, byte-identical.
-  FLAGS.UI_WORKSPACE_GUARD,
   // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim LEASE,
   // migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env gate. DEFAULT OFF — once the stale-claim
   // reaper requeues mid-flight items (GAP 1) + covers the issue family (GAP 2), the stuck-item
@@ -399,22 +387,8 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.IDLE_SESSION_REAPER, 'owner-authority'],
   [FLAGS.IDLE_SESSION_REAPER_TERMINATE, 'owner-authority'],
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
-  [FLAGS.NEGATIVE_SPACE_MINER, 'owner-authority'],
-  [FLAGS.NEOLOGISM_MINER, 'owner-authority'],
-  [FLAGS.REPLAY_HARNESS, 'owner-authority'],
-  [FLAGS.REGRET_MINING, 'owner-authority'],
-  [FLAGS.TRANSFER_HARNESS, 'owner-authority'],
-  [FLAGS.FLEET_EKG, 'owner-authority'],
-  [FLAGS.PROMPT_ABLATION, 'owner-authority'],
-  [FLAGS.DEFERRAL_INTEREST, 'owner-authority'],
-  [FLAGS.OWNER_PREFERENCE_RANKING, 'owner-authority'],
-  [FLAGS.CALIBRATION_MARKETS, 'owner-authority'],
-  [FLAGS.RED_QUEEN, 'owner-authority'],
-  [FLAGS.LEARNING_SLO_SENSORS, 'owner-authority'],
-  [FLAGS.GRADUATION_TRACKER, 'owner-authority'],
   [FLAGS.QUEEN_AUTONOMY_ARMED, 'owner-authority'],
   [FLAGS.QUEEN_FULL_AUTONOMY, 'owner-authority'],
-  [FLAGS.SCOUT_EXPERIMENT_RAIL, 'owner-authority'],
   [FLAGS.OVERWATCH, 'owner-authority'],
   [FLAGS.SENTINEL, 'owner-authority'],
   [FLAGS.SENTINEL_PROACTIVE, 'owner-authority'],
@@ -422,7 +396,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.INFERENCE_GATEWAY, 'cutover'],
   [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
   [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],
-  [FLAGS.UI_WORKSPACE_GUARD, 'cutover'],
   [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
 ]);
 

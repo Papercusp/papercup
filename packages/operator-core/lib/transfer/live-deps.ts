@@ -89,11 +89,16 @@ export function anthropicDistillerLlm(opts?: { apiKey?: string; model?: string }
 
   return async ({ system, user, maxTokens }) => {
     const mod = (await import('@anthropic-ai/sdk')) as unknown as {
-      default: new (o: { apiKey: string; timeout?: number }) => {
+      default: new (o: { apiKey: string; timeout?: number; baseURL?: string }) => {
         messages: { create: (...args: unknown[]) => Promise<unknown> };
       };
     };
-    const client = new mod.default({ apiKey, timeout: DISTILL_TIMEOUT_MS });
+    // Route through the inference gateway when it's pointing us at the localhost pacing
+    // pool (gateway sets PAPERCUSP_ANTHROPIC_URL / ANTHROPIC_BASE_URL) so this in-process
+    // distiller load-balances across the account pool instead of egressing direct to one
+    // account on its API key. Absent the env (gateway off) → unchanged direct egress.
+    const baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
+    const client = new mod.default({ apiKey, timeout: DISTILL_TIMEOUT_MS, ...(baseURL ? { baseURL } : {}) });
     const response = (await client.messages.create({
       model,
       max_tokens: maxTokens,
@@ -124,11 +129,14 @@ export function anthropicStudentRunner(opts?: { apiKey?: string; model?: string 
   return async ({ systemPrompt, contextText }) => {
     if (!apiKey) throw new Error('anthropicStudentRunner: no ANTHROPIC_API_KEY — student replay unavailable');
     const mod = (await import('@anthropic-ai/sdk')) as unknown as {
-      default: new (o: { apiKey: string; timeout?: number }) => {
+      default: new (o: { apiKey: string; timeout?: number; baseURL?: string }) => {
         messages: { create: (...args: unknown[]) => Promise<unknown> };
       };
     };
-    const client = new mod.default({ apiKey, timeout: STUDENT_TIMEOUT_MS });
+    // Route through the inference gateway when present (PAPERCUSP_ANTHROPIC_URL /
+    // ANTHROPIC_BASE_URL) so the replay student is pool-paced, not direct on its API key.
+    const baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
+    const client = new mod.default({ apiKey, timeout: STUDENT_TIMEOUT_MS, ...(baseURL ? { baseURL } : {}) });
     const response = (await client.messages.create({
       model,
       max_tokens: STUDENT_MAX_TOKENS,
