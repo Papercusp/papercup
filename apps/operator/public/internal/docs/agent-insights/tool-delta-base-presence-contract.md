@@ -155,5 +155,143 @@ byte-identical to today (zero overhead). A thrown `revision()` degrades to `full
 > the `format` capture) so the `not_modified` hit-rate per tool is a measurable
 > rollout signal — no DDL.
 
-Semantic `added/updated/removed` deltas (`changesSince`) are **Lane E** and build
-on this contract; they are NOT enabled by the `revision`-only declaration above.
+## Semantic deltas (Lane E) — `added` / `updated` / `removed` rows
+
+A delta-capable tool whose data is (or yields) a **row array** can graduate from
+`not_modified` to true semantic deltas by declaring `itemKey`. When the view
+changed and the harness asked for a delta (`_delta: "auto~<cursor>"`), the
+response carries ONLY the changed rows:
+
+```jsonc
+// _meta.delta
+{ "mode": "delta", "supported": true, "cursor": "<opaque>",
+  "checksum": "<set-hash>", "counts": { "added": 1, "updated": 1, "removed": 1 } }
+// body = the changes array (compact/TOON-eligible):
+[ { "change": "added",   "id": "P-9", "type": "plan-item", "data": { /* full row */ } },
+  { "change": "updated", "id": "E-2", "type": "coord-escalation", "data": { /* full row */ } },
+  { "change": "removed", "id": "P-1" } ]                       // removed carries id only
+```
+
+`added`/`updated` carry the **full row** (`data`) — a changed row never depends on
+the model's base; only completeness + removals do. The diff is **stateless**: the
+prior view's `{ itemKey → rowRevision }` digest is embedded in the cursor (`dg`),
+so `diffFromDigest(priorDigest, currentRows)` reconstructs added/updated/removed
+with no server-stored snapshot. (For an unbounded view that can't embed a digest,
+declare `changesSince(args, cursor, ctx)` instead — a watermark-backed query.)
+
+**The merge + checksum safety net (D-007).** The harness applies the changes to
+its retained base with `applySemanticDelta(base, changes, itemKey)`, then
+recomputes `computeViewChecksum` over the merged set and compares it to
+`_meta.delta.checksum`. **Any** mismatch — a missed removal, a mis-merge, an
+un-tombstoned drop — forces a full re-fetch. The worst untested path degrades to a
+wasted re-fetch, never a wrong action. All three helpers ship from
+[`delta-protocol.ts`](libs/generic/tooldef/src/delta-protocol.ts) so the server,
+the harness, and the tests share ONE implementation.
+
+**Capability for a semantic tool:**
+
+```ts
+delta: {
+  itemKey: (row) => row.id,           // stable per-row id (the merge key)
+  rowRevision: (row) => row.version,  // optional; defaults to a content hash
+  rowType: (row) => row.kind,         // optional; tags DeltaChange.type
+  rows: (data) => data.items,         // optional; extract the row array when data isn't itself one
+  maxDeltaAge: 5 * 60_000,            // periodic forced-full (bounds drift)
+  // revision omitted → derived from the item-set checksum
+}
+```
+
+The framework declines a semantic delta WHENEVER it isn't safe — and says why in
+`_meta.delta.reason`: `no_digest` (prior cursor had none), `max_age` (cursor too
+old → forced full), `delta_too_large` (the delta wasn't smaller than a full
+resend), `schema_changed` / `view_changed` (cursor doesn't match this view), or
+`changesSince_error`. An explicit `_delta: "not_modified"` is always honored as
+ETag-only (never upgraded to a delta body).
+
+### Exemplar: `plans:attention` (P-013)
+
+`plans:attention` is the first exemplar — the strongest ROI target (\~9.6k tokens,
+\~19k calls/6h, no `compact` escape). Its response is a GROUPED aggregate
+(`{ groups, tierCounts }`, untouched so the UI's `plans.attention` sync read is
+unaffected); the diffable unit is the FLAT `AttentionItem` set, extracted with
+`rows: (data) => data.groups.flatMap((g) => g.items)`. So an unchanged feed
+returns `not_modified` (no replay), a changed feed returns only the
+added/updated/removed items (checksum-verified), and first/stale/scope-change/
+over-age returns a full snapshot. A grouped view works because the AGENT's unit is
+the flat importance-sorted item list; the harness merges items and re-presents
+them (the groups are a UI presentation the agent doesn't need to reconstruct from
+a delta).
+
+> **Scope reminder.** Semantic deltas are scoped to OMP/psu (the base-presence
+> rule above). External Claude Code / Codex always get `full`.
+
+## Production rollout: the flag + the safety gate (P-016)
+
+The LLM-facing **semantic** delta (the `mode:delta` merge — Lane E) is the only
+risky part: a wrong merge is *plausible but incorrect*. Per the owner BUILD
+decision ([`D-007`/`D-008`](#)), that risk is retired **by test, not by
+avoidance** — so the semantic opt-in ships behind a flag and a gate, never on by
+default.
+
+**The flag — `papercusp-tool-delta-protocol`** (`libs/flags/src/types.ts`,
+default **ON** since the owner-directed flip 2026-06-22; removed from
+`KNOWN_DARK_FLAGS`). OFF ⇒ tools serve only the unconditionally-safe Lane-B
+responses (`full | not_modified`); a tool never emits a `mode:delta` body. The
+flag is the master switch for the semantic merge. It is a `FLAGS` entry, **not**
+an env boolean (env gates ship dark, dodge the default-on guard, and can't be
+flipped at runtime). The flip is **dormant-safe**: it enables the *server*
+capability ahead of any client, but no caller sends `_meta.delta` yet (the
+delta-aware client is WI-514), so today every response is still `full |
+not_modified` regardless — ON simply makes the server *ready* and keeps the flag
+a real runtime kill-switch rather than dead config.
+
+**Where the flag actually bites — the runtime gate.** The flag is enforced
+per-request inside `defineTool`'s `negotiateToolDelta` (`define-tool.ts`), not
+just at deploy time. tooldef is host-agnostic, so it exposes a resolver seam
+(`setSemanticDeltaEnabledResolver` / `isSemanticDeltaEnabled`, `delta-protocol.ts`,
+default `() => true`); the host wires it to the flag in
+`packages/operator-core/lib/agent-tools/delta-flag-wiring.ts` (a side-effect
+import from `agent-tools/index.ts`, same shape as `pre-prompt-registry-config`),
+keyed on `ctx.workspaceId` so the flag can be targeted per-workspace. The read
+sits **after** the structural narrowing (`rows && itemKey && base.mode === 'full'
+&& base.reason === 'changed' && wantsDelta`), so it runs only on a changed-view +
+delta-request call — never per-call — and **fails open to the flag default** (a
+flag-subsystem throw never silently disables a shipped-ON capability). When the
+resolver returns false the upgrade short-circuits to the Lane-B `full` body with
+`reason: 'flag_off'` — a distinct, telemetry-visible reason so a mode-mix
+dashboard can tell "flag is off" apart from "the view genuinely changed". OFF is
+byte-identical to a delta-unaware host.
+
+**The safety gate — `apps/operator/lib/release/delta-gate.ts`**, wired into the
+green-checkpoint as `CheckpointDeps.deltaGate` (mirrors `perf-gate.ts`). Before
+advancing the green pin it asks: *is the production delta flag ON, and are the
+Lane-C scenarios (`su-S23`/`S24`/`S25`) recorded-green-and-fresh?* If the flag is
+ON but any scenario is red/errored/stale/missing, it **holds the deploy**
+(`reason: 'delta-held'`). Key properties:
+
+* **Reads recorded verdicts, never runs the live model.** It queries
+  `llm_test_runs` (via `storage.latestScenarioVerdicts`) — the nightly matrix runs
+  the model and persists the verdict; the gate reads it. So the gate is immune to
+  account 429s / opus-saturation.
+* **Flag-scoped.** Flag OFF ⇒ no-op `pass` (nothing risky shipping).
+* **Default-warn, fail-closed-when-armed.** Disabled by default
+  (`PAPERCUSP_DELTA_GATE=1` enables it); even enabled it only `warn`s until the
+  owner arms `PAPERCUSP_DELTA_GATE_BLOCK=1`. A missing/stale verdict is treated as
+  *not proven* (warn|block), never a silent pass — a safety gate must not
+  green-light an opt-in it could not verify. Freshness window:
+  `PAPERCUSP_DELTA_GATE_MAX_AGE_MS` (default 7d).
+
+**State of the rollout (as of 2026-06-22).** Step (2) is **done** —
+`FLAG_DEFAULTS[TOOL_DELTA_PROTOCOL]` is `true` and the flag is out of
+`KNOWN_DARK_FLAGS` (owner-directed; safe because the opt-in is inert without the
+WI-514 client). What remains before any *real* `mode:delta` traffic flows: (1)
+confirm `su-S23`/`S24`/`S25` are green in the matrix; (3) **arm the gate**
+(`PAPERCUSP_DELTA_GATE=1`, and `_BLOCK=1` once trusted) so that once a client
+exists, a future regression that reds the scenarios holds the deploy instead of
+shipping a silent-wrong-merge. Until then the gate stays default-warn/un-armed so
+it never blocks deploys for a capability nothing exercises yet.
+
+**Telemetry.** Every negotiated response records its mode on
+`tool_invocations.metadata_json.deltaMode` (`full | delta | not_modified`,
+`dispatch-stack.ts`) — the adoption + savings signal, and the source a
+mode-mix dashboard reads.

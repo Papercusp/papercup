@@ -21,7 +21,8 @@ describe('warmMemoryEmbedder (P-004a)', () => {
     const search = vi.fn(async () => []);
     await warmMemoryEmbedder(fakeBackend({ search: search as MemoryBackend['search'] }));
     expect(search).toHaveBeenCalledTimes(1);
-    expect(search.mock.calls[0]?.[1]).toMatchObject({ scope: '__warmup__' });
+    const [, opts] = search.mock.calls[0] as unknown as Parameters<MemoryBackend['search']>;
+    expect(opts).toMatchObject({ scope: '__warmup__' });
   });
 
   it('skips the search when the backend is unavailable', async () => {

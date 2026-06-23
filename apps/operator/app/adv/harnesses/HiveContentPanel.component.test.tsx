@@ -60,13 +60,19 @@ const api = { setParams: vi.fn(), setTitle: vi.fn(), close: vi.fn() } as unknown
 >['api'];
 const PANEL = { panelId: 'test-panel', panelType: 'adv:hive-content' } as const;
 
-function renderPanel(searchParams = '?slug=demo-hive', onUrlChange?: (e: UrlUpdateEvent) => void) {
+// The dock auto-binds `harnessSlug` (HarnessesDock rebinds it for every panel),
+// so that's the param the panel receives live — mirror that here.
+function renderPanel(
+  searchParams = '',
+  onUrlChange?: (e: UrlUpdateEvent) => void,
+  panelParams: Record<string, unknown> = { harnessSlug: 'demo-hive' },
+) {
   syncResults['featuresConsolidated.byHive'] = FEATURES;
   syncResults['plans.byHive'] = PLANS;
   return render(
     <TooltipProvider>
       <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlChange}>
-        <HiveContentPanel {...PANEL} params={{ slug: 'demo-hive' }} api={api} />
+        <HiveContentPanel {...PANEL} params={panelParams} api={api} />
       </NuqsTestingAdapter>
     </TooltipProvider>,
   );
@@ -107,7 +113,7 @@ describe('HiveContentPanel (adv:hive-content)', () => {
 
   it('drills into a member on row click: writes ?harness=<origin> + ?sel=<id>', async () => {
     const updates: UrlUpdateEvent[] = [];
-    renderPanel('?slug=demo-hive', (e) => updates.push(e));
+    renderPanel('', (e) => updates.push(e));
     await waitFor(() => screen.getByText('cross-member browse'));
 
     fireEvent.click(screen.getByText('cross-member browse'));
@@ -119,10 +125,18 @@ describe('HiveContentPanel (adv:hive-content)', () => {
   });
 
   it('filters by the ?hcq query — narrows to matching rows', async () => {
-    renderPanel('?slug=demo-hive&hcq=rekey');
+    renderPanel('?hcq=rekey');
     // Only the matching feature ("rekey rotation") shows; the other is filtered out.
     await waitFor(() => screen.getByText('rekey rotation'));
     expect(screen.queryByText('cross-member browse')).toBeNull();
+  });
+
+  it('also accepts the hive home via params.slug (explicit-open fallback)', async () => {
+    renderPanel('', undefined, { slug: 'demo-hive' });
+    await waitFor(() => screen.getByText('cross-member browse'));
+    const feat = syncCalls.find((c) => c.queryName === 'featuresConsolidated.byHive');
+    expect(feat?.enabled).toBe(true);
+    expect(feat?.args).toEqual({ hiveHomeSlug: 'demo-hive' });
   });
 
   it('shows a per-tab empty state when a hive has no federated content yet', async () => {
@@ -130,8 +144,8 @@ describe('HiveContentPanel (adv:hive-content)', () => {
     syncResults['plans.byHive'] = [];
     render(
       <TooltipProvider>
-        <NuqsTestingAdapter searchParams="?slug=demo-hive">
-          <HiveContentPanel {...PANEL} params={{ slug: 'demo-hive' }} api={api} />
+        <NuqsTestingAdapter searchParams="">
+          <HiveContentPanel {...PANEL} params={{ harnessSlug: 'demo-hive' }} api={api} />
         </NuqsTestingAdapter>
       </TooltipProvider>,
     );

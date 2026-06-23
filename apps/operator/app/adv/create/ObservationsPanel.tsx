@@ -15,6 +15,7 @@
 
 import { useSyncQuery } from '@papercusp/sync';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
+import { useItemPlanFilter } from './use-create-data';
 
 interface ObservationRow {
   id: string;
@@ -43,14 +44,18 @@ const KIND_LABEL: Record<string, string> = {
 const OBSERVATIONS_LIMIT = 200;
 
 export default function ObservationsPanel(_props?: Partial<PanelComponentProps>) {
+  const [itemPlans] = useItemPlanFilter();
   const { data, loading } = useSyncQuery<ObservationRow>({
     queryName: 'learning.observations',
     args: { limit: OBSERVATIONS_LIMIT },
   });
-  const rows = data ?? [];
+  const allRows = data ?? [];
+  const rows = itemPlans.length
+    ? allRows.filter((row) => observationMatchesPlan(row, itemPlans))
+    : allRows;
   // When the feed exactly fills the cap, there may be older observations not
   // shown — say so instead of letting `rows.length` read as the true total.
-  const capped = rows.length >= OBSERVATIONS_LIMIT;
+  const capped = !itemPlans.length && rows.length >= OBSERVATIONS_LIMIT;
 
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: 16 }}>
@@ -68,7 +73,9 @@ export default function ObservationsPanel(_props?: Partial<PanelComponentProps>)
         <div style={{ color: 'var(--fg-mute)', padding: 12 }}>Loading observations…</div>
       ) : rows.length === 0 ? (
         <div style={{ color: 'var(--fg-mute)', padding: 12 }}>
-          No observations yet — they appear as agents reflect at the end of their turns.
+          {itemPlans.length
+            ? 'No observations match the selected plan.'
+            : 'No observations yet — they appear as agents reflect at the end of their turns.'}
         </div>
       ) : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -101,4 +108,13 @@ export default function ObservationsPanel(_props?: Partial<PanelComponentProps>)
       )}
     </div>
   );
+}
+
+function observationMatchesPlan(row: ObservationRow, planSlugs: readonly string[]): boolean {
+  if (planSlugs.length === 0) return true;
+  const refs = row.refs.map((r) => r.toLowerCase());
+  return planSlugs.some((slug) => {
+    const s = slug.toLowerCase();
+    return refs.some((ref) => ref === s || ref === `plan:${s}` || ref.includes(s));
+  });
 }

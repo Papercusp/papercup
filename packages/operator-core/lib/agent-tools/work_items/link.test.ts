@@ -14,11 +14,14 @@ vi.mock('../../work-items', () => ({
   unlinkWorkItem: vi.fn(),
   resolveWorkItemRef: vi.fn(),
 }));
+vi.mock('../../dbos/feature-blockers-edges', () => ({ guardFeatureBlockEdgeAcyclic: vi.fn() }));
 
 import { linkWorkItem, unlinkWorkItem, resolveWorkItemRef } from '../../work-items';
+import { guardFeatureBlockEdgeAcyclic } from '../../dbos/feature-blockers-edges';
 const linkM = vi.mocked(linkWorkItem);
 const unlinkM = vi.mocked(unlinkWorkItem);
 const resolveM = vi.mocked(resolveWorkItemRef);
+const guardM = vi.mocked(guardFeatureBlockEdgeAcyclic);
 const tool = (await import('./link')).default;
 
 type Out = { data: any };
@@ -29,6 +32,7 @@ beforeEach(() => {
   resolveM.mockResolvedValue({ kind: 'work_item', ref: 'WI-T' } as never);
   linkM.mockResolvedValue({} as never);
   unlinkM.mockResolvedValue({} as never);
+  guardM.mockResolvedValue(null); // default: no cycle
 });
 
 describe('work_items:link handler (bulk keyed-array)', () => {
@@ -60,5 +64,22 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     const b = await body({ id: 'WI-1', rel: 'fixes' });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-1', rel: 'fixes' });
     expect(String(b.results[0].error)).toMatch(/target_id.*target_kind/i);
+  });
+
+  it('REJECTS a cycle-closing feature→feature blocks edge (F4) without writing it', async () => {
+    // The source resolves to a qualified feature ref; the acyclicity guard reports a cycle.
+    resolveM.mockResolvedValue({ kind: 'feature', ref: 'h#F-1' } as never);
+    guardM.mockResolvedValue("'blocks' edge h#F-1 → h#F-2 would create a feature-dependency cycle");
+    const b = await body({ id: 'F-1', rel: 'blocks', target_kind: 'feature', target_ref: 'h#F-2', harness: 'h' });
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', rel: 'blocks' });
+    expect(String(b.results[0].error)).toMatch(/dependency cycle/);
+    expect(linkM).not.toHaveBeenCalled(); // the cycle-closing edge was never written
+  });
+
+  it('does NOT run the acyclicity guard for non-blocks edges or removals', async () => {
+    await body({ id: 'WI-1', rel: 'relates', target_id: 'WI-T' });
+    await body({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T', remove: true });
+    expect(guardM).not.toHaveBeenCalled();
   });
 });

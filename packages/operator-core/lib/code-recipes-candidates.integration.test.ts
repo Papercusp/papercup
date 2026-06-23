@@ -223,4 +223,34 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     expect(flaky).toBeDefined();
     expect(stable!.promotionScore).toBeGreaterThan(flaky!.promotionScore);
   });
+
+  it('reuse FLOOR — a single-run/single-agent multi-tool recipe is SCORED but NOT a promote candidate', async () => {
+    const ws = 'ws-cand-floor-reuse';
+    const hive = 'alpha';
+    // 3 tools run ONCE by ONE agent: success(0.20)+cohesion(0.20) alone push the score
+    // over PROMOTE_THRESHOLD (≈0.528 > 0.45), but with zero reuse breadth it must NOT
+    // promote — the reuse floor (≥2 distinct agents OR ≥3 runs) is what holds it back.
+    await upsertRecipe(db.adminSql, {
+      id: 'one-off-three-tool',
+      title: 'One-off three-tool recipe',
+      description: 'three tools, run once by one agent',
+      script: 's',
+      toolsUsed: ['work_items:list', 'work_items:set_state', 'work_items:comment'],
+      embedding: seededEmbedding(77),
+    });
+    await seedRuns(db.adminSql, 'one-off-three-tool', ws, hive, { runs: 1, agents: ['solo'] });
+
+    // minRunCount:1 so the recipe is CONSIDERED at all (the default floor of 2 would
+    // filter a single-run recipe before scoring; here we isolate the REUSE-breadth floor).
+    const { signals, promoteCandidates } = await recipeCandidates(db.adminSql, { minRunCount: 1 });
+    const sig = signals.find((s) => s.id === 'one-off-three-tool');
+    expect(sig).toBeDefined();
+    expect(sig!.distinctAgents).toBe(1);
+    expect(sig!.runCount).toBe(1);
+    expect(sig!.redundant).toBe(false); // 3 tools ⇒ not trivial, id collides with no tool
+    // its weighted score clears the threshold on success+cohesion alone …
+    expect(sig!.promotionScore).toBeGreaterThan(0.45);
+    // … yet the reuse FLOOR keeps it OUT of the promote list.
+    expect(promoteCandidates.find((c) => c.id === 'one-off-three-tool')).toBeUndefined();
+  });
 });

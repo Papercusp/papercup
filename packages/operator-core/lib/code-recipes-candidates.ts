@@ -201,8 +201,29 @@ const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
  *  lowercase, every non-alphanumeric run → "-", trimmed. So "plans:set-status" →
  *  "plans-set-status", letting a recipe id (which never contains the ":" a raw tool
  *  name does) be compared against existing tool names for the D-007 collision check. */
-const slugifyToolName = (name: string): string =>
+export const slugifyToolName = (name: string): string =>
   name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+/**
+ * Build the existing-tool lookups for the D-007 name-collision damp: the raw `ns:verb`
+ * names AND their kebab SLUGS (slugifyToolName). A recipe id is a kebab slug, never
+ * `ns:verb`, so the SLUG set is what actually catches a recipe that would regenerate an
+ * existing tool — the raw-name set alone never matched a slug id (the bug this fixes).
+ * Null/empty names are skipped. Exported so the collision fix is unit-testable without PG
+ * or a populated tool registry.
+ */
+export function existingToolSlugSet(
+  toolNames: Iterable<string | undefined | null>,
+): { names: Set<string>; slugs: Set<string> } {
+  const names = new Set<string>();
+  const slugs = new Set<string>();
+  for (const n of toolNames) {
+    if (!n) continue;
+    names.add(n);
+    slugs.add(slugifyToolName(n));
+  }
+  return { names, slugs };
+}
 
 /** freqScore — log-saturating on run_count (run ~20× ⇒ ~1.0). See RECIPE RUBRIC. */
 function freqScore(runCount: number): number {
@@ -250,23 +271,13 @@ export async function recipeCandidates(
          AND r.run_count >= ${minRunCount}
     GROUP BY r.id`;
 
-  // Existing tool names + their SLUGIFIED forms (the redundancy name-collision check,
-  // D-007). A recipe id is a kebab slug (recipeSlug, e.g. "triage-stale-items"); a
-  // projected tool name is always `ns:verb` (a colon) — so comparing the recipe id to
-  // the RAW tool name never matches (the bug this replaces — the collision damp never
-  // fired). Slugify each tool name the SAME way recipeSlug does ("plans:set-status" →
-  // "plans-set-status") and also index the bare verb ("set-status"), so a recipe whose
-  // id maps onto an existing tool IS caught and excluded from promotion.
-  const existingToolNames = new Set<string>();
-  const existingToolSlugs = new Set<string>();
-  for (const t of listAllProjectedTools()) {
-    const n = t.expose.mcp?.name;
-    if (!n) continue;
-    existingToolNames.add(n);
-    existingToolSlugs.add(slugifyToolName(n)); // "plans:set-status" → "plans-set-status"
-    const ci = n.indexOf(':');
-    if (ci > 0) existingToolSlugs.add(slugifyToolName(n.slice(ci + 1))); // bare verb "set-status"
-  }
+  // Existing-tool lookups for the D-007 name-collision damp (raw names + kebab slugs).
+  // A recipe id is a kebab slug, never `ns:verb`, so comparing the id to the RAW tool
+  // name never matched (the bug this replaces — the damp was dead); the SLUG set is what
+  // catches a recipe whose id maps onto an existing tool.
+  const { names: existingToolNames, slugs: existingToolSlugs } = existingToolSlugSet(
+    listAllProjectedTools().map((t) => t.expose.mcp?.name),
+  );
 
   const signals: RecipeSignal[] = [];
   for (const r of rows) {

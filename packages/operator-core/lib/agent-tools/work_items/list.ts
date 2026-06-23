@@ -3,11 +3,27 @@
  * D-007). Default = top-level items only; chunks surface under their parent (D-004,
  * pass `parent` or includeChildren). Filter by harness / kind / state.
  */
-import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../coordination/roles';
-import { listWorkItems, WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
-import { boundRowField } from '../_bound-output';
+import { z } from "zod";
+import { defineTool } from "@papercusp/agent-mcp";
+import { COORD_ROLES } from "../coordination/roles";
+import {
+  listWorkItems,
+  WORK_ITEM_KINDS,
+  type WorkItemKind,
+} from "../../work-items";
+import { boundRowField } from "../_bound-output";
+import { cachedRead, type CachedReadCtx } from "../../cache";
+
+/**
+ * SWR backstop for work_items:list (cache-expensive-tool-reads-2026-06-22 P-005).
+ * The unified work-item table (harness_features_consolidated) carries the generic
+ * .changed trigger, so any work-item write auto-invalidates the entry via the
+ * cache-ECA (table tag below) — this short soft TTL only bounds staleness for any
+ * dependency dimension a trigger doesn't cover. work_items:list is an OVERVIEW read,
+ * decoupled from the scheduler claim hot path (claim_next), so caching it does NOT
+ * touch the maintained readiness floor (D-004).
+ */
+const WORK_ITEMS_LIST_SOFT_TTL_MS = 20_000;
 
 /**
  * Output `data` schema (token-efficient-tool-result-formats P-011). The result
@@ -53,27 +69,43 @@ export const SUMMARIES_TOTAL_BUDGET = 16_000;
 
 // EI-1597: a thin semantic wrapper over the shared budget-aware bound — single
 // source of truth for the per-field excerpt (was an inlined copy of the loop).
-export function boundSummaries<T extends { summary?: string | null }>(rows: T[]): T[] {
-  return boundRowField(rows, 'summary', SUMMARY_ROW_CAP, SUMMARIES_TOTAL_BUDGET);
+export function boundSummaries<T extends { summary?: string | null }>(
+  rows: T[],
+): T[] {
+  return boundRowField(
+    rows,
+    "summary",
+    SUMMARY_ROW_CAP,
+    SUMMARIES_TOTAL_BUDGET,
+  );
 }
 
 export default defineTool({
-  name: 'work_items:list',
-  profile: 'engineer',
-  description: 'List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row\'s summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.',
+  name: "work_items:list",
+  profile: "engineer",
+  description:
+    "List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
   guidance: {
-    when: 'You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent\'s chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog\'s order in one call before steering it with work_items:set_priority.',
-    chaining: 'work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.',
+    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog's order in one call before steering it with work_items:set_priority.",
+    chaining:
+      "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
   },
-  capability: 'work_items:read',
+  capability: "work_items:read",
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().max(80).optional(),
     kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
     state: z.string().max(40).optional(),
-    parent: z.string().max(80).optional().describe('list children (chunks) of this parent id'),
-    includeChildren: z.boolean().optional().describe('include child items (chunks) in the list'),
+    parent: z
+      .string()
+      .max(80)
+      .optional()
+      .describe("list children (chunks) of this parent id"),
+    includeChildren: z
+      .boolean()
+      .optional()
+      .describe("include child items (chunks) in the list"),
     limit: z.number().int().positive().max(500).optional(),
   }),
   result: z.array(WORK_ITEM_ROW),
@@ -88,24 +120,46 @@ export default defineTool({
   delta: {
     rows: (data) => (Array.isArray(data) ? data : null),
     itemKey: (row) => (row as { id: string }).id,
-    itemKeyField: 'id',
+    itemKeyField: "id",
     rowType: (row) => (row as { kind: string }).kind,
-    orderKey: 'priority',
-    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
-    schemaVersion: 'work-items-list-v1',
+    orderKey: "priority",
+    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
+    schemaVersion: "work-items-list-v1",
     maxDeltaAge: 5 * 60_000,
   },
-  async handler(args) {
-    const items = await listWorkItems({
-      harness: args.harness,
-      kind: args.kind as WorkItemKind | undefined,
-      state: args.state,
-      parent: args.parent,
-      includeChildren: args.includeChildren,
-      limit: args.limit,
-    });
-    // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent
-    // result cap. Full body via work_items:get { id }.
-    return { data: boundSummaries(items) };
+  async handler(args, ctx) {
+    // Cache the expensive list read (cache-expensive-tool-reads P-005). Non-principal-
+    // scoped (depends only on workspace + the filter args). The bounding is folded INTO
+    // the cached factory so the stored value is the final, deterministic-per-args result.
+    const items = await cachedRead(
+      ctx as CachedReadCtx,
+      {
+        tool: "work_items:list",
+        key: {
+          harness: args.harness ?? null,
+          kind: args.kind ?? null,
+          state: args.state ?? null,
+          parent: args.parent ?? null,
+          includeChildren: args.includeChildren === true,
+          limit: args.limit ?? null,
+        },
+        tags: ["harness_features_consolidated"],
+        softTtlMs: WORK_ITEMS_LIST_SOFT_TTL_MS,
+      },
+      async () => {
+        const rows = await listWorkItems({
+          harness: args.harness,
+          kind: args.kind as WorkItemKind | undefined,
+          state: args.state,
+          parent: args.parent,
+          includeChildren: args.includeChildren,
+          limit: args.limit,
+        });
+        // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent
+        // result cap. Full body via work_items:get { id }.
+        return boundSummaries(rows);
+      },
+    );
+    return { data: items };
   },
 });

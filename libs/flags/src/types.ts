@@ -986,6 +986,20 @@ export const FLAGS = {
   // is bounded (only non-terminal work, ceiling-gated re-fire) and reversible; OFF
   // ⇒ the legacy reclaim-to-`failed` behaviour, byte-identical.
   SPAWN_RECLAIM_RELAUNCH: "papercusp-spawn-reclaim-relaunch",
+  // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items
+  // (bug|change|task) self-pickable by the scheduler claim path. Today the
+  // decentralized claim (claimNextWorkItem / getNextWorkItem) is feature-family-only —
+  // the claim floors hard-code item_kind IN ('feature','research-task','chunk') and
+  // UPDATE the feature view, so an issue can BLOCK a feature but can never itself be
+  // claimed/placed; the Queen's steer levers (set_priority / co_locate) also report
+  // applicable:false for issues. When ON, an ADDITIVE issue-claim branch (a separate
+  // query over the work_items base for issue-family kinds, run only when no feature
+  // is claimable) lets an UNBLOCKED issue be self-picked (readiness honored by the
+  // SAME work_item_deps NOT EXISTS predicate; terminal = resolved/closed), and the
+  // steer levers become applicable to issues. DEFAULT OFF — owner-authority: it
+  // changes WHAT the autonomous fleet picks up (a brand-new dispatch source), so the
+  // owner ratifies the flip. OFF ⇒ byte-identical to today (feature-only). KNOWN_DARK_FLAGS.
+  SCHEDULER_ISSUES_CLAIMABLE: "papercusp-scheduler-issues-claimable",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1538,6 +1552,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // work survives a host restart. Bounded (non-terminal work only, ceiling-gated re-fire)
   // and reversible; OFF ⇒ legacy reclaim-to-`failed`, byte-identical.
   [FLAGS.SPAWN_RECLAIM_RELAUNCH]: true,
+  // DEFAULT OFF (work-item-deps-and-readiness-2026-06-22 P-007): make ISSUE-family
+  // work-items self-pickable by the scheduler. owner-authority — it adds a brand-new
+  // dispatch SOURCE (what the autonomous fleet picks up), which the owner ratifies.
+  // OFF ⇒ feature-only claim, byte-identical to today; the issue-claim branch + the
+  // issue-applicable steer levers are inert. KNOWN_DARK_FLAGS.
+  [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

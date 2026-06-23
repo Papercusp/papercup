@@ -1,0 +1,71 @@
+# Presence/fleet roster derives from the authoritative session log
+URL: /internal/docs/agent-insights/presence-derives-from-session-log
+
+Why coord:presence surfaces recorded-but-unregistered live sessions, the 'recorded' session-state, and how the session-log leg stays CLI-agnostic.
+
+## The gap this closes
+
+`coord:presence` (and the shared `assemblePresenceSnapshot`) used to be anchored
+on the **self-registered** `harness_shared.coord_presence` table: a row exists
+there only after the agent itself calls a coord tool (the `coord:declare-intent`
+in the OMP `onSessionStart` hook, or a per-tool-call heartbeat). The authoritative
+session log, `harness_shared.adv_sessions` (written at launch by `recordAdvSession`
+in `bootstrap-su.ts` / the console + role + spawn paths), was only LEFT-JOINed
+*from* presence.
+
+Consequence: a session that the system **recorded** but that had **not yet
+self-registered** in `coord_presence` was structurally **invisible** to the
+roster and **undispatchable**. This was worst for **autonomous/console agents**
+(queens, overwatch, operators, hive bees) — they have no reliable
+`coord_presence` heartbeat path, so they were invisible for their *entire* life,
+not just a startup window. It also bit any interactive session in its
+launch→first-coord-call window.
+
+Proven (2026-06-22): 6–9 live `console/queen`/`overwatch` sessions with valid
+`coord_owner_id`s, up to 18 min old, absent from `coord:presence`.
+
+## The fix: presence is a VIEW over the session log
+
+`assemblePresenceSnapshot` now merges a **third leg** alongside `listPresence`
+(coord\_presence) and `listFederatedPresence`:
+
+* **`listRecordedLiveSessions`** (`adv-sessions.ts`) — live recorded sessions
+  (`ended_at IS NULL`, `coord_owner_id IS NOT NULL`, **12h recency-bound** to age
+  out unreaped zombies, workspace-scoped, `DISTINCT ON (coord_owner_id)`).
+* **`synthesizeRecordedRosterRows`** (`recorded-sessions.ts`, pure) — projects
+  each recorded session **not already in coord\_presence** into a
+  `UnifiedPresenceRecord` (`source: 'session-log'`, `stale: false` — the
+  `ended_at IS NULL` is a better liveness signal than heartbeat age). The
+  already-self-registered session keeps its richer coord\_presence row (dedup by
+  owner id); it is never shadowed.
+
+### The `'recorded'` session-state
+
+`deriveSessionState` is omp/su-centric: it treats "no live `coord:inbox-wake`
+await" as `ended`. A console agent never registers such an await, so it would be
+mislabeled `ended` while running. The snapshot therefore renders a session-log
+row that is live but not inbox-wakeable as **`recorded`** (authoritatively alive
+per `ended_at IS NULL`, just not inbox-wake-dispatchable) — distinct from `ended`
+(dead, relaunch). A recorded session that *has* begun registering (a live await
+exists → `wakeable`) derives normally. Read `byState.recorded` in the summary.
+
+## CLI-agnostic by construction (claude / codex / omp)
+
+The leg keys on the recorded row + its `coordOwnerId`, **never on the agent CLI**.
+The join key is uniform because `bootstrap-su.ts` mints `sid = su-<uuid>` (=
+`PAPERCUSP_SID`) and records it as `coordOwnerId` for **every** backend — and that
+is the *same* id the session later self-registers under in `coord_presence`
+(claude `s-<ts>-<hex>` console ids and codex/omp/su `su-<uuid>` ids both join
+consistently). So: codex + omp recorded sessions surface identically to claude,
+already-registered sessions of any CLI dedup correctly (no duplicate rows), and
+the omp detached/launch-window self-registration hole is moot — the `adv_sessions`
+row makes the session visible regardless of whether `onSessionStart` ever
+registers presence.
+
+## Scope note
+
+The recorded leg runs only for **workspace/`all`** scope (`hiveId == null`).
+`adv_sessions` carries no hive attribution yet, so including it under an explicit
+**hive** scope could leak cross-hive agents. Adding `hive_slug` to the recording
+(so the hive-scoped Queen view can include un-self-registered bees too) is the
+tracked follow-up (plan `presence-derive-from-session-log-2026-06-22`, P-002).

@@ -14,6 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { linkWorkItem, unlinkWorkItem, resolveWorkItemRef } from '../../work-items';
+import { guardFeatureBlockEdgeAcyclic } from '../../dbos/feature-blockers-edges';
 import type { ObjectRef } from '@papercusp/coordination/capabilities';
 import { runBulk, bulkContent } from '../_bulk';
 
@@ -82,6 +83,18 @@ export default defineTool({
           return { ok: false as const, id: it.id, rel: it.rel, error: 'pass target_id, or target_kind + target_ref' };
         }
         const harness = it.harness ?? args.harness;
+        // Acyclicity (P-003, F4): a feature→feature `blocks` edge that closes a cycle silently
+        // deadlocks the scheduler frontier. The link tools write a raw coord_links edge (bypassing
+        // syncFeatureBlockEdges' replace-semantics guard), so reject the cycle-closing edge here.
+        // The coord_links convention is src=blocker → dst=blocked, so the SOURCE work-item is the
+        // blocker and `dst` is the blocked feature.
+        if (!it.remove && it.rel === 'blocks') {
+          const srcRef = await resolveWorkItemRef(it.id, harness);
+          if (srcRef) {
+            const cycleErr = await guardFeatureBlockEdgeAcyclic(srcRef.ref, dst.ref);
+            if (cycleErr) return { ok: false as const, id: it.id, rel: it.rel, error: cycleErr };
+          }
+        }
         const res = it.remove
           ? await unlinkWorkItem(it.id, dst, it.rel, { harness })
           : await linkWorkItem(it.id, dst, it.rel, { harness, by: ident.ownerId });

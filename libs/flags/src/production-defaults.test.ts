@@ -53,6 +53,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // reconciliation proves the trigger-maintained sidecar has zero drift vs the inline oracle (a stale
   // sidecar → a bee claims blocked work). su/owner flips ON after that attended verify.
   FLAGS.SCHEDULER_MAINTAINED_READY,
+  // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items self-pickable by the
+  // scheduler claim path. owner-authority — it adds a brand-new dispatch SOURCE (what the autonomous
+  // fleet picks up: bug/change/task items, not just features), so the owner ratifies the flip. OFF ⇒
+  // feature-only claim, byte-identical to today (the issue-claim branch + issue-applicable steer levers
+  // are inert). su/owner flips ON after ratifying that issues should join the dispatched backlog.
+  FLAGS.SCHEDULER_ISSUES_CLAIMABLE,
   // (PLAN_WORKITEM_PROMOTION + PLAN_ITEM_CLAIM_AUTO_CONVERT graduated to default-ON 2026-06-22,
   // owner-directed — the work-items-everywhere ledger's two halves were built+tested but left dark
   // (promotion dogfood-verified D-007; claim-auto-convert 48 green tests). Finished work ships ON,
@@ -411,6 +417,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.GRADUATION_TRACKER, 'owner-authority'],
   [FLAGS.QUEEN_AUTONOMY_ARMED, 'owner-authority'],
   [FLAGS.QUEEN_FULL_AUTONOMY, 'owner-authority'],
+  [FLAGS.SCHEDULER_ISSUES_CLAIMABLE, 'owner-authority'],
   [FLAGS.SCOUT_EXPERIMENT_RAIL, 'owner-authority'],
   [FLAGS.OVERWATCH, 'owner-authority'],
   [FLAGS.SENTINEL, 'owner-authority'],

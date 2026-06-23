@@ -11,8 +11,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-const { sync } = vi.hoisted(() => ({
+const { sync, filters } = vi.hoisted(() => ({
   sync: { data: [] as unknown[], loading: false },
+  filters: { itemPlans: [] as string[] },
 }));
 
 vi.mock('@papercusp/sync', () => ({
@@ -24,6 +25,9 @@ vi.mock('@papercusp/sync', () => ({
     transport: 'sse' as const,
     invalidate: () => {},
   }),
+}));
+vi.mock('./use-create-data', () => ({
+  useItemPlanFilter: () => [filters.itemPlans, vi.fn()],
 }));
 
 import ObservationsPanel from './ObservationsPanel';
@@ -57,6 +61,7 @@ function mkRow(over: Partial<Row> = {}): Row {
 beforeEach(() => {
   sync.data = [];
   sync.loading = false;
+  filters.itemPlans = [];
 });
 afterEach(() => cleanup());
 
@@ -81,6 +86,27 @@ describe('<ObservationsPanel />', () => {
     expect(container.querySelectorAll('ul > li')).toHaveLength(2);
     expect(screen.getByText('First')).toBeTruthy();
     expect(screen.getByText('Second')).toBeTruthy();
+  });
+
+  it('filters observations by the selected plan refs', () => {
+    filters.itemPlans = ['plan-alpha'];
+    sync.data = [
+      mkRow({ id: 'a', title: 'Alpha exact', refs: ['plan-alpha'] }),
+      mkRow({ id: 'b', title: 'Alpha tagged', refs: ['plan:plan-alpha'] }),
+      mkRow({ id: 'c', title: 'Beta', refs: ['plan-beta'] }),
+    ];
+    const { container } = render(<ObservationsPanel />);
+    expect(container.querySelectorAll('ul > li')).toHaveLength(2);
+    expect(screen.getByText('Alpha exact')).toBeTruthy();
+    expect(screen.getByText('Alpha tagged')).toBeTruthy();
+    expect(screen.queryByText('Beta')).toBeNull();
+  });
+
+  it('shows a selected-plan empty state when the filter removes every observation', () => {
+    filters.itemPlans = ['plan-alpha'];
+    sync.data = [mkRow({ id: 'b', title: 'Beta', refs: ['plan-beta'] })];
+    render(<ObservationsPanel />);
+    expect(screen.getByText(/no observations match the selected plan/i)).toBeTruthy();
   });
 
   it('maps a known kind to its pretty label and passes an unknown kind through', () => {

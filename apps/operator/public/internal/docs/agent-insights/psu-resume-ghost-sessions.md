@@ -56,6 +56,36 @@ was only wired into the brain path, not the picker / direct-id paths.
   paths, so child-exit now stamps `ended_at`/`exit_code`. Best-effort: a 404
   from an operator predating the endpoint is swallowed.
 
+## The INVERSE bug: a resumed session recorded as DEAD (2026-06-22)
+
+Stamping `ended_at` on exit (above) created a mirror problem. `psu --resume`
+revives the **process**, but `launchResume` takes the **no-POST path** (it reuses
+the original coord identity + adv row, never re-hitting bootstrap-su), so the row
+kept the `ended_at`/`exit_code` from the prior exit. Result: a **running** resumed
+agent recorded as **dead** — invisible to the `coord:presence` roster (which by
+then [derives from the session log](/internal/docs/agent-insights/presence-derives-from-session-log)
+and correctly trusts "ended means ended"). Measured 2026-06-22: 24 running
+`claude --resume` agents, **all 24** with `ended_at` set → zero visible.
+
+The fix has three parts:
+
+* **`reactivateAdvSession(id)`** (`adv-sessions.ts`) — the inverse of
+  `markAdvSessionEnded`: clears `ended_at`/`exit_code`, bumps `started_at` so the
+  resumed incarnation reads as freshly-live. Idempotent (only touches an ended row).
+* **`POST /api/agent-mcp/console/bootstrap-su/session-resumed`** + `reportSessionResumed`
+  in the launcher — `launchResume` calls it (skipping forks, which take a fresh
+  identity + no adv-row link), so a resume re-activates its record the instant it
+  starts, before it touches coord. Self-healing: future resumes can't recur this.
+* **Supersede a STALE heartbeat** (`reconcileRosterSources` in
+  `recorded-sessions.ts`) — a leftover stale `coord_presence` row from the original
+  launch was *shadowing* the reactivated record (a fresh heartbeat still wins; a
+  stale one must not hide a running/resumed session).
+
+Note the contrast with the ghost-row trap above: a ghost has **no transcript** and
+is genuinely unresumable; this case is a **resumable, running** session merely
+mis-recorded as dead. Both share the `adv_sessions`-row-vs-reality skew, opposite
+directions.
+
 ## Diagnosis recipe (if it recurs)
 
 1. Does the transcript exist? `ls ~/.papercusp/session-claude/<coordOwnerId>/projects/*/<sessionId>.jsonl`

@@ -111,6 +111,19 @@ current state blocking `operator:converse`).
   More brittle (format mapping, dedup). Prefer the MCP-tool approach.
 - **Risk:** this is the hardest piece — Claude's transcript store ≠ the PG thread.
   Keep the Sentinel the *writer of record* (append-on-turn) to avoid two sources of truth.
+- **STATUS 2026-06-22 (investigated, READY for a fresh session — NOT built).** All
+  building blocks confirmed with NO schema change: `operator-conversations.ts` exposes
+  `getOrCreateActiveConversation`, `listTurnsRecent({conversationId,…})`, `appendTurn(…)`
+  on `harness_shared.operator_conversations`; launch injection goes through
+  `composeLaunchContext` (`su-launch-context.ts`) called from `buildRoleLaunchSpec`
+  (⚠ FLEET-WIDE — gate to the sentinel role + change carefully, like psu-launcher).
+  **Refinement:** because Phase C (DONE) routes voice-in to the SENTINEL PANE (not
+  `operator_conversations`), the voice convo no longer flows through the PG thread —
+  so the **append direction is the essential one** (the Sentinel must
+  `conversation:append` each user+assistant turn so the webview reflects it); read /
+  launch-inject is secondary. Build order: the two additive MCP tools first
+  (low-risk), the persona "append every turn" instruction, then the fleet-wide
+  `buildRoleLaunchSpec` injection LAST + carefully.
 
 ### Phase C — Voice IN (STT → Sentinel stdin)
 - The Sentinel pane is a PTY child managed by the dock/`psu-pty-host.mjs`.
