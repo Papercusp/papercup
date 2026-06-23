@@ -51,7 +51,11 @@ export default function PlanItemPreview({
   onResolved,
   onViewFullPlan,
 }: Props) {
-  const { data, loading, error } = usePlan(planSlug);
+  // Read-only preview → LIVE sync query (data-sync-push-completion P-011): a
+  // plans:* write pushes a fresh plan row over SSE, so the preview stays current
+  // without a manual refresh. (PlanDetail's editor stays guarded/one-shot — a
+  // live re-fire there would clobber the user's in-progress draft.)
+  const { data, loading, error } = usePlan(planSlug, { live: true });
   const scopeRef = useRef<HTMLDivElement | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [answerOpen, setAnswerOpen] = useState(false);

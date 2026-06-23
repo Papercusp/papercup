@@ -63,7 +63,10 @@ describe('makeAblationReplayLeg', () => {
     const out = await leg(legArg);
 
     expect(runReplay).toHaveBeenCalledTimes(1);
-    const cfg = (runReplay.mock.calls[0]![0] as { config: { cases: { caseId: string }[]; variants: { variantId: string }[] } }).config;
+    const [[replayArgs]] = runReplay.mock.calls as unknown as Array<[
+      { config: { cases: { caseId: string }[]; variants: { variantId: string }[] } },
+    ]>;
+    const cfg = replayArgs.config;
     expect(cfg.cases.map((c) => c.caseId)).toEqual(['run:r2', 'run:r1']); // newest first, capped at 2
     expect(cfg.variants.map((v) => v.variantId)).toEqual(
       expect.arrayContaining([ABLATION_FULL_VARIANT, ABLATION_ABLATED_VARIANT]),

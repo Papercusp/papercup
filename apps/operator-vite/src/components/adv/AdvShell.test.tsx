@@ -2,10 +2,11 @@
 //
 // AdvShell render coverage — the /adv shell: header (pot selector · scope
 // toggle · New/Share · status bar) + the Radix tab strip. Mounts against a
-// stubbed /api/harness/projects/lite (nuqs mocked with STABLE per-key setter
-// spies — the restore effect lists the setters as deps, so per-render vi.fn()
-// identities would re-fire it forever; otherwise the pinned sibling pattern,
-// see AdvConversationsTab.test.tsx). Children with their own suites
+// mocked harnessProjects.lite sync query (data-sync-push P-010 — the live
+// registry list replaced the old one-shot /api/harness/projects/lite fetch;
+// nuqs mocked with STABLE per-key setter spies — the restore effect keyed on
+// the project count would re-fire forever with per-render vi.fn() identities;
+// otherwise the pinned sibling pattern, see AdvNowRunning.test.tsx). Children with their own suites
 // (AdvNowRunning, Select, CreateHarnessPicker, PublishHiveCard) are stubbed;
 // the pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape)
 // are pinned in __tests__/adv-shell-logic.test.ts. Asserts:
@@ -42,6 +43,22 @@ vi.mock('nuqs', () => ({
   parseAsString: {},
   parseAsBoolean: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
+}));
+
+// Live harnessProjects.lite registry list (P-010). The tests seed `projectRows`
+// (the resolver's projects[] row shape) and optionally `projectsError`; the
+// component reads `data`, `error`, `invalidate` off the result. `invalidate` is
+// a spy so the create/share refetch paths stay assertable.
+let projectRows: unknown[] | undefined = [];
+let projectsError: Error | null = null;
+const invalidateSpy = vi.fn();
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    if (queryName === 'harnessProjects.lite') {
+      return { data: projectsError ? undefined : projectRows, error: projectsError, invalidate: invalidateSpy };
+    }
+    return { data: undefined, error: null, invalidate: vi.fn() };
+  },
 }));
 
 // Radix Select portals are noise here — render a native select with the same
@@ -191,20 +208,18 @@ beforeAll(() => {
   Object.defineProperty(globalThis, 'localStorage', { value: ls, configurable: true });
 });
 
-function stubProjects(payload: unknown = { projects: PROJECTS }, opts: { fail?: boolean } = {}) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => {
-      if (String(url).includes('/api/harness/projects/lite')) {
-        if (opts.fail) return { ok: false, status: 500, json: async () => ({}) };
-        return { ok: true, status: 200, json: async () => payload };
-      }
-      return { ok: true, status: 200, json: async () => ({}) };
-    }),
-  );
+/** Seed the live harnessProjects.lite result (rows or an error). */
+function stubProjects(rows: unknown[] = PROJECTS, opts: { fail?: boolean } = {}) {
+  if (opts.fail) {
+    projectRows = undefined;
+    projectsError = new Error('HTTP 500');
+  } else {
+    projectRows = rows;
+    projectsError = null;
+  }
 }
 
-/** Render the shell and wait for the projects/lite fetch to land. */
+/** Render the shell and wait for the live projects list to render. */
 async function renderShell() {
   const utils = render(
     <AdvShell title="Advanced">
@@ -226,12 +241,12 @@ beforeEach(() => {
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   shortcutHandlers.clear();
   localStorage.clear();
+  invalidateSpy.mockClear();
   stubProjects();
 });
 
 afterEach(() => {
   cleanup();
-  vi.unstubAllGlobals();
 });
 
 describe('AdvShell — strip + header', () => {
@@ -310,7 +325,7 @@ describe('AdvShell — selection restore (resolveAdvHarnessSelection wiring)', (
   });
 
   it('surfaces a projects/lite failure in the selector placeholder', async () => {
-    stubProjects(null, { fail: true });
+    stubProjects([], { fail: true });
     render(
       <AdvShell title="Advanced">
         <div />

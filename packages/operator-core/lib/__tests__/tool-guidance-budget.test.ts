@@ -58,7 +58,7 @@ function promptWeight(tool: { description?: string; guidance?: GuidanceShape }):
   );
 }
 
-const tools = listAllProjectedTools() as Array<{
+const tools = listAllProjectedTools() as unknown as Array<{
   description?: string;
   guidance?: GuidanceShape;
   expose?: { mcp?: { name?: string } };

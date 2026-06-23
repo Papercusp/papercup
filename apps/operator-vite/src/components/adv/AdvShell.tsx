@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
@@ -249,68 +250,73 @@ export default function AdvShell({
     'scope',
     parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
-  const [projects, setProjects] = useState<HarnessProjectLite[]>([]);
-  const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  // LIVE harness registry list (harnessProjects.lite). Replaces the old one-shot
+  // /api/harness/projects/lite fetch (data-sync-push P-010): the resolver is
+  // invalidated from the registry write seam, so creates/deletes/renames/forks
+  // from ANY operator process live-update the selector (EI-206). `invalidate()`
+  // still forces an immediate refetch after a local create/publish so the
+  // just-written state shows without waiting for the push.
+  const {
+    data: projectsData,
+    error: projectsError,
+    invalidate: refreshProjects,
+  } = useSyncQuery<HarnessProjectLite>({
+    queryName: 'harnessProjects.lite',
+    args: {},
+    staleTime: 60_000,
+  });
+  const projects = projectsData ?? [];
+  const projectLoadError = projectsError ? String(projectsError.message ?? projectsError) : null;
   // Workspace display name for the selector's root-group header (falls back to
   // the raw id until the registry read lands).
   const workspaceLabel = useWorkspaceLabel();
   // Create-harness flow. The dialog open-state is URL-backed (nuqs) so it
-  // survives refresh and is agent-controllable; `refreshNonce` re-runs the
-  // project fetch once a harness is created so the selector picks it up.
+  // survives refresh and is agent-controllable; `refreshProjects()` re-queries
+  // the registry once a harness is created so the selector picks it up.
   const [createOpen, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
   // Share the currently-selected harness. URL-backed so it survives refresh
   // and is agent-controllable; only meaningful when a slug is active.
   const [shareOpen, setShareOpen] = useQueryState('share', parseAsBoolean.withDefault(false));
-  const [refreshNonce, setRefreshNonce] = useState(0);
   // The persisted-selection restore runs at most once per mount. Setting the
-  // slug below re-triggers this effect (activeSlug is a dep); the ref keeps
-  // the re-run from re-restoring (or fighting a user's later pick).
+  // slug re-renders (activeSlug changes), but the ref keeps the effect from
+  // re-restoring (or fighting a user's later pick / a later live push).
   const restoredSelectionRef = useRef(false);
 
   useEffect(() => {
+    if (restoredSelectionRef.current || projects.length === 0) return;
+    restoredSelectionRef.current = true;
     let cancelled = false;
-    fetch('/api/harness/projects/lite', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(async (d) => {
-        if (cancelled) return;
-        const nextProjects = Array.isArray(d?.projects) ? d.projects : [];
-        setProjects(nextProjects);
-        setProjectLoadError(null);
-        if (restoredSelectionRef.current || !nextProjects.length) return;
-        restoredSelectionRef.current = true;
-        // Restore the persisted harness selection so the selector + tab strip
-        // inherit the last harness the user picked (persisted to localStorage
-        // on every selector change). resolveAdvHarnessSelection encodes the
-        // precedence: explicit ?slug= wins, else a persisted concrete harness
-        // (→ scope=expanded, full tab strip), else All-harnesses.
-        const persisted =
-          typeof window !== 'undefined'
-            ? window.localStorage.getItem(wsLocalKey('harness.activeProject'))
-            : null;
-        const decision = resolveAdvHarnessSelection({
-          projectSlugs: nextProjects.map((p: HarnessProjectLite) => p.slug),
-          urlSlug: activeSlug,
-          persisted,
-        });
-        // Apply the two writes SEQUENTIALLY (await between them). The custom
-        // nuqs adapter merges each write over the live `window.location.search`,
-        // so two same-tick writes both snapshot the pre-write URL and the later
-        // flush clobbers the earlier — a concurrent slug+scope restore kept only
-        // the slug and left a stale `scope=all`, so the strip stayed collapsed.
-        // Awaiting serializes them; scope is written last so it's authoritative
-        // for allMode. (No `cancelled` guard between them: the slug write
-        // re-triggers this effect and cancels THIS closure, but the restore is
-        // one logical unit that must finish.)
-        if (decision.setSlug) await setActiveSlug(decision.setSlug);
-        if (decision.setScope) await setScopeMode(decision.setScope);
-      })
-      .catch((e) => {
-        if (!cancelled) setProjectLoadError(String(e?.message ?? e));
-      });
+    // Restore the persisted harness selection so the selector + tab strip
+    // inherit the last harness the user picked (persisted to localStorage
+    // on every selector change). resolveAdvHarnessSelection encodes the
+    // precedence: explicit ?slug= wins, else a persisted concrete harness
+    // (→ scope=expanded, full tab strip), else All-harnesses.
+    const persisted =
+      typeof window !== 'undefined'
+        ? window.localStorage.getItem(wsLocalKey('harness.activeProject'))
+        : null;
+    const decision = resolveAdvHarnessSelection({
+      projectSlugs: projects.map((p) => p.slug),
+      urlSlug: activeSlug,
+      persisted,
+    });
+    // Apply the two writes SEQUENTIALLY (await between them). The custom
+    // nuqs adapter merges each write over the live `window.location.search`,
+    // so two same-tick writes both snapshot the pre-write URL and the later
+    // flush clobbers the earlier — a concurrent slug+scope restore kept only
+    // the slug and left a stale `scope=all`, so the strip stayed collapsed.
+    // Awaiting serializes them; scope is written last so it's authoritative
+    // for allMode.
+    void (async () => {
+      if (decision.setSlug) await setActiveSlug(decision.setSlug);
+      if (cancelled) return;
+      if (decision.setScope) await setScopeMode(decision.setScope);
+    })();
     return () => {
       cancelled = true;
     };
-  }, [activeSlug, setActiveSlug, setScopeMode, refreshNonce]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.length]);
 
   // "All harnesses" mode: list views (Plans, Sessions) span the whole
   // workspace. The single-harness widgets (Share, now-running, Discord)
@@ -576,7 +582,7 @@ export default function AdvShell({
           // custom nuqs adapter can't clobber one of two same-tick writes (that
           // dropped ?create=false → stuck-open modal). Doing setActiveSlug/Harness
           // here would re-introduce that race, so we keep only non-URL effects.
-          setRefreshNonce((n) => n + 1);
+          refreshProjects();
           const intoActiveHive = opts?.hive && opts.hive === activeSlug;
           if (!intoActiveHive && typeof window !== 'undefined') {
             window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
@@ -589,8 +595,8 @@ export default function AdvShell({
           onOpenChange={(v) => {
             if (!v) {
               void setShareOpen(false);
-              // Re-fetch projects/lite so a just-completed publish is reflected.
-              setRefreshNonce((n) => n + 1);
+              // Re-query projects/lite so a just-completed publish is reflected.
+              refreshProjects();
             }
           }}
           title={`Share ${activeSlug}`}

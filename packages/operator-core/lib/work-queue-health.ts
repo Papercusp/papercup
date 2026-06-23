@@ -133,8 +133,10 @@ export async function readWorkQueueHealth(
       (SELECT count(*) FROM harness_shared.harness_features_consolidated f
          WHERE (${ws}::text IS NULL OR f.workspace_id = ${ws})
            AND f.taken_by IS NOT NULL AND f.taken_by <> ''
-           AND f.taken_at IS NOT NULL
-           AND (now() - f.taken_at) > make_interval(secs => ${graceSec})
+           -- A NULL taken_at counts as past grace (the dead-holder signal alone
+           -- governs), matching the reaper's DEAD leg + the fleet_assignment
+           -- view's orphaned state so the alarm SEES the EI-2534 strand class.
+           AND (f.taken_at IS NULL OR (now() - f.taken_at) > make_interval(secs => ${graceSec}))
            AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by))::int AS dead_held_features,
       (SELECT count(*) FROM harness_shared.engineer_issues e
          WHERE (${ws}::text IS NULL OR e.workspace_id = ${ws})
@@ -201,8 +203,9 @@ export async function readHarnessStuckFeatures(
       (SELECT count(*) FROM harness_shared.harness_features_consolidated f
          WHERE f.workspace_id = ${workspaceId} AND f.harness_slug = ${harnessSlug}
            AND f.taken_by IS NOT NULL AND f.taken_by <> ''
-           AND f.taken_at IS NOT NULL
-           AND (now() - f.taken_at) > make_interval(secs => ${graceSec})
+           -- NULL taken_at counts as past grace (parity with the reaper + the
+           -- fleet_assignment view's orphaned state, EI-2534).
+           AND (f.taken_at IS NULL OR (now() - f.taken_at) > make_interval(secs => ${graceSec}))
            AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by))::int AS dead_held_features`;
   return {
     stuckFeatures: Number(row?.stuck_features ?? 0),

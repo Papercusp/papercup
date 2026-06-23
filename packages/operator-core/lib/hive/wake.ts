@@ -350,6 +350,17 @@ export async function recordHiveWake(workspaceId?: string): Promise<void> {
     (cur) => ({ ...cur, lastWakeAt: Date.now() }),
     workspaceId,
   );
+  // Per-wake push for the QueenHeartbeat sidebar (data-sync-push-completion P-007):
+  // hive.controlState surfaces lastWakeAt + the next-fire countdown + the placements
+  // the Queen is driving. This is THE single ledger chokepoint every explicit wake
+  // path funnels through (hive:wake, urgent-wake, the events/await wake-executor, hive
+  // create), so invalidating here replaces the heartbeat's old 12s self-poll. Fire-and-
+  // forget + non-throwing (mirrors hive:start/pause); name-only/{} matches the
+  // no-arg consumer. (A wake path that bypasses recordHiveWake is still caught by the
+  // @papercusp/sync 180s drift-repair tick.)
+  void import('../sync-sse')
+    .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
+    .catch(() => {});
 }
 
 /** Resolve the harness slug the hive runs against: explicit arg → ctx harness →

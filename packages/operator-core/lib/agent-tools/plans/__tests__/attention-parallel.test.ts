@@ -52,6 +52,9 @@ vi.mock('../../../plan-items/convert', () => ({ listConvertedPlanItemRefs: vi.fn
 vi.mock('../../../attention/triage-store', () => ({ readTriageByWorkspace: vi.fn(async () => new Map()) }));
 
 import tool from '../attention';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { resetOperatorCacheForTests } from '../../../cache';
+import { _refreshCacheLayerForTests } from '../../../cache/instance';
 
 const CTX = {
   log: vi.fn(),
@@ -74,13 +77,19 @@ const run = async () => {
 
 const allItems = (p: Awaited<ReturnType<typeof run>>) => p.groups.flatMap((g) => g.items);
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   M.readAllPlans.mockResolvedValue([]);
   M.ctxToPlanSourceOpts.mockResolvedValue({});
   M.planItemsToAttention.mockReturnValue([]);
   M.listEscalations.mockResolvedValue([]);
   M.listConversations.mockResolvedValue([]);
+  // plans:attention now caches its aggregation (cache-expensive-tool-reads P-003);
+  // this test characterizes the RAW source aggregation, so disable the cache (bypass)
+  // + reset the singleton so each case re-runs every source with its freshly-set mocks.
+  setFlagOverridesForTest({ 'papercusp-cache-layer': false });
+  resetOperatorCacheForTests();
+  await _refreshCacheLayerForTests();
 });
 
 describe('plans:attention — parallel source aggregation (P-005)', () => {

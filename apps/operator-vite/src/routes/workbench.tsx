@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
 import { HarnessDock } from '@/app/harness/dock/HarnessDock';
 import { registerWorkbenchPanels } from '@/app/harness/dock/workbench-panels';
 import { registerWorkbenchVoicePanel } from '../components/workbench/WorkbenchVoicePanel';
@@ -40,7 +41,15 @@ function WorkbenchPage() {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
   const [harness, setHarness] = useQueryState('harness', parseAsString.withDefault(''));
-  const [projects, setProjects] = useState<ProjectLite[]>([]);
+  // LIVE harness registry list (harnessProjects.lite) — auto-updates on
+  // create/delete/rename/fork from any operator process (EI-206), replacing the
+  // old one-shot /api/harness/projects/lite fetch (data-sync-push P-010).
+  const { data: projectsData } = useSyncQuery<ProjectLite>({
+    queryName: 'harnessProjects.lite',
+    args: {},
+    staleTime: 60_000,
+  });
+  const projects = projectsData ?? [];
 
   // Register the workbench panel types before the dock walks the layout.
   // pui + app come from @/app; voice is registered here (operator-vite) since
@@ -51,28 +60,15 @@ function WorkbenchPage() {
     registerWorkbenchHiveDirectoryPanel();
   }, []);
 
-  // Harness list for the header picker. Default the selection to the first
-  // project when nothing is pinned in the URL yet.
+  // Default the selection to the first project when nothing is pinned in the
+  // URL yet. One-shot: a ref guards against re-defaulting once the live query
+  // pushes a later update (e.g. a new harness lands) or the user picks another.
+  const defaultedRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    fetch('/api/harness/projects/lite', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => {
-        if (cancelled) return;
-        const next: ProjectLite[] = Array.isArray(d?.projects) ? d.projects : [];
-        setProjects(next);
-        if (!harness && next.length > 0) void setHarness(next[0].slug);
-      })
-      .catch(() => {
-        /* picker stays empty; the pui pane shows its own empty state */
-      });
-    return () => {
-      cancelled = true;
-    };
-    // Only on mount — the default-selection is one-shot; later harness changes
-    // come from the picker.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (defaultedRef.current || harness || projects.length === 0) return;
+    defaultedRef.current = true;
+    void setHarness(projects[0].slug);
+  }, [harness, projects, setHarness]);
 
   // Patch the active harness into the voice panel whenever it changes.
   // Mirrors dock-preview: the seed bakes an empty slug, the route fills it in

@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { ArrowRight, ListChecks, Users, Bell, Activity as ActivityIcon } from 'lucide-react';
+import { useSyncQuery } from '@papercusp/sync';
+import { deriveLiveness } from '@papercusp/operator-core/lib/liveness';
+import { getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 import FleetRateControl from './FleetRateControl';
 import {
   usePlanList,
@@ -28,10 +31,18 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * Tiles read GROUND-TRUTH PG state (plans list, attention, roster, activity) —
  * NOT the operator's `<report>` (D-002) — so they're correct even when the
  * operator is idle. Each tile clicks through to its full tab (D-007).
+ *
+ * Roster + activity are LIVE (SSE push-driven via @papercusp/sync), not polled
+ * (data-sync-push-completion P-006). Roster reads `dev.coordPresence` (the
+ * coord_presence→query bridge pushes on heartbeat/intent/claim writes); activity
+ * reads `userActions.byHarness`, scoped to the selected harness (`?slug=`) — the
+ * `user_actions`→query bridge pushes on every action write. The old 8s
+ * setInterval over /api/adv/roster + /api/agent-tools/activity/recent is gone.
  */
 
-// ── roster (GET /api/adv/roster → { active, ended }) — camelCase per
-//    packages/operator-core/lib/adv-roster.ts RosterEntry ──────────────────
+// ── roster: the subset of a `dev.coordPresence` PresenceRecord the Agents tile
+//    renders, after mapping (ownerLabel→label, agentRole→role, source→agent) +
+//    a client-derived liveness (deriveLiveness on heartbeatAt). ─────────────
 export interface OverviewRosterEntry {
   ownerId: string;
   label: string;
@@ -43,16 +54,42 @@ export interface OverviewRosterEntry {
   agent: string | null;
 }
 
-// ── activity (POST /api/agent-tools/activity/recent → { rows | result }) ──
+// ── one `dev.coordPresence` row (PresenceRecord — the fields this tile maps).
+//    The resolver already filters out stale rows server-side; we still derive
+//    a live/idle class for the dot from heartbeatAt. ────────────────────────
+interface PresenceRow {
+  ownerId: string;
+  ownerLabel: string;
+  intent: string;
+  currentFiles: string[];
+  currentPlanSlug: string | null;
+  agentRole: string | null;
+  source: string;
+  heartbeatAt: string;
+  stale?: boolean;
+}
+
+// ── activity: the subset of a `userActions.byHarness` row the Activity tile
+//    renders. `user_actions` has no agent/tool_name/created_at columns — the
+//    actor is `actor`, the title is `summary ?? kind`, keyed by `id`. ───────
 export interface OverviewActivityRow {
   id: string;
   agent: string | null;
-  harness_slug: string | null;
-  kind: string; // tool | lifecycle | todos
-  tool_name: string | null;
+  kind: string;
   summary: string | null;
   status: string | null;
-  created_at: string;
+}
+
+// ── one `userActions.byHarness` row (the `harness_shared.user_actions` shape:
+//    drizzle camelCase columns). ─────────────────────────────────────────────
+interface UserActionRow {
+  id: string | number;
+  harnessSlug: string;
+  kind: string;
+  status: string;
+  summary: string | null;
+  actor: string | null;
+  startedAt: number;
 }
 
 const TILE_LIMIT = 6;
@@ -140,57 +177,29 @@ export default function AdvOverviewTab() {
     await setInboxTier(tier);
   };
 
+  // The selected harness (AdvShell's `?slug=`). The activity feed is per-harness
+  // (`user_actions` has no fleet-wide variant), so the Activity tile scopes to
+  // it; null = the All-Pots default → no harness to read, empty state.
+  const [activeSlug] = useQueryState('slug', parseAsString);
+
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
   const attentionQ = usePlanAttention();
 
-  // Roster (live fleet) — one-shot + light interval; no global sync hook yet.
-  const [roster, setRoster] = useState<OverviewRosterEntry[]>([]);
-  const [rosterErr, setRosterErr] = useState<string | null>(null);
-  // Activity (recent fleet stream) — same.
-  const [activity, setActivity] = useState<OverviewActivityRow[]>([]);
-  const [activityErr, setActivityErr] = useState<string | null>(null);
+  // Roster (live fleet) — LIVE via dev.coordPresence (push-driven by the
+  // coord_presence→query bridge). Workspace-scoped server-side (no args). The
+  // resolver already drops stale rows; we keep selectLiveAgents' stale filter as
+  // a belt-and-braces guard on the client-derived liveness.
+  const rosterQ = useSyncQuery<PresenceRow>({ queryName: 'dev.coordPresence', staleTime: 8_000 });
 
-  useEffect(() => {
-    let cancel = false;
-    const pull = () => {
-      fetch('/api/adv/roster', { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then((d) => {
-          if (cancel) return;
-          setRoster(Array.isArray(d?.active) ? d.active : []);
-          setRosterErr(null);
-        })
-        .catch((e) => !cancel && setRosterErr(String(e?.message ?? e)));
-      fetch('/api/agent-tools/activity/recent', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({ limit: ACTIVITY_LIMIT }),
-      })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then((d) => {
-          if (cancel) return;
-          // tool result envelope varies (rows | result | the array itself) —
-          // accept whichever the dispatcher returns.
-          const rows: OverviewActivityRow[] = Array.isArray(d?.rows)
-            ? d.rows
-            : Array.isArray(d?.result)
-              ? d.result
-              : Array.isArray(d)
-                ? d
-                : [];
-          setActivity(rows);
-          setActivityErr(null);
-        })
-        .catch((e) => !cancel && setActivityErr(String(e?.message ?? e)));
-    };
-    pull();
-    const t = setInterval(pull, 8000);
-    return () => {
-      cancel = true;
-      clearInterval(t);
-    };
-  }, []);
+  // Activity (recent action stream) — LIVE via userActions.byHarness (push-driven
+  // by the user_actions→query bridge), scoped to the selected harness +
+  // workspace. Disabled (no fetch) when no harness is selected.
+  const activityQ = useSyncQuery<UserActionRow>({
+    queryName: 'userActions.byHarness',
+    args: { harnessSlug: activeSlug ?? '', workspaceId: getBrowserWorkspaceId(), limit: ACTIVITY_LIMIT },
+    enabled: !!activeSlug,
+    staleTime: 8_000,
+  });
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);
@@ -200,8 +209,40 @@ export default function AdvOverviewTab() {
   );
   const decisions = useMemo(() => selectDecisions(attentionItems), [attentionItems]);
   const alertCount = useMemo(() => countAlerts(attentionItems), [attentionItems]);
+
+  // Map PresenceRecord rows → OverviewRosterEntry (deriving live/idle from the
+  // heartbeat), then top-N live via the pinned pure selector.
+  const roster = useMemo<OverviewRosterEntry[]>(() => {
+    const now = Date.now();
+    return (rosterQ.data ?? [])
+      .filter((p) => !p.stale)
+      .map((p) => ({
+        ownerId: p.ownerId,
+        label: p.ownerLabel,
+        intent: p.intent,
+        currentFiles: p.currentFiles ?? [],
+        liveness: deriveLiveness(p.heartbeatAt, now),
+        currentPlanSlug: p.currentPlanSlug,
+        role: p.agentRole,
+        agent: p.source,
+      }));
+  }, [rosterQ.data]);
   const liveAgents = useMemo(() => selectLiveAgents(roster), [roster]);
-  const recentActivity = useMemo(() => activity.slice(0, 10), [activity]);
+
+  // Map user_actions rows → the Activity tile's render shape (actor = `actor`,
+  // title = `summary ?? kind`). Newest-first already (resolver orders by
+  // startedAt desc); take the top 10 the tile shows.
+  const recentActivity = useMemo<OverviewActivityRow[]>(
+    () =>
+      (activityQ.data ?? []).slice(0, 10).map((r) => ({
+        id: String(r.id),
+        agent: r.actor,
+        kind: r.kind,
+        summary: r.summary,
+        status: r.status,
+      })),
+    [activityQ.data],
+  );
 
   return (
     <div className="pc-overview">
@@ -282,7 +323,7 @@ export default function AdvOverviewTab() {
           title="Agents"
           count={liveAgents.length}
           accent="#a78bfa"
-          error={rosterErr}
+          loading={rosterQ.loading && !rosterQ.data}
           empty={liveAgents.length === 0}
           emptyLabel="No live agents"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.agents)}
@@ -302,16 +343,16 @@ export default function AdvOverviewTab() {
           icon={<ActivityIcon size={14} aria-hidden />}
           title="Activity"
           accent="#34d399"
-          error={activityErr}
+          loading={!!activeSlug && activityQ.loading && !activityQ.data}
           empty={recentActivity.length === 0}
-          emptyLabel="No recent activity"
+          emptyLabel={activeSlug ? 'No recent activity' : 'Select a harness to see activity'}
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.activity)}
         >
           {recentActivity.map((r) => (
             <div key={r.id} className="pc-overview__row">
               <span className="pc-overview__row-actor">{r.agent ?? '—'}</span>
-              <span className="pc-overview__row-title" title={r.summary ?? r.tool_name ?? r.kind}>
-                {r.summary ?? r.tool_name ?? r.kind}
+              <span className="pc-overview__row-title" title={r.summary ?? r.kind}>
+                {r.summary ?? r.kind}
               </span>
             </div>
           ))}

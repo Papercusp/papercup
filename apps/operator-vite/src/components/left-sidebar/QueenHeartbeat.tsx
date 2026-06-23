@@ -11,10 +11,12 @@
  *
  * Data: the `hive.controlState` sync query (started / nextFireAt / lastWakeAt +
  * the placements summary added for this, queen-heartbeat-2026-06-16). The
- * component ticks the countdown every 1s and periodically refetches so lastWakeAt
- * stays live (a heartbeat polls its own status — the legitimate UI-timer case).
+ * component ticks the countdown every 1s (a legit client UI timer); lastWakeAt /
+ * nextFireAt / placements arrive via PUSH — the Queen wake writer (recordHiveWake)
+ * fires notifySyncInvalidate('hive.controlState') per wake (data-sync-push-
+ * completion P-007), replacing the old 12s self-poll.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
 import { Crown } from 'lucide-react';
@@ -89,17 +91,15 @@ export default function QueenHeartbeat({ homeSlug }: { homeSlug?: string }) {
   const q = useSyncQuery<HiveControlState>({ queryName: 'hive.controlState', args: {}, staleTime: 10_000 });
   const [now, setNow] = useState(() => Date.now());
 
-  // Tick the countdown every 1s; periodically refetch so lastWakeAt / the
-  // placements stay live without a server-side per-wake invalidation.
-  const invalidateRef = useRef(q.invalidate);
-  invalidateRef.current = q.invalidate;
+  // Tick the countdown every 1s — a legit client UI timer (no data fetch).
+  // lastWakeAt / nextFireAt / the placements now arrive via PUSH: the Queen wake
+  // writer (recordHiveWake) fires notifySyncInvalidate('hive.controlState') on each
+  // wake (data-sync-push-completion P-007), so the old degenerate 12s self-poll is
+  // gone. The @papercusp/sync 180s drift-repair tick backs any wake path that bypasses
+  // recordHiveWake.
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 1000);
-    const refetch = setInterval(() => void invalidateRef.current?.(), 12_000);
-    return () => {
-      clearInterval(tick);
-      clearInterval(refetch);
-    };
+    return () => clearInterval(tick);
   }, []);
 
   const rows = (q.data ?? []) as HiveControlState[];

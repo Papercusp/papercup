@@ -803,11 +803,66 @@ export function usePlanViewerEmail(): string | null {
   return r.data?.[0]?.email ?? null;
 }
 
-export function usePlan(slug: string | null) {
-  return useAsyncJson<PlanGetResult | null>(
-    (signal) => (slug ? fetchPlan(slug, signal) : Promise.resolve(null)),
+/**
+ * Read one plan's full body (mode:'full' — frontmatter + items + raw markdown).
+ *
+ * Two consumption modes, chosen by `opts.live`:
+ *
+ *  - **`live: false` (default) — guarded one-shot** (`useAsyncJson`): fetch on
+ *    mount/slug-change plus an explicit `refresh()`, and exposes `setData` for
+ *    optimistic in-place patches. This is what **PlanDetail's Vditor editor**
+ *    uses: a LIVE re-fire mid-edit would clobber the user's in-progress draft
+ *    (data-sync-push-completion P-011 — "do NOT make PlanDetail's editor live").
+ *    The editor decides when to reload (its own `onChanged()` / 10s interval),
+ *    never the sync layer.
+ *
+ *  - **`live: true` — shared live sync query** (`useSyncQuery`,
+ *    `queryName:'plans.get'`): subscribes to the shared `['sync','plans.get',args]`
+ *    cache; any `plans:*` write pushes a fresh row over SSE
+ *    (`harness_plans` is bridged). Used by the **read-only** consumer
+ *    PlanItemPreview, which only reads `{ data, loading, error }` and never
+ *    edits — so a live re-fire is safe and desirable. No `setData` (the live
+ *    cache is server-authoritative); `refresh()` maps to `invalidate()`.
+ *
+ * The `plans.get` resolver returns a single-element row array `[PlanGetResult]`
+ * (the SAME `callPlansRead('get', { mode:'full' })` payload the REST `fetchPlan`
+ * hits, plus best-effort attribution enrichment), so the consumer renders
+ * identically off `data` whichever mode is in force.
+ */
+export function usePlan(
+  slug: string | null,
+  opts?: { live?: boolean },
+): AsyncResult<PlanGetResult | null> {
+  const live = opts?.live ?? false;
+
+  // Live read-only path (PlanItemPreview). Hooks must run unconditionally, so
+  // both hooks are always called; `enabled` gates which one actually fetches.
+  const liveArgs = useMemo<Record<string, unknown>>(
+    () => (slug ? { slug, mode: 'full' } : {}),
     [slug],
   );
+  const liveQuery = useSyncQuery<PlanGetResult>({
+    queryName: 'plans.get',
+    args: liveArgs,
+    enabled: live && !!slug,
+  });
+
+  // Guarded one-shot path (PlanDetail editor). Skip the fetch entirely when
+  // the live path is in force so we don't double-request the same plan.
+  const oneShot = useAsyncJson<PlanGetResult | null>(
+    (signal) => (!live && slug ? fetchPlan(slug, signal) : Promise.resolve(null)),
+    [slug, live],
+  );
+
+  if (live) {
+    return {
+      data: slug ? (liveQuery.data?.[0] ?? null) : null,
+      loading: liveQuery.loading,
+      error: liveQuery.error ? liveQuery.error.message : null,
+      refresh: () => liveQuery.invalidate(),
+    };
+  }
+  return oneShot;
 }
 
 export function usePlanItems(params?: {

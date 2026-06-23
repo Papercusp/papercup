@@ -104,24 +104,20 @@ export default function ScheduledCalendarTab() {
   // picker — pick an unscheduled plan to give it a first schedule.
   // Workspace-wide plan picker (D-020 item 3): fan plans.list across every harness
   // so an unscheduled plan in a NON-primary pot is schedulable too (the same
-  // projects/lite source QueenTab uses). Fetched + queried lazily — only once the
-  // picker is opened — since the cross-harness fan-out is heavier than the default.
-  const [harnessSlugs, setHarnessSlugs] = useState<string[]>([]);
-  useEffect(() => {
-    if (!pickerOpen || harnessSlugs.length > 0) return;
-    let cancel = false;
-    fetch('/api/harness/projects/lite', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d: { projects?: Array<{ slug?: string }> }) => {
-        if (cancel) return;
-        const slugs = Array.isArray(d?.projects) ? d.projects.map((p) => p.slug).filter((s): s is string => !!s) : [];
-        setHarnessSlugs(slugs);
-      })
-      .catch(() => {});
-    return () => {
-      cancel = true;
-    };
-  }, [pickerOpen, harnessSlugs.length]);
+  // projects/lite source QueenTab uses). LIVE-queried lazily — `enabled: pickerOpen`
+  // keeps the cross-harness fan-out off until the picker opens, and the registry
+  // list now auto-updates on create/delete/rename/fork (EI-206, data-sync-push
+  // P-010) instead of the old one-shot fetch.
+  const { data: projectsData } = useSyncQuery<{ slug: string }>({
+    queryName: 'harnessProjects.lite',
+    args: {},
+    enabled: pickerOpen,
+    staleTime: 60_000,
+  });
+  const harnessSlugs = useMemo(
+    () => (projectsData ?? []).map((p) => p.slug).filter((s): s is string => !!s),
+    [projectsData],
+  );
   const { data: planListData } = useSyncQuery<PlanListLite>({
     queryName: 'plans.list',
     args: harnessSlugs.length > 0 ? { harness_slugs: harnessSlugs } : {},

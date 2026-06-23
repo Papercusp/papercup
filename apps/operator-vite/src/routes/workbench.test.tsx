@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 /**
  * workbench.test.tsx — the /workbench top-level desktop route. Covers: panel-type
- * registration on mount, the projects/lite fetch + first-project default-select
- * (and the non-override when ?harness is already pinned), the picker → harness
- * (nuqs) → dock-slug flow, the onDockApiBind voice-panel slug patching (+ the
- * null-api no-op), the reset-layout CustomEvent, and the fetch-failure empty
- * picker. HarnessDock + the panel registrars + dock-actions are stubbed.
+ * registration on mount, the live harnessProjects.lite list + first-project
+ * default-select (and the non-override when ?harness is already pinned), the
+ * picker → harness (nuqs) → dock-slug flow, the onDockApiBind voice-panel slug
+ * patching (+ the null-api no-op), the reset-layout CustomEvent, and the
+ * empty-list empty picker. HarnessDock + the panel registrars + dock-actions
+ * are stubbed.
  *
  * Seams: @tanstack/react-router (createFileRoute → Route), nuqs (real testing
  * adapter for ?harness=), dock-actions (onDockApiBind captured so the test can
- * drive the bind callback), fetch stubbed per-call.
+ * drive the bind callback), @papercusp/sync (harnessProjects.lite — the live
+ * registry list replaced the old one-shot fetch, data-sync-push P-010).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -44,6 +46,14 @@ vi.mock('@/app/harness/dock/HarnessDock', () => ({
   HarnessDock: ({ slug }: { slug: string }) => <div data-testid="harness-dock" data-slug={slug} />,
 }));
 
+// Live harnessProjects.lite registry list (P-010). Tests seed `projectRows`
+// before render (the resolver's projects[] row shape); the route reads `data`.
+let projectRows: unknown[] | undefined = [];
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) =>
+    queryName === 'harnessProjects.lite' ? { data: projectRows } : { data: undefined },
+}));
+
 const boundCbs: Array<(api: unknown) => void> = [];
 const listPanelsMock = vi.fn<[], Array<{ id: string; type: string; params?: Record<string, unknown> }>>(() => []);
 const setPanelParamsMock = vi.fn();
@@ -57,14 +67,6 @@ import { Route } from './workbench';
 
 const Comp = Route.component as () => JSX.Element;
 
-let fetchImpl: () => { ok: boolean; status?: number; body: unknown };
-function stubFetch() {
-  vi.stubGlobal('fetch', vi.fn(async () => {
-    const r = fetchImpl();
-    return { ok: r.ok, status: r.status ?? (r.ok ? 200 : 500), json: async () => r.body } as unknown as Response;
-  }));
-}
-
 function renderWb(searchParams = '') {
   return render(<NuqsTestingAdapter searchParams={searchParams}><Comp /></NuqsTestingAdapter>);
 }
@@ -77,8 +79,7 @@ beforeEach(() => {
   registerWorkbenchHiveDirectoryPanel.mockReset();
   listPanelsMock.mockReset(); listPanelsMock.mockReturnValue([]);
   setPanelParamsMock.mockReset();
-  fetchImpl = () => ({ ok: true, body: { projects: [{ slug: 'p1', title: 'Project One' }, { slug: 'p2' }] } });
-  stubFetch();
+  projectRows = [{ slug: 'p1', title: 'Project One' }, { slug: 'p2' }];
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -144,8 +145,8 @@ describe('/workbench route', () => {
     window.removeEventListener('papercusp:dock-reset-layout', onReset);
   });
 
-  it('leaves the picker empty when the projects fetch fails', async () => {
-    fetchImpl = () => ({ ok: false, status: 500, body: {} });
+  it('leaves the picker empty when the projects list is empty', async () => {
+    projectRows = [];
     renderWb();
     await waitFor(() => expect(slug()).toBe(''));
     expect(screen.getByRole('option', { name: 'select' })).toBeTruthy();

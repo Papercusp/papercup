@@ -120,8 +120,22 @@ describe('workItemsStatus', () => {
   it('crit when the reaper is WEDGED (recorded but aged-out: reaperStale + non-null age)', () => {
     expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: 600 }))).toBe('crit');
   });
-  it('warn (not crit) when the reaper has NEVER recorded a run (null age — fresh boot)', () => {
+  it('warn (not crit) when the reaper has NEVER recorded a run (null age — fresh boot, no backlog)', () => {
     expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: null }))).toBe('warn');
+  });
+  // EI-2534 (reclaim-lane-not-firing): a never-recorded reaper (un-armed/dark sweep)
+  // WHILE a real dead-held backlog is stranded must escalate to crit — NOT the passive
+  // warn that let 7 P1 claims sit ~3h. The boot-blip warn above only applies with no backlog.
+  it('crit when the reaper has NEVER recorded a run AND a dead-held backlog is stranded (un-armed sweep)', () => {
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: null, deadHeldClaims: 7 }))).toBe('crit');
+  });
+  it('crit on a never-recorded reaper with any stranded recovery backlog (stuck / dead-assigned / dead-held reservations)', () => {
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: null, stuckFeatures: 1 }))).toBe('crit');
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: null, deadAssignedIssues: 2 }))).toBe('crit');
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: null, deadHeldAssignments: 3 }))).toBe('crit');
+  });
+  it('a dead-held backlog with a LIVE (fresh) reaper stays warn — it is actively being cleared, not stranded', () => {
+    expect(workItemsStatus(wi({ reaperStale: false, reaperAgeSec: 30, deadHeldClaims: 7 }))).toBe('warn');
   });
   it('warn when any feature is freed-but-non-dispatchable (stuck)', () => {
     expect(workItemsStatus(wi({ stuckFeatures: 1 }))).toBe('warn');

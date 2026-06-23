@@ -7,6 +7,24 @@ const calls: Call[] = [];
 const responses = new Map<string, { ok?: boolean; status?: number; body?: any }>();
 const origFetch = globalThis.fetch;
 
+interface HarnessSummary {
+  slug: string;
+  path: string;
+  hasState: boolean;
+  hasSpec: boolean;
+}
+
+interface ChatSummary {
+  id: string;
+}
+
+interface AgentSummary {
+  slug: string;
+  role: string;
+  chat_count: number;
+  last_active: string;
+}
+
 function setup() {
   calls.length = 0;
   responses.clear();
@@ -47,7 +65,7 @@ describe('runSharedTool', () => {
       ],
     } });
     const r = await runSharedTool('listHarnesses', {}, { base: 'http://test' });
-    const parsed = JSON.parse(r.content[0].text);
+    const parsed = JSON.parse(r.content[0].text) as HarnessSummary[];
     expect(parsed).toEqual([
       { slug: 'a', path: '/a', hasState: true, hasSpec: false },
       { slug: 'b', path: '/b', hasState: false, hasSpec: false },
@@ -60,7 +78,7 @@ describe('runSharedTool', () => {
     }));
     responses.set('http://test/api/harness/foo/agent-chats', { body: { chats } });
     const r = await runSharedTool('listChats', { slug: 'foo' }, { base: 'http://test' });
-    const parsed = JSON.parse(r.content[0].text);
+    const parsed = JSON.parse(r.content[0].text) as ChatSummary[];
     expect(parsed).toHaveLength(20);
     expect(parsed[0].id).toBe('c29');
   });
@@ -71,7 +89,7 @@ describe('runSharedTool', () => {
       { id: 'b', role: 'worker', updated_at: '2026-01-01', transcript: [] },
     ] } });
     const r = await runSharedTool('listChats', { slug: 'foo', role: 'architect' }, { base: 'http://test' });
-    const parsed = JSON.parse(r.content[0].text);
+    const parsed = JSON.parse(r.content[0].text) as ChatSummary[];
     expect(parsed).toHaveLength(1);
     expect(parsed[0].id).toBe('a');
   });
@@ -87,7 +105,7 @@ describe('runSharedTool', () => {
       { role: 'architect', updated_at: '2026-01-05' },
     ] } });
     const r = await runSharedTool('listAgents', {}, { base: 'http://test' });
-    const parsed = JSON.parse(r.content[0].text);
+    const parsed = JSON.parse(r.content[0].text) as AgentSummary[];
     // Most recent first
     expect(parsed[0]).toEqual({ slug: 'h2', role: 'architect', chat_count: 1, last_active: '2026-01-05' });
     expect(parsed.find((a) => a.slug === 'h1' && a.role === 'architect')).toEqual({

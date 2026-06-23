@@ -43,7 +43,11 @@
  * Safety properties:
  *   - graceMs (default 10 min, the view's window) means a briefly-quiet but
  *     alive agent is never robbed: its presence/nursery heartbeats refresh
- *     well inside the window.
+ *     well inside the window. A NULL taken_at (a claim with no claim-time
+ *     anchor) is treated as PAST grace, so the reaper's freed set is a SUPERSET
+ *     of the fleet_assignment view's `orphaned` set (which requires no taken_at)
+ *     — anything the view calls orphaned, the reaper frees (EI-2534). Still
+ *     safe: a NULL-taken_at row is freed ONLY when its holder is already dead.
  *   - FOR UPDATE SKIP LOCKED — never blocks a live claim transaction.
  *   - The release UPDATE re-checks the same predicates, so a row re-claimed
  *     between snapshot and update is left alone.
@@ -165,6 +169,10 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
  *
  *   (a) DEAD       — holder not alive per the alias-aware rule, past the grace
  *                    window (the original behavior — transient-quiet protection).
+ *                    A NULL taken_at counts as past grace (no anchor → the
+ *                    holder-death signal alone governs), so a taken_by-set/
+ *                    taken_at-NULL claim the view flags `orphaned` can't strand
+ *                    un-reaped (EI-2534).
  *   (b) SPAWN-EXIT — holder is an alias of a CONFIRMED-terminal spawn
  *                    (failed/cancelled/exited/killed, finished within the last
  *                    hour). Freed IMMEDIATELY, NO grace: a spawn's death should
@@ -215,9 +223,15 @@ export async function reclaimStaleWorkItemClaims(
         FROM harness_shared.harness_features_consolidated f
        WHERE f.taken_by IS NOT NULL AND f.taken_by <> ''
          AND (
-           -- (a) DEAD: holder not alive, past the grace window.
-           ( f.taken_at IS NOT NULL
-             AND (now() - f.taken_at) > make_interval(secs => ${graceSec})
+           -- (a) DEAD: holder not alive, past the grace window. A NULL taken_at
+           -- (a claim with NO claim-time anchor) is treated as PAST grace: the
+           -- holder-death signal governs alone. The fleet_assignment view flags
+           -- such a row orphaned off taken_by alone (it requires NO taken_at),
+           -- so requiring taken_at IS NOT NULL here let a taken_by-set/taken_at-
+           -- NULL claim read as orphaned forever yet never reap — the EI-2534
+           -- strand. Freeing it is safe: the row is only freed when its holder is
+           -- already NOT alive, so no live agent (anchored or not) is ever robbed.
+           ( (f.taken_at IS NULL OR (now() - f.taken_at) > make_interval(secs => ${graceSec}))
              AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by) )
            -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
            OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)

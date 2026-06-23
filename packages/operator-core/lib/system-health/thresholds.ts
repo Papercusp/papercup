@@ -138,20 +138,31 @@ export function beesStatus(d: BeesHealth): PanelStatus {
 /** Work items. warn = a needs-human queue exists. (Backlog depth is not a health
  *  failure on its own — that's the work-feed / plans story.) */
 export function workItemsStatus(d: WorkItemsHealth): PanelStatus {
+  // The recovery-layer backlog the reaper is responsible for clearing: freed-but-
+  // non-dispatchable rows + dead-held feature claims + dead-assigned issues + dead-
+  // held plan-item reservations (P-008 / EI-2535).
+  const stuckBacklog =
+    (d.stuckFeatures ?? 0) +
+    (d.deadHeldClaims ?? 0) +
+    (d.deadAssignedIssues ?? 0) +
+    (d.deadHeldAssignments ?? 0);
+
   // P-009: a recorded-but-aged-out reaper is WEDGED — the most severe work-queue
   // failure (stuck items accumulate silently). A null age = never recorded (fresh
   // boot / unknown) → warn, not crit, to avoid alarming on the ~1 boot interval
   // before the first sweep stamps its heartbeat.
   if (d.reaperStale && d.reaperAgeSec != null) return 'crit';
+  // EI-2534: a reaper that has NEVER recorded a run (null age) is normally a benign
+  // fresh-boot blip (warn, below) — UNLESS a real dead-held backlog is already
+  // stranded. A never-armed/dark sweep WITH stuck rows is not a boot blip; it is the
+  // reclaim-lane-not-firing incident (claims sat ~3h reading as a passive warn while
+  // the un-armed sweep never freed them). Surface it as crit so a stranded backlog
+  // under a non-firing reaper is loud, not silently yellow.
+  if (d.reaperStale && d.reaperAgeSec == null && stuckBacklog > 0) return 'crit';
   // P-008 / EI-2535: any genuinely stuck row, a dead-held claim backlog, a
-  // dead-assigned issue, or a dead-held plan-item reservation.
-  if (
-    (d.stuckFeatures ?? 0) > 0 ||
-    (d.deadHeldClaims ?? 0) > 0 ||
-    (d.deadAssignedIssues ?? 0) > 0 ||
-    (d.deadHeldAssignments ?? 0) > 0
-  )
-    return 'warn';
+  // dead-assigned issue, or a dead-held plan-item reservation (reaper alive →
+  // transient backlog it is actively clearing → warn).
+  if (stuckBacklog > 0) return 'warn';
   if (d.reaperStale) return 'warn';
   if (d.needsHuman > 0) return 'warn';
   return 'ok';

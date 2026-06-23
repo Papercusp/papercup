@@ -5,18 +5,20 @@
 // (planProgress / selectActivePlans / selectDecisions / countAlerts /
 // selectLiveAgents / OVERVIEW_TILE_TARGETS) are pinned in
 // __tests__/adv-overview-logic.test.ts; THIS file mounts the tab against
-// mocked usePlanList/usePlanAttention + stubbed roster/activity fetches
-// (useSyncQuery-family + nuqs mocked, the pinned sibling pattern — see
-// AdvConversationsTab.test.tsx) and asserts the four tiles, the alerts badge,
-// empty/error states, and the tile→tab click-through wiring.
-// FleetRateControl is covered by its own test file and stubbed out here.
+// mocked usePlanList/usePlanAttention + a per-query useSyncQuery dispatcher
+// (roster → dev.coordPresence, activity → userActions.byHarness; LIVE sync,
+// no longer polled — data-sync-push-completion P-006) and asserts the four
+// tiles, the alerts badge, empty/loading states, and the tile→tab
+// click-through wiring. FleetRateControl is covered by its own test file and
+// stubbed out here.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-// nuqs: writers only (tab / inboxTier). Stable per-key setter spies so the
+// nuqs: writers (tab / inboxTier) + the `slug` reader (the selected harness,
+// which scopes the activity query). Stable per-key setter spies so the
 // click-through wiring is assertable.
-const nuqsState: Record<string, unknown> = { tab: null, inboxTier: null };
+const nuqsState: Record<string, unknown> = { tab: null, inboxTier: null, slug: null };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 vi.mock('nuqs', () => ({
   useQueryState: (key: string) => {
@@ -39,7 +41,55 @@ vi.mock('@/app/admin/plans/plans-api', () => ({
   usePlanAttention: () => attentionResult,
 }));
 
-import AdvOverviewTab, { type OverviewRosterEntry } from './AdvOverviewTab';
+// Per-query sync mock — the tab subscribes to two distinct LIVE queries:
+//   dev.coordPresence (roster) · userActions.byHarness (activity).
+// A disabled query never resolves data (mirrors the no-fetch behaviour); the
+// activity query is disabled until a harness is selected (?slug=).
+let presenceResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
+let activityResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
+const syncEnabled: Record<string, boolean | undefined> = {};
+const syncArgs: Record<string, unknown> = {};
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({
+    queryName,
+    args,
+    enabled,
+  }: {
+    queryName: string;
+    args?: unknown;
+    enabled?: boolean;
+  }) => {
+    syncEnabled[queryName] = enabled;
+    syncArgs[queryName] = args;
+    if (enabled === false) return { data: undefined, loading: false, error: null };
+    switch (queryName) {
+      case 'dev.coordPresence':
+        return { ...presenceResult, error: null };
+      case 'userActions.byHarness':
+        return { ...activityResult, error: null };
+      default:
+        return { data: undefined, loading: false, error: null };
+    }
+  },
+}));
+
+// liveness: deterministic — derive 'live'/'idle'/'stale' from the row's
+// heartbeatAt offset (the real dep is a dependency-free leaf; stub it so the
+// roster mapping is assertable without wall-clock coupling).
+vi.mock('@papercusp/operator-core/lib/liveness', () => ({
+  deriveLiveness: (iso: string) => {
+    const age = Date.now() - new Date(iso).getTime();
+    if (age < 60_000) return 'live';
+    if (age < 600_000) return 'idle';
+    return 'stale';
+  },
+}));
+
+vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
+  getBrowserWorkspaceId: () => 'ws-test',
+}));
+
+import AdvOverviewTab from './AdvOverviewTab';
 import type { AttentionItem, PlanListRow } from '@/app/admin/plans/plans-api';
 
 const plan = (over: Partial<PlanListRow>): PlanListRow =>
@@ -66,46 +116,71 @@ const attn = (over: Partial<AttentionItem> & { tier?: string }): AttentionItem =
     ...over,
   }) as AttentionItem;
 
-const rosterEntry = (over: Partial<OverviewRosterEntry>): OverviewRosterEntry => ({
-  ownerId: `o-${Math.random()}`,
-  label: 'agent',
-  intent: '',
-  currentFiles: [],
-  liveness: 'live',
-  currentPlanSlug: null,
-  role: null,
-  agent: null,
+// A raw dev.coordPresence row (PresenceRecord — the fields the tab maps). The
+// liveness mock derives live/idle/stale from `heartbeatAt`, so the fixtures set
+// an explicit age via `agoMs`.
+const presenceRow = (
+  over: Partial<{
+    ownerId: string;
+    ownerLabel: string;
+    intent: string;
+    currentFiles: string[];
+    currentPlanSlug: string | null;
+    agentRole: string | null;
+    source: string;
+    agoMs: number;
+    stale: boolean;
+  }>,
+) => {
+  const { agoMs = 0, ...rest } = over;
+  return {
+    ownerId: `o-${Math.random()}`,
+    ownerLabel: 'agent',
+    intent: '',
+    currentFiles: [],
+    currentPlanSlug: null,
+    agentRole: null,
+    source: 'claude',
+    heartbeatAt: new Date(Date.now() - agoMs).toISOString(),
+    stale: false,
+    ...rest,
+  };
+};
+
+// A raw userActions.byHarness row (the harness_shared.user_actions shape).
+const actionRow = (
+  over: Partial<{
+    id: string | number;
+    harnessSlug: string;
+    kind: string;
+    status: string;
+    summary: string | null;
+    actor: string | null;
+    startedAt: number;
+  }>,
+) => ({
+  id: `act-${Math.random()}`,
+  harnessSlug: 'papercup',
+  kind: 'tool',
+  status: 'ok',
+  summary: null,
+  actor: null,
+  startedAt: Date.now(),
   ...over,
 });
 
 describe('AdvOverviewTab component', () => {
-  function stubOverviewFetch(opts: {
-    roster?: unknown;
-    activity?: unknown;
-    rosterFail?: boolean;
-  } = {}) {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (String(url).includes('/api/adv/roster')) {
-          if (opts.rosterFail) return { ok: false, status: 500, json: async () => ({}) };
-          return { ok: true, status: 200, json: async () => (opts.roster ?? { active: [] }) };
-        }
-        if (String(url).includes('/api/agent-tools/activity/recent')) {
-          return { ok: true, status: 200, json: async () => (opts.activity ?? { rows: [] }) };
-        }
-        return { ok: true, status: 200, json: async () => ({}) };
-      }),
-    );
-  }
-
   beforeEach(() => {
     nuqsState.tab = null;
     nuqsState.inboxTier = null;
+    nuqsState.slug = null;
     for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
+    for (const k of Object.keys(syncEnabled)) delete syncEnabled[k];
+    for (const k of Object.keys(syncArgs)) delete syncArgs[k];
     planListResult = { data: { plans: [] }, loading: false, error: null, refresh: vi.fn() };
     attentionResult = { data: { groups: [] }, loading: false, error: null, refresh: vi.fn() };
-    stubOverviewFetch();
+    presenceResult = { data: [], loading: false };
+    activityResult = { data: [], loading: false };
   });
 
   afterEach(() => {
@@ -122,8 +197,10 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('Activity')).toBeTruthy();
     expect(screen.getByText('No active plans')).toBeTruthy();
     expect(screen.getByText('Nothing needs you right now')).toBeTruthy();
-    await waitFor(() => expect(screen.getByText('No live agents')).toBeTruthy());
-    expect(screen.getByText('No recent activity')).toBeTruthy();
+    expect(screen.getByText('No live agents')).toBeTruthy();
+    // No harness selected (?slug= null) → the activity query is disabled.
+    expect(screen.getByText('Select a harness to see activity')).toBeTruthy();
+    expect(syncEnabled['userActions.byHarness']).toBe(false);
   });
 
   it('renders plan rows with the done/total fraction and the active-count badge', () => {
@@ -174,64 +251,50 @@ describe('AdvOverviewTab component', () => {
     expect(alerts.getAttribute('data-has-alerts')).toBe('true');
   });
 
-  it('renders live roster agents and recent activity from the polled endpoints', async () => {
-    stubOverviewFetch({
-      roster: {
-        active: [
-          rosterEntry({ ownerId: 'o1', intent: 'wiring the sync query', role: 'worker' }),
-          rosterEntry({ ownerId: 'o2', label: 'architect-1', intent: '', liveness: 'idle' }),
-          rosterEntry({ ownerId: 'o3', intent: 'gone', liveness: 'stale' }),
-        ],
-      },
-      activity: {
-        rows: [
-          {
-            id: 'act1',
-            agent: 'worker',
-            harness_slug: 'papercup',
-            kind: 'tool',
-            tool_name: 'plans:list',
-            summary: 'listed the plans',
-            status: 'ok',
-            created_at: '2026-06-10T00:00:00Z',
-          },
-        ],
-      },
-    });
+  it('renders live roster agents (dev.coordPresence) and recent activity (userActions.byHarness)', async () => {
+    nuqsState.slug = 'pot-a';
+    presenceResult = {
+      data: [
+        presenceRow({ ownerId: 'o1', intent: 'wiring the sync query', agentRole: 'worker', agoMs: 0 }),
+        presenceRow({ ownerId: 'o2', ownerLabel: 'architect-1', intent: '', agoMs: 120_000 }), // idle
+        presenceRow({ ownerId: 'o3', intent: 'gone', agoMs: 900_000 }), // stale-by-heartbeat
+      ],
+      loading: false,
+    };
+    activityResult = {
+      data: [actionRow({ id: 'act1', actor: 'worker', kind: 'tool', summary: 'listed the plans' })],
+      loading: false,
+    };
     render(<AdvOverviewTab />);
     expect(await screen.findByText('wiring the sync query')).toBeTruthy();
-    expect(screen.getByText('architect-1')).toBeTruthy(); // label fallback when no intent
-    expect(screen.queryByText('gone')).toBeNull(); // stale filtered out
-    // 'worker' appears as both the roster role tag and the activity actor
+    expect(screen.getByText('architect-1')).toBeTruthy(); // ownerLabel fallback when no intent
+    expect(screen.queryByText('gone')).toBeNull(); // stale (old heartbeat) filtered out
+    // 'worker' appears as both the roster role tag (agentRole) and the activity actor.
     expect(screen.getAllByText('worker').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('listed the plans')).toBeTruthy();
-  });
-
-  it('accepts the alternate activity result envelope ({ result: [...] })', async () => {
-    stubOverviewFetch({
-      activity: {
-        result: [
-          {
-            id: 'act2',
-            agent: 'queen',
-            harness_slug: null,
-            kind: 'lifecycle',
-            tool_name: null,
-            summary: 'woke up',
-            status: null,
-            created_at: '2026-06-10T00:00:00Z',
-          },
-        ],
-      },
+    // The activity query is enabled + scoped to the selected harness + workspace.
+    expect(syncEnabled['userActions.byHarness']).toBe(true);
+    expect(syncArgs['userActions.byHarness']).toMatchObject({
+      harnessSlug: 'pot-a',
+      workspaceId: 'ws-test',
     });
-    render(<AdvOverviewTab />);
-    expect(await screen.findByText('woke up')).toBeTruthy();
   });
 
-  it('shows a roster fetch failure in the Agents tile body', async () => {
-    stubOverviewFetch({ rosterFail: true });
+  it('falls back to `kind` for an activity row with no summary', async () => {
+    nuqsState.slug = 'pot-a';
+    activityResult = {
+      data: [actionRow({ id: 'act2', actor: 'queen', kind: 'lifecycle', summary: null })],
+      loading: false,
+    };
     render(<AdvOverviewTab />);
-    expect(await screen.findByText('HTTP 500')).toBeTruthy();
+    expect(await screen.findByText('lifecycle')).toBeTruthy();
+    expect(screen.getByText('queen')).toBeTruthy();
+  });
+
+  it('shows the Agents loading state while dev.coordPresence is in flight', () => {
+    presenceResult = { data: undefined, loading: true };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText('Loading…')).toBeTruthy();
   });
 
   it('clicking a tile open button writes the target tab to the URL', () => {

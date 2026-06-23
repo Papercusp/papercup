@@ -32,6 +32,15 @@ const SWEEP_RUNS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.periodic_sweep_runs (
     sweep_name text PRIMARY KEY, last_run_at timestamptz NOT NULL DEFAULT now(),
     last_released integer NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now())`;
+const PLAN_ASSIGNMENTS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.plan_item_assignments (
+    workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL, item_id text NOT NULL,
+    assignee_name text, assigned_by_user text, assigned_ts timestamptz, released_ts timestamptz,
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id))`;
+const AGENT_NAME_SESSIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.agent_name_sessions (
+    workspace_id text NOT NULL, session_owner_id text NOT NULL, agent_name text NOT NULL,
+    PRIMARY KEY (workspace_id, session_owner_id))`;
 
 let db: FreshPgDb;
 let sql: postgres.Sql;
@@ -47,12 +56,14 @@ beforeAll(async () => {
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(ENGINEER_ISSUES_DDL);
   await sql.unsafe(SWEEP_RUNS_DDL);
+  await sql.unsafe(PLAN_ASSIGNMENTS_DDL);
+  await sql.unsafe(AGENT_NAME_SESSIONS_DDL);
 }, 120_000);
 
 afterAll(async () => { await db?.cleanup(); });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.periodic_sweep_runs `;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.periodic_sweep_runs, harness_shared.plan_item_assignments, harness_shared.agent_name_sessions `;
 });
 
 async function seedFeature(id: string, status: string, takenBy: string | null, takenAgoMin: number, harness = H): Promise<void> {
@@ -114,6 +125,34 @@ describe('readWorkQueueHealth — stuck-items metric (P-008)', () => {
     const h = await readWorkQueueHealth(sql, { workspaceId: WS });
     expect(h.stuckFeatures).toBe(1);
     expect(h.deadAssignedIssues).toBe(1);
+  });
+
+  // EI-2535: the plan-item RESERVATION detector — the alarm half of the dead-holder
+  // assignment reaper. assignmentGraceMs is small here so the seeded ages cross it.
+  async function seedAssignment(item: string, name: string, agoMin: number): Promise<void> {
+    await sql`INSERT INTO harness_shared.plan_item_assignments
+      (workspace_id, harness_slug, plan_slug, item_id, assignee_name, assigned_ts, released_ts)
+      VALUES (${WS}, ${H}, 'p', ${item}, ${name}, now() - make_interval(mins => ${agoMin}), NULL)`;
+  }
+
+  it('counts a dead-holder plan-item assignment past the assignment grace', async () => {
+    await seedAssignment('P-001', 'su-dead-asg', 30);
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS, assignmentGraceMs: 10 * 60 * 1000 });
+    expect(h.deadHeldAssignments).toBe(1);
+  });
+
+  it('does NOT count an assignment whose name has a live ADOPTING session', async () => {
+    await seedAssignment('P-002', 'builder-1', 30);
+    await sql`INSERT INTO harness_shared.agent_name_sessions VALUES (${WS}, 'su-live-asg', 'builder-1')`;
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-live-asg', now())`;
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS, assignmentGraceMs: 10 * 60 * 1000 });
+    expect(h.deadHeldAssignments).toBe(0);
+  });
+
+  it('does NOT count an assignment reserved WITHIN the assignment grace', async () => {
+    await seedAssignment('P-003', 'su-recent-asg', 1);
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS, assignmentGraceMs: 10 * 60 * 1000 });
+    expect(h.deadHeldAssignments).toBe(0);
   });
 });
 
