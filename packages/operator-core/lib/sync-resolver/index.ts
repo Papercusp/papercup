@@ -547,6 +547,185 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // harnessWorkspaces.byHarness — workspace memberships for the /adv Workspaces popover.
+  // Registry writes invalidate via harness_shared.harness_registry.changed.
+  'harnessWorkspaces.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { workspacesForHarness } = await import('../harness-membership');
+      return (await workspacesForHarness(harnessSlug)).map((workspaceId) => ({ workspaceId }));
+    },
+  },
+
+  // contributors.byHarness — Contributors tab rows, live via contributors and
+  // tier-source table invalidations. Mirrors /harness/:slug/contributors.
+  'contributors.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { statsAggregateForStatus } = await import('../identity/binding-verifier-types');
+      const ws = workspaceId ?? activeWorkspaceId();
+      const { sql } = getOrgPg();
+      const rows = (await sql<{
+        github_user_id: number;
+        github_username: string;
+        display_name: string | null;
+        avatar_url: string | null;
+        joined_at: Date | string;
+        last_seen_at: Date | string | null;
+        binding_status: string;
+        binding_last_checked_at: Date | string | null;
+        device_attestations: unknown;
+        prs_merged: string | number | null;
+        features_shipped: string | number | null;
+        activity_events: string | number | null;
+      }[]>`
+        SELECT
+          c.github_user_id,
+          c.github_username,
+          c.display_name,
+          c.avatar_url,
+          c.joined_at,
+          c.last_seen_at,
+          c.binding_status,
+          c.binding_last_checked_at,
+          c.device_attestations,
+          (
+            SELECT COUNT(*) FROM harness_shared.auto_review_audit a
+            WHERE a.workspace_id = c.workspace_id
+              AND a.harness_slug = c.harness_slug
+              AND a.author_github_id = c.github_user_id
+              AND a.action IN ('auto_merge', 'manual_merge')
+          ) AS prs_merged,
+          (
+            SELECT COUNT(*) FROM harness_shared.harness_features_consolidated f
+            WHERE f.workspace_id = c.workspace_id
+              AND f.harness_slug = c.harness_slug
+              AND f.status = 'shipped'
+              AND f.taken_by = c.github_user_id::text
+          ) AS features_shipped,
+          (
+            SELECT COUNT(*) FROM harness_shared.contributor_usage_events e
+            WHERE e.harness_slug = c.harness_slug
+              AND e.github_user_id = c.github_user_id
+          ) AS activity_events
+        FROM harness_shared.contributors c
+        WHERE c.workspace_id = ${ws}
+          AND c.harness_slug = ${harnessSlug}
+        ORDER BY c.joined_at DESC
+      `);
+      const toMs = (v: Date | string | null): number | null => {
+        if (v === null) return null;
+        if (v instanceof Date) return v.getTime();
+        return new Date(v).getTime();
+      };
+      const toCount = (v: string | number | null | undefined): number => {
+        if (v == null) return 0;
+        const n = typeof v === 'string' ? Number(v) : v;
+        return Number.isFinite(n) ? n : 0;
+      };
+      return rows.map((r) => {
+        const aggregate = statsAggregateForStatus(r.binding_status as never);
+        return {
+          github_user_id: r.github_user_id,
+          github_username: r.github_username,
+          display_name: r.display_name,
+          avatar_url: r.avatar_url,
+          joined_at: toMs(r.joined_at) ?? 0,
+          last_seen_at: toMs(r.last_seen_at),
+          binding_status: r.binding_status,
+          binding_last_checked_at: toMs(r.binding_last_checked_at),
+          device_count: Array.isArray(r.device_attestations) ? r.device_attestations.length : 0,
+          prs_merged: aggregate ? toCount(r.prs_merged) : 0,
+          features_shipped: aggregate ? toCount(r.features_shipped) : 0,
+          activity_events: aggregate ? toCount(r.activity_events) : 0,
+        };
+      });
+    },
+  },
+
+  // advSessions.list — /adv Sessions roster rows with OMP summaries attached.
+  // Replaces the UI's 3s `/api/adv/sessions` poll; adv_sessions writes push via
+  // the table bridge.
+  'advSessions.list': {
+    argsSchema: z.object({ limit: clampedLimit(500, 200).optional() }).optional(),
+    resolve: async (args) => {
+      const limit = ((args as { limit?: number } | undefined)?.limit ?? 200);
+      const { listAdvSessions } = await import('../adv-sessions');
+      const { getOmpSessionRowSummary } = await import('../omp-sessions');
+      const rows = await listAdvSessions(limit);
+      const STARTUP_GRACE_MS = 60_000;
+      const now = Date.now();
+      const withSummary = await Promise.all(
+        rows.map(async (row) => {
+          if (row.mode !== 'omp') return { row, summary: null };
+          const summary = row.ompThreadId ? getOmpSessionRowSummary({ id: row.ompThreadId }) : null;
+          return { row, summary };
+        }),
+      );
+      return withSummary
+        .filter(({ row, summary }) => {
+          if (row.mode !== 'omp') return true;
+          if (summary && summary.userMessages > 0) return true;
+          if (summary !== null && summary.userMessages === 0) {
+            const startedMs = Date.parse(row.startedAt);
+            return Number.isFinite(startedMs) && now - startedMs < STARTUP_GRACE_MS;
+          }
+          return true;
+        })
+        .map(({ row, summary }) => ({ ...row, summary }));
+    },
+  },
+
+  // agentDetail.byOwner — Tier-3 dossier detail for the selected Sessions agent.
+  'agentDetail.byOwner': {
+    argsSchema: z.object({ ownerId: z.string().min(1) }),
+    resolve: async (args) => {
+      const { ownerId } = args as { ownerId: string };
+      const { getAgentDetail } = await import('../adv-agent-detail');
+      return [await getAgentDetail(ownerId)];
+    },
+  },
+
+  // advRoster.list — shared Sessions roster context, formerly a 4s
+  // `/api/adv/roster` poll. Shape matches the route payload.
+  'advRoster.list': {
+    argsSchema: z.object({
+      workspaceId: z.string().nullable().optional(),
+      endedLimit: clampedLimit(200, 50).optional(),
+    }).optional(),
+    resolve: async (args) => {
+      const { workspaceId = null, endedLimit = 50 } = (args ?? {}) as {
+        workspaceId?: string | null;
+        endedLimit?: number;
+      };
+      const os = await import('node:os');
+      const {
+        mergeRosterWithAssignments,
+        dedupeEndedAgainstActive,
+        pendingLaunchesToRosterEntries,
+      } = await import('../adv-roster');
+      const {
+        listEndedAdvSessions,
+        listPendingWorkbenchLaunches,
+      } = await import('../adv-sessions');
+      const [{ active, orphanedClaims }, endedAll, pendingRows] = await Promise.all([
+        mergeRosterWithAssignments({ workspaceId }),
+        listEndedAdvSessions({ workspaceId, limit: endedLimit }),
+        listPendingWorkbenchLaunches({ workspaceId }),
+      ]);
+      return [{
+        active,
+        ended: dedupeEndedAgainstActive(endedAll, active),
+        orphanedClaims,
+        pending: pendingLaunchesToRosterEntries(pendingRows, os.hostname()),
+      }];
+    },
+  },
+
   // hiveFromRepo.progress — REAL step transitions for the long create-from-URL
   // (hive-from-repo-hardening P-008). The composition records to the in-process
   // store + invalidates this name per step; the form subscribes with its
@@ -689,6 +868,67 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // harnessLanes.snapshot — dashboard-shaped lane snapshot for /adv chrome.
+  // Replaces the legacy `/api/harness/:slug/lanes` read without forcing clients
+  // to know the filesystem lanes.json shape or effective-config max-worker rule.
+  'harnessLanes.snapshot': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string().optional(),
+      phase: z.string().default('staging'),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId, phase } = args as {
+        harnessSlug: string;
+        workspaceId?: string;
+        phase: string;
+      };
+      const { existsSync, readFileSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const { resolvePhasedProject, harnessDir } = await import('../harness-core');
+      const { readEffectiveHarnessConfig } = await import('../harness-effective-config');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { phasePhaseLabel } = await import('../harness-phases');
+      const project = await resolvePhasedProject(harnessSlug, phasePhaseLabel(phase));
+      if (!project) return [];
+      const p = join(harnessDir(project), 'lanes.json');
+      const nowMs = Date.now();
+      const lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }> = [];
+      if (existsSync(p)) {
+        try {
+          const raw = JSON.parse(readFileSync(p, 'utf8')) as { lanes?: unknown[] };
+          for (const l of raw.lanes ?? []) {
+            if (!l || typeof l !== 'object') continue;
+            const lane = l as { pid?: unknown; feature_id?: unknown; started_at?: unknown };
+            if (typeof lane.pid !== 'number' || typeof lane.feature_id !== 'string') continue;
+            let alive = false;
+            try {
+              process.kill(lane.pid, 0);
+              alive = true;
+            } catch {}
+            const ts = typeof lane.started_at === 'number' ? lane.started_at * 1000 : nowMs;
+            lanes.push({
+              pid: lane.pid,
+              featureId: lane.feature_id,
+              startedAt: ts,
+              elapsedSeconds: Math.max(0, Math.floor((nowMs - ts) / 1000)),
+              alive,
+            });
+          }
+        } catch {
+          // Match the route's tolerant behavior: malformed lanes.json degrades to empty.
+        }
+      }
+      let max = 1;
+      try {
+        const cfg = await readEffectiveHarnessConfig(project.slug, workspaceId ?? activeWorkspaceId(), project.path);
+        const pw = cfg?.parallelWorkers as Record<string, unknown> | undefined;
+        if (typeof pw?.max === 'number' && pw.max > 0) max = pw.max;
+      } catch {}
+      return [{ lanes, max }];
+    },
+  },
+
   // harnessEscalations.byHarness — single escalation row per phase.
   //   zql.harnessEscalations.where(harnessSlug).where(phase).limit(1)
   'harnessEscalations.byHarness': {
@@ -746,17 +986,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // featurePrs.byHarness — feature PRs ordered by feature id.
   //   zql.harnessFeaturePrs.where(harnessSlug).orderBy('featureId', 'asc')
   'featurePrs.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness). This
+    // resolver was MISSED by su-d2230's "remediated to zero" pass because the
+    // coverage guard's block body bled the NEXT resolver's doc-comment (which
+    // mentioned workspaceId) into this block, masking it — fixed alongside this.
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { asc, eq } = await import('drizzle-orm');
+      const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeaturePrsInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(asc(t.featureId))) as unknown[];
     },
   },
@@ -792,6 +1040,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           ),
         )
         .limit(1)) as unknown[];
+    },
+  },
+
+  // harnessStatus.snapshot — dashboard-shaped status snapshot for /adv panels.
+  // This keeps the existing route's aggregate semantics (cost rollup, counts,
+  // checkpoints, smoke failure, project path) while delivering it through sync.
+  'harnessStatus.snapshot': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string().optional(),
+      phase: z.string().default('staging'),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { getHarnessStatusFull } = await import('../harness-core');
+      const { phasePhaseLabel } = await import('../harness-phases');
+      const payload = await getHarnessStatusFull(harnessSlug, phasePhaseLabel(phase));
+      return payload ? [payload] : [];
     },
   },
 
@@ -917,17 +1183,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessBrainstorm.byHarness — brainstorm rows ordered by phase asc.
   //   zql.harnessBrainstorm.where(harnessSlug).orderBy('phase', 'asc')
   'harnessBrainstorm.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness) — also
+    // masked from su-d2230's pass by the coverage-guard comment-bleed blind spot.
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { asc, eq } = await import('drizzle-orm');
+      const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessBrainstormInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(asc(t.phase))) as unknown[];
     },
   },
@@ -1141,6 +1413,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // featureTimeline.byFeature — synthesized feature event timeline.
+  // The helper mirrors /harness/:slug/features/:id/timeline; sync delivery keeps
+  // PlanDetail's feature slide-over off ad-hoc REST reads.
+  'featureTimeline.byFeature': {
+    argsSchema: z.object({ harnessSlug: z.string(), featureId: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug, featureId } = args as { harnessSlug: string; featureId: string };
+      const { getFeatureTimeline } = await import('../endpoint-route/routes/harness/feature-views');
+      const result = await getFeatureTimeline(harnessSlug, featureId);
+      return result.ok ? result.events : [];
+    },
+  },
+
   // chunkPlans.byHarness — all chunk plans for a harness, ordered.
   //   zql.harnessChunkPlans.where(harnessSlug)
   //                        .orderBy('featureId', 'asc').orderBy('chunkIndex', 'asc')
@@ -1169,9 +1454,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //   zql.harnessChunkPlans.where(harnessSlug).where(featureId)
   //                        .orderBy('chunkIndex', 'asc')
   'chunkPlans.byFeature': {
-    argsSchema: z.object({ harnessSlug: z.string(), featureId: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness) — also
+    // masked from su-d2230's pass by the coverage-guard comment-bleed blind spot.
+    argsSchema: z.object({ harnessSlug: z.string(), featureId: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug, featureId } = args as { harnessSlug: string; featureId: string };
+      const { harnessSlug, featureId, workspaceId } = args as { harnessSlug: string; featureId: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessChunkPlansInHarnessShared;
@@ -1179,7 +1466,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.featureId, featureId)))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.featureId, featureId), eq(t.workspaceId, workspaceId))
+            : and(eq(t.harnessSlug, harnessSlug), eq(t.featureId, featureId)),
+        )
         .orderBy(asc(t.chunkIndex))) as unknown[];
     },
   },
