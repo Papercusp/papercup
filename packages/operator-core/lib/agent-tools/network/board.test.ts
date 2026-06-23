@@ -14,9 +14,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const buildNetworkBoard = vi.fn(async () => [] as unknown[]);
+const buildNetworkBoard = vi.fn(async (_input: { workspaceId: string }) => [] as unknown[]);
 vi.mock('../../network-board/build-board', () => ({
-  buildNetworkBoard: (...a: unknown[]) => buildNetworkBoard(...a),
+  buildNetworkBoard: (input: { workspaceId: string }) => buildNetworkBoard(input),
 }));
 
 const activeWorkspaceId = vi.fn(() => 'active-ws');
@@ -26,12 +26,18 @@ vi.mock('../../workspace-registry', () => ({
 
 import tool from './board';
 
-function envelopeOf(res: { content: Array<{ text: string }> }) {
-  return JSON.parse(res.content[0].text);
+type TextToolResult = { content: Array<{ type?: string; text: string }> };
+
+function textResult(res: unknown): TextToolResult {
+  return res as TextToolResult;
+}
+
+function envelopeOf(res: unknown) {
+  return JSON.parse(textResult(res).content[0]!.text);
 }
 /** The workspaceId buildNetworkBoard was called with. */
 function calledWorkspace() {
-  return (buildNetworkBoard.mock.calls[0]?.[0] as { workspaceId?: string })?.workspaceId;
+  return buildNetworkBoard.mock.calls[0]?.[0]?.workspaceId;
 }
 
 beforeEach(() => {
@@ -82,8 +88,9 @@ describe('network:board — envelope', () => {
     ];
     buildNetworkBoard.mockResolvedValueOnce(rows);
     const res = await tool.handler({}, { workspaceId: 'ws' } as never);
-    expect(res.content).toHaveLength(1);
-    expect(res.content[0].type).toBe('text');
+    const text = textResult(res);
+    expect(text.content).toHaveLength(1);
+    expect(text.content[0]!.type).toBe('text');
     const env = envelopeOf(res);
     expect(env).toEqual({ ok: true, count: 2, rows });
   });

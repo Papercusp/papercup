@@ -136,7 +136,7 @@ export interface TelemetryRollupInput {
 export async function telemetryRollup(
   input: TelemetryRollupInput,
 ): Promise<{ entries: TelemetryRollupEntry[] }> {
-  const hours = Math.max(1, Math.min(168, input.hours ?? 24));
+  const hours = Math.max(1, Math.min(336, input.hours ?? 24));
   const limit = Math.max(1, Math.min(500, input.limit ?? 100));
   const { sql } = getOrgPg();
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
@@ -208,6 +208,56 @@ export async function telemetryRollup(
       workspaces: r.workspaces ?? [],
     })),
   };
+}
+
+// ── Served-format adoption (usage-insights P-002/D-002) ────────────
+
+export interface FormatAdoptionInput {
+  workspaceIds: string[] | null;
+  hours?: number;
+}
+export interface FormatAdoptionRow {
+  /** The SERVED result format the dispatch sink recorded — toon/csv/tsv/json/md, or
+   *  'none' for NULL (pre-capture or a non-re-encoded payload). */
+  format: string;
+  n: number;
+}
+
+/**
+ * Served-result-format mix over a window on the MCP transport — the token-opt
+ * compact-adoption signal (D-002). `metadata_json.format` is what the dispatch
+ * sink recorded as SERVED (P-002); NULL folds to 'none'. % compact = (toon+csv+tsv)
+ * / total. MCP-only because the auto re-encode is mcp-transport-only (http/ipc are
+ * always JSON), so mixing transports would dilute the real adoption number.
+ */
+export async function toolFormatAdoption(
+  input: FormatAdoptionInput,
+): Promise<{ rows: FormatAdoptionRow[] }> {
+  const hours = Math.max(1, Math.min(336, input.hours ?? 24));
+  const { sql } = getOrgPg();
+  const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
+  const workspaceIds = input.workspaceIds ?? [];
+  type Row = { format: string | null; n: number };
+  const rows = wsFilter
+    ? ((await sql`
+        SELECT coalesce(metadata_json->>'format', 'none') AS format, count(*)::int AS n
+        FROM harness_shared.tool_invocations
+        WHERE invoked_at > ${sinceIso}::timestamptz
+          AND transport = 'mcp'
+          AND workspace_id = ANY(${sql.array(workspaceIds)})
+        GROUP BY 1
+        ORDER BY n DESC
+      `) as unknown as Row[])
+    : ((await sql`
+        SELECT coalesce(metadata_json->>'format', 'none') AS format, count(*)::int AS n
+        FROM harness_shared.tool_invocations
+        WHERE invoked_at > ${sinceIso}::timestamptz
+          AND transport = 'mcp'
+        GROUP BY 1
+        ORDER BY n DESC
+      `) as unknown as Row[]);
+  return { rows: rows.map((r) => ({ format: r.format ?? 'none', n: r.n })) };
 }
 
 // ── Cross-workspace audit feed ─────────────────────────────────────

@@ -56,7 +56,7 @@ export default defineTool({
           where surface = 'messages' and ts > now() - make_interval(hours => ${args.hours})`
       : await sql`select body from harness_shared.coord_event_log where surface = 'messages'`;
 
-    const msgs: CoordMsgLike[] = (rows as Array<{ body: Record<string, unknown> | null }>).map((r) => {
+    const msgs: CoordMsgLike[] = (rows as unknown as Array<{ body: Record<string, unknown> | null }>).map((r) => {
       const b = (r.body ?? {}) as Record<string, unknown>;
       return {
         kind: typeof b.kind === 'string' ? b.kind : undefined,

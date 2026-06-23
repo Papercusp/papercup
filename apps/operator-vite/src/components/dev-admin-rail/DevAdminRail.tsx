@@ -39,6 +39,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FlaskConical,
+  BarChart3,
 } from 'lucide-react';
 import { RAIL_CSS } from './dev-admin-rail.styles';
 
@@ -50,6 +51,7 @@ const ServiceHealthPanel = lazy(() => import('./panels/ServiceHealthPanel'));
 const DeployStatePanel = lazy(() => import('./panels/DeployStatePanel'));
 const DbHealthPanel = lazy(() => import('./panels/DbHealthPanel'));
 const FleetPanel = lazy(() => import('./panels/FleetPanel'));
+const ToolUsagePanel = lazy(() => import('./panels/ToolUsagePanel'));
 
 const SECTIONS = [
   { id: 'flags', label: 'Feature flags', icon: Flag, render: () => <FlagsPanel /> },
@@ -59,6 +61,7 @@ const SECTIONS = [
   { id: 'deploy', label: 'Deploy / release gate', icon: Rocket, render: (a: boolean) => <DeployStatePanel active={a} /> },
   { id: 'db', label: 'DB health', icon: Database, render: (a: boolean) => <DbHealthPanel active={a} /> },
   { id: 'fleet', label: 'Fleet / coord', icon: Users, render: (a: boolean) => <FleetPanel active={a} /> },
+  { id: 'usage', label: 'Tool usage', icon: BarChart3, render: (a: boolean) => <ToolUsagePanel active={a} /> },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]['id'];
