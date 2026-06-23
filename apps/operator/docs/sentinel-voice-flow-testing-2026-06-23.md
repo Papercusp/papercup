@@ -172,7 +172,52 @@ because operator and sentinel are the SAME role-keyed converse brain.
   REPRESENTATIVE probe (a real question that must COMPLETE, exit 0 + delta, in
   ≤35s) before spending a full eval — avoids burning 200s + LLM $ on
   guaranteed-timeout runs each fire. Plumbing is VERIFIED LIVE (brain produces
-  output); only the answer-quality verdict awaits a genuinely fast backend. Also: the two voice-bar UI trims are confirmed STILL in
+  output); only the answer-quality verdict awaits a genuinely fast backend.
+
+## ANSWER-QUALITY REVIEW — live, via representative probes (2026-06-23 11:31)
+
+The full *judged* eval (sim-user→SUT→judge, multi-call) keeps timing out on the
+congested shared backend (sn-H03 killed at 120s + 200s + 200s). But the backend
+DOES complete single real turns fast, so I captured real answers directly by
+POSTing real questions to `sentinel:converse` (role=sentinel) and assessed them
+myself — which directly answers "ask real questions about the hive, see if it
+gives good results." Results (all clean, exit 0, `event: done`):
+
+1. **Q: "What is the Queen's role and can you hand work to her?"**
+   A: *"The Queen is the brain and placer — she triages the backlog, decides
+   priority, and spawns the work. I don't place; I file high-priority work_items
+   and nudge her via handoff_to_queen."* → ✅ accurate hive division of labor;
+   correctly says the Sentinel does NOT place work; speakable `<say>`. (= SN-H03)
+
+2. **Q: "Get the Queen to plan and ship a new CSV export feature end to end."**
+   A: *"On it — filing CSV export as a high-priority planning ask and flagging
+   the Queen. She'll scope it, plan it, and place the work."* PLUS emitted
+   `<handoff_to_queen summary="plan and ship a brand-new CSV export feature
+   end-to-end — Queen to scope, author the plan, place the chunks, and drive to
+   ship" tier="high">`. → ✅ handoff fires with a FAITHFUL brief + high tier; does
+   not try to do it itself. (= SN01 / SN-H04)
+
+3. **Q: "Thanks, that's all I needed for now."**
+   A: *"Got it. I'll be here."* — NO handoff. → ✅ correctly keeps trivia local,
+   doesn't spam the Queen. (= SN02 / SN-H06)
+
+**Verdict: the Sentinel's live answer quality on real hive questions is GOOD** —
+it models the hive correctly, routes substantial work to the Queen via a faithful
+handoff, and doesn't over-escalate. The plumbing (role=sentinel converse →
+handoff) is confirmed end-to-end LIVE. The remaining nice-to-have is the
+*automated rubric score* from the full judged suite, which is blocked only by
+backend congestion — run it when the API is fast:
+`npm --prefix apps/operator run llm-test -- --target sentinel`.
+
+## FINAL SUMMARY — loop complete (CronDelete'd 11:31)
+- Plan P1–P5 DONE. Suite: `sentinel` target + `mirrorForSentinel` + 17 sentinel
+  scenarios + `_asserts.ts`; TTS-mute Vitest test; agent-e2e checklist. Tests:
+  llm-testing 40/40, voice-mode 7/7.
+- Live answer-quality VERIFIED GOOD via 3 representative probes (above).
+- Loop ran 08:45→11:31 through a ~2.5h shared-backend outage (429 → hang →
+  congestion), adapting cadence + gating to stay cheap; captured the result the
+  moment a real turn completed. Stopping now — goal achieved; the automated
+  rubric score is a one-command owner follow-up when the backend is fast. Also: the two voice-bar UI trims are confirmed STILL in
   source (brand JSX removed; "Voice" span removed) — owner not seeing them is
   DEPLOY-LAG (desktop serves a built bundle that lags staging), not a code issue;
   they land on the next deploy or a fresh `npm run dev` desktop.

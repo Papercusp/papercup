@@ -241,12 +241,12 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               INSERT INTO harness_shared.agent_usage_samples
                 (workspace_id, ts, bucket_key, provider, model_class, source,
                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-                 model, cost_source, run_id, role)
+                 model, cost_source, run_id, role, session_id)
               VALUES (
                 ${ws}, ${Date.now()}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
                 ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
                 ${est.priced ? est.usd : null}, ${model}, ${est.priced ? 'estimated' : null},
-                ${sessionId}, ${'interactive'}
+                ${sessionId}, ${'interactive'}, ${sessionId}
               )
             `;
             result.samples += 1;

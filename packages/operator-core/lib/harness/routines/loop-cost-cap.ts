@@ -15,17 +15,19 @@
  * B-LOOP-1 seam (`reschedule_interval_sec` + `target_owner_id`), which this module does NOT
  * touch.
  *
- * ── Spend attribution is a FAIL-OPEN best-effort seam (FLAGGED) ──────────────────────────
- * `agent_usage_samples` (mig 161/170/279) is keyed by run_id / session_id, NOT the coord
- * ownerId, and a warm interactive su session's resume turns have no `spawned_agents` row to
- * join run_id against (mig 279's own note). So we attribute via
- * owner → `adv_sessions.session_id` → SUM(cost_usd). When that mapping is unavailable (no
- * tracked session id, a read error), `readLoopSpendCents` returns 0 — i.e. the cap NEVER
- * trips on uncertain data. A cost-cap that cannot read spend must not pause a working loop;
- * a false-pause is worse than a missed cap (the failure-streak gate + the wake-delivery drop
- * visibility still bound a genuinely runaway/dead loop). This is the clean upgrade point if a
- * direct owner→cost rollup ever lands. The cap MECHANISM (evaluate → auto-pause → fire-gate
- * integration) is exact + fully tested; only the spend SOURCE is best-effort.
+ * ── Spend attribution: owner → session_id → cost (FAIL-OPEN on uncertain data) ────────────
+ * `agent_usage_samples` (mig 161/170/279) is keyed by session_id, NOT the coord ownerId, so we
+ * attribute via owner → `adv_sessions.session_id` → SUM(cost_usd) keyed on `session_id`. This
+ * now WORKS for a warm interactive su session (loop-wake-rate-limit-robustness P3): the
+ * interactive-usage ingestion (interactive-usage/ingest-claude-transcripts.ts) previously wrote
+ * the native session UUID only into `run_id`, leaving `session_id` NULL — so the join found
+ * nothing and `readLoopSpendCents` always returned 0. That is fixed: the ingestion now also
+ * populates `session_id` with the native UUID (= the value `adv_sessions.session_id` carries),
+ * so a warm-session loop's resume-turn spend is attributable and the cap actually binds. STILL
+ * fail-open on genuinely uncertain data: when the owner has no tracked session id or a read
+ * errors, `readLoopSpendCents` returns 0 (a false-pause is worse than a missed cap — the
+ * failure-streak gate + the wake-delivery drop visibility still bound a runaway/dead loop). The
+ * cap MECHANISM (evaluate → auto-pause → fire-gate integration) is exact + fully tested.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';

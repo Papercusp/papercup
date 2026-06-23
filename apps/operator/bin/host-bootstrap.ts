@@ -476,6 +476,31 @@ export function runBootstrap(): void {
       const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
       await applyPendingMigrationsAtBoot();
 
+      // [EI-2048] Self-heal system-principal capability drift on boot. A cap added in
+      // code (e.g. operator's memory + locks grant) reaches an ALREADY-provisioned row
+      // only via a forceless provision — which used to be a no-op (so the live row stayed
+      // stale until someone manually re-POSTed /api/agent-mcp/provision) and whose only
+      // alternative (`force`) ROTATES the bearer and breaks live connections.
+      // provisionSystemPrincipals now reconciles caps ADDITIVELY in place (no rotation;
+      // see provisioning.ts), so calling it forceless per workspace here brings every
+      // operator/oracle row up to the code-defined cap set on each deploy — no token
+      // churn, no manual step. Runs only on a background-workers host (primary), after
+      // migrations (DB ready). Best-effort: a failure logs and never wedges boot.
+      try {
+        const { provisionSystemPrincipals } = await import('@papercusp/operator-core/lib/ensure-system-principals');
+        const { readRegistry } = await import('@papercusp/operator-core/lib/workspace-registry');
+        const { papercuspRoot } = await import('@papercusp/operator-core/lib/papercusp-root');
+        const root = papercuspRoot();
+        let healed = 0;
+        for (const ws of readRegistry().workspaces) {
+          const ensured = await provisionSystemPrincipals({ workspaceId: ws.id, papercuspRoot: root });
+          healed += ensured.filter((e) => e.reconciled || e.rotated).length;
+        }
+        if (healed > 0) console.warn(`[system-principals] boot reconcile updated ${healed} principal cap set(s) (EI-2048)`);
+      } catch (e) {
+        console.warn('[system-principals] boot reconcile failed (non-fatal):', e instanceof Error ? e.message : e);
+      }
+
       // [B-TOK-ROLL token-tracking] Refresh the model_pricing projection (migration
       // 334) from the canonical in-code MODEL_PRICES, right after migrations create
       // the table. The DB table is a derived snapshot for SQL-side $-transparency;

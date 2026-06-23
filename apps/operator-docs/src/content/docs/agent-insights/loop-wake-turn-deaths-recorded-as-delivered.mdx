@@ -1,6 +1,6 @@
 ---
 title: "Loop wakes record turn DEATHS as successful deliveries — the rate-limit robustness gap (+ remediation roadmap)"
-description: "The engine loop (loop:arm) re-wakes a warm session by spawning a DETACHED `claude --resume <uuid> -p` subprocess with stdio:'ignore', and records the wake `delivered` the instant the PID is assigned — on SPAWN success, not TURN success. If that turn then 429s mid-flight (account-wide rate-limit storm) it dies into /dev/null: the in-process RateLimitGovernor never sees it (the subprocess draws from Claude Code's OWN CLI transport bucket, not the operator's), the delivery-retry ladder only fires on spawn-time failure, the failure-streak fire-gate records the dead wake as `attempt` not `error` so the autoloop circuit never opens, and recovery falls to the stuck-park backstop (≥30min) which blind-retries into the same limit with no backoff. STATUS (2026-06-23): papercusp-loops is now FLAG-ON (owner-flipped) and P0+P1+P2 of the remediation roadmap below have LANDED — the resume turn's exit is now observed + classified (turn-error taxonomy), a loop-sourced turn DEATH feeds the EXISTING autoloop circuit (recordFire 'error') + a 429-retry-after-aware re-arm, the enqueue records 'attempt' not 'ok' (turn outcome owns ok/error), reconcile records 'ok' on completion / 'error' on the stuck-backstop (channel-agnostic), a watchdog 'loop-stalled' source surfaces a parked-dead loop early, an optional maxFires/maxDurationSec dead-man guard bounds a runaway loop, and loop:status now reports a stall verdict. P3 (cost-cap owner→cost attribution) is DEFERRED — it needs the usage-ingestion writer to tag interactive samples with session_id/owner; the cap stays fail-open (safe). This doc is the failure-mode analysis + the now-mostly-landed P0–P3 roadmap."
+description: "The engine loop (loop:arm) re-wakes a warm session by spawning a DETACHED `claude --resume <uuid> -p` subprocess with stdio:'ignore', and records the wake `delivered` the instant the PID is assigned — on SPAWN success, not TURN success. If that turn then 429s mid-flight (account-wide rate-limit storm) it dies into /dev/null: the in-process RateLimitGovernor never sees it (the subprocess draws from Claude Code's OWN CLI transport bucket, not the operator's), the delivery-retry ladder only fires on spawn-time failure, the failure-streak fire-gate records the dead wake as `attempt` not `error` so the autoloop circuit never opens, and recovery falls to the stuck-park backstop (≥30min) which blind-retries into the same limit with no backoff. STATUS (2026-06-23): papercusp-loops is now FLAG-ON (owner-flipped) and P0+P1+P2 of the remediation roadmap below have LANDED — the resume turn's exit is now observed + classified (turn-error taxonomy), a loop-sourced turn DEATH feeds the EXISTING autoloop circuit (recordFire 'error') + a 429-retry-after-aware re-arm, the enqueue records 'attempt' not 'ok' (turn outcome owns ok/error), reconcile records 'ok' on completion / 'error' on the stuck-backstop (channel-agnostic), a watchdog 'loop-stalled' source surfaces a parked-dead loop early, an optional maxFires/maxDurationSec dead-man guard bounds a runaway loop, and loop:status now reports a stall verdict. P3 (cost-cap owner→cost attribution) is now FIXED too — the interactive-usage ingestion now populates agent_usage_samples.session_id (it was leaving it NULL and writing the native UUID only to run_id), so the cost-cap's owner→adv_sessions.session_id→session_id join works for warm-session loops; the cap stays fail-open on genuinely uncertain data. This doc is the failure-mode analysis + the now-fully-landed P0–P3 roadmap."
 discovered: 2026-06-23
 tags: [loop, loop-arm, rate-limit, 429, wake-executor, await, autoloop, robustness, roadmap, detached-subprocess, transport]
 status: active
@@ -13,6 +13,7 @@ documents:
   - packages/operator-core/lib/harness/routines/loop-turn-outcome.ts
   - packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts
   - packages/operator-core/lib/harness/routines/loop-cost-cap.ts
+  - packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts
   - packages/operator-core/lib/harness/routines/loop-dead-man.ts
   - packages/operator-core/lib/harness/routines/loop.ts
   - packages/operator-core/lib/harness/improvements/watchdog.ts
@@ -186,11 +187,14 @@ for a loop is the fire-gate backoff + the 429-aware re-arm, not thundering the s
   counter — NO migration (reuse-first, mirrors `costCapCents`).
 - **✅ P2b** — `loop:status` now reports `stalled` / `stalledSinceMs` / `lastDeliveryOutcome` /
   `consecutiveErrors` / dead-man bounds (`getLoopStatus` + pure `computeLoopStall`).
-- **⏸ P3** — DEFERRED. Live finding: `agent_usage_samples` has no `owner_id`, and `source='interactive'`
-  rows (a warm-session loop's resume turns) carry `run_id` + cost but `session_id=NULL`, so the
-  owner→`session_id`→cost join returns 0. A real fix needs the usage-INGESTION writer to tag
-  interactive samples with session_id/owner (separate subsystem, fleet-wide cost impact). Cap
-  stays fail-open (safe: a missed cap < a false-pause).
+- **✅ P3** — FIXED (the deferred blocker, resolved). Root cause: `interactive-usage/ingest-claude-transcripts.ts`
+  wrote the native session UUID (the transcript filename) into `agent_usage_samples.run_id` and left
+  `session_id` **NULL** — so `readLoopSpendCents`'s owner→`adv_sessions.session_id`→`agent_usage_samples.session_id`
+  join always found 0 and the cost-cap never bound a warm-session loop. The native UUID *is* the session id
+  (= the value `adv_sessions.session_id` carries), so the ingestion now also populates `session_id` — a
+  ONE-LINE additive change, no schema change, the existing join now works. Proven against real PG
+  (`ingest-claude-transcripts.session-attribution.integration.test.ts`): interactive spend is now summed by
+  `session_id`. Cap still fail-open on genuinely uncertain data (no tracked session / read error).
 
 The original per-file roadmap (kept below for provenance):
 
