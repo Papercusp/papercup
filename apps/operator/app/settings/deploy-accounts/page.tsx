@@ -568,7 +568,7 @@ export default function DeployAccountsPage() {
                   columns={accountColumns(headroom, remove)}
                   rows={accounts}
                   getRowId={(a) => a.id}
-                  rowMinHeight={58}
+                  rowMinHeight={50}
                   headerHeight={40}
                 />
               </div>
@@ -588,19 +588,20 @@ export default function DeployAccountsPage() {
       </div>
 
       <style>{`
-        .pc-da { container-type: inline-size; display: grid; gap: 16px; min-width: 0; color: var(--fg); }
-        .pc-da__hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid color-mix(in srgb, var(--border), white 8%); }
-        .pc-da__hero-copy { display: grid; gap: 8px; min-width: 0; }
-        .pc-da__eyebrow { display: inline-flex; width: fit-content; align-items: center; gap: 7px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 64%); border-radius: 999px; color: var(--accent-cool); background: color-mix(in srgb, var(--accent), transparent 90%); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; line-height: 1.2; text-transform: uppercase; }
-        .pc-da h1 { margin: 0; font-size: clamp(28px, 4.2vw, 44px); line-height: 0.98; letter-spacing: 0; text-shadow: none; }
-        .pc-da__lede { margin: 0; max-width: 76ch; font-size: 13px; color: var(--fg-dim); line-height: 1.55; }
+        .pc-da { container-type: inline-size; display: grid; gap: 10px; min-width: 0; color: var(--fg); }
+        .pc-da__hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid color-mix(in srgb, var(--border), white 8%); }
+        .pc-da__hero-copy { display: grid; gap: 5px; min-width: 0; }
+        .pc-da__eyebrow { display: inline-flex; width: fit-content; align-items: center; gap: 6px; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 64%); border-radius: 999px; color: var(--accent-cool); background: color-mix(in srgb, var(--accent), transparent 90%); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; line-height: 1.2; text-transform: uppercase; }
+        .pc-da h1 { margin: 0; font-size: clamp(24px, 3.1vw, 34px); line-height: 1; letter-spacing: 0; text-shadow: none; }
+        .pc-da__lede { margin: 0; max-width: 72ch; font-size: 12.5px; color: var(--fg-dim); line-height: 1.35; }
         .pc-da__hero-action { white-space: nowrap; }
-        .pc-da__summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
-        .pc-da__metric { display: grid; min-width: 0; gap: 5px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--border), white 6%); border-radius: 10px; background: color-mix(in srgb, var(--bg-2), transparent 12%); }
-        .pc-da__metric > span { display: inline-flex; align-items: center; gap: 7px; color: color-mix(in srgb, var(--accent-soft), transparent 25%); font-size: 11px; font-weight: 750; letter-spacing: 0.05em; text-transform: uppercase; }
-        .pc-da__metric strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 20px; line-height: 1.15; }
-        .pc-da__metric small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute); font-size: 11px; }
-        .pc-da__btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 7px 13px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%); background: var(--bg-2); color: var(--fg); font-size: 12px; font-weight: 650; cursor: pointer; }
+        .pc-da__summary { display: flex; flex-wrap: wrap; gap: 6px; }
+        .pc-da__metric { display: inline-flex; align-items: center; min-width: 0; gap: 7px; min-height: 30px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--border), white 6%); border-radius: 999px; background: color-mix(in srgb, var(--bg-2), transparent 12%); }
+        .pc-da__metric > span { display: inline-flex; align-items: center; gap: 5px; color: color-mix(in srgb, var(--accent-soft), transparent 25%); font-size: 10px; font-weight: 750; letter-spacing: 0.05em; text-transform: uppercase; }
+        .pc-da__metric > span svg { width: 12px; height: 12px; }
+        .pc-da__metric strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.15; }
+        .pc-da__metric small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute); font-size: 10.5px; }
+        .pc-da__btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 5px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%); background: var(--bg-2); color: var(--fg); font-size: 12px; font-weight: 650; cursor: pointer; }
         .pc-da__btn:hover { background: color-mix(in srgb, var(--bg-popover), transparent 4%); border-color: color-mix(in srgb, var(--accent-strong), transparent 60%); }
         .pc-da__btn:disabled { opacity: 0.5; cursor: default; }
         .pc-da__btn--primary { background: color-mix(in srgb, var(--accent), transparent 82%); color: var(--accent-soft); border-color: color-mix(in srgb, var(--accent-strong), transparent 55%); }
@@ -632,9 +633,9 @@ export default function DeployAccountsPage() {
         .pc-da__empty p { margin: 0; font-size: 13px; line-height: 1.45; }
         .pc-da__grid-shell { min-width: 0; overflow-x: auto; overflow-y: hidden; border: 1px solid color-mix(in srgb, var(--border), white 5%); border-radius: 12px; background: color-mix(in srgb, var(--bg-2), transparent 14%); }
         .pc-da__grid { min-width: 880px; }
-        .pc-da__cards { display: none; gap: 10px; }
+        .pc-da__cards { display: none; gap: 6px; }
         .pc-da__mono { min-width: 0; font-family: ui-monospace, Menlo, monospace; }
-        .pc-da__identity { display: grid; min-width: 0; gap: 3px; }
+        .pc-da__identity { display: grid; min-width: 0; gap: 2px; }
         .pc-da__identity-main { display: flex; align-items: center; gap: 7px; min-width: 0; }
         .pc-da__identity-main > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .pc-da__identity-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute); font-size: 11px; }
@@ -652,22 +653,22 @@ export default function DeployAccountsPage() {
         .pc-da__util-bar--warn > span { background: var(--warn); }
         .pc-da__util-bar--bad > span { background: var(--bad); }
         .pc-da__util-pct { font-size: 11px; color: var(--fg-dim); }
-        .pc-da__card { display: grid; gap: 9px; padding: 12px; border: 1px solid color-mix(in srgb, var(--border), white 5%); border-radius: 12px; background: color-mix(in srgb, var(--bg-2), transparent 12%); }
-        .pc-da__card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
+        .pc-da__card { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--border), white 5%); border-radius: 10px; background: color-mix(in srgb, var(--bg-2), transparent 12%); }
+        .pc-da__card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; min-width: 0; }
+        .pc-da__card-title { display: grid; gap: 4px; min-width: 0; }
         .pc-da__card-head-actions { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
         .pc-da__card-meta { display: flex; flex-wrap: wrap; gap: 6px; }
-        .pc-da__card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-        .pc-da__card-field { display: grid; min-width: 0; gap: 4px; }
-        .pc-da__card-field.is-wide { grid-column: 1 / -1; }
-        .pc-da__card-field dt { color: var(--fg-mute); font-size: 10px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
-        .pc-da__card-field dd { min-width: 0; margin: 0; color: var(--fg); font-size: 12px; }
+        .pc-da__card-grid { display: grid; grid-template-columns: minmax(112px, 0.8fr) minmax(70px, 0.5fr) minmax(0, 1.4fr); gap: 8px; }
+        .pc-da__card-field { display: grid; min-width: 0; gap: 2px; }
+        .pc-da__card-field dt { color: var(--fg-mute); font-size: 9px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
+        .pc-da__card-field dd { min-width: 0; margin: 0; color: var(--fg); font-size: 11.5px; }
         @container (max-width: 900px) {
           .pc-da__grid-shell { display: none; }
           .pc-da__cards { display: grid; }
         }
-        @container (max-width: 560px) {
+        @container (max-width: 430px) {
           .pc-da__hero { grid-template-columns: 1fr; }
-          .pc-da h1 { font-size: 32px; }
+          .pc-da h1 { font-size: 28px; }
           .pc-da__hero-action { width: fit-content; }
           .pc-da__wizard { padding: 12px; }
           .pc-da__modes { display: flex; flex-wrap: wrap; }
@@ -779,17 +780,19 @@ function AccountCard({
   return (
     <article className="pc-da__card">
       <div className="pc-da__card-head">
-        <AccountIdentity row={account} headroom={headroom} />
+        <div className="pc-da__card-title">
+          <AccountIdentity row={account} headroom={headroom} />
+          <div className="pc-da__card-meta">
+            {accountStatus(account)}
+            <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(account))}</span>
+          </div>
+        </div>
         <div className="pc-da__card-head-actions">
-          <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(account))}</span>
           <button className="pc-da__btn pc-da__btn--ghost" onClick={() => void remove(account.id)}>
             <Trash2 size={13} aria-hidden="true" />
             Remove
           </button>
         </div>
-      </div>
-      <div className="pc-da__card-meta">
-        {accountStatus(account)}
       </div>
       <dl className="pc-da__card-grid">
         <div className="pc-da__card-field">
@@ -800,7 +803,7 @@ function AccountCard({
           <dt>Bound to</dt>
           <dd className="pc-da__mono">{account.boundTo.length ? account.boundTo.join(', ') : '—'}</dd>
         </div>
-        <div className="pc-da__card-field is-wide">
+        <div className="pc-da__card-field">
           <dt>Credential</dt>
           <dd><span className="pc-da__mono pc-da__cred">{account.credentialRef}</span></dd>
         </div>
