@@ -124,16 +124,19 @@ describe('OracleDock (always-mounted assistant dock)', () => {
     expect(screen.getByText('Ask Oracle')).toBeTruthy();
   });
 
-  it('clicking the FAB opens the dock (sets ?oracle and shows the dialog)', () => {
+  it('clicking the FAB opens the dock (sets ?oracle and shows the dock region)', () => {
     renderDock('');
     fireEvent.click(screen.getByLabelText('Open Oracle assistant'));
-    expect(screen.getByRole('dialog', { name: 'Oracle' })).toBeTruthy();
+    // The dock is a persistent, non-modal docked panel (no backdrop / focus
+    // trap), so it exposes itself as a labelled landmark region, not a modal
+    // dialog (design-primitives migration, OracleDock role="dialog"→"region").
+    expect(screen.getByRole('region', { name: 'Oracle' })).toBeTruthy();
   });
 
   it('opens directly to the Oracle tab when ?oracle=1', () => {
     renderDock('?oracle=true');
-    // The dock dialog + the default Oracle tab header render.
-    expect(screen.getByRole('dialog', { name: 'Oracle' })).toBeTruthy();
+    // The dock region + the default Oracle tab header render.
+    expect(screen.getByRole('region', { name: 'Oracle' })).toBeTruthy();
     expect(screen.getByText('general help across Papercusp')).toBeTruthy();
   });
 
@@ -159,7 +162,7 @@ describe('OracleDock (always-mounted assistant dock)', () => {
     renderDock('?oracle=true');
     fireEvent.click(screen.getByLabelText('Close'));
     // Back to the closed FAB-only state.
-    expect(screen.queryByRole('dialog', { name: 'Oracle' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Oracle' })).toBeNull();
     expect(screen.getByLabelText('Open Oracle assistant')).toBeTruthy();
   });
 
@@ -180,7 +183,7 @@ describe('OracleDock (always-mounted assistant dock)', () => {
   it('the reset-chat header action keeps the dock open on the Oracle tab', () => {
     renderDock('?oracle=true');
     fireEvent.click(screen.getByLabelText('Reset this chat'));
-    // Still the Oracle dialog (reset re-seeds the welcome message, no crash).
-    expect(screen.getByRole('dialog', { name: 'Oracle' })).toBeTruthy();
+    // Still the Oracle dock region (reset re-seeds the welcome message, no crash).
+    expect(screen.getByRole('region', { name: 'Oracle' })).toBeTruthy();
   });
 });

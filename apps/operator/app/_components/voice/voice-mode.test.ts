@@ -128,4 +128,18 @@ describe('voice-mode', () => {
     mod.assignVoiceToRole('worker', 'Bob');
     expect(mod.getVoiceConfig().roleVoices['worker']).toBe('Bob');
   });
+
+  // Voice-OUTPUT (TTS) mute — the speaker toggle in the voice bar
+  // (sentinel-as-claude-tui-2026-06-23). Default unmuted (responses spoken);
+  // setVoiceOutputMuted persists through localStorage and round-trips. (The
+  // broadcast event is best-effort/try-caught, so persistence holds even when
+  // window.dispatchEvent is absent in this Node test env.)
+  it('voice output mute (TTS toggle) defaults off and round-trips', async () => {
+    const mod = await import('./voice-mode');
+    expect(mod.isVoiceOutputMuted()).toBe(false);
+    mod.setVoiceOutputMuted(true);
+    expect(mod.isVoiceOutputMuted()).toBe(true);
+    mod.setVoiceOutputMuted(false);
+    expect(mod.isVoiceOutputMuted()).toBe(false);
+  });
 });

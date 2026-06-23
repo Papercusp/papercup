@@ -1,31 +1,26 @@
 // @vitest-environment jsdom
 /**
- * Tests for <LazyDetails> — a native <details> that defers mounting its
- * children until the first expand, then keeps them mounted across later
+ * Tests for <LazyDetails> — a Radix Collapsible disclosure that defers mounting
+ * its children until the first expand, then keeps them mounted across later
  * collapse/expand cycles (so child state survives).
  *
- * The key behaviours: collapsed → children absent; first expand → children
- * mount; a subsequent collapse keeps them mounted; defaultOpen renders them
- * up front. Toggling is driven through the native <details> open flag + the
- * `toggle` event (deterministic; doesn't lean on jsdom's summary-click).
+ * Migrated from a native <details>/<summary> to @radix-ui/react-collapsible per
+ * the design-primitives migration: toggling is driven by CLICKING the
+ * Collapsible.Trigger (the summary), and the disclosure state is read from Radix's
+ * `data-state` attribute rather than the native `.open` flag. The keep-mounted
+ * invariant is preserved by `Collapsible.Content forceMount` + the `opened` gate.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { LazyDetails } from './LazyDetails';
 
 afterEach(() => cleanup());
 
 const child = <span data-testid="child">expensive child</span>;
 
-// jsdom doesn't dispatch the native `toggle` event when `.open` flips, so
-// drive both directly. fireEvent(node, event) wraps the dispatch in act.
-function expand(details: HTMLDetailsElement) {
-  act(() => { details.open = true; });
-  fireEvent(details, new Event('toggle'));
-}
-function collapse(details: HTMLDetailsElement) {
-  act(() => { details.open = false; });
-  fireEvent(details, new Event('toggle'));
+/** Toggle the disclosure by clicking its trigger (the summary text). */
+function toggle(summary = 'More'): void {
+  fireEvent.click(screen.getByText(summary));
 }
 
 describe('LazyDetails', () => {
@@ -38,35 +33,34 @@ describe('LazyDetails', () => {
   it('renders children up front when defaultOpen', () => {
     render(<LazyDetails summary="More" defaultOpen>{child}</LazyDetails>);
     expect(screen.getByTestId('child')).toBeTruthy();
-    expect(document.querySelector('details')?.hasAttribute('open')).toBe(true);
+    // Radix marks the open trigger/root with data-state="open".
+    expect(screen.getByText('More').getAttribute('data-state')).toBe('open');
   });
 
   it('mounts children on first expand', () => {
     render(<LazyDetails summary="More">{child}</LazyDetails>);
     expect(screen.queryByTestId('child')).toBeNull();
-    expand(document.querySelector('details') as HTMLDetailsElement);
+    toggle();
     expect(screen.getByTestId('child')).toBeTruthy();
   });
 
   it('keeps children mounted across a later collapse', () => {
     render(<LazyDetails summary="More">{child}</LazyDetails>);
-    const details = document.querySelector('details') as HTMLDetailsElement;
-    expand(details);
+    toggle(); // expand
     expect(screen.getByTestId('child')).toBeTruthy();
-    collapse(details);
-    // Once mounted, children stay in the DOM (details just hides them) so
-    // internal child state survives the collapse.
+    toggle(); // collapse
+    // Once mounted, children stay in the DOM (Collapsible just hides them via
+    // forceMount) so internal child state survives the collapse.
     expect(screen.getByTestId('child')).toBeTruthy();
   });
 
   it('forwards className and summaryClassName', () => {
-    render(
+    const { container } = render(
       <LazyDetails summary="More" className="outer-cls" summaryClassName="sum-cls">
         {child}
       </LazyDetails>,
     );
-    const details = document.querySelector('details') as HTMLDetailsElement;
-    expect(details.className).toBe('outer-cls');
-    expect(details.querySelector('summary')?.className).toBe('sum-cls');
+    expect(container.querySelector('.outer-cls')).toBeTruthy();
+    expect(screen.getByText('More').className).toBe('sum-cls');
   });
 });

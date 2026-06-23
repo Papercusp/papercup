@@ -43,6 +43,10 @@ import { SN_H01_FLEET_STATUS } from './sentinel/SN-H01-fleet-status';
 import { SN_H02_PLANS_AND_BLOCKED } from './sentinel/SN-H02-plans-and-blocked';
 import { SN_H03_QUEEN_EXPLAINER } from './sentinel/SN-H03-queen-explainer';
 import { SN_H04_ASSIGN_TO_QUEEN } from './sentinel/SN-H04-assign-to-queen';
+// P3 handoff-depth scenarios (sentinel-voice-flow-testing).
+import { SN_H05_URGENT_HANDOFF } from './sentinel/SN-H05-urgent-handoff';
+import { SN_H06_RESPECT_NO_HANDOFF } from './sentinel/SN-H06-respect-no-handoff';
+import { SN_H07_MULTI_ITEM_HANDOFF } from './sentinel/SN-H07-multi-item-handoff';
 // M1–M12: operator-behavior-tests-2026-05-14 (brain-emission contracts)
 import { M1_CONTINUE_PAIRED_WITH_SAY } from './operator/M1-continue-paired-with-say';
 import { M2_MUTEX_CARD_VS_CONTINUE } from './operator/M2-mutex-card-vs-continue';
@@ -123,6 +127,9 @@ import { SU_S22_BULK_NOT_FOR_SINGLE } from './su/S22-bulk-not-for-single';
 import { SU_S23_DELTA_MERGE_BASE_PRESENT } from './su/S23-delta-merge-base-present';
 import { SU_S24_DELTA_FALLBACK_COMPACTED } from './su/S24-delta-fallback-compacted';
 import { SU_S25_DELTA_WRONG_MERGE_DETECTOR } from './su/S25-delta-wrong-merge-detector';
+// SU-S26: behavioral test for the "never wait for a calm window / take charge" policy's
+// STALLED-DEPENDENCY clause — the agent must FORCE a stalled git-sync/pipeline, not wait/punt.
+import { SU_S26_TAKE_CHARGE_DONT_WAIT } from './su/S26-take-charge-dont-wait';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
@@ -170,6 +177,10 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SN_H02_PLANS_AND_BLOCKED,
   SN_H03_QUEEN_EXPLAINER,
   SN_H04_ASSIGN_TO_QUEEN,
+  // sentinel P3 handoff-depth
+  SN_H05_URGENT_HANDOFF,
+  SN_H06_RESPECT_NO_HANDOFF,
+  SN_H07_MULTI_ITEM_HANDOFF,
   // Phase 1 (sentinel-voice-flow-testing): operator chat-hygiene contracts
   // mirrored onto the SENTINEL brain (same role-keyed converse) so the voice
   // front-door upholds the same voice/question/format discipline. Single source
@@ -250,6 +261,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S23_DELTA_MERGE_BASE_PRESENT,
   SU_S24_DELTA_FALLBACK_COMPACTED,
   SU_S25_DELTA_WRONG_MERGE_DETECTOR,
+  // behavioral test for the take-charge / never-wait-on-a-stalled-dependency policy
+  SU_S26_TAKE_CHARGE_DONT_WAIT,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

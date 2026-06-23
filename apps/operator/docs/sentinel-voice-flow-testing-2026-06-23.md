@@ -57,12 +57,37 @@ because operator and sentinel are the SAME role-keyed converse brain.
   - SN-H03 queen-explainer → text_contains queen + voice format.
   - SN-H04 assign-to-queen → emitsHandoff + no fleet:spawn.
   - Registered; lint + runner-aggregate green (40/40).
-- [ ] **P3 — Handoff depth** (extend SN01/SN02): urgent vs normal, multi-item,
-  "I'll do it myself" (no handoff), tier-gate. Judge brief quality.
-- [ ] **P4 — Full-flow UI integration**: text → Sentinel tab renders reply → TTS
-  toggle gates speech. Playwright e2e spec if supported, else agent-e2e checklist.
-- [ ] **P5 — Run + review**: `llm-test --target sentinel` against live `:3070`
-  (real workspace for P2); capture rubric scores + transcripts; iterate weak spots.
+- [x] **P3 — Handoff depth** DONE 2026-06-23: SN-H05 urgent-handoff (escalation +
+  no self-fix), SN-H06 respect-no-handoff (honor "don't bother the Queen"),
+  SN-H07 multi-item-handoff (all items captured, none dropped). Registered;
+  lint + runner-aggregate green (40/40).
+- [x] **P4 — Full-flow UI integration** DONE 2026-06-23. The new TTS-toggle LOGIC
+  is covered by a deterministic **Vitest** unit test
+  (`voice-mode.test.ts` → "voice output mute … defaults off and round-trips",
+  7/7 green). The full text→tab→speech round-trip is non-deterministic + the
+  operator UI is verified inside the Tauri shell (not browser e2e against
+  :3055/:3070, per repo convention; the existing voice Playwright spec is
+  flake-quarantined on the shared box) → documented as an agent-e2e checklist
+  below.
+
+  **Agent-e2e checklist (manual, `tauri-agent-tools`) — full voice round-trip:**
+  1. `cd papercusp-desktop && npm run dev` → drive the webview headlessly with
+     `tauri-agent-tools` (`probe`/`eval`/`dom`/`click`/`type`/`screenshot`/`check`).
+  2. Open the **Sentinel** tab (`left-sidebar-tab-sentinel`); confirm the voice
+     bar renders the mic + the speaker (TTS) toggle.
+  3. Inject text at the post-STT layer: `POST /api/operator/sentinel-input`
+     (CSRF-guarded) with a transcript, OR type into the Sentinel composer.
+     Confirm it lands in the **Sentinel pane** (not the focused pane).
+  4. Confirm the brain's reply streams back into the Sentinel tab/conversation.
+  5. Click the speaker toggle → assert `aria-pressed` flips and (unmuted) replies
+     are spoken / (muted) silent; reload → muted state persists.
+  6. `check` (CI-style assert) the above; `capture` a screenshot + DOM for the log.
+- [~] **P5 — Run + review** IN PROGRESS 2026-06-23. `:3070` healthy (200).
+  Bounded smoke RUNNING in background task **bmdk6a2ja**
+  (`npm --prefix apps/operator run llm-test -- --scenario sn-H03-queen-explainer`,
+  repeat=1, cheapest concept scenario). **Do NOT start another smoke** until this
+  completes — its result is recorded on completion. Full suite stays a manual run:
+  `npm --prefix apps/operator run llm-test -- --target sentinel`.
 
 ## Invariants / guardrails (must hold)
 
@@ -84,3 +109,10 @@ because operator and sentinel are the SAME role-keyed converse brain.
   (S10/S11/S13–S16/M4/M8). **P2 DONE** — 4 hive-knowledge scenarios (SN-H01–04)
   + `_asserts.ts`. Framework tests green (40/40). Autonomous 2-min loop armed
   (CronCreate job aeac4918) to drive P3→P5. Next: P3 handoff-depth scenarios.
+- 2026-06-23: **P3 DONE** — SN-H05/H06/H07 handoff-depth scenarios; 40/40 green.
+  Sentinel suite now: SN01/02 + SN-H01–H07 + 8 mirrors = 17 sentinel scenarios.
+  Next: P4 UI round-trip (Playwright e2e spec vs agent-e2e checklist).
+- 2026-06-23: **P4 DONE** — TTS-toggle logic covered by a Vitest unit test
+  (voice-mode.test.ts, 7/7); full round-trip documented as a tauri-agent-tools
+  agent-e2e checklist (browser e2e against :3055/:3070 is non-canonical for
+  Papercusp UI). Next + LAST: P5 bounded live smoke.

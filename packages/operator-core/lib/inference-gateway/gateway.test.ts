@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { createInferenceGateway, estimateTokens, parseRateReset, type ActiveAccount, type AccountPool } from './gateway';
+import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
@@ -92,6 +92,40 @@ test('parseRateReset — prefers unified unix-seconds reset; drops a retry-after
   );
   assert.equal(r.resetAt, (Math.round(now / 1000) + 600) * 1000);
   assert.equal(r.retryAfterMs, undefined, 'retry-after 15210s discarded vs a ~600s reset');
+});
+
+// classify429Shape — the hard-evidence "is this real capacity?" distinction, made loggable. A bare-burst
+// 429 means CAPACITY EXISTS (transient throttle); usage-cap is a real per-account wall. The precedence
+// (usage-cap > bare > rate-window > unified-rejected) mirrors the gateway's own 429-handling order.
+test('classify429Shape — bare-burst: 429 with x-should-retry, no window headers → capacity exists (not a wall)', () => {
+  assert.equal(
+    classify429Shape({ status: 429, isUsageCap: false, bare: true, hasWindowReset: false, unifiedRejected: false }),
+    'bare-burst',
+  );
+});
+test('classify429Shape — usage-cap (the body named a session/usage limit) takes precedence over every other shape', () => {
+  assert.equal(
+    classify429Shape({ status: 429, isUsageCap: true, bare: true, hasWindowReset: true, unifiedRejected: true }),
+    'usage-cap',
+  );
+});
+test('classify429Shape — rate-window when a retry-after/reset is present (and not bare/usage-cap)', () => {
+  assert.equal(
+    classify429Shape({ status: 429, isUsageCap: false, bare: false, hasWindowReset: true, unifiedRejected: false }),
+    'rate-window',
+  );
+});
+test('classify429Shape — unified-5h-rejected when only the rolling-window latch is set', () => {
+  assert.equal(
+    classify429Shape({ status: 429, isUsageCap: false, bare: false, hasWindowReset: false, unifiedRejected: true }),
+    'unified-5h-rejected',
+  );
+});
+test('classify429Shape — a non-429 (e.g. 529) is unclassified', () => {
+  assert.equal(
+    classify429Shape({ status: 529, isUsageCap: false, bare: true, hasWindowReset: false, unifiedRejected: false }),
+    'unclassified',
+  );
 });
 
 test('transparent proxy — injects OAuth bearer + merges anthropic-beta, forwards body + status', async () => {

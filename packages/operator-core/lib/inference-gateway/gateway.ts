@@ -589,6 +589,36 @@ export function parseRateReset(h: Record<string, string | undefined>, now = Date
   return out;
 }
 
+/** The actionable SHAPE of a 429 — the hard-evidence distinction the recurring "is this real capacity?"
+ *  question always needs, made loggable. The gateway already DERIVES these internally; naming them lets
+ *  the journal record WHICH kind every 429 was, so a capacity-vs-routing read comes from data, not a guess:
+ *   - `bare-burst`         — x-should-retry:true, NO window/retry-after headers → a TRANSIENT burst throttle:
+ *                            CAPACITY EXISTS, the move is rotate/retry, NOT "we're out".
+ *   - `usage-cap`          — the body named a session/usage limit → a REAL per-account wall (pause to reset).
+ *   - `rate-window`        — a per-window retry-after / unified reset is present → wait the bounded window.
+ *   - `unified-5h-rejected`— the rolling 5h budget latched over-util (no per-request retry signal).
+ *   - `unclassified`       — not a 429, or none of the above. */
+export type Gateway429Shape = 'bare-burst' | 'usage-cap' | 'rate-window' | 'unified-5h-rejected' | 'unclassified';
+
+export function classify429Shape(o: {
+  status: number;
+  /** The peeked body named a usage/session limit (a hard per-account wall) — takes precedence. */
+  isUsageCap: boolean;
+  /** The gateway's `bare429` verdict: a 429 with no window headers + (x-should-retry or no latch). */
+  bare: boolean;
+  /** A per-window `retry-after` / unified reset boundary was present on the response. */
+  hasWindowReset: boolean;
+  /** The governor's unified 5h window is latched rejected (over its utilization). */
+  unifiedRejected: boolean;
+}): Gateway429Shape {
+  if (o.status !== 429) return 'unclassified';
+  if (o.isUsageCap) return 'usage-cap';
+  if (o.bare) return 'bare-burst';
+  if (o.hasWindowReset) return 'rate-window';
+  if (o.unifiedRejected) return 'unified-5h-rejected';
+  return 'unclassified';
+}
+
 /**
  * Parse the unified-5h rolling budget window from an upstream response (present on 200s too, not
  * just 429s) → the fraction used + the reset boundary. This is the cross-process signal the drain
@@ -1632,6 +1662,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // When set, the gateway re-attempts (usually on a rotated account) before responding — absorbing
         // a transient throttle / routing past a usage cap so the bee never sees the error.
         let internalRetry: { rotate: boolean; backoffMs: number; exhaustResetAt: number } | null = null;
+        // Hard-evidence 429-shape suffix for the retry log (set inside the 429 block where the headers are in
+        // scope; empty for non-429). Makes the capacity-vs-routing read come from data, not a guess.
+        let shape429Suffix = '';
 
         if (up.status === 429 || up.status === 529) {
           upstream429++;
@@ -1685,6 +1718,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (classifyHttpError({ status: undefined, message: text }, 'anthropic').class === 'usage_limit') {
               usageCapResetAt = parseUsageResetMs(text) ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
             }
+          }
+          // Hard-evidence 429-shape suffix (gateway-429-shape-observability): everything needed is in scope here
+          // (headers + the bare/usage-cap classification). bare-burst = CAPACITY EXISTS (transient) — an account at
+          // util5h/util7d ≪ 1 that 429s here is NOT a quota wall; usage-cap = a real per-account wall. Surfacing
+          // util5h/util7d at the 429 site lets a capacity-vs-routing read come from data, not a guess.
+          if (up.status === 429) {
+            const shape429 = classify429Shape({
+              status: up.status,
+              isUsageCap: usageCapResetAt !== undefined,
+              bare: bare429,
+              hasWindowReset: reset.retryAfterMs !== undefined || reset.resetAt !== undefined,
+              unifiedRejected,
+            });
+            const u5 = hobj['anthropic-ratelimit-unified-5h-utilization'] ?? hobj['anthropic-ratelimit-unified-utilization'] ?? '-';
+            const u7 = hobj['anthropic-ratelimit-unified-7d-utilization'] ?? '-';
+            shape429Suffix = ` [429-shape=${shape429} x-should-retry=${shouldRetry} retry-after=${reset.retryAfterMs ?? '-'}ms util5h=${u5} util7d=${u7}]`;
           }
           if (up.status === 529) {
             // SERVER overload — NOT account budget; don't penalize/rotate the account, just back off + retry.
@@ -1828,7 +1877,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 t.unref?.();
               });
             }
-            log('warn', `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${active.accountId}'`);
+            // HARD-EVIDENCE 429 SHAPE (gateway-429-shape-observability): `shape429Suffix` names WHICH kind of 429
+            // this was (computed in the 429 block where the headers are in scope), so "is the pool actually out of
+            // capacity?" reads from the journal instead of a guess — bare-burst = CAPACITY EXISTS (transient), usage-cap
+            // = a real per-account wall, with the account's live util5h/util7d at the 429 site.
+            log(
+              'warn',
+              `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${active.accountId}'${shape429Suffix}`,
+            );
             continue;
           }
           // EXTENDED ABSORPTION (env-gated, requestAbsorbMs): we are about to FORWARD a retryable failure to the

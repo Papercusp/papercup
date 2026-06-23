@@ -51,7 +51,12 @@ export function LazyDetails({
       }}
     >
       <Collapsible.Trigger className={summaryClassName} style={summaryStyle}>{summary}</Collapsible.Trigger>
-      <Collapsible.Content>
+      {/* forceMount: keep the Content wrapper mounted across collapse so the
+          `opened` gate (not Radix's unmount-on-close) governs child lifetime —
+          children mount on first open and STAY mounted across later collapses,
+          preserving internal child state (the documented invariant; Radix would
+          otherwise unmount Content's subtree on every collapse). */}
+      <Collapsible.Content forceMount>
         {opened ? children : null}
       </Collapsible.Content>
     </Collapsible.Root>

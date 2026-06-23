@@ -42,8 +42,11 @@ describe('HowSharingWorks — P-012 explainer', () => {
     screen.getByRole('heading', { name: 'How sharing works' });
   });
 
-  it('reuses CLAIM_STATUS_COPY for the claimed/unclaimed section (single copy source)', () => {
+  it('reuses CLAIM_STATUS_COPY for the claimed/unclaimed section (single copy source)', async () => {
+    const user = userEvent.setup();
     renderLink('?explain=sharing');
+    // Radix Collapsible unmounts collapsed content; expand the section first.
+    await user.click(screen.getByRole('button', { name: /Claimed vs unclaimed/ }));
     screen.getByText(CLAIM_STATUS_COPY.claimed);
     screen.getByText(CLAIM_STATUS_COPY.unclaimed);
   });
@@ -60,9 +63,17 @@ describe('HowSharingWorks — P-012 explainer', () => {
     expect(learn?.getAttribute('href')).toBe('/internal/docs/agent-insights/hive-scoped-federation');
   });
 
-  it('lexicon-bound: Comb/Hive vocabulary in the the-hive pack', () => {
+  it('lexicon-bound: Comb/Hive vocabulary in the the-hive pack', async () => {
+    const user = userEvent.setup();
     renderLink('?explain=sharing');
-    // the-hive pack: cupboard → "Comb"; the publishing section names it.
-    expect(screen.getByText(/indexes its member repos in the/).textContent).toContain('Comb');
+    // Radix Collapsible unmounts collapsed content; expand the publishing section first.
+    await user.click(screen.getByRole('button', { name: /Publishing — listing/ }));
+    // the-hive pack: cupboard → "Comb"; the publishing section names it. The
+    // "Comb" token is a sibling text node (lexicon-interpolated), so match the
+    // sentence's containing element and assert against its full textContent.
+    const sentence = screen
+      .getByText(/indexes its member repos in the/)
+      .closest('div, p, section');
+    expect(sentence?.textContent).toContain('Comb');
   });
 });
