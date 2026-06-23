@@ -4,6 +4,12 @@ description: How Papercusp decides an agent is alive — supervision, stream act
 plans:
   - agent-liveness-heartbeat-hardening-2026-06-12
   - plan-item-assignment-claim-liveness-2026-06-04
+documents:
+  - packages/operator-core/lib/liveness.ts
+  - packages/operator-core/lib/agent-tools/coordination/dispatch-heartbeat.ts
+  - packages/operator-core/lib/work-items-stale-claims.ts
+  - packages/operator-core/lib/fleet/spawn-reclaim.ts
+  - packages/operator-core/lib/dbos/orchestrator-runner.ts
 ---
 
 Shipped by `agent-liveness-heartbeat-hardening-2026-06-12` (after the

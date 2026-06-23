@@ -7,6 +7,12 @@ plans:
   - mac-desktop-release-readiness-2026-06-11
   - storage-settings-page-2026-06-15
   - starlight-projection-site-2026-06-18
+documents:
+  - packages/operator-core/lib/posthog-config.ts
+  - packages/operator-core/lib/telemetry-flush.ts
+  - packages/operator-core/lib/posthog-public-defaults.ts
+  - apps/operator/app/_components/PostHogProvider.tsx
+  - libs/flags/src/server.ts
 ---
 
 Papercusp runs a self-hosted PostHog instance for feature-flag management, plus an **opt-in telemetry path** that forwards crash/usage reports to that instance. Session replay, surveys, error tracking, and LLM observability remain **not enabled** for V1, but the platform is installed so they can be turned on later without re-architecting.
