@@ -1093,9 +1093,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // Reversible kill-switch; the old `default`-partition issues are preserved so a flip-off restores them.
   [FLAGS.ISSUES_PER_WORKSPACE]: true,
   [FLAGS.WORKITEM_CLAIM_LEASE]: false,
-  // DEFAULT ON (graduated 2026-06-23, owner-attended cutover) — routines per-workspace ON
-  // CONFLICT (workspace_id, install_slug, name). Migration 305 is ADDITIVE (both unique targets
-  // valid, zero live collisions verified 2026-06-17), so the flip is safe + reversible.
+  // DEFAULT ON (graduated 2026-06-23, owner-attended cutover) — routines upsert arbitrates ON
+  // CONFLICT on the (id) PK when ON vs the equivalent (install_slug,name) unique when OFF. Since
+  // id is derived deterministically from (install_slug,name), the two are byte-identical +
+  // idempotent + both preserve workspace_id (the EI-2019 anti-clobber fix). Reversible.
   [FLAGS.ROUTINES_PER_WORKSPACE]: true,
   // DEFAULT OFF (deliberate) — ui:dispatch/get_state cross-workspace guard, reversible;
   // OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
