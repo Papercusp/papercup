@@ -1680,6 +1680,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // userActions.recent — workspace-wide (NOT harness-scoped) recent action stream,
+  // newest-first. Backs the Overview Activity tile's All-Pots view (no ?slug=): the
+  // per-harness userActions.byHarness left that tile blank when no harness was selected
+  // (data-sync-push-completion P-006 behavior shift; D-008 follow-up closes it). The SAME
+  // user_actions→query bridge that pushes byHarness/byKind also pushes this, so the
+  // fleet-wide feed updates live on any action insert.
+  //   zql.userActions.where(workspaceId).orderBy('startedAt', 'desc').limit(limit)
+  'userActions.recent': {
+    argsSchema: z.object({
+      workspaceId: z.string(),
+      limit: clampedLimit(500, 50),
+    }),
+    resolve: async (args) => {
+      const { workspaceId, limit } = args as { workspaceId: string; limit: number };
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.userActionsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.workspaceId, workspaceId))
+        .orderBy(desc(t.startedAt))
+        .limit(limit)) as unknown[];
+    },
+  },
+
   // userMemory.list — the settings memory page's row set: the user's
   // personal pool + every harness pool, enriched with canonical audit
   // state + timestamps, newest-first (memory-settings-page-refresh P-007).
