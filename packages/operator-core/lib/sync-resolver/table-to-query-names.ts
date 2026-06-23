@@ -351,6 +351,29 @@ export function resolveBridgeTarget(
 }
 
 /**
+ * Append-heavy activity-LOG tables that are MAPPED above but INTENTIONALLY carry NO
+ * per-row emit_change_notify trigger — a per-row pg_notify on a high-write log is the
+ * notify-storm anti-pattern (/internal/docs/performance). Source of truth for the
+ * exclusion: mig 376 (drops the trigger) + cache-tag-trigger-coverage's COVERAGE_EXEMPT
+ * (the test allow-list, with the reason + re-arm condition per table). Their live
+ * invalidation is instead the DEBOUNCED change-detector (append-heavy-invalidator.ts,
+ * data-sync-push-completion P-005/D-012): one max(id) poll per table per tick → a single
+ * synthesized `<table>.changed` invalidate when it advances, so consumers push-update
+ * WITHOUT the per-row storm. Keep this in sync with mig 376's drop_tables + COVERAGE_EXEMPT.
+ *
+ * Each name is the bare `<table>` (no `harness_shared.` prefix); the detector forms the
+ * full `harness_shared.<table>.changed` trigger-event key.
+ */
+export const APPEND_HEAVY_TABLES: readonly string[] = [
+  'audit_log',
+  'agent_runs_consolidated',
+  'user_actions',
+  'harness_hook_logs',
+  'toast_log',
+  'feature_audit_consolidated',
+] as const;
+
+/**
  * Given a trigger-event name like `harness_shared.<table>.changed` (+ the
  * trigger's `args` payload), return the bridged invalidation targets. See
  * {@link resolveBridgeTarget} for the per-target scope/full-bust decision.
