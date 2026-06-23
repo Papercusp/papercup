@@ -115,12 +115,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // signup on a single-owner box mints real accounts. The zero-users
   // bootstrap path in the route keeps fresh installs working while dark.
   FLAGS.OPEN_SIGNUP,
-  // shared-hive-hardening-2026-06-13 P-001 / D-005: the option-(c) Hyperswarm-mux
-  // lock-authority RPC transport is wired but its cross-machine path is
-  // real-hardware-unverified (P-003). OFF is byte-identical to today (HTTP-only
-  // addressing) + fails open (D-004); the flip is gated on the two-machine
-  // serialization proof, not unfinished code.
-  FLAGS.AUTHORITY_RPC_PROTOMUX,
+  // (FLAGS.AUTHORITY_RPC_PROTOMUX graduated to default-ON 2026-06-23, WI-607:
+  // shared-hive-hardening-2026-06-13 P-003 / D-003 — the option-(c) protomux
+  // lock-authority RPC transport's contended cross-peer serialization is now
+  // proven over a REAL Hyperswarm wire (authority-rpc-swarm-real-wire.test.ts: two
+  // real peers / real DHT / real per-socket muxer, NOT fail-open), closing the
+  // last gate. Fails open (D-004) so any residual is merge-churn-only. No longer dark.)
   // shared-hive-hardening-2026-06-13 P-016: the φ+SWIM eviction probe is wired +
   // unit/loopback-tested, but its LIVE cross-machine path rides the (also-dark)
   // protomux transport and is real-hardware-unverified (D-003, P-003 two-machine
@@ -195,13 +195,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // zero-spend, but it files owner ratification reports into the
   // improvements queue (new capture volume). The widening act itself (the
   // autoKinds/policy edit) is NEVER automated regardless of this flag.
-  // agent-capability-confinement-2026-06-13 B-06 (P-012): the per-role capability
-  // envelope ENFORCEMENT at the dispatch chokepoint. DELIBERATE dark ship (NOT the
-  // alpha flags-default-on policy) — enabling would DENY autonomous-fleet MCP calls
-  // outside the still-initial per-role allowlist before the B-18 fleet cutover wires
-  // the fleet onto the gated capability defineTools. Runs OBSERVE-ONLY (annotates
-  // the ledger, never blocks) while dark; the pending flip is the B-18 act.
-  FLAGS.CAPABILITY_ENVELOPE,
+  // (CAPABILITY_ENVELOPE graduated to default-ON 2026-06-23 — owner-directed arming of
+  // agent-capability-confinement B-06/P-012, WI-601. The B-18 cutover + B-05 capability
+  // tools shipped, so enforcement no longer strands the fleet; the only active denies are
+  // the universal protected floor (secrets:*/processes:kill) + the sentinel/overwatch
+  // fs-write/bash denies — caps those roles don't hold. Live-validated: the fleet ran
+  // enforced for days (operator_flag_overrides) with 0 envelope-caused failures. Removed
+  // from the dark allowlist per the shrink-only rule.)
   // queen-autonomy-policy-2026-06-13 B-12 (P-092): the autonomy decider ARMING GATE.
   // OFF ⇒ the decider gates EVERY item (autonomy dark, behavior-neutral, D-007); the
   // owner's P-092 act flips it ON, and even then every category ships never-auto
@@ -211,18 +211,21 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // / irreversible / graduation:*) and lifts the auto-implement loop's protected-path
   // TCB — the recursive-self-improvement boundary. DELIBERATE dark default (NOT the
   // alpha default-on policy); the owner flips it, and OFF restores today's gates.
-  // agent-capability-confinement-2026-06-13 B-18 (P-020): the FLEET CUTOVER. DELIBERATE
-  // dark ship (NOT the alpha default-on policy) — ON removes native write/exec tools from
-  // autonomous-fleet spawns and routes them to the gated capability:* tools; flipping it
-  // before capability:* ergonomics are validated on a live bee would strand the fleet.
-  // P-023 makes the flip an owner act. OFF = today's allowlist, zero live-fleet change.
-  FLAGS.FLEET_CAPABILITY_ONLY,
-  // agent-capability-confinement-2026-06-13 B-18 (P-022 / D-008): the server-side
-  // capability-exec sandbox. FAIL-OPEN (bwrap-unavailable ⇒ raw spawn), so it is safe to
-  // ship, but the bwrap argv path needs end-to-end validation on a bwrap-capable host
-  // (this dev box's unprivileged userns is AppArmor-restricted — bwrap can't map uids).
-  // The owner arms after that validation. OFF = today's raw operator-side spawn.
-  FLAGS.CAPABILITY_EXEC_SANDBOX,
+  // (FLEET_CAPABILITY_ONLY graduated to default-ON 2026-06-23 — owner-directed arming of
+  // agent-capability-confinement B-18/P-020, WI-602. Live-validated on this box: with the
+  // cutover ON (operator_flag_overrides) bees+queen made hundreds of successful
+  // capability:bash/edit/git/write calls over days with 0 errors — capability:* ergonomics
+  // confirmed on live agents. Pairs with CAPABILITY_EXEC_SANDBOX (re-containment, still
+  // dark pending bwrap-host validation — WI-608). Removed from the dark allowlist per the
+  // shrink-only rule.)
+  // (CAPABILITY_EXEC_SANDBOX graduated to default-ON 2026-06-23 — WI-608. Validated
+  // end-to-end on a bwrap+srt-capable host: an AppArmor profile granting /usr/bin/bwrap
+  // the `userns` permission (Ubuntu 24.04 apparmor_restrict_unprivileged_userns=1) makes
+  // bwrap+srt sandbox. A real-exec integration test (exec-sandbox.integration.test.ts) +
+  // a live :3170 capability:bash proved credential masking + cwd confinement + netns
+  // egress; the run also fixed a fail-CLOSED bug (a missing ~/.config/gcloud aborted the
+  // bwrap-fallback). FAIL-OPEN, so a non-bwrap host is unaffected. Removed from the dark
+  // allowlist per the shrink-only rule.)
   // experiment-registry-invocation-api-2026-06-14 (#2): the dark Scout→experiment rail.
   // ON forks testable Scout proposals into DRY-RUN experiment specs (no spend, no change
   // to gym routing); the owner flips it after reviewing the mechanical proposal→arms
@@ -274,14 +277,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // DEFAULT OFF + the routine is seeded INACTIVE (double-gated) — an unverified bee-lifecycle
   // change that force-recycles over-cap idle bees. OFF ⇒ a no-op (the sweep logs the over-cap
   // cohort but recycles nothing). Bring up dry-run-first, then flip after live verification.
-  // workspace-data-isolation-leaks-2026-06-17 F-C1: per-workspace coordination cutover.
-  // DELIBERATE dark ship (NOT alpha default-on) — flipping it cuts the LIVE fleet's
-  // coordination (messages/handoffs/escalations/plan-events) over from the shared
-  // `default` partition to per-workspace partitions. Ships as a reversible kill-switch
-  // the owner flips ON (OFF = today's behavior, byte-identical; old `default` history
-  // preserved so OFF fully restores it). Verify on :3170 (bees receive inboxes, Queen
-  // surveys, escalations route) before promoting.
-  FLAGS.COORD_PER_WORKSPACE,
+  // (COORD_PER_WORKSPACE graduated to default-ON 2026-06-23 — owner-directed verify+flip
+  // (WI-599, workspace-data-isolation-leaks F-C1). The per-workspace coordination cutover:
+  // flipping the CODE DEFAULT fixes the live writes-to-'default' (log.ts boot-cached
+  // coordPerWorkspaceOn fell through to the false default, D-006); migrations 361 + 391
+  // re-stamp the 'default' coord history onto papercusp-workspace so inboxes/read-positions/
+  // escalations don't fragment at the cutover restart. Reversible — removed per the shrink-only rule.)
   // (ISSUES_PER_WORKSPACE graduated to default-ON 2026-06-22 — owner-directed; reversible,
   // old default-partition issues preserved.)
   // (ROUTINES_PER_WORKSPACE graduated to default-ON 2026-06-23 — owner-attended cutover; migration
@@ -349,18 +350,12 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
-  [FLAGS.AUTHORITY_RPC_PROTOMUX, 'incomplete'],
   [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
-  [FLAGS.CAPABILITY_ENVELOPE, 'incomplete'],
-  [FLAGS.FLEET_CAPABILITY_ONLY, 'incomplete'],
-  [FLAGS.CAPABILITY_EXEC_SANDBOX, 'incomplete'],
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
   [FLAGS.PSU_END_USER, 'owner-authority'],
-  // cutover — reversible kill-switch the owner flips after an attended live verify
-  [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
 ]);
 
 /**

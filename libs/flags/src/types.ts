@@ -1102,10 +1102,16 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (alpha flags-default-on) — a complete presentation switch: the nested
   // hive→plan steering picker over the unchanged persisted shape. OFF = legacy flat lists.
   [FLAGS.STEERING_HIVE_TREE]: true,
-  // DEFAULT OFF (deliberate, NOT alpha default-on) — the per-workspace coordination
-  // cutover (F-C1) is a reversible kill-switch the owner flips ON; OFF = today's
-  // `default`-pinned coord, byte-identical. Listed in KNOWN_DARK_FLAGS.
-  [FLAGS.COORD_PER_WORKSPACE]: false,
+  // DEFAULT ON (graduated 2026-06-23, WI-599) — the per-workspace coordination
+  // cutover (F-C1). Reversible kill-switch; OFF = the legacy `default`-pinned coord
+  // (byte-identical, old history preserved). Flipping the CODE DEFAULT is the actual
+  // fix for the live writes-to-'default' symptom: log.ts caches coordPerWorkspaceOn
+  // at boot via getFlag(systemDistinctId), which fell through to this false default
+  // (D-006); with it true the boot resolution is true so coord routes per active
+  // workspace. Migrations 361 + 391 re-stamp the 'default' coord history onto
+  // papercusp-workspace so the cutover restart doesn't strand in-flight
+  // inboxes/read-positions/escalations. Set false to revert.
+  [FLAGS.COORD_PER_WORKSPACE]: true,
   // DEFAULT ON (flipped 2026-06-22, owner-directed): per-workspace engineer-issues cutover.
   // Reversible kill-switch; the old `default`-partition issues are preserved so a flip-off restores them.
   [FLAGS.ISSUES_PER_WORKSPACE]: true,
@@ -1218,11 +1224,18 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (deploy signing everywhere, THEN this stays/comes on) and the emergency
   // revert if a real unsigned peer must be tolerated.
   [FLAGS.AUTHORITY_RPC_SIGNED]: true,
-  // DEFAULT OFF (dark): the option-(c) Hyperswarm-mux RPC transport is wired but
-  // its cross-machine path has never been verified on real hardware (P-003). OFF
-  // is byte-identical to today (HTTP-only addressing); the flip is gated on the
-  // two-machine serialization proof. Listed in KNOWN_DARK_FLAGS.
-  [FLAGS.AUTHORITY_RPC_PROTOMUX]: false,
+  // DEFAULT ON (graduated 2026-06-23, WI-607): the option-(c) Hyperswarm-mux RPC
+  // transport is wired AND its cross-machine lock-serialization path is now proven
+  // over a REAL Hyperswarm wire — two real peers on a real testnet DHT, the
+  // papercusp/authority-rpc protomux channel on the same real per-socket muxer as
+  // announce, a contended lock serialized at ONE authority NOT fail-open
+  // (authority-rpc-swarm-real-wire.test.ts, clearing the P-003 / D-003 gate). The
+  // identical Hyperswarm connection + muxer stack is already proven cross-host for
+  // the sibling channels (announce two-peer, cross-hive, the Hetzner eviction over
+  // the same connection). Composes with the HTTP transport (addressable peers) and
+  // fails open (D-004), so any residual cross-host latency is merge-churn-only,
+  // never data loss.
+  [FLAGS.AUTHORITY_RPC_PROTOMUX]: true,
   // DEFAULT OFF (dark): the φ+SWIM eviction probe's live cross-machine path rides
   // the (also-dark) protomux transport and is real-hardware-unverified (D-003,
   // P-003 two-machine proof). OFF = staleness-only authority selection,
@@ -1417,10 +1430,15 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.STORAGE_RETAIN_TELEMETRY]: true,
   [FLAGS.STORAGE_RETAIN_SCRATCH]: true,
   [FLAGS.STORAGE_RETAIN_TEST_RUNS]: true,
-  // OFF by default — DELIBERATE (capability-confinement B-06 / P-012): envelope ENFORCEMENT
-  // would deny fleet tool calls before the B-18 cutover + B-05 capability tools exist. OFF =
-  // observe-only/shadow (evaluate + annotate, never block). The B-18 flip is the arming act.
-  [FLAGS.CAPABILITY_ENVELOPE]: false,
+  // ON by default (graduated 2026-06-23, su — owner-directed arming of agent-capability-
+  // confinement B-06/P-012, WI-601). Envelope ENFORCEMENT at the dispatch chokepoint: the
+  // B-18 cutover + B-05 capability tools have shipped, so enforcement no longer strands the
+  // fleet. The only active denies are the universal protected floor (secrets:* /
+  // processes:kill) for every fleet role + the sentinel/overwatch fs-write/bash denies —
+  // capabilities those roles don't hold anyway. Live-validated: the fleet ran enforced
+  // (operator_flag_overrides) for days with 0 envelope-caused failures. OFF = the
+  // observe-only/shadow kill-switch.
+  [FLAGS.CAPABILITY_ENVELOPE]: true,
   // DEFAULT ON (flipped 2026-06-22 — owner ratified the owner-authority surface in-session):
   // gates the loadRoleCapabilities grant-union (capability:grant_role / revoke_role).
   [FLAGS.CAPABILITY_GRANT_TOOL]: true,
@@ -1458,17 +1476,24 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (B-15) reads + writes the already-audited never-auto policy and arms nothing;
   // OFF hides the /settings/autonomy nav entry.
   [FLAGS.QUEEN_AUTONOMY_SETTINGS]: true,
-  // OFF by default — DELIBERATE (capability-confinement B-18 / P-020): the fleet
-  // cutover removes native write/exec tools from autonomous spawns. The owner arms
-  // it (P-023 is an owner item) after capability:* ergonomics are validated on a live
-  // bee. OFF = today's allowlist, zero live-fleet change. Listed in KNOWN_DARK_FLAGS.
-  [FLAGS.FLEET_CAPABILITY_ONLY]: false,
-  // OFF by default — DELIBERATE (capability-confinement B-18 / P-022 / D-008): the
-  // server-side capability-exec sandbox. FAIL-OPEN (bwrap-unavailable ⇒ raw spawn), so
-  // it is safe, but the bwrap argv path needs end-to-end validation on a bwrap-capable
-  // host (this box's unprivileged userns is AppArmor-restricted). Owner arms after that
-  // validation. OFF = today's raw operator-side spawn. Listed in KNOWN_DARK_FLAGS.
-  [FLAGS.CAPABILITY_EXEC_SANDBOX]: false,
+  // ON by default (graduated 2026-06-23, su — owner-directed arming of agent-capability-
+  // confinement B-18/P-020, WI-602). The fleet cutover drops native write/exec tools from
+  // autonomous spawns and routes them to the gated capability:* defineTools. Live-validated
+  // on this box (operator_flag_overrides ON for days): bees+queen made hundreds of
+  // successful capability:bash/edit/git/write calls with 0 errors — capability:* ergonomics
+  // confirmed on live agents. Pairs with CAPABILITY_ENVELOPE (enforcement) +
+  // CAPABILITY_EXEC_SANDBOX (re-containment, still default-OFF pending bwrap-host validation
+  // — WI-608; on a fresh bwrap host flip exec-sandbox too so capability:bash isn't
+  // unsandboxed). OFF = today's native-tool allowlist (kill-switch).
+  [FLAGS.FLEET_CAPABILITY_ONLY]: true,
+  // ON by default — capability-confinement B-18 / P-022 / D-008, validated end-to-end
+  // on a bwrap+srt-capable host (WI-608: an AppArmor profile granting /usr/bin/bwrap the
+  // `userns` permission lets Ubuntu 24.04's restricted userns sandbox). FAIL-OPEN
+  // (bwrap-unavailable ⇒ raw spawn), so it never breaks a host without a working bwrap;
+  // where bwrap works, capability:bash/git run srt-preferred (fs + credential +
+  // domain-allowlist egress) or bwrap-fallback (fs + credential) — re-containing the
+  // operator-side exec the B-18 cutover routes off native Bash onto capability:*.
+  [FLAGS.CAPABILITY_EXEC_SANDBOX]: true,
   // ON by default (alpha flags-default-on policy) — the content guard is a SAFETY
   // feature (broken docs never reach staging) that fails open per-detector + is a
   // verified no-op on a clean tree. ON ships it; OFF is the instant kill-switch if it
