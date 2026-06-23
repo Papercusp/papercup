@@ -48,8 +48,20 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 | 7 | `dbos/tick-load-shed.ts` | 11 ✓ | background-tick load-shed policy (P5-1/P5-3): shedUnderLoopPressure (sheds+warns iff isLoopSaturated); shedUnderPowerSave DETERMINISTIC counter (AC/mult≤0 never sheds; mult 3→[t,t,f]×; mult 2→[t,f]×; per-tickName INDEPENDENT counters); shouldShedHeavyTick OR + the `\|\|` SHORT-CIRCUIT (loop-pressure shed must NOT advance the power-save counter, else cadence desyncs under load). Mocks `../event-loop-lag-monitor` + `../resource-profile` via vi.hoisted; unique tickName per test vs the module-global counter Map. |
 | 8 | `agent-tools/_compound-dispatch.ts` | 12 ✓ | compound-tool in-process re-dispatch (B-CX-1B): inProcessCall GATE INTEGRITY (routes each sub-call through dispatchProjectedTool with the caller's exact ctx + host PROJECTED_DEPS — a compound can only compose tools the agent could call directly); FAILURE SURFACING (unregistered→throw, !ok→throw with code/message + `?? 'error'`/`?? 'unknown error'` fallbacks); UNWRAP precedence (structuredContent incl. null wins → first text item JSON-parsed → raw text on parse-fail → whole result → undefined). Mocks `@papercusp/agent-mcp` + `../projected-tool-deps` via vi.hoisted. |
 | 9 | `fleet-assignment-bus.ts` | 8 ✓ | parseFleetAssignmentPayload — best-effort decode of the `NOTIFY fleet_assignment` payload `"<ws>::<source>::<agent>"` (state-not-chat D-003/P-006). Load-bearing: agentId = `rest.join("::")` NOT `split[2]`, so an owner-id/agent-name CONTAINING `::` is reassembled, not truncated (else change-awareness misroutes); undefined/empty/partial → empty fields (never throws — the notify cb fans straight to handlers); destructuring-default applies only to MISSING segments (leading `::` keeps ws empty without shifting). Pure-fn-only import (no PG connection opens at import). |
+| 10 | `libs/generic/rules/src/validate.ts` | 33 ✓ | validateRuleShape — the structural guard EVERY rule passes on engine.add (engine.ts:34). engine.test.ts only drove 3 branches incidentally (empty id/on/fire); this is branch-COMPLETE: non-object→throw; id non-empty-string; `on` = non-empty string OR non-empty string[] (rejects empty array / empty-or-non-string element / number / undefined, names the rule id); fire required (only undefined\|null\|"" reject — numeric/object fire passes, deep-shape is schema.ts's job); when/args if present must be fn or non-null-object (rejects string/number/null/bool); RuleValidationError type+name. Pure (zero imports). **Widened the vein to `libs/generic` — run from libs/generic/rules: `npx vitest run src/<f>.test.ts`.** |
 
-**Loop tally: 83 tests across 9 modules.**
+**Loop tally: 116 tests across 10 modules.**
+
+### Iter 10 — vein WIDENED to libs/generic (operator-core pure-no-sibling pool thin)
+Surveyed `libs/generic/*` for untested pure modules. Verify-gate ruled out (already covered): `failure-detector/phi-accrual.ts`
+(PhiAccrualDetector — 2 thorough describe blocks incl. F2/F3/F4 boundary in `failure-detector.test.ts`),
+`failure-detector/swim-probe.ts` (indirectProbe/decideEviction — same file), `memory/topic-file.ts`
+(parse/serialize/slugify/etc all covered by `claude-file-backend.test.ts`), `memory/backend-registry.ts` (3 backend tests),
+most of `memory/bench/metrics.ts` + `scorecard.ts`. Remaining genuinely-uncovered libs/generic leads for next wakes:
+`search-core/src/rewrite.ts` (defaultRewritePrompt/clearRewriteCache — NONE; check purity, main logic may be non-exported),
+one-off bench fns `aggregateByClass`/`rememberP` (NONE — but adding to shared `bench.test.ts`, low value). Also still
+unexplored: `packages/agent-mcp/src` pure read-side helpers, `libs/flags/src`, other libs/generic packages
+(linkable-edges, pubsub-substrate, sse server bridge, papergrid rowStore).
 
 ### Iter 9 process notes — verify-gate HARDENED + 2 dead-ends (no waste shipped)
 - 🛑 **VERIFY-GATE GAP FOUND + FIXED:** the gate globbed only `*.test.ts`. `ui/built-in-intents.ts` has a

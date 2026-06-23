@@ -9,7 +9,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const getDefaultWakeMode = vi.fn<() => Promise<'auto' | 'manual'>>();
 const countAllPendingWakes = vi.fn<() => Promise<Map<string, number>>>();
 const snapshotGovernors = vi.fn<() => Array<{ key: string; state: { pausedUntil: number } }>>();
-const getLoopStatus = vi.fn<() => Promise<{ active: boolean; intervalSec: number; parked: boolean } | null>>();
+const getLoopStatus =
+  vi.fn<
+    () => Promise<{
+      active: boolean;
+      intervalSec: number;
+      parked: boolean;
+      // WI-655: the cheap reachability signals glance derives self.loop.reachable from.
+      lastDeliveryOutcome?: string | null;
+      stalled?: boolean;
+    } | null>
+  >();
 const sqlCalls: string[] = [];
 let beeCount = 0;
 let activityRows: Array<Record<string, unknown>> = [];

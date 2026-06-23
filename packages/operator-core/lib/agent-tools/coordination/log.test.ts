@@ -37,9 +37,28 @@ function fakeLog(extra: Partial<{ workspaceId: string; getSql: () => unknown }> 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => resetCoordLog()); // restore the default PG backend so no swap leaks across tests
 
-describe('coordScopeWorkspace', () => {
-  it('defaults to the shared partition when the per-workspace flag is off (the safe default)', () => {
+describe('coordScopeWorkspace — flag-gated coord partition (drives the cached flag deterministically)', () => {
+  // coordScopeWorkspace() reads a SYNC machine-global cache of the
+  // COORD_PER_WORKSPACE flag, warmed on module load + every flag change. Earlier
+  // this test relied on the flag's ambient DEFAULT being OFF; once the flag
+  // graduated default-ON (WI-599) that ambient read returned the active workspace
+  // and the assertion broke. So each case now sets an explicit flag override and
+  // awaits refreshCoordPerWorkspace() — testing BOTH directions, not the default.
+  afterEach(async () => {
+    setFlagOverridesForTest(null);
+    await refreshCoordPerWorkspace(); // restore the cache to the ambient default
+  });
+
+  it('falls back to the shared partition when the per-workspace flag is OFF (the safe kill-switch default)', async () => {
+    setFlagOverridesForTest({ [FLAGS.COORD_PER_WORKSPACE]: false });
+    await refreshCoordPerWorkspace();
     expect(coordScopeWorkspace()).toBe(DEFAULT_COORD_WORKSPACE);
+  });
+
+  it('scopes to the active workspace when the per-workspace flag is ON', async () => {
+    setFlagOverridesForTest({ [FLAGS.COORD_PER_WORKSPACE]: true });
+    await refreshCoordPerWorkspace();
+    expect(coordScopeWorkspace()).toBe(activeWorkspaceId());
   });
 });
 

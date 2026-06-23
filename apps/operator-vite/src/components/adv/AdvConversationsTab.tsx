@@ -353,7 +353,9 @@ function ConvFrame({
   detail,
 }: {
   filters?: React.ReactNode;
-  list: React.ReactNode;
+  /** The sidebar list (rail|detail views). Omit for full-width stream views
+   *  (Messages / Raw events), which render their list inside `detail`. */
+  list?: React.ReactNode;
   detail: React.ReactNode;
 }) {
   const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
@@ -391,9 +393,9 @@ function ConvFrame({
           {RAW_VIEW_DEFS.map(navBtn)}
         </div>
         {filters != null && <div className="pc-plans__group pc-advconv__navfilters">{filters}</div>}
-        <div className="pc-advconv__navlist">{list}</div>
+        {list != null && <div className="pc-advconv__navlist">{list}</div>}
       </aside>
-      <main className="pc-advconv__main">{detail}</main>
+      <main className={`pc-advconv__main${list == null ? ' pc-advconv__main--wide' : ''}`}>{detail}</main>
       <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => void setView('threads')} />
     </div>
   );
@@ -808,7 +810,9 @@ function FeedView() {
   );
 
   return (
-    <div className="pc-advfeed">
+    <ConvFrame
+      detail={
+        <div className="pc-advfeed">
       {/* Filters — all nuqs */}
       <div className="pc-advfeed__filters">
         <div className="pc-advfeed__filterhead">
@@ -983,7 +987,9 @@ function FeedView() {
           </button>
         )}
       </div>
-    </div>
+        </div>
+      }
+    />
   );
 }
 
@@ -1815,7 +1821,7 @@ function AgentChatsView() {
 
   // U1 (operator-vite-ui-consolidation): the agent-chats rail renders through
   // the shared, virtualized @papercusp/grid-core RichGrid instead of a raw
-  // `.map()`. RichGrid runs in `inline` mode so the existing `.pc-coord__rail`
+  // `.map()`. RichGrid runs in `inline` mode so the sidebar `.pc-advconv__listscroll`
   // stays the scroll container; one full-width column whose `render` emits the
   // original `.pc-coord__row` card keeps the visual result identical.
   // `virtualMode` mounts only the visible window (the list pulls up to 500
@@ -1930,7 +1936,7 @@ function AgentChatsView() {
               // `isSelected` drives the original `.pc-coord__row.is-active` style.
               selectedRowIds={selectedSet}
               onRowClick={(c) => void setSel(c.id)}
-              // The card look is fully class-driven (.pc-advconv__threads
+              // The card look is fully class-driven (.pc-advconv
               // .pc-coord__row). Neutralize RichGrid's own per-row chrome
               // (striping bg + bottom border) so only the original styling shows;
               // the 6px inter-card gap the flex rail used becomes per-row bottom
@@ -2129,7 +2135,9 @@ function MessagesView() {
   );
 
   return (
-    <div className="pc-advfeed">
+    <ConvFrame
+      detail={
+        <div className="pc-advfeed">
       <div className="pc-advfeed__filters">
         <div className="pc-advfeed__filterhead">
           <div>
@@ -2174,7 +2182,9 @@ function MessagesView() {
           />
         )}
       </div>
-    </div>
+        </div>
+      }
+    />
   );
 }
 
@@ -2202,44 +2212,94 @@ function AdvConvStyles() {
         min-height: 0;
         display: flex;
         flex-direction: column;
-        gap: 8px;
-        padding: 1px;
+        padding: 0;
         color: var(--fg, #dceaf6);
         background: var(--advconv-bg);
       }
-      .pc-advconv__header {
-        position: relative;
-        display: grid;
-        grid-template-columns: minmax(180px, 1fr) auto;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        flex: 0 0 auto;
-        padding: 8px 10px;
-        border: 1px solid var(--advconv-border);
-        border-radius: 12px;
-        overflow: hidden;
-        background: var(--advconv-panel-strong);
-        box-shadow: none;
+      /* Shell — a persistent left nav rail + a main pane, mirroring the Create
+         dock's sidebar│main split. The page title now lives in the AdvShell
+         header, so there is no in-body <h1>. */
+      .pc-advconv__shell {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: stretch;
       }
-      .pc-advconv__header-copy { position: relative; z-index: 1; min-width: 0; }
-      .pc-advconv__header h1 {
-        margin: 0;
-        font-size: 24px;
-        line-height: 1;
+      /* The nav reuses .pc-plans__rail (border-right + column flex + bg) for
+         pixel parity with the Create sidebar; only its width is set here. */
+      .pc-advconv__nav {
+        flex: 0 0 auto;
+        width: clamp(232px, 23vw, 300px);
+        min-height: 0;
+      }
+      .pc-advconv__nav-views {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px 10px;
+        border-bottom: 1px solid color-mix(in srgb, var(--advconv-accent), transparent 88%);
+      }
+      .pc-advconv__navbtn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 7px 10px;
+        border: 1px solid color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 66%);
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 91%);
+        color: var(--fg-dim, #b9d4e8);
+        font-size: 12px;
+        font-weight: 600;
         letter-spacing: 0;
+        text-align: left;
+        cursor: pointer;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+      }
+      .pc-advconv__navbtn > svg { color: var(--nav-accent, #38bdf8); flex: 0 0 auto; }
+      .pc-advconv__navbtn:hover {
+        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 82%);
+        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 44%);
         color: var(--fg, #e7f7ff);
       }
-      .pc-advconv__header p {
-        margin: 3px 0 0;
-        color: var(--fg-mute, #9fb6cc);
-        font-size: 12px;
-        line-height: 1.35;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
+      .pc-advconv__navbtn.is-active {
+        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 76%);
+        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 30%);
+        color: var(--fg, #e7f7ff);
+        font-weight: 700;
       }
+      .pc-advconv__nav-sep {
+        height: 1px;
+        margin: 5px 4px;
+        background: var(--advconv-border);
+      }
+      .pc-advconv__navfilters {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .pc-advconv__navlist {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .pc-advconv__listscroll {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 6px 8px 10px;
+      }
+      .pc-advconv__main {
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        padding: 8px;
+      }
+      .pc-advconv__main--wide { padding: 0; }
       .pc-advconv {
         --advconv-button-accent: var(--advconv-accent);
       }
@@ -2465,122 +2525,18 @@ function AdvConvStyles() {
         background: color-mix(in oklab, var(--good, #22c55e), transparent 64%);
       }
 
-      /* View tabs — 6 tabs can outgrow narrow widths: the tablist scrolls
-         horizontally, never wraps to a second header row. */
-      .pc-advconv__viewtabs {
-        position: relative;
-        z-index: 1;
-        align-self: center;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 0;
-        flex: 0 0 auto;
-        border: 0;
-        border-radius: 0;
-        background: transparent;
-        box-shadow: none;
-        max-width: 100%;
-        min-width: 0;
-        overflow-x: auto;
-        scrollbar-width: thin;
-      }
-      .pc-advconv__viewtab {
-        flex: 0 0 auto;
-        white-space: nowrap;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        min-height: 30px;
-        padding: 5px 11px;
-        border-radius: 8px;
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0;
-        border: 1px solid var(--advconv-border);
-        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 30%);
-        color: var(--fg-dim, #b9d4e8);
-        cursor: pointer;
-        box-shadow: none;
-        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
-      }
-      .pc-advconv__viewtab > svg {
-        color: var(--fg-mute, #7f9bb4);
-        transition: color 120ms ease;
-      }
-      .pc-advconv__viewtab span {
-        display: inline;
-        min-width: 0;
-      }
-      .pc-advconv__viewtab:hover {
-        border-color: color-mix(in oklab, var(--advconv-accent), transparent 55%);
-        background: var(--advconv-accent-softer);
-        color: var(--fg, #e7f7ff);
-      }
-      .pc-advconv__viewtab.is-active {
-        background: color-mix(in oklab, var(--advconv-accent), transparent 84%);
-        border-color: color-mix(in oklab, var(--advconv-accent), transparent 45%);
-        color: var(--fg, #e7f7ff);
-        font-weight: 700;
-        box-shadow: none;
-      }
-      .pc-advconv__viewtab.is-active > svg,
-      .pc-advconv__viewtab:hover > svg {
-        color: var(--advconv-accent-strong);
-      }
-      /* Divider between the curated views and the raw event log. */
-      .pc-advconv__viewtab-sep {
-        flex: 0 0 auto;
-        align-self: center;
-        width: 1px;
-        height: 18px;
-        margin: 0 3px;
-        background: var(--advconv-border);
-      }
-      /* "Raw events" is a debug tool, not a conversation type — render it muted
-         and neutral (no sky accent), with a dashed edge, so it reads as set apart. */
-      .pc-advconv__viewtab--raw {
-        color: var(--fg-mute, #7f9bb4);
-        border-style: dashed;
-        border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 64%);
-        background: transparent;
-      }
-      .pc-advconv__viewtab--raw > svg { color: var(--fg-mute, #7f9bb4); }
-      .pc-advconv__viewtab--raw:hover {
-        border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 40%);
-        background: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 90%);
-        color: var(--fg, #e7f7ff);
-      }
-      .pc-advconv__viewtab--raw.is-active {
-        border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 28%);
-        background: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 78%);
-        color: var(--fg, #e7f7ff);
-      }
-      .pc-advconv__viewtab--raw.is-active > svg,
-      .pc-advconv__viewtab--raw:hover > svg { color: var(--fg-dim, #b9d4e8); }
-      /* Threads split fills the remaining height */
-      .pc-advconv .pc-coord__split { flex: 1 1 auto; min-height: 0; }
-      .pc-advconv__threads {
-        grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
-        gap: 8px;
-      }
-      .pc-advconv__threads .pc-coord__rail,
-      .pc-advconv__threads .pc-coord__detail {
-        max-height: none;
+      /* The selected item's detail fills the main pane (it keeps its
+         .pc-coord__detail / .pc-coord__card content; the frame is now the
+         shell's main column, not a 2-pane split column). */
+      .pc-advconv__main .pc-coord__detail {
+        flex: 1 1 auto;
         min-height: 0;
+        overflow-y: auto;
         border: 1px solid var(--advconv-border);
         border-radius: 12px;
         background: var(--advconv-panel);
         backdrop-filter: blur(12px);
-      }
-      .pc-advconv__threads .pc-coord__rail {
-        padding: 8px;
-        gap: 6px;
-      }
-      .pc-advconv__threads .pc-coord__detail {
-        border-left: 1px solid var(--advconv-border);
-        padding: 10px;
+        padding: 12px;
       }
       .pc-advconv__railhead {
         display: flex;
@@ -2604,7 +2560,7 @@ function AdvConvStyles() {
         background: var(--advconv-accent-soft);
         border: 1px solid var(--advconv-border);
       }
-      .pc-advconv__threads .pc-coord__row {
+      .pc-advconv .pc-coord__row {
         display: flex;
         flex-direction: column;
         align-items: stretch;
@@ -2615,11 +2571,11 @@ function AdvConvStyles() {
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 38%);
         transition: background-color 140ms, border-color 140ms;
       }
-      .pc-advconv__threads .pc-coord__row:hover {
+      .pc-advconv .pc-coord__row:hover {
         background: var(--advconv-accent-softer);
         border-color: var(--advconv-border);
       }
-      .pc-advconv__threads .pc-coord__row.is-active {
+      .pc-advconv .pc-coord__row.is-active {
         background: var(--advconv-accent-soft);
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 50%);
         box-shadow: none;
@@ -2708,20 +2664,20 @@ function AdvConvStyles() {
         font-size: 10px;
         font-variant-numeric: tabular-nums;
       }
-    .pc-advconv__threads .pc-coord__row-title {
+    .pc-advconv .pc-coord__row-title {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       font-weight: 700;
       letter-spacing: 0;
     }
-      .pc-advconv__threads .pc-coord__row-meta {
+      .pc-advconv .pc-coord__row-meta {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         font-size: 11px;
       }
-      .pc-advconv__threads .pc-coord__card {
+      .pc-advconv .pc-coord__card {
         min-height: 100%;
         padding: 2px;
       }
@@ -2739,7 +2695,7 @@ function AdvConvStyles() {
         gap: 5px;
         margin: 0 0 5px;
       }
-      .pc-advconv__threads .pc-coord__card header h2 {
+      .pc-advconv .pc-coord__card header h2 {
         font-size: 22px;
         line-height: 1;
         letter-spacing: 0;
@@ -2766,14 +2722,14 @@ function AdvConvStyles() {
         color: var(--fg, #e7f7ff);
         font-variant-numeric: tabular-nums;
       }
-      .pc-advconv__threads .pc-coord__thread li {
+      .pc-advconv .pc-coord__thread li {
         position: relative;
         border-left-color: color-mix(in oklab, var(--advconv-accent), transparent 62%);
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 34%);
         border-radius: 0 8px 8px 0;
         padding: 8px 10px;
       }
-      .pc-advconv__threads .pc-coord__thread li::before {
+      .pc-advconv .pc-coord__thread li::before {
         content: "";
         position: absolute;
         left: -5px;
@@ -3219,16 +3175,16 @@ function AdvConvStyles() {
       .pc-advfeed__loadolder:hover { color: var(--fg, #e7f7ff); border-color: var(--advconv-border-strong); background: var(--advconv-accent-soft); }
       .pc-advfeed__refresh { flex: 0 0 auto; }
       @media (max-width: 920px) {
-        .pc-advconv__header { grid-template-columns: 1fr; }
-        .pc-advconv__viewtabs { align-self: stretch; }
-        .pc-advconv__viewtab { justify-content: center; }
+        .pc-advconv__shell { flex-direction: column; }
+        .pc-advconv__nav { width: auto; border-right: none; border-bottom: 1px solid var(--advconv-border); }
+        .pc-advconv__nav-views { flex-direction: row; flex-wrap: wrap; }
+        .pc-advconv__navbtn { width: auto; flex: 1 1 auto; justify-content: center; }
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advconv__replyhead { flex-direction: column; }
         .pc-advconv__replyhead em { max-width: none; text-align: left; }
         .pc-advfeed__refresh { justify-content: center; }
-        .pc-advconv__threads { grid-template-columns: 1fr; }
-        .pc-advconv__threads .pc-coord__rail { max-height: 34vh; }
+        .pc-advconv__navlist { max-height: 38vh; }
         .pc-advfeed__row {
           grid-template-columns: auto auto minmax(0, 1fr) auto;
         }
@@ -3242,7 +3198,6 @@ function AdvConvStyles() {
         }
       }
       @media (max-width: 620px) {
-        .pc-advconv__header { padding: 8px 10px; border-radius: 12px; }
         .pc-advfeed__filterhead,
         .pc-advfeed__filtermeta,
         .pc-advfeed__needsline {

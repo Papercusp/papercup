@@ -15,7 +15,7 @@
 // Guards against render-time crashes the typecheck can't catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 // nuqs: every useQueryState call needs the adapter context — stub each param to
 // a stable [value, noop]. The component reads `conv` (view), the activity filters
@@ -200,51 +200,54 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('AdvConversationsTab — simplified design', () => {
-  it('opens on Q&A with a compact header and the grouped, set-apart view tabs', () => {
+describe('AdvConversationsTab — Create-style shell', () => {
+  it('opens on Q&A with the persistent nav sidebar, the + Ask action, and the view switcher', () => {
     render(<AdvConversationsTab />);
 
-    expect(screen.getByRole('heading', { name: 'Conversations' })).toBeTruthy();
-    // The header description follows the active view (Q&A is the default).
-    expect(screen.getByText(/Questions & discussions between you and the agents/i)).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Q&A/i })).toBeTruthy();
-    // The raw event log is relabelled + set apart, but still reachable as a tab.
-    expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
+    // design-pass (2026-06-23): the tab now mirrors the Create dock's sidebar│main
+    // model. The in-body <h1> is gone — the page title lives in the AdvShell header
+    // (same as Create) — so there is no heading inside the tab body.
+    expect(screen.queryByRole('heading', { name: 'Conversations' })).toBeNull();
+    // The Create-style primary action ("+ New plan" ⇒ "+ Ask").
+    expect(screen.getByRole('button', { name: /Ask the agents/i })).toBeTruthy();
+    // The view switcher moved into the sidebar rail (still role=tab).
+    expect(screen.getByRole('tab', { name: 'Q&A' })).toBeTruthy();
+    // The raw event log is relabelled + set apart, but still reachable.
+    expect(screen.getByRole('tab', { name: 'Raw events' })).toBeTruthy();
     // The stale "Needs you" pill is removed — its canonical home is Create → Queue.
     expect(screen.queryByRole('button', { name: /Needs you/i })).toBeNull();
+    // The active view's section header still labels the rail.
     expect(screen.getByText(/Question & discussion threads/i)).toBeTruthy();
   });
 
-  // The per-view one-liners are pinned copy (orig. D-008
-  // conversations-tab-simplify-2026-06-08; re-clarified 2026-06-23 per owner ask
-  // to name the sections self-explanatorily and set the raw event log apart).
-  // Pinned exactly so the next copy churn is caught at review.
-  it('renders the pinned one-liner for every view', () => {
-    const FINAL_DESCS: Record<string, string> = {
-      threads: 'Questions & discussions between you and the agents — reply, accept an answer, or promote to an issue.',
-      deliberations: 'Group decisions — coord threads, proposals, and votes.',
-      agentchats: "Each agent's full chat transcript, with token + cost detail.",
-      messages: 'Work-item-scoped mail between agents (messages:send / inbox).',
-      feed: 'The raw coordination event log — every envelope, newest first. A debug firehose beneath the curated views.',
-    };
-    for (const [view, desc] of Object.entries(FINAL_DESCS)) {
-      nuqsState.conv = view;
-      render(<AdvConversationsTab />);
-      expect(screen.getByText(desc)).toBeTruthy();
-      cleanup();
+  // The five views each get a switcher button in the sidebar rail (labels are
+  // pinned copy; the per-view one-liner is now the button's tooltip, mirroring
+  // Create's tooltip'd Plans/Queue/Sessions buttons).
+  it('renders a switcher button for every view', () => {
+    const LABELS = ['Q&A', 'Deliberations', 'Agent chats', 'Messages', 'Raw events'];
+    render(<AdvConversationsTab />);
+    for (const label of LABELS) {
+      expect(screen.getByRole('tab', { name: label })).toBeTruthy();
     }
   });
 
-  // D-007/D-010 (OQ-4): when the tab row outgrows the header width the
-  // tablist scrolls horizontally — it must never wrap to a second row.
-  it('keeps the view tablist single-row with horizontal overflow scroll', () => {
+  // design-pass: the old horizontal tablist is replaced by a persistent left
+  // sidebar rail (Create-style). Guard the new layout primitives and the
+  // removal of the old tablist CSS.
+  it('renders the view switcher in a persistent sidebar rail, not a horizontal tab strip', () => {
     render(<AdvConversationsTab />);
     const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
-    const tablistRule = styles.match(/\.pc-advconv__viewtabs\s*{[^}]*}/)?.[0] ?? '';
-    expect(tablistRule).toContain('overflow-x: auto');
-    expect(tablistRule).not.toContain('flex-wrap');
-    const tabRule = styles.match(/\.pc-advconv__viewtab\s*{[^}]*}/)?.[0] ?? '';
-    expect(tabRule).toContain('flex: 0 0 auto');
+    expect(styles).not.toContain('pc-advconv__viewtabs');
+    const navRule = styles.match(/\.pc-advconv__nav\s*{[^}]*}/)?.[0] ?? '';
+    expect(navRule).toContain('width:');
+    const btnRule = styles.match(/\.pc-advconv__navbtn\s*{[^}]*}/)?.[0] ?? '';
+    expect(btnRule).toContain('width: 100%');
+  });
+
+  it('opens the Ask composer from the + Ask action', async () => {
+    render(<AdvConversationsTab />);
+    fireEvent.click(screen.getByRole('button', { name: /Ask the agents/i }));
+    expect(await screen.findByPlaceholderText(/What do you want to ask the fleet/i)).toBeTruthy();
   });
 
   // design-pass: Conversations now honors its DECLARED pink tab accent (#ec4899,
