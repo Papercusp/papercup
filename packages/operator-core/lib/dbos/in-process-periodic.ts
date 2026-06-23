@@ -189,24 +189,82 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
   intervalMs: 60_000,
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
-    const { reclaimOrphanedSpawns } = await import('../fleet/spawn-reclaim');
-    const r = await reclaimOrphanedSpawns(getOrgPg().sql);
+    const { reclaimOrphanedSpawns, reclaimWedgedSpawns, WEDGE_REAP_SILENT_MS } = await import(
+      '../fleet/spawn-reclaim'
+    );
+    const sql = getOrgPg().sql;
+    const { emitAwaitedEvent } = await import('../events/await/engine');
+    const { spawnSlotEventKey } = await import('../fleet/operator-spawn');
+    const announceFreed = async (workspaces: string[], summary: string) => {
+      for (const ws of workspaces) {
+        await emitAwaitedEvent({
+          key: spawnSlotEventKey(ws),
+          summary,
+          source: 'spawn-reclaim-sweep',
+          workspaceId: ws,
+        }).catch(() => undefined);
+      }
+    };
+
+    const r = await reclaimOrphanedSpawns(sql);
     if (r.reclaimed > 0) {
       console.warn(`[spawn-reclaim] freed ${r.reclaimed} orphaned spawn(s): ${r.spawnIds.join(', ')}`);
       try {
-        const { emitAwaitedEvent } = await import('../events/await/engine');
-        const { spawnSlotEventKey } = await import('../fleet/operator-spawn');
-        for (const ws of r.workspaces) {
-          await emitAwaitedEvent({
-            key: spawnSlotEventKey(ws),
-            summary: `${r.reclaimed} orphaned spawn slot(s) reclaimed by the periodic sweep`,
-            source: 'spawn-reclaim-sweep',
-            workspaceId: ws,
-          }).catch(() => undefined);
-        }
+        await announceFreed(r.workspaces, `${r.reclaimed} orphaned spawn slot(s) reclaimed by the periodic sweep`);
       } catch {
         /* best-effort — waiters fall back to their await timeout */
       }
+    }
+
+    // RECLAIM_STALLED: the "stalled, not just dead" half — durably reclaim WEDGED
+    // spawns (supervised-LIVE but stream-silent past the action threshold) that the
+    // orphan sweep above (stale-heartbeat only) can't see. Flag-gated OFF: killing a
+    // live agent + freeing its slot is a hot-path placement change (D-003 attended).
+    // The reap engine + threshold are the SAME as the in-memory `reapWedgedLocalSpawns`
+    // fast path — this is the durable, DB-truth, restart-safe floor over it.
+    try {
+      const [{ getFlag }, { FLAGS }] = await Promise.all([
+        import('@papercusp/flags/server'),
+        import('@papercusp/flags'),
+      ]);
+      if (await getFlag(FLAGS.RECLAIM_STALLED, 'system')) {
+        const { cancelSubtree } = await import('../fleet/nursery');
+        const { abortLocalSpawn } = await import('../fleet/operator-spawn');
+        const wr = await reclaimWedgedSpawns(sql, async (c) => {
+          const silentMin = Math.round(c.silentMs / 60_000);
+          // Durable cancel FIRST (releases claims/locks + flips the row with a
+          // `reclaimed:`-prefixed reason → the placement watchdog reads it as an
+          // infra reclaim, not item-pathology, WI-233), THEN SIGTERM the live child.
+          // Idempotent: a row that just settled is `alreadyTerminal`, the abort no-ops.
+          await cancelSubtree(sql, {
+            workspaceId: c.workspaceId,
+            rootSpawnId: c.spawnId,
+            reason: `reclaimed: wedged — alive but stream-silent ${silentMin}min (> ${Math.round(
+              WEDGE_REAP_SILENT_MS / 60_000,
+            )}min, RECLAIM_STALLED durable reaper)`,
+            actor: {
+              ownerId: 'wedge-reclaim-sweep',
+              ownerLabel: 'system · wedge-reclaim-sweep',
+              source: 'signed-spawn',
+              workspaceId: c.workspaceId,
+              userId: null,
+            },
+          });
+          abortLocalSpawn(c.spawnId);
+          return true;
+        });
+        if (wr.reclaimed > 0) {
+          console.warn(
+            `[wedge-reclaim] durably reaped ${wr.reclaimed} wedged spawn(s): ${wr.spawnIds.join(', ')}`,
+          );
+          await announceFreed(
+            wr.workspaces,
+            `${wr.reclaimed} wedged spawn slot(s) reclaimed (RECLAIM_STALLED durable reaper)`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('[wedge-reclaim] sweep failed (non-fatal — retries next tick):', err);
     }
   },
 };

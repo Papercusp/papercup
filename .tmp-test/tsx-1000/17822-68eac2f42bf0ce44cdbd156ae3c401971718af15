@@ -1,0 +1,1 @@
+{"code":"const PRESENCE_STALE_MS=10*60*1e3;export{PRESENCE_STALE_MS};\n","warnings":[],"map":{"version":3,"mappings":"AAaO,MAAM,kBAAoB,GAAK,GAAK","names":[],"ignoreList":[],"sources":["/home/marsh-office/papercupai-workspace/papercup/libs/generic/pubsub-substrate/src/presence/types.ts"],"sourcesContent":[null]}}

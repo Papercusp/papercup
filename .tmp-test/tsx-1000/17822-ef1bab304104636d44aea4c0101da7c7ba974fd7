@@ -1,0 +1,1 @@
+{"code":"const SYNC_MAX_DURATION_SEC=86400;const ACTION_MAX_DURATION_SEC=1800;export{ACTION_MAX_DURATION_SEC,SYNC_MAX_DURATION_SEC};\n","warnings":[],"map":{"version":3,"mappings":"AAeO,MAAM,sBAAwB,MAG9B,MAAM,wBAA0B","names":[],"ignoreList":[],"sources":["/home/marsh-office/papercupai-workspace/papercup/libs/generic/sse/src/server/max-duration.ts"],"sourcesContent":[null]}}

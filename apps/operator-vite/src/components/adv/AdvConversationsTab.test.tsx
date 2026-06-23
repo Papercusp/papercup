@@ -247,6 +247,18 @@ describe('AdvConversationsTab — simplified design', () => {
     expect(tabRule).toContain('flex: 0 0 auto');
   });
 
+  // design-pass: Conversations now honors its DECLARED pink tab accent (#ec4899,
+  // AdvShell ADV_TABS) instead of silently falling back to the body sky --accent —
+  // so the pink nav badge actually reaches the UI. Guards against re-introducing the
+  // var(--accent, …) fallback. (Live-visual is build-gated; this locks the emit.)
+  it('emits the declared pink tab accent (#ec4899) at the root, not the sky fallback', () => {
+    render(<AdvConversationsTab />);
+    const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+    const rootRule = styles.match(/\.pc-advconv\s*{[^}]*}/)?.[0] ?? '';
+    expect(rootRule).toContain('--advconv-accent: #ec4899');
+    expect(rootRule).toContain('--advconv-accent-strong: #f472b6');
+  });
+
   it('shows the Raw events log as the set-apart view with grouped filters', () => {
     nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);

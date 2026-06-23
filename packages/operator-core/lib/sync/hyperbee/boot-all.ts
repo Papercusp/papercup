@@ -43,12 +43,68 @@ import type { SwarmBinding } from './derive-swarm-topic';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
 import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
+import type { BootedHarnessFacts } from './substrate-eviction-policy';
 
 const handles: Map<string, BootedHarnessHandle> = new Map();
 const inflight: Map<string, Promise<BootedHarnessHandle>> = new Map();
 
 function key(workspaceId: string, harnessSlug: string): string {
   return `${workspaceId}::${harnessSlug}`;
+}
+
+/** Split a handle-map key back into (workspaceId, harnessSlug). Workspace ids
+ *  never contain "::" (they are slugs like `papercusp-workspace` / `default`),
+ *  so a split on the FIRST separator is unambiguous. */
+function parseKey(k: string): { workspaceId: string; harnessSlug: string } | null {
+  const i = k.indexOf('::');
+  if (i < 0) return null;
+  return { workspaceId: k.slice(0, i), harnessSlug: k.slice(i + 2) };
+}
+
+// ── LAZY_SUBSTRATE_BOOT (P-008) reaper support ──────────────────────────────
+// All inert until `enableSubstrateEvictionTracking()` is called (the reaper is
+// started, i.e. the flag is ON). With the flag OFF none of this runs, so boot
+// is byte-identical to eager all-harness boot.
+//
+// `lastAccess` is the LRU + idle signal: bumped on every `getBootedHarness` hit
+// (any consumer access) + at boot time. `evicted` records engines the reaper
+// tore down so a later `getBootedHarness` for one can fire a background re-boot
+// (the lazy-boot "reboot-on-access" dual of eviction).
+let evictionTrackingEnabled = false;
+const lastAccess = new Map<string, number>();
+const evicted = new Set<string>();
+
+/** The reboot-on-access trigger — fires a background re-boot for an evicted
+ *  engine on its next access. Default calls `bootSingleHarness` fire-and-forget;
+ *  overridable in tests so a unit test never triggers a real corestore boot. */
+let rebootOnAccess: (workspaceId: string, harnessSlug: string) => void = (
+  workspaceId,
+  harnessSlug,
+) => {
+  void bootSingleHarness(workspaceId, harnessSlug).catch(() => {
+    // best-effort re-boot; a failure leaves the harness unbooted (a later
+    // boot-all reconcile / access retries it) — never throws into the caller.
+  });
+};
+
+/** Turn on access tracking + reboot-on-access. Called once when the eviction
+ *  reaper starts (LAZY_SUBSTRATE_BOOT on). Idempotent. */
+export function enableSubstrateEvictionTracking(): void {
+  evictionTrackingEnabled = true;
+}
+
+/** Test seam: override the reboot-on-access trigger. Never call from production. */
+export function _setRebootOnAccessForTests(
+  fn: (workspaceId: string, harnessSlug: string) => void,
+): void {
+  rebootOnAccess = fn;
+}
+
+/** Test seam: reset the reaper-support state. Never call from production code. */
+export function _resetEvictionTrackingForTests(): void {
+  evictionTrackingEnabled = false;
+  lastAccess.clear();
+  evicted.clear();
 }
 
 /**
@@ -251,7 +307,25 @@ export function getBootedHarness(
   workspaceId: string,
   harnessSlug: string,
 ): BootedHarnessHandle | null {
-  return handles.get(key(workspaceId, harnessSlug)) ?? null;
+  const k = key(workspaceId, harnessSlug);
+  const handle = handles.get(k) ?? null;
+  if (handle) {
+    // LRU/idle signal (P-008): any consumer access marks the harness HOT, so the
+    // reaper won't evict an engine something is actively using. No-op when the
+    // reaper is off — keeps the OFF path byte-identical.
+    if (evictionTrackingEnabled) lastAccess.set(k, Date.now());
+    return handle;
+  }
+  // Reboot-on-access (P-008): if the reaper evicted this engine, bring it back in
+  // the BACKGROUND so the next access finds it resident. This access still gets
+  // null (the consumer's null-handling is graceful — feature-queue returns
+  // `substrate-off`, claims fall back to legacy — never data loss). bootSingleHarness
+  // coalesces on `inflight`, so a burst of accesses triggers a single re-boot.
+  if (evictionTrackingEnabled && evicted.has(k)) {
+    evicted.delete(k);
+    rebootOnAccess(workspaceId, harnessSlug);
+  }
+  return null;
 }
 
 /**
@@ -369,6 +443,12 @@ export async function bootSingleHarness(
   try {
     const handle = await bootPromise;
     handles.set(k, handle);
+    // P-008: a freshly-booted engine is HOT (seed its access time) and is no
+    // longer "evicted". No-op when the reaper is off.
+    if (evictionTrackingEnabled) {
+      lastAccess.set(k, Date.now());
+      evicted.delete(k);
+    }
     // Stage 5 (feature-content federation): bring the send-side online — the
     // one-time backfill + outbox drain loop, plus the P-008 presence-announce
     // loop. Both are additive + best-effort (a failure must NEVER block the boot
@@ -554,6 +634,10 @@ export async function closeBootedHarness(
   outboxWired.delete(k);
   presenceWired.delete(k);
   wiringInflight.delete(k);
+  // A DELIBERATE close (leave-hive, reboot, shutdown) is not a reaper eviction —
+  // drop its access record and never mark it for reboot-on-access.
+  lastAccess.delete(k);
+  evicted.delete(k);
   try {
     await handle.close();
   } catch {
@@ -648,6 +732,8 @@ export async function closeAllBootedHarnesses(): Promise<number> {
   outboxWired.clear();
   presenceWired.clear();
   wiringInflight.clear();
+  lastAccess.clear();
+  evicted.clear();
   let closed = 0;
   await Promise.all(
     entries.map(async ([, h]) => {
@@ -680,6 +766,69 @@ export function listBootedHandles(): BootedHandleSummary[] {
     });
   }
   return out;
+}
+
+/**
+ * Gather each booted harness's eviction-relevant liveness facts for the
+ * LAZY_SUBSTRATE_BOOT reaper (P-008). Pure read over the live handle map.
+ *
+ * ── v1 SAFETY BOUNDARY ── A harness with a LIVE SWARM (`handle.swarm != null`)
+ * or any admitted remote peer is reported `pinned`/`hasActivePeer`, so
+ * `planSubstrateEviction` NEVER evicts it. Tearing down a shared engine would
+ * leave its swarm topic → a later peer couldn't connect → silent divergence (the
+ * EI-126 class). The swarm-presence keepalive that makes idle-SHARED eviction
+ * safe is the documented v2; v1 evicts ONLY inert private (swarm-less, peerless)
+ * engines, which merge nothing and whose local writes are PG-direct.
+ *
+ * `lastAccessMs` defaults to `now` for a handle with no recorded access (treated
+ * HOT — never evicted on a missing signal). The own log seeds `admitted` to size
+ * 1, so `admitted.size > 1` means ≥1 remote peer log is admitted.
+ */
+export function gatherBootedHarnessFacts(now: number): BootedHarnessFacts[] {
+  const facts: BootedHarnessFacts[] = [];
+  for (const [k, handle] of handles) {
+    const hasSwarm = handle.swarm != null;
+    const hasRemotePeers = handle.admitted.size > 1;
+    facts.push({
+      key: k,
+      lastAccessMs: lastAccess.get(k) ?? now,
+      hasActivePeer: hasRemotePeers,
+      // v1: a swarmed harness is pinned (never evicted). Private harnesses fall
+      // through to the idle/LRU eviction candidates.
+      pinned: hasSwarm,
+    });
+  }
+  return facts;
+}
+
+/**
+ * Tear down ONE booted harness ENGINE for the reaper (P-008) and mark it for
+ * reboot-on-access. Returns whether it actually evicted.
+ *
+ * Re-checks freshness + swarm/peer state IMMEDIATELY before close to close the
+ * access↔evict race: between the reaper's fact snapshot and this call, a consumer
+ * may have grabbed the handle (bumping `lastAccess`) or a peer may have connected
+ * (swarm/admitted) — in which case we SKIP, leaving the engine resident.
+ */
+export async function evictBootedHarnessEngine(
+  k: string,
+  guard: { now: number; idleMs: number },
+): Promise<boolean> {
+  const handle = handles.get(k);
+  if (!handle) return false;
+  // Got hot since the snapshot? Skip.
+  const last = lastAccess.get(k);
+  if (last != null && guard.now - last < guard.idleMs) return false;
+  // Acquired a swarm / peer since the snapshot? Skip (v1 boundary).
+  if (handle.swarm != null || handle.admitted.size > 1) return false;
+  const parsed = parseKey(k);
+  if (!parsed) return false;
+  const closed = await closeBootedHarness(parsed.workspaceId, parsed.harnessSlug);
+  if (closed) {
+    // closeBootedHarness cleared lastAccess + evicted; re-mark for reboot-on-access.
+    evicted.add(k);
+  }
+  return closed;
 }
 
 /** For tests. Clears the handle map WITHOUT closing — useful when the

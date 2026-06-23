@@ -1844,13 +1844,17 @@ test('[stall-absorb SU-3650] upstream STALL on first attempt (single-account or 
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
     },
-    { concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 500 },
+    // Budgets sized for a LOADED CI box (2026-06-23): the absorb path (stall-detect → release → re-acquire →
+    // retry) is real-timer work; on a contended host the event loop slips, so a sub-second budget falsely sheds
+    // (502/503) even though the behavior is correct. Generous-but-bounded budgets test the BEHAVIOR (absorb→200)
+    // without flaking on machine load — the gate was held red for hours by exactly this fragility.
+    { concurrency: 1, upstreamHeadersTimeoutMs: 500, upstreamBodyIdleTimeoutMs: 500, requestAbsorbMs: 10_000 },
   );
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'upstream stall on first attempt is ABSORBED + retried → 200, not surfaced as 503');
   assert.equal((await r.json() as { ok: boolean }).ok, true);
   assert.equal(calls, 2, 'first stall-aborted attempt + second success (absorption retained the slot + retried)');
-});
+}, 20_000);
 
 test('[stall-absorb SU-3650] single-account pool: stall ABSORPTION works (no failover required)', async () => {
   // Absorption is the SECOND mechanism for stalls (first is failover-rotate to a fresh account). With only
@@ -1868,13 +1872,14 @@ test('[stall-absorb SU-3650] single-account pool: stall ABSORPTION works (no fai
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
     },
-    { pool, concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 800 },
+    // Load-robust budgets (see the sibling test above) — a contended box must not falsely shed the absorb.
+    { pool, concurrency: 1, upstreamHeadersTimeoutMs: 500, upstreamBodyIdleTimeoutMs: 500, requestAbsorbMs: 10_000 },
     gov,
   );
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'single-account stall is ABSORBED (no failover) + retried → 200');
   assert.equal(calls, 2, 'stall-absorb released + re-acquired on the SAME solo account, then succeeded');
-});
+}, 20_000);
 
 test('[429-absorb SU-3650] upstream 429 (bare, transient) WITHIN absorption deadline is ABSORBED + retried, not forwarded', async () => {
   // A bare 429 (no rate-limit-window headers, x-should-retry:true) signals CAPACITY EXISTS (a transient
@@ -1936,8 +1941,12 @@ test('[429-absorb SU-3650] all-accounts transient-429 under HIGH CONCURRENCY: ab
   const elapsed = Date.now() - t0;
   const ok = rs.filter((r) => r.status === 200).length;
   assert.ok(ok > 0, `some requests absorbed the all-429 burst and recovered (got ${ok}/${N} 200)`);
-  assert.ok(elapsed < 15_000, `the 20-wide all-429 burst was handled fast (${elapsed}ms), no slot-squat wedge`);
+  // 45s threshold (not 15s): this asserts NO slot-squat WEDGE — a real wedge holds slots until the self-heal
+  // valve (75s) / watchdog (120s) reclaim them, so anything well under 75s proves no wedge. 15s was too tight
+  // for a contended CI box (it flaked at 15017ms and held the deploy gate red for hours); 45s tolerates load
+  // while still failing a true wedge (which would blow the 60s test timeout below).
+  assert.ok(elapsed < 45_000, `the 20-wide all-429 burst was handled without a slot-squat wedge (${elapsed}ms)`);
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all admission slots drained — no slot-squat even under the all-429 storm');
-}, 30_000);
+}, 60_000);
 

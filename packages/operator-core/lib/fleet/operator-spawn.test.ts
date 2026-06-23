@@ -44,6 +44,9 @@ vi.mock('./spawn-reclaim', () => ({
   heartbeatSpawns: vi.fn(async () => {}),
   reclaimOrphanedSpawns: vi.fn(async () => ({ reclaimed: 0, spawnIds: [], workspaces: [] })),
   SPAWN_HEARTBEAT_INTERVAL_MS: 60_000,
+  // operator-spawn re-exports this from spawn-reclaim (threshold centralised there);
+  // selectWedgeReapCandidates uses it as a default param, so the mock must expose it.
+  WEDGE_REAP_SILENT_MS: 30 * 60_000,
 }));
 // Lazy-imported by the slot-freed announce (D-004) — vi.mock intercepts the
 // dynamic import too, so the spy sees every emit.

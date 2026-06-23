@@ -13,6 +13,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   reclaimOrphanedSpawns,
+  reclaimWedgedSpawns,
+  type WedgedSpawnCandidate,
   heartbeatSpawns,
   recordSpawnPid,
   isSpawnProcessAlive,
@@ -72,14 +74,20 @@ async function insertSpawn(
     featureId?: string;
     itemId?: string;
     parentRole?: string;
+    /** Seconds-ago for last_output_at (wedge tests). Omitted ⇒ NULL (no output yet). */
+    lastOutputAgoSec?: number;
   } = {},
 ) {
+  const lastOutput =
+    rec.lastOutputAgoSec != null
+      ? db.sql`now() - ${rec.lastOutputAgoSec}::int * interval '1 second'`
+      : db.sql`NULL`;
   await db.sql`
     INSERT INTO harness_shared.spawned_agents
-      (spawn_id, workspace_id, harness_slug, child_role, parent_role, feature_id, item_id, run_id, status, started_at, heartbeat_at, pid, launcher_host, launcher_boot_id)
+      (spawn_id, workspace_id, harness_slug, child_role, parent_role, feature_id, item_id, run_id, status, started_at, heartbeat_at, last_output_at, pid, launcher_host, launcher_boot_id)
     VALUES (${spawnId}, ${WS}, 'papercup', ${rec.childRole ?? 'worker'}, ${rec.parentRole ?? null},
             ${rec.featureId ?? null}, ${rec.itemId ?? null}, ${rec.runId ?? 'r-' + spawnId}, ${status},
-            now() - interval '10 minutes', now() - ${heartbeatAgoSec}::int * interval '1 second',
+            now() - interval '10 minutes', now() - ${heartbeatAgoSec}::int * interval '1 second', ${lastOutput},
             ${rec.pid ?? null}, ${rec.host ?? null}, ${rec.bootId ?? null})`;
 }
 
@@ -634,5 +642,153 @@ describe('heartbeatSpawns stamps last_output_at (P-008 stream activity)', () => 
     await insertSpawn('gone', 'done', 0);
     await heartbeatSpawns(db.sql, ['gone'], new Map([['gone', Date.now()]]));
     expect(await lastOutputOf('gone')).toBeNull();
+  });
+});
+
+/**
+ * reclaimWedgedSpawns (RECLAIM_STALLED, real PG) — the "stalled, not just dead" half
+ * of the spawn-reclaim floor. Selects supervised-LIVE (fresh heartbeat) rows that are
+ * stream-silent past the ACTION threshold and were launched by THIS incarnation, then
+ * hands each to the injected reap seam. These are the recurrence guards for BRIEF D:
+ * a wedged bee MUST be selected for reclaim (if the wiring is reverted, the happy-path
+ * test fails), and the safety filters MUST hold (no killing of fresh / no-output /
+ * stale-host / cross-host / cross-incarnation / operator-pid / terminal rows).
+ */
+describe('reclaimWedgedSpawns (RECLAIM_STALLED — wedged-but-alive reclaim, real PG)', () => {
+  const ME2 = hostname();
+  const BOOT = launcherBootId();
+  // A child pid distinct from the operator (test-runner) pid — the SQL excludes
+  // pid = process.pid so an in-process launch (Queen) is never killed.
+  const CHILD_PID = process.pid + 1;
+  const SILENT = { silentMs: 30 * 60_000, staleMs: 5 * 60_000 };
+
+  /** A reap seam that records the candidates it was handed and accepts them all. */
+  function recordingReap() {
+    const seen: WedgedSpawnCandidate[] = [];
+    const fn = async (c: WedgedSpawnCandidate) => {
+      seen.push(c);
+      return true;
+    };
+    return { fn, seen };
+  }
+
+  /** Insert a row that IS a valid wedged candidate unless an override breaks one rule. */
+  async function insertWedged(
+    spawnId: string,
+    over: {
+      status?: string;
+      heartbeatAgoSec?: number;
+      lastOutputAgoSec?: number;
+      host?: string;
+      bootId?: string;
+      pid?: number;
+    } = {},
+  ) {
+    await insertSpawn(spawnId, over.status ?? 'running', over.heartbeatAgoSec ?? 5, {
+      host: over.host ?? ME2,
+      bootId: over.bootId ?? BOOT,
+      pid: over.pid ?? CHILD_PID,
+      lastOutputAgoSec: over.lastOutputAgoSec ?? 31 * 60, // silent 31 min > 30-min action window
+    });
+  }
+
+  it('reaps a wedged same-host this-incarnation child: fresh heartbeat + output silent > action window', async () => {
+    await insertWedged('wedged');
+    const { fn, seen } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['wedged']);
+    expect(r.workspaces).toEqual([WS]); // freed → announced to over-ceiling waiters
+    // The candidate carries the observed silence so the seam can frame the reason.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].spawnId).toBe('wedged');
+    expect(seen[0].silentMs).toBeGreaterThanOrEqual(30 * 60_000);
+  });
+
+  it('does NOT reap a spawn that emitted recently (silent under the action window)', async () => {
+    await insertWedged('chatty', { lastOutputAgoSec: 2 * 60 }); // 2 min silent
+    const { fn, seen } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('does NOT reap a spawn with NO observed output (absence of signal ≠ wedge)', async () => {
+    // lastOutputAgoSec omitted ⇒ last_output_at NULL.
+    await insertSpawn('mute', 'running', 5, { host: ME2, bootId: BOOT, pid: CHILD_PID });
+    const { fn } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('does NOT reap a stale-heartbeat spawn — the orphan sweep owns that one', async () => {
+    await insertWedged('stale-host', { heartbeatAgoSec: 10 * 60 }); // heartbeat 10 min stale
+    const { fn } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('does NOT reap a DIFFERENT-host wedged row (the owning host reaps it)', async () => {
+    await insertWedged('remote', { host: 'some-other-box' });
+    const { fn } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('does NOT reap a PRIOR-incarnation row (boot-id mismatch — not locally killable)', async () => {
+    await insertWedged('prior', { bootId: 'some-dead-prior-boot-id' });
+    const { fn } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('does NOT reap an in-process launch recorded with the operator pid (never kills the Queen/operator)', async () => {
+    await insertWedged('queen-launch', { pid: process.pid });
+    const { fn } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('never touches terminal rows', async () => {
+    for (const status of ['done', 'failed', 'cancelled', 'reaped']) {
+      await insertWedged(`term-${status}`, { status });
+    }
+    const { fn } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('counts only the rows the seam ACCEPTS (a declined row is not reclaimed)', async () => {
+    await insertWedged('take');
+    await insertWedged('decline');
+    const r = await reclaimWedgedSpawns(
+      db.sql,
+      async (c) => c.spawnId === 'take',
+      SILENT,
+    );
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['take']);
+  });
+
+  it('is idempotent — a row the seam settled terminal is not re-reaped next sweep', async () => {
+    await insertWedged('once');
+    // Seam simulates cancelSubtree: flip the row terminal, the way the real reap does.
+    const reapAndSettle = async (c: WedgedSpawnCandidate) => {
+      await db.sql`UPDATE harness_shared.spawned_agents SET status = 'cancelled' WHERE spawn_id = ${c.spawnId}`;
+      return true;
+    };
+    const first = await reclaimWedgedSpawns(db.sql, reapAndSettle, SILENT);
+    expect(first.reclaimed).toBe(1);
+    const { fn, seen } = recordingReap();
+    const second = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(second.reclaimed).toBe(0); // already terminal → never offered again
+    expect(seen).toHaveLength(0);
+  });
+
+  it('reaps restarting rows too (they also hold a concurrency slot)', async () => {
+    await insertWedged('restarting-wedge', { status: 'restarting' });
+    const { fn } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(1);
   });
 });
