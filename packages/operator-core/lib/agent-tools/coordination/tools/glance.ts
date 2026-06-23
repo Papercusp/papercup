@@ -125,7 +125,11 @@ export default defineTool({
     // client-agnostic glance read the statusline already makes every tick) so the CC/Codex/OMP
     // bottom display + terminal title can show "⟳ <interval>" with NO extra call
     // (loop-status-display-2026-06-23). Only an ACTIVE loop is reported; null otherwise.
-    let selfLoop: { active: true; intervalSec: number; parked: boolean } | null = null;
+    // `reachable` (WI-655): a CHEAP statusline signal derived from the loop row already
+    // read — a loop that last fired but reached nobody (`no-session-now`) or whose wake
+    // turn died (`stalled`) is the black-hole this surfaces, so the bottom display can
+    // render "⟳ <interval> (unreachable!)" with NO extra probe.
+    let selfLoop: { active: true; intervalSec: number; parked: boolean; reachable: boolean } | null = null;
     try {
       const { ownerId } = resolveAgentIdentity(ctx);
       if (ownerId) {
@@ -141,7 +145,15 @@ export default defineTool({
         selfObjective = title ?? normalizeObjective((await getPresence(ownerId))?.intent);
         try {
           const ls = await getLoopStatus(ownerId);
-          if (ls?.active) selfLoop = { active: true, intervalSec: ls.intervalSec, parked: !!ls.parked };
+          if (ls?.active) {
+            const unreachable = ls.lastDeliveryOutcome === 'no-session-now' || ls.stalled === true;
+            selfLoop = {
+              active: true,
+              intervalSec: ls.intervalSec ?? 0,
+              parked: !!ls.parked,
+              reachable: !unreachable,
+            };
+          }
         } catch {
           selfLoop = null; // fail-open: loop read never breaks the glance render
         }

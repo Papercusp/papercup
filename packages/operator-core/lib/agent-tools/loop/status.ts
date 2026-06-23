@@ -10,6 +10,10 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getLoopStatus } from '../../harness/routines/loop';
+import {
+  probeWakeReachability,
+  type WakeReachabilityVerdict,
+} from '../../events/await/wake-reachability';
 
 export default defineTool({
   name: 'loop:status',
@@ -35,11 +39,29 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.ownerId ?? identity.ownerId;
     const status = await getLoopStatus(ownerId);
+
+    // WI-655 — surface LIVE wake-reachability alongside the loop row: an active loop
+    // whose owner can't receive a wake (the `no-session-now` black-hole) reads as a loud
+    // `reachable:false` here rather than only as a stale lastDeliveryOutcome. Best-effort.
+    let reachability: WakeReachabilityVerdict | null = null;
+    if (status?.active) {
+      reachability = await probeWakeReachability(ownerId).catch(() => null);
+    }
+    const reachabilityOut = reachability
+      ? {
+          reachable: reachability.reachable,
+          channel: reachability.channel,
+          durableWhileAlive: reachability.durableWhileAlive,
+          summary: reachability.summary,
+          ...(reachability.warning ? { warning: reachability.warning } : {}),
+        }
+      : null;
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, ownerId, loop: status }),
+          text: JSON.stringify({ ok: true, ownerId, loop: status, reachability: reachabilityOut }),
         },
       ],
     };

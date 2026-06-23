@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import type { CoordEventLog } from '@papercusp/coordination/event-log';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { activeWorkspaceId } from '../../workspace-registry';
 import {
   coordLog,
   configureCoordLog,
@@ -15,6 +18,7 @@ import {
   coordHasPgFastPath,
   coordScopeWorkspace,
   coordSql,
+  refreshCoordPerWorkspace,
 } from './log';
 
 /** A fake CoordEventLog backend with vi.fn() methods + optional pg-ish extras (workspaceId/getSql). */

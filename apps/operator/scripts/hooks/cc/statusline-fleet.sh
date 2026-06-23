@@ -197,6 +197,11 @@ def loop_part(g):
     lp = (g.get('self') or {}).get('loop')
     if not isinstance(lp, dict) or not lp.get('active'):
         return None
+    # WI-655: a loop that fired but reached nobody (no-session-now) / whose wake turn died
+    # reads `reachable: False` — surface it LOUDLY so a black-holed loop isn't invisible in
+    # the bottom display. `reachable` absent (older operator) ⇒ unknown ⇒ no scary text (fail-open).
+    if lp.get('reachable') is False:
+        return f'⟳ {fmt_interval(lp.get("intervalSec"))} loop ⚠unreachable'
     return f'⟳ {fmt_interval(lp.get("intervalSec"))} loop'
 
 
@@ -207,7 +212,11 @@ def term_title(g):
     bits = []
     lp = (g.get('self') or {}).get('loop') if isinstance(g, dict) else None
     if isinstance(lp, dict) and lp.get('active'):
-        bits.append(f'⟳{fmt_interval(lp.get("intervalSec"))}')
+        # WI-655: trailing '!' on the title loop chip when the loop is armed but not wake-reachable.
+        tag = f'⟳{fmt_interval(lp.get("intervalSec"))}'
+        if lp.get('reachable') is False:
+            tag += '!'
+        bits.append(tag)
     if me_id:
         bits.append(me_id)
     obj = (g.get('self') or {}).get('objective') if isinstance(g, dict) else None

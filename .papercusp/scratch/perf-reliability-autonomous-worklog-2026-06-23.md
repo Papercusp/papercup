@@ -47,8 +47,23 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 | 6 | `harness-seed.ts` | 5 ✓ | seedThrowawayHarness: validation BEFORE side effects (frozen-role/unknown-role override→throw, no deps called); effect order register→writeFile(s)→setOverride(s SORTED)→fileFeature; arg passthrough (basePath=repoOrClonePath); empty files/overrides skip; returns {harnessSlug}. Uses real AGENT_ROLES/FROZEN_OVERLAY_ROLES. |
 | 7 | `dbos/tick-load-shed.ts` | 11 ✓ | background-tick load-shed policy (P5-1/P5-3): shedUnderLoopPressure (sheds+warns iff isLoopSaturated); shedUnderPowerSave DETERMINISTIC counter (AC/mult≤0 never sheds; mult 3→[t,t,f]×; mult 2→[t,f]×; per-tickName INDEPENDENT counters); shouldShedHeavyTick OR + the `\|\|` SHORT-CIRCUIT (loop-pressure shed must NOT advance the power-save counter, else cadence desyncs under load). Mocks `../event-loop-lag-monitor` + `../resource-profile` via vi.hoisted; unique tickName per test vs the module-global counter Map. |
 | 8 | `agent-tools/_compound-dispatch.ts` | 12 ✓ | compound-tool in-process re-dispatch (B-CX-1B): inProcessCall GATE INTEGRITY (routes each sub-call through dispatchProjectedTool with the caller's exact ctx + host PROJECTED_DEPS — a compound can only compose tools the agent could call directly); FAILURE SURFACING (unregistered→throw, !ok→throw with code/message + `?? 'error'`/`?? 'unknown error'` fallbacks); UNWRAP precedence (structuredContent incl. null wins → first text item JSON-parsed → raw text on parse-fail → whole result → undefined). Mocks `@papercusp/agent-mcp` + `../projected-tool-deps` via vi.hoisted. |
+| 9 | `fleet-assignment-bus.ts` | 8 ✓ | parseFleetAssignmentPayload — best-effort decode of the `NOTIFY fleet_assignment` payload `"<ws>::<source>::<agent>"` (state-not-chat D-003/P-006). Load-bearing: agentId = `rest.join("::")` NOT `split[2]`, so an owner-id/agent-name CONTAINING `::` is reassembled, not truncated (else change-awareness misroutes); undefined/empty/partial → empty fields (never throws — the notify cb fans straight to handlers); destructuring-default applies only to MISSING segments (leading `::` keeps ws empty without shifting). Pure-fn-only import (no PG connection opens at import). |
 
-**Loop tally: 75 tests across 8 modules.**
+**Loop tally: 83 tests across 9 modules.**
+
+### Iter 9 process notes — verify-gate HARDENED + 2 dead-ends (no waste shipped)
+- 🛑 **VERIFY-GATE GAP FOUND + FIXED:** the gate globbed only `*.test.ts`. `ui/built-in-intents.ts` has a
+  `built-in-intents.test.**tsx**` that ALREADY covers all 6 intents — I wrote a duplicate `.test.ts` (23
+  tests), caught it when vitest ran BOTH, and **deleted my duplicate**. Gate is now: `ls <name>.test.{ts,tsx}`
+  + `<dir>/__tests__/<name>.test.{ts,tsx}` AND `grep -rln <export> --include='*.test.ts' --include='*.test.tsx'`.
+- 🛑 `capabilities/introspection.ts::schemaRequiresArgs` — ALREADY covered by `capabilities/capabilities.test.ts`
+  (dedicated describe block). Only edge branches (async-thenable, validate-throws, zod-fallback safeParse) remain,
+  not worth editing that actively-developed shared file. Skipped.
+- These three (+ earlier computeSpeedMetrics, ivf) confirm: MANY pure modules have sibling/`.tsx` coverage — the
+  `grep <export> --include=*.test.{ts,tsx}` check is non-optional and catches them BEFORE writing.
+- Remaining genuinely-uncovered leads (verified NONE this wake): `decodeAudioBase` (in operator-voice-proxy-helpers.ts
+  — but its file already has a dedicated test; would need to ADD to it, low value). Vein thinning; next wakes
+  should widen the grep (other dirs / `export const` arrow fns) or consider concluding.
 
 ⚠ Verify-gate caught two non-targets this run (kept the loop honest): `hive-eval/speed-metrics.ts`
 (computeSpeedMetrics ALREADY covered by `speed-efficiency-metrics.test.ts`) and the PG-backed

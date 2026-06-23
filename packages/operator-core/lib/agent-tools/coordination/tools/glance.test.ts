@@ -120,10 +120,28 @@ describe('coord:glance', () => {
   it('self.loop reflects an active engine loop (loop-status-display); null when not looping', async () => {
     getLoopStatus.mockResolvedValue({ active: true, intervalSec: 120, parked: false });
     let g = out(await glance.handler(parse({}), ctx));
-    expect(g.self.loop).toEqual({ active: true, intervalSec: 120, parked: false });
+    // WI-655: an active loop with no failing delivery signal reads reachable:true.
+    expect(g.self.loop).toEqual({ active: true, intervalSec: 120, parked: false, reachable: true });
     getLoopStatus.mockResolvedValue(null);
     g = out(await glance.handler(parse({}), ctx));
     expect(g.self.loop).toBeNull();
+  });
+
+  it('WI-655: a loop whose last fire reached nobody (no-session-now) reads reachable:false', async () => {
+    getLoopStatus.mockResolvedValue({
+      active: true,
+      intervalSec: 120,
+      parked: true,
+      lastDeliveryOutcome: 'no-session-now',
+    });
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.loop).toEqual({ active: true, intervalSec: 120, parked: true, reachable: false });
+  });
+
+  it('WI-655: a stalled loop (wake turn died) reads reachable:false', async () => {
+    getLoopStatus.mockResolvedValue({ active: true, intervalSec: 120, parked: true, stalled: true });
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.loop).toEqual({ active: true, intervalSec: 120, parked: true, reachable: false });
   });
 
   it('bees count rides the fresh-heartbeat nursery query', async () => {

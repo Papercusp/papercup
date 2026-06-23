@@ -48,18 +48,23 @@ import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import { listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Modal } from '@/app/harness/Modal';
 import ChatPanel from '@/app/harness/ChatPanel';
 import {
   inputStyle,
+  primaryBtnStyle,
+  secondaryBtnStyle,
   sectionHeaderStyle,
   DEBOUNCE_MS,
   useDebouncedValue,
   friendlyApiError,
   ErrorBanner,
   EmptyState,
+  FieldLabel,
+  HintText,
   Pill,
 } from '@/app/harness/picker-kit';
 import { hiveHomeLabel } from '@/lib/hive-label';
@@ -189,37 +194,215 @@ const VIEW_DEFS: ReadonlyArray<ViewDef> = [
 const CURATED_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'curated');
 const RAW_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'raw');
 
-export default function AdvConversationsTab() {
-  const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
-  const activeDef = VIEW_DEFS.find((v) => v.id === view) ?? VIEW_DEFS[0];
-  const renderTab = ({ id, label, Icon, group }: ViewDef) => (
-    <button
-      key={id}
-      type="button"
-      role="tab"
-      aria-selected={view === id}
-      className={`pc-advconv__viewtab${group === 'raw' ? ' pc-advconv__viewtab--raw' : ''}${view === id ? ' is-active' : ''}`}
-      onClick={() => void setView(id)}
-    >
-      <Icon size={13} aria-hidden />
-      <span>{label}</span>
-    </button>
-  );
+// Per-view accent for the sidebar switcher buttons — the icon already
+// distinguishes them; the accent makes the active selection legible at a glance
+// (mirrors the Create sidebar's per-view button colours). 'feed' is the muted
+// debug firehose, so it gets a quiet slate.
+const VIEW_ACCENT: Record<ConvView, string> = {
+  threads: '#38bdf8',
+  deliberations: '#a78bfa',
+  agentchats: '#22c55e',
+  messages: '#f59e0b',
+  feed: '#94a3b8',
+};
+
+/**
+ * AskComposer — the "+ Ask" primary action's modal (the Conversations analogue of
+ * the Create sidebar's "+ New plan"). Opens a `question` conversation routed to
+ * topic subscribers via coord:ask (force_open so it always reaches peers rather
+ * than returning inline knowledge candidates — a human asking the fleet wants the
+ * thread). Uses the shared picker-kit field vocabulary so it matches Create.
+ */
+function AskComposer({
+  open,
+  onOpenChange,
+  onAsked,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onAsked: () => void;
+}) {
+  const [question, setQuestion] = useState('');
+  const [topics, setTopics] = useState('');
+  const [harness, setHarness] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    setQuestion('');
+    setTopics('');
+    setHarness('');
+    setError(null);
+  };
+
+  const submit = async () => {
+    const q = question.trim();
+    if (!q || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const topicList = topics
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 8);
+      await coord('coord/ask', {
+        question: q,
+        topics: topicList.length ? topicList : undefined,
+        harness: harness.trim() || undefined,
+        force_open: true,
+      });
+      toast.success('Question opened — routed to topic subscribers; answers land in Q&A.', { duration: 4000 });
+      reset();
+      onOpenChange(false);
+      onAsked();
+    } catch (e) {
+      setError(friendlyApiError(undefined, errText(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <div className="pc-coord pc-advconv">
-      <header className="pc-advconv__header">
-        <div className="pc-advconv__header-copy">
-          <h1>Conversations</h1>
-          <p>{activeDef.desc}</p>
+    <Modal
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) reset();
+        onOpenChange(o);
+      }}
+      title="Ask the agents"
+      contentStyle={{
+        width: 'min(540px, 96vw)',
+        background: 'var(--bg-popover, #0d1829)',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        padding: 22,
+        color: 'var(--fg, #e8e8ea)',
+      }}
+    >
+      <p style={{ margin: '0 0 16px', fontSize: 12.5, lineHeight: 1.5, color: 'var(--fg-dim)' }}>
+        Opens a question conversation routed to the agents who own the topics you tag. Answers arrive back in
+        the <strong>Q&amp;A</strong> view — this never blocks.
+      </p>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+      <div style={{ marginBottom: 14 }}>
+        <FieldLabel>Question</FieldLabel>
+        <textarea
+          autoFocus
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void submit();
+          }}
+          placeholder="What do you want to ask the fleet?"
+          rows={4}
+          maxLength={2000}
+          style={{ ...inputStyle, resize: 'vertical', minHeight: 88, lineHeight: 1.5 }}
+        />
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <FieldLabel>Topics</FieldLabel>
+        <input
+          value={topics}
+          onChange={(e) => setTopics(e.target.value)}
+          placeholder="e.g. inference-gateway, sync (comma-separated)"
+          style={inputStyle}
+        />
+        <HintText>Routes a miss to the right people. Without topics, only direct subscribers see it.</HintText>
+      </div>
+      <div style={{ marginBottom: 18 }}>
+        <FieldLabel>Scope to a pot (optional)</FieldLabel>
+        <input
+          value={harness}
+          onChange={(e) => setHarness(e.target.value)}
+          placeholder="harness slug — leave blank for workspace-wide"
+          style={inputStyle}
+        />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button type="button" style={secondaryBtnStyle} onClick={() => onOpenChange(false)} disabled={busy}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          style={{ ...primaryBtnStyle, opacity: !question.trim() || busy ? 0.6 : 1 }}
+          onClick={() => void submit()}
+          disabled={!question.trim() || busy}
+        >
+          {busy ? 'Asking…' : 'Ask'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * ConvFrame — the shared Conversations shell, mirroring the Create dock's
+ * sidebar│main model (a persistent left rail that owns the primary action + the
+ * view switcher + this view's filters/list, and a main pane that holds only the
+ * selected item's detail). Each of the five views renders one ConvFrame, passing
+ * its own `filters`/`list`/`detail` slots — so the frame is identical across
+ * views and only the content swaps, exactly like Create's TwoPaneShell.
+ *
+ * The nav reuses the globally-imported `pc-plans__*` rail classes (plans.css is
+ * loaded on the /adv route) so it is visually identical to Create's sidebar.
+ */
+function ConvFrame({
+  filters,
+  list,
+  detail,
+}: {
+  filters?: React.ReactNode;
+  list: React.ReactNode;
+  detail: React.ReactNode;
+}) {
+  const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
+  const [askOpen, setAskOpen] = useState(false);
+
+  const navBtn = (d: ViewDef) => (
+    <Tooltip key={d.id} label={d.desc}>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === d.id}
+        className={`pc-advconv__navbtn${view === d.id ? ' is-active' : ''}`}
+        style={{ ['--nav-accent' as string]: VIEW_ACCENT[d.id] } as React.CSSProperties}
+        onClick={() => void setView(d.id)}
+      >
+        <d.Icon size={14} aria-hidden />
+        <span>{d.label}</span>
+      </button>
+    </Tooltip>
+  );
+
+  return (
+    <div className="pc-advconv__shell">
+      <aside className="pc-plans__rail pc-advconv__nav">
+        <div className="pc-plans__rail-actions">
+          <Tooltip label="Ask the agents a question — opens a question conversation routed to topic subscribers; answers land in Q&A.">
+            <button type="button" className="pc-plans__new-plan" onClick={() => setAskOpen(true)} aria-label="Ask the agents">
+              <Plus size={14} aria-hidden /> Ask
+            </button>
+          </Tooltip>
         </div>
-        {/* Two clusters: the curated communication views, then a divider, then
-            the raw event log set apart as a debug tool. */}
-        <div className="pc-advconv__viewtabs" role="tablist" aria-label="Conversations view">
-          {CURATED_VIEW_DEFS.map(renderTab)}
-          <span className="pc-advconv__viewtab-sep" role="separator" aria-orientation="vertical" />
-          {RAW_VIEW_DEFS.map(renderTab)}
+        <div className="pc-advconv__nav-views" role="tablist" aria-label="Conversations view">
+          {CURATED_VIEW_DEFS.map(navBtn)}
+          <span className="pc-advconv__nav-sep" role="separator" aria-orientation="horizontal" />
+          {RAW_VIEW_DEFS.map(navBtn)}
         </div>
-      </header>
+        {filters != null && <div className="pc-plans__group pc-advconv__navfilters">{filters}</div>}
+        <div className="pc-advconv__navlist">{list}</div>
+      </aside>
+      <main className="pc-advconv__main">{detail}</main>
+      <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => void setView('threads')} />
+    </div>
+  );
+}
+
+export default function AdvConversationsTab() {
+  const [view] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
+  return (
+    <div className="pc-coord pc-advconv pc-advconv--shell">
       {view === 'feed' ? (
         <FeedView />
       ) : view === 'deliberations' ? (
@@ -1183,79 +1366,86 @@ function ThreadsView() {
   );
 
   return (
-    <div className="pc-coord__split pc-advconv__threads">
-      <aside className="pc-coord__rail" ref={railScrollRef}>
-        <div className="pc-advconv__railhead">
-          <span style={sectionHeaderStyle}>Question &amp; discussion threads</span>
-          <strong>{loading ? '…' : visible.length}</strong>
-        </div>
-        <div className="pc-coord__filters" role="group" aria-label="State filter">
-          {CONV_STATES.map((s) => (
-            <Pill key={s} active={state === s} accent="var(--advconv-accent)" aria-pressed={state === s} onClick={() => void setState(s)}>
-              {s}
-            </Pill>
-          ))}
-        </div>
-        <div className="pc-coord__filters" role="group" aria-label="Kind filter">
-          {CONV_KINDS.map((k) => (
-            <Pill key={k} active={kind === k} accent="var(--advconv-accent)" aria-pressed={kind === k} onClick={() => void setKind(k)}>
-              {k}
-            </Pill>
-          ))}
-          <button
-            type="button"
-            className="pc-coord__chip pc-advconv__refresh"
-            aria-label="Reload conversations"
-            disabled={loading}
-            onClick={() => void reload()}
-          >
-            <RefreshCw size={11} aria-hidden />
-          </button>
-        </div>
-        {allTopics.length > 0 && (
-          <div className="pc-coord__filters" role="group" aria-label="Topic filter">
-            <Pill active={!topic} accent="var(--advconv-accent)" aria-pressed={!topic} onClick={() => void setTopic('')}>
-              all topics
-            </Pill>
-            {allTopics.map((t) => (
-              <Pill key={t} active={topic === t} accent="var(--advconv-accent)" aria-pressed={topic === t} onClick={() => void setTopic(topic === t ? '' : t)}>
-                #{t}
+    <ConvFrame
+      filters={
+        <>
+          <div className="pc-advconv__railhead">
+            <span style={sectionHeaderStyle}>Question &amp; discussion threads</span>
+            <strong>{loading ? '…' : visible.length}</strong>
+          </div>
+          <div className="pc-coord__filters" role="group" aria-label="State filter">
+            {CONV_STATES.map((s) => (
+              <Pill key={s} active={state === s} accent="var(--advconv-accent)" aria-pressed={state === s} onClick={() => void setState(s)}>
+                {s}
               </Pill>
             ))}
           </div>
-        )}
-        {loading ? (
-          <LoadingRows />
-        ) : error ? (
-          <LoadError message={error} onRetry={() => void reload()} />
-        ) : visible.length === 0 ? (
-          <EmptyState
-            icon={<MessageCircle size={22} aria-hidden />}
-            title="No threads match"
-            desc="Change the state, kind, or topic filter to widen the thread rail."
-          />
-        ) : (
-          <RichGrid<ConvRow>
-            inline
-            disableCopySupport
-            headerStyle={{ display: 'none' }}
-            columns={columns}
-            getRowId={(c) => c.id}
-            virtualMode={{
-              virtualizer: rowVirtualizer,
-              totalRows: visible.length,
-              rowAt: (i) => visible[i],
-              measureAll: true,
-            }}
-            selectedRowIds={selectedSet}
-            onRowClick={(c) => void setSel(c.id)}
-            getRowBg={gridTransparentBg}
-            rowProps={railRowProps}
-          />
-        )}
-      </aside>
-      <section className="pc-coord__detail">
-        {!detail ? (
+          <div className="pc-coord__filters" role="group" aria-label="Kind filter">
+            {CONV_KINDS.map((k) => (
+              <Pill key={k} active={kind === k} accent="var(--advconv-accent)" aria-pressed={kind === k} onClick={() => void setKind(k)}>
+                {k}
+              </Pill>
+            ))}
+            <button
+              type="button"
+              className="pc-coord__chip pc-advconv__refresh"
+              aria-label="Reload conversations"
+              disabled={loading}
+              onClick={() => void reload()}
+            >
+              <RefreshCw size={11} aria-hidden />
+            </button>
+          </div>
+          {allTopics.length > 0 && (
+            <div className="pc-coord__filters" role="group" aria-label="Topic filter">
+              <Pill active={!topic} accent="var(--advconv-accent)" aria-pressed={!topic} onClick={() => void setTopic('')}>
+                all topics
+              </Pill>
+              {allTopics.map((t) => (
+                <Pill key={t} active={topic === t} accent="var(--advconv-accent)" aria-pressed={topic === t} onClick={() => void setTopic(topic === t ? '' : t)}>
+                  #{t}
+                </Pill>
+              ))}
+            </div>
+          )}
+        </>
+      }
+      list={
+        <div className="pc-advconv__listscroll" ref={railScrollRef}>
+          {loading ? (
+            <LoadingRows />
+          ) : error ? (
+            <LoadError message={error} onRetry={() => void reload()} />
+          ) : visible.length === 0 ? (
+            <EmptyState
+              icon={<MessageCircle size={22} aria-hidden />}
+              title="No threads match"
+              desc="Change the state, kind, or topic filter to widen the thread rail."
+            />
+          ) : (
+            <RichGrid<ConvRow>
+              inline
+              disableCopySupport
+              headerStyle={{ display: 'none' }}
+              columns={columns}
+              getRowId={(c) => c.id}
+              virtualMode={{
+                virtualizer: rowVirtualizer,
+                totalRows: visible.length,
+                rowAt: (i) => visible[i],
+                measureAll: true,
+              }}
+              selectedRowIds={selectedSet}
+              onRowClick={(c) => void setSel(c.id)}
+              getRowBg={gridTransparentBg}
+              rowProps={railRowProps}
+            />
+          )}
+        </div>
+      }
+      detail={
+        <section className="pc-coord__detail">
+          {!detail ? (
           <EmptyState
             style={{ minHeight: '100%' }}
             icon={<MessageCircle size={22} aria-hidden />}
@@ -1344,8 +1534,9 @@ function ThreadsView() {
             )}
           </article>
         )}
-      </section>
-    </div>
+        </section>
+      }
+    />
   );
 }
 
@@ -1451,8 +1642,8 @@ function DeliberationsView() {
   );
 
   return (
-    <div className="pc-coord__split pc-advconv__threads">
-      <aside className="pc-coord__rail" ref={railScrollRef}>
+    <ConvFrame
+      filters={
         <div className="pc-advconv__railhead">
           <span style={sectionHeaderStyle}>Deliberation threads</span>
           <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
@@ -1460,38 +1651,43 @@ function DeliberationsView() {
             <RefreshCw size={11} aria-hidden />
           </button>
         </div>
-        {loading ? (
-          <LoadingRows />
-        ) : error ? (
-          <LoadError message={error} onRetry={() => void reload()} />
-        ) : list.length === 0 ? (
-          <EmptyState
-            icon={<MessagesSquare size={22} aria-hidden />}
-            title="No deliberations"
-            desc="No coord:thread / deliberate / vote discussions recorded."
-          />
-        ) : (
-          <RichGrid<ThreadRow>
-            inline
-            disableCopySupport
-            headerStyle={{ display: 'none' }}
-            columns={columns}
-            getRowId={(t) => t.thread_id}
-            virtualMode={{
-              virtualizer: rowVirtualizer,
-              totalRows: list.length,
-              rowAt: (i) => list[i],
-              measureAll: true,
-            }}
-            selectedRowIds={selectedSet}
-            onRowClick={(t) => void setSel(t.thread_id)}
-            getRowBg={gridTransparentBg}
-            rowProps={railRowProps}
-          />
-        )}
-      </aside>
-      <section className="pc-coord__detail">
-        {!head ? (
+      }
+      list={
+        <div className="pc-advconv__listscroll" ref={railScrollRef}>
+          {loading ? (
+            <LoadingRows />
+          ) : error ? (
+            <LoadError message={error} onRetry={() => void reload()} />
+          ) : list.length === 0 ? (
+            <EmptyState
+              icon={<MessagesSquare size={22} aria-hidden />}
+              title="No deliberations"
+              desc="No coord:thread / deliberate / vote discussions recorded."
+            />
+          ) : (
+            <RichGrid<ThreadRow>
+              inline
+              disableCopySupport
+              headerStyle={{ display: 'none' }}
+              columns={columns}
+              getRowId={(t) => t.thread_id}
+              virtualMode={{
+                virtualizer: rowVirtualizer,
+                totalRows: list.length,
+                rowAt: (i) => list[i],
+                measureAll: true,
+              }}
+              selectedRowIds={selectedSet}
+              onRowClick={(t) => void setSel(t.thread_id)}
+              getRowBg={gridTransparentBg}
+              rowProps={railRowProps}
+            />
+          )}
+        </div>
+      }
+      detail={
+        <section className="pc-coord__detail">
+          {!head ? (
           <EmptyState
             style={{ minHeight: '100%' }}
             icon={<MessagesSquare size={22} aria-hidden />}
@@ -1534,8 +1730,9 @@ function DeliberationsView() {
             )}
           </article>
         )}
-      </section>
-    </div>
+        </section>
+      }
+    />
   );
 }
 
@@ -1674,72 +1871,79 @@ function AgentChatsView() {
   );
 
   return (
-    <div className="pc-coord__split pc-advconv__threads">
-      <aside className="pc-coord__rail" ref={railScrollRef}>
-        <div className="pc-advconv__railhead">
-          <span style={sectionHeaderStyle}>Agent chat sessions</span>
-          <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
+    <ConvFrame
+      filters={
+        <>
+          <div className="pc-advconv__railhead">
+            <span style={sectionHeaderStyle}>Agent chat sessions</span>
+            <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
+          </div>
+          {harnesses.length > 0 && (
+            <div className="pc-coord__filters" role="group" aria-label="Harness filter">
+              <Pill active={!harness} accent="var(--advconv-accent)" aria-pressed={!harness} onClick={() => void setHarness('')}>all</Pill>
+              {harnesses.map((h) => (
+                <Pill key={h} active={harness === h} accent="var(--advconv-accent)" aria-pressed={harness === h} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</Pill>
+              ))}
+              <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload agent chats" disabled={loading} onClick={() => void reload()}>
+                <RefreshCw size={11} aria-hidden />
+              </button>
+            </div>
+          )}
+          {roles.length > 0 && (
+            <div className="pc-coord__filters" role="group" aria-label="Role filter">
+              <Pill active={!role} accent="var(--advconv-accent)" aria-pressed={!role} onClick={() => void setRole('')}>all roles</Pill>
+              {roles.map((r) => (
+                <Pill key={r} active={role === r} accent="var(--advconv-accent)" aria-pressed={role === r} onClick={() => void setRole(role === r ? '' : r)}>{r}</Pill>
+              ))}
+            </div>
+          )}
+        </>
+      }
+      list={
+        <div className="pc-advconv__listscroll" ref={railScrollRef}>
+          {loading ? (
+            <LoadingRows />
+          ) : error ? (
+            <LoadError message={error} onRetry={() => void reload()} />
+          ) : list.length === 0 ? (
+            <EmptyState
+              icon={<Bot size={22} aria-hidden />}
+              title="No agent chats"
+              desc="No multi-turn agent chat sessions match the current filter."
+            />
+          ) : (
+            <RichGrid<AgentChatRow>
+              inline
+              disableCopySupport
+              // The rail was a flat list of cards with no header. RichGrid always
+              // renders its sticky header row, so hide it to keep the prior look.
+              // (grid-core gap: no `hideHeader` prop — noted in the U1 report.)
+              headerStyle={{ display: 'none' }}
+              columns={columns}
+              getRowId={(c) => c.id}
+              virtualMode={{
+                virtualizer: rowVirtualizer,
+                totalRows: list.length,
+                rowAt: (i) => list[i],
+              }}
+              // Selection is the nuqs `?chat=` param — feed it in so the cell's
+              // `isSelected` drives the original `.pc-coord__row.is-active` style.
+              selectedRowIds={selectedSet}
+              onRowClick={(c) => void setSel(c.id)}
+              // The card look is fully class-driven (.pc-advconv__threads
+              // .pc-coord__row). Neutralize RichGrid's own per-row chrome
+              // (striping bg + bottom border) so only the original styling shows;
+              // the 6px inter-card gap the flex rail used becomes per-row bottom
+              // padding since virtual rows are positioned edge-to-edge. Stable
+              // hoisted refs so memo(BodyRow) skips untouched rows (see top of file).
+              getRowBg={gridTransparentBg}
+              rowProps={railRowProps}
+            />
+          )}
         </div>
-        {harnesses.length > 0 && (
-          <div className="pc-coord__filters" role="group" aria-label="Harness filter">
-            <Pill active={!harness} accent="var(--advconv-accent)" aria-pressed={!harness} onClick={() => void setHarness('')}>all</Pill>
-            {harnesses.map((h) => (
-              <Pill key={h} active={harness === h} accent="var(--advconv-accent)" aria-pressed={harness === h} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</Pill>
-            ))}
-            <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload agent chats" disabled={loading} onClick={() => void reload()}>
-              <RefreshCw size={11} aria-hidden />
-            </button>
-          </div>
-        )}
-        {roles.length > 0 && (
-          <div className="pc-coord__filters" role="group" aria-label="Role filter">
-            <Pill active={!role} accent="var(--advconv-accent)" aria-pressed={!role} onClick={() => void setRole('')}>all roles</Pill>
-            {roles.map((r) => (
-              <Pill key={r} active={role === r} accent="var(--advconv-accent)" aria-pressed={role === r} onClick={() => void setRole(role === r ? '' : r)}>{r}</Pill>
-            ))}
-          </div>
-        )}
-        {loading ? (
-          <LoadingRows />
-        ) : error ? (
-          <LoadError message={error} onRetry={() => void reload()} />
-        ) : list.length === 0 ? (
-          <EmptyState
-            icon={<Bot size={22} aria-hidden />}
-            title="No agent chats"
-            desc="No multi-turn agent chat sessions match the current filter."
-          />
-        ) : (
-          <RichGrid<AgentChatRow>
-            inline
-            disableCopySupport
-            // The rail was a flat list of cards with no header. RichGrid always
-            // renders its sticky header row, so hide it to keep the prior look.
-            // (grid-core gap: no `hideHeader` prop — noted in the U1 report.)
-            headerStyle={{ display: 'none' }}
-            columns={columns}
-            getRowId={(c) => c.id}
-            virtualMode={{
-              virtualizer: rowVirtualizer,
-              totalRows: list.length,
-              rowAt: (i) => list[i],
-            }}
-            // Selection is the nuqs `?chat=` param — feed it in so the cell's
-            // `isSelected` drives the original `.pc-coord__row.is-active` style.
-            selectedRowIds={selectedSet}
-            onRowClick={(c) => void setSel(c.id)}
-            // The card look is fully class-driven (.pc-advconv__threads
-            // .pc-coord__row). Neutralize RichGrid's own per-row chrome
-            // (striping bg + bottom border) so only the original styling shows;
-            // the 6px inter-card gap the flex rail used becomes per-row bottom
-            // padding since virtual rows are positioned edge-to-edge. Stable
-            // hoisted refs so memo(BodyRow) skips untouched rows (see top of file).
-            getRowBg={gridTransparentBg}
-            rowProps={railRowProps}
-          />
-        )}
-      </aside>
-      <section className="pc-coord__detail">
+      }
+      detail={
+        <section className="pc-coord__detail">
         {!detail ? (
           <EmptyState
             style={{ minHeight: '100%' }}
@@ -1799,8 +2003,9 @@ function AgentChatsView() {
             )}
           </article>
         )}
-      </section>
-    </div>
+        </section>
+      }
+    />
   );
 }
 

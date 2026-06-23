@@ -254,6 +254,47 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(out).toContain('2 peers');
   });
 
+  it('an active+reachable loop renders the ⟳ <interval> loop chip (no unreachable marker)', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: null, loop: { active: true, intervalSec: 120, parked: false, reachable: true } },
+    });
+    expect(out).toContain('⟳ 2m loop');
+    expect(out).not.toContain('unreachable');
+  });
+
+  it('WI-655: an active loop with reachable:false renders ⟳ <interval> loop ⚠unreachable', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: null, loop: { active: true, intervalSec: 120, parked: true, reachable: false } },
+    });
+    expect(out).toContain('⟳ 2m loop ⚠unreachable');
+  });
+
+  it('a loop payload WITHOUT the reachable field (older operator) → plain chip, no scary text', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: null, loop: { active: true, intervalSec: 1800, parked: false } },
+    });
+    expect(out).toContain('⟳ 30m loop');
+    expect(out).not.toContain('unreachable');
+  });
+
   it('garbage fixture prints nothing and exits 0', () => {
     expect(render([1, 2, 3])).toBe('');
   });

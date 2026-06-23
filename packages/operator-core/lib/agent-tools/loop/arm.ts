@@ -31,6 +31,11 @@ import {
   buildLoopWakePrompt,
   LOOP_INTERVAL_FLOOR_SEC,
 } from '../../harness/routines/loop';
+import { armInboxWake } from '../../events/await/inbox-wake-arm';
+import {
+  probeWakeReachability,
+  type WakeReachabilityVerdict,
+} from '../../events/await/wake-reachability';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
@@ -155,6 +160,39 @@ export default defineTool({
       maxDurationSec: args.maxDurationSec ?? null,
     });
 
+    // WI-655 — wake-reachability is INTRINSIC to arming a loop, not a separate step.
+    // (1) ARM the standing inbox-wake watch right here, so a loop is wakeable the instant
+    // it is armed — independent of the SessionStart re-arm a RESUMED/curl-driven session
+    // never re-runs (the exact decoupling that black-holed fires as `no-session-now`).
+    // (2) VERIFY it: probe which wake-executor channel a fire WOULD take, and if the
+    // session can't receive a wake as a fresh turn, return a LOUD warning rather than a
+    // silent success. Fail-soft — arming the loop already succeeded; this leg is the
+    // honest reachability read on top.
+    let reachability: WakeReachabilityVerdict | null = null;
+    try {
+      await armInboxWake({ ownerId, workspaceId, note: `loop-armed inbox-wake (${loop.name})` });
+      reachability = await probeWakeReachability(ownerId);
+    } catch (e) {
+      console.warn(`[loop:arm] reachability arm/probe failed (loop still armed): ${e instanceof Error ? e.message : e}`);
+    }
+
+    const reachabilityOut = reachability
+      ? {
+          reachable: reachability.reachable,
+          channel: reachability.channel,
+          durableWhileAlive: reachability.durableWhileAlive,
+          summary: reachability.summary,
+          ...(reachability.warning ? { warning: reachability.warning } : {}),
+        }
+      : null;
+
+    const note =
+      reachability && !reachability.reachable
+        ? `⚠ Armed, but NOT wake-reachable: ${reachability.warning ?? reachability.summary} The loop row exists, but fires will NOT reach you as a fresh turn until this is fixed (re-arm from a managed/console/psu-hosted session). loop:status shows live reachability; loop:end stops it.`
+        : reachability && reachability.warning
+          ? `Armed (wake path: ${reachability.channel}). ⚠ ${reachability.warning} End your turn — the engine re-wakes ~${args.intervalSec}s after each turn settles. Stop with loop:end.`
+          : `Armed (wake path: ${reachability?.channel ?? 'unverified'}). End your turn — the engine will re-wake this session ~${args.intervalSec}s after each turn settles. Stop anytime with loop:end.`;
+
     return {
       content: [
         {
@@ -172,7 +210,8 @@ export default defineTool({
               firstFireAt: loop.nextFireAt ? loop.nextFireAt.toISOString() : null,
               customWakePrompt: args.wakePrompt != null,
             },
-            note: `Armed. End your turn — the engine will re-wake this session ~${args.intervalSec}s after each turn settles. Stop anytime with loop:end.`,
+            reachability: reachabilityOut,
+            note,
           }),
         },
       ],
