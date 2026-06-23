@@ -7,8 +7,19 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { synthesizeRecordedRosterRows, RECORDED_SESSION_SOURCE } from './recorded-sessions';
+import { synthesizeRecordedRosterRows, reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import type { AdvSessionRow } from '../../adv-sessions';
+import type { UnifiedPresenceRecord } from './federated-presence';
+
+/** Minimal presence-row factory — only ownerId + stale drive the reconciliation. */
+function pres(ownerId: string, stale: boolean): UnifiedPresenceRecord {
+  return {
+    ownerId, ownerLabel: ownerId, workspaceId: 'ws-1', source: 'omp-hook-session',
+    intent: '', currentPlanSlug: null, currentFiles: [], host: '', pid: null,
+    startedAt: '2026-06-22T19:00:00.000Z', heartbeatAt: '2026-06-22T19:00:00.000Z',
+    lastActiveAt: null, agentRole: 'su', hiveSlug: null, stale, userId: null, revoked: false,
+  };
+}
 
 /** Minimal AdvSessionRow factory — only the fields the projection reads matter. */
 function adv(overrides: Partial<AdvSessionRow>): AdvSessionRow {
@@ -110,5 +121,48 @@ describe('synthesizeRecordedRosterRows', () => {
 
   it('empty input → empty output', () => {
     expect(synthesizeRecordedRosterRows([], new Set())).toEqual([]);
+  });
+});
+
+describe('reconcileRosterSources', () => {
+  it('a FRESH presence row wins — the session-log record never shadows it', () => {
+    const out = reconcileRosterSources([pres('a', false)], [adv({ coordOwnerId: 'a', label: 'from-log' })]);
+    expect(out).toHaveLength(1);
+    expect(out[0].source).toBe('omp-hook-session'); // the presence row, not the synthesized one
+  });
+
+  it('a live session-log record SUPERSEDES a STALE presence row (the resume case)', () => {
+    const out = reconcileRosterSources([pres('b', true)], [adv({ coordOwnerId: 'b', label: 'resumed' })]);
+    // The stale heartbeat row is dropped; the live record wins.
+    expect(out).toHaveLength(1);
+    expect(out[0].ownerId).toBe('b');
+    expect(out[0].source).toBe(RECORDED_SESSION_SOURCE);
+    expect(out[0].stale).toBe(false);
+  });
+
+  it('an owner with ONLY a live record gets a synthesized recorded row', () => {
+    const out = reconcileRosterSources([], [adv({ coordOwnerId: 'c' })]);
+    expect(out.map((r) => [r.ownerId, r.source])).toEqual([['c', RECORDED_SESSION_SOURCE]]);
+  });
+
+  it('a STALE presence row with NO live record is kept as-is (still ended/stale)', () => {
+    const out = reconcileRosterSources([pres('d', true)], []);
+    expect(out).toHaveLength(1);
+    expect(out[0].ownerId).toBe('d');
+    expect(out[0].source).toBe('omp-hook-session');
+    expect(out[0].stale).toBe(true);
+  });
+
+  it('mixed roster: fresh wins, stale superseded, log-only synthesized, stale-no-log kept', () => {
+    const out = reconcileRosterSources(
+      [pres('fresh', false), pres('stale-resumed', true), pres('stale-dead', true)],
+      [adv({ coordOwnerId: 'fresh' }), adv({ coordOwnerId: 'stale-resumed' }), adv({ coordOwnerId: 'log-only' })],
+    );
+    const byOwner = Object.fromEntries(out.map((r) => [r.ownerId, r.source]));
+    expect(byOwner['fresh']).toBe('omp-hook-session');        // fresh presence wins
+    expect(byOwner['stale-resumed']).toBe(RECORDED_SESSION_SOURCE); // live record supersedes stale
+    expect(byOwner['stale-dead']).toBe('omp-hook-session');   // stale kept (no live record)
+    expect(byOwner['log-only']).toBe(RECORDED_SESSION_SOURCE); // synthesized
+    expect(out).toHaveLength(4); // no double-listing
   });
 });

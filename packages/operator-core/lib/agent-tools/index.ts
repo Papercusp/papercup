@@ -66,6 +66,7 @@ import './voice/leave';
 import './voice/status';
 import './voice/agent';
 import './voice/transcript';
+import './voice/say';
 import './roles/list';
 import './roles/get';
 import './roles/firing_on';

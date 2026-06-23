@@ -60,6 +60,42 @@ function recordedLabel(r: AdvSessionRow): string {
  * A row with no `coordOwnerId` is skipped (unaddressable — it could never be
  * woken). Pure → unit-tested.
  */
+/**
+ * Reconcile the two liveness sources into ONE roster-row list (P-001 / P-002).
+ * The precedence — the crux of why a resumed-but-idle session is now visible:
+ *
+ *  1. A FRESH (non-stale) presence row WINS — it carries the richest live
+ *     enrichment (intent, files, wakeability), so a session-log record never
+ *     shadows it.
+ *  2. A live session-log record SUPERSEDES a STALE presence row — a dead
+ *     heartbeat must NOT hide a running session. This is the resume case: an
+ *     exited session's `coord_presence` row lingers stale (heartbeat > 10 min)
+ *     while `psu --resume` revives the process and reactivates the `adv_sessions`
+ *     row; the live record wins, the stale heartbeat row is dropped.
+ *  3. An owner with ONLY a live session-log record (never self-registered) gets
+ *     a synthesized `recorded` row.
+ *
+ * Pure (rows in → rows out) → unit-tested. Synthesized rows are appended in the
+ * deterministic owner order `listRecordedLiveSessions` returns, preserving the
+ * snapshot's byte-stability.
+ */
+export function reconcileRosterSources(
+  presence: readonly UnifiedPresenceRecord[],
+  recordedLive: readonly AdvSessionRow[],
+): UnifiedPresenceRecord[] {
+  // Only a FRESH presence row blocks a session-log record (rule 1); a stale one
+  // does not (rule 2).
+  const freshPresentIds = new Set(
+    presence.filter((r) => !r.stale).map((r) => r.ownerId),
+  );
+  const synthesized = synthesizeRecordedRosterRows(recordedLive, freshPresentIds);
+  const synthOwnerIds = new Set(synthesized.map((r) => r.ownerId));
+  // Drop a STALE presence row superseded by a live session-log record (rule 2) so
+  // the owner isn't double-listed (once stale-dead, once recorded-live).
+  const kept = presence.filter((r) => !(r.stale && synthOwnerIds.has(r.ownerId)));
+  return [...kept, ...synthesized];
+}
+
 export function synthesizeRecordedRosterRows(
   recorded: readonly AdvSessionRow[],
   existingOwnerIds: ReadonlySet<string>,

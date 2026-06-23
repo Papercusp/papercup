@@ -124,16 +124,23 @@ current state blocking `operator:converse`).
 - **Risk:** writing into a live interactive Claude pane (focus, race, multi-line). Use
   a deterministic submit (bracketed paste + Enter) and confirm via dump-screen.
 
-### Phase D — Voice OUT (Sentinel reply → TTS)
-- Capture the Sentinel's reply text and pass it to `speak()` (the existing TTS path).
-- **Approach (recommended): a `<say>…</say>` convention.** The Sentinel persona wraps
-  the spoken portion of each reply in `<say>` (or calls a `voice:speak` MCP tool);
-  the voice host reads it and TTS's it. The `<say>`-tag parsing already exists
-  (`apps/tui/src/chat_tags.rs`, `operator-converse-tags.ts`) — reuse it. This lets the
-  agent decide what's spoken vs shown.
-- **Alternative:** capture the pane's rendered output (fragile) or a
-  `stream-json` hook (the dock pane is interactive, not headless).
-- **Risk:** keeping spoken text concise; not TTS-ing tool noise.
+### Phase D — Voice OUT (Sentinel reply → TTS) — DONE (code)
+- **Built via an MCP `voice:say` tool** (`agent-tools/voice/say.ts`), NOT the
+  Stop-hook/`<say>`-capture the plan first proposed. The Sentinel calls
+  `voice:say(text)` to speak; the tool pushes the line into the in-process buffer
+  (`sentinel-output-buffer.ts`); the webview voice runtime polls `GET
+  /api/operator/sentinel-output` (`VoiceAppBridge` + `drainSentinelOutput`) and
+  runs each line through the local `speak()`/TTS. Persona instructs it
+  (`sentinel.persona.md` "How you speak"). `voice:say` is `capability:
+  'operator:read'` + `agentRoles:['sentinel']` (the sentinel's `voice:*` mapping),
+  so no role-cap change was needed; `tools-md-sync` green.
+- **Why the tool, not capture:** no transcript parsing, no screen-scraping, no
+  operator-URL discovery, no per-session hook config — the agent explicitly emits
+  what's spoken (so tool noise/code is never TTS'd) and it's in-process.
+- The `POST /api/operator/sentinel-output` endpoint also exists (CSRF-guarded) for
+  a future hook/alt-emitter, but `voice:say` is the path.
+- **Risk:** relies on the persona calling `voice:say` for spoken lines (vs auto
+  capture) — acceptable + gives the agent control; revisit if it under-speaks.
 
 ### Phase E — Cards (structured choices)
 - **Near-term:** plain-text Q&A — the Sentinel asks "1) … 2) … — say or type a number,"

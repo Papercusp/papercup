@@ -65,6 +65,21 @@ const DEFAULT_MAX_QUEUE_WAIT_MS = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUE
 // shed 429 that fails a bee at $0. Sized so maxQueueWaitMs + this stays under the bee CLI's ~10-min SDK timeout.
 // 0 = OFF (legacy: shed/forward at the deadline). Env-tunable; injectable per-gateway via deps.requestAbsorbMs.
 const DEFAULT_REQUEST_ABSORB_MS = Number(process.env.PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS) || 60_000;
+// P-003 (gateway-priority-tiers, SAFE variant of the priority throttle-park): tier-differential absorb
+// patience. A higher-priority tier HOLDS the caller longer through a transient throttle-park (so it wins the
+// recovered account); a batch tier sheds SOONER (freeing the slot for the high tier) — the OUTCOME of "serve
+// highest tier first" WITHOUT a governor-wait-queue restructure (which collides with the absorb's gov-layer
+// re-acquire). Applied only when the tier layer is on (`tierMap` set) and the absorb is on; identity (factor 1)
+// otherwise. Env PAPERCUSP_GATEWAY_ABSORB_TIER_SCALE=0 disables. Factors ≤1.5, so maxQueueWaitMs + the scaled
+// absorb stays under the bee CLI's ~10-min SDK timeout for a sanely-sized requestAbsorbMs.
+const ABSORB_TIER_SCALE_ON = process.env.PAPERCUSP_GATEWAY_ABSORB_TIER_SCALE !== '0';
+function absorbTierFactor(tier: number | undefined): number {
+  if (!ABSORB_TIER_SCALE_ON || tier === undefined) return 1;
+  if (tier <= 1) return 1.5; // interactive / queen / scout / overwatch — hold longest
+  if (tier === 2) return 1.25; // su
+  if (tier === 3) return 1; // bee — the baseline
+  return 0.6; // tier 4+ (unknown / batch) — sheds soonest, freeing the slot for the high tiers
+}
 /** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
  *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
  *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the

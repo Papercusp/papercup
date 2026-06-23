@@ -21,7 +21,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { listRecordedLiveSessions } from '../../adv-sessions';
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
-import { synthesizeRecordedRosterRows, RECORDED_SESSION_SOURCE } from './recorded-sessions';
+import { reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
 import { toStableRosterRow, type RosterRow } from './presence-payload';
 import { fetchWakeability, deriveSessionState, type WakeabilitySignals } from './presence-wakeability';
@@ -137,11 +137,11 @@ export async function assemblePresenceSnapshot(
       : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
     sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
   ]);
-  // Synthesize roster rows for recorded live sessions NOT already self-registered
-  // (coord_presence + federated own the richer row when present). CLI-agnostic.
-  const presentIds = new Set<string>([...records, ...federated].map((r) => r.ownerId));
-  const synthesized = synthesizeRecordedRosterRows(recordedLive, presentIds);
-  const all: RosterRow[] = [...records, ...federated, ...synthesized];
+  // Reconcile the two liveness sources: a fresh presence row wins; a live
+  // session-log record supersedes a STALE presence row (so a resumed-but-idle
+  // session whose old heartbeat went stale is still surfaced, not shadowed); an
+  // owner with only a live record gets a synthesized 'recorded' row. CLI-agnostic.
+  const all: RosterRow[] = reconcileRosterSources([...records, ...federated], recordedLive);
   const active = all.filter((r) => !r.stale);
   const stale = all.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();

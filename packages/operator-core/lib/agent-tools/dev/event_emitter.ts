@@ -17,16 +17,12 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const ArgsSchema = z.object({
   steps: z.number().int().min(1).max(50).default(5),
   delayMs: z.number().int().min(0).max(2000).default(150),
 });
-
-const EventsSchema = {
-  tick: z.object({ i: z.number().int() }),
-} as const;
 
 export default defineTool({
   name: 'dev:event_emitter',
@@ -37,11 +33,13 @@ export default defineTool({
   agentRoles: ['operator'],
   timeoutSec: 60,
   replayBufferSize: 100,
-  events: EventsSchema,
+  events: {
+    tick: z.object({ i: z.number().int() }),
+  },
   args: ArgsSchema,
-  async handler(args, ctx) {
+  async handler(args, ctx: UnifiedToolContext) {
     for (let i = 0; i < args.steps; i++) {
-      if (ctx.signal.aborted) break;
+      if (ctx.signal?.aborted) break;
       ctx.emit('tick', { i });
       if (args.delayMs > 0) await new Promise((r) => setTimeout(r, args.delayMs));
     }
