@@ -10,20 +10,24 @@
  * item counts.
  */
 
-import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { z } from "zod";
+import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
 import {
   listPlanIndexRows,
   listPlanIndexRowsForWorkspace,
   getPlanContentsBySlugs,
   resolveHarnessPlansDir,
   type PlanIndexRow,
-} from './source';
-import { activeWorkspaceId } from '../../workspace-registry';
-import { ctxToPlanSourceOpts } from './_ctx-opts';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
-import { resolveEffectiveStatusForItems } from './effective-status';
-import { getAllBlockedPlanItems, applyPlanItemBlocks, planItemRef } from '../../issue-blocks-merge';
+} from "./source";
+import { activeWorkspaceId } from "../../workspace-registry";
+import { ctxToPlanSourceOpts } from "./_ctx-opts";
+import { harnessArg, harnessScopedCtx } from "../_harness-scope";
+import { resolveEffectiveStatusForItems } from "./effective-status";
+import {
+  getAllBlockedPlanItems,
+  applyPlanItemBlocks,
+  planItemRef,
+} from "../../issue-blocks-merge";
 import {
   IMPORTANCE_LEVELS,
   ITEM_STATUSES,
@@ -32,39 +36,57 @@ import {
   type Importance,
   type ItemStatus,
   type PlanItem,
-} from './parser';
-import { reconcileStartStatus } from './plan-start-state';
+} from "./parser";
+import { reconcileStartStatus } from "./plan-start-state";
+import { cachedRead, type CachedReadCtx } from "../../cache";
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
 const HARNESS_SLUGS_MAX = 64;
+
+/**
+ * SWR backstop for plans:list (cache-expensive-tool-reads-2026-06-22 P-002 / D-002).
+ * The plan tables (harness_plans/plan_revisions/plan_runs) are trigger-covered so a
+ * plan write auto-invalidates via the cache-ECA — this short soft TTL only bounds
+ * staleness for the un-triggered OVERLAY dimensions the read folds in (the open
+ * issue-block overlay via coord_links, scout provenance via scout_routed_ideas).
+ */
+const PLANS_LIST_SOFT_TTL_MS = 45_000;
 
 const argsSchema = z.object({
   status: z
     .enum([...PLAN_STATUSES] as [string, ...string[]])
     .optional()
-    .describe('Filter by plan-level status. Legacy plans (no frontmatter) report status "draft"; use includeLegacy + the isLegacy flag to find them.'),
+    .describe(
+      'Filter by plan-level status. Legacy plans (no frontmatter) report status "draft"; use includeLegacy + the isLegacy flag to find them.',
+    ),
   includeArchived: z
     .boolean()
     .optional()
-    .describe('Include plans under docs/plans/archive/. Default false.'),
+    .describe("Include plans under docs/plans/archive/. Default false."),
   includeLegacy: z
     .boolean()
     .optional()
-    .describe('Include plans without valid frontmatter. Default true.'),
+    .describe("Include plans without valid frontmatter. Default true."),
   includeInstances: z
     .boolean()
     .optional()
-    .describe('Include per-run instance plans of scheduled templates (Option C). Hidden by default — they are reached via the template Runs history, not the main directory.'),
+    .describe(
+      "Include per-run instance plans of scheduled templates (Option C). Hidden by default — they are reached via the template Runs history, not the main directory.",
+    ),
   template: z
     .string()
     .min(1)
     .optional()
-    .describe('Filter to plans of a given template TYPE (e.g. "rubric") — plan-templates-and-rubric-v2 P-005. Rides the harness_plans_template_idx filter index.'),
+    .describe(
+      'Filter to plans of a given template TYPE (e.g. "rubric") — plan-templates-and-rubric-v2 P-005. Rides the harness_plans_template_idx filter index.',
+    ),
   templateSlug: z
     .string()
     .min(1)
     .optional()
-    .describe('Filter to per-run instances of a given template plan (the template_slug back-pointer). Implies including instances (they are otherwise hidden).'),
+    .describe(
+      "Filter to per-run instances of a given template plan (the template_slug back-pointer). Implies including instances (they are otherwise hidden).",
+    ),
   /**
    * P-029: explicit multi-harness fan-out. When set, ignore the ctx
    * harness and walk each named harness's `docs/plans/` dir, returning
@@ -82,38 +104,58 @@ const argsSchema = z.object({
   harness_slugs: z
     .union([z.string().min(1), z.array(z.string().min(1))])
     .transform((v) => (Array.isArray(v) ? v : [v]))
-    .pipe(z.array(z.string().min(1)).max(HARNESS_SLUGS_MAX, { message: `harness_slugs capped at ${HARNESS_SLUGS_MAX}` }))
+    .pipe(
+      z
+        .array(z.string().min(1))
+        .max(HARNESS_SLUGS_MAX, {
+          message: `harness_slugs capped at ${HARNESS_SLUGS_MAX}`,
+        }),
+    )
     .optional()
-    .describe('Optional explicit fan-out across multiple harnesses (overrides ctx harness).'),
+    .describe(
+      "Optional explicit fan-out across multiple harnesses (overrides ctx harness).",
+    ),
   workspaceWide: z
     .boolean()
     .optional()
-    .describe('List EVERY plan in the active workspace, regardless of harness (workspace-data-isolation-leaks F-A1). The UI "all plans" view uses this instead of the harness:"all" wildcard (which is the SU shortcut for Papercusp\'s own plans). Overrides harness / harness_slugs.'),
+    .describe(
+      'List EVERY plan in the active workspace, regardless of harness (workspace-data-isolation-leaks F-A1). The UI "all plans" view uses this instead of the harness:"all" wildcard (which is the SU shortcut for Papercusp\'s own plans). Overrides harness / harness_slugs.',
+    ),
   limit: z
     .number()
     .int()
     .positive()
     .max(500)
     .optional()
-    .describe('Max plans returned (after ordering). Combine with order:"updated" for "the N most-recent plans" instead of fetching every plan.'),
+    .describe(
+      'Max plans returned (after ordering). Combine with order:"updated" for "the N most-recent plans" instead of fetching every plan.',
+    ),
   createdSince: z
     .string()
     .min(1)
     .optional()
-    .describe('Only plans created at/after this — an ISO date/timestamp ("2026-06-17") OR a relative window ("4d", "12h", "30m"). Filtered server-side (PG), not after fetch.'),
+    .describe(
+      'Only plans created at/after this — an ISO date/timestamp ("2026-06-17") OR a relative window ("4d", "12h", "30m"). Filtered server-side (PG), not after fetch.',
+    ),
   updatedSince: z
     .string()
     .min(1)
     .optional()
-    .describe('Only plans with last real activity at/after this — ISO or relative ("4d"). Filtered server-side.'),
+    .describe(
+      'Only plans with last real activity at/after this — ISO or relative ("4d"). Filtered server-side.',
+    ),
   order: z
-    .enum(['updated', 'created', 'slug'])
+    .enum(["updated", "created", "slug"])
     .optional()
-    .describe('Order: "updated"/"created" = most-recent first; "slug" (default) = alphabetical.'),
+    .describe(
+      'Order: "updated"/"created" = most-recent first; "slug" (default) = alphabetical.',
+    ),
   compact: z
     .boolean()
     .optional()
-    .describe('Skip per-plan item-state resolution — omit itemCounts + maxImportance for a smaller, cheaper result (keeps slug/title/status/updated/created/owner/template/nextAction/harness). Use for a fast directory scan; drop it when you need effective item counts.'),
+    .describe(
+      "Skip per-plan item-state resolution — omit itemCounts + maxImportance for a smaller, cheaper result (keeps slug/title/status/updated/created/owner/template/nextAction/harness). Use for a fast directory scan; drop it when you need effective item counts.",
+    ),
   harness: harnessArg,
 });
 
@@ -125,7 +167,12 @@ function resolveSince(v: string | undefined): string | undefined {
   const m = /^(\d+)\s*([dhm])$/i.exec(v.trim());
   if (!m) return v;
   const n = Number.parseInt(m[1], 10);
-  const unitMs = m[2].toLowerCase() === 'd' ? 86_400_000 : m[2].toLowerCase() === 'h' ? 3_600_000 : 60_000;
+  const unitMs =
+    m[2].toLowerCase() === "d"
+      ? 86_400_000
+      : m[2].toLowerCase() === "h"
+        ? 3_600_000
+        : 60_000;
   return new Date(Date.now() - n * unitMs).toISOString();
 }
 
@@ -145,7 +192,9 @@ type ListRow = {
   template: string | null;
   archived: boolean;
   isLegacy: boolean;
-  itemCounts: Partial<Record<(typeof ITEM_STATUSES)[number] | 'unknown', number>> | null;
+  itemCounts: Partial<
+    Record<(typeof ITEM_STATUSES)[number] | "unknown", number>
+  > | null;
   nextAction: string | null;
   /**
    * Resolved harness slug per
@@ -168,7 +217,7 @@ type ListRow = {
    */
   scheduled: boolean;
   scheduleActive: boolean;
-  scheduleKind: 'recurring' | 'one-shot' | null;
+  scheduleKind: "recurring" | "one-shot" | null;
 };
 
 /** Most → least urgent rank, per IMPORTANCE_LEVELS order. */
@@ -185,23 +234,22 @@ function isoOrNull(ts: unknown): string | null {
 }
 
 export default defineTool({
-  name: 'plans:list',
+  name: "plans:list",
   description:
     'List SU plans under apps/operator/docs/plans/. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line. Legacy plans (no frontmatter) surface as status="draft" (flagged via isLegacy).',
   guidance: {
-    when:
-      'A directory of plans — "what plans exist / are active", or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or "4d") + order:"updated" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For a fast scan that skips item-count resolution, add compact:true.',
+    when: 'A directory of plans — "what plans exist / are active", or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or "4d") + order:"updated" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For a fast scan that skips item-count resolution, add compact:true.',
     notWhen:
-      'You already know the plan slug and want full contents — call plans:get directly. For an ad-hoc/aggregate query no arg here exposes (group-by, joins), use dev:pg_query.',
+      "You already know the plan slug and want full contents — call plans:get directly. For an ad-hoc/aggregate query no arg here exposes (group-by, joins), use dev:pg_query.",
     chaining:
-      'plans:list → plans:get { slug } (full plan) or plans:items { actionable: true } (pickable items across plans).',
+      "plans:list → plans:get { slug } (full plan) or plans:items { actionable: true } (pickable items across plans).",
   },
-  capability: 'plans:read',
+  capability: "plans:read",
   requirePrincipal: false,
   // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor grounds nudges against
   // active plans / stalled items / aging escalations (read-only — plans:read cap).
-  agentRoles: [...SU_ROLES, 'overwatch'],
-  modality: ['text'],
+  agentRoles: [...SU_ROLES, "overwatch"],
+  modality: ["text"],
   args: argsSchema,
   // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, P-015 — Lane F rollout,
   // pairs with the P-013 plans:attention exemplar). The diffable unit is the `plans` row
@@ -217,9 +265,9 @@ export default defineTool({
       return Array.isArray(plans) ? plans : null;
     },
     itemKey: (row) => (row as { slug: string }).slug,
-    orderKey: 'updated',
-    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
-    schemaVersion: 'plans-list-v1',
+    orderKey: "updated",
+    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
+    schemaVersion: "plans-list-v1",
     maxDeltaAge: 5 * 60_000,
   },
   async handler(args, ctx) {
@@ -230,8 +278,12 @@ export default defineTool({
     const compact = args.compact === true;
     // Server-side recency/order/limit (pushed into the SQL, not post-filtered).
     const sourceFilters = {
-      ...(resolveSince(args.createdSince) ? { createdSince: resolveSince(args.createdSince) } : {}),
-      ...(resolveSince(args.updatedSince) ? { updatedSince: resolveSince(args.updatedSince) } : {}),
+      ...(resolveSince(args.createdSince)
+        ? { createdSince: resolveSince(args.createdSince) }
+        : {}),
+      ...(resolveSince(args.updatedSince)
+        ? { updatedSince: resolveSince(args.updatedSince) }
+        : {}),
       ...(args.order ? { order: args.order } : {}),
       ...(args.limit && args.limit > 0 ? { limit: args.limit } : {}),
     };
@@ -256,234 +308,312 @@ export default defineTool({
           seen.add(trimmed);
           try {
             const r = await resolveHarnessPlansDir(trimmed);
-            if (!perHarness.includes(r.harnessSlug)) perHarness.push(r.harnessSlug);
+            if (!perHarness.includes(r.harnessSlug))
+              perHarness.push(r.harnessSlug);
           } catch {
             unknownHarnesses.push(trimmed);
           }
         }
       } else {
-        const one = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
+        const one = await ctxToPlanSourceOpts(
+          harnessScopedCtx(args.harness, ctx),
+        );
         perHarness.push(one.harnessSlug);
       }
     }
 
-    // Fetch the index rows as per-harness batches. Workspace-wide reads them all
-    // at once (one query by workspace_id) and groups by harness so the per-harness
-    // gap-fill + row processing below is unchanged.
-    const batches: Array<{ harnessSlug: string; rows: PlanIndexRow[] }> = [];
-    if (args.workspaceWide) {
-      const allRows = await listPlanIndexRowsForWorkspace({
-        workspaceId: activeWorkspaceId(),
-        includeArchived,
-        includeInstances,
-        ...(args.template ? { template: args.template } : {}),
-        ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
-        ...sourceFilters,
-      });
-      const byHarness = new Map<string, PlanIndexRow[]>();
-      for (const r of allRows) {
-        const arr = byHarness.get(r.harnessSlug) ?? [];
-        arr.push(r);
-        byHarness.set(r.harnessSlug, arr);
-      }
-      for (const [harnessSlug, rows] of byHarness) batches.push({ harnessSlug, rows });
-    } else {
-      for (const harnessSlug of perHarness) {
-        try {
-          const rows = await listPlanIndexRows({
-            harnessSlug,
+    // Cache the expensive fetch + augmentation (cache-expensive-tool-reads-2026-06-22
+    // P-002). plans:list is the #1 read-byte tool by 48h telemetry; its read is PURE
+    // and non-principal-scoped (depends only on workspace + harness-set + args — D-001).
+    // Tags are the trigger-covered plan tables, so any plan write auto-invalidates via
+    // the cache-ECA; the short SWR softTtl backstops the un-triggered OVERLAY dims
+    // (issue-block via coord_links, scout via scout_routed_ideas). The key folds EVERY
+    // output-determining dimension — the resolved harness set + workspaceWide + the RAW
+    // args (RAW createdSince/updatedSince, NOT the Date.now()-resolved absolute time, so
+    // two `4d` calls share one entry within the TTL window).
+    const cacheKey = {
+      status: args.status ?? null,
+      includeArchived,
+      includeLegacy,
+      includeInstances,
+      template: args.template ?? null,
+      templateSlug: args.templateSlug ?? null,
+      order: args.order ?? null,
+      limit: args.limit ?? null,
+      createdSince: args.createdSince ?? null,
+      updatedSince: args.updatedSince ?? null,
+      compact,
+      workspaceWide: args.workspaceWide === true,
+      harnesses: [...perHarness].sort(),
+    };
+
+    const { plans, harnessCount, batchUnknown } = await cachedRead(
+      ctx as CachedReadCtx,
+      {
+        tool: "plans:list",
+        key: cacheKey,
+        tags: ["harness_plans", "plan_revisions", "plan_runs"],
+        softTtlMs: PLANS_LIST_SOFT_TTL_MS,
+      },
+      async () => {
+        // Per-build collector for the not-registered slugs the batch loop swallows
+        // (merged into the response metadata below). Local so a cache HIT doesn't lose it.
+        const batchUnknown: string[] = [];
+        // Fetch the index rows as per-harness batches. Workspace-wide reads them all
+        // at once (one query by workspace_id) and groups by harness so the per-harness
+        // gap-fill + row processing below is unchanged.
+        const batches: Array<{ harnessSlug: string; rows: PlanIndexRow[] }> =
+          [];
+        if (args.workspaceWide) {
+          const allRows = await listPlanIndexRowsForWorkspace({
+            workspaceId: activeWorkspaceId(),
             includeArchived,
             includeInstances,
             ...(args.template ? { template: args.template } : {}),
             ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
             ...sourceFilters,
           });
-          batches.push({ harnessSlug, rows });
-        } catch (err) {
-          // infra round-3 F5: a stale/unregistered slug must not spike the
-          // error-rate on plans:list (the highest-volume tool — ~2% of calls
-          // were `resolvePlanScope: harness '…' is not registered`, from callers
-          // querying a deregistered/stale hive slug). A LIST read of a
-          // nonexistent harness is empty, not an error — match the harness_slugs
-          // fan-out path above (which already catches → unknownHarnesses). Only
-          // the not-registered resolve failure is swallowed; any OTHER error
-          // (a real DB/query fault) still throws so genuine failures stay loud.
-          const msg = err instanceof Error ? err.message : String(err);
-          if (/not registered/i.test(msg)) {
-            unknownHarnesses.push(harnessSlug);
-          } else {
-            throw err;
+          const byHarness = new Map<string, PlanIndexRow[]>();
+          for (const r of allRows) {
+            const arr = byHarness.get(r.harnessSlug) ?? [];
+            arr.push(r);
+            byHarness.set(r.harnessSlug, arr);
           }
-        }
-      }
-    }
-
-    type AugmentedRow = ListRow & {
-      startStatus: 'started' | 'paused' | 'done' | null;
-      priority: number | null;
-      /** 'scout' when the plan was routed by the Scout loop (ledger-derived) — the Create-tab origin filter. */
-      origin: 'scout' | null;
-    };
-    const augmentedRows: AugmentedRow[] = [];
-    const seenRowKeys = new Set<string>();
-
-    // engineer-issues D-005: one batch read of every open issue-block across all
-    // plans, so the per-plan itemCounts histogram below reflects items flipped to
-    // `blocked` by an open engineer-issue. Hoisted out of the harness×plan loops.
-    // Non-fatal — degrades to resolver-only counts on error.
-    let allBlocked = new Map<string, string[]>();
-    if (!compact) {
-      // Only needed for the itemCounts overlay — skipped in compact mode.
-      try {
-        allBlocked = await getAllBlockedPlanItems();
-      } catch {
-        // Non-fatal — no issue-block overlay.
-      }
-    }
-
-    // Scout provenance: one batched ledger read (scout_routed_ideas is the
-    // canonical record of what the Scout loop routed — frontmatter need not be
-    // parsed, and pre-stamp plans are covered retroactively). Workspace-free by
-    // design (see readScoutPlanRefs — in-dispatch ALS is 'default'). Non-fatal.
-    let scoutPlanRefs = new Set<string>();
-    try {
-      const { readScoutPlanRefs } = await import('../../scout/routed-ledger');
-      scoutPlanRefs = await readScoutPlanRefs();
-    } catch (err) {
-      // Non-fatal — origin degrades to null. Logged because a silent miss here
-      // cost a live debugging session (2026-06-11): the Create tab's scout
-      // filter quietly matches nothing when this read breaks.
-      // eslint-disable-next-line no-console
-      console.warn('[plans:list] scout-provenance read failed — origin omitted:', err instanceof Error ? err.message : err);
-    }
-
-    for (const { harnessSlug, rows } of batches) {
-      // Index-only rows (audit P-042 — EI-98/EI-174/EI-175): every field this
-      // row needs lives in the harness_plans projection columns, so the
-      // content blobs never leave PG and nothing is parsed per request. The
-      // archived filter ran in SQL during the fetch above.
-
-      // Targeted fallback for projection-gap rows (non-legacy with an empty
-      // Stage-3 items index — e.g. a federated remote row whose projection
-      // didn't fill): ONE batched content fetch for just those slugs, parsed
-      // below. Best-effort — on failure their counts degrade to {}.
-      const gapSlugs = compact
-        ? []
-        : rows.filter((r) => !r.isLegacy && r.items.length === 0).map((r) => r.planSlug);
-      let gapContents = new Map<string, string>();
-      if (gapSlugs.length > 0) {
-        try {
-          gapContents = await getPlanContentsBySlugs(gapSlugs, { harnessSlug });
-        } catch {
-          /* counts for gap rows degrade to {} */
-        }
-      }
-
-      const itemsForRow = (row: PlanIndexRow): PlanItem[] => {
-        if (row.items.length > 0) {
-          return row.items.map((i) => ({
-            id: i.id,
-            text: i.text,
-            storedStatus: i.status as ItemStatus,
-            importance: i.importance as Importance,
-            blockedBy: i.blockedBy,
-            decisionRefs: i.decisionRefs,
-            phase: i.phase,
-            lineNumber: 0,
-            rawLine: '',
-          }));
-        }
-        const content = gapContents.get(row.planSlug);
-        return content ? parsePlan(content).items : [];
-      };
-
-      for (const row of rows) {
-        if (row.isLegacy && !includeLegacy) continue;
-
-        const slug = row.planSlug;
-
-        let itemCounts: ListRow['itemCounts'] = null;
-        let maxImportance: Importance | null = null;
-        if (!compact && !row.isLegacy) {
-          const { items } = applyPlanItemBlocks(
-            resolveEffectiveStatusForItems(itemsForRow(row)).items,
-            (id) => allBlocked.get(planItemRef(slug, id)),
-          );
-          const counts: Record<string, number> = {};
-          for (const it of items) {
-            counts[it.effectiveStatus] = (counts[it.effectiveStatus] ?? 0) + 1;
-            // Hottest open item — a done/dropped urgent item shouldn't keep
-            // the plan ranked "most urgent".
-            if (it.effectiveStatus !== 'done' && it.effectiveStatus !== 'dropped') {
-              const imp = it.importance ?? 'normal';
-              if (maxImportance === null || IMPORTANCE_RANK[imp] < IMPORTANCE_RANK[maxImportance]) {
-                maxImportance = imp;
+          for (const [harnessSlug, rows] of byHarness)
+            batches.push({ harnessSlug, rows });
+        } else {
+          for (const harnessSlug of perHarness) {
+            try {
+              const rows = await listPlanIndexRows({
+                harnessSlug,
+                includeArchived,
+                includeInstances,
+                ...(args.template ? { template: args.template } : {}),
+                ...(args.templateSlug
+                  ? { templateSlug: args.templateSlug }
+                  : {}),
+                ...sourceFilters,
+              });
+              batches.push({ harnessSlug, rows });
+            } catch (err) {
+              // infra round-3 F5: a stale/unregistered slug must not spike the
+              // error-rate on plans:list (the highest-volume tool — ~2% of calls
+              // were `resolvePlanScope: harness '…' is not registered`, from callers
+              // querying a deregistered/stale hive slug). A LIST read of a
+              // nonexistent harness is empty, not an error — match the harness_slugs
+              // fan-out path above (which already catches → unknownHarnesses). Only
+              // the not-registered resolve failure is swallowed; any OTHER error
+              // (a real DB/query fault) still throws so genuine failures stay loud.
+              const msg = err instanceof Error ? err.message : String(err);
+              if (/not registered/i.test(msg)) {
+                batchUnknown.push(harnessSlug);
+              } else {
+                throw err;
               }
             }
           }
-          itemCounts = counts;
         }
 
-        // No projected status (incl. legacy/unparseable plans) → 'draft'.
-        const status = row.status ?? 'draft';
-        if (args.status && status !== args.status) continue;
+        type AugmentedRow = ListRow & {
+          startStatus: "started" | "paused" | "done" | null;
+          priority: number | null;
+          /** 'scout' when the plan was routed by the Scout loop (ledger-derived) — the Create-tab origin filter. */
+          origin: "scout" | null;
+        };
+        const augmentedRows: AugmentedRow[] = [];
+        const seenRowKeys = new Set<string>();
 
-        const dedupKey = `${harnessSlug}:${slug}`;
-        if (seenRowKeys.has(dedupKey)) continue;
-        seenRowKeys.add(dedupKey);
+        // engineer-issues D-005: one batch read of every open issue-block across all
+        // plans, so the per-plan itemCounts histogram below reflects items flipped to
+        // `blocked` by an open engineer-issue. Hoisted out of the harness×plan loops.
+        // Non-fatal — degrades to resolver-only counts on error.
+        let allBlocked = new Map<string, string[]>();
+        if (!compact) {
+          // Only needed for the itemCounts overlay — skipped in compact mode.
+          try {
+            allBlocked = await getAllBlockedPlanItems();
+          } catch {
+            // Non-fatal — no issue-block overlay.
+          }
+        }
 
-        augmentedRows.push({
-          slug,
-          title: row.title,
-          status,
-          updated: isoOrNull(row.updatedAt) ?? row.updated ?? null,
-          created: row.created,
-          owner: row.owner,
-          initiative: row.initiative,
-          template: row.template,
-          archived: row.archived,
-          isLegacy: row.isLegacy,
-          itemCounts,
-          nextAction: row.nowNext,
-          harness: harnessSlug,
-          // Self-heal the started/terminal invariant on read: a terminal plan
-          // (shipped/superseded) can never be operationally started/paused.
-          startStatus: reconcileStartStatus(row.opStatus, status),
-          priority: row.opPriority,
-          maxImportance,
-          origin: scoutPlanRefs.has(`plan:${slug}`) ? ('scout' as const) : null,
-          // P-021 schedule glance — already-loaded columns, no extra read.
-          // A recurrence set ⇒ recurring; else a bare one-shot fire time ⇒ one-shot.
-          scheduled: row.schedule != null || row.scheduledAt != null,
-          scheduleActive: row.scheduleActive === true,
-          scheduleKind: row.schedule != null ? 'recurring' : row.scheduledAt != null ? 'one-shot' : null,
-        });
-      }
-    }
+        // Scout provenance: one batched ledger read (scout_routed_ideas is the
+        // canonical record of what the Scout loop routed — frontmatter need not be
+        // parsed, and pre-stamp plans are covered retroactively). Workspace-free by
+        // design (see readScoutPlanRefs — in-dispatch ALS is 'default'). Non-fatal.
+        let scoutPlanRefs = new Set<string>();
+        try {
+          const { readScoutPlanRefs } =
+            await import("../../scout/routed-ledger");
+          scoutPlanRefs = await readScoutPlanRefs();
+        } catch (err) {
+          // Non-fatal — origin degrades to null. Logged because a silent miss here
+          // cost a live debugging session (2026-06-11): the Create tab's scout
+          // filter quietly matches nothing when this read breaks.
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[plans:list] scout-provenance read failed — origin omitted:",
+            err instanceof Error ? err.message : err,
+          );
+        }
 
-    // Re-apply order + limit ACROSS harness batches (SQL ordered/limited each
-    // batch; this makes a multi-harness fan-out yield the correct global top-N).
-    if (args.order === 'updated') {
-      augmentedRows.sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
-    } else if (args.order === 'created') {
-      augmentedRows.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
-    } else if (args.order === 'slug') {
-      augmentedRows.sort((a, b) => a.slug.localeCompare(b.slug));
-    }
-    const plans =
-      args.limit && args.limit > 0 ? augmentedRows.slice(0, args.limit) : augmentedRows;
+        for (const { harnessSlug, rows } of batches) {
+          // Index-only rows (audit P-042 — EI-98/EI-174/EI-175): every field this
+          // row needs lives in the harness_plans projection columns, so the
+          // content blobs never leave PG and nothing is parsed per request. The
+          // archived filter ran in SQL during the fetch above.
 
+          // Targeted fallback for projection-gap rows (non-legacy with an empty
+          // Stage-3 items index — e.g. a federated remote row whose projection
+          // didn't fill): ONE batched content fetch for just those slugs, parsed
+          // below. Best-effort — on failure their counts degrade to {}.
+          const gapSlugs = compact
+            ? []
+            : rows
+                .filter((r) => !r.isLegacy && r.items.length === 0)
+                .map((r) => r.planSlug);
+          let gapContents = new Map<string, string>();
+          if (gapSlugs.length > 0) {
+            try {
+              gapContents = await getPlanContentsBySlugs(gapSlugs, {
+                harnessSlug,
+              });
+            } catch {
+              /* counts for gap rows degrade to {} */
+            }
+          }
+
+          const itemsForRow = (row: PlanIndexRow): PlanItem[] => {
+            if (row.items.length > 0) {
+              return row.items.map((i) => ({
+                id: i.id,
+                text: i.text,
+                storedStatus: i.status as ItemStatus,
+                importance: i.importance as Importance,
+                blockedBy: i.blockedBy,
+                decisionRefs: i.decisionRefs,
+                phase: i.phase,
+                lineNumber: 0,
+                rawLine: "",
+              }));
+            }
+            const content = gapContents.get(row.planSlug);
+            return content ? parsePlan(content).items : [];
+          };
+
+          for (const row of rows) {
+            if (row.isLegacy && !includeLegacy) continue;
+
+            const slug = row.planSlug;
+
+            let itemCounts: ListRow["itemCounts"] = null;
+            let maxImportance: Importance | null = null;
+            if (!compact && !row.isLegacy) {
+              const { items } = applyPlanItemBlocks(
+                resolveEffectiveStatusForItems(itemsForRow(row)).items,
+                (id) => allBlocked.get(planItemRef(slug, id)),
+              );
+              const counts: Record<string, number> = {};
+              for (const it of items) {
+                counts[it.effectiveStatus] =
+                  (counts[it.effectiveStatus] ?? 0) + 1;
+                // Hottest open item — a done/dropped urgent item shouldn't keep
+                // the plan ranked "most urgent".
+                if (
+                  it.effectiveStatus !== "done" &&
+                  it.effectiveStatus !== "dropped"
+                ) {
+                  const imp = it.importance ?? "normal";
+                  if (
+                    maxImportance === null ||
+                    IMPORTANCE_RANK[imp] < IMPORTANCE_RANK[maxImportance]
+                  ) {
+                    maxImportance = imp;
+                  }
+                }
+              }
+              itemCounts = counts;
+            }
+
+            // No projected status (incl. legacy/unparseable plans) → 'draft'.
+            const status = row.status ?? "draft";
+            if (args.status && status !== args.status) continue;
+
+            const dedupKey = `${harnessSlug}:${slug}`;
+            if (seenRowKeys.has(dedupKey)) continue;
+            seenRowKeys.add(dedupKey);
+
+            augmentedRows.push({
+              slug,
+              title: row.title,
+              status,
+              updated: isoOrNull(row.updatedAt) ?? row.updated ?? null,
+              created: row.created,
+              owner: row.owner,
+              initiative: row.initiative,
+              template: row.template,
+              archived: row.archived,
+              isLegacy: row.isLegacy,
+              itemCounts,
+              nextAction: row.nowNext,
+              harness: harnessSlug,
+              // Self-heal the started/terminal invariant on read: a terminal plan
+              // (shipped/superseded) can never be operationally started/paused.
+              startStatus: reconcileStartStatus(row.opStatus, status),
+              priority: row.opPriority,
+              maxImportance,
+              origin: scoutPlanRefs.has(`plan:${slug}`)
+                ? ("scout" as const)
+                : null,
+              // P-021 schedule glance — already-loaded columns, no extra read.
+              // A recurrence set ⇒ recurring; else a bare one-shot fire time ⇒ one-shot.
+              scheduled: row.schedule != null || row.scheduledAt != null,
+              scheduleActive: row.scheduleActive === true,
+              scheduleKind:
+                row.schedule != null
+                  ? "recurring"
+                  : row.scheduledAt != null
+                    ? "one-shot"
+                    : null,
+            });
+          }
+        }
+
+        // Re-apply order + limit ACROSS harness batches (SQL ordered/limited each
+        // batch; this makes a multi-harness fan-out yield the correct global top-N).
+        if (args.order === "updated") {
+          augmentedRows.sort((a, b) =>
+            (b.updated ?? "").localeCompare(a.updated ?? ""),
+          );
+        } else if (args.order === "created") {
+          augmentedRows.sort((a, b) =>
+            (b.created ?? "").localeCompare(a.created ?? ""),
+          );
+        } else if (args.order === "slug") {
+          augmentedRows.sort((a, b) => a.slug.localeCompare(b.slug));
+        }
+        const plans =
+          args.limit && args.limit > 0
+            ? augmentedRows.slice(0, args.limit)
+            : augmentedRows;
+        return { plans, harnessCount: batches.length, batchUnknown };
+      },
+    );
+
+    // unknownHarnesses from the explicit harness_slugs fan-out (resolved BEFORE the
+    // cache, cheap) + batchUnknown from the cached fetch (the not-registered swallows).
+    const allUnknown = [...unknownHarnesses, ...batchUnknown];
     ctxAny.metadata?.({
       count: plans.length,
       includeArchived,
       includeLegacy,
       compact,
-      harnessCount: batches.length,
-      ...(unknownHarnesses.length > 0 && { unknownHarnesses }),
+      harnessCount,
+      ...(allUnknown.length > 0 && { unknownHarnesses: allUnknown }),
     });
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ plans }) }],
+      content: [{ type: "text" as const, text: JSON.stringify({ plans }) }],
     };
   },
 });

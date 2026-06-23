@@ -182,6 +182,8 @@ export interface WorkItemsHealth {
   deadHeldClaims?: number;
   /** Open bug/change issues past grace still assigned to a dead holder. */
   deadAssignedIssues?: number;
+  /** Active plan-item reservations past grace still held by a dead holder (EI-2535). */
+  deadHeldAssignments?: number;
   /** Age of the stale-claim reaper's last recorded run, in seconds; null if never
    *  recorded (fresh boot / unknown). */
   reaperAgeSec?: number | null;

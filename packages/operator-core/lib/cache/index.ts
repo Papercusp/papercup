@@ -22,3 +22,14 @@ export type { ProjectionErrorSink, GuardedProjectionIndexOptions } from './guard
 // The operator's singleton Cache instance (P-004) — the one process-wide cache
 // the operator reads/writes through and the `cache.bumpTags` ECA action bumps.
 export { getOperatorCache, setOperatorCache, installOperatorCache, resetOperatorCacheForTests } from './instance';
+
+// The one operator-side getOrSet wrapper every expensive read-mostly tool caches
+// through (cache-expensive-tool-reads-2026-06-22 P-001 / D-003).
+export {
+  cachedRead,
+  stableKey,
+  resolveCacheWorkspaceId,
+  snapshotCachedReadStats,
+  resetCachedReadStatsForTests,
+} from './cached-read';
+export type { CachedReadCtx, CachedReadOptions, CachedReadToolStats } from './cached-read';

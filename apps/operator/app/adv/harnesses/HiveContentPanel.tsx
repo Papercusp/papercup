@@ -123,7 +123,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
     );
   }
 
-  const loading = featuresQ.isLoading || plansQ.isLoading;
+  const loading = featuresQ.loading || plansQ.loading;
 
   return (
     <div className="pc-advpanel pc-hivecontent">

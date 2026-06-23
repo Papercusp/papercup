@@ -126,6 +126,16 @@ export type {
 } from '@papercusp/tooldef';
 export { diffSnapshot, applySnapshotDelta, chooseSnapshotEmission } from '@papercusp/tooldef';
 export type { SnapshotDelta, SnapshotEmission } from '@papercusp/tooldef';
+// Tool-result SEMANTIC-delta flag seam (agent-tool-delta-protocol-2026-06-22, the
+// flag-bite): tooldef gates the `mode:'delta'` upgrade behind this resolver, the
+// host wires it to FLAGS.TOOL_DELTA_PROTOCOL (see operator-core's
+// agent-tools/delta-flag-wiring.ts — the resolver needs @papercusp/flags, which
+// agent-mcp doesn't depend on, so the wiring lives operator-side).
+export {
+  setSemanticDeltaEnabledResolver,
+  resetSemanticDeltaEnabledResolver,
+  isSemanticDeltaEnabled,
+} from '@papercusp/tooldef';
 export {
   registerCard,
   resolveCardResponse,

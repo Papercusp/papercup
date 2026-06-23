@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { Activity, CheckCircle2, Coins, LayoutGrid, Network } from 'lucide-react';
+import { FLAGS } from '@papercusp/flags';
 import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
 import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@papercusp/ui-primitives';
+import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import HealthBadge from '../../harness/HealthBadge';
@@ -41,6 +43,10 @@ interface Props {
 export default function HarnessTopBar({ slug }: Props) {
   const t = useLexicon();
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
+  // WI-259 P-006 — cross-member browse: the "Hive content" rollup panel is
+  // registered always but only offered in the Add-panel catalog when the flag
+  // is on (DEFAULT ON; inert outside a hive, so the gate is mostly a courtesy).
+  const crossMemberBrowse = useFlag(FLAGS.CROSS_MEMBER_BROWSE);
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [lanes, setLanes] = useState<LanesPayload | null>(null);
 
@@ -147,7 +153,17 @@ export default function HarnessTopBar({ slug }: Props) {
         {slug && (
           <AddPanelCatalog
             defaultSlug={slug}
-            allowedTypes={['adv:work-items', 'adv:detail', 'adv:overview', 'adv:agents', 'adv:logs', 'adv:contributors', 'adv:insights', 'adv:chat']}
+            allowedTypes={[
+              'adv:work-items',
+              'adv:detail',
+              'adv:overview',
+              'adv:agents',
+              'adv:logs',
+              'adv:contributors',
+              'adv:insights',
+              ...(crossMemberBrowse ? ['adv:hive-content'] : []),
+              'adv:chat',
+            ]}
             className="pc-adv-topbar__add-panel"
           />
         )}

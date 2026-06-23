@@ -64,16 +64,16 @@ export async function notifyAgents(
   const notified: string[] = [];
   const subscribed: string[] = [];
   const list = opts.addressees.map((a) => a?.trim()).filter((a): a is string => !!a);
-  if (list.length === 0) return { notified, subscribed };
+  if (list.length === 0) return { notified, subscribed, woke: 0 };
 
   // 1. Resolve short ids / handles → full ownerIds (fail-soft: input kept on miss).
   const resolved = await resolveBestEffortAgainstRoster(list, identity.workspaceId).catch(() => list);
   const targets = Array.from(
     new Set(resolved.map((r, i) => r || list[i])),
   ).filter((o) => o && o !== identity.ownerId); // dedupe + never self-notify
-  if (targets.length === 0) return { notified, subscribed };
+  if (targets.length === 0) return { notified, subscribed, woke: 0 };
 
-  const subs = new PgEntitySubscriptionStore({ getSql: () => getOrgPg().sql, ensureSchema: async () => {} });
+  const subs = getCoordSubscriptionStore();
   const targetRef = objectToTargetRef(opts.objectRef);
   const now = new Date().toISOString();
 
@@ -106,5 +106,19 @@ export async function notifyAgents(
       /* best-effort */
     }
   }
-  return { notified, subscribed };
+
+  // Active wake (parity with coord:message-agent): when the caller opts in, fire
+  // the pinged addressees' inbox-wake keys so sleeping sessions are re-invoked NOW
+  // (wakeRecipients filters '*'/'human'/non-wakeable internally). The per-message
+  // `extra:{wake}` above is the federated wake-INTENT; this is the live re-invoke.
+  let woke = 0;
+  if (opts.wake && notified.length > 0) {
+    const fan = await wakeRecipients(notified, {
+      summary: opts.summary,
+      source: identity.ownerId,
+      ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
+    }).catch(() => ({ woken: 0 }));
+    woke = fan.woken ?? 0;
+  }
+  return { notified, subscribed, woke };
 }

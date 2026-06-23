@@ -347,12 +347,17 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
         stuckFeatures: recovery.stuckFeatures,
         deadHeldClaims: recovery.deadHeldFeatures,
         deadAssignedIssues: recovery.deadAssignedIssues,
+        deadHeldAssignments: recovery.deadHeldAssignments,
         reaperAgeSec: recovery.reaperAgeMs == null ? null : Math.round(recovery.reaperAgeMs / 1000),
         reaperStale: recovery.reaperStale,
       } : {}),
     };
     const status = workItemsStatus(data);
-    const stuckTotal = (data.stuckFeatures ?? 0) + (data.deadHeldClaims ?? 0) + (data.deadAssignedIssues ?? 0);
+    const stuckTotal =
+      (data.stuckFeatures ?? 0) +
+      (data.deadHeldClaims ?? 0) +
+      (data.deadAssignedIssues ?? 0) +
+      (data.deadHeldAssignments ?? 0);
     const reaperWedged = data.reaperStale === true && data.reaperAgeSec != null;
     return {
       status,

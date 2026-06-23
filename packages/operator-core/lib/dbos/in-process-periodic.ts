@@ -293,19 +293,12 @@ const staleClaimSweepCheck: PeriodicCheck = {
       );
     }
 
-    // P-009 heartbeat — record this run (always, even when nothing was freed) so the
-    // system-health reader can detect a WEDGED scheduler (last-run aged out).
-    try {
-      const { recordSweepRun, STALE_CLAIM_SWEEP_NAME } = await import('../work-queue-health');
-      await recordSweepRun(sql, STALE_CLAIM_SWEEP_NAME, r.released.length + ir.released.length);
-    } catch {
-      /* best-effort heartbeat */
-    }
-
     // The PLAN-ITEM analog (EI-179): delete claims whose lease lapsed past grace AND
-    // whose holder is gone. The durable ASSIGNMENT (mig 140) is untouched, so the
-    // item returns to its assignee/pool.
-    const { reclaimExpiredPlanItemClaims } = await import('../plan-items/stale-claims');
+    // whose holder is gone. The durable ASSIGNMENT (mig 140) is untouched HERE — the
+    // assignment reaper below handles it.
+    const { reclaimExpiredPlanItemClaims, reclaimStaleDeadHolderPlanItemAssignments } = await import(
+      '../plan-items/stale-claims'
+    );
     const pr = await reclaimExpiredPlanItemClaims(sql);
     if (pr.released.length > 0) {
       console.warn(
@@ -315,6 +308,36 @@ const staleClaimSweepCheck: PeriodicCheck = {
             .map((c) => `${c.harness_slug}/${c.plan_slug}#${c.item_id}<-${c.former_owner}`)
             .join(', '),
       );
+    }
+
+    // The dead-holder ASSIGNMENT reaper (EI-2535): soft-release durable plan-item
+    // RESERVATIONS whose name-aware holder is dead past grace (a one-shot session-id
+    // assignee never re-adopts, so its reservation strands forever — the leases above
+    // never touched it). Returns the item to the unassigned pool.
+    const ar = await reclaimStaleDeadHolderPlanItemAssignments(sql, {
+      graceMs: livenessCfg.assignmentReclaimGraceMs,
+    });
+    if (ar.released.length > 0) {
+      console.warn(
+        `[stale-claims] soft-released ${ar.released.length} dead-holder plan-item assignment(s) ` +
+          `(reserved past grace, no live presence): ` +
+          ar.released
+            .map((c) => `${c.harness_slug}/${c.plan_slug}#${c.item_id}<-${c.former_assignee}`)
+            .join(', '),
+      );
+    }
+
+    // P-009 heartbeat — record this run (always, even when nothing was freed) so the
+    // system-health reader can detect a WEDGED scheduler (last-run aged out).
+    try {
+      const { recordSweepRun, STALE_CLAIM_SWEEP_NAME } = await import('../work-queue-health');
+      await recordSweepRun(
+        sql,
+        STALE_CLAIM_SWEEP_NAME,
+        r.released.length + ir.released.length + pr.released.length + ar.released.length,
+      );
+    } catch {
+      /* best-effort heartbeat */
     }
   },
 };

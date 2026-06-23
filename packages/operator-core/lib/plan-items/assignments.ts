@@ -4,9 +4,14 @@
  * Plan: plan-item-assignment-claim-liveness-2026-06-04 (Phase 0, D-001/D-002/D-006).
  *
  * Assignment is the FEDERATED, low-churn half of "who's doing this": a small
- * per-item record bound to a stable agent-NAME. It never auto-expires — only an
- * explicit release (released_ts) clears it, so it survives sleep/interrupt and is
- * the anchor a lapsed claim returns to (D-004). It IS the substrate Claimable
+ * per-item record bound to a stable agent-NAME. An explicit release (released_ts)
+ * clears it, so it survives sleep/interrupt and is the anchor a lapsed claim
+ * returns to (D-004). The ONE exception (EI-2535): a stale-assignment reaper
+ * (plan-items/stale-claims.ts) ALSO soft-releases an assignment whose holder is
+ * dead past a long grace per a NAME-AWARE liveness rule — so a one-shot session-id
+ * assignee whose session is permanently gone no longer strands the item forever
+ * (an actively-running stable name re-adopts → stays alive → is never reaped). It
+ * IS the substrate Claimable
  * `assignee` scalar for ObjectRef kind 'plan-item' (capabilities/types.ts) — the
  * same model a work_item's assignee uses (unify-work-items D-003); the leased CLAIM
  * (claims.ts) is the live grip on top.

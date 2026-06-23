@@ -96,7 +96,10 @@ async fn resolve_session(client: &OperatorClient, scope: &Scope) -> Option<(Stri
     // waiting…" forever even though its transcript was on disk. Tailing the last
     // ended wake IS this pane's contract ("keeps showing the last wake's
     // transcript, which persists on disk after the process exits", below).
-    let entries: Vec<RosterEntry> = client.roster_brain_scoped(workspace.as_deref()).await.ok()?;
+    let entries: Vec<RosterEntry> = client
+        .roster_brain_scoped(workspace.as_deref())
+        .await
+        .ok()?;
     select_newest_with_transcript(entries, scope, locate_session_transcript)
 }
 

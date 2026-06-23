@@ -143,8 +143,15 @@ export function workItemsStatus(d: WorkItemsHealth): PanelStatus {
   // boot / unknown) → warn, not crit, to avoid alarming on the ~1 boot interval
   // before the first sweep stamps its heartbeat.
   if (d.reaperStale && d.reaperAgeSec != null) return 'crit';
-  // P-008: any genuinely stuck row, a dead-held claim backlog, or a dead-assigned issue.
-  if ((d.stuckFeatures ?? 0) > 0 || (d.deadHeldClaims ?? 0) > 0 || (d.deadAssignedIssues ?? 0) > 0) return 'warn';
+  // P-008 / EI-2535: any genuinely stuck row, a dead-held claim backlog, a
+  // dead-assigned issue, or a dead-held plan-item reservation.
+  if (
+    (d.stuckFeatures ?? 0) > 0 ||
+    (d.deadHeldClaims ?? 0) > 0 ||
+    (d.deadAssignedIssues ?? 0) > 0 ||
+    (d.deadHeldAssignments ?? 0) > 0
+  )
+    return 'warn';
   if (d.reaperStale) return 'warn';
   if (d.needsHuman > 0) return 'warn';
   return 'ok';

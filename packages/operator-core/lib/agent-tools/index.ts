@@ -24,6 +24,12 @@
 // the read serializer + write shim + prompt legend.
 import './pre-prompt-registry-config';
 
+// Wire tooldef's semantic-delta gate to FLAGS.TOOL_DELTA_PROTOCOL
+// (agent-tool-delta-protocol-2026-06-22) — a pure side-effect that registers the
+// host flag-reading resolver; OFF reverts every tool to Lane-B (full |
+// not_modified). See delta-flag-wiring.ts.
+import './delta-flag-wiring';
+
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.

@@ -245,7 +245,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
         let n = kdl_pane_name(&lex.lex(term), fallback);
         format!("{} {n}", kind.glyph())
     };
-    let operator_name = glyph_name("operator", "operator", AgentPaneKind::Sentinel);
+    let sentinel_name = glyph_name("sentinel", "sentinel", AgentPaneKind::Sentinel);
     let brain_name = glyph_name("brain", "brain", AgentPaneKind::Queen);
     // The Sentinel pane is a REAL psu/Claude TUI — the FRONT-DOOR Sentinel the
     // user talks to (sentinel-as-claude-tui-2026-06-22): the `sentinel` role
@@ -834,7 +834,10 @@ mod tests {
         assert!(kdl.contains("name=\"♛ brain\""));
         assert!(kdl.contains("stacked=true"));
         assert!(kdl.contains("expanded=true"));
-        assert!(kdl.contains("command \"psu\"")); // the sentinel (operator chat)
+        // sentinel-as-claude-tui-2026-06-22: the sentinel pane (operator chat) now
+        // launches via the `psu-sentinel` wrapper (which internally runs `psu
+        // --no-picker --agent=claude --role=sentinel`), not a bare `command "psu"`.
+        assert!(kdl.contains("command \"psu-sentinel\""));
         // D-003: the brain pane is now the read-only transcript view, not psu --resume.
         assert!(kdl.contains("args \"brain-view\" \"--queen\""));
         // The retired pane modes + old single-tab panes are GONE — tab
@@ -952,13 +955,17 @@ mod tests {
 
     #[test]
     fn chat_dock_sentinel_is_a_psu_session() {
-        // hive-agent-tabs P-003: the operator/Sentinel pane is a real
-        // psu/Claude TUI (`psu --role operator`) — the `pui chat-pane` widget
-        // it replaced was retired by P-014.
+        // hive-agent-tabs P-003: the operator/Sentinel pane is a real psu/Claude TUI
+        // — the `pui chat-pane` widget it replaced was retired by P-014.
+        // sentinel-as-claude-tui-2026-06-22: it now launches via the `psu-sentinel`
+        // wrapper (~/.local/bin, repo apps/operator/scripts/psu-sentinel.sh), which
+        // mints a per-pane sid + spawns `psu --no-picker --agent=claude
+        // --role=sentinel` itself — so the KDL pane carries no inline `args` (the
+        // wrapper owns the flags). The old `command "psu"` + inline --role=operator
+        // form is gone.
         let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
-        // Fully-scoped, no-picker launch (owner ask): the role is auto-selected.
-        assert!(on.contains("args \"--no-picker\" \"--agent=claude\" \"--role=operator\""));
-        assert!(on.contains("--role=operator")); // `=` form — psu drops `--role operator`
+        assert!(on.contains("command \"psu-sentinel\""), "sentinel launches the wrapper: {on}");
+        assert!(!on.contains("--role=operator")); // the wrapper picks role=sentinel; no inline role here
         assert!(!on.contains("args \"--role\" \"operator\"")); // never the dropped space form
         assert!(!on.contains("args \"chat-pane\""));
         // queen-overwatch-live-visibility D-003: the ♛ queen + 👁 overwatch panes
@@ -966,7 +973,9 @@ mod tests {
         // ONLY psu session in the dock is the sentinel (operator chat). That is what
         // lets every desktop instance show the SAME live queen/overwatch and survive
         // a shell exit. The one-pane `pui agent-pane` variant stays reverted.
-        assert_eq!(on.matches("command \"psu\"").count(), 1); // sentinel only (queen+overwatch are pui brain-view)
+        assert_eq!(on.matches("command \"psu-sentinel\"").count(), 1); // sentinel only (queen+overwatch are pui brain-view)
+        // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
+        assert_eq!(on.matches("command \"psu\"\n").count(), 0);
         assert!(!on.contains("agent-pane"), "the reverted one-pane variant must not return: {on}");
         assert!(on.contains("name=\"♛ queen\" split_direction=\"vertical\""), "queen split container: {on}");
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
@@ -1076,10 +1085,14 @@ mod tests {
 
     #[test]
     fn chat_dock_fresh_brain_omits_args_line() {
-        // A bare `psu` brain (fresh, no resume) renders no `args` line.
-        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default());
-        assert!(kdl.contains("command \"psu\""));
-        assert!(!kdl.contains("args \"--resume\""));
+        // The dock's only psu session is the sentinel, via the `psu-sentinel`
+        // wrapper (sentinel-as-claude-tui-2026-06-22) — the brain/queen pane is a
+        // read-only `pui brain-view --queen` tail (D-003), not a psu resume. So
+        // brain_argv (the resume handle) NEVER reaches the KDL: no `--resume` line
+        // leaks regardless of what brain_argv carries.
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string(), "x".to_string()], &Lexicon::default());
+        assert!(kdl.contains("command \"psu-sentinel\""));
+        assert!(!kdl.contains("args \"--resume\""), "brain_argv must not leak a resume into the KDL: {kdl}");
     }
 
     #[test]

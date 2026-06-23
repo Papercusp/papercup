@@ -43,7 +43,7 @@ import {
   type ObjectRef,
   type ResolvedSubscriber,
 } from '@papercusp/coordination/capabilities';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { coordScopeWorkspace } from '../../agent-tools/coordination/log';
 import { buildInjectEnvelope, shouldDeliver, type InjectEvent, type InjectSink } from '../../agent-tools/coordination/fanout-delivery';
 
 type OutboxOp = 'put' | 'del';
@@ -173,8 +173,12 @@ export async function runFanoutForOutboxRow(outboxRow: OutboxFanoutRow, deps: Fa
 
 // ── Production wiring (PG singletons over the coord workspace) ────────────────
 
-const coordWs = DEFAULT_COORD_WORKSPACE;
-const storeOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, workspaceId: coordWs };
+// P-004: resolve the coord workspace PER-OPERATION (flag-gated via
+// coordScopeWorkspace — the SAME resolver coordLog + the reach paths now use) so
+// the fan-out reads subscribers from, and writes notifies to, the SAME workspace a
+// subscribe wrote. The old `workspaceId: DEFAULT_COORD_WORKSPACE` pin silently
+// dropped deliveries under COORD_PER_WORKSPACE (subscribe→active-ws, fanout-read→default).
+const storeOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, getWorkspaceId: () => coordScopeWorkspace() };
 const subscriptions = new PgEntitySubscriptionStore(storeOpts);
 const tags = new PgTaggableStore(storeOpts);
 const topics = new PgTopicStore(storeOpts);
@@ -193,7 +197,7 @@ export async function insertFanoutNotify(
   const env = buildInjectEnvelope(sub, ev, msgId);
   const rows = await pg<{ id: string }[]>`
     INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
-    VALUES (${coordWs}, 'messages', ${sub.subscriber_id}, ${msgId}, ${JSON.stringify(env)}::text::jsonb)
+    VALUES (${coordScopeWorkspace()}, 'messages', ${sub.subscriber_id}, ${msgId}, ${JSON.stringify(env)}::text::jsonb)
     ON CONFLICT (workspace_id, msg_id) WHERE (surface = 'messages' AND (body ->> 'notify_kind') IS NOT NULL)
     DO NOTHING
     RETURNING id`;

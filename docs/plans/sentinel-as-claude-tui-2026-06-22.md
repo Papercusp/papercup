@@ -141,6 +141,19 @@ current state blocking `operator:converse`).
   a future hook/alt-emitter, but `voice:say` is the path.
 - **Risk:** relies on the persona calling `voice:say` for spoken lines (vs auto
   capture) — acceptable + gives the agent control; revisit if it under-speaks.
+- **⚠ LIVE-TEST FINDING (2026-06-22) — voice-OUT not yet wired across processes.**
+  Voice-IN is VERIFIED working end-to-end (endpoint → sentinel pane → the sentinel
+  replied). But voice-OUT has TWO gaps: (1) the dock sentinel's MCP points at
+  **`localhost:3070`** (the GREEN/main operator, per
+  `.papercusp-workspaces/.../.mcp.json`), which does NOT yet have `voice:say` — my
+  changes are on staging, so the sentinel can't call the tool until the green deploy
+  lands it (git-sync → green-checkpoint → main → :3070, or a force-deploy). (2) The
+  in-memory `sentinel-output-buffer` does NOT bridge the operator the sentinel
+  pushes to (:3070) and the one the webview polls (:3270) — separate processes —
+  AND it violates the PG storage policy. **FIX: make the buffer PG-backed** (a
+  migration via `db:migrate` + rewrite `sentinel-output-buffer.ts` to INSERT on
+  push / SELECT+DELETE on drain) so push and poll bridge regardless of operator.
+  Both are needed before voice-OUT works live.
 
 ### Phase E — Cards (structured choices)
 - **Near-term:** plain-text Q&A — the Sentinel asks "1) … 2) … — say or type a number,"

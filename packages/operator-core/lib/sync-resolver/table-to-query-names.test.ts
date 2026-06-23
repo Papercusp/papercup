@@ -58,6 +58,17 @@ describe('queryNamesForTriggerEvent', () => {
     expect(names).toEqual(expect.arrayContaining(['plans.list', 'plans.get']));
   });
 
+  it('maps the design-write tables (data-sync-push-completion P-003)', () => {
+    // Sketch saves land on harness_design_artifacts (trigger attached mig 380) → push
+    // the sketch pane. Feature design-state flips land on work_items → push the dashboard.
+    expect(queryNamesForTriggerEvent('harness_shared.harness_design_artifacts.changed')).toEqual([
+      'designSketches.byFeature',
+    ]);
+    expect(queryNamesForTriggerEvent('harness_shared.work_items.changed')).toEqual(
+      expect.arrayContaining(['designFeatures.byHarness']),
+    );
+  });
+
   it('handles *Consolidated tables', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_features_consolidated.changed')).toEqual(
       expect.arrayContaining(['featuresConsolidated.bySlug', 'featuresConsolidated.byPlanSlug']),

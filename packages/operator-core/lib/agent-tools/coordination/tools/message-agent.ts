@@ -25,14 +25,10 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { PgEntitySubscriptionStore, objectToTargetRef } from '@papercusp/coordination/capabilities';
-import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { openConversation } from '../conversations';
-import { sendMessage } from '../messages';
-import { wakeRecipients } from '../inbox-wake';
-import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
+import { notifyAgents } from '../notify-agents';
 
 function truncate(s: string, n = 100): string {
   const t = s.trim().replace(/\s+/g, ' ');
@@ -42,7 +38,7 @@ function truncate(s: string, n = 100): string {
 export default defineTool({
   name: 'coord:message-agent',
   description:
-    "Open a work-item-scoped conversation with a specific agent — the inbox's \"Message owner\" action. Creates a browseable discussion thread (Brief 25's conversations tab) scoped to the item's harness, subscribes the owning agent, and pings them so they reply in-thread. Returns { conversation_id, thread_id }.",
+    "Open a work-item-scoped conversation with one OR several specific agents — the inbox's \"Message owner\" action, generalized. Creates a browseable discussion thread (Brief 25's conversations tab) scoped to the item's harness, subscribes the named agent(s), and pings them so they reply in-thread. Returns { conversation_id, thread_id, notified, subscribed }.",
   guidance: {
     when: 'You (or the human via the inbox) want to message the agent that owns a specific work-item — start a durable, scoped thread with them about that item.',
     notWhen:
@@ -53,9 +49,10 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    /** The owning agent's ownerId. Optional: absent → a harness-scoped
-     *  conversation with no direct ping (no single agent owner). */
-    to: z.string().min(1).optional(),
+    /** The owning agent's ownerId — OR a list, to open one thread with several
+     *  agents subscribed. Optional: absent → a harness-scoped conversation with
+     *  no direct ping (no single agent owner; peers still see it via scope/topic). */
+    to: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
     /** The message to the owner. */
     body: z.string().min(1),
     /** A short thread title (defaults to a work-item label / the body). */
@@ -69,17 +66,13 @@ export default defineTool({
     /** Topic slugs to tag the conversation with (work-item linkage). */
     topics: z.array(z.string().min(1)).max(8).optional(),
     /** Deliver-and-wake (P-040): default false (the ping is a cheap inject the
-     *  owner sees mid-turn / next turn). true = ALSO re-invoke the owner now if
-     *  they are asleep. Targeted to the single addressee — never a broadcast. */
+     *  addressee sees mid-turn / next turn). true = ALSO re-invoke the addressee(s)
+     *  now if asleep. Targeted to the addressees only — never a broadcast. */
     wake: z.boolean().optional(),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    // owner-2026-06-17: resolve a short ownerId prefix to the full id so the
-    // subscribe (+ ping + wake) target the right agent. Best-effort + fail-soft.
-    const toOwner = args.to
-      ? (await resolveBestEffortAgainstRoster([args.to], identity.workspaceId))[0]
-      : undefined;
+    const addressees = Array.isArray(args.to) ? args.to : args.to ? [args.to] : [];
     const workItemLabel =
       args.item_ref && args.plan_slug
         ? `${args.plan_slug} ${args.item_ref}`
@@ -96,59 +89,23 @@ export default defineTool({
     });
     const conversationId = opened.conversation.id;
 
-    // 2. Subscribe the owning agent so every later thread reply reaches them.
-    let subscribedOwner = false;
-    if (toOwner && toOwner !== identity.ownerId) {
-      try {
-        const subs = new PgEntitySubscriptionStore({
-          getSql: () => getOrgPg().sql,
-          ensureSchema: async () => {},
-        });
-        await subs.subscribe({
-          subscriber_id: toOwner,
-          target_kind: 'object',
-          target_ref: objectToTargetRef({ kind: 'conversation', ref: conversationId }),
-          delivery_mode: 'full',
-          created_ts: new Date().toISOString(),
-        });
-        subscribedOwner = true;
-      } catch {
-        /* best-effort — the ping below still reaches the owner */
-      }
-    }
-
-    // 3. Ping the owning agent directly so they see it this turn + reply in-thread.
-    let pinged = false;
-    if (args.to && args.to !== identity.ownerId) {
-      try {
-        await sendMessage(identity, {
-          to: [args.to],
+    // 2. Reach the named agent(s) ON the conversation via the shared reach-core
+    //    (resolve → subscribe → ping → wake). This IS the conversation-rung of the
+    //    durability ladder (D-001): mint a thread + notifyAgents on it. No addressee
+    //    → a harness-scoped conversation with no direct ping (D-005 graceful
+    //    degradation; peers still see it via scope/topic). Multi-`to` opens ONE
+    //    thread with all of them subscribed.
+    const reach = addressees.length
+      ? await notifyAgents(identity, {
+          addressees,
+          objectRef: { kind: 'conversation', ref: conversationId },
           summary: `💬 ${identity.ownerLabel ?? identity.ownerId} messaged you${workItemLabel ? ` re ${workItemLabel}` : ''}`,
           body: `${args.body}\n\n— reply in conversation ${conversationId} (conversations:post).`,
           ...(args.harness ? { harnessSlug: args.harness } : {}),
-          ...(args.plan_slug ? { plan_slug: args.plan_slug } : {}),
-          // EI-279: federate the wake intent (see coord:send) so an owner homed
-          // on a remote instance is woken by the projection-side fan.
-          ...(args.wake ? { extra: { wake: true } } : {}),
-        });
-        pinged = true;
-      } catch {
-        /* best-effort */
-      }
-    }
-
-    // Deliver-and-wake (P-040): the ping above is the cheap inject default. When
-    // the sender opts in AND there is a single named owner, ALSO fire that owner's
-    // inbox-wake key so a sleeping owner is re-invoked now. One targeted emit —
-    // never a broadcast (P-042). wakeRecipients filters '*'/'human'/self-send.
-    let woke = false;
-    if (args.wake && args.to && args.to !== identity.ownerId) {
-      const fan = await wakeRecipients([args.to], {
-        summary: `💬 ${identity.ownerLabel ?? identity.ownerId} messaged you${workItemLabel ? ` re ${workItemLabel}` : ''}`,
-        source: identity.ownerId,
-      });
-      woke = fan.woken > 0;
-    }
+          ...(args.plan_slug ? { planSlug: args.plan_slug } : {}),
+          ...(args.wake ? { wake: true } : {}),
+        })
+      : { notified: [], subscribed: [], woke: 0 };
 
     return {
       content: [
@@ -158,10 +115,10 @@ export default defineTool({
             ok: true,
             conversation_id: conversationId,
             thread_id: opened.thread_id,
-            to: args.to ?? null,
-            subscribedOwner,
-            pinged,
-            woke,
+            to: addressees,
+            notified: reach.notified,
+            subscribed: reach.subscribed,
+            woke: reach.woke,
           }),
         },
       ],

@@ -956,11 +956,14 @@ export const FLAGS = {
   QUEEN_CAPACITY_DISPATCH: "papercusp-queen-capacity-dispatch",
   // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): gates the LLM-facing
   // SEMANTIC-delta opt-in (mode:delta merge responses) — the silent-wrong-merge
-  // hazard the owner BUILD decision agreed to retire BY TEST. DEFAULT OFF until the
-  // Lane-C behavioral scenarios (su-S23/S24/S25) are recorded-green in the matrix
-  // AND the delta safety gate (apps/operator/lib/release/delta-gate.ts) clears.
-  // OFF ⇒ tools degrade to the unconditionally-safe Lane-B behaviour (full |
-  // not_modified), never a semantic delta. KNOWN_DARK_FLAGS.
+  // hazard the owner BUILD decision agreed to retire BY TEST. DEFAULT ON
+  // (owner-directed flip 2026-06-22): enables the server capability ahead of the
+  // delta-aware client (WI-514 — nothing sends _meta.delta yet, so it's INERT),
+  // and the delta-gate (apps/operator/lib/release/delta-gate.ts) stays
+  // warn-only/un-armed so it never blocks deploys. OFF ⇒ tools degrade to the
+  // unconditionally-safe Lane-B behaviour (full | not_modified), never a semantic
+  // delta — a reversible runtime kill-switch (host wiring: operator-core's
+  // agent-tools/delta-flag-wiring.ts).
   TOOL_DELTA_PROTOCOL: "papercusp-tool-delta-protocol",
   // agent-tool-delta-protocol-2026-06-22 P-009 (Lane D): gates the SSE state-snapshot
   // DATA-CARRYING delta path (/api/operator/state-snapshot ?delta=1 → per-run card

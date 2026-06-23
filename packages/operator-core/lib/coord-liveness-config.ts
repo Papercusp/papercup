@@ -27,6 +27,10 @@ export interface CoordLivenessConfig {
   reclaimGraceMs?: number;
   /** Override the requeue cap before a mid-flight claim is dead-lettered (default staleReclaimRequeueCap() = 3). */
   reclaimRequeueCap?: number;
+  /** Override the dead-holder plan-item ASSIGNMENT reclaim grace (default
+   *  STALE_PLAN_ASSIGNMENT_GRACE_MS = 60m). Longer than reclaimGraceMs because
+   *  assignments are durable across interruption (EI-2535). */
+  assignmentReclaimGraceMs?: number;
   /** Override the idle-session reaper grace (default IDLE_SESSION_GRACE_MS = STALE_MS = 10m). */
   sessionReaperGraceMs?: number;
 }
@@ -38,6 +42,7 @@ export const COORD_LIVENESS_DEFAULTS = {
   handoffRepingMs: 30 * 60 * 1000,
   reclaimGraceMs: STALE_MS,
   reclaimRequeueCap: 3,
+  assignmentReclaimGraceMs: 60 * 60 * 1000,
   sessionReaperGraceMs: STALE_MS,
 } as const;
 

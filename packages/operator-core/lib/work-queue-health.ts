@@ -26,6 +26,7 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from './work-items-stale-claims';
+import { STALE_PLAN_ASSIGNMENT_GRACE_MS } from './plan-items/stale-claims';
 import { FEATURE_NON_REQUEUE_STATES } from './work-item-dispatch-states';
 
 type Db = Sql | TransactionSql;
@@ -73,6 +74,10 @@ export interface WorkQueueHealth {
   deadHeldFeatures: number;
   /** Open bug/change issues past grace still assigned to a dead holder. */
   deadAssignedIssues: number;
+  /** Active plan-item ASSIGNMENTS past grace still reserved by a dead (name-aware)
+   *  holder — the reservation analog the assignment reaper clears (EI-2535). A
+   *  growing count means the assignment reaper isn't keeping up (or is wedged). */
+  deadHeldAssignments: number;
   /** When the stale-claim reaper last ran (ms epoch), or null if never recorded. */
   reaperLastRunMs: number | null;
   /** Age of the reaper's last run in ms, or null if never recorded. */
@@ -91,16 +96,34 @@ export interface WorkQueueHealth {
  */
 export async function readWorkQueueHealth(
   sql: Db,
-  opts: { workspaceId?: string; graceMs?: number; stalenessMs?: number; nowMs?: number } = {},
+  opts: {
+    workspaceId?: string;
+    graceMs?: number;
+    assignmentGraceMs?: number;
+    stalenessMs?: number;
+    nowMs?: number;
+  } = {},
 ): Promise<WorkQueueHealth> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const asgGraceSec = Math.max(
+    1,
+    Math.round((opts.assignmentGraceMs ?? STALE_PLAN_ASSIGNMENT_GRACE_MS) / 1000),
+  );
   const stalenessMs = opts.stalenessMs ?? SWEEP_STALENESS_MS;
   const nowMs = opts.nowMs ?? Date.now();
   const ws = opts.workspaceId ?? null;
   const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
 
-  const [counts] = await sql<{ stuck_features: number; dead_held_features: number; dead_assigned_issues: number }[]>`
-    WITH live_holder AS (${liveHolderFragment(sql, graceSec)})
+  const [counts] = await sql<
+    {
+      stuck_features: number;
+      dead_held_features: number;
+      dead_assigned_issues: number;
+      dead_held_assignments: number;
+    }[]
+  >`
+    WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+         live_holder_asg AS (${liveHolderFragment(sql, asgGraceSec)})
     SELECT
       (SELECT count(*) FROM harness_shared.harness_features_consolidated f
          WHERE (${ws}::text IS NULL OR f.workspace_id = ${ws})
@@ -119,7 +142,22 @@ export async function readWorkQueueHealth(
            AND e.assignee IS NOT NULL AND e.assignee <> ''
            AND e.assigned_at IS NOT NULL
            AND (now() - e.assigned_at) > make_interval(secs => ${graceSec})
-           AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = e.assignee))::int AS dead_assigned_issues`;
+           AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = e.assignee))::int AS dead_assigned_issues,
+      -- The assignment analog (EI-2535): active reservations past the ASSIGNMENT
+      -- grace whose name-aware holder is dead (neither the name nor any adopting
+      -- session is a live alias). Mirrors reclaimStaleDeadHolderPlanItemAssignments.
+      (SELECT count(*) FROM harness_shared.plan_item_assignments asg
+         WHERE (${ws}::text IS NULL OR asg.workspace_id = ${ws})
+           AND asg.released_ts IS NULL
+           AND asg.assignee_name IS NOT NULL AND asg.assignee_name <> ''
+           AND asg.assigned_ts IS NOT NULL
+           AND (now() - asg.assigned_ts) > make_interval(secs => ${asgGraceSec})
+           AND NOT EXISTS (SELECT 1 FROM live_holder_asg h WHERE h.alias = asg.assignee_name)
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.agent_name_sessions s
+               JOIN live_holder_asg h ON h.alias = s.session_owner_id
+              WHERE s.workspace_id = asg.workspace_id AND s.agent_name = asg.assignee_name
+           ))::int AS dead_held_assignments`;
 
   const run = await readSweepRun(sql, STALE_CLAIM_SWEEP_NAME);
   const reaperLastRunMs = run?.lastRunMs ?? null;
@@ -130,6 +168,7 @@ export async function readWorkQueueHealth(
     stuckFeatures: Number(counts?.stuck_features ?? 0),
     deadHeldFeatures: Number(counts?.dead_held_features ?? 0),
     deadAssignedIssues: Number(counts?.dead_assigned_issues ?? 0),
+    deadHeldAssignments: Number(counts?.dead_held_assignments ?? 0),
     reaperLastRunMs,
     reaperAgeMs,
     reaperStale,

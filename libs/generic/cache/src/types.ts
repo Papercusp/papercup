@@ -39,6 +39,16 @@ export interface CacheEntry<V> {
   hardExpiresAt: number;
 }
 
+/**
+ * The outcome of a single `getOrSet` call, reported synchronously to the per-call
+ * {@link GetOrSetOptions.onOutcome} hook BEFORE the value is returned. Lets a host
+ * attribute hit-rate per consumer (the global {@link CacheStats} can't — it is one
+ * set of counters across every key). `'hit'` = served fresh from L1; `'stale'` =
+ * served stale + revalidating in background (SWR); `'miss'` = built (no usable
+ * entry); `'bypass'` = the kill-switch is on, so L1 was skipped entirely.
+ */
+export type CacheOutcome = 'hit' | 'stale' | 'miss' | 'bypass';
+
 export interface GetOrSetOptions {
   /** Data dependencies; invalidating any one of these marks the entry stale. */
   tags?: readonly string[];
@@ -48,6 +58,13 @@ export interface GetOrSetOptions {
   hardTtlMs?: number;
   /** Also cache null/undefined factory results (negative caching). Default false. */
   cacheEmpty?: boolean;
+  /**
+   * Per-call outcome hook (optional). Invoked synchronously with the call's
+   * {@link CacheOutcome} so a host can record per-consumer telemetry the shared
+   * {@link CacheStats} can't express. Pure side-channel — it never affects the
+   * cached value and any throw from it is swallowed (telemetry must not break a read).
+   */
+  onOutcome?: (outcome: CacheOutcome) => void;
 }
 
 export interface CacheStats {
