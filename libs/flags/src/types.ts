@@ -1673,9 +1673,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // + reversible (adds a one-shot [batch-hint] line to a result for a code:run-capable caller); OFF
   // ⇒ no hint, byte-identical to before.
   [FLAGS.CODE_RUN_BATCH_NUDGE]: true,
-  // DEFAULT OFF (dark): owner-authority/security surface — see the key comment
-  // above (psu-in-desktop-builds-2026-06-23 C1). Owner ratifies before flip.
-  [FLAGS.PSU_END_USER]: false,
+  // FLIPPED ON 2026-06-23 (owner-directed, psu-in-desktop-builds): psu is verified
+  // shipping in real mac + windows builds (mac: psu.mjs in the installed .app
+  // sidecar; windows: vm-smoke-windows.sh 9/9 incl the psu shim check). The
+  // discoverable superuser-session entry is now live. Reversible — set false to revert.
+  [FLAGS.PSU_END_USER]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
