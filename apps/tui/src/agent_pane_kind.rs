@@ -91,15 +91,16 @@ impl AgentPaneKind {
     }
 
     /// The dock-stack GROUP order (P-011): same-type panes stack together, in
-    /// this rank order — Sentinel (owner-facing chat) leads, then the Queen,
-    /// then the worker Bees, then Planners. Matches the static KDL order
-    /// (sentinel · queen · …) so appended panes extend the existing grouping.
+    /// this rank order — Sentinel (owner-facing chat) leads, then Overwatch, then
+    /// the Queen, then the worker Bees (colony), then Planners. Matches the static
+    /// KDL order (sentinel · overwatch · queen · …) so appended panes extend it.
     pub fn group_rank(self) -> u8 {
         match self {
             Self::Sentinel => 0,
-            Self::Queen => 1,
-            // Overwatch ranks right after the Queen — its sibling supervisor.
-            Self::Overwatch => 2,
+            // Owner reorder (2026-06-22): top-to-bottom sentinel · overwatch · queen
+            // · colony. Overwatch ranks right after the Sentinel, ahead of the Queen.
+            Self::Overwatch => 1,
+            Self::Queen => 2,
             Self::Bee => 3,
             Self::Planner => 4,
             // su sessions are never dock-paned, but the roster sorts by rank —

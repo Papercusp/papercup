@@ -80,6 +80,7 @@ export default defineTool({
       return Array.isArray(activity) ? activity : null;
     },
     itemKey: (row) => (row as ActivityRow).id,
+    itemKeyField: 'id',
     rowType: (row) => (row as ActivityRow).kind,
     orderKey: 'id',
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',

@@ -125,6 +125,7 @@ export default defineTool({
         : null;
     },
     itemKey: (row) => (row as AttentionItem).id,
+    itemKeyField: 'id',
     rowType: (row) => (row as AttentionItem).kind,
     orderKey: "importance",
     scope: (_args, ctx) => {

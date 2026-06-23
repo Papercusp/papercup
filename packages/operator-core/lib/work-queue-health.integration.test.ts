@@ -110,6 +110,27 @@ describe('readWorkQueueHealth — stuck-items metric (P-008)', () => {
     expect(h.deadHeldFeatures).toBe(0);
   });
 
+  // EI-2534: a dead-held claim with NO taken_at anchor must be COUNTED (it is the
+  // exact row the fleet_assignment view flags `orphaned` yet the old reader/reaper
+  // — both requiring taken_at IS NOT NULL — could neither alarm on nor reap). The
+  // alarm must see the strand class so a wedged reaper is caught.
+  it('counts a dead-HELD claim with NULL taken_at (EI-2534 strand class)', async () => {
+    await seedFeature('F-noanchor', 'in_progress', 'su-dead-noanchor', 30);
+    await sql`UPDATE harness_shared.harness_features_consolidated
+                 SET taken_at = NULL WHERE feature_id = 'F-noanchor'`;
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS });
+    expect(h.deadHeldFeatures).toBe(1);
+  });
+
+  it('a NULL-taken_at claim with a LIVE holder is NOT counted dead-held', async () => {
+    await seedFeature('F-noanchor-live', 'in_progress', 'su-live-noanchor', 30);
+    await sql`UPDATE harness_shared.harness_features_consolidated
+                 SET taken_at = NULL WHERE feature_id = 'F-noanchor-live'`;
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-live-noanchor', now())`;
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS });
+    expect(h.deadHeldFeatures).toBe(0);
+  });
+
   it('counts a dead-assigned open bug/change issue across the issue family', async () => {
     await seedIssue('EI-1', 'bug', 'opspawn-dead-bug', 30);
     await seedIssue('EI-2', 'change', 'opspawn-dead-chg', 30);

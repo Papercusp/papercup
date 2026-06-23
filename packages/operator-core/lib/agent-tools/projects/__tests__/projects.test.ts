@@ -29,6 +29,8 @@ function parsePayload(result: { content: Array<{ text: string }> }): Record<stri
   return JSON.parse(result.content[0].text);
 }
 
+type ErrorEnvelope = { isError: true; content: Array<{ text: string }> };
+
 describe('projects:list', () => {
   it('returns harnessSlug + projects', async () => {
     const projects = [{ id: 'PROJ-1', name: 'P1' }];
@@ -54,7 +56,7 @@ describe('projects:list', () => {
     const { default: tool } = await import('../list');
     // The tool now returns the canonical MCP {isError:true} envelope instead of
     // throwing, so the dispatcher surfaces the guidance text to the caller.
-    const res = await tool.handler({}, MAKE_CTX({ harnessSlug: undefined }));
+    const res = await tool.handler({}, MAKE_CTX({ harnessSlug: undefined })) as ErrorEnvelope;
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/slug_required|needs a specific harness/i);
   });

@@ -74,7 +74,7 @@ beforeEach(() => {
       const cmd = args[0] as string;
       const opts = args[1] as { encoding?: string } | undefined;
       if (cmd.startsWith('command -v')) {
-        const bin = cmd.split(' ').pop();
+        const bin = cmd.split(' ').pop() ?? '';
         return opts?.encoding ? `${join(tmpHome, 'bin', bin)}\n` : Buffer.from(`${join(tmpHome, 'bin', bin)}\n`);
       }
       return opts?.encoding ? '' : Buffer.from('');

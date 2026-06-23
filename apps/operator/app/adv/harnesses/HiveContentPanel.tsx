@@ -63,8 +63,13 @@ function matchesSearch(haystack: Array<string | null | undefined>, needle: strin
 }
 
 export default function HiveContentPanel({ params, api }: PanelComponentProps) {
-  // In scope=all, `?slug=` is the HIVE HOME slug (the member axis is `?harness=`).
-  const hiveHomeSlug = (params.slug as string) || (params.hiveHomeSlug as string) || '';
+  // The dock auto-binds `harnessSlug` to the active route slug for every panel
+  // (HarnessesDock rebinds it on slug-switch), so read it FIRST — same convention
+  // as MemberWorkPanel. In scope=all that slug is the HIVE HOME; in single-harness
+  // scope it's the current harness (whose hive peers the resolver enumerates via
+  // the registry). `slug`/`hiveHomeSlug` are explicit-open fallbacks.
+  const hiveHomeSlug =
+    (params.harnessSlug as string) || (params.slug as string) || (params.hiveHomeSlug as string) || '';
 
   const [tab, setTab] = useQueryState('hct', parseAsStringEnum<Tab>(['features', 'plans']).withDefault('features'));
   const [search, setSearch] = useQueryState('hcq', parseAsString.withDefault(''));

@@ -74,9 +74,12 @@ import { searchSimilarRecipes } from './code-recipes-search';
 //   • Otherwise damp = 1.0 (no redundancy).
 //
 // A recipe is a PROMOTE candidate iff: status='active', not already promoted/merged,
-// not redundant, AND promotionScore ≥ PROMOTE_THRESHOLD (= 0.45). The threshold sits
-// just below "broadly-reused multi-tool recipe with decent success" so a hot,
-// shared, cohesive recipe clears it while a solo one-tool macro does not.
+// not redundant, promotionScore ≥ PROMOTE_THRESHOLD (= 0.45), AND it clears the REUSE
+// FLOOR — reused by ≥2 distinct agents OR run ≥3 times (MIN_PROMOTE_DISTINCT_AGENTS /
+// MIN_PROMOTE_RUN_COUNT). The floor is load-bearing: success(0.20)+cohesion(0.20) are
+// maxed by a SINGLE successful multi-tool run, so the weighted score alone can clear the
+// threshold (a 3-tool one-off ⇒ 0.528) with zero reuse evidence — the floor requires
+// reuse you can SEE in the run-log before a recipe graduates into a tool.
 //
 // MERGE clusters (D-015): for each active recipe, searchSimilarRecipes(excludeId=self)
 // is run; any peer with blended similarity ≥ MERGE_SIMILARITY (= 0.8) is a
@@ -96,6 +99,15 @@ const BREADTH_SATURATION = 5;
 const COHESION_SATURATION = 3;
 
 const PROMOTE_THRESHOLD = 0.45;
+/**
+ * Reuse FLOOR for a promote candidate — PROVEN reuse, not just a high intrinsic score.
+ * A recipe run once by one agent maxes success(0.20)+cohesion(0.20) — 0.4 of the score —
+ * with ZERO reuse evidence, so the weighted score ALONE can clear PROMOTE_THRESHOLD (a
+ * single 3-tool run ⇒ 0.528). Gate on reuse you can SEE in the run-log: a candidate must
+ * be reused by ≥2 distinct agents OR run ≥3 times ("proven demand, not guessed" — D-006).
+ */
+const MIN_PROMOTE_DISTINCT_AGENTS = 2;
+const MIN_PROMOTE_RUN_COUNT = 3;
 const MERGE_SIMILARITY = 0.8;
 const DEFAULT_MIN_RUN_COUNT = 2;
 const DEFAULT_LIMIT = 25;
@@ -185,6 +197,13 @@ const asIsoOrNull = (v: Date | string | null): string | null =>
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
+/** Slugify a projected tool name to the SAME kebab shape recipe ids use (recipeSlug):
+ *  lowercase, every non-alphanumeric run → "-", trimmed. So "plans:set-status" →
+ *  "plans-set-status", letting a recipe id (which never contains the ":" a raw tool
+ *  name does) be compared against existing tool names for the D-007 collision check. */
+const slugifyToolName = (name: string): string =>
+  name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
 /** freqScore — log-saturating on run_count (run ~20× ⇒ ~1.0). See RECIPE RUBRIC. */
 function freqScore(runCount: number): number {
   if (runCount <= 0) return 0;
@@ -231,12 +250,22 @@ export async function recipeCandidates(
          AND r.run_count >= ${minRunCount}
     GROUP BY r.id`;
 
-  // Existing tool names (the redundancy name-collision check). A recipe id/slug that
-  // matches an already-projected tool name would regenerate an existing tool (D-007).
+  // Existing tool names + their SLUGIFIED forms (the redundancy name-collision check,
+  // D-007). A recipe id is a kebab slug (recipeSlug, e.g. "triage-stale-items"); a
+  // projected tool name is always `ns:verb` (a colon) — so comparing the recipe id to
+  // the RAW tool name never matches (the bug this replaces — the collision damp never
+  // fired). Slugify each tool name the SAME way recipeSlug does ("plans:set-status" →
+  // "plans-set-status") and also index the bare verb ("set-status"), so a recipe whose
+  // id maps onto an existing tool IS caught and excluded from promotion.
   const existingToolNames = new Set<string>();
+  const existingToolSlugs = new Set<string>();
   for (const t of listAllProjectedTools()) {
     const n = t.expose.mcp?.name;
-    if (n) existingToolNames.add(n);
+    if (!n) continue;
+    existingToolNames.add(n);
+    existingToolSlugs.add(slugifyToolName(n)); // "plans:set-status" → "plans-set-status"
+    const ci = n.indexOf(':');
+    if (ci > 0) existingToolSlugs.add(slugifyToolName(n.slice(ci + 1))); // bare verb "set-status"
   }
 
   const signals: RecipeSignal[] = [];
@@ -256,9 +285,9 @@ export async function recipeCandidates(
     if (toolCount <= 1) {
       redundant = true;
       redundancyReason = 'trivial: batches ≤1 distinct tool (not worth a tool over the primitive)';
-    } else if (existingToolNames.has(r.id)) {
+    } else if (existingToolNames.has(r.id) || existingToolSlugs.has(r.id)) {
       redundant = true;
-      redundancyReason = `name_collision: an existing tool already named "${r.id}"`;
+      redundancyReason = `name_collision: recipe id "${r.id}" maps to an existing tool (D-007 — promoting would regenerate it)`;
     }
 
     // Weighted rubric sum (see RECIPE RUBRIC method block above).
@@ -310,7 +339,13 @@ export async function recipeCandidates(
   const alreadyPromoted = new Map(rows.map((r) => [r.id, !!r.promoted_tool || !!r.merged_into]));
   const promoteCandidates: PromoteCandidate[] = signals
     .filter(
-      (s) => !s.redundant && !(alreadyPromoted.get(s.id) ?? false) && s.promotionScore >= PROMOTE_THRESHOLD,
+      (s) =>
+        !s.redundant &&
+        !(alreadyPromoted.get(s.id) ?? false) &&
+        s.promotionScore >= PROMOTE_THRESHOLD &&
+        // Reuse FLOOR: proven reuse, not just a high intrinsic score — a single
+        // multi-tool run can clear the threshold on success+cohesion alone.
+        (s.distinctAgents >= MIN_PROMOTE_DISTINCT_AGENTS || s.runCount >= MIN_PROMOTE_RUN_COUNT),
     )
     .sort((a, b) => b.promotionScore - a.promotionScore || a.id.localeCompare(b.id))
     .slice(0, limit)

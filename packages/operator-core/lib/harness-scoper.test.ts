@@ -53,7 +53,13 @@ describe('invokeScoperBackground → chokepoint (P-008 / D-013 residual 1)', () 
     expect(invocationId).toBeTruthy();
     expect(spawnInvokeOnceMock).toHaveBeenCalledTimes(1);
 
-    const [projectDir, role, extras, extraEnv, opts] = spawnInvokeOnceMock.mock.calls[0];
+    const [projectDir, role, extras, extraEnv, opts] = spawnInvokeOnceMock.mock.calls[0] as [
+      string,
+      string,
+      string[],
+      Record<string, string>,
+      { resultPath: string; timeoutMs: number },
+    ];
     expect(projectDir).toBe('/tmp/papercusp-scoper-test');
     expect(role).toBe('scoper');
     expect(extras).toEqual(['MODE=proposal', 'OUTPUT_MODE=proposal']);

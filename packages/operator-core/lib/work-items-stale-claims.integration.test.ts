@@ -176,6 +176,46 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect(r.released).toHaveLength(0);
   });
 
+  // EI-2534 (the stranded-orphan class): a dead-holder claim with NO taken_at
+  // anchor. The fleet_assignment view flags it `orphaned` off taken_by alone (it
+  // requires no taken_at), but the OLD DEAD leg required taken_at IS NOT NULL, so
+  // such a row read orphaned forever yet never reaped — 7 P1 items stranded ~3h.
+  // A NULL taken_at must count as past grace: the dead-holder signal alone frees it.
+  it('a dead-holder claim with NULL taken_at is freed (EI-2534 strand class)', async () => {
+    await seedItem('F-014', 'su-dead-noanchor', 30);
+    // Strip the claim-time anchor — taken_by stays set (the orphaned-but-no-anchor row).
+    await sql`UPDATE harness_shared.harness_features_consolidated
+                 SET taken_at = NULL WHERE feature_id = 'F-014'`;
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(1);
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'F-014',
+      former_taken_by: 'su-dead-noanchor',
+      reason: 'dead',
+      action: 'freed-todo',
+    });
+    expect((await statusOf('F-014')).taken_by).toBeNull();
+  });
+
+  it('a mid-flight NULL-taken_at dead-holder claim is requeued → todo (EI-2534)', async () => {
+    await seedItem('F-015', 'su-dead-noanchor2', 30, 'in_progress');
+    await sql`UPDATE harness_shared.harness_features_consolidated
+                 SET taken_at = NULL WHERE feature_id = 'F-015'`;
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-015', reason: 'dead', new_status: 'todo', action: 'requeued' });
+    expect(await statusOf('F-015')).toMatchObject({ status: 'todo', taken_by: null });
+  });
+
+  it('a NULL-taken_at claim held by a LIVE holder is NOT freed (no anchor must not over-reclaim)', async () => {
+    await seedItem('F-016', 'su-alive-noanchor', 30);
+    await sql`UPDATE harness_shared.harness_features_consolidated
+                 SET taken_at = NULL WHERE feature_id = 'F-016'`;
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-noanchor', now())`;
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-016')).taken_by).toBe('su-alive-noanchor');
+  });
+
   it('a mid-flight (in_progress) row is REQUEUED → todo and re-enters the pool (GAP 1, P-001)', async () => {
     await seedItem('F-007', 'opspawn-dead-mid', 30, 'in_progress');
     const r = await reclaimStaleWorkItemClaims(sql);

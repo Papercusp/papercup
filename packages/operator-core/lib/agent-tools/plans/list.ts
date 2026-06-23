@@ -265,6 +265,7 @@ export default defineTool({
       return Array.isArray(plans) ? plans : null;
     },
     itemKey: (row) => (row as { slug: string }).slug,
+    itemKeyField: 'slug',
     orderKey: "updated",
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
     schemaVersion: "plans-list-v1",

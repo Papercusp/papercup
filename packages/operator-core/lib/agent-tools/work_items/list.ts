@@ -88,6 +88,7 @@ export default defineTool({
   delta: {
     rows: (data) => (Array.isArray(data) ? data : null),
     itemKey: (row) => (row as { id: string }).id,
+    itemKeyField: 'id',
     rowType: (row) => (row as { kind: string }).kind,
     orderKey: 'priority',
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',

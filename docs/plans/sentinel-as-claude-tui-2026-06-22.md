@@ -154,10 +154,27 @@ current state blocking `operator:converse`).
   migration via `db:migrate` + rewrite `sentinel-output-buffer.ts` to INSERT on
   push / SELECT+DELETE on drain) so push and poll bridge regardless of operator.
   Both are needed before voice-OUT works live.
+- **UPDATE 2026-06-22 (PG buffer ATTEMPTED + REVERTED — needs a clean DB).** Wrote
+  the PG-backed buffer + migration `381-sentinel-says.sql` (`harness_shared.sentinel_says`)
+  but reverted both, because: (a) no running operator picks up working-tree edits
+  cleanly this session — `:3170` runs a LAGGING checkout, so the POST→GET "round-trip"
+  that looked green was actually the OLD in-memory buffer, NOT PG (invalid verification);
+  and (b) the dev `:5432`/`papercusp` DB is DRIFTED (~37 columns) from the committed
+  schema, so a local `pull-schema` can't regenerate a clean `generated.ts` — and
+  committing a migration WITHOUT the matching `generated.ts` fails CI's drift gate and
+  blocks ALL deploys. The buffer is back to in-memory (async signatures kept so the PG
+  swap stays drop-in). **DO THE PG BUFFER IN A FRESH SESSION ON A CLEAN DB:** re-add
+  migration 381, apply it on a non-drifted DB (CI's testcontainer path, or a clean
+  embedded-pg), run `pull-schema` THERE, commit the clean `generated.ts`, then swap
+  `sentinel-output-buffer.ts` in-memory→PG (INSERT on push / `WITH d AS (DELETE …
+  RETURNING) SELECT … ORDER BY id` on drain). voice:say must also reach `:3070` (green)
+  via the deploy pipeline.
 
 ### Phase E — Cards (structured choices)
-- **Near-term:** plain-text Q&A — the Sentinel asks "1) … 2) … — say or type a number,"
-  the user answers by voice/text. Zero new infra; works in a raw Claude pane.
+- **Near-term — DONE (2026-06-22):** plain-text Q&A via a persona instruction —
+  `sentinel.persona.md` § "How you offer choices (cards)" tells the Sentinel to
+  speak a short NUMBERED list through `voice:say` ("Two options: one … two … Which?")
+  and accept a voice/number reply. Zero new infra; works in a raw Claude pane.
 - **Later (rich cards):** a sentinel MCP tool that **blocks + round-trips through the
   reusable server machinery** (card-correlator → `openCards` state-channel →
   `/card-response` → `resolveCardResponse`; all intact per the old plan §10), rendered
