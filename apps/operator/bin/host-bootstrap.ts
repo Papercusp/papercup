@@ -636,6 +636,26 @@ export function runBootstrap(): void {
     }
   })();
 
+  // gateway-rate-limit-stall-autowake (2026-06-23 fix): the stall-waker re-wakes a rate-limit-stalled session
+  // when its account recovers, but it was started ONLY lazily from the bee-spawn path (operator-spawn:1056). So
+  // if the operator restarts and no bee spawns (a quiet / capacity-throttled fleet), the loop never runs and
+  // recorded stalls — including su/psu sessions, now role-agnostic — pile up UNPROCESSED → no auto-wake (the
+  // su-3650b incident: 95 stalls, oldest 34 min, never woken). Start it on BOOT too, per workspace, when the
+  // inference gateway is on. ensureStallWakerLoop is idempotent → a later spawn-path call is a no-op.
+  if (backgroundWorkers)
+    void (async () => {
+      try {
+        if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'operator-host'))) return;
+        const { readRegistry } = await import('@papercusp/operator-core/lib/workspace-registry');
+        const { ensureStallWakerLoop } = await import('@papercusp/operator-core/lib/inference-gateway/stall-waker-loop');
+        const wss = readRegistry().workspaces;
+        for (const ws of wss) ensureStallWakerLoop(ws.id);
+        console.log(`[stall-waker] boot-start: ${wss.length} workspace(s) (gateway on)`);
+      } catch (e) {
+        console.warn(`[stall-waker] boot-start failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+      }
+    })();
+
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
   // Gated by PAPERCUSP_DBOS_ENABLE=1; default OFF. Dynamic import so the host
   // doesn't require @dbos-inc/dbos-sdk when the flag is off. This is the LIVE

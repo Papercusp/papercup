@@ -54,7 +54,7 @@ describe('improvements:learning_loops handler', () => {
     const b = body(await tool.handler({} as never, { workspaceId: 'ws-1' } as never) as Out);
     expect(b).toMatchObject({ ok: true, workspaceId: 'ws-1', summary: { firing: 1, dark: 0 }, loops: [{ loop: 'calibration' }] });
     // the row→routine mapping fed to the composer
-    const routines = computeM.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
     expect(routines[0]).toEqual({
       installSlug: '@singleton', name: 'sg:calibration', active: true,
       lastFiredAt: '2026-01-01T00:00:00.000Z', nextFireAt: null,
@@ -65,7 +65,7 @@ describe('improvements:learning_loops handler', () => {
     h.rows = [{ install_slug: 'papercup', name: 'calib-legacy', active: null, last_fired_at: null, next_fire_at: new Date('2026-02-01T00:00:00Z') }];
     const b = body(await tool.handler({} as never, {} as never) as Out);
     expect(b.workspaceId).toBe('default'); // no ctx workspace → activeWorkspaceId()
-    const routines = computeM.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
     expect(routines[0]).toMatchObject({ active: false, lastFiredAt: null, nextFireAt: '2026-02-01T00:00:00.000Z' });
   });
 });

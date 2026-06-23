@@ -77,7 +77,7 @@ describe('harness_docs:verify handler (bulk keyed-array)', () => {
   it('no resolvable harness (ctx "*", no arg) → top-level harness_required, touches nothing', async () => {
     const res = await call({ docId: 'guides/setup.md' }, { harnessSlug: '*' });
     expect(res.isError).toBe(true);
-    expect(JSON.parse(res.content[0]!.text)).toEqual({ ok: false, error: 'harness_required' });
+    expect(JSON.parse(res.content![0]!.text)).toEqual({ ok: false, error: 'harness_required' });
     expect(verifyM).not.toHaveBeenCalled();
   });
 });

@@ -20,12 +20,12 @@
  * at the sidebar (LeftSidebar hides the tab when off); this also renders a clear
  * dark/empty state defensively.
  */
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { Activity, AlertTriangle, Clock3, Eye, Pause, Play, ShieldCheck } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, Clock3, Eye, History, Pause, Play, ShieldCheck, XCircle } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import type {
   Anomaly,
@@ -33,6 +33,7 @@ import type {
   AnomalySeverity,
   OverwatchBrief,
   OverwatchControlState,
+  OverwatchLiveness,
 } from '@papercusp/operator-core/lib/overwatch/brief-types';
 
 const SEV_TONE: Record<AnomalySeverity, string> = { critical: 'bad', warning: 'warn', info: 'mute' };
@@ -56,6 +57,19 @@ function whenLabel(iso: string | null): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return '—';
   return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** Compact forward duration: "in 3m 12s" / "in 4h". Negative ⇒ "overdue". */
+function countdownLabel(ms: number | null): string {
+  if (ms == null) return '—';
+  if (ms <= 0) return 'now / overdue';
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `in ${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min < 60) return sec > 0 && min < 10 ? `in ${min}m ${sec}s` : `in ${min}m`;
+  const hr = Math.floor(min / 60);
+  return `in ${hr}h`;
 }
 
 /**
@@ -86,6 +100,7 @@ async function runOverwatchControl(tool: 'overwatch:start' | 'overwatch:pause', 
 export default function OverwatchTab({ active }: { active: boolean }) {
   const snap = useSyncQuery<OverwatchBrief>({ queryName: 'overwatch.snapshot', args: {}, staleTime: 15_000 });
   const ctrl = useSyncQuery<OverwatchControlState>({ queryName: 'overwatch.controlState', args: {}, staleTime: 15_000 });
+  const live = useSyncQuery<OverwatchLiveness>({ queryName: 'overwatch.liveness', args: {}, staleTime: 15_000 });
   const [sevFilter, setSevFilter] = useQueryState(
     'owsev',
     parseAsStringEnum<SevFilter>([...SEV_FILTERS]).withDefault('all'),
@@ -93,8 +108,20 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   const [busy, setBusy] = useState(false);
   const [ctrlErr, setCtrlErr] = useState<string | null>(null);
 
+  // A 1s ticker so the "Last run" age + "Next run" countdown stay live BETWEEN
+  // sync fetches (the server stamps ageMs/nextRunInMs at resolve time; we advance
+  // them locally so the strip visibly counts — the whole point of an alive
+  // indicator). Only runs while the tab is open.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
   const brief = active ? snap.data?.[0] : undefined;
   const control = active ? ctrl.data?.[0] : undefined;
+  const liveness = active ? live.data?.[0] : undefined;
 
   // Render the control header whenever we have EITHER the control-state or a brief —
   // critically so a PAUSED overwatch (which has no live brief) still shows its Start

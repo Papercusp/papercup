@@ -36,12 +36,12 @@ describe('fleet:admit handler', () => {
   it('delegates to the governor and returns its verdict, mapping circuit_key→circuitKey', async () => {
     const b = body(await call({ cost: 5, harness: 'web', role: 'worker', circuit_key: 'cb-1' }));
     expect(b).toMatchObject({ admitted: true, debited: 1 });
-    const params = admitM.mock.calls[0]![1] as Record<string, unknown>;
+    const params = admitM.mock.calls[0]![1] as unknown as Record<string, unknown>;
     expect(params).toMatchObject({ workspaceId: 'ws-actor', cost: 5, harness: 'web', role: 'worker', circuitKey: 'cb-1' });
   });
 
   it('an explicit workspace arg overrides the actor workspace', async () => {
     await call({ workspace: 'ws-override' });
-    expect((admitM.mock.calls[0]![1] as Record<string, unknown>).workspaceId).toBe('ws-override');
+    expect((admitM.mock.calls[0]![1] as unknown as Record<string, unknown>).workspaceId).toBe('ws-override');
   });
 });

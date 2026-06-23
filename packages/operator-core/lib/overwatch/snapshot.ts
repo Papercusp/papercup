@@ -29,14 +29,20 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { resolveHiveHomeSlug } from '../hive/wake';
 import { lastSystemHealth, runSystemHealthTick } from '../system-health';
 import { mapSystemHealthToBrief, withAnomalies } from './compute-brief';
-import { emptyOverwatchBrief, type OverwatchBrief, type OverwatchControlState } from './brief-types';
+import {
+  emptyOverwatchBrief,
+  type OverwatchBrief,
+  type OverwatchControlState,
+  type OverwatchLiveness,
+  type OverwatchRun,
+} from './brief-types';
 import {
   getOverwatchStarted,
   getOverwatchCadenceSec,
   listStartedOverwatches,
   DEFAULT_OVERWATCH_CADENCE_SEC,
 } from './control-state';
-import { overwatchLivenessCheck } from './liveness';
+import { overwatchLivenessCheck, OVERWATCH_ROLE } from './liveness';
 
 /** Reuse the shared SystemHealth cache when it is at most this fresh (matches the
  *  Health tab's read floor); past it, warm the cache with one tick. */
@@ -136,4 +142,142 @@ export async function getOverwatchControlState(opts?: {
     lastWakeAt: liveness.lastFiredAt ? liveness.lastFiredAt.toISOString() : null,
     staleForMs: liveness.staleForMs,
   };
+}
+
+/** STALE-after threshold: a started+enabled loop is STALE once its last fire is
+ *  older than this multiple of the cadence (one missed cycle is tolerable jitter;
+ *  past 2× the loop is genuinely not firing). */
+const STALE_CADENCE_MULTIPLE = 2;
+
+/** The raw `autoloop_state` fire row (role='overwatch') the strip rests on. */
+interface OverwatchFireRow {
+  lastFiredAt: Date | null;
+  lastStatus: string | null;
+  consecutiveErrors: number;
+}
+
+/** A status reads "ok" unless it is an explicit `error:` fire (the loop stamps
+ *  `error: …` on a failed launch; `firing` / `ok` / `no-session-now` are not errors). */
+function statusIsOk(status: string | null): boolean {
+  if (!status) return false;
+  return !status.startsWith('error');
+}
+
+/**
+ * The PURE liveness derivation — given the fire row, cadence, control bits, and
+ * `now`, compute the whole `OverwatchLiveness` projection (next-run estimate +
+ * ALIVE/STALE verdict). Pure + deterministic so it unit-tests with no DB.
+ */
+export function deriveOverwatchLiveness(input: {
+  hiveSlug: string | null;
+  started: boolean;
+  flagEnabled: boolean;
+  cadenceSec: number;
+  fire: OverwatchFireRow;
+  now?: number;
+}): OverwatchLiveness {
+  const now = input.now ?? Date.now();
+  const { hiveSlug, started, flagEnabled, cadenceSec, fire } = input;
+  const lastMs = fire.lastFiredAt ? fire.lastFiredAt.getTime() : null;
+  const ageMs = lastMs != null ? Math.max(0, now - lastMs) : null;
+  const nextMs = lastMs != null ? lastMs + cadenceSec * 1000 : null;
+  const enabledLoop = started && flagEnabled;
+  const staleThresholdMs = cadenceSec * 1000 * STALE_CADENCE_MULTIPLE;
+
+  // ALIVE = the loop is meant to be running AND it has fired within the stale
+  // window. STALE = meant to be running but the last fire is past the window
+  // (or it never fired despite being enabled). A paused/dark loop is neither.
+  const firedRecently = ageMs != null && ageMs <= staleThresholdMs;
+  const alive = enabledLoop && firedRecently;
+  const stale = enabledLoop && !firedRecently;
+
+  const recentRuns: OverwatchRun[] =
+    fire.lastFiredAt && lastMs != null
+      ? [{ firedAt: fire.lastFiredAt.toISOString(), status: fire.lastStatus ?? 'unknown', ok: statusIsOk(fire.lastStatus) }]
+      : [];
+
+  return {
+    hiveSlug,
+    started,
+    flagEnabled,
+    cadenceSec,
+    lastRunAt: fire.lastFiredAt ? fire.lastFiredAt.toISOString() : null,
+    lastStatus: fire.lastStatus,
+    consecutiveErrors: fire.consecutiveErrors,
+    ageMs,
+    nextRunAt: nextMs != null ? new Date(nextMs).toISOString() : null,
+    nextRunInMs: nextMs != null ? nextMs - now : null,
+    alive,
+    stale,
+    recentRuns,
+  };
+}
+
+/** Read the overwatch fire row from `autoloop_state` (role='overwatch') for the
+ *  given (workspace, install). Fail-soft to an empty/never-fired row. */
+async function readOverwatchFireRow(ws: string, installSlug: string): Promise<OverwatchFireRow> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ last_fired_at: Date | string | null; last_status: string | null; consecutive_errors: number | string | null }>>`
+      SELECT last_fired_at, last_status, consecutive_errors
+        FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${ws} AND harness_slug = ${installSlug} AND role = ${OVERWATCH_ROLE}
+       LIMIT 1
+    `;
+    if (rows.length === 0) return { lastFiredAt: null, lastStatus: null, consecutiveErrors: 0 };
+    const r = rows[0];
+    const lastFiredAt = r.last_fired_at == null ? null : r.last_fired_at instanceof Date ? r.last_fired_at : new Date(r.last_fired_at);
+    return {
+      lastFiredAt: lastFiredAt && !Number.isNaN(lastFiredAt.getTime()) ? lastFiredAt : null,
+      lastStatus: r.last_status ?? null,
+      consecutiveErrors: Number(r.consecutive_errors ?? 0),
+    };
+  } catch {
+    return { lastFiredAt: null, lastStatus: null, consecutiveErrors: 0 };
+  }
+}
+
+/**
+ * The overwatch LIVENESS / heartbeat projection — the "is-it-alive?" strip's data
+ * (the `overwatch.liveness` sync resolver). Unlike `getOverwatchControlState`,
+ * whose `armed`/`lastWakeAt` come from the one-shot `overwatch-wake` routine row
+ * (deactivated between fires, so it can't prove a healthy-between-runs loop), this
+ * rests on the `autoloop_state` row that EVERY actual fire stamps via `recordFire`.
+ * Every read is independently fail-soft so a degraded source greys the field
+ * instead of erroring the strip.
+ */
+export async function getOverwatchLiveness(opts?: {
+  workspaceId?: string;
+  hiveSlug?: string;
+  now?: number;
+}): Promise<OverwatchLiveness> {
+  const ws = opts?.workspaceId ?? activeWorkspaceId();
+  const installSlug = await resolveOverwatchInstallSlug(ws, opts?.hiveSlug);
+  const flagEnabled = await getFlag(FLAGS.OVERWATCH, `overwatch:${ws}`).catch(() => false);
+
+  if (!installSlug) {
+    return deriveOverwatchLiveness({
+      hiveSlug: null,
+      started: false,
+      flagEnabled,
+      cadenceSec: DEFAULT_OVERWATCH_CADENCE_SEC,
+      fire: { lastFiredAt: null, lastStatus: null, consecutiveErrors: 0 },
+      now: opts?.now,
+    });
+  }
+
+  const [started, cadenceSec, fire] = await Promise.all([
+    getOverwatchStarted(ws, installSlug).catch(() => false),
+    getOverwatchCadenceSec(ws, installSlug).catch(() => DEFAULT_OVERWATCH_CADENCE_SEC),
+    readOverwatchFireRow(ws, installSlug),
+  ]);
+
+  return deriveOverwatchLiveness({
+    hiveSlug: installSlug,
+    started,
+    flagEnabled,
+    cadenceSec,
+    fire,
+    now: opts?.now,
+  });
 }

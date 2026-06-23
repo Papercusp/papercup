@@ -277,6 +277,63 @@ export interface OverwatchControlState {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
+ * The liveness / heartbeat view (the "is-it-alive?" strip).
+ *
+ * The control-state's `armed` / `lastWakeAt` derive from the ONE-SHOT
+ * `overwatch-wake` routine row, which is DEACTIVATED the instant it fires —
+ * between cadence fires that row is `active=false, next_fire_at=NULL`, so the
+ * pane couldn't distinguish a healthy-between-runs overwatch from a dead one
+ * (a healthy running overwatch looked identical to a dead one — the whole point
+ * of this strip). The AUTHORITATIVE proof-of-life is instead the
+ * `harness_shared.autoloop_state` row (role='overwatch'): EVERY actual fire
+ * stamps `last_fired_at` + `last_status` + `consecutive_errors` there, via the
+ * loop's `recordFire(... 'overwatch' ...)`. This projection reads THAT row plus
+ * the configured cadence, and derives the next-run estimate + the ALIVE/STALE
+ * verdict. Pure shape (client-safe); the DB read lives in snapshot.ts.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** One recent overwatch run (from `autoloop_state`; v1 has only the latest row). */
+export interface OverwatchRun {
+  /** When the run fired (ISO-8601). */
+  firedAt: string;
+  /** The recorded status (`'ok'` | `'firing'` | `'no-session-now'` | `'error: …'`). */
+  status: string;
+  /** True when the status reads as a healthy fire (not an `error:` status). */
+  ok: boolean;
+}
+
+export interface OverwatchLiveness {
+  /** The hive the overwatch supervises (D-005 per-hive); null when none resolvable. */
+  hiveSlug: string | null;
+  /** The persisted `overwatch_started` bit — the loop is supposed to be running. */
+  started: boolean;
+  /** The `papercusp-overwatch` activation flag (D-009). started && !flagEnabled = PRE-ARMED. */
+  flagEnabled: boolean;
+  /** The configured wake cadence in seconds (default 600). */
+  cadenceSec: number;
+  /** The last ACTUAL overwatch fire (ISO-8601) from `autoloop_state`, or null if never. */
+  lastRunAt: string | null;
+  /** The status of the last fire (`'ok'` | `'firing'` | `'error: …'`), or null if never. */
+  lastStatus: string | null;
+  /** Consecutive fire-path errors (the autoloop circuit counter). */
+  consecutiveErrors: number;
+  /** ms since the last fire, or null (never fired). */
+  ageMs: number | null;
+  /** Derived next-run estimate (lastRunAt + cadence), ISO-8601, or null if never fired. */
+  nextRunAt: string | null;
+  /** ms until the next estimated run (negative when overdue), or null if never fired. */
+  nextRunInMs: number | null;
+  /** ALIVE verdict: started + flag on + a fire within 2× cadence. A never-fired-yet
+   *  but just-started loop is treated as pending (alive=false, stale=false). */
+  alive: boolean;
+  /** STALE verdict: started + flag on but the last fire is older than 2× cadence
+   *  (the loop should be firing on cadence but isn't) — the dead-overwatch signal. */
+  stale: boolean;
+  /** Up to ~5 recent runs, newest first (v1: the single latest `autoloop_state` row). */
+  recentRuns: OverwatchRun[];
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
  * The renderer.
  * ──────────────────────────────────────────────────────────────────────────── */
 

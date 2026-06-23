@@ -107,7 +107,11 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
     extra: [`BLUEPRINT_ID=${OVERWATCH_BLUEPRINT_ID}`],
   };
   if (brief) body.overwatchBrief = brief;
-  void recordFire(installSlug, role, 'firing', 'attempt').catch(() => {});
+  // Stamp the attempt, then refresh the pane's "is-it-alive?" heartbeat strip:
+  // `recordFire` wrote a fresh `autoloop_state` row that `overwatch.liveness`
+  // reads, so the strip's last-run / countdown / ALIVE badge update live over SSE
+  // the moment a wake fires. Name-only (the consumer subscribes with no args).
+  void recordFire(installSlug, role, 'firing', 'attempt').catch(() => {}).finally(invalidateOverwatchLiveness);
   void loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -128,8 +132,19 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
         return recordFire(installSlug, role, `error: ${detail}`, 'error');
       },
     )
-    .catch(() => {});
+    .catch(() => {})
+    .finally(invalidateOverwatchLiveness);
 };
+
+/** Refresh the `overwatch.liveness` sync subscribers (the "is-it-alive?" strip)
+ *  after a fire stamps `autoloop_state`. Lazy import (the loop module is imported
+ *  at boot, before the SSE bus is necessarily wired) + fully fail-soft — a notify
+ *  miss never affects the launch. */
+function invalidateOverwatchLiveness(): void {
+  void import('../sync-sse')
+    .then(({ notifySyncInvalidate }) => notifySyncInvalidate('overwatch.liveness', {}))
+    .catch(() => {});
+}
 
 /**
  * The registered `system:overwatch-launch` handler. Self-gates (flag + started),
