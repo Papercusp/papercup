@@ -1,0 +1,62 @@
+/**
+ * classify-same-hive-member.test — the WI-559 same-hive cross-member SCOPE decision (the asymmetric
+ * A→B peer stall fix). Pure function, so these are deterministic unit tests of the decision the boot
+ * closure's `resolveSameHiveMember` applies (admit / buffer-on-miss / fall-through).
+ *
+ * THE WI-559 FIX, in one assertion: a same-hive candidate whose membership has NOT federated to us
+ * yet classifies as 'miss' (→ the caller BUFFERS it for retry), NOT as a conclusive drop. Each
+ * assertion pairs with its opposite under the same setup minus the one triggering field, so
+ * neutering a guard flips a test RED.
+ */
+import { describe, it, expect } from 'vitest';
+import { classifySameHiveMember, type SameHiveDecision } from './boot';
+
+// Use the classifier's OWN input type so the null/undefined cases below typecheck.
+type Input = Parameters<typeof classifySameHiveMember>[0];
+
+const BASE: Input = {
+  originSlug: 'fed-a-member',
+  ownSlug: 'fed-b-member',
+  hiveHome: 'fixawitness-hive',
+  githubUserId: 279242982,
+  devicePubkey: '5cWxDYOf',
+  memberDevices: ['5cWxDYOf', 'someOtherDevice'],
+};
+
+const decide = (over: Partial<Input>): SameHiveDecision =>
+  classifySameHiveMember({ ...BASE, ...over });
+
+describe('classifySameHiveMember', () => {
+  it("ADMITS a registered same-hive member's device", () => {
+    expect(decide({})).toBe('admit');
+  });
+
+  it("WI-559: a same-hive candidate NOT YET in hive_members is a MISS (→ buffer, not a drop)", () => {
+    // Same setup minus the membership row (B has not federated A in yet) → 'miss'.
+    expect(decide({ memberDevices: [] })).toBe('miss');
+    expect(decide({ memberDevices: ['someOtherDevice'] })).toBe('miss');
+    // Teeth: add A's device back (membership federates in) → flips to 'admit'.
+    expect(decide({ memberDevices: ['5cWxDYOf'] })).toBe('admit');
+  });
+
+  it("is NOT a candidate when the origin slug is our OWN slug (in-own-scope, handled upstream)", () => {
+    expect(decide({ originSlug: BASE.ownSlug })).toBe('not-candidate');
+  });
+
+  it('is NOT a candidate when the origin slug is absent (legacy / single-harness peer)', () => {
+    expect(decide({ originSlug: null })).toBe('not-candidate');
+  });
+
+  it('is NOT a candidate without a github identity (cannot be membership-checked)', () => {
+    expect(decide({ githubUserId: null })).toBe('not-candidate');
+    expect(decide({ githubUserId: undefined })).toBe('not-candidate');
+    expect(decide({ githubUserId: 0 })).toBe('not-candidate'); // 0 is falsy → no identity
+  });
+
+  it('is NOT a candidate when we have no hive home to check membership against', () => {
+    // Even a would-be member is not-candidate without a resolved hive home — the caller buffers it
+    // as scope_unresolved (A-003), not as a membership miss.
+    expect(decide({ hiveHome: null })).toBe('not-candidate');
+    expect(decide({ hiveHome: null, memberDevices: [] })).toBe('not-candidate');
+  });
+});

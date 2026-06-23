@@ -482,6 +482,35 @@ export interface BootedHarnessHandle {
   close(): Promise<void>;
 }
 
+/**
+ * WI-559: the PURE same-hive cross-member SCOPE decision, extracted so it is unit-testable in
+ * isolation (the boot closure's `resolveSameHiveMember` applies it + the side effects). A frame that
+ * has ALREADY passed the identity decider (sig + channel-2 binding valid, NOT revoked — checked
+ * upstream, every call) and is out of this harness's OWN slug scope is classified:
+ *   - 'admit'         → its github_user_id is a member of this hive AND its device is registered.
+ *   - 'miss'          → a same-hive candidate (cross-slug + has a github id + we have a hive home)
+ *                       whose membership has NOT federated to us yet → caller BUFFERS it for retry
+ *                       (the asymmetric A→B stall fix) instead of conclusively rejecting.
+ *   - 'not-candidate' → not a same-hive cross-member (own/empty slug, no github id, or no hive home)
+ *                       → caller falls through to the A-003 / conclusive paths.
+ * It NEVER decides revocation or the read-cut (that is the identity decider, run BEFORE it), so
+ * widening 'miss' → buffer can never re-admit a revoked / read-cut peer.
+ */
+export type SameHiveDecision = 'admit' | 'miss' | 'not-candidate';
+export function classifySameHiveMember(input: {
+  originSlug: string | null;
+  ownSlug: string;
+  hiveHome: string | null;
+  githubUserId: number | null | undefined;
+  devicePubkey: string;
+  memberDevices: readonly string[];
+}): SameHiveDecision {
+  const { originSlug, ownSlug, hiveHome, githubUserId, devicePubkey, memberDevices } = input;
+  if (!(originSlug != null && originSlug !== ownSlug && githubUserId)) return 'not-candidate';
+  if (hiveHome == null) return 'not-candidate';
+  return memberDevices.includes(devicePubkey) ? 'admit' : 'miss';
+}
+
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
   if (!opts.workspaceRoot) throw new Error('bootHarnessSubstrate: workspaceRoot required');
   if (!opts.workspaceId) throw new Error('bootHarnessSubstrate: workspaceId required');
@@ -1521,7 +1550,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return null;
     const memberDevices = await loadHiveMembers(myHiveHome, frame.github_user_id);
-    if (memberDevices.includes(frame.device_pubkey)) {
+    const decision = classifySameHiveMember({
+      originSlug,
+      ownSlug: slug,
+      hiveHome: myHiveHome,
+      githubUserId: frame.github_user_id,
+      devicePubkey: frame.device_pubkey,
+      memberDevices,
+    });
+    if (decision === 'admit') {
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,
@@ -1530,6 +1567,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
       return admitPeer(frame);
     }
+    // decision === 'miss' here (the pre-checks above already returned null for 'not-candidate').
     // MEMBERSHIP-MISS (WI-559) — plausible same-hive cross-member whose hive_members row has not
     // federated to us yet → BUFFER for retry instead of a conclusive drop. Idempotent: a no-op when
     // already pending (preserving its grace clock), and the boot event is recorded ONLY on the first

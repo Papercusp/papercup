@@ -46,6 +46,13 @@ export interface AppendHeavyInvalidatorDeps {
   pollMs?: number;
   /** Per-fire dedupe window passed to the bus (ms). Default 5000. */
   dedupeWindowMs?: number;
+  /**
+   * Runtime kill-switch checked at the START of every sweep (default: always on). The flag is
+   * checked HERE — not at boot — because getFlag is FRAGILE at host-bootstrap time (it can resolve
+   * false before the flag backend is warm; see host-bootstrap's INFERENCE_GATEWAY note). Starting
+   * unconditionally + gating the work per-tick avoids "detector silently never started".
+   */
+  isEnabled?: () => boolean;
   /** Read the table's current max(id). Returns null/undefined when empty. (postgres-js
    *  returns a bigint column as a string — BigInt() in the sweep accepts string|number|bigint.) */
   maxId: (table: string) => Promise<bigint | number | string | null | undefined>;
@@ -105,6 +112,14 @@ export function startAppendHeavyInvalidator(deps: AppendHeavyInvalidatorDeps): (
 
   const tick = async () => {
     if (stopped) return;
+    // Runtime kill-switch (NOT boot-gated — getFlag is fragile at boot). When off, skip the
+    // sweep (no reads, no fires) but keep ticking so a runtime flip back ON resumes without a
+    // restart. lastSeen is left untouched while off, so the first ON tick fires at most ONCE to
+    // catch up the OFF-window backlog (a single full-bust, not a per-row storm).
+    if (deps.isEnabled && !deps.isEnabled()) {
+      if (!stopped) timer = setTimer(() => void tick(), pollMs);
+      return;
+    }
     await sweepAppendHeavy(tables, lastSeen, deps.maxId, deps.emitChanged, dedupeWindowMs, deps.onError);
     if (!stopped) timer = setTimer(() => void tick(), pollMs);
   };
@@ -124,6 +139,8 @@ export function startAppendHeavyInvalidator(deps: AppendHeavyInvalidatorDeps): (
 export function startAppendHeavyInvalidatorHost(opts?: {
   pollMs?: number;
   dedupeWindowMs?: number;
+  /** Runtime kill-switch checked per-tick (default always on). Pass `() => getFlag(...)`. */
+  isEnabled?: () => boolean;
   log?: (msg: string) => void;
 }): () => void {
   // Dedicated single connection on the BYPASSRLS admin URL (mig 016) so max(id) sees every
@@ -132,6 +149,7 @@ export function startAppendHeavyInvalidatorHost(opts?: {
   const stop = startAppendHeavyInvalidator({
     pollMs: opts?.pollMs,
     dedupeWindowMs: opts?.dedupeWindowMs,
+    isEnabled: opts?.isEnabled,
     maxId: async (table) => {
       // table comes from the hardcoded APPEND_HEAVY_TABLES allow-list (never user input);
       // sql(table) escapes the identifier regardless.

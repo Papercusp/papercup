@@ -265,21 +265,6 @@ export async function buildRoleLaunchSpec(
     promptFile = ws.promptFile;
   }
 
-  // Stale-harness guard (owner 2026-06-23): if the resolved launch cwd no
-  // longer exists — e.g. a harness whose registered project dir was a /tmp
-  // e2e test bed that's since been deleted — fall back to the workspace root
-  // so the launcher doesn't crash writing `<cwd>/.mcp.json` (ENOENT, the
-  // "psu: write .mcp.json" planner-pane failure). Logs the bad path so the
-  // stale registration is visible to clean up. Resolves the whole class (any
-  // deleted harness dir), not one path.
-  if (!fsSync.existsSync(cwd)) {
-    const fallbackCwd = papercuspPathForWorkspace(input.workspaceId);
-    console.warn(
-      `[role-launch] launch cwd "${cwd}" does not exist (stale harness registration?); falling back to "${fallbackCwd}"`,
-    );
-    cwd = fsSync.existsSync(fallbackCwd) ? fallbackCwd : process.cwd();
-  }
-
   // 3. Signed role-scoped MCP URL — same param set + signing key the
   //    orchestrator's writeSignedSpawnMcp uses, so the MCP handler's
   //    verifySpawnParams accepts it and dispatch enforces role's allowlist.
@@ -498,16 +483,6 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     // active one (same fix as console-launcher — input.workspaceId may differ
     // from activeWorkspaceId()).
     cwd = papercuspPathForWorkspace(input.workspaceId);
-  }
-
-  // Stale-harness guard (see buildRoleLaunchSpec): a deleted harness project
-  // dir falls back to the workspace root rather than crashing the launcher.
-  if (!fsSync.existsSync(cwd)) {
-    const fallbackCwd = papercuspPathForWorkspace(input.workspaceId);
-    console.warn(
-      `[role-launch:su] launch cwd "${cwd}" does not exist (stale harness registration?); falling back to "${fallbackCwd}"`,
-    );
-    cwd = fsSync.existsSync(fallbackCwd) ? fallbackCwd : process.cwd();
   }
 
   // 2. Prompt — the engineer/power playbook (base + per-agent tooling

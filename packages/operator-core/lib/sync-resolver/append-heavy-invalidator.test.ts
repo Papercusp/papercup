@@ -69,6 +69,34 @@ describe('sweepAppendHeavy', () => {
     expect(emitted).toEqual([{ name: 'harness_shared.harness_hook_logs.changed', dedupe: DEDUPE }]);
   });
 
+  it('runtime isEnabled gates the sweep per-tick (off → skip; flip on → resume, no restart)', async () => {
+    let enabled = false;
+    const maxId = vi.fn(async () => 5n);
+    const emitChanged = vi.fn(async () => {});
+    let next: (() => void) | null = null;
+    const { startAppendHeavyInvalidator } = await import('./append-heavy-invalidator');
+    const stop = startAppendHeavyInvalidator({
+      tables: ['user_actions'],
+      maxId,
+      emitChanged,
+      isEnabled: () => enabled,
+      setTimer: (fn: () => void) => {
+        next = fn;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer: () => {},
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(maxId).not.toHaveBeenCalled(); // disabled at first tick → skipped (no DB read)
+    expect(next).toBeTypeOf('function'); // still ticking → a runtime flip resumes it
+
+    enabled = true;
+    next!(); // fire the next tick
+    await new Promise((r) => setTimeout(r, 0));
+    expect(maxId).toHaveBeenCalledWith('user_actions'); // enabled → swept
+    stop();
+  });
+
   it('isolates a per-table query error — other tables still sweep + fire', async () => {
     const maxId = vi.fn(async (table: string) => {
       if (table === 'bad') throw new Error('boom');

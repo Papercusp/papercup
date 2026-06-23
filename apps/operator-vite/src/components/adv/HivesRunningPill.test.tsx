@@ -11,6 +11,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+// The pill now renders via the shared `<Popover>` (harness), which composes a Radix
+// `Tooltip` requiring a `TooltipProvider` ancestor — supplied at the app root in production.
+// Wrap the isolated renders in one, exactly as every sibling component test does
+// (Popover.test / HiveContentPanel / MemberWorkPanel / QueuePanel). Without it the pill renders
+// throw "Tooltip must be used within TooltipProvider" — the green-checkpoint deploy blocker.
+import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 
 const H = vi.hoisted(() => ({
   flagOn: true,
@@ -34,6 +40,13 @@ vi.mock('nuqs', () => ({
 
 import HivesRunningPill from './HivesRunningPill';
 
+/** Render the pill inside the TooltipProvider the shared Popover requires (see top-of-file). */
+const Pill = () => (
+  <TooltipProvider>
+    <HivesRunningPill />
+  </TooltipProvider>
+);
+
 beforeEach(() => {
   H.flagOn = true;
   H.rows = [{ slug: 'a', started: true }, { slug: 'b', started: false }];
@@ -45,19 +58,19 @@ afterEach(() => cleanup());
 describe('<HivesRunningPill>', () => {
   it('renders nothing when the HIVE_CONTROL flag is off', () => {
     H.flagOn = false;
-    const { container } = render(<HivesRunningPill />);
+    const { container } = render(<Pill />);
     expect(container.innerHTML).toBe('');
     expect(screen.queryByTestId('hives-running-pill')).toBeNull();
   });
 
   it('renders nothing when no local hive is registered', () => {
     H.rows = [];
-    const { container } = render(<HivesRunningPill />);
+    const { container } = render(<Pill />);
     expect(container.innerHTML).toBe('');
   });
 
   it('shows the pluralized running label and the is-running class when ≥1 started', () => {
-    render(<HivesRunningPill />);
+    render(<Pill />);
     const pill = screen.getByTestId('hives-running-pill');
     expect(pill.textContent).toContain('1 hive running');
     expect(pill.className).toContain('is-running');
@@ -66,36 +79,40 @@ describe('<HivesRunningPill>', () => {
 
   it('drops the is-running class when nothing is started (and pluralizes 0)', () => {
     H.rows = [{ slug: 'a', started: false }, { slug: 'b', started: false }];
-    render(<HivesRunningPill />);
+    render(<Pill />);
     const pill = screen.getByTestId('hives-running-pill');
     expect(pill.textContent).toContain('0 hives running');
     expect(pill.className).not.toContain('is-running');
   });
 
   it('clicking the pill flips the ?hivesCtl param (open the popover)', () => {
-    render(<HivesRunningPill />);
+    render(<Pill />);
     fireEvent.click(screen.getByTestId('hives-running-pill'));
     expect(nuqs.set).toHaveBeenCalledWith(true);
   });
 
   it('clicking again (when open) flips it back to false', () => {
     nuqs.open = true;
-    render(<HivesRunningPill />);
+    render(<Pill />);
     expect(screen.getByTestId('hives-running-pill').getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(screen.getByTestId('hives-running-pill'));
     expect(nuqs.set).toHaveBeenCalledWith(false);
   });
 
   it('mounts the LocalHivesControl popover only while open', () => {
-    const { rerender } = render(<HivesRunningPill />);
+    const { rerender } = render(<Pill />);
     expect(screen.queryByTestId('hives-running-pop')).toBeNull();
     expect(screen.queryByTestId('local-hives-control')).toBeNull();
     nuqs.open = true;
-    rerender(<HivesRunningPill />);
+    rerender(<Pill />);
+    // The shared <Popover> now renders the dialog semantics (role=dialog + aria-label) on its
+    // Content wrapper — queried via getByRole('dialog'), the canonical Popover.test pattern —
+    // not on the inner `hives-running-pop` content div the old hand-rolled panel used. The pill's
+    // aria-controls still points at that inner content div's id.
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.getAttribute('aria-label')).toBe('Local hives');
     const pop = screen.getByTestId('hives-running-pop');
     expect(pop).toBeTruthy();
-    expect(pop.getAttribute('role')).toBe('dialog');
-    expect(pop.getAttribute('aria-label')).toBe('Local hives');
     expect(screen.getByTestId('hives-running-pill').getAttribute('aria-controls')).toBe(pop.id);
     expect(screen.getByTestId('local-hives-control')).toBeTruthy();
   });

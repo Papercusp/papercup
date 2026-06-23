@@ -269,20 +269,23 @@ export function runBootstrap(): void {
   // serves clients on EVERY operator (incl. :3170, which runs no background workers) — hence NOT
   // gated on backgroundWorkersEnabled (resilient: no bg-host single point of failure). A 2nd host
   // also running it is harmless — the per-call short dedupe + react-query refetch-coalescing fold
-  // the duplicate fires. Flag-gated (default ON) so it's a clean kill-switch.
-  if (getFlag(FLAGS.APPEND_HEAVY_LIVE_INVALIDATION, 'operator-host')) {
-    void (async () => {
-      try {
-        const { startAppendHeavyInvalidatorHost } = await import(
-          '@papercusp/operator-core/lib/sync-resolver/append-heavy-invalidator'
-        );
-        startAppendHeavyInvalidatorHost({ log: (m) => console.log(m) });
-        console.log('[append-heavy-invalidator] started — debounced live-invalidation for append-heavy logs');
-      } catch (err) {
-        console.error('[append-heavy-invalidator] failed to start:', err);
-      }
-    })();
-  }
+  // the duplicate fires. Started UNCONDITIONALLY with the flag checked PER-TICK at runtime, not
+  // here — getFlag is fragile at host-boot (see the INFERENCE_GATEWAY note below), so a boot-gate
+  // risks "silently never started"; the per-tick check is the clean kill-switch.
+  void (async () => {
+    try {
+      const { startAppendHeavyInvalidatorHost } = await import(
+        '@papercusp/operator-core/lib/sync-resolver/append-heavy-invalidator'
+      );
+      startAppendHeavyInvalidatorHost({
+        isEnabled: () => getFlag(FLAGS.APPEND_HEAVY_LIVE_INVALIDATION, 'operator-host'),
+        log: (m) => console.log(m),
+      });
+      console.log('[append-heavy-invalidator] started — debounced live-invalidation for append-heavy logs');
+    } catch (err) {
+      console.error('[append-heavy-invalidator] failed to start:', err);
+    }
+  })();
   if (!utilityHost) {
     // P2P voice channels: the local binary audio socket (holepunch-voice-channels
     // P-006/D-010). Cheap to start; the voice swarm itself is lazy (first join).

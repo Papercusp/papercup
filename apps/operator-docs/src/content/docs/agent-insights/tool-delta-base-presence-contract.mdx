@@ -173,6 +173,43 @@ therefore belongs in the **OMP/psu turn-wrapper**, alongside coord's existing
 place Papercusp owns both the turn boundary and the message array. The unit ships
 now; the turn-wrapper adoption is the (flag-gated) follow-on.
 
+**Integration recipe — one call.** `dispatchWithBasePresence` composes the two so a
+turn-wrapper adopts the whole contract in a single line per delta-capable read:
+
+```ts
+import { BasePresenceTracker, DeltaToolClient, dispatchWithBasePresence } from '@papercusp/tooldef';
+
+// once per session: enabled=false for an out-of-scope wrapper (external Claude Code / Codex)
+const tracker = new BasePresenceTracker({ enabled: harnessOwnsTurnWrapper });
+const client = new DeltaToolClient();
+// from the wrapper's compaction / session-resume hook:
+onCompaction(() => tracker.onCompaction());
+
+// per delta-capable tool read (e.g. plans:attention):
+const { rows, mode } = await dispatchWithBasePresence(
+  tracker, client, viewKey, itemKeyFor(view),
+  (requested) => callTool(name, args, { _meta: requested ? { delta: requested } : {} }),
+  { wantSemantic: true },
+);
+// mode === 'full'         → inject `rows` into the model context
+// mode === 'delta'        → inject only the changed rows (the token win)
+// mode === 'not_modified' → inject NOTHING; the base already stands
+```
+
+**Where this lands (and where it does NOT).** Every delta-capable consumer today is an
+EXTERNAL MCP-client runtime — `transport: 'mcp'` calls from spawned bees / psu sessions
+(claude-code, omp-via-Meridian, codex *binaries*), never an in-repo Papercusp LLM loop
+(the operator's own `runAgentChat` delegates to a child process and owns no message
+array). So the model-token win is realized by the **agent runtime** importing
+`@papercusp/tooldef` and calling the recipe above inside its own tool-exec loop —
+claude-code/codex are contract-excluded (`enabled:false`), omp/Meridian is the in-scope
+adopter. The reusable half ships from this repo; the per-runtime call site is that
+runtime's (one-line) change. The resilience MCP proxy
+([`mcp-proxy/proxy.ts`](apps/operator/lib/mcp-proxy/proxy.ts)) is deliberately stateless
+per-request and can't see client compaction, so it is NOT the integration site (a
+proxy-level delta would reconstruct `full` for the client — a localhost-moot wire saving,
+no model-token win).
+
 ## Small-response bypass
 
 Below ~256 bytes of full body

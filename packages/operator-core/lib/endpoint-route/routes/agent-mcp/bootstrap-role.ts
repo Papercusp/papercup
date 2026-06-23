@@ -31,6 +31,7 @@ import { recordAdvSession } from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { roleConsumes } from '../../../role-registry';
 import { buildRoleLaunchSpec } from '../../../role-launch-spec';
+import { papercuspPathForWorkspace } from '../../../papercusp-root';
 import { getPlanContextBySlug } from '../../../plan-context-for-feature';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -233,6 +234,22 @@ const post = defineTool({
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'role launch spec build failed' }, 400);
+    }
+
+    // Stale-harness guard (owner 2026-06-23): a harness whose registered project
+    // dir was deleted — classically a `/tmp` e2e test bed (e.g.
+    // `/tmp/sched-e2e-test-bed`) — yields a cwd that no longer exists, so the
+    // `.mcp.json` write below ENOENTs and the planner pane never opens (the
+    // "write .mcp.json: ENOENT … /.mcp.json" failure the owner hit on "new
+    // plan"). Fall back to the workspace root so the launch still works, and
+    // warn so the stale registration is visible to clean up. Resolves the whole
+    // class (any deleted harness dir), not one path.
+    if (!existsSync(spec.cwd)) {
+      const fallbackCwd = papercuspPathForWorkspace(workspace);
+      console.warn(
+        `[bootstrap-role] launch cwd "${spec.cwd}" does not exist (stale harness registration?); falling back to "${fallbackCwd}"`,
+      );
+      if (existsSync(fallbackCwd)) spec.cwd = fallbackCwd;
     }
 
     // Per-session coord/lock owner (P-022) — now MINTED BY THE LAUNCH-SPEC
