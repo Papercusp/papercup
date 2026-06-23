@@ -28,7 +28,14 @@ import { systemDistinctId } from '../../flag-distinct-id';
 // an initial read + every flag change — exactly the lexicon/configure.ts pattern.
 // While the cache is unloaded it reads false ⇒ 'default' (today's behavior, safe).
 let coordPerWorkspaceOn = false;
-async function refreshCoordPerWorkspace(): Promise<void> {
+/**
+ * Re-read the COORD_PER_WORKSPACE flag into the sync cache. Fired on an initial
+ * read + every flag change (the lexicon/configure.ts pattern). Exported so tests
+ * can drive the cache DETERMINISTICALLY (set a flag override → await this →
+ * assert) instead of racing the fire-and-forget module-load refresh — which is
+ * brittle once the flag's DEFAULT flips (it graduated default-ON in WI-599).
+ */
+export async function refreshCoordPerWorkspace(): Promise<void> {
   try {
     coordPerWorkspaceOn = await getFlag(FLAGS.COORD_PER_WORKSPACE, systemDistinctId());
   } catch {
