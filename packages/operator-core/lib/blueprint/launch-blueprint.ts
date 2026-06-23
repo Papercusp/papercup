@@ -32,6 +32,7 @@ import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
+import { agentProducedTurn } from '../fleet/invoke-outcome';
 import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 
@@ -431,11 +432,39 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
     // default 5-min headers cap (UND_ERR_HEADERS_TIMEOUT) before she places a bee.
     { launch: true },
   )
-    .then(() => {
+    .then(async (r) => {
       stopHeartbeat();
-      if (pg) {
-        void finishSpawn(pg.sql, { spawnId, workspaceId, status: 'done' }).catch(() => {});
+      if (!pg) return;
+      // HTTP 200 ≠ the agent ran. Judge the invoke body with the SHARED rule
+      // (fleet/invoke-outcome), same as durable-spawn: a fire that returns ok-shaped
+      // while the agent never emitted a turn (a 429-killed / dead-launcher spawn) is
+      // recorded `failed` (infra_loss), NOT silently `done`. This path previously
+      // recorded `done` on ANY resolve — the doc-steward silent-swallow that left
+      // drifted docs un-healed (docs-audit 2026-06-23 #1). A non-2xx also resolves
+      // here (loopbackFetch doesn't throw on it), so treat that as failed too.
+      let status: 'done' | 'failed' = 'done';
+      let errorMessage: string | undefined;
+      const body = r && typeof r.text === 'function' ? await r.text().catch(() => '') : '';
+      if (r && r.ok === false) {
+        status = 'failed';
+        const tail = body ? ` — ${body.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
+        errorMessage = `invoke ${installSlug}/${role} → HTTP ${r.status}${tail}`;
+      } else {
+        const outcome = agentProducedTurn(body, `${installSlug}/${role}`);
+        if (!outcome.ran) {
+          status = 'failed';
+          errorMessage = `infra_loss:${outcome.detail}`;
+        }
       }
+      if (status === 'failed') {
+        console.warn(`[launch-blueprint] fire not green (${installSlug}/${role}): ${errorMessage}`);
+      }
+      void finishSpawn(pg.sql, {
+        spawnId,
+        workspaceId,
+        status,
+        ...(errorMessage ? { errorMessage } : {}),
+      }).catch(() => {});
     })
     .catch((e) => {
       stopHeartbeat();

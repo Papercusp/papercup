@@ -40,6 +40,7 @@ import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { queueConcurrency } from './queue-concurrency';
 import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
+import { agentProducedTurn } from '../fleet/invoke-outcome';
 
 /**
  * HTTP statuses where retrying the IDENTICAL replayed request can never succeed,
@@ -158,40 +159,14 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           // agentOutput — blueprint roles ALWAYS emit a decision line, so empty ⇒ no turn) as
           // an infra-loss recorded `failed`, not `done`. An unreadable/unparseable body ⇒ keep
           // the OLD 'done' behavior — never flip on uncertainty (most load-bearing path).
+          // HTTP 200 ≠ the agent ran. Judge the invoke body with the SHARED rule
+          // (fleet/invoke-outcome) so this path and launch-blueprint classify a
+          // no-turn death identically — a 429'd/dead-launcher spawn is `failed`
+          // (infra_loss), never silently `done` (docs-audit 2026-06-23 #1).
           const bodyText = typeof r.text === 'function' ? await r.text().catch(() => '') : '';
-          if (bodyText) {
-            try {
-              const b = JSON.parse(bodyText) as {
-                ok?: unknown;
-                agentOutput?: unknown;
-                stdout?: unknown;
-                exitCode?: unknown;
-                timedOut?: unknown;
-              };
-              // Only judge when the body carries the invoke-result shape (a boolean `ok`).
-              if (typeof b.ok === 'boolean') {
-                const out =
-                  typeof b.agentOutput === 'string'
-                    ? b.agentOutput
-                    : typeof b.stdout === 'string'
-                      ? b.stdout
-                      : '';
-                const agentRan = b.ok === true && out.trim().length > 0;
-                if (!agentRan) {
-                  return {
-                    ok: false,
-                    infraLoss: true,
-                    detail: ` ${input.label ?? ''} returned HTTP 200 but the agent produced no turn (ok=${String(
-                      b.ok,
-                    )}, exitCode=${String(b.exitCode)}, timedOut=${String(
-                      b.timedOut,
-                    )}, outLen=${out.trim().length}) — agent died before emitting a turn: a dead/restarting launcher host OR (more often) an upstream gateway stall/429 storm killing the agent MID-TURN (the transcript shows a normal run that stops on its 2nd call) — see agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5; recorded failed, not retried`,
-                  } as const;
-                }
-              }
-            } catch {
-              /* unparseable body ⇒ assume done (the old behavior) */
-            }
+          const outcome = agentProducedTurn(bodyText, input.label ?? '');
+          if (!outcome.ran) {
+            return { ok: false, infraLoss: true, detail: outcome.detail } as const;
           }
           return { ok: true } as const;
         }
