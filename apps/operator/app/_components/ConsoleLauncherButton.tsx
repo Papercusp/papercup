@@ -71,6 +71,7 @@ export function ConsoleLauncherButton() {
     : 'Launch terminal in workspace root';
 
   return (
+    <>
     <Tooltip label={tooltip}><button
       type="button"
       className={`pc-console-btn${busy ? ' is-busy' : ''}`}
@@ -119,6 +120,42 @@ export function ConsoleLauncherButton() {
         </span>
       )}
     </button></Tooltip>
+    {psuEnabled && (
+      <Tooltip label={`Open a superuser session (psu)${harnessSlug ? ` in ${harnessSlug}` : ''}`}>
+        <button
+          type="button"
+          className={`pc-console-btn pc-console-btn--psu${busy ? ' is-busy' : ''}`}
+          aria-label="Open superuser session (psu)"
+          disabled={busy}
+          onClick={() => void launchPsu()}
+        >
+          <PsuIcon />
+        </button>
+      </Tooltip>
+    )}
+    </>
+  );
+}
+
+function PsuIcon() {
+  // A shield with a small terminal chevron — "elevated/superuser console".
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Shield outline */}
+      <path d="M9 1.6 L15 3.8 V8.6 C15 12.2 12.4 14.8 9 16.4 C5.6 14.8 3 12.2 3 8.6 V3.8 Z" />
+      {/* Prompt chevron inside */}
+      <path d="M7 6.6 L9.2 8.4 L7 10.2" />
+    </svg>
   );
 }
 

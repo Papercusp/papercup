@@ -109,6 +109,13 @@ const ABSORB_STALLS_ON = process.env.PAPERCUSP_GATEWAY_ABSORB_STALLS !== '0';
  *  transient-throttle duration: long enough to let it clear, short enough not to over-bench an
  *  account that's already recovered (which would thin the pool under broad concurrent contention). */
 const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
+/** SOFT-PIN failover threshold: the per-account in-flight count at/above which a header-PINNED request stops
+ *  funneling onto its pinned account and yields to the healthiest idle sibling instead (owner-reported
+ *  "unpinned 10+ sessions fine, but pinned breaks after a few" — pinning concentrates N concurrent sessions
+ *  onto ONE account, saturating its per-account RPM/burst limit while the rest of the pool sits idle). A pin
+ *  stays sticky for sequential/single-session use (in-flight 0-1 → cache affinity preserved); only a
+ *  CONCURRENT pile-up on the pinned account spreads. Env-tunable. */
+const PIN_YIELD_INFLIGHT = Number(process.env.PAPERCUSP_GATEWAY_PIN_YIELD_INFLIGHT) || 2;
 /** When EVERY pool account is transiently throttled at once, the gateway waits out the soonest
  *  account's short penalty and retries rather than forwarding a retryable (x-should-retry:true) 429.
  *  This caps that wait so a request can never hang on a hard/long reset (a multi-hour usage cap is
