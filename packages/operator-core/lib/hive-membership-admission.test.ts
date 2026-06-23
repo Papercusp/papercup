@@ -13,6 +13,7 @@ import {
   evaluateJoinAdmission,
   approvePendingJoin,
   denyPendingJoin,
+  ownerAdmitOrPend,
   type MembershipAdmissionDeps,
 } from './hive-membership-admission';
 import type { PendingJoinRecord } from './hive-pending-joins-store';
@@ -168,5 +169,75 @@ describe('denyPendingJoin — never trust-admits', () => {
       deps,
     );
     expect(res).toEqual({ ok: false, code: 'no_pending' });
+  });
+});
+
+describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)', () => {
+  const memberRow = {
+    workspaceId: 'w',
+    hiveHomeSlug: 'h',
+    githubUserId: 1001,
+    githubUsername: 'alice',
+    displayName: 'Alice',
+    avatarUrl: null,
+    deviceAttestations: joiner.deviceAttestations,
+    revokedPubkeys: [],
+    bindingStatus: 'verified',
+  };
+
+  it('ALREADY a member ⇒ refresh (re-upsert), policy gate is NOT consulted even under approval', async () => {
+    // approval policy + an already-member peer: must refresh, NOT re-open a pending request.
+    const { deps, upsertHiveMember, recordPendingJoin } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => memberRow) as never },
+    );
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
+    expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
+    expect(upsertHiveMember).toHaveBeenCalledTimes(1);
+    expect(upsertHiveMember.mock.calls[0][0]).toMatchObject({ githubUserId: 1001, bindingStatus: 'verified' });
+    expect(recordPendingJoin).not.toHaveBeenCalled();
+  });
+
+  it('NOT a member + open/null policy ⇒ trust-admit (upsert), no pending', async () => {
+    const { deps, upsertHiveMember, recordPendingJoin } = depsWith(null, {
+      getHiveMember: (async () => null) as never,
+    });
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
+    expect(out).toMatchObject({ action: 'admitted', reason: 'policy_admit' });
+    expect(upsertHiveMember).toHaveBeenCalledTimes(1);
+    expect(recordPendingJoin).not.toHaveBeenCalled();
+  });
+
+  it('NOT a member + approval ⇒ pending (record), NEVER trust-admit', async () => {
+    const { deps, upsertHiveMember, recordPendingJoin } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => null) as never },
+    );
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
+    expect(out.action).toBe('pending');
+    expect(recordPendingJoin).toHaveBeenCalledTimes(1);
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+  });
+
+  it('NOT a member + banned ⇒ refuse, NEVER trust-admit, NO pending', async () => {
+    const { deps, upsertHiveMember, recordPendingJoin } = depsWith(
+      { membership: 'open', moderation: { bannedGithubIds: ['1001'] } },
+      { getHiveMember: (async () => null) as never },
+    );
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
+    expect(out).toEqual({ action: 'refuse', reason: 'banned' });
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+    expect(recordPendingJoin).not.toHaveBeenCalled();
+  });
+
+  it('NOT a member + allowlist non-listed ⇒ refuse(not_allowlisted), no member, no pending', async () => {
+    const { deps, upsertHiveMember, recordPendingJoin } = depsWith(
+      { membership: 'allowlist', allowlist: ['someone-else'] },
+      { getHiveMember: (async () => null) as never },
+    );
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
+    expect(out).toEqual({ action: 'refuse', reason: 'not_allowlisted' });
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+    expect(recordPendingJoin).not.toHaveBeenCalled();
   });
 });

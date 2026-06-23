@@ -1122,24 +1122,53 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               if (!admitHiveHome) return;
               const { loadHivePubkey } = await import('../../identity/hive-keypair');
               if (!(await loadHivePubkey(opts.workspaceId, admitHiveHome))) return;
-              const { upsertHiveMember } = await import('../../hive-membership-store');
-              await upsertHiveMember({
+              // WI-639: gate the trust-admit on the owner-signed membership policy.
+              // This was an UNCONDITIONAL upsertHiveMember, so membership:'approval'
+              // did nothing — a verified joiner was auto-admitted as if open-mode.
+              // ownerAdmitOrPend keeps open-mode BYTE-EQUIVALENT (outcome 'admit' →
+              // the same upsertHiveMember + idempotent epoch re-grant), and an
+              // already-member reconnect still refreshes (re-grant) — but under
+              // approval mode it RECORDS a federated pending-join (the owner is the
+              // writer → it reaches the joiner AND the membership_pending queue) and
+              // does NOT trust-admit until hive:membership_decide approves; a banned /
+              // not-allowlisted peer is refused (no member row). Core admission +
+              // revocation + the read-cut/epoch gate + per-op enforcement are untouched
+              // (their own seams); a pending/refused peer's CONTENT stays gated by the
+              // P-002 membership guard, so nothing federates as a member before approval.
+              const { ownerAdmitOrPend } = await import('../../hive-membership-admission');
+              const admitOutcome = await ownerAdmitOrPend({
                 workspaceId: opts.workspaceId,
                 hiveHomeSlug: admitHiveHome,
-                githubUserId: frame.github_user_id,
-                githubUsername: frame.github_login,
-                deviceAttestations: [
-                  {
-                    device_pubkey: frame.device_pubkey,
-                    gist_id: frame.attestation_gist_id,
-                    gist_url: '',
-                    device_label: frame.github_login,
-                    created_at: Date.now(),
-                    signature_by_device: '',
-                  },
-                ],
-                bindingStatus: 'verified',
+                joiner: {
+                  githubUserId: frame.github_user_id,
+                  githubUsername: frame.github_login,
+                  deviceAttestations: [
+                    {
+                      device_pubkey: frame.device_pubkey,
+                      gist_id: frame.attestation_gist_id,
+                      gist_url: '',
+                      device_label: frame.github_login,
+                      created_at: Date.now(),
+                      signature_by_device: '',
+                    },
+                  ],
+                },
               });
+              if (admitOutcome.action === 'pending') {
+                recordBootEvent(
+                  opts.workspaceId,
+                  opts.harnessSlug,
+                  'announce_pending',
+                  `${peerLabel(frame.log_core_key)} awaiting owner approval (hive ${admitHiveHome})`,
+                );
+              } else if (admitOutcome.action === 'refuse') {
+                recordBootEvent(
+                  opts.workspaceId,
+                  opts.harnessSlug,
+                  'announce_rejected',
+                  `${peerLabel(frame.log_core_key)} membership refused:${admitOutcome.reason} (hive ${admitHiveHome})`,
+                );
+              }
             } catch (e) {
               const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
               // The GRANT failure inside upsertHiveMember already records a queryable

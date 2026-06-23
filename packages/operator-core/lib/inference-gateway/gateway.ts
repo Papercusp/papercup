@@ -109,6 +109,12 @@ const ABSORB_STALLS_ON = process.env.PAPERCUSP_GATEWAY_ABSORB_STALLS !== '0';
  *  transient-throttle duration: long enough to let it clear, short enough not to over-bench an
  *  account that's already recovered (which would thin the pool under broad concurrent contention). */
 const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
+/** Smooth each per-account RPM allowance into an even inter-request pace (governor.smoothRpm) so the
+ *  fleet never fires a sub-minute BURST that trips Anthropic's burst limit (the bare-burst 429 storm,
+ *  2026-06-23). Throughput-neutral — the governor's per-minute count gate still caps the rate; this
+ *  only reshapes WHEN within the minute the requests go out. On by default; set PAPERCUSP_GATEWAY_RPM_SMOOTH=0
+ *  to disable (ops kill-switch). Gateway-only: the fleet concurrency governor never sets smoothRpm. */
+const RPM_SMOOTH_ON = process.env.PAPERCUSP_GATEWAY_RPM_SMOOTH !== '0';
 /** When EVERY pool account is transiently throttled at once, the gateway waits out the soonest
  *  account's short penalty and retries rather than forwarding a retryable (x-should-retry:true) 429.
  *  This caps that wait so a request can never hang on a hard/long reset (a multi-hour usage cap is
@@ -475,6 +481,12 @@ export interface GatewayDeps {
    *  `concurrency`; these override the floor + the trip thresholds. Omit for env/defaults (floor 4,
    *  halve at net-pressure 6, +1 per 8 clean). Set `floor` ≥ cap to effectively DISABLE AIMD. */
   aimd?: { floor?: number; decreaseFactor?: number; decreaseThreshold?: number; increaseEvery?: number };
+  /** Smooth each per-account RPM allowance into an even inter-request pace (governor.smoothRpm) so the
+   *  fleet can't fire a sub-minute BURST that trips Anthropic's burst limit (the bare-burst 429 storm,
+   *  2026-06-23). Throughput-neutral (the per-minute count gate still caps the rate). Default = env
+   *  `PAPERCUSP_GATEWAY_RPM_SMOOTH` (on unless '0'); the test harness passes `false` so rapid-fire unit
+   *  tests under a tiny maxQueueWaitMs are byte-identical. */
+  smoothRpm?: boolean;
   /** In-process self-heal release valve (EI-2086): pre-empt the external watchdog's full restart by
    *  aborting the oldest stuck slot when saturated + nothing has naturally drained for `freezeMs`. Omit
    *  for env/defaults (enabled, freeze 75s, poll 10s). `enabled:false` disables it (e.g. unit tests
@@ -766,6 +778,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
   const credential401DeadThreshold = deps.credential401DeadThreshold ?? DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
+  const smoothRpm = deps.smoothRpm ?? RPM_SMOOTH_ON;
   const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
   const upstreamStreamHeadersTimeoutMs = deps.upstreamStreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS;
   const upstreamBodyIdleTimeoutMs = deps.upstreamBodyIdleTimeoutMs ?? DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS;
@@ -856,6 +869,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const governorForAccount = (model: string, accountId: string): RateLimitGovernor => {
     const g = deps.governorFor ? deps.governorFor(model) : governorForBackend('claude-code', model, undefined, accountId);
     if (g.state.limits.maxConcurrent < concurrency) g.state.limits.maxConcurrent = concurrency;
+    // Smooth the static-floor RPM allowance into an even pace (subscription accounts return no per-minute
+    // headers, so paceDelayMs stays 0 → the count gate alone lets effRpm fire as an instant burst that trips
+    // the sub-minute burst limit). Gateway-only opt-in; the fleet concurrency governor is left untouched.
+    g.state.smoothRpm = smoothRpm;
     return g;
   };
 

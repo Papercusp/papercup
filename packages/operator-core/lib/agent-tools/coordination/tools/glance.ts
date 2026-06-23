@@ -23,6 +23,7 @@ import { countAllPendingWakes } from '../pending-wakes';
 import { evaluateTips, GLANCE_AUDIENCES } from '../glance-tips';
 import { resolveAgentIdentity } from '../identity';
 import { getPresence } from '../presence';
+import { getLoopStatus } from '../../../harness/routines/loop';
 
 const DEFAULT_ACTIVITY_LIMIT = 12;
 
@@ -120,6 +121,11 @@ export default defineTool({
     // FAIL-OPEN: glance renders on every statusline tick, so any trouble → null and the
     // existing render is unaffected.
     let selfObjective: string | null = null;
+    // self.loop — is THIS session on an engine loop (loop:arm)? Surfaced here (the one
+    // client-agnostic glance read the statusline already makes every tick) so the CC/Codex/OMP
+    // bottom display + terminal title can show "⟳ <interval>" with NO extra call
+    // (loop-status-display-2026-06-23). Only an ACTIVE loop is reported; null otherwise.
+    let selfLoop: { active: true; intervalSec: number; parked: boolean } | null = null;
     try {
       const { ownerId } = resolveAgentIdentity(ctx);
       if (ownerId) {
@@ -133,6 +139,12 @@ export default defineTool({
         // titles/intents to null so the fallback chain is honestly wip → intent → null.
         const title = normalizeObjective(wipRows[0]?.title);
         selfObjective = title ?? normalizeObjective((await getPresence(ownerId))?.intent);
+        try {
+          const ls = await getLoopStatus(ownerId);
+          if (ls?.active) selfLoop = { active: true, intervalSec: ls.intervalSec, parked: !!ls.parked };
+        } catch {
+          selfLoop = null; // fail-open: loop read never breaks the glance render
+        }
       }
     } catch {
       selfObjective = null;
@@ -154,7 +166,7 @@ export default defineTool({
             governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
             activity,
             tips,
-            self: { objective: selfObjective },
+            self: { objective: selfObjective, loop: selfLoop },
           }),
         },
       ],

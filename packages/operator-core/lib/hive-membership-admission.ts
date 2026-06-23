@@ -38,6 +38,7 @@ import {
 } from './hive-pending-joins-store';
 import {
   upsertHiveMember as realUpsertHiveMember,
+  getHiveMember as realGetHiveMember,
   type HiveMemberRecord,
 } from './hive-membership-store';
 import type { DeviceAttestationEntry } from './harness/contributor-row-types';
@@ -61,6 +62,9 @@ export interface MembershipAdmissionDeps {
   getPendingJoin?: typeof realGetPendingJoin;
   setPendingJoinDecision?: typeof realSetPendingJoinDecision;
   upsertHiveMember?: typeof realUpsertHiveMember;
+  /** Read an existing member row — the ownerAdmitOrPend already-member fast path.
+   *  Default: getHiveMember. */
+  getHiveMember?: typeof realGetHiveMember;
   /** Per-file test schema threaded into the stores. */
   sql?: Sql;
 }
@@ -190,4 +194,83 @@ export async function denyPendingJoin(
   );
   if (!decided) return { ok: false, code: 'no_pending' };
   return { ok: true, status: 'denied', pending: decided };
+}
+
+/**
+ * The OWNER-SIDE admit-or-pend decision, applied at the substrate admission seam
+ * (boot.ts `drainAdmissionQueue`) when the owner admits a binding-verified peer's
+ * announce. This is what WIRES the previously-dead `evaluateJoinAdmission` gate into
+ * the live join path (WI-639): before this, the owner UNCONDITIONALLY trust-admitted
+ * (`upsertHiveMember`) every verified peer — so `membership:'approval'` did nothing.
+ *
+ * Precedence:
+ *   1. ALREADY a member → refresh the row (re-upsert). This preserves the prior
+ *      open-mode reconnect behavior: the upsert idempotently re-grants the member's
+ *      epoch keys (shared-hive-rekey). An established member is NEVER re-routed
+ *      through the policy gate (approval mode must not "un-admit" an approved member
+ *      on reconnect, and must not re-open a pending/decided request for them).
+ *   2. NOT yet a member → consult the owner-signed policy via `evaluateJoinAdmission`:
+ *        - admit   (open / allowlisted)  → trust-admit (upsertHiveMember).
+ *        - pending (approval mode)       → a federated pending-join request is
+ *          recorded (by the OWNER here, origin='local' → it reaches the joiner and
+ *          shows in the owner's hive:membership_pending queue); the peer is NOT
+ *          trust-admitted. The owner later decides via hive:membership_decide.
+ *        - refuse  (banned / not-allowlisted) → neither admit nor pending.
+ *
+ * SECURITY/INVARIANTS: this gates ONLY the membership UPSERT decision. It does NOT
+ * touch core admission, the revoked set, the read-cut/epoch decrypt gate, or per-op
+ * policy enforcement — those run unchanged at their own seams. With no policy (or
+ * `open` mode) the outcome is `admit`, so existing hives are byte-for-byte unaffected.
+ * The joiner's CORE is admitted by boot.ts independent of this decision; a pending /
+ * refused peer's CONTENT is still gated by the P-002 membership guard + per-op
+ * enforcement, so nothing leaks before approval.
+ *
+ * Authority (this is the owner box, holding the Hive key) is the CALLER's check
+ * (boot.ts self-gates on loadHivePubkey), same split as the rest of this module.
+ */
+export type OwnerAdmitOutcome =
+  | { action: 'admitted'; member: HiveMemberRecord; reason: 'already_member' | 'policy_admit' }
+  | { action: 'pending'; pending: PendingJoinRecord }
+  | { action: 'refuse'; reason: 'banned' | 'not_allowlisted' };
+
+export async function ownerAdmitOrPend(
+  input: { workspaceId: string; hiveHomeSlug: string; joiner: JoinerInfo },
+  deps: MembershipAdmissionDeps = {},
+): Promise<OwnerAdmitOutcome> {
+  const { workspaceId, hiveHomeSlug, joiner } = input;
+  const getMember = deps.getHiveMember ?? realGetHiveMember;
+  const upsertMember = deps.upsertHiveMember ?? realUpsertHiveMember;
+
+  const upsert = (): Promise<HiveMemberRecord> =>
+    upsertMember(
+      {
+        workspaceId,
+        hiveHomeSlug,
+        githubUserId: joiner.githubUserId,
+        githubUsername: joiner.githubUsername,
+        displayName: joiner.displayName ?? null,
+        avatarUrl: joiner.avatarUrl ?? null,
+        deviceAttestations: joiner.deviceAttestations ?? [],
+        bindingStatus: 'verified',
+      },
+      deps.sql,
+    );
+
+  // 1 — already a member: refresh (idempotent epoch re-grant on reconnect). Never
+  //     re-route an established member through the policy gate.
+  const existing = await getMember(workspaceId, hiveHomeSlug, joiner.githubUserId, deps.sql);
+  if (existing) {
+    return { action: 'admitted', member: await upsert(), reason: 'already_member' };
+  }
+
+  // 2 — not yet a member: the owner-signed policy decides. evaluateJoinAdmission
+  //     RECORDS the pending request under approval mode (federates to the joiner).
+  const outcome = await evaluateJoinAdmission({ workspaceId, hiveHomeSlug, joiner }, deps);
+  if (outcome.outcome === 'admit') {
+    return { action: 'admitted', member: await upsert(), reason: 'policy_admit' };
+  }
+  if (outcome.outcome === 'pending') {
+    return { action: 'pending', pending: outcome.pending };
+  }
+  return { action: 'refuse', reason: outcome.reason };
 }

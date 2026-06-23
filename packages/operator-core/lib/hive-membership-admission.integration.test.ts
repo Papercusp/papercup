@@ -37,6 +37,7 @@ import {
   evaluateJoinAdmission,
   approvePendingJoin,
   denyPendingJoin,
+  ownerAdmitOrPend,
 } from './hive-membership-admission';
 import { getPendingJoin, listPendingJoins } from './hive-pending-joins-store';
 import { getHiveMember, listHiveMembers } from './hive-membership-store';
@@ -347,5 +348,76 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
     expect((await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql })).outcome).toBe(
       'refuse',
     );
+  });
+});
+
+// WI-639: the OWNER admission seam (boot.ts drainAdmissionQueue) now routes through
+// ownerAdmitOrPend instead of an unconditional upsertHiveMember. This exercises that
+// decision end-to-end on real PG — the live-path behavior boot.ts depends on.
+describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-639)', () => {
+  it('OPEN / absent policy ⇒ trust-admit: a real hive_members row, NO pending', async () => {
+    await seedHive();
+    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    expect(out).toMatchObject({ action: 'admitted', reason: 'policy_admit' });
+    const member = await getHiveMember(WS, HIVE, alice.githubUserId, sql);
+    expect(member).toMatchObject({ githubUserId: 1001, bindingStatus: 'verified' });
+    expect(member?.deviceAttestations[0]?.device_pubkey).toBe('devA');
+    expect(await listPendingJoins(WS, HIVE, { status: null }, sql)).toHaveLength(0);
+  });
+
+  it("APPROVAL ⇒ pending: records a federated pending row, NO member (the gap this fix closes)", async () => {
+    await seedHive();
+    await setPolicy({ membership: 'approval' });
+    await sql.unsafe('DELETE FROM harness_shared.substrate_outbox'); // isolate the pending-join capture
+
+    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    expect(out.action).toBe('pending');
+
+    // A pending row exists; the joiner is NOT yet a member.
+    const row = await getPendingJoin(WS, HIVE, alice.githubUserId, sql);
+    expect(row).toMatchObject({ githubUserId: 1001, status: 'pending' });
+    expect(await getHiveMember(WS, HIVE, alice.githubUserId, sql)).toBeNull();
+
+    // The pending request federates (one outbox put keyed by github id, Hive-scoped).
+    const outbox = (await sql.unsafe(
+      `SELECT op, key, harness_slug FROM harness_shared.substrate_outbox WHERE table_name = 'hive_pending_joins'`,
+    )) as unknown as Array<{ op: string; key: string; harness_slug: string }>;
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]).toMatchObject({ op: 'put', key: String(alice.githubUserId), harness_slug: HIVE });
+  });
+
+  it('APPROVAL → ownerAdmitOrPend (pending) → owner APPROVE ⇒ joiner becomes a member', async () => {
+    await seedHive();
+    await setPolicy({ membership: 'approval' });
+    expect((await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql })).action).toBe(
+      'pending',
+    );
+    const res = await approvePendingJoin(
+      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
+      { sql },
+    );
+    expect(res).toMatchObject({ ok: true, status: 'approved' });
+    expect(await getHiveMember(WS, HIVE, alice.githubUserId, sql)).toMatchObject({ bindingStatus: 'verified' });
+  });
+
+  it('ALREADY a member ⇒ refresh (re-upsert), never a second pending row, even under approval', async () => {
+    await seedHive();
+    // First admit (open) makes alice a member.
+    await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    // Now flip to approval + re-run (a reconnect): she must STAY a member, no pending.
+    await setPolicy({ membership: 'approval' });
+    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
+    expect(await listHiveMembers(WS, HIVE, sql)).toHaveLength(1);
+    expect(await listPendingJoins(WS, HIVE, { status: null }, sql)).toHaveLength(0);
+  });
+
+  it('banned ⇒ refuse: no member, no pending', async () => {
+    await seedHive();
+    await setPolicy({ membership: 'open', moderation: { bannedGithubIds: [String(alice.githubUserId)] } });
+    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    expect(out).toEqual({ action: 'refuse', reason: 'banned' });
+    expect(await getHiveMember(WS, HIVE, alice.githubUserId, sql)).toBeNull();
+    expect(await listPendingJoins(WS, HIVE, { status: null }, sql)).toHaveLength(0);
   });
 });
