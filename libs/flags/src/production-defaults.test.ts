@@ -283,9 +283,8 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.COORD_PER_WORKSPACE,
   // (ISSUES_PER_WORKSPACE graduated to default-ON 2026-06-22 — owner-directed; reversible,
   // old default-partition issues preserved.)
-  // workspace-data-isolation-leaks-2026-06-17 F-E1 (phase 1): routines per-workspace ON CONFLICT.
-  // DELIBERATE dark ship — reversible; OFF = today's ON CONFLICT (install_slug,name), byte-identical.
-  FLAGS.ROUTINES_PER_WORKSPACE,
+  // (ROUTINES_PER_WORKSPACE graduated to default-ON 2026-06-23 — owner-attended cutover; migration
+  // 305 additive (both ON CONFLICT targets valid, zero live collisions), reversible.)
   // workspace-data-isolation-leaks-2026-06-17 F-M7: ui:dispatch/get_state cross-workspace guard
   // (SU-only surface). DELIBERATE dark ship — reversible; OFF = today's behavior, byte-identical.
   // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim LEASE,
@@ -363,7 +362,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
   // cutover — reversible kill-switch the owner flips after an attended live verify
   [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
-  [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],
   [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
 ]);
 
