@@ -1825,17 +1825,26 @@ test('[stall-autowake P-002] an UN-identified bee (no x-papercusp-owner) records
 });
 
 // ---------------------------------------------------------------------------------------------------
-// STALL ABSORPTION (su-3650 incident): A 30s upstream stall + 429 rate-limit responses MUST be
-// absorbed within the extended-absorption budget, NOT surfaced as fatal errors to bees.
+// STALL ABSORPTION (su-3650 incident) — RECONCILED with the `everRotated` gate (2026-06-23).
+// The original su-3650 tests here asserted that a SINGLE-account / no-proxy upstream stall should be
+// ABSORBED (release-slot → re-acquire → retry → 200). That CONTRADICTED the design the egress-circuit
+// suite + the 2026-06-19 deadlock guard encode, and that the `everRotated` variable (gateway.ts) is
+// documented to enforce: stall-absorption is reserved for a MULTI-account stall STORM (everRotated true —
+// the pool has flapping/recovering ALTERNATIVES worth holding the caller for). A LONE / no-proxy stall (no
+// alternative) must SHED FAST — re-acquiring on the same dead path would just re-stall for the whole absorb
+// budget (the "LONE dead proxy sheds FAST", "N consecutive failures → 503", autowake-503 and streak-reset
+// tests in gateway-egress-circuit.test.ts assert exactly that). The su-3650 concern ("a stall must not
+// surface as a FATAL error to a bee") is still met WITHOUT absorption: a no-proxy stall sheds a RETRYABLE
+// 502 (the Anthropic SDK retries 5xx) and the slot is released so the bee's retry lands on a recovered/
+// rotated account — the same slot-release-then-retry the "HEADERS stall aborted (502)" test above proves.
+// (If true no-proxy absorption is ever wanted, it must be reconciled with the 2026-06-19 + chaos-storm
+// deadlock guards, not bolted on — owner call, see su-3650.)
 // ---------------------------------------------------------------------------------------------------
 
-test('[stall-absorb SU-3650] upstream STALL on first attempt (single-account or initial fail) is ABSORBED + retried, not surfaced as 503', async () => {
-  // The gateway's extended-absorption mechanism (requestAbsorbMs, default 60s) permits holding the
-  // admission slot through a transient egress-proxy stall (30s+) while waiting for recovery, re-acquiring,
-  // and retrying — instead of surfacing a fatal 503 to the bee. PRE-FIX: the `everRotated &&` gate on line
-  // 1671 prevented absorption on the FIRST attempt or a single-account pool (everRotated stays false) → any
-  // stall surfaced immediately. POST-FIX: absorption fires unconditionally (subject to the deadline +
-  // absorption config) on EVERY stall, even the first one.
+test('[stall-absorb reconciled su-3650] a no-proxy / single-account upstream stall SHEDS a retryable error fast (everRotated gate) + the bee retries through', async () => {
+  // everRotated is false (no alternative to rotate to) → NO stall-absorb hold: the request sheds a retryable
+  // 502 FAST instead of squatting the slot for the absorb budget. The slot is released, so the bee's retry
+  // (a fresh request) succeeds the moment the transient stall clears (calls===2 → 200).
   let calls = 0;
   await boot(
     (_req, res) => {
@@ -1846,34 +1855,14 @@ test('[stall-absorb SU-3650] upstream STALL on first attempt (single-account or 
     },
     { concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 500 },
   );
-  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(r.status, 200, 'upstream stall on first attempt is ABSORBED + retried → 200, not surfaced as 503');
-  assert.equal((await r.json() as { ok: boolean }).ok, true);
-  assert.equal(calls, 2, 'first stall-aborted attempt + second success (absorption retained the slot + retried)');
-});
-
-test('[stall-absorb SU-3650] single-account pool: stall ABSORPTION works (no failover required)', async () => {
-  // Absorption is the SECOND mechanism for stalls (first is failover-rotate to a fresh account). With only
-  // one account in the pool there is nowhere to fail over TO → the stall-absorb path is the SOLE defense
-  // against surfacing the stall as a fatal error. PRE-FIX `everRotated &&` blocked this on single-account
-  // setups. POST-FIX it unconditionally absorbs the stall while waiting for the same account's recovery.
-  const A: ActiveAccount = { accountId: 'solo', token: async () => 'solo-tok' };
-  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id) => (id === 'solo' ? A : null) };
-  let calls = 0;
-  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
-  await boot(
-    (_req, res) => {
-      calls++;
-      if (calls === 1) return; // STALL on the solo account
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{"ok":true}');
-    },
-    { pool, concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 800 },
-    gov,
-  );
-  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(r.status, 200, 'single-account stall is ABSORBED (no failover) + retried → 200');
-  assert.equal(calls, 2, 'stall-absorb released + re-acquired on the SAME solo account, then succeeded');
+  const t0 = Date.now();
+  const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r1.status, 502, 'a lone/no-proxy stall sheds a retryable error FAST — not held for the absorb budget (everRotated gate)');
+  assert.ok(Date.now() - t0 < 400, `shed fast, no absorb hold: ${Date.now() - t0}ms (< the 500ms requestAbsorbMs budget)`);
+  assert.equal((await r1.json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized retryable error');
+  const r2 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+  assert.equal(r2.status, 200, "the slot was released → the bee's retry succeeds once the transient stall clears");
+  assert.equal(calls, 2, 'first attempt stalled+shed, the bee retry is the second (successful) attempt');
 });
 
 test('[429-absorb SU-3650] upstream 429 (bare, transient) WITHIN absorption deadline is ABSORBED + retried, not forwarded', async () => {

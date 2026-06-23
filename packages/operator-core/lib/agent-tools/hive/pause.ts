@@ -73,7 +73,10 @@ export default defineTool({
     // the wake clear and the state flip (P-013's lifecycle coupling).
     await setHiveStarted(workspaceId, installSlug, false);
     await setDefaultWakeMode('manual');
-    await clearHiveTimeWake(sql, installSlug);
+    // K1 (workspace-scoped-coordination P-003): thread the workspace so a Pause
+    // clears the workspace-sentinel wake routine when the flag is ON (OFF ⇒
+    // per-hive, unchanged).
+    await clearHiveTimeWake(sql, installSlug, { workspaceId });
     // Live UI reflection (P-006): the AdvShell harness-bar control
     // (AdvNowRunning) reads hive.controlState.
     void import('../../sync-sse')

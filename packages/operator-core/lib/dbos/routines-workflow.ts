@@ -330,11 +330,14 @@ async function routinesTickImpl(): Promise<void> {
   // resumes; observability must never fail the loop it watches.
   await DBOS.runStep(
     async () => {
-      const [{ listStartedHives }, { recordHiveThroughputTick }] = await Promise.all([
+      // K1 (workspace-scoped-coordination P-003): one throughput tick per
+      // workspace loop when WORKSPACE_COORDINATION is ON; the raw per-hive set
+      // (byte-identical) when OFF.
+      const [{ listStartedWorkspaceLoops }, { recordHiveThroughputTick }] = await Promise.all([
         import('../hive/started'),
         import('../hive/throughput'),
       ]);
-      for (const { workspaceId, installSlug } of await listStartedHives()) {
+      for (const { workspaceId, installSlug } of await listStartedWorkspaceLoops()) {
         await recordHiveThroughputTick({ workspaceId, hiveSlug: installSlug }).catch(() => {});
       }
     },

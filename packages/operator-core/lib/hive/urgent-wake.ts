@@ -92,7 +92,9 @@ export async function requestUrgentHiveWake(opts: {
     const boundary = new Date((state.lastWakeAt ?? now) + floorSec * 1_000);
     const target = clampWakeAt(boundary, new Date(now), floorSec).at;
     const { sql } = getOrgPg();
-    const cur = await getHiveTimeWake(sql, installSlug);
+    // K1 (workspace-scoped-coordination P-003): the only-advance read must see the
+    // workspace-sentinel wake routine when the flag is ON (OFF ⇒ per-hive).
+    const cur = await getHiveTimeWake(sql, installSlug, { workspaceId });
     if (cur?.active && cur.nextFireAt && cur.nextFireAt.getTime() <= target.getTime()) {
       // Only-advance: a wake is already coming at least this soon — leave it.
       return {

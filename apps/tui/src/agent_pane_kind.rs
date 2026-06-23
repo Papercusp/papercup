@@ -252,11 +252,11 @@ mod tests {
     }
 
     #[test]
-    fn group_rank_orders_sentinel_queen_bee_planner() {
+    fn group_rank_orders_sentinel_overwatch_queen_bee_planner() {
         // P-011: the dock-stack group order — and every rank distinct.
-        assert!(AgentPaneKind::Sentinel.group_rank() < AgentPaneKind::Queen.group_rank());
-        assert!(AgentPaneKind::Queen.group_rank() < AgentPaneKind::Overwatch.group_rank());
-        assert!(AgentPaneKind::Overwatch.group_rank() < AgentPaneKind::Bee.group_rank());
+        assert!(AgentPaneKind::Sentinel.group_rank() < AgentPaneKind::Overwatch.group_rank());
+        assert!(AgentPaneKind::Overwatch.group_rank() < AgentPaneKind::Queen.group_rank());
+        assert!(AgentPaneKind::Queen.group_rank() < AgentPaneKind::Bee.group_rank());
         assert!(AgentPaneKind::Bee.group_rank() < AgentPaneKind::Planner.group_rank());
         assert!(AgentPaneKind::Planner.group_rank() < AgentPaneKind::Su.group_rank());
     }

@@ -138,7 +138,9 @@ export default defineTool({
       const r = await declareHiveTimeWake(sql, { workspaceId, installSlug, at: requested, kickoff: args.kickoff });
       time = { at: r.at.toISOString(), clamped: r.clamped };
     } else {
-      await clearHiveTimeWake(sql, installSlug);
+      // K1 (workspace-scoped-coordination P-003): thread the workspace so a clear
+      // targets the sentinel wake routine when the flag is ON (OFF ⇒ per-hive).
+      await clearHiveTimeWake(sql, installSlug, { workspaceId });
     }
 
     const subs: HiveEventSubscription[] = (args.events ?? []).map((s) => ({

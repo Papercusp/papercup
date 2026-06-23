@@ -46,7 +46,9 @@ export default defineTool({
     const harnessUnresolved = !installSlug;
     const { sql } = getOrgPg();
 
-    const time = installSlug ? await getHiveTimeWake(sql, installSlug) : null;
+    // K1 (workspace-scoped-coordination P-003): read the workspace-sentinel wake
+    // routine when the flag is ON (OFF ⇒ per-hive, unchanged).
+    const time = installSlug ? await getHiveTimeWake(sql, installSlug, { workspaceId }) : null;
     const state = await readHiveWakeState(workspaceId);
     const ruleIds = listReactionRules()
       .filter((r) => r.id.startsWith(`hive-wake:${workspaceId}#`))

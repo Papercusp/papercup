@@ -20,9 +20,13 @@ vi.mock('./wake', () => ({
 
 const getHiveStarted = vi.fn();
 const listStartedHives = vi.fn();
+// K1 (workspace-scoped-coordination P-003): the watchdog liveness loops consume
+// the de-duped workspace-loop set; OFF it is byte-identical to listStartedHives.
+const listStartedWorkspaceLoops = vi.fn();
 vi.mock('./started', () => ({
   getHiveStarted: (...a: unknown[]) => getHiveStarted(...a),
   listStartedHives: (...a: unknown[]) => listStartedHives(...a),
+  listStartedWorkspaceLoops: (...a: unknown[]) => listStartedWorkspaceLoops(...a),
 }));
 
 const getDefaultWakeMode = vi.fn();
@@ -88,6 +92,7 @@ beforeEach(() => {
   pendingWakeRows = [];
   getHiveStarted.mockResolvedValue(true);
   listStartedHives.mockResolvedValue([{ workspaceId: WS, installSlug: SLUG }]);
+  listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: WS, installSlug: SLUG }]);
   getDefaultWakeMode.mockResolvedValue('auto');
   resolveBrainOwner.mockResolvedValue(null);
   wakeRecipients.mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 1 });
@@ -202,7 +207,7 @@ describe('hiveTurnEndCheck (P-009) + hiveBootCheck (P-010)', () => {
   });
 
   it('boot check sweeps every started hive', async () => {
-    listStartedHives.mockResolvedValue([
+    listStartedWorkspaceLoops.mockResolvedValue([
       { workspaceId: WS, installSlug: 'h1' },
       { workspaceId: WS, installSlug: 'h2' },
     ]);
@@ -217,7 +222,7 @@ describe('hiveWatchdogSweep (P-011 / D-003: every condition gates)', () => {
     readHiveWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: NOW - (watchdogStaleSec() + 60) * 1_000 });
 
   it('no started hives → nothing', async () => {
-    listStartedHives.mockResolvedValue([]);
+    listStartedWorkspaceLoops.mockResolvedValue([]);
     expect(await hiveWatchdogSweep({ now: NOW })).toHaveLength(0);
   });
 

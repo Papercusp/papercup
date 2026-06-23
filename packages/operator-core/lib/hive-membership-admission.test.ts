@@ -14,7 +14,9 @@ import {
   approvePendingJoin,
   denyPendingJoin,
   ownerAdmitOrPend,
+  admitAnnouncedPeerAsOwner,
   type MembershipAdmissionDeps,
+  type AdmitAnnouncedPeerDeps,
 } from './hive-membership-admission';
 import type { PendingJoinRecord } from './hive-pending-joins-store';
 
@@ -237,6 +239,82 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
     );
     const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
     expect(out).toEqual({ action: 'refuse', reason: 'not_allowlisted' });
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+    expect(recordPendingJoin).not.toHaveBeenCalled();
+  });
+});
+
+describe('admitAnnouncedPeerAsOwner — boot.ts admission-seam wiring (WI-639)', () => {
+  const peer = { githubUserId: 1001, githubLogin: 'alice', devicePubkey: 'devA', attestationGistId: 'g' };
+  // Build AdmitAnnouncedPeerDeps over depsWith's membership fakes + the resolve/owner-gate seams.
+  function admitDeps(
+    policy: HivePolicy | null,
+    over: Partial<AdmitAnnouncedPeerDeps> = {},
+  ): { deps: AdmitAnnouncedPeerDeps; recordPendingJoin: ReturnType<typeof vi.fn>; upsertHiveMember: ReturnType<typeof vi.fn> } {
+    const base = depsWith(policy, { getHiveMember: (async () => null) as never });
+    const deps: AdmitAnnouncedPeerDeps = {
+      ...base.deps,
+      hiveHomeSlugForHarness: async () => 'home',
+      loadHivePubkey: async () => 'OWNER_PK',
+      ...over,
+    };
+    return { deps, recordPendingJoin: base.recordPendingJoin, upsertHiveMember: base.upsertHiveMember };
+  }
+
+  it('no hive-home ⇒ skip(no_hive_home), no membership decision', async () => {
+    const { deps, upsertHiveMember } = admitDeps(null, { hiveHomeSlugForHarness: async () => null });
+    const out = await admitAnnouncedPeerAsOwner({ workspaceId: 'w', harnessSlug: 'member', peer }, deps);
+    expect(out).toEqual({ action: 'skip', reason: 'no_hive_home' });
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+  });
+
+  it('not the owner box (no hive key) ⇒ skip(not_owner)', async () => {
+    const { deps, upsertHiveMember } = admitDeps(null, { loadHivePubkey: async () => null });
+    const out = await admitAnnouncedPeerAsOwner({ workspaceId: 'w', harnessSlug: 'member', peer }, deps);
+    expect(out).toEqual({ action: 'skip', reason: 'not_owner' });
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+  });
+
+  it('owner + open ⇒ admitted(policy_admit) with the resolved hiveHomeSlug', async () => {
+    const { deps, upsertHiveMember } = admitDeps(null);
+    const out = await admitAnnouncedPeerAsOwner({ workspaceId: 'w', harnessSlug: 'member', peer }, deps);
+    expect(out).toEqual({ action: 'admitted', hiveHomeSlug: 'home', reason: 'policy_admit' });
+    // The joiner is built from the announce frame: hive-home slug, verified, devA captured.
+    expect(upsertHiveMember.mock.calls[0][0]).toMatchObject({
+      hiveHomeSlug: 'home',
+      githubUserId: 1001,
+      githubUsername: 'alice',
+      bindingStatus: 'verified',
+    });
+    expect(upsertHiveMember.mock.calls[0][0].deviceAttestations[0]).toMatchObject({ device_pubkey: 'devA', gist_id: 'g' });
+  });
+
+  it('owner + approval ⇒ pending with the resolved hiveHomeSlug, NO upsert', async () => {
+    const { deps, recordPendingJoin, upsertHiveMember } = admitDeps({ membership: 'approval' });
+    const out = await admitAnnouncedPeerAsOwner({ workspaceId: 'w', harnessSlug: 'member', peer }, deps);
+    expect(out).toEqual({ action: 'pending', hiveHomeSlug: 'home' });
+    expect(recordPendingJoin).toHaveBeenCalledTimes(1);
+    expect(recordPendingJoin.mock.calls[0][0]).toMatchObject({ hiveHomeSlug: 'home', githubUserId: 1001 });
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+  });
+
+  it('owner + already a member ⇒ admitted(already_member), refresh', async () => {
+    const memberRow = { hiveHomeSlug: 'home', githubUserId: 1001, deviceAttestations: [], bindingStatus: 'verified' };
+    const { deps, upsertHiveMember } = admitDeps({ membership: 'approval' }, {
+      getHiveMember: (async () => memberRow) as never,
+    });
+    const out = await admitAnnouncedPeerAsOwner({ workspaceId: 'w', harnessSlug: 'member', peer }, deps);
+    expect(out).toEqual({ action: 'admitted', hiveHomeSlug: 'home', reason: 'already_member' });
+    expect(upsertHiveMember).toHaveBeenCalledTimes(1);
+  });
+
+  it('owner + banned ⇒ refuse(banned), NO upsert, NO pending', async () => {
+    const { deps, upsertHiveMember, recordPendingJoin } = admitDeps({
+      membership: 'open',
+      moderation: { bannedGithubIds: ['1001'] },
+    });
+    const out = await admitAnnouncedPeerAsOwner({ workspaceId: 'w', harnessSlug: 'member', peer }, deps);
+    expect(out).toEqual({ action: 'refuse', hiveHomeSlug: 'home', reason: 'banned' });
     expect(upsertHiveMember).not.toHaveBeenCalled();
     expect(recordPendingJoin).not.toHaveBeenCalled();
   });

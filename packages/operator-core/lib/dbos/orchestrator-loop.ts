@@ -75,7 +75,8 @@ import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
 import { listAllHarnesses } from '../dev-data';
-import { listStartedHives } from '../hive/started';
+import { getHiveStarted, listStartedHives } from '../hive/started';
+import { isWorkspaceCoordinationOn } from '../workspace-brain-scope';
 import { resolveProject } from '../harness-core';
 import { convertOpenIssuesToFeatures } from '../promote-issue';
 import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
@@ -360,13 +361,29 @@ export async function resolveTickHarnesses(workspaceId: string): Promise<string[
   // Only STARTED hives get their work placed. A stopped hive, or a harness that
   // was never started, is filtered out — placement now means the same thing
   // start/stop does. Fail-safe on an unreadable started-set (place nothing).
+  //
+  // K1 workspace-brain re-key (workspace-scoped-coordination P-003 / D-006):
+  // `getHiveStarted` is read-fallback aware, so the gate stays correct under the
+  // flag. OFF (the dark default) ⇒ each candidate's per-hive started bit, the
+  // SAME membership the old per-hive `listStartedHives()` set computed
+  // (byte-identical). ON ⇒ the workspace sentinel bit resolves for every hive in
+  // a started workspace (the central-dispatch widening, D-002), inert until the
+  // owner flips the flag. The single batch `listStartedHives()` read still backs
+  // the fast-path / fail-safe so a single DB hiccup places nothing.
   try {
-    const started = new Set(
-      (await listStartedHives())
-        .filter((h) => h.workspaceId === workspaceId)
-        .map((h) => h.installSlug),
+    const startedRows = (await listStartedHives()).filter((h) => h.workspaceId === workspaceId);
+    const startedSlugs = new Set(startedRows.map((h) => h.installSlug));
+    const on = await isWorkspaceCoordinationOn();
+    if (!on) return candidates.filter((slug) => startedSlugs.has(slug));
+    // ON: a candidate is started iff its read-fallback resolves a started bit
+    // (the workspace sentinel OR its own legacy per-hive row). Evaluated in
+    // parallel; any per-candidate read failure fails that candidate closed.
+    const flags = await Promise.all(
+      candidates.map((slug) =>
+        getHiveStarted(workspaceId, slug).catch(() => false),
+      ),
     );
-    return candidates.filter((slug) => started.has(slug));
+    return candidates.filter((_, i) => flags[i]);
   } catch {
     return [];
   }

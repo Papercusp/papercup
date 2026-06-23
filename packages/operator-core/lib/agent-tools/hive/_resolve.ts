@@ -98,7 +98,9 @@ async function buildWakeView(
   homeSlug: string,
   workspaceId: string,
 ): Promise<HiveWakeView> {
-  const time = await getHiveTimeWake(sql, homeSlug);
+  // K1 (workspace-scoped-coordination P-003): read the workspace-sentinel wake
+  // routine when the flag is ON (OFF ⇒ per-hive, unchanged).
+  const time = await getHiveTimeWake(sql, homeSlug, { workspaceId });
   const state = await readHiveWakeState(workspaceId);
   return {
     active: time?.active ?? false,

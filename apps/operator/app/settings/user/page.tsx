@@ -16,6 +16,22 @@ interface User {
 }
 
 /**
+ * Auto-login fallback identity — MUST match UserPicker's FALLBACK_USER. Under
+ * auto-login the deployment runs single-user and `/api/auth/me` returns
+ * `{ autoLogin: true, user: null }` (no cookie session). The top-right UserPicker
+ * already falls back to this and shows "User · auto"; this page must do the SAME,
+ * otherwise it wrongly renders "Not signed in" while the header says you're signed
+ * in (owner report 2026-06-23). The identity edits below operate on the resolved
+ * current user the same way the rest of the app does.
+ */
+const FALLBACK_USER: User = {
+  id: '00000000-0000-0000-0000-000000000001',
+  username: 'default',
+  display_name: 'User',
+  has_password: false,
+};
+
+/**
  * Override-eligible voice/operator pref keys. Must stay in sync with
  * VOICE_USER_OVERRIDE_KEYS in lib/user-preferences.ts and the underlying
  * VoicePrefs schema in lib/voice-prefs.ts.
@@ -101,7 +117,7 @@ interface EffectivePrefs {
 }
 
 export default function UserSettingsPage() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User>(FALLBACK_USER);
   const [effective, setEffective] = useState<EffectivePrefs>({ workspace: {}, user: {} });
   const [loading, setLoading] = useState(true);
 
@@ -118,7 +134,7 @@ export default function UserSettingsPage() {
     setLoading(true);
     try {
       const [me, prefsJson, workspaceJson] = await Promise.all([
-        fetch('/api/auth/me').then((r) => r.json()),
+        fetch('/api/auth/me').then((r) => (r.ok ? r.json() : null)).catch(() => null),
         fetch('/api/user/preferences').then((r) => r.ok ? r.json() : { payload: {} }),
         // ?layer=workspace returns workspace-only prefs (no user merge),
         // so we can show the true fallback value alongside the override.
@@ -126,8 +142,11 @@ export default function UserSettingsPage() {
           .then((r) => r.ok ? r.json() : null)
           .catch(() => null),
       ]);
-      setUser(me.user);
-      setDisplayName(me.user?.display_name ?? '');
+      // Under auto-login `/api/auth/me` returns no `user`; fall back to the
+      // default identity (matches UserPicker) instead of "Not signed in".
+      const resolvedUser: User = me?.user ?? FALLBACK_USER;
+      setUser(resolvedUser);
+      setDisplayName(resolvedUser.display_name ?? '');
       const userPrefs = prefsJson.payload ?? {};
       const workspace: Record<string, unknown> = workspaceJson ?? {};
       setEffective({ workspace, user: userPrefs });
@@ -205,13 +224,6 @@ export default function UserSettingsPage() {
   }, [user?.has_password, currentPw, nextPw, refresh]);
 
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
-  if (!user) {
-    return (
-      <div style={{ padding: 32 }}>
-        <p>Not signed in. <a href="/login">Sign in</a></p>
-      </div>
-    );
-  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>

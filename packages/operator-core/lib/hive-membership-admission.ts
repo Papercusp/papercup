@@ -274,3 +274,85 @@ export async function ownerAdmitOrPend(
   }
   return { action: 'refuse', reason: outcome.reason };
 }
+
+/** The result of the owner's substrate-seam admission of an announced peer (the
+ *  testable extraction of boot.ts drainAdmissionQueue's membership step, WI-639). */
+export type OwnerAnnounceAdmitResult =
+  | { action: 'skip'; reason: 'no_hive_home' | 'not_owner' }
+  | { action: 'admitted'; hiveHomeSlug: string; reason: 'already_member' | 'policy_admit' }
+  | { action: 'pending'; hiveHomeSlug: string }
+  | { action: 'refuse'; hiveHomeSlug: string; reason: 'banned' | 'not_allowlisted' };
+
+export interface AdmitAnnouncedPeerDeps extends MembershipAdmissionDeps {
+  /** Resolve a harness slug → its Hive home slug. Default: hive-federation
+   *  hiveHomeSlugForHarness (a fresh registry read). */
+  hiveHomeSlugForHarness?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
+  /** Truthy iff THIS Swarm holds the Hive private key (the owner box). Default:
+   *  identity/hive-keypair loadHivePubkey. */
+  loadHivePubkey?: (workspaceId: string, hiveHomeSlug: string) => Promise<unknown>;
+  /** The admit-or-pend decision. Default: ownerAdmitOrPend. */
+  admit?: typeof ownerAdmitOrPend;
+}
+
+/**
+ * The OWNER substrate-seam admission of a binding-verified announced peer — the
+ * testable extraction of what boot.ts `drainAdmissionQueue` runs when it admits a
+ * new peer's core (WI-639). Resolves the Hive home, self-gates to the OWNER box,
+ * then routes the membership decision through `ownerAdmitOrPend`.
+ *
+ * WI-280: hive_members is keyed by the HIVE-HOME slug, but a peer joins via the
+ * MEMBER topic, so the booted `harnessSlug` is the MEMBER slug. We resolve the home
+ * via `hiveHomeSlugForHarness` (a fresh registry read: member → its hive_slug;
+ * hive-home → itself) — NOT a boot-time projection slug, which is undefined on the
+ * owner's MEMBER boot and silently skipped registration before. `skip` outcomes:
+ * `no_hive_home` (not part of a hive) / `not_owner` (no Hive key on this box — the
+ * local upsert is the owner's; federation projects it to the others).
+ *
+ * Returns the outcome (+ the resolved hiveHomeSlug) so the caller can record the
+ * matching boot-event; it performs no boot-history I/O itself.
+ */
+export async function admitAnnouncedPeerAsOwner(
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    peer: { githubUserId: number; githubLogin: string; devicePubkey: string; attestationGistId: string };
+  },
+  deps: AdmitAnnouncedPeerDeps = {},
+): Promise<OwnerAnnounceAdmitResult> {
+  const resolveHome =
+    deps.hiveHomeSlugForHarness ??
+    (async (ws: string, slug: string) => (await import('./hive-federation')).hiveHomeSlugForHarness(ws, slug));
+  const loadPubkey =
+    deps.loadHivePubkey ??
+    (async (ws: string, home: string) => (await import('./identity/hive-keypair')).loadHivePubkey(ws, home));
+  const admit = deps.admit ?? ownerAdmitOrPend;
+
+  const hiveHomeSlug = await resolveHome(input.workspaceId, input.harnessSlug);
+  if (!hiveHomeSlug) return { action: 'skip', reason: 'no_hive_home' };
+  if (!(await loadPubkey(input.workspaceId, hiveHomeSlug))) return { action: 'skip', reason: 'not_owner' };
+
+  const outcome = await admit(
+    {
+      workspaceId: input.workspaceId,
+      hiveHomeSlug,
+      joiner: {
+        githubUserId: input.peer.githubUserId,
+        githubUsername: input.peer.githubLogin,
+        deviceAttestations: [
+          {
+            device_pubkey: input.peer.devicePubkey,
+            gist_id: input.peer.attestationGistId,
+            gist_url: '',
+            device_label: input.peer.githubLogin,
+            created_at: Date.now(),
+            signature_by_device: '',
+          },
+        ],
+      },
+    },
+    deps,
+  );
+  if (outcome.action === 'admitted') return { action: 'admitted', hiveHomeSlug, reason: outcome.reason };
+  if (outcome.action === 'pending') return { action: 'pending', hiveHomeSlug };
+  return { action: 'refuse', hiveHomeSlug, reason: outcome.reason };
+}

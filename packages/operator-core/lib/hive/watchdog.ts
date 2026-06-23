@@ -31,7 +31,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { declareHiveTimeWake, getHiveTimeWake, readHiveWakeState } from './wake';
-import { getHiveStarted, listStartedHives } from './started';
+import { getHiveStarted, listStartedWorkspaceLoops } from './started';
 
 // ── tunables (env-overridable, like the wake floor) ──────────────────────────
 
@@ -72,7 +72,10 @@ export async function hiveLivenessCheck(
   opts: { workspaceId?: string; now?: number } = {},
 ): Promise<HiveLiveness> {
   const now = opts.now ?? Date.now();
-  const time = await getHiveTimeWake(sql, installSlug);
+  // K1 (workspace-scoped-coordination P-003): thread the workspace so the
+  // read-fallback resolves the workspace-sentinel wake routine when the flag is
+  // ON (OFF ⇒ per-hive, unchanged).
+  const time = await getHiveTimeWake(sql, installSlug, opts.workspaceId ? { workspaceId: opts.workspaceId } : {});
   const state = await readHiveWakeState(opts.workspaceId);
   const armed = Boolean(time?.active && time.nextFireAt);
   const lastActivity = Math.max(state.lastWakeAt ?? 0, time?.lastFiredAt?.getTime() ?? 0);
@@ -296,7 +299,10 @@ export async function hiveTurnEndCheck(opts: {
 export async function hiveBootCheck(): Promise<FallbackArmResult[]> {
   const results: FallbackArmResult[] = [];
   try {
-    for (const { workspaceId, installSlug } of await listStartedHives()) {
+    // K1 (workspace-scoped-coordination P-003): the de-duped liveness set — ONE
+    // loop per workspace when WORKSPACE_COORDINATION is ON, the raw per-hive set
+    // (byte-identical) when OFF.
+    for (const { workspaceId, installSlug } of await listStartedWorkspaceLoops()) {
       results.push(
         await armFallbackHiveWake({
           workspaceId,
@@ -322,7 +328,9 @@ export async function hiveBootCheck(): Promise<FallbackArmResult[]> {
 export async function hiveWatchdogSweep(opts: { now?: number } = {}): Promise<FallbackArmResult[]> {
   const results: FallbackArmResult[] = [];
   try {
-    const started = await listStartedHives();
+    // K1 (workspace-scoped-coordination P-003): ONE loop per workspace when
+    // WORKSPACE_COORDINATION is ON; the raw per-hive set (byte-identical) OFF.
+    const started = await listStartedWorkspaceLoops();
     if (started.length === 0) return results;
     const { sql } = getOrgPg();
     const now = opts.now ?? Date.now();

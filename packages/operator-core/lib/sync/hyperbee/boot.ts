@@ -1090,95 +1090,52 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             peerLabel(frame.log_core_key),
           );
           emitAdmitted(frame.log_core_key);
-          // Re-key member-add (open-mode, shared-hive-rekey-2026-06-19 / WI-280): when the OWNER
-          // admits a NEW peer — including OPEN-mode auto-admit — REGISTER it in hive_members AND
-          // grant its device every epoch key [0..current] so it can decrypt EXISTING hive content.
-          // ROUTED THROUGH upsertHiveMember (not the bare grant): open-mode auto-admit never
-          // otherwise populates hive_members, so the boundary/grant wrap-set (loadAllHiveMemberDevice-
-          // Pubkeys) stays empty and the live binary mints 0 keys — the WI-280 root (the green-rig/
-          // red-binary pattern the hermetic tests hid by SEEDING hive_members). upsertHiveMember
-          // INSERTs the member row THEN grants to its devices; self-gates to the owner (no-op on a
-          // joiner / without the hive key), is flag-gated (papercusp-hive-rekey), idempotent per
-          // (epoch, member), and records the `rekey_grant_failed` boot-event in ITS catch (a SUPERSET
-          // of part-B's admit-seam event). Fire-and-forget: drainAdmissionQueue runs under the merge
-          // gate, so this must NOT block it. The frame carries everything: device_pubkey +
-          // github_user_id + github_login (the attested identity, == admittedIdentities[…].githubLogin).
+          // WI-639 + WI-280: the OWNER's trust-admit of a freshly-admitted peer, gated on
+          // the owner-signed membership policy. admitAnnouncedPeerAsOwner resolves the Hive
+          // home (member→hive_slug via a fresh registry read, the WI-280 fix), self-gates to
+          // the OWNER box, then routes the decision through ownerAdmitOrPend: open/allowlisted
+          // → upsertHiveMember (+ idempotent epoch [0..current] re-grant); approval → record a
+          // federated pending-join (NO trust-admit until hive:membership_decide approves);
+          // banned/not-allowlisted → refuse. Open-mode is BYTE-EQUIVALENT to the prior
+          // unconditional upsert. Core admission / revocation / read-cut+epoch / per-op
+          // enforcement are untouched (their own seams). Fire-and-forget: drainAdmissionQueue
+          // runs under the merge gate, so this must NOT block it.
           void (async () => {
             try {
-              // WI-280: hive_members is keyed by the HIVE-HOME slug, and B joins via the MEMBER topic — so
-              // opts.harnessSlug here is the MEMBER slug. Upserting under it both (a) FK-violates
-              // hive_members_hive_fkey (no hives parent row for a member slug) AND (b) registers B under the
-              // WRONG slug, so the revoke's loadHiveMemberDevicePubkeys(HIVE_SLUG, B) returns [] →
-              // revokeHiveContributor short-circuits 'no_target' → advanceEpochOnHiveBoundary never fires →
-              // the epoch never advances (the K2 cut bug; role + 328af confirmed). Resolve the hive-home via
-              // hiveHomeSlugForHarness — a fresh REGISTRY read (member → its hive_slug, hive-home → itself),
-              // NOT hiveHomeProjectionSlug: that's resolved at boot only when swarmBinding.kind==='hive' and is
-              // UNDEFINED on the owner's MEMBER boot (boots on the gh topic before the hive rebind), so the
-              // prior redirect silently skipped + B never registered (VERIFIED live: members stayed 1, K2 FAIL).
-              // Skip when null (not part of a hive — no hive_members) or off the OWNER box (loadHivePubkey
-              // null — the local upsert is the owner's; the federation projects it to the others).
-              const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-              const admitHiveHome = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
-              if (!admitHiveHome) return;
-              const { loadHivePubkey } = await import('../../identity/hive-keypair');
-              if (!(await loadHivePubkey(opts.workspaceId, admitHiveHome))) return;
-              // WI-639: gate the trust-admit on the owner-signed membership policy.
-              // This was an UNCONDITIONAL upsertHiveMember, so membership:'approval'
-              // did nothing — a verified joiner was auto-admitted as if open-mode.
-              // ownerAdmitOrPend keeps open-mode BYTE-EQUIVALENT (outcome 'admit' →
-              // the same upsertHiveMember + idempotent epoch re-grant), and an
-              // already-member reconnect still refreshes (re-grant) — but under
-              // approval mode it RECORDS a federated pending-join (the owner is the
-              // writer → it reaches the joiner AND the membership_pending queue) and
-              // does NOT trust-admit until hive:membership_decide approves; a banned /
-              // not-allowlisted peer is refused (no member row). Core admission +
-              // revocation + the read-cut/epoch gate + per-op enforcement are untouched
-              // (their own seams); a pending/refused peer's CONTENT stays gated by the
-              // P-002 membership guard, so nothing federates as a member before approval.
-              const { ownerAdmitOrPend } = await import('../../hive-membership-admission');
-              const admitOutcome = await ownerAdmitOrPend({
+              const { admitAnnouncedPeerAsOwner } = await import('../../hive-membership-admission');
+              const res = await admitAnnouncedPeerAsOwner({
                 workspaceId: opts.workspaceId,
-                hiveHomeSlug: admitHiveHome,
-                joiner: {
+                harnessSlug: opts.harnessSlug,
+                peer: {
                   githubUserId: frame.github_user_id,
-                  githubUsername: frame.github_login,
-                  deviceAttestations: [
-                    {
-                      device_pubkey: frame.device_pubkey,
-                      gist_id: frame.attestation_gist_id,
-                      gist_url: '',
-                      device_label: frame.github_login,
-                      created_at: Date.now(),
-                      signature_by_device: '',
-                    },
-                  ],
+                  githubLogin: frame.github_login,
+                  devicePubkey: frame.device_pubkey,
+                  attestationGistId: frame.attestation_gist_id,
                 },
               });
-              if (admitOutcome.action === 'pending') {
+              if (res.action === 'pending') {
                 recordBootEvent(
                   opts.workspaceId,
                   opts.harnessSlug,
                   'announce_pending',
-                  `${peerLabel(frame.log_core_key)} awaiting owner approval (hive ${admitHiveHome})`,
+                  `${peerLabel(frame.log_core_key)} awaiting owner approval (hive ${res.hiveHomeSlug})`,
                 );
-              } else if (admitOutcome.action === 'refuse') {
+              } else if (res.action === 'refuse') {
                 recordBootEvent(
                   opts.workspaceId,
                   opts.harnessSlug,
                   'announce_rejected',
-                  `${peerLabel(frame.log_core_key)} membership refused:${admitOutcome.reason} (hive ${admitHiveHome})`,
+                  `${peerLabel(frame.log_core_key)} membership refused:${res.reason} (hive ${res.hiveHomeSlug})`,
                 );
               }
             } catch (e) {
               const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
-              // The GRANT failure inside upsertHiveMember already records a queryable
-              // `rekey_grant_failed` boot-event (a superset of part-B); this catch only fires if the
-              // membership INSERT itself throws. Stay non-blocking (merge-gated admission), best-effort.
+              // The grant failure inside upsertHiveMember already records a queryable
+              // `rekey_grant_failed` boot-event; this catch only fires if the resolve /
+              // membership write itself throws. Stay non-blocking (merge-gated), best-effort.
               // eslint-disable-next-line no-console
               console.error(
-                `[hive-rekey] open-mode admit upsertHiveMember failed for ${peerLabel(
-                  frame.log_core_key,
-                )}: ${detail}`,
+                `[hive-rekey] owner admit failed for ${peerLabel(frame.log_core_key)}: ${detail}`,
               );
             }
           })();

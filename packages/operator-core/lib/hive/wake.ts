@@ -33,6 +33,11 @@ import { computeNextFireAt } from '../harness/routines/cron';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { registerReactionRule, unregisterReactionRule, listReactionRules } from '../events/registry';
+import {
+  isWorkspaceCoordinationOn,
+  workspaceBrainScopeKey,
+  workspaceBrainReadKeys,
+} from '../workspace-brain-scope';
 
 /** The hive launch blueprint id (blueprints/coding/blueprint.yaml — renamed from `hive`). */
 export const HIVE_BLUEPRINT_ID = 'coding';
@@ -147,6 +152,18 @@ export async function declareHiveTimeWake(
   // tool — is owner-aware with no call-site change) unless the caller pre-resolved it.
   const floorSec = opts.floorSec ?? (await effectiveHiveWakeFloorSec(opts.workspaceId, opts.installSlug));
   const { at, clamped } = clampWakeAt(opts.at, opts.now, floorSec);
+  // K1 workspace-brain re-key (workspace-scoped-coordination P-003 / D-006): when
+  // WORKSPACE_COORDINATION is ON, the one workspace Queen owns ONE hive-wake
+  // routine, keyed under the workspace SENTINEL (install_slug = workspaceId)
+  // instead of per-hive — collapsing N per-hive wake routines (the carry-note /
+  // subscription clobber the plan names) to one. OFF (the dark default) ⇒ the
+  // legacy per-hive install slug, byte-identical to today. (Event-state — the
+  // hive_wake operator-state row — is already workspace-keyed; untouched.)
+  const scopeSlug = workspaceBrainScopeKey(
+    opts.workspaceId,
+    opts.installSlug,
+    await isWorkspaceCoordinationOn(),
+  );
   // EI-1477 (sibling of EI-1472): the hive wake is a SINGLETON keyed by (install_slug,
   // name) — the global routines_install_slug_name_key enforces ONE row per install
   // regardless of workspace. With per-workspace ON CONFLICT (F-E1) on, upsertRoutine
@@ -157,14 +174,14 @@ export async function declareHiveTimeWake(
   // place; harmless under the legacy (install_slug, name) conflict).
   const existing = await sql<Array<{ workspace_id: string }>>`
     SELECT workspace_id FROM harness_shared.routines
-     WHERE install_slug = ${opts.installSlug} AND name = ${HIVE_WAKE_ROUTINE_NAME}
+     WHERE install_slug = ${scopeSlug} AND name = ${HIVE_WAKE_ROUTINE_NAME}
      LIMIT 1
   `;
   await upsertRoutine(
     sql,
     {
       workspaceId: existing[0]?.workspace_id ?? opts.workspaceId,
-      installSlug: opts.installSlug,
+      installSlug: scopeSlug,
       name: HIVE_WAKE_ROUTINE_NAME,
       triggerKind: 'cron',
       triggerConfig: {}, // no cron expr ⇒ one-shot
@@ -187,9 +204,23 @@ export async function declareHiveTimeWake(
 
 /** Clear the hive's time wake (mode 'none', or a declare with no time).
  *  EI-1477: DELETE the row (not just deactivate) to avoid duplicate-key conflicts
- *  under concurrency when a stale/orphaned row would collide with a new UPSERT. */
-export async function clearHiveTimeWake(sql: Sql, installSlug: string): Promise<void> {
-  await deleteRoutine(sql, installSlug, HIVE_WAKE_ROUTINE_NAME);
+ *  under concurrency when a stale/orphaned row would collide with a new UPSERT.
+ *
+ *  K1 (workspace-scoped-coordination P-003): when WORKSPACE_COORDINATION is ON and
+ *  a `workspaceId` is supplied, the wake routine lives under the workspace sentinel
+ *  — clear BOTH the sentinel row and the legacy per-hive row (hygiene; a stop must
+ *  leave nothing armed). OFF, or no workspaceId, ⇒ clear the per-hive row only,
+ *  byte-identical to today. */
+export async function clearHiveTimeWake(
+  sql: Sql,
+  installSlug: string,
+  opts: { workspaceId?: string } = {},
+): Promise<void> {
+  const on = opts.workspaceId ? await isWorkspaceCoordinationOn() : false;
+  const slugs = on
+    ? workspaceBrainReadKeys(opts.workspaceId!, installSlug, true)
+    : [installSlug];
+  for (const slug of slugs) await deleteRoutine(sql, slug, HIVE_WAKE_ROUTINE_NAME);
 }
 
 /** timestamptz arrives as Date or ISO string depending on the pool's type
@@ -201,24 +232,39 @@ function toDateOrNull(v: Date | string | null): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** Read the hive's time-wake routine state (null = never declared). */
+/** Read the hive's time-wake routine state (null = never declared).
+ *
+ *  K1 (workspace-scoped-coordination P-003): when WORKSPACE_COORDINATION is ON and
+ *  a `workspaceId` is supplied, prefer the workspace-sentinel routine row, falling
+ *  back to the legacy per-hive row until the sentinel is first written (zero
+ *  regression). OFF, or no workspaceId, ⇒ the per-hive row only, byte-identical
+ *  to today. */
 export async function getHiveTimeWake(
   sql: Sql,
   installSlug: string,
+  opts: { workspaceId?: string } = {},
 ): Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null> {
-  const rows = await sql<
-    Array<{ active: boolean; next_fire_at: Date | string | null; last_fired_at: Date | string | null }>
-  >`
-    SELECT active, next_fire_at, last_fired_at
-      FROM harness_shared.routines
-     WHERE install_slug = ${installSlug} AND name = ${HIVE_WAKE_ROUTINE_NAME}
-  `;
-  if (rows.length === 0) return null;
-  return {
-    active: rows[0].active,
-    nextFireAt: toDateOrNull(rows[0].next_fire_at),
-    lastFiredAt: toDateOrNull(rows[0].last_fired_at),
-  };
+  const on = opts.workspaceId ? await isWorkspaceCoordinationOn() : false;
+  const slugs = on
+    ? workspaceBrainReadKeys(opts.workspaceId!, installSlug, true)
+    : [installSlug];
+  for (const slug of slugs) {
+    const rows = await sql<
+      Array<{ active: boolean; next_fire_at: Date | string | null; last_fired_at: Date | string | null }>
+    >`
+      SELECT active, next_fire_at, last_fired_at
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND name = ${HIVE_WAKE_ROUTINE_NAME}
+    `;
+    if (rows.length > 0) {
+      return {
+        active: rows[0].active,
+        nextFireAt: toDateOrNull(rows[0].next_fire_at),
+        lastFiredAt: toDateOrNull(rows[0].last_fired_at),
+      };
+    }
+  }
+  return null;
 }
 
 // ── event-wake subscriptions ─────────────────────────────────────────────────

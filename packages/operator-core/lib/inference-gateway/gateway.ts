@@ -101,6 +101,13 @@ const HUMAN_PRIORITY_LABELS = new Set(['interactive', 'operator']);
 // held during the wait → cannot wedge). Gated by requestAbsorbMs>0 (the absorb being on); kill-switch:
 // PAPERCUSP_GATEWAY_ABSORB_STALLS=0 reverts to the immediate retryable-503 shed.
 const ABSORB_STALLS_ON = process.env.PAPERCUSP_GATEWAY_ABSORB_STALLS !== '0';
+/** G1 (WI-649): when ≥half the account pool is out of rotation (a FLEET-WIDE bare-burst storm), SUPPRESS the
+ *  cross-account rotate-retry on a bare 429 — rotating A→B→C finds no capacity and just multiplies upstream
+ *  load (the observed 2.4× fan-out: 152 upstream-429s / 63 requests + 108 failovers), sustaining the storm.
+ *  Suppressing it lets the request fall through to the bounded transient-wait / absorb / fail-fast-shed so it
+ *  makes ≈1 upstream call instead of ~2.4. The few-accounts-maxed→rotate-to-healthy path is preserved (this
+ *  fires ONLY when <half the pool has rotation budget). Kill-switch: PAPERCUSP_GATEWAY_SUPPRESS_BAREBURST_ROTATE=0. */
+const SUPPRESS_BAREBURST_ROTATE_ON = process.env.PAPERCUSP_GATEWAY_SUPPRESS_BAREBURST_ROTATE !== '0';
 /** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
  *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
  *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the
@@ -387,6 +394,10 @@ export interface AccountPool {
    *  priority-tier `/stats` reports alongside the per-tier demand so an operator sees headroom vs queueing.
    *  Optional: a single-account pool omits it (the gateway then reports 1). */
   healthyCount?(extra?: (accountId: string) => boolean): number;
+  /** Total accounts in the live pool — the DENOMINATOR for healthyCount() that the fleet-wide-bare-burst
+   *  detector (G1, WI-649) needs to decide whether ≥half the pool is out of rotation (rotating would find
+   *  no capacity). Optional: a single-account pool omits it (the gateway then treats the pool size as 1). */
+  size?(): number;
   /** H3: non-advancing "current best" for read-only callers (stats/startup/health pollers) — see active(). */
   peek?(): ActiveAccount;
 }
@@ -536,6 +547,10 @@ export interface GatewayStats {
   /** Count of 429s shed at ADMISSION because the WHOLE pool was throttled with a far-off reset — the
    *  fail-fast path (B-GW-1) that frees the slot immediately instead of taking the acquire/retry path. */
   shedAllThrottled: number;
+  /** G1 (WI-649): count of bare-429 rotate-retries SUPPRESSED because ≥half the pool was out of rotation
+   *  (a fleet-wide bare-burst storm) — the request fell through to the bounded wait/absorb/shed instead of
+   *  fanning out another upstream call. A climbing value = the gateway is actively damping a storm. */
+  bareBurstRotateSuppressed: number;
   /** The admission backlog cap that triggers load-shedding (0 = unbounded). */
   maxQueued: number;
   /** The CONFIGURED admission-concurrency cap (the AIMD ceiling). `admission.maxConcurrent` is the LIVE
@@ -891,6 +906,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const serviceable = pool.healthyCount((id) => governorForAccount(SERVICEABLE_CLAMP_MODEL, id).state.pausedUntil <= now);
     return Math.max(MIN_SERVICEABLE_ADMISSION, serviceable * PER_ACCOUNT_ADMISSION);
   };
+
+  // G1 (WI-649): FLEET-WIDE bare-burst detector. True when ≥half the pool is currently OUT OF ROTATION
+  // (pool.exhaustedUntil — the short bare-429 paces / hard caps / transport circuits that other in-flight
+  // requests already rotated off), i.e. rotating this bare-429 onto "another" account would find no capacity
+  // and just multiply upstream load. Reads the POOL's own rotation state (NOT the per-account governor) so it
+  // stays correct under a shared-governor test pool, and counts the CURRENT (just-bursted) account as still
+  // available (its onExhausted hasn't run yet) — so a LONE account bursting in an otherwise-healthy pool (the
+  // few-maxed→rotate-to-healthy case) is never mistaken for a fleet-wide storm.
+  const isFleetWideBareBurst = (): boolean => {
+    if (!SUPPRESS_BAREBURST_ROTATE_ON || !pool.healthyCount || !pool.size) return false;
+    const total = pool.size();
+    if (total < 2) return false; // single-account pool: nothing to rotate to anyway
+    return pool.healthyCount() * 2 <= total; // ≤half the pool has rotation budget ⇒ ≥half is penalized
+  };
   // Re-apply the clamp on a cadence so it tracks accounts pausing/recovering even while the AIMD effective is
   // stable (e.g. pinned at the floor under a storm) — onChange alone only fires on an AIMD change. Unref'd so it
   // never holds the process open; cleared on close().
@@ -1038,6 +1067,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let queued429 = 0;
   let shed429 = 0; // load-shed: 429s returned because the admission queue was at maxQueued (backlog cap)
   let shedAllThrottled = 0; // fail-fast: 429s shed at admission because the whole pool was throttled (B-GW-1)
+  let bareBurstRotateSuppressed = 0; // G1 (WI-649): bare-429 rotate-retries suppressed because ≥half the pool was out of rotation (fleet-wide storm)
   let upstreamErrors = 0;
   let failovers = 0;
   let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
@@ -1206,6 +1236,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       queued429,
       shed429,
       shedAllThrottled,
+      bareBurstRotateSuppressed,
       maxQueued,
       concurrencyCap: concurrency,
       aimd: aimd.snapshot(),
@@ -1746,7 +1777,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // account (gov.acquire waits for a circuit-OPEN account's transport-pause to lift via the half-open
             // probe), and retry — so the caller WAITS through the storm and succeeds instead of erroring. Kill-
             // switch PAPERCUSP_GATEWAY_ABSORB_STALLS=0.
-            if (ABSORB_STALLS_ON && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
+            //   everRotated GUARD (wires up the documented purpose of `everRotated` decl'd above): only a
+            //   MULTI-account storm (we actually rotated → the pool HAS flapping/recovering alternatives) is
+            //   worth holding the caller for. A LONE permanently-dead proxy (everRotated false → no alternative)
+            //   must shed FAST — re-acquiring on the SAME dead account would just re-stall for the whole absorb
+            //   budget (8–60s), the bug the egress-circuit "LONE dead proxy sheds FAST" / "N consecutive
+            //   failures → 503" / autowake-503 / streak-reset tests assert against.
+            if (ABSORB_STALLS_ON && everRotated && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
               release();
               release = () => {};
               let cand = active;
@@ -1814,6 +1851,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // When set, the gateway re-attempts (usually on a rotated account) before responding — absorbing
         // a transient throttle / routing past a usage cap so the bee never sees the error.
         let internalRetry: { rotate: boolean; backoffMs: number; exhaustResetAt: number } | null = null;
+        // G1 (WI-649): set in the bare-429 branch when ≥half the pool is out of rotation — suppresses the
+        // cross-account rotate-retry below so a fleet-wide storm doesn't fan out ~2.4 upstream calls/request.
+        let suppressBareBurstRotate = false;
         // Hard-evidence 429-shape suffix for the retry log (set inside the 429 block where the headers are in
         // scope; empty for non-429). Makes the capacity-vs-routing read come from data, not a guess.
         let shape429Suffix = '';
@@ -1910,6 +1950,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             } else if (bare429) {
               gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS, rateLimited: true });
               exhaustResetAt = Date.now() + BARE_429_FAILOVER_BACKOFF_MS;
+              // G1 (WI-649): a bare-burst is a TRANSIENT throttle (capacity exists) — distinct from the usage-cap
+              // wall handled above. If ≥half the pool is already out of rotation, rotating onto "another" account
+              // finds no capacity and just sustains the storm → suppress the rotate-retry so this request falls
+              // through to the bounded transient-wait / absorb / fail-fast-shed (≈1 upstream call, not ~2.4).
+              suppressBareBurstRotate = isFleetWideBareBurst();
             } else {
               exhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000; // unifiedRejected: bounded pause already set
             }
@@ -1988,7 +2033,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
             internalRetry.exhaustResetAt > 0 &&
             internalRetry.exhaustResetAt - Date.now() <= ALL_THROTTLED_RECOVERY_WAIT_CAP_MS;
           if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
-            if (internalRetry.rotate) {
+            if (internalRetry.rotate && suppressBareBurstRotate) {
+              // G1 (WI-649): FLEET-WIDE bare-burst — ≥half the pool is out of rotation, so rotating A→B→C finds
+              // no capacity and just multiplies upstream load, sustaining the storm. SUPPRESS the rotate-retry:
+              // leave proceed=false so we fall through to the bounded transient-WAIT / absorb / fail-fast-shed
+              // below (≈1 upstream call/request instead of ~2.4). recordThrottle still fires below (routedAround
+              // stays false) — an un-routable bare-burst IS genuine pool-wide saturation, so AIMD shrinks admission.
+              bareBurstRotateSuppressed++;
+            } else if (internalRetry.rotate) {
               const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
               if (next && next.accountId !== active.accountId) {
                 failovers++;

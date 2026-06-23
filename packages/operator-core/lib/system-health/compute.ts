@@ -1095,8 +1095,31 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   if (hiveSlug) {
     try {
       const { summarizeOpenPlacements } = await import('../hive/placement-watchdog');
-      const op = await summarizeOpenPlacements(ws, hiveSlug);
-      openPlacements = { recovering: op.recovering, cursed: op.cursed, stranded: op.stranded, workingTracked: op.workingTracked };
+      // K1 (workspace-scoped-coordination P-003 / D-006): the one workspace Queen
+      // drives placements across ALL the workspace's hives, so when
+      // WORKSPACE_COORDINATION is ON the open-placement panel SPANS every hive
+      // (summed) rather than just the representative one. OFF (the dark default) ⇒
+      // the single representative hive, byte-identical to today.
+      const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
+      const on = await isWorkspaceCoordinationOn();
+      let scopeSlugs = [hiveSlug];
+      if (on) {
+        try {
+          const { listHives } = await import('../agent-tools/hive/_resolve');
+          const all = (await listHives(ws)).map((h) => h.slug);
+          if (all.length > 0) scopeSlugs = all;
+        } catch { /* registry unreadable → fall back to the representative hive */ }
+      }
+      const sums = await Promise.all(scopeSlugs.map((slug) => summarizeOpenPlacements(ws, slug)));
+      openPlacements = sums.reduce(
+        (acc, op) => ({
+          recovering: acc.recovering + op.recovering,
+          cursed: acc.cursed + op.cursed,
+          stranded: acc.stranded + op.stranded,
+          workingTracked: acc.workingTracked + op.workingTracked,
+        }),
+        { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0 },
+      );
     } catch { /* leave null — queen.workingTracked + bees.placements degrade to 0 */ }
   }
 

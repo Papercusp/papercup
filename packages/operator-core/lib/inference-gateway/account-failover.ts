@@ -141,5 +141,12 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return live.reduce((n, e) => n + (available(e) && (!extra || extra(e.accountId)) ? 1 : 0), 0);
   }
 
-  return { active, onExhausted, select, reload, readmit, healthyCount, peek };
+  /** Total accounts in the live pool (the DENOMINATOR for healthyCount). The fleet-wide-bare-burst
+   *  detector (WI-649 / gateway G1) compares healthyCount() against this to decide whether ≥half the
+   *  pool is out of rotation — i.e. rotating A→B→C would find no capacity. Reflects hot-reload swaps. */
+  function size(): number {
+    return live.length;
+  }
+
+  return { active, onExhausted, select, reload, readmit, healthyCount, peek, size };
 }

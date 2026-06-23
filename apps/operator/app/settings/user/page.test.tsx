@@ -94,3 +94,28 @@ describe('UserSettingsPage override surface (shared OverridableSetting)', () => 
     );
   });
 });
+
+describe('UserSettingsPage auto-login fallback (owner report 2026-06-23)', () => {
+  it('renders the settings (NOT "Not signed in") when /api/auth/me has no user', async () => {
+    // Under single-user auto-login the route returns { autoLogin: true, user: null }
+    // (no cookie session). The page must fall back to the default identity and
+    // render normally — matching UserPicker — instead of the old "Not signed in".
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/api/auth/me'))
+          return new Response(JSON.stringify({ autoLogin: true, user: null }), { status: 200 });
+        if (u.includes('/api/user/preferences'))
+          return new Response(JSON.stringify({ payload: {} }), { status: 200 });
+        if (u.includes('operator-voice-prefs')) return new Response(JSON.stringify({}), { status: 200 });
+        return new Response('{}', { status: 200 });
+      }),
+    );
+    render(<UserSettingsPage />);
+    await waitFor(() => expect(screen.getByText('User preferences')).toBeTruthy());
+    expect(screen.queryByText(/Not signed in/i)).toBeNull();
+    // Falls back to the default display name ("User").
+    expect(screen.getByText(/just for User/)).toBeTruthy();
+  });
+});
