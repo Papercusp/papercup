@@ -475,11 +475,13 @@ export const DRAIN_URGENT_RESET_MS = 20 * 60_000;
 /** At/above this unified utilization an account is effectively full — don't route fresh load to it. */
 export const DRAIN_FULL_UTIL = 0.97;
 /** Cache-affinity weight multiplier for a harness's soft-pinned account in the drain SPREAD
- *  (account-spawn-spread fix, 2026-06-23). The pinned account is preferred (warm system/tools prefix
- *  cache) but NOT exclusive: with a bonus of B and N equal-headroom peers it draws ≈ B/(B+N−1) of the
- *  hive's bees, so a busy hive keeps cache warmth while still fanning across budgeted accounts instead
- *  of RPM-storming one. Env-tunable; 1 = no preference (pure spread). */
-export const SOFT_PIN_AFFINITY_WEIGHT = Number(process.env.PAPERCUSP_SPAWN_SOFT_PIN_AFFINITY_WEIGHT) || 2.5;
+ *  (account-spawn-spread fix, 2026-06-23). The pinned account is gently preferred (warm system/tools
+ *  prefix cache) but NOT exclusive: with a bonus of B and N equal-headroom peers it draws ≈ B/(B+N−1)
+ *  of the hive's bees. Kept LOW (1.3) so HEADROOM dominates — when a budgeted hive is one giant
+ *  soft-pinned slug (the autonomous fleet under `papercusp`), a strong bonus would re-funnel every bee
+ *  onto the pinned account even when peers have MORE budget; at 1.3 affinity is a tiebreaker, not an
+ *  override, so the account with the most budget still draws the most load. Env-tunable; 1 = pure spread. */
+export const SOFT_PIN_AFFINITY_WEIGHT = Number(process.env.PAPERCUSP_SPAWN_SOFT_PIN_AFFINITY_WEIGHT) || 1.3;
 
 /** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never
  *  observed / stale (treat as most-available so a cold pool degrades gracefully). */
