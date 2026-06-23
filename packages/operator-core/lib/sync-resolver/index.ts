@@ -131,15 +131,22 @@ export { NAME_NOT_FOUND, type NameNotFound } from '@papercusp/sync/server';
  * mapping doesn't apply to sql`` columns, and the driver would otherwise
  * return bigints as strings.
  */
-async function resolveRunsWithOutcome(harnessSlug: string, limit?: number): Promise<unknown[]> {
+async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string, limit?: number): Promise<unknown[]> {
   const { getOrgPg, generated } = await import('@papercusp/db-org');
   const { and, desc, eq, sql } = await import('drizzle-orm');
   const t = generated.agentRunsConsolidatedInHarnessShared;
   const s = generated.spawnedAgentsInHarnessShared;
   const { db } = getOrgPg();
+  // EI-1763 (helper-form): harness_slug is per-workspace-unique and getOrgPg bypasses
+  // RLS, so a slug-only filter cross-leaks runs across workspaces sharing a slug. Both
+  // stores (agent_runs_consolidated, spawned_agents) carry workspace_id. The block-grained
+  // coverage guard CANNOT see this leak (the `eq(s.harnessSlug,…)` is on an alias in this
+  // shared helper, outside any resolver block), so it is fixed here by hand. `workspaceId`
+  // is OPTIONAL (threaded from the caller's argsSchema) → unset preserves today's behavior.
   const spawn = db
     .selectDistinctOn([s.harnessSlug, s.runId], {
       harnessSlug: s.harnessSlug,
+      workspaceId: s.workspaceId,
       runId: s.runId,
       childRole: s.childRole,
       featureId: s.featureId,
@@ -152,7 +159,11 @@ async function resolveRunsWithOutcome(harnessSlug: string, limit?: number): Prom
       sessionId: s.sessionId,
     })
     .from(s)
-    .where(eq(s.harnessSlug, harnessSlug))
+    .where(
+      workspaceId != null
+        ? and(eq(s.harnessSlug, harnessSlug), eq(s.workspaceId, workspaceId))
+        : eq(s.harnessSlug, harnessSlug),
+    )
     .orderBy(s.harnessSlug, s.runId, desc(s.startedAt))
     .as('spawn');
 
@@ -193,7 +204,18 @@ async function resolveRunsWithOutcome(harnessSlug: string, limit?: number): Prom
     })
     .from(t)
     .fullJoin(spawn, and(eq(spawn.harnessSlug, t.harnessSlug), eq(spawn.runId, t.runId)))
-    .where(sql`coalesce(${t.harnessSlug}, ${spawn.harnessSlug}) = ${harnessSlug}`)
+    .where(
+      // Scope the FULL-OUTER union by workspace too (EI-1763). The spawn subquery is
+      // already workspace-filtered; the coalesce here additionally scopes the LEGACY
+      // (`t`-only) rows — coalescing the two stores' workspace_id mirrors the harness_slug
+      // coalesce above so a legacy-only or live-only row is judged by whichever side exists.
+      workspaceId != null
+        ? and(
+            sql`coalesce(${t.harnessSlug}, ${spawn.harnessSlug}) = ${harnessSlug}`,
+            sql`coalesce(${t.workspaceId}, ${spawn.workspaceId}) = ${workspaceId}`,
+          )
+        : sql`coalesce(${t.harnessSlug}, ${spawn.harnessSlug}) = ${harnessSlug}`,
+    )
     .orderBy(desc(tsExpr));
   return (limit != null ? await q.limit(limit) : await q) as unknown[];
 }
@@ -1891,10 +1913,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // spawned_agents (adv-harness-tab-migration P-023): spawnStatus / exitCode /
   // errorMessage / sessionId, null for pre-spawn-engine rows.
   'agentRunsConsolidated.bySlug': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspaceId is optional + threaded into the helper's per-workspace
+    // scoping (harness_slug is per-workspace-unique on the RLS-bypassing connection).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
-      return resolveRunsWithOutcome(harnessSlug);
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
+      return resolveRunsWithOutcome(harnessSlug, workspaceId);
     },
   },
 
@@ -1902,10 +1926,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc').limit(50)
   // Same joined outcome projection as .bySlug (P-023).
   'agentRunsConsolidated.recent': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: see .bySlug — workspaceId threaded into the helper's scoping.
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
-      return resolveRunsWithOutcome(harnessSlug, 50);
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
+      return resolveRunsWithOutcome(harnessSlug, workspaceId, 50);
     },
   },
 
