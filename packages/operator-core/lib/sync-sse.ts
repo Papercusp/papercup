@@ -22,6 +22,7 @@ import {
   createInvalidationBus,
   type SyncEvent as LibSyncEvent,
   type SubscribeHandle as LibSubscribeHandle,
+  type NotifyInvalidateOpts,
 } from '@papercusp/sync/server';
 import { createPgListenSource, createPgNotifySink } from '@papercusp/sync/server/pg';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
@@ -106,4 +107,5 @@ export const notifySyncInvalidate: (
   name: string,
   args?: Record<string, unknown>,
   data?: unknown[],
+  notifyOpts?: NotifyInvalidateOpts,
 ) => Promise<void> = bus.notifyInvalidate;
