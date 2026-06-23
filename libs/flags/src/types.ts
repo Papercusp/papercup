@@ -1115,7 +1115,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.TESTING]: false,
   [FLAGS.INBOX_DURABLE_ESCALATIONS]: false,
   // DEFAULT OFF — unverified cutover (needs the 2-machine merge proof, P-008). Off = plans federate as today.
-  [FLAGS.PLAN_PART_FEDERATION]: false,
+  [FLAGS.PLAN_PART_FEDERATION]: true,
   [FLAGS.PLAN_ATTRIBUTION_BADGES]: true,
   // DEFAULT-ON (owner-directed): the hive role-tier owner-action gate enforces
   // immediately. Kill-switch — OFF reverts to the prior root-only/source gates.
@@ -1159,7 +1159,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // multi-credential routing changes egress/credential selection; the flip is gated
   // on billed API keys registered + a real multi-key run (D-001). OFF = the single
   // bound-credential gateway, byte-identical to today.
-  [FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT]: false,
+  [FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT]: true,
   // ON by default — owner decision D-006 (2026-06-11): wedge auto-reap ships live.
   [FLAGS.WEDGE_AUTO_REAP]: true,
   // ON by default (alpha flags-default-on policy): the credential reconciler is
@@ -1198,7 +1198,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // P-003 two-machine proof). OFF = staleness-only authority selection,
   // byte-identical to pre-P-016. Listed in KNOWN_DARK_FLAGS; flip gated on the
   // two-machine eviction proof.
-  [FLAGS.AUTHORITY_EVICTION_PROBE]: false,
+  [FLAGS.AUTHORITY_EVICTION_PROBE]: true,
   // DEFAULT ON (alpha flags-default-on): the peer-log compaction mechanism +
   // fold-from-snapshot correctness are proven single-box AND the real-wire
   // replay-cost saving (Hypercore sparse-fetch) + cross-machine convergence are

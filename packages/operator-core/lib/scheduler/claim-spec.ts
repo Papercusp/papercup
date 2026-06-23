@@ -57,6 +57,13 @@ export const ITEM_FIELDS = [
   'redundancy',
   'est_cost',
   'assignee',
+  // `id` — the work-item id (feature_id). Filterable so a spec can PIN a specific
+  // finite set (`id in [...]`), composing with the rest of the grammar. It is a STATIC
+  // pin (no auto-inflow / work-stealing — a frozen candidate set), so it is the
+  // exception for a fixed wave (hotfix / cutover / re-drive), NOT a standing lane (use a
+  // property filter for that). NOT rankable (ordering by id is meaningless) and the
+  // observability tripwire `isIdOnlySelector` flags specs that select on id ALONE.
+  'id',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 

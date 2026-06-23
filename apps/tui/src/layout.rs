@@ -831,8 +831,8 @@ mod tests {
         // must never reappear.
         let lex = Lexicon::default();
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
-        assert!(kdl.contains("name=\"chat\""));
-        assert!(kdl.contains("name=\"🛡 operator\"")); // lex("operator"), P-010 glyph
+        assert!(kdl.contains("name=\"🐝 colony\""));
+        assert!(kdl.contains("name=\"🛡 sentinel\"")); // lex("sentinel"), P-010 glyph
         assert!(kdl.contains("name=\"♛ brain\""));
         assert!(kdl.contains("stacked=true"));
         assert!(kdl.contains("expanded=true"));
@@ -854,15 +854,17 @@ mod tests {
             "swarm-pane",
             "bee-pane",
             "name=\"main\"",
+            "name=\"chat\"", // the old single agent stack — gone in the reorder
         ] {
             assert!(!kdl.contains(gone), "stale dock artifact: {gone}");
         }
-        // Operator leads the agent stack (expanded + focused), under the queen.
-        let (q, o) = (
-            kdl.find("name=\"♛ brain\"").unwrap(),
-            kdl.find("name=\"🛡 operator\"").unwrap(),
+        // The Sentinel LEADS the dock — it sits ABOVE the queen split (reorder
+        // sentinel-as-claude-tui-2026-06-22: 🛡 sentinel · 👁 overwatch · ♛ queen).
+        let (s, q) = (
+            kdl.find("name=\"🛡 sentinel\"").unwrap(),
+            kdl.find("name=\"♛ queen\"").unwrap(),
         );
-        assert!(q < o, "the queen split precedes the agent stack");
+        assert!(s < q, "the sentinel leads the dock, above the queen split");
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
         assert!(!kdl.contains("args \"hud\""));
         assert!(!kdl.contains("name=\"work\" "));
@@ -908,11 +910,11 @@ mod tests {
             th < nw && nw < pl,
             "this hive must be the FIRST tab so tier-1 GoToTab(1) lands on it"
         );
-        // The dock body moved VERBATIM inside the this-hive tab (the chat
-        // stack sits between the first two tab headers).
-        let chat = kdl.find("name=\"chat\"").unwrap();
+        // The dock body lives inside the this-hive tab (the sentinel pane — the
+        // FIRST dock pane after the reorder — sits between the first two tab headers).
+        let body = kdl.find("name=\"🛡 sentinel\"").unwrap();
         assert!(
-            th < chat && chat < nw,
+            th < body && body < nw,
             "the dock body must live inside the this-hive tab"
         );
         // The network + plans tabs host their respective pinned pui boards.
@@ -943,13 +945,14 @@ mod tests {
 
     #[test]
     fn chat_dock_pane_names_route_through_the_hive_lexicon() {
-        // With the-hive active: operator→sentinel, brain→queen (lowercased,
-        // kdl-safe, P-010 glyph-prefixed). The fixed "chat" stays verbatim.
-        // (renamed from "sentinel-bee", owner directive 2026-06-09 / P-003.)
+        // With the-hive active: the brain pane routes brain→queen (lowercased,
+        // kdl-safe, P-010 glyph-prefixed). The sentinel pane is keyed "sentinel"
+        // (no lexicon term → its own 🛡 glyph + name). The old single "chat" stack
+        // is gone (sentinel-as-claude-tui-2026-06-22 reorder).
         let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
         assert!(kdl.contains("name=\"🛡 sentinel\""));
         assert!(kdl.contains("name=\"♛ queen\""));
-        assert!(kdl.contains("name=\"chat\""));
+        assert!(!kdl.contains("name=\"chat\""));
         // The classic labels must NOT leak when the-hive is on.
         assert!(!kdl.contains("name=\"🛡 operator\""));
         assert!(!kdl.contains("name=\"♛ brain\""));
@@ -1007,14 +1010,14 @@ mod tests {
         assert_eq!(on.matches("command \"pui\"").count(), 10);
         assert!(on.contains("args \"network-pane\""));
         assert!(on.contains("args \"plans-pane\""));
-        // Order: brain precedes her side column; the queen container precedes
-        // the agent `chat` stack; the driver is inside the stack.
+        // Order: brain precedes her side column; the queen split precedes the
+        // 🐝 colony stack; the dock-driver is inside that colony stack.
         let queen_at = on.find("name=\"♛ queen\"").expect("queen container");
-        let stack_at = on.find("name=\"chat\" stacked=true").expect("chat stack");
+        let stack_at = on.find("name=\"🐝 colony\" stacked=true").expect("colony stack");
         let driver_at = on.find("args \"dock-driver\"").expect("driver pane");
         assert!(queen_at < brief_at, "brain precedes her side column");
-        assert!(work_at < stack_at, "the queen split precedes the agent stack");
-        assert!(stack_at < driver_at, "the driver is inside the stack");
+        assert!(work_at < stack_at, "the queen split precedes the colony stack");
+        assert!(stack_at < driver_at, "the driver is inside the colony stack");
     }
 
     #[test]
@@ -1081,7 +1084,7 @@ mod tests {
         // P-010: the sentinel/queen pane NAMES carry their per-type glyph
         // (zellij has no per-pane color, D-008).
         let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
-        assert!(kdl.contains("name=\"🛡 operator\""), "sentinel glyph missing: {kdl}");
+        assert!(kdl.contains("name=\"🛡 sentinel\""), "sentinel glyph missing: {kdl}");
         assert!(kdl.contains("name=\"♛ brain\""), "queen/brain glyph missing: {kdl}");
     }
 

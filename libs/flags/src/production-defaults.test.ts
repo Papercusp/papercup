@@ -84,7 +84,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // before the flip. With it OFF, plans federate exactly as today (whole
   // harness_plans.content blob); the per-part capture/projection are inert.
   // Pending flip surfaced in the plan's ## Now. Owner flips at cutover.
-  FLAGS.PLAN_PART_FEDERATION,
   // papercusp-self-improvement-loop Phase 3 master switch: auto-IMPLEMENTING
   // captured improvements only begins once the owner flips it (capture +
   // triage run regardless).
@@ -106,7 +105,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // selection. The flip is gated on billed API keys registered in the account
   // pool + a real multi-key run (D-001). OFF = the single bound-credential
   // gateway, byte-identical to today. Pending flip surfaced in the plan's ## Now.
-  FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT,
   // auth-tier rollout (OWNER rows): SECURITY gate, not unfinished work —
   // /auth/signup is internet-reachable via the cloudflared tunnel; open
   // signup on a single-owner box mints real accounts. The zero-users
@@ -123,7 +121,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // protomux transport and is real-hardware-unverified (D-003, P-003 two-machine
   // proof). OFF = staleness-only authority selection, byte-identical to pre-P-016
   // + fail-open (D-004); the flip is gated on the two-machine eviction proof.
-  FLAGS.AUTHORITY_EVICTION_PROBE,
   // (FLAGS.SUBSTRATE_LOG_SNAPSHOT graduated to default-ON 2026-06-14:
   // substrate-peer-log-compaction-2026-06-13 D-008 — the real-wire 2-machine
   // Hetzner proof landed green (fresh joiner converged with contiguousLength=0
@@ -352,10 +349,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
-  [FLAGS.PLAN_PART_FEDERATION, 'incomplete'],
-  [FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'incomplete'],
   [FLAGS.AUTHORITY_RPC_PROTOMUX, 'incomplete'],
-  [FLAGS.AUTHORITY_EVICTION_PROBE, 'incomplete'],
   [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
   [FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT, 'incomplete'],
   [FLAGS.CAPABILITY_ENVELOPE, 'incomplete'],
@@ -442,7 +436,7 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // an existing dark flag first (net-zero), or get EXPLICIT owner sign-off to raise the watermark.
     // Growth must be a deliberate, owner-visible act, never a quiet append. (Pairs with the
     // valid-reason guard below, which already bars the "finished, owner flips later" excuse.)
-    const DARK_FLAGS_HIGH_WATERMARK = 25;
+    const DARK_FLAGS_HIGH_WATERMARK = 22;
     expect(
       KNOWN_DARK_FLAGS.size <= DARK_FLAGS_HIGH_WATERMARK,
       `The dark allowlist GREW to ${KNOWN_DARK_FLAGS.size} (high-watermark ${DARK_FLAGS_HIGH_WATERMARK}). ` +
