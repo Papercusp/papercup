@@ -33,6 +33,42 @@ export function baselineFor(record: Pick<HarnessDocRecord, 'source' | 'generated
   return (record.source === 'manual' ? record.lastVerifiedSha : record.generatedFromSha) ?? '';
 }
 
+// ── Doc-steward retry policy (mig 386) ──────────────────────────────────────────
+// The dispatch latch (regen_enqueued_at / reverify_flagged_at) used to be a fire-ONCE
+// gate with no retry: a steward that died (e.g. its first model call 429'd during an
+// account-wide rate-limit storm — recorded `done` with no `harness_docs:verify`) left
+// the doc flagged forever, and NO later sweep re-dispatched it because the latch was
+// already set. So a transient failure became a permanent stall. The fix: treat the
+// latch timestamp as a RETRY CLOCK and the attempt counter as a GIVE-UP cap.
+export const STEWARD_RETRY_BASE_MS = 30 * 60_000; // first retry after 30min
+export const STEWARD_RETRY_MAX_MS = 6 * 60 * 60_000; // backoff caps at 6h
+export const STEWARD_MAX_ATTEMPTS = 5; // after 5 dispatches, give up → needs manual verify
+
+/** Exponential backoff between steward dispatches for the same unhealed episode. */
+export function stewardBackoffMs(attempts: number): number {
+  const n = Math.max(0, attempts - 1);
+  return Math.min(STEWARD_RETRY_BASE_MS * 2 ** n, STEWARD_RETRY_MAX_MS);
+}
+
+/**
+ * Is a (re-)dispatch due for an unhealed doc? First episode (no latch) → yes; already
+ * gave up (attempts ≥ cap) → no (it'll show a give-up status_detail instead); otherwise
+ * only once the backoff window since the last dispatch has elapsed.
+ */
+export function dispatchDue(latchAt: string | null, attempts: number, now: number): boolean {
+  if (!latchAt) return true;
+  if (attempts >= STEWARD_MAX_ATTEMPTS) return false;
+  const age = now - Date.parse(latchAt);
+  return Number.isFinite(age) && age >= stewardBackoffMs(attempts);
+}
+
+/** The latch/attempt pair that governs a doc's steward retries, by derived status. */
+function retryStateFor(doc: HarnessDocRecord): { latchAt: string | null; attempts: number } | null {
+  if (doc.status === 'stale') return { latchAt: doc.regenEnqueuedAt, attempts: doc.regenAttempts ?? 0 };
+  if (doc.status === 'review') return { latchAt: doc.reverifyFlaggedAt, attempts: doc.reverifyAttempts ?? 0 };
+  return null;
+}
+
 /** Pure mapping: a drift result + the doc's ownership → the derived status + a why. */
 export function classifyDrift(
   record: Pick<HarnessDocRecord, 'source' | 'subjectRef'>,
@@ -129,6 +165,8 @@ export interface SweepOpts extends DriftDeps {
    *  regenerate/re-verify actions already drive the loop). */
   onRegenNeeded?: (doc: HarnessDocRecord, detail: string | null) => Promise<void> | void;
   onReverifyNeeded?: (doc: HarnessDocRecord, detail: string | null) => Promise<void> | void;
+  /** Wall-clock for the steward retry backoff (mig 386). Injectable for tests. */
+  now?: number;
 }
 
 /**
@@ -138,6 +176,7 @@ export interface SweepOpts extends DriftDeps {
  */
 export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
   const store = opts.store ?? pgDocStore(opts.harnessSlug, opts.workspaceId);
+  const now = opts.now ?? Date.now();
   const all = await store.load();
   const result: SweepResult = {
     candidates: 0,
@@ -153,7 +192,14 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
   const candidates = all.filter((d) => {
     if (!d.subjectRef || d.subjectRef.length === 0) return false; // untracked → skip
     if (!opts.changedPaths) return true;
-    return anchorMatchesChanged(d.anchorPaths, opts.changedPaths);
+    if (anchorMatchesChanged(d.anchorPaths, opts.changedPaths)) return true;
+    // Retry leg (mig 386): also re-consider an ALREADY-flagged doc whose steward
+    // never healed it and that is now due for another dispatch — even if THIS tick
+    // didn't touch its anchor. The retry CLOCK, not the current diff, gates it; the
+    // recompute below re-confirms it's still drifted (its baseline never advanced).
+    // Bounded to docs already in stale/review, so the extra git confirms are few.
+    const retry = retryStateFor(d);
+    return retry != null && dispatchDue(retry.latchAt, retry.attempts, now);
   });
   result.candidates = candidates.length;
 
@@ -161,7 +207,21 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
     // Capture the prior status BEFORE any mutation — an in-memory store may alias
     // `doc`, and store.setStatus could otherwise change what we compare against.
     const priorStatus = doc.status;
-    const { status, detail } = await recomputeDocStatus(doc, opts);
+    const { status, detail: baseDetail } = await recomputeDocStatus(doc, opts);
+
+    // Attempt counter for THIS doc's drift family (read pre-dispatch).
+    const attempts = status === 'stale' ? (doc.regenAttempts ?? 0)
+      : status === 'review' ? (doc.reverifyAttempts ?? 0) : 0;
+    const latchAt = status === 'stale' ? doc.regenEnqueuedAt
+      : status === 'review' ? doc.reverifyFlaggedAt : null;
+    const due = (status === 'stale' || status === 'review') && dispatchDue(latchAt, attempts, now);
+    const gaveUp = (status === 'stale' || status === 'review') && attempts >= STEWARD_MAX_ATTEMPTS;
+
+    // Surface a give-up in the persisted status_detail so a permanently-failing
+    // auto-heal is VISIBLE (and stops silently re-flagging) rather than invisibly stuck.
+    const detail = gaveUp
+      ? `${baseDetail ?? 'subject code changed'} — auto-heal gave up after ${STEWARD_MAX_ATTEMPTS} attempts; run harness_docs:verify`
+      : baseDetail;
     if (status !== priorStatus || detail !== doc.statusDetail) {
       await store.setStatus(doc.docId, status, detail);
     }
@@ -170,14 +230,14 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
 
     if (status === 'stale') {
       result.flippedStale += becameStale ? 1 : 0;
-      if (!doc.regenEnqueuedAt) {
+      if (due) {
         await store.markRegen(doc.docId);
         await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail);
         result.regenEnqueued.push(doc.docId);
       }
     } else if (status === 'review') {
       result.flippedReview += becameReview ? 1 : 0;
-      if (!doc.reverifyFlaggedAt) {
+      if (due) {
         await store.markReverify(doc.docId);
         await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail);
         result.reverifyFlagged.push(doc.docId);

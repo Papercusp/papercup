@@ -8,6 +8,10 @@ import {
   classifyDrift,
   sweepHarnessDocs,
   baselineFor,
+  stewardBackoffMs,
+  dispatchDue,
+  STEWARD_RETRY_BASE_MS,
+  STEWARD_MAX_ATTEMPTS,
   type DocStore,
 } from './freshness-sweep';
 import type { GitRunner } from './subject-ref';
@@ -106,11 +110,18 @@ function rec(partial: Partial<HarnessDocRecord> & Pick<HarnessDocRecord, 'docId'
     workspaceId: 'ws', harnessSlug: 'h', subjectRef: [], anchorPaths: [],
     generatedFromSha: null, lastVerifiedSha: null, lastVerifiedAt: null, overlay: null,
     status: 'fresh', statusDetail: null, statusCheckedAt: null, regenEnqueuedAt: null,
-    reverifyFlaggedAt: null, title: null, createdAt: '', updatedAt: '', ...partial,
+    reverifyFlaggedAt: null, regenAttempts: 0, reverifyAttempts: 0,
+    title: null, createdAt: '', updatedAt: '', ...partial,
   };
 }
 
-function memStore(records: HarnessDocRecord[]): DocStore & { records: HarnessDocRecord[] } {
+// Mirrors the PG DocStore semantics (mig 386): a dispatch bumps the latch timestamp
+// AND the per-episode attempt counter; returning to `fresh` clears both. `stampAt`
+// lets a test control the latch clock so the backoff is actually exercised.
+function memStore(
+  records: HarnessDocRecord[],
+  stampAt: () => string = () => new Date().toISOString(),
+): DocStore & { records: HarnessDocRecord[] } {
   const byId = new Map(records.map((r) => [r.docId, r]));
   return {
     records,
@@ -119,9 +130,13 @@ function memStore(records: HarnessDocRecord[]): DocStore & { records: HarnessDoc
       const r = byId.get(docId)!;
       r.status = status;
       r.statusDetail = detail;
+      if (status === 'fresh') {
+        r.regenEnqueuedAt = null; r.reverifyFlaggedAt = null;
+        r.regenAttempts = 0; r.reverifyAttempts = 0;
+      }
     },
-    markRegen: async (docId) => { byId.get(docId)!.regenEnqueuedAt = 'now'; },
-    markReverify: async (docId) => { byId.get(docId)!.reverifyFlaggedAt = 'now'; },
+    markRegen: async (docId) => { const r = byId.get(docId)!; r.regenEnqueuedAt = stampAt(); r.regenAttempts += 1; },
+    markReverify: async (docId) => { const r = byId.get(docId)!; r.reverifyFlaggedAt = stampAt(); r.reverifyAttempts += 1; },
   };
 }
 
@@ -140,7 +155,8 @@ describe('sweepHarnessDocs', () => {
     expect(r.regenEnqueued).toEqual(['features/F-1.md']);
     expect(regen).toEqual(['features/F-1.md']);
     expect(store.records[0].status).toBe('stale');
-    expect(store.records[0].regenEnqueuedAt).toBe('now');
+    expect(store.records[0].regenEnqueuedAt).toBeTruthy();
+    expect(store.records[0].regenAttempts).toBe(1);
   });
 
   it('flips a manual doc to review + flags re-verify; idempotent on re-run', async () => {
@@ -184,5 +200,114 @@ describe('sweepHarnessDocs', () => {
     expect(r.candidates).toBe(2);
     expect(store.records.find((x) => x.docId === 'g.md')!.status).toBe('stale');
     expect(store.records.find((x) => x.docId === 'stable.md')!.status).toBe('fresh');
+  });
+});
+
+// ── doc-steward retry: backoff + give-up cap + stuck re-dispatch (mig 386) ──────
+describe('steward retry policy (pure)', () => {
+  it('stewardBackoffMs grows exponentially from the base and caps', () => {
+    expect(stewardBackoffMs(1)).toBe(STEWARD_RETRY_BASE_MS); // first retry = base
+    expect(stewardBackoffMs(2)).toBe(STEWARD_RETRY_BASE_MS * 2);
+    expect(stewardBackoffMs(3)).toBe(STEWARD_RETRY_BASE_MS * 4);
+    expect(stewardBackoffMs(99)).toBe(6 * 60 * 60_000); // capped at 6h
+  });
+  it('dispatchDue: first episode → yes; within backoff → no; past backoff → yes; capped → no', () => {
+    const t = 10_000_000_000;
+    expect(dispatchDue(null, 0, t)).toBe(true); // never dispatched
+    const recent = new Date(t - 60_000).toISOString(); // 1min ago
+    expect(dispatchDue(recent, 1, t)).toBe(false); // < 30min backoff
+    const old = new Date(t - STEWARD_RETRY_BASE_MS - 1).toISOString();
+    expect(dispatchDue(old, 1, t)).toBe(true); // past backoff
+    expect(dispatchDue(old, STEWARD_MAX_ATTEMPTS, t)).toBe(false); // gave up
+  });
+});
+
+describe('sweepHarnessDocs — steward retry', () => {
+  it('re-dispatches a stuck review doc once the backoff elapses (the no-retry-latch bug fix)', async () => {
+    const t = 10_000_000_000;
+    const longAgo = new Date(t - STEWARD_RETRY_BASE_MS - 1).toISOString();
+    const records = [
+      // Already flagged review from a prior sweep; steward died (never verified) →
+      // still review, latch set, 1 attempt, anchor NOT in this tick's changed paths.
+      rec({
+        docId: 'm.md', source: 'manual', subjectRef: [{ kind: 'path', globs: ['src/man.ts'] }],
+        anchorPaths: ['src/man.ts'], lastVerifiedSha: shas.c0,
+        status: 'review', statusDetail: 'code changed: src/man.ts',
+        reverifyFlaggedAt: longAgo, reverifyAttempts: 1,
+      }),
+    ];
+    const store = memStore(records);
+    const reverify: string[] = [];
+    const r = await sweepHarnessDocs({
+      harnessSlug: 'h', repoRoot: repo, runGit, now: t,
+      changedPaths: ['src/unrelated.ts'], // does NOT touch m.md's anchor
+      store, onReverifyNeeded: (d) => { reverify.push(d.docId); },
+    });
+    expect(r.candidates).toBe(1); // re-considered via the retry leg despite no anchor hit
+    expect(reverify).toEqual(['m.md']); // re-dispatched
+    expect(store.records[0].reverifyAttempts).toBe(2); // attempt bumped
+  });
+
+  it('does NOT re-dispatch while still inside the backoff window', async () => {
+    const t = 10_000_000_000;
+    const recent = new Date(t - 60_000).toISOString(); // 1min ago « 30min backoff
+    const records = [
+      rec({
+        docId: 'm.md', source: 'manual', subjectRef: [{ kind: 'path', globs: ['src/man.ts'] }],
+        anchorPaths: ['src/man.ts'], lastVerifiedSha: shas.c0,
+        status: 'review', reverifyFlaggedAt: recent, reverifyAttempts: 1,
+      }),
+    ];
+    const store = memStore(records);
+    const reverify: string[] = [];
+    const r = await sweepHarnessDocs({
+      harnessSlug: 'h', repoRoot: repo, runGit, now: t,
+      changedPaths: ['src/unrelated.ts'], store, onReverifyNeeded: (d) => { reverify.push(d.docId); },
+    });
+    expect(r.candidates).toBe(0); // not yet due → not even re-considered
+    expect(reverify).toEqual([]);
+    expect(store.records[0].reverifyAttempts).toBe(1);
+  });
+
+  it('gives up after the attempt cap: no re-dispatch + a visible give-up status_detail', async () => {
+    const t = 10_000_000_000;
+    const longAgo = new Date(t - STEWARD_RETRY_BASE_MS * 1000).toISOString();
+    const records = [
+      rec({
+        docId: 'm.md', source: 'manual', subjectRef: [{ kind: 'path', globs: ['src/man.ts'] }],
+        anchorPaths: ['src/man.ts'], lastVerifiedSha: shas.c0,
+        status: 'review', reverifyFlaggedAt: longAgo, reverifyAttempts: STEWARD_MAX_ATTEMPTS,
+      }),
+    ];
+    const store = memStore(records);
+    const reverify: string[] = [];
+    // Anchor IS in changed paths, so it's a candidate regardless — proves the cap
+    // (not the candidate filter) is what stops the dispatch.
+    const r = await sweepHarnessDocs({
+      harnessSlug: 'h', repoRoot: repo, runGit, now: t,
+      changedPaths: ['src/man.ts'], store, onReverifyNeeded: (d) => { reverify.push(d.docId); },
+    });
+    expect(reverify).toEqual([]); // capped → no further dispatch
+    expect(store.records[0].reverifyAttempts).toBe(STEWARD_MAX_ATTEMPTS); // not bumped past cap
+    expect(store.records[0].statusDetail).toContain('gave up after');
+    expect(store.records[0].statusDetail).toContain('harness_docs:verify');
+  });
+
+  it('returning to fresh clears the latch + attempts so a future drift re-dispatches', async () => {
+    // A generated doc whose baseline is current HEAD → recompute fresh; any leftover
+    // regen latch/attempts from a prior healed episode must be cleared.
+    const headNow = git(['rev-parse', 'HEAD']);
+    const records = [
+      rec({
+        docId: 'g.md', source: 'generated', subjectRef: [{ kind: 'path', globs: ['src/gen.ts'] }],
+        anchorPaths: ['src/gen.ts'], generatedFromSha: headNow,
+        status: 'stale', regenEnqueuedAt: new Date().toISOString(), regenAttempts: 3,
+      }),
+    ];
+    const store = memStore(records);
+    await sweepHarnessDocs({ harnessSlug: 'h', repoRoot: repo, runGit, store });
+    expect(store.records[0].status).toBe('fresh');
+    expect(store.records[0].regenEnqueuedAt).toBeNull();
+    expect(store.records[0].regenAttempts).toBe(0);
   });
 });

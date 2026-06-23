@@ -12,6 +12,13 @@
  * pattern plans:get already uses for feature-links. The pure @papercusp/plan-parser
  * resolver is UNCHANGED; this merge lives only at the operator call-site.
  *
+ * WORKSPACE SCOPING (EI-2760): the coord_links edge is SUBSTRATE data on the coord
+ * workspace (DEFAULT_COORD_WORKSPACE while COORD_PER_WORKSPACE is off); the engineer_issues
+ * ROW it joins for Lifecycle state is DOMAIN data on the issue scope, which may be a
+ * different (per-)workspace. EI-<n> ids are GLOBALLY unique, so the row join keys on the
+ * global issue_id WITHOUT a workspace filter — pinning it to the coord workspace silently
+ * dropped every block when issues lived in a non-'default' workspace.
+ *
  * Wiring status:
  *  - PLAN side: WIRED. plans:get overlays via overlayIssueBlocksForPlan; plans:list
  *    + plans:items hoist getAllBlockedPlanItems() out of their loop and overlay via

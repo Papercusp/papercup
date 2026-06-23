@@ -82,6 +82,15 @@ const feed = await import('./topics-feed');
 const blocks = await import('./issue-blocks-merge');
 
 const NOW = '2026-06-04T00:00:00.000Z';
+// EI-2760 regression guard: a deliberately NON-'default' workspace. issue ROWS land in this
+// per-workspace partition (issuesScopeWorkspace) while their coord metadata — tags / subs /
+// links — rides the shared 'default' coord substrate (coordScopeWorkspace, the scope every
+// consumer reads). Pinning it both EXERCISES that production split (fan-out / topic feeds /
+// plan-item blocks must resolve across the row↔substrate workspace boundary) and removes the
+// test's hidden dependency on the dev box's ambient workspace registry (which made it pass in
+// CI but fail on a box whose current workspace ≠ 'default').
+const PINNED_WS = 'ei2760-guard-ws';
+let savedWsEnv: string | undefined;
 let db: FreshPgDb;
 let subs: PgEntitySubscriptionStore;
 let topicStore: PgTopicStore;
@@ -95,6 +104,8 @@ async function inboxOf(owner: string): Promise<Notify[]> {
 }
 
 beforeAll(async () => {
+  savedWsEnv = process.env.PAPERCUSP_WORKSPACE_ID;
+  process.env.PAPERCUSP_WORKSPACE_ID = PINNED_WS; // see PINNED_WS note above
   db = await createFreshPgDb('engineer-issues');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = db.sql;
@@ -122,6 +133,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db.cleanup();
+  if (savedWsEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+  else process.env.PAPERCUSP_WORKSPACE_ID = savedWsEnv;
 });
 
 beforeEach(async () => {

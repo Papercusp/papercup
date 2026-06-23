@@ -86,6 +86,11 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
     thinkingBudgetTokens: opts.thinkingBudgetTokens,
+    // Inference-gateway admission-tier label (gateway-priority-tiers): attached as
+    // the `x-papercusp-priority` header on the in-process anthropic-direct call so
+    // the pacing gateway tiers this caller (e.g. 'scout' → tier 1) instead of the
+    // first-shed default band. No-op for the subprocess backends.
+    priority: opts.priority,
     // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
     // the host ~/.claude. No-op for the default `anthropic-direct` backend (HTTP, no
     // subprocess). Without this, each sim-user/judge `claude` spawn does a

@@ -46,6 +46,8 @@ function rec(over: Partial<HarnessDocRecord> & { source: DocSource }): HarnessDo
     statusCheckedAt: null,
     regenEnqueuedAt: null,
     reverifyFlaggedAt: null,
+    regenAttempts: 0,
+    reverifyAttempts: 0,
     title: null,
     createdAt: '',
     updatedAt: '',

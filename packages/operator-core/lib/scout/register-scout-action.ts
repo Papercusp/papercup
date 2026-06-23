@@ -104,8 +104,19 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     }
   }
 
-  const { llmCall } = await import('../llm-testing/llm-client');
+  const { llmCall: rawLlmCall } = await import('../llm-testing/llm-client');
   const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
+
+  // Gateway admission-tier label (gateway-priority-tiers-2026-06-22): stamp every
+  // in-process Scout LLM call (ideators/critics/recombine/revise) with the `scout`
+  // role so the localhost pacing gateway routes it through TIER 1 — the protected,
+  // reserved-floor lane the map already assigns to scout/queen/overwatch/interactive
+  // (DEFAULT_GATEWAY_PRIORITY_MAP). Until this, the FB-16 fix pointed the in-process
+  // SDK at the gateway (gatewayLlmEnv) but never identified the caller, so Scout's 8
+  // ideators arrived UNTIERED → the lowest `default` band (tier 4), which the AIMD
+  // shrink sheds FIRST under fleet load → all 8 bailed every fire ("rate-limit pause
+  // exceeds maxWait"), 0 ideas for 12 days while bees (tier 3) crowded the pool.
+  const llmCall: typeof rawLlmCall = (o) => rawLlmCall({ ...o, priority: 'scout' });
 
   // ── Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20) ──────────
   // Scout's coord identity (P-003) + the two Scout→Queen ping ports (queen-notify).

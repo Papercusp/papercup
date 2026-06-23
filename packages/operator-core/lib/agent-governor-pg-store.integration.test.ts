@@ -42,6 +42,10 @@ beforeAll(async () => {
     'utf8',
   );
   await sql.unsafe(ddl);
+  // C1 (2026-06-23): apply the rpm_factor/rpm_factor_at columns the store now persists.
+  await sql.unsafe(
+    readFileSync(join(__dirname, '../../../libs/papercusp/libs/db/sql/384-agent-rate-budget-rpm-factor.sql'), 'utf8'),
+  );
 
   store = new PgGovernorStore(sql);
 });
@@ -82,6 +86,23 @@ describe('PgGovernorStore (RB-007)', () => {
     ok?.();
     const row = await sql`SELECT paused_until FROM harness_shared.agent_rate_budget WHERE bucket_key = 'anthropic:opus'`;
     expect(Number(row[0].paused_until)).toBe(1_030_000);
+  });
+
+  it('the adaptive rpmFactor persists + reloads across the shared row (C1, 2026-06-23)', async () => {
+    const key = 'anthropic:opus@aviynw-rpm';
+    const a = new RateLimitGovernor({ maxConcurrent: 100, rpm: 40 }, { store, storeKey: key });
+    // A rate-429 on A decreases the learned factor AND must persist it to the shared row (before C1 the decrease
+    // hit only A's in-memory state → a peer reloading the row saw factor 1 and re-walked into the same 429).
+    a.penalize({ retryAfterMs: 1, rateLimited: true });
+    await new Promise((r) => setTimeout(r, 80)); // let the fire-and-forget shared write land
+    const row = await sql`SELECT rpm_factor FROM harness_shared.agent_rate_budget WHERE bucket_key = ${key}`;
+    expect(Number(row[0].rpm_factor)).toBeCloseTo(0.5, 5); // the learned factor IS in the shared row now
+    // A PEER process (B) loading the row on its next acquire must inherit the learned-down factor (rowToState
+    // reads rpm_factor → syncSharedInto carries it into B's snapshot).
+    const b = new RateLimitGovernor({ maxConcurrent: 100, rpm: 40 }, { store, storeKey: key });
+    const rel = await b.acquire({}, { maxWaitMs: 200 });
+    rel?.();
+    expect(b.state.rpmFactor).toBeCloseTo(0.5, 5);
   });
 
   it('the shared RPM window is enforced across both governors (no double-spend under FOR UPDATE)', async () => {

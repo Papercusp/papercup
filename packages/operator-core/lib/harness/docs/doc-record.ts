@@ -41,6 +41,10 @@ export interface HarnessDocRecord {
   statusCheckedAt: string | null;
   regenEnqueuedAt: string | null;
   reverifyFlaggedAt: string | null;
+  /** Doc-steward dispatches in the CURRENT unhealed episode (reset to 0 on heal).
+   *  Drives the backoff + give-up cap in the freshness sweep (mig 386). */
+  regenAttempts: number;
+  reverifyAttempts: number;
   title: string | null;
   createdAt: string;
   updatedAt: string;
@@ -62,6 +66,8 @@ interface DocRow {
   status_checked_at: Date | string | null;
   regen_enqueued_at: Date | string | null;
   reverify_flagged_at: Date | string | null;
+  regen_attempts: number | null;
+  reverify_attempts: number | null;
   title: string | null;
   created_at: Date | string;
   updated_at: Date | string;
@@ -88,6 +94,8 @@ function rowToRecord(r: DocRow): HarnessDocRecord {
     statusCheckedAt: toIso(r.status_checked_at),
     regenEnqueuedAt: toIso(r.regen_enqueued_at),
     reverifyFlaggedAt: toIso(r.reverify_flagged_at),
+    regenAttempts: r.regen_attempts ?? 0,
+    reverifyAttempts: r.reverify_attempts ?? 0,
     title: r.title,
     createdAt: toIso(r.created_at) ?? '',
     updatedAt: toIso(r.updated_at) ?? '',
@@ -197,9 +205,19 @@ export async function setDocStatus(
 ): Promise<void> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
+  // Heal resets the episode bookkeeping (mig 386): when a doc returns to `fresh`
+  // (the baseline caught up — a documenter regen advanced generated_from_sha, or a
+  // verify advanced last_verified_sha), clear the dispatch latch + attempt counter
+  // so a FUTURE drift re-dispatches the doc-steward instead of being suppressed by
+  // a stale latch left over from the previous episode (the regen latch was never
+  // cleared at all before this — generated docs silently stopped re-dispatching).
   await sql`
     UPDATE harness_shared.harness_docs
-       SET status = ${status}, status_detail = ${statusDetail}, status_checked_at = now()
+       SET status = ${status}, status_detail = ${statusDetail}, status_checked_at = now(),
+           regen_enqueued_at = CASE WHEN ${status} = 'fresh' THEN NULL ELSE regen_enqueued_at END,
+           reverify_flagged_at = CASE WHEN ${status} = 'fresh' THEN NULL ELSE reverify_flagged_at END,
+           regen_attempts = CASE WHEN ${status} = 'fresh' THEN 0 ELSE regen_attempts END,
+           reverify_attempts = CASE WHEN ${status} = 'fresh' THEN 0 ELSE reverify_attempts END
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
 }
 
@@ -216,7 +234,7 @@ export async function verifyDoc(
     UPDATE harness_shared.harness_docs
        SET last_verified_sha = ${verifiedSha}, last_verified_at = now(),
            status = 'fresh', status_detail = NULL, status_checked_at = now(),
-           reverify_flagged_at = NULL
+           reverify_flagged_at = NULL, reverify_attempts = 0
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
 }
 
@@ -243,7 +261,9 @@ export async function setDocOverlay(
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
 }
 
-/** Record that a regeneration was enqueued (D-004) — so the sweep doesn't re-enqueue. */
+/** Record that a regeneration was dispatched (D-004): bump the latch timestamp AND
+ *  the per-episode attempt counter (mig 386). The sweep keys its backoff/give-up off
+ *  both — `regen_enqueued_at` is the retry clock, `regen_attempts` the cap counter. */
 export async function markRegenEnqueued(
   harnessSlug: string,
   docId: string,
@@ -252,11 +272,13 @@ export async function markRegenEnqueued(
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
-    UPDATE harness_shared.harness_docs SET regen_enqueued_at = now()
+    UPDATE harness_shared.harness_docs
+       SET regen_enqueued_at = now(), regen_attempts = regen_attempts + 1
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
 }
 
-/** Record that a human re-verify task was flagged (D-004). */
+/** Record that a re-verify (doc-steward) dispatch fired (D-004): bump latch + attempt
+ *  counter (mig 386), same retry-clock/cap model as markRegenEnqueued. */
 export async function markReverifyFlagged(
   harnessSlug: string,
   docId: string,
@@ -265,7 +287,8 @@ export async function markReverifyFlagged(
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
-    UPDATE harness_shared.harness_docs SET reverify_flagged_at = now()
+    UPDATE harness_shared.harness_docs
+       SET reverify_flagged_at = now(), reverify_attempts = reverify_attempts + 1
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
 }
 

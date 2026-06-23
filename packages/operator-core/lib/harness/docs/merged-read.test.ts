@@ -51,6 +51,8 @@ function rec(docId: string, over: Partial<HarnessDocRecord> & { source: DocSourc
     statusCheckedAt: null,
     regenEnqueuedAt: null,
     reverifyFlaggedAt: null,
+    regenAttempts: 0,
+    reverifyAttempts: 0,
     title: null,
     createdAt: '',
     updatedAt: '',
