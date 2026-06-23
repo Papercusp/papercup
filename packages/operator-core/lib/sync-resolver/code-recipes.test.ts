@@ -76,14 +76,14 @@ describe('codeRecipes resolver', () => {
     expect(rows[0]).toMatchObject(RECIPE);
     expect(rows[0]._meta).toEqual({ total: 42 });
     // recipes are GLOBAL (P-001): no workspace/hive filter; default LIMIT applied.
-    expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 1000 });
+    expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 1000, includeTrivial: true });
     // COUNT is the true total (also global, no limit).
     expect(H.countRecipes).toHaveBeenCalledWith({});
   });
 
   it('honors an explicit limit arg (recipes are global — no hive narrowing)', async () => {
     await resolveNamedQueryV2('codeRecipes', { limit: 25 });
-    expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 25 });
+    expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 25, includeTrivial: true });
     expect(H.hiveHomeSlugForHarness).not.toHaveBeenCalled();
   });
 });
