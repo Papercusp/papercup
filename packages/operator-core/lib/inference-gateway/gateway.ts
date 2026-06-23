@@ -1222,6 +1222,48 @@ export function createInferenceGateway(deps: GatewayDeps) {
       gov = governorForAccount(model, active.accountId);
     }
 
+    // PROACTIVE HEALTH-AWARE PICK FOR UNPINNED REQUESTS (no-pin-hang fix, 2026-06-23). `pool.active()` is a
+    // blind round-robin, so an unpinned request COMMITS to whatever account it lands on — including a budget-
+    // exhausted or flaky-EGRESS-PROXY account whose governor isn't paused THIS instant — and only rotates
+    // REACTIVELY after the upstream stalls/429s, burning the internal-retry + stall-absorb ladder (the
+    // observed ~90s no-pin hang that surfaces to the caller as an opaque 500, while a request PINNED to a
+    // healthy account returned 200 in <25s). The reactive walk below only fires when the chosen account is
+    // ALREADY governor-paused, so a not-yet-circuit-open flaky proxy slips through. Steer up front instead:
+    // among governor-healthy accounts pick the one with the freshest egress proxy (no unrecovered transport-
+    // failure streak, no live transport pause) and the most residual budget (lowest unified utilization). Only
+    // for UNPINNED requests (a pin already expresses an explicit choice + has its liveness-yield above), and we
+    // only SWITCH to a strictly-different account — a single-account / all-paused pool keeps today's behavior
+    // (the reactive walk + fail-fast shed below still handle the all-paused case). `pool.active()` advances the
+    // rr-cursor exactly like the reactive walk, so fairness/cursor semantics are unchanged.
+    if (pinned === null) {
+      const now0 = Date.now();
+      let bestCand: ActiveAccount | null = null;
+      let bestGov: RateLimitGovernor | null = null;
+      let bestKey = Infinity;
+      for (let walk = 0; walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
+        const cand = pool.active();
+        const cgov = governorForAccount(model, cand.accountId);
+        if (cgov.state.pausedUntil > now0) continue; // governor-paused (429 / budget / transport-circuit) — skip
+        if ((egressPauseUntil.get(cand.accountId) ?? 0) > now0) continue; // live transport pause — skip
+        const u = cgov.snapshot().unified?.utilization ?? 0; // no util data ⇒ idle (eligible)
+        // A recent UNRECOVERED transport failure (egressFailStreak>0, cleared on the next success) is the
+        // dead/flaky-proxy hint — bucket those behind every clean account (+1) so a clean one always wins,
+        // then break ties by lowest utilization (most residual budget). u ∈ [0,1] keeps the buckets disjoint.
+        const flaky = (egressFailStreak.get(cand.accountId) ?? 0) > 0 ? 1 : 0;
+        const key = flaky + u;
+        if (key < bestKey) {
+          bestKey = key;
+          bestCand = cand;
+          bestGov = cgov;
+          if (bestKey === 0) break; // a clean, fully-idle account — cannot do better, stop scanning
+        }
+      }
+      if (bestCand && bestGov && bestCand.accountId !== active.accountId) {
+        active = bestCand;
+        gov = bestGov;
+      }
+    }
+
     // ROUTE TO CAPACITY (2026-06-18, owner-reported "accounts unused / opus hangs"): if the chosen
     // UNPINNED (or pinned-yielded-to-active) account's governor is currently PAUSED, round-robin the
     // pool to an account whose governor has headroom NOW — rather than hanging the full maxQueueWaitMs

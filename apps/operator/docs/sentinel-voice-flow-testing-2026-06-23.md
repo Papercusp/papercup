@@ -155,8 +155,15 @@ because operator and sentinel are the SAME role-keyed converse brain.
   (judge: environment/SUT-health failure, NOT a behavioral finding). So now the
   blocker is a flaky brain LLM backend (likely 429 residual), not a clean 429.
   Loop keeps retrying; STOP only on a CLEAN non-errored verdict. Cadence restored
-  to 2-min per owner. **Latest: 10:58 — ~9 attempts total, still
-  429/timeout/agent-backend-failure (env-blocked the whole window 08:45→10:58).** Also: the two voice-bar UI trims are confirmed STILL in
+  to 2-min per owner. **Latest: 11:04 — ~11 attempts; direct brain probe at 11:04
+  sharpened the diagnosis: operator-converse (role=sentinel) streams ONLY SSE
+  heartbeats (×4 in 40s), NO `delta` — i.e. the brain turn IS invoked (role
+  resolves, keepalives flow) but its LLM call yields zero tokens. So the block is
+  PURELY the shared Anthropic LLM backend hanging/overloaded — NOT a routing/role/
+  code bug. Not fixable by me (no force-deploy/restart unattended). Loop switched
+  to PROBE-FIRST: cheap 40s brain probe each fire; only run the full eval once a
+  `delta` returns (backend recovered). Env-blocked window 08:45→11:10 (~2h25m;
+  11:10 probe = heartbeats-only, no delta).** Also: the two voice-bar UI trims are confirmed STILL in
   source (brand JSX removed; "Voice" span removed) — owner not seeing them is
   DEPLOY-LAG (desktop serves a built bundle that lags staging), not a code issue;
   they land on the next deploy or a fresh `npm run dev` desktop.

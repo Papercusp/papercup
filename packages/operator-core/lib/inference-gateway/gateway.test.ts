@@ -703,6 +703,45 @@ test('a header-pinned request whose account is HEALTHY is still strict-honored (
   resetGovernorRegistry();
 });
 
+test('UNPINNED request steers to the least-utilized healthy account up front, not the round-robin first pick (no-pin-hang fix, 2026-06-23)', async () => {
+  // Repro of the owner-reported "500 on every no-pin launch": pool.active() round-robin handed an unpinned
+  // request to a near-cap (but NOT governor-paused) account, which then 429/stall-looped through the internal-
+  // retry + stall-absorb ladder (~90s) before shedding — surfacing to the caller as an opaque 500 — while the
+  // SAME request PINNED to a healthy account returned 200 in <25s. The proactive health pick must route the
+  // unpinned request to the account with the MOST residual budget BEFORE forwarding. The reactive paused-walk
+  // does NOT cover this: 'hot' is at 0.85 unified utilization (> 0.8 pace watermark, < 0.95 predictive-pause
+  // watermark), so it PACES but its governor.pausedUntil stays <= now — only the proactive pick routes around it.
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const hot: ActiveAccount = { accountId: 'hot', token: async () => 'hot-tok' };   // near-cap, still allowed
+  const cool: ActiveAccount = { accountId: 'cool', token: async () => 'cool-tok' }; // fresh budget
+  // Round-robin active() can hand back the HOT account (the pre-fix trap); the proactive pick must still land cool.
+  const ring = [hot, cool];
+  let i = 0;
+  const pool: AccountPool = {
+    active: () => ring[i++ % ring.length]!,
+    onExhausted: () => null,
+    select: (id) => (id === 'hot' ? hot : id === 'cool' ? cool : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  // Seed 'hot' to 0.85 unified 5h utilization with a FUTURE reset + allowed status → it PACES but is NOT paused.
+  const futureResetSec = Math.round(Date.now() / 1000) + 3600;
+  getGovernor('anthropic', 'opus', undefined, 'hot').recordResponse({
+    'anthropic-ratelimit-unified-5h-status': 'allowed',
+    'anthropic-ratelimit-unified-5h-utilization': '0.85',
+    'anthropic-ratelimit-unified-5h-reset': String(futureResetSec),
+  });
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'served 200 (routed to the cool account, no stall-absorb)');
+  assert.equal(r.headers.get('x-papercusp-routed-account'), 'cool', 'unpinned request steered to the least-utilized healthy account');
+  assert.equal(upstream.last.headers['authorization'], 'Bearer cool-tok', 'egressed on the cool account, not the round-robin-first hot one');
+  resetGovernorRegistry();
+});
+
 test('every account is Claude Max OAuth — a bee-sent x-api-key is stripped + replaced with Bearer (D-003)', async () => {
   await boot((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
