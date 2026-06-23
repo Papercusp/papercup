@@ -20,7 +20,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -102,6 +102,28 @@ export default defineTool({
     // otherwise fall back to the focused pane of the live session.
     const reg = readSentinelPaneReg();
     const paneId = reg && reg.session === session ? reg.paneId : null;
+
+    // Boot-window guard (dock-relaunch race). `psu-sentinel` writes the
+    // registration at launch START, then psu bootstraps + the Claude TUI boots
+    // for several seconds before its composer accepts input. The dock is
+    // volatile — it relaunches (new pui-dock session) and the pane's psu process
+    // restarts — so a voice-in that lands in that warm-up window is typed into a
+    // not-yet-ready composer and SILENTLY LOST (observed in the 2026-06-23 live
+    // test: the first utterance vanished because the dock had just relaunched).
+    // When the registration is very fresh the pane is still warming up, so wait
+    // out the remaining warm-up before writing. The turn is delayed a few seconds
+    // (only right after a relaunch) instead of dropped. Bounded; stat failure or
+    // a stale (focused-pane) fallback skips the gate.
+    if (paneId) {
+      try {
+        const ageMs = Date.now() - statSync(join(homedir(), '.papercusp', 'sentinel-pane')).mtimeMs;
+        if (ageMs >= 0 && ageMs < SENTINEL_WARMUP_MS) {
+          await new Promise((r) => setTimeout(r, SENTINEL_WARMUP_MS - ageMs));
+        }
+      } catch {
+        /* stat unavailable — proceed without the warm-up gate */
+      }
+    }
 
     const z = zellijBin();
     try {
