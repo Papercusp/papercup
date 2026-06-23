@@ -14,7 +14,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { DEFAULT_CLAIM_SPEC, validateClaimSpec, type ClaimSpec } from './claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
 import { getNextWorkItem, type GetNextResult } from './get-next';
 import type { OrgSql } from '../work-items';
 
@@ -33,12 +33,17 @@ export async function setClaimSpec(
   if (!v.ok || !v.spec) return { ok: false, errors: v.errors };
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
+  // The id-pin tripwire (mig 389): record whether this spec selects on `id` ALONE — a static
+  // pin (a fixed wave), as opposed to a property-filtered standing lane. Denormalized so
+  // over-reliance is a one-line COUNT, keeping the describe-by-property discipline visible.
+  const idOnly = isIdOnlySelector(v.spec);
   const rows = (await sql`
-    INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, updated_by, updated_at)
-    VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${args.updatedBy ?? null}, now())
+    INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, updated_at)
+    VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, now())
     ON CONFLICT (workspace_id, bee_id) DO UPDATE SET
       spec = EXCLUDED.spec,
       revision = GREATEST(harness_shared.bee_claim_specs.revision + 1, EXCLUDED.revision),
+      id_only = EXCLUDED.id_only,
       updated_by = EXCLUDED.updated_by,
       updated_at = now()
     RETURNING revision`) as { revision: number }[];

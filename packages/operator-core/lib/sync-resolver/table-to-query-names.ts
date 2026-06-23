@@ -361,16 +361,27 @@ export function resolveBridgeTarget(
  * synthesized `<table>.changed` invalidate when it advances, so consumers push-update
  * WITHOUT the per-row storm. Keep this in sync with mig 376's drop_tables + COVERAGE_EXEMPT.
  *
- * Each name is the bare `<table>` (no `harness_shared.` prefix); the detector forms the
+ * Each `table` is the bare `<table>` (no `harness_shared.` prefix); the detector forms the
  * full `harness_shared.<table>.changed` trigger-event key.
+ *
+ * `changeKey` = the MONOTONIC-on-insert bigint column the detector MAXes to detect new rows.
+ * NOT every table has a usable integer `id`: audit_log's `id` is TEXT, and agent_runs_consolidated
+ * / harness_hook_logs have NO `id` column at all — they carry a bigint epoch `ts` instead. (Found
+ * live: the first cut assumed `id` everywhere and errored on 3 of 6 — D-012 follow-up.) All
+ * changeKeys are bigint so the sweep compares them uniformly via BigInt(). Detection catches new
+ * rows; a pure UPDATE that doesn't advance changeKey lags to the next insert / 180s drift-repair.
  */
-export const APPEND_HEAVY_TABLES: readonly string[] = [
-  'audit_log',
-  'agent_runs_consolidated',
-  'user_actions',
-  'harness_hook_logs',
-  'toast_log',
-  'feature_audit_consolidated',
+export interface AppendHeavyTableSpec {
+  readonly table: string;
+  readonly changeKey: string;
+}
+export const APPEND_HEAVY_TABLES: readonly AppendHeavyTableSpec[] = [
+  { table: 'audit_log', changeKey: 'ts' }, // id is TEXT — use the bigint ts
+  { table: 'agent_runs_consolidated', changeKey: 'ts' }, // no id column
+  { table: 'user_actions', changeKey: 'id' },
+  { table: 'harness_hook_logs', changeKey: 'ts' }, // no id column
+  { table: 'toast_log', changeKey: 'id' },
+  { table: 'feature_audit_consolidated', changeKey: 'id' },
 ] as const;
 
 /**
