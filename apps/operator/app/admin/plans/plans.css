@@ -852,22 +852,19 @@
   gap: 6px;
   min-height: 36px;
   padding: 7px 8px;
-  /* Unselected = quiet: a faint accent border + a subtle top-lit gradient wash
-     (radial accent glow over a vertical fade), matching the app's tab/chip
-     gradient idiom instead of a flat fill. Selected (.is-active) is a much
-     stronger gradient + bright border + a ✓ badge, so the states stay distinct. */
+  /* Unselected = quiet: a faint accent border + a FLAT accent wash (no
+     gradient — owner ask 2026-06-23). Selected (.is-active) is a much
+     stronger flat fill + bright border + a ✓ badge, so the two states
+     stay very distinguishable. */
   border: 1px solid color-mix(in oklab, var(--pc-view-accent), transparent 68%);
   border-radius: 11px;
-  background:
-    radial-gradient(120% 100% at 20% -25%, color-mix(in oklab, var(--pc-view-accent), transparent 82%), transparent 70%),
-    linear-gradient(180deg, color-mix(in oklab, var(--pc-view-accent), transparent 88%), color-mix(in srgb, var(--bg-deeper, #04111b), transparent 6%));
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 93%);
   color: var(--fg-dim, #b9d4e8);
   text-align: left;
   cursor: pointer;
   transition:
     background-color 120ms,
     border-color 120ms,
-    box-shadow 120ms,
     color 120ms;
 }
 
