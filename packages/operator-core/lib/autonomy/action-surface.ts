@@ -265,6 +265,12 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     category: 'ideation-intake',
     reversibility: 'reversible',
     authority: 'system',
+    // NOTE: issues:promote/close are KEPT here deliberately — they classify to
+    // ideation-intake (suggestedPosture 'low-risk'), distinct from work_items:* which
+    // classify to work-prioritization ('early-autonomy'). The namespace split encodes a
+    // real autonomy-posture distinction (issue-triage < work-steering), so these are NOT
+    // collapsible onto work_items:* without an owner autonomy-policy decision
+    // (coordination-unification-2026-06-23 D-009).
     queenVerbs: ['issues:promote', 'issues:close'],
     humanSurface: 'Issues board',
     coverage: 'covered',
