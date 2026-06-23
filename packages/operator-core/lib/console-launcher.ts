@@ -21,6 +21,9 @@ import { join, resolve as resolvePath } from 'node:path';
 
 import { resolveAgentBin, resolveBackend } from '@papercusp/papercusp-shared/agent';
 
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import {
@@ -79,6 +82,13 @@ export interface BuildEnvelopeOpts {
    * session (`<agent-cli> -r <sessionId>`) instead of opening fresh.
    */
   resumeSessionId?: string;
+  /**
+   * psu-in-desktop-builds-2026-06-23 B: when set, the console runs `psu` (a
+   * superuser agent session) on open instead of just dropping to a shell. Only
+   * honored when FLAGS.PSU_END_USER is on (defense-in-depth — the discoverable
+   * UI entry is also flag-gated). psu is on PATH via the ~/.papercusp/bin shim.
+   */
+  runPsu?: boolean;
 }
 
 // (kickoff-kind allowlist moved to @/lib/agent-kickoff/kickoff-kind in P-032,
@@ -226,7 +236,13 @@ export async function buildConsoleEnvelope(
   // user in the live agent CLI via `-r <sessionId>` instead of a
   // plain shell. Default greeting stays unchanged for normal launches.
   let greetingCmd = 'papercup status 2>/dev/null || true';
-  if (opts.resumeSessionId) {
+  // psu-in-desktop-builds B: a "superuser session" launch runs psu directly.
+  // Gated server-side on PSU_END_USER (the UI entry is also flag-gated). psu
+  // runs in the greeting subshell; when its agent session exits the user drops
+  // to the normal shell (still superuser-scoped). Mutually exclusive with resume.
+  if (opts.runPsu && !opts.resumeSessionId && (await getFlag(FLAGS.PSU_END_USER, 'system'))) {
+    greetingCmd = 'psu';
+  } else if (opts.resumeSessionId) {
     // resolveBackend/resolveAgentBin take a RunAgentChatOptions with
     // `promptText` required; we only consume the env-driven branches,
     // so a stub options object is fine — cast to satisfy the type.

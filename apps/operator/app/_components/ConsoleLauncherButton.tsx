@@ -23,6 +23,8 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
 
 import { launchNativeConsole, isConsoleLauncherSupported } from '@papercusp/operator-core/lib/native-console';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 
 export function ConsoleLauncherButton() {
   const [busy, setBusy] = useState(false);
@@ -32,6 +34,22 @@ export function ConsoleLauncherButton() {
   const [clickCount, setClickCount] = useState<number>(0);
   const pathname = usePathname();
   const harnessSlug = extractHarnessSlug(pathname ?? '');
+  // psu-in-desktop-builds-2026-06-23 B: the discoverable "superuser session"
+  // entry only appears when the owner-authority PSU_END_USER flag is on. The
+  // server re-checks the flag before honoring runPsu (defense-in-depth).
+  const psuEnabled = useFlag(FLAGS.PSU_END_USER);
+
+  const launchPsu = async () => {
+    setBusy(true);
+    try {
+      await launchNativeConsole({ slug: harnessSlug, runPsu: true });
+      toast.success('Superuser session (psu) launched.', { duration: 4000 });
+    } catch (e: any) {
+      toast.error(`psu launch failed: ${e?.message ?? 'unknown error'}`, { duration: 10000 });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     console.info('[console-launcher] mounted', {

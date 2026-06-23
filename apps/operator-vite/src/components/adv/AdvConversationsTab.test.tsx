@@ -29,6 +29,10 @@ const nuqsState: Record<string, unknown> = {
   fq: '',
   fmsg: null,
   // the new communication views' selection/filter params
+  conversation: null,
+  cstate: 'open',
+  ckind: 'all',
+  ctopic: '',
   thread: null,
   acharness: '',
   acrole: '',
@@ -177,6 +181,10 @@ beforeEach(() => {
   nuqsState.fplan = '';
   nuqsState.fq = '';
   nuqsState.fmsg = null;
+  nuqsState.conversation = null;
+  nuqsState.cstate = 'open';
+  nuqsState.ckind = 'all';
+  nuqsState.ctopic = '';
   nuqsState.thread = null;
   nuqsState.acharness = '';
   nuqsState.acrole = '';
@@ -614,5 +622,75 @@ describe('AdvConversationsTab — unified communication views', () => {
     await waitFor(() => expect(screen.getByText(/Couldn't load/i)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();
     expect(screen.getByText(/HTTP 500/)).toBeTruthy();
+  });
+});
+
+// ─── picker-kit adoption — the shared Create⇄Conversations visual vocabulary ──────
+//
+// adopt-picker-kit-in-conversations: the tab adopts the shared picker-kit
+// primitives (EmptyState / ErrorBanner / Pill / inputStyle) so it looks + works
+// like the Create flow. These pin the user-visible results of that adoption:
+// standardized empty states, deep-linkable thread detail (nuqs `?conversation`),
+// and the filter chips still toggling via aria-pressed.
+
+describe('AdvConversationsTab — picker-kit adoption', () => {
+  it('renders the shared EmptyState (icon + title + desc) for an empty Messages view', async () => {
+    nuqsState.conv = 'messages';
+    stubComms({ '/comms/messages/list': { items: [] } });
+    render(<AdvConversationsTab />);
+    await waitFor(() => expect(screen.getByText('No messages')).toBeTruthy());
+    // The shared EmptyState renders the title in a <strong> and the desc beside it.
+    expect(screen.getByText(/No agent-to-agent messages recorded/i)).toBeTruthy();
+  });
+
+  it('renders the shared EmptyState for the Raw events log when no traffic matches', () => {
+    nuqsState.conv = 'feed';
+    mockResult = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    render(<AdvConversationsTab />);
+    expect(screen.getByText('No matching traffic')).toBeTruthy();
+    expect(screen.getByText(/broaden the search/i)).toBeTruthy();
+  });
+
+  // P2.5: the OPEN thread is fully driven by the nuqs `conversation` id, so a
+  // refresh / pasted deep-link with `?conversation=<id>` reloads that thread.
+  it('deep-links the open Q&A thread from the nuqs `conversation` id', async () => {
+    nuqsState.conv = 'threads';
+    nuqsState.conversation = 'c-1';
+    stubComms({
+      '/coordination/conversations/list': { conversations: [] },
+      '/coordination/conversations/get': {
+        conversation: {
+          id: 'c-1',
+          kind: 'question',
+          state: 'open',
+          scope: 'harness',
+          harness_slug: 'papercup',
+          title: 'why does the watchdog recycle the host?',
+          body: 'it recycles roughly every 12 minutes',
+          asker_id: 'oracle',
+          accepted_answer: null,
+          promoted_issue_id: null,
+        },
+        topics: ['infra'],
+        posts: [{ id: 1, author_id: 'worker', body: 'looks like the watchdog threshold', created_ts: new Date().toISOString() }],
+        subscriber_count: 2,
+      },
+    });
+    render(<AdvConversationsTab />);
+    // The detail pane loaded purely from the URL id — no list click needed.
+    expect(await screen.findByText('it recycles roughly every 12 minutes')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /why does the watchdog recycle the host\?/i })).toBeTruthy();
+    expect(screen.getByText('looks like the watchdog threshold')).toBeTruthy();
+  });
+
+  it('the Q&A state filter chips toggle via aria-pressed (picker-kit Pill)', () => {
+    nuqsState.conv = 'threads';
+    nuqsState.cstate = 'open';
+    render(<AdvConversationsTab />);
+    // The active state filter reflects the URL via aria-pressed.
+    const openChip = screen.getByRole('button', { name: /^open$/i, pressed: true });
+    expect(openChip).toBeTruthy();
+    // A non-active filter is present but not pressed.
+    expect(screen.getByRole('button', { name: /^resolved$/i, pressed: false })).toBeTruthy();
   });
 });

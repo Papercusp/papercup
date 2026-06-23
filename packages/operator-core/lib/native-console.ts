@@ -35,6 +35,12 @@ export interface LaunchOpts {
    * command. Curated in-repo briefs only — no free-text payloads.
    */
   kickoff?: { kind: 'new-plan' } | null;
+  /**
+   * psu-in-desktop-builds-2026-06-23 B: open the console straight into a `psu`
+   * superuser agent session instead of a plain shell. Honored only when
+   * FLAGS.PSU_END_USER is on (re-checked server-side in buildConsoleEnvelope).
+   */
+  runPsu?: boolean;
 }
 
 interface ConsoleEnvelope {
@@ -95,6 +101,7 @@ async function tryServerSideSpawn(
       slug: opts.slug,
       planSlug: opts.planSlug ?? null,
       label: opts.label ?? null,
+      runPsu: opts.runPsu ?? false,
     }),
   });
   const data = await r.json().catch(() => ({ status: 'error', error: 'invalid JSON' }));
@@ -142,7 +149,7 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
   const resolveR = await fetch('/api/agent-mcp/console/resolve', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ slug: opts.slug }),
+    body: JSON.stringify({ slug: opts.slug, runPsu: opts.runPsu ?? false }),
   });
   if (!resolveR.ok) {
     const detail = await resolveR.json().catch(() => null);

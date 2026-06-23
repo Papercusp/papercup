@@ -20,13 +20,19 @@ export default defineTool({
       }
       throw err;
     }
-    const body = (await req.json().catch(() => ({}))) as { slug?: string | null };
+    const body = (await req.json().catch(() => ({}))) as {
+      slug?: string | null;
+      // psu-in-desktop-builds B: the Tauri (mac/Windows) path threads runPsu so
+      // the native console runs psu on open. Flag-gated in buildConsoleEnvelope.
+      runPsu?: boolean;
+    };
     const workspaceId = activeWorkspaceId();
     try {
       const envelope = await buildConsoleEnvelope({
         workspaceId,
         slug: body.slug ?? null,
         operatorBaseUrl: new URL(req.url).origin,
+        runPsu: body.runPsu ?? false,
       });
       return Response.json(envelope);
     } catch (e: any) {

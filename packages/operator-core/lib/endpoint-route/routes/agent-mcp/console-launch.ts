@@ -368,6 +368,9 @@ const post = defineTool({
       // launched from so /adv/sessions can group + display.
       planSlug?: string | null;
       label?: string | null;
+      // psu-in-desktop-builds B: launch straight into a psu superuser session
+      // (flag-gated server-side on PSU_END_USER in buildConsoleEnvelope).
+      runPsu?: boolean;
     } = {};
     try {
       const text = await req.text();
@@ -385,6 +388,7 @@ const post = defineTool({
         slug: body.slug ?? null,
         operatorBaseUrl: new URL(req.url).origin,
         resumeSessionId: body.resumeSessionId ?? undefined,
+        runPsu: body.runPsu ?? false,
       });
     } catch (e: any) {
       console.warn(`[console-launch] envelope build failed: ${e?.message}`);

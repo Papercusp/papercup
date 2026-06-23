@@ -52,6 +52,16 @@ import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, Me
 import { listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Tooltip } from '@/app/harness/Tooltip';
 import ChatPanel from '@/app/harness/ChatPanel';
+import {
+  inputStyle,
+  sectionHeaderStyle,
+  DEBOUNCE_MS,
+  useDebouncedValue,
+  friendlyApiError,
+  ErrorBanner,
+  EmptyState,
+  Pill,
+} from '@/app/harness/picker-kit';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import '@/app/admin/coordination/coordination.css';
 
@@ -114,16 +124,21 @@ function LoadingRows({ rows = 4, label = 'Loading' }: { rows?: number; label?: s
   );
 }
 
-/** List-fetch failure state — without it a rejected fetch left the skeleton up forever. */
+/**
+ * List-fetch failure state — a friendly red banner (picker-kit ErrorBanner) with
+ * a retry. Without it a rejected fetch left the skeleton up forever. The raw
+ * `message` (e.g. "threads/list: HTTP 500") is mapped to friendly copy via
+ * friendlyApiError; the raw text is preserved so the status code stays visible.
+ */
 function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail pc-advconv__empty--error" role="alert">
-      <strong>Couldn&apos;t load</strong>
-      <span>{message}</span>
-      <button type="button" className="pc-coord__chip" onClick={onRetry}>
+    <ErrorBanner>
+      <span style={{ display: 'block', fontWeight: 600 }}>Couldn&apos;t load</span>
+      <span>{friendlyApiError(undefined, message)}</span>
+      <button type="button" className="pc-coord__chip pc-advconv__retry" onClick={onRetry} style={{ marginLeft: 8 }}>
         <RefreshCw size={11} aria-hidden /> Retry
       </button>
-    </div>
+    </ErrorBanner>
   );
 }
 
@@ -251,7 +266,9 @@ const KIND_COLOR: Record<string, string> = {
   message: 'var(--accent-strong, #7dd3fc)',
   ack: 'var(--fg-mute, #7f9bb4)',
   notify: 'var(--warn, #fbbf24)',
-  broadcast: '#f472b6', // categorical — no semantic token
+  // broadcast is the tab's own all-hands accent — bind it to the pink
+  // --advconv-accent-strong (the scoped var, == #f472b6) so it tracks the theme.
+  broadcast: 'var(--advconv-accent-strong, #f472b6)',
   handoff: '#a78bfa', // categorical — no semantic token
   handoff_accepted: '#c4b5fd', // categorical — no semantic token
   escalation: 'var(--bad, #f87171)',
@@ -355,6 +372,10 @@ function FeedView() {
   const [agent, setAgent] = useQueryState('fagent', parseAsString.withDefault(''));
   const [plan, setPlan] = useQueryState('fplan', parseAsString.withDefault(''));
   const [q, setQ] = useQueryState('fq', parseAsString.withDefault(''));
+  // Debounce the free-text search so a fast-typed query only re-fires the
+  // sync query once it settles (DEBOUNCE_MS) — the input stays bound to the raw
+  // nuqs `q` for responsiveness; only the QUERY-driving reads use `debouncedQ`.
+  const debouncedQ = useDebouncedValue(q, DEBOUNCE_MS);
   const [openMsg, setOpenMsg] = useQueryState('fmsg', parseAsString);
 
   // "Load older" grows the window from the top. The feed is newest-first and the
@@ -375,17 +396,28 @@ function FeedView() {
       ...(serverKinds.length ? { kinds: serverKinds } : {}),
       ...(agent ? { owner: agent } : {}),
       ...(plan ? { plan_slug: plan } : {}),
-      ...(q.trim() ? { q: q.trim() } : {}),
+      ...(debouncedQ.trim() ? { q: debouncedQ.trim() } : {}),
       limit,
     }),
-    [serverKinds, agent, plan, q, limit],
+    [serverKinds, agent, plan, debouncedQ, limit],
   );
+  // useSyncQuery owns the actual fetch (SSE-primary, REST fallback). Hold an
+  // AbortController keyed to the live feedArgs and abort it whenever the args
+  // change or the view unmounts, so a stale REST-fallback request for a prior
+  // search/filter can't land after the user has moved on.
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    fetchAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    fetchAbortRef.current = ctrl;
+    return () => ctrl.abort();
+  }, [feedArgs]);
   const head = useSyncQuery<FeedRow>({ queryName: 'dev.coordFeed', args: feedArgs, staleTime: 5_000 });
 
   // Reset the window whenever the FILTER set changes (not when limit changes).
   const filterKey = useMemo(
-    () => JSON.stringify({ kinds, agent, plan, q: q.trim() }),
-    [kinds, agent, plan, q],
+    () => JSON.stringify({ kinds, agent, plan, q: debouncedQ.trim() }),
+    [kinds, agent, plan, debouncedQ],
   );
   useEffect(() => {
     setLimit(PAGE);
@@ -481,8 +513,8 @@ function FeedView() {
     k === 'broadcast' ? rawRows.filter((r) => r.broadcast).length : (meta?.byKind?.[k] ?? rawRows.filter((r) => r.kind === k).length);
   const kindLabel = (k: string) => k.replaceAll('_', ' ');
 
-  const filtersActive = kinds.length > 0 || !!agent || !!plan || !!q.trim();
-  const activeFilterCount = kinds.length + (agent ? 1 : 0) + (plan ? 1 : 0) + (q.trim() ? 1 : 0);
+  const filtersActive = kinds.length > 0 || !!agent || !!plan || !!debouncedQ.trim();
+  const activeFilterCount = kinds.length + (agent ? 1 : 0) + (plan ? 1 : 0) + (debouncedQ.trim() ? 1 : 0);
   const clearFilters = () => {
     void setKinds([]);
     void setAgent('');
@@ -630,26 +662,28 @@ function FeedView() {
             const n = groupCount(g.kinds);
             return (
               <Tooltip key={g.id} label={g.description}>
-                <button
-                  type="button"
-                  className={`pc-coord__chip pc-advfeed__groupchip${active ? ' is-active' : ''}`}
+                <Pill
+                  className="pc-advfeed__groupchip"
+                  active={active}
+                  accent="var(--advconv-accent)"
                   onClick={() => toggleKindGroup(g.kinds)}
                   aria-pressed={active}
                 >
                   {g.label}
                   {n > 0 ? <span className="pc-advfeed__kindn">{n}</span> : null}
-                </button>
+                </Pill>
               </Tooltip>
             );
           })}
-          <button
-            type="button"
-            className={`pc-coord__chip pc-advfeed__advancedtoggle${advancedKinds === 'open' ? ' is-active' : ''}`}
+          <Pill
+            className="pc-advfeed__advancedtoggle"
+            active={advancedKinds === 'open'}
+            accent="#a78bfa"
             onClick={() => void setAdvancedKinds(advancedKinds === 'open' ? 'closed' : 'open')}
             aria-expanded={advancedKinds === 'open'}
           >
             Advanced / all kinds
-          </button>
+          </Pill>
         </div>
         {advancedKinds === 'open' && (
           <div className="pc-coord__filters pc-advfeed__rawkinds" role="group" aria-label="Raw kind filter">
@@ -659,18 +693,18 @@ function FeedView() {
               const n = rawKindCount(k);
               const active = kinds.includes(k);
               return (
-                <button
+                <Pill
                   key={k}
-                  type="button"
-                  className={`pc-coord__chip pc-advfeed__kindchip${active ? ' is-active' : ''}`}
-                  style={active ? { borderColor: KIND_COLOR[k], color: KIND_COLOR[k] } : undefined}
+                  className="pc-advfeed__kindchip"
+                  active={active}
+                  accent={KIND_COLOR[k] ?? '#64748b'}
                   onClick={() => toggleKind(k)}
                   aria-pressed={active}
                 >
                   <span className="pc-advfeed__kinddot" style={{ background: KIND_COLOR[k] ?? '#64748b' }} aria-hidden />
                   {kindLabel(k)}
                   {typeof n === 'number' && n > 0 ? <span className="pc-advfeed__kindn">{n}</span> : null}
-                </button>
+                </Pill>
               );
             })}
           </div>
@@ -680,6 +714,7 @@ function FeedView() {
             <span>Agent</span>
             <input
               className="pc-advfeed__input"
+              style={inputStyle}
               placeholder="from or to…"
               value={agent}
               onChange={(e) => void setAgent(e.target.value)}
@@ -690,6 +725,7 @@ function FeedView() {
             <span>Plan</span>
             <input
               className="pc-advfeed__input"
+              style={inputStyle}
               placeholder="plan slug…"
               value={plan}
               onChange={(e) => void setPlan(e.target.value)}
@@ -704,6 +740,7 @@ function FeedView() {
             <input
               type="search"
               className="pc-advfeed__input pc-advfeed__input--search"
+              style={inputStyle}
               placeholder="summary, body, event…"
               value={q}
               onChange={(e) => void setQ(e.target.value)}
@@ -722,7 +759,7 @@ function FeedView() {
             {kinds.length > 0 && <strong>{kinds.join(', ')}</strong>}
             {agent && <strong>agent: {agent}</strong>}
             {plan && <strong>plan: {plan}</strong>}
-            {q.trim() && <strong>search: {q.trim()}</strong>}
+            {debouncedQ.trim() && <strong>search: {debouncedQ.trim()}</strong>}
           </div>
         )}
       </div>
@@ -732,12 +769,13 @@ function FeedView() {
         {head.loading && allRows.length === 0 ? (
           <LoadingRows rows={6} label="Loading the coordination feed" />
         ) : head.error ? (
-          <p className="pc-coord__empty pc-advconv__empty">Raw events log unavailable: {head.error.message}</p>
+          <ErrorBanner>{friendlyApiError(undefined, head.error.message)}</ErrorBanner>
         ) : roots.length === 0 ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
-            <strong>No matching traffic</strong>
-            <span>Clear a filter or broaden the search to return activity.</span>
-          </div>
+          <EmptyState
+            icon={<Radio size={22} aria-hidden />}
+            title="No matching traffic"
+            desc="Clear a filter or broaden the search to return activity."
+          />
         ) : (
           <RichGrid<FeedEntry>
             inline
@@ -935,6 +973,66 @@ interface ConvGetResponse {
   subscriber_count?: number;
 }
 
+/**
+ * The Q&A thread reply box (P3 extract). Owns its own mid-edit draft (useState —
+ * a draft is render-only, never user-meaningful URL state per the nuqs rule); the
+ * parent keys it on the thread id so switching threads gives a fresh draft. The
+ * post/resolve actions are passed in and return whether they succeeded, so the
+ * draft only clears on success.
+ */
+function ReplyComposer({
+  kind,
+  busy,
+  onReply,
+  onResolve,
+}: {
+  kind: string;
+  busy: boolean;
+  onReply: (body: string) => Promise<boolean>;
+  onResolve: (answer: string) => Promise<boolean>;
+}) {
+  const [reply, setReply] = useState('');
+  const trimmed = reply.trim();
+  return (
+    <div className="pc-advconv__reply">
+      <div className="pc-advconv__replyhead">
+        <span>
+          <MessageCircle size={13} aria-hidden />
+          Thread response
+        </span>
+        <em>{kind === 'question' ? 'Resolve with an accepted answer when this closes the loop.' : 'Add context for everyone subscribed to this discussion.'}</em>
+      </div>
+      <textarea
+        value={reply}
+        onChange={(e) => setReply(e.target.value)}
+        placeholder={kind === 'question' ? 'Write a reply, or accept it as the answer…' : 'Write a reply…'}
+        rows={2}
+      />
+      <div className="pc-coord__actions pc-advconv__replyactions">
+        <button
+          type="button"
+          className="pc-advconv__replybtn"
+          disabled={busy || !trimmed}
+          onClick={() => { void onReply(trimmed).then((ok) => { if (ok) setReply(''); }); }}
+        >
+          <Send size={12} aria-hidden /> Reply
+        </button>
+        {kind === 'question' && (
+          <button
+            type="button"
+            className="pc-advconv__replybtn pc-advconv__replybtn--resolve"
+            disabled={busy || !trimmed}
+            aria-label="Record this reply as the accepted answer and resolve the question"
+            onClick={() => { void onResolve(trimmed).then((ok) => { if (ok) setReply(''); }); }}
+          >
+            <CheckCircle2 size={12} aria-hidden /> Accept as answer
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ThreadsView() {
   const [state, setState] = useQueryState('cstate', parseAsStringEnum<ConvStateFilter>([...CONV_STATES]).withDefault('open'));
   const [kind, setKind] = useQueryState('ckind', parseAsStringEnum<ConvKindFilter>([...CONV_KINDS]).withDefault('all'));
@@ -945,7 +1043,6 @@ function ThreadsView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [reply, setReply] = useState('');
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -978,14 +1075,35 @@ function ThreadsView() {
       setDetail(null);
     }
   }, []);
+  // The OPEN thread is fully driven by the nuqs `conversation` (`sel`) id — same
+  // shape as the Feed's `?fmsg` deep-link. A refresh or a pasted deep-link with
+  // `?conversation=<id>` reloads that thread from scratch: `detail` is cleared the
+  // instant `sel` changes (so the prior thread never lingers under a new id) and
+  // an in-flight `get` is ignored if `sel` moved on before it resolved (race guard).
   useEffect(() => {
     if (!sel) {
       setDetail(null);
       return;
     }
-    void loadDetail(sel);
-    setReply('');
-  }, [sel, loadDetail]);
+    let live = true;
+    setDetail(null);
+    void (async () => {
+      try {
+        const r = await coord<ConvGetResponse>('conversations/get', { conversation_id: sel });
+        if (!live) return;
+        setDetail(
+          r.conversation
+            ? { ...r.conversation, topics: r.topics ?? [], posts: r.posts ?? [], subscriber_count: r.subscriber_count ?? 0 }
+            : null,
+        );
+      } catch {
+        if (live) setDetail(null);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [sel]);
 
   const allTopics = useMemo(() => {
     const s = new Set<string>();
@@ -1068,21 +1186,21 @@ function ThreadsView() {
     <div className="pc-coord__split pc-advconv__threads">
       <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
-          <span>Question &amp; discussion threads</span>
+          <span style={sectionHeaderStyle}>Question &amp; discussion threads</span>
           <strong>{loading ? '…' : visible.length}</strong>
         </div>
         <div className="pc-coord__filters" role="group" aria-label="State filter">
           {CONV_STATES.map((s) => (
-            <button key={s} type="button" aria-pressed={state === s} className={`pc-coord__chip${state === s ? ' is-active' : ''}`} onClick={() => void setState(s)}>
+            <Pill key={s} active={state === s} accent="var(--advconv-accent)" aria-pressed={state === s} onClick={() => void setState(s)}>
               {s}
-            </button>
+            </Pill>
           ))}
         </div>
         <div className="pc-coord__filters" role="group" aria-label="Kind filter">
           {CONV_KINDS.map((k) => (
-            <button key={k} type="button" aria-pressed={kind === k} className={`pc-coord__chip${kind === k ? ' is-active' : ''}`} onClick={() => void setKind(k)}>
+            <Pill key={k} active={kind === k} accent="var(--advconv-accent)" aria-pressed={kind === k} onClick={() => void setKind(k)}>
               {k}
-            </button>
+            </Pill>
           ))}
           <button
             type="button"
@@ -1096,13 +1214,13 @@ function ThreadsView() {
         </div>
         {allTopics.length > 0 && (
           <div className="pc-coord__filters" role="group" aria-label="Topic filter">
-            <button type="button" aria-pressed={!topic} className={`pc-coord__chip${!topic ? ' is-active' : ''}`} onClick={() => void setTopic('')}>
+            <Pill active={!topic} accent="var(--advconv-accent)" aria-pressed={!topic} onClick={() => void setTopic('')}>
               all topics
-            </button>
+            </Pill>
             {allTopics.map((t) => (
-              <button key={t} type="button" aria-pressed={topic === t} className={`pc-coord__chip${topic === t ? ' is-active' : ''}`} onClick={() => void setTopic(topic === t ? '' : t)}>
+              <Pill key={t} active={topic === t} accent="var(--advconv-accent)" aria-pressed={topic === t} onClick={() => void setTopic(topic === t ? '' : t)}>
                 #{t}
-              </button>
+              </Pill>
             ))}
           </div>
         )}
@@ -1111,10 +1229,11 @@ function ThreadsView() {
         ) : error ? (
           <LoadError message={error} onRetry={() => void reload()} />
         ) : visible.length === 0 ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
-            <strong>No threads match</strong>
-            <span>Change the state, kind, or topic filter to widen the thread rail.</span>
-          </div>
+          <EmptyState
+            icon={<MessageCircle size={22} aria-hidden />}
+            title="No threads match"
+            desc="Change the state, kind, or topic filter to widen the thread rail."
+          />
         ) : (
           <RichGrid<ConvRow>
             inline
@@ -1137,11 +1256,12 @@ function ThreadsView() {
       </aside>
       <section className="pc-coord__detail">
         {!detail ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--detail">
-            <MessageCircle size={22} aria-hidden />
-            <strong>Select a thread</strong>
-            <span>Open a question or discussion to review context, replies, accepted answers, and linked work-items.</span>
-          </div>
+          <EmptyState
+            style={{ minHeight: '100%' }}
+            icon={<MessageCircle size={22} aria-hidden />}
+            title="Select a thread"
+            desc="Open a question or discussion to review context, replies, accepted answers, and linked work-items."
+          />
         ) : (
           <article className="pc-coord__card">
             <header className="pc-advconv__detailhead">
@@ -1194,49 +1314,33 @@ function ThreadsView() {
                 </button>
               )}
             </div>
-            <ol className="pc-coord__thread">
-              {detail.posts.map((p) => (
-                <li key={p.id}>
-                  <span className="pc-advconv__postmeta">
-                    <strong>{p.author_id ?? 'unknown'}</strong>
-                    {p.created_ts && <span>{dateStamp(p.created_ts)}</span>}
-                  </span>
-                  <p>{p.body}</p>
-                </li>
-              ))}
-              {detail.posts.length === 0 && (
-                <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
-                  <strong>No replies yet</strong>
-                  <span>This thread is waiting for its first response.</span>
-                </li>
-              )}
-            </ol>
+            {detail.posts.length === 0 ? (
+              <EmptyState
+                icon={<MessageCircle size={22} aria-hidden />}
+                title="No replies yet"
+                desc="This thread is waiting for its first response."
+              />
+            ) : (
+              <ol className="pc-coord__thread">
+                {detail.posts.map((p) => (
+                  <li key={p.id}>
+                    <span className="pc-advconv__postmeta">
+                      <strong>{p.author_id ?? 'unknown'}</strong>
+                      {p.created_ts && <span>{dateStamp(p.created_ts)}</span>}
+                    </span>
+                    <p>{p.body}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
             {detail.state === 'open' && (
-              <div className="pc-advconv__reply">
-                <div className="pc-advconv__replyhead">
-                  <span>
-                    <MessageCircle size={13} aria-hidden />
-                    Thread response
-                  </span>
-                  <em>{detail.kind === 'question' ? 'Resolve with an accepted answer when this closes the loop.' : 'Add context for everyone subscribed to this discussion.'}</em>
-                </div>
-                <textarea
-                  value={reply}
-                  onChange={(e) => setReply(e.target.value)}
-                  placeholder={detail.kind === 'question' ? 'Write a reply, or accept it as the answer…' : 'Write a reply…'}
-                  rows={2}
-                />
-                <div className="pc-coord__actions pc-advconv__replyactions">
-                  <button type="button" className="pc-advconv__replybtn" disabled={busy || !reply.trim()} onClick={() => { void act('conversations/post', { conversation_id: detail.id, body: reply.trim() }).then((ok) => { if (ok) setReply(''); }); }}>
-                    <Send size={12} aria-hidden /> Reply
-                  </button>
-                  {detail.kind === 'question' && (
-                    <button type="button" className="pc-advconv__replybtn pc-advconv__replybtn--resolve" disabled={busy || !reply.trim()} aria-label="Record this reply as the accepted answer and resolve the question" onClick={() => { void act('conversations/resolve', { conversation_id: detail.id, accepted_answer: reply.trim() }).then((ok) => { if (ok) setReply(''); }); }}>
-                      <CheckCircle2 size={12} aria-hidden /> Accept as answer
-                    </button>
-                  )}
-                </div>
-              </div>
+              <ReplyComposer
+                key={detail.id}
+                kind={detail.kind}
+                busy={busy}
+                onReply={(body) => act('conversations/post', { conversation_id: detail.id, body })}
+                onResolve={(answer) => act('conversations/resolve', { conversation_id: detail.id, accepted_answer: answer })}
+              />
             )}
           </article>
         )}
@@ -1350,7 +1454,7 @@ function DeliberationsView() {
     <div className="pc-coord__split pc-advconv__threads">
       <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
-          <span>Deliberation threads</span>
+          <span style={sectionHeaderStyle}>Deliberation threads</span>
           <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
           <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload deliberations" disabled={loading} onClick={() => void reload()}>
             <RefreshCw size={11} aria-hidden />
@@ -1361,10 +1465,11 @@ function DeliberationsView() {
         ) : error ? (
           <LoadError message={error} onRetry={() => void reload()} />
         ) : list.length === 0 ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
-            <strong>No deliberations</strong>
-            <span>No coord:thread / deliberate / vote discussions recorded.</span>
-          </div>
+          <EmptyState
+            icon={<MessagesSquare size={22} aria-hidden />}
+            title="No deliberations"
+            desc="No coord:thread / deliberate / vote discussions recorded."
+          />
         ) : (
           <RichGrid<ThreadRow>
             inline
@@ -1387,11 +1492,12 @@ function DeliberationsView() {
       </aside>
       <section className="pc-coord__detail">
         {!head ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--detail">
-            <MessagesSquare size={22} aria-hidden />
-            <strong>Select a deliberation</strong>
-            <span>Open a thread to read its discussion posts.</span>
-          </div>
+          <EmptyState
+            style={{ minHeight: '100%' }}
+            icon={<MessagesSquare size={22} aria-hidden />}
+            title="Select a deliberation"
+            desc="Open a thread to read its discussion posts."
+          />
         ) : (
           <article className="pc-coord__card">
             <header className="pc-advconv__detailhead">
@@ -1407,23 +1513,25 @@ function DeliberationsView() {
                 <span><strong>{posts.length}</strong> posts</span>
               </div>
             </header>
-            <ol className="pc-coord__thread pc-advconv__transcript">
-              {posts.map((p) => (
-                <li key={p.id} className="pc-advconv__turn">
-                  <span className="pc-advconv__postmeta">
-                    <strong>{p.author_id ?? 'unknown'}</strong>
-                    <span>{fmtTs(p.created_at)}</span>
-                  </span>
-                  <p>{p.body ?? ''}</p>
-                </li>
-              ))}
-              {posts.length === 0 && (
-                <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
-                  <strong>No posts</strong>
-                  <span>This thread has no recorded posts.</span>
-                </li>
-              )}
-            </ol>
+            {posts.length === 0 ? (
+              <EmptyState
+                icon={<MessagesSquare size={22} aria-hidden />}
+                title="No posts"
+                desc="This thread has no recorded posts."
+              />
+            ) : (
+              <ol className="pc-coord__thread pc-advconv__transcript">
+                {posts.map((p) => (
+                  <li key={p.id} className="pc-advconv__turn">
+                    <span className="pc-advconv__postmeta">
+                      <strong>{p.author_id ?? 'unknown'}</strong>
+                      <span>{fmtTs(p.created_at)}</span>
+                    </span>
+                    <p>{p.body ?? ''}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
           </article>
         )}
       </section>
@@ -1569,14 +1677,14 @@ function AgentChatsView() {
     <div className="pc-coord__split pc-advconv__threads">
       <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
-          <span>Agent chat sessions</span>
+          <span style={sectionHeaderStyle}>Agent chat sessions</span>
           <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
         </div>
         {harnesses.length > 0 && (
           <div className="pc-coord__filters" role="group" aria-label="Harness filter">
-            <button type="button" aria-pressed={!harness} className={`pc-coord__chip${!harness ? ' is-active' : ''}`} onClick={() => void setHarness('')}>all</button>
+            <Pill active={!harness} accent="var(--advconv-accent)" aria-pressed={!harness} onClick={() => void setHarness('')}>all</Pill>
             {harnesses.map((h) => (
-              <button key={h} type="button" aria-pressed={harness === h} className={`pc-coord__chip${harness === h ? ' is-active' : ''}`} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</button>
+              <Pill key={h} active={harness === h} accent="var(--advconv-accent)" aria-pressed={harness === h} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</Pill>
             ))}
             <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload agent chats" disabled={loading} onClick={() => void reload()}>
               <RefreshCw size={11} aria-hidden />
@@ -1584,10 +1692,10 @@ function AgentChatsView() {
           </div>
         )}
         {roles.length > 0 && (
-          <div className="pc-coord__filters" role="tablist" aria-label="Role filter">
-            <button type="button" className={`pc-coord__chip${!role ? ' is-active' : ''}`} onClick={() => void setRole('')}>all roles</button>
+          <div className="pc-coord__filters" role="group" aria-label="Role filter">
+            <Pill active={!role} accent="var(--advconv-accent)" aria-pressed={!role} onClick={() => void setRole('')}>all roles</Pill>
             {roles.map((r) => (
-              <button key={r} type="button" className={`pc-coord__chip${role === r ? ' is-active' : ''}`} onClick={() => void setRole(role === r ? '' : r)}>{r}</button>
+              <Pill key={r} active={role === r} accent="var(--advconv-accent)" aria-pressed={role === r} onClick={() => void setRole(role === r ? '' : r)}>{r}</Pill>
             ))}
           </div>
         )}
@@ -1596,10 +1704,11 @@ function AgentChatsView() {
         ) : error ? (
           <LoadError message={error} onRetry={() => void reload()} />
         ) : list.length === 0 ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
-            <strong>No agent chats</strong>
-            <span>No multi-turn agent chat sessions match the current filter.</span>
-          </div>
+          <EmptyState
+            icon={<Bot size={22} aria-hidden />}
+            title="No agent chats"
+            desc="No multi-turn agent chat sessions match the current filter."
+          />
         ) : (
           <RichGrid<AgentChatRow>
             inline
@@ -1632,11 +1741,12 @@ function AgentChatsView() {
       </aside>
       <section className="pc-coord__detail">
         {!detail ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--detail">
-            <Bot size={22} aria-hidden />
-            <strong>Select a chat</strong>
-            <span>Open an agent chat session to read its full transcript.</span>
-          </div>
+          <EmptyState
+            style={{ minHeight: '100%' }}
+            icon={<Bot size={22} aria-hidden />}
+            title="Select a chat"
+            desc="Open an agent chat session to read its full transcript."
+          />
         ) : (
           <article className="pc-coord__card">
             <header className="pc-advconv__detailhead">
@@ -1668,6 +1778,12 @@ function AgentChatsView() {
                   }}
                 />
               </div>
+            ) : (detail.transcript ?? []).length === 0 ? (
+              <EmptyState
+                icon={<Bot size={22} aria-hidden />}
+                title="Empty transcript"
+                desc="This chat session has no recorded turns."
+              />
             ) : (
               <ol className="pc-coord__thread pc-advconv__transcript">
                 {(detail.transcript ?? []).map((t, i) => (
@@ -1679,12 +1795,6 @@ function AgentChatsView() {
                     <p>{turnText(t.content)}</p>
                   </li>
                 ))}
-                {(detail.transcript ?? []).length === 0 && (
-                  <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
-                    <strong>Empty transcript</strong>
-                    <span>This chat session has no recorded turns.</span>
-                  </li>
-                )}
               </ol>
             )}
           </article>
@@ -1835,10 +1945,11 @@ function MessagesView() {
         ) : error && list.length === 0 ? (
           <LoadError message={error} onRetry={() => void reload()} />
         ) : list.length === 0 ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
-            <strong>No messages</strong>
-            <span>No agent-to-agent messages recorded.</span>
-          </div>
+          <EmptyState
+            icon={<Mail size={22} aria-hidden />}
+            title="No messages"
+            desc="No agent-to-agent messages recorded."
+          />
         ) : (
           <RichGrid<MsgRow>
             inline
