@@ -33,6 +33,31 @@ const DOCS_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
+/** Cap on how many doc ids the digest names inline (the rest fold into "+N more"). */
+export const DOC_DRIFT_DIGEST_MAX_NAMED = 8;
+
+/**
+ * Coalesce a sweep's drifted docs into ONE digest line (EI-2826). The sweep used to
+ * broadcast ONE coord message per drifted doc to `*`; a single substantive commit could
+ * fire 50+ in seconds, BURYING directed peer messages in every agent's inbox (the channel
+ * became unusable as a directed-message bus during any large change). One digest per sweep
+ * preserves the signal (it names the drifted docs + the regen/re-verify split) without the
+ * flood. Returns null when nothing drifted (→ send nothing).
+ */
+export function buildDocDriftDigest(harnessSlug: string, staleDocs: DriftedDoc[]): string | null {
+  if (staleDocs.length === 0) return null;
+  // classifyDrift routes manual→'review'→re-verify and generated/augmented→'stale'→regen,
+  // so `source === 'manual'` is exactly the re-verify set; everything else is regen-enqueued.
+  const reverify = staleDocs.filter((d) => d.source === 'manual').length;
+  const regen = staleDocs.length - reverify;
+  const parts: string[] = [];
+  if (reverify > 0) parts.push(`${reverify} manual need RE-VERIFY`);
+  if (regen > 0) parts.push(`${regen} generated STALE → regen enqueued`);
+  const named = staleDocs.slice(0, DOC_DRIFT_DIGEST_MAX_NAMED).map((d) => d.docId).join(', ');
+  const more = staleDocs.length > DOC_DRIFT_DIGEST_MAX_NAMED ? ` (+${staleDocs.length - DOC_DRIFT_DIGEST_MAX_NAMED} more)` : '';
+  return `📄 ${harnessSlug}: ${staleDocs.length} doc(s) drifted after this sync — ${parts.join(', ')}: ${named}${more}`;
+}
+
 /** Read a harness repo's current HEAD sha (captured pre-sync to bound the diff). */
 export async function captureHeadSha(harnessSlug: string): Promise<string | null> {
   const repoRoot = await projectDirForSlug(harnessSlug);
@@ -151,21 +176,14 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     changedPaths,
     submodulePaths,
     resolveFeatureCommits: makeFeatureCommitLookup(harnessSlug, workspaceId),
-    onRegenNeeded: async (doc, detail) => {
+    // EI-2826: collect drifted docs into the batch; the coord broadcast is COALESCED into
+    // ONE digest after the sweep (below) instead of one-per-doc to `*` (which buried
+    // directed messages). The staleDocs batch already drives the doc-steward dispatch.
+    onRegenNeeded: (doc, detail) => {
       staleDocs.push({ docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source });
-      await sendMessage(DOCS_IDENTITY, {
-        to: ['*'],
-        summary: `📄 ${harnessSlug}: generated doc ${doc.docId} is STALE (${detail ?? 'subject code changed'}) — regeneration enqueued`,
-        category: 'doc-drift',
-      }).catch(() => {});
     },
-    onReverifyNeeded: async (doc, detail) => {
+    onReverifyNeeded: (doc, detail) => {
       staleDocs.push({ docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source });
-      await sendMessage(DOCS_IDENTITY, {
-        to: ['*'],
-        summary: `📄 ${harnessSlug}: manual doc ${doc.docId} needs RE-VERIFY (${detail ?? 'subject code changed'})`,
-        category: 'doc-drift',
-      }).catch(() => {});
     },
   });
 
@@ -188,6 +206,14 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     } catch {
       /* best-effort: attribution enrichment must never break the sweep */
     }
+  }
+
+  // EI-2826: ONE coalesced doc-drift broadcast per sweep (replaces the per-doc flood to `*`
+  // that buried directed coord messages). Sent AFTER attribution enrichment so the batch is
+  // final. Best-effort — a send failure must never break the sweep; null ⇒ nothing drifted.
+  const digest = buildDocDriftDigest(harnessSlug, staleDocs);
+  if (digest) {
+    await sendMessage(DOCS_IDENTITY, { to: ['*'], summary: digest, category: 'doc-drift' }).catch(() => {});
   }
 
   // P-008 doc-steward — dispatch the LLM consumer to FIX the newly-drifted docs against the
