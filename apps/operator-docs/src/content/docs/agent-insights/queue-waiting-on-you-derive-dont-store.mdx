@@ -48,7 +48,7 @@ un-GC'd noise duplicating a number the system already derives.
    options. (One reader change demotes the existing flood AND future ones.)
 2. **GC it.** `attention/reconcile-escalations.ts` is an hourly sweep
    (`dbos/periodic-workflows.ts`) that auto-resolves operational escalations
-   idle past a TTL (`OPERATIONAL_ESCALATION_TTL_MS`, default 3d) — batch-limited
+   idle past a TTL (`OPERATIONAL_ESCALATION_TTL_MS`, default 48h — lowered from 3d per infra-perf-robustness-audit-2026-06-18 D-005; reconcile-escalations.ts:40) — batch-limited
    so a large backlog drains over several ticks. Genuine (non-system / with
    options) escalations are **never** auto-resolved.
 3. **Stop minting blockers.** The watchdog now emits the cursed-placement
