@@ -481,21 +481,22 @@ body.has-left-sidebar .pc-header {
   opacity: 0.7;
 }
 .pclsb-expand {
-  margin: 5px 0 2px 6px;
-  padding: 6px 8px 8px 10px;
+  margin: 6px 0 2px 6px;
+  padding: 8px 8px 9px 10px;
   border-left: 2px solid color-mix(in oklab, var(--pclsb-current-accent), transparent 35%);
   border-radius: 0 8px 8px 0;
-  background: color-mix(in oklab, var(--pclsb-current-accent), transparent 95%);
+  background: color-mix(in oklab, var(--bg-1, #0b1220), transparent 24%);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .pclsb-expand__head {
-  margin: 6px 0 1px;
+  margin: 8px 0 2px;
   font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--fg-mute, #7f9bb4);
+  letter-spacing: 0;
 }
 .pclsb-expand__head:first-child {
   margin-top: 0;
@@ -598,48 +599,78 @@ body.has-left-sidebar .pc-header {
   color: var(--fg-mute, #7f9bb4);
   padding: 0 1px 7px;
 }
+.pclsb-linkrow {
+  text-decoration: none;
+}
+.pclsb-linkrow:focus-visible {
+  outline: 1px solid var(--accent, #38bdf8);
+  outline-offset: -1px;
+}
 .pclsb-task {
   display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 4px 5px;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 6px;
   border-radius: 8px;
   font-size: 12px;
   color: var(--fg-dim, #b9d4e8);
+  border: 1px solid transparent;
 }
 .pclsb-task:hover {
   background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  border-color: var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
 }
 .pclsb-task__rank {
-  flex: 0 0 34px;
+  flex: 0 0 28px;
   color: var(--fg-mute, #7f9bb4);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
-.pclsb-task__title {
+.pclsb-task__main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pclsb-task__title {
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--fg-dim, #b9d4e8);
+}
+.pclsb-task__id {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-mute, #7f9bb4);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
 }
 .pclsb-task__st {
   flex: 0 0 auto;
   font-size: 10px;
-  color: var(--fg-mute, #7f9bb4);
+  color: var(--fg-dim, #b9d4e8);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
 }
 
 /* Plan progress bars */
 .pclsb-plan {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 5px;
+  gap: 7px;
+  padding: 5px 6px;
   border-radius: 8px;
   font-size: 12px;
+  border: 1px solid transparent;
 }
 .pclsb-plan:hover {
   background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  border-color: var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
 }
 .pclsb-plan__slug {
   flex: 1;
@@ -650,7 +681,7 @@ body.has-left-sidebar .pc-header {
   color: var(--fg-dim, #b9d4e8);
 }
 .pclsb-plan__bar {
-  flex: 0 0 90px;
+  flex: 0 0 58px;
   height: 6px;
   border-radius: 999px;
   background: var(--bg-3, rgba(255, 255, 255, 0.075));
@@ -660,6 +691,13 @@ body.has-left-sidebar .pc-header {
   height: 100%;
   border-radius: 999px;
   background: var(--pclsb-current-accent);
+}
+.pclsb-plan__pct {
+  flex: 0 0 32px;
+  font-size: 10px;
+  color: var(--fg-dim, #b9d4e8);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right;
 }
 .pclsb-plan__nums {
   flex: 0 0 auto;
@@ -675,10 +713,21 @@ body.has-left-sidebar .pc-header {
   font-size: 12px;
   color: var(--fg-dim, #b9d4e8);
   background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  border: 1px solid transparent;
+}
+.pclsb-mail:hover {
+  border-color: var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
 }
 .pclsb-mail__meta {
   font-size: 10px;
   color: var(--fg-mute, #7f9bb4);
+  margin-bottom: 2px;
+}
+.pclsb-mail__summary {
+  display: block;
+  color: var(--fg-dim, #b9d4e8);
+  line-height: 1.35;
 }
 
 /* The Voice tab's video region wants the full panel height. */

@@ -32,12 +32,19 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * NOT the operator's `<report>` (D-002) — so they're correct even when the
  * operator is idle. Each tile clicks through to its full tab (D-007).
  *
- * Roster + activity are LIVE (SSE push-driven via @papercusp/sync), not polled
- * (data-sync-push-completion P-006). Roster reads `dev.coordPresence` (the
- * coord_presence→query bridge pushes on heartbeat/intent/claim writes); activity
- * reads `userActions.byHarness`, scoped to the selected harness (`?slug=`) — the
- * `user_actions`→query bridge pushes on every action write. The old 8s
- * setInterval over /api/adv/roster + /api/agent-tools/activity/recent is gone.
+ * Both tiles read via @papercusp/sync (one audited path), replacing the old 8s
+ * setInterval over /api/adv/roster + /api/agent-tools/activity/recent
+ * (data-sync-push-completion P-006). Their LIVENESS differs by source:
+ *  - Roster → `dev.coordPresence`: SSE PUSH-driven (coord_presence carries the
+ *    emit_change_notify trigger, so a heartbeat/intent/claim write invalidates live).
+ *  - Activity → `userActions.byHarness` / `userActions.recent` (All-Pots): user_actions
+ *    is an APPEND-HEAVY log INTENTIONALLY excluded from the per-row change-notify trigger
+ *    (a per-row pg_notify on a high-write log is the notify-storm anti-pattern —
+ *    cache-tag-trigger-coverage's COVERAGE_EXEMPT; mig 376). So it CANNOT SSE-push today;
+ *    it carries a bounded `pollIntervalMs` (the AdvEvalsTab pattern, plan D-001) to keep
+ *    the feed live — restoring the cadence the old 8s poll had. (When the append-heavy
+ *    DEBOUNCED-invalidation follow-up lands — COVERAGE_EXEMPT's P-005 TODO — the poll can
+ *    drop. Found live: data-sync-push-completion D-011.)
  */
 
 // ── roster: the subset of a `dev.coordPresence` PresenceRecord the Agents tile
@@ -192,23 +199,28 @@ export default function AdvOverviewTab() {
   // a belt-and-braces guard on the client-derived liveness.
   const rosterQ = useSyncQuery<PresenceRow>({ queryName: 'dev.coordPresence', staleTime: 8_000 });
 
-  // Activity (recent action stream) — LIVE via the user_actions→query bridge
-  // (push-driven). A harness selected → userActions.byHarness (that harness +
-  // workspace); All-Pots (no harness) → the fleet-wide userActions.recent feed.
-  // One unconditional hook with a computed query (rules-of-hooks safe); the cache
-  // key carries the queryName + args so switching scope re-subscribes.
+  // Activity (recent action stream). A harness selected → userActions.byHarness (that
+  // harness + workspace); All-Pots (no harness) → the fleet-wide userActions.recent feed.
+  // One unconditional hook with a computed query (rules-of-hooks safe); the cache key
+  // carries the queryName + args so switching scope re-subscribes. user_actions is
+  // append-heavy → no per-row SSE push (see the file header), so a bounded pollIntervalMs
+  // keeps the feed live (the AdvEvalsTab/D-001 pattern). It's the read side of a small
+  // indexed limit-50 SELECT, NOT the write-side per-row notify the exclusion avoids.
   const activityWsId = getBrowserWorkspaceId();
+  const ACTIVITY_POLL_MS = 8_000;
   const activityQ = useSyncQuery<UserActionRow>(
     activeSlug
       ? {
           queryName: 'userActions.byHarness',
           args: { harnessSlug: activeSlug, workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
           staleTime: 8_000,
+          pollIntervalMs: ACTIVITY_POLL_MS,
         }
       : {
           queryName: 'userActions.recent',
           args: { workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
           staleTime: 8_000,
+          pollIntervalMs: ACTIVITY_POLL_MS,
         },
   );
 

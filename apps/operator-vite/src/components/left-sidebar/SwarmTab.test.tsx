@@ -53,18 +53,21 @@ const PRESENCE = [
 const BEES = [
   {
     agentId: 'bee-1', name: 'Bee One', alive: true, intent: 'refactoring', declaredPlanSlug: 'plan-a',
-    claims: [{ planSlug: 'plan-b' }], load: 2,
+    claims: [
+      { type: 'work-item', id: 'WI-1', harnessSlug: 'pot-a', planSlug: 'plan-a' },
+      { type: 'work-item', id: 'WI-2', harnessSlug: 'pot-a', planSlug: 'plan-b' },
+    ], load: 2,
     queued: [
-      { id: 'w1', title: 'fix the thing', status: 'wip', rank: 1 },
-      { id: 'w2', title: 'write tests', status: 'queued', rank: 2 },
+      { id: 'WI-1', title: 'fix the thing', status: 'wip', rank: 1 },
+      { id: 'WI-2', title: 'write tests', status: 'queued', rank: 2 },
     ],
   },
-  { agentId: 'bee-2', name: 'Bee Two', alive: true, intent: null, load: 1, queued: [{ id: 'w3', title: 'review', status: 'queued', rank: 1 }] },
+  { agentId: 'bee-2', name: 'Bee Two', alive: true, intent: null, load: 1, queued: [{ id: 'WI-3', title: 'review', status: 'queued', rank: 1 }] },
 ];
 
 const PLANS = [
-  { slug: 'plan-a', archived: false, priority: 5, itemCounts: { todo: 1, done: 3, blocked: 0, failed: 0 } },
-  { slug: 'plan-b', archived: false, priority: 1, itemCounts: { todo: 2, done: 0 } },
+  { slug: 'plan-a', harness: 'pot-a', archived: false, priority: 5, itemCounts: { todo: 1, done: 3, blocked: 0, failed: 0 } },
+  { slug: 'plan-b', harness: 'pot-a', archived: false, priority: 1, itemCounts: { todo: 2, done: 0 } },
   { slug: 'plan-archived', archived: true, itemCounts: { todo: 1, done: 1 } },
 ];
 
@@ -128,16 +131,37 @@ describe('<SwarmTab> selection + expansion', () => {
     expect(screen.queryByTestId('swarm-expand-bee-2')).toBeNull();
   });
 
+  it('links tasks and plans to their full detail surfaces', () => {
+    nuqsState.lsa = 'bee-1';
+    seed('dev.coordPresence', PRESENCE);
+    seed('sidebar.fleetBees', BEES);
+    seed('plans.list', PLANS);
+    render(<SwarmTab active={true} />);
+
+    expect(screen.getByRole('link', { name: /open task WI-1/i }).getAttribute('href')).toBe(
+      '/adv?tab=harnesses&slug=pot-a&scope=self&sel=WI-1',
+    );
+    expect(screen.getByRole('link', { name: /open plan plan-a/i }).getAttribute('href')).toBe(
+      '/admin/plans?view=plans&plan=plan-a&h=pot-a',
+    );
+  });
+
   it('folds the selected agent’s recent comms into the expansion', () => {
     nuqsState.lsa = 'bee-1';
     seed('dev.coordPresence', PRESENCE);
     seed('sidebar.fleetBees', BEES);
     seed('sidebar.beeMail', [
-      { owner: 'bee-1', inbox: [{ from: 'queen', kind: 'task', summary: 'do X' }], outbox: [{ to: ['queen'], kind: 'ack', summary: 'done Y' }] },
+      { owner: 'bee-1', inbox: [{ msg_id: 'm-in', from: 'queen', kind: 'task', summary: 'do X' }], outbox: [{ msg_id: 'm-out', to: ['queen'], kind: 'ack', summary: 'done Y' }] },
     ]);
     render(<SwarmTab active={true} />);
     const exp = screen.getByTestId('swarm-expand-bee-1');
     expect(exp.textContent).toContain('do X');
     expect(exp.textContent).toContain('done Y');
+    expect(screen.getByRole('link', { name: /open inbound message from queen/i }).getAttribute('href')).toBe(
+      '/adv?tab=conversations&conv=feed&fagent=bee-1&fmsg=m-in',
+    );
+    expect(screen.getByRole('link', { name: /open outbound message to queen/i }).getAttribute('href')).toBe(
+      '/adv?tab=conversations&conv=feed&fagent=bee-1&fmsg=m-out',
+    );
   });
 });

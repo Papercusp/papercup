@@ -37,6 +37,9 @@ interface WorkListItem {
 }
 
 interface AgentClaimLite {
+  type?: string | null;
+  id?: string | null;
+  harnessSlug?: string | null;
   planSlug?: string | null;
 }
 
@@ -55,6 +58,7 @@ interface BeeGroup {
 
 interface PlanRow {
   slug: string;
+  harness?: string | null;
   archived?: boolean;
   priority?: number | null;
   itemCounts?: { todo?: number; done?: number; blocked?: number; failed?: number } | null;
@@ -80,6 +84,29 @@ function planTotals(p: PlanRow): { done: number; total: number } {
   const done = c.done ?? 0;
   const total = done + (c.todo ?? 0) + (c.blocked ?? 0) + (c.failed ?? 0);
   return { done, total };
+}
+
+function href(path: string, params: Record<string, string | number | null | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== '') qs.set(key, String(value));
+  }
+  const search = qs.toString();
+  return search ? `${path}?${search}` : path;
+}
+
+function taskHref(w: WorkListItem, g: BeeGroup | undefined): string | null {
+  const claim = g?.claims?.find((c) => c.type === 'work-item' && c.id === w.id && c.harnessSlug);
+  if (!claim?.harnessSlug) return null;
+  return href('/adv', { tab: 'harnesses', slug: claim.harnessSlug, scope: 'self', sel: w.id });
+}
+
+function planHref(p: PlanRow): string {
+  return href('/admin/plans', { view: 'plans', plan: p.slug, h: p.harness });
+}
+
+function mailHref(ownerId: string, mm: MailEntry): string {
+  return href('/adv', { tab: 'conversations', conv: 'feed', fagent: ownerId, fmsg: mm.msg_id });
 }
 
 /**
@@ -132,15 +159,34 @@ export default function SwarmTab({ active }: { active: boolean }) {
     void setSelected(selected === id ? null : id);
   };
 
-  const taskRow = (w: WorkListItem, i: number) => (
-    <div className="pclsb-task" key={`${w.id}-${i}`}>
-      <span className="pclsb-task__rank">{w.rank != null ? `#${w.rank}` : '—'}</span>
-      <span className="pclsb-task__title" title={w.title ?? w.id}>
-        {w.title || w.id}
-      </span>
-      <span className="pclsb-task__st">{w.status ?? ''}</span>
-    </div>
-  );
+  const taskRow = (w: WorkListItem, i: number, g: BeeGroup | undefined) => {
+    const target = taskHref(w, g);
+    const label = w.title || w.id;
+    const body = (
+      <>
+        <span className="pclsb-task__rank">{w.rank != null ? `#${w.rank}` : '—'}</span>
+        <span className="pclsb-task__main">
+          <span className="pclsb-task__title">{label}</span>
+          <span className="pclsb-task__id">{w.id}</span>
+        </span>
+        {w.status && <span className="pclsb-task__st">{w.status}</span>}
+      </>
+    );
+    return target ? (
+      <a
+        className="pclsb-task pclsb-linkrow"
+        key={`${w.id}-${i}`}
+        href={target}
+        aria-label={`Open task ${w.id}: ${label}`}
+      >
+        {body}
+      </a>
+    ) : (
+      <div className="pclsb-task" key={`${w.id}-${i}`}>
+        {body}
+      </div>
+    );
+  };
 
   const renderExpansion = (r: PresenceRecord) => {
     const g = byAgent.get(r.ownerId);
@@ -159,30 +205,36 @@ export default function SwarmTab({ active }: { active: boolean }) {
 
     return (
       <div className="pclsb-expand" data-testid={`swarm-expand-${r.ownerId}`}>
-        <div className="pclsb-expand__head">tasks{g ? ` · ${g.load} claimed` : ''}</div>
+        <div className="pclsb-expand__head">Tasks{g ? ` · ${g.load} claimed` : ''}</div>
         {g && g.queued.length > 0 ? (
-          g.queued.map(taskRow)
+          g.queued.map((w, i) => taskRow(w, i, g))
         ) : (
           <div className="pclsb-expand__empty">{g ? 'no work-items claimed' : 'no fleet task data'}</div>
         )}
 
-        <div className="pclsb-expand__head">plan progress</div>
+        <div className="pclsb-expand__head">Plan progress</div>
         {agentPlans.length > 0 ? (
           agentPlans.slice(0, 8).map((p) => {
             const { done, total } = planTotals(p);
             const pct = total > 0 ? Math.round((done / total) * 100) : 0;
             return (
-              <div className="pclsb-plan" key={p.slug}>
-                <span className="pclsb-plan__slug" title={p.slug}>
+              <a
+                className="pclsb-plan pclsb-linkrow"
+                key={p.slug}
+                href={planHref(p)}
+                aria-label={`Open plan ${p.slug}`}
+              >
+                <span className="pclsb-plan__slug">
                   {p.slug}
                 </span>
-                <span className="pclsb-plan__bar">
+                <span className="pclsb-plan__bar" aria-hidden="true">
                   <span className="pclsb-plan__fill" style={{ width: `${pct}%` }} />
                 </span>
+                <span className="pclsb-plan__pct">{pct}%</span>
                 <span className="pclsb-plan__nums">
                   {done}/{total}
                 </span>
-              </div>
+              </a>
             );
           })
         ) : (
@@ -191,23 +243,33 @@ export default function SwarmTab({ active }: { active: boolean }) {
 
         {(hasMail || (selected === r.ownerId && mail.loading)) && (
           <>
-            <div className="pclsb-expand__head">recent comms</div>
+            <div className="pclsb-expand__head">Recent messages</div>
             {mail.loading && !hasMail && <div className="pclsb-expand__empty">loading…</div>}
             {inbox.map((mm, i) => (
-              <div className="pclsb-mail" key={`in-${mm.msg_id ?? i}`}>
+              <a
+                className="pclsb-mail pclsb-linkrow"
+                href={mailHref(r.ownerId, mm)}
+                key={`in-${mm.msg_id ?? i}`}
+                aria-label={`Open inbound message from ${mm.from ?? 'unknown'}`}
+              >
                 <div className="pclsb-mail__meta">
-                  ↘ {mm.from ?? '?'} · {mm.kind ?? 'message'}
+                  Inbox · {mm.from ?? '?'} · {mm.kind ?? 'message'}
                 </div>
-                {mm.summary ?? ''}
-              </div>
+                <span className="pclsb-mail__summary">{mm.summary ?? '(no summary)'}</span>
+              </a>
             ))}
             {outbox.map((mm, i) => (
-              <div className="pclsb-mail" key={`out-${mm.msg_id ?? i}`}>
+              <a
+                className="pclsb-mail pclsb-linkrow"
+                href={mailHref(r.ownerId, mm)}
+                key={`out-${mm.msg_id ?? i}`}
+                aria-label={`Open outbound message to ${(mm.to ?? []).join(', ') || 'all'}`}
+              >
                 <div className="pclsb-mail__meta">
-                  ↗ {(mm.to ?? []).join(', ') || '*'} · {mm.kind ?? 'message'}
+                  Outbox · {(mm.to ?? []).join(', ') || '*'} · {mm.kind ?? 'message'}
                 </div>
-                {mm.summary ?? ''}
-              </div>
+                <span className="pclsb-mail__summary">{mm.summary ?? '(no summary)'}</span>
+              </a>
             ))}
           </>
         )}

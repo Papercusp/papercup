@@ -16,6 +16,13 @@ export type TargetFactory = () => ChatTarget;
 
 const TARGETS: Record<string, TargetFactory> = {
   operator: () => new OperatorTarget(),
+  // sentinel — the SAME converse brain loaded with role='sentinel' (the
+  // Sentinel-as-Herald persona). The agent-mcp/operator-converse route honors
+  // the explicit body.role, so this exercises Sentinel-only behavior the
+  // operator role can't reach — notably the `<handoff_to_queen>` routing
+  // (sentinel-as-claude-tui-2026-06-22; converse.ts only honors handoffs for
+  // role==='sentinel'). Same HTTP transport as `operator`.
+  sentinel: () => new OperatorTarget({ role: 'sentinel' }),
   oracle: () => new OracleTarget(),
   // Architect is harness-scoped; the chat route returns a 400 without
   // a harnessSlug in the body. Default to 'sheets' (the long-standing

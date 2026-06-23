@@ -122,6 +122,9 @@ describe('scenario registry', () => {
       // overwatch persona boundaries (overwatch-role-2026-06-15 B-11)
       'overwatch-OW01-nudge-not-replace',
       'overwatch-OW02-observe-not-idea',
+      // sentinel voice→Queen handoff (sentinel-as-claude-tui-2026-06-22)
+      'sn-S01-handoff-planning-ask',
+      'sn-S02-no-handoff-trivial',
     ].sort());
   });
 
@@ -131,7 +134,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'oracle', 'architect', 'su', 'queen', 'bee', 'overwatch']).toContain(s.target);
+      expect(['operator', 'sentinel', 'oracle', 'architect', 'su', 'queen', 'bee', 'overwatch']).toContain(s.target);
     }
   });
 

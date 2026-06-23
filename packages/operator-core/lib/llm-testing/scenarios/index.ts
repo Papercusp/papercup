@@ -32,6 +32,10 @@ import { S13_VOICE_TERSE_COMPLEX } from './operator/S13-voice-terse-complex';
 import { S14_VOICE_NO_CODE } from './operator/S14-voice-no-code';
 import { S15_VOICE_ERROR_RECOVERY } from './operator/S15-voice-error-recovery';
 import { S16_VOICE_DISAMBIGUATION } from './operator/S16-voice-disambiguation';
+// SN01–SN02: sentinel-as-claude-tui-2026-06-22 — the voice→Sentinel→Queen
+// handoff path (role='sentinel' converse brain, `sentinel` target).
+import { SN01_HANDOFF_PLANNING_ASK } from './sentinel/SN01-handoff-planning-ask';
+import { SN02_NO_HANDOFF_TRIVIAL } from './sentinel/SN02-no-handoff-trivial';
 // M1–M12: operator-behavior-tests-2026-05-14 (brain-emission contracts)
 import { M1_CONTINUE_PAIRED_WITH_SAY } from './operator/M1-continue-paired-with-say';
 import { M2_MUTEX_CARD_VS_CONTINUE } from './operator/M2-mutex-card-vs-continue';
@@ -151,6 +155,9 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   S14_VOICE_NO_CODE,
   S15_VOICE_ERROR_RECOVERY,
   S16_VOICE_DISAMBIGUATION,
+  // sentinel voice→Queen handoff path (SN01–SN02)
+  SN01_HANDOFF_PLANNING_ASK,
+  SN02_NO_HANDOFF_TRIVIAL,
   // operator brain-emission contracts (M1–M12)
   M1_CONTINUE_PAIRED_WITH_SAY,
   M2_MUTEX_CARD_VS_CONTINUE,

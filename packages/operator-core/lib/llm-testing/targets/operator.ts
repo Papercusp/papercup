@@ -41,15 +41,28 @@ export interface OperatorTargetOpts {
   baseUrl?: string;
   /** Optional `harnessSlug` — most operator behavior is harness-scoped. */
   harnessSlug?: string;
+  /**
+   * Persona role the converse brain runs as. The agent-mcp/operator-converse
+   * route honors an EXPLICIT `body.role` (resolves `${role}:converse` + that
+   * role's prompt set — operator-converse.ts ~L85). Defaults to `operator`;
+   * the registered `sentinel` target passes `sentinel` so Sentinel-specific
+   * behavior — notably `<handoff_to_queen>` (sentinel-as-claude-tui) — is
+   * exercisable. `<handoff_to_queen>` is honored ONLY for role==='sentinel'
+   * (converse.ts ~L512), so the operator target can never trigger it.
+   */
+  role?: 'operator' | 'sentinel';
 }
 
 export class OperatorTarget implements ChatTarget {
-  readonly id = 'operator';
+  readonly id: string;
   readonly behaviors = BEHAVIORS;
   private readonly opts: OperatorTargetOpts;
 
   constructor(opts: OperatorTargetOpts = {}) {
     this.opts = opts;
+    // The id is the target key + telemetry tag — derive it from the role so a
+    // role='sentinel' instance registers/tags as 'sentinel', not 'operator'.
+    this.id = opts.role === 'sentinel' ? 'sentinel' : 'operator';
   }
 
   async open(opts: SessionOptions): Promise<ChatSession> {
@@ -68,6 +81,7 @@ export class OperatorTarget implements ChatTarget {
       runId: opts.runId,
       baseUrl,
       harnessSlug: this.opts.harnessSlug,
+      role: this.opts.role,
       transport: opts.transport,
       hasOverride: !!opts.dispatchOverride,
       // The runId IS a UUID; reuse it as conversationId so chain rows
@@ -82,6 +96,8 @@ interface SessionState {
   runId: string;
   baseUrl: string;
   harnessSlug?: string;
+  /** Persona role to stamp in the converse body (default operator). */
+  role?: 'operator' | 'sentinel';
   transport: 'in-process' | 'http-sse';
   hasOverride: boolean;
   /**
@@ -131,6 +147,10 @@ class OperatorSession implements ChatSession {
       // definition. Same shape as the production provider.
       isAutoFire: input.trigger === 'continue',
       ...(input.meta?.welcomedUser ? { welcomed_user: input.meta.welcomedUser } : {}),
+      // Explicit role wins at the converse route (resolves `${role}:converse`).
+      // Only stamp it when non-default so the operator target's wire body is
+      // byte-identical to before (keeps existing operator scenarios stable).
+      ...(this.state.role && this.state.role !== 'operator' ? { role: this.state.role } : {}),
     };
 
     const headers: Record<string, string> = {
