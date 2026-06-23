@@ -351,31 +351,33 @@ export function resolveBridgeTarget(
 }
 
 /**
- * Append-heavy activity-LOG tables that are MAPPED above but INTENTIONALLY carry NO
- * per-row emit_change_notify trigger — a per-row pg_notify on a high-write log is the
- * notify-storm anti-pattern (/internal/docs/performance). Source of truth for the
- * exclusion: mig 376 (drops the trigger) + cache-tag-trigger-coverage's COVERAGE_EXEMPT
- * (the test allow-list, with the reason + re-arm condition per table). Their live
- * invalidation is instead the DEBOUNCED change-detector (append-heavy-invalidator.ts,
- * data-sync-push-completion P-005/D-012): one max(id) poll per table per tick → a single
- * synthesized `<table>.changed` invalidate when it advances, so consumers push-update
- * WITHOUT the per-row storm. Keep this in sync with mig 376's drop_tables + COVERAGE_EXEMPT.
+ * The trigger-LESS append-heavy LOG tables the debounced change-detector must POLL
+ * (append-heavy-invalidator.ts; data-sync-push-completion P-005/D-012). These are MAPPED above
+ * but INTENTIONALLY carry NO per-row emit_change_notify trigger — a per-row pg_notify on a
+ * high-write log is the notify-storm anti-pattern (mig 376 drops it; cache-tag-trigger-coverage's
+ * COVERAGE_EXEMPT documents it). The detector MAXes a monotonic column per tick and synthesizes a
+ * `<table>.changed` invalidation when it advances, so consumers push-update WITHOUT the per-row storm.
  *
- * Each `table` is the bare `<table>` (no `harness_shared.` prefix); the detector forms the
- * full `harness_shared.<table>.changed` trigger-event key.
+ * RELATIONSHIP to cache/debounced-invalidate.ts (cache-expensive-tool-reads P-008): that module's
+ * `APPEND_HEAVY_TABLES` Set is the CONSUMER-side cache coalescer — it debounces L1 cache-tag bumps
+ * WHEN a `<table>.changed` fires. This list is the PRODUCER side — who FIRES `.changed` for the
+ * trigger-less tables. They compose automatically: a synthesized `.changed` flows through sync-sse's
+ * bridge → emitSystemEvent → the cache ECA's coalescer AND → the client query-name push. This list
+ * is a strict SUBSET of that Set (it excludes coord_event_log, which already has a real mig-275
+ * trigger, so it is NOT polled). A drift-guard test asserts the subset relation.
  *
- * `changeKey` = the MONOTONIC-on-insert bigint column the detector MAXes to detect new rows.
- * NOT every table has a usable integer `id`: audit_log's `id` is TEXT, and agent_runs_consolidated
- * / harness_hook_logs have NO `id` column at all — they carry a bigint epoch `ts` instead. (Found
- * live: the first cut assumed `id` everywhere and errored on 3 of 6 — D-012 follow-up.) All
- * changeKeys are bigint so the sweep compares them uniformly via BigInt(). Detection catches new
- * rows; a pure UPDATE that doesn't advance changeKey lags to the next insert / 180s drift-repair.
+ * `changeKey` = the MONOTONIC-on-insert bigint column the detector MAXes to detect new rows. NOT
+ * every table has a usable integer `id`: audit_log's `id` is TEXT, and agent_runs_consolidated /
+ * harness_hook_logs have NO `id` column — they carry a bigint epoch `ts` instead. (Found live: the
+ * first cut assumed `id` everywhere and errored on 3 of 6.) All changeKeys are bigint so the sweep
+ * compares them uniformly via BigInt(). Detection catches new rows; a pure UPDATE that doesn't
+ * advance changeKey lags to the next insert / 180s drift-repair.
  */
 export interface AppendHeavyTableSpec {
   readonly table: string;
   readonly changeKey: string;
 }
-export const APPEND_HEAVY_TABLES: readonly AppendHeavyTableSpec[] = [
+export const APPEND_HEAVY_POLL_SPECS: readonly AppendHeavyTableSpec[] = [
   { table: 'audit_log', changeKey: 'ts' }, // id is TEXT — use the bigint ts
   { table: 'agent_runs_consolidated', changeKey: 'ts' }, // no id column
   { table: 'user_actions', changeKey: 'id' },
