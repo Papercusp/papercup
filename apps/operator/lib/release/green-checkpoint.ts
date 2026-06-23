@@ -41,8 +41,15 @@ export interface CheckpointDeps {
   /** Run the "green" suite in `treeDir` against `base`; resolve green=true on pass.
    *  `failingTests` is a STABLE signature of what failed (test files / workspaces),
    *  extracted from the FULL output — used to dedup the release-fixer dispatch by the
-   *  failure rather than the candidate sha (P-012). */
-  runGreen(treeDir: string, base: string | null): Promise<{ green: boolean; summary: string; failingTests?: string[] }>;
+   *  failure rather than the candidate sha (P-012).
+   *  `flakeSuspects` (load-flake-isolation-2026-06-23): files that FAILED under the
+   *  gate's 8-fork load but PASSED on an isolated single-concurrency re-run — i.e. the
+   *  suite was red only from box-weather, so `green` is reported true and these files
+   *  are surfaced (drives the P-009 flake ledger / quarantine nudge). */
+  runGreen(
+    treeDir: string,
+    base: string | null,
+  ): Promise<{ green: boolean; summary: string; failingTests?: string[]; flakeSuspects?: string[] }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
   /** Publish `ready` to origin. */
@@ -85,6 +92,11 @@ export interface CheckpointResult {
   /** P-012: a stable signature of what failed (test files / workspaces) on the
    *  not-green path, so the release-fixer dispatch dedups by FAILURE, not candidate sha. */
   failingTests?: string[];
+  /** load-flake-isolation-2026-06-23: files the gate ABSORBED as load-flakes — they
+   *  failed under the 8-fork checkpoint load but PASSED in an isolated re-run, so the
+   *  gate is GREEN despite the initial red. Surfaced so the P-009 ledger can tally a
+   *  chronically-flaky file and the owner can quarantine it accountably. */
+  flakeSuspects?: string[];
 }
 
 /** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
@@ -100,6 +112,132 @@ export function extractFailingTests(out: string): string[] {
   for (const m of out.matchAll(/^\s*FAIL\s+(\S+)/gm)) set.add(m[1]);
   for (const m of out.matchAll(/>>>\s+(\S+)\s+FAILED\b/g)) set.add(m[1]);
   return [...set].sort().slice(0, 50);
+}
+
+/** A single failing test FILE, paired with the workspace it ran under. The
+ *  isolation re-run needs BOTH: the file (to scope `vitest run <file>`) and the
+ *  workspace dir (the cwd vitest runs in — the file path is workspace-relative). */
+export interface FailingFile {
+  /** The workspace package name printed by the affected runner's `>>> <ws> :: …` header. */
+  workspace: string;
+  /** The test file path as vitest reports it (workspace-relative, e.g. `lib/foo.test.ts`). */
+  file: string;
+}
+
+/**
+ * load-flake-isolation-2026-06-23: parse the FULL affected-runner output into the
+ * concrete failing test FILES, grouped by the workspace they ran under, so the
+ * isolation re-run can re-run exactly those files at single concurrency.
+ *
+ * The affected runner sections its output by `>>> <ws> :: npm run <script>` headers
+ * (scripts/affected-tests.mjs), then prints that workspace's vitest output beneath —
+ * including `FAIL <file>` suite rows and `❯ <file> (… N failed …)` summary rows. A
+ * failing file therefore belongs to the MOST RECENT `>>>` header above it. We parse
+ * line-by-line, tracking the current workspace, and collect only real test FILES
+ * (`.test.`/`.spec.`) — never the bare workspace markers `extractFailingTests` also
+ * returns (those aren't files and can't be handed to `vitest run`).
+ *
+ * Mirrors `parseFailedFiles`'s file regexes in affected-tests.mjs so the two stay in
+ * lock-step. Pure + total: empty output ⇒ `[]`, never throws.
+ */
+export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] {
+  const TEST_FILE = /\S+\.(?:test|spec)\.[cm]?[jt]sx?/;
+  // `>>> <ws> :: npm run <script>` — the affected runner's per-workspace section header.
+  const HEADER = /^\s*>>>\s+(\S+)\s+::\s+npm run\b/;
+  // `❯ lib/x/y.test.ts (22 tests | 1 failed) 85ms` — a failed-file summary row.
+  const SUMMARY_FAIL = new RegExp(`^\\s*❯\\s+(${TEST_FILE.source})\\s+\\([^)]*\\bfailed\\b[^)]*\\)`);
+  // `FAIL  lib/x/y.test.ts …` — a failed-suite row (transform/setup errors).
+  const SUITE_FAIL = new RegExp(`^\\s*FAIL\\s+(${TEST_FILE.source})\\b`);
+
+  const out: FailingFile[] = [];
+  const seen = new Set<string>();
+  let currentWs: string | null = null;
+  for (const line of fullOutput.split('\n')) {
+    const h = HEADER.exec(line);
+    if (h) {
+      currentWs = h[1];
+      continue;
+    }
+    const m = SUMMARY_FAIL.exec(line) ?? SUITE_FAIL.exec(line);
+    if (m) {
+      const file = m[1];
+      // A file before any `>>>` header (or a non-affected-runner invocation) has no
+      // known workspace; skip it — we can't run `vitest run <file>` without a cwd.
+      if (!currentWs) continue;
+      const key = `${currentWs} ${file}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ workspace: currentWs, file });
+    }
+  }
+  return out;
+}
+
+/** The result of re-running ONE originally-failing file in isolation. */
+export interface IsolationResult {
+  workspace: string;
+  file: string;
+  /** true ⇒ the file PASSED on its isolated re-run (a load-flake suspect). */
+  passed: boolean;
+  /** true ⇒ the isolated re-run itself errored/timed out (verdict undetermined for this file). */
+  errored?: boolean;
+}
+
+export type FlakeVerdict =
+  /** every originally-failing file PASSED in isolation ⇒ the red was pure load-flake. */
+  | 'all-flakes'
+  /** at least one file STILL FAILED in isolation ⇒ a real deterministic break. */
+  | 'real-break'
+  /** the isolation run couldn't decide (no files parsed, an isolation error) ⇒ trust the original verdict. */
+  | 'inconclusive';
+
+export interface FlakeDecision {
+  verdict: FlakeVerdict;
+  /** files that flaked (failed under load, passed in isolation) — recorded as flake-suspects. */
+  flakeAbsorbed: string[];
+  /** files that STILL failed in isolation — a real break; the gate must stay red. */
+  stillFailing: string[];
+}
+
+/**
+ * load-flake-isolation-2026-06-23: the PURE flake-vs-real decision. SAFE by
+ * construction — it NEVER hides a deterministic bug:
+ *   - `real-break`     ⇐ ANY originally-failing file still fails in isolation, OR any
+ *                          isolation re-run ERRORED (we cannot prove that file is a flake).
+ *   - `all-flakes`     ⇐ we re-ran a non-empty set of files AND every one PASSED cleanly
+ *                          (no errors). Only THIS verdict may flip the gate red→green.
+ *   - `inconclusive`   ⇐ there were no parseable failing files to re-run (e.g. a build
+ *                          break, a non-vitest failure mode). Caller keeps the ORIGINAL
+ *                          (red) verdict — uncertainty never flips red→green.
+ *
+ * The fail-safe bias is deliberate: an errored isolation re-run counts as a real break,
+ * not a flake, so a flaky-to-run isolation step can never manufacture a false green.
+ */
+export function decideFlakeAbsorption(input: {
+  originalFailing: FailingFile[];
+  isolationResults: IsolationResult[];
+}): FlakeDecision {
+  const { originalFailing, isolationResults } = input;
+  if (originalFailing.length === 0) {
+    return { verdict: 'inconclusive', flakeAbsorbed: [], stillFailing: [] };
+  }
+  const label = (r: { workspace: string; file: string }) => `${r.workspace}::${r.file}`;
+  const byKey = new Map(isolationResults.map((r) => [label(r), r]));
+
+  const flakeAbsorbed: string[] = [];
+  const stillFailing: string[] = [];
+  for (const f of originalFailing) {
+    const r = byKey.get(label(f));
+    // No result for an originally-failing file, or the re-run errored ⇒ we cannot
+    // prove it's a flake ⇒ treat it as still-failing (fail-safe; never flip to green).
+    if (!r || r.errored || !r.passed) {
+      stillFailing.push(label(f));
+    } else {
+      flakeAbsorbed.push(label(f));
+    }
+  }
+  const verdict: FlakeVerdict = stillFailing.length > 0 ? 'real-break' : 'all-flakes';
+  return { verdict, flakeAbsorbed, stillFailing };
 }
 
 /** Host-set, test-affecting NON-`PAPERCUSP_` env vars the gate must strip (P-008).
@@ -220,7 +358,18 @@ export async function runGreenCheckpoint(
 
   deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
   await deps.setupTree(candidate);
-  const { green, summary, failingTests } = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  const { green, summary, failingTests, flakeSuspects } = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
+  // affected suite went red under the gate's 8-fork load, but every originally-failing
+  // FILE then PASSED on an isolated single-concurrency re-run, so it reported green=true
+  // and surfaced the flake suspects. Make that visible in the green-advance broadcast
+  // below so a flake-absorbed advance is auditable (and the file is on record for the
+  // P-009 chronic-flake ledger / quarantine nudge), without holding the whole fleet's gate.
+  if (green && flakeSuspects?.length) {
+    deps.log(
+      `candidate ${candidate.slice(0, 8)} is green (load-flake absorbed: ${flakeSuspects.join(', ')} — failed under load, passed in isolation)`,
+    );
+  }
   if (!green) {
     deps.log(`candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}`);
     await deps

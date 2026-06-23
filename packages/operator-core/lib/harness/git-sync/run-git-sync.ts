@@ -42,7 +42,18 @@ const defaultRunGit: RunGit = (args, cwd) =>
     // output (push-rejection markers like "[rejected]" / "non-fast-forward", merge text)
     // is DETERMINISTIC regardless of the host's LANG — the non-FF detection + other output
     // parsing is then reliable at the root, rather than depending on the operator's locale.
-    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
+    //
+    // PAPERCUSP_GIT_SYNC_PUSH=1: mark EVERY git invocation from the git-sync runner so the
+    // local pre-push hook (bin/git-hooks/pre-push) recognizes the automated git-sync push and
+    // SKIPS its `test:affected` author-warning gate. git-sync must stay fast + non-blocking
+    // (it commits with `--no-verify`, but `push` is NOT exempted from pre-push), so without
+    // this marker the hook would run the affected suite on the scheduled push and wedge
+    // git-sync. Mirrors green-checkpoint's PAPERCUSP_MAIN_PUSH_OK=1 push-marker pattern. The
+    // hook only acts on `push`, so setting it on all git-sync git calls is harmless.
+    const child = spawn('git', args, {
+      cwd,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', PAPERCUSP_GIT_SYNC_PUSH: '1' },
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => (stdout += String(d)));
