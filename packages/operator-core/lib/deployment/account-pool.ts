@@ -422,6 +422,9 @@ export interface SelectOpts {
    *  callers/tests are byte-identical; production passes `Math.random`. */
   spread?: boolean;
   rng?: () => number;
+  /** When spreading, give this account (the harness's soft-pin) a cache-affinity weight bonus so the
+   *  hive prefers its warm-cache credential without funnelling every bee onto it. */
+  affinityId?: string;
 }
 
 /**
@@ -471,6 +474,12 @@ export const DRAIN_UTIL_STALE_MS = 10 * 60_000;
 export const DRAIN_URGENT_RESET_MS = 20 * 60_000;
 /** At/above this unified utilization an account is effectively full — don't route fresh load to it. */
 export const DRAIN_FULL_UTIL = 0.97;
+/** Cache-affinity weight multiplier for a harness's soft-pinned account in the drain SPREAD
+ *  (account-spawn-spread fix, 2026-06-23). The pinned account is preferred (warm system/tools prefix
+ *  cache) but NOT exclusive: with a bonus of B and N equal-headroom peers it draws ≈ B/(B+N−1) of the
+ *  hive's bees, so a busy hive keeps cache warmth while still fanning across budgeted accounts instead
+ *  of RPM-storming one. Env-tunable; 1 = no preference (pure spread). */
+export const SOFT_PIN_AFFINITY_WEIGHT = Number(process.env.PAPERCUSP_SPAWN_SOFT_PIN_AFFINITY_WEIGHT) || 2.5;
 
 /** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never
  *  observed / stale (treat as most-available so a cold pool degrades gracefully). */
@@ -598,18 +607,27 @@ export function selectAccountByDrain(pool: AccountPool, now: number, opts: Selec
   const availableNow = sorted.filter((a) => isAvailable(a, now));
   const tier = availableNow.length > 0 ? availableNow : sorted;
   const urgentSet = tier.filter(urgent);
-  return weightedHeadroomPick(urgentSet.length > 0 ? urgentSet : tier, now, opts.rng ?? Math.random);
+  return weightedHeadroomPick(urgentSet.length > 0 ? urgentSet : tier, now, opts.rng ?? Math.random, opts.affinityId);
 }
 
 /**
  * Pick from `cands` (already best-first) weighted by remaining headroom (1 − effective util, floored so
- * a near-full account keeps a slim chance). `rng()===0` deterministically returns the first (best)
- * candidate, so deterministic callers/tests are unchanged; a uniform `rng` spreads a burst across the
- * pool roughly in proportion to each account's spare capacity.
+ * a near-full account keeps a slim chance), with an optional cache-affinity BONUS for `affinityId` (the
+ * harness's soft-pinned account) so a hive prefers its warm-cache credential without piling every bee
+ * on it. `rng()===0` deterministically returns the first (best) candidate, so deterministic
+ * callers/tests are unchanged; a uniform `rng` spreads a burst roughly in proportion to the weights.
  */
-function weightedHeadroomPick(cands: readonly ClaudeAccount[], now: number, rng: () => number): ClaudeAccount {
+function weightedHeadroomPick(
+  cands: readonly ClaudeAccount[],
+  now: number,
+  rng: () => number,
+  affinityId?: string,
+): ClaudeAccount {
   if (cands.length <= 1) return cands[0];
-  const weights = cands.map((a) => Math.max(0.05, 1 - effectiveDrainUtil(a, now)));
+  const weights = cands.map((a) => {
+    const base = Math.max(0.05, 1 - effectiveDrainUtil(a, now));
+    return a.id === affinityId ? base * SOFT_PIN_AFFINITY_WEIGHT : base;
+  });
   const total = weights.reduce((s, w) => s + w, 0);
   let r = rng() * total;
   for (let i = 0; i < cands.length; i++) {
@@ -637,14 +655,16 @@ export interface SpawnSelection {
  * Pick the account a spawning bee should egress through (inference-gateway-multi-credential-routing
  * P-005, corrected to the Claude Max basis — D-003). Cache-affinity FIRST (the dominant cost lever —
  * the conversation/prompt cache is per-credential), then budget-draining among the rest:
- *   1. STICKY — the bee's prior account, if still available (preserves its per-credential cache).
+ *   1. STICKY — the bee's prior account, if still available (preserves its per-credential cache — this
+ *      is the per-BEE multi-turn affinity; the dominant cache lever).
  *   2. MANUAL-BIND — an available account with the harness in `boundTo` (owner/deploy pin); ties → drain.
- *   3. SOFT-PIN — an available, NOT-yet-full account the harness was auto-pinned to (`softPin`), so a
- *      harness's consecutive bees reuse one credential's prompt-cache prefix. A full/paused soft pin is
- *      SKIPPED (lazy re-pin, D-002) and the next step re-pins fresh.
- *   4. DRAIN — otherwise the account that best fills the aggregate Max 5h budget; when a `harness` is
- *      given this also NEWLY soft-pins it (surfaced via `newlyPinned` for the caller to persist), so
- *      the harness amortizes a warm-cache RUN on that account instead of cold-starting per bee.
+ *   3. SOFT-PIN as an AFFINITY HINT (account-spawn-spread fix, 2026-06-23) — the account a harness was
+ *      auto-pinned to is PREFERRED in the drain spread (warm system/tools prefix cache) but is NO LONGER
+ *      a hard funnel: a busy hive's CONCURRENT bees fan out across budgeted peers instead of every bee
+ *      piling on the one pinned account and RPM-storming it. A full/paused pin contributes no hint.
+ *   4. DRAIN — SPREAD across spawn-eligible accounts weighted by headroom (+ the affinity bonus). When
+ *      the harness has NO pin yet, the chosen account is surfaced via `newlyPinned` to ESTABLISH the
+ *      hive's cache anchor; an existing pin is kept stable (not re-thrashed per spilled bee).
  * Pure — the soft-pin WRITE-BACK is the caller's (keeps this exhaustively unit-testable).
  */
 export function selectAccountForSpawn(pool: AccountPool, now: number, opts: SpawnSelectOpts = {}): SpawnSelection {
@@ -654,20 +674,21 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
     if (prior && isAvailable(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
   }
   const harness = opts.harness;
+  let affinityId: string | undefined;
   if (harness) {
-    // 2. Manually-bound account (owner/deploy intent), best drain among the bound ties.
+    // 2. Manually-bound account (owner/deploy intent), best drain among the bound ties — a hard pin.
     const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && isAvailable(a, now));
     const boundBest = selectAccountByDrain({ accounts: bound }, now);
     if (boundBest) return { accountId: boundBest.id, pinSource: 'manual-bind' };
-    // 3. Soft cache-affinity pin — only while it still has headroom (lazy re-pin past the cap, D-002).
+    // 3. Soft cache-affinity pin → an AFFINITY HINT for the spread (weighted preference, not a funnel).
+    //    Skipped when full/paused (lazy re-pin, D-002) so the hive re-anchors onto fresh capacity.
     const softPinned = softPinnedAccount(pool, harness);
-    if (softPinned && !accountFull(softPinned, now)) return { accountId: softPinned.id, pinSource: 'soft-pin' };
+    if (softPinned && !accountFull(softPinned, now)) affinityId = softPinned.id;
   }
-  // 4. Budget-drain across the whole pool — SPREAD across budget-healthy accounts (weighted by
-  //    headroom) instead of piling every bee onto the single lowest-util one, and widened to
-  //    spawn-ELIGIBLE accounts (isSpawnEligible) so a budgeted account carrying a stale predictive
-  //    pause isn't stranded out of selection. Auto-pin the chosen account for a fresh harness.
-  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, eligible: isSpawnEligible });
+  // 4. Budget-drain across the whole pool — SPREAD across budget-healthy accounts (weighted by headroom,
+  //    with the affinity bonus for the hive's pinned account), widened to spawn-ELIGIBLE accounts so a
+  //    budgeted account carrying a stale predictive pause isn't stranded out of selection.
+  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, eligible: isSpawnEligible, affinityId });
   if (!drained) {
     // 4b. Nothing is spawn-eligible (the pool is genuinely exhausted). Rather than return undefined and
     //     herd EVERY bee onto the single shared frame-default credential (which then 429s them all), pin
@@ -677,8 +698,10 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
   }
   return {
     accountId: drained.id,
-    pinSource: 'drain',
-    ...(harness ? { newlyPinned: { harness, accountId: drained.id } } : {}),
+    pinSource: drained.id === affinityId ? 'soft-pin' : 'drain',
+    // ESTABLISH the hive's cache anchor only when it had none; keep an existing pin stable so a bee that
+    // spilled off it via the spread does not re-pin the whole harness onto its spill target.
+    ...(harness && !affinityId ? { newlyPinned: { harness, accountId: drained.id } } : {}),
   };
 }
 

@@ -125,7 +125,9 @@ describe('multi-account routing — end-to-end (selection → spawn header → g
 
   it('a bee in an UNBOUND harness egresses through the budget-drain pick (acctA)', async () => {
     const pool = selectionPool();
-    const accountId = selectAccountForSpawn(pool, T0, { harness: 'other-harness' }).accountId;
+    // Unbound harness → step-4 drain SPREAD; under a fixed seed (rng: () => 0) it returns its
+    // deterministic best (oldest-added / most-headroom 'acctA'). Production spreads via Math.random.
+    const accountId = selectAccountForSpawn(pool, T0, { harness: 'other-harness', rng: () => 0 }).accountId;
     expect(accountId).toBe('acctA'); // no binding → oldest-added / budget-drain order
     const port = await bootGateway();
     await fireBee(port, gatewaySpawnEnv(true, { accountId }));

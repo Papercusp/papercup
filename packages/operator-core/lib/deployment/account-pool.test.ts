@@ -256,6 +256,35 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
   it('returns undefined only for an empty pool', () => {
     expect(selectAccountForSpawn(emptyPool(), T0).accountId).toBeUndefined();
   });
+
+  it('a soft-pinned harness PREFERS its pin but no longer funnels every concurrent bee onto it', () => {
+    // Soft-pin harness 'h' to 'b' (a healthy account); the hive must spread, not 100%-pile on 'b'.
+    let p = poolOf('a', 'b', 'c');
+    p = { accounts: p.accounts.map((acc) => (acc.id === 'b' ? { ...acc, softPin: ['h'] } : acc)) };
+    const picks = Array.from(
+      { length: 60 },
+      (_, i) => selectAccountForSpawn(p, T0, { harness: 'h', rng: () => i / 60 }).accountId,
+    );
+    const counts = picks.reduce<Record<string, number>>((m, id) => ((m[id!] = (m[id!] ?? 0) + 1), m), {});
+    expect(Object.keys(counts).length).toBeGreaterThan(1); // fans out across the pool (not a funnel)
+    expect(counts['b']).toBeGreaterThan(counts['a'] ?? 0); // ...while still PREFERRING the warm-cache pin
+    expect(counts['b']).toBeGreaterThan(counts['c'] ?? 0);
+  });
+
+  it('does NOT re-pin the harness when a bee spills off its existing soft-pin (anchor stays stable)', () => {
+    let p = poolOf('a', 'b');
+    p = { accounts: p.accounts.map((acc) => (acc.id === 'b' ? { ...acc, softPin: ['h'] } : acc)) };
+    // rng=0.1 lands in 'a's weight band (below 'b's affinity-boosted slice) → this bee SPILLS to 'a',
+    // but newlyPinned must stay unset: the hive's pin 'b' holds; a spilled bee never re-anchors the harness.
+    const sel = selectAccountForSpawn(p, T0, { harness: 'h', rng: () => 0.1 });
+    expect(sel.accountId).toBe('a'); // spilled off the pin
+    expect(sel.newlyPinned).toBeUndefined(); // ...without re-pinning the harness
+  });
+
+  it('establishes a fresh soft-pin (newlyPinned) only when the harness has none yet', () => {
+    const sel = selectAccountForSpawn(poolOf('a', 'b'), T0, { harness: 'fresh-harness', rng: () => 0 });
+    expect(sel.newlyPinned).toEqual({ harness: 'fresh-harness', accountId: sel.accountId });
+  });
 });
 
 describe('selectAccountByHeadroom (P-020)', () => {
