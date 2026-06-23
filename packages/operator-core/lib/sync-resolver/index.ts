@@ -2163,6 +2163,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── overwatch.liveness — the Overwatch pane's "is-it-alive?" heartbeat strip ──
+  //
+  // The proof-of-life the control-state CAN'T give: it derives from the
+  // `harness_shared.autoloop_state` row (role='overwatch') that EVERY actual fire
+  // stamps (`recordFire`), not the one-shot `overwatch-wake` routine row (which is
+  // deactivated between fires, so a healthy-between-runs loop looked identical to a
+  // dead one). Returns last-run-at + status + a derived next-run estimate + an
+  // ALIVE/STALE verdict (stale once the last fire is older than 2× cadence). The
+  // overwatch loop's fire path (`overwatch/loop.ts`) invalidates this name after
+  // each `recordFire`, so the strip's countdown + badge refresh live over SSE.
+  'overwatch.liveness': {
+    resolve: async () => {
+      const { getOverwatchLiveness } = await import('../overwatch/snapshot');
+      return [await getOverwatchLiveness()];
+    },
+  },
+
   // ── learning.gym — the Learning tab's Gym view (operator-learning-tab P-006) ──
   //
   // Cross-harness rollup of the gym control plane: recent prompt-optimization
