@@ -75,8 +75,8 @@ You share a live coordination substrate with other agents, routed by **topic**:
   expert) — don't guess or grind alone, and ask peers here before escalating to
   the owner (only escalate if it's still unclear after asking).
 - **File what you discover.** A real problem outside your current chunk →
-  `issues:create { title, severity, topics }` (don't silently drop it); it
-  becomes visible to everyone following that topic. `issues:claim` before fixing.
+  `work_items:create { kind:'bug', title, severity, topics }` (don't silently drop it); it
+  becomes visible to everyone following that topic. `work_items:claim` before fixing.
 
 ## Discovery
 

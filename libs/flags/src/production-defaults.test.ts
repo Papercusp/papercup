@@ -47,12 +47,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
-  // work-item-deps-and-readiness-2026-06-22 P-005: the maintained-readiness sidecar cutover on the
-  // scheduler claim HOT PATH. OFF = today's inline NOT EXISTS predicate (byte-identical); ON = the
-  // indexed work_item_blocked anti-join. A reversible kill-switch that must NOT flip until a LIVE
-  // reconciliation proves the trigger-maintained sidecar has zero drift vs the inline oracle (a stale
-  // sidecar → a bee claims blocked work). su/owner flips ON after that attended verify.
-  FLAGS.SCHEDULER_MAINTAINED_READY,
+  // (SCHEDULER_MAINTAINED_READY graduated to default-ON 2026-06-22 — the maintained-readiness sidecar
+  // cutover: live reconciliation drift=0 SUSTAINED on the dev DB + the flag-ON claim path verified green
+  // end-to-end (claim-respects-blocking 9/9, both entry points). Reversible kill-switch back to the inline
+  // predicate. Finished+verified ships ON, not dark — removed from the allowlist per the rule.)
   // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items self-pickable by the
   // scheduler claim path. owner-authority — it adds a brand-new dispatch SOURCE (what the autonomous
   // fleet picks up: bug/change/task items, not just features), so the owner ratifies the flip. OFF ⇒
@@ -378,7 +376,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, 'incomplete'],
-  [FLAGS.SCHEDULER_MAINTAINED_READY, 'cutover'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
   [FLAGS.PLAN_PART_FEDERATION, 'incomplete'],

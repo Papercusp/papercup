@@ -62,16 +62,19 @@ cover both families, and a write via either view fires the triggers on `work_ite
 
 ## The claim cutover (flag)
 
-`SCHEDULER_MAINTAINED_READY` (default **OFF**, `KNOWN_DARK_FLAGS` case `cutover`). `claimFloorsWhereSql`
-swaps the inline `NOT EXISTS` for `NOT EXISTS (work_item_blocked …)` (indexed) when on. **Both** claim
-entry points — `claimNextWorkItem` and `getNextWorkItem` — resolve `schedulerMaintainedReadyEnabled()`
-(fail-CLOSED to the inline predicate) and pass the boolean into the shared fragment, so the two paths
-can never drift (D-002). OFF is byte-identical to the pre-existing behavior.
+`SCHEDULER_MAINTAINED_READY` (now **default ON** — graduated 2026-06-22 after a sustained live drift=0
+verify + the flag-ON claim path green end-to-end). `claimFloorsWhereSql` reads `NOT EXISTS
+(work_item_blocked …)` (indexed) when on, the inline `NOT EXISTS` when off. **Both** claim entry points —
+`claimNextWorkItem` and `getNextWorkItem` — resolve `schedulerMaintainedReadyEnabled()` (fail-CLOSED to
+the inline predicate) and pass the boolean into the shared fragment, so the two paths can never drift
+(D-002). OFF is the reversible kill-switch back to the byte-identical inline predicate.
 
-**Do not flip it without a live reconciliation showing zero drift.** Run `reconcileReadiness()` (or the
-inline SQL: `EXCEPT` both ways between `work_item_blocked` and the `work_item_is_blocked()` set over
-features) — `drift = missing + extra` must be 0. `missing` (oracle-blocked but no sidecar row) is the
-dangerous one: a blocked item looks ready → a bee claims blocked work.
+**Before changing the default or trusting the sidecar on a new DB, verify zero drift.** Run
+`reconcileReadiness()` (or the inline SQL: `EXCEPT` both ways between `work_item_blocked` and the
+`work_item_is_blocked()` set over features) — `drift = missing + extra` must be 0. `missing`
+(oracle-blocked but no sidecar row) is the dangerous one: a blocked item looks ready → a bee claims
+blocked work. The claim test pins both arms explicitly (an inline-OFF describe + a sidecar-ON describe)
+so a fragment bug in either path is caught.
 
 ## Gotchas
 

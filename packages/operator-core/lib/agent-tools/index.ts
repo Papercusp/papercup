@@ -594,6 +594,9 @@ import './work_items/link';
 import './work_items/tag';
 import './work_items/subscribe';
 import './work_items/comment';
+// Field-edit (title/body/severity/kind/found-during/linked-feature) — the unified
+// replacement for the retired issues:update (coordination-unification-2026-06-23 P-009).
+import './work_items/update';
 import './work_items/checkpoint';
 import './work_items/amend';
 import './work_items/expand';

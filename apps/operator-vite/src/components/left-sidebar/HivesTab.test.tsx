@@ -20,6 +20,13 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.result }));
 vi.mock('./LocalHivesControl', () => ({
   default: () => <div data-testid="local-hives-control" />,
 }));
+// HiveFederationStatus is mounted inside HivesTab but is its OWN surface with its
+// own test + its own `network.federationStatus` sync query. Stub it so this test's
+// queryName-agnostic useSyncQuery mock doesn't feed it HivesTab's hive rows (which
+// it would mis-read as a FedStatus and crash on). Mirrors the LocalHivesControl stub.
+vi.mock('./HiveFederationStatus', () => ({
+  default: () => <div data-testid="hive-federation-status" />,
+}));
 
 import HivesTab from './HivesTab';
 

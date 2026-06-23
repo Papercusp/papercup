@@ -947,9 +947,9 @@ export const FLAGS = {
   SCHEDULER_SPEC_CLAIM: "papercusp-scheduler-spec-claim",
   // work-item-deps-and-readiness-2026-06-22 P-005: the scheduler claim reads the maintained
   // readiness sidecar (work_item_blocked — an indexed anti-join) instead of the inline per-claim
-  // NOT EXISTS subquery. Behavior-identical; a pure performance cutover. DEFAULT OFF (reversible
-  // kill-switch) until a LIVE reconciliation proves the trigger-maintained sidecar has zero drift
-  // vs the inline oracle; then su/owner flips it ON. KNOWN_DARK_FLAGS.
+  // NOT EXISTS subquery. Behavior-identical; a pure performance cutover. DEFAULT ON (verified: live
+  // reconciliation drift=0 sustained + flag-ON claim path green end-to-end). OFF is the reversible
+  // kill-switch back to the inline predicate.
   SCHEDULER_MAINTAINED_READY: "papercusp-scheduler-maintained-ready",
   // gateway-priority-tiers-2026-06-22: gates the inference-gateway priority-tier
   // queueing/admission path. DEFAULT OFF — the implementation is in-flight; flips
@@ -1523,11 +1523,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // hybrid-bee-scheduler-work-stealing-2026-06-22: spec-driven claim ON (default); OFF degrades
   // scheduler:get_next to the default ordering (no breakage). Resolver + spec store complete + tested.
   [FLAGS.SCHEDULER_SPEC_CLAIM]: true,
-  // DEFAULT OFF (work-item-deps-and-readiness-2026-06-22 P-005): the maintained-readiness sidecar
-  // cutover. OFF ⇒ the claim uses the inline NOT EXISTS predicate (today's byte-identical behavior);
-  // ON ⇒ the indexed work_item_blocked anti-join. A reversible kill-switch pending a live zero-drift
-  // reconciliation verify before the flip. KNOWN_DARK_FLAGS.
-  [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
+  // DEFAULT ON (work-item-deps-and-readiness-2026-06-22 P-005): the scheduler claim reads readiness from
+  // the maintained work_item_blocked sidecar (an indexed anti-join kept exact by the wir_* triggers)
+  // instead of the inline per-claim NOT EXISTS. Verified: live reconciliation drift=0 SUSTAINED + the
+  // flag-ON claim path green end-to-end (claim-respects-blocking 9/9, both entry points). OFF is the
+  // reversible kill-switch back to the byte-identical inline predicate. Shipped ON (finished+verified).
+  [FLAGS.SCHEDULER_MAINTAINED_READY]: true,
   // DEFAULT ON (gateway-priority-tiers-2026-06-22): per-tier admission caps + a reserved tier-1 floor
   // (queen/scout/interactive never crowded out by batch bees). Complete + tested (19 module tests +
   // gateway suite green, flag-OFF byte-identical); flipped ON per owner directive 2026-06-22.

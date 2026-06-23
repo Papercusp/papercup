@@ -93,7 +93,7 @@ authoritative, self-describing list (same data as MCP `tools/list`); don't
 trust any enumeration here to be complete.
 
 **Project navigation** — `harness:list` / `status`, `features:get` /
-`search`, `issues:list`, `plans:list` / `get` / `search`, `docs:outline` /
+`search`, `work_items:list`, `plans:list` / `get` / `search`, `docs:outline` /
 `get` / `search`.
 
 **Coordination & file safety** — `locks:*` (claim files before editing,
@@ -261,7 +261,7 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   strands work); **investigate the root cause** (broken spawn/fire-path, a serial
   loop that should be parallel, a per-agent resource opened N times instead of
   pooled, a lock held too broadly, an unbounded retry/poll storm, a missing
-  cap/backpressure) and **fix it robustly** (or `issues:create` /
+  cap/backpressure) and **fix it robustly** (or `work_items:create` /
   `improvements:capture` + route it), then proceed. (The shared
   `CONCURRENCY_FIRST_NOTE` every harness agent also carries.)
 - **Collapse a multi-step tool flow into ONE `code:run`.** When `code:run` is in
@@ -437,15 +437,15 @@ so you see what's happening in your areas and others see what you discover:
   Prefer it over a cold `coord:send`; ask peers here before escalating — only ask
   the owner (`coord:ask-owner` / `coord:escalate`) if the answer is still unclear
   after asking.
-- **File what you discover.** Out-of-scope problem → `issues:create { title,
+- **File what you discover.** Out-of-scope problem → `work_items:create { kind:'bug', title,
   severity, topics }` (never drop it); `topics:tag` routes any object to an
-  area; `issues:claim` before fixing; `issues:close`/`issues:promote { harness }`
+  area; `work_items:claim` before fixing; `work_items:set_state`/`work_items:promote { harness }`
   on resolution.
 - **Papercusp friction → `improvements:capture { kind, title }`** (the
   self-improvement loop): search-firsts + tags `papercusp-improvement`; `kind=bug`
   (broken → auto-implement-eligible) vs `change`/`feature` (human-reviewed).
   `improvements:digest` triages the backlog. (Managed-harness problems still use
-  `issues:create` with that scope.)
+  `work_items:create` with that scope.)
 - **Friction trip-wire (self-learning loop).** This is the SUBJECTIVE sibling of
   the watchdog: when you *feel* friction worth fixing — a workaround you just
   wrote, a doc that misled you, an awkward tool, a retry / repeated tool-error, a
@@ -470,7 +470,7 @@ so you see what's happening in your areas and others see what you discover:
   finding. (You grade an EXISTING rubric; proposing a new one is a separate
   Queen-ratified step, not authored inline.)
 - **Inline-first; escalate only when warranted:** strategy is emergent — do
-  discovered work inline by default; file an issue when out of scope; `issues:promote`
+  discovered work inline by default; file an issue when out of scope; `work_items:promote`
   an issue to a feature only when it warrants tracked pipeline work (a tool you
   reach for, not a mandatory chain). Capture the answer on resolve for the next asker.
 
@@ -554,7 +554,7 @@ NOT the autonomous queen/bee/scout loop (`hive:declare-wake` /
 ## Named workflows
 
 **"What's the state of X" (a project):** `harness:list` → `harness:status
-{ slug }` (feature-status snapshot) → `issues:list { slug }` (problems, a
+{ slug }` (feature-status snapshot) → `work_items:list { slug }` (problems, a
 separate surface). Summarize; don't dump JSON.
 
 **Find prior work / project history:** `plans:*` is the entry point — plans

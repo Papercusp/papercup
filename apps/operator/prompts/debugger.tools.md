@@ -80,7 +80,7 @@ The coordination substrate keeps you in sync with other agents, routed by **topi
   — before you grind alone, and before escalating to the owner (only escalate if
   still unclear after asking).
 - **File what you discover.** A real defect that's out of your current
-  investigation → `issues:create { title, severity, topics }`; `issues:link
+  investigation → `work_items:create { kind:'bug', title, severity, topics }`; `work_items:link
   { rel:'blocks', target }` the work it blocks.
 
 ## Discovery

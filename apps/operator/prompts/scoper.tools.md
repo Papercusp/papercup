@@ -82,7 +82,7 @@ The coordination substrate keeps you in sync with other agents, routed by **topi
   existing knowledge or routes to the area's subscribers (the expert); ask peers
   here before escalating to the owner (only escalate if still unclear after).
 - **File what you discover.** A real defect or gap you surface while scoping →
-  `issues:create { title, severity, topics }`.
+  `work_items:create { kind:'bug', title, severity, topics }`.
 
 ## Discovery
 

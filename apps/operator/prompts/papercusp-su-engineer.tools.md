@@ -372,7 +372,7 @@ autonomous-fleet agent.
   strands the task) — **investigate the root cause** (broken spawn/fire-path, a
   serial loop that should be parallel, a per-agent resource opened N times
   instead of pooled, a lock held too broadly, an unbounded retry/poll storm, a
-  missing cap/backpressure) and **fix it robustly** (or `issues:create` /
+  missing cap/backpressure) and **fix it robustly** (or `work_items:create` /
   `improvements:capture` + route it if it's outside your reach), then proceed.
   The target: adding agents never forces anyone to wait; only real, verified
   exhaustion does. (The shared `CONCURRENCY_FIRST_NOTE` every harness agent also
@@ -533,8 +533,8 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   here BEFORE escalating to the owner: only ask the owner (`coord:ask-owner` /
   `coord:escalate`) if the best answer is still unclear AFTER asking peers.
 - **File what you discover.** An out-of-scope real problem →
-  `issues:create { title, severity, topics, scope }` (never silently drop);
-  `issues:claim` before fixing; `issues:close` or `issues:promote` to mint a
+  `work_items:create { kind:'bug', title, severity, topics, scope }` (never silently drop);
+  `work_items:claim` before fixing; `work_items:set_state` or `work_items:promote` to mint a
   pipeline feature.
 - **Papercusp friction → `improvements:capture { kind, title }`** (kind:
   `bug`/`change`/`feature`; browse with `improvements:digest`). The SUBJECTIVE
@@ -542,7 +542,7 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   misleading doc, an awkward tool, a >3-attempt confusing failure, lock/coord
   contention. **Bar: genuine, repeatable** (the next agent would hit it too) —
   don't reflect every turn. (Managed-harness problems still go to
-  `issues:create`.)
+  `work_items:create`.)
 - **Observation? Check for a rubric first.** When you file a turn-end observation
   (`improvements:capture { lane:"observation" }`), check `rubrics:list`; if an
   ACTIVE rubric fits the characteristic you observed, file structured —
@@ -605,7 +605,7 @@ Papercusp coordination (`coord:*`, `locks:*`) is identical on every client.
 ## Named workflows
 
 **"What's the state of X":** `papercusp:list_workspaces` → `harness:list
-{ workspace }` → `harness:status { slug }` → `issues:list { slug }` →
+{ workspace }` → `harness:status { slug }` → `work_items:list { slug }` →
 `harness:escalation`. Summarize; don't dump JSON.
 
 **Find prior work / project history:** `plans:*` — PG-canonical. `plans:list`

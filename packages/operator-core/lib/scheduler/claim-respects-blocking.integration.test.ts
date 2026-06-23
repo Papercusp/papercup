@@ -31,7 +31,7 @@
  *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *     lib/scheduler/claim-respects-blocking.integration.test.ts
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -42,6 +42,8 @@ import {
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -171,6 +173,12 @@ beforeEach(async () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('scheduler claim respects blocking — NEVER hands out a blocked item (P-005)', () => {
+  // Explicit INLINE arm (flag OFF) — the reversible kill-switch fallback. (The sidecar/ON arm — now the
+  // shipped default — is the dedicated describe at the bottom.) Pinned so both paths stay covered
+  // regardless of the default value.
+  beforeEach(() => setFlagOverridesForTest({ [FLAGS.SCHEDULER_MAINTAINED_READY]: false }));
+  afterEach(() => setFlagOverridesForTest({}));
+
   it('1. does NOT claim a feature with a non-terminal feature blocker — NEITHER claim path', async () => {
     // F-blocker is 'wip' (not itself claimable here); F-blocked is the only 'todo' candidate,
     // tagged so a filter/spec WOULD otherwise select it — but its blocker is non-terminal.
@@ -272,5 +280,46 @@ describe('maintained readiness sidecar tracks the inline oracle through the life
     await db.sql`DELETE FROM harness_shared.work_item_deps WHERE blocked_ref = ${`${H}#F-blocked`}`;
     expect(await oracleSaysBlocked('F-blocked')).toBe(false);
     expect(await sidecarSaysBlocked('F-blocked')).toBe(false);
+  });
+});
+
+// Closes the agent's TODO(su-0e44e75b): exercise the claim with SCHEDULER_MAINTAINED_READY ON,
+// so the INDEXED work_item_blocked anti-join in claimFloorsWhereSql is driven end-to-end through
+// BOTH entry points (the equivalence proof above covers the sidecar==oracle predicate; this covers
+// the anti-join SQL fragment itself — a wrong column match would claim a blocked item or claim none).
+describe('claim respects blocking with SCHEDULER_MAINTAINED_READY ON — the indexed sidecar anti-join (P-005 cutover)', () => {
+  beforeEach(() => setFlagOverridesForTest({ [FLAGS.SCHEDULER_MAINTAINED_READY]: true }));
+  afterEach(() => setFlagOverridesForTest({}));
+
+  it('flag ON: a feature with a non-terminal blocker is NOT claimed via EITHER path', async () => {
+    await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'todo', createdTs: 200, tags: ['sync'] });
+    await blockByFeature('F-blocked', 'F-blocker');
+    expect(await sidecarSaysBlocked('F-blocked')).toBe(true);
+    const { legacy, spec } = await claimViaBothPaths('m1');
+    expect(legacy).toBeNull();
+    expect(spec).toBeNull();
+  });
+
+  it('flag ON: the blocked feature becomes claimable via BOTH paths once the blocker is terminal', async () => {
+    await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'todo', createdTs: 200, tags: ['sync'] });
+    await blockByFeature('F-blocked', 'F-blocker');
+    expect((await claimViaBothPaths('m2')).legacy).toBeNull();
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id='F-blocker'`;
+    expect(await sidecarSaysBlocked('F-blocked')).toBe(false);
+    const { legacy, spec } = await claimViaBothPaths('m2');
+    expect(legacy).toBe('F-blocked');
+    expect(spec).toBe('F-blocked');
+  });
+
+  it('flag ON: skips a blocked item for a ready one — the indexed floor never starves the queue', async () => {
+    await seedFeature('F-blocker', { status: 'wip', createdTs: 1 });
+    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-ready', { status: 'todo', createdTs: 200 });
+    await blockByFeature('F-blocked', 'F-blocker');
+    const { legacy, spec } = await claimViaBothPaths('m3');
+    expect(legacy).toBe('F-ready');
+    expect(spec).toBe('F-ready');
   });
 });

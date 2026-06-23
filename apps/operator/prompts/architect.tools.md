@@ -97,7 +97,7 @@ in sync, routed by **topic**:
   knowledge or routes to the area's subscribers (the expert); ask peers here
   before escalating to the owner (only escalate if still unclear after).
 - **File what you discover.** A real defect or gap you surface while planning →
-  `issues:create { title, severity, topics }`; `topics:tag` routes a plan to its
+  `work_items:create { kind:'bug', title, severity, topics }`; `topics:tag` routes a plan to its
   area so its owners see it.
 
 ## Discovery

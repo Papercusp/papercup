@@ -26,7 +26,8 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // honest. Add back when the handlers ship.
   'mcp__agentmcp__goals:list',
   'mcp__agentmcp__goals:get',
-  'mcp__agentmcp__issues:list',
+  // issues:list retired onto the unified work-item surface (coordination-unification-2026-06-23 P-009):
+  'mcp__agentmcp__work_items:list',
   // Rubrics — the shared-standards store (rubric-driven-observations-2026-06-20
   // P-002). The brain consults active rubrics (the standards agents grade structured
   // observations against) — read-only here; propose/ratify are agent/Queen verbs.

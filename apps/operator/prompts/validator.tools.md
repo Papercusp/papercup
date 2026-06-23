@@ -71,9 +71,9 @@ You share a live coordination substrate with other agents, routed by **topic**:
   expert) — don't guess or grind alone, and ask peers here before escalating to
   the owner (only escalate if it's still unclear after asking).
 - **File what you discover.** A real problem outside the current validation scope
-  → `issues:create { title, severity, topics }` (the engineer-issue surface,
+  → `work_items:create { kind:'bug', title, severity, topics }` (the engineer-issue surface,
   distinct from the validator pipeline's per-feature findings); it becomes
-  visible to everyone following that topic. `issues:claim` before fixing.
+  visible to everyone following that topic. `work_items:claim` before fixing.
 
 ## Discovery
 
