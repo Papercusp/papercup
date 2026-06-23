@@ -17,6 +17,7 @@ import {
   recordAccountWindow,
   isAvailable,
   isSustainedlyLimited,
+  isSpawnEligible,
   selectAccountByHeadroom,
   selectAccountByDrain,
   selectAccountForSpawn,
@@ -210,7 +211,8 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
   it('falls through a paused prior account to the next rule', () => {
     let p = poolOf('a', 'b');
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
-    expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'b' }).accountId).toBe('a');
+    // rng: () => 0 → the drain spread picks its deterministic best (the clean, never-penalized 'a').
+    expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'b', rng: () => 0 }).accountId).toBe('a');
   });
 
   it('pins a harness to the account it is bound to (cache co-location)', () => {
@@ -219,22 +221,40 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
     expect(selectAccountForSpawn(p, T0, { harness: 'harness-x' }).accountId).toBe('b');
   });
 
-  it('skips a paused harness-pinned account and falls back to headroom', () => {
+  it('skips a paused bound account (manual-bind stays available-only) and falls back to headroom', () => {
     let p = poolOf('a', 'b');
     p = bindAccount(p, 'b', 'harness-x');
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
-    expect(selectAccountForSpawn(p, T0 + MIN, { harness: 'harness-x' }).accountId).toBe('a');
+    expect(selectAccountForSpawn(p, T0 + MIN, { harness: 'harness-x', rng: () => 0 }).accountId).toBe('a');
   });
 
   it('falls back to the least-loaded available account with no prior/harness', () => {
-    expect(selectAccountForSpawn(poolOf('a', 'b'), T0).accountId).toBe('a');
+    expect(selectAccountForSpawn(poolOf('a', 'b'), T0, { rng: () => 0 }).accountId).toBe('a');
   });
 
-  it('returns undefined when every account is paused', () => {
+  it('keeps a budget-healthy but transiently-paused account spawn-eligible (D-003 stranding fix)', () => {
+    // A single 429 carries a far-future pause even though the account still has budget; selection must
+    // NOT strand it out of rotation (else the fleet funnels onto the few "available" accounts). With
+    // both accounts paused-but-healthy, the bee still routes to a real pool account rather than undefined.
     let p = poolOf('a', 'b');
     p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 10 * MIN });
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
-    expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'a', harness: 'h' }).accountId).toBeUndefined();
+    const pick = selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'a', harness: 'h', rng: () => 0 }).accountId;
+    expect(pick).toBeDefined();
+    expect(['a', 'b']).toContain(pick);
+  });
+
+  it('falls back to the soonest-recovering account when every account is genuinely exhausted', () => {
+    // 3 penalties in-window = sustainedly limited (truly out of budget) → not spawn-eligible. Rather than
+    // herd every bee onto the shared frame-default credential, pin to the account recovering soonest.
+    let p = poolOf('a', 'b');
+    for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'a', T0 + i, { pausedUntil: T0 + 20 * MIN });
+    for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'b', T0 + i, { pausedUntil: T0 + 10 * MIN });
+    expect(selectAccountForSpawn(p, T0 + MIN, { rng: () => 0 }).accountId).toBe('b');
+  });
+
+  it('returns undefined only for an empty pool', () => {
+    expect(selectAccountForSpawn(emptyPool(), T0).accountId).toBeUndefined();
   });
 });
 
@@ -338,6 +358,70 @@ describe('selectAccountByDrain (D-003 budget-draining selector)', () => {
     let p = poolOf('a', 'b', 'c');
     p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 10 * MIN });
     expect(selectAccountByDrain(p, T0 + MIN, { exclude: ['b'] })!.id).toBe('c');
+  });
+});
+
+describe('isSpawnEligible (account-spawn-eligibility — D-003 stranding fix)', () => {
+  it('an available account is eligible', () => {
+    expect(isSpawnEligible(getAccount(poolOf('a'), 'a')!, T0)).toBe(true);
+  });
+
+  it('a budget-healthy account is eligible EVEN while paused (a stale single-429 pause must not strand it)', () => {
+    // The aviynw case: util5h=0, penaltyCount=1, yet paused to the far-future window reset.
+    let p = poolOf('a');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 26 * MIN });
+    const a = getAccount(p, 'a')!;
+    expect(isAvailable(a, T0 + MIN)).toBe(false); // narrow availability would exclude it...
+    expect(isSpawnEligible(a, T0 + MIN)).toBe(true); // ...but it still has budget, so it's selectable
+  });
+
+  it('a genuinely rate-exhausted account (sustained penalties) is NOT eligible', () => {
+    let p = poolOf('a');
+    for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'a', T0 + i, { pausedUntil: T0 + 20 * MIN });
+    expect(isSpawnEligible(getAccount(p, 'a')!, T0 + MIN)).toBe(false);
+  });
+
+  it('a paused account at/over its fresh budget cap is NOT eligible', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 1.0 }, T0); // fresh at-cap reading
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 20 * MIN });
+    expect(isSpawnEligible(getAccount(p, 'a')!, T0 + MIN)).toBe(false);
+  });
+});
+
+describe('selectAccountByDrain spread (anti-thundering-herd, 2026-06-23)', () => {
+  it('rng()===0 reproduces the deterministic best (spread is opt-in and order-preserving)', () => {
+    let p = poolOf('a', 'b', 'c');
+    p = recordAccountWindow(p, 'b', { utilization: 0.1 }, T0); // b has the most headroom
+    expect(selectAccountByDrain(p, T0, { spread: true, rng: () => 0 })!.id).toBe('b');
+    expect(selectAccountByDrain(p, T0)!.id).toBe('b'); // == non-spread
+  });
+
+  it('spreads a burst across budget-healthy accounts instead of piling on one', () => {
+    const p = poolOf('a', 'b', 'c'); // all equal headroom (no util data)
+    // Deterministic (no spread): every pick is the same account → the thundering herd.
+    const herd = new Set(Array.from({ length: 20 }, () => selectAccountByDrain(p, T0)!.id));
+    expect(herd.size).toBe(1);
+    // Spread: walking rng across [0,1) lands on multiple distinct accounts → load fans out.
+    const spread = new Set(
+      Array.from({ length: 20 }, (_, i) => selectAccountByDrain(p, T0, { spread: true, rng: () => i / 20 })!.id),
+    );
+    expect(spread.size).toBeGreaterThan(1);
+  });
+
+  it('with isSpawnEligible, the spread includes budget-healthy paused accounts the narrow filter would drop', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 26 * MIN }); // paused but budget-healthy
+    // Default eligibility (isAvailable) drops 'a' → only 'b' selectable.
+    expect(selectAccountByDrain(p, T0 + MIN)!.id).toBe('b');
+    // Spawn eligibility keeps 'a' in the candidate set → a spread can route to it.
+    const seen = new Set(
+      Array.from({ length: 20 }, (_, i) =>
+        selectAccountByDrain(p, T0 + MIN, { spread: true, rng: () => i / 20, eligible: isSpawnEligible })!.id,
+      ),
+    );
+    expect(seen.has('a')).toBe(true);
+    expect(seen.has('b')).toBe(true);
   });
 });
 

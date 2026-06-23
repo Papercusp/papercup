@@ -31,7 +31,7 @@ import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/devic
 import { registerHostPlatform } from '@papercusp/host-platform';
 import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
-import { validateHomeHarnessResolution } from '@papercusp/operator-core/lib/startup/validate-home-harness';
+import { validateHomeHarnessResolution, homeHarnessValidationFatal } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -78,7 +78,7 @@ export function runBootstrap(): void {
       // "don't go dark silently" intent) and only hard-fail when explicitly opted in
       // — the dev/server operator (and CI/green-gate) can set
       // PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL=1 to restore fail-fast.
-      if (process.env.PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL === '1') throw e;
+      if (homeHarnessValidationFatal()) throw e;
     }
   })();
 

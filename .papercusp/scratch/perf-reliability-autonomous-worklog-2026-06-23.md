@@ -44,7 +44,28 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 
 | 5 | `cross-hive-ask-send.ts` | 6 ✓ | sendCrossHiveAsk: default-deny admission (ungranted→no boundary/insert/send); UTF-8 bodyBytes to grant; no-live-boundary hard-fail (no row); crash-safe order (insert BEFORE send); delivered→markSent+'sent', offline→'queued'+no markSent; askedBy conditional; newId→correlationId; answeredEvent/declinedEvent via crossHiveReplyEventKey. (Fixed a tsc artifact: typed the insertQueued vi.fn params so .mock.calls[0][2] is indexable.) |
 
-**Loop tally: 47 tests across 5 modules.**
+| 6 | `harness-seed.ts` | 5 ✓ | seedThrowawayHarness: validation BEFORE side effects (frozen-role/unknown-role override→throw, no deps called); effect order register→writeFile(s)→setOverride(s SORTED)→fileFeature; arg passthrough (basePath=repoOrClonePath); empty files/overrides skip; returns {harnessSlug}. Uses real AGENT_ROLES/FROZEN_OVERLAY_ROLES. |
+
+**Loop tally: 52 tests across 6 modules.**
+
+## LOOP CONCLUDED 2026-06-23 — low-collision pure backlog EXHAUSTED
+Final tally: **52 tests across 6 modules** (egress-dispatcher 13, egress-probe 12, file-lock-routing 7,
+swe-bench-pro 9, cross-hive-ask-send 6, harness-seed 5). Every remaining injectable-deps candidate is
+wiring-only (`llm-testing/deps.ts` = RunnerDeps assembly + a trivial persist flag; `hive-epoch-boot-deps.ts`
+= boot-deps builder), a PG-query constructor (`cross-hive-wiring.ts` pgCrossHiveQuotaLedger), or already
+covered by an integration test (pgCrossHiveAskLedger, wireCrossHiveBoundary). No genuinely-uncovered
+PURE/seamable module with real logic remains within the low-collision constraint. Loop stopped (no further wakes).
+
+### Deliberately DEFERRED (need what this session lacks)
+- **Gateway flaky timing tests** (EI-2904 `gateway.test.ts` `elapsed<15_000`): may guard REAL 429 slowness
+  (WI-611 critical) — weakening = hide a bug; the code fix is hot/high-stakes + needs coord (unavailable).
+- **Plan/work-item bookkeeping** for THIS perf/reliability work: papercusp MCP unreachable → recorded here + in
+  the task list; reconcile from an authorized session.
+- **Extending perf-anti-patterns.test.ts (A18/A19)** + fixing any live anti-pattern instance: would edit
+  shared source uncoordinated → deferred to a coord-enabled session.
+
+## (historical) Backlog NEARLY EXHAUSTED (injectable-deps pure pool)
+Broad `export interface *Deps` scan, untested + non-I/O leftovers: `cross-hive-wiring.ts` (pgCrossHiveQuotaLedger untested but a PG-query constructor → brittle, skip), `sync/hyperbee/hive-epoch-boot-deps.ts` (boot-deps BUILDER, 0 pure exports → wiring), `llm-testing/deps.ts` (1 pure export — last clean candidate to check). After llm-testing/deps.ts → reassess: if remaining are all PG-coupled/wiring/already-covered/integration → STOP + final report.
 ⚠ Verification caveat reaffirmed: `graduation/evidence.ts` was a candidate but evidenceItemsFromIssues is ALREADY tested in `graduation/scan.test.ts` — ALWAYS `grep -rl <export> **/*.test.ts` (incl. sibling test files, not just colocated) before committing.
 ⚠ tsc tip: a `vi.fn(async () => …)` infers an empty-args tuple, so `.mock.calls[0][N]` errors under tsc — give the vi.fn explicit param types when you index its calls.
 

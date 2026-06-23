@@ -42,3 +42,18 @@ export async function validateHomeHarnessResolution(): Promise<void> {
     );
   }
 }
+
+/**
+ * Should a FAILED home-harness validation hard-fail boot? NON-FATAL by default (EI-2633): a fresh
+ * PACKAGED install legitimately has no registered home-harness project yet (the baked default slug
+ * doesn't resolve in the 'default' workspace until setup), and re-throwing in host-bootstrap's
+ * fire-and-forget boot IIFE was an UNHANDLED promise rejection → Node process exit → embedded-PG
+ * down → dead on first launch for EVERY new user. So the boot path logs loudly (preserving the
+ * EI-2224 "don't go dark silently" intent) and hard-fails ONLY when explicitly opted in — the
+ * dev/server operator + CI/green-gate set PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL=1 to restore
+ * fail-fast. Mirrors the sibling addon-preflight policy. This pure predicate centralizes the
+ * decision so it can be unit-pinned (the boot IIFE itself is not unit-testable).
+ */
+export function homeHarnessValidationFatal(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL === '1';
+}

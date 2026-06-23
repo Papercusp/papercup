@@ -176,7 +176,16 @@ export async function selectSpawnAccount(
 
 /** Apply a `SpawnSelection`: persist a newly-assigned soft pin (atomic CAS) and return the routed id. */
 async function resolveSelection(ws: string | undefined, sel: SpawnSelection, now: number): Promise<string | undefined> {
-  if (sel.newlyPinned) return persistSoftPin(ws, sel.newlyPinned.harness, sel.newlyPinned.accountId, now);
+  if (sel.newlyPinned) {
+    // Persist the soft cache-affinity pin for FUTURE (sequential) bees of this harness, but route THIS
+    // bee to its OWN spread pick (account-spawn-spread fix, 2026-06-23). Returning persistSoftPin's
+    // CAS-converge winner forced every concurrent bee of a hive onto ONE account — the thundering herd
+    // that RPM-storms it while budgeted peers idle ("accounts have usage but aren't picked"). The stored
+    // pin still converges (sequential affinity → warm prefix cache); concurrent bees now diverge across
+    // the headroom-weighted spread (selectAccountForSpawn step 4) so the fleet's load actually fans out.
+    await persistSoftPin(ws, sel.newlyPinned.harness, sel.newlyPinned.accountId, now);
+    return sel.accountId;
+  }
   return sel.accountId;
 }
 

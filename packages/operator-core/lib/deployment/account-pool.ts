@@ -412,6 +412,16 @@ export interface SelectOpts {
   availableOnly?: boolean;
   /** Prefer accounts with no bindings yet (spread Swarms across distinct accounts). */
   preferUnbound?: boolean;
+  /** Candidate-eligibility predicate applied when `availableOnly` (default `isAvailable`). The spawn
+   *  path passes `isSpawnEligible` so a budget-healthy account carrying a stale predictive pause is
+   *  still a routable candidate instead of being stranded out of rotation. */
+  eligible?: (a: ClaudeAccount, now: number) => boolean;
+  /** SPREAD a concurrent burst across candidates weighted by remaining headroom (anti-thundering-herd)
+   *  instead of deterministically returning the single best — so the fleet fans out rather than piling
+   *  onto one account until it RPM-storms. `rng()===0` returns the deterministic best, so non-spread
+   *  callers/tests are byte-identical; production passes `Math.random`. */
+  spread?: boolean;
+  rng?: () => number;
 }
 
 /**
@@ -448,6 +458,9 @@ export interface SpawnSelectOpts {
   /** The account this (logical) bee last egressed through — kept sticky so its per-credential
    *  conversation cache survives across a re-spawn. */
   priorAccountId?: string;
+  /** Injectable RNG for the drain SPREAD (default `Math.random`). Tests pass a fixed rng (e.g. `() => 0`
+   *  → deterministic best) so spawn selection stays assertable. */
+  rng?: () => number;
 }
 
 /** Beyond this age the unified-budget projection is treated as unknown (the gateway hasn't egressed
@@ -504,6 +517,28 @@ export function accountFull(a: ClaudeAccount, now: number): boolean {
 }
 
 /**
+ * Is this account a valid SPAWN-SELECTION candidate — can a freshly-spawning bee pin to it?
+ * Deliberately WIDER than `isAvailable` (account-spawn-eligibility fix, 2026-06-23): on Claude Max a
+ * single transient per-minute 429 routinely carries a pause out to the multi-hour 5h/7d window reset
+ * even when the account is NOT over budget (the D-003 phenomenon). `rate.pausedUntil` advances
+ * monotonically and is never shortened on recovery, so that ONE 429 strands a budget-healthy account
+ * out of spawn selection for 10-30 min (observed: aviynw util5h=0, penaltyCount=1, yet paused 26 min;
+ * aviynw2/aviynw6 paused 12-13 min with their windows already reset). The narrow `isAvailable` filter
+ * then collapses the candidate pool to a couple of accounts, so the fleet funnels onto one — it
+ * RPM-storms while budgeted peers sit idle (the owner-reported "accounts have usage but aren't picked").
+ *
+ * Eligible when available now, OR it still has real budget AND is not GENUINELY rate-exhausted: not
+ * sustainedly-limited (≥threshold real penalties in-window, or a fresh at-cap reading) AND its effective
+ * (5h∧7d) utilization is below the full mark. The gateway's per-(model,account) governor is the runtime
+ * pace authority — it paces/rotates a still-throttled account at request time — so spawn selection
+ * should only EXCLUDE accounts that are truly out of budget, not ones merely carrying a stale pause.
+ */
+export function isSpawnEligible(a: ClaudeAccount, now: number, policy: ScalePolicy = DEFAULT_SCALE_POLICY): boolean {
+  if (isAvailable(a, now)) return true;
+  return !isSustainedlyLimited(a, now, policy) && effectiveDrainUtil(a, now) < DRAIN_FULL_UTIL;
+}
+
+/**
  * Account-aware opus-pause decision (account-aware-rate-governor-routing-2026-06-16 Phase 1). A single
  * account's 429 must NOT pause the whole model class while other accounts have headroom — the class
  * "pauses" ONLY when EVERY account is full (paused or at/over its 5h cap). With ≥1 account having
@@ -533,9 +568,9 @@ export function anyAccountAvailable(pool: AccountPool, now: number): boolean {
  * This is the consumer-Max budget-maximizing selector D-001 wrongly excluded as "unnecessary".
  */
 export function selectAccountByDrain(pool: AccountPool, now: number, opts: SelectOpts = {}): ClaudeAccount | undefined {
-  const { exclude = [], availableOnly = true } = opts;
+  const { exclude = [], availableOnly = true, eligible = isAvailable } = opts;
   let candidates = pool.accounts.filter((a) => !exclude.includes(a.id));
-  if (availableOnly) candidates = candidates.filter((a) => isAvailable(a, now));
+  if (availableOnly) candidates = candidates.filter((a) => eligible(a, now));
   if (candidates.length === 0) return undefined;
 
   const urgent = (a: ClaudeAccount): boolean => {
@@ -545,12 +580,37 @@ export function selectAccountByDrain(pool: AccountPool, now: number, opts: Selec
   // 7d-aware rank: order by the TIGHTER window (max 5h/7d util) so selection prefers both-window
   // headroom (aviynw6) over a 5h-fresh-but-7d-near-cap account (aviynw2) — 7d-aware-account-selection.
   const rank = (a: ClaudeAccount): number[] => [urgent(a) ? 0 : 1, effectiveDrainUtil(a, now), a.rate.lastPenaltyAt, a.addedAt];
-  return [...candidates].sort((x, y) => {
+  const sorted = [...candidates].sort((x, y) => {
     const rx = rank(x);
     const ry = rank(y);
     for (let i = 0; i < rx.length; i++) if (rx[i] !== ry[i]) return rx[i] - ry[i];
     return x.id < y.id ? -1 : x.id > y.id ? 1 : 0;
-  })[0];
+  });
+  if (!opts.spread) return sorted[0];
+  // SPREAD (account-spawn-spread fix, 2026-06-23): distribute a concurrent burst across accounts
+  // weighted by remaining headroom so the fleet fans out instead of every bee piling on the single
+  // best account (which then RPM-storms while budgeted peers idle). Preserve the URGENT class
+  // (use-it-before-you-lose-it): when any window is about to reset, spread only among those.
+  const urgentSet = sorted.filter(urgent);
+  return weightedHeadroomPick(urgentSet.length > 0 ? urgentSet : sorted, now, opts.rng ?? Math.random);
+}
+
+/**
+ * Pick from `cands` (already best-first) weighted by remaining headroom (1 − effective util, floored so
+ * a near-full account keeps a slim chance). `rng()===0` deterministically returns the first (best)
+ * candidate, so deterministic callers/tests are unchanged; a uniform `rng` spreads a burst across the
+ * pool roughly in proportion to each account's spare capacity.
+ */
+function weightedHeadroomPick(cands: readonly ClaudeAccount[], now: number, rng: () => number): ClaudeAccount {
+  if (cands.length <= 1) return cands[0];
+  const weights = cands.map((a) => Math.max(0.05, 1 - effectiveDrainUtil(a, now)));
+  const total = weights.reduce((s, w) => s + w, 0);
+  let r = rng() * total;
+  for (let i = 0; i < cands.length; i++) {
+    r -= weights[i];
+    if (r < 0) return cands[i];
+  }
+  return cands[cands.length - 1];
 }
 
 /**
@@ -597,9 +657,18 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
     const softPinned = softPinnedAccount(pool, harness);
     if (softPinned && !accountFull(softPinned, now)) return { accountId: softPinned.id, pinSource: 'soft-pin' };
   }
-  // 4. Budget-drain across the whole pool; auto-pin the chosen account for a fresh harness.
-  const drained = selectAccountByDrain(pool, now);
-  if (!drained) return {};
+  // 4. Budget-drain across the whole pool — SPREAD across budget-healthy accounts (weighted by
+  //    headroom) instead of piling every bee onto the single lowest-util one, and widened to
+  //    spawn-ELIGIBLE accounts (isSpawnEligible) so a budgeted account carrying a stale predictive
+  //    pause isn't stranded out of selection. Auto-pin the chosen account for a fresh harness.
+  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, eligible: isSpawnEligible });
+  if (!drained) {
+    // 4b. Nothing is spawn-eligible (the pool is genuinely exhausted). Rather than return undefined and
+    //     herd EVERY bee onto the single shared frame-default credential (which then 429s them all), pin
+    //     to the pool account that recovers SOONEST — a real pool account the gateway can pace/rotate.
+    const soonest = [...pool.accounts].sort((x, y) => (x.rate.pausedUntil ?? 0) - (y.rate.pausedUntil ?? 0))[0];
+    return soonest ? { accountId: soonest.id, pinSource: 'drain' } : {};
+  }
   return {
     accountId: drained.id,
     pinSource: 'drain',

@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { validateHomeHarnessResolution } from './validate-home-harness';
+import { validateHomeHarnessResolution, homeHarnessValidationFatal } from './validate-home-harness';
 
 // Mock the dependencies
 vi.mock('../harness/operator-home-harness', () => ({
@@ -81,5 +81,24 @@ describe('validateHomeHarnessResolution', () => {
     await expect(validateHomeHarnessResolution()).rejects.toThrow(
       /fire-paths.*404/
     );
+  });
+});
+
+describe('homeHarnessValidationFatal (EI-2633 — boot non-fatal by default)', () => {
+  // The crash: re-throwing a failed validation in host-bootstrap's fire-and-forget IIFE was an
+  // unhandled rejection → Node exit → embedded-PG down → dead on EVERY fresh packaged install.
+  // This pins that the policy stays non-fatal unless explicitly opted in.
+  it('is NON-FATAL by default (env unset) — a fresh packaged install must not crash on boot', () => {
+    expect(homeHarnessValidationFatal({})).toBe(false);
+  });
+
+  it('hard-fails ONLY when explicitly opted in (PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL === "1")', () => {
+    expect(homeHarnessValidationFatal({ PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL: '1' })).toBe(true);
+  });
+
+  it('treats any non-"1" value as non-fatal (0 / true / empty)', () => {
+    expect(homeHarnessValidationFatal({ PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL: '0' })).toBe(false);
+    expect(homeHarnessValidationFatal({ PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL: 'true' })).toBe(false);
+    expect(homeHarnessValidationFatal({ PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL: '' })).toBe(false);
   });
 });
