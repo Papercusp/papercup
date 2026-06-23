@@ -103,13 +103,15 @@ take longer than 10 minutes."** The 2-task smoke worked only because it used a t
 Fix: call `client.messages.stream(params).finalMessage()` (accumulates the stream into the
 full `Message`) instead of `messages.create()`. This is why `agent-live.ts` streams.
 
-## Trap 4 — the gateway does NOT load-balance the account pool
+## Trap 4 — (FIXED 2026-06-18) the gateway now round-robins the account pool
 
-`account-failover.ts`: the gateway routes through **one `active()` account at a time** and only
-**rotates on a hard 429** (unified-window-rejected). It is failover, not load-balancing. So
-under fleet load the single active account saturates to `utilization ≥ 1.0` and 429s your
-requests, **while healthy accounts sit idle** (`accounts:status` will show e.g. `aviynw6` at
-0.45). Two mitigations, both now in `agent-live.ts`:
+`account-failover.ts`: as of 2026-06-18 `active()` **round-robins** the fleet's **unpinned**
+egress across every account that still has budget (it advances a cursor on each call) and fails
+over off an exhausted one — so load now distributes across the pool. The behavior this trap
+originally warned about (the whole fleet egressing through ONE fixed `active` account while
+healthy accounts sat idle) is **gone**. Header-pinned requests (`x-papercusp-account`) bypass
+the round-robin and keep their own credential for cache-affinity. Two things still help and are
+both in `agent-live.ts`:
 
 - **Pin a healthy account** (`x-papercusp-account`, the `accountId` opt) — separates your run
   from the fleet's contention on the active account. Pick one from `accounts:status` with
