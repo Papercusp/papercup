@@ -1873,10 +1873,13 @@ function AdvConvStyles() {
         --advconv-panel-strong: color-mix(in srgb, var(--bg-popover, #0d1829), transparent 6%);
         --advconv-border: var(--border, rgba(125, 211, 252, 0.15));
         --advconv-border-strong: var(--border-strong, rgba(125, 211, 252, 0.32));
-        --advconv-accent: var(--accent, #38bdf8);
-        --advconv-accent-strong: var(--accent-strong, #7dd3fc);
-        --advconv-accent-soft: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
-        --advconv-accent-softer: color-mix(in oklab, var(--accent, #38bdf8), transparent 92%);
+        /* Conversations honors its DECLARED tab accent (pink #ec4899, AdvShell ADV_TABS) —
+           previously these fell back to the body sky --accent, so the pink nav badge never
+           reached the UI. Each adv tab renders its own accent; this makes Conversations match. */
+        --advconv-accent: #ec4899;
+        --advconv-accent-strong: #f472b6;
+        --advconv-accent-soft: color-mix(in oklab, #ec4899, transparent 86%);
+        --advconv-accent-softer: color-mix(in oklab, #ec4899, transparent 92%);
         --advconv-good-soft: color-mix(in oklab, var(--good, #22c55e), transparent 88%);
         --advconv-warn-soft: color-mix(in oklab, var(--warn, #f59e0b), transparent 90%);
         height: 100%;

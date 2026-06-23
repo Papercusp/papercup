@@ -1111,9 +1111,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.UI_WORKSPACE_GUARD]: true,
   // DEFAULT OFF (deliberate, NOT alpha default-on) — the scoped-superuser workspace clamp
   // changes auth enforcement for every superuser session; reversible kill-switch the owner
-  // flips ON after an attended verification. OFF = today's unscoped '*' superuser,
-  // byte-identical. Listed in KNOWN_DARK_FLAGS.
-  [FLAGS.SCOPED_SUPERUSER_CLAMP]: false,
+  // FLIPPED ON 2026-06-23 (owner-directed, psu-in-desktop-builds D-002): a full-tool
+  // end-user psu session must stay confined to its own workspace, and the clamp is the
+  // only boundary once the scoped profile is dropped. Was the reversible cutover
+  // kill-switch (default-off); the owner flipped it. Reversible — set false to revert.
+  [FLAGS.SCOPED_SUPERUSER_CLAMP]: true,
   // DEFAULT OFF (deliberate, NOT alpha default-on) — the shared workspace-scoped-coordination
   // re-key (Queen + Scout per-hive→workspace) is a hot-path live-loop change; reversible
   // kill-switch the owner flips ON post-canary. OFF = today's per-hive brains, byte-identical.

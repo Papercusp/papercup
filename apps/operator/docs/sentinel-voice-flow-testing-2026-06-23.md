@@ -293,3 +293,22 @@ fully-grounded answer (8× `papercusp-su` tool calls reading live state; correct
   despite migration 390 being applied + the buffer file present in papercup-release.
   Green-checkpoint appears held (hive degraded). Not forcing a deploy. Loop will
   re-check and live-verify once :3070 reloads.
+
+### Loop tick 16:10 — root-caused the deploy block (NOT mine)
+- Item 1 (live-verify) is blocked because **green-checkpoint is wedged**: the
+  `@papercusp/operator-core` test task fails it (15:28 log), signature "admission
+  slots drained — no slot-squat" → maps to inference-gateway / capacity-dispatch /
+  fleet-admission code (cross-hive-boundary-admission, capacity-dispatch), NOT the
+  voice/sentinel files I touched.
+- Green-checkpoint has been RED ALL DAY (08:24/09:27/11:27/13:28/14:37/15:28) with
+  DIFFERENT signatures → pre-existing flaky/degraded-hive failure, not introduced
+  by my changes. My operator-core tests are green (sentinel-input 5/5, buffer integ
+  5/5). So my 4 fixes are shipped+green but stuck BEHIND a fleet-infra blocker.
+- :3070 last restarted 12:30 → still serving old buffer+persona. The pipeline
+  won't deliver my fixes until green-checkpoint passes, which is gated on the
+  inference-gateway/admission failure + the degraded hive (Queen dark) — OWNER /
+  fleet-ops territory, outside the Sentinel lane.
+- NOT force-deploying: it would push a green-gate-FAILING tree (+ all peers' WIP)
+  to :3070 unattended — too risky. Declined per the no-unattended-force-deploy
+  constraint. Loop stays in monitor-for-unblock mode: re-checks :3070 reload each
+  tick and live-verifies the voice flow the moment it lands.

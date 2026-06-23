@@ -300,13 +300,9 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // heartbeat on the self-selection path. Owner flips ON after the recovery layer is exercised;
   // OFF = today's local SELECT … FOR UPDATE SKIP LOCKED, byte-identical.
   FLAGS.WORKITEM_CLAIM_LEASE,
-  // scoped-superuser-workspace-clamp-2026-06-18: bind a psu workspace-scoped superuser
-  // session to its launch workspace at the dispatch layer (engaging the existing
-  // effectiveDispatchWorkspace clamp) + deny crossWorkspace tools / the harness:'all' global
-  // plan escape for a scoped session. DELIBERATE dark ship — it changes auth enforcement for
-  // every superuser session, so it ships as a reversible kill-switch the owner flips ON after
-  // an attended :3170 verification (OFF = today's unscoped '*' superuser, byte-identical).
-  FLAGS.SCOPED_SUPERUSER_CLAMP,
+  // (SCOPED_SUPERUSER_CLAMP graduated to default-ON 2026-06-23 — owner-directed flip,
+  // psu-in-desktop-builds D-002: it is the workspace boundary for a full-tool end-user psu
+  // session. Reversible kill-switch; removed from the dark allowlist per the rule.)
   // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED Queen+Scout workspace-scoping
   // gate. DARK because the per-hive→workspace re-key is a multi-part hot-path change to the live
   // wake/learning loop (P-003 Queen A+B+C + P-002 Scout) not yet built end-to-end + canary'd.
@@ -374,7 +370,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.PSU_END_USER, 'owner-authority'],
   // cutover — reversible kill-switch the owner flips after an attended live verify
   [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
-  [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
 ]);
 
 /**
