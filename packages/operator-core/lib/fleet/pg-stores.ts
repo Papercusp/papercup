@@ -122,6 +122,24 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
       item_id       = COALESCE(EXCLUDED.item_id, harness_shared.spawned_agents.item_id),
       restart_strategy = EXCLUDED.restart_strategy
   `;
+  // data-sync-push-completion-2026-06-23 D-008 follow-up (P-007 freshness gap): the
+  // QueenHeartbeat sidebar reads `hive.controlState`, whose lastWakeAt = the MORE RECENT
+  // of the recordHiveWake ledger AND `latestQueenWakeAt` (= max(started_at) of THIS
+  // table's child_role='queen' rows). The wake-brain Queen spawns the queen WITHOUT
+  // calling recordHiveWake, so before this a real queen wake only surfaced on the
+  // @papercusp/sync 180s drift-repair tick — a freshness regression from the heartbeat's
+  // old 12s self-poll. recordSpawnPg is the single spawned_agents INSERT chokepoint, so
+  // pushing here on a QUEEN spawn (rare — once per wake cycle, NOT per heartbeat: status
+  // updates go through finishSpawnPg/heartbeat paths) covers every queen-spawn path
+  // (wake-brain, hive:wake, urgent-wake, create) uniformly. Fire-and-forget + non-throwing
+  // (mirrors hive:start/pause + recordHiveWake); name-only/{} matches the no-arg consumer;
+  // the 90s source-dedupe caps the rate. A rolled-back caller txn is harmless — the
+  // resolver just re-reads the unchanged max.
+  if (input.childRole === 'queen') {
+    void import('../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
+      .catch(() => {});
+  }
 }
 
 export async function finishSpawnPg(sql: Db, input: FinishSpawnInput): Promise<void> {

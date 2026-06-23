@@ -919,11 +919,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
               log('warn', `inference-gateway: egress probe for '${account.accountId}' OK ${probeSuccessStreak}/${EGRESS_PROBE_READMIT_STREAK} — confirming stability before readmit`);
             }
           } else {
-            probeSuccessStreak = 0; // a failed probe means it's still flapping, not stably recovered
+            // H10 (inference-gateway-audit-2026-06-23): DECREMENT, don't hard-reset. One slow/failed probe (a box
+            // under load makes probes legitimately take 1.3–6.1s) would otherwise perpetually restart the 2-strict-
+            // consecutive streak, so a recovered-but-jittery proxy never readmits before its pause elapses. A
+            // leaky count (success +1, fail −1) still readmits a mostly-healthy proxy and keeps a dead one at 0.
+            probeSuccessStreak = Math.max(0, probeSuccessStreak - 1);
             log('warn', `inference-gateway: egress probe for '${account.accountId}' STILL DOWN (${probe.error ?? 'no exit IP'}) — stays circuit-paused`);
           }
         } catch (err) {
-          probeSuccessStreak = 0;
+          probeSuccessStreak = Math.max(0, probeSuccessStreak - 1); // H10: decrement (tolerate a transient probe error), not hard-reset
           log('warn', `inference-gateway: egress probe error for '${account.accountId}': ${(err as Error).message}`);
         } finally {
           // Keep probing until the proxy is CONFIRMED stable (readmitted) OR the circuit pause expires.

@@ -93,7 +93,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
   // reaper ENDS adv_session rows — DARK until proven on the fleet. OFF ⇒ a no-op;
   // the routine is also seeded INACTIVE. Bring-up: --active --dry-run, then flip.
-  FLAGS.IDLE_SESSION_REAPER,
   // operator-memory-and-psu-resilience-2026-06-14 P-011 / WI-152 (D-007): the
   // reaper's WRITE half — TERMINATING a LIVE-but-idle session (Ctrl-C then
   // SIGKILL). DELIBERATE dark ship (the explicit-owner-ask exception to the
@@ -101,7 +100,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // processes. DOUBLE-GATED (no-op unless IDLE_SESSION_REAPER is ALSO on) and
   // busy-owner-excluding; OFF ⇒ a pure no-op. The owner flips it ON only after a
   // live --dry-run proof on the fleet — same bring-up gate as its slice-1 sibling.
-  FLAGS.IDLE_SESSION_REAPER_TERMINATE,
   // hive-inference-gateway P-012: DELIBERATE dark ship — enabling reroutes
   // every bee's inference auth through a gateway service that must be
   // deployed first; flipping early would break the whole fleet's auth.
@@ -211,13 +209,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // OFF ⇒ the decider gates EVERY item (autonomy dark, behavior-neutral, D-007); the
   // owner's P-092 act flips it ON, and even then every category ships never-auto
   // (D-005) so arming alone auto-decides nothing. The pending flip is owner-only.
-  FLAGS.QUEEN_AUTONOMY_ARMED,
   // queen-autonomy-and-selffeed-fix-2026-06-15 Phase 2: the OWNER FULL-AUTONOMY grant.
   // ON lets the Queen auto-decide the categorical residue (owner-authority / protected
   // / irreversible / graduation:*) and lifts the auto-implement loop's protected-path
   // TCB — the recursive-self-improvement boundary. DELIBERATE dark default (NOT the
   // alpha default-on policy); the owner flips it, and OFF restores today's gates.
-  FLAGS.QUEEN_FULL_AUTONOMY,
   // agent-capability-confinement-2026-06-13 B-18 (P-020): the FLEET CUTOVER. DELIBERATE
   // dark ship (NOT the alpha default-on policy) — ON removes native write/exec tools from
   // autonomous-fleet spawns and routes them to the gated capability:* tools; flipping it
@@ -244,7 +240,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // The owner flips it ON after that proof. Gates the role registration (B-01),
   // the wake-loop/routine (B-04), and the UI pane (B-08). Pending flip surfaced in
   // the plan's ## Now + every lane report.
-  FLAGS.OVERWATCH,
   // sentinel-as-herald-2026-06-21 (mirrors OVERWATCH): the SENTINEL autonomous
   // system-health role. DELIBERATE dark ship (NOT the alpha default-on policy) —
   // a brand-new, not-yet-proven autonomous role that nudges the live fleet; a
@@ -252,7 +247,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // ships dark until its first live staging run proves it. The owner flips it ON
   // after that proof. Gates the role registration, the wake-loop/routine, and the
   // UI pane. Pending flip surfaced in the plan's ## Now + every lane report.
-  FLAGS.SENTINEL,
   // sentinel-as-herald-2026-06-21 Phase 5 (P-018..P-022): the SERVER-SIDE proactive
   // "decide to speak" sweep (the voice-host periodic tick that lets the Sentinel Herald
   // speak out-of-band with no desktop UI open, or route a salient alert via attention-push
@@ -262,7 +256,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // unchanged); triple-gated on top of the flag (humanFacingRole==='sentinel' + not
   // DND/paused/over-budget + voice-host owns the lease). Owner flips ON after its first
   // live staging run. Pending flip surfaced in the plan's ## Now + every lane report.
-  FLAGS.SENTINEL_PROACTIVE,
   // impartial-benchmark-suite-2026-06-15 P-005 (BRIEF 3): the EXTERNAL-BENCH grader
   // adapter + the `external-bench:run` op. DELIBERATE dark ship (NOT the alpha
   // default-on policy) — the runner is genuinely incomplete (M2 in-container
@@ -381,14 +374,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.WATCHDOG_AUTO_CLOSE, 'owner-authority'],
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, 'owner-authority'],
-  [FLAGS.IDLE_SESSION_REAPER, 'owner-authority'],
-  [FLAGS.IDLE_SESSION_REAPER_TERMINATE, 'owner-authority'],
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
-  [FLAGS.QUEEN_AUTONOMY_ARMED, 'owner-authority'],
-  [FLAGS.QUEEN_FULL_AUTONOMY, 'owner-authority'],
-  [FLAGS.OVERWATCH, 'owner-authority'],
-  [FLAGS.SENTINEL, 'owner-authority'],
-  [FLAGS.SENTINEL_PROACTIVE, 'owner-authority'],
   // cutover — reversible kill-switch the owner flips after an attended live verify
   [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
   [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],

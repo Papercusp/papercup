@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { PanelComponentProps } from './panel-registry';
 import { openPanel, focusPanel } from './dock-actions';
 import { useHarnessIssues } from '../../adv/harnesses/useHarnessData';
+import { Tooltip } from '../Tooltip';
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: 'var(--bad)',
@@ -123,37 +124,36 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
         ) : (
           <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
             {filtered.map((i) => (
-              <li
-                key={i.id}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  const id = openPanel({
-                    type: 'pin:issue',
-                    params: { harnessSlug: slug, issueId: i.id },
-                    title: i.id,
-                  });
-                  focusPanel(id);
-                }}
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey) {
+              <Tooltip key={i.id} label="Cmd/Ctrl-click or right-click to pin as panel" side="right" align="start">
+                <li
+                  onContextMenu={(e) => {
+                    e.preventDefault();
                     const id = openPanel({
                       type: 'pin:issue',
                       params: { harnessSlug: slug, issueId: i.id },
                       title: i.id,
                     });
                     focusPanel(id);
-                  }
-                }}
-                title="Cmd/Ctrl-click or right-click to pin as panel"
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  padding: '6px 12px',
-                  borderBottom: '1px solid var(--border)',
-                  alignItems: 'baseline',
-                  cursor: 'pointer',
-                }}
-              >
+                  }}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey) {
+                      const id = openPanel({
+                        type: 'pin:issue',
+                        params: { harnessSlug: slug, issueId: i.id },
+                        title: i.id,
+                      });
+                      focusPanel(id);
+                    }
+                  }}
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    padding: '6px 12px',
+                    borderBottom: '1px solid var(--border)',
+                    alignItems: 'baseline',
+                    cursor: 'pointer',
+                  }}
+                >
                 <span
                   style={{
                     width: 6,
@@ -188,7 +188,8 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
                 >
                   {i.status ?? '?'}
                 </span>
-              </li>
+                </li>
+              </Tooltip>
             ))}
           </ul>
         )}

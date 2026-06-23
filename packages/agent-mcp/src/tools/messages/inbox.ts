@@ -35,6 +35,23 @@ export default defineTool({
     status: z.enum(['pending', 'acknowledged', 'archived', 'all']).default('pending'),
     limit: z.number().int().positive().max(200).default(50),
   }),
+  // Output schema (token-efficient-tool-result-formats P-011) — mirrors
+  // audit:list: the default `summary` shape is a flat array of scalar rows,
+  // which unlocks CSV (the densest format) + the MCP `outputSchema`
+  // advertisement. `detail: 'full'` returns the wider raw rows (incl.
+  // `body`/`parent_message_id`); the serializer's runtime flatness check
+  // downgrades those to TOON gracefully, so declaring the summary shape is
+  // correct + lossless for both modes. `feature` is nullable (harness-level
+  // messages have no feature lane).
+  result: z.array(
+    z.object({
+      id: z.string(),
+      from: z.string(),
+      feature: z.string().nullable(),
+      kind: z.string(),
+      subject: z.string(),
+    }),
+  ),
   async handler(args, ctx) {
     if (!SLUG_RE.test(args.slug)) {
       return {

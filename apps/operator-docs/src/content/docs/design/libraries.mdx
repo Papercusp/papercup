@@ -16,10 +16,6 @@ import { Aside } from '@astrojs/starlight/components';
 
 Most libraries below are declared in `apps/operator/package.json` and resolved through the monorepo root `node_modules`. Total bundle delta from the migration was ~55 KB gzipped across the harness routes, all tree-shakable.
 
-<Aside type="caution" title="gsap is an undeclared dependency">
-`gsap` and `@gsap/react` are imported by `OperatorPanel.tsx` but are **not** declared in `apps/operator/package.json` (or any package.json) and are absent from `node_modules`. They resolve today only by accident of the install tree — verify/restore the declaration before relying on the HUD animation. See the [animation stack](#motion--formkitauto-animate--gsap-for-the-operatorpanel-hud) for what gsap actually drives.
-</Aside>
-
 ## `@radix-ui/react-tooltip`
 
 **What:** Hover/focus tooltip primitive. WAI-ARIA `tooltip` role, focus-aware, touch-friendly, keyboard-navigable.
@@ -503,15 +499,16 @@ return (
 
 **Do not** introduce `formik`, `@rjsf/core`, `@jsonforms/react`, `uniforms`, or `@formily/react`. They were all considered and rejected in favour of RHF — adding any of them creates two parallel form systems.
 
-## `motion` + `@formkit/auto-animate` (+ `gsap` for the OperatorPanel HUD)
+## `motion` + `@formkit/auto-animate`
 
-**What:** The animation stack. Two general-purpose libraries that complement each other (**use them together, not as alternatives**), plus `gsap` for the bespoke OperatorPanel HUD ring animation.
+**What:** The animation stack. Two general-purpose libraries that complement each other (**use them together, not as alternatives**).
 
 - **`motion`** (the rebrand of `framer-motion` — same engine, same author) — the general-purpose React animation lib. WAAPI-backed since v10, so transforms run on the native compositor. ~41 KB gzip.
 - **`@formkit/auto-animate`** — purpose-built for one job: animate when children of an element are added, removed, or reordered. Drop-in via `useAutoAnimate()`. WAAPI direct, zero React re-renders. ~3 KB gzip.
-- **`gsap`** (+ `@gsap/react`) — drives the **OperatorPanel HUD ring animation** (`OperatorPanel.tsx` — `gsap.timeline()` / `gsap.to()` / `gsap.utils.selector()` via `useGSAP`). It does **not** drive the route warp. (See the [undeclared-dependency caution](#radix-uireact-tooltip) at the top of this page — `gsap`/`@gsap/react` are imported but not in any `package.json`.)
 
-**The "jump-gate" route warp uses WAAPI, not gsap.** `RouteTransitionProvider.tsx` plays the warp overlay via the **Web Animations API** (transform/opacity only — GPU-composited; its own docstring says "no gsap"). This replaced `next-transition-router`, which was dropped in the TanStack Router migration — it serialised navigation through one in-flight transition and swallowed clicks, so on TSR it was pure overhead. The warp is now a capture-phase click listener on the two jump-gate anchors that plays the WAAPI overlay; everything else navigates via plain TanStack `<Link>`.
+**GSAP is not part of the app UI stack.** Do not add `gsap` or `@gsap/react` for operator UI. If an effect needs choreography, use `motion`; if it is a simple open/close, use CSS; if it is list add/remove/reorder, use `auto-animate`.
+
+**The "jump-gate" route warp is testing-only.** `RouteTransitionProvider.tsx` plays the warp overlay via the **Web Animations API** (transform/opacity only — GPU-composited; no gsap), but the app root mounts that provider only when `FLAGS.TESTING` is on. Normal navigation is plain TanStack `<Link>` without a route-transition overlay.
 
 **The rule of three** (memorize this):
 
@@ -520,10 +517,9 @@ return (
 | Modal / popover / dropdown / tab open + close | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`). |
 | **List item add / remove / reorder** | **`auto-animate`** | One-line `useAutoAnimate()` ref. Don't reach for `motion.li` + `AnimatePresence` — it's more code, more re-renders, same visual result. |
 | Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`** | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`. |
-| The one cross-route "jump-gate" warp (`/` ⇄ `/adv`) | **WAAPI** via `RouteTransitionProvider` | A capture-phase click listener intercepts only the two jump-gate anchors and plays a Web Animations API overlay (no gsap); all other navigation is plain TanStack `<Link>` (instant). |
-| The OperatorPanel HUD ring intro / loops | **`gsap`** via `OperatorPanel.tsx` (`useGSAP`) | Timeline choreography of the HUD rings; the one place gsap is actually used. |
+| The testing-only cross-route "jump-gate" warp (`/` ⇄ `/adv`) | **WAAPI** via `RouteTransitionProvider`, mounted only behind `FLAGS.TESTING` | A capture-phase click listener intercepts jump-gate anchors during testing; all normal navigation is plain TanStack `<Link>` (instant). |
 
-**Don't use** for app UI: `@theatre/core`, `@react-spring/web`, `popmotion`. They're either overkill, abandoned, or duplicates of what `motion` covers in our context. `gsap` is in the tree but is reserved for the OperatorPanel HUD ring animation above — reach for `motion` / CSS / `auto-animate` for everything else, not GSAP. (And note the route warp is WAAPI, not gsap — don't add gsap "to match the warp.")
+**Don't use** for app UI: `gsap`, `@gsap/react`, `@theatre/core`, `@react-spring/web`, `popmotion`. They're either overkill, abandoned, or duplicates of what `motion` covers in our context.
 
 **RichGrid lists are NOT auto-animate targets.** Any `RichGrid`-backed virtualized list (e.g. `apps/operator-vite/src/components/adv/AdvConversationsTab.tsx`, `apps/operator/app/adv/harnesses/AdvAgentsPanel.tsx`) uses `useVirtualizer` — `auto-animate` would fight virtualization (animating every scroll). Animations there should target row-level data changes (status pulse, color transition) not row mount/unmount.
 

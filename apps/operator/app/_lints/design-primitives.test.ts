@@ -314,20 +314,23 @@ describe('design primitive lint', () => {
   });
 
   it('blocks title-only tooltips on buttons', () => {
-    expectNoUnexpected('Button title tooltip', unexpectedFiles(/<button\b[^>]*\btitle=/g, LEGACY_BUTTON_TITLE_FILES));
+    expectNoUnexpected(
+      'Button title tooltip',
+      unexpectedFiles(/<button\b(?:=>|[^>])*\btitle=/g, LEGACY_BUTTON_TITLE_FILES),
+    );
   });
 
   it('blocks title-only tooltips on links', () => {
     expectNoUnexpected(
       'Link title tooltip',
-      unexpectedFiles(/<(?:a\b|RouteLink\b)[^>]*\btitle=/g, LEGACY_LINK_TITLE_FILES),
+      unexpectedFiles(/<(?:a\b|RouteLink\b)(?:=>|[^>])*\btitle=/g, LEGACY_LINK_TITLE_FILES),
     );
   });
 
   it('blocks title-only tooltips on tab controls', () => {
     expectNoUnexpected(
       'Tab title tooltip',
-      unexpectedFiles(/\brole=["']tab["'][^>]*\btitle=/g, LEGACY_TAB_TITLE_FILES),
+      unexpectedFiles(/\brole=["']tab["'](?:=>|[^>])*\btitle=/g, LEGACY_TAB_TITLE_FILES),
     );
   });
 

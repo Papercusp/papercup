@@ -139,6 +139,9 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
       {refreshBtn}
       {rows.map((h) => {
         const joinable = h.memberLinks.length > 0;
+        const joinTooltip = joinable
+          ? 'Join every member harness of this hive'
+          : 'This hive published topics only; a full join link is required';
         return (
           <div key={h.hiveId} style={card}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
@@ -150,14 +153,17 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
             {h.description ? <div style={{ fontSize: 13, margin: '4px 0' }}>{h.description}</div> : null}
             <div style={{ fontSize: 11, color: 'var(--fg-mute, #888)' }}>owner: {h.owner}</div>
             <div style={{ marginTop: 8 }}>
-              <button
-                type="button"
-                disabled={!joinable || joining === h.hiveId}
-                onClick={() => void join(h)}
-                title={joinable ? 'Join every member harness of this hive' : 'This hive published topics only — a full join link is required'}
-              >
-                {joining === h.hiveId ? 'Joining…' : 'Join'}
-              </button>
+              <Tooltip label={joinTooltip}>
+                <span style={{ display: 'inline-flex' }}>
+                  <button
+                    type="button"
+                    disabled={!joinable || joining === h.hiveId}
+                    onClick={() => void join(h)}
+                  >
+                    {joining === h.hiveId ? 'Joining…' : 'Join'}
+                  </button>
+                </span>
+              </Tooltip>
               {!joinable ? <span style={{ ...mute, padding: 0, marginLeft: 8 }}>link required</span> : null}
               {joinMsg[h.hiveId] ? <span style={{ ...mute, padding: 0, marginLeft: 8 }}>{joinMsg[h.hiveId]}</span> : null}
             </div>

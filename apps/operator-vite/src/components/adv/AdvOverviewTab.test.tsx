@@ -65,7 +65,10 @@ vi.mock('@papercusp/sync', () => ({
     switch (queryName) {
       case 'dev.coordPresence':
         return { ...presenceResult, error: null };
+      // byHarness (a harness selected) + recent (All-Pots fleet-wide) share the
+      // same row shape + fixture (D-008: the All-Pots Activity fallback).
       case 'userActions.byHarness':
+      case 'userActions.recent':
         return { ...activityResult, error: null };
       default:
         return { data: undefined, loading: false, error: null };
@@ -198,9 +201,26 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('No active plans')).toBeTruthy();
     expect(screen.getByText('Nothing needs you right now')).toBeTruthy();
     expect(screen.getByText('No live agents')).toBeTruthy();
-    // No harness selected (?slug= null) → the activity query is disabled.
-    expect(screen.getByText('Select a harness to see activity')).toBeTruthy();
-    expect(syncEnabled['userActions.byHarness']).toBe(false);
+    // No harness selected (?slug= null) → the Activity tile reads the fleet-wide
+    // userActions.recent feed (D-008); the empty fixture → its empty state. It is
+    // NOT scoped to a harness (no userActions.byHarness call).
+    expect(screen.getByText('No recent activity')).toBeTruthy();
+    expect(syncArgs['userActions.recent']).toMatchObject({ workspaceId: expect.any(String) });
+    expect(syncArgs['userActions.byHarness']).toBeUndefined();
+  });
+
+  it('fills the All-Pots Activity tile from the fleet-wide userActions.recent feed (D-008)', () => {
+    // No harness selected (?slug= null), but the fleet-wide recent feed has rows —
+    // the tile must render them instead of an empty/"select a harness" state.
+    nuqsState.slug = null;
+    activityResult = {
+      data: [actionRow({ id: 'fleet1', actor: 'queen', kind: 'place', summary: 'placed WI-900' })],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText('placed WI-900')).toBeTruthy();
+    expect(syncArgs['userActions.recent']).toMatchObject({ workspaceId: expect.any(String) });
+    expect(syncArgs['userActions.byHarness']).toBeUndefined();
   });
 
   it('renders plan rows with the done/total fraction and the active-count badge', () => {

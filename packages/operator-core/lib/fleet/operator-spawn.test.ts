@@ -215,8 +215,13 @@ describe('spawnAgentInHarness — happy path', () => {
 });
 
 describe('spawnAgentInHarness — overwatch flag gate (overwatch-role-2026-06-15 B-10 / D-009)', () => {
-  it('rejects role="overwatch" when papercusp-overwatch is OFF (the default) — registered but not activatable', async () => {
-    // getFlag default impl returns FLAG_DEFAULTS[OVERWATCH] = false → gated.
+  it('rejects role="overwatch" when papercusp-overwatch is OFF — registered but not activatable', async () => {
+    // OVERWATCH graduated to default-ON (flip-dark-flags-default-on-2026-06-23); getFlag is mocked
+    // here, so this off-path test forces the flag OFF via the mock (mirrors the flag-ON sibling
+    // below) instead of relying on FLAG_DEFAULTS. The gate is unchanged: OFF ⇒ not activatable.
+    vi.mocked(getFlag).mockImplementation(async (key: string) =>
+      key === FLAGS.OVERWATCH ? false : (FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false),
+    );
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'overwatch' });
     expect(res.ok).toBe(false);
     // the flag-gate rejection, not the unknown-role rejection (overwatch IS registered)

@@ -23,31 +23,28 @@
   margin: 0 0 18px;
   padding: 16px 18px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
-  border-radius: 16px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 6%), color-mix(in srgb, var(--bg-deep), transparent 2%));
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.035),
-    0 18px 34px rgba(0,0,0,0.18);
-  color: rgba(214, 236, 248, 0.74);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1), transparent 6%);
+  box-shadow: none;
+  color: var(--fg-dim, rgba(214, 236, 248, 0.74));
   font-size: 13px;
   line-height: 1.55;
 }
 .pc-ops-intro p { margin: 0; }
 .pc-ops-intro code {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-2, rgba(255, 255, 255, 0.05));
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 12px;
-  color: #eff8ff;
+  color: var(--fg, #eff8ff);
 }
 
 .pc-ops-error {
   padding: 14px 16px;
-  border: 1px solid rgba(248, 113, 113, 0.34);
-  border-radius: 14px;
-  color: #fecaca;
-  background: rgba(127, 29, 29, 0.22);
+  border: 1px solid color-mix(in srgb, var(--bad), transparent 66%);
+  border-radius: 8px;
+  color: var(--bad, #fecaca);
+  background: color-mix(in srgb, var(--bad), transparent 86%);
   margin-bottom: 18px;
 }
 
@@ -55,7 +52,7 @@
 .pc-ops-section-title {
   font-size: 11px;
   font-weight: 760;
-  color: rgba(203, 238, 255, 0.74);
+  color: var(--fg-dim, rgba(203, 238, 255, 0.74));
   text-transform: uppercase;
   letter-spacing: 0;
   margin: 0 0 10px;
@@ -63,9 +60,9 @@
 .pc-ops-empty {
   background: color-mix(in srgb, var(--bg), transparent 6%);
   border: 1px dashed color-mix(in srgb, var(--accent-strong), transparent 82%);
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 18px;
-  color: rgba(214, 236, 248, 0.68);
+  color: var(--fg-dim, rgba(214, 236, 248, 0.68));
   font-size: 12px;
 }
 .pc-ops-grid {
@@ -75,26 +72,23 @@
 }
 
 .pc-ops-card {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 6%), color-mix(in srgb, var(--bg-deep), transparent 1%));
+  background: color-mix(in srgb, var(--bg-1), transparent 6%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
-  border-radius: 16px;
+  border-radius: 8px;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.03),
-    0 18px 34px rgba(0,0,0,0.16);
-  transition: border-color 120ms, transform 120ms;
+  box-shadow: none;
+  transition: border-color 120ms, background 120ms;
 }
 .pc-ops-card:hover {
-  border-color: rgba(103, 232, 249, 0.30);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%);
+  background: color-mix(in srgb, var(--bg-2), transparent 4%);
 }
-.pc-ops-card-running { border-color: rgba(103, 232, 249, 0.42); }
-.pc-ops-card-error { border-color: rgba(248, 113, 113, 0.34); }
-.pc-ops-card-done { border-color: rgba(74, 222, 128, 0.30); }
+.pc-ops-card-running { border-color: color-mix(in srgb, var(--accent-strong), transparent 58%); }
+.pc-ops-card-error { border-color: color-mix(in srgb, var(--bad), transparent 66%); }
+.pc-ops-card-done { border-color: color-mix(in srgb, var(--good), transparent 70%); }
 
 .pc-ops-card-head {
   display: flex;
@@ -105,10 +99,10 @@
   flex: 1;
   font-size: 15px;
   font-weight: 700;
-  color: #eff8ff;
+  color: var(--fg, #eff8ff);
 }
 .pc-ops-card-desc {
-  color: rgba(205, 226, 240, 0.74);
+  color: var(--fg-dim, rgba(205, 226, 240, 0.74));
   font-size: 12px;
   line-height: 1.5;
 }
@@ -121,10 +115,10 @@
 .pc-ops-card-cmd {
   background: color-mix(in srgb, var(--bg-deepest), transparent 6%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 10px 12px;
   font-size: 11px;
-  color: #fbbf24;
+  color: var(--warn, #fbbf24);
   white-space: pre-wrap;
   word-break: break-all;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -136,36 +130,36 @@
 .pc-ops-btn {
   appearance: none;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
-  background: rgba(255, 255, 255, 0.04);
-  color: #eff8ff;
+  background: color-mix(in srgb, var(--bg-2), transparent 4%);
+  color: var(--fg, #eff8ff);
   padding: 6px 12px;
-  border-radius: 10px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 650;
   cursor: pointer;
   line-height: 1.2;
-  transition: background 100ms, border-color 100ms, color 100ms, transform 100ms;
+  transition: background 100ms, border-color 100ms, color 100ms;
 }
 .pc-ops-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(103, 232, 249, 0.34);
+  background: color-mix(in srgb, var(--bg-3), transparent 2%);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%);
 }
-.pc-ops-btn:active { transform: translateY(1px); }
+.pc-ops-btn:active { background: color-mix(in srgb, var(--bg-3), transparent 0%); }
 .pc-ops-btn-run {
   background: color-mix(in srgb, var(--accent), transparent 74%);
-  color: #f4fbff;
-  border-color: rgba(103, 232, 249, 0.42);
+  color: var(--accent-ink, #f4fbff);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 58%);
 }
 .pc-ops-btn-run:hover { background: color-mix(in srgb, var(--accent), transparent 66%); }
 .pc-ops-btn-stop {
-  background: rgba(220, 38, 38, 0.22);
-  color: #fff;
-  border-color: rgba(248, 113, 113, 0.42);
+  background: color-mix(in srgb, var(--bad), transparent 78%);
+  color: var(--fg, #fff);
+  border-color: color-mix(in srgb, var(--bad), transparent 58%);
 }
-.pc-ops-btn-stop:hover { background: rgba(220, 38, 38, 0.32); }
+.pc-ops-btn-stop:hover { background: color-mix(in srgb, var(--bad), transparent 68%); }
 .pc-ops-btn-ghost {
   background: transparent;
-  color: rgba(214, 236, 248, 0.72);
+  color: var(--fg-dim, rgba(214, 236, 248, 0.72));
   border-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
 }
 .pc-ops-btn-mini { padding: 3px 8px; font-size: 11px; }
@@ -188,10 +182,10 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
 }
-.pc-ops-pill-idle { background: rgba(148, 163, 184, 0.16); color: rgba(214, 236, 248, 0.70); }
+.pc-ops-pill-idle { background: color-mix(in srgb, var(--fg-mute), transparent 84%); color: var(--fg-dim, rgba(214, 236, 248, 0.70)); }
 .pc-ops-pill-running {
   background: color-mix(in srgb, var(--accent), transparent 82%);
-  color: #93ecff;
+  color: var(--accent-soft, #93ecff);
   position: relative;
   padding-left: 18px;
 }
@@ -203,7 +197,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #93ecff;
+  background: var(--accent-soft, #93ecff);
   transform: translateY(-50%);
   animation: pc-ops-pulse 1s ease-in-out infinite;
 }
@@ -211,9 +205,9 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
-.pc-ops-pill-done { background: rgba(34, 197, 94, 0.18); color: #86efac; }
-.pc-ops-pill-error { background: rgba(220, 38, 38, 0.22); color: #fca5a5; }
-.pc-ops-pill-cancelled { background: rgba(234, 179, 8, 0.18); color: #fcd34d; }
+.pc-ops-pill-done { background: color-mix(in srgb, var(--good), transparent 82%); color: var(--good, #86efac); }
+.pc-ops-pill-error { background: color-mix(in srgb, var(--bad), transparent 78%); color: var(--bad, #fca5a5); }
+.pc-ops-pill-cancelled { background: color-mix(in srgb, var(--warn), transparent 82%); color: var(--warn, #fcd34d); }
 
 .pc-ops-log-wrap {
   display: flex;
@@ -230,7 +224,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: rgba(214, 236, 248, 0.72);
+  color: var(--fg-dim, rgba(214, 236, 248, 0.72));
   font-size: 11px;
   cursor: pointer;
 }
@@ -239,15 +233,15 @@
 .pc-ops-log-box {
   background: color-mix(in srgb, var(--bg-deepest), transparent 6%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 10px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   line-height: 1.45;
-  color: #d1d5db;
+  color: var(--fg-dim, #d1d5db);
   max-height: 360px;
   overflow: auto;
   white-space: pre;
 }
 .pc-ops-log-line { white-space: pre-wrap; word-break: break-all; }
-.pc-ops-log-stderr { color: #fca5a5; }
+.pc-ops-log-stderr { color: var(--bad, #fca5a5); }

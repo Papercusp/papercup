@@ -24,8 +24,6 @@ import { createResilientEventSource } from '@restart/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
-import gsap from 'gsap';
-import { useGSAP } from '@gsap/react';
 import { MarkdownPreview } from './MarkdownEditor';
 import { LazyDetails } from './LazyDetails';
 import { Select } from '../harness/Select';
@@ -286,8 +284,6 @@ import {
   type AutoAcceptLevel,
   type OperatorState,
 } from './operator-shared-state';
-
-gsap.registerPlugin(useGSAP);
 
 export { setOperatorState };
 
@@ -1610,101 +1606,12 @@ export function OperatorPanel(): ReactElement | null {
         },
       };
 
-  useGSAP(
-    () => {
-      if (!panelRef.current || calmMotion) return;
-      const q = gsap.utils.selector(panelRef.current);
-      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
-
-      intro
-        .fromTo(
-          q('.operator-reactor-shell'),
-          { autoAlpha: 0, scale: 0.52, rotate: -82 },
-          { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.92 },
-          0,
-        )
-        .fromTo(
-          q('.operator-panel__header'),
-          { autoAlpha: 0, y: -36, rotationX: 18 },
-          { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.78 },
-          0.06,
-        )
-        .fromTo(
-          q('.operator-panel__metric-card'),
-          { autoAlpha: 0, y: 18, scale: 0.9 },
-          { autoAlpha: 1, y: 0, scale: 1, duration: 0.42, stagger: 0.05 },
-          0.2,
-        )
-        .fromTo(
-          q('.operator-panel__actions > *'),
-          { autoAlpha: 0, x: 24 },
-          { autoAlpha: 1, x: 0, duration: 0.34, stagger: 0.04 },
-          0.24,
-        )
-        .fromTo(
-          q('.operator-panel__rail--left, .operator-panel__feed, .operator-panel__rail--right'),
-          { autoAlpha: 0, y: 34, rotationX: 10 },
-          { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.68, stagger: 0.08 },
-          0.16,
-        )
-        .fromTo(
-          q('.operator-entry'),
-          { autoAlpha: 0, y: 28, x: 18, rotateX: 10 },
-          { autoAlpha: 1, y: 0, x: 0, rotateX: 0, duration: 0.44, stagger: 0.05 },
-          0.4,
-        )
-        .fromTo(
-          q('.operator-panel__lock-flash'),
-          { autoAlpha: 0.12, scaleX: 0.06 },
-          { autoAlpha: 0.92, scaleX: 1, duration: 0.18, repeat: 1, yoyo: true },
-          0.34,
-        );
-
-      const loops: gsap.core.Tween[] = [
-        gsap.to(q('.operator-hud-ring--outer'), { rotate: 360, duration: 18, ease: 'none', repeat: -1 }),
-        gsap.to(q('.operator-hud-ring--mid'), { rotate: -360, duration: 12, ease: 'none', repeat: -1 }),
-        gsap.to(q('.operator-hud-ring--inner'), { rotate: 360, duration: 7, ease: 'none', repeat: -1 }),
-        gsap.fromTo(
-          q('.operator-hud-scan-beam'),
-          { yPercent: -120, autoAlpha: 0.14 },
-          { yPercent: 140, autoAlpha: 0.9, duration: 1.85, ease: 'power2.inOut', repeat: -1, repeatDelay: 0.35 },
-        ),
-
-      ];
-
-      if (state.paused) {
-        loops.push(
-          gsap.to(q('.operator-reactor-core__orb'), { scale: 0.88, autoAlpha: 0.7, duration: 1.1, yoyo: true, repeat: -1, ease: 'sine.inOut' }),
-        );
-      } else if (state.iconState === 'acting') {
-        loops.push(
-          gsap.to(q('.operator-reactor-core__orb'), { scale: 1.2, duration: 0.34, yoyo: true, repeat: -1, ease: 'power2.inOut' }),
-        );
-      } else if (state.iconState === 'thinking') {
-        loops.push(
-          gsap.to(q('.operator-reactor-core__orb'), { scale: 1.1, duration: 0.72, yoyo: true, repeat: -1, ease: 'sine.inOut' }),
-        );
-      } else if (state.iconState === 'scanning') {
-        loops.push(
-          gsap.to(q('.operator-hud-reticle'), { rotate: '+=18', duration: 2.2, ease: 'none', repeat: -1 }),
-        );
-      }
-
-      return () => {
-        intro.kill();
-        loops.forEach((loop) => loop.kill());
-      };
-    },
-    { scope: panelRef, dependencies: [calmMotion, state.iconState, state.paused, scanStatus, suggestions.length, decisions.length] },
-  );
-
   return (
     <AnimatePresence initial={false}>
       {state.open ? (
         <motion.div
           ref={panelRef}
           role="dialog"
-          aria-modal="true"
           aria-label="Deck"
           data-harness-modal="true"
           data-operator-state={effectiveIconState}

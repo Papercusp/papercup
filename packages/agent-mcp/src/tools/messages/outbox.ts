@@ -28,6 +28,16 @@ export default defineTool({
     detail: z.enum(['summary', 'full']).default('summary'),
     limit: z.number().int().positive().max(200).default(50),
   }),
+  // Output schema (token-efficient-tool-result-formats P-011) — see audit:list /
+  // messages:inbox: the default `summary` shape is a flat scalar array (CSV-
+  // eligible + advertised `outputSchema`); `detail: 'full'` adds a nested
+  // `details` object per row, which the serializer downgrades to TOON.
+  result: z.array(
+    z.object({
+      ts: z.number(),
+      subject: z.string(),
+    }),
+  ),
   async handler(args, ctx) {
     if (!/^[a-z0-9._-]+$/i.test(args.slug)) {
       return {

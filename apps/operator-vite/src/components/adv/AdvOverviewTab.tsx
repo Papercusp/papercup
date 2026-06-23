@@ -177,9 +177,10 @@ export default function AdvOverviewTab() {
     await setInboxTier(tier);
   };
 
-  // The selected harness (AdvShell's `?slug=`). The activity feed is per-harness
-  // (`user_actions` has no fleet-wide variant), so the Activity tile scopes to
-  // it; null = the All-Pots default → no harness to read, empty state.
+  // The selected harness (AdvShell's `?slug=`). The Activity tile scopes to it when
+  // set (userActions.byHarness); in the All-Pots default (null) it falls back to the
+  // fleet-wide userActions.recent feed so the tile is never blank (D-008 follow-up to
+  // the P-006 behavior shift).
   const [activeSlug] = useQueryState('slug', parseAsString);
 
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
@@ -191,15 +192,25 @@ export default function AdvOverviewTab() {
   // a belt-and-braces guard on the client-derived liveness.
   const rosterQ = useSyncQuery<PresenceRow>({ queryName: 'dev.coordPresence', staleTime: 8_000 });
 
-  // Activity (recent action stream) — LIVE via userActions.byHarness (push-driven
-  // by the user_actions→query bridge), scoped to the selected harness +
-  // workspace. Disabled (no fetch) when no harness is selected.
-  const activityQ = useSyncQuery<UserActionRow>({
-    queryName: 'userActions.byHarness',
-    args: { harnessSlug: activeSlug ?? '', workspaceId: getBrowserWorkspaceId(), limit: ACTIVITY_LIMIT },
-    enabled: !!activeSlug,
-    staleTime: 8_000,
-  });
+  // Activity (recent action stream) — LIVE via the user_actions→query bridge
+  // (push-driven). A harness selected → userActions.byHarness (that harness +
+  // workspace); All-Pots (no harness) → the fleet-wide userActions.recent feed.
+  // One unconditional hook with a computed query (rules-of-hooks safe); the cache
+  // key carries the queryName + args so switching scope re-subscribes.
+  const activityWsId = getBrowserWorkspaceId();
+  const activityQ = useSyncQuery<UserActionRow>(
+    activeSlug
+      ? {
+          queryName: 'userActions.byHarness',
+          args: { harnessSlug: activeSlug, workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
+          staleTime: 8_000,
+        }
+      : {
+          queryName: 'userActions.recent',
+          args: { workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
+          staleTime: 8_000,
+        },
+  );
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);
@@ -343,9 +354,9 @@ export default function AdvOverviewTab() {
           icon={<ActivityIcon size={14} aria-hidden />}
           title="Activity"
           accent="#34d399"
-          loading={!!activeSlug && activityQ.loading && !activityQ.data}
+          loading={activityQ.loading && !activityQ.data}
           empty={recentActivity.length === 0}
-          emptyLabel={activeSlug ? 'No recent activity' : 'Select a harness to see activity'}
+          emptyLabel="No recent activity"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.activity)}
         >
           {recentActivity.map((r) => (

@@ -32,9 +32,9 @@ describe('queryNamesForTriggerEvent', () => {
     expect(queryNamesForTriggerEvent('')).toEqual([]);
   });
 
-  it('handles userActions which contributes two names from one table', () => {
+  it('handles userActions which contributes three names from one table', () => {
     expect(queryNamesForTriggerEvent('harness_shared.user_actions.changed')).toEqual(
-      expect.arrayContaining(['userActions.byHarness', 'userActions.byKind']),
+      expect.arrayContaining(['userActions.byHarness', 'userActions.byKind', 'userActions.recent']),
     );
   });
 

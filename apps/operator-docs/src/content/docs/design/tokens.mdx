@@ -32,10 +32,12 @@ Components must reference a **semantic `var(--…)` token**, never a brand
 primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`,
 `#7dd3fc`, `#bae6fd`, `rgba(125, 211, 252, …)`, …). A theme can only swap the
 **semantic** layer — anything hardcoded to a sky value stays blue when the user
-picks Black. This rule is **audited by review**, not test-enforced:
-`app/_lints/css-tokens.test.ts` only checks that every `var(--…)` reference in
-`.tsx` resolves to a defined token (plus a vocabulary sanity check) — it does
-**not** scan for raw sky hexes or brand primitives. The full do/don't is the
+picks Black. This rule is partly test-enforced and partly review-enforced:
+`app/_lints/css-tokens.test.ts` checks that every `var(--…)` reference in
+`.tsx` resolves to a defined token, and `app/_lints/design-primitives.test.ts`
+blocks brand primitive references plus direct cyan literals in audited active
+surfaces. The audit is intentionally not whole-repo yet, so the full do/don't is
+still binding review policy; see the
 [theme contract](#the-theme-contract--what-agents-must-follow) below.
 </Aside>
 
@@ -151,6 +153,11 @@ through it. The rules:
    accent-tint scale). New dark surfaces → `--bg` / `--bg-1` / `--bg-popover`,
    **never** a hand-picked dark-navy literal.
 5. **Status & decorative palettes are exempt** — see the next two sections.
+6. **Brand marks, media, and swatches are narrow exceptions.** A logo SVG,
+   avatar, screenshot, user-authored color swatch, or token-dev preview may
+   carry its real color. If the color is part of app chrome, navigation,
+   content panels, cards, buttons, or charts that should theme with the app, it
+   must be semantic-tokenized.
 
 <Aside type="tip" title="The litmus test">
 Switch the operator to the **Black** theme (Settings → Personalization). Anything

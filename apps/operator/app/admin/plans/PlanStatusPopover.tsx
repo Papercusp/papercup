@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * P-203 — status-flip popover anchored to a clicked `[data-plan-status]`
+ * P-203 — status-flip menu anchored to a clicked `[data-plan-status]`
  * code element. Six buttons (todo / wip / blocked / needs-human / done /
  * dropped); selection calls `plans:set-status` and closes. Esc / outside
  * click cancels.
@@ -137,7 +137,7 @@ export default function PlanStatusPopover({
     <div
       ref={containerRef}
       className="pc-plan-status-popover"
-      role="dialog"
+      role="menu"
       aria-label={`Set status for ${pending.itemId}`}
       style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 200 }}
     >
@@ -147,17 +147,18 @@ export default function PlanStatusPopover({
           current: <code className={`pc-plan-status pc-plan-status--${pending.status}`}>{pending.status}</code>
         </span>
       </div>
-      <ul className="pc-plan-status-popover__list" role="list">
+      <ul className="pc-plan-status-popover__list" role="none">
         {STATUS_ORDER.map((s) => {
           const isCurrent = s === pending.status;
           const isBusy = busy === s;
           return (
-            <li key={s}>
+            <li key={s} role="none">
               <button
                 type="button"
+                role="menuitemradio"
                 className={`pc-plan-status-popover__btn${isCurrent ? ' is-current' : ''}`}
                 disabled={busy !== null}
-                aria-pressed={isCurrent}
+                aria-checked={isCurrent}
                 onClick={async () => {
                   if (isCurrent) {
                     onClose();

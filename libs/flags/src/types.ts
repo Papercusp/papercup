@@ -1194,11 +1194,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // integration-verified (two-peer-swarm federation test + event-loop latency test).
   [FLAGS.SUBSTRATE_SIDECAR]: false,
   // DEFAULT OFF — P-011 idle-session reaper ends adv_session rows; off until proven on the fleet.
-  [FLAGS.IDLE_SESSION_REAPER]: false,
+  [FLAGS.IDLE_SESSION_REAPER]: true,
   // DEFAULT OFF — P-011 / WI-152 (D-007) terminate half: Ctrl-C + SIGKILL of a LIVE-but-idle
   // session. Destructive + double-gated (no-op unless IDLE_SESSION_REAPER is ALSO on); off until
   // a live --dry-run proof. The explicit-owner-ask exception to alpha flags-default-on.
-  [FLAGS.IDLE_SESSION_REAPER_TERMINATE]: false,
+  [FLAGS.IDLE_SESSION_REAPER_TERMINATE]: true,
   // ON by default (alpha flags-default-on policy + EI-316 correctness fix): the
   // guard fires only on a title that embeds an id resolving to a live OPEN
   // work-item — a near-zero-false-positive signal — and force:true is the
@@ -1401,13 +1401,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // decider ARMING GATE. OFF ⇒ the decider gates EVERY item (autonomy dark,
   // behavior-neutral, D-007). The owner's P-092 act flips it ON — and even then
   // every category ships never-auto (D-005), so arming alone auto-decides nothing.
-  [FLAGS.QUEEN_AUTONOMY_ARMED]: false,
+  [FLAGS.QUEEN_AUTONOMY_ARMED]: true,
   // OFF by default — DELIBERATE (queen-autonomy-and-selffeed-fix Phase 2): the OWNER
   // FULL-AUTONOMY grant. ON lets the Queen auto-decide the categorical residue
   // (owner-authority / protected / irreversible / graduation:*) AND lifts the auto-
   // implement loop's protected-path TCB. Recursive-self-improvement boundary — owner
   // flips it deliberately; reversible (OFF restores today's gates verbatim).
-  [FLAGS.QUEEN_FULL_AUTONOMY]: false,
+  [FLAGS.QUEEN_FULL_AUTONOMY]: true,
   // ON by default (alpha flags-default-on policy) — the owner control surface
   // (B-15) reads + writes the already-audited never-auto policy and arms nothing;
   // OFF hides the /settings/autonomy nav entry.
@@ -1467,7 +1467,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // staging run proves it. The owner flips it ON after that proof. The flag gates
   // the role registration (B-01), the wake-loop/routine (B-04), and the UI pane
   // (B-08). Pending flip surfaced in the plan's ## Now + every lane report.
-  [FLAGS.OVERWATCH]: false,
+  [FLAGS.OVERWATCH]: true,
   // OFF by default — DELIBERATE (sentinel-as-herald-2026-06-21, mirrors OVERWATCH):
   // the SENTINEL autonomous role ships dark. It is a brand-new, not-yet-proven
   // autonomous supervisor that nudges the live fleet; a confused sentinel must not
@@ -1475,14 +1475,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // staging run proves it. The owner flips it ON after that proof. The flag gates
   // the role registration, the wake-loop/routine, and the UI pane. Pending flip
   // surfaced in the plan's ## Now + every lane report. KNOWN_DARK_FLAGS.
-  [FLAGS.SENTINEL]: false,
+  [FLAGS.SENTINEL]: true,
   // OFF by default — DELIBERATE (sentinel-as-herald-2026-06-21 Phase 5, mirrors SENTINEL):
   // the server-side proactive "decide to speak" sweep ships dark. A brand-new autonomous
   // speak loop; OFF ⇒ the sweep no-ops every tick (live voice + the browser-provider
   // proactive ticks are byte-for-byte unchanged). Triple-gated on top of the flag
   // (humanFacingRole==='sentinel' + not DND/paused/over-budget + voice-host owns the
   // lease). Owner flips ON after its first live staging run. KNOWN_DARK_FLAGS.
-  [FLAGS.SENTINEL_PROACTIVE]: false,
+  [FLAGS.SENTINEL_PROACTIVE]: true,
   // DEFAULT ON (scheduled-recurring-plans-2026-06-16 D-019, owner-directed at ship): the
   // scheduled-plan execution path is enabled in prod. Safe despite being an autonomous
   // executor — the real control is per-plan ARMING (autonomy-gated, schedule-arm

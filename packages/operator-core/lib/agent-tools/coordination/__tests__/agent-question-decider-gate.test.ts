@@ -8,10 +8,22 @@
  * (the gate body is a one-line `postureToRung(decision.posture)`); the decider's own
  * suite covers when it returns `auto`.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AgentIdentity, IdentitySource } from '../identity';
 import { deciderAgentQuestionGate, postureToRung } from '../agent-question-decider-gate';
+
+// QUEEN_AUTONOMY_ARMED graduated to default-ON (flip-dark-flags-default-on-2026-06-23). These tests
+// verify the UNARMED gate (owner-queue routing), so pin the arming flag OFF via the env override
+// (this file uses the real getFlag, which honors PAPERCUSP_FLAG_* over the default) rather than
+// depending on the now-ON default. The armed auto→bee-self mapping is covered by postureToRung above.
+const ARMED_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_QUEEN_AUTONOMY_ARMED';
+beforeEach(() => {
+  process.env[ARMED_ENV] = '0';
+});
+afterEach(() => {
+  delete process.env[ARMED_ENV];
+});
 
 const idOf = (source: IdentitySource): AgentIdentity => ({
   ownerId: `owner-${source}`,

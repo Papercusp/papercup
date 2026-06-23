@@ -1157,7 +1157,7 @@
   white-space: nowrap;
 }
 .pc-tables-fklink:hover {
-  color: #bae6fd;
+  color: var(--accent-soft, #bae6fd);
   text-decoration-style: solid;
 }
 .pc-tables-filter-bar {

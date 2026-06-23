@@ -244,7 +244,6 @@ export default function LeftSidebar() {
             className="pclsb__rail-btn pclsb__rail-btn--expand"
             onClick={() => setOpen(true)}
             aria-label="Expand sidebar"
-            title="Expand sidebar"
           >
             <PanelLeftOpen size={17} aria-hidden="true" />
           </button>

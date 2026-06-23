@@ -1,5 +1,5 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router';
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { Toaster } from 'sonner';
 // Custom nuqs adapter (NOT nuqs/adapters/tanstack-router): the stock adapter
 // rebuilds the URL from only nuqs-watched keys, dropping TanStack-native typed
@@ -37,6 +37,8 @@ import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverPr
 // ?perf-recorder=1 is set (the chaos-desktop recorder window). Phase 6 of
 // universal-testing-domains-generic-2026-06-03.
 import { RecorderHost } from '@papercusp/testing-shell';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@papercusp/flags/client';
 import ChromeShell from '@/app/_components/ChromeShell';
 import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
@@ -134,6 +136,12 @@ export const Route = createRootRoute({
   notFoundComponent: NotFound,
 });
 
+function TestingRouteTransition({ children }: { children: ReactNode }) {
+  const testingEnabled = useFlag(FLAGS.TESTING);
+  if (!testingEnabled) return <>{children}</>;
+  return <RouteTransitionProvider>{children}</RouteTransitionProvider>;
+}
+
 function RootComponent() {
   // Dev shells only (same gate as DevAdminRail): force the lazy voice-mode chunk
   // to evaluate at startup so its agent-e2e test seam (window.__pcVoiceTest) is
@@ -188,7 +196,7 @@ function RootComponent() {
               <Suspense fallback={null}>
                 <LeftSidebar />
               </Suspense>
-              <RouteTransitionProvider>
+              <TestingRouteTransition>
                 <WslOnboardingGate>
                   <OperatorConversationProvider>
                     <PostHogProvider>
@@ -214,7 +222,7 @@ function RootComponent() {
                     </PostHogProvider>
                   </OperatorConversationProvider>
                 </WslOnboardingGate>
-              </RouteTransitionProvider>
+              </TestingRouteTransition>
               <Toaster
                 theme="dark"
                 position="top-right"
@@ -258,4 +266,3 @@ function RootComponent() {
     </Tooltip.Provider>
   );
 }
-

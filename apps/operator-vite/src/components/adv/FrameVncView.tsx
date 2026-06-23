@@ -54,7 +54,8 @@ export default function FrameVncView({
         rfb = new RFB(containerRef.current, data.wsUrl);
         rfb.viewOnly = !drive;
         rfb.scaleViewport = true;
-        rfb.background = 'rgb(7, 16, 29)';
+        rfb.background =
+          getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#07101d';
         rfb.addEventListener('connect', () => set('connected'));
         rfb.addEventListener('disconnect', () => set('ended'));
       } catch (e) {

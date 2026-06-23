@@ -24,6 +24,7 @@ describe('sync-resolver v2 registry', () => {
         'auditLog.operatorDecisions',
         'operatorBudget.byWorkspace',
         'userActions.byKind',
+        'userActions.recent',
       ]) {
         expect(names).toContain(expected);
       }

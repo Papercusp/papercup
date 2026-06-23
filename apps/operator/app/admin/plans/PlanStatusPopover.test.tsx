@@ -70,15 +70,15 @@ describe('PlanStatusPopover', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders the dialog with the item id and six status buttons', () => {
+  it('renders the menu with the item id and six status choices', () => {
     renderPopover(pendingFlip());
-    expect(screen.getByRole('dialog', { name: /Set status for P-001/i })).toBeTruthy();
-    expect(screen.getAllByRole('button')).toHaveLength(6);
+    expect(screen.getByRole('menu', { name: /Set status for P-001/i })).toBeTruthy();
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(6);
   });
 
   it('clicking the current status just closes (no write)', () => {
     renderPopover(pendingFlip('todo'));
-    fireEvent.click(screen.getAllByRole('button')[0]); // todo = current
+    fireEvent.click(screen.getAllByRole('menuitemradio')[0]); // todo = current
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(setItemStatusMock).not.toHaveBeenCalled();
   });
@@ -86,7 +86,7 @@ describe('PlanStatusPopover', () => {
   it('flipping to a new status writes then calls onSuccess + onClose', async () => {
     setStatusResult = { ok: true };
     renderPopover(pendingFlip('todo'));
-    fireEvent.click(screen.getAllByRole('button')[1]); // wip
+    fireEvent.click(screen.getAllByRole('menuitemradio')[1]); // wip
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(setItemStatusMock).toHaveBeenCalledWith({ slug: 'alpha', itemId: 'P-001', status: 'wip' });
     expect(onClose).toHaveBeenCalled();
@@ -95,7 +95,7 @@ describe('PlanStatusPopover', () => {
   it('shows the write error and does not close on a plain error', async () => {
     setStatusResult = { error: 'denied' };
     renderPopover(pendingFlip('todo'));
-    fireEvent.click(screen.getAllByRole('button')[4]); // done
+    fireEvent.click(screen.getAllByRole('menuitemradio')[4]); // done
     expect(await screen.findByText('denied')).toBeTruthy();
     expect(onSuccess).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
@@ -104,7 +104,7 @@ describe('PlanStatusPopover', () => {
   it('formats a busy lock error with owner + intent', async () => {
     setStatusResult = { error: 'busy', busy: [{ owner_label: 'shellX', intent: 'editing' }] };
     renderPopover(pendingFlip('todo'));
-    fireEvent.click(screen.getAllByRole('button')[1]);
+    fireEvent.click(screen.getAllByRole('menuitemradio')[1]);
     expect(await screen.findByText(/busy: held by shellX \(editing\)/i)).toBeTruthy();
   });
 

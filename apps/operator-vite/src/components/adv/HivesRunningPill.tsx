@@ -12,6 +12,7 @@ import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { useSyncQuery } from '@papercusp/sync';
+import { Popover } from '@/app/harness/Popover';
 import { countStarted, hivesRunningLabel, type HiveControlRow } from './hive-control';
 import LocalHivesControl from '../left-sidebar/LocalHivesControl';
 
@@ -26,29 +27,34 @@ export default function HivesRunningPill() {
 
   return (
     <div className="pc-advshell__hives-pill-wrap">
-      <button
-        type="button"
-        className={`pc-advshell__action pc-advshell__action--hives${running > 0 ? ' is-running' : ''}`}
-        data-testid="hives-running-pill"
-        aria-expanded={open}
-        aria-controls="pc-advshell-hives-pop"
-        title="Start/stop hives — click to expand"
-        onClick={() => void setOpen(!open)}
+      <Popover
+        open={open}
+        onOpenChange={(next) => void setOpen(next)}
+        trigger={(
+          <button
+            type="button"
+            className={`pc-advshell__action pc-advshell__action--hives${running > 0 ? ' is-running' : ''}`}
+            data-testid="hives-running-pill"
+            aria-expanded={open}
+            aria-controls="pc-advshell-hives-pop"
+          >
+            <Play size={11} aria-hidden />
+            {hivesRunningLabel(running)}
+          </button>
+        )}
+        tooltipLabel="Start/stop hives"
+        side="bottom"
+        align="end"
+        ariaLabel="Local hives"
+        contentClassName="pc-advshell__hives-pop"
       >
-        <Play size={11} aria-hidden />
-        {hivesRunningLabel(running)}
-      </button>
-      {open && (
         <div
           id="pc-advshell-hives-pop"
-          className="pc-advshell__hives-pop"
           data-testid="hives-running-pop"
-          role="dialog"
-          aria-label="Local hives"
         >
           <LocalHivesControl />
         </div>
-      )}
+      </Popover>
     </div>
   );
 }
