@@ -45,6 +45,22 @@ export interface CoordEventLog {
   /** Write one immutable per-event record, addressed by msg_id. */
   putEvent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<void>;
 
+  /**
+   * Write MANY immutable per-event records to ONE surface in a single batch.
+   * Semantically equal to calling `putEvent` once per entry (same keying: a
+   * re-put on an existing msg_id upserts), but a backend SHOULD collapse the
+   * write into one operation — the PG backend does ONE multi-row INSERT, so N
+   * records cost one round-trip + one transaction instead of N. This is what
+   * lets a sweep drain a large backlog (e.g. the ~11k operational-escalation
+   * reconcile) in one tick: with per-row `putEvent` the per-statement overhead
+   * (round-trip + the AFTER-ROW coord triggers committing per statement) caps a
+   * tick at a few hundred writes. An empty array is a no-op.
+   */
+  putEvents(
+    surface: EventSurface,
+    records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,
+  ): Promise<void>;
+
   /** Read every per-event record in a surface. */
   readEvents(surface: EventSurface): Promise<CoordEnvelope[]>;
 
