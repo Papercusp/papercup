@@ -115,6 +115,9 @@ describe('scenario registry', () => {
       'queen-Q02-owner-grade-sovereign-no-retry',
       // queen ranked-queue decider (self-learning-frontier-2026-06-12 P-045 / FB-19)
       'queen-Q03-ranked-queue-decider',
+      // hybrid bee-scheduler adoption (hybrid-bee-scheduler-work-stealing-2026-06-22 P-003)
+      'queen-Q04-authors-claim-spec',
+      'bee-B01-pull-via-get-next',
       // overwatch persona boundaries (overwatch-role-2026-06-15 B-11)
       'overwatch-OW01-nudge-not-replace',
       'overwatch-OW02-observe-not-idea',

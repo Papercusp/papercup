@@ -459,3 +459,37 @@ const memoryAnchorAuditWorkflow = DBOS.registerWorkflow(memoryAnchorAuditTick, {
   name: 'memoryAnchorAudit', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(memoryAnchorAuditWorkflow, { name: 'memoryAnchorAudit', crontab: '0 0 5 * * *' });
+
+// Weekly (Sun 05:30 UTC, off the daily 03:00–05:00 GC/prune cluster): code-recipes
+// hygiene (recipes-reuse-activation-2026-06-22 P-003). There was NO scheduled automation
+// for the recipe corpus — recipes:sweep / recipes:candidates were manual su-only tools —
+// so the never-reused one-off tail accumulated unbounded (the audit found the corpus was
+// already mostly trivial dogfood noise). This (1) RETIRES the stale long-tail via
+// sweepRecipes (a reversible status flip that NEVER touches hot / promoted / merged /
+// NULL-last-run recipes) and (2) LOGS the current promote/merge worklist for visibility
+// (the Queen still pulls recipes:candidates live; this is a passive heartbeat so a
+// Queen-less window still surfaces what's graduating). Default ON; kill-switch
+// PAPERCUSP_RECIPE_HYGIENE=0. Never throws → can't poison the scheduler. Shed under load.
+async function recipeHygieneTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_RECIPE_HYGIENE === '0') return;
+    if (shouldShedHeavyTick('recipe-hygiene')) return;
+    try {
+      const { runRecipeHygieneOnce } = await import('../recipe-hygiene');
+      const { sql } = getOrgPg();
+      const r = await runRecipeHygieneOnce(sql);
+      if (r.sweptIds.length > 0 || r.promoteCandidates > 0 || r.mergeClusters > 0) {
+        console.log(
+          `[recipe-hygiene] retired ${r.sweptIds.length} stale one-off recipe(s); ` +
+            `${r.promoteCandidates} promote candidate(s), ${r.mergeClusters} merge cluster(s) awaiting Queen review`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[recipe-hygiene] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'recipe-hygiene' });
+}
+const recipeHygieneWorkflow = DBOS.registerWorkflow(recipeHygieneTick, {
+  name: 'recipeHygiene', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(recipeHygieneWorkflow, { name: 'recipeHygiene', crontab: '0 30 5 * * 0' });

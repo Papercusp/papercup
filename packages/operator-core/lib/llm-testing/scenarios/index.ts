@@ -120,6 +120,11 @@ import { QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY } from './queen/Q02-owner-grad
 // DECIDES the ranked improvement queue (triage-one place/gate/gym/reject),
 // weighs claimed confidence by calibration trust, gates graduation reports.
 import { QUEEN_Q03_RANKED_QUEUE_DECIDER } from './queen/Q03-ranked-queue-decider';
+// QUEEN-Q04 + BEE-B01: hybrid-bee-scheduler-work-stealing-2026-06-22 P-003 — the Queen
+// AUTHORS a per-bee claim spec (scheduler:set_claim_spec, steer-not-dispatch) and the bee
+// PULLS its next item via scheduler:get_next (no self-freelance). The two adoption halves.
+import { QUEEN_Q04_AUTHORS_CLAIM_SPEC } from './queen/Q04-authors-claim-spec';
+import { BEE_B01_PULL_VIA_GET_NEXT } from './bee/B01-pull-via-get-next';
 // OVERWATCH-OW01/OW02: overwatch-role-2026-06-15 B-11 — the system-health
 // supervisor's persona boundaries: NUDGE-not-replace (D-001) + OBSERVE-not-idea (D-003).
 import { OVERWATCH_OW01_NUDGE_NOT_REPLACE } from './overwatch/OW01-nudge-not-replace';
@@ -216,6 +221,9 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,
   // queen ranked-queue decider coverage (self-learning-frontier P-045 / FB-19)
   QUEEN_Q03_RANKED_QUEUE_DECIDER,
+  // hybrid bee-scheduler adoption coverage (hybrid-bee-scheduler-work-stealing P-003)
+  QUEEN_Q04_AUTHORS_CLAIM_SPEC,
+  BEE_B01_PULL_VIA_GET_NEXT,
   // overwatch persona-boundary coverage (overwatch-role-2026-06-15 B-11)
   OVERWATCH_OW01_NUDGE_NOT_REPLACE,
   OVERWATCH_OW02_OBSERVE_NOT_IDEA,

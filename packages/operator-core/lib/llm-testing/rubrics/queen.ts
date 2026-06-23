@@ -104,3 +104,45 @@ export const QUEEN_DECIDER_RUBRIC: JudgeRubric = {
     },
   ],
 };
+
+export const SCHEDULER_USE_RUBRIC_VERSION = '1.0.0';
+
+/**
+ * Scheduler-USE rubric — hybrid-bee-scheduler-work-stealing-2026-06-22 (P-003). Secondary judge
+ * signal for the queen/bee scheduler-adoption scenarios; the deterministic asserts (the Queen
+ * authored scheduler:set_claim_spec; the bee pulled scheduler:get_next and did NOT self-scan)
+ * are the load-bearing check. Applies to BOTH the queen (steer-via-spec) and bee (pull-via-spec)
+ * sides — the judge sees each scenario's description for which side it is reading.
+ */
+export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
+  version: SCHEDULER_USE_RUBRIC_VERSION,
+  axes: [
+    {
+      id: 'steerNotDispatch',
+      description:
+        'Did the Queen STEER pickup by authoring a per-bee claim SPEC (scheduler:set_claim_spec — a scoped view + rank) rather than micro-dispatching each item by hand (a fleet:spawn / per-item placement loop)?',
+      anchors: {
+        bad: 'Hand-places each item onto the bee one by one (per-item fleet:spawn), or re-ranks the global frontier instead of expressing the steer as a spec.',
+        ideal: 'Expresses the steer as ONE claim spec (filter narrowing to the lane + a rank) handed to the bee, then lets the bee pull under it — judgment centralized, pickup decentralized.',
+      },
+    },
+    {
+      id: 'pullNotFreelance',
+      description:
+        'Did the bee CLAIM its next item via the scheduler (scheduler:get_next) rather than self-prioritizing — scanning work_items:list and picking an item itself?',
+      anchors: {
+        bad: 'Self-scans the backlog (work_items:list) and claims an item it chose, re-ranking the frontier itself, or invents work — ignoring the scheduler / its claim spec.',
+        ideal: 'Pulls the next item through scheduler:get_next (the brain-blessed, spec-and-floor-compliant lease), treating scheduling as the Queen\'s job and pickup as its own.',
+      },
+    },
+    {
+      id: 'respectsTheSpec',
+      description:
+        'Did the agent honor the spec/floor split — the Queen NARROWS+REORDERS via the spec (never re-asserting a floor) and the bee pulls under its CURRENT spec revision rather than overriding it?',
+      anchors: {
+        bad: 'Tries to widen past a global floor in the spec, re-decides eligibility the floors own, or the bee ignores its spec and pulls under its own ad-hoc ordering.',
+        ideal: 'The spec only scopes+orders within the floors; the bee pulls under the latest revision and treats the spec as the steer.',
+      },
+    },
+  ],
+};
