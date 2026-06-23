@@ -65,8 +65,8 @@ describe('rerankProseHits — active', () => {
   it('key present → maps hits to {id,text,row}, passes generic opts, returns reranker order', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
     // Reranker reverses the order to prove the new order is honored.
-    vi.mocked(rankWithReranker).mockImplementation(
-      async (_q: string, docs: Array<{ row: SearchHit }>) => docs.map((d) => d.row).reverse(),
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) =>
+      docs.map((d) => d.row as SearchHit).reverse(),
     );
 
     const out = await rerankProseHits('q', HITS, 5);

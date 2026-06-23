@@ -97,7 +97,7 @@ describe('improvements:resolve calibration bet (P-041 / FB-13, fix-survival)', (
     await callTool({ id: 'EI-8', outcome: 'fixed', summary: 'fixed, no stated confidence', testsRun: 'vitest — green' });
     await flush();
     expect(mockRecord).toHaveBeenCalledTimes(1);
-    const arg = mockRecord.mock.calls[0][0] as Record<string, unknown>;
+    const arg = mockRecord.mock.calls[0][0] as unknown as Record<string, unknown>;
     expect(arg.subjectId).toBe('EI-8');
     expect('probability' in arg).toBe(false);
   });

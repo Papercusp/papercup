@@ -80,6 +80,15 @@ function absorbTierFactor(tier: number | undefined): number {
   if (tier === 3) return 1; // bee — the baseline
   return 0.6; // tier 4+ (unknown / batch) — sheds soonest, freeing the slot for the high tiers
 }
+// STALL ABSORPTION (2026-06-23, su-3650b incident fix #2): extend the in-request absorb to the dominant failure
+// — TRANSPORT STALLS (Anthropic holding the connection → egress circuit). The 429-absorb can't help (no 429);
+// under an Anthropic-wide stall storm every account TTFB-stalls, the gateway exhausts rotation + sheds a
+// retryable 503, and the caller errors. With this on, the egress-exhausted shed instead RELEASES the slot +
+// re-acquires (gov.acquire waits for a circuit-OPEN account's transport-pause to lift via the half-open probe)
+// + retries — so the caller WAITS through the storm and succeeds. Bounded by the same absorb budget (no slot
+// held during the wait → cannot wedge). Gated by requestAbsorbMs>0 (the absorb being on); kill-switch:
+// PAPERCUSP_GATEWAY_ABSORB_STALLS=0 reverts to the immediate retryable-503 shed.
+const ABSORB_STALLS_ON = process.env.PAPERCUSP_GATEWAY_ABSORB_STALLS !== '0';
 /** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
  *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
  *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the
@@ -1315,7 +1324,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       let retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
       // EXTENDED ABSORPTION (env-gated): the wall-clock past which we stop the release-slot-and-re-acquire
       // park-retry loop and finally shed. 0 = OFF (the slot-hold deadline above is the only bound, as before).
-      const absorbDeadlineAt = requestAbsorbMs > 0 ? Date.now() + requestAbsorbMs : 0;
+      // P-003 (safe variant): scale the budget by the request's TIER so a high-priority caller out-waits a batch
+      // one for the recovered account (the priority-throttle-park OUTCOME, no governor wait-queue). Identity off.
+      const reqTier = tierMap ? tierOf((req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined, tierMap) : undefined;
+      const effAbsorbMs = requestAbsorbMs > 0 ? Math.round(requestAbsorbMs * absorbTierFactor(reqTier)) : 0;
+      const absorbDeadlineAt = effAbsorbMs > 0 ? Date.now() + effAbsorbMs : 0;
       for (;;) {
         // Bound the OAuth token refresh (2026-06-20 token-hang wedge). active.token() does a deadline-less
         // network refresh AND runs before the per-attempt stall-guard below, so a stalled refresh used to
@@ -1453,6 +1466,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 log('warn', `inference-gateway: transport ${stalled ? 'stall' : 'failure'} on egress proxy → failover to '${active.accountId}' (attempt ${attempt})`);
                 continue;
               }
+            }
+            // STALL ABSORPTION (#2, su-3650b incident): the DOMINANT failure under an Anthropic-wide stall storm
+            // dies HERE (every proxy account TTFB-stalls → rotation exhausted). The 429-absorb can't help (no
+            // 429). So before sheding the retryable 503, if absorb budget remains, HOLD the caller: release the
+            // slot (the re-acquire's wait holds NO slot → cannot wedge), re-acquire on the pool's current-best
+            // account (gov.acquire waits for a circuit-OPEN account's transport-pause to lift via the half-open
+            // probe), and retry — so the caller WAITS through the storm and succeeds instead of erroring. Kill-
+            // switch PAPERCUSP_GATEWAY_ABSORB_STALLS=0.
+            if (ABSORB_STALLS_ON && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
+              release();
+              release = () => {};
+              let cand = active;
+              let candGov = gov;
+              try {
+                cand = pool.active();
+                candGov = governorForAccount(model, cand.accountId);
+              } catch {
+                /* pool empty / all-exhausted → keep the current account; the re-acquire still waits for recovery */
+              }
+              const reacq = await candGov.acquire(est, {
+                maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()),
+                allowSoftPaused: serveSoft,
+              });
+              if (reacq) {
+                release = reacq;
+                active = cand;
+                gov = candGov;
+                retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry
+                attempt = 0;
+                transientWaitedMs = 0;
+                log(
+                  'warn',
+                  `inference-gateway: stall-absorb on '${active.accountId}' — holding the caller through the egress stall storm instead of a 503 (${Math.round((absorbDeadlineAt - Date.now()) / 1000)}s budget left)`,
+                );
+                continue;
+              }
+              // re-acquire timed out within the budget → fall through to the retryable 503 (release is the no-op → finally safe)
             }
             // No healthy account left / rotation budget spent — return a RETRYABLE 503 (the bee's CLI
             // retries; the next request lands on the failover-rotated active()), never a terminal 502.
