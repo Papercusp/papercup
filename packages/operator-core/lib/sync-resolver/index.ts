@@ -1994,9 +1994,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // userActions.recent — workspace-wide (NOT harness-scoped) recent action stream,
   // newest-first. Backs the Overview Activity tile's All-Pots view (no ?slug=): the
   // per-harness userActions.byHarness left that tile blank when no harness was selected
-  // (data-sync-push-completion P-006 behavior shift; D-008 follow-up closes it). The SAME
-  // user_actions→query bridge that pushes byHarness/byKind also pushes this, so the
-  // fleet-wide feed updates live on any action insert.
+  // (data-sync-push-completion P-006 behavior shift; D-008 follow-up closes it).
+  // NOTE (D-011): user_actions is mapped in TABLE_TO_QUERY_NAMES but is APPEND-HEAVY and
+  // INTENTIONALLY carries NO per-row emit_change_notify trigger (COVERAGE_EXEMPT; mig 376
+  // — a per-row notify on a high-write log is the notify-storm anti-pattern). So this (and
+  // byHarness/byKind) does NOT SSE-push on a write today; the Activity tile keeps it live
+  // with a bounded client pollIntervalMs until the append-heavy DEBOUNCED-invalidation
+  // follow-up (COVERAGE_EXEMPT's P-005 TODO) lands. The bridge entry stays so that
+  // follow-up wires straight through.
   //   zql.userActions.where(workspaceId).orderBy('startedAt', 'desc').limit(limit)
   'userActions.recent': {
     argsSchema: z.object({
