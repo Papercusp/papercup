@@ -115,6 +115,83 @@ Code / Codex** sessions get no turn-wrapper control, so the harness must **never
 send `not_modified` for them — they always receive `full` (their MCP client may
 still use `?format=` etc., just not delta).
 
+### Harness reference implementation (P-003)
+
+The harness half is now a concrete, generic unit — the inverse companion to the
+client-side merge:
+
+* [`DeltaToolClient`](libs/generic/tooldef/src/delta-client.ts) owns the \*\*cursor
+  * base ROWS + the merge\*\* (`ingest`: `full` caches, `not_modified` returns the
+    cached base, `delta` merges then checksum-verifies or forces a refetch).
+* [`BasePresenceTracker`](libs/generic/tooldef/src/base-presence.ts) owns the
+  **base-PRESENCE** question this contract pins: is the base snapshot still in the
+  *model's* context? It implements rules 2–6 + the compaction clear (rule 3) and
+  the scope guard as a `enabled` constructor flag — `enabled:false` (external
+  Claude Code / Codex) makes every `negotiationFor` resolve to `full` and every
+  `record` a no-op. `negotiationFor(viewKey)` returns the `_meta.delta` wire value
+  (`full` | `not_modified~<cursor>` | `auto~<cursor>`); `record(viewKey, mode,
+  cursor, supported)` folds the served response back in; `onCompaction()` is the
+  `snapshot_rebootstrap_pending` move.
+
+The two compose: the tracker decides *whether* it is safe to ask for a delta (so
+the model never loses its base across a compaction), the client decides *how* to
+reconstruct the full view from whatever the server returned. The
+[`base-presence.test.ts`](libs/generic/tooldef/src/base-presence.test.ts) suite
+walks a realistic poll loop: `full → not_modified×N → compaction → forced full`.
+
+**The integration seam is the turn-wrapper that OWNS the message array — and the
+operator's in-process `runAgentChat` is NOT it (P-003 finding).** The operator's
+oracle/converse loop
+([`chat-stream.ts`](libs/papercusp-shared/src/agent/chat-stream.ts)) does not run
+a Vercel-AI-SDK-style `execute()` loop holding the messages; it **spawns a child
+agent process** (claude-code or omp) and only *observes* that child's event
+stream (`tool_call` blocks, text deltas). The actual tool dispatch + the message
+array — where a `not_modified`/`delta` would have to be injected and a base
+re-presented — live INSIDE the child process. So a base-presence tracker bolted
+onto `runAgentChat` would have no message array to act on, and for the
+claude-code child it is excluded by the scope rule above anyway. The tracker
+therefore belongs in the **OMP/psu turn-wrapper**, alongside coord's existing
+`coord_watermarks` / `snapshot_rebootstrap_pending` plumbing, which is the one
+place Papercusp owns both the turn boundary and the message array. The unit ships
+now; the turn-wrapper adoption is the (flag-gated) follow-on.
+
+**Integration recipe — one call.** `dispatchWithBasePresence` composes the two so a
+turn-wrapper adopts the whole contract in a single line per delta-capable read:
+
+```ts
+import { BasePresenceTracker, DeltaToolClient, dispatchWithBasePresence } from '@papercusp/tooldef';
+
+// once per session: enabled=false for an out-of-scope wrapper (external Claude Code / Codex)
+const tracker = new BasePresenceTracker({ enabled: harnessOwnsTurnWrapper });
+const client = new DeltaToolClient();
+// from the wrapper's compaction / session-resume hook:
+onCompaction(() => tracker.onCompaction());
+
+// per delta-capable tool read (e.g. plans:attention):
+const { rows, mode } = await dispatchWithBasePresence(
+  tracker, client, viewKey, itemKeyFor(view),
+  (requested) => callTool(name, args, { _meta: requested ? { delta: requested } : {} }),
+  { wantSemantic: true },
+);
+// mode === 'full'         → inject `rows` into the model context
+// mode === 'delta'        → inject only the changed rows (the token win)
+// mode === 'not_modified' → inject NOTHING; the base already stands
+```
+
+**Where this lands (and where it does NOT).** Every delta-capable consumer today is an
+EXTERNAL MCP-client runtime — `transport: 'mcp'` calls from spawned bees / psu sessions
+(claude-code, omp-via-Meridian, codex *binaries*), never an in-repo Papercusp LLM loop
+(the operator's own `runAgentChat` delegates to a child process and owns no message
+array). So the model-token win is realized by the **agent runtime** importing
+`@papercusp/tooldef` and calling the recipe above inside its own tool-exec loop —
+claude-code/codex are contract-excluded (`enabled:false`), omp/Meridian is the in-scope
+adopter. The reusable half ships from this repo; the per-runtime call site is that
+runtime's (one-line) change. The resilience MCP proxy
+([`mcp-proxy/proxy.ts`](apps/operator/lib/mcp-proxy/proxy.ts)) is deliberately stateless
+per-request and can't see client compaction, so it is NOT the integration site (a
+proxy-level delta would reconstruct `full` for the client — a localhost-moot wire saving,
+no model-token win).
+
 ## Small-response bypass
 
 Below \~256 bytes of full body

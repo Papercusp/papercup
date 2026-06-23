@@ -45,16 +45,28 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 | 5 | `cross-hive-ask-send.ts` | 6 ✓ | sendCrossHiveAsk: default-deny admission (ungranted→no boundary/insert/send); UTF-8 bodyBytes to grant; no-live-boundary hard-fail (no row); crash-safe order (insert BEFORE send); delivered→markSent+'sent', offline→'queued'+no markSent; askedBy conditional; newId→correlationId; answeredEvent/declinedEvent via crossHiveReplyEventKey. (Fixed a tsc artifact: typed the insertQueued vi.fn params so .mock.calls[0][2] is indexable.) |
 
 | 6 | `harness-seed.ts` | 5 ✓ | seedThrowawayHarness: validation BEFORE side effects (frozen-role/unknown-role override→throw, no deps called); effect order register→writeFile(s)→setOverride(s SORTED)→fileFeature; arg passthrough (basePath=repoOrClonePath); empty files/overrides skip; returns {harnessSlug}. Uses real AGENT_ROLES/FROZEN_OVERLAY_ROLES. |
+| 7 | `dbos/tick-load-shed.ts` | 11 ✓ | background-tick load-shed policy (P5-1/P5-3): shedUnderLoopPressure (sheds+warns iff isLoopSaturated); shedUnderPowerSave DETERMINISTIC counter (AC/mult≤0 never sheds; mult 3→[t,t,f]×; mult 2→[t,f]×; per-tickName INDEPENDENT counters); shouldShedHeavyTick OR + the `\|\|` SHORT-CIRCUIT (loop-pressure shed must NOT advance the power-save counter, else cadence desyncs under load). Mocks `../event-loop-lag-monitor` + `../resource-profile` via vi.hoisted; unique tickName per test vs the module-global counter Map. |
 
-**Loop tally: 52 tests across 6 modules.**
+**Loop tally: 63 tests across 7 modules.**
 
-## LOOP CONCLUDED 2026-06-23 — low-collision pure backlog EXHAUSTED
-Final tally: **52 tests across 6 modules** (egress-dispatcher 13, egress-probe 12, file-lock-routing 7,
+## LOOP REOPENED 2026-06-23 (after "continue where you left off")
+The earlier "EXHAUSTED" call was scoped too narrowly — to the **`*Deps`-injectable-interface** subset. A
+broader collision-free vein remains: **pure DECISION modules whose only I/O is a couple of module imports
+mockable via `vi.mock`/`vi.hoisted`** (no `*Deps` param, but just as seamable). `dbos/tick-load-shed.ts`
+(iter 7) is the first — 3 sync boolean policy fns, deps `isLoopSaturated`/`getResourceProfile`. Survey
+seed for this vein: `grep -rlE 'backoff|retry|rateLimit|debounce|throttle|jitter|deadline|timeout' --include=*.ts`
+in operator-core/lib, then filter to genuinely-pure-logic modules with no colocated/sibling test.
+Strong remaining candidates to verify: `events/reaction-dedup.ts` (likely PG → check seam), `migrate-policy.ts`,
+`interactive-safety-floor.ts`, `hive-control-policy.ts`, `evidence-discipline-policy.ts`, `scout/tick-ledger.ts`,
+`hive-eval/speed-metrics.ts`, `resource-profile.ts` (sharedUtilityPoolMax / detectHostRole pure).
+
+## (superseded) LOOP CONCLUDED 2026-06-23 — `*Deps`-seam subset exhausted
+Final tally at conclusion: **52 tests across 6 modules** (egress-dispatcher 13, egress-probe 12, file-lock-routing 7,
 swe-bench-pro 9, cross-hive-ask-send 6, harness-seed 5). Every remaining injectable-deps candidate is
 wiring-only (`llm-testing/deps.ts` = RunnerDeps assembly + a trivial persist flag; `hive-epoch-boot-deps.ts`
 = boot-deps builder), a PG-query constructor (`cross-hive-wiring.ts` pgCrossHiveQuotaLedger), or already
-covered by an integration test (pgCrossHiveAskLedger, wireCrossHiveBoundary). No genuinely-uncovered
-PURE/seamable module with real logic remains within the low-collision constraint. Loop stopped (no further wakes).
+covered by an integration test (pgCrossHiveAskLedger, wireCrossHiveBoundary). [Re-scoped above: this was only
+the `*Deps`-param subset, not all pure/seamable modules.]
 
 ### Deliberately DEFERRED (need what this session lacks)
 - **Gateway flaky timing tests** (EI-2904 `gateway.test.ts` `elapsed<15_000`): may guard REAL 429 slowness

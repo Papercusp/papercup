@@ -102,7 +102,6 @@ export function startSubstrateEvictionReaper(
           if (did) evictedKeys.push(key);
         } catch (e) {
           // Best-effort: one engine's failed teardown never aborts the pass.
-          // eslint-disable-next-line no-console
           console.warn(
             `[substrate-eviction-reaper] evict failed for ${key}:`,
             e instanceof Error ? e.message : String(e),
@@ -116,7 +115,6 @@ export function startSubstrateEvictionReaper(
       }
     } catch (e) {
       // A throwing gatherFacts/policy must not kill the reaper.
-      // eslint-disable-next-line no-console
       console.warn(
         '[substrate-eviction-reaper] tick failed:',
         e instanceof Error ? e.message : String(e),

@@ -1844,17 +1844,13 @@ test('[stall-absorb SU-3650] upstream STALL on first attempt (single-account or 
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
     },
-    // Budgets sized for a LOADED CI box (2026-06-23): the absorb path (stall-detect → release → re-acquire →
-    // retry) is real-timer work; on a contended host the event loop slips, so a sub-second budget falsely sheds
-    // (502/503) even though the behavior is correct. Generous-but-bounded budgets test the BEHAVIOR (absorb→200)
-    // without flaking on machine load — the gate was held red for hours by exactly this fragility.
-    { concurrency: 1, upstreamHeadersTimeoutMs: 500, upstreamBodyIdleTimeoutMs: 500, requestAbsorbMs: 10_000 },
+    { concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 500 },
   );
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'upstream stall on first attempt is ABSORBED + retried → 200, not surfaced as 503');
   assert.equal((await r.json() as { ok: boolean }).ok, true);
   assert.equal(calls, 2, 'first stall-aborted attempt + second success (absorption retained the slot + retried)');
-}, 20_000);
+});
 
 test('[stall-absorb SU-3650] single-account pool: stall ABSORPTION works (no failover required)', async () => {
   // Absorption is the SECOND mechanism for stalls (first is failover-rotate to a fresh account). With only
@@ -1872,14 +1868,13 @@ test('[stall-absorb SU-3650] single-account pool: stall ABSORPTION works (no fai
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
     },
-    // Load-robust budgets (see the sibling test above) — a contended box must not falsely shed the absorb.
-    { pool, concurrency: 1, upstreamHeadersTimeoutMs: 500, upstreamBodyIdleTimeoutMs: 500, requestAbsorbMs: 10_000 },
+    { pool, concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120, requestAbsorbMs: 800 },
     gov,
   );
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'single-account stall is ABSORBED (no failover) + retried → 200');
   assert.equal(calls, 2, 'stall-absorb released + re-acquired on the SAME solo account, then succeeded');
-}, 20_000);
+});
 
 test('[429-absorb SU-3650] upstream 429 (bare, transient) WITHIN absorption deadline is ABSORBED + retried, not forwarded', async () => {
   // A bare 429 (no rate-limit-window headers, x-should-retry:true) signals CAPACITY EXISTS (a transient

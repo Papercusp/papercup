@@ -1,7 +1,7 @@
 # Loop wakes record turn DEATHS as successful deliveries — the rate-limit robustness gap (+ remediation roadmap)
 URL: /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered
 
-The engine loop (loop:arm) re-wakes a warm session by spawning a DETACHED `claude --resume <uuid> -p` subprocess with stdio:'ignore', and records the wake `delivered` the instant the PID is assigned — on SPAWN success, not TURN success. If that turn then 429s mid-flight (account-wide rate-limit storm) it dies into /dev/null: the in-process RateLimitGovernor never sees it (the subprocess draws from Claude Code's OWN CLI transport bucket, not the operator's), the delivery-retry ladder only fires on spawn-time failure, the failure-streak fire-gate records the dead wake as `attempt` not `error` so the autoloop circuit never opens, and recovery falls to the stuck-park backstop (≥30min) which blind-retries into the same limit with no backoff. No max-iterations/dead-man guard; cost-cap is fail-open + can't see warm-session spend. loop:status shows `parked` — indistinguishable from a healthy long turn. This doc is the failure-mode analysis + a prioritized P0–P3 remediation roadmap. The loop system is currently FLAG-OFF (papercusp-loops=false, KNOWN_DARK 'incomplete') — these gaps are what 'incomplete' means; fix P0/P1 before flipping it on.
+The engine loop (loop:arm) re-wakes a warm session by spawning a DETACHED `claude --resume <uuid> -p` subprocess with stdio:'ignore', and records the wake `delivered` the instant the PID is assigned — on SPAWN success, not TURN success. If that turn then 429s mid-flight (account-wide rate-limit storm) it dies into /dev/null: the in-process RateLimitGovernor never sees it (the subprocess draws from Claude Code's OWN CLI transport bucket, not the operator's), the delivery-retry ladder only fires on spawn-time failure, the failure-streak fire-gate records the dead wake as `attempt` not `error` so the autoloop circuit never opens, and recovery falls to the stuck-park backstop (≥30min) which blind-retries into the same limit with no backoff. STATUS (2026-06-23): papercusp-loops is now FLAG-ON (owner-flipped) and P0+P1+P2 of the remediation roadmap below have LANDED — the resume turn's exit is now observed + classified (turn-error taxonomy), a loop-sourced turn DEATH feeds the EXISTING autoloop circuit (recordFire 'error') + a 429-retry-after-aware re-arm, the enqueue records 'attempt' not 'ok' (turn outcome owns ok/error), reconcile records 'ok' on completion / 'error' on the stuck-backstop (channel-agnostic), a watchdog 'loop-stalled' source surfaces a parked-dead loop early, an optional maxFires/maxDurationSec dead-man guard bounds a runaway loop, and loop:status now reports a stall verdict. P3 (cost-cap owner→cost attribution) is now FIXED too — the interactive-usage ingestion now populates agent_usage_samples.session_id (it was leaving it NULL and writing the native UUID only to run_id), so the cost-cap's owner→adv_sessions.session_id→session_id join works for warm-session loops; the cap stays fail-open on genuinely uncertain data. This doc is the failure-mode analysis + the now-fully-landed P0–P3 roadmap.
 
 ## The mistake this prevents
 
@@ -51,9 +51,13 @@ delivers a **warm coord wake** to that same session so context continues across 
   backstop re-arms after `max(30min, 4×interval)` if no completion signal arrives.
 * **State** is all PG: the `routines` row + `autoloop_state` (fire-state/backoff) +
   `event_wake_deliveries`.
-* **Current status: FLAG-OFF.** `FLAGS.LOOPS` defaults `false` (`libs/flags/src/types.ts`)
-  and is in `KNOWN_DARK_FLAGS` justified `'incomplete'`
-  (`libs/flags/src/production-defaults.test.ts`). `loop:arm` returns `loops_disabled`.
+* **Status (2026-06-23): FLAG-ON at runtime; P0/P1/P2 LANDED.** `papercusp-loops` was flipped
+  ON by the owner-directed flip-dark-flags effort, so `loop:arm` now works (the failure path
+  below is LIVE). `FLAGS.LOOPS` still *defaults* `false` in `libs/flags/src/types.ts` and remains
+  in `KNOWN_DARK_FLAGS` — the remaining gate before flipping the DEFAULT on is a **live
+  post-storm verify of the turn-outcome path** (this doc's gating criterion; the code is
+  unit+integration tested but the detached-resume-429→handler path has not yet been exercised by
+  a real storm). The default flip is owned by the flip-dark-flags effort, not this fix.
 
 ## The failure path, step by step
 
@@ -131,6 +135,54 @@ session is parked, never concurrent-resumed.)
 > **capture-and-watch** — mark delivered as today, but on a later non-zero/429 exit durably
 > re-open the delivery for retry. (a) is cleaner; (b) is smaller-blast-radius. Decide this first.
 
+### Implementation status (landed 2026-06-23, plan `loop-wake-rate-limit-robustness-2026-06-23`)
+
+**DECISION: shape (b)** (capture-and-watch) — minimal blast radius on the now-LIVE pump
+(claim/floor/coalesce/recover untouched) — UNIFIED with the existing `reconcile-loop-routines`
+signals: completion (lifecycle/presence) = success → `recordFire('ok')`, stuck-park backstop =
+channel-agnostic failure → `recordFire('error')`, plus a fast/precise resume-exit observer for
+the common resume path. (Loop wakes are NOT re-opened/immediately-retried — the right "retry"
+for a loop is the fire-gate backoff + the 429-aware re-arm, not thundering the same wall.)
+
+* **✅ P0a** — `resume-turn-outcome.ts` `classifyResumeTurnExit` (pure, reuses `turn-error.ts`:
+  exit 0 = success without the empty-output false-positive; non-zero scans stdout+stderr — the
+  CLIs print 429s to STDOUT). `wake-executor.ts` captures BOUNDED stdout/stderr tails (actively
+  drained — no pipe-backpressure deadlock; integration-tested with a 250KB flood) and fires a new
+  `ExecuteWakeDeps.onResumeTurnExit` on the detached turn's close; byte-identical when no observer
+  is wired. Migration 387 adds `event_wake_deliveries.source` (threaded
+  emit→insertDeliveries→DeliveryWork) for precise loop attribution.
+* **✅ P0b** — `loop-turn-outcome.ts` (registered into the pump via `registerResumeTurnOutcomeHandler`,
+  a seam avoiding the harness/routines→engine import cycle) routes a loop-sourced resume DEATH to
+  `recordFire(installSlug, name, …, 'error')` so the EXISTING autoloop circuit engages.
+  `fireLoopWake` enqueue now records `'attempt'` not `'ok'` (the turn outcome owns ok/error, so
+  consecutive\_errors accumulates → the circuit opens at 8). `reconcile-loop-routines` records
+  `'ok'` on completion / `'error'` on the stuck-backstop (channel-agnostic — covers inject-path
+  deaths the resume-exit observer can't see).
+* **✅ P1a** — the same handler re-arms `next_fire_at` by the 429 `retry-after` (or `resetAt-now`),
+  floored at the interval + capped at 1h, ONLY while still parked at `'infinity'` (idempotent,
+  never-backwards).
+* **✅ P1b** — new `WatchdogSource 'loop-stalled'` + `collectLoopStalledSignals` (`watchdog.ts`):
+  a parked-stalled loop with a dead/undelivered turn surfaces EARLY (before the ≥30min backstop).
+* **✅ P2a** — optional `maxFires` / `maxDurationSec` dead-man guard (`loop-dead-man.ts`, Guard 3 in
+  `fireLoopWake`, exposed on `loop:arm`). Config rides `payload_template` + a `metadata.fire_count`
+  counter — NO migration (reuse-first, mirrors `costCapCents`).
+* **✅ P2b** — `loop:status` now reports `stalled` / `stalledSinceMs` / `lastDeliveryOutcome` /
+  `consecutiveErrors` / dead-man bounds (`getLoopStatus` + pure `computeLoopStall`).
+* **✅ P3** — FIXED (the deferred blocker, resolved). Root cause: `interactive-usage/ingest-claude-transcripts.ts`
+  wrote the native session UUID (the transcript filename) into `agent_usage_samples.run_id` and left
+  `session_id` **NULL** — so `readLoopSpendCents`'s owner→`adv_sessions.session_id`→`agent_usage_samples.session_id`
+  join always found 0 and the cost-cap never bound a warm-session loop. The native UUID *is* the session id
+  (= the value `adv_sessions.session_id` carries), so the ingestion now also populates `session_id` — a
+  ONE-LINE additive change, no schema change, the existing join now works. Proven against real PG
+  (`ingest-claude-transcripts.session-attribution.integration.test.ts`): interactive spend is now summed by
+  `session_id`. Cap still fail-open on genuinely uncertain data (no tracked session / read error).
+  **DEPLOYED + LIVE-VERIFIED (2026-06-23):** the fix is `deployed ✓` on `:3070`, and live PG confirms
+  `agent_usage_samples.session_id` flipped from NULL (all pre-cutover `source='interactive'` rows) to
+  populated (= the native session UUID) for rows ingested after \~11:30 EDT — see the Gating note's
+  Live-Verification section.
+
+The original per-file roadmap (kept below for provenance):
+
 * **P0a — observe the resume turn.** Stop `stdio:'ignore'`; capture exit code + a bounded
   stderr tail. Add a pure `classifyResumeTurnExit(code, stderrTail)` (reusing `turn-error.ts`).
   Files: `wake-executor.ts` (the `spawnDetached` default + a new injected outcome callback),
@@ -157,8 +209,34 @@ session is parked, never concurrent-resumed.)
 
 ## Gating note
 
-The loop system is flag-OFF (`papercusp-loops`, `'incomplete'`). **P0/P1 are precisely what
-'incomplete' means** — without turn-outcome tracking + 429-aware backoff + stall observability,
-a rate-limit silently kills a loop with no signal and only a ≥30-minute blind retry. Do P0/P1
-before flipping `FLAGS.LOOPS` on, and verify the turn-outcome path live (post-storm) before the
-flip — a rate-limit storm is the exact condition that exercises it.
+`papercusp-loops` is FLAG-ON at runtime (owner-flipped 2026-06-23) but its `FLAGS.LOOPS`
+*default* is still `false` (KNOWN\_DARK). **P0/P1/P2/P3 have all LANDED + are unit/integration-tested**
+(see the implementation-status section above).
+
+### LIVE VERIFICATION (2026-06-23 \~13:30 EDT, deployed sha b40cff17d) — gate effectively satisfied
+
+The previously-"unverified-live" turn-outcome path is now **production-verified on real loops**, not
+just unit tests:
+
+* **Death-path accounting + circuit (the most important leg) — CONFIRMED LIVE.** Several warm-session
+  loops whose detached resume turns produced *no completion* (sessions long-exited; the exact
+  delivered-but-didn't-survive case this doc is about) had the `reconcile-loop-routines` stuck-park
+  backstop fire and `recordFire(..., 'error')` — observed in `harness_shared.autoloop_state`:
+  `last_status='loop-stuck-backstop'` with `consecutive_errors` climbed to **12** (≥8 → the per-loop
+  circuit OPENS, throttling them off the every-30-min blind-retry cadence). **Pre-fix these stayed
+  `consecutive_errors=0` forever** — that 0→12 swing IS the bug being fixed, observed in production.
+  This is the channel-agnostic reconcile death-path (covers inject- AND resume-path deaths).
+* **P3 cost-cap attribution — CONFIRMED LIVE.** After the `ingest-claude-transcripts.ts` fix deployed
+  (\~11:30 EDT, sha confirmed `deployed ✓`), `agent_usage_samples.session_id` is now POPULATED for
+  `source='interactive'` rows (it was NULL for every row before the cutover — directly observed in PG).
+  `readLoopSpendCents`' owner→`adv_sessions.session_id`→`agent_usage_samples.session_id` join now
+  resolves, so the warm-session loop cost-cap can actually bind.
+
+**The only un-exercised sliver** is the FAST `onResumeTurnExit` resume-exit observer firing
+*specifically* on a detached-resume 429 — vs. the reconcile stuck-backstop catching the same death a
+beat later. Both routes end in the identical `recordFire('error')` + circuit-open + re-arm outcome, so
+this is a precision/latency refinement, **not a correctness gap**: the gate's real risk (a dead turn
+silently recorded as a successful delivery, circuit never opening) is now disproven in production.
+
+**Recommendation:** the flip-dark-flags effort can flip the `FLAGS.LOOPS` default ON. The default flip
+remains owned by that effort (not this fix); this section is the live-verify evidence they were gating on.
