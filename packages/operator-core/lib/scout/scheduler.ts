@@ -30,7 +30,7 @@ import {
 import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
 import { readIdeaQueueStatus } from './routed-ledger';
-import { recordScoutTick, type ScoutTickRecord } from './tick-ledger';
+import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 
@@ -241,7 +241,13 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   // is the one atomic step that collapses them to a single cycle; the loser
   // exits as a gated no-op.
   if (deps.claimFire) {
-    const claimed = await deps.claimFire(state.lastRunAtMs ?? null);
+    // EI-1600: the single-flight claim CAS's against the autoloop FIRE-SLOT clock
+    // (autoloop_state.last_fired_at), which is NOT the cadence clock (lastRunAtMs =
+    // last RUN). Use fireSlotLastMs when the production wiring supplies it; fall
+    // back to lastRunAtMs for the unit-test fakes that model a single shared clock.
+    const claimExpected =
+      state.fireSlotLastMs !== undefined ? state.fireSlotLastMs : state.lastRunAtMs;
+    const claimed = await deps.claimFire(claimExpected ?? null);
     if (!claimed) {
       await note({ status: 'gated', gate: 'claim-lost' });
       return { fired: false, reason: 'claim-lost' };
@@ -341,9 +347,22 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
       // must span ALL the workspace's routed ideas, not just this install's — otherwise
       // a single hive draining would wrongly re-trigger the workspace brain. OFF ⇒
       // per-install, byte-identical to today. Best-effort flag read (defaults OFF on error).
-      const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
+      const { isWorkspaceCoordinationOn, workspaceBrainReadKeys } = await import('../workspace-brain-scope');
       const wsCoordOn = await isWorkspaceCoordinationOn();
-      const [idleRatio, frictionSignals, fire, ideaQueue] = await Promise.all([
+      // EI-1600: the cadence floor (min-interval / heartbeat) is measured from the
+      // last cycle that ACTUALLY RAN (scout_ticks status='ran'/'fired'), NOT the
+      // autoloop fire-ATTEMPT clock — a hung/errored fire advances last_fired_at
+      // without running a cycle, and measuring the floor from it gates every
+      // subsequent tick as min-interval (the ~24h Scout dormancy). The autoloop
+      // last_fired_at is still read, but only as the FIRE-SLOT clock for the
+      // single-flight claimFire CAS (fireSlotLastMs). The ran-tick read reconciles
+      // across the workspace-brain re-key (K1) with the same read-fallback keys the
+      // routed-ledger uses, so a sentinel/legacy install_slug split still resolves
+      // the true last run.
+      const ranReadKeys = opts.workspaceId
+        ? workspaceBrainReadKeys(opts.workspaceId, harnessSlug, wsCoordOn)
+        : [harnessSlug];
+      const [idleRatio, frictionSignals, fire, ideaQueue, lastRanAtMs] = await Promise.all([
         opts.readIdleRatio().catch(() => 0),
         opts.readFrictionSignals().catch(() => 0),
         readFireState(harnessSlug, SCOUT_CYCLE_ROLE).catch(() => null),
@@ -356,11 +375,20 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
           ...(wsCoordOn ? {} : { harnessSlug }),
           ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
         }).catch(() => ({ total: 0, pending: 0 })),
+        // The cadence clock (EI-1600). Best-effort: a read failure ⇒ null = "never
+        // ran", which fires idle/heartbeat freely rather than wedging the loop.
+        readLastRanTickAtMs({
+          installSlugs: ranReadKeys,
+          ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+        }).catch(() => null),
       ]);
       return {
         idleRatio,
         frictionSignals,
-        lastRunAtMs: fire?.lastFiredAt ? fire.lastFiredAt.getTime() : null,
+        // Cadence floor = last RUN (scout_ticks), NOT the autoloop attempt clock.
+        lastRunAtMs: lastRanAtMs,
+        // Fire-slot clock for the single-flight claimFire CAS only (autoloop).
+        fireSlotLastMs: fire?.lastFiredAt ? fire.lastFiredAt.getTime() : null,
         nowMs: now(),
         routedIdeaTotal: ideaQueue.total,
         pendingIdeaCount: ideaQueue.pending,

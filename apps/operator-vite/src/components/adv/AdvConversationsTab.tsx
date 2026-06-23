@@ -1,8 +1,12 @@
 /**
  * AdvConversationsTab — the /adv "Conversations" tab. It surfaces EVERY type of
- * communication the workspace produces, across five views (nuqs `?conv=`):
+ * communication the workspace produces, across five views (nuqs `?conv=`) split
+ * into two clusters in the header: FOUR curated communication stores (Q&A,
+ * Deliberations, Agent chats, Messages — each a distinct table you read), then,
+ * set apart past a divider, the RAW coordination event log (a debug firehose
+ * beneath the curated views, not a 5th peer):
  *
- *  - **Threads** (default, `conv=threads`): the conversations substrate (questions +
+ *  - **Q&A** (default, `conv=threads`): the conversations substrate (questions +
  *    discussions) — the human counterpart to the agents' conversations:* tools.
  *    Reads the in-process admin-coordination dispatch (one data path, no Zero
  *    entity). Detail = seed + topics + thread + accepted answer + linked
@@ -23,7 +27,7 @@
  *    (messages:send / messages:inbox) from `messages_consolidated` — from → to,
  *    kind, subject/body, status, click-to-expand.
  *
- *  - **Activity log** (`conv=feed`): raw coordination events for debugging,
+ *  - **Raw events** (`conv=feed`): raw coordination events for debugging,
  *    newest-first, with day separators, grouped filters, URL-backed advanced
  *    kind filters, `from → to` routing, a plan chip, and click-to-expand detail.
  *    Data rides the SSE-invalidation rail via `@papercusp/sync` (`dev.coordFeed`,
@@ -145,27 +149,47 @@ const streamRowProps = () => STREAM_ROW_PROPS;
 const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
-const VIEW_DEFS: ReadonlyArray<{
+interface ViewDef {
   id: ConvView;
   label: string;
   desc: string;
+  // 'curated' = a distinct, materialized communication store you read.
+  // 'raw' = the low-level coordination event firehose, set apart as a debug tool.
+  group: 'curated' | 'raw';
   Icon: typeof MessageCircle;
-}> = [
-  { id: 'threads', label: 'Threads', desc: 'Questions & discussions — reply, accept, promote.', Icon: MessageCircle },
-  { id: 'deliberations', label: 'Deliberations', desc: 'Group decisions — proposals and votes.', Icon: MessagesSquare },
-  { id: 'agentchats', label: 'Agent chats', desc: 'What each pipeline agent said, with token + cost detail.', Icon: Bot },
-  { id: 'messages', label: 'Messages', desc: 'Work-item-scoped agent → agent messages.', Icon: Mail },
-  { id: 'feed', label: 'Activity log', desc: 'Raw coordination events, newest first.', Icon: Radio },
+}
+
+// The five views split into TWO clusters. The first four are distinct, curated
+// stores (each its own table) you read directly; the fifth ('feed') is the RAW
+// coordination event log — a lower layer that re-surfaces SOME of the same
+// traffic (deliberation posts, coord messages, escalations), not a 5th peer.
+// The header sets it apart so it reads as a debug firehose, not a conversation type.
+const VIEW_DEFS: ReadonlyArray<ViewDef> = [
+  { id: 'threads', label: 'Q&A', desc: 'Questions & discussions between you and the agents — reply, accept an answer, or promote to an issue.', group: 'curated', Icon: MessageCircle },
+  { id: 'deliberations', label: 'Deliberations', desc: 'Group decisions — coord threads, proposals, and votes.', group: 'curated', Icon: MessagesSquare },
+  { id: 'agentchats', label: 'Agent chats', desc: "Each agent's full chat transcript, with token + cost detail.", group: 'curated', Icon: Bot },
+  { id: 'messages', label: 'Messages', desc: 'Work-item-scoped mail between agents (messages:send / inbox).', group: 'curated', Icon: Mail },
+  { id: 'feed', label: 'Raw events', desc: 'The raw coordination event log — every envelope, newest first. A debug firehose beneath the curated views.', group: 'raw', Icon: Radio },
 ];
+const CURATED_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'curated');
+const RAW_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'raw');
 
 export default function AdvConversationsTab() {
   const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
-  const [, setHeaderKinds] = useQueryState('fkind', parseAsArrayOf(parseAsString).withDefault([]));
-  const openNeedsYou = () => {
-    void setHeaderKinds(['message', 'escalation']);
-    void setView('feed');
-  };
   const activeDef = VIEW_DEFS.find((v) => v.id === view) ?? VIEW_DEFS[0];
+  const renderTab = ({ id, label, Icon, group }: ViewDef) => (
+    <button
+      key={id}
+      type="button"
+      role="tab"
+      aria-selected={view === id}
+      className={`pc-advconv__viewtab${group === 'raw' ? ' pc-advconv__viewtab--raw' : ''}${view === id ? ' is-active' : ''}`}
+      onClick={() => void setView(id)}
+    >
+      <Icon size={13} aria-hidden />
+      <span>{label}</span>
+    </button>
+  );
   return (
     <div className="pc-coord pc-advconv">
       <header className="pc-advconv__header">
@@ -173,21 +197,12 @@ export default function AdvConversationsTab() {
           <h1>Conversations</h1>
           <p>{activeDef.desc}</p>
         </div>
-        <NeedsYouSummary onOpen={openNeedsYou} />
+        {/* Two clusters: the curated communication views, then a divider, then
+            the raw event log set apart as a debug tool. */}
         <div className="pc-advconv__viewtabs" role="tablist" aria-label="Conversations view">
-          {VIEW_DEFS.map(({ id, label, Icon }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={view === id}
-              className={`pc-advconv__viewtab${view === id ? ' is-active' : ''}`}
-              onClick={() => void setView(id)}
-            >
-              <Icon size={13} aria-hidden />
-              <span>{label}</span>
-            </button>
-          ))}
+          {CURATED_VIEW_DEFS.map(renderTab)}
+          <span className="pc-advconv__viewtab-sep" role="separator" aria-orientation="vertical" />
+          {RAW_VIEW_DEFS.map(renderTab)}
         </div>
       </header>
       {view === 'feed' ? (
@@ -203,30 +218,6 @@ export default function AdvConversationsTab() {
       )}
       <AdvConvStyles />
     </div>
-  );
-}
-
-function NeedsYouSummary({ onOpen }: { onOpen: () => void }) {
-  const summary = useSyncQuery<FeedRow>({ queryName: 'dev.coordFeed', args: { limit: 100 }, staleTime: 5_000 });
-  const rows = summary.data ?? [];
-  const waitingCount = rows.filter((r) => (r.to ?? []).includes('human') || r.kind === 'escalation').length;
-  const humanCount = rows.filter((r) => (r.to ?? []).includes('human')).length;
-  const escalationCount = rows.filter((r) => r.kind === 'escalation').length;
-  const label = summary.loading && rows.length === 0
-    ? 'Checking…'
-    : waitingCount === 0
-      ? 'Nothing waiting'
-      : `${waitingCount} waiting`;
-
-  return (
-    <button type="button" className="pc-advconv__needs" onClick={onOpen}>
-      <span className="pc-advconv__needs-kicker">
-        <AlertTriangle size={12} aria-hidden />
-        Needs you
-      </span>
-      <strong>{label}</strong>
-      <em>{humanCount} human · {escalationCount} escalation</em>
-    </button>
   );
 }
 
@@ -1845,7 +1836,7 @@ function AdvConvStyles() {
       .pc-advconv__header {
         position: relative;
         display: grid;
-        grid-template-columns: minmax(180px, 1fr) auto auto;
+        grid-template-columns: minmax(180px, 1fr) auto;
         align-items: center;
         justify-content: space-between;
         gap: 8px;
@@ -1874,53 +1865,6 @@ function AdvConvStyles() {
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
-      }
-      .pc-advconv__needs {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        min-width: 0;
-        min-height: 30px;
-        padding: 5px 10px;
-        border-radius: 8px;
-        border: 1px solid color-mix(in oklab, var(--warn, #f59e0b), transparent 64%);
-        background: color-mix(in oklab, var(--warn, #f59e0b), transparent 90%);
-        color: var(--fg, #e7f7ff);
-        text-align: left;
-        font: inherit;
-        cursor: pointer;
-        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
-      }
-      .pc-advconv__needs:hover {
-        border-color: color-mix(in oklab, var(--warn, #f59e0b), transparent 44%);
-        background: color-mix(in oklab, var(--warn, #f59e0b), transparent 74%);
-      }
-      .pc-advconv__needs-kicker {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        color: var(--warn, #f59e0b);
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: 0;
-        text-transform: uppercase;
-      }
-      .pc-advconv__needs strong {
-        color: var(--fg, #e7f7ff);
-        font-size: 11.5px;
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-      }
-      .pc-advconv__needs em {
-        color: var(--fg-mute, #8aa3bc);
-        font-style: normal;
-        font-size: 10.5px;
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }
-      @media (max-width: 1180px) {
-        .pc-advconv__needs em { display: none; }
       }
       .pc-advconv {
         --advconv-button-accent: var(--advconv-accent);
@@ -2211,6 +2155,36 @@ function AdvConvStyles() {
       .pc-advconv__viewtab:hover > svg {
         color: var(--advconv-accent-strong);
       }
+      /* Divider between the curated views and the raw event log. */
+      .pc-advconv__viewtab-sep {
+        flex: 0 0 auto;
+        align-self: center;
+        width: 1px;
+        height: 18px;
+        margin: 0 3px;
+        background: var(--advconv-border);
+      }
+      /* "Raw events" is a debug tool, not a conversation type — render it muted
+         and neutral (no sky accent), with a dashed edge, so it reads as set apart. */
+      .pc-advconv__viewtab--raw {
+        color: var(--fg-mute, #7f9bb4);
+        border-style: dashed;
+        border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 64%);
+        background: transparent;
+      }
+      .pc-advconv__viewtab--raw > svg { color: var(--fg-mute, #7f9bb4); }
+      .pc-advconv__viewtab--raw:hover {
+        border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 40%);
+        background: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 90%);
+        color: var(--fg, #e7f7ff);
+      }
+      .pc-advconv__viewtab--raw.is-active {
+        border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 28%);
+        background: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 78%);
+        color: var(--fg, #e7f7ff);
+      }
+      .pc-advconv__viewtab--raw.is-active > svg,
+      .pc-advconv__viewtab--raw:hover > svg { color: var(--fg-dim, #b9d4e8); }
       /* Threads split fills the remaining height */
       .pc-advconv .pc-coord__split { flex: 1 1 auto; min-height: 0; }
       .pc-advconv__threads {
@@ -2315,6 +2289,41 @@ function AdvConvStyles() {
         border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 80%);
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 48%);
         color: var(--fg-mute, #7f9bb4);
+      }
+      /* Kind pill — bring the coordination.css base (a square, hardcoded-#9bd chip)
+         in line with the site's rounded, semantic-token pills (StatusPill family).
+         Question is accent-tinted so it pops against neutral discussions/roles in
+         the thread rail. */
+      .pc-advconv .pc-coord__kind {
+        display: inline-flex;
+        align-items: center;
+        min-height: 18px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 72%);
+        background: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 90%);
+        color: var(--fg-dim, #b9d4e8);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+      .pc-advconv .pc-coord__kind--question {
+        border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 56%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
+        color: var(--accent-strong, #7dd3fc);
+      }
+      /* Topic tags — subtle accent pills (was the hardcoded-#9bd .pc-coord__tag). */
+      .pc-advconv .pc-coord__tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--accent-strong, #7dd3fc), transparent 80%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 92%);
+        color: var(--accent-strong, #7dd3fc);
+        font-size: 10px;
+        font-weight: 700;
       }
       .pc-advconv__rowdate {
         margin-left: auto;
@@ -2448,7 +2457,7 @@ function AdvConvStyles() {
         background: var(--accent-strong, #7dd3fc) !important;
       }
       .pc-advconv__turn--assistant::before {
-        background: #6ee7b7 !important;
+        background: var(--good, #6ee7b7) !important;
       }
       .pc-advconv__turn--system::before {
         background: var(--fg-mute, #8aa3bc) !important;
@@ -2563,7 +2572,7 @@ function AdvConvStyles() {
         padding-top: 2px;
       }
       .pc-advfeed__kindchip {
-        --advconv-button-accent: #94a3b8;
+        --advconv-button-accent: var(--fg-mute, #94a3b8);
         display: inline-flex;
         align-items: center;
         gap: 5px;

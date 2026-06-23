@@ -247,6 +247,17 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   that calls the LLM, build it ON the account-routing system (the inference gateway
   / account pool — never a hardcoded single credential) so it never trips a true
   limit.
+- **A likely cause is a HYPOTHESIS, not a fact — prove it with HARD EVIDENCE, or
+  build the means to.** The general rule the multi-account note is one instance of:
+  a plausible-looking cause ("it's a rate limit / capacity," "the box is contended,"
+  "that service is down," "flaky infra") is a hypothesis to **test**, never a fact to
+  act on or report. Don't conclude until you have evidence that confirms — or could
+  **refute** — it (a log line, metric, query, the real error body/headers, the actual
+  config); one counter-example (e.g. even ONE account with headroom when you suspected
+  "out of capacity") kills a wrong theory. If you **can't get** that evidence (not
+  logged, no query/endpoint/tool), don't assume — **ADD the observability** and read
+  it, or **`improvements:capture`** the mechanism to build it. (The shared
+  `EVIDENCE_DISCIPLINE_NOTE` every harness agent also carries.)
 - **Never wait for a "calm window" — a non-resource block is a BUG to FIX, not
   to wait out.** The dual of the multi-account note. The **ONLY** legitimate
   reason you can't proceed is TRUE, *verified* exhaustion of a real shared

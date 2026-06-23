@@ -137,3 +137,42 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
     };
   });
 }
+
+/**
+ * The epoch-ms timestamp of the last scout_ticks row that ACTUALLY RAN a cycle
+ * (status IN ('ran','fired')) for the given install slug(s) — or null when a
+ * cycle has never run. This is the cadence clock the scheduler measures the
+ * min-interval / heartbeat floor from (EI-1600).
+ *
+ * Why NOT the autoloop `last_fired_at`: that clock is stamped on every fire
+ * ATTEMPT (`recordFire('attempt')`) and by the single-flight `claimFire`, so it
+ * advances even when a cycle HANGS or ERRORS without ever producing a cycle-run.
+ * Measuring the cadence floor from it lets a hung/errored fire keep resetting the
+ * floor, withholding every subsequent real cycle as `min-interval` indefinitely
+ * (the observed ~24h Scout dormancy). Measuring it from the last RUN instead means
+ * a hung/errored cycle never resets the cadence floor — repeated failures are
+ * bounded by the autoloop fire-gate's error backoff/circuit instead, which is
+ * exactly its job. A null result (never ran) reads as "never run" by the gate,
+ * which fires idle/heartbeat freely — the correct fresh-install behaviour.
+ *
+ * `installSlugs` reconciles across the workspace-brain re-key (K1): pass the write
+ * key plus its read-fallbacks (workspaceBrainReadKeys) so a sentinel/legacy split
+ * still resolves the true last run. Empty/omitted ⇒ workspace-wide (all installs).
+ */
+export async function readLastRanTickAtMs(
+  opts: { installSlugs?: string[]; workspaceId?: string } = {},
+): Promise<number | null> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const slugs = (opts.installSlugs ?? []).filter((s) => typeof s === 'string' && s.length > 0);
+  const rows = await sql<Array<{ last_ran: string | Date | null }>>`
+    SELECT max(tick_at) AS last_ran
+      FROM harness_shared.scout_ticks
+     WHERE workspace_id = ${ws}
+       AND status IN ('ran', 'fired')
+       ${slugs.length > 0 ? sql`AND install_slug = ANY(${slugs}::text[])` : sql``}`;
+  const v = rows[0]?.last_ran ?? null;
+  if (v == null) return null;
+  const ms = v instanceof Date ? v.getTime() : new Date(v).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}

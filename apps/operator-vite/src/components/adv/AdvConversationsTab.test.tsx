@@ -4,14 +4,14 @@
 // design. Mounts the tab against a realistic dev.coordFeed snapshot (useSyncQuery
 // + nuqs mocked, the pinned sibling pattern — see admin/GitClient.test.tsx) and
 // asserts:
-//   - Threads is the default front door,
-//   - the top "Needs you" affordance renders,
-//   - the Activity log keeps raw traffic reachable,
+//   - Q&A is the default front door,
+//   - the stale "Needs you" pill is gone (its home is now Create → Queue),
+//   - the Raw events log is set apart but keeps raw traffic reachable,
 //   - human category filters replace the raw 12-kind wall by default,
 //   - a BROADCAST row is marked, and a "→ human" escalation is highlighted,
 //   - the plan-slug chip renders,
 //   - an ack groups under its parent as a reply (related_msg_id chain),
-//   - the view switch shows Threads + Activity log.
+//   - the view switch shows the curated views + the set-apart Raw events log.
 // Guards against render-time crashes the typecheck can't catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -192,28 +192,31 @@ afterEach(() => {
 });
 
 describe('AdvConversationsTab — simplified design', () => {
-  it('opens on Threads with a compact header and Needs you summary', () => {
+  it('opens on Q&A with a compact header and the grouped, set-apart view tabs', () => {
     render(<AdvConversationsTab />);
 
     expect(screen.getByRole('heading', { name: 'Conversations' })).toBeTruthy();
-    // The header description follows the active view (Threads is the default).
-    expect(screen.getByText(/Questions & discussions — reply, accept, promote/i)).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Threads/i })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Activity log/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Needs you/i })).toBeTruthy();
+    // The header description follows the active view (Q&A is the default).
+    expect(screen.getByText(/Questions & discussions between you and the agents/i)).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Q&A/i })).toBeTruthy();
+    // The raw event log is relabelled + set apart, but still reachable as a tab.
+    expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
+    // The stale "Needs you" pill is removed — its canonical home is Create → Queue.
+    expect(screen.queryByRole('button', { name: /Needs you/i })).toBeNull();
     expect(screen.getByText(/Question & discussion threads/i)).toBeTruthy();
   });
 
-  // D-008 (conversations-tab-simplify-2026-06-08): the per-view one-liners are
-  // THE ratified copy, including the two P-009 deltas (Deliberations +
-  // Agent chats). Pinned exactly so the next copy churn is caught at review.
-  it('renders the ratified D-008 one-liner for every view', () => {
+  // The per-view one-liners are pinned copy (orig. D-008
+  // conversations-tab-simplify-2026-06-08; re-clarified 2026-06-23 per owner ask
+  // to name the sections self-explanatorily and set the raw event log apart).
+  // Pinned exactly so the next copy churn is caught at review.
+  it('renders the pinned one-liner for every view', () => {
     const FINAL_DESCS: Record<string, string> = {
-      threads: 'Questions & discussions — reply, accept, promote.',
-      deliberations: 'Group decisions — proposals and votes.',
-      agentchats: 'What each pipeline agent said, with token + cost detail.',
-      messages: 'Work-item-scoped agent → agent messages.',
-      feed: 'Raw coordination events, newest first.',
+      threads: 'Questions & discussions between you and the agents — reply, accept an answer, or promote to an issue.',
+      deliberations: 'Group decisions — coord threads, proposals, and votes.',
+      agentchats: "Each agent's full chat transcript, with token + cost detail.",
+      messages: 'Work-item-scoped mail between agents (messages:send / inbox).',
+      feed: 'The raw coordination event log — every envelope, newest first. A debug firehose beneath the curated views.',
     };
     for (const [view, desc] of Object.entries(FINAL_DESCS)) {
       nuqsState.conv = view;
@@ -235,7 +238,7 @@ describe('AdvConversationsTab — simplified design', () => {
     expect(tabRule).toContain('flex: 0 0 auto');
   });
 
-  it('shows Activity log as the secondary view with grouped filters', () => {
+  it('shows the Raw events log as the set-apart view with grouped filters', () => {
     nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
 
@@ -268,7 +271,7 @@ describe('AdvConversationsTab — simplified design', () => {
     expect(screen.getAllByRole('button', { name: /handoff/i }).length).toBeGreaterThan(1);
   });
 
-  it('shows channel summaries and kind badges in the Activity log', () => {
+  it('shows channel summaries and kind badges in the Raw events log', () => {
     nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
 
@@ -358,11 +361,11 @@ function stubComms(byUrl: Record<string, unknown>) {
 describe('AdvConversationsTab — unified communication views', () => {
   it('exposes a view tab for every communication type', () => {
     render(<AdvConversationsTab />);
-    expect(screen.getByRole('tab', { name: /Threads/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Q&A/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Deliberations/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Agent chats/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Messages/i })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Activity log/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
   });
 
   it('Deliberations view lists threads and opens its posts', async () => {

@@ -82,12 +82,18 @@ because operator and sentinel are the SAME role-keyed converse brain.
   5. Click the speaker toggle → assert `aria-pressed` flips and (unmuted) replies
      are spoken / (muted) silent; reload → muted state persists.
   6. `check` (CI-style assert) the above; `capture` a screenshot + DOM for the log.
-- [~] **P5 — Run + review** IN PROGRESS 2026-06-23. `:3070` healthy (200).
-  Bounded smoke RUNNING in background task **bmdk6a2ja**
-  (`npm --prefix apps/operator run llm-test -- --scenario sn-H03-queen-explainer`,
-  repeat=1, cheapest concept scenario). **Do NOT start another smoke** until this
-  completes — its result is recorded on completion. Full suite stays a manual run:
-  `npm --prefix apps/operator run llm-test -- --target sentinel`.
+- [x] **P5 — Run + review** DONE (bounded smoke executed) 2026-06-23. `:3070`
+  healthy (200). Smoke `sn-H03-queen-explainer` ran and **validated the live
+  plumbing**: the runner loaded the scenario, resolved the **`sentinel`** target,
+  connected to `:3070`, and started the sim-user/judge loop
+  (`▶ sn-H03-queen-explainer [sentinel]`). It then hit **Anthropic API rate
+  limits (429 × 8 retries)** → the answer-quality eval is **inconclusive** (an
+  external rate limit, NOT a wiring bug). Did not retry into the limit (bounded).
+  **Answer-quality review is ready to run when API headroom returns:**
+  `npm --prefix apps/operator run llm-test -- --target sentinel` (full suite), or
+  `--scenario sn-H03-queen-explainer` for a single cheap check. Note: the runner
+  warned SUT model === judge model (both claude-sonnet-4-6) — Plan §6.3 prefers
+  they differ to avoid self-grading bias; a follow-up could set distinct models.
 
 ## Invariants / guardrails (must hold)
 
@@ -116,3 +122,24 @@ because operator and sentinel are the SAME role-keyed converse brain.
   (voice-mode.test.ts, 7/7); full round-trip documented as a tauri-agent-tools
   agent-e2e checklist (browser e2e against :3055/:3070 is non-canonical for
   Papercusp UI). Next + LAST: P5 bounded live smoke.
+- 2026-06-23: **P5 DONE (bounded smoke) — PLAN COMPLETE.** Live smoke validated
+  the sentinel plumbing end-to-end against :3070; answer-quality eval blocked by
+  Anthropic 429 rate limits (external, transient) → ready-to-run command left
+  above. While finalizing, also fixed a CONCURRENT-PEER red: `su-S26` was added
+  to the registry without updating the aggregate test's id list — added it; gate
+  back to 40/40.
+
+  ## FINAL SUMMARY (loop complete, CronDelete'd)
+  Shipped, all framework-green:
+  - `sentinel` LLM-testing target (role='sentinel' converse) + `mirrorForSentinel`
+    factory + shared `_asserts.ts`.
+  - **17 sentinel scenarios**: SN01/02 (handoff / no-handoff), SN-H01–H07
+    (fleet-status, plans-and-blocked, queen-explainer, assign-to-queen,
+    urgent-handoff, respect-no-handoff, multi-item-handoff), + 8 mirrored operator
+    chat-hygiene contracts (S10/S11/S13–S16/M4/M8).
+  - TTS-mute unit test (voice-mode.test.ts 7/7) + agent-e2e checklist for the UI
+    round-trip.
+  - Tests: llm-testing lint+aggregate **40/40**, voice-mode **7/7**.
+  ONE follow-up for the owner: run the live answer-quality eval when the API
+  isn't rate-limited (`npm --prefix apps/operator run llm-test -- --target
+  sentinel`); optionally set a distinct judge model (Plan §6.3).

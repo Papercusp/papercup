@@ -3,11 +3,14 @@
 // AdvOverviewPanel — the per-harness mission-control summary panel. Two halves:
 //   • PURE computeStats — extracted + exported, tested branch-by-branch
 //     (null counts, empty, passed/total → pct, divide-by-zero guard).
-//   • A render-smoke driving the fetch-backed shell: no-slug empty, the loading
+//   • A render-smoke driving the sync-backed shell: no-slug empty, the loading
 //     state, and the populated state (slug/alive/badges/progress/counts/cost).
+// Status reads through `useSyncQuery('harnessStatus.snapshot')` (NOT a REST
+// fetch) — so we mock @papercusp/sync to drive data/loading/error, the pinned
+// sibling pattern (see AdvNowRunning.test.tsx). `fetch` is still stubbed for
+// the phase-last-used GET (first-mount hydration) + PUT (switchPhase persist).
 // Tooltip + StatusPill are stubbed (Radix portal / theme tables aren't the
-// thing under test); fetch is stubbed to serve the phase-last-used + status
-// endpoints.
+// thing under test).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -17,6 +20,22 @@ vi.mock('../../harness/Tooltip', () => ({
 }));
 vi.mock('../../harness/primitives', () => ({
   StatusPill: ({ status }: { status: string }) => <span data-testid={`pill-${status}`}>{status}</span>,
+}));
+
+// The status snapshot arrives via sync, not REST — mock the hook and let each
+// test drive the result through these module-scoped knobs. `invalidate` is a
+// spy so the Refresh test can assert it fired.
+let syncRows: unknown[] | undefined;
+let syncError: Error | null = null;
+const syncInvalidate = vi.fn();
+let lastSyncOpts: { queryName?: string; args?: unknown; enabled?: boolean } | undefined;
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: (opts: { queryName: string; args?: unknown; enabled?: boolean }) => {
+    lastSyncOpts = opts;
+    // A disabled query (no slug/workspace) never resolves data — mirror that.
+    if (opts.enabled === false) return { data: [], error: null, invalidate: syncInvalidate };
+    return { data: syncRows ?? [], error: syncError, invalidate: syncInvalidate };
+  },
 }));
 
 import AdvOverviewPanel, { computeStats } from './AdvOverviewPanel';
@@ -41,12 +60,16 @@ const STATUS = {
 };
 
 beforeEach(() => {
+  // Default: status sync delivers a populated snapshot; tests that want the
+  // loading/error/variant states reassign syncRows/syncError before render.
+  syncRows = [STATUS];
+  syncError = null;
+  syncInvalidate.mockClear();
+  lastSyncOpts = undefined;
+  // `fetch` now only serves the phase-last-used GET (hydration) + PUT (persist).
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (String(url).includes('/harness-phase-last-used/')) {
       return new Response(JSON.stringify({ phase: null }), { status: 200 });
-    }
-    if (String(url).includes('/status')) {
-      return new Response(JSON.stringify(STATUS), { status: 200 });
     }
     return new Response('{}', { status: 200 });
   }));
@@ -81,7 +104,8 @@ describe('<AdvOverviewPanel />', () => {
     expect(screen.getByText(/no hive slug in params/i)).toBeTruthy();
   });
 
-  it('shows the loading state before the status fetch resolves', () => {
+  it('shows the loading state before the status sync resolves', () => {
+    syncRows = []; // sync has no rows yet → data is null → loading branch
     render(
       <AdvOverviewPanel
         panelId="p"
@@ -93,7 +117,7 @@ describe('<AdvOverviewPanel />', () => {
     expect(screen.getByText(/loading my-harness…/i)).toBeTruthy();
   });
 
-  it('renders the populated summary once the status fetch lands', async () => {
+  it('renders the populated summary once the status sync lands', async () => {
     const api = mkApi();
     const { container } = render(
       <AdvOverviewPanel
@@ -119,18 +143,16 @@ describe('<AdvOverviewPanel />', () => {
     expect(container.textContent).toContain('checkpoints pending: 2');
     // title was synced
     expect(api.setTitle).toHaveBeenCalledWith('Overview: my-harness (staging)');
+    // status is read through sync (harnessStatus.snapshot) keyed by slug+phase,
+    // not an ad-hoc REST fetch
+    expect(lastSyncOpts?.queryName).toBe('harnessStatus.snapshot');
+    expect(lastSyncOpts?.args).toMatchObject({ harnessSlug: 'my-harness', phase: 'staging' });
   });
 
   it('omits the escalated/smoke badges and the checkpoint line when those flags are off/zero', async () => {
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (String(url).includes('/harness-phase-last-used/')) return new Response(JSON.stringify({ phase: null }), { status: 200 });
-      if (String(url).includes('/status'))
-        return new Response(
-          JSON.stringify({ ...STATUS, alive: false, escalated: false, smokeFail: true, pendingCheckpoints: 0, activeCompetitions: 0, lastDecision: null }),
-          { status: 200 },
-        );
-      return new Response('{}', { status: 200 });
-    });
+    syncRows = [
+      { ...STATUS, alive: false, escalated: false, smokeFail: true, pendingCheckpoints: 0, activeCompetitions: 0, lastDecision: null },
+    ];
     const { container } = render(
       <AdvOverviewPanel panelId="p" panelType="adv:overview" params={{ harnessSlug: 'my-harness', phase: 'staging' }} api={mkApi()} />,
     );
@@ -144,16 +166,20 @@ describe('<AdvOverviewPanel />', () => {
     expect(container.textContent).not.toContain('checkpoints pending');
   });
 
-  it('renders the Failed surface when the status fetch rejects (non-ok response)', async () => {
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (String(url).includes('/harness-phase-last-used/')) return new Response(JSON.stringify({ phase: null }), { status: 200 });
-      if (String(url).includes('/status')) return new Response('nope', { status: 503 });
-      return new Response('{}', { status: 200 });
-    });
-    render(
+  it('renders the Failed surface when the status sync errors (non-ok response)', async () => {
+    syncRows = [];
+    syncError = new Error('status 503');
+    const { container } = render(
       <AdvOverviewPanel panelId="p" panelType="adv:overview" params={{ harnessSlug: 'my-harness', phase: 'staging' }} api={mkApi()} />,
     );
-    await waitFor(() => expect(screen.getByText(/failed: status 503/i)).toBeTruthy());
+    // The banner ("Failed: " + the stringified error) is split across text
+    // nodes, so match on the err-surface element's full text content.
+    await waitFor(() => {
+      const banner = container.querySelector('.pc-advpanel__empty--err');
+      expect(banner).toBeTruthy();
+      expect(banner!.textContent).toMatch(/failed:/i);
+      expect(banner!.textContent).toMatch(/status 503/i);
+    });
   });
 
   it('switchPhase writes the new phase param + PUTs phase-last-used, and is a no-op on the current phase', async () => {
@@ -178,15 +204,14 @@ describe('<AdvOverviewPanel />', () => {
     expect((putCall![1] as RequestInit).body).toBe(JSON.stringify({ phase: 'testing' }));
   });
 
-  it('the Refresh button re-fires the status fetch (tick bump)', async () => {
+  it('the Refresh button invalidates the status sync query (manual refetch)', async () => {
     render(
       <AdvOverviewPanel panelId="p" panelType="adv:overview" params={{ harnessSlug: 'my-harness', phase: 'staging' }} api={mkApi()} />,
     );
     await waitFor(() => expect(screen.getByText('my-harness')).toBeTruthy());
-    const statusCalls = () =>
-      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) => String(u).includes('/status')).length;
-    const before = statusCalls();
+    // Refresh re-reads through sync via invalidate(), not an ad-hoc REST fetch.
+    expect(syncInvalidate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /refresh status/i }));
-    await waitFor(() => expect(statusCalls()).toBeGreaterThan(before));
+    expect(syncInvalidate).toHaveBeenCalled();
   });
 });

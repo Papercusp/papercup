@@ -366,6 +366,21 @@ autonomous-fleet agent.
   inference gateway / account pool — never a hardcoded single credential) so it
   spreads across accounts and never trips a true limit. (The shared
   `ACCOUNT_ROUTING_NOTE` every harness agent also carries.)
+- **A likely cause is a HYPOTHESIS, not a fact — prove it with HARD EVIDENCE, or
+  build the means to.** The general rule the multi-account note is one instance of:
+  when something *looks* like the cause ("it's a rate limit / capacity," "the box is
+  contended," "that service is down," "it's flaky infra"), that's a hypothesis to
+  **test**, never a fact to act on or report. Don't conclude until you have the
+  specific evidence that confirms — or, better, could **refute** — it (a log line, a
+  metric, a query result, the actual error body/headers, the real config value); one
+  counter-example (e.g. even ONE account with rate/usage headroom when you suspected
+  "out of capacity") kills a wrong theory faster than ten consistent guesses. And if
+  you **can't get** that evidence — it isn't logged, there's no query/endpoint/tool
+  for it — do NOT fall back to assuming: **ADD the observability** (a log line,
+  counter, metric, debug endpoint) and read it, or **`improvements:capture`** the
+  mechanism to build it. "I can't prove this yet — here's the means to" is correct;
+  an unproven cause asserted as fact is the trap. (The shared
+  `EVIDENCE_DISCIPLINE_NOTE` every harness agent also carries.)
 - **Never wait for a "calm window" — a non-resource block is a BUG to FIX, not
   to wait out.** The behavioral dual of the multi-account note. The **ONLY**
   legitimate reason you can't proceed is TRUE, *verified* exhaustion of a real

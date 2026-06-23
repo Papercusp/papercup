@@ -48,8 +48,25 @@ export interface ScoutCadenceState {
   idleRatio: number;
   /** Count of recent unaddressed friction signals (watchdog + friction-markers). */
   frictionSignals: number;
-  /** When the last Scout cycle ran (epoch ms), or null if never. */
+  /**
+   * When the last Scout cycle actually RAN (epoch ms), or null if never. This is
+   * the cadence clock the min-interval / heartbeat floors are measured from, and
+   * (EI-1600) it MUST reflect the last successful cycle-RUN (scout_ticks
+   * status='ran'/'fired'), NOT the autoloop `last_fired_at` fire-ATTEMPT clock — a
+   * hung/errored fire that advanced the attempt clock without running a cycle must
+   * not reset this floor (else Scout goes dark, gating every tick as min-interval).
+   */
   lastRunAtMs: number | null;
+  /**
+   * The autoloop fire-slot clock (epoch ms) — `autoloop_state.last_fired_at` — used
+   * ONLY by the scheduler's single-flight `claimFire` CAS, NOT by the cadence gate
+   * (the pure {@link shouldRunScoutCycle} ignores it). It is DELIBERATELY decoupled
+   * from {@link lastRunAtMs} (EI-1600): the cadence floor measures the last RUN,
+   * while the claim must CAS against the fire-slot value it read. Omit (the
+   * pure-gate default) ⇒ the scheduler falls back to {@link lastRunAtMs} for the
+   * claim (the legacy single-source behaviour the unit-test fakes rely on).
+   */
+  fireSlotLastMs?: number | null;
   /** Now (epoch ms). */
   nowMs: number;
   /**

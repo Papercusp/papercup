@@ -51,6 +51,7 @@ import { renderYieldPolicy } from './turn-yield-policy';
 import { renderTestingStandard } from './testing-standard-policy';
 import { renderAccountRoutingNote } from './account-routing-policy';
 import { renderConcurrencyFirstNote } from './concurrency-first-policy';
+import { renderEvidenceDisciplineNote } from './evidence-discipline-policy';
 import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 import { renderCodeRunNudge } from './code-run-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
@@ -148,6 +149,7 @@ export interface AssembledSection {
     | 'yield-policy'
     | 'testing-standard'
     | 'account-routing-note'
+    | 'evidence-discipline-note'
     | 'concurrency-first-note'
     | 'deploy-pipeline-note'
     | 'reuse-first-nudge'
@@ -489,6 +491,16 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (accountNote) {
     parts.push(accountNote);
     sections.push({ name: 'account-routing-note', chars: accountNote.length });
+  }
+
+  // Evidence-discipline note — the GENERAL rule the account-routing note above is one instance of: a
+  // likely-looking cause is a HYPOTHESIS to verify with hard evidence, never a fact to act on / report;
+  // and when the evidence isn't obtainable, ADD the observability or FILE the means rather than assuming.
+  // Sourced from the one EVIDENCE_DISCIPLINE_NOTE constant (orchestrator) so the bases + su playbooks can't desync.
+  const evidenceNote = renderEvidenceDisciplineNote();
+  if (evidenceNote) {
+    parts.push(evidenceNote);
+    sections.push({ name: 'evidence-discipline-note', chars: evidenceNote.length });
   }
 
   // Concurrency-first note — the SHARED base every operator-launched role inherits, the
