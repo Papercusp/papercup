@@ -34,6 +34,12 @@ export interface StallWakerDeps {
   /** Fire the targeted coord wake. Returns `woken` (>0 = a watching bee was re-invoked; 0 = nobody home —
    *  the bee process is gone, not a resumable session). Honors the hive pause/manual gate internally. */
   wake: (ownerId: string, summary: string) => Promise<{ woken: number }>;
+  /** FAST un-wedge (owner-requested 2026-06-23): ESC the owner's dead turn NOW (no wake), decoupled from the
+   *  capacity gate. A turn that DIED on a gateway error is WEDGED — its CLI can't receive ANY message (not even
+   *  a wake) until the dead turn is ESC'd. This re-arms it immediately so it's reachable again, WITHOUT shoving
+   *  it back into a still-throttled pool (the capacity-gated `wake` below does the resume once budget returns).
+   *  Optional — omit to keep only the legacy capacity-gated ESC+wake. */
+  unwedge?: (ownerId: string) => Promise<void>;
   now: () => number;
   log: (level: 'info' | 'warn', msg: string) => void;
 }

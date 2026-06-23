@@ -1636,6 +1636,52 @@ test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: pe
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
 }, 30_000);
 
+test('[soft-pin] a PINNED request whose account is SLAMMED by concurrent sessions yields to a healthy sibling (pinned-concentration fix)', async () => {
+  // Owner-reported: unpinned 10+ sessions are fine (they spread), but PINNING several sessions to ONE account
+  // breaks after a few — they pile onto that account's per-account RPM/burst limit while the pool sits idle.
+  // The pin is a cache-affinity PREFERENCE: when the pinned account is already slammed (in-flight ≥ threshold),
+  // THIS request yields to a healthy idle sibling instead of erroring on the saturated pin.
+  resetGovernorRegistry();
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
+  await boot(
+    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    { pool, governorFor: undefined, concurrency: 24 },
+  );
+  // Simulate N concurrent pinned sessions already forwarding through A: pre-load A's per-account governor's
+  // in-flight to the soft-pin yield threshold (the gateway reads the SAME registry-keyed governor).
+  getGovernor('anthropic', 'opus', undefined, 'A').state.inFlight = 2;
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 200, 'the pinned request still succeeds (served by a healthy sibling)');
+  await r.text();
+  const routed = r.headers.get('x-papercusp-routed-account');
+  assert.ok(routed === 'B' || routed === 'C', `slammed pin yielded to a healthy idle sibling, not piled onto A (routed=${routed})`);
+}, 20_000);
+
+test('[soft-pin] a PINNED request to a HEALTHY idle account STAYS on its pin (cache affinity preserved)', async () => {
+  // The dual: a pin must NOT thrash when its account is fine — sequential/single-session use keeps its warm
+  // per-credential cache. With A healthy + idle (in-flight 0), a pinned-to-A request stays on A.
+  resetGovernorRegistry();
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
+  await boot(
+    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    { pool, governorFor: undefined, concurrency: 24 },
+  );
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 200);
+  await r.text();
+  assert.equal(r.headers.get('x-papercusp-routed-account'), 'A', 'a healthy idle pin is preserved (cache affinity)');
+}, 20_000);
+
 test('[B-GW-1] fail-fast SHED when the whole pool is throttled with a far-off reset (slot freed, not squatted)', async () => {
   // Pre-pause the single account far beyond maxQueueWaitMs (boot uses 80ms). The next request finds no
   // account with headroom at admission and the reset is far → it sheds IMMEDIATELY with a pool-wide

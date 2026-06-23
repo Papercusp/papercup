@@ -1292,20 +1292,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // only SWITCH to a strictly-different account — a single-account / all-paused pool keeps today's behavior
     // (the reactive walk + fail-fast shed below still handle the all-paused case). `pool.active()` advances the
     // rr-cursor exactly like the reactive walk, so fairness/cursor semantics are unchanged.
+    // Health score (lower = better): governor-paused / live-transport-paused ⇒ never pick (Infinity); else a
+    // recent UNRECOVERED transport failure (egressFailStreak>0, cleared on the next success) is the dead/flaky-
+    // proxy hint — bucket those behind every clean account (+1) so a clean one always wins, then break ties by
+    // lowest unified utilization (most residual budget). u ∈ [0,1] keeps the flaky bucket disjoint; a clean,
+    // idle, fresh-proxy account scores 0. SHARED by the unpinned proactive pick AND the soft-pin failover.
+    const now0 = Date.now();
+    const keyOf = (cgov: RateLimitGovernor, accountId: string): number => {
+      if (cgov.state.pausedUntil > now0) return Infinity;
+      if ((egressPauseUntil.get(accountId) ?? 0) > now0) return Infinity;
+      const u = cgov.snapshot().unified?.utilization ?? 0;
+      const flaky = (egressFailStreak.get(accountId) ?? 0) > 0 ? 1 : 0;
+      return flaky + u;
+    };
     if (pinned === null) {
-      const now0 = Date.now();
-      // Health score (lower = better): governor-paused / live-transport-paused ⇒ never pick proactively
-      // (Infinity); else a recent UNRECOVERED transport failure (egressFailStreak>0, cleared on the next
-      // success) is the dead/flaky-proxy hint — bucket those behind every clean account (+1) so a clean one
-      // always wins, then break ties by lowest unified utilization (most residual budget). u ∈ [0,1] keeps the
-      // flaky bucket disjoint; a clean, idle, fresh-proxy account scores 0.
-      const keyOf = (cgov: RateLimitGovernor, accountId: string): number => {
-        if (cgov.state.pausedUntil > now0) return Infinity;
-        if ((egressPauseUntil.get(accountId) ?? 0) > now0) return Infinity;
-        const u = cgov.snapshot().unified?.utilization ?? 0;
-        const flaky = (egressFailStreak.get(accountId) ?? 0) > 0 ? 1 : 0;
-        return flaky + u;
-      };
       // SEED with the round-robin pick so a healthy active() is KEPT — round-robin fairness is preserved and
       // only a STRICTLY-better account displaces it. A key-0 active (healthy, idle, fresh proxy) can't be beaten
       // → skip the walk entirely (zero added cost on the happy path). A paused/paced/flaky active (key > 0)
@@ -1328,6 +1328,41 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (bestCand.accountId !== active.accountId) {
         active = bestCand;
         gov = bestGov;
+      }
+    } else {
+      // SOFT-PIN FAILOVER (pinned-concentration fix, 2026-06-23, owner-reported "unpinned 10+ sessions fine but
+      // PINNED breaks after a few"): a pin is a cache-affinity PREFERENCE, not a hard funnel. Pinning N CONCURRENT
+      // sessions onto one account saturates ITS per-account RPM/burst limit while the rest of the pool sits idle,
+      // so the pinned requests 429 even though the pool has capacity. The pause-yield above only fires on a HARD
+      // governor pause, and the proactive pick above is unpinned-only — so a busy-but-not-paused pin slips through
+      // to a reactive 429. Here: yield THIS request to the healthiest, least-loaded sibling whenever the pinned
+      // account is STRESSED — paused/flaky/near-cap (keyOf > 0) OR slammed by concurrent pinned sessions
+      // (in-flight ≥ PIN_YIELD_INFLIGHT). The pin still holds for sequential/single-session requests (in-flight
+      // 0-1 → keyOf 0 → no yield → warm per-credential cache preserved); only a concurrent pile-up spreads.
+      const load = (cgov: RateLimitGovernor): number => (cgov.state.inFlight >= PIN_YIELD_INFLIGHT ? 1 : 0);
+      let bestKey = keyOf(gov, active.accountId) + load(gov);
+      if (bestKey > 0) {
+        let bestCand = active;
+        let bestGov = gov;
+        for (let walk = 0; walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
+          const cand = pool.active();
+          if (cand.accountId === pinned!.accountId) continue;
+          const cgov = governorForAccount(model, cand.accountId);
+          const key = keyOf(cgov, cand.accountId) + load(cgov);
+          if (key < bestKey) {
+            bestKey = key;
+            bestCand = cand;
+            bestGov = cgov;
+          }
+        }
+        if (bestCand.accountId !== active.accountId) {
+          log(
+            'warn',
+            `inference-gateway: pinned '${pinned!.accountId}' stressed (inflight=${gov.state.inFlight}) → soft-pin failover to '${bestCand.accountId}' (cache-affinity yields to load/liveness)`,
+          );
+          active = bestCand;
+          gov = bestGov;
+        }
       }
     }
 
