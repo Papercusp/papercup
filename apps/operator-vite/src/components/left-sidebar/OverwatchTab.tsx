@@ -27,6 +27,8 @@ import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Activity, AlertTriangle, CheckCircle2, Clock3, Eye, History, Pause, Play, ShieldCheck, XCircle } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import ModelOverride from './ModelOverride';
+import { useModelOverride } from './useModelOverride';
 import type {
   Anomaly,
   AnomalyActionType,
@@ -119,6 +121,10 @@ export default function OverwatchTab({ active }: { active: boolean }) {
     return () => clearInterval(id);
   }, [active]);
 
+  // Session-only MODEL override for the Overwatch supervisor (model-override-sidebar-2026-06-23).
+  // Hook called unconditionally (before the early return) per the rules of hooks.
+  const overwatchModel = useModelOverride('overwatch', active);
+
   const brief = active ? snap.data?.[0] : undefined;
   const control = active ? ctrl.data?.[0] : undefined;
   const liveness = active ? live.data?.[0] : undefined;
@@ -136,6 +142,14 @@ export default function OverwatchTab({ active }: { active: boolean }) {
               ? 'Loading the overwatch brief…'
               : 'Overwatch is dark. The full system health is on the Health tab.'}
         </div>
+        {/* Model override is settable even while dark — it applies on the next start. */}
+        {overwatchModel.error && <div className="pc-owsb__err">Model override - {overwatchModel.error}</div>}
+        <ModelOverride
+          label="Overwatch model"
+          override={overwatchModel.override}
+          onWrite={overwatchModel.setOverride}
+          busy={overwatchModel.busy}
+        />
       </div>
     );
   }
@@ -224,6 +238,14 @@ export default function OverwatchTab({ active }: { active: boolean }) {
             Started, but the <strong>papercusp-overwatch</strong> flag is OFF - pre-armed, not looping. Flip it on at /admin/features.
           </div>
         )}
+
+        {overwatchModel.error && <div className="pc-owsb__err">Model override - {overwatchModel.error}</div>}
+        <ModelOverride
+          label="Overwatch model"
+          override={overwatchModel.override}
+          onWrite={overwatchModel.setOverride}
+          busy={overwatchModel.busy}
+        />
 
         {brief ? (
           <OverwatchAnomalies brief={brief} sevFilter={sevFilter} setSevFilter={setSevFilter} />
