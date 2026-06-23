@@ -34,6 +34,9 @@ vi.mock('../operator-state-pg', () => ({
 import { selectSpawnAccount } from './account-pool-store';
 
 const ADDED = 1_700_000_000_000;
+/** Deterministic RNG seed for the drain spread: `() => 0` → the spread returns its deterministic best,
+ *  so these regression locks assert a stable account under a fixed seed while production spreads. */
+const SEED0 = () => 0;
 
 function poolOf(...ids: string[]): AccountPool {
   let p = emptyPool();
@@ -57,14 +60,15 @@ describe('selectSpawnAccount — deterministic, Queen-independent egress-account
     expect(await selectSpawnAccount('ws', 'harness-x')).toBeUndefined();
   });
 
-  it('is a pure function of (pool, harness): same inputs → same account, regardless of placement / call order', async () => {
+  it('is Queen-independent: same (pool, harness, seed) → same account, regardless of placement / call order', async () => {
     h.pool = poolOf('a', 'b', 'c');
-    const first = await selectSpawnAccount('ws', 'harness-x');
+    const first = await selectSpawnAccount('ws', 'harness-x', undefined, 'claude', SEED0);
     expect(first).toBeDefined();
     // The Queen re-placing the same bee (or placing another bee into the same harness) passes NO account
-    // hint — re-resolving for the same harness is byte-identical. Selection never depends on a Queen call.
-    expect(await selectSpawnAccount('ws', 'harness-x')).toBe(first);
-    expect(await selectSpawnAccount('ws', 'harness-x')).toBe(first);
+    // hint — re-resolving for the same harness under the same seed is byte-identical. Selection never
+    // depends on a Queen call. (Production spreads via Math.random; the seed isolates that here.)
+    expect(await selectSpawnAccount('ws', 'harness-x', undefined, 'claude', SEED0)).toBe(first);
+    expect(await selectSpawnAccount('ws', 'harness-x', undefined, 'claude', SEED0)).toBe(first);
   });
 
   it('routes by HARNESS cache-affinity (a bound account wins), proving (harness, pool) is the sole input', async () => {
@@ -72,18 +76,28 @@ describe('selectSpawnAccount — deterministic, Queen-independent egress-account
     p = bindAccount(p, 'b', 'harness-x');
     h.pool = p;
     expect(await selectSpawnAccount('ws', 'harness-x')).toBe('b');
-    // A DIFFERENT harness with no binding falls through to budget-drain order (oldest-added 'a') — the
-    // account tracks the harness, not who/what placed the bee.
-    expect(await selectSpawnAccount('ws', 'other-harness')).toBe('a');
+    // A DIFFERENT harness with no binding falls through to the budget-drain spread; under SEED0 that is
+    // the deterministic best (oldest-added 'a') — the account tracks the harness, not who placed the bee.
+    expect(await selectSpawnAccount('ws', 'other-harness', undefined, 'claude', SEED0)).toBe('a');
   });
 
   it('avoids a paused/over-budget account, picking a budgeted one (budget-aware selection)', async () => {
     const now = Date.now();
     let p = poolOf('a', 'b');
-    // 'a' is the oldest-added (would win on recency), but it is paused → selection must skip it for 'b'.
+    // 'a' is the oldest-added (would win on recency), but it is paused → the spread prefers the
+    // available account 'b' (a budget-healthy-but-paused account is only used when none are available).
     p = recordAccountPenalty(p, 'a', now, { pausedUntil: now + 60 * 60_000 });
     h.pool = p;
     expect(await selectSpawnAccount('ws', undefined)).toBe('b');
+  });
+
+  it('SPREADS concurrent fresh bees across budgeted accounts instead of piling on one (anti-thundering-herd)', async () => {
+    h.pool = poolOf('a', 'b', 'c'); // all equal headroom
+    // Production rng (Math.random) over many fresh spawns must touch more than one account — the fix for
+    // the owner-reported "accounts have usage but aren't being picked" funnel.
+    const seen = new Set<string | undefined>();
+    for (let i = 0; i < 40; i++) seen.add(await selectSpawnAccount('ws', undefined));
+    expect(seen.size).toBeGreaterThan(1);
   });
 
   it('respects sticky prior-account affinity when still available (per-credential cache reuse)', async () => {
@@ -123,8 +137,8 @@ describe('selectSpawnAccount — accurate header-derived budget signal does not 
     // 'b' has a FRESH mid reading.
     p = recordAccountWindow(p, 'b', { utilization: 0.4 }, now);
     h.pool = p;
-    // stale 'a' → drainUtil 0 (most-available) → still selectable; the false-99% did not mis-route.
-    expect(await selectSpawnAccount('ws', undefined)).toBe('a');
+    // stale 'a' → drainUtil 0 (most-available) → the spread's best under SEED0; the false-99% did not mis-route.
+    expect(await selectSpawnAccount('ws', undefined, undefined, 'claude', SEED0)).toBe('a');
   });
 
   it('a FRESH near-budget reading IS honored — the spawn avoids it for a budgeted account', async () => {
@@ -133,6 +147,7 @@ describe('selectSpawnAccount — accurate header-derived budget signal does not 
     p = recordAccountWindow(p, 'a', { utilization: 0.99 }, now); // genuinely near budget (fresh)
     p = recordAccountWindow(p, 'b', { utilization: 0.2 }, now); // budgeted
     h.pool = p;
-    expect(await selectSpawnAccount('ws', undefined)).toBe('b');
+    // Under SEED0 the spread returns its best (the budgeted 'b'); 'a' keeps only a slim weighted chance.
+    expect(await selectSpawnAccount('ws', undefined, undefined, 'claude', SEED0)).toBe('b');
   });
 });

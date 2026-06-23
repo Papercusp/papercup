@@ -14,13 +14,15 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadHarnessRegistry } from '../harness-registry';
 import { harnessDir } from '../harness-core';
-import { groupByHive, type HiveGroup, type HiveGroupProject } from './hive-groups';
+import { groupByHive, isRepoLessHiveHome, type HiveGroup, type HiveGroupProject } from './hive-groups';
 import { activeWorkspaceId } from '../workspace-registry';
 
 export interface ProjectsLiteEntry {
   slug: string;
   path: string;
   harness_kind: string | null;
+  /** A `harness_kind:'hive'` home that IS its own repo checkout (self-hive) — stays selectable. */
+  self_repo: boolean | null;
   hive_slug: string | null;
   parent_slug: string | null;
   is_shared: boolean;
@@ -48,13 +50,16 @@ export function bustProjectsLiteCache(): void {
 }
 
 export async function buildProjectsLitePayload(
-  opts: { bypassCache?: boolean } = {},
+  opts: { bypassCache?: boolean; includeHiveHomes?: boolean } = {},
 ): Promise<ProjectsLitePayload> {
   const g = globalThis as LiteGlobals;
   const now = Date.now();
-  const ws = activeWorkspaceId();
+  // The selectable `projects` list varies by includeHiveHomes, so the variant is
+  // part of the cache key (the default — repo-less Hive homes hidden — is what the
+  // psu/GUI selectors read).
+  const cacheKey = `${activeWorkspaceId()}|${opts.includeHiveHomes ? 'h' : ''}`;
   if (!opts.bypassCache) {
-    const hit = g[__liteKey]?.get(ws);
+    const hit = g[__liteKey]?.get(cacheKey);
     if (hit && now - hit.ts < LITE_TTL_MS) return hit.payload;
   }
   const reg = await loadHarnessRegistry();
@@ -63,7 +68,7 @@ export async function buildProjectsLitePayload(
   // parent_slug is a scaffold-time harness contract artifact in
   // .papercusp/config.json (NOT a migrated HarnessConfig field —
   // deprecate-harness-config-json-2026-06-06 D-005); the file persists for it.
-  const projects = await Promise.all(reg.projects.map(async (p): Promise<ProjectsLiteEntry> => {
+  const allProjects = await Promise.all(reg.projects.map(async (p): Promise<ProjectsLiteEntry> => {
     const hDir = harnessDir(p);
     const cfgPath = join(p.path, '.papercusp', 'config.json');
     let parentSlug: string | null = null;
@@ -79,6 +84,7 @@ export async function buildProjectsLitePayload(
       slug: p.slug,
       path: p.path,
       harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
+      self_repo: (p as { self_repo?: boolean }).self_repo ?? null,
       // FORMAL Hive membership (shared-hive-federation): a registry field, so
       // grouping over it needs no PG `hives`-table read (harnesses-tab P-021).
       hive_slug: (p as { hive_slug?: string }).hive_slug ?? null,
@@ -93,8 +99,15 @@ export async function buildProjectsLitePayload(
   // (buildHarnessSelectOptions, member rail, all-mode cards) stops
   // tree-inferring it. Grouped over the formal `harness_kind:'hive'` home +
   // `hive_slug`, with `parent_slug` legacy fallback (D-002/D-008 seam).
-  const hives = groupByHive(projects as unknown as HiveGroupProject[]);
+  // Grouping is computed over ALL projects (incl. repo-less Hive homes) so the
+  // Hive-grouping consumers (PR settings, member rail) keep the full structure.
+  const hives = groupByHive(allProjects as unknown as HiveGroupProject[]);
+  // `projects` is the flat SELECTABLE list the psu/GUI harness selectors read: hide
+  // repo-less Hive homes by default (self-hives like papercusp keep their repo + stay).
+  const projects = opts.includeHiveHomes
+    ? allProjects
+    : allProjects.filter((p) => !isRepoLessHiveHome(p));
   const payload: ProjectsLitePayload = { projects, hives };
-  (g[__liteKey] ??= new Map()).set(ws, { ts: Date.now(), payload });
+  (g[__liteKey] ??= new Map()).set(cacheKey, { ts: Date.now(), payload });
   return payload;
 }

@@ -142,6 +142,9 @@ export async function selectSpawnAccount(
   harness: string | undefined,
   priorAccountId?: string,
   provider: AccountProvider = 'claude',
+  /** Injectable RNG for the drain SPREAD (default Math.random). Production spreads concurrent bees
+   *  across budgeted accounts; tests pass a fixed rng (e.g. `() => 0` → deterministic best). */
+  rng: () => number = Math.random,
 ): Promise<string | undefined> {
   const pool = await loadAccountPool(ws).catch(() => null);
   if (!pool) return undefined;
@@ -165,12 +168,13 @@ export async function selectSpawnAccount(
     const sel = selectAccountForSpawn({ accounts: providerPool.accounts.filter((a) => allow.has(a.id)) }, now, {
       harness,
       priorAccountId,
+      rng,
     });
     return resolveSelection(ws, sel, now);
   }
   // No override → today's exact path: no routing needed for ≤1 account.
   if (providerPool.accounts.length <= 1) return undefined;
-  const sel = selectAccountForSpawn(providerPool, now, { harness, priorAccountId });
+  const sel = selectAccountForSpawn(providerPool, now, { harness, priorAccountId, rng });
   return resolveSelection(ws, sel, now);
 }
 

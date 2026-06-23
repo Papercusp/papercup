@@ -22,6 +22,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ProjectEntry } from '../../harness-registry';
+import { isRepoLessHiveHome } from '../hive-groups';
 
 export type IneligibleReason =
   | 'ephemeral_debris'
@@ -87,7 +88,7 @@ export function gitSyncEligibility(
   // OWN repo (Option-B merge, papercup→papercusp 2026-06-20): marked `self_repo` on the merged
   // registry entry, it owns a checkout and MUST be git-synced (else origin freezes). Flag-based
   // (no IO) so the early-return reasons stay IO-free (the 2026-06-18 instance-churn invariant).
-  if (p.harness_kind === 'hive' && !p.self_repo) return { eligible: false, reason: 'hive_home' };
+  if (isRepoLessHiveHome(p)) return { eligible: false, reason: 'hive_home' };
   const target = p.deployment?.target;
   if (target && target !== 'local') return { eligible: false, reason: 'non_local_deployment' };
   if (!p.path || !pathExists(p.path)) return { eligible: false, reason: 'no_path' };

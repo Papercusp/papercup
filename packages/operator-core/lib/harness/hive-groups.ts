@@ -33,6 +33,21 @@
 export const HIVE_KIND = 'hive';
 
 /**
+ * A repo-LESS Hive home: a `harness_kind:'hive'` coordination home whose repo
+ * lives in a SEPARATE member harness (created via hive:create / hive:create_from_repo).
+ * These are backend coordination homes, NOT work targets — hide them from harness /
+ * work-target selectors (the psu picker, the GUI harness selector). A SELF-hive
+ * (`self_repo`, e.g. the papercusp dogfood repo) IS its own checkout and stays
+ * selectable. Mirrors the git-sync `hive_home` eligibility discriminator so "what is a
+ * real, selectable harness" has ONE definition.
+ */
+export function isRepoLessHiveHome(
+  p: Pick<HiveGroupProject, 'harness_kind' | 'self_repo'>,
+): boolean {
+  return p.harness_kind === HIVE_KIND && !p.self_repo;
+}
+
+/**
  * The structural subset of a registry/lite entry this module groups over — the
  * two membership edges + the card-facing metadata. A superset of what the
  * client passes is fine (extra fields are carried through untouched on `root`
@@ -46,6 +61,11 @@ export interface HiveGroupProject {
   parent_slug?: string | null;
   /** `'hive'` ⇒ this project is a Hive home (its own root). */
   harness_kind?: string | null;
+  /**
+   * A `harness_kind:'hive'` home that IS its own repo checkout (self-hive, e.g. the
+   * papercusp dogfood repo). Such homes stay selectable; a repo-LESS home does not.
+   */
+  self_repo?: boolean | null;
   is_shared?: boolean;
   /** Whether the harness has state — the rail/cards' zero-new-poller liveness hint. */
   hasState?: boolean;

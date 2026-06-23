@@ -392,7 +392,9 @@ describe('isSpawnEligible (account-spawn-eligibility — D-003 stranding fix)', 
 describe('selectAccountByDrain spread (anti-thundering-herd, 2026-06-23)', () => {
   it('rng()===0 reproduces the deterministic best (spread is opt-in and order-preserving)', () => {
     let p = poolOf('a', 'b', 'c');
+    p = recordAccountWindow(p, 'a', { utilization: 0.8 }, T0);
     p = recordAccountWindow(p, 'b', { utilization: 0.1 }, T0); // b has the most headroom
+    p = recordAccountWindow(p, 'c', { utilization: 0.8 }, T0);
     expect(selectAccountByDrain(p, T0, { spread: true, rng: () => 0 })!.id).toBe('b');
     expect(selectAccountByDrain(p, T0)!.id).toBe('b'); // == non-spread
   });
@@ -409,19 +411,30 @@ describe('selectAccountByDrain spread (anti-thundering-herd, 2026-06-23)', () =>
     expect(spread.size).toBeGreaterThan(1);
   });
 
-  it('with isSpawnEligible, the spread includes budget-healthy paused accounts the narrow filter would drop', () => {
-    let p = poolOf('a', 'b');
-    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 26 * MIN }); // paused but budget-healthy
-    // Default eligibility (isAvailable) drops 'a' → only 'b' selectable.
-    expect(selectAccountByDrain(p, T0 + MIN)!.id).toBe('b');
-    // Spawn eligibility keeps 'a' in the candidate set → a spread can route to it.
-    const seen = new Set(
+  it('prefers AVAILABLE accounts; a budget-healthy paused one is selectable only when none are available', () => {
+    // One paused (but budget-healthy), one available → the spread must NOT demote the available account.
+    let pMixed = poolOf('a', 'b');
+    pMixed = recordAccountPenalty(pMixed, 'a', T0, { pausedUntil: T0 + 26 * MIN });
+    const mixed = new Set(
       Array.from({ length: 20 }, (_, i) =>
-        selectAccountByDrain(p, T0 + MIN, { spread: true, rng: () => i / 20, eligible: isSpawnEligible })!.id,
+        selectAccountByDrain(pMixed, T0 + MIN, { spread: true, rng: () => i / 20, eligible: isSpawnEligible })!.id,
       ),
     );
-    expect(seen.has('a')).toBe(true);
-    expect(seen.has('b')).toBe(true);
+    expect(mixed).toEqual(new Set(['b'])); // only the available account is used while one exists
+
+    // BOTH paused but budget-healthy → the narrow `isAvailable` filter strands them (undefined: the bug);
+    // spawn eligibility keeps them selectable so the spread still routes across them (no frame-default herd).
+    let pBoth = poolOf('a', 'b');
+    pBoth = recordAccountPenalty(pBoth, 'a', T0, { pausedUntil: T0 + 26 * MIN });
+    pBoth = recordAccountPenalty(pBoth, 'b', T0, { pausedUntil: T0 + 26 * MIN });
+    expect(selectAccountByDrain(pBoth, T0 + MIN)).toBeUndefined(); // narrow filter → stranded
+    const both = new Set(
+      Array.from({ length: 20 }, (_, i) =>
+        selectAccountByDrain(pBoth, T0 + MIN, { spread: true, rng: () => i / 20, eligible: isSpawnEligible })!.id,
+      ),
+    );
+    expect(both.has('a')).toBe(true);
+    expect(both.has('b')).toBe(true);
   });
 });
 

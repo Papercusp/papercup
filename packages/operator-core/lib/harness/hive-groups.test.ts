@@ -4,13 +4,46 @@
  * Hive-home-is-its-own-root rule, and the cycle/orphan guards.
  */
 import { describe, test, expect } from 'vitest';
-import { groupByHive, hiveRootOf, type HiveGroupProject } from './hive-groups';
+import { groupByHive, hiveRootOf, isRepoLessHiveHome, type HiveGroupProject } from './hive-groups';
 
 function bySlug(projects: HiveGroupProject[]): Map<string, HiveGroupProject> {
   const m = new Map<string, HiveGroupProject>();
   for (const p of projects) m.set(p.slug, p);
   return m;
 }
+
+describe('isRepoLessHiveHome — selector visibility discriminator', () => {
+  test('a repo-less hive home (separate member holds the repo) is hidden', () => {
+    expect(isRepoLessHiveHome({ harness_kind: 'hive' })).toBe(true);
+    expect(isRepoLessHiveHome({ harness_kind: 'hive', self_repo: false })).toBe(true);
+    expect(isRepoLessHiveHome({ harness_kind: 'hive', self_repo: null })).toBe(true);
+  });
+  test('a self-hive (its own repo checkout, e.g. papercusp) stays selectable', () => {
+    expect(isRepoLessHiveHome({ harness_kind: 'hive', self_repo: true })).toBe(false);
+  });
+  test('member / standalone harnesses stay selectable', () => {
+    expect(isRepoLessHiveHome({ harness_kind: null })).toBe(false);
+    expect(isRepoLessHiveHome({ harness_kind: undefined })).toBe(false);
+    expect(isRepoLessHiveHome({ harness_kind: 'coding' })).toBe(false);
+  });
+});
+
+describe('groupByHive — after hiding repo-less homes (selector behaviour)', () => {
+  test('a member re-roots to itself when its repo-less home is filtered; self-hive stays', () => {
+    const all: HiveGroupProject[] = [
+      { slug: 'oddsmith-hive', harness_kind: 'hive' },
+      { slug: 'oddsmith', hive_slug: 'oddsmith-hive' },
+      { slug: 'papercusp', harness_kind: 'hive', self_repo: true },
+      { slug: 'standalone' },
+    ];
+    const selectable = all.filter((p) => !isRepoLessHiveHome(p));
+    expect(selectable.map((p) => p.slug).sort()).toEqual(['oddsmith', 'papercusp', 'standalone']);
+    // The repo-less home is gone; its member stands alone as its own root; the
+    // self-hive (papercusp) and the standalone harness remain selectable roots.
+    const roots = groupByHive(selectable).map((g) => g.root.slug).sort();
+    expect(roots).toEqual(['oddsmith', 'papercusp', 'standalone']);
+  });
+});
 
 describe('hiveRootOf — membership precedence', () => {
   test('formal hive_slug beats legacy parent_slug', () => {

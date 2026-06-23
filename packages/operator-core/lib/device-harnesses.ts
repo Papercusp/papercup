@@ -9,6 +9,7 @@
  */
 import { getOrgPg, withWorkspace, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
+import { isRepoLessHiveHome } from './harness/hive-groups';
 
 const hr = generated.harnessRegistryInHarnessShared;
 
@@ -16,6 +17,8 @@ export interface ProjectEntry {
   slug: string;
   path: string;
   harness_kind?: string;
+  /** A `harness_kind:'hive'` home that IS its own repo checkout (self-hive) — stays listable. */
+  self_repo?: boolean;
 }
 
 export interface HarnessLite {
@@ -49,8 +52,14 @@ export async function harnessExistsInWorkspace(workspaceId: string, slug: string
   return projects.some((p) => p.slug === slug);
 }
 
-export async function listHarnessesFor(workspaceId: string): Promise<HarnessLite[]> {
-  const projects = await readHarnessRegistryFor(workspaceId);
+export async function listHarnessesFor(
+  workspaceId: string,
+  opts: { includeHiveHomes?: boolean } = {},
+): Promise<HarnessLite[]> {
+  const all = await readHarnessRegistryFor(workspaceId);
+  // Repo-less Hive homes are backend coordination homes, not selectable work
+  // targets — hide them from the psu picker + mobile harness lists by default.
+  const projects = opts.includeHiveHomes ? all : all.filter((p) => !isRepoLessHiveHome(p));
   if (projects.length === 0) return [];
 
   // Latest status row per slug (collapsing across phases — pick most recent).

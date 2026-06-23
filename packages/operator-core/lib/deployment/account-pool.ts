@@ -589,10 +589,16 @@ export function selectAccountByDrain(pool: AccountPool, now: number, opts: Selec
   if (!opts.spread) return sorted[0];
   // SPREAD (account-spawn-spread fix, 2026-06-23): distribute a concurrent burst across accounts
   // weighted by remaining headroom so the fleet fans out instead of every bee piling on the single
-  // best account (which then RPM-storms while budgeted peers idle). Preserve the URGENT class
-  // (use-it-before-you-lose-it): when any window is about to reset, spread only among those.
-  const urgentSet = sorted.filter(urgent);
-  return weightedHeadroomPick(urgentSet.length > 0 ? urgentSet : sorted, now, opts.rng ?? Math.random);
+  // best account (which then RPM-storms while budgeted peers idle).
+  //  - Prefer accounts AVAILABLE right now; only spread into budget-healthy-but-paused candidates
+  //    (admitted by `isSpawnEligible`) when NO available account remains — a stale predictive pause
+  //    widens the fallback set without demoting accounts that are ready to serve immediately.
+  //  - Preserve the URGENT class (use-it-before-you-lose-it): when any window is about to reset,
+  //    spread only among those.
+  const availableNow = sorted.filter((a) => isAvailable(a, now));
+  const tier = availableNow.length > 0 ? availableNow : sorted;
+  const urgentSet = tier.filter(urgent);
+  return weightedHeadroomPick(urgentSet.length > 0 ? urgentSet : tier, now, opts.rng ?? Math.random);
 }
 
 /**
