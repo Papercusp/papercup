@@ -3605,35 +3605,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   codeRecipes: {
     argsSchema: z
       .object({
-        harnessSlug: z.string().min(1).optional(),
-        allHives: z.boolean().optional(),
         limit: z.number().int().positive().max(2000).default(1000),
       })
       .optional(),
     resolve: async (args) => {
-      const { harnessSlug, allHives, limit } = (args ?? {}) as {
-        harnessSlug?: string;
-        allHives?: boolean;
-        limit?: number;
-      };
+      const { limit } = (args ?? {}) as { limit?: number };
       const lim = limit ?? 1000;
-      const [{ getOrgPg }, { listRecipes, countRecipes }, { activeWorkspaceId }, { hiveHomeSlugForHarness }] =
-        await Promise.all([
-          import('@papercusp/db-org'),
-          import('../code-recipes-store'),
-          import('../workspace-registry'),
-          import('../hive-federation'),
-        ]);
+      const [{ getOrgPg }, { listRecipes, countRecipes }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../code-recipes-store'),
+      ]);
       const sql = getOrgPg().sql;
-      const workspaceId = activeWorkspaceId();
-      // Capped list + cheap COUNT over the SAME filter, so the dashboard can show
-      // "N of TOTAL" via attachListMeta (the flat-row sync contract has no envelope).
-      const listOpts = allHives
-        ? {}
-        : { hiveSlug: await hiveHomeSlugForHarness(workspaceId, harnessSlug ?? operatorHomeHarnessSlug()).catch(() => null) };
+      // Recipes are GLOBAL (P-001): capped list + cheap COUNT (no workspace/hive
+      // filter), so the dashboard can show "N of TOTAL" via attachListMeta.
       const [rows, total] = await Promise.all([
-        listRecipes(sql, workspaceId, { ...listOpts, limit: lim }),
-        countRecipes(sql, workspaceId, listOpts),
+        listRecipes(sql, { limit: lim }),
+        countRecipes(sql),
       ]);
       return attachListMeta(rows, { total }) as unknown[];
     },
@@ -3651,14 +3638,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   recipeCandidates: {
     argsSchema: z
       .object({
-        harnessSlug: z.string().min(1).optional(),
         minRunCount: z.number().int().min(1).max(1000).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       })
       .optional(),
     resolve: async (args) => {
-      const { harnessSlug, minRunCount, limit } = (args ?? {}) as {
-        harnessSlug?: string;
+      const { minRunCount, limit } = (args ?? {}) as {
         minRunCount?: number;
         limit?: number;
       };
@@ -3666,25 +3651,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         { getOrgPg },
         { recipeCandidates },
         { activeWorkspaceId },
-        { hiveHomeSlugForHarness },
         { buildQueryEmbedder },
         { buildRecipeCooccurrenceDep },
       ] = await Promise.all([
         import('@papercusp/db-org'),
         import('../code-recipes-candidates'),
         import('../workspace-registry'),
-        import('../hive-federation'),
         import('../agent-tools/search/embedder'),
         import('../recipe-cooccurrence-leg'),
       ]);
       const workspaceId = activeWorkspaceId();
-      const slug = harnessSlug ?? operatorHomeHarnessSlug();
-      const hiveSlug = await hiveHomeSlugForHarness(workspaceId, slug).catch(() => null);
       const embedder = await buildQueryEmbedder().catch(() => null);
+      // recipes are global (P-001); the co-occurrence signal is workspace-scoped telemetry.
       const toolCooccurrence = await buildRecipeCooccurrenceDep(workspaceId).catch(() => null);
       const { promoteCandidates, mergeClusters } = await recipeCandidates(
         getOrgPg().sql,
-        { workspaceId, hiveSlug, minRunCount, limit },
+        { minRunCount, limit },
         { embedder, toolCooccurrence },
       );
       return [{ promoteCandidates, mergeClusters }] as unknown[];
