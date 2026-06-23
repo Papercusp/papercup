@@ -903,6 +903,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
             probeSuccessStreak++;
             if (probeSuccessStreak >= EGRESS_PROBE_READMIT_STREAK) {
               egressFailStreak.delete(account.accountId);
+              // H8 (inference-gateway-audit-2026-06-23): a CONFIRMED recovery (2 stable probes) resets the flap
+              // escalation. Clearing the reopen count + last-open stamp means a LATER isolated blip re-opens at the
+              // BASE backoff (~20s), not the escalated 2**reopen exile (up to 5min). A genuinely-flapping proxy
+              // can't pass 2 stable probes, so it never reaches here — only a real recovery clears the history,
+              // so sparse unrelated blips on a recovered-and-serving account stop compounding into a long exile.
+              egressReopenCount.delete(account.accountId);
+              egressLastOpenAt.delete(account.accountId);
               gov.liftTransportPause(egressPauseUntil.get(account.accountId) ?? pausedUntil); // C3: lift the LIVE pause (an escalated reopen extends it past the captured value); no-op if a real 429 superseded it
               pool.readmit?.(account.accountId); // rejoin the round-robin
               egressPauseUntil.delete(account.accountId);

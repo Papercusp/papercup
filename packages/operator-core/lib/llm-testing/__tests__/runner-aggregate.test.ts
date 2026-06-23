@@ -118,6 +118,7 @@ describe('scenario registry', () => {
       // hybrid bee-scheduler adoption (hybrid-bee-scheduler-work-stealing-2026-06-22 P-003)
       'queen-Q04-authors-claim-spec',
       'bee-B01-pull-via-get-next',
+      'bee-B02-idle-on-empty-frontier',
       // overwatch persona boundaries (overwatch-role-2026-06-15 B-11)
       'overwatch-OW01-nudge-not-replace',
       'overwatch-OW02-observe-not-idea',

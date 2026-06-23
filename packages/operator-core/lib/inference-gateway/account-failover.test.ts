@@ -212,4 +212,14 @@ describe('createFailoverPool — deeper edges (depth pass, su-7f3e0376)', () => 
     const govPaused = new Set(['b', 'c']);
     expect(p.healthyCount!((id) => !govPaused.has(id))).toBe(1); // only 'd' (a pool-exhausted, b/c gov-paused)
   });
+
+  it('peek() returns the current-best WITHOUT advancing the round-robin cursor (H3, 2026-06-23)', () => {
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')]);
+    expect(p.peek!().accountId).toBe('a');
+    expect(p.peek!().accountId).toBe('a'); // idempotent — a read never advances the cursor
+    expect(p.active().accountId).toBe('a'); // active() returns the same current-best…
+    expect(p.active().accountId).toBe('b'); // …but DID advance, so the next active() rotates
+    expect(p.peek!().accountId).toBe('c'); // peek reflects the advanced cursor, still no advance
+    expect(p.peek!().accountId).toBe('c');
+  });
 });

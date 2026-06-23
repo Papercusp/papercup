@@ -1138,7 +1138,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // reroutes every bee's inference egress through the gateway service; flipping it before
   // the service is deployed would break the whole fleet's auth. Owner flips it ON after
   // deploy + the P-015 load test passes. Surfaced loudly in the plan's Now + completion report.
-  [FLAGS.INFERENCE_GATEWAY]: false,
+  [FLAGS.INFERENCE_GATEWAY]: true,
   // OFF by default — DELIBERATE (inference-gateway-multi-credential-routing P-009):
   // multi-credential routing changes egress/credential selection; the flip is gated
   // on billed API keys registered + a real multi-key run (D-001). OFF = the single
@@ -1299,7 +1299,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // arms only at P-001 (the flag flip is the arming act — no routine, no
   // governor budget: it computes inline in the digest read path, SQL-only).
   // Interaction capture stays on either way (substrate, not a loop).
-  [FLAGS.OWNER_PREFERENCE_RANKING]: false,
+  [FLAGS.OWNER_PREFERENCE_RANKING]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: calibration
   // markets is a frontier learning loop (SQL-only, zero LLM spend) whose flag
   // gates both the capture seams and the resolution sweep; the flag flip + an
@@ -1433,7 +1433,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (git-sync-dx-hardening P-004) — rewrites the commit hot path (per-agent
   // attributed commits). OFF = today's single `git add -A` commit, byte-identical. Owner
   // flips post-review (also listed in KNOWN_DARK_FLAGS).
-  [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION]: false,
+  [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION]: true,
   // DEFAULT ON (docs-corpus WS2 P-008): the doc-steward — the post-git-sync freshness sweep
   // dispatches a doc-steward agent to re-sync a drifted doc to the current code. Owner-ratified
   // ON 2026-06-22 (auto-doc-editing surface). Thoroughly tested (dispatch + blueprint + flag);

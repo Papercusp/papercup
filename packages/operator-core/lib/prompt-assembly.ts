@@ -54,6 +54,8 @@ import { renderConcurrencyFirstNote } from './concurrency-first-policy';
 import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 import { renderCodeRunNudge } from './code-run-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
+import { renderWorkRecordNote } from './work-record-policy';
+import { renderTurnEndObservation } from './turn-end-observation-policy';
 import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
 import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
 import { renderWaitLoopNote } from './wait-loop-policy';
@@ -531,6 +533,27 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (reuseFirstNudge) {
     parts.push(reuseFirstNudge);
     sections.push({ name: 'reuse-first-nudge', chars: reuseFirstNudge.length });
+  }
+
+  // Work-record note (audit-trail discipline; owner ask 2026-06-23) — the SHARED base every
+  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). Every unit
+  // of work gets a work-item record even when small; a tiny task may be recorded AFTER finishing (or
+  // batched) rather than pre-claimed. Sourced from the one WORK_RECORD_NOTE constant (orchestrator)
+  // so this base + the spawned-bee base can't desync.
+  const workRecordNote = renderWorkRecordNote();
+  if (workRecordNote) {
+    parts.push(workRecordNote);
+    sections.push({ name: 'work-record-note', chars: workRecordNote.length });
+  }
+
+  // Turn-end observation pass (owner ask 2026-06-23) — the DELIBERATE end-of-turn reflection step
+  // (the bee.md / su-playbook pass) generalized to every operator-launched role (operator / oracle /
+  // sentinel previously had only the reactive friction-tripwire). Token-light: "routine turn ⇒ record
+  // nothing". Injected ONLY here (the bee base + su playbooks carry their own) to avoid double-inject.
+  const turnEndObservation = renderTurnEndObservation();
+  if (turnEndObservation) {
+    parts.push(turnEndObservation);
+    sections.push({ name: 'turn-end-observation', chars: turnEndObservation.length });
   }
 
   // Code-run nudge (code-execution-tool-orchestration B-CX-3) — the SHARED base every

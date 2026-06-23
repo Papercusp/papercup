@@ -5,6 +5,15 @@ import { rankHumanQueueByImpact } from '../harness/improvements/blocking-impact'
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import type { IssueLinkCounts } from '../issues-engineer';
 
+// OWNER_PREFERENCE_RANKING + DEFERRAL_INTEREST graduated to default-ON
+// (flip-dark-flags-default-on-2026-06-23). These tests verify the blocking-impact-only ranker
+// baseline, so pin the optional ranker-feature flags OFF explicitly (mirrors what every test here
+// implicitly assumed while those flags were dark-by-default) rather than depend on the now-ON default.
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getFlag: vi.fn(async () => false),
+}));
+
 const NOW = Date.parse('2026-06-12T12:00:00Z');
 function daysAgo(n: number): string {
   return new Date(NOW - n * 24 * 60 * 60 * 1000).toISOString();

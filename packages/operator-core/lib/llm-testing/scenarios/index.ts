@@ -125,6 +125,7 @@ import { QUEEN_Q03_RANKED_QUEUE_DECIDER } from './queen/Q03-ranked-queue-decider
 // PULLS its next item via scheduler:get_next (no self-freelance). The two adoption halves.
 import { QUEEN_Q04_AUTHORS_CLAIM_SPEC } from './queen/Q04-authors-claim-spec';
 import { BEE_B01_PULL_VIA_GET_NEXT } from './bee/B01-pull-via-get-next';
+import { BEE_B02_IDLE_ON_EMPTY_FRONTIER } from './bee/B02-idle-on-empty-frontier';
 // OVERWATCH-OW01/OW02: overwatch-role-2026-06-15 B-11 — the system-health
 // supervisor's persona boundaries: NUDGE-not-replace (D-001) + OBSERVE-not-idea (D-003).
 import { OVERWATCH_OW01_NUDGE_NOT_REPLACE } from './overwatch/OW01-nudge-not-replace';
@@ -224,6 +225,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   // hybrid bee-scheduler adoption coverage (hybrid-bee-scheduler-work-stealing P-003)
   QUEEN_Q04_AUTHORS_CLAIM_SPEC,
   BEE_B01_PULL_VIA_GET_NEXT,
+  BEE_B02_IDLE_ON_EMPTY_FRONTIER,
   // overwatch persona-boundary coverage (overwatch-role-2026-06-15 B-11)
   OVERWATCH_OW01_NUDGE_NOT_REPLACE,
   OVERWATCH_OW02_OBSERVE_NOT_IDEA,

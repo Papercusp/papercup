@@ -27,10 +27,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // default-ON 2026-06-22 — owner ratified the owner-authority flips in-session.)
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
   FLAGS.CLOUDFLARE_PUBLISH, // cut for V1 — publish surface not shipping
-  // owner-preference ranking HELD dark (flip-dark-flags-default-on-2026-06-23 D-001): flipping
-  // re-ranks the owner's live queue and broke the B-08 equivalence baseline (score drift) —
-  // verify it degrades to a no-op without a trained model + add an on-behavior test before flip.
-  FLAGS.OWNER_PREFERENCE_RANKING,
   FLAGS.HARNESS_PHASES, // cut for V1
   FLAGS.DESIGN, // cut for V1
   FLAGS.TESTING, // cut for V1
@@ -50,7 +46,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // git-sync-dx-hardening-2026-06-17 P-004: derived per-agent commit attribution rewrites
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
-  FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
   // (SCHEDULER_MAINTAINED_READY + SCHEDULER_ISSUES_CLAIMABLE graduated to default-ON 2026-06-23, owner-
   // directed/ratified. MAINTAINED_READY: the maintained-readiness sidecar cutover (mig 379 folded into the
   // shared claim-test fixture so every claim test has the sidecar; live drift=0; flag-ON claim path 9/9).
@@ -110,7 +105,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // hive-inference-gateway P-012: DELIBERATE dark ship — enabling reroutes
   // every bee's inference auth through a gateway service that must be
   // deployed first; flipping early would break the whole fleet's auth.
-  FLAGS.INFERENCE_GATEWAY,
   // inference-gateway-multi-credential-routing-2026-06-14 P-009: DELIBERATE dark
   // ship — multi-credential per-request routing changes egress/credential
   // selection. The flip is gated on billed API keys registered in the account
@@ -367,7 +361,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   // incomplete — not fully working / unverified on a path that matters
   [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
-  [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, 'incomplete'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
   [FLAGS.PLAN_PART_FEDERATION, 'incomplete'],
@@ -391,14 +384,12 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.IDLE_SESSION_REAPER, 'owner-authority'],
   [FLAGS.IDLE_SESSION_REAPER_TERMINATE, 'owner-authority'],
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
-  [FLAGS.OWNER_PREFERENCE_RANKING, 'owner-authority'],
   [FLAGS.QUEEN_AUTONOMY_ARMED, 'owner-authority'],
   [FLAGS.QUEEN_FULL_AUTONOMY, 'owner-authority'],
   [FLAGS.OVERWATCH, 'owner-authority'],
   [FLAGS.SENTINEL, 'owner-authority'],
   [FLAGS.SENTINEL_PROACTIVE, 'owner-authority'],
   // cutover — reversible kill-switch the owner flips after an attended live verify
-  [FLAGS.INFERENCE_GATEWAY, 'cutover'],
   [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
   [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],
   [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
