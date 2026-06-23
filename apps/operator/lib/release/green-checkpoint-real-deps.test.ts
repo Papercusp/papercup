@@ -124,6 +124,69 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(calls[0].opts?.env?.AFFECTED_BASE).toBeUndefined();
     expect(calls[0].opts?.env?.GREEN_CHECKPOINT).toBe('1');
   });
+
+  // load-flake-isolation-2026-06-23: the real-path wiring of the isolation re-run —
+  // a red suite whose failing FILES (parsed from the affected-runner output) re-run
+  // GREEN at single concurrency is a load-flake, so runGreen reports green + the suspects.
+  const RED_OUTPUT =
+    '>>> @papercusp/operator-core :: npm run test\n' +
+    ' FAIL  lib/llm-testing/__tests__/runner-aggregate.test.ts > aggregates\n' +
+    ' ❯ lib/scout/scheduler-workspace-scope.test.ts (12 tests | 1 failed) 21034ms\n' +
+    '2 non-quarantined task(s) failed.';
+
+  it('load-flake: red suite, both failing files PASS in isolation → green + flakeSuspects, single-fork env', async () => {
+    // call 0: green command (red suite). call 1: isolation re-run of file #1 (pass).
+    // call 2: isolation re-run of file #2 (pass). No build runs (it only runs on a
+    // suite that was green from the start: r.code === 0).
+    const { exec, calls } = makeExec([{ code: 1, stdout: RED_OUTPUT }, { code: 0 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', 'base-sha');
+
+    expect(r.green).toBe(true); // absorbed: both files passed in isolation
+    expect(r.flakeSuspects).toEqual([
+      '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
+      '@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts',
+    ]);
+    // exactly the suite + 2 isolation re-runs — no SPA build (the suite started red).
+    expect(calls).toHaveLength(3);
+    // the isolation re-runs are `npm run test --workspace <ws> -- --no-file-parallelism <file>`
+    // at SINGLE concurrency, in the checkpoint tree, with the stripped gate env.
+    for (const c of calls.slice(1)) {
+      expect(c.cmd).toBe('npm');
+      expect(c.args.slice(0, 4)).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);
+      expect(c.args).toContain('--no-file-parallelism');
+      expect(c.opts?.cwd).toBe('/cp');
+      expect(c.opts?.env?.VITEST_MAX_FORKS).toBe('1');
+      expect(c.opts?.env?.VITEST_MAX_THREADS).toBe('1');
+      expect(c.opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    }
+    expect(calls[1].args).toContain('lib/llm-testing/__tests__/runner-aggregate.test.ts');
+    expect(calls[2].args).toContain('lib/scout/scheduler-workspace-scope.test.ts');
+  });
+
+  it('real break: red suite where ONE file still fails in isolation → stays NOT green', async () => {
+    // call 0: red suite. call 1: file #1 re-run PASSES. call 2: file #2 re-run FAILS.
+    const { exec } = makeExec([{ code: 1, stdout: RED_OUTPUT }, { code: 0 }, { code: 1 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+
+    expect(r.green).toBe(false); // a real deterministic break is NEVER hidden
+    expect(r.flakeSuspects).toBeUndefined();
+    // the suite signature still names the failing files (from the FAIL row) for the
+    // release-fixer dedup — extractFailingTests reads `FAIL <file>` + `>>> <ws> FAILED`.
+    expect(r.failingTests).toContain('lib/llm-testing/__tests__/runner-aggregate.test.ts');
+  });
+
+  it('fail-safe: an isolation re-run that THROWS leaves the gate red (no false green)', async () => {
+    // A red suite with one parseable failing file; the isolation exec throws.
+    let i = 0;
+    const throwingExec: CheckpointExec = async (cmd, _args, _opts) => {
+      i++;
+      if (i === 1) return { code: 1, stdout: '>>> @papercusp/x :: npm run test\n FAIL  lib/a.test.ts > c', stderr: '' };
+      throw new Error('vitest spawn ENOMEM'); // the isolation re-run itself errors
+    };
+    const r = await realCheckpointDeps(cfg, throwingExec).runGreen('/cp', null);
+    expect(r.green).toBe(false);
+    expect(r.flakeSuspects).toBeUndefined();
+  });
 });
 
 describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', () => {

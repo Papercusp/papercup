@@ -394,6 +394,85 @@ test('401 from upstream invalidates the cached token', async () => {
   assert.equal(invalidated, 1);
 });
 
+// CREDENTIAL-HEALTH (#5 PART A): a DEAD credential (consecutive 401s despite the drop+refresh) fires the
+// loud `onCredentialDead` side-channel ONCE per episode, and a successful auth (2xx) resets the streak so a
+// later episode re-arms. The 401 request semantics are UNCHANGED — only the alert counter is added.
+test('credential-health — consecutive 401s past the threshold fire onCredentialDead exactly ONCE per episode', async () => {
+  const dead: { accountId: string; consecutive401s: number }[] = [];
+  // Upstream: a credential that 401s forever (the dead-credential signature — the refresh keeps yielding
+  // the same invalid token, so the 401 never clears).
+  await boot(
+    (_req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'Invalid authentication credentials' } }));
+    },
+    {
+      credential401DeadThreshold: 3,
+      onCredentialDead: (info) => dead.push(info),
+    },
+  );
+  // 5 consecutive 401 requests; the alert fires only at the 3rd (the crossing), then stays quiet.
+  for (let i = 0; i < 5; i++) {
+    await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  }
+  assert.equal(dead.length, 1, 'alerts exactly once across a sustained dead-credential 401 streak');
+  assert.equal(dead[0].accountId, 'test-acct');
+  assert.equal(dead[0].consecutive401s, 3, 'fires at the crossing tick (streak === threshold)');
+  // The token was still dropped+refreshed on EVERY 401 — request semantics unchanged.
+  assert.equal(invalidated, 5, 'invalidateToken still fires on every 401 (no semantics change)');
+});
+
+test('credential-health — a successful 2xx resets the streak, re-arming the alert for a later episode', async () => {
+  const dead: { accountId: string; consecutive401s: number }[] = [];
+  let mode: '401' | '200' = '401';
+  await boot(
+    (_req, res) => {
+      if (mode === '200') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      } else {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error' } }));
+      }
+    },
+    {
+      credential401DeadThreshold: 2,
+      onCredentialDead: (info) => dead.push(info),
+    },
+  );
+  // Episode 1: two 401s → one alert at the crossing.
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(dead.length, 1, 'episode 1 alerts once');
+  // A successful auth clears the streak.
+  mode = '200';
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(dead.length, 1, 'a 2xx does not alert');
+  // Episode 2: the credential dies again → the reset streak crosses afresh → a SECOND alert.
+  mode = '401';
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(dead.length, 2, 'the reset re-armed the alert for the second dead episode');
+});
+
+test('credential-health — a throwing onCredentialDead never breaks the request hot path (fire-and-forget)', async () => {
+  await boot(
+    (_req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error' } }));
+    },
+    {
+      credential401DeadThreshold: 1,
+      onCredentialDead: () => {
+        throw new Error('alert side-channel blew up');
+      },
+    },
+  );
+  // The 401 still forwards to the caller unchanged despite the alert callback throwing.
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 401, 'the 401 is still forwarded — the throwing alert never wedges the request');
+});
+
 test('healthz + stats endpoints report account + counters', async () => {
   await boot((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });

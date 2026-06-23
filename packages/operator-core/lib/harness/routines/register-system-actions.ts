@@ -210,6 +210,11 @@ import './session-dir-gc-action';
 // infra-perf-robustness-audit-2026-06-18 P-006). Seeded INACTIVE
 // (seed-telemetry-retention-routine.ts --active).
 import './telemetry-retention-action';
+// `system:doc-anchor-reconcile` — periodic FULL doc-anchor reconcile (#5 PART B): the safety net for
+// the git-sync re-anchor-on-change path. Re-derives anchors from CURRENT frontmatter for all
+// anchor-derived docs so a stale anchor cache that slipped past re-anchor-on-change is caught. Pure
+// DB/git maintenance (no agent, no LLM); seeded INACTIVE (seed-doc-anchor-reconcile-routine.ts --active).
+import './doc-anchor-reconcile-action';
 // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
 // reaper — marks dead-process open adv_sessions ended (reclaims roster +
 // unblocks session-dir-gc). Flag-gated DEFAULT-OFF + seeded INACTIVE.

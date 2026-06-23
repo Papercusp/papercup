@@ -163,7 +163,16 @@ because operator and sentinel are the SAME role-keyed converse brain.
   code bug. Not fixable by me (no force-deploy/restart unattended). Loop switched
   to PROBE-FIRST: cheap 40s brain probe each fire; only run the full eval once a
   `delta` returns (backend recovered). Env-blocked window 08:45→11:10 (~2h25m;
-  11:10 probe = heartbeats-only, no delta).** Also: the two voice-bar UI trims are confirmed STILL in
+  11:10 probe = heartbeats-only, no delta).**
+- 2026-06-23 11:22: PARTIAL recovery — the brain now answers TINY calls (the
+  "say hi" probe got 2 deltas, exit 0 at 11:15) BUT the full multi-turn eval
+  still times out even at 200s (sn-H03 killed twice: 120s + 200s). So the shared
+  backend is up-but-severely-congested: trivial calls return, real eval turns
+  hang. The trivial probe over-signals "recovered" → refined the loop gate to a
+  REPRESENTATIVE probe (a real question that must COMPLETE, exit 0 + delta, in
+  ≤35s) before spending a full eval — avoids burning 200s + LLM $ on
+  guaranteed-timeout runs each fire. Plumbing is VERIFIED LIVE (brain produces
+  output); only the answer-quality verdict awaits a genuinely fast backend. Also: the two voice-bar UI trims are confirmed STILL in
   source (brand JSX removed; "Voice" span removed) — owner not seeing them is
   DEPLOY-LAG (desktop serves a built bundle that lags staging), not a code issue;
   they land on the next deploy or a fresh `npm run dev` desktop.

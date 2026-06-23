@@ -197,3 +197,75 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
 
   return result;
 }
+
+export interface ReconcileAnchorsResult {
+  /** Anchor-derived docs examined (manual/augmented records). */
+  scanned: number;
+  /** Docs whose denormalised anchor cache DIFFERED from the freshly-derived frontmatter anchors
+   *  (the stale-cache the re-anchor-on-change path missed) and was rewritten. */
+  reconciled: number;
+  /** Re-anchor failures (a doc whose harness/doc paths couldn't be resolved). */
+  failed: number;
+}
+
+/**
+ * PERIODIC FULL doc-anchor RECONCILE (#5 PART B) — the safety net for the re-anchor-on-change path.
+ *
+ * `runDocFreshnessSweepAfterSync` re-derives a doc's anchors ONLY when its FILE changed in a git-sync
+ * tick (the self-bootstrap loop above). That misses a stale anchor cache that slipped past
+ * re-anchor-on-change — e.g. a `documents:` frontmatter edit committed in a tick whose diff range the
+ * sweep never saw (a force-push / squash / a sync without prev↔head, a record seeded before the
+ * re-anchor logic existed, or a partial-failure that left the cache half-written). A stale anchor cache
+ * silently makes the reverse-index match the WRONG paths → the freshness sweep both misses real drift
+ * and false-flags unrelated changes.
+ *
+ * This re-derives anchors from the CURRENT frontmatter for ALL anchor-derived (manual/augmented) docs and
+ * rewrites the cache where it drifted — reusing the EXACT `anchorManualDoc` + `recomputeDocStatus` path the
+ * self-bootstrap loop already uses, so reconcile and re-anchor-on-change share one code path. Generated
+ * docs are NOT touched: their anchors come from the documenter regeneration (provenance.ts, with a
+ * `generated_from_sha` baseline), not author frontmatter — re-anchoring them as manual would wipe that
+ * baseline. Best-effort + idempotent: a clean cache is a no-op (the upsert rewrites identical anchors and
+ * `recomputeDocStatus` lands the same status), so it is safe to run on a periodic routine.
+ */
+export async function reconcileAllDocAnchors(
+  harnessSlug: string,
+  workspaceId?: string,
+): Promise<ReconcileAnchorsResult> {
+  const ws = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
+  const out: ReconcileAnchorsResult = { scanned: 0, reconciled: 0, failed: 0 };
+
+  const repoRoot = await projectDirForSlug(harnessSlug);
+  if (!repoRoot) return out;
+  const submodulePaths = await listSubmodulePaths(repoRoot).catch(() => [] as string[]);
+  const reanchorDeps = {
+    runGit,
+    repoRoot,
+    resolveFeatureCommits: makeFeatureCommitLookup(harnessSlug, ws),
+    submodulePaths,
+  };
+
+  const records = await listDocRecords(harnessSlug, ws);
+  for (const [docId, record] of records) {
+    // Only anchor-derived docs (manual/augmented) carry frontmatter-derived anchors; a generated doc's
+    // anchors + baseline belong to the documenter regeneration path, so skip it (see the doc-comment).
+    if (record.source === 'generated') continue;
+    out.scanned += 1;
+    const before = [...record.anchorPaths].sort();
+    // Re-derive from CURRENT frontmatter (no verify → preserves the last_verified_sha baseline via the
+    // upsert COALESCE), exactly like the self-bootstrap re-anchor-on-change branch.
+    const res = await anchorManualDoc({ harnessSlug, docId, workspaceId: ws });
+    if (!res.ok) {
+      out.failed += 1;
+      continue;
+    }
+    const after = [...res.record.anchorPaths].sort();
+    const drifted = before.length !== after.length || before.some((p, i) => p !== after[i]);
+    if (drifted) out.reconciled += 1;
+    // Recompute status from the FRESH anchors so a pure-frontmatter change doesn't stick at the
+    // transient 'review' anchorManualDoc writes for an un-verified anchor (mirrors the bootstrap loop).
+    const { status, detail } = await recomputeDocStatus(res.record, reanchorDeps);
+    await setDocStatus(harnessSlug, docId, status, detail, ws);
+  }
+
+  return out;
+}

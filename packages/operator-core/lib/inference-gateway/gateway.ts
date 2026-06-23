@@ -470,6 +470,17 @@ export interface GatewayDeps {
    *  projection / observability) — the gateway is the only process that sees the unified-budget
    *  headers, so this is how the cross-process drain projection (account utilization) is fed. */
   onResponse?(headers: Record<string, string | undefined>, status: number, model: string, accountId: string): void;
+  /** CREDENTIAL-HEALTH alert side-channel (#5 PART A). Fired FIRE-AND-FORGET (never awaited, never
+   *  throws into the request path) the FIRST time an account's credential 401s `credential401DeadThreshold`
+   *  times IN A ROW *despite* the gateway's drop+refresh (`invalidateToken`) — i.e. the refresh keeps
+   *  yielding the same invalid credential, so it's genuinely DEAD/expired, not merely stale-cached. The
+   *  launch layer wires this to a LOUD escalation (severity 'blocker', meta.source 'credential-health',
+   *  transition-only so it doesn't re-open every request) + a fleet broadcast. The streak resets on the
+   *  next successful auth (a 2xx) for that account, which re-arms a fresh alert for a later episode. */
+  onCredentialDead?(info: { accountId: string; consecutive401s: number }): void;
+  /** Consecutive-401 streak that marks a credential DEAD (vs stale-cached) → fires `onCredentialDead`.
+   *  Default `DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD` (3); tests inject a small value. ≤0 disables the alert. */
+  credential401DeadThreshold?: number;
 }
 
 export interface GatewayStats {
@@ -737,6 +748,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
   const requestAbsorbMs = deps.requestAbsorbMs ?? DEFAULT_REQUEST_ABSORB_MS;
   const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
+  const credential401DeadThreshold = deps.credential401DeadThreshold ?? DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
   const upstreamStreamHeadersTimeoutMs = deps.upstreamStreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS;
@@ -908,6 +920,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Per-account TRANSPORT pause the egress circuit set (= the resetAt handed to gov.penalize), so the
    *  half-open probe can lift exactly THAT pause on recovery without ever shortening a real 429 pause. */
   const egressPauseUntil = new Map<string, number>();
+  /** CREDENTIAL-HEALTH state (#5 PART A): per-account CONSECUTIVE upstream-401 streak. The gateway's 401
+   *  handler drops+refreshes the cached token; if the refresh keeps yielding the SAME invalid credential it
+   *  just 401s again — a SILENT dead-credential outage (spawns/evals die "produced no turn", no fleet alert).
+   *  We count consecutive 401s per account and, the FIRST time the streak crosses credential401DeadThreshold,
+   *  fire the loud `onCredentialDead` side-channel ONCE per episode. RESET on the next successful auth (a 2xx
+   *  for that account — see the 2xx success path), which re-arms the alert for a later episode. */
+  const credential401Streak = new Map<string, number>();
   /** Half-open egress probe: after a circuit opens, re-test the account's proxy (egress-probe.ts) on a short
    *  LOOP. On the FIRST success it LIFTS the transport pause IMMEDIATELY — clears the streak, lifts the
    *  governor's transport pause (gov.liftTransportPause, a no-op if a real 429 pause superseded it), and
@@ -1847,7 +1866,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
           }
         } else if (up.status === 401) {
+          // Drop+refresh the cached token (unchanged request semantics — a STALE cached token recovers
+          // on the next request's refresh). CREDENTIAL-HEALTH (#5 PART A): a DEAD/expired credential 401s
+          // AGAIN after the refresh yields the same invalid credential — silently breaking spawns/evals
+          // with no fleet alert. Count consecutive 401s per account; the FIRST tick the streak crosses the
+          // dead threshold, fire the loud alert side-channel ONCE (fire-and-forget — never block/throw the
+          // request path). The streak resets on the next 2xx for this account (success path below).
           active.invalidateToken?.();
+          const streak = (credential401Streak.get(active.accountId) ?? 0) + 1;
+          credential401Streak.set(active.accountId, streak);
+          if (classifyCredential401Streak(streak, credential401DeadThreshold)) {
+            log('error', `inference-gateway: credential for '${active.accountId}' is DEAD — ${streak} consecutive 401s despite token refresh; firing credential-health alert`);
+            try {
+              deps.onCredentialDead?.({ accountId: active.accountId, consecutive401s: streak });
+            } catch {
+              /* fire-and-forget: the alert side-channel must NEVER throw into the request hot path */
+            }
+          }
         }
 
         // Internal retry with TWO SEPARATE budgets, so a fleet-wide transient burst is waited out without
@@ -1978,7 +2013,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // throttle pressure + nudge admission concurrency back up toward the cap. A forwarded non-2xx
         // (a 4xx client error, or a 429 we chose not to retry) is neither throttle nor clean-capacity,
         // so it neither shrinks nor grows the limit (a 429 already recorded its throttle above).
-        if (up.status >= 200 && up.status < 300) aimd.recordSuccess();
+        if (up.status >= 200 && up.status < 300) {
+          aimd.recordSuccess();
+          // CREDENTIAL-HEALTH (#5 PART A): a 2xx is a SUCCESSFUL auth for this account's credential — clear
+          // its consecutive-401 streak so a later dead-credential episode re-arms a fresh alert (and a
+          // recovered-but-previously-flapping credential never carries a stale streak into a false alert).
+          if (credential401Streak.has(active.accountId)) credential401Streak.delete(active.accountId);
+        }
         // P-002 autowake-coverage (2026-06-22): a FORWARDED retryable rate-limit (a 429/529 the gateway could not
         // retry away) to an IDENTIFIED bee → record a stall so the stall-waker re-wakes it when this account
         // recovers. This is the DOMINANT "nothing goes through" exit (a forwarded upstream 429) that previously

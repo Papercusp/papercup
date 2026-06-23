@@ -55,6 +55,7 @@ const { anchorManualDoc, verifyManualDoc } = await import('./manual-anchor');
 const { requestRegeneration } = await import('./regenerate');
 const { setDocOverlay, getDocRecord, deleteDocRecord } = await import('./doc-record');
 const { ingestHarnessDocs } = await import('./migrate-fs-docs');
+const { reconcileAllDocAnchors } = await import('./sweep-after-sync');
 const { runGit } = await import('./git-runner');
 
 let db: FreshPgDb;
@@ -216,5 +217,35 @@ describe('harness-docs full flow', () => {
     const merged = await buildMergedDocs('demo');
     expect(merged.entries.find((e) => e.docId === 'guides/setup.md')!.tracked).toBe(true);
     expect(merged.entries.find((e) => e.docId === 'orphan.md')!.status).toBe('untracked');
+  });
+
+  // #5 PART B: the periodic FULL reconcile catches a STALE anchor cache that slipped past the git-sync
+  // re-anchor-on-change path — it re-derives anchors from CURRENT frontmatter for every anchor-derived doc.
+  it('reconcileAllDocAnchors re-derives a STALE anchor cache from current frontmatter (re-anchor-on-change safety net)', async () => {
+    // guides/setup.md is anchored to src/setup.ts (its `documents:` frontmatter). Corrupt the STORED
+    // anchor cache directly — simulating a cache that drifted from the frontmatter without the doc's FILE
+    // changing in a sync tick (so re-anchor-on-change never re-derived it).
+    await h.sql`
+      UPDATE harness_shared.harness_docs
+         SET anchor_paths = ${['src/WRONG-stale-anchor.ts']}::text[]
+       WHERE harness_slug = 'demo' AND doc_id = 'guides/setup.md'`;
+    const stale = await getDocRecord('demo', 'guides/setup.md');
+    expect(stale!.anchorPaths).toEqual(['src/WRONG-stale-anchor.ts']);
+
+    const r = await reconcileAllDocAnchors('demo');
+    // Only anchor-derived (manual) docs are scanned; the stale one is reconciled.
+    expect(r.scanned).toBeGreaterThanOrEqual(1);
+    expect(r.reconciled).toBeGreaterThanOrEqual(1);
+    expect(r.failed).toBe(0);
+
+    // The cache is re-derived back to the CURRENT frontmatter subject (src/setup.ts).
+    const fixed = await getDocRecord('demo', 'guides/setup.md');
+    expect(fixed!.anchorPaths).toEqual(['src/setup.ts']);
+    expect(fixed!.subjectRef).toEqual([{ kind: 'path', globs: ['src/setup.ts'] }]);
+
+    // A second reconcile over the now-clean cache is a no-op (idempotent — safe on a periodic routine).
+    const r2 = await reconcileAllDocAnchors('demo');
+    expect(r2.reconciled).toBe(0);
+    expect(r2.failed).toBe(0);
   });
 });

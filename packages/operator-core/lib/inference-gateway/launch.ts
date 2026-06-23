@@ -174,6 +174,62 @@ function makeWindowProjector(
   };
 }
 
+/**
+ * Build the gateway `onCredentialDead` side-channel (#5 PART A). The gateway calls this FIRE-AND-FORGET the
+ * first time an account's credential 401s past the dead threshold despite the drop+refresh — i.e. a genuinely
+ * DEAD/expired credential silently breaking spawns/evals. We surface it LOUDLY: a durable human-facing
+ * escalation (severity 'blocker', tagged `source: 'credential-health'` so the open is TRANSITION-ONLY —
+ * idempotent across the whole dead episode, not re-opened every 401 request) + a fleet broadcast.
+ *
+ * The escalation is per-ACCOUNT-keyed (`meta.deadAccountId`) so two different dead credentials each get their
+ * own alert, and a second dead credential isn't swallowed by the first account's still-open escalation. The
+ * gateway clears the per-account streak on the next successful auth (a 2xx); a LATER episode on the same
+ * account re-fires only after a fresh streak crosses the threshold again — but if the prior escalation is still
+ * open (nobody resolved it) we don't pile a duplicate on top. Best-effort: every import/IO failure is swallowed
+ * (it must never throw back into the gateway's fire-and-forget call).
+ */
+function makeCredentialHealthAlert(
+  ws: string | undefined,
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void,
+): (info: { accountId: string; consecutive401s: number }) => void {
+  const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
+  return ({ accountId, consecutive401s }) => {
+    void (async () => {
+      const summary = `Inference credential for account '${accountId}' is DEAD — ${consecutive401s} consecutive 401s despite token refresh; spawns/evals on it will fail "produced no turn"`;
+      const body =
+        `The inference gateway dropped + refreshed account '${accountId}'s OAuth token after each 401, but the refresh keeps yielding the same invalid credential — so it is genuinely dead/expired (revoked, or its refresh token is bad), not merely stale-cached. ` +
+        `Re-authenticate or replace the credential (accounts:* / re-login) and the gateway's next successful 2xx for this account clears the alert state. Routing has already failed this account over to a healthy account where one exists.`;
+      // Durable, transition-only escalation (idempotent per dead account).
+      try {
+        const { openEscalation, listEscalations } = await import('../agent-tools/coordination/escalations');
+        const open = await listEscalations({ status: 'open' });
+        const already = open.some(
+          (e) =>
+            (e as Record<string, unknown>).source === 'credential-health' &&
+            (e as Record<string, unknown>).deadAccountId === accountId,
+        );
+        if (!already) {
+          await openEscalation(identity, {
+            severity: 'blocker',
+            summary,
+            body,
+            meta: { source: 'credential-health', deadAccountId: accountId, consecutive401s },
+          });
+        }
+      } catch (e) {
+        log('warn', `credential-health escalation failed for '${accountId}': ${(e as Error).message}`);
+      }
+      // Loud fleet broadcast (best-effort, independent of the escalation).
+      try {
+        const { sendMessage } = await import('../agent-tools/coordination/messages');
+        await sendMessage(identity, { to: ['*'], summary, body, category: 'service-health' });
+      } catch (e) {
+        log('warn', `credential-health broadcast failed for '${accountId}': ${(e as Error).message}`);
+      }
+    })();
+  };
+}
+
 function createOptionalFailoverPool(
   entries: readonly ActiveAccount[],
   opts: FailoverPoolOptions = {},
@@ -284,6 +340,8 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     fetchImpl: opts.fetchImpl,
     log,
     onResponse: makeWindowProjector(opts.workspace, log),
+    // #5 PART A: a DEAD credential (consecutive 401s despite refresh) fires a loud escalation + broadcast.
+    onCredentialDead: makeCredentialHealthAlert(opts.workspace, log),
     // B-HOT-2: expose the live config + on-demand hot-reload over /admin/config + /admin/reload.
     // `reloadPool` is a hoisted function declaration; `configVersion`/`accounts` are read lazily at
     // request time (after their initialisers run), so referencing them here is safe.

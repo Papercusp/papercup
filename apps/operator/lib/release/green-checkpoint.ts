@@ -38,6 +38,12 @@ import { heldGateAlert } from './held-gate-alarm';
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
   setupTree(ref: string): Promise<void>;
+  /** load-flake-isolation-2026-06-23: re-run ONE originally-failing test file in
+   *  ISOLATION (a fresh `vitest run <file>` at single concurrency, same tree+env) to
+   *  decide load-flake-vs-real-break. Optional + injected so the realCheckpointDeps
+   *  wiring is unit-testable without running real vitest; realCheckpointDeps shells it
+   *  through the CheckpointExec seam. */
+  isolationRun?(input: { workspace: string; file: string }): Promise<IsolationResult>;
   /** Run the "green" suite in `treeDir` against `base`; resolve green=true on pass.
    *  `failingTests` is a STABLE signature of what failed (test files / workspaces),
    *  extracted from the FULL output — used to dedup the release-fixer dispatch by the
@@ -238,6 +244,90 @@ export function decideFlakeAbsorption(input: {
   }
   const verdict: FlakeVerdict = stillFailing.length > 0 ? 'real-break' : 'all-flakes';
   return { verdict, flakeAbsorbed, stillFailing };
+}
+
+/** The most files the isolation step will ever re-run. A broad red (many distinct
+ *  failing files) is a real regression, not the box-weather flake this absorbs —
+ *  re-running dozens of files would also blow the gate's wall-clock budget. Mirrors
+ *  affected-tests.mjs's FRESH_RETRY_MAX_FILES (15). */
+export const ISOLATION_MAX_FILES = 15;
+
+/** The outcome of the whole flake-absorption attempt — what {@link runGreenCheckpoint}
+ *  needs to (maybe) flip the verdict, plus the suspects to surface. */
+export interface FlakeAbsorptionOutcome {
+  /** true ⇒ the original red was pure load-flake; the caller may report green=true. */
+  absorbedToGreen: boolean;
+  /** files proven flaky (failed under load, passed in isolation) — surfaced as suspects. */
+  flakeSuspects: string[];
+  /** human-readable note for the log / broadcast. */
+  note: string;
+}
+
+/**
+ * load-flake-isolation-2026-06-23: orchestrate the flake-vs-real isolation re-run —
+ * the SAFE fix for the incident where `runner-aggregate.test.ts` + `scheduler-workspace-
+ * scope.test.ts` failed the gate under the 8-fork checkpoint load but PASSED in isolation
+ * (and AFFECTED_RETRY_FAILED=1 didn't absorb them). PURE of vitest/exec: the actual
+ * re-runner is injected (`isolationRun`), so this orchestration is unit-testable.
+ *
+ * Bounded + fail-safe — it can only EVER flip red→green when it has POSITIVE proof:
+ *   1. Parse the originally-failing FILES (+ their workspaces) from the full output.
+ *      None parseable (build break / non-vitest red) ⇒ keep the original red (`false`).
+ *   2. A broad red (> {@link ISOLATION_MAX_FILES} files) is treated as a real regression,
+ *      NOT a flake ⇒ keep the original red. (Cheap guard + bounds wall-clock.)
+ *   3. Re-run each file in isolation. Any re-run that REJECTS is caught and recorded as
+ *      `errored` (⇒ that file counts as still-failing in the decision — never a flake).
+ *   4. {@link decideFlakeAbsorption}: only `all-flakes` (every file re-ran and PASSED)
+ *      flips to green. `real-break` / `inconclusive` keep the gate red.
+ *
+ * The whole attempt is itself wrapped so that ANY unexpected throw defaults to the
+ * ORIGINAL (red) verdict — uncertainty NEVER manufactures a false green.
+ */
+export async function attemptFlakeAbsorption(
+  fullOutput: string,
+  isolationRun: (input: { workspace: string; file: string }) => Promise<IsolationResult>,
+  log: (s: string) => void = () => {},
+): Promise<FlakeAbsorptionOutcome> {
+  const keep = (note: string): FlakeAbsorptionOutcome => ({ absorbedToGreen: false, flakeSuspects: [], note });
+  try {
+    const originalFailing = parseFailingFilesByWorkspace(fullOutput);
+    if (originalFailing.length === 0) {
+      return keep('isolation: no parseable failing test files (build break / non-vitest red) — gate stays red');
+    }
+    if (originalFailing.length > ISOLATION_MAX_FILES) {
+      return keep(
+        `isolation: ${originalFailing.length} failing files (> ${ISOLATION_MAX_FILES}) — a broad red is a real regression, not a load-flake; gate stays red`,
+      );
+    }
+    log(
+      `isolation: re-running ${originalFailing.length} originally-failing file(s) at single concurrency: ${originalFailing
+        .map((f) => f.file)
+        .join(', ')}`,
+    );
+    const isolationResults: IsolationResult[] = [];
+    for (const f of originalFailing) {
+      try {
+        isolationResults.push(await isolationRun(f));
+      } catch (e) {
+        // An isolation re-run that ITSELF errored cannot prove the file is a flake →
+        // record errored:true so decideFlakeAbsorption counts it as still-failing.
+        log(`isolation: re-run of ${f.workspace}::${f.file} errored (${e instanceof Error ? e.message : e}) — treated as still-failing`);
+        isolationResults.push({ workspace: f.workspace, file: f.file, passed: false, errored: true });
+      }
+    }
+    const decision = decideFlakeAbsorption({ originalFailing, isolationResults });
+    if (decision.verdict === 'all-flakes') {
+      const note = `isolation: ALL ${decision.flakeAbsorbed.length} originally-failing file(s) PASSED in isolation — absorbed as load-flake(s): ${decision.flakeAbsorbed.join(', ')}`;
+      log(note);
+      return { absorbedToGreen: true, flakeSuspects: decision.flakeAbsorbed, note };
+    }
+    return keep(
+      `isolation: ${decision.stillFailing.length} file(s) STILL FAILED in isolation — real break, gate stays red: ${decision.stillFailing.join(', ')}`,
+    );
+  } catch (e) {
+    // Any unexpected fault in the absorption attempt defaults to the ORIGINAL verdict.
+    return keep(`isolation: absorption attempt errored (${e instanceof Error ? e.message : e}) — defaulting to the original (red) verdict`);
+  }
 }
 
 /** Host-set, test-affecting NON-`PAPERCUSP_` env vars the gate must strip (P-008).
@@ -457,10 +547,13 @@ export async function runGreenCheckpoint(
     await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   }
   deps.log(`✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${candidate.slice(0, 8)} (green)`);
+  const flakeNote = flakeSuspects?.length
+    ? `\n\n⚠️ Load-flake absorbed: ${flakeSuspects.join(', ')} failed under the gate's 8-fork load but PASSED in an isolated re-run. Consider quarantining if it recurs.`
+    : '';
   await deps
     .broadcast(
-      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)`,
-      `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.`,
+      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)${flakeSuspects?.length ? ' [load-flake absorbed]' : ''}`,
+      `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.${flakeNote}`,
     )
     .catch(() => {});
   // P-002: the gate recovered — resolve any open `release-not-green` escalation.
@@ -478,7 +571,15 @@ export async function runGreenCheckpoint(
       }),
     )
     .catch(() => {});
-  return { advanced: adv.advanced, candidate, from: adv.from, green: true, reason: 'advanced', summary };
+  return {
+    advanced: adv.advanced,
+    candidate,
+    from: adv.from,
+    green: true,
+    reason: 'advanced',
+    summary,
+    ...(flakeSuspects?.length ? { flakeSuspects } : {}),
+  };
 }
 
 /** Real effect wiring. The heavy bit — runGreen — runs the configured suite in
@@ -491,12 +592,44 @@ export async function runGreenCheckpoint(
 export type CheckpointExec = (
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean },
+  opts?: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean; timeoutMs?: number },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** load-flake-isolation-2026-06-23: hard cap for ONE isolated single-file re-run.
+ *  A single test file at single concurrency finishes in seconds; 5 min covers even a
+ *  cold heavy `await import()` graph. On timeout the exec REJECTS → the absorption step
+ *  records that file errored → it counts as still-failing (never a false green). */
+export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
 
 export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = runCmd): CheckpointDeps {
   const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
+  // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
+  // a fresh `vitest run <file>` scoped to its workspace, at SINGLE concurrency
+  // (VITEST_MAX_FORKS/THREADS=1) so the 8-fork load contention that caused the flake is
+  // gone. Same committed-defaults env (buildGreenCheckpointEnv) + the same checkpoint
+  // tree the suite ran in. A bounded timeout (ISOLATION_RUN_TIMEOUT_MS) caps a genuine
+  // hang; on timeout/spawn-error the result is errored:true so the decision treats the
+  // file as still-failing (never a false-green). `--no-file-parallelism` + the fork cap
+  // give a clean, deterministic single-file run. Defined as a const (not `this`) so
+  // runGreen can call it directly without depending on call-site binding.
+  const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+    const env = buildGreenCheckpointEnv(null);
+    env.VITEST_MAX_FORKS = '1';
+    env.VITEST_MAX_THREADS = '1';
+    try {
+      const r = await exec(
+        'npm',
+        ['run', 'test', '--workspace', workspace, '--', '--no-file-parallelism', file],
+        { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
+      );
+      return { workspace, file, passed: r.code === 0 };
+    } catch (e) {
+      log(`isolation: vitest re-run of ${workspace}::${file} threw (${e instanceof Error ? e.message : e})`);
+      return { workspace, file, passed: false, errored: true };
+    }
+  };
   return {
+    isolationRun,
     async setupTree(ref) {
       const script = path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
       // `force` (not `auto`) for the CHECKPOINT tree: the `auto` lockfile/entry-set
@@ -565,8 +698,26 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
           }
         }
       }
-      const green = r.code === 0 && buildOk;
+      let green = r.code === 0 && buildOk;
       const fullOutput = r.stdout + r.stderr + buildOut;
+
+      // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
+      // SUITE is what failed (r.code !== 0; the build only runs on a green suite, so
+      // buildOk is still true here) — a build break is deterministic, never a load-flake.
+      // Re-run each originally-failing FILE in isolation at single concurrency; if EVERY
+      // one passes, the red was box-weather (the 8-fork checkpoint load) and the gate is
+      // GREEN. If any still fails, it's a real break and the gate stays red. Fail-safe:
+      // attemptFlakeAbsorption can only flip red→green on POSITIVE proof, never on error.
+      // This is what AFFECTED_RETRY_FAILED=1 couldn't absorb for runner-aggregate.test.ts
+      // + scheduler-workspace-scope.test.ts (the 2026-06-23 4h gate stall).
+      let flakeSuspects: string[] | undefined;
+      if (r.code !== 0 && buildOk) {
+        const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log);
+        if (outcome.absorbedToGreen) {
+          green = true;
+          flakeSuspects = outcome.flakeSuspects;
+        }
+      }
 
       // Persist the FULL suite (+ build) output — the 2000-char tail below repeatedly
       // proved undiagnosable post-hoc ("2 non-quarantined task(s) failed" with no test
@@ -588,7 +739,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // sha. The de-noised 2000-char tail rides the held-gate broadcast/escalation.
       const failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
       const summary = summarizeSuiteOutput(fullOutput);
-      return { green, summary, failingTests };
+      return { green, summary, failingTests, ...(flakeSuspects?.length ? { flakeSuspects } : {}) };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
@@ -702,16 +853,36 @@ function pruneOldLogs(dir: string, days: number): void {
 function runCmd(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean } = {},
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean; timeoutMs?: number } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    // A bounded timeout (used by the isolation re-run): SIGKILL the child and REJECT, so
+    // a genuine hang can't stall the gate — the caller treats a rejected isolation re-run
+    // as still-failing, never a flake.
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill('SIGKILL');
+          reject(new Error(`${cmd} ${args.join(' ')} timed out after ${opts.timeoutMs}ms`));
+        }, opts.timeoutMs)
+      : null;
     child.stdout.on('data', (d) => (stdout += d.toString()));
     child.stderr.on('data', (d) => (stderr += d.toString()));
-    child.on('error', reject);
+    child.on('error', (e) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(e);
+    });
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
       if (code === 0 || opts.allowNonZero) resolve({ code: code ?? 0, stdout, stderr });
       else reject(new Error(`${cmd} ${args.join(' ')} exited ${code}: ${stderr || stdout}`));
     });

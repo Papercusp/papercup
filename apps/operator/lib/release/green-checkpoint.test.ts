@@ -13,7 +13,13 @@ import {
   buildGreenCheckpointEnv,
   checkpointFailureSignature,
   summarizeSuiteOutput,
+  parseFailingFilesByWorkspace,
+  decideFlakeAbsorption,
+  attemptFlakeAbsorption,
+  ISOLATION_MAX_FILES,
   type CheckpointDeps,
+  type FailingFile,
+  type IsolationResult,
 } from './green-checkpoint';
 import { git, revParse, advanceReady } from './git-ops';
 import { releaseConfig } from './release-config';
@@ -28,7 +34,11 @@ async function commit(file: string, content: string, msg: string): Promise<strin
   return revParse(repo, 'HEAD');
 }
 
-function stubDeps(green: boolean, failingTests?: string[]): { deps: CheckpointDeps; calls: string[] } {
+function stubDeps(
+  green: boolean,
+  failingTests?: string[],
+  flakeSuspects?: string[],
+): { deps: CheckpointDeps; calls: string[] } {
   const calls: string[] = [];
   const deps: CheckpointDeps = {
     setupTree: async (ref) => {
@@ -36,7 +46,7 @@ function stubDeps(green: boolean, failingTests?: string[]): { deps: CheckpointDe
     },
     runGreen: async () => {
       calls.push('runGreen');
-      return { green, summary: green ? 'all pass' : '3 failed', failingTests };
+      return { green, summary: green ? 'all pass' : '3 failed', failingTests, flakeSuspects };
     },
     advance: (candidate) => {
       calls.push('advance');
@@ -156,6 +166,30 @@ describe('runGreenCheckpoint', () => {
     expect(r.reason).toBe('not-green');
     // the signature flows out so the release-fixer can dedup by FAILURE, not candidate sha
     expect(r.failingTests).toEqual(['@papercusp/operator-core', 'lib/fleet/operator-spawn.test.ts']);
+  });
+
+  // load-flake-isolation-2026-06-23: when runGreen reports green=true with flakeSuspects
+  // (the suite went red under load but every file passed in isolation), the gate ADVANCES
+  // and surfaces the absorbed files in the green broadcast — the whole fleet's gate isn't
+  // held by box-weather, but the flake is on record (drives the P-009 quarantine nudge).
+  it('load-flake: a flake-absorbed green advances and surfaces flakeSuspects', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const suspects = ['@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts'];
+    const { deps, calls } = stubDeps(true, undefined, suspects);
+    const bodies: string[] = [];
+    deps.broadcast = async (_s: string, body?: string) => {
+      calls.push('broadcast');
+      if (body) bodies.push(body);
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced' });
+    expect(r.flakeSuspects).toEqual(suspects);
+    expect(await revParse(repo, 'ready')).toBe(c2); // advanced despite the initial (absorbed) red
+    expect(calls).toContain('advance');
+    // the green broadcast names the absorbed flake so the advance is auditable
+    expect(bodies.some((b) => b.includes('Load-flake absorbed') && b.includes('runner-aggregate.test.ts'))).toBe(true);
   });
 
   // F2 (round-4 P-031): the perf-regression gate runs post-runGreen / pre-advance.
@@ -309,5 +343,169 @@ describe('summarizeSuiteOutput (de-noised held-gate tail)', () => {
 
   it('keeps only the last 2000 chars', () => {
     expect(summarizeSuiteOutput('x'.repeat(3000))).toHaveLength(2000);
+  });
+});
+
+// load-flake-isolation-2026-06-23: the SAFE load-flake absorber. The 2026-06-23 incident:
+// runner-aggregate.test.ts + scheduler-workspace-scope.test.ts (both @papercusp/operator-core)
+// failed the gate under the 8-fork checkpoint load but PASS in isolation, and the
+// AFFECTED_RETRY_FAILED=1 workspace retry didn't absorb them — holding the whole fleet's
+// gate for 4h. These cover the pure parse + decision + orchestration without real vitest.
+
+// A realistic affected-runner output for the actual incident: two files fail under
+// @papercusp/operator-core's section (the `>>>` header), shown via both a `FAIL` suite row
+// and a `❯ … failed` summary row, the two formats parseFailingFilesByWorkspace handles.
+const INCIDENT_OUTPUT = [
+  'Affected workspaces (2): @papercusp/operator-core, @papercusp/agent-mcp',
+  '',
+  '>>> @papercusp/operator-core :: npm run test',
+  ' FAIL  lib/llm-testing/__tests__/runner-aggregate.test.ts > aggregates runs',
+  ' ❯ lib/scout/scheduler-workspace-scope.test.ts (12 tests | 1 failed) 21034ms',
+  '   Test timed out in 20000ms',
+  '>>> @papercusp/operator-core FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)',
+  '',
+  '>>> @papercusp/agent-mcp :: npm run test',
+  ' Tests  340 passed (340)',
+  '',
+  '2 non-quarantined task(s) failed.',
+].join('\n');
+
+describe('parseFailingFilesByWorkspace (load-flake isolation)', () => {
+  it('groups failing FILES under the workspace section they ran in (both FAIL + ❯ formats)', () => {
+    expect(parseFailingFilesByWorkspace(INCIDENT_OUTPUT)).toEqual([
+      { workspace: '@papercusp/operator-core', file: 'lib/llm-testing/__tests__/runner-aggregate.test.ts' },
+      { workspace: '@papercusp/operator-core', file: 'lib/scout/scheduler-workspace-scope.test.ts' },
+    ]);
+  });
+
+  it('does NOT return bare workspace markers (only real .test/.spec files)', () => {
+    const files = parseFailingFilesByWorkspace(INCIDENT_OUTPUT).map((f) => f.file);
+    expect(files.every((f) => /\.(test|spec)\./.test(f))).toBe(true);
+    expect(files).not.toContain('@papercusp/operator-core');
+  });
+
+  it('skips a FAIL line with no preceding workspace header (no cwd to run it in)', () => {
+    const out = ' FAIL  lib/orphan.test.ts > case\nno header above';
+    expect(parseFailingFilesByWorkspace(out)).toEqual([]);
+  });
+
+  it('dedupes a file that appears in multiple rows of the same workspace', () => {
+    const out = [
+      '>>> @papercusp/x :: npm run test',
+      ' FAIL  lib/a.test.ts > one',
+      ' ❯ lib/a.test.ts (3 tests | 2 failed) 5ms',
+    ].join('\n');
+    expect(parseFailingFilesByWorkspace(out)).toEqual([{ workspace: '@papercusp/x', file: 'lib/a.test.ts' }]);
+  });
+
+  it('returns [] on empty / non-vitest output (build break)', () => {
+    expect(parseFailingFilesByWorkspace('')).toEqual([]);
+    expect(parseFailingFilesByWorkspace('=== SPA BUILD FAILED (@papercusp/operator-vite) ===\nerror TS2304')).toEqual([]);
+  });
+});
+
+describe('decideFlakeAbsorption (pure flake-vs-real decision — NEVER hides a real bug)', () => {
+  const ff = (workspace: string, file: string): FailingFile => ({ workspace, file });
+  const ir = (workspace: string, file: string, passed: boolean, errored = false): IsolationResult => ({
+    workspace,
+    file,
+    passed,
+    errored,
+  });
+
+  it('all-flakes: every originally-failing file PASSES in isolation', () => {
+    const originalFailing = [ff('@p/core', 'a.test.ts'), ff('@p/core', 'b.test.ts')];
+    const isolationResults = [ir('@p/core', 'a.test.ts', true), ir('@p/core', 'b.test.ts', true)];
+    const d = decideFlakeAbsorption({ originalFailing, isolationResults });
+    expect(d.verdict).toBe('all-flakes');
+    expect(d.flakeAbsorbed).toEqual(['@p/core::a.test.ts', '@p/core::b.test.ts']);
+    expect(d.stillFailing).toEqual([]);
+  });
+
+  it('real-break: ONE file still fails in isolation ⇒ gate stays red (no hiding)', () => {
+    const originalFailing = [ff('@p/core', 'a.test.ts'), ff('@p/core', 'b.test.ts')];
+    const isolationResults = [ir('@p/core', 'a.test.ts', true), ir('@p/core', 'b.test.ts', false)];
+    const d = decideFlakeAbsorption({ originalFailing, isolationResults });
+    expect(d.verdict).toBe('real-break');
+    expect(d.stillFailing).toEqual(['@p/core::b.test.ts']);
+  });
+
+  it('real-break: an ERRORED isolation re-run counts as still-failing (fail-safe)', () => {
+    const originalFailing = [ff('@p/core', 'a.test.ts')];
+    const isolationResults = [ir('@p/core', 'a.test.ts', false, true)];
+    expect(decideFlakeAbsorption({ originalFailing, isolationResults }).verdict).toBe('real-break');
+  });
+
+  it('real-break: a MISSING isolation result counts as still-failing (never assume a flake)', () => {
+    const originalFailing = [ff('@p/core', 'a.test.ts'), ff('@p/core', 'b.test.ts')];
+    const isolationResults = [ir('@p/core', 'a.test.ts', true)]; // no result for b
+    const d = decideFlakeAbsorption({ originalFailing, isolationResults });
+    expect(d.verdict).toBe('real-break');
+    expect(d.stillFailing).toEqual(['@p/core::b.test.ts']);
+  });
+
+  it('inconclusive: no originally-failing files (caller keeps the original red verdict)', () => {
+    expect(decideFlakeAbsorption({ originalFailing: [], isolationResults: [] }).verdict).toBe('inconclusive');
+  });
+});
+
+describe('attemptFlakeAbsorption (orchestration — injected isolation runner)', () => {
+  it('absorbs the 2026-06-23 incident: both files pass in isolation ⇒ green', async () => {
+    const ran: string[] = [];
+    const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+      ran.push(`${workspace}::${file}`);
+      return { workspace, file, passed: true }; // both pass at single concurrency
+    };
+    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun);
+    expect(out.absorbedToGreen).toBe(true);
+    expect(out.flakeSuspects).toEqual([
+      '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
+      '@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts',
+    ]);
+    // it actually re-ran each originally-failing file
+    expect(ran).toHaveLength(2);
+  });
+
+  it('does NOT absorb when a file still fails in isolation (real break stays red)', async () => {
+    const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+      workspace,
+      file,
+      passed: file.includes('runner-aggregate'), // scheduler-workspace-scope STILL fails
+    });
+    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(out.flakeSuspects).toEqual([]);
+  });
+
+  it('a THROWING isolation runner defaults to red (uncertainty never flips to green)', async () => {
+    const isolationRun = async (): Promise<IsolationResult> => {
+      throw new Error('vitest spawn failed');
+    };
+    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun);
+    expect(out.absorbedToGreen).toBe(false);
+  });
+
+  it('a build break / non-vitest red (no parseable files) stays red — never re-runs', async () => {
+    let called = false;
+    const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+      called = true;
+      return { workspace, file, passed: true };
+    };
+    const out = await attemptFlakeAbsorption('=== SPA BUILD FAILED (@papercusp/operator-vite) ===', isolationRun);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(called).toBe(false); // nothing to re-run
+  });
+
+  it('a BROAD red (> ISOLATION_MAX_FILES files) is a real regression — never absorbed', async () => {
+    const lines = ['>>> @papercusp/operator-core :: npm run test'];
+    for (let i = 0; i <= ISOLATION_MAX_FILES; i++) lines.push(` FAIL  lib/f${i}.test.ts > case`);
+    let called = false;
+    const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+      called = true;
+      return { workspace, file, passed: true };
+    };
+    const out = await attemptFlakeAbsorption(lines.join('\n'), isolationRun);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(called).toBe(false); // a broad red is never load-flake absorption
   });
 });

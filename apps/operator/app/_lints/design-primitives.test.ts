@@ -8,7 +8,7 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { relative, resolve, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const OPERATOR_ROOT = resolve(__dirname, '../..');
 const APPS_ROOT = resolve(OPERATOR_ROOT, '..');
@@ -175,7 +175,7 @@ function unexpectedNativeCheckboxFiles(): string[] {
   return offenders;
 }
 
-function unexpectedPatternMatches(label: string, pattern: RegExp): string[] {
+function collectPatternMatches(pattern: RegExp): string[] {
   const offenders: string[] = [];
   for (const file of collectFiles()) {
     const content = readFileSync(file, 'utf-8');
@@ -186,13 +186,6 @@ function unexpectedPatternMatches(label: string, pattern: RegExp): string[] {
       offenders.push(`${rel(file)}:${line}: ${match[0].trim()}`);
     }
   }
-  if (offenders.length > 0) {
-    throw new Error(
-      `${label} found in app UI:\n${offenders.map((f) => `  ${f}`).join('\n')}\n\n` +
-        'Follow /internal/docs/design: use stable type sizes and letter-spacing: 0.',
-    );
-  }
-  expect(offenders).toHaveLength(0);
   return offenders;
 }
 
@@ -294,14 +287,53 @@ function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
   return offenders;
 }
 
-function expectNoUnexpected(label: string, offenders: string[]): void {
-  if (offenders.length > 0) {
-    throw new Error(
-      `${label} found in unapproved files:\n${offenders.map((f) => `  ${f}`).join('\n')}\n\n` +
-        'Use the shared Papercusp design primitive, or add a temporary allowlist entry with a plan item reference.',
-    );
+/**
+ * Warn-first lint rollout (catch-test-lags-migration-at-the-author #4, Part B).
+ *
+ * Every design-lint check routes its offenders through this ONE enforcement decision
+ * point. A NEW rule lands `enforce: false` first: it LOGS offenders loudly (so authors
+ * see drift accumulate and seed the allowlist) but PASSES the suite — so introducing a
+ * rule doesn't instantly red the whole fleet's green gate the moment one un-migrated
+ * file exists. Once the allowlist is seeded, flip the rule to `enforce: true` and it
+ * hard-fails on any new offender — exactly the behavior every rule below ships with
+ * today (the currently-enforced rules are unchanged: they all pass `enforce: true`).
+ *
+ * The flip from warn → error is the FINAL step of landing a rule, not a "someday":
+ * a rule left `enforce: false` forever is a lint that does nothing.
+ */
+function warnOrFail(
+  label: string,
+  offenders: string[],
+  opts: { enforce: boolean; hint?: string },
+): void {
+  const hint =
+    opts.hint ??
+    'Use the shared Papercusp design primitive, or add a temporary allowlist entry with a plan item reference.';
+
+  if (offenders.length === 0) {
+    expect(offenders).toHaveLength(0);
+    return;
   }
-  expect(offenders).toHaveLength(0);
+
+  if (!opts.enforce) {
+    // WARN-ONLY: log loudly, do NOT fail. Lets a new rule's offenders surface and be
+    // allowlisted before the rule is flipped to enforce:true.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `⚠️  [design-lint WARN-ONLY, not yet enforced] ${label} found in ${offenders.length} file(s):\n` +
+        `${offenders.map((f) => `  ${f}`).join('\n')}\n` +
+        `${hint}\n` +
+        `(This rule is in warn-only mode — seed its allowlist, then flip enforce:true.)`,
+    );
+    return;
+  }
+
+  throw new Error(`${label} found in unapproved files:\n${offenders.map((f) => `  ${f}`).join('\n')}\n\n${hint}`);
+}
+
+/** Enforced wrapper — the default for every currently-active rule (enforce:true). */
+function expectNoUnexpected(label: string, offenders: string[]): void {
+  warnOrFail(label, offenders, { enforce: true });
 }
 
 describe('design primitive lint', () => {
@@ -349,17 +381,21 @@ describe('design primitive lint', () => {
     );
   });
 
+  const TYPE_HINT = 'Follow /internal/docs/design: use stable type sizes and letter-spacing: 0.';
+
   it('blocks negative letter spacing in app UI', () => {
-    unexpectedPatternMatches(
+    warnOrFail(
       'Negative letter-spacing',
-      /\b(?:letter-spacing|letterSpacing)\s*:\s*(?:['"])?-[0-9.]+em(?:['"])?/g,
+      collectPatternMatches(/\b(?:letter-spacing|letterSpacing)\s*:\s*(?:['"])?-[0-9.]+em(?:['"])?/g),
+      { enforce: true, hint: TYPE_HINT },
     );
   });
 
   it('blocks viewport-relative font sizing in app UI', () => {
-    unexpectedPatternMatches(
+    warnOrFail(
       'Viewport-relative font size',
-      /\b(?:font-size|fontSize)\s*:\s*(?:['"])?[^;'",}]*(?:vw|vh|vmin|vmax)[^;'",}]*(?:['"])?/g,
+      collectPatternMatches(/\b(?:font-size|fontSize)\s*:\s*(?:['"])?[^;'",}]*(?:vw|vh|vmin|vmax)[^;'",}]*(?:['"])?/g),
+      { enforce: true, hint: TYPE_HINT },
     );
   });
 
@@ -380,5 +416,51 @@ describe('design primitive lint', () => {
 
   it('keeps audited active surfaces free of direct cyan literals', () => {
     expectNoUnexpected('Direct cyan literals', unexpectedDirectCyanLiteralsInAuditedFiles());
+  });
+});
+
+// ── Warn-first lint rollout (catch-test-lags-migration-at-the-author #4, Part B) ───────
+// Pins the contract a new design-lint rule relies on to land WITHOUT instantly redding
+// the fleet's gate: enforce:false logs offenders but passes; enforce:true hard-fails.
+describe('warnOrFail (warn-first lint rollout)', () => {
+  const OFFENDERS = ['operator/app/foo.tsx:12: <select>', 'operator/app/bar.tsx:3: <select>'];
+
+  it('passes (never throws) for an empty offender list, regardless of enforce', () => {
+    expect(() => warnOrFail('Empty', [], { enforce: true })).not.toThrow();
+    expect(() => warnOrFail('Empty', [], { enforce: false })).not.toThrow();
+  });
+
+  it('WARN-ONLY (enforce:false): logs offenders loudly but does NOT fail the suite', () => {
+    const warnings: string[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      warnings.push(args.map(String).join(' '));
+    });
+    try {
+      expect(() => warnOrFail('New native select', OFFENDERS, { enforce: false })).not.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    const logged = warnings.join('\n');
+    expect(logged).toMatch(/WARN-ONLY/);
+    expect(logged).toMatch(/New native select/);
+    // Every offender is surfaced so the author can seed the allowlist before flipping.
+    for (const o of OFFENDERS) expect(logged).toContain(o);
+  });
+
+  it('ENFORCED (enforce:true): throws with the offenders listed', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => warnOrFail('New native select', OFFENDERS, { enforce: true })).toThrow(/New native select/);
+      // Enforced mode must NOT route through the warn-only logger.
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('uses a custom hint when supplied', () => {
+    expect(() =>
+      warnOrFail('Custom', ['x:1: y'], { enforce: true, hint: 'SEE THE DESIGN DOC.' }),
+    ).toThrow(/SEE THE DESIGN DOC\./);
   });
 });

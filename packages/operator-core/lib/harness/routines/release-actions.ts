@@ -128,6 +128,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   let candidate: string | undefined;
   let summary: string | undefined;
   let failingTests: string[] | undefined;
+  let flakeSuspects: string[] | undefined;
   const detail: Record<string, unknown> = {};
   // P-008: parse the delimited result marker, not a brace-slice of all stdout.
   const parsed = parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) as {
@@ -137,12 +138,14 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     from?: string | null;
     summary?: string;
     failingTests?: string[];
+    flakeSuspects?: string[];
   } | null;
   if (parsed?.reason) {
     status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
     candidate = parsed.candidate;
     summary = parsed.summary;
     failingTests = parsed.failingTests;
+    flakeSuspects = parsed.flakeSuspects;
     detail.green = parsed.green ?? null;
     if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
     if (parsed.from) detail.from = parsed.from.slice(0, 12);
@@ -150,6 +153,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // append-only event so WHY the gate was red survives the per-tick metadata
     // overwrite (capped — the full list also goes to the release-fixer).
     if (parsed.failingTests?.length) detail.failingTests = parsed.failingTests.slice(0, 20);
+    // load-flake-isolation-2026-06-23: persist the files the gate ABSORBED as
+    // load-flakes (red under the 8-fork load, green in isolation) so an advance that
+    // rode a flake absorption is auditable in the append-only pipeline event.
+    if (parsed.flakeSuspects?.length) detail.flakeSuspects = parsed.flakeSuspects.slice(0, 20);
   } else {
     // No parseable result marker (crash before print / non-zero exit) → 'error'.
     detail.code = r.code;
@@ -183,7 +190,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // P-009: per-workspace flake history — tally workspaces the gate marked as a
   // PROVEN flake (failed then passed on retry) and notify when one is chronically
   // flaky so it gets quarantined accountably. Fail-safe.
-  await trackFlakeHistory(ctx, summary).catch((e) =>
+  // load-flake-isolation-2026-06-23: ALSO tally the per-FILE flakes the new isolation
+  // pass absorbed (red under load, green in isolation) — proven flakes keyed by
+  // `<ws>::<file>`, finer-grained than the workspace-retry markers, so a chronically
+  // load-flaky FILE trips the same quarantine nudge.
+  await trackFlakeHistory(ctx, summary, flakeSuspects).catch((e) =>
     console.warn(`[green-checkpoint] flake history failed: ${e instanceof Error ? e.message : e}`),
   );
 });
@@ -342,12 +353,22 @@ async function trackGateStall(
  * release-fixer's / a human's job (D-003), never a tracked-file write from this
  * routine. Fail-safe — the routine tick never depends on it.
  */
-async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string): Promise<void> {
-  if (!summary) return;
+async function trackFlakeHistory(
+  ctx: SystemActionCtx,
+  summary?: string,
+  flakeSuspects?: string[],
+): Promise<void> {
   const flaked = new Set<string>();
-  for (const m of summary.matchAll(/>>>\s+(\S+)\s+passed on retry — counted as a FLAKE/g)) {
-    flaked.add(m[1]);
+  if (summary) {
+    for (const m of summary.matchAll(/>>>\s+(\S+)\s+passed on retry — counted as a FLAKE/g)) {
+      flaked.add(m[1]);
+    }
   }
+  // load-flake-isolation-2026-06-23: the per-file flakes the isolation pass absorbed
+  // are PROVEN flakes too (failed under the gate's load, passed in an isolated re-run),
+  // keyed by `<ws>::<file>` so the ledger distinguishes a chronically-flaky FILE from a
+  // chronically-flaky workspace.
+  for (const f of flakeSuspects ?? []) flaked.add(f);
   if (flaked.size === 0) return;
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
