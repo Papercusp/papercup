@@ -1,1 +1,0 @@
-{"code":"import{LinkBackedTaggable}from\"@papercusp/linkable-edges\";export{LinkBackedTaggable};\n","warnings":[],"map":{"version":3,"mappings":"AAMA,OAAS,uBAA0B","names":[],"ignoreList":[],"sources":["/home/marsh-office/papercupai-workspace/papercup/packages/coordination/src/capabilities/taggable.ts"],"sourcesContent":[null]}}
