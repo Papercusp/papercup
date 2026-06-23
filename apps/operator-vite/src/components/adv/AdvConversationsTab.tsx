@@ -2239,22 +2239,24 @@ function AdvConvStyles() {
       .pc-advconv__nav-actions {
         align-items: stretch;
       }
+      /* Sizing/display lifted verbatim from the Create sidebar's button
+         (pc-plans__plans-btn): flex:1, 8px 12px padding, 12px/700, centered
+         icon+label, 8px radius — only the accent is per-view (--nav-accent). */
       .pc-advconv__navbtn {
+        position: relative;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 7px;
-        flex: 1 1 auto;
-        min-width: 88px;
-        padding: 8px 10px;
-        border: 1px solid color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 66%);
+        gap: 6px;
+        flex: 1;
+        padding: 8px 12px;
+        border: 1px solid color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 64%);
         border-radius: 8px;
-        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 91%);
-        color: var(--fg-dim, #b9d4e8);
+        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 90%);
+        color: var(--fg, #e7f7ff);
         font-size: 12px;
-        font-weight: 600;
+        font-weight: 700;
         letter-spacing: 0;
-        text-align: center;
         cursor: pointer;
         transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }

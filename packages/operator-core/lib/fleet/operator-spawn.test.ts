@@ -639,7 +639,9 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
 
   it('does NOT pin a non-bee role even under the bench flag (only bench bees are pinned)', async () => {
     process.env[KEY] = 'claim + implement your lone bench feature';
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    // A genuine non-bee role (scoper) — carries a featureId so it clears the
+    // coding-factory pushed-feature guard while staying a factory pipeline role.
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper', featureId: 'F-1' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
     expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();

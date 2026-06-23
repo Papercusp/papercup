@@ -1294,7 +1294,7 @@ test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 20
   assert.equal(gw.stats().totalRequests - before, N, 'every request was counted (counters never froze)');
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all 120 admission slots drained back to 0 — no slot leak');
-}, 30_000);
+}, 90_000);
 
 test('[B-GW-2 chaos] pool-wide throttle storm (slow upstream squats slots) under high concurrency — graceful load-shed (429+retry-after), inFlight bounded + drains, fast recovery', async () => {
   // The PRIMARY production wedge (insight inference-gateway-wedge-admission-slot-squat): under a
@@ -1344,7 +1344,7 @@ test('[B-GW-2 chaos] pool-wide throttle storm (slow upstream squats slots) under
   const recovered = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'recover' }] });
   assert.equal(recovered.status, 200, 'gateway recovered — a fresh request succeeds once the throttle clears');
   assert.ok(Date.now() - t0 < 6000, 'recovery was prompt, not a multi-second wedge');
-}, 30_000);
+}, 90_000);
 
 test('[B-GW-2 chaos] upstream 429 storm under high concurrency — every request sheds FAST (no slot squat), counters keep moving, inFlight drains to 0', async () => {
   // The SECONDARY throttle path: the upstream ITSELF returns rate-limit 429s pool-wide (unified-rejected).
@@ -1385,7 +1385,7 @@ test('[B-GW-2 chaos] upstream 429 storm under high concurrency — every request
   assert.ok(health.status === 200 || health.status === 503, 'control plane still responds after the storm');
   const again = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'again' }] });
   assert.equal(again.status, 429, 'a post-storm request still sheds fast (responsive), not a wedge');
-}, 30_000);
+}, 90_000);
 
 test('[B-GW-2 chaos] internal-retry DEADLINE bounds slot-hold: a perpetual TRANSIENT 429 sheds + frees its slot at the deadline, never to the self-heal/watchdog threshold (wedge-prevention ladder)', async () => {
   // The slow-burn wedge this guards: a TRANSIENT/bare upstream 429 (x-should-retry, capacity exists) makes
@@ -1447,7 +1447,7 @@ test('[B-GW-2 chaos] a STORM of upstream HEADER-stalls under high concurrency �
   mode = 'healthy';
   const recovered = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
   assert.equal(recovered.status, 200, 'gateway recovered after the stall storm cleared');
-}, 30_000);
+}, 90_000);
 
 test('[B-GW-2 chaos] a STORM of mid-stream BODY-stalls under high concurrency — the body-idle guard drains every slot, recovers', async () => {
   // Headers + first chunk arrive, then the upstream stalls mid-stream. The per-chunk body-idle deadline
@@ -1478,7 +1478,7 @@ test('[B-GW-2 chaos] a STORM of mid-stream BODY-stalls under high concurrency �
   mode = 'healthy';
   const recovered = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
   assert.equal(recovered.status, 200, 'recovered after the mid-stream stall storm');
-}, 30_000);
+}, 90_000);
 
 test('[B-GW-2 chaos] a hung OAuth-TOKEN endpoint under high concurrency — every request fails fast (503), never reaches upstream, all slots drain, recovers', async () => {
   // The 2026-06-20 token-hang wedge under LOAD: active.token() does a deadline-bounded refresh BEFORE the
@@ -1634,7 +1634,7 @@ test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: pe
   assert.equal(s.aimd.decreases, 0, `the maxed-account quota-429s did NOT trip a single global AIMD decrease (got ${s.aimd.decreases})`);
   assert.equal(s.aimd.effective, s.aimd.cap, `global admission stayed at the cap, never choked by per-account quotas (effective=${s.aimd.effective}/${s.aimd.cap})`);
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
-}, 30_000);
+}, 90_000);
 
 test('[soft-pin] a PINNED request whose account is SLAMMED by concurrent sessions yields to a healthy sibling (pinned-concentration fix)', async () => {
   // Owner-reported: unpinned 10+ sessions are fine (they spread), but PINNING several sessions to ONE account

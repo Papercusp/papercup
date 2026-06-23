@@ -100,6 +100,26 @@ export function isFrozen(idleSec, freezeSilenceS = FREEZE_SILENCE_S) {
   return idleSec != null && idleSec > freezeSilenceS;
 }
 
+/**
+ * Pure restart decision (2026-06-23 — the routines-queue-saturation false-restart fix). A stale routine
+ * `last_fired_at` (`routineIdleSec`) alone is AMBIGUOUS: it means a genuine ticker freeze OR merely a
+ * SATURATED fire-queue — a few legitimate LONG routines (green-checkpoint ~25m, gym ~90m) holding every
+ * `routines`-queue slot stall new claims/completions WITHOUT the event loop being frozen. Restarting THEN is
+ * destructive: it kills the in-flight long routines mid-run, DBOS recovers them, they re-saturate → a 5-min
+ * restart LOOP that never lets them finish + freezes git-sync (the 2026-06-23 deploy-freeze incident).
+ *
+ * Corroborate with the SCHEDULER's own liveness (`schedulerIdleSec` = newest `routinesTick` age): the tick
+ * fires every ~30s on the SAME event loop but is NOT on the saturable `routines` queue, so a FRESH tick
+ * proves the ticker is ALIVE (just busy) → NOT a freeze. Restart only when fires are stale AND the scheduler
+ * is not confirmed-fresh (a real freeze stalls BOTH). A null scheduler signal (rare — the routines read
+ * succeeded, so the same DB is reachable) falls back to the documented fire-staleness behavior.
+ */
+export function shouldRestart(idleSec, schedSec, freezeSilenceS = FREEZE_SILENCE_S) {
+  if (!isFrozen(idleSec, freezeSilenceS)) return false; // fires unknown or healthy → never a freeze
+  if (schedSec != null && !isFrozen(schedSec, freezeSilenceS)) return false; // scheduler alive ⇒ saturation, not a freeze
+  return true; // fires stale AND scheduler also stale (or unreadable) ⇒ genuine freeze
+}
+
 /** Read DATABASE_URL out of a process's /proc/<pid>/environ (same-user readable). The bg-host's ACTUAL
  *  running value — robust against .env.local not defining it literally (it doesn't on this box). */
 function readProcEnvUrl(pid, readFile = readFileSync) {
@@ -134,6 +154,20 @@ async function routineIdleSec(dbUrl) {
   return parseIdleSec(r.stdout);
 }
 
+/** Newest `routinesTick` SCHEDULER execution age (seconds) — the TRUE ticker-liveness signal, independent of
+ *  `routines`-fire-queue saturation (the tick is a scheduled workflow, NOT enqueued on the saturable queue).
+ *  A fresh tick while routine fires are stale = a busy/saturated queue, not a frozen event loop. null on any
+ *  read fault ⇒ UNKNOWN (shouldRestart falls back to the documented fire-staleness behavior). */
+async function schedulerIdleSec(dbUrl) {
+  if (!dbUrl) return null;
+  const q =
+    "SELECT EXTRACT(EPOCH FROM (now() - to_timestamp(MAX(created_at)/1000.0)))::int " +
+    "FROM dbos.workflow_status WHERE name = 'routinesTick'";
+  const r = await sh('psql', [dbUrl, '-tAqc', q]);
+  if (r.err) return null;
+  return parseIdleSec(r.stdout);
+}
+
 function restart(reason) {
   const now = Date.now();
   if (now - lastRestart < DEBOUNCE_MS) {
@@ -157,7 +191,8 @@ async function poll() {
     // not active → a crash; Restart=always handles that. Don't interfere.
     return;
   }
-  const idleSec = await routineIdleSec(await resolveDbUrlAsync());
+  const dbUrl = await resolveDbUrlAsync();
+  const idleSec = await routineIdleSec(dbUrl);
   if (idleSec == null) {
     // Liveness UNKNOWN (psql/DB unreadable) — NEVER conclude frozen from a missing signal (that was the
     // EI-2434 false-restart bug). Skip this poll.
@@ -165,7 +200,20 @@ async function poll() {
     return;
   }
   if (isFrozen(idleSec)) {
-    restart(`${UNIT} newest routine fired ${idleSec}s ago (> ${FREEZE_SILENCE_S}s) while active — ticker genuinely frozen (PG-confirmed, journald-independent)`);
+    // Routine fires are stale — but corroborate with the SCHEDULER before restarting (2026-06-23 fix). A
+    // SATURATED routines fire-queue (legit long routines holding every slot) stalls fires WITHOUT a frozen
+    // event loop; restarting then kills them mid-run + re-saturates → the 5-min restart LOOP that froze
+    // git-sync + deploys for hours. Only restart if the scheduler (routinesTick) is ALSO stale.
+    const schedSec = await schedulerIdleSec(dbUrl);
+    if (!shouldRestart(idleSec, schedSec)) {
+      const now = Date.now();
+      if (now - lastHeartbeat >= HEARTBEAT_MS) {
+        lastHeartbeat = now;
+        log(`fire-queue SATURATED, not frozen — routine last_fired_at ${idleSec}s stale BUT scheduler (routinesTick) fired ${schedSec}s ago (event loop alive). NOT restarting (would kill in-flight long routines + re-saturate).`);
+      }
+      return;
+    }
+    restart(`${UNIT} routine fires ${idleSec}s stale AND scheduler (routinesTick) ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} ago (> ${FREEZE_SILENCE_S}s) while active — ticker genuinely frozen (PG-confirmed, journald-independent)`);
     return;
   }
   // Healthy. Emit a throttled heartbeat so the durable log shows the watchdog is actively monitoring.

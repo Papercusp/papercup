@@ -149,6 +149,7 @@ export default defineTool({
     if (args.idleActivities !== undefined) patch.idleActivities = args.idleActivities;
     if (args.autoScaleOut !== undefined) patch.autoScaleOut = args.autoScaleOut;
     if (args.decomposition !== undefined) patch.decomposition = args.decomposition;
+    if (args.modelOverrides !== undefined) patch.modelOverrides = args.modelOverrides;
     if (args.pauseNewWork !== undefined) patch.pauseNewWork = args.pauseNewWork;
     if (args.pausedUntil !== undefined) patch.pausedUntil = args.pausedUntil;
     if (args.clear !== undefined) patch.clear = args.clear;
@@ -160,6 +161,17 @@ export default defineTool({
       // setHiveSetting rejects when the hive doesn't exist (logical scope, no FK).
       return json({ ok: false, error: e instanceof Error ? e.message : String(e), hive: installSlug });
     }
+
+    // Materialize the Sentinel's session model override to the file the dock's
+    // psu-sentinel wrapper reads at launch (~/.papercusp/sentinel-model) — the
+    // storage-policy "PG-canonical, file projected just-in-time" pattern (the bash
+    // wrapper can't read hive_settings). The dock is volatile (relaunches on its
+    // own), so the next relaunch picks up the new model. Best-effort.
+    void import('../../sentinel-model-file')
+      .then(({ materializeSentinelModelFile }) =>
+        materializeSentinelModelFile(steering.modelOverrides?.sentinel ?? null),
+      )
+      .catch(() => {});
 
     // Refresh the 👑 Queen tab (hive.steering resolver) — best-effort.
     void import('../../sync-sse')

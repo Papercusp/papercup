@@ -76,6 +76,11 @@ export interface OverwatchLaunchFireInput {
   /** The rendered OverwatchBrief, or null when its precompute degraded (the
    *  persona then gathers the panels itself — overwatch.md's fallback). */
   brief: string | null;
+  /** SESSION model override (model-override-sidebar-2026-06-23) — a `model[:effort]`
+   *  spec for THIS overwatch wake, from `owner-steering.modelOverrides.overwatch`.
+   *  Threaded as `body.spawnModel` → PAPERCUSP_SPAWN_MODEL (the highest-precedence
+   *  model channel). Empty/absent ⇒ the workspace default (agent-config models.overwatch). */
+  spawnModel?: string | null;
 }
 
 export type OverwatchLaunchFireFn = (input: OverwatchLaunchFireInput) => void | Promise<void>;
@@ -93,7 +98,7 @@ export function setOverwatchLaunchFire(fn: OverwatchLaunchFireFn | null): void {
  * durable step on the whole agent lifetime — the next declared wake re-fires).
  * Mirrors blueprint-run-action.ts's `defaultFire`.
  */
-const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId, role, kickoff, brief }) => {
+const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId, role, kickoff, brief, spawnModel }) => {
   const ws = encodeURIComponent(workspaceId);
   // `bpkind=overwatch` tells the invoke route to record a TRACKED, resumable
   // session (label `overwatch · <slug>/<role>`, matching overwatchMidTurn) AND to
@@ -107,6 +112,10 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
     extra: [`BLUEPRINT_ID=${OVERWATCH_BLUEPRINT_ID}`],
   };
   if (brief) body.overwatchBrief = brief;
+  // SESSION model override (model-override-sidebar-2026-06-23): pin this wake's model
+  // via the highest-precedence channel (PAPERCUSP_SPAWN_MODEL), separate from the
+  // workspace default. Absent ⇒ no pin (workspace/CLI default).
+  if (spawnModel && spawnModel.trim()) body.spawnModel = spawnModel.trim();
   // Stamp the attempt, then refresh the pane's "is-it-alive?" heartbeat strip:
   // `recordFire` wrote a fresh `autoloop_state` row that `overwatch.liveness`
   // reads, so the strip's last-run / countdown / ALIVE badge update live over SSE
@@ -188,8 +197,19 @@ export async function handleOverwatchLaunch(ctx: SystemActionCtx): Promise<void>
       brief = null;
     }
 
+    // Session model override (model-override-sidebar-2026-06-23): owner-steering
+    // modelOverrides.overwatch pins THIS wake's model, separate from the workspace
+    // agent-config default. Fail-soft → no override (workspace default).
+    let spawnModel: string | null = null;
+    try {
+      const { getOwnerSteering } = await import('../owner-steering');
+      spawnModel = (await getOwnerSteering(workspaceId, installSlug)).modelOverrides?.overwatch ?? null;
+    } catch {
+      /* fail-soft — launch at the default model */
+    }
+
     const fire = _fire ?? defaultOverwatchFire;
-    await fire({ installSlug, workspaceId, role: OVERWATCH_ROLE, kickoff, brief });
+    await fire({ installSlug, workspaceId, role: OVERWATCH_ROLE, kickoff, brief, spawnModel });
     console.log(`[overwatch-loop] ${installSlug}: fired overwatch launch (brief ${brief ? 'attached' : 'absent'})`);
   } catch (e) {
     // The whole handler is fail-soft (the durable-step contract): never throw.

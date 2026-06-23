@@ -34,6 +34,8 @@ import { Megaphone, RotateCcw, Settings2 } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import OverridableSetting from '../override/OverridableSetting';
 import { isOverridden } from '../override/isOverridden';
+import ModelOverride from './ModelOverride';
+import { useModelOverride } from './useModelOverride';
 
 /** The voice/persona pref keys the Sentinel herald surfaces as live overrides.
  *  Each MUST exist in the VoicePrefs schema (voice-prefs.ts) so the workspace
@@ -172,6 +174,9 @@ export default function SentinelTab({ active }: { active: boolean }) {
 
   const busy = (key: string) => busyKey === key;
 
+  // Session-only MODEL override for the dock 🛡 Sentinel (model-override-sidebar-2026-06-23).
+  const sentinelModel = useModelOverride('sentinel', active);
+
   return (
     <TooltipPrimitive.Provider delayDuration={250}>
       <style>{SENTINEL_CSS}</style>
@@ -190,6 +195,18 @@ export default function SentinelTab({ active }: { active: boolean }) {
             {err}
           </div>
         )}
+
+        {sentinelModel.error && (
+          <div className="pc-queen__err" role="alert">
+            Model override: {sentinelModel.error}
+          </div>
+        )}
+        <ModelOverride
+          label="Sentinel model"
+          override={sentinelModel.override}
+          onWrite={sentinelModel.setOverride}
+          busy={sentinelModel.busy}
+        />
 
         {!loaded ? (
           <div className="pc-queen__placeholder">Loading the herald’s settings…</div>

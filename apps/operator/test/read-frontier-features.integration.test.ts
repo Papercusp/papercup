@@ -53,22 +53,11 @@ let db: OrgTestDb;
 
 beforeAll(async () => {
   db = await createOrgTestDb();
-  // Patch the prefix schema up to what readFrontierFeatures needs (see caveat).
-  await db.adminSql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated
-      ADD COLUMN IF NOT EXISTS workspace_id  TEXT,
-      ADD COLUMN IF NOT EXISTS blocked_by    TEXT[],
-      ADD COLUMN IF NOT EXISTS feature_order INT,
-      ADD COLUMN IF NOT EXISTS origin        TEXT,
-      ADD COLUMN IF NOT EXISTS audit_verdict TEXT;
-    -- Plans are PG-canonical: the started-plan dispatch gate reads
-    -- harness_plans.op_status (folded from the retired harness_plan_status).
-    CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
-      workspace_id TEXT NOT NULL, harness_slug TEXT NOT NULL, plan_slug TEXT NOT NULL,
-      op_status TEXT, op_priority INT, op_started_at TIMESTAMPTZ,
-      PRIMARY KEY (workspace_id, harness_slug, plan_slug)
-    );
-  `);
+  // createOrgTestDb now applies the FULL self-contained head schema (000-baseline + 107+),
+  // so work_items (the base table, with workspace_id/blocked_by/feature_order/origin/audit_verdict)
+  // and harness_plans already exist, and harness_features_consolidated is a VIEW over work_items.
+  // The old prefix-patch ALTER was both invalid (can't ALTER a view) and unnecessary; the seeds
+  // below write the work_items base table and the readFrontier code reads the compat view.
 
   // Seed features exercising both gates.
   const f = async (
@@ -85,7 +74,7 @@ beforeAll(async () => {
     // pre-baseline prefix this fixture used to build). A "no remote-origin concern"
     // feature is represented as 'local' — so coalesce the test's null to 'local'.
     await db.adminSql`
-      INSERT INTO harness_shared.harness_features_consolidated
+      INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, status, metadata, workspace_id, origin, audit_verdict, feature_order)
       VALUES (${SLUG}, ${feature_id}, 'todo', ${metadata}, ${WS}, ${origin ?? 'local'}, ${audit_verdict}, ${order})`;
   };
@@ -117,7 +106,7 @@ describe('readFrontierFeatures — auditor gate + started-plan filter', () => {
 
   it('admitting a quarantined remote feature makes it pickable', async () => {
     await db.adminSql`
-      UPDATE harness_shared.harness_features_consolidated
+      UPDATE harness_shared.work_items
          SET audit_verdict = 'admit'
        WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND feature_id = 'F-REMOTE-PENDING'`;
     const ids = (await readFrontierFeatures(db.adminSql as never, WS, SLUG)).map((r) => r.id);

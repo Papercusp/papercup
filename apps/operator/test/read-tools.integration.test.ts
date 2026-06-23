@@ -117,19 +117,31 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   pg = postgres(u.toString(), { max: 4, onnotice: () => {} });
 
-  // Head-faithful copies of the three queried generated tables.
-  await createGenTable(generated.harnessFeaturesConsolidatedInHarnessShared as unknown as PgTable);
+  // Head-faithful copies of the queried generated relations.
+  //
+  // work-items-base-table (~migration 135): `harness_shared.work_items` is now
+  // the BASE TABLE (the canonical feature/work-item store) and
+  // `harness_shared.harness_features_consolidated` is a VIEW over it (the codegen
+  // emits it via `harnessShared.view(...)`, NOT `.table(...)` — so it is no
+  // longer a `PgTable` and `getTableConfig()` throws on it). The read handlers
+  // still query the compat VIEW, so we create the base table head-faithfully and
+  // recreate the view over it exactly as head does (filtering out bug/change/task
+  // item_kinds → only feature-shaped rows surface).
+  await createGenTable(generated.workItemsInHarnessShared as unknown as PgTable);
   await createGenTable(generated.projectsInHarnessShared as unknown as PgTable);
   await createGenTable(generated.auditLogInHarnessShared as unknown as PgTable);
-  // `_search` is a generated tsvector in prod but createGenTable mirrors it as
-  // plain `text` (codegen drops the GENERATED clause) — retype it so the FTS
-  // `@@` operator works and we can populate it. tags/see_also lag the codegen.
+  // createGenTable mirrors `_search` (a GENERATED tsvector in prod) as a plain,
+  // populatable tsvector column (codegen drops the GENERATED clause; coerceType
+  // keeps the `tsvector` type) — so the FTS `@@` operator works and we can seed it
+  // by UPDATE below. tags (jsonb) + see_also (text[]) are already native columns
+  // of the base table, so no compat ALTERs are needed.
+  //
+  // Recreate the compat view over the base table, matching head's definition
+  // (CHECK item_kind <> ALL (bug,change,task) — features carry item_kind='feature').
   await pg.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS _search text;
-    ALTER TABLE harness_shared.harness_features_consolidated ALTER COLUMN _search TYPE tsvector USING NULL::tsvector;
-    ALTER TABLE harness_shared.harness_features_consolidated
-      ADD COLUMN IF NOT EXISTS tags     jsonb,
-      ADD COLUMN IF NOT EXISTS see_also text[];
+    CREATE OR REPLACE VIEW harness_shared.harness_features_consolidated AS
+      SELECT * FROM harness_shared.work_items
+       WHERE item_kind <> ALL (ARRAY['bug', 'change', 'task']);
   `);
   // feature-history side tables (minimal columns their queries read; ts = epoch ms).
   await pg.unsafe(`

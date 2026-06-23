@@ -14,4 +14,21 @@ if [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$ZELLIJ_SESSION_NAME" ]; then
   printf '%s %s' "$ZELLIJ_SESSION_NAME" "$ZELLIJ_PANE_ID" \
     > "$HOME/.papercusp/sentinel-pane" 2>/dev/null || true
 fi
-exec psu --no-picker --agent=claude --role=sentinel
+# Session MODEL override (model-override-sidebar-2026-06-23): the Sentinel sidebar
+# tab writes the chosen `model[:effort]` spec to ~/.papercusp/sentinel-model
+# (projected from owner-steering by hive:set-steering — the bash wrapper can't read
+# PG). Present ⇒ launch the Sentinel at that model (+ effort, split out to claude's
+# --effort); absent ⇒ no flag ⇒ the workspace / CLI default. Re-read every launch
+# (the dock is volatile) so a change applies on the next relaunch.
+model_args=()
+if [ -s "$HOME/.papercusp/sentinel-model" ]; then
+  spec="$(tr -d ' \t\r\n' < "$HOME/.papercusp/sentinel-model" 2>/dev/null)"
+  if [ -n "$spec" ]; then
+    model="${spec%%:*}"
+    [ -n "$model" ] && model_args+=("--model=$model")
+    case "$spec" in
+      *:*) effort="${spec#*:}"; [ -n "$effort" ] && model_args+=(-- --effort "$effort") ;;
+    esac
+  fi
+fi
+exec psu --no-picker --agent=claude --role=sentinel "${model_args[@]}"

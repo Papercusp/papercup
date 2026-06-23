@@ -27,6 +27,7 @@ import PlanBucketTabs from '@/app/admin/plans/PlanBucketTabs';
 import PlanRail from '@/app/admin/plans/PlanRail';
 import { usePlanSearch } from '@/app/admin/plans/plans-api';
 import { Select } from '@/app/harness/Select';
+import { useDebouncedValue } from '@/app/harness/picker-kit';
 import {
   useCreateScope,
   usePlanListMaps,
@@ -41,6 +42,11 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
   const maps = usePlanListMaps(scope);
   const [view, setView] = useCreateView();
   const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
+  // The search box updates ?q on every keystroke (instant input), but the
+  // EXPENSIVE consumers — the cross-plan body search (a server round-trip) and
+  // the per-keystroke bucket-count / rail re-filter — read this DEBOUNCED value,
+  // so typing stays responsive and the heavy work runs only once typing settles.
+  const debouncedQ = useDebouncedValue(q, 250);
   const [plan, setPlan] = useQueryState('plan', parseAsString);
   const [harnessFilter, setHarnessFilter] = useQueryState('h', parseAsString);
   const [itemPlans, setItemPlans] = useItemPlanFilter();
@@ -75,7 +81,7 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
     }
   };
 
-  const railSearchHits = usePlanSearch(q);
+  const railSearchHits = usePlanSearch(debouncedQ);
   const searchHitSlugs = useMemo<Set<string>>(() => {
     const s = new Set<string>();
     for (const h of railSearchHits.data?.hits ?? []) s.add(h.plan);
@@ -180,14 +186,14 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
         ) : null}
 
         <PlanFilters list={filteredPlanList} query={q} onQueryChange={setQ} searchRef={searchRef} />
-        <PlanBucketTabs plans={maps.visiblePlans} query={q} searchHitSlugs={searchHitSlugs} />
+        <PlanBucketTabs plans={maps.visiblePlans} query={debouncedQ} searchHitSlugs={searchHitSlugs} />
       </div>
 
       <div className="pc-plans__list" aria-label="Plans">
         <PlanRail
           list={filteredPlanList}
           selectedSlugs={selectedSlugs}
-          query={q}
+          query={debouncedQ}
           searchHitSlugs={searchHitSlugs}
           onSelect={onSelectPlan}
           onStartToggle={() => maps.planList.refresh()}
