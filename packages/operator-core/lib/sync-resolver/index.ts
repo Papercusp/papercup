@@ -3017,6 +3017,36 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // dev.telemetry — per-tool invocation rollup (calls / bytes / latency p50/p95 /
+  // repeat-within-spawn) over a window. Powers the Tool-usage tab's hot-tools +
+  // batching-waste panels (usage-insights P-003/P-004). Flat scalar-array rows.
+  'dev.telemetry': {
+    argsSchema: z.object({
+      hours: z.number().int().positive().max(336).default(24),
+      limit: z.number().int().positive().max(500).default(100),
+    }),
+    resolve: async (args) => {
+      const { hours, limit } = args as { hours: number; limit: number };
+      const { telemetryRollup } = await import('../dev-data');
+      const { entries } = await telemetryRollup({ workspaceIds: null, hours, limit });
+      return entries;
+    },
+  },
+
+  // dev.toolFormatAdoption — served-format mix (toon/json/csv/none) on the MCP
+  // transport over a window: the token-opt compact-adoption signal (P-002/D-002).
+  'dev.toolFormatAdoption': {
+    argsSchema: z.object({
+      hours: z.number().int().positive().max(336).default(24),
+    }),
+    resolve: async (args) => {
+      const { hours } = args as { hours: number };
+      const { toolFormatAdoption } = await import('../dev-data');
+      const { rows } = await toolFormatAdoption({ workspaceIds: null, hours });
+      return rows;
+    },
+  },
+
   // dev.coordPresence — LIVE coordination agents and their declared intent: who's
   // working on what right now. Filters out stale rows server-side (heartbeat >10
   // min — almost certainly ended): the roster can hold 150+ rows but only a
