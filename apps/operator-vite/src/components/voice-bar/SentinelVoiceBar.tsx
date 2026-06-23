@@ -22,7 +22,7 @@
  * "Sentinel" in the-hive pack, "Operator" in classic — never a hardcoded
  * "Papercup".
  */
-import { PanelLeftClose, Radio, Volume2, VolumeX } from 'lucide-react';
+import { PanelLeftClose, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLexicon } from '@/lib/useLexicon';
 import { AudienceModeSelector } from '@/app/_components/AudienceModeSelector';
@@ -54,25 +54,10 @@ export default function SentinelVoiceBar({ onCollapse }: { onCollapse?: () => vo
   return (
     <div className="pc-voice-bar" role="region" aria-label={`${persona} voice controls`}>
       <style>{VOICE_BAR_CSS}</style>
-      <div className="pc-voice-bar__brand">
-        <Radio size={13} aria-hidden="true" />
-        <span className="pc-voice-bar__title">{persona}</span>
-        <span className="pc-voice-bar__subtitle">voice &amp; activity</span>
-        {/* Collapse the whole left rail. Sits at the top-right of the rail header
-            (replaces the removed empty header row, owner 2026-06-22). PanelLeftClose
-            reads unmistakably as a sidebar-collapse control; the collapsed rail
-            shows the matching PanelLeftOpen to expand. */}
-        {onCollapse && (
-          <button
-            type="button"
-            className="pc-voice-bar__collapse"
-            onClick={onCollapse}
-            aria-label="Collapse sidebar"
-          >
-            <PanelLeftClose size={15} aria-hidden="true" />
-          </button>
-        )}
-      </div>
+      {/* Brand/header row ("<persona> · voice & activity") removed to save
+          vertical space (owner ask 2026-06-23) — the highlighted active tab
+          already shows which view you're on. The collapse control moved into
+          the controls row below. */}
       <div className="pc-voice-bar__controls">
         <AudienceModeSelector />
         <OperatorActiveToggle />
@@ -94,6 +79,19 @@ export default function SentinelVoiceBar({ onCollapse }: { onCollapse?: () => vo
         >
           {muted ? <VolumeX size={15} aria-hidden="true" /> : <Volume2 size={15} aria-hidden="true" />}
         </button>
+        {/* Collapse the left rail — moved here from the removed brand row (owner
+            ask 2026-06-23). `margin-left:auto` on .pc-voice-bar__collapse
+            right-aligns it at the end of the controls row. */}
+        {onCollapse && (
+          <button
+            type="button"
+            className="pc-voice-bar__collapse"
+            onClick={onCollapse}
+            aria-label="Collapse sidebar"
+          >
+            <PanelLeftClose size={15} aria-hidden="true" />
+          </button>
+        )}
       </div>
     </div>
   );

@@ -34,10 +34,11 @@
  * token_index is UNIQUE(workspace_id, harness_slug) as in head.)
  */
 import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config';
+import { createFreshTestDb } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages -- run the real boot-path migration runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -89,27 +90,45 @@ const clientOpts = {
   connection: { search_path: 'harness_shared, public' },
 } as const;
 
-export async function createOrgTestDb(): Promise<OrgTestDb> {
-  const containerUri = await getTestPg();
-  const dbName = `org_${randomBytes(5).toString('hex')}`;
-
-  const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
-  try {
-    await maint.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await maint.end({ timeout: 5 });
+let _migKey: string | null = null;
+/** Content hash of the migration set — the template key. Changes whenever any migration
+ *  is added / edited / removed, so a schema change forces a template rebuild (a stale
+ *  template would silently serve the WRONG schema). Computed once per process. */
+function migrationSetKey(): string {
+  if (_migKey) return _migKey;
+  const h = createHash('sha1');
+  for (const f of readdirSync(SQL_DIR).filter((n) => n.endsWith('.sql')).sort()) {
+    h.update(f).update('\0').update(readFileSync(resolve(SQL_DIR, f)));
   }
+  _migKey = h.digest('hex').slice(0, 16);
+  return _migKey;
+}
 
-  const u = new URL(containerUri);
-  u.pathname = `/${dbName}`;
-  const boot = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await boot.unsafe(FRAMEWORK_PREREQS_DDL);
-  // The migration set is now self-contained (000-baseline.sql + 107+): empty→head
-  // builds the COMPLETE schema, so this throws loudly on any real failure rather than
-  // silently leaving a partial prefix (self-contained-migration-baseline-2026-06-02).
-  await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR });
-  await boot.end({ timeout: 5 });
-
+export async function createOrgTestDb(): Promise<OrgTestDb> {
+  // Clone the fully-migrated schema from a per-container TEMPLATE built ONCE
+  // (FRAMEWORK_PREREQS_DDL + ~280 migrations) instead of replaying it for EVERY
+  // integration file — a near-instant Postgres `CREATE DATABASE … TEMPLATE` file
+  // copy. The template is keyed by the migration-set content hash, so a schema
+  // change rebuilds it (else a stale template serves the wrong schema).
+  const db = await createFreshTestDb({
+    prefix: 'org',
+    template: {
+      key: migrationSetKey(),
+      provision: async (url) => {
+        const boot = postgres(url, { max: 1, onnotice: () => {} });
+        try {
+          await boot.unsafe(FRAMEWORK_PREREQS_DDL);
+          // empty→head builds the COMPLETE schema, throwing loudly on any real failure
+          // (self-contained-migration-baseline-2026-06-02).
+          await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR });
+        } finally {
+          await boot.end({ timeout: 5 });
+        }
+      },
+    },
+  });
+  const dbName = db.name;
+  const u = new URL(db.url);
   const host = u.hostname;
   const port = u.port;
   const appDsn = `postgresql://harness_app:harness_app_pwd@${host}:${port}/${dbName}`;
@@ -120,14 +139,7 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const cleanup = async () => {
     await appSql.end({ timeout: 5 }).catch(() => {});
     await adminSql.end({ timeout: 5 }).catch(() => {});
-    const m = postgres(containerUri, { max: 1, onnotice: () => {} });
-    try {
-      await m.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-    } catch {
-      /* best-effort */
-    } finally {
-      await m.end({ timeout: 5 });
-    }
+    await db.drop().catch(() => {});
   };
 
   return { appSql, adminSql, appDsn, adminDsn, dbName, cleanup };

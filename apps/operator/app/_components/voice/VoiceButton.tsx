@@ -384,8 +384,9 @@ export function VoiceButton(): ReactElement {
             navigateClient('/settings/voice');
           }}
         >
+          {/* Icon-only to save space (owner ask 2026-06-23) — the "Voice" text
+              label was dropped; the gear + aria-label/tooltip still name it. */}
           <Settings2 size={14} aria-hidden="true" />
-          <span className="pc-voice-settings-text">Voice</span>
         </a>
       </Tooltip>
       {(showWakeHint || showPttHint) && (

@@ -143,3 +143,10 @@ because operator and sentinel are the SAME role-keyed converse brain.
   ONE follow-up for the owner: run the live answer-quality eval when the API
   isn't rate-limited (`npm --prefix apps/operator run llm-test -- --target
   sentinel`); optionally set a distinct judge model (Plan §6.3).
+- 2026-06-23 (resumed): two voice-bar space trims (owner ask) — removed the
+  "<persona> · voice & activity" brand/header row from SentinelVoiceBar (collapse
+  control moved into the controls row), and dropped the "Voice" text label from
+  the VoiceButton settings link (gear-icon-only; aria-label/tooltip retained).
+  LeftSidebar 12/12, VoiceButton 15/15 green. Re-armed the 2-min loop
+  (CronCreate **8b3ba1e8**) to retry the bounded LIVE eval until the 429 rate
+  limit clears, then capture results + self-review + CronDelete.
