@@ -36,6 +36,8 @@ interface BudgetRow {
   pace_delay_ms: unknown;
   last_acquire_at: unknown;
   limits: Partial<GovernorLimits> | string | null;
+  rpm_factor: unknown;
+  rpm_factor_at: unknown;
 }
 
 function rowToState(row: BudgetRow, floor: GovernorLimits): GovernorState {
@@ -47,6 +49,12 @@ function rowToState(row: BudgetRow, floor: GovernorLimits): GovernorState {
   s.pausedUntil = n(row.paused_until);
   s.paceDelayMs = n(row.pace_delay_ms);
   s.lastAcquireAt = n(row.last_acquire_at);
+  // C1 (inference-gateway-audit-2026-06-23): the adaptive-RPM learned factor must survive the cross-process
+  // round-trip — without it, `transact` runs the rate gate on `effectiveRpmFactor === 1` every time and the
+  // account never learns down off a soft-throttle. NULL ⇒ undefined (effectiveRpmFactor treats it as 1), NEVER
+  // 0 (a real-but-wrong factor that would pace the account to a crawl). The pair is read/written atomically.
+  s.rpmFactor = row.rpm_factor == null ? undefined : Number(row.rpm_factor);
+  s.rpmFactorAt = row.rpm_factor_at == null ? undefined : n(row.rpm_factor_at);
   // Persisted (auto-tuned) limits win; the floor's maxConcurrent is local-only so keep it.
   // jsonb usually arrives parsed, but be defensive against a string-returning client config.
   const l: Partial<GovernorLimits> =
@@ -71,7 +79,7 @@ export class PgGovernorStore implements GovernorStore {
     return (await sql.begin(async (tx) => {
       const rows = (await tx`
         SELECT window_start, req_in_window, in_tok_in_window, out_tok_in_window,
-               paused_until, pace_delay_ms, last_acquire_at, limits
+               paused_until, pace_delay_ms, last_acquire_at, limits, rpm_factor, rpm_factor_at
           FROM harness_shared.agent_rate_budget
          WHERE bucket_key = ${key}
          FOR UPDATE
@@ -92,10 +100,11 @@ export class PgGovernorStore implements GovernorStore {
       await tx`
         INSERT INTO harness_shared.agent_rate_budget
           (bucket_key, window_start, req_in_window, in_tok_in_window, out_tok_in_window,
-           paused_until, pace_delay_ms, last_acquire_at, limits, updated_at)
+           paused_until, pace_delay_ms, last_acquire_at, limits, updated_at, rpm_factor, rpm_factor_at)
         VALUES
           (${key}, ${s.windowStart}, ${s.reqInWindow}, ${s.inTokInWindow}, ${s.outTokInWindow},
-           ${s.pausedUntil}, ${s.paceDelayMs}, ${s.lastAcquireAt}, ${JSON.stringify(limitsObj)}::text::jsonb, ${Date.now()})
+           ${s.pausedUntil}, ${s.paceDelayMs}, ${s.lastAcquireAt}, ${JSON.stringify(limitsObj)}::text::jsonb, ${Date.now()},
+           ${s.rpmFactor ?? null}, ${s.rpmFactorAt ?? null})
         ON CONFLICT (bucket_key) DO UPDATE SET
           window_start      = EXCLUDED.window_start,
           req_in_window     = EXCLUDED.req_in_window,
@@ -105,7 +114,9 @@ export class PgGovernorStore implements GovernorStore {
           pace_delay_ms     = EXCLUDED.pace_delay_ms,
           last_acquire_at   = EXCLUDED.last_acquire_at,
           limits            = EXCLUDED.limits,
-          updated_at        = EXCLUDED.updated_at
+          updated_at        = EXCLUDED.updated_at,
+          rpm_factor        = EXCLUDED.rpm_factor,
+          rpm_factor_at     = EXCLUDED.rpm_factor_at
       `;
       return s;
     })) as GovernorState;
