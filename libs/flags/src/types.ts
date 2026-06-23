@@ -1307,12 +1307,18 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // The wedged leg matches the already-live in-memory reaper's threshold, so the
   // incremental risk of ON is bounded; flip OFF at /admin/features if it misbehaves.
   [FLAGS.RECLAIM_STALLED]: true,
-  // OFF by default — DELIBERATE (operator-memory-and-psu-resilience P-008 / WI-147,
-  // D-005/D-006 BINDING constraint): lazy/bounded substrate boot is correctness-critical
-  // with fleet-sync blast radius (a wrong eviction → the EI-126 data-divergence class) and
-  // MUST stage on :3170 first. OFF = byte-identical eager boot (today's behavior). The
-  // pending staged enable is surfaced in WI-147 + the plan.
-  [FLAGS.LAZY_SUBSTRATE_BOOT]: false,
+  // DEFAULT ON (WI-596, 2026-06-23) — lazy/bounded substrate boot, v1. When ON, the
+  // eviction reaper (substrate-eviction-reaper.ts) tears down idle, INERT private
+  // (swarm-less, peerless) harness engines via the pure planSubstrateEviction policy,
+  // bounding operator RSS sub-linearly in harness count. SAFE-BY-CONSTRUCTION: a harness
+  // with a live swarm (`handle.swarm != null`) or any admitted remote peer is treated as
+  // pinned/active-peer and is NEVER evicted, so v1 can never strand a federating harness
+  // (the EI-126 data-divergence class is off the table for v1) — and an evicted engine
+  // re-boots on access (getBootedHarness reboot-on-access) or on its next boot-all
+  // reconcile. The harder slice — evicting idle SHARED harnesses while a lightweight
+  // swarm-presence keepalive re-boots them on a later peer connection (D-004) — is the
+  // v2 follow-up and is OUT of v1's eviction set. OFF = byte-identical eager boot.
+  [FLAGS.LAZY_SUBSTRATE_BOOT]: true,
   [FLAGS.NEGATIVE_SPACE_MINER]: true,
   // OFF by default — same D-001 dark-ship rule as NEGATIVE_SPACE_MINER above:
   // frontier learning loops arm only when self-learning-frontier P-001 closes

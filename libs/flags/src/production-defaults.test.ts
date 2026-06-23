@@ -37,11 +37,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // P-003; 34 reconciler integration tests) AND the new spawned_agents WEDGED-reclaim leg (durable
   // DB-truth `reclaimWedgedSpawns`; 12 integration tests; action threshold = the already-live in-memory
   // wedge reaper's 30-min, so incremental risk is bounded). Reversible kill-switch — removed per the rule.)
-  // operator-memory-and-psu-resilience P-008 (WI-147, D-005/D-006): lazy/bounded substrate boot —
-  // correctness-critical with fleet-sync blast radius (a wrong eviction → the EI-126 data-divergence
-  // class). Binding constraint: stage on :3170 FIRST. OFF ⇒ byte-identical eager boot. Owner flips ON
-  // after the staged :3170 verify (peer sync intact + no outbox growth + RSS drop).
-  FLAGS.LAZY_SUBSTRATE_BOOT,
+  // (LAZY_SUBSTRATE_BOOT graduated to default-ON 2026-06-23, WI-596 — lazy/bounded substrate boot v1.
+  // The eviction reaper tears down ONLY idle, INERT private (swarm-less, peerless) harness engines; a
+  // swarmed/peered harness is pinned + never evicted, so the EI-126 fleet-divergence class is off the
+  // table for v1, and an evicted engine re-boots on access. OFF = byte-identical eager boot. 1227-test
+  // hyperbee suite green incl. federation/convergence/swarm-chaos; v1 wiring 37 tests. The idle-SHARED
+  // eviction + swarm-presence keepalive (D-004) is the v2 follow-up under the SAME flag — removed per
+  // the rule, not parked.)
   // git-sync-dx-hardening-2026-06-17 P-004: derived per-agent commit attribution rewrites
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
@@ -346,7 +348,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.DESIGN, 'parked'],
   [FLAGS.TESTING, 'parked'],
   // incomplete — not fully working / unverified on a path that matters
-  [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
