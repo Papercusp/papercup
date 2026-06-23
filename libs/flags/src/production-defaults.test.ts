@@ -328,6 +328,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // rows-delta (plans.attention/plans.list, the ~327GB/3d win); merge is done in code by the
   // SyncDeltaCodec/DeltaToolClient with a checksum→refetch-full guard, NO LLM in the path. Reversible —
   // removed from the dark allowlist per the rule.)
+  // psu-in-desktop-builds-2026-06-23 C1: the END-USER psu exposure flag. Legitimate dark case —
+  // owner-authority/SECURITY surface (psu opens a superuser agent session). OFF ⇒ no discoverable
+  // entry + the scoped `user` profile is the only end-user path; the bundled shim is inert. Owner
+  // (Avi) ratifies the end-user exposure before default-ON; the scoped profile (C2) + VM smoke (D)
+  // must also land first. Surfaced in the plan ## Now + the completion report.
+  FLAGS.PSU_END_USER,
 ]);
 
 /**
@@ -365,6 +371,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
+  [FLAGS.PSU_END_USER, 'owner-authority'],
   // cutover — reversible kill-switch the owner flips after an attended live verify
   [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
   [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],

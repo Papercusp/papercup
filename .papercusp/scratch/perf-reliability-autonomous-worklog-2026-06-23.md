@@ -42,8 +42,11 @@ errors in touched files; do NOT run *.integration.test.ts; never leave red) → 
 
 | 4 | `external-bench/grader/swe-bench-pro.ts` | 9 ✓ | parseSweBenchProReport (PURE: resolved bool passthrough, missing/non-boolean→graderError); makeSweBenchProGrader.grade (injected exec+fs: no-diff→[], predictions.json content, eval-arg assembly + --use_local_docker toggle + pythonBin/numWorkers/dockerhub overrides, read-error→batchError w/ exit code, scratch rm in finally) |
 
-**Loop tally: 41 tests across 4 modules.**
+| 5 | `cross-hive-ask-send.ts` | 6 ✓ | sendCrossHiveAsk: default-deny admission (ungranted→no boundary/insert/send); UTF-8 bodyBytes to grant; no-live-boundary hard-fail (no row); crash-safe order (insert BEFORE send); delivered→markSent+'sent', offline→'queued'+no markSent; askedBy conditional; newId→correlationId; answeredEvent/declinedEvent via crossHiveReplyEventKey. (Fixed a tsc artifact: typed the insertQueued vi.fn params so .mock.calls[0][2] is indexable.) |
+
+**Loop tally: 47 tests across 5 modules.**
 ⚠ Verification caveat reaffirmed: `graduation/evidence.ts` was a candidate but evidenceItemsFromIssues is ALREADY tested in `graduation/scan.test.ts` — ALWAYS `grep -rl <export> **/*.test.ts` (incl. sibling test files, not just colocated) before committing.
+⚠ tsc tip: a `vi.fn(async () => …)` infers an empty-args tuple, so `.mock.calls[0][N]` errors under tsc — give the vi.fn explicit param types when you index its calls.
 
 ## Best target pattern: untested modules exporting a `*Deps` injectable-deps interface
 `grep -rlE "export interface [A-Za-z]+Deps" packages/operator-core/lib --include=*.ts | <filter to no colocated test>`.

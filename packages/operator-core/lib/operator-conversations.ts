@@ -211,6 +211,15 @@ export async function appendTurn(input: {
    */
   report?: ParsedReport | null;
 }): Promise<TurnRow> {
+  // Fail FAST + CLEAR on a missing conversation id (EI-2905). Without this, an undefined
+  // conversationId flowed straight into the INSERT's `$1` and surfaced as postgres-js's
+  // cryptic `UNDEFINED_VALUE: Undefined values are not allowed` — naming neither the tool
+  // nor the field. A named guard turns the next such caller bug into an obvious error.
+  if (!input.conversationId) {
+    throw new Error(
+      `appendTurn: conversationId is required (got ${JSON.stringify(input.conversationId)})`,
+    );
+  }
   const { sql: rawSql } = getOrgPg();
 
   // Drizzle has a known jsonb auto-conversion bug (commit 98cfffb7 — three

@@ -1023,6 +1023,14 @@ export const FLAGS = {
   // changes WHAT the autonomous fleet picks up (a brand-new dispatch source), so the
   // owner ratifies the flip. OFF ⇒ byte-identical to today (feature-only). KNOWN_DARK_FLAGS.
   SCHEDULER_ISSUES_CLAIMABLE: "papercusp-scheduler-issues-claimable",
+  // psu-in-desktop-builds-2026-06-23 C1: exposes the `psu` superuser CLI as an
+  // END-USER feature in the shipped desktop builds (the discoverable launch
+  // entry + forcing the scoped `user` profile). DEFAULT OFF — this is the
+  // legitimate owner-authority/SECURITY dark case (CLAUDE.md): psu opens a
+  // superuser agent session, so the owner must personally ratify the end-user
+  // exposure before it defaults on. OFF ⇒ the entry is not offered; the bundled
+  // psu shim is inert (dev/internal launch is unchanged). KNOWN_DARK_FLAGS.
+  PSU_END_USER: "papercusp-psu-end-user",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1603,6 +1611,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // + reversible (adds a one-shot [batch-hint] line to a result for a code:run-capable caller); OFF
   // ⇒ no hint, byte-identical to before.
   [FLAGS.CODE_RUN_BATCH_NUDGE]: true,
+  // DEFAULT OFF (dark): owner-authority/security surface — see the key comment
+  // above (psu-in-desktop-builds-2026-06-23 C1). Owner ratifies before flip.
+  [FLAGS.PSU_END_USER]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

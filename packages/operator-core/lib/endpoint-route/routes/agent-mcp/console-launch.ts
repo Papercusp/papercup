@@ -227,8 +227,13 @@ function buildOneliner(
   appearance: AppearanceOpts,
 ): string {
   const envExports: string[] = [];
-  if (env.PAPERCUSP_SCRIPTS_DIR) {
-    envExports.push(`export PATH=${shellEscape(env.PAPERCUSP_SCRIPTS_DIR)}:\${PATH}`);
+  // Prepend the writable shim dir (psu/ptool, ~/.papercusp/bin) AND the bundled
+  // scripts dir to PATH so the in-app terminal can run papercup/psu/ptool. Bin
+  // dir first so a user shim wins over a same-named bundled script
+  // (psu-in-desktop-builds-2026-06-23 A2b).
+  const pathPrepend = [env.PAPERCUSP_BIN_DIR, env.PAPERCUSP_SCRIPTS_DIR].filter(Boolean) as string[];
+  if (pathPrepend.length) {
+    envExports.push(`export PATH=${pathPrepend.map((d) => shellEscape(d)).join(':')}:\${PATH}`);
   }
   for (const [k, v] of Object.entries(env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;

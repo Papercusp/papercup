@@ -37,6 +37,12 @@ export interface InstallPaths {
   playbookPath: string;
   /** ~/.papercusp/papercusp-coord.ts — refreshed every call. */
   extensionPath: string;
+  /** ~/.papercusp/bin — user-writable dir for the on-PATH CLI shims. */
+  binDir: string;
+  /** ~/.papercusp/bin/psu — superuser launcher shim → the bundled psu.mjs. */
+  psuPath: string;
+  /** ~/.papercusp/bin/ptool — defineTool CLI shim → the bundled ptool.mjs. */
+  ptoolPath: string;
 }
 
 export interface InstallResult extends InstallPaths {
@@ -53,6 +59,14 @@ export interface InstallResult extends InstallPaths {
   playbookSource: string;
   /** Where the extension source was read from. Empty when not found. */
   extensionSource: string;
+  /** True when the `psu` shim was written (bundled/dev launcher resolved). */
+  psuShimWritten: boolean;
+  /** True when the `ptool` shim was written. */
+  ptoolShimWritten: boolean;
+  /** Resolved psu launcher the shim points at. Empty when not found. */
+  psuLauncherSource: string;
+  /** Resolved ptool launcher the shim points at. Empty when not found. */
+  ptoolLauncherSource: string;
 }
 
 export interface InstallOpts {
@@ -319,6 +333,48 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
   ];
 }
 
+/**
+ * Candidate launcher paths for the on-PATH CLI shims (psu / ptool). The
+ * shipped sidecar bundles esbuild outputs at `<root>/scripts/psu.mjs` +
+ * `ptool.mjs` (build-desktop-sidecar.sh); the dev repo has the un-bundled
+ * sources at `apps/operator/scripts/psu-launcher.mjs` + `ptool.mjs`. `names`
+ * is ordered bundled-first, dev-second, so a real packaged build always
+ * prefers its self-contained bundle. Mirrors playbookCandidates' root list
+ * (operatorAppRoot first, then process.cwd()-rooted fallbacks for the esbuild
+ * sidecar layout where __dirname collapses to sidecar/).
+ */
+function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, names: string[]): string[] {
+  const roots = explicitRoot
+    ? [path.join(operatorAppRoot, 'scripts')]
+    : [
+        path.join(operatorAppRoot, 'scripts'),
+        path.join(process.cwd(), 'scripts'),
+        path.join(process.cwd(), 'apps', 'operator', 'scripts'),
+      ];
+  // Names-outer so the bundled name wins in EVERY root before the dev name is tried.
+  return names.flatMap((n) => roots.map((r) => path.join(r, n)));
+}
+
+/**
+ * Write an executable bash shim that `exec node`s the resolved launcher.
+ * Same shape as the `psu`/`ptool` shims install-standalone-mcp.sh writes for
+ * dev, but pointed at the bundled launcher in the shipped runtime. Refreshed
+ * every boot so an app update re-points the shim at the new bundle. The
+ * launcher path is double-quoted (JSON.stringify) so a path with spaces
+ * survives — these shims run under bash on macOS / Linux / the WSL distro.
+ */
+async function writeShim(shimPath: string, launcherPath: string, label: string): Promise<boolean> {
+  const body =
+    '#!/usr/bin/env bash\n' +
+    `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
+    '# Refreshed on every boot; do not edit. Execs the bundled Node launcher.\n' +
+    `exec node ${JSON.stringify(launcherPath)} "$@"\n`;
+  await fs.writeFile(shimPath, body, { mode: 0o755 });
+  // writeFile honors mode only on creation; chmod to guarantee on overwrite.
+  await fs.chmod(shimPath, 0o755);
+  return true;
+}
+
 async function pathExists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
@@ -337,12 +393,16 @@ async function firstExisting(candidates: string[]): Promise<string | null> {
 
 export function resolveInstallPaths(home: string): InstallPaths {
   const papercuspDir = path.join(home, '.papercusp');
+  const binDir = path.join(papercuspDir, 'bin');
   return {
     papercuspDir,
     tokenPath: path.join(papercuspDir, 'superuser-token'),
     agentIdPath: path.join(papercuspDir, 'su-agent-id'),
     playbookPath: path.join(papercuspDir, 'engineer-collaborator.md'),
     extensionPath: path.join(papercuspDir, 'papercusp-coord.ts'),
+    binDir,
+    psuPath: path.join(binDir, 'psu'),
+    ptoolPath: path.join(binDir, 'ptool'),
   };
 }
 
@@ -355,6 +415,13 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     opts.playbookSource ?? (await firstExisting(playbookCandidates(operatorAppRoot, explicitRoot)));
   const extensionSource =
     opts.extensionSource ?? (await firstExisting(extensionCandidates(operatorAppRoot, explicitRoot)));
+  // psu/ptool launchers — bundled (psu.mjs/ptool.mjs) first, dev source second.
+  const psuLauncherSource = await firstExisting(
+    cliLauncherCandidates(operatorAppRoot, explicitRoot, ['psu.mjs', 'psu-launcher.mjs']),
+  );
+  const ptoolLauncherSource = await firstExisting(
+    cliLauncherCandidates(operatorAppRoot, explicitRoot, ['ptool.mjs']),
+  );
 
   const paths = resolveInstallPaths(home);
 
@@ -369,6 +436,19 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const playbookWritten = playbookSource ? await writeSplicedPlaybook(playbookSource, paths.playbookPath) : false;
   const extensionWritten = extensionSource ? await copyIfExists(extensionSource, paths.extensionPath) : false;
 
+  // On-PATH CLI shims (psu-in-desktop-builds-2026-06-23 A2). Written only when
+  // the launcher actually resolves — a dev repo or a packaged build that bundled
+  // them. The native-console terminal prepends ~/.papercusp/bin to PATH (A2b),
+  // so `psu` / `ptool` are then runnable from the in-app terminal. The shims are
+  // the launcher only; what the discoverable end-user entry exposes + which
+  // profile psu launches with are gated separately (FLAGS.PSU_END_USER + the
+  // scoped `user` profile, C1/C2).
+  await fs.mkdir(paths.binDir, { recursive: true, mode: 0o700 });
+  const psuShimWritten = psuLauncherSource ? await writeShim(paths.psuPath, psuLauncherSource, 'superuser launcher (psu)') : false;
+  const ptoolShimWritten = ptoolLauncherSource
+    ? await writeShim(paths.ptoolPath, ptoolLauncherSource, 'defineTool CLI (ptool)')
+    : false;
+
   return {
     ...paths,
     minted: { token: token.minted, agentId: agentId.minted },
@@ -376,6 +456,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     extensionWritten,
     playbookSource: playbookWritten && playbookSource ? playbookSource : '',
     extensionSource: extensionWritten && extensionSource ? extensionSource : '',
+    psuShimWritten,
+    ptoolShimWritten,
+    psuLauncherSource: psuShimWritten && psuLauncherSource ? psuLauncherSource : '',
+    ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
   };
 }
 

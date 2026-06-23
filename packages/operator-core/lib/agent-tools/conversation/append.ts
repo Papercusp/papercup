@@ -38,7 +38,10 @@ export default defineTool({
     const conv = await getOrCreateActiveConversation();
     const source = args.source ?? (args.role === 'assistant' ? 'voice_tts' : 'voice_stt');
     const turn = await appendTurn({
-      conversationId: conv.conversationId,
+      // ConversationRow's id field is `id`, NOT `conversationId` (EI-2905): reading the
+      // non-existent `conv.conversationId` passed `undefined` to appendTurn's INSERT `$1`,
+      // which postgres-js rejected as `UNDEFINED_VALUE` on 100% of calls.
+      conversationId: conv.id,
       role: args.role,
       text: args.text,
       source,

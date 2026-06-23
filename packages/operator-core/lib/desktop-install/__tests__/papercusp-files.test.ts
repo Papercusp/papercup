@@ -32,6 +32,10 @@ beforeEach(async () => {
     path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
     '// coord-hook v1\n',
   );
+  // psu/ptool launcher sources the shim writer points at (A2). Dev names —
+  // the bundled `psu.mjs` test below adds the bundled name explicitly.
+  await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'psu-launcher.mjs'), '// psu-launcher v1\n');
+  await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'ptool.mjs'), '// ptool v1\n');
 });
 
 afterEach(async () => {
@@ -99,6 +103,44 @@ describe('installPapercuspFiles', () => {
     expect(tokenStat.mode & 0o777).toBe(0o600);
     const agentStat = await fs.stat(result.agentIdPath);
     expect(agentStat.mode & 0o777).toBe(0o600);
+  });
+
+  it('writes executable psu + ptool shims pointing at the resolved launchers (A2)', async () => {
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+
+    expect(result.psuShimWritten).toBe(true);
+    expect(result.ptoolShimWritten).toBe(true);
+    expect(result.psuLauncherSource).toBe(path.join(tmpAppRoot, 'scripts', 'psu-launcher.mjs'));
+    expect(result.ptoolLauncherSource).toBe(path.join(tmpAppRoot, 'scripts', 'ptool.mjs'));
+
+    // Shim lands at ~/.papercusp/bin/psu, executable, and execs the launcher.
+    expect(result.psuPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'psu'));
+    const psu = await fs.readFile(result.psuPath, 'utf8');
+    expect(psu).toMatch(/^#!\/usr\/bin\/env bash\n/);
+    expect(psu).toContain(`exec node ${JSON.stringify(result.psuLauncherSource)} "$@"`);
+    expect((await fs.stat(result.psuPath)).mode & 0o777).toBe(0o755);
+    expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
+  });
+
+  it('prefers the bundled psu.mjs over the dev psu-launcher.mjs (A2)', async () => {
+    // A packaged sidecar ships scripts/psu.mjs alongside the dev source; the
+    // bundled name must win so end users run the self-contained bundle.
+    await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'psu.mjs'), '// bundled psu\n');
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.psuLauncherSource).toBe(path.join(tmpAppRoot, 'scripts', 'psu.mjs'));
+    const psu = await fs.readFile(result.psuPath, 'utf8');
+    expect(psu).toContain(path.join(tmpAppRoot, 'scripts', 'psu.mjs'));
+  });
+
+  it('missing psu launcher: psuShimWritten=false, no throw, other artifacts land (A2)', async () => {
+    await fs.rm(path.join(tmpAppRoot, 'scripts', 'psu-launcher.mjs'));
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.psuShimWritten).toBe(false);
+    expect(result.psuLauncherSource).toBe('');
+    // ptool still resolved, and the rest of the install still landed.
+    expect(result.ptoolShimWritten).toBe(true);
+    expect(result.minted.token).toBe(true);
+    expect(result.playbookWritten).toBe(true);
   });
 
   it('missing playbook source: playbookWritten=false, no throw', async () => {

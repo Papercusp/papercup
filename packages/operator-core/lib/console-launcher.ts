@@ -190,6 +190,10 @@ export async function buildConsoleEnvelope(
   //     just opens without the greeting CLI in PATH).
   const scriptsDir = resolveScriptsDir();
   if (scriptsDir) env.PAPERCUSP_SCRIPTS_DIR = scriptsDir;
+  // The psu/ptool shims (installPapercuspFiles) live in ~/.papercusp/bin. Pass
+  // it so the spawner can prepend it to PATH — that's what makes `psu` runnable
+  // from the in-app terminal (psu-in-desktop-builds-2026-06-23 A2b).
+  env.PAPERCUSP_BIN_DIR = join(homedir(), '.papercusp', 'bin');
 
 
   // 3. Build the .mcp.json that the user's claude/codex agent will
