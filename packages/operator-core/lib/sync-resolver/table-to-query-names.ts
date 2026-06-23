@@ -72,7 +72,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // back-to-back registry changes (EI-206 — a create followed by a delete
   // inside the window left open harness lists stale).
   // network.board: a hive create/dissolve changes its tier 1–2 rows.
-  'harness_shared.harness_registry': ['harnessProjects.lite', 'network.board'],
+  'harness_shared.harness_registry': ['harnessProjects.lite', 'harnessWorkspaces.byHarness', 'network.board'],
+  'harness_shared.contributors': ['contributors.byHarness'],
+  'harness_shared.auto_review_audit': ['contributors.byHarness'],
+  'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list'],
   // ── Per-harness HYPERBEE-bucket tables ────────────────────────────
   'harness_shared.harness_text_artifacts': ['harnessTextArtifact.byHarness'],
   // harness_design_artifacts backs the Design tab's sketch pane (designSketches.byFeature).
@@ -82,11 +85,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_project_files': ['harnessProjectFiles.byHarness'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
-  'harness_shared.harness_lanes': ['harnessLanes.byHarness'],
+  'harness_shared.harness_lanes': ['harnessLanes.byHarness', 'harnessLanes.snapshot'],
   'harness_shared.harness_escalations': ['harnessEscalations.byHarness'],
   'harness_shared.harness_checkpoints': ['harnessCheckpoints.byHarness'],
-  'harness_shared.harness_feature_prs': ['featurePrs.byHarness'],
-  'harness_shared.harness_status': ['harnessStatus.byHarness'],
+  'harness_shared.harness_feature_prs': ['featurePrs.byHarness', 'featureTimeline.byFeature'],
+  'harness_shared.harness_status': ['harnessStatus.byHarness', 'harnessStatus.snapshot'],
   'harness_shared.harness_tests': ['harnessTests.byHarness'],
   'harness_shared.harness_archives': ['harnessArchives.byHarness'],
   'harness_shared.harness_hook_logs': ['harnessHookLogs.byHarness'],
@@ -126,7 +129,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_screenshots': ['harnessScreenshots.byHarness'],
   'harness_shared.agent_chats_consolidated': ['agentChats.byHarness'],
   'harness_shared.harness_feature_notes': ['featureNotes.byHarness'],
-  'harness_shared.harness_feature_debug_notes': ['featureDebugNotes.byHarness'],
+  'harness_shared.harness_feature_debug_notes': ['featureDebugNotes.byHarness', 'featureTimeline.byFeature'],
   'harness_shared.feature_audit_consolidated': ['featureAudit.byHarness'],
   // chunkPlans contributes 2 query names sharing 1 table; both fire.
   'harness_shared.harness_chunk_plans': [
@@ -157,6 +160,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.work_items': [
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
+    'harnessStatus.snapshot',
     // designFeatures.byHarness (data-sync-push-completion P-003) — the Design dashboard's
     // "features needing design" list reads work_items (needs_design / design_status /
     // design_spec_id columns) via harness_features_consolidated. A design-state flip on a
@@ -170,6 +174,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // to any member busts the whole hive rollup (the rollup is hive-grained).
     'featuresConsolidated.byHive',
     'workItems.byHarness',
+    'contributors.byHarness',
+    'featureTimeline.byFeature',
     // scheduler.running (the live-execution view) reads work-item claims (taken_by /
     // taken_at / last_progress_at) off work_items via fleet_assignment — a claim/progress
     // flip refreshes the bee-run list (hybrid-bee-scheduler P-001).
@@ -180,7 +186,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
     'featuresConsolidated.byHive',
+    'harnessStatus.snapshot',
     'workItems.byHarness',
+    'contributors.byHarness',
+    'featureTimeline.byFeature',
     'scheduler.running',
     // designFeatures.byHarness (P-003) — documentary mirror of the work_items producer
     // above; this key is a compat VIEW (COVERAGE_EXEMPT) so the real .changed comes from
@@ -194,6 +203,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.agent_runs_consolidated': [
     'agentRunsConsolidated.bySlug',
     'agentRunsConsolidated.recent',
+    'featureTimeline.byFeature',
   ],
   // The agentRunsConsolidated.* rows JOIN spawned_agents for the run outcome
   // (spawnStatus/exitCode/errorMessage/sessionId — adv-harness-tab-migration
@@ -205,6 +215,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'agentRunsConsolidated.recent',
     'workItems.byHarness',
     'fleetAssignments.byHarness',
+    'advRoster.list',
     // sidebar.fleetBees reads the SAME fleet_assignment view as
     // fleetAssignments.byHarness, so a spawn/claim/presence flip must push the
     // Swarm sidebar's "Bees" cells too (else they stay stale until next
@@ -238,6 +249,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'sidebar.fleetBees', // same fleet_assignment view — keep the Swarm sidebar live
     'network.board',
     'dev.coordPresence',
+    'agentDetail.byOwner',
+    'advRoster.list',
     // hiveRoster.byHive (presence-v2 P-006) folds coord_presence + the fleet
     // work-detail; a presence/intent/claim/last_active write refreshes it too.
     // byHarness (P-007) is the same fold keyed by harness→hive.
@@ -278,7 +291,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // are P-073+ work. Mapped here in advance so trigger events have a
   // home the moment the consumers land; until then, the trigger fires
   // events with no matching subscriber (harmless no-op, dedupe handles).
-  'harness_shared.contributor_usage_events': ['contributorUsageEvents.byHarness'],
+  'harness_shared.contributor_usage_events': ['contributorUsageEvents.byHarness', 'contributors.byHarness'],
   'harness_shared.insights_first_visit': ['insightsFirstVisit.byHarness'],
 };
 
