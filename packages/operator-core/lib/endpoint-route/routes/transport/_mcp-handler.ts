@@ -65,6 +65,7 @@ import {
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
+import { maybeBatchNudge, CODE_RUN_CAPABLE_ROLES } from '../../../code-run-batch-nudge';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { logVerificationFailure, verifySpawnParams } from '../../../spawn-signing';
@@ -1264,6 +1265,32 @@ const handler = createMcpHandler(
                     `[mcp-replay] store failed for ${toolName} (key=${idempotencyKey}): ` +
                       (err instanceof Error ? err.message : String(err)),
                   );
+                }
+              }
+              // code-run batch nudge (code-run-token-frugality, owner directive 2026-06-23):
+              // catch the eager same-tool-N× pattern at the decision point + steer the caller to
+              // bundle the calls into one code:run. In-process, one-shot per (session, tool),
+              // success-path only, code:run-capable callers only. The Map bump runs on every call
+              // (cheap); getFlag is consulted ONLY when a hint actually fires (rare), so the hot
+              // path stays a single in-memory increment. Best-effort — never affect the tool result.
+              // Attached AFTER idempotent persistence so a replay serves the raw stored result.
+              if (!result.isError) {
+                try {
+                  const hint = maybeBatchNudge({
+                    sessionKey: replayOwnerKey,
+                    toolName,
+                    canCodeRun:
+                      dispatchSpawnCtx.isSuperuser === true ||
+                      CODE_RUN_CAPABLE_ROLES.has(dispatchSpawnCtx.role),
+                  });
+                  if (hint && (await getFlag(FLAGS.CODE_RUN_BATCH_NUDGE, 'system'))) {
+                    result.content = [
+                      ...result.content,
+                      { type: 'text' as const, text: `\n[batch-hint] ${hint}` },
+                    ];
+                  }
+                } catch {
+                  // nudge is purely advisory; a failure must never change the tool outcome.
                 }
               }
               return result;

@@ -940,6 +940,16 @@ export const FLAGS = {
   // panic switch if a cache consumer ever serves wrong/stale data in prod. Read
   // SYNC-cached (the getOrSet hot path can't await), refreshed on boot + flag change.
   CACHE_LAYER: "papercusp-cache-layer",
+  // data-sync-push-completion P-005/D-012: the DEBOUNCED live-invalidation detector for the
+  // six APPEND_HEAVY_TABLES (audit_log, agent_runs_consolidated, user_actions, harness_hook_logs,
+  // toast_log, feature_audit_consolidated) — which intentionally carry NO per-row change-notify
+  // trigger (notify-storm; mig 376 + COVERAGE_EXEMPT). ON ⇒ the host polls max(id) per table and
+  // synthesizes a `<table>.changed` invalidation when it advances, so their mapped sync queries
+  // (userActions.*, auditLog.*, toastLog.recent, …) push-update without the per-row storm. OFF ⇒
+  // no detector; those consumers fall back to their own poll / the 180s drift-repair (the
+  // pre-P-005 behavior). DEFAULT ON: the detector + the bus per-call dedupe override are complete
+  // + tested; cuttable kill-switch if the synthesized fires ever misbehave.
+  APPEND_HEAVY_LIVE_INVALIDATION: "papercusp-append-heavy-live-invalidation",
   // hybrid-bee-scheduler-work-stealing-2026-06-22 — gate the SPEC-driven claim path: ON ⇒
   // scheduler:get_next pulls per the bee's Queen-issued claim spec; OFF ⇒ get_next ignores stored
   // specs and falls back to the DEFAULT ordering (== work_items:claim_next) — a no-breakage
@@ -993,6 +1003,12 @@ export const FLAGS = {
   // is bounded (only non-terminal work, ceiling-gated re-fire) and reversible; OFF
   // ⇒ the legacy reclaim-to-`failed` behaviour, byte-identical.
   SPAWN_RECLAIM_RELAUNCH: "papercusp-spawn-reclaim-relaunch",
+  // code-run-token-frugality (owner directive 2026-06-23): the INLINE batch nudge — when an agent
+  // fires the SAME tool repeatedly in a session, attach a one-shot hint to its result steering it to
+  // bundle the calls into one code:run. The STRUCTURAL complement to the CODE_RUN_NUDGE prompt prose
+  // (hits the decision point, which beats prose for adoption). Additive (only adds a [batch-hint]
+  // line, one-shot per session+tool, code:run-capable callers only); DEFAULT ON; OFF ⇒ no hint.
+  CODE_RUN_BATCH_NUDGE: "papercusp-code-run-batch-nudge",
   // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items
   // (bug|change|task) self-pickable by the scheduler claim path. Today the
   // decentralized claim (claimNextWorkItem / getNextWorkItem) is feature-family-only —
@@ -1527,6 +1543,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (byte-identical to no cache). Default-on per alpha policy — the bypass is the panic
   // switch, not a dark gate.
   [FLAGS.CACHE_LAYER]: true,
+  // DEFAULT ON (data-sync-push-completion P-005/D-012): the debounced append-heavy
+  // change-detector. Complete + tested (the detector + the bus per-call dedupe override);
+  // OFF ⇒ no detector, append-heavy consumers fall back to their own poll / 180s drift-repair.
+  [FLAGS.APPEND_HEAVY_LIVE_INVALIDATION]: true,
   // hybrid-bee-scheduler-work-stealing-2026-06-22: spec-driven claim ON (default); OFF degrades
   // scheduler:get_next to the default ordering (no breakage). Resolver + spec store complete + tested.
   [FLAGS.SCHEDULER_SPEC_CLAIM]: true,
@@ -1577,6 +1597,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // readiness uses the inline work_item_deps predicate (the maintained sidecar is feature-only). OFF is the
   // reversible kill-switch back to feature-only (byte-identical).
   [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
+  // DEFAULT ON (code-run-token-frugality 2026-06-23): the inline same-tool-N× batch nudge. Additive
+  // + reversible (adds a one-shot [batch-hint] line to a result for a code:run-capable caller); OFF
+  // ⇒ no hint, byte-identical to before.
+  [FLAGS.CODE_RUN_BATCH_NUDGE]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

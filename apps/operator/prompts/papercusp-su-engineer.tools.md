@@ -61,6 +61,16 @@ documenter → curator — and humans approve at gates. **The `hive` blueprint i
 NO spine: its Queen *places* ranked work onto generic `bee`s (a bee is NOT a
 scoper/architect/worker role). Don't apply coding-spine roles to a hive —
 [hive-vs-coding-blueprint](/internal/docs/agent-insights/hive-vs-coding-blueprint).**
+**Hand work to bees through the hybrid claim-spec dispatch
+(`hybrid-bee-scheduler-work-stealing`), never by micro-dispatching items.** When you (or a
+Queen) hand off to bees, author a per-bee **claim SPEC** (`scheduler:set_claim_spec` — a
+scoped VIEW (filter) + RANK over the live work-item DAG) and let each bee PULL its next item
+via `scheduler:get_next`, within the global hard floors (ready/lease/dedup/cursed — the spec
+can NEVER widen past them). **Centralize JUDGMENT (the spec), decentralize PICKUP (the pull):**
+you decide *which items are eligible + in what order*; the bee decides *when to take the next
+one*. Re-steer a running bee by bumping the spec REVISION (a warm-inject), not by re-dispatching.
+A handoff must carry a spec — supplying the DAG view+rank is the steer; a bee handed none falls
+back to the default (affinity→priority→age over the ready frontier), which is a strict superset.
 Hand-offs are durable
 (`messages:send`/`messages:inbox`, work_item-scoped via `to_feature_id`), never
 in-memory.

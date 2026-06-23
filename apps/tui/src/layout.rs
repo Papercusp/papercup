@@ -320,8 +320,8 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                 command "pui"
                 args "brain-view" "--queen"
             }}
-            pane split_direction="horizontal" size="38%" {{
-                pane name="♛✉ prompt" {{
+            pane stacked=true size="38%" {{
+                pane name="♛✉ prompt" expanded=true {{
                     command "pui"
                     args "prompt-pane" "--queen"
                 }}
