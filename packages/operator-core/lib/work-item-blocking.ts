@@ -63,10 +63,14 @@ export const workItemDepsBlockingStore: BlockingStore = {
 };
 
 /**
- * The seam's CURRENT default backend. P-003 flips this to `workItemDepsBlockingStore`. Consumers that
- * don't inject a store use this — the single switch point for the coord_links → work_item_deps cutover.
+ * The seam's default backend. P-004 cutover (2026-06-23): flipped from `coordLinksBlockingStore` to
+ * `workItemDepsBlockingStore` so the dispatch frontier + Queen survey read blocking from the SAME
+ * `work_item_deps` table the scheduler claim already reads — closing the latent split (frontier read
+ * coord_links while the claim read work_item_deps; if the dual-write ever diverged they'd disagree).
+ * The two readers return identical prefix-stripped Maps on the dual-written, verified-equal data; the
+ * coord_links blocks edges remain dual-written as a safety net until the full edge migration drops them.
  */
-export const defaultBlockingStore: BlockingStore = coordLinksBlockingStore;
+export const defaultBlockingStore: BlockingStore = workItemDepsBlockingStore;
 
 /** Build readiness nodes from items + a blocker map (pure). */
 export function toReadinessNodes(
