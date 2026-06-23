@@ -139,7 +139,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.toast_log': ['toastLog.recent'],
   'harness_shared.operator_budget': ['operatorBudget.byWorkspace'],
   'harness_shared.audit_log': ['auditLog.operatorDecisions'],
-  'harness_shared.user_actions': ['userActions.byHarness', 'userActions.byKind'],
+  'harness_shared.user_actions': ['userActions.byHarness', 'userActions.byKind', 'userActions.recent'],
   'harness_shared.plugin_configs': ['pluginConfigs.byHarness'],
   'harness_shared.plugin_enables': ['pluginEnables.byWorkspace'],
   'harness_shared.project_spec_revisions': ['projectSpecRevisions.byProject'],
