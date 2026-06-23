@@ -2,18 +2,19 @@
 //
 // AdvNowRunning render coverage — the AdvShell header harness status bar +
 // THE hive Start/Pause control (start-hive-wake-orchestration P-005/P-006).
-// Mounts the bar against a mocked hive.controlState sync row + a stubbed
-// agents poll and run-tool dispatch (useSyncQuery + nuqs mocked, the pinned
-// sibling pattern — see AdvConversationsTab.test.tsx). Asserts:
+// Mounts the bar against mocked sync queries (hive.controlState +
+// agentRunsConsolidated.recent + plans.list — all push-driven after
+// data-sync-push-completion P-004/P-005) and a stubbed run-tool dispatch
+// (useSyncQuery + nuqs mocked, the pinned sibling pattern). Asserts:
 //   - the null-slug blank state and the is-checking loading state,
 //   - stopped → Start hive, started → Active — idle + Stop hive,
-//   - live agent runs become pills (role · featureId · m:ss, runId parsing),
+//   - live agent runs become pills (role · featureId · m:ss),
 //   - Start fires hive:start through the loopback palette bridge and flips to
 //     the optimistic "waiting for agent…" state (errors → toast.error),
 //   - Stop confirms, then fires hive:pause { drainBees: true },
-//   - the "N plans waiting" nudge + its click-through to the Plans tab's
-//     Running bucket (the countWaitingPlans/waitingLabel pure layer is pinned
-//     in __tests__/adv-now-running-logic.test.ts).
+//   - the "N plans waiting" nudge (push-driven plans.list) + its click-through
+//     to the Plans tab's Running bucket (the countWaitingPlans/waitingLabel
+//     pure layer is pinned in __tests__/adv-now-running-logic.test.ts).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -33,27 +34,49 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-let hiveResult: Record<string, unknown> = { data: [{ slug: 'hive-1', started: false }] };
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => hiveResult }));
+// Per-query sync mock — the component subscribes to three distinct queries.
+let hiveRows: unknown[] | undefined = [{ slug: 'hive-1', started: false }];
+let runRows: unknown[] = [];
+let planRows: unknown[] = [];
+const syncEnabled: Record<string, boolean | undefined> = {};
+const syncArgs: Record<string, unknown> = {};
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({
+    queryName,
+    args,
+    enabled,
+  }: {
+    queryName: string;
+    args?: unknown;
+    enabled?: boolean;
+  }) => {
+    syncEnabled[queryName] = enabled;
+    syncArgs[queryName] = args;
+    // A disabled query never resolves data (no fetch) — mirror that here.
+    if (enabled === false) return { data: undefined };
+    switch (queryName) {
+      case 'hive.controlState':
+        return { data: hiveRows };
+      case 'agentRunsConsolidated.recent':
+        return { data: runRows };
+      case 'plans.list':
+        return { data: planRows };
+      default:
+        return { data: undefined };
+    }
+  },
+}));
 
 // The hover popover is its own surface — stub it out.
 vi.mock('@/app/harness/AgentThinkingPopover', () => ({
   default: ({ runId }: { runId: string }) => <div data-testid="thinking-popover" data-run={runId} />,
 }));
 
-vi.mock('@/app/admin/plans/plans-api', () => ({
-  fetchPlanList: vi.fn(async () => ({ plans: [] })),
-}));
-
 import { toast } from 'sonner';
-import { fetchPlanList } from '@/app/admin/plans/plans-api';
 import AdvNowRunning from './AdvNowRunning';
 
-const fetchPlanListMock = vi.mocked(fetchPlanList);
 const toastMock = vi.mocked(toast);
 
-type RunRow = { runId: string; role: string; ts: number; running?: boolean };
-let agentsRuns: RunRow[] = [];
 let runToolResponse: Record<string, unknown> = {
   ok: true,
   result: { content: [{ text: JSON.stringify({ ok: true }) }] },
@@ -65,12 +88,13 @@ beforeEach(() => {
   nuqsState.view = null;
   nuqsState.pBuckets = null;
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
-  hiveResult = { data: [{ slug: 'hive-1', started: false }] };
-  agentsRuns = [];
+  for (const k of Object.keys(syncEnabled)) delete syncEnabled[k];
+  for (const k of Object.keys(syncArgs)) delete syncArgs[k];
+  hiveRows = [{ slug: 'hive-1', started: false }];
+  runRows = [];
+  planRows = [];
   runToolCalls = [];
   runToolResponse = { ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } };
-  fetchPlanListMock.mockReset();
-  fetchPlanListMock.mockResolvedValue({ plans: [] } as never);
   toastMock.success.mockReset();
   toastMock.error.mockReset();
   vi.stubGlobal(
@@ -80,9 +104,6 @@ beforeEach(() => {
       if (u.includes('/api/agent-mcp/run-tool')) {
         runToolCalls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return { ok: true, status: 200, json: async () => runToolResponse };
-      }
-      if (u.includes('/agents?phase=staging')) {
-        return { ok: true, status: 200, json: async () => ({ runs: agentsRuns }) };
       }
       return { ok: true, status: 200, json: async () => ({}) };
     }),
@@ -102,7 +123,7 @@ describe('AdvNowRunning', () => {
   });
 
   it('shows the is-checking state while hive.controlState has not resolved', () => {
-    hiveResult = { data: undefined };
+    hiveRows = undefined;
     const { container } = render(<AdvNowRunning slug="pot-a" />);
     const bar = container.querySelector('.pc-advshell__harness-bar');
     expect(bar?.className).toContain('is-checking');
@@ -119,27 +140,28 @@ describe('AdvNowRunning', () => {
   });
 
   it('started hive with no runs → "Active — idle" + Stop button', async () => {
-    hiveResult = { data: [{ slug: 'hive-1', started: true }] };
+    hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
     expect(await screen.findByText('Active — idle')).toBeTruthy();
     expect(screen.getByText('Stop hive')).toBeTruthy();
     expect(screen.queryByText('Start hive')).toBeNull();
   });
 
-  it('renders one pill per RUNNING agent with the parsed featureId + duration', async () => {
-    hiveResult = { data: [{ slug: 'hive-1', started: true }] };
+  it('renders one pill per RUNNING agent with the resolved featureId + duration', async () => {
+    hiveRows = [{ slug: 'hive-1', started: true }];
     const nowSec = Math.floor(Date.now() / 1000);
-    agentsRuns = [
-      { runId: 'r1-worker-F-042', role: 'worker', ts: nowSec - 65, running: true },
-      { runId: 'r2-queen', role: 'queen', ts: nowSec - 5, running: true },
-      { runId: 'r3-oracle-F-001', role: 'oracle', ts: nowSec - 9, running: false },
+    // agentRunsConsolidated.recent rows: featureId is a resolved column; ts is epoch-ms.
+    runRows = [
+      { runId: 'r1-worker-F-042', role: 'worker', featureId: 'F-042', ts: (nowSec - 65) * 1000, running: true },
+      { runId: 'r2-queen', role: 'queen', featureId: null, ts: (nowSec - 5) * 1000, running: true },
+      { runId: 'r3-oracle-F-001', role: 'oracle', featureId: 'F-001', ts: (nowSec - 9) * 1000, running: false },
     ];
     render(<AdvNowRunning slug="pot-a" />);
     expect(await screen.findByText('Active — 2 agents running')).toBeTruthy();
-    // runId "r1-worker-F-042" → role worker, featureId F-042; oldest first
-    expect(screen.getByText(/worker · F-042 · 1:0[5-7]/)).toBeTruthy();
-    // runId "r2-queen" → no featureId remainder
-    expect(screen.getByText(/^queen · 0:0[5-7]$/)).toBeTruthy();
+    // worker run · featureId F-042 · ~65s; oldest first
+    expect(screen.getByText(/worker · F-042 · 1:0[4-7]/)).toBeTruthy();
+    // queen run · no featureId remainder
+    expect(screen.getByText(/^queen · 0:0[4-7]$/)).toBeTruthy();
     // non-running runs are filtered out
     expect(screen.queryByText(/oracle/)).toBeNull();
   });
@@ -167,7 +189,7 @@ describe('AdvNowRunning', () => {
   });
 
   it('Stop confirms, then fires hive:pause with drainBees', async () => {
-    hiveResult = { data: [{ slug: 'hive-1', started: true }] };
+    hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Stop hive'));
     fireEvent.click(await screen.findByRole('button', { name: 'Pause hive' }));
@@ -180,7 +202,7 @@ describe('AdvNowRunning', () => {
   });
 
   it('a declined confirm aborts the pause entirely', async () => {
-    hiveResult = { data: [{ slug: 'hive-1', started: true }] };
+    hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Stop hive'));
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
@@ -189,23 +211,25 @@ describe('AdvNowRunning', () => {
   });
 
   it('nudges with "N plans waiting" while stopped and deep-links the Running bucket', async () => {
-    fetchPlanListMock.mockResolvedValue({
-      plans: [{ startStatus: 'started' }, { startStatus: 'started' }, { startStatus: null }],
-    } as never);
+    planRows = [{ startStatus: 'started' }, { startStatus: 'started' }, { startStatus: null }];
     render(<AdvNowRunning slug="pot-a" />);
     const nudge = await screen.findByText('2 plans waiting');
-    expect(fetchPlanListMock).toHaveBeenCalledWith({ harness_slugs: ['pot-a'] });
+    // the plans.list query is enabled + scoped to this harness while stopped
+    expect(syncEnabled['plans.list']).toBe(true);
+    expect(syncArgs['plans.list']).toEqual({ harness_slugs: ['pot-a'] });
     fireEvent.click(nudge);
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('plans'));
     expect(nuqsSetters.view).toHaveBeenCalledWith('plans');
     expect(nuqsSetters.pBuckets).toHaveBeenCalledWith(['running']);
   });
 
-  it('skips the waiting-plans fetch entirely while the hive is started', async () => {
-    hiveResult = { data: [{ slug: 'hive-1', started: true }] };
+  it('disables the waiting-plans query entirely while the hive is started', async () => {
+    hiveRows = [{ slug: 'hive-1', started: true }];
+    planRows = [{ startStatus: 'started' }, { startStatus: 'started' }];
     render(<AdvNowRunning slug="pot-a" />);
     await screen.findByText('Active — idle');
-    expect(fetchPlanListMock).not.toHaveBeenCalled();
+    // started hive → stopped=false → plans.list disabled (no fetch) → no nudge
+    expect(syncEnabled['plans.list']).toBe(false);
     expect(screen.queryByText(/plans? waiting/)).toBeNull();
   });
 });

@@ -159,6 +159,29 @@ describe('cachedRead — tag invalidation', () => {
   });
 });
 
+describe('cachedRead — stale-while-revalidate (softTtl backstop)', () => {
+  it('past softTtl serves the stale value, then revalidates in the background', async () => {
+    let now = 1000;
+    setOperatorCache({ clock: () => now }); // singleton with an injected clock
+    let builds = 0;
+    const read = (): Promise<string> =>
+      cachedRead(ctx('w1'), { tool: 't', key: 'k', tags: [], softTtlMs: 100 }, () => `v${++builds}`);
+
+    expect(await read()).toBe('v1'); // miss → build
+    now = 1050; // within the soft window
+    expect(await read()).toBe('v1'); // fresh hit
+    expect(builds).toBe(1);
+
+    now = 1200; // past softTtl (100ms) → serve stale + background rebuild
+    expect(await read()).toBe('v1'); // STALE value still served
+    await new Promise((r) => setTimeout(r, 0)); // let the bg rebuild settle
+    expect(builds).toBe(2); // rebuilt in the background
+
+    expect(await read()).toBe('v2'); // now serves the revalidated value
+    expect(snapshotCachedReadStats()['t']).toMatchObject({ stale: 1 });
+  });
+});
+
 describe('cachedRead — CACHE_LAYER kill-switch', () => {
   it('flag OFF ⇒ bypass: the factory runs every call, byte-identical to no cache', async () => {
     setFlagOverridesForTest({ [CACHE_LAYER]: false });

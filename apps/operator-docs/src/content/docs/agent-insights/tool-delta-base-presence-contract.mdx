@@ -12,6 +12,7 @@ documents:
   - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
   - packages/operator-core/lib/coord-schema.ts
   - packages/operator-core/lib/agent-tools/plans/attention.ts
+  - packages/operator-core/lib/agent-tools/delta-flag-wiring.ts
   - apps/operator/lib/release/delta-gate.ts
   - apps/operator/lib/release/green-checkpoint.ts
   - packages/operator-core/lib/llm-testing/storage.ts
@@ -249,11 +250,33 @@ avoidance** — so the semantic opt-in ships behind a flag and a gate, never on 
 default.
 
 **The flag — `papercusp-tool-delta-protocol`** (`libs/flags/src/types.ts`,
-default **OFF**, in `KNOWN_DARK_FLAGS` as `incomplete`). OFF ⇒ tools serve only
-the unconditionally-safe Lane-B responses (`full | not_modified`); a tool never
-emits a `mode:delta` body. The flag is the master switch for the semantic merge.
-It is a `FLAGS` entry, **not** an env boolean (env gates ship dark, dodge the
-default-on guard, and can't be flipped at runtime).
+default **ON** since the owner-directed flip 2026-06-22; removed from
+`KNOWN_DARK_FLAGS`). OFF ⇒ tools serve only the unconditionally-safe Lane-B
+responses (`full | not_modified`); a tool never emits a `mode:delta` body. The
+flag is the master switch for the semantic merge. It is a `FLAGS` entry, **not**
+an env boolean (env gates ship dark, dodge the default-on guard, and can't be
+flipped at runtime). The flip is **dormant-safe**: it enables the *server*
+capability ahead of any client, but no caller sends `_meta.delta` yet (the
+delta-aware client is WI-514), so today every response is still `full |
+not_modified` regardless — ON simply makes the server *ready* and keeps the flag
+a real runtime kill-switch rather than dead config.
+
+**Where the flag actually bites — the runtime gate.** The flag is enforced
+per-request inside `defineTool`'s `negotiateToolDelta` (`define-tool.ts`), not
+just at deploy time. tooldef is host-agnostic, so it exposes a resolver seam
+(`setSemanticDeltaEnabledResolver` / `isSemanticDeltaEnabled`, `delta-protocol.ts`,
+default `() => true`); the host wires it to the flag in
+`packages/operator-core/lib/agent-tools/delta-flag-wiring.ts` (a side-effect
+import from `agent-tools/index.ts`, same shape as `pre-prompt-registry-config`),
+keyed on `ctx.workspaceId` so the flag can be targeted per-workspace. The read
+sits **after** the structural narrowing (`rows && itemKey && base.mode === 'full'
+&& base.reason === 'changed' && wantsDelta`), so it runs only on a changed-view +
+delta-request call — never per-call — and **fails open to the flag default** (a
+flag-subsystem throw never silently disables a shipped-ON capability). When the
+resolver returns false the upgrade short-circuits to the Lane-B `full` body with
+`reason: 'flag_off'` — a distinct, telemetry-visible reason so a mode-mix
+dashboard can tell "flag is off" apart from "the view genuinely changed". OFF is
+byte-identical to a delta-unaware host.
 
 **The safety gate — `apps/operator/lib/release/delta-gate.ts`**, wired into the
 green-checkpoint as `CheckpointDeps.deltaGate` (mirrors `perf-gate.ts`). Before
@@ -274,11 +297,15 @@ ON but any scenario is red/errored/stale/missing, it **holds the deploy**
   green-light an opt-in it could not verify. Freshness window:
   `PAPERCUSP_DELTA_GATE_MAX_AGE_MS` (default 7d).
 
-**To flip the semantic opt-in on:** (1) confirm `su-S23`/`S24`/`S25` are green in
-the matrix; (2) flip `FLAG_DEFAULTS[TOOL_DELTA_PROTOCOL]` to `true` + remove it
-from `KNOWN_DARK_FLAGS`; (3) arm the gate (`PAPERCUSP_DELTA_GATE=1`, and
-`_BLOCK=1` once trusted) so a future regression that reds the scenarios holds the
-deploy instead of shipping a silent-wrong-merge.
+**State of the rollout (as of 2026-06-22).** Step (2) is **done** —
+`FLAG_DEFAULTS[TOOL_DELTA_PROTOCOL]` is `true` and the flag is out of
+`KNOWN_DARK_FLAGS` (owner-directed; safe because the opt-in is inert without the
+WI-514 client). What remains before any *real* `mode:delta` traffic flows: (1)
+confirm `su-S23`/`S24`/`S25` are green in the matrix; (3) **arm the gate**
+(`PAPERCUSP_DELTA_GATE=1`, and `_BLOCK=1` once trusted) so that once a client
+exists, a future regression that reds the scenarios holds the deploy instead of
+shipping a silent-wrong-merge. Until then the gate stays default-warn/un-armed so
+it never blocks deploys for a capability nothing exercises yet.
 
 **Telemetry.** Every negotiated response records its mode on
 `tool_invocations.metadata_json.deltaMode` (`full | delta | not_modified`,

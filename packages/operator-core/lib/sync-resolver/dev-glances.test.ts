@@ -88,9 +88,19 @@ describe('dev.* glance resolvers', () => {
       vi.doUnmock('../dev-data');
     });
 
-    it('dev.pgActiveQueries rejects an out-of-range limit (zod)', async () => {
+    it('dev.pgActiveQueries clamps an out-of-range limit to the cap (D-002: clamp, never reject)', async () => {
+      // clampedLimit() transforms (clamps) rather than .max()-rejecting, so a
+      // client/server version skew can't make the resolver throw a panel-breaking
+      // "Too big" error (sync-resolver/index.ts P-001 / D-002). An over-cap limit
+      // is bounded to the cap (200) and passed to the data source — never rejected.
+      const queries = [{ pid: 1, state: 'active', query: 'SELECT 1', duration_seconds: 0.1 }];
+      const pgActiveQueries = vi.fn(async () => ({ queries }));
+      vi.doMock('../dev-data', () => ({ pgActiveQueries, pgHealth: vi.fn() }));
       const { resolveNamedQueryV2: r } = await import('./index');
-      await expect(r('dev.pgActiveQueries', { limit: 9999 })).rejects.toThrow();
+      const rows = (await r('dev.pgActiveQueries', { limit: 9999 })) as unknown[];
+      expect(rows).toEqual(queries);
+      expect(pgActiveQueries).toHaveBeenCalledWith(200); // clamped to cap, not 9999
+      vi.doUnmock('../dev-data');
     });
 
     it('dev.telemetry returns the flat rollup entries (passes hours+limit through, workspaceIds:null)', async () => {

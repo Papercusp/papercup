@@ -28,7 +28,7 @@ const post = defineTool({
     const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
     const text = typeof body?.text === 'string' ? body.text : '';
     if (!text.trim()) return Response.json({ error: 'text required' }, { status: 400 });
-    pushSentinelSay(text);
+    await pushSentinelSay(text);
     return Response.json({ ok: true });
   },
 });
@@ -40,7 +40,7 @@ const get = defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    return Response.json({ says: drainSentinelSays() });
+    return Response.json({ says: await drainSentinelSays() });
   },
 });
 

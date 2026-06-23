@@ -1,22 +1,23 @@
 /**
  * @vitest-environment jsdom
  *
- * VoiceAppBridge — routes app-level voice utterances into the
- * operator:converse brain (the SAME backend the Sentinel TUI text chat
- * drives) via routeVoiceUtteranceToConverse(), unless a higher-priority
- * consumer (an open Operator panel, an undo toast) has claimed them. We
- * render the component, capture its onFinalUtterance + voice-state
- * subscriptions, and drive utterances to assert the consumer-priority
- * routing decision + the converse hand-off.
+ * VoiceAppBridge — routes app-level voice utterances into the dock's 🛡
+ * Sentinel pane (a psu/Claude-Code TUI) via routeVoiceToSentinelPane()
+ * (POST /api/operator/sentinel-input), unless a higher-priority consumer
+ * (an open Operator panel, an undo toast) has claimed them. We render the
+ * component, capture its onFinalUtterance + voice-state subscriptions, and
+ * drive utterances to assert the consumer-priority routing decision + the
+ * Sentinel-pane hand-off.
  *
  * Intent parsing is bypassed (wakeWordIntents:false) so we test the
- * consumer / converse routing path directly.
+ * consumer / Sentinel routing path directly.
  *
- * The legacy Oracle fallback (POST /api/oracle/chat) was removed
- * 2026-06-22 (sentinel-tui-shared-backend-and-cards Phase 1): Oracle is
- * a separate concierge brain (not the conversation) and 404s on the
- * desktop host. The bridge now hands spoken turns to operator:converse,
- * which generates AND speaks the reply.
+ * Routing history: the legacy Oracle fallback (POST /api/oracle/chat) was
+ * removed 2026-06-22 (sentinel-tui-shared-backend-and-cards Phase 1), which
+ * briefly handed spoken turns to operator:converse. Phase C
+ * (sentinel-as-claude-tui-2026-06-22) then SUPERSEDED that converse route:
+ * the bridge now writes the final transcript into the Sentinel pane's stdin
+ * (local app user only), which generates AND speaks the reply.
  *
  * P-014 of plan voice-production-test-coverage-2026-06-01.
  */
@@ -28,7 +29,7 @@ const h = vi.hoisted(() => ({
   stateCb: null as null | ((s: Record<string, unknown>) => void),
   speak: vi.fn(),
   cancelAllSpeech: vi.fn(),
-  routeToConverse: vi.fn(() => true),
+  routeToSentinel: vi.fn(() => Promise.resolve(true)),
   fullAgentEngine: 'off' as string,
 }));
 
@@ -46,18 +47,20 @@ vi.mock('./voice-mode', () => ({
 }));
 vi.mock('./voice-prefs-client', () => ({
   // wakeWordIntents false → bypass intent parsing, fall through to
-  // consumer / converse routing. fullAgentEngine governs whether converse
+  // consumer / Sentinel routing. fullAgentEngine governs whether converse
   // is the active brain (off) or a hosted full-agent owns the turn.
   loadVoicePrefsClient: vi.fn(() => ({ fullAgentEngine: h.fullAgentEngine, wakeWordIntents: false })),
 }));
-vi.mock('./voice-converse-bridge', () => ({
-  routeVoiceUtteranceToConverse: h.routeToConverse,
+vi.mock('./voice-sentinel-bridge', () => ({
+  routeVoiceToSentinelPane: h.routeToSentinel,
+  // Phase D voice-OUT polling — kept inert so the bridge's 1.5s interval is a no-op.
+  drainSentinelOutput: vi.fn(() => Promise.resolve([])),
 }));
 
 import { VoiceAppBridge, registerVoiceConsumer } from './VoiceAppBridge';
 
-function converseCalled() {
-  return h.routeToConverse.mock.calls.length > 0;
+function sentinelCalled() {
+  return h.routeToSentinel.mock.calls.length > 0;
 }
 
 const ALWAYS_ON = { mode: 'always-on', status: 'listening', supported: true, lastTranscript: '', speakingRole: null };
@@ -80,8 +83,8 @@ beforeEach(() => {
   h.utteranceCb = null;
   h.stateCb = null;
   h.speak.mockClear();
-  h.routeToConverse.mockClear();
-  h.routeToConverse.mockReturnValue(true);
+  h.routeToSentinel.mockClear();
+  h.routeToSentinel.mockReturnValue(Promise.resolve(true));
   h.fullAgentEngine = 'off';
 });
 afterEach(() => {
@@ -90,44 +93,44 @@ afterEach(() => {
   cleanup();
 });
 
-describe('VoiceAppBridge — converse routing', () => {
-  it('routes the spoken turn into operator:converse when no consumer is registered (panel closed)', async () => {
+describe('VoiceAppBridge — Sentinel-pane routing', () => {
+  it('routes the spoken turn into the Sentinel pane when no consumer is registered (panel closed)', async () => {
     mount();
     setMode(ALWAYS_ON);
     await utter('what is happening');
-    expect(converseCalled()).toBe(true);
-    expect(h.routeToConverse).toHaveBeenCalledWith('what is happening');
+    expect(sentinelCalled()).toBe(true);
+    expect(h.routeToSentinel).toHaveBeenCalledWith('what is happening');
   });
 
   it('does nothing when voice mode is off', async () => {
     mount(); // no setMode → stays 'off'
     await utter('ignored while off');
-    expect(converseCalled()).toBe(false);
+    expect(sentinelCalled()).toBe(false);
   });
 
   it('ignores too-short utterances', async () => {
     mount();
     setMode(ALWAYS_ON);
     await utter('a');
-    expect(converseCalled()).toBe(false);
+    expect(sentinelCalled()).toBe(false);
   });
 
-  it('does NOT route into converse when a full-agent engine owns the session', async () => {
+  it('does NOT route into the Sentinel pane when a full-agent engine owns the session', async () => {
     h.fullAgentEngine = 'elevenlabs-conv';
     mount();
     setMode(ALWAYS_ON);
     await utter('the full agent is in charge');
-    expect(converseCalled()).toBe(false);
+    expect(sentinelCalled()).toBe(false);
   });
 });
 
 describe('VoiceAppBridge — consumer priority', () => {
-  it('suppresses converse when the Operator panel (panel-open) is registered', async () => {
+  it('suppresses Sentinel routing when the Operator panel (panel-open) is registered', async () => {
     mount();
     setMode(ALWAYS_ON);
     deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
     await utter('open something');
-    expect(converseCalled()).toBe(false); // panel consumes (suppresses) the turn
+    expect(sentinelCalled()).toBe(false); // panel consumes (suppresses) the turn
   });
 
   it('hands the utterance to a background-toast consumer’s handler', async () => {
@@ -137,10 +140,10 @@ describe('VoiceAppBridge — consumer priority', () => {
     setMode(ALWAYS_ON);
     await utter('cancel');
     expect(handler).toHaveBeenCalledWith('cancel');
-    expect(converseCalled()).toBe(false);
+    expect(sentinelCalled()).toBe(false);
   });
 
-  it('panel-open outranks background-toast (higher priority wins, suppresses both toast handler and converse)', async () => {
+  it('panel-open outranks background-toast (higher priority wins, suppresses both toast handler and Sentinel routing)', async () => {
     const toastHandler = vi.fn();
     deregs.push(registerVoiceConsumer('undo-toast', 'background-toast', toastHandler));
     deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
@@ -148,15 +151,15 @@ describe('VoiceAppBridge — consumer priority', () => {
     setMode(ALWAYS_ON);
     await utter('something');
     expect(toastHandler).not.toHaveBeenCalled(); // panel-open won
-    expect(converseCalled()).toBe(false);
+    expect(sentinelCalled()).toBe(false);
   });
 
-  it('deregistering the panel consumer restores converse routing', async () => {
+  it('deregistering the panel consumer restores Sentinel routing', async () => {
     const dereg = registerVoiceConsumer('operator-panel', 'panel-open');
     mount();
     setMode(ALWAYS_ON);
     dereg(); // panel closed
     await utter('now route me');
-    expect(converseCalled()).toBe(true);
+    expect(sentinelCalled()).toBe(true);
   });
 });

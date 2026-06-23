@@ -302,15 +302,22 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // launch as role=overwatch, mirroring the sentinel pane's --role=operator launch
     // (--role=overwatch MUST use `=`; psu-launcher drops a space-separated --role).
     // 👁 glyph + indigo identity come from AgentPaneKind::Overwatch (B-01). It is the
-    // Queen's sibling system-health supervisor, so it leads the dock above her.
+    // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22):
+    // the 🛡 Sentinel chat is the TOP full-width pane (the front-door agent the user
+    // talks to leads the dock), then 👁 overwatch, then the ♛ queen block.
     let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
-        pane name="👁 overwatch" size="22%" {{
+        pane name="chat" stacked=true size="45%" {{
+            pane name="{sentinel_name}" focus=true expanded=true {{
+                {sentinel_cmd_block}
+            }}{driver_pane_block}{wake_pane_block}
+        }}
+        pane name="👁 overwatch" size="18%" {{
             command "pui"
             args "brain-view" "--overwatch"
         }}
-        pane name="♛ queen" split_direction="vertical" size="46%" {{
+        pane name="♛ queen" split_direction="vertical" size="37%" {{
             pane name="{brain_name}" {{
                 command "pui"
                 args "brain-view" "--queen"
@@ -333,11 +340,6 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                     args "work-pane" "--queen"
                 }}
             }}
-        }}
-        pane name="chat" stacked=true {{
-            pane name="{operator_name}" focus=true expanded=true {{
-                {sentinel_cmd_block}
-            }}{driver_pane_block}{wake_pane_block}
         }}
     }}"#
         )

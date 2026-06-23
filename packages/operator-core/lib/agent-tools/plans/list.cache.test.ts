@@ -1,0 +1,123 @@
+/**
+ * plans:list cache integration (cache-expensive-tool-reads-2026-06-22 P-002).
+ *
+ * Drives the REAL handler against a mocked source layer + the REAL operator cache
+ * to pin the caching CONTRACT specific to plans:list: a repeat call hits (the source
+ * fetch runs once); a plan-table write busts it (tag invalidation); different args /
+ * workspaces never share an entry (no cross-arg / cross-workspace leak); the
+ * CACHE_LAYER kill-switch disables caching. (The generic SWR/key semantics are pinned
+ * in cache/cached-read.test.ts; this file proves the wiring — right tags, right key.)
+ */
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+
+const M = vi.hoisted(() => ({
+  listPlanIndexRows: vi.fn(async () => [] as unknown[]),
+  listPlanIndexRowsForWorkspace: vi.fn(async () => [] as unknown[]),
+  getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
+  resolveHarnessPlansDir: vi.fn(async (slug: string) => ({ harnessSlug: slug })),
+  ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: 'papercup' })),
+}));
+
+vi.mock('./source', async (orig) => {
+  const actual = await orig<typeof import('./source')>();
+  return {
+    ...actual,
+    listPlanIndexRows: M.listPlanIndexRows,
+    listPlanIndexRowsForWorkspace: M.listPlanIndexRowsForWorkspace,
+    getPlanContentsBySlugs: M.getPlanContentsBySlugs,
+    resolveHarnessPlansDir: M.resolveHarnessPlansDir,
+  };
+});
+vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
+vi.mock('../../issue-blocks-merge', async (orig) => {
+  const actual = await orig<typeof import('../../issue-blocks-merge')>();
+  return { ...actual, getAllBlockedPlanItems: vi.fn(async () => new Map<string, string[]>()) };
+});
+vi.mock('../../scout/routed-ledger', () => ({
+  readScoutPlanRefs: vi.fn(async () => new Set<string>()),
+  readRoutedIdeas: vi.fn(async () => []),
+}));
+
+import tool from './list';
+import { getOperatorCache, resetOperatorCacheForTests, resetCachedReadStatsForTests } from '../../cache';
+import { _refreshCacheLayerForTests } from '../../cache/instance';
+
+const CACHE_LAYER = 'papercusp-cache-layer';
+
+const ctx = (workspaceId: string): never =>
+  ({ workspaceId, harnessSlug: 'papercup', metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
+
+const run = async (args: Record<string, unknown>, workspaceId = 'ws-list'): Promise<unknown[]> => {
+  const res = (await tool.handler(args as never, ctx(workspaceId))) as { content: { text: string }[] };
+  return (JSON.parse(res.content[0].text) as { plans: unknown[] }).plans;
+};
+
+beforeEach(async () => {
+  resetOperatorCacheForTests();
+  resetCachedReadStatsForTests();
+  M.listPlanIndexRows.mockClear();
+  setFlagOverridesForTest({ [CACHE_LAYER]: true });
+  await _refreshCacheLayerForTests();
+});
+
+afterEach(async () => {
+  setFlagOverridesForTest(null);
+  await _refreshCacheLayerForTests();
+  resetOperatorCacheForTests();
+  resetCachedReadStatsForTests();
+});
+
+describe('plans:list — cache wiring', () => {
+  it('a repeat call with the same args HITS (the source fetch runs once)', async () => {
+    await run({});
+    await run({});
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
+  });
+
+  it('a plan-table write BUSTS the entry (tags=harness_plans → ECA bump rebuilds)', async () => {
+    await run({});
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
+    // Simulate the cache-ECA reacting to a harness_plans.changed event.
+    getOperatorCache().invalidateByTags('ws-list', ['harness_plans']);
+    await run({});
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
+  });
+
+  it('a plan_revisions write also busts (every tagged table invalidates)', async () => {
+    await run({});
+    getOperatorCache().invalidateByTags('ws-list', ['plan_revisions']);
+    await run({});
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
+  });
+
+  it('different args do NOT share an entry (no cross-arg leak)', async () => {
+    await run({ status: 'active' });
+    await run({ status: 'ready' });
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
+    // ...and each of those is independently cached on repeat.
+    await run({ status: 'active' });
+    await run({ status: 'ready' });
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
+  });
+
+  it('different workspaces do NOT share an entry (no cross-workspace leak)', async () => {
+    await run({}, 'ws-A');
+    await run({}, 'ws-B');
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
+    // a bump in ws-A leaves ws-B's entry warm
+    getOperatorCache().invalidateByTags('ws-A', ['harness_plans']);
+    await run({}, 'ws-A');
+    await run({}, 'ws-B');
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(3);
+  });
+
+  it('CACHE_LAYER OFF ⇒ bypass: the source fetch runs on every call', async () => {
+    setFlagOverridesForTest({ [CACHE_LAYER]: false });
+    await _refreshCacheLayerForTests();
+    await run({});
+    await run({});
+    await run({});
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(3);
+  });
+});

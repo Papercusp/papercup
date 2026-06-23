@@ -21,12 +21,14 @@
 
 import { DETERMINISTIC_EXECUTOR_TCB_PATTERNS } from '../../blueprint-steps/tcb';
 import { CAPABILITY_DISPATCH_TCB_PATTERNS } from '../../capability-envelope/tcb';
+import type { LifecycleState } from '@papercusp/coordination/capabilities';
 
 /** Work-item kinds (forward-compatible with unify-work-items-2026-06-04 D-002). */
 export type WorkItemKind = 'feature' | 'bug' | 'change' | 'research-task' | 'chunk';
 
 export type ImprovementSeverity = 'critical' | 'major' | 'minor' | 'nit';
-export type ImprovementState = 'open' | 'resolved' | 'closed';
+// Canonical lifecycle vocabulary (P-007) — one definition across all ObjectRefs.
+export type ImprovementState = LifecycleState;
 
 /** The unit the loop reasons over — a captured improvement (an issue today, a
  *  work_item[kind=bug|change] after unify-work-items lands). Storage-agnostic. */

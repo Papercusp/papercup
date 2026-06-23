@@ -47,6 +47,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
   claimFloorsWhereSql,
+  schedulerMaintainedReadyEnabled,
   featureRowToWorkItem,
   FEATURE_COLS,
   type FeatureRowDb,
@@ -411,6 +412,7 @@ export async function getNextWorkItem(
 ): Promise<GetNextResult | null> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
+  const useMaintainedReady = await schedulerMaintainedReadyEnabled();
 
   const floors = claimFloorsWhereSql(sql, {
     harness: opts.harness,
@@ -418,6 +420,7 @@ export async function getNextWorkItem(
     states: opts.states,
     swarmId: opts.swarmId,
     excludeRedundant: opts.excludeRedundant,
+    useMaintainedReady,
   });
   const filter = compileFilter(sql, spec.view.filter);
   const order = compileRank(sql, spec, bee);

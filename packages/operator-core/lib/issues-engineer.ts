@@ -25,9 +25,11 @@ import {
   PgThreadStore,
   PgEntitySubscriptionStore,
   PgLinkStore,
+  LIFECYCLE_STATES,
   type ObjectRef,
   type DeliveryMode,
   type ThreadPostRow,
+  type LifecycleState,
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { FLAGS } from '@papercusp/flags';
@@ -43,7 +45,10 @@ import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements
 
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
 export type IssueSource = 'engineer' | 'su';
-export type IssueState = 'open' | 'resolved' | 'closed';
+// Lifecycle vocabulary sourced from the ONE canonical LifecycleState (P-007) so a
+// future 4th state can't drift across issues / work-items / conversations /
+// improvements. The per-kind setState UPDATE bodies stay distinct (D-007).
+export type IssueState = LifecycleState;
 /** Work-item kind within the issue kind-table for the issues:* SURFACE
  *  (unify-work-items D-002). bug|change are the user-facing issue kinds. */
 export type IssueKind = 'bug' | 'change';
@@ -54,7 +59,7 @@ export type IssueStoreKind = IssueKind | 'task';
 
 export const ISSUE_KIND = 'issue';
 export const ISSUE_SEVERITIES: readonly IssueSeverity[] = ['critical', 'major', 'minor', 'nit'];
-export const ISSUE_STATES: readonly IssueState[] = ['open', 'resolved', 'closed'];
+export const ISSUE_STATES: readonly IssueState[] = LIFECYCLE_STATES;
 export const ISSUE_KINDS: readonly IssueKind[] = ['bug', 'change'];
 /** Storage kinds (incl. `task`). The default listIssues filter restricts to
  *  ISSUE_KINDS so delegated tasks never leak into the issues:* surface. */

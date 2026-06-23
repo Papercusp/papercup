@@ -17,10 +17,12 @@
 
 import type { Sql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import type { LifecycleState } from '@papercusp/coordination/capabilities';
 
 export type ConversationKind = 'question' | 'discussion';
 export type ConversationScope = 'operator' | 'harness';
-export type ConversationState = 'open' | 'resolved' | 'closed';
+// Canonical lifecycle vocabulary (P-007) — one definition across all ObjectRefs.
+export type ConversationState = LifecycleState;
 
 export const CONVERSATION_KINDS: readonly ConversationKind[] = ['question', 'discussion'];
 

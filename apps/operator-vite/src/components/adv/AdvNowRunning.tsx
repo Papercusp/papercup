@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Square, Play, AlertTriangle } from 'lucide-react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
-import { fetchPlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
+import { type PlanListRow } from '@/app/admin/plans/plans-api';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
@@ -16,13 +16,14 @@ interface AgentRun {
   ts: number;
 }
 
-interface AgentsResponse {
-  runs: Array<{
-    runId: string;
-    role: string;
-    ts: number;
-    running?: boolean;
-  }>;
+/** The subset of an `agentRunsConsolidated.recent` row the run pills use. */
+interface RunConsolidatedRow {
+  runId: string;
+  role: string;
+  featureId: string | null;
+  /** epoch-ms (resolver coalesces consolidated.ts / spawn.started_at). */
+  ts: number;
+  running: boolean;
 }
 
 interface Props {
@@ -99,22 +100,19 @@ export function waitingLabel(n: number): string {
  * so "running" = the persisted `hive_started` bit + live agent runs, not a
  * driver-process scan. Hidden when no hive is registered.
  *
- * Polls /api/harness/:slug/agents every 4 s for the run pills.
+ * Run pills + the "N plans waiting" nudge are push-driven (SSE sync), not
+ * polled (data-sync-push-completion P-004/P-005).
  */
 export default function AdvNowRunning({ slug }: Props) {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
-  const [runs, setRuns] = useState<AgentRun[]>([]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [starting, setStarting] = useState(false);
-  // Optimistic post-launch state: a run takes a poll cycle (a couple of
-  // seconds) before the agents endpoint reports the first running agent.
-  // While true we show "waiting for agent…" and poll faster.
+  // Optimistic post-launch state: the Queen's first spawn lands a beat after
+  // hive:start. While true we show the "waiting" label; the push from the
+  // first spawned_agents write clears it (effect below).
   const [awaitingAgent, setAwaitingAgent] = useState(false);
-  // Count of started-but-unpicked plans, shown only while the harness is
-  // stopped (see the effect below). Drives the "N plans waiting" nudge.
-  const [waitingCount, setWaitingCount] = useState(0);
 
   // Navigation targets for the nudge — jump to the Plans tab filtered to the
   // Running bucket (= started plans). We only WRITE these; PlansClient and
@@ -131,6 +129,44 @@ export default function AdvNowRunning({ slug }: Props) {
   const hive = (hiveData as HiveControlRow[] | undefined)?.[0];
   const started = hive?.started === true;
 
+  // Run pills — push-driven via agentRunsConsolidated.recent (P-004). The spawn
+  // engine writes spawned_agents on spawn/heartbeat/exit, and the table→query
+  // bridge maps those writes to this query, so pills appear/disappear on the real
+  // run lifecycle. No /api/harness/:slug/agents fs-scan poll.
+  const { data: runsData } = useSyncQuery({
+    queryName: 'agentRunsConsolidated.recent',
+    args: { harnessSlug: slug ?? '' },
+    enabled: !!slug,
+  });
+  const runs: AgentRun[] = useMemo(() => {
+    const rows = (runsData as RunConsolidatedRow[] | undefined) ?? [];
+    return rows
+      .filter((r) => r.running === true)
+      .map((r) => ({
+        runId: r.runId,
+        role: r.role,
+        featureId: r.featureId ?? null,
+        // resolver ts is epoch-ms; the duration timer subtracts `now`
+        // (epoch-seconds), so normalize to seconds here.
+        ts: Math.floor(Number(r.ts) / 1000),
+      }))
+      .sort((a, b) => a.ts - b.ts);
+  }, [runsData]);
+
+  // While the hive is paused, count started-but-unpicked plans for the
+  // "N plans waiting" nudge — push-driven via plans.list (P-005). A started hive
+  // is already working them, so the query is disabled in that state (no fetch).
+  const stopped = !(started || awaitingAgent || runs.length > 0);
+  const { data: waitingPlansData } = useSyncQuery({
+    queryName: 'plans.list',
+    args: { harness_slugs: slug ? [slug] : [] },
+    enabled: !!slug && stopped,
+  });
+  const waitingCount = useMemo(
+    () => (stopped ? countWaitingPlans((waitingPlansData as PlanListRow[] | undefined) ?? []) : 0),
+    [waitingPlansData, stopped],
+  );
+
   const [hovered, setHovered] = useState<{ run: AgentRun; rect: DOMRect } | null>(null);
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -142,26 +178,10 @@ export default function AdvNowRunning({ slug }: Props) {
     closeTimer.current = setTimeout(() => setHovered(null), 150);
   };
 
+  // First real run arrived (via push) — drop the optimistic "waiting" state.
   useEffect(() => {
-    if (!slug) { setRuns([]); return; }
-    let cancelled = false;
-    const refresh = () => {
-      fetch(`/api/harness/${encodeURIComponent(slug)}/agents?phase=${PHASE}`)
-        .then((r) => (r.ok ? (r.json() as Promise<AgentsResponse>) : null))
-        .then((agents) => {
-          if (cancelled) return;
-          const live = (agents?.runs ?? []).filter((r) => r.running);
-          const liveRuns = live.map(parseRun).sort((a, b) => a.ts - b.ts);
-          setRuns(liveRuns);
-          // First real run arrived — drop the optimistic "waiting" state.
-          if (liveRuns.length > 0) setAwaitingAgent(false);
-        });
-    };
-    refresh();
-    // Poll faster while optimistically waiting for the first agent post-launch.
-    const id = window.setInterval(refresh, awaitingAgent ? 1200 : 4000);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, [slug, awaitingAgent]);
+    if (runs.length > 0) setAwaitingAgent(false);
+  }, [runs.length]);
 
   useEffect(() => {
     if (runs.length === 0) return;
@@ -177,23 +197,6 @@ export default function AdvNowRunning({ slug }: Props) {
     const id = window.setTimeout(() => setAwaitingAgent(false), 20_000);
     return () => window.clearTimeout(id);
   }, [awaitingAgent]);
-
-  // While the hive is paused, count started-but-unpicked plans so the
-  // bar can nudge "N plans waiting". A started hive is already working
-  // them, so we skip the fetch entirely in that state (no extra request).
-  useEffect(() => {
-    const stopped = !(started || awaitingAgent || runs.length > 0);
-    if (!slug || !stopped) { setWaitingCount(0); return; }
-    let cancelled = false;
-    const load = () => {
-      fetchPlanList({ harness_slugs: [slug] })
-        .then((res) => { if (!cancelled) setWaitingCount(countWaitingPlans(res.plans)); })
-        .catch(() => { /* best-effort nudge — ignore failures */ });
-    };
-    load();
-    const id = window.setInterval(load, 8000);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, [slug, started, awaitingAgent, runs.length]);
 
   // START = boot the brain: hive:start persists the started bit, re-affirms
   // the Queen's event-wake subscriptions, flips wake-mode to auto, and wakes
@@ -367,12 +370,4 @@ export default function AdvNowRunning({ slug }: Props) {
     </div>
     </>
   );
-}
-
-function parseRun(r: { runId: string; role: string; ts: number }): AgentRun {
-  const after = r.runId.split('-').slice(1).join('-');
-  const remainder = after.startsWith(`${r.role}-`)
-    ? after.slice(r.role.length + 1)
-    : after === r.role ? '' : after;
-  return { runId: r.runId, role: r.role, featureId: remainder || null, ts: r.ts };
 }

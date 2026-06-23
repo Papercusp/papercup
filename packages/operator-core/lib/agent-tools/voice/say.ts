@@ -31,7 +31,7 @@ export default defineTool({
     text: z.string().min(1).describe('The line to speak aloud to the local user.'),
   }),
   async handler(args) {
-    pushSentinelSay(args.text);
+    await pushSentinelSay(args.text);
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
   },
 });

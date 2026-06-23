@@ -945,6 +945,12 @@ export const FLAGS = {
   // specs and falls back to the DEFAULT ordering (== work_items:claim_next) — a no-breakage
   // kill-switch. DEFAULT ON (alpha flags-default-on; the resolver + spec store are complete + tested).
   SCHEDULER_SPEC_CLAIM: "papercusp-scheduler-spec-claim",
+  // work-item-deps-and-readiness-2026-06-22 P-005: the scheduler claim reads the maintained
+  // readiness sidecar (work_item_blocked — an indexed anti-join) instead of the inline per-claim
+  // NOT EXISTS subquery. Behavior-identical; a pure performance cutover. DEFAULT OFF (reversible
+  // kill-switch) until a LIVE reconciliation proves the trigger-maintained sidecar has zero drift
+  // vs the inline oracle; then su/owner flips it ON. KNOWN_DARK_FLAGS.
+  SCHEDULER_MAINTAINED_READY: "papercusp-scheduler-maintained-ready",
   // gateway-priority-tiers-2026-06-22: gates the inference-gateway priority-tier
   // queueing/admission path. DEFAULT OFF — the implementation is in-flight; flips
   // ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
@@ -1503,6 +1509,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // hybrid-bee-scheduler-work-stealing-2026-06-22: spec-driven claim ON (default); OFF degrades
   // scheduler:get_next to the default ordering (no breakage). Resolver + spec store complete + tested.
   [FLAGS.SCHEDULER_SPEC_CLAIM]: true,
+  // DEFAULT OFF (work-item-deps-and-readiness-2026-06-22 P-005): the maintained-readiness sidecar
+  // cutover. OFF ⇒ the claim uses the inline NOT EXISTS predicate (today's byte-identical behavior);
+  // ON ⇒ the indexed work_item_blocked anti-join. A reversible kill-switch pending a live zero-drift
+  // reconciliation verify before the flip. KNOWN_DARK_FLAGS.
+  [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
   // DEFAULT ON (gateway-priority-tiers-2026-06-22): per-tier admission caps + a reserved tier-1 floor
   // (queen/scout/interactive never crowded out by batch bees). Complete + tested (19 module tests +
   // gateway suite green, flag-OFF byte-identical); flipped ON per owner directive 2026-06-22.

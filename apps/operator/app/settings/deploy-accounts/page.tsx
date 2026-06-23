@@ -5,6 +5,7 @@ import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { KeyRound, Plus, Trash2 } from 'lucide-react';
 import {
   formatResetIn,
@@ -764,14 +765,15 @@ function AccountCard({
       <span className="pc-da__mono pc-da__cred pc-da__card-credential" title={account.credentialRef}>
         {account.credentialRef}
       </span>
-      <button
-        className="pc-da__btn pc-da__btn--ghost pc-da__card-remove"
-        aria-label={`Remove ${account.id}`}
-        title={`Remove ${account.id}`}
-        onClick={() => void remove(account.id)}
-      >
-        <Trash2 size={13} aria-hidden="true" />
-      </button>
+      <Tooltip label={`Remove ${account.id}`}>
+        <button
+          className="pc-da__btn pc-da__btn--ghost pc-da__card-remove"
+          aria-label={`Remove ${account.id}`}
+          onClick={() => void remove(account.id)}
+        >
+          <Trash2 size={13} aria-hidden="true" />
+        </button>
+      </Tooltip>
     </article>
   );
 }

@@ -182,70 +182,79 @@ describe('migration 379 — maintained readiness sidecar (work_item_blocked)', (
     expect(await blockedSet()).toEqual([]);
   });
 
-  it('(f) reconciliation invariant: sidecar contents == EXACTLY the oracle-blocked feature set, on a random graph', async () => {
-    // Build a small random DAG of features + a couple of issues, randomized statuses,
+  it('(f) reconciliation invariant: sidecar contents == EXACTLY the oracle-blocked feature set, on random graphs', async () => {
+    // Build small random DAGs of features + a couple of issues, randomized statuses,
     // and random blocks-edges (acyclic by construction: a node may only be blocked by a
     // lower-indexed node). Every mutation runs through the live triggers; then assert the
-    // maintained sidecar matches the oracle predicate exactly.
+    // maintained sidecar matches the oracle predicate EXACTLY. Run several deterministic
+    // seeds so the invariant covers a range of graph shapes while staying reproducible.
     const FEATURES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
     const ISSUES = ['I1', 'I2', 'I3'];
     const featureStatuses = ['todo', 'in_progress', 'passed', 'deprecated'];
     const issueStatuses = ['open', 'in_progress', 'resolved', 'closed'];
+    const SEEDS = [0x9e3779b9, 0x12345678, 0xdeadbeef, 0x0badf00d, 0x5eed5eed];
 
-    // Deterministic PRNG (mulberry32) so a failure is reproducible.
-    let s = 0x9e3779b9 >>> 0;
-    const rnd = (): number => {
-      s |= 0;
-      s = (s + 0x6d2b79f5) | 0;
-      let t = Math.imul(s ^ (s >>> 15), 1 | s);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-    const pick = <T,>(arr: T[]): T => arr[Math.floor(rnd() * arr.length)]!;
+    for (const seed of SEEDS) {
+      // Fresh graph per seed.
+      await db.sql`TRUNCATE harness_shared.work_item_deps`;
+      await db.sql`TRUNCATE harness_shared.work_items`;
+      await db.sql`TRUNCATE harness_shared.work_item_blocked`;
 
-    for (let i = 0; i < FEATURES.length; i++) {
-      await insertFeature('hx', FEATURES[i]!, pick(featureStatuses));
-    }
-    for (const id of ISSUES) {
-      await insertIssue(id, pick(issueStatuses), 'bug');
-    }
+      // Deterministic PRNG (mulberry32) so a failure is reproducible from the seed.
+      let s = seed >>> 0;
+      const rnd = (): number => {
+        s |= 0;
+        s = (s + 0x6d2b79f5) | 0;
+        let t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const pick = <T,>(arr: T[]): T => arr[Math.floor(rnd() * arr.length)]!;
 
-    // Feature->feature edges (acyclic: blocker index < blocked index).
-    for (let blocked = 1; blocked < FEATURES.length; blocked++) {
-      for (let blocker = 0; blocker < blocked; blocker++) {
-        if (rnd() < 0.25) {
-          await addBlocksEdge(`hx#${FEATURES[blocked]}`, `hx#${FEATURES[blocker]}`);
+      for (let i = 0; i < FEATURES.length; i++) {
+        await insertFeature('hx', FEATURES[i]!, pick(featureStatuses));
+      }
+      for (const id of ISSUES) {
+        await insertIssue(id, pick(issueStatuses), 'bug');
+      }
+
+      // Feature->feature edges (acyclic: blocker index < blocked index).
+      for (let blocked = 1; blocked < FEATURES.length; blocked++) {
+        for (let blocker = 0; blocker < blocked; blocker++) {
+          if (rnd() < 0.25) {
+            await addBlocksEdge(`hx#${FEATURES[blocked]}`, `hx#${FEATURES[blocker]}`);
+          }
         }
       }
-    }
-    // Issue->feature edges.
-    for (let i = 0; i < FEATURES.length; i++) {
-      for (const issue of ISSUES) {
-        if (rnd() < 0.2) {
-          await addBlocksEdge(`hx#${FEATURES[i]}`, issue, 'feature', 'issue');
+      // Issue->feature edges.
+      for (let i = 0; i < FEATURES.length; i++) {
+        for (const issue of ISSUES) {
+          if (rnd() < 0.2) {
+            await addBlocksEdge(`hx#${FEATURES[i]}`, issue, 'feature', 'issue');
+          }
         }
       }
-    }
 
-    // Now perturb: flip a random subset of statuses (exercises the status triggers).
-    for (let i = 0; i < FEATURES.length; i++) {
-      if (rnd() < 0.5) {
-        await db.sql`UPDATE harness_shared.work_items SET status = ${pick(featureStatuses)}
-                      WHERE harness_slug = 'hx' AND feature_id = ${FEATURES[i]!}`;
+      // Now perturb: flip a random subset of statuses (exercises the status triggers).
+      for (let i = 0; i < FEATURES.length; i++) {
+        if (rnd() < 0.5) {
+          await db.sql`UPDATE harness_shared.work_items SET status = ${pick(featureStatuses)}
+                        WHERE harness_slug = 'hx' AND feature_id = ${FEATURES[i]!}`;
+        }
       }
-    }
-    for (const id of ISSUES) {
-      if (rnd() < 0.5) {
-        await db.sql`UPDATE harness_shared.work_items SET status = ${pick(issueStatuses)}
-                      WHERE harness_slug = '' AND feature_id = ${id}`;
+      for (const id of ISSUES) {
+        if (rnd() < 0.5) {
+          await db.sql`UPDATE harness_shared.work_items SET status = ${pick(issueStatuses)}
+                        WHERE harness_slug = '' AND feature_id = ${id}`;
+        }
       }
+
+      const maintained = await blockedSet();
+      const oracle = await oracleBlockedSet();
+      expect(maintained, `seed=0x${seed.toString(16)}`).toEqual(oracle);
+
+      // And the sidecar must contain ONLY feature-family refs (never an issue ref).
+      for (const ref of maintained) expect(ref.startsWith('hx#')).toBe(true);
     }
-
-    const maintained = await blockedSet();
-    const oracle = await oracleBlockedSet();
-    expect(maintained).toEqual(oracle);
-
-    // And the sidecar must contain ONLY feature-family refs (never an issue ref).
-    for (const ref of maintained) expect(ref.startsWith('hx#')).toBe(true);
   });
 });
