@@ -3483,6 +3483,67 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // network.hiveDirectory — the P2P hive-directory browse list (data-sync-push-
+  // completion P-009): the SAME un-muted, un-expired, non-private discovered set
+  // GET /api/discovery/hives serves to the desktop WorkbenchHiveDirectoryPanel,
+  // moved onto the sync rail so a withdrawn hive drops out / a new announce
+  // appears WITHOUT the old 30s poll. Reuses the directory's own
+  // listDiscoveredHives builder + the endpoint's exact row shape (so the panel
+  // renders identically). Flat HiveRow array (the panel maps over it directly).
+  // IN-MEMORY P2P state (no PG table → no table→query bridge; that would trip the
+  // cache-tag-trigger-coverage test which requires a PG trigger per bridged table).
+  // Live: the directory ingest path (verify→add / withdraw-tombstone in
+  // hive-directory-boot's onAnnounce) + the announce/withdraw/beacon writers fire
+  // notifySyncInvalidate('network.hiveDirectory') on every accepted change. The
+  // 90s source-side dedupe is fine here — P2P announce/withdraw events are sparse
+  // (typically >90s apart), so each invalidation delivers promptly; any miss falls
+  // back to the @papercusp/sync 180s drift-repair tick.
+  'network.hiveDirectory': {
+    resolve: async () => {
+      const { getHiveDirectory } = await import('../hive-directory-deps');
+      return getHiveDirectory()
+        .listDiscoveredHives({ includeExpired: false })
+        .filter((h) => h.visibility !== 'private')
+        .map((h) => ({
+          hiveId: h.hiveId,
+          title: h.title,
+          description: h.description,
+          owner: h.ownerGithubLogin,
+          visibility: (h.visibility === 'invite' ? 'invite' : 'public') as 'public' | 'invite',
+          memberTopics: h.memberTopics,
+          memberLinks: h.memberLinks ?? [],
+          memberCount: h.memberTopics.length,
+          createdAt: h.createdAt,
+          lastSeenMs: h.lastSeenMs,
+          // The hive's identity pubkey (raw-32-byte base64) — parity with the
+          // /discovery/hives endpoint so the Comb's ?hive= rollup can match.
+          hivePubkey: h.hivePubkey ?? null,
+        }));
+    },
+  },
+
+  // network.federationStatus — the desktop's LIVE federation status read (data-
+  // sync-push-completion P-009): the SAME { ok, substrate, hives } payload GET
+  // /api/discovery/federation-status serves to the left-sidebar
+  // HiveFederationStatus panel, moved onto the sync rail so the old 10s poll is
+  // gone. Reuses the endpoint's exact builder (buildFederationStatus) so the
+  // FedStatus shape matches precisely. Workspace-singleton, no-arg; returns a
+  // FLAT one-element array per the resolver contract — the consumer reads data[0].
+  // IN-MEMORY P2P + install-wide substrate state (no PG table → no table→query
+  // bridge). Live: the directory ingest path + the announce/withdraw/beacon writers
+  // fire notifySyncInvalidate('network.federationStatus') on every accepted change;
+  // substrate/drain changes (harness boots) not covered by those fall back to the
+  // 180s drift-repair tick — acceptable for a status panel (substrate is steady
+  // after boot). Same 90s-dedupe reasoning as network.hiveDirectory.
+  'network.federationStatus': {
+    resolve: async () => {
+      const { buildFederationStatus } = await import(
+        '../endpoint-route/routes/discovery/build-federation-status'
+      );
+      return [await buildFederationStatus()];
+    },
+  },
+
   // planItems.byPlan — the parsed plan items (id, text, storedStatus,
   // effectiveStatus, blockedBy, …) for one plan, for the Create-tab kanban.
   // Reads through the SAME path as `plans:get` (parses the plan's `content`
