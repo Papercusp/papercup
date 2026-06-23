@@ -17,14 +17,17 @@
  * to {@link fireBuiltinReactionAction} and its name to {@link BUILTIN_ACTIONS}.
  */
 
-import type { FireReactionResult } from './dispatch-reaction';
-import { getOperatorCache } from '../cache/instance';
+import type { FireReactionResult } from "./dispatch-reaction";
+import { getOperatorCache } from "../cache/instance";
+import { coalescedInvalidateByTags } from "../cache/debounced-invalidate";
 
 /** The action name the cache-invalidation reaction fires. */
-export const CACHE_BUMP_TAGS_ACTION = 'cache.bumpTags';
+export const CACHE_BUMP_TAGS_ACTION = "cache.bumpTags";
 
 /** The closed set of recognised built-in (non-tool) reaction action names. */
-export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([CACHE_BUMP_TAGS_ACTION]);
+export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
+  CACHE_BUMP_TAGS_ACTION,
+]);
 
 /** Whether `fire` names a built-in in-process action (vs a projected tool). */
 export function isBuiltinReactionAction(fire: string): boolean {
@@ -34,7 +37,9 @@ export function isBuiltinReactionAction(fire: string): boolean {
 /** Coerce an args value to a clean string[] of tags (drop empties / non-strings). */
 function toTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((t): t is string => typeof t === 'string' && t.length > 0);
+  return value.filter(
+    (t): t is string => typeof t === "string" && t.length > 0,
+  );
 }
 
 /**
@@ -45,6 +50,11 @@ function toTags(value: unknown): string[] {
  * generation for each tag on the operator's singleton cache, lazily marking
  * every `getOrSet` entry carrying any of those tags stale on its next read. The
  * workspace is the trigger's (D-010): tags never cross a workspace boundary.
+ *
+ * Routed through `coalescedInvalidateByTags` (P-008/D-006): tags for the
+ * APPEND-HEAVY log tables (coord_event_log, …) are DEBOUNCED — coalesced to at
+ * most one bump per window — so an append storm can't tank a consumer's hit-rate;
+ * every other tag bumps immediately, unchanged.
  */
 export function fireBuiltinReactionAction(
   fire: string,
@@ -60,10 +70,13 @@ export function fireBuiltinReactionAction(
         return { ok: true };
       }
       try {
-        getOperatorCache().invalidateByTags(workspaceId, tags);
+        coalescedInvalidateByTags(getOperatorCache(), workspaceId, tags);
         return { ok: true };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
     }
     default:

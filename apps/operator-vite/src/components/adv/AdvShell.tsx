@@ -791,7 +791,7 @@ export default function AdvShell({
           z-index: 80;
           width: min(340px, calc(100vw - 28px));
           overflow: visible;
-          border: 1px solid rgba(125, 211, 252, 0.26);
+          border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
           border-radius: 10px;
           background:
             linear-gradient(180deg, #111c2f 0%, #0b1525 100%);
@@ -807,8 +807,8 @@ export default function AdvShell({
           width: 10px;
           height: 10px;
           transform: rotate(45deg);
-          border-left: 1px solid rgba(125, 211, 252, 0.26);
-          border-top: 1px solid rgba(125, 211, 252, 0.26);
+          border-left: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
+          border-top: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
           background: #111c2f;
         }
         .pc-advshell__hives-pop .pclsb-panel {
@@ -823,14 +823,14 @@ export default function AdvShell({
         .pc-advshell__hives-pop .pclsb-panel__bar {
           min-height: 26px;
           padding: 0 1px 7px;
-          border-bottom: 1px solid rgba(125, 211, 252, 0.16);
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.16));
         }
         .pc-advshell__hives-pop .pclsb-panel__bar-label {
           color: #b9d4e8;
         }
         .pc-advshell__hives-pop .pclsb-row {
           padding: 8px 9px;
-          border-color: rgba(125, 211, 252, 0.16);
+          border-color: var(--border, rgba(125, 211, 252, 0.16));
           background: #0f1b2d;
         }
         .pc-advshell__hives-pop .pclsb-row + .pclsb-row {

@@ -47,10 +47,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
-  // (SCHEDULER_MAINTAINED_READY graduated to default-ON 2026-06-22 — the maintained-readiness sidecar
-  // cutover: live reconciliation drift=0 SUSTAINED on the dev DB + the flag-ON claim path verified green
-  // end-to-end (claim-respects-blocking 9/9, both entry points). Reversible kill-switch back to the inline
-  // predicate. Finished+verified ships ON, not dark — removed from the allowlist per the rule.)
+  // work-item-deps-and-readiness-2026-06-22 P-005: the maintained-readiness sidecar cutover. The sidecar
+  // is BUILT + live + drift=0-verified and the flag-ON claim path is green (claim-respects-blocking 9/9),
+  // but flipping the DEFAULT makes work_item_blocked a HARD claim dependency — any env/test without mig
+  // 379 errors ("relation work_item_blocked does not exist"). Default-ON is a coordinated cutover (deploy
+  // 379 everywhere + migrate the claim-path tests to apply it first); left OFF until then.
+  FLAGS.SCHEDULER_MAINTAINED_READY,
   // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items self-pickable by the
   // scheduler claim path. owner-authority — it adds a brand-new dispatch SOURCE (what the autonomous
   // fleet picks up: bug/change/task items, not just features), so the owner ratifies the flip. OFF ⇒
@@ -376,6 +378,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, 'incomplete'],
+  [FLAGS.SCHEDULER_MAINTAINED_READY, 'cutover'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
   [FLAGS.PLAN_PART_FEDERATION, 'incomplete'],
