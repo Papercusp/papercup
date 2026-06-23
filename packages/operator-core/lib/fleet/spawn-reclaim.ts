@@ -348,7 +348,14 @@ export async function reclaimOrphanedSpawns(
       priorBoot.push(c.spawn_id);
       continue;
     }
-    const kind: 'spawn' | 'launch' = (c.run_id ?? '').startsWith('launch-') ? 'launch' : 'spawn';
+    // A `launch-%` run_id OR a `durable-spawn:%` spawn_id is an in-process loopback launch (the
+    // firing operator holds the /invoke connection for the agent's run) → liveness = the firing
+    // process exists. Otherwise it is an invoke-once bee child → strict invoke-once-cmdline check.
+    // (durable-spawn rows stamp the firing process's pid in durableSpawnFireImpl; without the
+    // launch-kind here that operator pid would fail the cmdline check and the row would still be
+    // false-reclaimed — D-011.)
+    const kind: 'spawn' | 'launch' =
+      (c.run_id ?? '').startsWith('launch-') || c.spawn_id.startsWith('durable-spawn:') ? 'launch' : 'spawn';
     if (sameHost && c.pid != null) {
       if (isAlive(c.pid, kind)) alive.push(c.spawn_id);
       else deadChild.push(c.spawn_id);
