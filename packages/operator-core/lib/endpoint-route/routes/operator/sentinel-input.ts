@@ -7,17 +7,16 @@
  * Claude-Code session) by voice. The webview voice runtime POSTs here instead
  * of routing into `operator:converse`.
  *
- * Mechanism: the Sentinel is the `focus=true` pane of the live `pui-dock-*`
- * zellij session; we `write-chars <text>` then `write 13` (Enter) to submit a
- * turn. (Verified manually that zellij write-chars reaches that pane.)
+ * Mechanism: `psu-sentinel` registers the Sentinel pane's zellij id at launch to
+ * ~/.papercusp/sentinel-pane; we `write-chars --pane-id <sentinel> <text>` then
+ * `write --pane-id <sentinel> 13` (Enter) to submit a turn — so it always lands
+ * in the SENTINEL pane, not whatever pane is focused. (Verified: a `--pane-id`
+ * write reaches the sentinel composer, not the focused pane.) If the
+ * registration is absent/stale we fall back to the live session's focused pane.
  *
  * LOCAL APP USER ONLY (owner constraint, 2026-06-22): this is the local
  * STT→pane pipeline, NOT the P2P voice-channel system. `auth: 'loopback'` — only
  * the local webview reaches it.
- *
- * v1 limitation: writes to the session's FOCUSED pane (the Sentinel by layout
- * default). If the user has focused another dock pane, the turn lands there —
- * a follow-up can focus the sentinel pane by id first.
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';

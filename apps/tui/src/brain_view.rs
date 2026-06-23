@@ -56,11 +56,17 @@ impl Scope {
 }
 
 /// Resolve the autonomous session this pane follows: the NEWEST session for
-/// this scope (across the live + ended roster tiers) whose transcript file
-/// actually exists on disk. Returns its native uuid + transcript path together
+/// this scope (across the live `active` AND `ended` roster tiers) whose transcript
+/// file actually exists on disk. Returns its native uuid + transcript path together
 /// (we locate once), or None when no such session is up yet. The roster is the
 /// SAME backend data every desktop instance reads, so all instances resolve the
 /// same session.
+///
+/// The `ended` tier is ESSENTIAL, not optional: an autonomous wake's adv_sessions
+/// row is markAdvSessionEnded the instant its invoke run returns, so a short wake
+/// (every Overwatch fire; a Queen wake between cycles) is in `ended` by the time
+/// this resolves — reading only `active` is exactly why the Overwatch pane was
+/// stuck on "waiting…". See roster_brain_scoped (client.rs).
 ///
 /// The Queen runs as a SERIES of short "wake" sessions, each a fresh uuid; the
 /// roster accumulates dozens of past wakes (45 active + 24 ended is normal). We
@@ -81,8 +87,16 @@ async fn resolve_session(client: &OperatorClient, scope: &Scope) -> Option<(Stri
     // → unscoped, preserving the prior fleet-wide behavior. A failed workspace
     // read also degrades to unscoped (never blanks the pane).
     let workspace = client.current_workspace().await.ok().flatten();
-    let (active, pending) = client.roster_typed_scoped(workspace.as_deref()).await.ok()?;
-    let entries: Vec<RosterEntry> = active.into_iter().chain(pending).collect();
+    // Read the `active` AND `ended` roster tiers (roster_brain_scoped): a
+    // short-lived autonomous wake (every Overwatch invoke; a Queen wake between
+    // cycles) is markAdvSessionEnded the instant its run returns, so it sits in
+    // `ended`, not `active`. The OLD code read only `active` (+ the reactive-pane
+    // `pending` tier, which never carries a queen/overwatch session) — so the
+    // Overwatch pane resolved nothing and printed "not running right now —
+    // waiting…" forever even though its transcript was on disk. Tailing the last
+    // ended wake IS this pane's contract ("keeps showing the last wake's
+    // transcript, which persists on disk after the process exits", below).
+    let entries: Vec<RosterEntry> = client.roster_brain_scoped(workspace.as_deref()).await.ok()?;
     select_newest_with_transcript(entries, scope, locate_session_transcript)
 }
 
@@ -225,6 +239,30 @@ mod tests {
         let got = select_newest_with_transcript(entries, &Scope::Queen, locate);
         // Rolls back from 3329 (no file) to 3328 (`live`) — NOT the oldest 2915.
         assert_eq!(got, Some(("live".into(), PathBuf::from("/t/live.jsonl"))));
+    }
+
+    #[test]
+    fn overwatch_resolves_from_an_ended_wake_with_a_transcript() {
+        // The regression this fix closes: every Overwatch wake is a short invoke
+        // whose adv_sessions row is ENDED by the time the pane polls, so it arrives
+        // ONLY via the roster's `ended` tier (now merged into `entries` by
+        // roster_brain_scoped). select_newest_with_transcript is tier-agnostic, so
+        // an overwatch entry with a sessionId + an on-disk transcript MUST resolve
+        // — proving the pane attaches instead of printing "waiting…". (Before the
+        // fix the ended tier was dropped client-side and `entries` was empty.)
+        let entries = vec![
+            entry("overwatch", 6929, Some("ow-old")),  // older ended wake, has a file
+            entry("queen", 6940, Some("q")),           // wrong scope, newer
+            entry("overwatch", 6946, Some("ow-new")),  // newest ended wake, has a file
+        ];
+        let locate = |uuid: &str| -> Option<PathBuf> {
+            match uuid {
+                "ow-old" | "ow-new" => Some(PathBuf::from(format!("/t/{uuid}.jsonl"))),
+                _ => None,
+            }
+        };
+        let got = select_newest_with_transcript(entries, &Scope::Overwatch, locate);
+        assert_eq!(got, Some(("ow-new".into(), PathBuf::from("/t/ow-new.jsonl"))));
     }
 
     #[test]

@@ -442,6 +442,30 @@ impl OperatorClient {
         Ok((resp.active, resp.pending))
     }
 
+    /// The brain-view roster: the `active` AND `ended` tiers concatenated, scoped
+    /// to one workspace (`None` → fleet-wide). The read-only queen/overwatch panes
+    /// (`brain_view.rs`) resolve the NEWEST wake-with-a-transcript across BOTH
+    /// tiers — a short-lived autonomous wake is `markAdvSessionEnded` the instant
+    /// its invoke run returns, so it lands in `ended`, not `active`. Reading only
+    /// `active` (the old behavior) made the Overwatch pane permanently say
+    /// "not running right now — waiting…": every overwatch wake is a ~seconds-to-
+    /// minutes invoke whose adv_sessions row is ENDED by the time the pane polls,
+    /// so it never appeared in the `active`-only set even though its transcript
+    /// sits on disk. The Queen happened to keep many `active` rows (overlapping
+    /// wakes), which is why only Overwatch showed the bug. `ended` is appended
+    /// after `active` so a still-live wake (if any) is seen first; the caller
+    /// sorts by `adv_session_id` regardless, so ordering here is not load-bearing.
+    pub async fn roster_brain_scoped(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<Vec<RosterEntry>> {
+        let v = self.roster_scoped(workspace).await?;
+        let resp = serde_json::from_value::<RosterResponse>(v).context("decode roster")?;
+        let mut entries = resp.active;
+        entries.extend(resp.ended);
+        Ok(entries)
+    }
+
     pub async fn plans_typed(&self) -> Result<Vec<PlanSummary>> {
         let v = self.plans_list().await?;
         Ok(serde_json::from_value::<PlansResponse>(v)

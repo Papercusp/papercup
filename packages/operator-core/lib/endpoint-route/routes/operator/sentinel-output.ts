@@ -2,8 +2,9 @@
  * /api/operator/sentinel-output — Phase D voice-OUT relay for the
  * Sentinel-as-Claude-TUI (sentinel-as-claude-tui-2026-06-22).
  *
- *   POST { text }  — the Sentinel's Claude-session Stop hook posts the spoken
- *                    `<say>…</say>` text of its latest reply.
+ *   POST { text }  — alt voice-out emitter (e.g. a launch hook) posts a spoken
+ *                    line. The PRIMARY path is the `voice:say` MCP tool, which
+ *                    the Sentinel calls to push straight into the buffer.
  *   GET            — the webview voice runtime drains buffered spoken lines and
  *                    calls speak()/TTS (it polls while voice is active).
  *

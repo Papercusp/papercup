@@ -16,6 +16,8 @@ describe('dev.* glance resolvers', () => {
       'dev.gitPipeline',
       'dev.pgHealth',
       'dev.pgActiveQueries',
+      'dev.telemetry',
+      'dev.toolFormatAdoption',
       'dev.coordPresence',
       'dev.coordFeed',
       'dev.fleetGovernor',
@@ -89,6 +91,33 @@ describe('dev.* glance resolvers', () => {
     it('dev.pgActiveQueries rejects an out-of-range limit (zod)', async () => {
       const { resolveNamedQueryV2: r } = await import('./index');
       await expect(r('dev.pgActiveQueries', { limit: 9999 })).rejects.toThrow();
+    });
+
+    it('dev.telemetry returns the flat rollup entries (passes hours+limit through, workspaceIds:null)', async () => {
+      const entries = [
+        { tool_name: 'work_items:list', call_count: 5, error_count: 0, p50_ms: 10, p95_ms: 20, total_bytes: 1000, avg_bytes: 200, repeat_within_spawn: 2 },
+      ];
+      const telemetryRollup = vi.fn(async () => ({ entries }));
+      vi.doMock('../dev-data', () => ({ telemetryRollup }));
+      const { resolveNamedQueryV2: r } = await import('./index');
+      const rows = (await r('dev.telemetry', { hours: 168, limit: 50 })) as unknown[];
+      expect(rows).toEqual(entries);
+      expect(telemetryRollup).toHaveBeenCalledWith({ workspaceIds: null, hours: 168, limit: 50 });
+      vi.doUnmock('../dev-data');
+    });
+
+    it('dev.toolFormatAdoption returns the flat format-mix rows (passes hours through, workspaceIds:null)', async () => {
+      const formatRows = [
+        { format: 'toon', n: 75 },
+        { format: 'json', n: 25 },
+      ];
+      const toolFormatAdoption = vi.fn(async () => ({ rows: formatRows }));
+      vi.doMock('../dev-data', () => ({ toolFormatAdoption }));
+      const { resolveNamedQueryV2: r } = await import('./index');
+      const rows = (await r('dev.toolFormatAdoption', { hours: 24 })) as unknown[];
+      expect(rows).toEqual(formatRows);
+      expect(toolFormatAdoption).toHaveBeenCalledWith({ workspaceIds: null, hours: 24 });
+      vi.doUnmock('../dev-data');
     });
 
     it('dev.coordPresence returns the flat presence array (passes workspace through)', async () => {

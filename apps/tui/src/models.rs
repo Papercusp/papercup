@@ -411,6 +411,16 @@ pub struct WakeGroup {
 pub struct RosterResponse {
     #[serde(default)]
     pub active: Vec<RosterEntry>,
+    /// Recently-ended sessions (`/api/adv/roster` `ended` tier) — the durable
+    /// history half of the live roster. The brain-view panes MUST read this: a
+    /// short-lived autonomous wake (the Overwatch's every-10-min invoke, a Queen
+    /// wake between cycles) is `markAdvSessionEnded` the instant its run returns,
+    /// so by the time a pane resolves it the row is already here, NOT in `active`.
+    /// Tailing it from `ended` is exactly the pane's "keeps showing the last
+    /// wake's transcript, which persists on disk after the process exits" contract
+    /// (brain_view.rs). The Fleet roster ignores this tier (it renders `active`).
+    #[serde(default)]
+    pub ended: Vec<RosterEntry>,
     /// Pending workbench launches (pui-reactive-session-panes D-006): recorded but
     /// not-yet-running sessions, in a SEPARATE tier from `active`. The pui reads
     /// these to reactively open work-area panes; they never render in the roster.
@@ -2276,6 +2286,32 @@ mod tests {
         assert_eq!(e.role, None);
         assert!(e.current_files.is_empty());
         assert!(!e.stale);
+    }
+
+    #[test]
+    fn parses_ended_tier_with_overwatch_session_id() {
+        // Regression (overwatch-not-running-waiting): the brain-view panes resolve
+        // the autonomous session from the `ended` tier too — a short-lived
+        // overwatch/queen wake is markAdvSessionEnded the instant its invoke
+        // returns, so by the time a pane polls it's in `ended`, NOT `active`. The
+        // tier must deserialize and carry the entry's sessionId (the native uuid
+        // the pane tails). Shape trimmed from the live :3270 /api/adv/roster probe.
+        let j = r#"{"active":[],"ended":[
+            {"ownerId":"s-1782179103429-e2dcccf4","label":"overwatch · papercusp/overwatch",
+             "source":"claude","role":"overwatch","agent":"claude","mode":"console",
+             "host":"","pid":null,"liveness":"ended","stale":false,
+             "sessionId":"5fb7d772-655e-4a64-bba3-2bf522c1d1d9","advSessionId":6946,
+             "workspaceId":"papercusp-workspace","endedAt":"2026-06-23T01:45:07.987Z"}
+        ],"pending":[]}"#;
+        let r: RosterResponse = serde_json::from_str(j).unwrap();
+        assert!(r.active.is_empty());
+        assert_eq!(r.ended.len(), 1, "ended tier must deserialize");
+        let e = &r.ended[0];
+        assert_eq!(e.role.as_deref(), Some("overwatch"));
+        // The native uuid the brain-view pane locates + tails MUST survive the
+        // round-trip — empty here = the pane filters the entry out (= "waiting…").
+        assert_eq!(e.session_id.as_deref(), Some("5fb7d772-655e-4a64-bba3-2bf522c1d1d9"));
+        assert_eq!(e.adv_session_id, Some(6946));
     }
 
     #[test]
