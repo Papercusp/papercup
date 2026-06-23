@@ -3710,7 +3710,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // Recipes are GLOBAL (P-001): capped list + cheap COUNT (no workspace/hive
       // filter), so the dashboard can show "N of TOTAL" via attachListMeta.
       const [rows, total] = await Promise.all([
-        listRecipes(sql, { limit: lim }),
+        // Admin/management view shows the FULL corpus including low-value recipes —
+        // they are the sweep/merge targets here, and it keeps the listed rows consistent
+        // with countRecipes' total (P-004: the AGENT-facing recipes:list hides them).
+        listRecipes(sql, { limit: lim, includeTrivial: true }),
         countRecipes(sql),
       ]);
       return attachListMeta(rows, { total }) as unknown[];
