@@ -30,6 +30,31 @@ still reads status=draft with P-003 in now_next. When `plans:*` MCP is reachable
 - Optionally `memory:remember` the strategic finding: LLM tool-result delta is scoped to Papercusp-owned turn-wrappers (OMP/psu); external Claude Code (the fleet's big consumers) is out of scope — the real win was the sync delta (P-006).
 Do NOT raw-UPDATE harness_plans (desyncs content_hash/version/plan-events) — use the MCP tools.
 
+## Follow-on items (owner asked "take these on now") — dispositions
+
+### Item 2 (BasePresenceTracker → turn-wrapper integration) — IN-REPO PART DONE
+Investigated the integration site thoroughly. FINDING (corrects the earlier "clean, contained
+task"): every delta-capable consumer is an EXTERNAL MCP-client runtime (`transport='mcp'`:
+activity:recent 8750, work_items:list, plans:attention… — spawned bees / psu = claude-code /
+omp-via-Meridian / codex BINARIES). No in-repo Papercusp LLM loop consumes these (runAgentChat
+delegates to a child process, owns no message array). The MCP proxy (apps/operator/lib/mcp-proxy/
+proxy.ts) is deliberately stateless + can't see client compaction → not the seam (a proxy delta
+reconstructs full for the client = localhost-moot wire saving, no model-token win).
+→ So the model-token win is realized by the AGENT RUNTIME importing @papercusp/tooldef; the
+per-runtime call site is external. Maximal in-repo deliverable SHIPPED: `dispatchWithBasePresence`
+(one-call turn-wrapper seam = tracker + client + guarded dispatch), +6 composition tests (594
+tooldef green, type-clean), exported, + an integration RECIPE on the contract doc. The external
+adoption is now a one-liner. claude-code/codex stay contract-excluded (enabled:false); omp/Meridian
+is the in-scope adopter.
+
+### Item 1 (plan bookkeeping reconciliation) — BLOCKED on MCP tool exposure (staged)
+papercusp-su MCP handshakes (claude mcp list: ✔ Connected, port 9071) BUT tools/list returns []
+for this session's client params — the superuser endpoint gates tool exposure on an authorized
+PAPERCUSP_SID not present in my Bash context (default client UUID → empty tool list). Can't call
+plans:set-status without forging superuser auth (won't). Raw UPDATE forbidden (desync). → The
+set-status commands above remain staged; run them from an AUTHORIZED su session where the tools
+ARE exposed. The WORK is complete (code/tests/docs); only the plan-status projection lags.
+
 ### P-005 finding (live telemetry)
 `SELECT metadata_json->>'deltaMode', count(*) FROM harness_shared.tool_invocations GROUP BY 1`
 → `<none>`: 6,473,976 · **`full`: 8,044** · `not_modified`: 0 · `delta`: 0.
