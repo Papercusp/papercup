@@ -110,23 +110,27 @@ try:
     except Exception:
         glance = None
 
-    if not isinstance(glance, dict):
-        sys.exit(0)
-    obj = (glance.get('self') or {}).get('objective')
-    if not isinstance(obj, str):
-        sys.exit(0)
-    obj = obj.strip()
-    if not obj:
-        sys.exit(0)
-    if len(obj) > OBJECTIVE_MAX:
-        obj = obj[:OBJECTIVE_MAX - 1].rstrip() + '…'
-    # Strip control chars that could break out of the OSC string (defensive — the
-    # objective is operator-controlled, but a title escape must stay well-formed).
-    obj = ''.join(c for c in obj if ord(c) >= 32 and c not in '\x07\x1b')
-    if not obj:
+    # The papercusp id of THIS agent ALWAYS leads the title (owner ask 2026-06-23) so a
+    # human can tell which session owns the terminal even before/without an objective.
+    # Short form mirrors the fleet statusline (su- + 5 hex, e.g. su-fcdb9).
+    me_short = ('su-' + me[3:].split('-', 1)[0][:5]) if me.startswith('su-') else me[:12]
+    # Objective (in-execution work-item title ?? declared intent) — appended AFTER the
+    # id when present; a missing/blank objective (or operator down) just leaves the id.
+    obj = None
+    if isinstance(glance, dict):
+        o = (glance.get('self') or {}).get('objective')
+        if isinstance(o, str) and o.strip():
+            o = o.strip()
+            if len(o) > OBJECTIVE_MAX:
+                o = o[:OBJECTIVE_MAX - 1].rstrip() + '…'
+            obj = o
+    title = me_short + (' · 🔭 ' + obj if obj else '')
+    # Strip control chars that could break out of the OSC string (defensive).
+    title = ''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b')
+    if not title:
         sys.exit(0)
     # OSC 0 sets BOTH the icon name and the window title: ESC ] 0 ; <text> BEL.
-    osc = '\033]0;🔭 ' + obj + '\007'
+    osc = '\033]0;' + title + '\007'
     # Write straight to the tty (the client owns it). A piped/headless session has
     # no controlling tty → the open fails and we fail open (no title set).
     try:

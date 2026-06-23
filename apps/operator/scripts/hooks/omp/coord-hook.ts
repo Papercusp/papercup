@@ -1218,15 +1218,25 @@ const OBJECTIVE_TITLE_MAX = 60; // a window/tab title is short — clip a verbos
  * break out of the OSC string (the objective is operator-controlled, but a title
  * escape must stay well-formed). Unit-tested.
  */
-export function buildObjectiveTitleOsc(objective: string | null | undefined): string {
-  if (typeof objective !== 'string') return '';
-  let obj = objective.trim();
-  if (obj.length === 0) return '';
+export function buildObjectiveTitleOsc(
+  objective: string | null | undefined,
+  agentId?: string | null,
+): string {
+  // The papercusp id of THIS agent ALWAYS leads the title (owner ask 2026-06-23) so a
+  // human can tell which session owns the terminal even before/without an objective.
+  // Short form mirrors the fleet statusline (su- + 5 hex, e.g. su-fcdb9). A legacy
+  // one-arg call (no id) falls back to the objective-only title.
+  const id = typeof agentId === 'string' ? agentId.trim() : '';
+  const idShort = id.startsWith('su-') ? `su-${id.slice(3).split('-')[0].slice(0, 5)}` : id.slice(0, 12);
+  let obj = typeof objective === 'string' ? objective.trim() : '';
   if (obj.length > OBJECTIVE_TITLE_MAX) obj = `${obj.slice(0, OBJECTIVE_TITLE_MAX - 1).trimEnd()}…`;
   obj = [...obj].filter((c) => c.codePointAt(0)! >= 32 && c !== '\x07' && c !== '\x1b').join('');
-  if (obj.length === 0) return '';
+  let title = idShort;
+  if (obj.length > 0) title = idShort ? `${idShort} · 🔭 ${obj}` : `🔭 ${obj}`;
+  title = [...title].filter((c) => c.codePointAt(0)! >= 32 && c !== '\x07' && c !== '\x1b').join('');
+  if (title.length === 0) return '';
   // OSC 0 sets BOTH icon name and window title: ESC ] 0 ; <text> BEL.
-  return `\x1b]0;🔭 ${obj}\x07`;
+  return `\x1b]0;${title}\x07`;
 }
 
 /**
@@ -1241,7 +1251,7 @@ export async function emitObjectiveTitle(): Promise<void> {
     audience: 'user',
     activity_limit: 0,
   })) as { self?: { objective?: string | null } } | null;
-  const osc = buildObjectiveTitleOsc(glance?.self?.objective ?? null);
+  const osc = buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
   if (osc.length === 0) return;
   try {
     const fh = await fsp.open('/dev/tty', 'w');
