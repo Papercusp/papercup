@@ -71,6 +71,7 @@ import {
   untagIssue,
   subscribeIssue,
   commentIssue,
+  updateIssue,
   searchIssues,
   promoteIssue,
   issuesScopeWorkspace,
@@ -1929,6 +1930,41 @@ export async function commentWorkItem(id: string, body: string, authorId?: strin
   };
   await fanoutForObject(ref, ev, { excludeId: authorId });
   return post;
+}
+
+/** The mutable fields a work-item field-edit can touch (mirrors issues:update's
+ *  fields — the issue family is the only one with directly-editable metadata). */
+export interface UpdateWorkItemPatch {
+  title?: string;
+  body?: string;
+  severity?: IssueSeverity;
+  kind?: IssueKind;
+  foundDuring?: string | null;
+  linkedFeatureId?: string | null;
+}
+
+/**
+ * Field-edit a work-item's mutable metadata (title / body / severity / kind /
+ * found-during / linked-feature). Replaces the retired issues:update onto the
+ * unified work_items surface. Dispatches by family:
+ *   - issue-family (bug | change | task) → engineer-issues updateIssue (notifies subs).
+ *   - feature-family (feature | research-task | chunk) → unsupported: a feature's
+ *     fields are owned by the pipeline (scoper/architect), not a direct edit.
+ * Returns the refreshed WorkItem on success, or a typed reason on failure.
+ */
+export async function updateWorkItem(
+  id: string,
+  patch: UpdateWorkItemPatch,
+  by?: string,
+  opts: { harness?: string } = {},
+): Promise<{ ok: true; item: WorkItem } | { ok: false; reason: 'not_found' | 'unsupported_family' }> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { ok: false, reason: 'not_found' };
+  if (wi.family !== 'issue') return { ok: false, reason: 'unsupported_family' };
+  const issue = await updateIssue(id, { ...patch, by });
+  if (!issue) return { ok: false, reason: 'not_found' };
+  const refreshed = await getWorkItem(id, opts.harness);
+  return refreshed ? { ok: true, item: refreshed } : { ok: false, reason: 'not_found' };
 }
 
 export interface PromoteToPipelineResult {
