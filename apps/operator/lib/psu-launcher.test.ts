@@ -26,6 +26,7 @@ import {
   claudeStoreHasSession,
   sessionHasTranscript,
   reportSessionEnded,
+  reportSessionResumed,
   roleLaunchArgs,
   suLaunchArgs,
   agentInvalidForRole,
@@ -1057,6 +1058,32 @@ describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
     const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
     await expect(
       reportSessionEnded(17, 1, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('reportSessionResumed (re-activate adv row on resume — best-effort, never rejects)', () => {
+  it('POSTs the row id to bootstrap-su/session-resumed with the bearer', async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionResumed('42', { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-resumed');
+    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
+    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 42 });
+  });
+
+  it('no adv row id → no request (untracked resumes have no row to re-activate)', async () => {
+    const calls = [];
+    const fetchImpl = async (...a) => { calls.push(a); return { ok: true }; };
+    await reportSessionResumed(null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('swallows transport failures — a resume must never wait on or fail from the re-activation', async () => {
+    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+    await expect(
+      reportSessionResumed(42, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
     ).resolves.toBeUndefined();
   });
 });

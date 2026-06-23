@@ -75,29 +75,16 @@ describe('codeRecipes resolver', () => {
     // The row data is preserved; row[0] carries the capped-aware total via attachListMeta.
     expect(rows[0]).toMatchObject(RECIPE);
     expect(rows[0]._meta).toEqual({ total: 42 });
-    // workspace from activeWorkspaceId, hive resolved to the home hive; default LIMIT applied.
-    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: 'papercusp', limit: 1000 });
-    // COUNT uses the SAME hive filter (no limit), so it's the true total.
-    expect(H.countRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: 'papercusp' });
+    // recipes are GLOBAL (P-001): no workspace/hive filter; default LIMIT applied.
+    expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 1000 });
+    // COUNT is the true total (also global, no limit).
+    expect(H.countRecipes).toHaveBeenCalledWith({});
   });
 
-  it('allHives:true lists the whole workspace (no hive narrowing)', async () => {
-    await resolveNamedQueryV2('codeRecipes', { allHives: true });
-    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { limit: 1000 });
-    expect(H.countRecipes).toHaveBeenCalledWith({}, 'ws-1', {});
-    expect(H.hiveHomeSlugForHarness).not.toHaveBeenCalled();
-  });
-
-  it('honors an explicit limit arg', async () => {
+  it('honors an explicit limit arg (recipes are global — no hive narrowing)', async () => {
     await resolveNamedQueryV2('codeRecipes', { limit: 25 });
-    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: 'papercusp', limit: 25 });
-  });
-
-  it('a failed hive resolution degrades to the workspace-global bucket (hiveSlug null)', async () => {
-    H.hiveHomeSlugForHarness.mockRejectedValue(new Error('no hive'));
-    await resolveNamedQueryV2('codeRecipes', {});
-    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: null, limit: 1000 });
-    expect(H.countRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: null });
+    expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 25 });
+    expect(H.hiveHomeSlugForHarness).not.toHaveBeenCalled();
   });
 });
 
@@ -134,11 +121,11 @@ describe('recipeCandidates resolver', () => {
     expect(env).not.toHaveProperty('signals');
   });
 
-  it('passes the resolved workspace + hive (and minRunCount/limit) through to the scorer', async () => {
+  it('passes minRunCount/limit through to the scorer (recipes are global — no workspace/hive)', async () => {
     await resolveNamedQueryV2('recipeCandidates', { minRunCount: 3, limit: 10 });
     expect(H.recipeCandidates).toHaveBeenCalledWith(
       {},
-      { workspaceId: 'ws-1', hiveSlug: 'papercusp', minRunCount: 3, limit: 10 },
+      { minRunCount: 3, limit: 10 },
       expect.objectContaining({ embedder: null, toolCooccurrence: null }),
     );
   });

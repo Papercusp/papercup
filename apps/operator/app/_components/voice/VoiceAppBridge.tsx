@@ -31,7 +31,7 @@ import {
   cancelAllSpeech,
   type VoiceState,
 } from './voice-mode';
-import { routeVoiceToSentinelPane } from './voice-sentinel-bridge';
+import { routeVoiceToSentinelPane, drainSentinelOutput } from './voice-sentinel-bridge';
 
 /**
  * Voice consumer priority registry (v4 §2b).
@@ -272,6 +272,27 @@ export function VoiceAppBridge(): null {
       unsubState();
       unsubUtterance();
       cancelAllSpeech();
+    };
+  }, []);
+
+  // Phase D voice-OUT (sentinel-as-claude-tui-2026-06-22): while voice mode is
+  // on, poll the Sentinel's spoken-output buffer (filled by its Claude-session
+  // Stop hook → /api/operator/sentinel-output) and speak each <say> line via
+  // local TTS. Local app user only.
+  useEffect(() => {
+    let stopped = false;
+    const id = setInterval(() => {
+      if (stopped || voiceStateRef.current.mode === 'off') return;
+      void (async () => {
+        const says = await drainSentinelOutput();
+        if (says.length === 0) return;
+        const { speak } = await import('./voice-mode');
+        for (const line of says) speak(line, 'system:operator', 'polite');
+      })();
+    }, 1500);
+    return () => {
+      stopped = true;
+      clearInterval(id);
     };
   }, []);
 

@@ -335,6 +335,38 @@ export async function markAdvSessionEnded(id: number, exitCode: number | null): 
   }
 }
 
+/**
+ * Re-activate a tracked session row on RESUME — the inverse of
+ * `markAdvSessionEnded` (presence-derive-from-session-log-2026-06-22 P-002 /
+ * resume-visibility).
+ *
+ * `psu --resume` brings the agent PROCESS back to life, but `launchResume` does
+ * NOT re-POST bootstrap-su, so the row kept the `ended_at`/`exit_code` from the
+ * PRIOR exit — leaving a RUNNING agent recorded as dead, hence invisible to the
+ * roster + presence-as-a-view (which correctly trust "ended means ended"). This
+ * clears that stamp so a resumed session shows live the instant it resumes,
+ * before it touches coord. `started_at` is bumped to now() so this incarnation
+ * reads as freshly-live for the roster's recency window (the row represents the
+ * CURRENT live session; resume time is its real "live since"). Idempotent: only
+ * an already-ENDED row is touched. Returns true when this call re-activated a
+ * row (false = no such ended row — already live, unknown id, or DB error).
+ */
+export async function reactivateAdvSession(id: number): Promise<boolean> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET ended_at = NULL, exit_code = NULL, started_at = now()
+       WHERE id = ${id} AND ended_at IS NOT NULL
+      RETURNING id
+    `;
+    return rows.length > 0;
+  } catch (e) {
+    console.warn('[adv-sessions] reactivateAdvSession failed:', (e as Error).message);
+    return false;
+  }
+}
+
 export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   try {
     const { sql } = getOrgPg();

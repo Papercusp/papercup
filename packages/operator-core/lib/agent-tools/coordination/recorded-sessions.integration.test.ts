@@ -13,7 +13,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
-import { listRecordedLiveSessions } from '../../adv-sessions';
+import { listRecordedLiveSessions, reactivateAdvSession } from '../../adv-sessions';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
@@ -104,5 +104,37 @@ describe('listRecordedLiveSessions (real PG)', () => {
     await seedAdv({ coordOwnerId: 'su-omp', agent: 'omp', mode: 'omp', label: 'su · engineer' });
     const owners = (await listRecordedLiveSessions({ workspaceId: WS })).map((r) => r.coordOwnerId).sort();
     expect(owners).toEqual(['s-claude', 'su-codex', 'su-omp']);
+  });
+});
+
+describe('reactivateAdvSession (resume re-activates an ended row → roster surfaces it)', () => {
+  it('clears ended_at/exit_code so an ended (resumed) session becomes live + listable', async () => {
+    // An ended session — invisible to the live roster, exactly like a session
+    // the user exited and is about to `psu --resume`.
+    const rows = await admin`
+      INSERT INTO harness_shared.adv_sessions (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code)
+      VALUES (${WS}, 'claude', 'console', 's-resumed', now() - interval '90 minutes', now() - interval '30 minutes', 0)
+      RETURNING id`;
+    const id = Number(rows[0].id);
+    expect((await listRecordedLiveSessions({ workspaceId: WS })).map((r) => r.coordOwnerId)).toEqual([]);
+
+    // Resume re-activates the row.
+    expect(await reactivateAdvSession(id)).toBe(true);
+
+    const live = await listRecordedLiveSessions({ workspaceId: WS });
+    expect(live.map((r) => r.coordOwnerId)).toEqual(['s-resumed']);
+    expect(live[0].endedAt).toBeNull();
+  });
+
+  it('is idempotent — re-activating an already-live row is a no-op (returns false)', async () => {
+    const rows = await admin`
+      INSERT INTO harness_shared.adv_sessions (workspace_id, agent, mode, coord_owner_id, started_at, ended_at)
+      VALUES (${WS}, 'claude', 'console', 's-live2', now() - interval '5 minutes', NULL)
+      RETURNING id`;
+    expect(await reactivateAdvSession(Number(rows[0].id))).toBe(false);
+  });
+
+  it('returns false for an unknown id', async () => {
+    expect(await reactivateAdvSession(99999999)).toBe(false);
   });
 });

@@ -15,9 +15,11 @@ import fs from 'node:fs/promises';
 import {
   captureCpuProfile,
   classifyLoopPressure,
+  cooperativeYield,
   isLoopSaturated,
   loopPressure,
   startEventLoopLagMonitor,
+  yieldToEventLoop,
   type LagMonitorHandle,
 } from './event-loop-lag-monitor';
 
@@ -194,5 +196,45 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
       const body = await fs.readFile(path.join(dir, profs[0]), 'utf8');
       expect(() => JSON.parse(body)).not.toThrow();
     }
+  });
+});
+
+describe('cooperativeYield / yieldToEventLoop (event-loop-lag root fix)', () => {
+  it('yieldToEventLoop lets a pending macrotask (the "ticker") run before continuing', async () => {
+    const order: string[] = [];
+    // A pending immediate stands in for the routine ticker callback.
+    setImmediate(() => order.push('ticker'));
+    order.push('before');
+    await yieldToEventLoop();
+    order.push('after');
+    // The ticker ran in the gap, NOT after the loop continued.
+    expect(order).toEqual(['before', 'ticker', 'after']);
+  });
+
+  it('cooperativeYield yields on the everyN boundary and advances the counter', async () => {
+    // No monitor running ⇒ loopPressure() is 'ok', so only the everyN boundary triggers a yield.
+    let ranTicker = false;
+    let n = 0;
+    // everyN = 4 (default): iterations 1,2,3 do NOT yield; iteration 4 does.
+    for (let i = 0; i < 3; i++) {
+      setImmediate(() => { ranTicker = true; });
+      n = await cooperativeYield(n);
+      // setImmediate scheduled but a non-yielding iteration must NOT have run it yet
+      // (we can't assert synchronously across awaits reliably, so just track count).
+    }
+    expect(n).toBe(3); // counter advanced once per call
+    // The 4th call crosses the boundary → yields → the pending immediate runs.
+    setImmediate(() => { ranTicker = true; });
+    n = await cooperativeYield(n);
+    expect(n).toBe(4);
+    expect(ranTicker).toBe(true);
+  });
+
+  it('cooperativeYield respects a custom everyN', async () => {
+    let n = 0;
+    n = await cooperativeYield(n, 1); // everyN=1 ⇒ yields every iteration
+    expect(n).toBe(1);
+    n = await cooperativeYield(n, 1);
+    expect(n).toBe(2);
   });
 });

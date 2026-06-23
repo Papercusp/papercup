@@ -23,3 +23,21 @@ export async function routeVoiceToSentinelPane(text: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Phase D voice-OUT: drain the buffered Sentinel `<say>` lines. The webview
+ * polls this while voice is active and speaks each line (TTS). The buffer is
+ * filled by the Sentinel's Claude-session Stop hook → POST /sentinel-output.
+ */
+export async function drainSentinelOutput(): Promise<string[]> {
+  try {
+    const res = await fetch('/api/operator/sentinel-output', { method: 'GET' });
+    if (!res.ok) return [];
+    const data = (await res.json().catch(() => null)) as { says?: unknown } | null;
+    return Array.isArray(data?.says)
+      ? data.says.filter((s): s is string => typeof s === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}

@@ -105,6 +105,35 @@ export function isLoopSaturated(): boolean {
   return loopPressure() === 'critical';
 }
 
+/** Yield the macrotask queue once so any pending timer/IO callback — most
+ *  importantly the routine TICKER — runs before this loop continues. A `setImmediate`
+ *  fires after the current poll phase, so the ticker is never starved by a long
+ *  synchronous CPU-loop on the main thread. */
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Cooperative-yield gate for a hot boot/drain LOOP that would otherwise hog the
+ * main thread (the EI / event-loop-lag class: "host is CPU-bound on the main
+ * thread", routine ticker starved → watchdog restart loop). Call it once per
+ * iteration; it yields (lets the ticker + IO run) when EITHER the loop has done
+ * `everyN` iterations since the last yield OR loop pressure is already elevated —
+ * so a quiet boot pays at most one macrotask hop per `everyN` items, but a
+ * saturated one yields aggressively. Returns the running count so callers can keep
+ * a single `let n = 0` cursor.
+ *
+ *   let n = 0;
+ *   for (const item of heavy) { await work(item); n = await cooperativeYield(n); }
+ */
+export async function cooperativeYield(count: number, everyN = 4): Promise<number> {
+  const next = count + 1;
+  if (next % Math.max(1, everyN) === 0 || loopPressure() !== 'ok') {
+    await yieldToEventLoop();
+  }
+  return next;
+}
+
 /**
  * Start the event-loop-lag monitor. Returns a handle; the underlying timer is
  * `unref`'d so it never keeps the process alive on its own. Idempotent enough

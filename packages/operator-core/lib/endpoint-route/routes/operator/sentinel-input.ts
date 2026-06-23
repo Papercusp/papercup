@@ -25,6 +25,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireAllowedOriginOr403 } from '../../cors';
 
 const exec = promisify(execFile);
 
@@ -61,6 +62,14 @@ export default defineTool({
   path: '/operator/sentinel-input',
   auth: 'loopback',
   async handler(req) {
+    // CSRF guard: `auth: 'loopback'` admits the cookie-less webview, so it no
+    // longer blocks a foreign browser page from POSTing to 127.0.0.1. This
+    // endpoint types straight into the Sentinel's Claude-Code TUI stdin (an
+    // RCE-adjacent sink), so a cross-origin write MUST be refused. Origin-based
+    // (a browser always stamps it on a cross-origin request; JS can't forge it).
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
+
     const body = (await req.json().catch(() => null)) as Body | null;
     const text = typeof body?.text === 'string' ? body.text.trim() : '';
     if (!text) return Response.json({ error: 'text required' }, { status: 400 });
@@ -72,7 +81,10 @@ export default defineTool({
 
     const z = zellijBin();
     try {
-      await exec(z, ['-s', session, 'action', 'write-chars', text], { timeout: 4000 });
+      // `--` end-of-options marker: `text` is user-controlled, so without it a
+      // value starting with `-` would be parsed as a zellij flag (argv flag
+      // smuggling). After `--` everything is positional.
+      await exec(z, ['-s', session, 'action', 'write-chars', '--', text], { timeout: 4000 });
       await exec(z, ['-s', session, 'action', 'write', '13'], { timeout: 4000 });
       return Response.json({ ok: true, session });
     } catch (e) {

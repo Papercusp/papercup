@@ -53,6 +53,7 @@ import {
 import { getGrantsForPluginInHarness } from './plugin-grants';
 import { PgAuditWriter } from './plugin-audit-writer';
 import { InMemoryAuditWriter as _InMemoryAuditWriter } from '@papercusp/plugin-loader';
+import { cooperativeYield } from './event-loop-lag-monitor';
 
 // operator-core is an ESM package (`type: module`); under the host's ESM
 // runtime (tsx) the CommonJS globals `require` and `__dirname` are UNDEFINED.
@@ -1120,6 +1121,15 @@ export async function warmUpPluginsForSlug(args: {
   stateDir: string;
 }): Promise<void> {
   const state = await getPluginHost();
+  // COOPERATIVE YIELD between plugin inits (event-loop-lag root fix). Warming N
+  // plugins × M harness slugs at boot runs each plugin's synchronous `init()`
+  // back-to-back on the main thread — long enough (22 plugins) to starve the
+  // routine ticker past the watchdog's freeze threshold → a restart loop that
+  // reclaim-kills in-flight queen/bee spawns. Yielding the macrotask queue between
+  // inits lets the ticker (and IO) interleave, so a slow warm no longer freezes the
+  // host. Quiet boot pays ≤1 macrotask hop per few plugins; a saturated loop yields
+  // every iteration (cooperativeYield reads loopPressure()).
+  let yielded = 0;
   for (const lp of state.loaded) {
     const ctx = buildPapercuspContext({
       pluginName: lp.plugin.name,
@@ -1128,6 +1138,7 @@ export async function warmUpPluginsForSlug(args: {
       stateDir: args.stateDir,
     });
     await ensureInitialized(state, lp, ctx);
+    yielded = await cooperativeYield(yielded);
   }
 }
 

@@ -43,6 +43,7 @@ import operatorCardResponse from './operator/card-response';
 import operatorSilenceNudge from './operator/silence-nudge';
 import operatorRunCancel from './operator/run-cancel';
 import operatorSentinelInput from './operator/sentinel-input';
+import operatorSentinelOutput from './operator/sentinel-output';
 import operatorTurnAnswer from './operator/turn-answer';
 import backupsIndex from './backups/index';
 import backupsBrokenList from './backups/broken-list';
@@ -518,6 +519,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(operatorSilenceNudge as AnyRoute),
   ...flatten(operatorRunCancel as AnyRoute),
   ...flatten(operatorSentinelInput as AnyRoute),
+  ...flatten(operatorSentinelOutput as AnyRoute[]),
   ...flatten(operatorTurnAnswer as AnyRoute),
   ...flatten(backupsIndex as AnyRoute[]),
   ...flatten(backupsBrokenList as AnyRoute),

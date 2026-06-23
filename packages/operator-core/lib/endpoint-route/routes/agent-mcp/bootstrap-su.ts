@@ -25,7 +25,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
-import { markAdvSessionEnded, recordAdvSession } from '../../../adv-sessions';
+import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -763,4 +763,59 @@ const optionsForSessionEnded = defineTool({
   },
 });
 
-export default [options, optionsForOptions, post, optionsGet, brainGet, heartbeat, optionsForHeartbeat, sessionEnded, optionsForSessionEnded];
+/**
+ * POST /api/agent-mcp/console/bootstrap-su/session-resumed  { advSessionId }
+ *
+ * The psu launcher's RESUME report — the inverse of session-ended. `psu --resume`
+ * brings the agent process back to life but `launchResume` takes the no-POST path
+ * (it reuses the original coord identity + adv row), so without this the row keeps
+ * the ended_at/exit_code from the prior exit and the running agent is recorded as
+ * dead → invisible to the roster + presence-as-a-view. This re-activates the row
+ * (clears ended_at/exit_code, bumps started_at) so a resumed session shows live
+ * immediately, before it touches coord (presence-derive-from-session-log P-002).
+ *
+ * Best-effort + idempotent like the sibling session-ended: reactivateAdvSession
+ * only touches an already-ENDED row, so a duplicate / already-live report is a
+ * harmless no-op, and the launcher swallows any failure.
+ */
+const sessionResumed = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/console/bootstrap-su/session-resumed',
+  auth: 'loopback',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    let advSessionId: number | null = null;
+    try {
+      const body = (await req.json()) as { advSessionId?: unknown };
+      if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
+        advSessionId = body.advSessionId;
+      }
+    } catch {
+      /* fall through to the 400 */
+    }
+    if (advSessionId == null || advSessionId <= 0) {
+      return jsonRes({ error: 'advSessionId required' }, 400);
+    }
+    try {
+      const reactivated = await reactivateAdvSession(advSessionId);
+      return jsonRes({ ok: true, reactivated });
+    } catch (err) {
+      return jsonRes(
+        { ok: false, error: err instanceof Error ? err.message : String(err) },
+        503,
+      );
+    }
+  },
+});
+
+const optionsForSessionResumed = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/session-resumed',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+export default [options, optionsForOptions, post, optionsGet, brainGet, heartbeat, optionsForHeartbeat, sessionEnded, optionsForSessionEnded, sessionResumed, optionsForSessionResumed];

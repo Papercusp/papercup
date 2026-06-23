@@ -1257,6 +1257,39 @@ export async function reportSessionEnded(
   }
 }
 
+/**
+ * Best-effort "my session RESUMED" report — the inverse of reportSessionEnded.
+ * `psu --resume` revives the agent process, but launchResume takes the no-POST
+ * path (it reuses the original coord identity + adv row), so the row keeps the
+ * ended_at/exit_code from the prior exit and the running agent stays recorded as
+ * DEAD → invisible to the roster + presence-as-a-view. This clears that stamp
+ * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
+ * instant it resumes, before it ever touches coord. psu is the live parent of
+ * the resumed child (same property the supervisor beat + the end-report ride).
+ * Fire-and-forget, bounded, never rejects — a resume must never wait on it.
+ * Exported with injectables for tests.
+ */
+export async function reportSessionResumed(
+  advSessionId,
+  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 2_000 } = {},
+) {
+  if (!advSessionId) return;
+  try {
+    const tok = token ?? readToken();
+    await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-resumed', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'content-type': 'application/json',
+        ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+      },
+      body: JSON.stringify({ advSessionId: Number(advSessionId) }),
+    });
+  } catch {
+    /* best-effort — never surface */
+  }
+}
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
@@ -1388,6 +1421,14 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   // Surface whether the account re-pin took effect (or the fail-soft reason it
   // was skipped) so a resume is never silently unpinned — mirrors launchFreshSu.
   if (accountEnv?.notice) console.error(`psu: account — ${accountEnv.notice}`);
+  // Re-activate the tracked adv row that the prior exit stamped `ended` (a no-POST
+  // resume reuses the original identity + row, so without this the running agent
+  // stays recorded-as-dead → invisible to the roster). A FORK deliberately takes a
+  // fresh identity + no adv-row link, so it never reactivates the original.
+  // Fire-and-forget, fail-soft — never delays the resume.
+  if (!fork && session.id != null) {
+    void reportSessionResumed(session.id);
+  }
   console.error(`psu: ${fork ? 'forking' : 'resuming'} ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
   runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
 }

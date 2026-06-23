@@ -325,8 +325,18 @@ export async function startDurableSpawns(
 ): Promise<{ enqueued: number; total: number }> {
   const reqs = spawns ?? [];
   let enqueued = 0;
+  // COOPERATIVE YIELD between fires (event-loop-lag root fix). A big drain
+  // (the implement lane / a Queen's batch placement) runs N `DBOS.startWorkflow`
+  // enqueues back-to-back; under DBOS catch-up load each can be synchronous-heavy,
+  // and the unbroken loop starves the routine ticker → the CPU-bound-main-thread
+  // restart loop that reclaim-kills queen/bee spawns. Yield the macrotask queue
+  // between fires so the ticker interleaves (quiet drain ≈ free; a saturated loop
+  // yields every iteration via loopPressure()).
+  const { cooperativeYield } = await import('../event-loop-lag-monitor');
+  let yielded = 0;
   for (const req of reqs) {
     if (await durableSpawnFire(req)) enqueued += 1;
+    yielded = await cooperativeYield(yielded);
   }
   return { enqueued, total: reqs.length };
 }
