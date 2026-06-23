@@ -92,7 +92,7 @@ export async function getAllWakeModeOverrides(): Promise<Map<string, WakeMode>> 
   `;
   const out = new Map<string, WakeMode>();
   const prefix = 'wake_mode:agent:';
-  for (const r of rows as Array<{ key: string; value: string }>) {
+  for (const r of rows as unknown as Array<{ key: string; value: string }>) {
     const ownerId = r.key.slice(prefix.length);
     const mode = coerceWakeMode(r.value);
     if (ownerId && mode) out.set(ownerId, mode);

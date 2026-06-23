@@ -248,20 +248,16 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     let operator_name = glyph_name("operator", "operator", AgentPaneKind::Sentinel);
     let brain_name = glyph_name("brain", "brain", AgentPaneKind::Queen);
     // The Sentinel pane is a REAL psu/Claude TUI — the FRONT-DOOR Sentinel the
-    // user talks to (sentinel-as-claude-tui-2026-06-22 Phase A): the `sentinel`
-    // role (Sentinel persona = sentinel.persona.md), NOT the `operator`
-    // placement/decider role it used to launch. It MUST be a FULLY-SCOPED,
-    // no-picker launch: `psu --no-picker --agent=claude --role=sentinel`.
-    //   - `--no-picker` → strict scripting launch, no interactive picker.
-    //   - `--agent=claude` → required by --no-picker; the Claude TUI backend.
-    //   - `--role=sentinel` → MUST use `=` (psu-launcher parses `--role=<v>`, NOT
-    //     space-separated — `--role sentinel` is silently dropped → role picker).
-    //     `sentinel` resolves none/none consumes (DEFAULT) → harness-less, the
-    //     same launch profile the operator pane had.
-    //   - workspace/harness/plan are omitted → psu falls back to the active-
-    //     workspace defaults (selectionsFromArgs), which is the right scope.
-    let sentinel_cmd_block =
-        "command \"psu\"\n            args \"--no-picker\" \"--agent=claude\" \"--role=sentinel\"";
+    // user talks to (sentinel-as-claude-tui-2026-06-22): the `sentinel` role
+    // (Sentinel persona = sentinel.persona.md), NOT the `operator` placement
+    // role it used to launch. It launches via the `psu-sentinel` wrapper
+    // (~/.local/bin, repo src apps/operator/scripts/psu-sentinel.sh), which
+    // FIRST records THIS zellij pane's id ($ZELLIJ_PANE_ID + session) to
+    // ~/.papercusp/sentinel-pane so /api/operator/sentinel-input can write voice
+    // straight to the Sentinel pane (Phase C pane-targeting, not the focused
+    // pane), THEN execs the exact same no-picker launch:
+    // `psu --no-picker --agent=claude --role=sentinel`.
+    let sentinel_cmd_block = "command \"psu-sentinel\"";
     // P-004 / D-009: the operator pane is psu, so the reactive agent stack has a
     // dedicated driver — the `pui dock-driver` pane runs the reactive loop
     // (dock_agent_panes) and renders the fleet roster as the dock's controller.

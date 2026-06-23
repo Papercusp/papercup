@@ -21,7 +21,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -57,6 +57,24 @@ interface Body {
   text?: unknown;
 }
 
+/**
+ * Read the Sentinel pane registration that `psu-sentinel` writes at launch
+ * ("<session> <paneId>"), so we can write to the Sentinel pane specifically via
+ * `--pane-id` instead of whatever pane is focused. null if absent/malformed.
+ */
+function readSentinelPaneReg(): { session: string; paneId: string } | null {
+  try {
+    const raw = readFileSync(join(homedir(), '.papercusp', 'sentinel-pane'), 'utf8').trim();
+    const sp = raw.indexOf(' ');
+    if (sp <= 0) return null;
+    const session = raw.slice(0, sp).trim();
+    const paneId = raw.slice(sp + 1).trim();
+    return session && paneId ? { session, paneId } : null;
+  } catch {
+    return null;
+  }
+}
+
 export default defineTool({
   method: 'POST',
   path: '/operator/sentinel-input',
@@ -79,14 +97,26 @@ export default defineTool({
       return Response.json({ error: 'no live pui-dock session' }, { status: 503 });
     }
 
+    // Prefer the registered Sentinel pane (psu-sentinel writes it at launch) so
+    // we type into the SENTINEL pane, not whatever pane is focused. The dock is
+    // volatile, so only trust the registration if its session is the live one;
+    // otherwise fall back to the focused pane of the live session.
+    const reg = readSentinelPaneReg();
+    const paneId = reg && reg.session === session ? reg.paneId : null;
+
     const z = zellijBin();
     try {
       // `--` end-of-options marker: `text` is user-controlled, so without it a
       // value starting with `-` would be parsed as a zellij flag (argv flag
       // smuggling). After `--` everything is positional.
-      await exec(z, ['-s', session, 'action', 'write-chars', '--', text], { timeout: 4000 });
-      await exec(z, ['-s', session, 'action', 'write', '13'], { timeout: 4000 });
-      return Response.json({ ok: true, session });
+      if (paneId) {
+        await exec(z, ['-s', session, 'action', 'write-chars', '--pane-id', paneId, '--', text], { timeout: 4000 });
+        await exec(z, ['-s', session, 'action', 'write', '--pane-id', paneId, '13'], { timeout: 4000 });
+      } else {
+        await exec(z, ['-s', session, 'action', 'write-chars', '--', text], { timeout: 4000 });
+        await exec(z, ['-s', session, 'action', 'write', '13'], { timeout: 4000 });
+      }
+      return Response.json({ ok: true, session, paneId, targeted: !!paneId });
     } catch (e) {
       return Response.json(
         { error: `zellij write failed: ${String(e).slice(0, 200)}` },

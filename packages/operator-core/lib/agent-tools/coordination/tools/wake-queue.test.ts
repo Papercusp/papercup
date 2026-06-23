@@ -14,8 +14,8 @@ import type { PendingWake } from '../pending-wakes';
 
 const listPendingWakes = vi.fn<(ownerId: string) => Promise<PendingWake[]>>();
 const listAllPendingWakes = vi.fn<() => Promise<PendingWake[]>>();
-const releasePendingWake = vi.fn(async () => undefined);
-const clearPendingWakes = vi.fn(async () => 0);
+const releasePendingWake = vi.fn(async (_id: number) => undefined);
+const clearPendingWakes = vi.fn(async (_ownerId: string) => 0);
 const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
   ok: true as const,
   key,
