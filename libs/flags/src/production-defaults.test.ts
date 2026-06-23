@@ -47,17 +47,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
-  // work-item-deps-and-readiness-2026-06-22 P-005: the maintained-readiness sidecar cutover. The sidecar
-  // is BUILT + live + drift=0-verified and the flag-ON claim path is green (claim-respects-blocking 9/9),
-  // but flipping the DEFAULT makes work_item_blocked a HARD claim dependency — any env/test without mig
-  // 379 errors ("relation work_item_blocked does not exist"). Default-ON is a coordinated cutover (deploy
-  // 379 everywhere + migrate the claim-path tests to apply it first); left OFF until then.
-  FLAGS.SCHEDULER_MAINTAINED_READY,
-  // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items self-pickable by the
-  // scheduler claim path. owner-authority — it adds a brand-new dispatch SOURCE (what the autonomous
-  // fleet picks up: bug/change/task items, not just features), so the owner ratifies the flip. OFF ⇒
-  // feature-only claim, byte-identical to today (the issue-claim branch + issue-applicable steer levers
-  // are inert). su/owner flips ON after ratifying that issues should join the dispatched backlog.
+  // (SCHEDULER_MAINTAINED_READY graduated to default-ON 2026-06-23, owner-directed — the maintained-
+  // readiness sidecar cutover; prerequisite met: mig 379 folded into the shared claim-test fixture so every
+  // claim test has the sidecar; live drift=0; flag-ON claim path 9/9. Reversible kill-switch. Removed per the rule.)
+  // work-item-deps-and-readiness-2026-06-22 P-007: SCHEDULER_ISSUES_CLAIMABLE — issues self-pickable by the
+  // scheduler claim. OWNER-RATIFIED ON via runtime override (flags:set), but kept default-FALSE here because
+  // flipping the DEFAULT ripples through many tests asserting feature-only behavior (a separate test
+  // migration). owner-authority + behavior-changing dispatch source; OFF in code ⇒ feature-only byte-identical.
   FLAGS.SCHEDULER_ISSUES_CLAIMABLE,
   // (PLAN_WORKITEM_PROMOTION + PLAN_ITEM_CLAIM_AUTO_CONVERT graduated to default-ON 2026-06-22,
   // owner-directed — the work-items-everywhere ledger's two halves were built+tested but left dark
@@ -378,7 +374,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, 'incomplete'],
-  [FLAGS.SCHEDULER_MAINTAINED_READY, 'cutover'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
   [FLAGS.PLAN_PART_FEDERATION, 'incomplete'],

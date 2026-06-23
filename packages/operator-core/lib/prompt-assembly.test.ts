@@ -343,13 +343,16 @@ describe('assembleRolePrompt — coord-injection legend (token-efficient-coord-i
 });
 
 describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibility-2026-06-18 P-003)', () => {
-  it('injects the async + self-healing deploy-pipeline note into the SHARED base every role inherits', async () => {
+  it('injects the async deploy-pipeline note + the "a RED gate is everyone\'s job to FIX" directive into the SHARED base every role inherits', async () => {
     mockTools.length = 0;
     const { assembleRolePrompt } = await import('./prompt-assembly');
     const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
-    expect(out.text).toContain('## The deploy pipeline is ASYNC + SELF-HEALING');
+    expect(out.text).toContain('## The deploy pipeline is ASYNC');
     expect(out.text).toContain('dev:pipeline_position');
     expect(out.text).toContain(':3070 serves GREEN `main`');
+    // owner-directed reframe (2026-06-23): a RED gate is everyone's job to fix — no owner-ask, even out of lane
+    expect(out.text).toContain('do NOT ask the owner');
+    expect(out.text).toContain('even if it is not your lane');
     expect(out.sections.some((s) => s.name === 'deploy-pipeline-note')).toBe(true);
   });
 });

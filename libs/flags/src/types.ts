@@ -1555,11 +1555,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // work survives a host restart. Bounded (non-terminal work only, ceiling-gated re-fire)
   // and reversible; OFF ⇒ legacy reclaim-to-`failed`, byte-identical.
   [FLAGS.SPAWN_RECLAIM_RELAUNCH]: true,
-  // DEFAULT OFF (work-item-deps-and-readiness-2026-06-22 P-007): make ISSUE-family
-  // work-items self-pickable by the scheduler. owner-authority — it adds a brand-new
-  // dispatch SOURCE (what the autonomous fleet picks up), which the owner ratifies.
-  // OFF ⇒ feature-only claim, byte-identical to today; the issue-claim branch + the
-  // issue-applicable steer levers are inert. KNOWN_DARK_FLAGS.
+  // DEFAULT OFF in code, OWNER-RATIFIED ON via runtime override (work-item-deps-and-readiness P-007,
+  // 2026-06-23). Issues being self-pickable by the scheduler is a BEHAVIOR change (the fleet works
+  // bug/change/task items, not just features) — the owner enabled it; set ON in prod via flags:set.
+  // Kept default-FALSE because flipping the DEFAULT ripples through many tests that assert feature-only
+  // behavior (a separate test migration). Additive: feature claim untouched; the issue-claim branch runs
+  // only on a feature-miss. OFF ⇒ feature-only, byte-identical. KNOWN_DARK_FLAGS 'owner-authority'.
   [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false,
 };
 
