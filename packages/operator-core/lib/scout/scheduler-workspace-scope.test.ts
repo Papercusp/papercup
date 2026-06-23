@@ -21,7 +21,13 @@ const h = vi.hoisted(() => ({
   isWorkspaceCoordinationOn: vi.fn(async () => false),
 }));
 
-vi.mock('./tick-ledger', () => ({ recordScoutTick: h.recordScoutTick }));
+vi.mock('./tick-ledger', () => ({
+  recordScoutTick: h.recordScoutTick,
+  // The cadence clock (EI-1600), added to tick-ledger AFTER this mock was written →
+  // "No readLastRanTickAtMs export on the mock" red on the green gate. Stub it null
+  // (best-effort "no prior tick"); these tests assert idea-queue SCOPING, not cadence.
+  readLastRanTickAtMs: vi.fn(async () => null),
+}));
 vi.mock('./routed-ledger', () => ({
   recordRoutedIdea: vi.fn(async () => {}),
   refreshScoutOutcomes: vi.fn(async () => ({})),

@@ -1914,28 +1914,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // touched (see `announceIdentityOverride`).
       const signAnnounce =
         opts.announceIdentityOverride?.sign ?? signWithDeviceKey;
-      const ourAnnounce = await buildAnnounce(
-        {
-          device_pubkey: identity.devicePubkeyBase64,
-          github_user_id: identity.githubUserId,
-          github_login: identity.githubLogin,
-          attestation_gist_id: identity.attestationGistId,
-          log_core_key: ownLog.keyHex,
-          // A-003 (a′): the SIGNED origin-harness slug. When multiple local
-          // harnesses share one hive topic (the hive-home log alongside a
-          // member's — dc9db's swarm.ts broadcasts each on the single channel),
-          // the peer's onAnnounce slug-filter uses this to admit a log only into
-          // the harness scope that should hold it. Absent on legacy peers → the
-          // filter treats absent as admit (backward-compatible).
-          harness_slug: opts.harnessSlug,
-        },
-        (bytes) => signAnnounce(identity.keychainId, bytes),
-      );
+      // WI-559 issue-2 — FRESH-ANNOUNCE-PER-CONNECTION. The announce BODY is static (this peer's
+      // device identity + log core + signed origin slug); only `ts`+`sig` change per build. A single
+      // frozen-`ts` frame built ONCE at boot is rejected by the peer's `verifyAnnounce` the moment it
+      // is >5min old (DEFAULT_ANNOUNCE_WINDOW_MS) — so EVERY post-window / post-reconnect / post-reboot
+      // connection sent a STALE announce → the peer admitted nothing → both sides stuck on own-only
+      // admitted sets (the WI-559 stale-peering root cause, distinct from the membership-miss path).
+      // So pass a FACTORY that re-stamps (current ts) + re-signs per connection; `ourAnnounce` (the
+      // initial build) seeds the static log_core_key (swarm entry key) + the first send.
+      const announceBody = {
+        device_pubkey: identity.devicePubkeyBase64,
+        github_user_id: identity.githubUserId,
+        github_login: identity.githubLogin,
+        attestation_gist_id: identity.attestationGistId,
+        log_core_key: ownLog.keyHex,
+        // A-003 (a′): the SIGNED origin-harness slug. When multiple local harnesses share one hive
+        // topic (the hive-home log alongside a member's — dc9db's swarm.ts broadcasts each on the
+        // single channel), the peer's onAnnounce slug-filter uses this to admit a log only into the
+        // harness scope that should hold it. Absent on legacy peers → the filter treats absent as admit.
+        harness_slug: opts.harnessSlug,
+      };
+      const signOurAnnounce = (bytes: Buffer) => signAnnounce(identity.keychainId, bytes);
+      const buildOurAnnounce = () => buildAnnounce(announceBody, signOurAnnounce);
+      const ourAnnounce = await buildOurAnnounce();
       swarmHandle = await joinHarnessSwarm({
         store,
         topic,
         swarm,
         ourAnnounce,
+        buildOurAnnounce,
         onAnnounce,
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');

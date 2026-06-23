@@ -100,6 +100,15 @@ export interface JoinHarnessSwarmOpts {
    */
   ourAnnounce?: SignedAnnounce;
   /**
+   * WI-559 issue-2 — a FACTORY that builds a FRESH signed announce (current `ts`, re-signed) for
+   * EACH connection's channel-open. A single frozen-`ts` frame (built once at boot and reused) is
+   * rejected by the peer's `verifyAnnounce` once it is >5min old (DEFAULT_ANNOUNCE_WINDOW_MS), so a
+   * post-window / post-reconnect connection sent a stale announce → 0 admitted → own-only set. When
+   * supplied, the channel-open flush builds a fresh frame per send via this; `ourAnnounce` is kept
+   * for the static `log_core_key` (the swarm entry key) and as the fallback when no factory is set.
+   */
+  buildOurAnnounce?: () => Promise<SignedAnnounce>;
+  /**
    * Handle an inbound signed announce from a peer. Verifies the sig, runs the
    * read-admission decision, and on admit opens + admits the peer's remote log
    * and triggers a merge (boot.ts wires this to its `onAnnounce`). Required for
@@ -111,6 +120,8 @@ export interface JoinHarnessSwarmOpts {
 /** Announce-channel opts for one hive on one peer connection. */
 export type AnnounceChannelOpts = {
   ourAnnounce?: SignedAnnounce;
+  /** WI-559 issue-2: fresh-announce-per-connection factory (see JoinHarnessSwarmOpts). */
+  buildOurAnnounce?: () => Promise<SignedAnnounce>;
   onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'];
 };
 
@@ -173,13 +184,37 @@ function announceTopicStatesFor(mux: object): Map<string, TopicAnnounceState> {
  *  channel. Idempotent via `state.sentKeys` — a duplicate onopen, a re-pair, or
  *  a late-joining harness can call this without double-sending. */
 function flushTopicAnnounces(state: TopicAnnounceState): void {
-  if (!state.message) return;
+  const msg = state.message;
+  if (!msg) return;
   for (const entry of state.entries.values()) {
+    // WI-559 issue-2 — send a FRESH announce (current ts, re-signed) per connection when a factory
+    // is supplied: a frozen-ts frame is rejected by the peer's verifyAnnounce once it is >5min old,
+    // so a reconnect after the window admitted nothing → own-only set. Dedup by log_core_key so a
+    // re-pair / late-join on the SAME channel doesn't double-send; a NEW connection gets a fresh
+    // `state` (fresh sentKeys) → re-flushes → a fresh frame, which IS the per-connection refresh.
+    if (entry.buildOurAnnounce) {
+      const key = entry.ourAnnounce?.log_core_key;
+      if (!key || state.sentKeys.has(key)) continue;
+      state.sentKeys.add(key);
+      void entry
+        .buildOurAnnounce()
+        .then((fresh) => {
+          try {
+            msg.send(fresh);
+          } catch {
+            // best-effort — replication still proceeds
+          }
+        })
+        .catch(() => {
+          // a build/sign failure must never crash the swarm handler
+        });
+      continue;
+    }
     const ann = entry.ourAnnounce;
     if (!ann || state.sentKeys.has(ann.log_core_key)) continue;
     state.sentKeys.add(ann.log_core_key);
     try {
-      state.message.send(ann);
+      msg.send(ann);
     } catch {
       // best-effort — replication still proceeds
     }
@@ -422,6 +457,7 @@ export async function joinHarnessSwarm(
       // signed announces so admitted peer logs get aggregated (Model B Stage 4b).
       openAnnounceChannel(socket, opts.topic, {
         ourAnnounce: opts.ourAnnounce,
+        buildOurAnnounce: opts.buildOurAnnounce,
         onAnnounce: opts.onAnnounce,
       });
     } catch {
