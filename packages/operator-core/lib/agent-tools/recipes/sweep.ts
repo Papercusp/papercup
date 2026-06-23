@@ -19,8 +19,6 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
 import { sweepRecipes } from '../../code-recipes-store';
 
 export default defineTool({
@@ -69,15 +67,9 @@ export default defineTool({
       .describe('Preview only — return the candidates without retiring them. DEFAULTS TO TRUE; pass false to commit.'),
   }),
   async handler(args, ctx) {
-    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const hiveSlug = ctx.harnessSlug
-      ? await hiveHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
-      : null;
     // Preview-first: default to dryRun unless the caller explicitly commits.
     const dryRun = args.dryRun ?? true;
     const { swept } = await sweepRecipes(getOrgPg().sql, {
-      workspaceId,
-      hiveSlug,
       staleDays: args.staleDays,
       maxRunCount: args.maxRunCount,
       dryRun,
@@ -97,7 +89,6 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             dryRun,
-            hiveSlug,
             count: swept.length,
             recipes: swept.map((r) => ({
               id: r.id,

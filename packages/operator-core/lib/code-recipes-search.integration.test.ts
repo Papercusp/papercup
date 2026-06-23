@@ -6,8 +6,8 @@
  * Mirrors code-recipes-store.integration.test.ts: the module is transport-agnostic
  * (takes the `sql` handle), so we pass the org-fixture's admin (RLS-bypass) client.
  * Validates: a same-use-case query ranks the right recipe top, the structural
- * tool-set-overlap (Jaccard) signal boosts a same-tool recipe, excludeId is honored,
- * and hive-scope filtering. No live embedder — the BM25 lexical leg + the
+ * tool-set-overlap (Jaccard) signal boosts a same-tool recipe, and excludeId is
+ * honored. No live embedder — the BM25 lexical leg + the
  * pre-computed-embedding cosine leg + the structural leg carry the ranking.
  *
  * Part of code-recipes-2026-06-21 Phase 2 (P-004, integration tier).
@@ -43,8 +43,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     // The target: triage stale work-items, calls work_items:list + set_state.
     await upsertRecipe(db.adminSql, {
       id: 'triage-stale-work-items',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Triage stale work-items',
       description: 'list open work-items then mark stale ones blocked',
       script: 's',
@@ -54,8 +52,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     // A decoy on a totally different topic + tool-set.
     await upsertRecipe(db.adminSql, {
       id: 'announce-deploy',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Announce a deploy to the hive',
       description: 'post a coord message when a release ships',
       script: 's',
@@ -65,8 +61,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     // A weak lexical neighbor (shares "work-items" but a different action + tools).
     await upsertRecipe(db.adminSql, {
       id: 'count-work-items',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Count open work-items',
       description: 'tally how many work-items are open',
       script: 's',
@@ -75,8 +69,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
 
     const results = await searchSimilarRecipes(db.adminSql, {
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Triage stale work-items',
       description: 'find stale work-items and block them',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
@@ -99,8 +91,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     // Same exact tool-set as the query, but no lexical/embedding head-start.
     await upsertRecipe(db.adminSql, {
       id: 'same-tools',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Sweep items',
       description: 'sweep things',
       script: 's',
@@ -110,8 +100,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     // Lexically matches the query words but a disjoint tool-set.
     await upsertRecipe(db.adminSql, {
       id: 'lexical-only',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Manage a plan and its items',
       description: 'manage plan items',
       script: 's',
@@ -120,8 +108,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
 
     const results = await searchSimilarRecipes(db.adminSql, {
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Manage a plan and its items',
       description: 'manage plan items',
       toolsUsed: ['plans:set-status', 'plans:add-item'],
@@ -141,8 +127,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
       id: 'self',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Self recipe',
       description: 'a recipe',
       script: 's',
@@ -151,8 +135,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
     await upsertRecipe(db.adminSql, {
       id: 'other',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Self recipe',
       description: 'a recipe',
       script: 's',
@@ -160,8 +142,6 @@ describe('code_recipes hybrid search (real PG)', () => {
       embedding: seededEmbedding(7),
     });
     const results = await searchSimilarRecipes(db.adminSql, {
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Self recipe',
       description: 'a recipe',
       toolsUsed: ['coord:send'],
@@ -173,12 +153,10 @@ describe('code_recipes hybrid search (real PG)', () => {
     expect(results.find((r) => r.id === 'other')).toBeDefined();
   });
 
-  it('is hive-scoped — a recipe in another hive is not returned', async () => {
+  it('searches the global recipe corpus', async () => {
     const ws = 'ws-crs-hive';
     await upsertRecipe(db.adminSql, {
       id: 'in-alpha',
-      workspaceId: ws,
-      hiveSlug: 'alpha',
       title: 'Deploy the service',
       description: 'deploy it',
       script: 's',
@@ -187,8 +165,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
     await upsertRecipe(db.adminSql, {
       id: 'in-beta',
-      workspaceId: ws,
-      hiveSlug: 'beta',
       title: 'Deploy the service',
       description: 'deploy it',
       script: 's',
@@ -196,8 +172,6 @@ describe('code_recipes hybrid search (real PG)', () => {
       embedding: seededEmbedding(9),
     });
     const results = await searchSimilarRecipes(db.adminSql, {
-      workspaceId: ws,
-      hiveSlug: 'alpha',
       title: 'Deploy the service',
       description: 'deploy it',
       toolsUsed: ['deploy:harness'],
@@ -205,7 +179,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       limit: 5,
     });
     expect(results.find((r) => r.id === 'in-alpha')).toBeDefined();
-    expect(results.find((r) => r.id === 'in-beta')).toBeUndefined();
+    expect(results.find((r) => r.id === 'in-beta')).toBeDefined();
   });
 
   it('returns the blended fields (title/description/runCount/similarity)', async () => {
@@ -213,8 +187,6 @@ describe('code_recipes hybrid search (real PG)', () => {
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
       id: 'fielded',
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Fielded recipe title',
       description: 'a thorough description here',
       script: 's',
@@ -222,8 +194,6 @@ describe('code_recipes hybrid search (real PG)', () => {
       embedding: seededEmbedding(11),
     });
     const results = await searchSimilarRecipes(db.adminSql, {
-      workspaceId: ws,
-      hiveSlug: hive,
       title: 'Fielded recipe title',
       description: 'a thorough description here',
       toolsUsed: ['coord:send'],

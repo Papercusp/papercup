@@ -4,8 +4,8 @@
  * bulk-endpoint-standardization-2026-06-21).
  *
  * The script is returned so an agent can INSPECT what the recipe does before
- * recipes:run-ning it (or adapt it into a new code:run). Workspace-scoped — a
- * recipe in another workspace is invisible. Read-only.
+ * recipes:run-ning it (or adapt it into a new code:run). GLOBAL — recipes are a
+ * fleet-wide capability (P-001). Read-only.
  *
  * Bulk by default (the house keyed-array contract): pass `id` for one or `ids`
  * for several → { ok, results:[{ ok, id, recipe? | error }], counts } — each
@@ -17,7 +17,6 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
@@ -50,14 +49,13 @@ export default defineTool({
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
     }),
-  async handler(args, ctx) {
-    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+  async handler(args) {
     const sql = getOrgPg().sql;
     const ids = mergeIds(args.id, args.ids);
     const env = await runBulk(
       ids,
       async (id) => {
-        const recipe = await getRecipe(sql, workspaceId, id);
+        const recipe = await getRecipe(sql, id);
         if (!recipe) {
           return { ok: false as const, id, error: 'not_found' };
         }
@@ -75,7 +73,6 @@ export default defineTool({
             successCount: recipe.successCount,
             lastRunAt: recipe.lastRunAt,
             status: recipe.status,
-            hiveSlug: recipe.hiveSlug,
             tags: recipe.tags,
           },
         };

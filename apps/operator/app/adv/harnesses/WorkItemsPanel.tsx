@@ -52,16 +52,6 @@ export interface WorkItemRow {
   verifiedAuthorGithubUserId: number | null;
 }
 
-/**
- * Fetch ceiling for the live work-items read. The grid is virtualized
- * (`VirtualGrid`), so render cost no longer scales with row count — this is a
- * generous bound that loads a harness's full work-item set in practice (local
- * desktop app, all data is local). It exists only to bound the LIVE sync query's
- * per-invalidation re-assembly; when a harness exceeds it the header shows the
- * honest "N of TOTAL" rather than truncating-as-total. Mirrors WORK_ITEMS_MAX_LIMIT.
- */
-const WORK_ITEMS_FETCH_LIMIT = 2000;
-
 // Grid-cell truncation (native title= is the approved pattern for dynamic
 // per-row truncation tooltips — see design/gotchas).
 const CELL_TRUNCATE: CSSProperties = {
@@ -86,9 +76,15 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // preference, not user-meaningful URL state → localStorage, not nuqs.
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:work-items');
 
+  // Deliberately DON'T pass an explicit `limit` — the resolver defaults to its
+  // full cap (loads all of a harness's work items on a local desktop app), and
+  // omitting it means a newer client can't send a value an OLDER deployed
+  // resolver would reject during a rollout skew (the cause of the "Too big
+  // limit" panel error). The grid is virtualized, so render cost is bounded
+  // regardless, and the true total is carried via row[0]._meta.
   const query = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug, limit: WORK_ITEMS_FETCH_LIMIT },
+    args: { harnessSlug: slug },
     enabled: Boolean(slug),
   });
   const items = query.loading ? null : query.data;

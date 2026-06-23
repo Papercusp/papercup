@@ -20,7 +20,6 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
 import { mergeRecipes } from '../../code-recipes-store';
 
 export default defineTool({
@@ -55,9 +54,7 @@ export default defineTool({
       .describe('Recipe ids to merge into the survivor (status→merged, merged_into→survivor, counts added). The survivor id itself is ignored if present.'),
   }),
   async handler(args, ctx) {
-    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const { survivor, mergedIds } = await mergeRecipes(getOrgPg().sql, {
-      workspaceId,
       survivorId: args.survivorId,
       duplicateIds: args.duplicateIds,
     });

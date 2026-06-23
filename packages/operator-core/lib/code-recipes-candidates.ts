@@ -365,7 +365,6 @@ export async function recipeCandidates(
   // undirected graph of near-duplicate edges, then connected components ≥2 are the
   // Queen's merge worklist. The embedder (if any) powers the cosine leg; absent ⇒
   // lexical + structural still find exact/near twins.
-  const idToHive = new Map(signals.map((s) => [s.id, s.hiveSlug]));
   const adjacency = new Map<string, Set<string>>();
   for (const s of signals) adjacency.set(s.id, new Set());
 
@@ -375,8 +374,6 @@ export async function recipeCandidates(
       similar = await searchSimilarRecipes(
         sql,
         {
-          workspaceId: opts.workspaceId,
-          hiveSlug: idToHive.get(s.id) ?? null,
           title: s.title,
           description: s.description,
           toolsUsed: s.toolsUsed,

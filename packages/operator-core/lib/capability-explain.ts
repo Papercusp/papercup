@@ -46,12 +46,16 @@ function humanise(cap: string): string {
   return cap.split(':').filter(Boolean).join(' ');
 }
 
+function explainTier(cap: string): CapabilityTier {
+  return lookupTier(cap) ?? 'low';
+}
+
 export function explainCapability(cap: string): CapabilityExplanation {
   for (const [re, fn] of RULES) {
     const m = cap.match(re);
-    if (m) return { cap, label: fn(m), tier: lookupTier(cap) };
+    if (m) return { cap, label: fn(m), tier: explainTier(cap) };
   }
-  return { cap, label: humanise(cap), tier: lookupTier(cap) };
+  return { cap, label: humanise(cap), tier: explainTier(cap) };
 }
 
 export function tierBadgeColor(tier: CapabilityTier): string {

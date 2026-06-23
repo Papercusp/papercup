@@ -1,19 +1,17 @@
 /**
- * recipes:list — the agent-facing read of reusable code:run RECIPES for the
- * caller's hive (code-recipes-2026-06-21 Phase 2, P-005).
+ * recipes:list — the agent-facing read of reusable code:run RECIPES
+ * (code-recipes-2026-06-21 Phase 2, P-005).
  *
  * A recipe is a saved code:run script (captured on every successful run, D-012);
- * recipes share at the HIVE boundary (D-005). This lists the active recipes for
- * the caller's home hive, most-run first (the hot recipes surface), so an agent
- * can browse what's reusable before authoring a fresh code:run. Read-only.
+ * recipes are GLOBAL — a fleet-wide capability (P-001, reversing D-005). This lists
+ * the active recipes most-run first (the hot recipes surface), so an agent can
+ * browse what's reusable before authoring a fresh code:run. Read-only.
  *
  * Server-only.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
 import { listRecipes } from '../../code-recipes-store';
 
 export default defineTool({
@@ -37,14 +35,10 @@ export default defineTool({
   args: z.object({
     limit: z.number().int().min(1).max(100).optional().describe('Max recipes to return (default 25).'),
   }),
-  async handler(args, ctx) {
-    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const hiveSlug = ctx.harnessSlug
-      ? await hiveHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
-      : null;
+  async handler(args) {
     const limit = args.limit ?? 25;
-    const all = await listRecipes(getOrgPg().sql, workspaceId, { hiveSlug });
-    const recipes = all.slice(0, limit).map((r) => ({
+    const all = await listRecipes(getOrgPg().sql, { limit });
+    const recipes = all.map((r) => ({
       id: r.id,
       title: r.title,
       description: r.description,
@@ -55,7 +49,7 @@ export default defineTool({
       status: r.status,
     }));
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, hiveSlug, count: recipes.length, recipes }) }],
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, count: recipes.length, recipes }) }],
     };
   },
 });

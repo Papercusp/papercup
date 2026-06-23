@@ -137,8 +137,11 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
     tokensOut: number;
     costUsdCents: number;
   }>({
+    // No explicit `limit` — rely on the resolver default so a newer client can't
+    // send a value an older deployed resolver would reject (rollout-skew safety);
+    // the resolver clamps + carries the true total via _meta.
     queryName: 'projectSpecRevisions.byProject',
-    args: { projectId, limit: 500 },
+    args: { projectId },
     enabled: !!projectId,
   });
   useEffect(() => {

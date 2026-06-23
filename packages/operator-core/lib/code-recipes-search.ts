@@ -7,9 +7,11 @@
  *     title+description), `ts_rank_cd` like every search/sources.ts surface.
  *   - embedding leg — cosine over the `embedding vector(384)` column
  *     (`embedding <=> qVec::vector`), 1 - distance as the similarity.
- * Both legs are workspace_id + hive_slug scoped (the sharing boundary, D-005),
- * and each degrades-on-error inside runHybridSearch (a missing index / absent
- * embedding column logs + skips, never throws). This mirrors sources.ts EXACTLY.
+ * Both legs are GLOBAL — recipes are a fleet-wide capability (P-001, reversing the
+ * D-005 hive-scoping); the SearchSource still receives workspaceId/scopeFilter from
+ * the @papercusp/search engine API but ignores them. Each leg degrades-on-error
+ * inside runHybridSearch (a missing index / absent embedding column logs + skips,
+ * never throws). This mirrors sources.ts EXACTLY.
  *
  * `searchSimilarRecipes` fuses that hybrid (lexical + cosine) read with a
  * STRUCTURAL signal — Jaccard overlap of the candidate's `tools_used` against
@@ -29,23 +31,19 @@ import { runHybridSearch, type SearchSource, type SearchSourceParams, type Listi
 const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' : '');
 
 /**
- * The `code_recipes` SearchSource. Scoped by workspace_id AND hive_slug — the
- * caller passes the hive in `scopeFilter` (null ⇒ the workspace-global bucket,
- * matching the listRecipes hive contract). Both legs carry id/title/description/
- * run_count/tools_used in the row payload so the caller can blend + return them
- * without a second read.
+ * The `code_recipes` SearchSource — GLOBAL (recipes are a fleet-wide capability,
+ * P-001). The engine still hands it workspaceId/scopeFilter but it does not filter
+ * on them. Both legs carry id/title/description/run_count/tools_used in the row
+ * payload so the caller can blend + return them without a second read.
  */
 export const codeRecipesSource: SearchSource = {
   name: 'code_recipes',
-  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async bm25({ sql, query, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT id, title, description, run_count, tools_used,
              ts_rank_cd(title_tsv, plainto_tsquery('english', ${query})) AS rank
         FROM harness_shared.code_recipes
-       WHERE workspace_id = ${workspaceId}
-         AND status = 'active'
-         AND ((${scopeFilter}::text IS NULL AND hive_slug IS NULL)
-              OR hive_slug = ${scopeFilter})
+       WHERE status = 'active'
          AND title_tsv @@ plainto_tsquery('english', ${query})
     ORDER BY rank DESC LIMIT ${limit}
     `) as unknown as Array<{ id: string; title: string; description: string; run_count: number | string; tools_used: string[] | null; rank: number }>;
@@ -62,15 +60,12 @@ export const codeRecipesSource: SearchSource = {
       },
     }));
   },
-  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
+  async embedding({ sql, limit, qVec }): Promise<Listing> {
     const rows = (await sql`
       SELECT id, title, description, run_count, tools_used,
              1 - (embedding <=> ${qVec}::vector) AS sim
         FROM harness_shared.code_recipes
-       WHERE workspace_id = ${workspaceId}
-         AND status = 'active'
-         AND ((${scopeFilter}::text IS NULL AND hive_slug IS NULL)
-              OR hive_slug = ${scopeFilter})
+       WHERE status = 'active'
          AND embedding IS NOT NULL
     ORDER BY embedding <=> ${qVec}::vector
        LIMIT ${limit}
@@ -100,9 +95,6 @@ export interface SimilarRecipe {
 }
 
 export interface SearchSimilarRecipesInput {
-  workspaceId: string;
-  /** Sharing boundary (the hive). null ⇒ the workspace-global bucket. */
-  hiveSlug: string | null;
   title: string;
   description: string;
   /** The new script's canonical tool-set (the structural-overlap signal). */
@@ -160,8 +152,10 @@ export async function searchSimilarRecipes(
   const { results } = await runHybridSearch([codeRecipesSource], {
     sql,
     query,
-    workspaceId: input.workspaceId,
-    scopeFilter: input.hiveSlug,
+    // recipes are global (P-001): the engine requires a workspaceId/scopeFilter but
+    // codeRecipesSource ignores them — pass non-filtering placeholders.
+    workspaceId: '',
+    scopeFilter: null,
     limit: limit + (input.excludeId ? 1 : 0) + 5,
     mode: 'hybrid',
     embedder,
@@ -176,7 +170,7 @@ export async function searchSimilarRecipes(
   const metaRows = (await sql`
     SELECT id, title, description, run_count, tools_used
       FROM harness_shared.code_recipes
-     WHERE workspace_id = ${input.workspaceId} AND id = ANY(${ids})
+     WHERE id = ANY(${ids})
   `) as unknown as Array<{
     id: string;
     title: string;
