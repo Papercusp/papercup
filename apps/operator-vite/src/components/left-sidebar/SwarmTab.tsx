@@ -14,6 +14,7 @@
  * agent-driveable (ui:get_state / ui:dispatch).
  */
 import { useMemo } from 'react';
+import { Link } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsString } from 'nuqs';
 
@@ -86,27 +87,44 @@ function planTotals(p: PlanRow): { done: number; total: number } {
   return { done, total };
 }
 
-function href(path: string, params: Record<string, string | number | null | undefined>): string {
-  const qs = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value != null && value !== '') qs.set(key, String(value));
-  }
-  const search = qs.toString();
-  return search ? `${path}?${search}` : path;
+/**
+ * Rows used to be plain `<a href>` anchors — which TanStack Router cannot
+ * intercept, so every click did a FULL PAGE RELOAD (owner bug 2026-06-23). They
+ * are now `<Link to search>` for client-side nav: the destination route's
+ * `useSyncQuery`s hydrate the right pane in place, no reload.
+ *
+ * The `search` is always applied as a MERGE over the live URL (the `(prev) =>`
+ * updater below), never a plain object — because the Colony rail's own state
+ * (`?lsb`/`lst`/`lsa`) rides in the same search string, so a wholesale replace
+ * would collapse/reset the sidebar on every click. (Same convention as
+ * QueenTab's navigate() in this directory.) Empty values are dropped.
+ */
+type RowSearch = Record<string, string | number | null | undefined>;
+
+function mergeSearch(params: RowSearch) {
+  return (prev: Record<string, unknown>) => {
+    const next: Record<string, unknown> = { ...prev };
+    for (const [key, value] of Object.entries(params)) {
+      if (value == null || value === '') delete next[key];
+      else next[key] = value;
+    }
+    return next;
+  };
 }
 
-function taskHref(w: WorkListItem, g: BeeGroup | undefined): string | null {
+/** Work-item → its harness Working pane (needs the owning harness from the claim). */
+function taskSearch(w: WorkListItem, g: BeeGroup | undefined): RowSearch | null {
   const claim = g?.claims?.find((c) => c.type === 'work-item' && c.id === w.id && c.harnessSlug);
   if (!claim?.harnessSlug) return null;
-  return href('/adv', { tab: 'harnesses', slug: claim.harnessSlug, scope: 'self', sel: w.id });
+  return { tab: 'harnesses', slug: claim.harnessSlug, scope: 'self', sel: w.id };
 }
 
-function planHref(p: PlanRow): string {
-  return href('/admin/plans', { view: 'plans', plan: p.slug, h: p.harness });
+function planSearch(p: PlanRow): RowSearch {
+  return { view: 'plans', plan: p.slug, h: p.harness };
 }
 
-function mailHref(ownerId: string, mm: MailEntry): string {
-  return href('/adv', { tab: 'conversations', conv: 'feed', fagent: ownerId, fmsg: mm.msg_id });
+function mailSearch(ownerId: string, mm: MailEntry): RowSearch {
+  return { tab: 'conversations', conv: 'feed', fagent: ownerId, fmsg: mm.msg_id };
 }
 
 /**
@@ -160,7 +178,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
   };
 
   const taskRow = (w: WorkListItem, i: number, g: BeeGroup | undefined) => {
-    const target = taskHref(w, g);
+    const search = taskSearch(w, g);
     const label = w.title || w.id;
     const body = (
       <>
@@ -172,15 +190,16 @@ export default function SwarmTab({ active }: { active: boolean }) {
         {w.status && <span className="pclsb-task__st">{w.status}</span>}
       </>
     );
-    return target ? (
-      <a
+    return search ? (
+      <Link
         className="pclsb-task pclsb-linkrow"
         key={`${w.id}-${i}`}
-        href={target}
+        to="/adv"
+        search={mergeSearch(search)}
         aria-label={`Open task ${w.id}: ${label}`}
       >
         {body}
-      </a>
+      </Link>
     ) : (
       <div className="pclsb-task" key={`${w.id}-${i}`}>
         {body}
@@ -218,10 +237,11 @@ export default function SwarmTab({ active }: { active: boolean }) {
             const { done, total } = planTotals(p);
             const pct = total > 0 ? Math.round((done / total) * 100) : 0;
             return (
-              <a
+              <Link
                 className="pclsb-plan pclsb-linkrow"
                 key={p.slug}
-                href={planHref(p)}
+                to="/admin/plans"
+                search={mergeSearch(planSearch(p))}
                 aria-label={`Open plan ${p.slug}`}
               >
                 <span className="pclsb-plan__slug">
@@ -234,7 +254,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
                 <span className="pclsb-plan__nums">
                   {done}/{total}
                 </span>
-              </a>
+              </Link>
             );
           })
         ) : (
@@ -246,9 +266,10 @@ export default function SwarmTab({ active }: { active: boolean }) {
             <div className="pclsb-expand__head">Recent messages</div>
             {mail.loading && !hasMail && <div className="pclsb-expand__empty">loading…</div>}
             {inbox.map((mm, i) => (
-              <a
+              <Link
                 className="pclsb-mail pclsb-linkrow"
-                href={mailHref(r.ownerId, mm)}
+                to="/adv"
+                search={mergeSearch(mailSearch(r.ownerId, mm))}
                 key={`in-${mm.msg_id ?? i}`}
                 aria-label={`Open inbound message from ${mm.from ?? 'unknown'}`}
               >
@@ -256,12 +277,13 @@ export default function SwarmTab({ active }: { active: boolean }) {
                   Inbox · {mm.from ?? '?'} · {mm.kind ?? 'message'}
                 </div>
                 <span className="pclsb-mail__summary">{mm.summary ?? '(no summary)'}</span>
-              </a>
+              </Link>
             ))}
             {outbox.map((mm, i) => (
-              <a
+              <Link
                 className="pclsb-mail pclsb-linkrow"
-                href={mailHref(r.ownerId, mm)}
+                to="/adv"
+                search={mergeSearch(mailSearch(r.ownerId, mm))}
                 key={`out-${mm.msg_id ?? i}`}
                 aria-label={`Open outbound message to ${(mm.to ?? []).join(', ') || 'all'}`}
               >
@@ -269,7 +291,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
                   Outbox · {(mm.to ?? []).join(', ') || '*'} · {mm.kind ?? 'message'}
                 </div>
                 <span className="pclsb-mail__summary">{mm.summary ?? '(no summary)'}</span>
-              </a>
+              </Link>
             ))}
           </>
         )}

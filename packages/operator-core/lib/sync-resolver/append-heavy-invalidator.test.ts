@@ -5,6 +5,23 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { sweepAppendHeavy } from './append-heavy-invalidator';
+import { APPEND_HEAVY_POLL_SPECS } from './table-to-query-names';
+import { APPEND_HEAVY_TABLES as CACHE_APPEND_HEAVY } from '../cache/debounced-invalidate';
+
+describe('APPEND_HEAVY_POLL_SPECS ↔ cache coalescer drift-guard (reuse, not fork)', () => {
+  it('every POLLED (producer) table is in the cache-layer (consumer) append-heavy set', () => {
+    // The detector synthesizes `.changed` for these; the cache debouncer coalesces the resulting
+    // cache-tag bump. If the two lists drift, a polled table would bypass the cache coalescer.
+    for (const { table } of APPEND_HEAVY_POLL_SPECS) {
+      expect(CACHE_APPEND_HEAVY.has(table), `${table} must be in cache APPEND_HEAVY_TABLES`).toBe(true);
+    }
+  });
+
+  it('does NOT poll coord_event_log — it already has a real (mig-275) trigger', () => {
+    expect(APPEND_HEAVY_POLL_SPECS.some((s) => s.table === 'coord_event_log')).toBe(false);
+    expect(CACHE_APPEND_HEAVY.has('coord_event_log')).toBe(true); // in the cache set, just not polled
+  });
+});
 
 const DEDUPE = 5_000;
 

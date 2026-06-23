@@ -387,6 +387,21 @@ autonomous-fleet agent.
   The target: adding agents never forces anyone to wait; only real, verified
   exhaustion does. (The shared `CONCURRENCY_FIRST_NOTE` every harness agent also
   carries.)
+- **A STALLED DEPENDENCY is the same trap — not just contention.** You are about
+  to WAIT, so STOP, when your next step hangs on something you don't control
+  finishing (a scheduled job, git-sync, a deploy/CI, a background tick, another
+  agent, a pipeline stage, a queued lock), OR when you're about to end a turn with
+  *"pending X," "once Y lands,"* or *"want me to … once it's ready?"* — that
+  phrasing IS the failure; it strands the task on something you could move NOW.
+  Ladder, THIS turn: **(1) PROCEED** on the most-reversible path; **(2) can't?
+  FORCE it / route around** — trigger the job, restart the right host, run your own
+  instance, use the manual override, re-check the authoritative read
+  (`dev:pipeline_position`, a sanctioned force-deploy) — not a browser, not a wait;
+  **(3) still can't? FIX the root cause** durably (or file + route it); **(4) ONLY
+  if irreversible + high-stakes + outside your authority, ASK** — with a diagnosis
+  + a proposed action, never an open *"want me to?"*. Asking permission for a
+  **reversible** action you could just take IS waiting — replace the question with
+  the action + a one-line disclosure. Take charge; report after.
 - **Collapse a multi-step tool flow into ONE `code:run` — don't pay a round-trip
   per call.** Before a burst of calls, ASK: can I get this result in FEWER calls?
   Tokens are real cost — each call re-reads your whole context. Bundle the calls you

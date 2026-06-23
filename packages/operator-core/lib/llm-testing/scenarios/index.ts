@@ -36,6 +36,13 @@ import { S16_VOICE_DISAMBIGUATION } from './operator/S16-voice-disambiguation';
 // handoff path (role='sentinel' converse brain, `sentinel` target).
 import { SN01_HANDOFF_PLANNING_ASK } from './sentinel/SN01-handoff-planning-ask';
 import { SN02_NO_HANDOFF_TRIVIAL } from './sentinel/SN02-no-handoff-trivial';
+import { mirrorForSentinel } from './sentinel/_mirror';
+// P2 hive-knowledge scenarios (sentinel-voice-flow-testing): real questions about
+// the live papercusp hive, judged for grounded/tool-backed answers.
+import { SN_H01_FLEET_STATUS } from './sentinel/SN-H01-fleet-status';
+import { SN_H02_PLANS_AND_BLOCKED } from './sentinel/SN-H02-plans-and-blocked';
+import { SN_H03_QUEEN_EXPLAINER } from './sentinel/SN-H03-queen-explainer';
+import { SN_H04_ASSIGN_TO_QUEEN } from './sentinel/SN-H04-assign-to-queen';
 // M1–M12: operator-behavior-tests-2026-05-14 (brain-emission contracts)
 import { M1_CONTINUE_PAIRED_WITH_SAY } from './operator/M1-continue-paired-with-say';
 import { M2_MUTEX_CARD_VS_CONTINUE } from './operator/M2-mutex-card-vs-continue';
@@ -158,6 +165,25 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   // sentinel voice→Queen handoff path (SN01–SN02)
   SN01_HANDOFF_PLANNING_ASK,
   SN02_NO_HANDOFF_TRIVIAL,
+  // sentinel P2 hive-knowledge (real questions about the live hive)
+  SN_H01_FLEET_STATUS,
+  SN_H02_PLANS_AND_BLOCKED,
+  SN_H03_QUEEN_EXPLAINER,
+  SN_H04_ASSIGN_TO_QUEEN,
+  // Phase 1 (sentinel-voice-flow-testing): operator chat-hygiene contracts
+  // mirrored onto the SENTINEL brain (same role-keyed converse) so the voice
+  // front-door upholds the same voice/question/format discipline. Single source
+  // — see ./sentinel/_mirror.
+  ...[
+    S10_ASK_CHOICE,
+    S11_VOICE_CARD_ANSWER,
+    S13_VOICE_TERSE_COMPLEX,
+    S14_VOICE_NO_CODE,
+    S15_VOICE_ERROR_RECOVERY,
+    S16_VOICE_DISAMBIGUATION,
+    M4_ONE_QUESTION_PER_TURN,
+    M8_FORMAT_UTTERANCE,
+  ].map(mirrorForSentinel),
   // operator brain-emission contracts (M1–M12)
   M1_CONTINUE_PAIRED_WITH_SAY,
   M2_MUTEX_CARD_VS_CONTINUE,

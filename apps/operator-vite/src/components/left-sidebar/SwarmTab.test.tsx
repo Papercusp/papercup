@@ -25,10 +25,35 @@ vi.mock('nuqs', () => ({
 
 const H = vi.hoisted(() => ({
   results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
+  // The base search the Link mock resolves the `(prev) => …` merge updater
+  // against — `{}` by default (fresh URL), set to a populated object to assert
+  // the rail's own params (lsb/lst/lsa) survive a row click.
+  linkBase: {} as Record<string, unknown>,
 }));
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
+}));
+
+// Rows now navigate via TanStack `<Link to search>` (client-side, no full reload)
+// instead of plain `<a href>`. Mock Link to a real `<a>` whose href reflects the
+// resolved `to` + `search` so the destination assertions below stay meaningful
+// without standing up a full RouterProvider. `search` is the `(prev) => …` merge
+// updater the component builds; resolve it against an empty base.
+vi.mock('@tanstack/react-router', () => ({
+  Link: ({ to, search, children, ...rest }: { to: string; search?: unknown; children?: unknown }) => {
+    const resolved = (typeof search === 'function' ? search(H.linkBase) : (search ?? {})) as Record<string, unknown>;
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(resolved)) {
+      if (value != null && value !== '') qs.set(key, String(value));
+    }
+    const q = qs.toString();
+    return (
+      <a href={q ? `${to}?${q}` : to} {...rest}>
+        {children as never}
+      </a>
+    );
+  },
 }));
 
 import SwarmTab from './SwarmTab';
@@ -40,6 +65,7 @@ function seed(queryName: string, data: unknown[], extra: Partial<ReturnType<type
 beforeEach(() => {
   nuqsState.lsa = null;
   H.results = {};
+  H.linkBase = {};
 });
 afterEach(() => cleanup());
 
@@ -144,6 +170,31 @@ describe('<SwarmTab> selection + expansion', () => {
     expect(screen.getByRole('link', { name: /open plan plan-a/i }).getAttribute('href')).toBe(
       '/admin/plans?view=plans&plan=plan-a&h=pot-a',
     );
+  });
+
+  it('row links MERGE over the live URL — the rail’s own state (lsb/lst/lsa) survives the click, no full reload', () => {
+    // Reproduces the owner bug: clicking a row used to be a plain <a href> that
+    // (a) hard-reloaded and (b) dropped the sidebar state. The Link now merges
+    // content params over the current search, so the rail stays open/expanded
+    // while only the right-pane params change.
+    H.linkBase = { lsb: 'true', lst: 'swarm', lsa: 'bee-1', tab: 'overview' };
+    nuqsState.lsa = 'bee-1';
+    seed('dev.coordPresence', PRESENCE);
+    seed('sidebar.fleetBees', BEES);
+    seed('plans.list', PLANS);
+    render(<SwarmTab active={true} />);
+
+    const taskHref = screen.getByRole('link', { name: /open task WI-1/i }).getAttribute('href') ?? '';
+    const params = new URLSearchParams(taskHref.split('?')[1] ?? '');
+    // rail state preserved…
+    expect(params.get('lsb')).toBe('true');
+    expect(params.get('lst')).toBe('swarm');
+    expect(params.get('lsa')).toBe('bee-1');
+    // …content params applied / overridden (was tab=overview)…
+    expect(taskHref.startsWith('/adv?')).toBe(true);
+    expect(params.get('tab')).toBe('harnesses');
+    expect(params.get('slug')).toBe('pot-a');
+    expect(params.get('sel')).toBe('WI-1');
   });
 
   it('folds the selected agent’s recent comms into the expansion', () => {

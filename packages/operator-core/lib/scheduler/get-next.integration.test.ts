@@ -136,6 +136,34 @@ describe('get_next — spec filter + rank selects the correct item', () => {
     expect(r?.claimedUnder).toEqual({ specId: 'sync-only', revision: 3 });
   });
 
+  it('an `id in [...]` PIN narrows to exactly the pinned set (the fixed-wave exception)', async () => {
+    await seedFeature('F-pinned', { createdTs: 100 });
+    await seedFeature('F-other', { createdTs: 50 }); // older (would win on age) but NOT pinned
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'redrive-wave',
+      revision: 1,
+      view: { filter: { field: 'id', op: 'in', value: ['F-pinned', 'F-missing'] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-pinned');
+  });
+
+  it('an `id` pin still respects the ready floor — a pinned-but-BLOCKED item is not claimed', async () => {
+    await seedFeature('F-pin-blocked', { createdTs: 100 });
+    await seedFeature('F-pin-blocker', { createdTs: 50 });
+    await blockByFeature('F-pin-blocked', 'F-pin-blocker');
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'pin-blocked',
+      revision: 1,
+      view: { filter: { field: 'id', op: 'in', value: ['F-pin-blocked'] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    // The id-pin selects F-pin-blocked, but the ready floor excludes it ⇒ nothing claimable.
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+  });
+
   it('rank by priority (feature_order) desc picks the HIGHEST-priority item', async () => {
     // feature_order is an INVERTED scale (lower = higher priority); `priority desc`
     // ("highest priority first") ⇒ feature_order ASC ⇒ the order-1 item wins.

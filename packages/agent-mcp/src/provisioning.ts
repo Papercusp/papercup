@@ -52,6 +52,22 @@ export interface ProvisionResult {
   reconciled?: boolean;
 }
 
+/**
+ * The ADDITIVE capability-reconcile decision (EI-2048), pure + exported for tests.
+ * Returns the caps in `code` that `stored` lacks (`missing`) and the union to persist
+ * (`merged`). NEVER removes a stored cap not in `code` — shrinking a principal's caps is
+ * an attended `force` reprovision, not an automatic forceless-deploy side effect. When
+ * `missing` is empty the live row is already current and the caller writes nothing.
+ */
+export function reconcileCapabilities(
+  stored: readonly string[],
+  code: readonly string[],
+): { missing: string[]; merged: string[] } {
+  const have = new Set(stored);
+  const missing = code.filter((c) => !have.has(c));
+  return { missing, merged: missing.length ? [...stored, ...missing] : [...stored] };
+}
+
 function genBearer(): string {
   return randomBytes(32).toString('base64url');
 }
@@ -67,16 +83,34 @@ export async function provisionSystemPrincipal(
   const configPath = `${papercuspRoot}/system/${name}/config.json`;
 
   return withWorkspace(workspaceId, async (tx) => {
-    const existing = await tx<Array<{ bearer_hash: string }>>`
-      SELECT bearer_hash
+    const existing = await tx<Array<{ bearer_hash: string; capabilities: unknown }>>`
+      SELECT bearer_hash, capabilities
         FROM harness_shared.system_principals
        WHERE workspace_id = ${workspaceId} AND name = ${name}
        LIMIT 1
     `;
     if (existing.length > 0 && !force) {
-      // Already provisioned. Caller should read the bearer from disk if
-      // they need it; we don't return it.
-      return null;
+      // EI-2048: a capability ADDED in code (e.g. operator's memory:*/locks:* grant on
+      // 2026-06-20) never reached an already-provisioned row — provision-without-force
+      // used to be a pure no-op, and the only way to apply it (`force`) ROTATES the
+      // bearer, breaking every live connection. So reconcile capabilities IN PLACE,
+      // ADDITIVELY: grant the caps the code-defined set has that the live row lacks, and
+      // NEVER auto-revoke (shrinking a principal's caps stays an attended `force`
+      // reprovision — auto-revoking under a live session is the dangerous direction). The
+      // bearer is untouched (zero token churn / no broken connections); NOTIFY makes
+      // auth.ts's cache reload. A normal (forceless) deploy now self-heals cap drift.
+      const storedCaps = Array.isArray(existing[0].capabilities)
+        ? (existing[0].capabilities as string[])
+        : [];
+      const { missing, merged } = reconcileCapabilities(storedCaps, capabilities);
+      if (missing.length === 0) return null; // already current — a true no-op
+      await tx`
+        UPDATE harness_shared.system_principals
+           SET capabilities = ${JSON.stringify(merged)}::jsonb
+         WHERE workspace_id = ${workspaceId} AND name = ${name}
+      `;
+      await notifyPrincipalChanged(tx, workspaceId, `system:${name}`);
+      return { workspaceId, name, configPath, rotated: false, reconciled: true };
     }
     const bearer = genBearer();
     const bearerHash = hash(bearer);

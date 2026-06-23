@@ -125,6 +125,20 @@ describe('scenario registry', () => {
       // sentinel voice→Queen handoff (sentinel-as-claude-tui-2026-06-22)
       'sn-S01-handoff-planning-ask',
       'sn-S02-no-handoff-trivial',
+      // sentinel P2 hive-knowledge scenarios
+      'sn-H01-fleet-status',
+      'sn-H02-plans-and-blocked',
+      'sn-H03-queen-explainer',
+      'sn-H04-assign-to-queen',
+      // sentinel P1 mirrors of operator chat-hygiene contracts (./sentinel/_mirror)
+      'sn-S10-ask-choice',
+      'sn-S11-voice-card-answer',
+      'sn-S13-voice-terse-complex',
+      'sn-S14-voice-no-code',
+      'sn-S15-voice-error-recovery',
+      'sn-S16-voice-disambiguation',
+      'sn-M4-one-question-per-turn',
+      'sn-M8-format-utterance',
     ].sort());
   });
 

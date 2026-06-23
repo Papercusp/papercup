@@ -2,7 +2,7 @@
  * append-heavy-invalidator — the DEBOUNCED live-invalidation producer for the append-heavy
  * activity-LOG tables (data-sync-push-completion P-005 / D-012).
  *
- * THE PROBLEM. The six APPEND_HEAVY_TABLES (audit_log, agent_runs_consolidated, user_actions,
+ * THE PROBLEM. The six APPEND_HEAVY_POLL_SPECS (audit_log, agent_runs_consolidated, user_actions,
  * harness_hook_logs, toast_log, feature_audit_consolidated) are MAPPED in TABLE_TO_QUERY_NAMES
  * but INTENTIONALLY carry NO per-row emit_change_notify trigger — a per-row pg_notify on a
  * high-write log is the notify-storm anti-pattern (mig 376 drops it; cache-tag-trigger-coverage's
@@ -11,18 +11,21 @@
  * "Debounced invalidation TODO (P-005)". Consumers had to fall back to a client poll (the
  * AdvOverviewTab Activity tile) or go stale until the 180s drift-repair.
  *
- * THE FIX. ONE cheap detector instead of a per-row trigger OR per-client poll: poll `max(id)`
- * per table on a fixed cadence; when it advances, synthesize a single `harness_shared.<table>.changed`
- * invalidation — the SAME event the real trigger would emit — so the existing sync-sse bridge
- * fans it to every mapped query name + every connected client. ONE poll serves ALL clients, and
- * the synthesized fire is rate-limited to the poll cadence, so there is no per-row storm.
+ * THE FIX. ONE cheap detector instead of a per-row trigger OR per-client poll: poll a monotonic
+ * change-key (`max(<changeKey>)`, per APPEND_HEAVY_POLL_SPECS — NOT always `id`: 3 of the 6 tables
+ * have a TEXT id or no id, so they use their bigint `ts`) per table on a fixed cadence; when it
+ * advances, synthesize a single `harness_shared.<table>.changed` invalidation — the SAME event the
+ * real trigger would emit — so the existing sync-sse bridge fans it to every mapped query name +
+ * every connected client. ONE poll serves ALL clients; the fire is rate-limited to the poll cadence,
+ * so there is no per-row storm.
  *
  * Self-debounced ⇒ it passes a SHORT `dedupeWindowMs` so the bus's 90s default (built to collapse
  * a chatty per-row reconcile) does not WRONGLY collapse its legitimate per-tick fires to one/90s.
  *
- * Detection = `max(id)` (bigserial PK), which catches new rows — the dominant change for append
- * LOGS. A pure UPDATE that does not advance the PK (e.g. user_actions running→completed) is picked
- * up on the next INSERT or the 180s drift-repair; acceptable for an activity feed.
+ * Detection = `max(<changeKey>)`, which catches new rows — the dominant change for append LOGS. A
+ * pure UPDATE that does not advance the change-key (e.g. user_actions running→completed) is picked
+ * up on the next INSERT or the 180s drift-repair; acceptable for an activity feed. Composes with
+ * cache/debounced-invalidate.ts (the CONSUMER-side cache coalescer) — see APPEND_HEAVY_POLL_SPECS.
  *
  * Host-only (opens a PG connection, fires server invalidations). RLS: reads go through a
  * BYPASSRLS admin connection (mig 016) so `max(id)` sees every workspace; the synthesized
@@ -31,7 +34,7 @@
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { notifySyncInvalidate } from '../sync-sse';
-import { APPEND_HEAVY_TABLES } from './table-to-query-names';
+import { APPEND_HEAVY_POLL_SPECS } from './table-to-query-names';
 
 const DEFAULT_POLL_MS = 8_000;
 // < poll cadence, so consecutive per-tick fires are NOT collapsed; still long enough to
@@ -40,7 +43,7 @@ const DEFAULT_DEDUPE_MS = 5_000;
 
 /** Injectable seams so the loop is unit-testable without a real DB / bus / clock. */
 export interface AppendHeavyInvalidatorDeps {
-  /** Tables to watch. Default {@link APPEND_HEAVY_TABLES}. */
+  /** Tables to watch. Default {@link APPEND_HEAVY_POLL_SPECS}. */
   tables?: readonly string[];
   /** Poll cadence (ms). Default 8000. */
   pollMs?: number;
@@ -101,7 +104,7 @@ export async function sweepAppendHeavy(
  * (the host wrapper {@link startAppendHeavyInvalidatorHost} supplies the real ones).
  */
 export function startAppendHeavyInvalidator(deps: AppendHeavyInvalidatorDeps): () => void {
-  const tables = deps.tables ?? APPEND_HEAVY_TABLES.map((s) => s.table);
+  const tables = deps.tables ?? APPEND_HEAVY_POLL_SPECS.map((s) => s.table);
   const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
   const dedupeWindowMs = deps.dedupeWindowMs ?? DEFAULT_DEDUPE_MS;
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
@@ -147,16 +150,16 @@ export function startAppendHeavyInvalidatorHost(opts?: {
   // workspace's rows. max:1 — one long-lived poller connection, never per-call (perf-doc A-pattern).
   const sql = postgres(getHarnessAdminUrl(), { max: 1, idle_timeout: 0, connect_timeout: 30 });
   // Per-table MONOTONIC change-key column (bigint) — NOT every table has a usable `id` (see
-  // APPEND_HEAVY_TABLES). Built from the hardcoded allow-list, never user input.
-  const changeKeyByTable = new Map(APPEND_HEAVY_TABLES.map((s) => [s.table, s.changeKey]));
+  // APPEND_HEAVY_POLL_SPECS). Built from the hardcoded allow-list, never user input.
+  const changeKeyByTable = new Map(APPEND_HEAVY_POLL_SPECS.map((s) => [s.table, s.changeKey]));
   const stop = startAppendHeavyInvalidator({
-    tables: APPEND_HEAVY_TABLES.map((s) => s.table),
+    tables: APPEND_HEAVY_POLL_SPECS.map((s) => s.table),
     pollMs: opts?.pollMs,
     dedupeWindowMs: opts?.dedupeWindowMs,
     isEnabled: opts?.isEnabled,
     maxId: async (table) => {
       const changeKey = changeKeyByTable.get(table) ?? 'id';
-      // table + changeKey come from the hardcoded APPEND_HEAVY_TABLES allow-list (never user
+      // table + changeKey come from the hardcoded APPEND_HEAVY_POLL_SPECS allow-list (never user
       // input); sql(...) escapes both identifiers regardless.
       const rows = await sql<{ m: string | number | null }[]>`
         SELECT max(${sql(changeKey)}) AS m FROM harness_shared.${sql(table)}`;
