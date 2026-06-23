@@ -4,6 +4,13 @@ description: 'autonomy_tripwire_list returning 0 does not mean the auto-revert s
 discovered: 2026-06-18
 tags: [autonomy, queen, tripwire, auto-revert, decider, flags, dark-ship, verify-first, decision-ledger, misdiagnosis]
 status: active
+documents:
+  - packages/operator-core/lib/autonomy/decider.ts
+  - packages/operator-core/lib/autonomy/arm-reversible-action.ts
+  - packages/operator-core/lib/autonomy/action-surface.ts
+  - packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts
+  - packages/operator-core/lib/autonomy/tripwire/revert-executor.ts
+  - packages/operator-core/lib/autonomy/tripwire/scan.ts
 ---
 
 When an agent sees `autonomy:tripwire_list` return **0 rows** "despite hundreds

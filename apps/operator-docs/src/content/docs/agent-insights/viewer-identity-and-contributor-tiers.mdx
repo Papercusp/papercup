@@ -4,6 +4,15 @@ description: How to get "who is the current viewer" in the /adv shell (GET /api/
 discovered: 2026-06-02
 tags: [identity, viewer, contributors, tiers, privacy, federation, adv-shell]
 status: active
+documents:
+  - packages/operator-core/lib/identity/resolve-local-github-identity.ts
+  - packages/operator-core/lib/endpoint-route/routes/users/viewer.ts
+  - packages/operator-core/lib/endpoint-route/routes/users/by-github-id.ts
+  - apps/operator/app/adv/harnesses/useViewer.ts
+  - packages/operator-core/lib/user-profile/load.ts
+  - packages/operator-core/lib/harness-insights/load-contributors-tab.ts
+  - packages/operator-core/lib/harness-insights/load-people.ts
+  - packages/operator-core/lib/identity/binding-verifier-types.ts
 ---
 
 ## Who is the current viewer?

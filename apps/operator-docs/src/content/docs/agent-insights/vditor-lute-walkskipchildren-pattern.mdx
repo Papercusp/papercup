@@ -1,6 +1,10 @@
 ---
 title: Vditor Lute renderers — the WalkSkipChildren selective-override pattern
 description: When overriding a Lute renderer in vditor's IR pipeline, return WalkSkipChildren (=1) for the custom case and ["", WalkContinue] for the default fall-through. Returning WalkContinue with custom HTML breaks subsequent renders.
+documents:
+  - apps/operator/app/admin/plans/plan-renderers-ir.ts
+  - apps/operator/app/admin/plans/plan-renderers-ir.test.ts
+  - apps/operator/app/admin/plans/PlanEditor.tsx
 ---
 
 When you register a `SetJSRenderers({ renderers: { Md2VditorIRDOM: { renderX: ... } } })` callback for vditor (3.11.x), the return value `[html: string, walkStop: number]` controls two things at once: what HTML to emit AND whether Lute should recurse into the node's children. Get the walk-stop wrong and rendering breaks in a way that's hard to diagnose — subsequent siblings of the same type just don't render at all.

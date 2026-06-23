@@ -1,6 +1,9 @@
 ---
 title: Verifying UI changes end-to-end via :3170 + a dedicated webview instance
 description: The cheap recipe for true end-to-end UI verification of staging edits — rebuild the SPA dist :3170 serves, launch the prebuilt debug desktop pinned to :3170 on a free X display, drive it with tauri-agent-tools. Plus the three traps that cost an hour.
+documents:
+  - papercusp-desktop/src-tauri/src/dev_wrapper.rs
+  - papercusp-desktop/src-tauri/src/dev_bridge.rs
 ---
 
 Verified live 2026-06-11 while shipping `hive-pr-rollup-and-subharness-membership-2026-06-11`.
