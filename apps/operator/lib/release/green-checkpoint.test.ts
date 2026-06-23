@@ -100,6 +100,32 @@ describe('runGreenCheckpoint', () => {
     expect(calls).toContain('escalate');
   });
 
+  it('docs-audit #2: re-broadcasts a rising-urgency alert when the gate has been held >2h', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps } = stubDeps(false);
+    const messages: string[] = [];
+    deps.broadcast = async (s: string) => { messages.push(s); };
+    deps.heldGateMs = async () => 4 * 60 * 60 * 1000; // held 4h (the 2026-06-23 incident)
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green');
+    // The standard red broadcast PLUS a louder URGENT alert naming the held duration.
+    expect(messages.some((m) => m.includes('URGENT') && m.includes('held 4h'))).toBe(true);
+  });
+
+  it('docs-audit #2: no louder alert within the first 2h (fresh hold ⇒ heldGateMs null/small)', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps } = stubDeps(false);
+    const messages: string[] = [];
+    deps.broadcast = async (s: string) => { messages.push(s); };
+    deps.heldGateMs = async () => null; // first red — escalation just opened, no age yet
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(messages.some((m) => /HELD|URGENT|CRITICAL/.test(m))).toBe(false);
+  });
+
   it('is a no-op when ready already at integration HEAD', async () => {
     const c1 = await commit('a', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);

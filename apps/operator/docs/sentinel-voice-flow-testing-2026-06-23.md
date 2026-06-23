@@ -150,9 +150,12 @@ because operator and sentinel are the SAME role-keyed converse brain.
   LeftSidebar 12/12, VoiceButton 15/15 green. Re-armed the 2-min loop
   (CronCreate **8b3ba1e8**) to retry the bounded LIVE eval until the 429 rate
   limit clears, then capture results + self-review + CronDelete.
-- 2026-06-23: live eval STILL rate-limited (Anthropic 429s). `sn-H03` attempts
-  killed at the 90s fail-fast timeout while in 429 backoff (first smoke confirmed
-  the 429s). **Latest attempt: 09:27; 3 attempts so far, all 429/timeout.**
-  Consolidated here (updated in place each loop fire, not one line per fire, to
-  avoid log spam); one bounded attempt per ~2-min fire until the limit clears,
-  then capture + review + CronDelete.
+- 2026-06-23: live eval STILL rate-limited (Anthropic 429s) — SUSTAINED ~50 min
+  (08:45→09:33). `sn-H03` attempts keep getting killed at the 90s fail-fast
+  timeout while in 429 backoff (first smoke confirmed the 429s). **Latest: 09:33;
+  5 attempts, all 429/timeout.** Since the limit is fleet-wide + sustained (and
+  retrying harder can't clear it), **backed the retry cadence off from 2-min →
+  15-min** (CronCreate **2d3e072f**, replacing 8b3ba1e8) — still catches the clear
+  but a responsible footprint on the shared box/account. On the first success:
+  capture score → run sn-S01 → answer-quality review → CronDelete. (Owner: bump
+  back to 2-min or run `--target sentinel` manually once the API has headroom.)

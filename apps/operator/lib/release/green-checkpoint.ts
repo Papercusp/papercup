@@ -33,6 +33,7 @@ import {
 import type { ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromEnv } from './perf-gate';
 import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
+import { heldGateAlert } from './held-gate-alarm';
 
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
@@ -54,6 +55,10 @@ export interface CheckpointDeps {
   escalate?(summary: string, body: string): Promise<void>;
   /** Resolve any open `release-not-green` escalation — the gate recovered. */
   clearEscalation?(): Promise<void>;
+  /** docs-audit #2: how long has the gate been held red (ms), or null if it isn't
+   *  currently escalated (first red of a fresh hold). Drives the rising-urgency
+   *  re-broadcast so a long-held gate gets LOUDER instead of going silent. */
+  heldGateMs?(): Promise<number | null>;
   /** F2 (round-4 P-031): perf-regression deploy gate. Runs post-runGreen / pre-advance
    *  on a GREEN candidate: if the operator is in a definitive per-thread wedge right now,
    *  WARN (default — still advance) or BLOCK (only when the owner armed block-mode). Optional
@@ -244,6 +249,21 @@ export async function runGreenCheckpoint(
       `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
       `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}`,
     ).catch(() => {});
+    // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
+    // re-broadcast a rising-urgency alert (the gate blocks EVERY fleet deploy), so a
+    // long-held gate keeps surfacing top-of-inbox instead of one stale escalation.
+    const heldMs = await deps.heldGateMs?.().catch(() => null);
+    if (heldMs != null) {
+      const alert = heldGateAlert(heldMs);
+      if (alert) {
+        await deps
+          .broadcast(
+            `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${cfg.releaseRef}\` stuck at ${lastReady?.slice(0, 8) ?? 'unset'}, ${candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
+            summary,
+          )
+          .catch(() => {});
+      }
+    }
     return { advanced: false, candidate, from: lastReady, green: false, reason: 'not-green', summary, failingTests };
   }
 
@@ -464,6 +484,26 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
             resolver: 'green-checkpoint',
           }).catch(() => {});
         }
+      }
+    },
+    // docs-audit #2: how long the current `release-not-green` escalation has been
+    // open (= how long the gate's been held red), or null if none is open. The
+    // escalation opens on first red, so this is null on the first red of a fresh
+    // hold (no loud alert yet) and grows across the hourly ticks while held.
+    async heldGateMs() {
+      try {
+        const { listEscalations } = await import(
+          '@papercusp/operator-core/lib/agent-tools/coordination/escalations'
+        );
+        const open = await listEscalations({ status: 'open' });
+        const e = open.find((x) => (x as Record<string, unknown>).source === 'green-checkpoint') as
+          | { ts?: string }
+          | undefined;
+        if (!e?.ts) return null;
+        const opened = Date.parse(e.ts);
+        return Number.isFinite(opened) ? Math.max(0, Date.now() - opened) : null;
+      } catch {
+        return null; // never let the alarm read break the gate verdict
       }
     },
     // F2 (round-4 P-031): the real perf gate reads the latest perf-signals-v1 capture
