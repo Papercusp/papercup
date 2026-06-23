@@ -150,6 +150,15 @@ because operator and sentinel are the SAME role-keyed converse brain.
   LeftSidebar 12/12, VoiceButton 15/15 green. Re-armed the 2-min loop
   (CronCreate **8b3ba1e8**) to retry the bounded LIVE eval until the 429 rate
   limit clears, then capture results + self-review + CronDelete.
+- 2026-06-23 ~09:35: live eval got PAST the 429 (cost $0.0009) but the sentinel
+  brain on :3070 returned NO output — "agent backend failure" → verdict=errored
+  (judge: environment/SUT-health failure, NOT a behavioral finding). So now the
+  blocker is a flaky brain LLM backend (likely 429 residual), not a clean 429.
+  Loop keeps retrying; STOP only on a CLEAN non-errored verdict. Cadence restored
+  to 2-min per owner. Also: the two voice-bar UI trims are confirmed STILL in
+  source (brand JSX removed; "Voice" span removed) — owner not seeing them is
+  DEPLOY-LAG (desktop serves a built bundle that lags staging), not a code issue;
+  they land on the next deploy or a fresh `npm run dev` desktop.
 - 2026-06-23: live eval STILL rate-limited (Anthropic 429s) — SUSTAINED ~50 min
   (08:45→09:33). `sn-H03` attempts keep getting killed at the 90s fail-fast
   timeout while in 429 backoff (first smoke confirmed the 429s). **Latest: 09:33;

@@ -113,10 +113,10 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
           className="pc-plans__new-plan"
           onClick={onNewPlan}
           disabled={launching}
-
+          aria-label={launching ? 'Launching…' : 'New plan'}
         >
           <Plus size={14} aria-hidden />
-          {launching ? 'Launching…' : 'New plan'}
+          {launching ? 'Launching…' : 'New'}
         </button></Tooltip>
         <Tooltip label="Plans — open a plan from the list to view/edit it full-width."><button
           type="button"
