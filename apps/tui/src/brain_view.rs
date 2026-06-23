@@ -37,9 +37,13 @@ impl Scope {
     }
 
     fn label(&self) -> &'static str {
+        // Glyph rides the existing "── {label} · live transcript ──" header line
+        // (brain-view, line ~142) so the pane is identifiable with pane_frames
+        // OFF — same ♛/👁 glyphs as the zellij pane names (owner ask 2026-06-23,
+        // distinguish panes without spending vertical space on frames).
         match self {
-            Scope::Queen => "Queen",
-            Scope::Overwatch => "Overwatch",
+            Scope::Queen => "♛ Queen",
+            Scope::Overwatch => "👁 Overwatch",
         }
     }
 
