@@ -6,6 +6,15 @@ import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import {
+  Activity,
+  BadgeCheck,
+  KeyRound,
+  Plus,
+  ServerCog,
+  Trash2,
+  UserRound,
+} from 'lucide-react';
+import {
   formatResetIn,
   isActiveAccount,
   setupTokenCommand,
@@ -287,21 +296,60 @@ export default function DeployAccountsPage() {
         : value.trim()
           ? 'Ready to link this account.'
           : provider === 'codex' ? 'Paste a bearer token or env reference to continue.' : 'Paste a setup-token or credentials bundle to continue.';
+  const providerCounts = accounts.reduce(
+    (acc, account) => {
+      acc[accountProvider(account)] += 1;
+      return acc;
+    },
+    { claude: 0, codex: 0 } as Record<AccountProvider, number>,
+  );
+  const constrainedCount = accounts.filter((account) => (
+    account.sustainedlyLimited || account.rate.pausedUntil > Date.now()
+  )).length;
+  const activeAccount = headroom?.reachable && headroom.accountId
+    ? accounts.find((account) => account.id === headroom.accountId)
+    : null;
+  const gridHeight = Math.min(640, 40 + accounts.length * 58 + 6);
 
   return (
     <div className="pc-da">
       {confirmEl}
-      <div className="pc-da__bar">
-        <p className="pc-da__lede">
-          Account pool used by the inference gateway. Claude Max accounts power pooled fleet egress and deploys;
-          Codex accounts route Codex sessions through the OpenAI-compatible account-pinning path.
-        </p>
+      <header className="pc-da__hero">
+        <div className="pc-da__hero-copy">
+          <div className="pc-da__eyebrow">
+            <ServerCog size={14} aria-hidden="true" />
+            Account pool
+          </div>
+          <h1>Deploy accounts</h1>
+          <p className="pc-da__lede">
+            Manage provider accounts used by the inference gateway for pooled egress, deploys, and Codex account pinning.
+          </p>
+        </div>
         {!addOpen && (
-          <button className="pc-da__btn pc-da__btn--primary" onClick={() => setAddOpen(true)}>
-            + Link account
+          <button className="pc-da__btn pc-da__btn--primary pc-da__hero-action" onClick={() => setAddOpen(true)}>
+            <Plus size={15} aria-hidden="true" />
+            Link account
           </button>
         )}
-      </div>
+      </header>
+
+      <section className="pc-da__summary" aria-label="Deploy account pool summary">
+        <div className="pc-da__metric">
+          <span><UserRound size={14} aria-hidden="true" /> Accounts</span>
+          <strong>{accounts.length}</strong>
+          <small>{providerCounts.claude} Claude · {providerCounts.codex} Codex</small>
+        </div>
+        <div className="pc-da__metric">
+          <span><Activity size={14} aria-hidden="true" /> Active route</span>
+          <strong>{activeAccount?.id ?? 'None'}</strong>
+          <small>{headroom?.reachable ? 'Gateway reachable' : 'Gateway not reporting'}</small>
+        </div>
+        <div className="pc-da__metric">
+          <span><BadgeCheck size={14} aria-hidden="true" /> Availability</span>
+          <strong>{Math.max(0, accounts.length - constrainedCount)}</strong>
+          <small>{constrainedCount} paused or limited</small>
+        </div>
+      </section>
 
       {addOpen && (
         <div className="pc-da__wizard">
@@ -507,26 +555,52 @@ export default function DeployAccountsPage() {
         {loadingList && <p className="pc-da__muted">Loading…</p>}
         {listError && <p className="pc-da__error">⚠ {listError}</p>}
         {!loadingList && !listError && accounts.length === 0 && (
-          <p className="pc-da__muted">No accounts in the pool yet. Link one to grow the fleet's aggregate capacity.</p>
+          <div className="pc-da__empty">
+            <KeyRound size={18} aria-hidden="true" />
+            <p>No accounts in the pool yet. Link one to grow the fleet's aggregate capacity.</p>
+          </div>
         )}
         {accounts.length > 0 && (
-          <div style={{ height: Math.min(620, 34 + accounts.length * 42 + 4) }}>
-            <RichGrid<AccountRow>
-              columns={accountColumns(headroom, remove)}
-              rows={accounts}
-              getRowId={(a) => a.id}
-              rowMinHeight={42}
-              headerHeight={34}
-            />
-          </div>
+          <>
+            <div className="pc-da__grid-shell">
+              <div className="pc-da__grid" style={{ height: gridHeight }}>
+                <RichGrid<AccountRow>
+                  columns={accountColumns(headroom, remove)}
+                  rows={accounts}
+                  getRowId={(a) => a.id}
+                  rowMinHeight={58}
+                  headerHeight={40}
+                />
+              </div>
+            </div>
+            <div className="pc-da__cards" aria-label="Deploy accounts">
+              {accounts.map((account) => (
+                <AccountCard
+                  key={account.id}
+                  account={account}
+                  headroom={headroom}
+                  remove={remove}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
 
       <style>{`
-        .pc-da { padding: 16px 18px; color: var(--fg); }
-        .pc-da__bar { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; margin-bottom: 14px; }
-        .pc-da__lede { margin: 0; max-width: 70ch; font-size: 13px; color: var(--fg-dim); line-height: 1.5; }
-        .pc-da__btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%); background: var(--bg-2); color: var(--fg); font-size: 12px; font-weight: 650; cursor: pointer; }
+        .pc-da { container-type: inline-size; display: grid; gap: 16px; min-width: 0; color: var(--fg); }
+        .pc-da__hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid color-mix(in srgb, var(--border), white 8%); }
+        .pc-da__hero-copy { display: grid; gap: 8px; min-width: 0; }
+        .pc-da__eyebrow { display: inline-flex; width: fit-content; align-items: center; gap: 7px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 64%); border-radius: 999px; color: var(--accent-cool); background: color-mix(in srgb, var(--accent), transparent 90%); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; line-height: 1.2; text-transform: uppercase; }
+        .pc-da h1 { margin: 0; font-size: clamp(28px, 4.2vw, 44px); line-height: 0.98; letter-spacing: 0; text-shadow: none; }
+        .pc-da__lede { margin: 0; max-width: 76ch; font-size: 13px; color: var(--fg-dim); line-height: 1.55; }
+        .pc-da__hero-action { white-space: nowrap; }
+        .pc-da__summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+        .pc-da__metric { display: grid; min-width: 0; gap: 5px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--border), white 6%); border-radius: 10px; background: color-mix(in srgb, var(--bg-2), transparent 12%); }
+        .pc-da__metric > span { display: inline-flex; align-items: center; gap: 7px; color: color-mix(in srgb, var(--accent-soft), transparent 25%); font-size: 11px; font-weight: 750; letter-spacing: 0.05em; text-transform: uppercase; }
+        .pc-da__metric strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 20px; line-height: 1.15; }
+        .pc-da__metric small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute); font-size: 11px; }
+        .pc-da__btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 7px 13px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%); background: var(--bg-2); color: var(--fg); font-size: 12px; font-weight: 650; cursor: pointer; }
         .pc-da__btn:hover { background: color-mix(in srgb, var(--bg-popover), transparent 4%); border-color: color-mix(in srgb, var(--accent-strong), transparent 60%); }
         .pc-da__btn:disabled { opacity: 0.5; cursor: default; }
         .pc-da__btn--primary { background: color-mix(in srgb, var(--accent), transparent 82%); color: var(--accent-soft); border-color: color-mix(in srgb, var(--accent-strong), transparent 55%); }
@@ -553,21 +627,54 @@ export default function DeployAccountsPage() {
         .pc-da__save-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
         .pc-da__save-status { color: var(--fg-mute); font-size: 12.5px; }
         .pc-da__save-actions { display: inline-flex; align-items: center; gap: 8px; }
-        .pc-da__mono { font-family: ui-monospace, Menlo, monospace; }
-        .pc-da__cred { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--accent-soft), transparent 38%); }
-        .pc-da__pill { display: inline-flex; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; }
+        .pc-da__list { min-width: 0; }
+        .pc-da__empty { display: flex; align-items: center; gap: 10px; min-height: 68px; padding: 14px; border: 1px solid color-mix(in srgb, var(--border), white 4%); border-radius: 12px; background: color-mix(in srgb, var(--bg-2), transparent 14%); color: var(--fg-dim); }
+        .pc-da__empty p { margin: 0; font-size: 13px; line-height: 1.45; }
+        .pc-da__grid-shell { min-width: 0; overflow-x: auto; overflow-y: hidden; border: 1px solid color-mix(in srgb, var(--border), white 5%); border-radius: 12px; background: color-mix(in srgb, var(--bg-2), transparent 14%); }
+        .pc-da__grid { min-width: 880px; }
+        .pc-da__cards { display: none; gap: 10px; }
+        .pc-da__mono { min-width: 0; font-family: ui-monospace, Menlo, monospace; }
+        .pc-da__identity { display: grid; min-width: 0; gap: 3px; }
+        .pc-da__identity-main { display: flex; align-items: center; gap: 7px; min-width: 0; }
+        .pc-da__identity-main > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pc-da__identity-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute); font-size: 11px; }
+        .pc-da__cred { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--accent-soft), transparent 38%); }
+        .pc-da__pill { display: inline-flex; align-items: center; width: fit-content; max-width: 100%; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; line-height: 1.35; }
         .pc-da__pill--active { margin-left: 8px; background: color-mix(in srgb, var(--accent-strong), transparent 80%); color: var(--accent-cool); }
         .pc-da__pill--neutral { background: color-mix(in srgb, var(--fg), transparent 88%); color: var(--fg-dim); }
         .pc-da__pill--ok { background: color-mix(in srgb, var(--good), transparent 84%); color: var(--good); }
         .pc-da__pill--warn { background: color-mix(in srgb, var(--warn), transparent 84%); color: var(--warn); }
         .pc-da__pill--bad { background: color-mix(in srgb, var(--bad), transparent 84%); color: var(--bad); }
-        .pc-da__util { display: grid; gap: 3px; min-width: 110px; }
+        .pc-da__util { display: grid; gap: 4px; min-width: 112px; }
         .pc-da__util-bar { height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--fg), transparent 88%); overflow: hidden; }
         .pc-da__util-bar > span { display: block; height: 100%; border-radius: 999px; }
         .pc-da__util-bar--ok > span { background: var(--good); }
         .pc-da__util-bar--warn > span { background: var(--warn); }
         .pc-da__util-bar--bad > span { background: var(--bad); }
         .pc-da__util-pct { font-size: 11px; color: var(--fg-dim); }
+        .pc-da__card { display: grid; gap: 9px; padding: 12px; border: 1px solid color-mix(in srgb, var(--border), white 5%); border-radius: 12px; background: color-mix(in srgb, var(--bg-2), transparent 12%); }
+        .pc-da__card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
+        .pc-da__card-head-actions { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+        .pc-da__card-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+        .pc-da__card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .pc-da__card-field { display: grid; min-width: 0; gap: 4px; }
+        .pc-da__card-field.is-wide { grid-column: 1 / -1; }
+        .pc-da__card-field dt { color: var(--fg-mute); font-size: 10px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
+        .pc-da__card-field dd { min-width: 0; margin: 0; color: var(--fg); font-size: 12px; }
+        @container (max-width: 900px) {
+          .pc-da__grid-shell { display: none; }
+          .pc-da__cards { display: grid; }
+        }
+        @container (max-width: 560px) {
+          .pc-da__hero { grid-template-columns: 1fr; }
+          .pc-da h1 { font-size: 32px; }
+          .pc-da__hero-action { width: fit-content; }
+          .pc-da__wizard { padding: 12px; }
+          .pc-da__modes { display: flex; flex-wrap: wrap; }
+          .pc-da__save-row { align-items: stretch; flex-direction: column; }
+          .pc-da__save-actions { justify-content: flex-end; }
+          .pc-da__card-grid { grid-template-columns: 1fr; }
+        }
       `}</style>
     </div>
   );
@@ -578,23 +685,14 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
     {
       key: 'id',
       header: 'ID',
-      width: 1.2,
+      width: 1.5,
       toCopyText: (a) => a.id,
-      render: ({ row }) => {
-        const active = isActiveAccount(headroom, row.id);
-        return (
-          <span className="pc-da__mono">
-            {row.id}
-            {active && <span className="pc-da__pill pc-da__pill--active" title="The gateway is routing egress through this account now">active</span>}
-          </span>
-        );
-      },
+      render: ({ row }) => <AccountIdentity row={row} headroom={headroom} />,
     },
-    { key: 'label', header: 'Label', width: 1, toCopyText: (a) => a.label || '—', render: ({ row }) => row.label || '—' },
     {
       key: 'provider',
       header: 'Provider',
-      width: 0.8,
+      width: 0.75,
       toCopyText: (a) => a.provider || 'claude',
       render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(row))}</span>,
     },
@@ -610,21 +708,7 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
       header: 'Usage',
       width: 1.5,
       toCopyText: (a) => accountUsageText(a, headroom),
-      render: ({ row }) => {
-        const usage = accountUsage(row, headroom);
-        if (!usage) return <span className="pc-da__muted">—</span>;
-        const pct = usage.pct;
-        return (
-          <div className="pc-da__util" title={`${usage.label}${usage.rejected ? ' — over budget' : ''}`}>
-            <div className={`pc-da__util-bar pc-da__util-bar--${utilizationTone(pct)}`}>
-              <span style={{ width: `${Math.min(100, pct)}%` }} />
-            </div>
-            <span className="pc-da__util-pct">
-              {pct}%{usage.reset ? ` · resets ${usage.reset}` : ''}
-            </span>
-          </div>
-        );
-      },
+      render: ({ row }) => <UsageCell row={row} headroom={headroom} />,
     },
     {
       key: 'bound',
@@ -646,11 +730,83 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
       width: '88px',
       render: ({ row }) => (
         <button className="pc-da__btn pc-da__btn--ghost" onClick={() => void remove(row.id)}>
+          <Trash2 size={13} aria-hidden="true" />
           Remove
         </button>
       ),
     },
   ];
+}
+
+function AccountIdentity({ row, headroom }: { row: AccountRow; headroom: PoolHeadroom | null }) {
+  const active = isActiveAccount(headroom, row.id);
+  return (
+    <span className="pc-da__identity">
+      <span className="pc-da__identity-main pc-da__mono">
+        <span>{row.id}</span>
+        {active && <span className="pc-da__pill pc-da__pill--active" title="The gateway is routing egress through this account now">active</span>}
+      </span>
+      {row.label && <span className="pc-da__identity-label">{row.label}</span>}
+    </span>
+  );
+}
+
+function UsageCell({ row, headroom }: { row: AccountRow; headroom: PoolHeadroom | null }) {
+  const usage = accountUsage(row, headroom);
+  if (!usage) return <span className="pc-da__muted">—</span>;
+  const pct = usage.pct;
+  return (
+    <div className="pc-da__util" title={`${usage.label}${usage.rejected ? ' — over budget' : ''}`}>
+      <div className={`pc-da__util-bar pc-da__util-bar--${utilizationTone(pct)}`}>
+        <span style={{ width: `${Math.min(100, pct)}%` }} />
+      </div>
+      <span className="pc-da__util-pct">
+        {pct}%{usage.reset ? ` · resets ${usage.reset}` : ''}
+      </span>
+    </div>
+  );
+}
+
+function AccountCard({
+  account,
+  headroom,
+  remove,
+}: {
+  account: AccountRow;
+  headroom: PoolHeadroom | null;
+  remove: (id: string) => void;
+}) {
+  return (
+    <article className="pc-da__card">
+      <div className="pc-da__card-head">
+        <AccountIdentity row={account} headroom={headroom} />
+        <div className="pc-da__card-head-actions">
+          <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(account))}</span>
+          <button className="pc-da__btn pc-da__btn--ghost" onClick={() => void remove(account.id)}>
+            <Trash2 size={13} aria-hidden="true" />
+            Remove
+          </button>
+        </div>
+      </div>
+      <div className="pc-da__card-meta">
+        {accountStatus(account)}
+      </div>
+      <dl className="pc-da__card-grid">
+        <div className="pc-da__card-field">
+          <dt>Usage</dt>
+          <dd><UsageCell row={account} headroom={headroom} /></dd>
+        </div>
+        <div className="pc-da__card-field">
+          <dt>Bound to</dt>
+          <dd className="pc-da__mono">{account.boundTo.length ? account.boundTo.join(', ') : '—'}</dd>
+        </div>
+        <div className="pc-da__card-field is-wide">
+          <dt>Credential</dt>
+          <dd><span className="pc-da__mono pc-da__cred">{account.credentialRef}</span></dd>
+        </div>
+      </dl>
+    </article>
+  );
 }
 
 function accountStatusText(account: AccountRow): string {
