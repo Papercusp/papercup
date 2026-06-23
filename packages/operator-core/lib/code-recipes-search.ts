@@ -90,6 +90,9 @@ export interface SimilarRecipe {
   title: string;
   description: string;
   runCount: number;
+  /** The recipe's canonical tool-set — carried so callers can gate low-value (≤1-tool)
+   *  recipes out of the reuse surfaces (recipes-reuse-activation-2026-06-22 P-004). */
+  toolsUsed: string[];
   /** Blended 0..1 similarity (fused hybrid score normalized + tool-set Jaccard). */
   similarity: number;
 }
@@ -195,6 +198,7 @@ export async function searchSimilarRecipes(
       title: meta.title,
       description: meta.description,
       runCount: typeof meta.run_count === 'number' ? meta.run_count : parseInt(meta.run_count, 10),
+      toolsUsed: meta.tools_used ?? [],
       similarity,
     });
   }

@@ -18,7 +18,8 @@ export default defineTool({
   name: 'recipes:list',
   description:
     'List reusable code:run RECIPES for your hive (most-run first). A recipe is a saved code:run ' +
-    'script other agents authored; browse them to reuse instead of re-authoring. Read-only.',
+    'script other agents authored; browse them to reuse instead of re-authoring. Low-value ' +
+    '(≤1-tool / auto-titled) recipes are hidden by default — pass includeTrivial to see all. Read-only.',
   guidance: {
     when:
       'Before authoring a multi-step code:run, to see what reusable recipes already exist in your ' +
@@ -34,10 +35,17 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     limit: z.number().int().min(1).max(100).optional().describe('Max recipes to return (default 25).'),
+    includeTrivial: z
+      .boolean()
+      .optional()
+      .describe(
+        'Include low-value recipes (≤1-tool wrappers + auto-derived-title throwaways) hidden by ' +
+          'default. Default false — the browse shows reuse-worthy multi-tool recipes only.',
+      ),
   }),
   async handler(args) {
     const limit = args.limit ?? 25;
-    const all = await listRecipes(getOrgPg().sql, { limit });
+    const all = await listRecipes(getOrgPg().sql, { limit, includeTrivial: args.includeTrivial ?? false });
     const recipes = all.map((r) => ({
       id: r.id,
       title: r.title,

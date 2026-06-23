@@ -73,6 +73,9 @@ import './voice/status';
 import './voice/agent';
 import './voice/transcript';
 import './voice/say';
+// Shared operator_conversations thread (sentinel-as-claude-tui Phase B):
+import './conversation/recent';
+import './conversation/append';
 import './roles/list';
 import './roles/get';
 import './roles/firing_on';

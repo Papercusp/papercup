@@ -367,8 +367,28 @@ function clampLimit(limit: number | undefined): number {
 }
 
 /**
+ * A "low-value" recipe is one not worth SURFACING for reuse: it batches ≤1 distinct tool
+ * (a thin wrapper over the primitive — the candidate scorer's `trivial` class) OR carries
+ * an AUTO-DERIVED fallback title ("recipe: <tools>", produced by deriveTitleDescription
+ * only when the author gave no title). Such recipes still CAPTURE on every successful
+ * code:run (D-012 unchanged); they are merely hidden from the code:run similarRecipes
+ * nudge + the default recipes:list, and aged out by the weekly hygiene sweep
+ * (recipes-reuse-activation-2026-06-22 P-004). Keep this predicate in lockstep with the
+ * SQL filter in {@link listRecipes}.
+ */
+export function isLowValueRecipe(r: { toolsUsed?: string[] | null; title: string }): boolean {
+  const toolCount = r.toolsUsed?.length ?? 0;
+  return toolCount <= 1 || /^recipe:\s/i.test(r.title);
+}
+
+/**
  * List recipes (GLOBAL — recipes are a fleet-wide capability, P-001). Newest-run
  * first, then most-run, so the hot recipes surface (matches the run_count idx).
+ *
+ * By DEFAULT excludes low-value recipes (≤1-tool wrappers + auto-derived-title
+ * throwaways — see {@link isLowValueRecipe}) so the browse stays signal-dense; pass
+ * `includeTrivial: true` for the whole corpus (P-004). The SQL filter mirrors
+ * isLowValueRecipe — keep them in lockstep.
  *
  * Capped at `limit` (default {@link DEFAULT_LIST_LIMIT}, clamped to
  * {@link MAX_LIST_LIMIT}) so a large corpus can't flood the sync transport; pair
@@ -376,11 +396,15 @@ function clampLimit(limit: number | undefined): number {
  */
 export async function listRecipes(
   sql: postgres.Sql,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; includeTrivial?: boolean } = {},
 ): Promise<CodeRecipeRow[]> {
   const lim = clampLimit(opts.limit);
+  const whereTrivial = opts.includeTrivial
+    ? sql`TRUE`
+    : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
   const rows = await sql<DbRow[]>`
     SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
+     WHERE ${whereTrivial}
      ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
      LIMIT ${lim}`;
   return rows.map(mapRow);

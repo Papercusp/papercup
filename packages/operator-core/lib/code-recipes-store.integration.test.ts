@@ -65,7 +65,7 @@ describe('code_recipes store (real PG)', () => {
 
     const got = await getRecipe(db.adminSql, 'triage-stale-items');
     expect(got?.title).toBe('Triage stale items');
-    const list = await listRecipes(db.adminSql);
+    const list = await listRecipes(db.adminSql, { includeTrivial: true });
     expect(list.some((r) => r.id === 'triage-stale-items')).toBe(true);
   });
 
@@ -88,7 +88,7 @@ describe('code_recipes store (real PG)', () => {
     expect(second.description).toBe('second');
     expect(second.script).toBe('return 2;');
     expect(second.toolsUsed).toEqual(['coord:send']);
-    const list = await listRecipes(db.adminSql);
+    const list = await listRecipes(db.adminSql, { includeTrivial: true });
     expect(list.filter((r) => r.id === 'note')).toHaveLength(1);
   });
 
@@ -154,7 +154,7 @@ describe('code_recipes store (real PG)', () => {
     await upsertRecipe(db.adminSql, { id: 'h2', title: 'H2', description: 'd', script: 's' });
     await upsertRecipe(db.adminSql, { id: 'g1', title: 'G1', description: 'd', script: 's' });
 
-    const ids = new Set((await listRecipes(db.adminSql)).map((r) => r.id));
+    const ids = new Set((await listRecipes(db.adminSql, { includeTrivial: true })).map((r) => r.id));
     expect(ids.has('h1')).toBe(true);
     expect(ids.has('h2')).toBe(true);
     expect(ids.has('g1')).toBe(true);
@@ -165,6 +165,34 @@ describe('code_recipes store (real PG)', () => {
     await upsertRecipe(db.adminSql, { id: 'p2', title: 'B', description: 'd', script: 's' });
     expect((await getRecipe(db.adminSql, 'p'))?.title).toBe('A');
     expect((await getRecipe(db.adminSql, 'p2'))?.title).toBe('B');
+  });
+
+  it('listRecipes HIDES low-value recipes by default; includeTrivial returns them (P-004)', async () => {
+    // multi-tool, authored title → reuse-worthy (shown by default)
+    await upsertRecipe(db.adminSql, {
+      id: 'multi-tool-worthy', title: 'Triage and block stale items', description: 'd', script: 's',
+      toolsUsed: ['work_items:list', 'work_items:set_state'],
+    });
+    // 1-tool wrapper → low-value (hidden by default)
+    await upsertRecipe(db.adminSql, {
+      id: 'one-tool-wrapper', title: 'Just list plans', description: 'd', script: 's',
+      toolsUsed: ['plans:list'],
+    });
+    // auto-derived fallback title ("recipe: …") on a multi-tool script → low-value
+    await upsertRecipe(db.adminSql, {
+      id: 'auto-titled', title: 'recipe: plans:add-item + plans:set-status', description: 'd', script: 's',
+      toolsUsed: ['plans:add-item', 'plans:set-status'],
+    });
+
+    const def = new Set((await listRecipes(db.adminSql)).map((r) => r.id));
+    expect(def.has('multi-tool-worthy')).toBe(true);
+    expect(def.has('one-tool-wrapper')).toBe(false); // hidden: ≤1 tool
+    expect(def.has('auto-titled')).toBe(false); // hidden: auto-derived title
+
+    const all = new Set((await listRecipes(db.adminSql, { includeTrivial: true })).map((r) => r.id));
+    expect(all.has('multi-tool-worthy')).toBe(true);
+    expect(all.has('one-tool-wrapper')).toBe(true);
+    expect(all.has('auto-titled')).toBe(true);
   });
 
   // ── mergeRecipes (Phase 4, P-010 / D-015) ───────────────────────────────────

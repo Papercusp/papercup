@@ -22,6 +22,7 @@ import { checkScript } from '@papercusp/tooldef';
 import {
   upsertRecipe,
   recordRecipeRun,
+  isLowValueRecipe,
   type CodeRecipeRow,
 } from '../../code-recipes-store';
 import { searchSimilarRecipes, type SimilarRecipe } from '../../code-recipes-search';
@@ -225,6 +226,12 @@ export async function captureRecipe(
     } catch (err) {
       log(`code:run recipe dedup failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
     }
+
+    // P-004: don't SURFACE low-value recipes for reuse — a ≤1-tool wrapper or an
+    // auto-derived-title throwaway is noise to suggest re-running (the agent can call the
+    // one tool directly). They still capture (D-012) + age out via the weekly sweep; they
+    // just don't pollute the code:run reuse nudge.
+    similarRecipes = similarRecipes.filter((r) => !isLowValueRecipe(r));
 
     const row = await upsertRecipe(deps.sql, {
       id,

@@ -1,0 +1,48 @@
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { getOrCreateActiveConversation, appendTurn } from '../../operator-conversations';
+
+/**
+ * conversation:append — Phase B of the Sentinel-as-Claude-TUI
+ * (sentinel-as-claude-tui-2026-06-22). Mirrors a turn into the SHARED
+ * `operator_conversations` thread (the one the app's webview chat live-syncs),
+ * so the voice/TUI conversation the user has with the dock Sentinel also appears
+ * in the app. Voice-in now lands in the Sentinel pane (Phase C), NOT this thread,
+ * so the Sentinel is the *writer of record* — it appends BOTH sides per turn.
+ *
+ * `operator:converse` (the sentinel holds it — role-principal-caps) over
+ * `operator-conversations.ts`; the webview reflects it instantly via useSyncQuery.
+ */
+export default defineTool({
+  name: 'conversation:append',
+  profile: 'engineer',
+  description:
+    "Append a turn to the SHARED operator conversation thread the app's webview chat displays. Mirror your voice/TUI turns here so the local user sees the conversation in the app.",
+  capability: 'operator:converse',
+  guidance: {
+    when: `You (the voice-first Sentinel) just heard the user or spoke a reply — append BOTH sides so the webview chat reflects the live conversation: the user's words as role:'user' (source 'voice_stt'), your spoken reply as role:'assistant' (source 'voice_tts').`,
+    notWhen: `Don't append internal tool noise, code, or unspoken scratch — only the user-visible conversation turns.`,
+  },
+  requirePrincipal: false,
+  agentRoles: ['sentinel', 'operator'],
+  rolesQuota: { sentinel: { perRun: 4000 }, operator: { perRun: 400 } },
+  args: z.object({
+    role: z.enum(['user', 'assistant']).describe("Who said it — 'user' (the app user) or 'assistant' (you)."),
+    text: z.string().min(1).describe('The turn text (what was said).'),
+    source: z
+      .enum(['voice_stt', 'voice_tts', 'text_typed'])
+      .optional()
+      .describe("How it was conveyed; defaults to voice_stt for user, voice_tts for assistant."),
+  }),
+  async handler(args) {
+    const conv = await getOrCreateActiveConversation();
+    const source = args.source ?? (args.role === 'assistant' ? 'voice_tts' : 'voice_stt');
+    const turn = await appendTurn({
+      conversationId: conv.conversationId,
+      role: args.role,
+      text: args.text,
+      source,
+    });
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, seq: turn.seq }) }] };
+  },
+});

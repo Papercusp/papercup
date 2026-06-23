@@ -124,6 +124,18 @@ current state blocking `operator:converse`).
   launch-inject is secondary. Build order: the two additive MCP tools first
   (low-risk), the persona "append every turn" instruction, then the fleet-wide
   `buildRoleLaunchSpec` injection LAST + carefully.
+- **BUILT 2026-06-22 (additive part — the core mechanism).** `conversation:recent`
+  (read) + `conversation:append` (write) MCP tools added under
+  `agent-tools/conversation/*` — `capability:'operator:converse'` (the sentinel holds
+  it, role-principal-caps line 73; within its read+suggest envelope),
+  `agentRoles:['sentinel','operator']`, over `operator-conversations.ts`
+  (`getOrCreateActiveConversation` + `listTurnsRecent`/`appendTurn`, no schema change);
+  `tools-md-sync` green. Persona § "Staying in sync with the app" tells the Sentinel to
+  mirror BOTH sides via `conversation:append` and read app turns via `conversation:recent`.
+  **Goes live once operator-core reaches the sentinel's MCP operator (green `:3070`) via
+  the deploy pipeline** — same dependency as `voice:say`. STILL DEFERRED (optional, not
+  required): the launch-time auto-injection via the fleet-wide `buildRoleLaunchSpec` —
+  the Sentinel can call `conversation:recent` on demand instead.
 
 ### Phase C — Voice IN (STT → Sentinel stdin)
 - The Sentinel pane is a PTY child managed by the dock/`psu-pty-host.mjs`.

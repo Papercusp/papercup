@@ -90,6 +90,32 @@ rejects. Hard to diagnose (looks like "federation just doesn't work").
   Auto-heals after reset (60s keepalive re-announce + 30-min admission grace) → completion
   scheduled just after 2026-06-23 03:22 UTC.
 
+## RESULTS — live K-stage on the packaged binary (2026-06-23 ~03:25 UTC) — ALL GREEN
+
+The rate-limit reset (03:22 UTC) and admission **auto-healed** (60s keepalive re-announce +
+30-min grace): the owner verified the joiner's attestation gist (budget restored), admitted
+fed-b, and minted + federated the keys. Device pubkeys: **owner `5cWxDYOf…`** (papercupai),
+**joiner `VCe9HBZizf…`** (aviynw, fed-b).
+
+| Stage | Evidence (both VMs) | Verdict |
+|---|---|---|
+| **K0** keys cross A→B | fed-a + fed-b both: `hive_members`=2 (verified); epoch-0 key for BOTH devices; `hive_settings` federated to fed-b | ✅ GREEN |
+| **K1** joiner reads cur-epoch | fed-b holds epoch-0 key wrapped to its own device `VCe9…` | ✅ GREEN |
+| **K-revoke** epoch advance | `POST /admin/substrate/revoke-contributor {hiveSlug, githubUserId:1567022}` → `{ok,revokedPubkeys:[VCe9…],live:true}`; epoch setting 0→**1**; owner re-keyed | ✅ GREEN |
+| **K-CUT** read-cutoff | epoch-1 key minted **only** to owner `5cWxDYOf…`; **NO epoch-1 key for the revoked `VCe9…` on EITHER VM**; fed-b sees the epoch-1 row (owner-wrapped) but cannot unwrap it | ✅ GREEN |
+
+**Cut semantics confirmed:** the cut is by **wrap-set**, not by withholding the row — fed-b
+even *receives* the epoch-1 key row, but it is wrapped only to the owner's device pubkey, so
+the revoked device is cryptographically unable to derive the epoch-1 content key. Epoch-0 keys
+persist for both devices (correct: forward-only cut — the revoked member keeps pre-revocation
+access, loses epoch-1+). This is the C-001 read-cutoff observed **cross-machine on the
+FIX-A packaged binary** — the P-008 live witness.
+
+(Minor data-model note, non-blocking: the revoked pubkey is recorded under the OWNER's member
+row `revoked_pubkeys`, and the `aviynw` member row was not deleted — membership-row cleanup is
+cosmetic; the cryptographic cut is via the revoked-set + wrap-set and holds. Worth a tidy-up
+ticket but does not affect the guarantee.)
+
 ## papercusp-hive-rekey flag
 
 Production flip is **owner-ratify** (security surface) — NOT self-flipped. The minting/cut is
