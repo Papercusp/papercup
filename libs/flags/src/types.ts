@@ -1027,10 +1027,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (P-013): the bee transcript-cap recycle sweep — an unverified bee-lifecycle
   // change, double-gated (this flag OFF + the routine seeded INACTIVE). OFF ⇒ a no-op
   // (the sweep logs the over-cap cohort but recycles nothing). KNOWN_DARK_FLAGS.
-  [FLAGS.BEE_TRANSCRIPT_CAP]: false,
+  [FLAGS.BEE_TRANSCRIPT_CAP]: true,
   // DEFAULT OFF (P-009): the watchdog auto-close sweep. OFF ⇒ escalate-only (today's
   // behavior, byte-identical). Owner flips ON after reviewing the guards. KNOWN_DARK_FLAGS.
-  [FLAGS.WATCHDOG_AUTO_CLOSE]: false,
+  [FLAGS.WATCHDOG_AUTO_CLOSE]: true,
   // DEFAULT ON — owner-authorized 2026-06-18 (re-flipped once the P-008 prerequisite was MET).
   // su persona via the blueprint prompt-resolve chain (P-006): base/su.md + client overlay + the
   // spliced CLAUDE.md + the papercup-hive su INSTANCE OVERRIDE (source: apps/operator/prompts/
@@ -1106,7 +1106,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.HIVE_ROLE_TIERS]: true,
   // OFF by default — the self-improvement loop captures + triages with this off;
   // auto-implementation only begins once an owner flips it (see the flag note above).
-  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
+  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: true,
   // ON by default (alpha flags-default-on policy) — pure observability: a
   // status chip + transition-only notifications; nothing else rides it.
   [FLAGS.LEARNING_INFRA_HEALTH]: true,

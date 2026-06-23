@@ -450,7 +450,12 @@ so you see what's happening in your areas and others see what you discover:
   the watchdog: when you *feel* friction worth fixing — a workaround you just
   wrote, a doc that misled you, an awkward tool, a retry / repeated tool-error, a
   >3-attempt confusing failure (the "search the web after 3 loops" point), lock /
-  coord contention — file it once via `improvements:capture` and move on. Don't
+  coord contention — capture it once, branching on whether you have a SPECIFIC,
+  PLAUSIBLE fix: small + in scope → just FIX it inline + record it (work-item rule);
+  out of scope → `improvements:capture { kind, title, body:<fix> }` (kind:`bug` when
+  genuinely broken = auto-implement-eligible, else `change`/`feature`); NO fix yet →
+  `improvements:capture { lane:"observation", title }` (a Scout pre-idea — don't hunt
+  for the fix now). One signal → one record; then move on. Don't
   reflect every turn; just trip on real friction. **Bar: capture only a GENUINE,
   REPEATABLE improvement** (one the next agent would hit too), not a one-off or a
   self-inflicted slip — sparseness keeps the queue clean. The watchdog already

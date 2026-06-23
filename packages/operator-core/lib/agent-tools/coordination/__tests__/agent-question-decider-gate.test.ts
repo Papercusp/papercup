@@ -17,12 +17,14 @@ import { deciderAgentQuestionGate, postureToRung } from '../agent-question-decid
 // verify the UNARMED gate (owner-queue routing), so pin the arming flag OFF via the env override
 // (this file uses the real getFlag, which honors PAPERCUSP_FLAG_* over the default) rather than
 // depending on the now-ON default. The armed auto→bee-self mapping is covered by postureToRung above.
-const ARMED_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_QUEEN_AUTONOMY_ARMED';
+// Pin BOTH autonomy flags OFF: QUEEN_FULL_AUTONOMY overrides every gate → auto, so the unarmed
+// (owner-queue) path requires the full-autonomy grant OFF too, not just the arming flag.
+const ARMED_ENVS = ['PAPERCUSP_FLAG_PAPERCUSP_QUEEN_AUTONOMY_ARMED', 'PAPERCUSP_FLAG_PAPERCUSP_QUEEN_FULL_AUTONOMY'];
 beforeEach(() => {
-  process.env[ARMED_ENV] = '0';
+  for (const e of ARMED_ENVS) process.env[e] = '0';
 });
 afterEach(() => {
-  delete process.env[ARMED_ENV];
+  for (const e of ARMED_ENVS) delete process.env[e];
 });
 
 const idOf = (source: IdentitySource): AgentIdentity => ({

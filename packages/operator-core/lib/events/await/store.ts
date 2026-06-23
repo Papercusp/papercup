@@ -97,6 +97,7 @@ function mapDelivery(r: any): DeliveryRow {
     urgent: r.urgent ?? false,
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
     coalescedCount: r.coalesced_count != null ? Number(r.coalesced_count) : 1,
+    source: r.source ?? null,
   };
 }
 
@@ -306,6 +307,10 @@ export async function insertDeliveries(input: {
   summary?: string | null;
   /** Emit-time urgency: bypass the per-subscriber floor for these deliveries. */
   urgent?: boolean;
+  /** Emit-time attribution (migration 387) — persisted on the delivery so the async
+   *  resume-turn-exit handler can attribute a turn death to its source (e.g. a loop fire's
+   *  `loop:<routineId>`). */
+  source?: string | null;
   workspaceId?: string;
 }): Promise<number> {
   if (input.awaits.length === 0) return 0;
@@ -319,9 +324,9 @@ export async function insertDeliveries(input: {
     const urgent = (input.urgent ?? false) || a.urgency;
     await sql`
       INSERT INTO harness_shared.event_wake_deliveries
-        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec)
+        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
       VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::jsonb,
-              ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null})
+              ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null})
     `;
     n++;
   }

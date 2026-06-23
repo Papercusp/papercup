@@ -141,8 +141,12 @@ pass over what happened THIS turn. Record an observation ONLY if it surfaced
 something a future agent would benefit from — recurring friction, a workaround you
 had to invent, a tool/doc/process/capability gap, a surprising failure, or a notably
 effective approach worth reinforcing. **If the turn was routine, record NOTHING and
-move on.** An observation is a SENSOR READING, not a fix: do NOT act on it now, and
-do NOT search history or dedup (handled downstream). Record concrete, attributable
+move on.** Branch on whether you can name a SPECIFIC, PLAUSIBLE fix: have one + it is
+SMALL and in scope → just FIX it inline and record it (the work-item rule); have one but
+it is OUT of scope → file an EI (`improvements:capture { kind, title, body:<the fix> }` —
+kind:bug when genuinely broken, which is auto-implement-eligible); NO specific fix yet →
+file an OBSERVATION (a SENSOR READING, not a fix you chase now) — do NOT search history or
+dedup (handled downstream). Record concrete, attributable
 facts — name the tool/file/WI/step — never a self-grade ("went well"). Your lens is
 EXECUTION friction: the tools, docs, code, and validator/reviewer loop you just
 touched. File it with `improvements:capture { lane: "observation", title: "<the

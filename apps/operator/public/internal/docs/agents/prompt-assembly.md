@@ -13,7 +13,7 @@ import { Aside } from '@astrojs/starlight/components';
 1.  <role>.persona.md         character + behavior rules
 2.  Tools catalog             per-tool guidance from defineTool({ guidance })
 3.  <role>.tools.md           cross-tool patterns + workflows
-─── shared-base policy block (≈10 sections, see below) ───
+─── shared-base policy block (≈13 sections, see below) ───
 4.  coord-legend              how to read injected [coord+N] blocks
 5.  friction-tripwire         file friction you felt
 6.  observation-rubric-nudge  how to grade a turn-end observation
@@ -24,11 +24,14 @@ import { Aside } from '@astrojs/starlight/components';
 11. deploy-pipeline-note      don't babysit the async pipeline
 12. reuse-first-nudge         extend, don't fork
 13. code-run-note             collapse N tool calls into one code:run
+14. finish-the-rollout-note   built-but-gated-OFF is incomplete; flip it on
+15. agent-activity-truth-note "who's doing what" is a live derived truth
+16. wait-loop-note            waiting? arm a self-wake loop, don't sleep blind
 ─────────────────────────────────────────────────────────
-14. Runtime context           caller-supplied blocks (history, trigger, ...)
+17. Runtime context           caller-supplied blocks (history, trigger, ...)
 ```
 
-Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–13 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 14 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 14 sections.
+Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–16 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 17 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 17 sections.
 
 `assembleRolePrompt` is the **reference/CLI assembly path** — `role-launch-spec` uses it (via the *orchestrator's* slug-based variant; see [API](#api)) and tests exercise this one, but **no live chat route calls operator-core's `assembleRolePrompt` directly**. The two real chat surfaces — operator converse and oracle — call the lower-level loaders (`loadRolePersona` / `renderToolsCatalog` / `loadRoleToolsMd`) and assemble manually so they can interleave converse rules and audience-mode overlays. The per-feature worker-chat route (`agent-chats`) calls the **orchestrator's** distinct slug-based `assembleRolePrompt` (the spawned-bee `buildPrompt` path), which produces a different layout entirely. Read this page as the canonical description of *the layering*, not a single function every surface funnels through.
 
@@ -137,22 +140,25 @@ The order within runtime is caller-controlled. The contract is: runtime always c
 
 ## The shared-base policy block
 
-Between the tools playbook (section 3) and runtime (section 14), `assembleRolePrompt` injects up to **ten shared-base policy sections** in this order:
+Between the tools playbook (section 3) and runtime (section 17), `assembleRolePrompt` injects up to **thirteen shared-base policy sections** in this order:
 
-| Section                    | What it primes                                                                                                                                            |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `coord-legend`             | how to read the injected `[coord+N]` blocks the PostToolUse hook adds                                                                                     |
-| `friction-tripwire`        | file friction you *felt* (a workaround, a misleading doc, a >3-attempt confusing failure) via `improvements:capture` the moment it hits                   |
-| `observation-rubric-nudge` | when filing a turn-end observation, check `rubrics:list` first and file a structured observation if an active rubric fits                                 |
-| `yield-policy`             | on a `turn:interrupt` yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn                                       |
-| `account-routing-note`     | don't mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system                                        |
-| `concurrency-first-note`   | don't back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents      |
-| `testing-standard`         | write tests the project way                                                                                                                               |
-| `deploy-pipeline-note`     | your change ships via an async, self-healing pipeline; don't babysit or self-diagnose a stall                                                             |
-| `reuse-first-nudge`        | extend an existing durable surface, don't fork a parallel one                                                                                             |
-| `code-run-note`            | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset) |
+| Section                     | What it primes                                                                                                                                                                   |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coord-legend`              | how to read the injected `[coord+N]` blocks the PostToolUse hook adds                                                                                                            |
+| `friction-tripwire`         | file friction you *felt* (a workaround, a misleading doc, a >3-attempt confusing failure) via `improvements:capture` the moment it hits                                          |
+| `observation-rubric-nudge`  | when filing a turn-end observation, check `rubrics:list` first and file a structured observation if an active rubric fits                                                        |
+| `yield-policy`              | on a `turn:interrupt` yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn                                                              |
+| `account-routing-note`      | don't mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system                                                               |
+| `concurrency-first-note`    | don't back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents                             |
+| `testing-standard`          | write tests the project way                                                                                                                                                      |
+| `deploy-pipeline-note`      | your change ships via an async, self-healing pipeline; don't babysit or self-diagnose a stall                                                                                    |
+| `reuse-first-nudge`         | extend an existing durable surface, don't fork a parallel one                                                                                                                    |
+| `code-run-note`             | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset)                        |
+| `finish-the-rollout-note`   | a capability built then left gated OFF (flag or env boolean) is incomplete — flipping the gate on is the last step of the task                                                   |
+| `agent-activity-truth-note` | "who's doing what" is a live derived truth (`fleet:assignments`: claim + holder-liveness + progress), never a stale coord broadcast that outlives the work                       |
+| `wait-loop-note`            | waiting on something that may never fire? arm a recurring self-wake (`loop:arm` / `hive:declare-wake`) and FIX what's blocking it — don't sleep forever on a bare `events:await` |
 
-Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can't desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all ten.
+Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can't desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all thirteen.
 
 ## The noun/verb split
 

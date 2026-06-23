@@ -41,6 +41,16 @@ The library set documented here was chosen, installed, and applied across the ha
 | 5000+ rows of mostly-scalar data, performance is the constraint                                       | `@papercusp/grid-core` `DataGridShell` (canvas)                                                                                                                                                                                           | `<DataGridShell headers data formatters />`                                                                                                                                                                                      |
 | Kanban board (drag cards between status columns)                                                      | vendored Kibo UI primitives on `@dnd-kit`                                                                                                                                                                                                 | `<KanbanProvider columns data onDataChange overlay>` + `KanbanBoard`/`KanbanHeader`/`KanbanCards`/`KanbanCard` from `app/harness/Kanban.tsx` (token CSS in `Kanban.css`; consumer example: `app/admin/plans/PlanKanbanView.tsx`) |
 
+## Token quick-reference
+
+The design section **does** have a full token-system page: [design tokens](/internal/docs/design/tokens). Use that page when changing tokens or themes. This short version is for component authors:
+
+* Component code uses **semantic CSS variables**: `--bg*` for surfaces, `--fg*` for text, `--border*` for borders, `--accent*` for interactive accent, `--good` / `--warn` / `--bad` for status.
+* Do not use brand primitives like `--sky-400` in components. Those are source palette values generated into `_brand-primitives.css`; themes swap the semantic layer, not the primitive layer.
+* Do not hardcode sky/cyan literals (`#38bdf8`, `#7dd3fc`, `#bae6fd`, `rgba(103,232,249,…)`) in app UI. Use `var(--accent*)` or `color-mix()` over a semantic token.
+* `var(--token, #fallback)` is allowed. The fallback is only for rendering outside a themed root; the token still wins in the app.
+* Raw brand/product/media colors are allowed only for actual brand marks, avatars, user-generated media, screenshots, color swatches, or generated token CSS. When in doubt, route through a semantic token.
+
 ## Hard rules
 
 1. **Never write `<div role="dialog">` or `aria-modal="true"` by hand.** Use `<Modal>` (centered) or `<Drawer.Root>` (side panel). Both wire focus trap, scroll lock, ESC, outside-click, and portal correctly.
@@ -68,6 +78,16 @@ The library set documented here was chosen, installed, and applied across the ha
 8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@papercusp/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (the markdown-rendering components, e.g. `app/_components/MarkdownEditor.tsx` and `app/settings/SettingsMarkdownEditor.tsx`) — those are content-author tables, not UI tables.
 
 9. **Buttons are flat — no 3D.** In-page action buttons and pills are flat: a solid (or `color-mix`-tinted) background, a 1px border, readable text. Do **not** give them an embossed bevel (`box-shadow: inset 0 1px 0 …`), a raised drop-shadow / glow (`box-shadow: 0 8px … rgba(0,0,0,…)`), a hover-lift or press (`transform: translateY(…)`), or a vertical "sheen" gradient fill (`linear-gradient(180deg, rgba(255,255,255,.05), …)`) — those read as 3D and hurt legibility. Hover/active = change the background/border colour, not the elevation. Keyboard focus rings (`:focus-visible`) are the one box-shadow/outline that stays. *Carve-out: the large top-level **page/tab nav** (e.g. the `/adv` tab strip) is a different category — it may keep its accent treatment.* See [buttons](#buttons) below for the flat recipe.
+
+10. **Anchored panels use the anchored-panel primitive.** If a panel opens under or beside a trigger button, use `<Popover>` from `app/harness/Popover.tsx` or the matching Radix primitive. Do not write a trigger plus a sibling `open && <div role="dialog">…</div>` by hand; that loses portal positioning, outside-click handling, and focus restoration. *Carve-out: cursor-anchored context/status menus that are anchored to generated document content may use a local fixed-position menu if they use menu semantics (`role="menu"` / `menuitem*`), ESC/outside-click close, and a narrow comment explaining why a trigger-based popover is not a fit.*
+
+11. **`aria-modal="true"` is only for real modals.** Use it through `<Modal>` / Dialog, not on non-trapping panels. A top deck, non-blocking overlay, popover, or menu should not claim modal semantics unless it traps focus and prevents interaction with the rest of the app.
+
+12. **Animation libraries are restricted.** For normal app UI use CSS (`[data-anim]`), `@formkit/auto-animate`, or `motion`. Do not add `gsap` / `@gsap/react`. Cross-route flourish effects belong behind `FLAGS.TESTING`; production navigation should be direct and predictable.
+
+13. **Declare UI dependencies before importing them.** A dependency imported by app source must be declared in the owning package's `package.json`. Do not rely on a transitive or extraneous package that happens to exist in the workspace install tree.
+
+14. **Know which rules are lint-enforced.** `app/_lints/design-primitives.test.ts` covers a subset: native selects/tables/checkboxes/radios, direct confirm, action `title=` tooltips, some typography rules, and selected token leaks. `app/_lints/css-tokens.test.ts` validates token references. The rest of this page is still binding review policy even when no test catches it.
 
 ## Buttons
 
@@ -109,6 +129,8 @@ Buttons are **flat**. The look is a solid or `color-mix`-tinted surface, a 1px b
 ## Soft rules (judgment calls)
 
 * **Tooltips on grid-cell text.** When you're rendering thousands of rows in `RichGrid` and want truncation tooltips, `title="…"` on the cell `<span>` is fine. Wrapping each row in a Radix Tooltip mounts thousands of portals and listeners — bad perf. The "no native title=" rule is for *action elements*, not data cells.
+
+* **Native `<datalist>` is allowed for progressive enhancement.** There is no shared combobox primitive yet. If you need browser autocomplete for a plain text input, `<datalist>` is acceptable as long as the field remains usable without it and the option set is small. If the user must choose from a controlled list, use `<Select>` or build a real combobox primitive first.
 
 * **Filter pills vs real tabs.** If clicking the pill swaps which list of items is shown but the surrounding layout is the same, `<Tabs.Root>` + `<Tabs.List>` + `<Tabs.Trigger>` is correct (live example: `app/adv/sessions/AdvSessionsClient.tsx`, the session detail-panel tab strip). If clicking swaps fundamentally different content panels, add a `<Tabs.Content>` per panel. If the pills are mutually-exclusive boolean toggles where each one filters a single list, native `<button aria-pressed>` is also acceptable — `@radix-ui/react-toggle-group` would be ideal but is not currently installed.
 

@@ -46,6 +46,7 @@ import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import { listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { Tooltip } from '@/app/harness/Tooltip';
 import ChatPanel from '@/app/harness/ChatPanel';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import '@/app/admin/coordination/coordination.css';
@@ -582,17 +583,17 @@ function FeedView() {
             const active = g.kinds.some((k) => kinds.includes(k));
             const n = groupCount(g.kinds);
             return (
-              <button
-                key={g.id}
-                type="button"
-                className={`pc-coord__chip pc-advfeed__groupchip${active ? ' is-active' : ''}`}
-                onClick={() => toggleKindGroup(g.kinds)}
-                aria-pressed={active}
-                title={g.description}
-              >
-                {g.label}
-                {n > 0 ? <span className="pc-advfeed__kindn">{n}</span> : null}
-              </button>
+              <Tooltip key={g.id} label={g.description}>
+                <button
+                  type="button"
+                  className={`pc-coord__chip pc-advfeed__groupchip${active ? ' is-active' : ''}`}
+                  onClick={() => toggleKindGroup(g.kinds)}
+                  aria-pressed={active}
+                >
+                  {g.label}
+                  {n > 0 ? <span className="pc-advfeed__kindn">{n}</span> : null}
+                </button>
+              </Tooltip>
             );
           })}
           <button

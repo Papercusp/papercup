@@ -7,8 +7,6 @@ import { Aside } from '@astrojs/starlight/components';
 
 Most libraries below are declared in `apps/operator/package.json` and resolved through the monorepo root `node_modules`. Total bundle delta from the migration was \~55 KB gzipped across the harness routes, all tree-shakable.
 
-`gsap` and `@gsap/react` are imported by `OperatorPanel.tsx` but are **not** declared in `apps/operator/package.json` (or any package.json) and are absent from `node_modules`. They resolve today only by accident of the install tree — verify/restore the declaration before relying on the HUD animation. See the [animation stack](#motion--formkitauto-animate--gsap-for-the-operatorpanel-hud) for what gsap actually drives.
-
 ## `@radix-ui/react-tooltip`
 
 **What:** Hover/focus tooltip primitive. WAI-ARIA `tooltip` role, focus-aware, touch-friendly, keyboard-navigable.
@@ -79,13 +77,13 @@ Radix Select reserves `value=""` to mean "no value selected". If your business l
 
 ## Native `<input>` + `<textarea>` styling
 
-This section previously described a `:where(input, textarea)` baseline in `globals.css`. **That rule is not present in current source CSS** (`apps/operator/app/globals.css`) — it was added in May 2026 and appears to have been dropped/relocated during the operator-vite migration. Today the dark-theme look comes from the **harness wrappers' inline style objects** (`TextInput.tsx`'s `BASE_STYLE`, `Select.tsx`'s `TRIGGER_DEFAULT_STYLE`), not a global selector. An *unwrapped* native `<input>` / `<textarea>` does **not** automatically pick up the dark theme until the baseline is restored — wrap it with `<TextInput>` / `<TextArea>` for now.
+The `:where(input:not([type]), input[type=text|number|email|search|tel|url|password|date|time|datetime-local], textarea)` baseline **is present** in `apps/operator/app/globals.css:629-655`, and the live operator-vite UI loads it (`apps/operator-vite/src/routes/__root.tsx` imports `@/app/globals.css`). It sets `background: var(--bg-2)`, `color: var(--fg)`, a 1px `var(--border)`, `border-radius: 4px`, `font-size: 12px`, `4px 8px` padding, plus an accent focus ring (`:657-673`). So an *unwrapped* native `<input>` / `<textarea>` **does** pick up the dark theme. The harness wrappers (`TextInput.tsx` `BASE_STYLE`, `Select.tsx` `TRIGGER_DEFAULT_STYLE`) layer leading/trailing affordances on top — they are no longer the only styled path. *(An earlier version of this Aside claimed the baseline had been dropped in the operator-vite migration; it has since been restored.)*
 
 **Intended look** (carried by the wrappers' inline `BASE_STYLE`): `var(--bg-2)` background, `var(--border)` border, `border-radius: 4`, font-size 12, `4px 8px` padding, with an accent-tinted focus ring. This matches the `<Select>` trigger.
 
-**Why a baseline was the goal:** Inputs are scattered across hundreds of sites; migrating every one to a wrapper would be high-churn for low marginal value. A single `:where(...)` specificity-0 rule would fix the visual problem in one place — any site with an inline style or class still winning, so bespoke surfaces (marketplace search, OracleDock composer, etc.) keep their custom look. Restoring that rule is the right fix; until then, prefer the wrapper.
+**Why a baseline was the goal:** Inputs are scattered across hundreds of sites; migrating every one to a wrapper would be high-churn for low marginal value. A single `:where(...)` specificity-0 rule would fix the visual problem in one place — any site with an inline style or class still winning, so bespoke surfaces (marketplace search, OracleDock composer, etc.) keep their custom look. That `:where(...)` baseline is in place (`globals.css:629-655`), so the visual problem is solved app-wide; reach for the wrapper for leading/trailing affordances, not for basic theming.
 
-**Intended selector list** (when restored, intentionally narrow): `input[type=text|number|email|search|tel|url|password|date|time|datetime-local]`, untyped `<input>`, and `<textarea>`. Excluded: `checkbox`/`radio` (use `<Checkbox>`), `range`/`color`/`file` (bespoke widgets), `submit`/`button` (button styling).
+**Selector list** (intentionally narrow): `input[type=text|number|email|search|tel|url|password|date|time|datetime-local]`, untyped `<input>`, and `<textarea>`. Excluded: `checkbox`/`radio` (use `<Checkbox>`), `range`/`color`/`file` (bespoke widgets), `submit`/`button` (button styling).
 
 **Number-input spinner buttons** are *not* suppressed app-wide. The only `::-webkit-(inner|outer)-spin-button` suppression in the operator CSS is scoped to a single component selector (`.operator-budget-custom__input`, `globals.css:5406`). Other number inputs still draw their native up/down arrows.
 
@@ -93,9 +91,9 @@ This section previously described a `:where(input, textarea)` baseline in `globa
 
 In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or "sheen" gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). On `/adv` a scoped `.pc-advshell__body` rule enforces it; the top tab strip is exempt.
 
-This section previously credited a native `<button>` baseline and `.pc-btn-primary` / `.pc-btn-destructive` / `.pc-btn-ghost` rules to `globals.css`. **None of those rules exist in current source CSS.** `Button.tsx` / `SubmitButton.tsx` *apply* the `.pc-btn-*` classes (and tests assert them), but the only place the matching styling lives is the wrappers' inline `BASE_STYLE` / `TRIGGER_DEFAULT_STYLE` TS objects (plus stale built `dist` artifacts). Applying a bare `.pc-btn-primary` class to a native `<button>` does **not** currently style it. The `<button>` rule that does exist (`globals.css:597`) only sets font/color/cursor inheritance — not bg/border/radius/padding. These were added May 2026 and dropped during the operator-vite migration; restore them or treat the wrapper as the only styled path.
+A native `<button>` baseline and the `.pc-btn-primary` / `.pc-btn-destructive` / `.pc-btn-ghost` variant rules **are present** in `globals.css`: the shared `:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost)` block (`:679-755`) sets fill, a 1px border, `border-radius: 6px`, and hover/focus/disabled states, plus the per-variant colors (`.pc-btn-primary` `:718`, `.pc-btn-destructive` `:730`, `.pc-btn-ghost` `:742`). (A separate bare `button { font/color/cursor }` inheritance rule is at `:623`.) So applying a `.pc-btn-*` class to a native `<button>` **does** style it — `Button.tsx` / `SubmitButton.tsx` rely on exactly that. The wrappers add icon/spinner/sizing affordances on top; they are not the only styled path. *(An earlier version of this Aside claimed these rules had been dropped in the operator-vite migration; they are present.)*
 
-**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (the global native-`<button>` baseline it was meant to layer on is currently missing — see the caution above). It carries the neutral default look inline and adds three variants for the cases where more emphasis is needed:
+**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (it layers on the global native-`<button>` baseline — see the note above). It carries the neutral default look and adds three variants for the cases where more emphasis is needed:
 
 * `variant="primary"` — filled accent for the page's primary CTA
 * `variant="destructive"` — red tint for delete / clear / forget actions
@@ -103,7 +101,7 @@ This section previously credited a native `<button>` baseline and `.pc-btn-prima
 
 **When to use which:**
 
-* Action buttons should use the wrapper for now — the global baseline that would style *unwrapped* `<button>`s is not currently present (see the caution above).
+* Action buttons can use the wrapper for variant/icon/spinner affordances — the global baseline already styles *unwrapped* `<button>`s too (see the note above).
 * Use `<Button variant="primary">` for the **one** save/submit button on a page. Don't sprinkle primary buttons everywhere; the variant is for the dominant action.
 * Use `<Button variant="destructive">` whenever the button triggers `useConfirmDialog({ destructive: true })` — the visual and the confirm modal both signal "this is dangerous."
 * Use `<Button variant="ghost">` for icon-only buttons in toolbars or for "Cancel" in a modal footer where you want the primary button to dominate.
@@ -119,7 +117,7 @@ import { Button } from '@/app/harness/Button';
 
 The wrapper forwards refs and spreads all native button props. `type` defaults to `"button"` so you don't accidentally submit a form.
 
-**The variant classes** (`.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) are applied by the wrapper, but **have no CSS rule in current source** — applying one to a bare native `<button>` does not currently reproduce the look. Use the wrapper until the `.pc-btn-*` rules are restored in `globals.css`.
+**The variant classes** (`.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) are applied by the wrapper **and have matching CSS rules** in `globals.css` (`:679-755`) — applying one to a bare native `<button>` reproduces the look. The wrapper adds icon/spinner/sizing affordances on top.
 
 ## `<TextInput>` + `<TextArea>` wrappers
 
@@ -131,7 +129,7 @@ The wrapper forwards refs and spreads all native button props. `type` defaults t
 * You want the canonical class hook (`.pc-text-input`) for future restyling. (Note: there is no `.pc-text-input` CSS *rule* in current source — the wrapper carries its look via inline `BASE_STYLE`; the class is a future hook, not an active style.)
 * You want to opt out of any inline-style cascade a parent might be applying.
 
-**Prefer the wrapper for now.** A simple `<input type="text" value … onChange …>` does **not** currently pick up the dark-theme look on its own — the global `:where(input, textarea)` baseline that used to style unwrapped inputs is not present in current source CSS (see the [native input section](#native-input--textarea-styling)). Until it's restored, wrap text inputs with `<TextInput>` rather than relying on an unwrapped `<input>` matching surrounding fields.
+**Use the wrapper for affordances, not for theming.** A simple `<input type="text" value … onChange …>` **does** pick up the dark-theme look on its own via the global `:where(input, textarea)` baseline (`globals.css:629-655`; see the [native input section](#native-input--textarea-styling)). Reach for `<TextInput>` when you want the wrapper's leading/trailing slots or validation affordances; a bare `<input>` already matches surrounding fields.
 
 **Don't override the canonical look with ad-hoc inline styles.** Applying `style={{ background, border, borderRadius, padding }}` to an `<input>` or `<textarea>` drifts the look away from the wrapper's `BASE_STYLE` (and away from every other input in the harness). If you need a different look in one place, reach for `<TextInput>` and document the deviation; if you need it everywhere, change `BASE_STYLE` in `TextInput.tsx` (or restore + edit the global `globals.css` baseline). A page-local `inputStyleSmall` const that re-states `background: 'var(--bg-3)'` is the failure mode this rule names.
 
@@ -170,7 +168,7 @@ The wrapper forwards refs and spreads all native props.
 
 **What:** Native `<input type="checkbox|radio|range">` are *intended* to get `accent-color: var(--accent)` so the native control's tint (checkmark fill, radio dot, slider track + thumb) recolors to the app accent without breaking the OS rendering or accessibility semantics.
 
-A *global* `accent-color: var(--accent)` on native checkbox/radio/range is **not** present in current source CSS. The only `accent-color` rules in `globals.css` are component-scoped: `.pc-toggle input` (`:25822`) and `.pc-template-manifest-structured input[type="checkbox"]` (a hardcoded `#22d3ee`, `:17486`). Native controls outside those scopes do **not** pick up the accent tint automatically — restore the global baseline, or tint per-site, until it's back.
+A *global* `:where(input[type="checkbox"], input[type="radio"], input[type="range"]) { accent-color: var(--accent); }` baseline **is present** in `globals.css:675-677`, so native checkbox/radio/range controls pick up the accent tint automatically. Component-scoped `accent-color` rules also exist (`.pc-toggle input`, `.pc-template-manifest-structured input[type="checkbox"]` with a hardcoded `#22d3ee`), but they are no longer the only source. *(An earlier version of this Aside claimed there was no global baseline; it is present.)*
 
 **Why this exists alongside HR2:** the wrapper is still required for harness interactive UI (HR2 explicit). This is the baseline for native controls that *legitimately can't* be wrapped:
 
@@ -476,27 +474,27 @@ return (
 
 **Do not** introduce `formik`, `@rjsf/core`, `@jsonforms/react`, `uniforms`, or `@formily/react`. They were all considered and rejected in favour of RHF — adding any of them creates two parallel form systems.
 
-## `motion` + `@formkit/auto-animate` (+ `gsap` for the OperatorPanel HUD)
+## `motion` + `@formkit/auto-animate`
 
-**What:** The animation stack. Two general-purpose libraries that complement each other (**use them together, not as alternatives**), plus `gsap` for the bespoke OperatorPanel HUD ring animation.
+**What:** The animation stack. Two general-purpose libraries that complement each other (**use them together, not as alternatives**).
 
 * **`motion`** (the rebrand of `framer-motion` — same engine, same author) — the general-purpose React animation lib. WAAPI-backed since v10, so transforms run on the native compositor. \~41 KB gzip.
 * **`@formkit/auto-animate`** — purpose-built for one job: animate when children of an element are added, removed, or reordered. Drop-in via `useAutoAnimate()`. WAAPI direct, zero React re-renders. \~3 KB gzip.
-* **`gsap`** (+ `@gsap/react`) — drives the **OperatorPanel HUD ring animation** (`OperatorPanel.tsx` — `gsap.timeline()` / `gsap.to()` / `gsap.utils.selector()` via `useGSAP`). It does **not** drive the route warp. (See the [undeclared-dependency caution](#radix-uireact-tooltip) at the top of this page — `gsap`/`@gsap/react` are imported but not in any `package.json`.)
 
-**The "jump-gate" route warp uses WAAPI, not gsap.** `RouteTransitionProvider.tsx` plays the warp overlay via the **Web Animations API** (transform/opacity only — GPU-composited; its own docstring says "no gsap"). This replaced `next-transition-router`, which was dropped in the TanStack Router migration — it serialised navigation through one in-flight transition and swallowed clicks, so on TSR it was pure overhead. The warp is now a capture-phase click listener on the two jump-gate anchors that plays the WAAPI overlay; everything else navigates via plain TanStack `<Link>`.
+**GSAP is not part of the app UI stack.** Do not add `gsap` or `@gsap/react` for operator UI. If an effect needs choreography, use `motion`; if it is a simple open/close, use CSS; if it is list add/remove/reorder, use `auto-animate`.
+
+**The "jump-gate" route warp is testing-only.** `RouteTransitionProvider.tsx` plays the warp overlay via the **Web Animations API** (transform/opacity only — GPU-composited; no gsap), but the app root mounts that provider only when `FLAGS.TESTING` is on. Normal navigation is plain TanStack `<Link>` without a route-transition overlay.
 
 **The rule of three** (memorize this):
 
-| Need                                                                           | Reach for                                                                                   | Why                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Modal / popover / dropdown / tab open + close                                  | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`).                                                                             |
-| **List item add / remove / reorder**                                           | **`auto-animate`**                                                                          | One-line `useAutoAnimate()` ref. Don't reach for `motion.li` + `AnimatePresence` — it's more code, more re-renders, same visual result.                                               |
-| Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`**                                                                                | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`.                                                                 |
-| The one cross-route "jump-gate" warp (`/` ⇄ `/adv`)                            | **WAAPI** via `RouteTransitionProvider`                                                     | A capture-phase click listener intercepts only the two jump-gate anchors and plays a Web Animations API overlay (no gsap); all other navigation is plain TanStack `<Link>` (instant). |
-| The OperatorPanel HUD ring intro / loops                                       | **`gsap`** via `OperatorPanel.tsx` (`useGSAP`)                                              | Timeline choreography of the HUD rings; the one place gsap is actually used.                                                                                                          |
+| Need                                                                           | Reach for                                                                                   | Why                                                                                                                                     |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Modal / popover / dropdown / tab open + close                                  | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`).                               |
+| **List item add / remove / reorder**                                           | **`auto-animate`**                                                                          | One-line `useAutoAnimate()` ref. Don't reach for `motion.li` + `AnimatePresence` — it's more code, more re-renders, same visual result. |
+| Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`**                                                                                | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`.                   |
+| The testing-only cross-route "jump-gate" warp (`/` ⇄ `/adv`)                   | **WAAPI** via `RouteTransitionProvider`, mounted only behind `FLAGS.TESTING`                | A capture-phase click listener intercepts jump-gate anchors during testing; all normal navigation is plain TanStack `<Link>` (instant). |
 
-**Don't use** for app UI: `@theatre/core`, `@react-spring/web`, `popmotion`. They're either overkill, abandoned, or duplicates of what `motion` covers in our context. `gsap` is in the tree but is reserved for the OperatorPanel HUD ring animation above — reach for `motion` / CSS / `auto-animate` for everything else, not GSAP. (And note the route warp is WAAPI, not gsap — don't add gsap "to match the warp.")
+**Don't use** for app UI: `gsap`, `@gsap/react`, `@theatre/core`, `@react-spring/web`, `popmotion`. They're either overkill, abandoned, or duplicates of what `motion` covers in our context.
 
 **RichGrid lists are NOT auto-animate targets.** Any `RichGrid`-backed virtualized list (e.g. `apps/operator-vite/src/components/adv/AdvConversationsTab.tsx`, `apps/operator/app/adv/harnesses/AdvAgentsPanel.tsx`) uses `useVirtualizer` — `auto-animate` would fight virtualization (animating every scroll). Animations there should target row-level data changes (status pulse, color transition) not row mount/unmount.
 

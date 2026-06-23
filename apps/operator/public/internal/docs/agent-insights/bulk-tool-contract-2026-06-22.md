@@ -24,12 +24,13 @@ once. (Plan: `bulk-endpoint-standardization-2026-06-21`, D-001.)
   thrown error (or a returned `{ ok:false }`) becomes that item's `{ ok:false, <key>, error }`;
   top-level `ok:true` means "the batch ran", `counts.failed` is the truth signal. Cap items at
   \~100–200 (D-005).
-* **Serialize with `bulkContent(envelope)`.** It returns a raw `{ content:[{ text }] }` body,
-  but it is NOT a token dead-end: the framework dispatch re-encodes a single-text JSON
-  object-with-an-array-field to TOON on the agent (MCP) transport — so every bulk envelope is
-  \~18-38% smaller for free, with a lossless JSON fallback and a size-guard that keeps a
-  HETEROGENEOUS envelope on JSON when TOON would be larger
-  (`definetool-token-optimization-adoption-2026-06-22` P-002/D-005).
+* **Serialize with `bulkContent(envelope)`.** It now returns the framework's canonical
+  `{ data: payload }` `ToolResponse` shape (the same a `defineTool` handler returns;
+  `_bulk.ts:135-136`) — not the old raw `{ content:[{ text }] }` body. The single
+  `serializeToolResponse` path re-encodes the object-with-an-array-field to TOON on the agent
+  (MCP) transport — so every bulk envelope is \~18-38% smaller for free, with a lossless JSON
+  fallback and a size-guard that keeps a HETEROGENEOUS envelope on JSON when TOON would be
+  larger (`definetool-token-optimization-adoption-2026-06-22` P-002/D-005).
 
 ## Skeleton
 

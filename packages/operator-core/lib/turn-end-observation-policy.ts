@@ -16,13 +16,19 @@
 export const TURN_END_OBSERVATION = [
   '## Turn-end observation pass',
   '',
-  'Before you end or yield a turn, take ONE quick pass over what happened THIS turn. File an',
-  'observation ONLY if it surfaced something a FUTURE agent would benefit from — recurring friction, a',
-  'workaround you had to invent, a tool/doc/process/capability gap, an infra weakness, a surprising',
-  'failure, or a notably effective approach worth reinforcing — via `improvements:capture { lane:',
-  '"observation", title, body, observation:{ kind, scope, confidence, refs } }`. **Routine turn ⇒',
-  'record NOTHING and move on.** An observation is a SENSOR READING, not a fix: name the concrete',
-  'tool/file/WI/step, do NOT act on it now, and do NOT dedup or search history (handled downstream).',
+  'Before you end or yield a turn, take ONE quick pass over what happened THIS turn. If it surfaced',
+  'something a FUTURE agent would benefit from — recurring friction, a workaround, a tool/doc/process/',
+  'capability gap, an infra weakness, a surprising failure, or a notably effective approach — capture',
+  'it once. Branch on whether you can name a SPECIFIC, PLAUSIBLE fix (need not be certain):',
+  '• Have such a fix AND it is SMALL + in scope → just FIX it inline and record it (the work-item rule).',
+  '• Have such a fix but it is OUT of scope / a detour → file an EI: `improvements:capture { kind,',
+  '  title, body:<the fix> }` (kind:bug when genuinely broken + you have the fix = auto-implement-',
+  '  eligible; change|feature otherwise) — enters the work queue, claimable.',
+  '• NO specific fix yet → `improvements:capture { lane:"observation", title, body, observation:{ kind,',
+  '  scope, confidence, refs } }` — a cheap pre-idea Scout reads to generate ideas, so the signal is not',
+  '  lost WITHOUT an expensive search now.',
+  '**Routine turn ⇒ record NOTHING and move on.** One signal → one record. Name the concrete',
+  'tool/file/WI/step; for an observation do NOT dedup or search history (handled downstream).',
 ].join('\n');
 
 /** The shared turn-end observation clause, injected into every operator-launched role's prompt base

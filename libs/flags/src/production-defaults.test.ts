@@ -66,7 +66,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // watchdog-and-exposed-systems-improvement-2026-06-18 P-009: the watchdog auto-close sweep.
   // OFF = escalate-only (today's behavior, byte-identical) — auto-closing real improvement
   // items autonomously is unsafe until the owner reviews the guards. Safe to ship dark.
-  FLAGS.WATCHDOG_AUTO_CLOSE,
   // shared-hive-rekey-2026-06-19 (C-001 read-plane revocation, S0-for-release): the hive
   // epoch RE-KEY master gate. DARK because the boundary + op-path wiring is incomplete — the
   // K-half crypto/serving/epoch/boundary/producer modules are landed + teeth-verified, but
@@ -89,7 +88,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // papercusp-self-improvement-loop Phase 3 master switch: auto-IMPLEMENTING
   // captured improvements only begins once the owner flips it (capture +
   // triage run regardless).
-  FLAGS.IMPROVEMENT_AUTO_IMPLEMENT,
   // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
   // reaper ENDS adv_session rows — DARK until proven on the fleet. OFF ⇒ a no-op;
   // the routine is also seeded INACTIVE. Bring-up: --active --dry-run, then flip.
@@ -278,7 +276,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // DEFAULT OFF + the routine is seeded INACTIVE (double-gated) — an unverified bee-lifecycle
   // change that force-recycles over-cap idle bees. OFF ⇒ a no-op (the sweep logs the over-cap
   // cohort but recycles nothing). Bring up dry-run-first, then flip after live verification.
-  FLAGS.BEE_TRANSCRIPT_CAP,
   // workspace-data-isolation-leaks-2026-06-17 F-C1: per-workspace coordination cutover.
   // DELIBERATE dark ship (NOT alpha default-on) — flipping it cuts the LIVE fleet's
   // coordination (messages/handoffs/escalations/plan-events) over from the shared
@@ -367,13 +364,10 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.CAPABILITY_EXEC_SANDBOX, 'incomplete'],
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
   [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT, 'incomplete'],
-  [FLAGS.BEE_TRANSCRIPT_CAP, 'incomplete'],
   [FLAGS.WORKITEM_CLAIM_LEASE, 'incomplete'],
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   [FLAGS.LOOPS, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
-  [FLAGS.WATCHDOG_AUTO_CLOSE, 'owner-authority'],
-  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, 'owner-authority'],
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
   // cutover — reversible kill-switch the owner flips after an attended live verify
   [FLAGS.COORD_PER_WORKSPACE, 'cutover'],

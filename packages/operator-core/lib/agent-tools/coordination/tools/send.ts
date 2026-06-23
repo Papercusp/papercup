@@ -187,6 +187,10 @@ async function sendOne(
         woken: number;
         staged?: number;
         recipient_absent?: boolean;
+        /** WI-574: the subset of missed targets with NO live session watching their inbox-wake key —
+         *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
+         *  dispatch black-holes until they are re-spawned. A LOUD miss the sender must handle. */
+        recipient_dead?: string[];
         note?: string;
       }
     | undefined;
@@ -204,9 +208,33 @@ async function sendOne(
     // inbox row persisted regardless; a durable backstop picks it up).
     if (wakeMode === 'required' && fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
       wake.recipient_absent = true;
-      wake.note =
-        `required wake reached no awake/watching session for: ${fan.targets.join(', ')} — ` +
-        'the message was injected to their inbox (seen on their next natural turn), but no session was re-invoked now.';
+      // WI-574 (dispatch-black-hole fix): a required wake that woke nobody is NOT necessarily
+      // "seen on their next turn" — if the recipient has NO live session watching its inbox-wake
+      // key, it is genuinely dead and the inject black-holes (a dead process has no next turn).
+      // Classify the missed targets (same non-firing liveness probe the no-wake path uses) and
+      // report the dead ones LOUDLY + truthfully instead of the old misleading "next turn" note.
+      let dead: string[] = [];
+      try {
+        const report = await reportIdleRecipients(fan.targets, {
+          workspaceId: identity.workspaceId ?? undefined,
+        });
+        dead = report.idle;
+      } catch {
+        /* fail-soft: keep the generic miss note below */
+      }
+      if (dead.length > 0) {
+        wake.recipient_dead = dead;
+        wake.note =
+          `required wake MISSED — NO live session is watching the inbox of: ${dead.join(', ')}. ` +
+          'These agents are not running, so the message will NOT be seen on any "next turn" — the ' +
+          'dispatch black-holes until they are re-spawned/resumed. Do NOT assume it landed: re-dispatch ' +
+          'to a LIVE agent (coord:presence → wakeable:true) or respawn these via the resume path.';
+      } else {
+        wake.note =
+          `required wake reached no awake/watching session for: ${fan.targets.join(', ')} — the message ` +
+          'was injected; a live-but-paused recipient sees it next turn, but none was re-invoked now. ' +
+          'Confirm the recipient is actually running (coord:presence) before assuming pickup.';
+      }
     }
   }
 

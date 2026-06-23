@@ -63,4 +63,4 @@ Trust what the code **does** (call sites, usage, the path that actually runs), n
 
 ## Escalating
 
-If the docs are wrong or missing, surface the gap via a supervisor note or by listing it as a finding in your next artifact. Don't silently work around — the next agent will hit the same wall. Existing issues are readable via `issues:list`.
+If the docs are wrong or missing, surface the gap via a supervisor note or by listing it as a finding in your next artifact. Don't silently work around — the next agent will hit the same wall. Existing issues are readable via `work_items:list` (issues are work-items of kind bug/change).

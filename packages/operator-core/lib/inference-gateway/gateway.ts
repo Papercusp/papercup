@@ -1347,9 +1347,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // unknown hang. Aborts the in-flight upstream (currentAc) AND destroys the client socket → every await
     // below (fetch / peekBody / the streaming pipe) resolves → the finally releases the slot.
     let currentAc: AbortController | undefined;
+    // H12 (inference-gateway-audit-2026-06-23): a STABLE per-request abort signal. `currentAc` is re-created per
+    // attempt, so during an absorb RE-ACQUIRE (which holds NO upstream fetch) it is already settled → aborting it
+    // does nothing. The ceiling + the self-heal reclaim abort THIS too, and the absorb re-acquires below wait on
+    // it — so a reclaimed/ceilinged request truly CANCELS its parked gov.acquire instead of waiting the full
+    // absorb budget after being declared freed (which mis-reported self-heal progress + risked a double reclaim).
+    const reqAbort = new AbortController();
     const ceilingTimer = setTimeout(() => {
       log('error', `inference-gateway: request hit the ${requestCeilingMs}ms hard ceiling on '${active.accountId}' — force-terminating (slot backstop)`);
       try { currentAc?.abort(new Error(`request ceiling: ${requestCeilingMs}ms`)); } catch { /* already settled */ }
+      try { reqAbort.abort(new Error(`request ceiling: ${requestCeilingMs}ms`)); } catch { /* already aborted */ } // H12: cancel a parked absorb re-acquire
       try { res.destroy(); } catch { /* already torn down */ }
     }, requestCeilingMs);
     ceilingTimer.unref?.();
@@ -1364,6 +1371,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       reclaimed: false,
       abort: (reason) => {
         try { currentAc?.abort(new Error(reason)); } catch { /* already settled */ }
+        try { reqAbort.abort(new Error(reason)); } catch { /* already aborted */ } // H12: cancel a parked absorb re-acquire
         try { res.destroy(); } catch { /* already torn down */ }
       },
     });
@@ -1572,6 +1580,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               const reacq = await candGov.acquire(est, {
                 maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()),
                 allowSoftPaused: serveSoft,
+                signal: reqAbort.signal, // H12: a reclaim/ceiling truly cancels this parked re-acquire
               });
               if (reacq) {
                 release = reacq;
@@ -1843,7 +1852,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 t.unref?.();
               });
             }
-            const reacq = await gov.acquire(est, { maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()), allowSoftPaused: serveSoft });
+            const reacq = await gov.acquire(est, { maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()), allowSoftPaused: serveSoft, signal: reqAbort.signal }); // H12: reclaim/ceiling cancels this parked re-acquire
             if (reacq) {
               release = reacq;
               retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry

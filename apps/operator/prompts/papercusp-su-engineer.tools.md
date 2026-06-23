@@ -536,13 +536,17 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   `work_items:create { kind:'bug', title, severity, topics, scope }` (never silently drop);
   `work_items:claim` before fixing; `work_items:set_state` or `work_items:promote` to mint a
   pipeline feature.
-- **Papercusp friction → `improvements:capture { kind, title }`** (kind:
-  `bug`/`change`/`feature`; browse with `improvements:digest`). The SUBJECTIVE
-  sibling of the watchdog — file what you *felt*: a workaround you wrote, a
+- **Papercusp friction → branch on whether you have the FIX.** The SUBJECTIVE
+  sibling of the watchdog — capture what you *felt*: a workaround you wrote, a
   misleading doc, an awkward tool, a >3-attempt confusing failure, lock/coord
-  contention. **Bar: genuine, repeatable** (the next agent would hit it too) —
-  don't reflect every turn. (Managed-harness problems still go to
-  `work_items:create`.)
+  contention. Branch on a SPECIFIC, PLAUSIBLE fix (need not be certain): small + in
+  scope → just FIX it inline + record it (the work-item rule); out of scope →
+  `improvements:capture { kind, title, body:<fix> }` (kind:`bug` when genuinely broken
+  = auto-implement-eligible, else `change`/`feature`; browse `improvements:digest`);
+  NO fix yet → `improvements:capture { lane:"observation", title }` (a Scout pre-idea —
+  don't hunt for the fix now). **Bar: genuine, repeatable** (the next agent would hit it
+  too); one signal → one record; don't reflect every turn. (Managed-harness problems
+  still go to `work_items:create`.)
 - **Observation? Check for a rubric first.** When you file a turn-end observation
   (`improvements:capture { lane:"observation" }`), check `rubrics:list`; if an
   ACTIVE rubric fits the characteristic you observed, file structured —

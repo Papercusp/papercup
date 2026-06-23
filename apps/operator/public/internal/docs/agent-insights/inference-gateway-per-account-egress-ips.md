@@ -222,7 +222,7 @@ watchdog-restart storm, and the cause was subtle:
 **proxy-egress** account now feeds the **same `gov.pausedUntil` lever the 429 hard-cap
 uses**, so the existing pin-yield + cross-account selector route around it automatically. A
 **consecutive-failure streak** (`EGRESS_FAIL_CIRCUIT_THRESHOLD`, default 3) opens a longer
-**circuit** (`EGRESS_CIRCUIT_OPEN_MS`, default 60s); the request then **rotates + retries**
+**circuit** (`EGRESS_CIRCUIT_OPEN_MS`, default 20s — a proxy that **re-opens** within `EGRESS_FLAP_RESET_MS` of its last open is treated as chronic, so its open window **doubles each reopen**, capped at `EGRESS_CIRCUIT_OPEN_MAX_MS`); the request then **rotates + retries**
 on a healthy account instead of returning a terminal 502. The streak resets on any upstream
 response (so the half-open is natural: the pause expires → the next request re-probes the
 account → success closes the circuit, a failure re-opens it), plus an **active half-open

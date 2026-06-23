@@ -51,6 +51,18 @@ function withUser(dsn: string, user: string, password: string): string {
 export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture> {
   const dsn = inject('baselineSchemaDsn');
 
+  // The injected DSN points at a throwaway testcontainer with NO PgBouncer in front. On a
+  // SERVER-class host (the dev box / a dedicated CI server), pgbouncerEnabled() derives ON from
+  // hostClass even with PAPERCUSP_PGBOUNCER unset — so getOrgPg()'s maybePgbouncer() would rewrite
+  // these reads to 127.0.0.1:6432 (the box's pooler), connecting to the WRONG Postgres and tripping
+  // a FATAL 08P01 (protocol violation) under transaction pooling. Force the kill-switch OFF + skip
+  // PG discovery so getOrgPg honours the env DSN's host:port verbatim. (Same guard the
+  // feature-content-federation integration test uses; the symptom is dev-box-only because CI hosts
+  // are workstation-class, so the suite is green there and red here.)
+  const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
+  const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+  process.env.PAPERCUSP_PGBOUNCER = '0';
+  process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   process.env.HARNESS_DATABASE_URL = withUser(dsn, 'harness_app', 'harness_app_pwd');
   process.env.HARNESS_ADMIN_DATABASE_URL = withUser(dsn, 'harness_admin', 'harness_admin_pwd');
   _resetUrlCacheForTests();
@@ -67,6 +79,10 @@ export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture>
     await admin.end({ timeout: 5 }).catch(() => {});
     delete process.env.HARNESS_DATABASE_URL;
     delete process.env.HARNESS_ADMIN_DATABASE_URL;
+    if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+    else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
+    if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+    else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
     _resetUrlCacheForTests();
     _resetHarnessAdminUrlCacheForTests();
     await _resetForTests();

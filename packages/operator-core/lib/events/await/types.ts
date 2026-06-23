@@ -123,6 +123,10 @@ export interface DeliveryRow {
   minSleepSec: number | null;
   /** How many fires folded into this wake (1 = not coalesced). */
   coalescedCount: number;
+  /** Emit-time attribution (migration 387) — e.g. a loop fire's `loop:<routineId>`. Persisted
+   *  so the async resume-turn-exit handler can attribute a turn DEATH to its source (the
+   *  loop-wake-rate-limit-robustness fix). null = unattributed. */
+  source: string | null;
 }
 
 /** A delivery row joined with its await's wake handle + note (the pump's unit). */

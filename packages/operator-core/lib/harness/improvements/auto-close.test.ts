@@ -82,7 +82,10 @@ const mkIssue = (over: Partial<EngineerIssue> & { watchdogKey?: string }): Engin
 };
 
 describe('processAutoClose — flag gate + orchestration', () => {
-  it('is INERT when the flag is off (default): never reads deps, closes nothing', async () => {
+  it('is INERT when the flag is off: never reads deps, closes nothing', async () => {
+    // WATCHDOG_AUTO_CLOSE graduated to default-ON (flip-dark-flags-default-on-2026-06-23); pin it OFF
+    // here via the env override rather than relying on the (now-ON) default — the gate is unchanged.
+    process.env[FLAG_ENV] = '0';
     let touched = false;
     const deps: AutoCloseDeps = {
       listOpen: async () => { touched = true; return []; },

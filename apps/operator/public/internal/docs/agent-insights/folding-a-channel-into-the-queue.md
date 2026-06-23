@@ -28,7 +28,7 @@ If a channel has **no pending-decision store** (e.g. `gym:judge` is a pure scori
 
 ## Where
 
-* Model + categories: `packages/operator-core/lib/attention/types.ts` (`AttentionKind`, `ATTENTION_KIND_CATEGORY`, `AttentionRef`); `lib/autonomy/categories.ts` (the 13 ids).
+* Model + categories: `packages/operator-core/lib/attention/types.ts` (`AttentionKind`, `ATTENTION_KIND_CATEGORY`, `AttentionRef`); `lib/autonomy/categories.ts` (the 14 ids).
 * Adapters (pure): `lib/attention/adapters.ts`. Source fetches (best-effort, one try/catch each): `lib/agent-tools/plans/attention.ts`.
 * The dedup guard: `dropConvertedPlanItems` in `lib/attention/sources.ts` + `listConvertedPlanItemRefs` in `lib/plan-items/convert.ts`.
 * Tests: `lib/attention/{adapters,sources,triage}.test.ts`.

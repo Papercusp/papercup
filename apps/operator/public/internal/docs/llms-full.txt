@@ -1746,7 +1746,7 @@ A tool an agent calls many times in a row (per id, per file, per row) should acc
 * **Input — scalar OR array on the logical id field**, so the single call is just n=1: expose both `id` and `ids` and merge with `mergeIds(args.id, args.ids)`. Heterogeneous per-item fields (or a compound key like `{slug, feature_id}`) ride `items: [{ … }]`. `scalarOrArray(z.string())` is the Zod seam for the `id|ids` union.
 * **Output — the self-describing keyed-array envelope:** `{ ok: true, results: [{ ok, <keyfields>, …data | error }], counts: { ok, failed } }`. Each result EMBEDS its own correlation key — the agent reads the key, NEVER the array index (robust to reordering / partial failure / truncation; LLMs mis-count indices).
 * **Failure is per-item, never a throw:** wrap the per-item work in `runBulk(items, op)` — a thrown error (or a returned `{ ok:false }`) becomes that item’s `{ ok:false, <key>, error }`; top-level `ok:true` means “the batch ran”, `counts.failed` is the truth signal. Cap items at \~100–200 (D-005).
-* **Serialize with `bulkContent(envelope)`.** It returns a raw `{ content:[{ text }] }` body, but it is NOT a token dead-end: the framework dispatch re-encodes a single-text JSON object-with-an-array-field to TOON on the agent (MCP) transport — so every bulk envelope is \~18-38% smaller for free, with a lossless JSON fallback and a size-guard that keeps a HETEROGENEOUS envelope on JSON when TOON would be larger (`definetool-token-optimization-adoption-2026-06-22` P-002/D-005).
+* **Serialize with `bulkContent(envelope)`.** It now returns the framework’s canonical `{ data: payload }` `ToolResponse` shape (the same a `defineTool` handler returns; `_bulk.ts:135-136`) — not the old raw `{ content:[{ text }] }` body. The single `serializeToolResponse` path re-encodes the object-with-an-array-field to TOON on the agent (MCP) transport — so every bulk envelope is \~18-38% smaller for free, with a lossless JSON fallback and a size-guard that keeps a HETEROGENEOUS envelope on JSON when TOON would be larger (`definetool-token-optimization-adoption-2026-06-22` P-002/D-005).
 
 ## Skeleton
 
@@ -4950,9 +4950,9 @@ The route (`packages/operator-core/lib/endpoint-route/routes/flags/set.ts`, `aut
 * The audit trail for ANY flag flip is `audit:list` with action `flag:set` (singular — `flags:set` as an action filter matches nothing).
 * Observed during the consume-edges P-013 supervised proof (2026-06-12): both the protective pause and the un-pause of `papercusp-improvement-auto-implement` rode the pg-override fallback.
 
-# Fleet bee dies at exactly 10 minutes — the DBOS 600s invoke timeout
+# Fleet bee killed by the DBOS invoke timeout (was 600s/10 min; default now 45 min)
 
-> A fleet:spawn'd bee that fails with exit 143 (SIGTERM), an EMPTY error_message, and a duration of exactly 600s was killed by PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS (default 600_000, orchestrator-runner.ts). Three bees died this way on 2026-06-11 mid-edit, one leaving the shared tree red. Don't re-dispatch a >10-minute task into the same guillotine — do it inline or raise the timeout.
+> A fleet:spawn'd bee that fails with exit 143 (SIGTERM), an EMPTY error_message, and a duration landing exactly on PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS was killed by the DBOS invoke timeout (invokeTimeoutMs(), orchestrator-runner.ts). The default was 600_000ms (10 min) when first hit — three bees died that way on 2026-06-11 mid-edit, one leaving the shared tree red — and has since been raised to 2_700_000ms (45 min). Don't re-dispatch a task that outruns the timeout into the same guillotine — do it inline or raise the env.
 
 ## Symptom
 
@@ -4962,7 +4962,7 @@ A `fleet:spawn`’d agent shows `failed` in the nursery (`harness_shared.spawned
 
 * `exit_code` **143** (SIGTERM)
 * `error_message` **empty** — nothing distinguishes it from a crash
-* `finished_at - started_at` = **exactly 600 seconds** (the tell — measure it)
+* `finished_at - started_at` = **exactly the invoke timeout** (the tell — measure it; default now **2,700 s / 45 min**, was **600 s / 10 min** when the bees below died)
 * `output_tail` cut off mid-sentence, mid-work
 * no respawn, even with `restart_strategy = one_for_one`
 
@@ -4975,18 +4975,19 @@ Three bees died this way on 2026-06-11 (20:06, 20:19, 22:34). The 22:34 one was 
 The DBOS invoke path wraps every spawned run in a hard timeout:
 
 ```ts
-// packages/operator-core/lib/dbos/orchestrator-runner.ts:83
-Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
+// packages/operator-core/lib/dbos/orchestrator-runner.ts:94-95
+export const invokeTimeoutMs = (): number =>
+  Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 2_700_000);
 ```
 
-600 000 ms = 10 minutes. A coding bee with a real brief routinely needs more. `operator-spawn.ts` supports a per-spawn `timeoutMs` override (threaded to the DBOS step), but **`fleet:spawn` does not expose it** — so a dispatcher cannot grant a longer window. Filed as **EI-361** (with the empty-`error_message` and dead `one_for_one` legs).
+2 700 000 ms = 45 minutes — raised from the original 600 000 ms / 10 min (the three bees below died at the old 10-minute default, which “was insufficient” per the code comment). A coding bee with a long brief can still exceed it. `operator-spawn.ts` supports a per-spawn `timeoutMs` override (threaded to the DBOS step), but **`fleet:spawn` does not expose it** — so a dispatcher cannot grant a longer window. Filed as **EI-361** (with the empty-`error_message` and dead `one_for_one` legs).
 
 ## What to do
 
 [Section titled “What to do”](#what-to-do)
 
-* **Diagnose**: `SELECT status, exit_code, finished_at - started_at FROM harness_shared.spawned_agents WHERE spawn_id = '…'` — `143` + exactly `00:10:00` ⇒ timeout kill, not a crash. Check `output_tail` for where it died.
-* **Don’t blind-retry**: a retry of a >10-minute brief dies the same death and may leave MORE half-landed edits. Either do the work inline (an interactive session has no invoke timeout), split the brief into chunks each under 10 minutes, or raise `PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS` on the spawning host until EI-361 lands a per-spawn override.
+* **Diagnose**: `SELECT status, exit_code, finished_at - started_at FROM harness_shared.spawned_agents WHERE spawn_id = '…'` — `143` + a duration landing on the invoke timeout (default `00:45:00`, or whatever `PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS` is set to) ⇒ timeout kill, not a crash. Check `output_tail` for where it died.
+* **Don’t blind-retry**: a retry of a brief that outruns the timeout dies the same death and may leave MORE half-landed edits. Either do the work inline (an interactive session has no invoke timeout), split the brief into chunks each well under the timeout, or raise `PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS` on the spawning host until EI-361 lands a per-spawn override.
 * **Always sweep for partial work** after such a kill: the bee’s edits are in the shared tree (git-sync swept them) — `git log` the kill window and check `lint:tsc` / the touched suites before assuming “nothing landed”.
 
 # Session-level behavior lives in agent_activity, NOT tool_invocations — spawn_id can't group sessions
@@ -5336,7 +5337,7 @@ If a channel has **no pending-decision store** (e.g. `gym:judge` is a pure scori
 
 [Section titled “Where”](#where)
 
-* Model + categories: `packages/operator-core/lib/attention/types.ts` (`AttentionKind`, `ATTENTION_KIND_CATEGORY`, `AttentionRef`); `lib/autonomy/categories.ts` (the 13 ids).
+* Model + categories: `packages/operator-core/lib/attention/types.ts` (`AttentionKind`, `ATTENTION_KIND_CATEGORY`, `AttentionRef`); `lib/autonomy/categories.ts` (the 14 ids).
 * Adapters (pure): `lib/attention/adapters.ts`. Source fetches (best-effort, one try/catch each): `lib/agent-tools/plans/attention.ts`.
 * The dedup guard: `dropConvertedPlanItems` in `lib/attention/sources.ts` + `listConvertedPlanItemRefs` in `lib/plan-items/convert.ts`.
 * Tests: `lib/attention/{adapters,sources,triage}.test.ts`.
@@ -5545,11 +5546,11 @@ Other gateway details that carry over: `xhigh` = extended thinking at `budget_to
 
 Once `max_tokens` is large enough that a request could exceed \~10 minutes (extended thinking at a 16k budget trips this), the SDK throws **“Streaming is required for operations that may take longer than 10 minutes.”** The 2-task smoke worked only because it used a tiny 6k budget. Fix: call `client.messages.stream(params).finalMessage()` (accumulates the stream into the full `Message`) instead of `messages.create()`. This is why `agent-live.ts` streams.
 
-## Trap 4 — the gateway does NOT load-balance the account pool
+## Trap 4 — (FIXED 2026-06-18) the gateway now round-robins the account pool
 
-[Section titled “Trap 4 — the gateway does NOT load-balance the account pool”](#trap-4--the-gateway-does-not-load-balance-the-account-pool)
+[Section titled “Trap 4 — (FIXED 2026-06-18) the gateway now round-robins the account pool”](#trap-4--fixed-2026-06-18-the-gateway-now-round-robins-the-account-pool)
 
-`account-failover.ts`: the gateway routes through **one `active()` account at a time** and only **rotates on a hard 429** (unified-window-rejected). It is failover, not load-balancing. So under fleet load the single active account saturates to `utilization ≥ 1.0` and 429s your requests, **while healthy accounts sit idle** (`accounts:status` will show e.g. `aviynw6` at 0.45). Two mitigations, both now in `agent-live.ts`:
+`account-failover.ts`: as of 2026-06-18 `active()` **round-robins** the fleet’s **unpinned** egress across every account that still has budget (it advances a cursor on each call) and fails over off an exhausted one — so load now distributes across the pool. The behavior this trap originally warned about (the whole fleet egressing through ONE fixed `active` account while healthy accounts sat idle) is **gone**. Header-pinned requests (`x-papercusp-account`) bypass the round-robin and keep their own credential for cache-affinity. Two things still help and are both in `agent-live.ts`:
 
 * **Pin a healthy account** (`x-papercusp-account`, the `accountId` opt) — separates your run from the fleet’s contention on the active account. Pick one from `accounts:status` with `utilization < 0.6`, low `penaltyCount`, `available: true`.
 * **Request interactive priority** (`x-papercusp-priority: interactive`, the `priority` opt) — jumps the gateway’s priority queue ahead of the fleet’s `batch` work, so a user-requested run isn’t starved (the symptom of starvation is a request that just hangs → a client-side timeout with no response, distinct from a fast 429).
@@ -6194,7 +6195,7 @@ Orthogonality that fell out of the live proof (2026-06-13): with the gateway hea
 
 # The gym cycle's in-process judge/proposer bypass the inference gateway (FB-16)
 
-> Spawned bees get ANTHROPIC_BASE_URL at the spawn chokepoint (gatewaySpawnEnv), but an IN-PROCESS anthropic-direct llmCall never passes through that chokepoint — so the gym cycle's judge/proposer hit api.anthropic.com directly. Symptom that means READ THIS — gym-cycle:error with `LlmCallError: 401 authentication_error` while the org-blocked OAuth subscription is in effect, even though INFERENCE_GATEWAY is ON and spawned agents work fine. Also: anthropicDirectTransport honors PAPERCUSP_ANTHROPIC_URL but NOT the standard ANTHROPIC_BASE_URL.
+> Spawned bees get ANTHROPIC_BASE_URL at the spawn chokepoint (gatewaySpawnEnv), but an IN-PROCESS anthropic-direct llmCall never passes through that chokepoint — so the gym cycle's judge/proposer hit api.anthropic.com directly. Symptom that means READ THIS — gym-cycle:error with `LlmCallError: 401 authentication_error` while the org-blocked OAuth subscription is in effect, even though INFERENCE_GATEWAY is ON and spawned agents work fine. (Historical: anthropicDirectTransport once honored PAPERCUSP_ANTHROPIC_URL but NOT the standard ANTHROPIC_BASE_URL — now FIXED, it honors both.)
 
 ## The trap
 
@@ -6211,7 +6212,7 @@ The gym cycle (`runOneAutoloopCycle`) has both kinds of LLM call:
 
 This is why the live :3070 autoloop showed `gym-cycle:error` with 10 consecutive errors while the implement-lane workers (spawned bees) ran fine on the same gateway: the cycle booted clean (EI-368 is contained), the pipeline agents ran, then the judge 401’d “before completing” and the circuit opened.
 
-Compounding it: `anthropicDirectTransport` (`chat-stream.ts`) reads `process.env.PAPERCUSP_ANTHROPIC_URL ?? 'https://api.anthropic.com'` — it honors the papercusp-specific override but **not** the standard `ANTHROPIC_BASE_URL` that the gateway sets for the CLI. So the two LLM legs key off two different env vars.
+Originally compounding it: `anthropicDirectTransport` (`chat-stream.ts`) read `process.env.PAPERCUSP_ANTHROPIC_URL ?? 'https://api.anthropic.com'` — it honored the papercusp-specific override but **not** the standard `ANTHROPIC_BASE_URL` that the gateway sets for the CLI, so the two LLM legs keyed off different env vars. **This is now fixed** — it reads `PAPERCUSP_ANTHROPIC_URL ?? ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'` (`chat-stream.ts:612-614`), so an in-process call picks up the gateway env even when only `ANTHROPIC_BASE_URL` is set.
 
 ## The fix (2026-06-13, FB-16 of self-improvement-consume-edges)
 
@@ -6226,7 +6227,7 @@ Proven 2026-06-13: a real `GYM_LOOP_MAX_CYCLES=1` cycle with the gateway env set
 [Section titled “Two gotchas for the next agent”](#two-gotchas-for-the-next-agent)
 
 * **`getFlag(FLAGS.INFERENCE_GATEWAY)` resolves `false` in a standalone CLI/tsx context** (it falls back to `FLAG_DEFAULTS`, where the flag is OFF), even though the PG override / MCP `flags:get` reports it ON. The flag resolves ON only inside a full operator process (PostHog + PG override). So a manual `gym-loop-run.ts` proof must set the gateway env explicitly; the flag-gated auto-apply fires on the live `:3070` operator.
-* **The broader latent gap**: any *other* in-process anthropic-direct consumer (memory `session-extraction-llm.ts`, the `su` llm-test target) has the same blind spot — they only honor `PAPERCUSP_ANTHROPIC_URL`, not `ANTHROPIC_BASE_URL`. If the gateway ever becomes mandatory, make `anthropicDirectTransport` fall back to `ANTHROPIC_BASE_URL` (filed as a follow-up EI).
+* **The broader latent gap (now closed at the shared transport)**: the `anthropicDirectTransport` fallback to `ANTHROPIC_BASE_URL` is implemented (`chat-stream.ts:612-614`), so any in-process anthropic-direct consumer that routes through it (e.g. the `su` llm-test target) now picks up the gateway env. A consumer that resolves its own URL without going through `anthropicDirectTransport` still needs the same `?? ANTHROPIC_BASE_URL` fallback applied locally.
 
 # Testing the gym live-boot path (runOneAutoloopCycle / runGymBlueprintCycle)
 
@@ -7167,7 +7168,7 @@ The lever is the fleet `maxSimultaneousAgents` / effective cap, live-editable vi
 
 A federated write goes through **two** ordering decisions, and they must agree:
 
-1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogsIncremental` → `lwwPick`/`beatsStored`) — since P-010 this orders by the op’s **HLC** when both ops carry one, else falls back to wall-clock `ts`.
+1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogsIncremental` → `lwwPick`/`beatsStored`, both defined in `projection.ts`) — since P-010 this orders by the op’s **HLC** when both ops carry one, else falls back to wall-clock `ts`.
 2. **The PG projection LWW guard** (`harness-features.ts` etc.) — the `INSERT … ON CONFLICT … WHERE stored.fed_ts IS NULL OR EXCLUDED.fed_ts >= stored.fed_ts` clause — orders by **`fed_ts`**.
 
 If these two disagree under same-key contention, the system **silently diverges**: the merge picks op X as the winner and hands it to `apply`, but the PG guard rejects X (its `fed_ts` lost) → no write → the cell keeps its own value. Each cell keeps its own → the two cells “converge” (no more ops to drain, `fixedPoint=true`) to **different** values. The tripwire was `split-brain-queen.integration.test.ts` (both Queens steer opposite orders; cell A ended with a mix, cell B with all-its-own).
@@ -7198,7 +7199,7 @@ export function stampOpHlc(op, clock = processHlc()) {
 
 `HlcClock.send(physicalNow)` is built for exactly this (“seed from an event’s own recorded ms”) and stays monotone via `bumpCount` when `ts` is in the past, so causality (the RECV-seam `observeRemoteHlc` advance) is preserved. The merge’s HLC order matches the PG guard’s `fed_ts` order → no silent rejection **FOR THE DRAIN-INTERLEAVE CASE**.
 
-> ⚠️ **INCOMPLETE — see ”## REOPENED (D-001)” below.** Seeding the HLC from `op.ts` only guarantees `HLC.physical ≥ op.ts` for the SAME op. It does NOT make the HLC ORDER of two CONCURRENT ops match their `fed_ts` order, because the RECV-seam advance this fix DELIBERATELY PRESERVES raises a peer’s clock ABOVE a later write’s `ts` (`send(ts)` returns `max(clock.physical, ts)`). The split-brain is still reachable on `staging`.
+> ⚠️ **This 2026-06-14 patch was INCOMPLETE (it closed only the drain-interleave trigger) and was later REOPENED then fully RESOLVED — see ”## REOPENED (D-001)” and ”## RESOLVED” below.** Seeding the HLC from `op.ts` only guarantees `HLC.physical ≥ op.ts` for the SAME op. It does NOT make the HLC ORDER of two CONCURRENT ops match their `fed_ts` order, because the RECV-seam advance this patch DELIBERATELY PRESERVES raises a peer’s clock ABOVE a later write’s `ts` (`send(ts)` returns `max(clock.physical, ts)`). The split-brain was still reachable until the D-001 ordering-key fix shipped.
 
 ## Gotchas when reproducing in a rig
 
@@ -7230,7 +7231,13 @@ The 2026-06-14 fix closed the **drain-interleave** trigger but NOT the root caus
 
 **Why the green suite missed it (still):** `split-brain-queen` and the composition rig share one wall clock (`physical: () => this.now()`), so they can’t construct recv-advance + skew. `three-peer-partition-rejoin` asserts convergence at the read-merge layer with a TEST-LOCAL ts-only LWW and an injected sink — it exercises neither the HLC fold nor the PG guard, the two layers whose disagreement IS the bug.
 
-**Repro (current `staging`):** `packages/operator-core/lib/sync/hyperbee/__tests__/lww-hlc-fedts-divergence.test.ts` (fast, real merge + faithful guard), its `.integration.test.ts` twin (real PG projection), and the seeded `convergence-fuzz.test.ts` (monotone sweep GREEN, skew sweep finds it). The fix is one ordering-key of record end to end — make the PG guard order by HLC (carry an `hlc` column / compare it), or derive `fed_ts` from the HLC physical. Cross-cutting (18 projections + capture) → needs a design call + migration, NOT a low-risk in-lane patch.
+**Repro (current `staging`):** `packages/operator-core/lib/sync/hyperbee/__tests__/lww-hlc-fedts-divergence.test.ts` (fast, real merge + faithful guard), its `.integration.test.ts` twin (real PG projection), and the seeded `convergence-fuzz.test.ts` (monotone sweep GREEN, skew sweep finds it).
+
+## RESOLVED (D-001 fix shipped)
+
+[Section titled “RESOLVED (D-001 fix shipped)”](#resolved-d-001-fix-shipped)
+
+The one-ordering-key-of-record fix landed. Migration `314-d001-hlc-ordering-key.sql` adds a **`fed_hlc`** column to the mutable LWW tables, and the projection PG guards now order by it (the HLC), with `fed_ts` kept only as a fallback when a row predates the column — so the merge fold and the PG guard finally use the SAME key. The HLC-winner can no longer be silently rejected by a `fed_ts`-loser guard, so concurrent same-key writes converge to one value across cells even under recv-advance skew. The seeded `convergence-fuzz` suite asserts it: `S0 (D-001) FIXED: the skew sweep fully converges under the shipped fed_hlc guard` (`packages/operator-core/lib/sync/hyperbee/__tests__/convergence-fuzz.test.ts`). The original `lww-hlc-fedts-divergence.test.ts` repro is now the regression tripwire.
 
 # The honest-majority trust model (shared-hive owner enforcement)
 
@@ -7291,7 +7298,30 @@ Hit live by `swarm-full-loop.integration.test.ts` (shared-hive-loop-e2e P-008): 
 
 [Section titled “Why”](#why)
 
-Two facts comp
+Two facts compound:
+
+1. **Signed announces ride PER-CONNECTION channels, not gossip.** Each peer sends its signed announce on the `papercusp/announce` Protomux channel (`swarm.ts` `ANNOUNCE_PROTOCOL`) of *every direct connection* it has — there is no relay/forwarding. A peer admits another peer’s log **only** if it has a *direct* hyperswarm connection to it.
+2. **Hyperswarm’s DHT does not guarantee a full mesh.** With N≥3 peers joining the same topic concurrently, the DHT announce/lookup rounds race: peer 0 may connect to both 1 and 2 while 1 and 2 never discover each other (each sits at `admitted.size === 2`). The pairwise gap can persist for minutes on hyperswarm’s retry-timer backoff ladder (1s → 5s → 15s → 10min).
+
+So topic discovery alone is not enough for deterministic N≥3 admission.
+
+## Fix — distribute swarm keys + `joinPeer` an explicit mesh
+
+[Section titled “Fix — distribute swarm keys + joinPeer an explicit mesh”](#fix--distribute-swarm-keys--joinpeer-an-explicit-mesh)
+
+A peer’s **`swarmKey`** is its hyperswarm noise pubkey (`swarm.keyPair.publicKey`). The full-loop driver makes the mesh deterministic instead of leaving it to the DHT:
+
+1. Each agent emits its `swarmKey` in its `ready` event (`p2p-perf-tier3/loop-agent.ts`).
+2. Once every peer is ready, the parent collects all `swarmKey`s and broadcasts a `peers <hex,…>` line to all agents (`p2p-perf-tier3/run-full-loop.ts`, “Deterministic mesh”).
+3. Each agent `joinPeer(Buffer.from(hex,'hex'))`s every key but its own (`loop-agent.ts` `peers` handler). `joinPeer` marks the peer **EXPLICIT** and re-enqueues it with priority, so hyperswarm dials it directly rather than waiting out the discovery ladder. A bad key is swallowed — topic discovery stays the fallback.
+
+The result is identical on a local testnet and the public DHT. The same `joinPeer`-every-pair trick is the deterministic reconnect driver in `swarm-chaos.test.ts` `forceReconnectAll` after an abrupt disconnect.
+
+## Smell test
+
+[Section titled “Smell test”](#smell-test)
+
+If an N≥3 substrate rig stalls with some peers at `admitted.size < N` while peer 0 is fully meshed (`runFullLoop: Swarm(s) … never reached full mesh`, run-full-loop.ts), it is the per-connection-announce + DHT-race gap — distribute swarm keys and `joinPeer` explicitly; don’t just bump the gate timeout.
 
 # The idempotent PG-ensure pattern (and where the in-process flag goes)
 
@@ -7845,7 +7875,7 @@ Per-account egress adds a new failure mode: **the proxy itself can die.** On 202
 * The gateway’s account health/penalty signal was **429-only**. A dead/hanging proxy makes the upstream `fetch` **stall or fail to connect** — a *transport* failure that never reaches Anthropic, so it carries **no HTTP status** and (unlike a 429) fed **zero** account-health signal.
 * So the dead-egress account accrued **no penalty** → the router scored it **“healthiest”** → routed the **most** traffic to it **and** overrode session pins onto it (“yields to liveness”). Pinning to good accounts didn’t help; the dead account kept getting flooded.
 
-**The fix** (`gateway.ts`, the upstream-fetch `catch`): a transport failure on a **proxy-egress** account now feeds the **same `gov.pausedUntil` lever the 429 hard-cap uses**, so the existing pin-yield + cross-account selector route around it automatically. A **consecutive-failure streak** (`EGRESS_FAIL_CIRCUIT_THRESHOLD`, default 3) opens a longer **circuit** (`EGRESS_CIRCUIT_OPEN_MS`, default 60s); the request then **rotates + retries** on a healthy account instead of returning a terminal 502. The streak resets on any upstream response (so the half-open is natural: the pause expires → the next request re-probes the account → success closes the circuit, a failure re-opens it), plus an **active half-open probe** (`egress-probe.ts`) re-tests the proxy and logs/clears the streak on recovery.
+**The fix** (`gateway.ts`, the upstream-fetch `catch`): a transport failure on a **proxy-egress** account now feeds the **same `gov.pausedUntil` lever the 429 hard-cap uses**, so the existing pin-yield + cross-account selector route around it automatically. A **consecutive-failure streak** (`EGRESS_FAIL_CIRCUIT_THRESHOLD`, default 3) opens a longer **circuit** (`EGRESS_CIRCUIT_OPEN_MS`, default 20s — a proxy that **re-opens** within `EGRESS_FLAP_RESET_MS` of its last open is treated as chronic, so its open window **doubles each reopen**, capped at `EGRESS_CIRCUIT_OPEN_MAX_MS`); the request then **rotates + retries** on a healthy account instead of returning a terminal 502. The streak resets on any upstream response (so the half-open is natural: the pause expires → the next request re-probes the account → success closes the circuit, a failure re-opens it), plus an **active half-open probe** (`egress-probe.ts`) re-tests the proxy and logs/clears the streak on recovery.
 
 * **Scoping matters.** The circuit is **only** armed for accounts that egress through an `http(s)` proxy — only those can have a *dead proxy*. A transport failure on a **no-proxy** account is an Anthropic/network-side stall (the proxy can’t be the fault), so it keeps the existing **fast-502** (the bee’s CLI retries; AIMD shrinks concurrency) and its healthy account is **not** penalized.
 * **`pausedUntil` is take-MAX** (the shared governor’s `recordPenalty` only ever *extends* a pause, never shortens a real 429/usage-cap pause). The half-open probe tracks the **transport** pause separately (`egressPauseUntil` / `gov.liftTransportPause`), so on recovery it **lifts that pause immediately** and readmits the account — a flapping proxy that recovers in seconds rejoins in seconds, not at the full circuit-window expiry (a 2026-06-21 change; before it, a recovered account waited the whole window, which kept the only token-healthy accounts out together).
@@ -9121,6 +9151,83 @@ The migration that mattered (295) lives **inside the `libs/papercusp` submodule*
 
 Related: \[\[boot-wire-drain-ordering]]; plans `release-gate-ready-branch-2026-06-04`, `staging-branch-pipeline-2026-06-06`.
 
+# Loop wakes record turn DEATHS as successful deliveries — the rate-limit robustness gap (+ remediation roadmap)
+
+> The engine loop (loop:arm) re-wakes a warm session by spawning a DETACHED `claude --resume <uuid> -p` subprocess with stdio:'ignore', and records the wake `delivered` the instant the PID is assigned — on SPAWN success, not TURN success. If that turn then 429s mid-flight (account-wide rate-limit storm) it dies into /dev/null: the in-process RateLimitGovernor never sees it (the subprocess draws from Claude Code's OWN CLI transport bucket, not the operator's), the delivery-retry ladder only fires on spawn-time failure, the failure-streak fire-gate records the dead wake as `attempt` not `error` so the autoloop circuit never opens, and recovery falls to the stuck-park backstop (≥30min) which blind-retries into the same limit with no backoff. No max-iterations/dead-man guard; cost-cap is fail-open + can't see warm-session spend. loop:status shows `parked` — indistinguishable from a healthy long turn. This doc is the failure-mode analysis + a prioritized P0–P3 remediation roadmap. The loop system is currently FLAG-OFF (papercusp-loops=false, KNOWN_DARK 'incomplete') — these gaps are what 'incomplete' means; fix P0/P1 before flipping it on.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+> “Our loop system doesn’t seem robust enough when there are issues like a rate limit.”
+
+It isn’t — and the reason is precise: **a loop’s re-wake turn runs in a detached subprocess whose later death the operator never observes, because the operator records the wake as `delivered` the instant that subprocess *spawns*.** A rate-limit (429) that kills the turn seconds-to-minutes later is invisible: it isn’t retried with awareness, doesn’t open any circuit, and surfaces nowhere. The loop just goes quiet, then blind-retries into the same wall \~30 minutes later.
+
+This was corroborated live on 2026-06-23: during an account-wide 429 storm the fleet logged **84 failed vs 19 done spawns in 8h** (dominant error `infra_loss: …/<role> returned HTTP 200 but the agent produced no turn (exitCode=1)` — the spawned agent’s first model call 429’d and it exited having produced no turn), and the `su` LLM-eval’s *own* in-process `anthropic-direct` path retried 8× with clean exponential backoff (2→4→8→16→32→60→60s) and *still* 429’d every attempt. That contrast is the whole point: **the in-process governor backs off correctly; the loop’s detached resume turn is on a transport the governor can’t see.**
+
+## How the loop works (so the gap is legible)
+
+[Section titled “How the loop works (so the gap is legible)”](#how-the-loop-works-so-the-gap-is-legible)
+
+A “loop” is the **third recurrence kind** of the routines engine: a row in `harness_shared.routines` with `reschedule_interval_sec` set (no cron/rrule) bound to a `target_owner_id` — the warm su session’s coord ownerId. It does NOT spawn a role; it delivers a **warm coord wake** to that same session so context continues across iterations (engine-tracked Claude `/loop`).
+
+* **Tools:** `loop:arm` (`agent-tools/loop/arm.ts`, flag-gated by `FLAGS.LOOPS` at arm time) · `loop:end` · `loop:status`. `materializeLoop` (`harness/routines/loop.ts`) upserts the row; `LOOP_INTERVAL_FLOOR_SEC = 60`.
+* **Scheduling:** the DBOS 30s routine tick claims due loops; an in-flight loop parks `next_fire_at = 'infinity'` (the skip-if-in-flight sentinel). Dispatch routes a row with `reschedule_interval_sec != null && target_owner_id` to `fireLoopWake` (`dbos/routines-workflow.ts`). **Note the fire path does NOT re-check `FLAGS.LOOPS`** — only `loop:arm` does.
+* **The fire** (`harness/routines/loop-fire.ts` `fireLoopWake`): Guard 1 = the failure-streak fire-gate (`autoloop.ts` `checkFireGate`, per-loop by routine name); Guard 2 = the cost-cap (`loop-cost-cap.ts`); then `wakeRecipients([targetOwnerId], …)`.
+* **The wake → re-wake:** `wakeRecipients` fires `coord:inbox-wake:<ownerId>`; the await engine’s pump (`events/await/engine.ts`) calls `executeWake` (`events/await/wake-executor.ts`), which runs the liveness ladder: live pty → inject; **process exited → detached `claude --resume <uuid> -p`**; alive-uninjectable → park; gone → drop.
+* **Re-arm:** `reconcile-loop-routines.ts` (the completion-rebase) detects the woken turn’s `Stop`-hook ‘ended’ marker and sets `next_fire_at = completed_at + interval`; a stuck-park backstop re-arms after `max(30min, 4×interval)` if no completion signal arrives.
+* **State** is all PG: the `routines` row + `autoloop_state` (fire-state/backoff) + `event_wake_deliveries`.
+* **Current status: FLAG-OFF.** `FLAGS.LOOPS` defaults `false` (`libs/flags/src/types.ts`) and is in `KNOWN_DARK_FLAGS` justified `'incomplete'` (`libs/flags/src/production-defaults.test.ts`). `loop:arm` returns `loops_disabled`.
+
+## The failure path, step by step
+
+[Section titled “The failure path, step by step”](#the-failure-path-step-by-step)
+
+1. **Delivered = spawned, not survived.** `executeWake`’s default `spawnDetached` runs `claude --resume <uuid> -p <wakeText>` with `detached: true, stdio: 'ignore'` (`wake-executor.ts` \~665–676), then returns `{ kind: 'delivered', channel: 'resume-headless' }` **the instant `spawnDetached` returns a non-null PID** (\~688–689). A turn that 429s after that exits non-zero into `/dev/null`; the delivery is already `delivered`.
+
+2. **The in-process `RateLimitGovernor` doesn’t cover this turn.** The AIMD/429-pacing governor (`libs/papercusp-shared/src/resilience/governor.ts`) wraps in-process orchestrator spawns + anthropic-direct calls. A `claude --resume … -p` subprocess draws from Claude Code’s OWN CLI client bucket — a separate transport the operator’s governor never sees. See \[\[rate-limit-is-usually-account-routing-not-capacity]] and \[\[llm-429-check-the-transport-not-the-account]].
+
+3. **The delivery-retry ladder doesn’t engage.** `store.ts` `markDeliveryFailed` (8 attempts, exp backoff → ‘dead’) is only reached when `executeWake` returns `{ kind: 'error' }` — i.e. on *spawn-time* failure (`'headless resume spawn failed'`). A successful spawn whose turn later 429s is `delivered`, a terminal state, so the ladder never runs.
+
+4. **The failure-streak gate is blind to a dead turn.** `loop-fire.ts` (\~149–159) records a wake miss as `attempt`, not `error`; only a genuinely dead session (a wake-delivery DROP) or the cost-cap advances the streak. A loop whose wakes are *delivered* but whose turns *die on 429* keeps `consecutive_errors = 0`, so `autoloop.ts` `evaluateFireGate` never opens its circuit — **the loop keeps firing empty wakes into a rate-limited void.**
+
+5. **Recovery is slow + blind.** A dead turn emits no `Stop`-hook ‘ended’ marker, so the loop sits parked at `'infinity'` until the `reconcile-loop-routines.ts` stuck-park backstop fires (≥`max(30min, 4×interval)`) and re-arms to retry the *same* wake — into the same rate limit, with no backoff awareness.
+
+6. **No dead-man guard; cost-cap is toothless here.** There is no max-iterations / max-duration / dead-man’s-switch — a loop armed by a session that then dies permanently is re-armed forever by the backstop. The one net-new guardrail, the cost-cap (`loop-cost-cap.ts`), is fail-open and attributes spend via owner→session→cost, a mapping usually absent for a warm interactive su session → `readLoopSpendCents` returns 0 → the cap never trips.
+
+7. **Observability is near-zero.** `loop:status` returns `parked` — indistinguishable from a legitimately long in-flight turn until the backstop fires ≥30min later. `autoloop:status` shows `consecutive_errors` but (per #4) a 429’d turn never increments it. The 429 itself is in the discarded subprocess stderr — logged **nowhere**. `watchdog.ts` has no collector for “a loop is parked-stalled with dead turns.”
+
+(What IS robust, and should stay: concurrent-fire is well-guarded — the `'infinity'` park means a loop is never re-claimed while its turn is in flight, and a live-but-uninjectable session is parked, never concurrent-resumed.)
+
+## Existing infrastructure to reuse (don’t roll new retry)
+
+[Section titled “Existing infrastructure to reuse (don’t roll new retry)”](#existing-infrastructure-to-reuse-dont-roll-new-retry)
+
+* **Turn-error taxonomy:** `libs/papercusp-shared/src/agent/turn-error.ts` already classifies `usage_limit` vs `rate_limited`. Classify the captured stderr with this — don’t pattern-match ad-hoc.
+* **Autoloop backoff/circuit:** `autoloop.ts` `evaluateFireGate` already implements exp backoff (base 60s → cap 3600s) + a circuit at 8 errors, and is **already consulted by the loop** — it just never sees 429’d turns. Feeding it the error is most of the fix.
+* **Delivery retry/backoff:** `store.ts` `markDeliveryFailed` (8 attempts) + `recoverStuckDeliveries` (stuck `delivering` → `pending` after 5min).
+* **Backoff patterns:** `cross-hive-outbox-drain.ts`, `agent-tools/locks/contention-retry.ts`, `loopback-fetch.ts` (`isTransientNetworkError`). The repo rolls its own backoff helpers; there is no `p-retry`. Per \[\[rate-limit-governor-activation]], classify + let the governor pace — don’t re-add ad-hoc retry at call sites.
+
+## Remediation roadmap (prioritized)
+
+[Section titled “Remediation roadmap (prioritized)”](#remediation-roadmap-prioritized)
+
+> ⚠ The crux that makes P0 a real change, not a one-liner: **the turn outcome is not known synchronously.** `executeWake` returns to the pump immediately, but the resumed turn dies seconds-to-minutes later in a detached process. So any turn-outcome feedback is necessarily *asynchronous and durable* (PG), not a closure — and the delivery is already `delivered` (terminal) by the time the turn dies. Two viable shapes: (a) **don’t mark `delivered` until the turn exits** — keep the row `delivering`, attach an exit listener that marks delivered-on-success / failed-on-429, and extend `recoverStuckDeliveries` to not reclaim a row whose turn PID is still alive (else a long real turn double-fires after 5min); or (b) **capture-and-watch** — mark delivered as today, but on a later non-zero/429 exit durably re-open the delivery for retry. (a) is cleaner; (b) is smaller-blast-radius. Decide this first.
+
+* **P0a — observe the resume turn.** Stop `stdio:'ignore'`; capture exit code + a bounded stderr tail. Add a pure `classifyResumeTurnExit(code, stderrTail)` (reusing `turn-error.ts`). Files: `wake-executor.ts` (the `spawnDetached` default + a new injected outcome callback), `engine.ts` (wire the callback), `store.ts` (the re-open/fail transition).
+* **P0b — open the circuit on dead turns.** Route a classified rate-limit/non-zero turn death to `recordFire(installSlug, routineName, reason, 'error')` so the EXISTING autoloop backoff engages. Requires the wake delivery to durably carry the loop’s fire-gate key (installSlug + routineName) so the async exit handler can reconstruct it — today the wake only carries `source: 'loop:<routineId>'`. Files: `loop-fire.ts` (enrich the wake payload), the P0a outcome handler, `autoloop.ts` (no change — just fed correctly).
+* **P1a — rate-limit-aware re-arm.** Back off `next_fire_at` by the 429’s `retry-after` instead of the blind interval. Files: `reconcile-loop-routines.ts`, `loop-fire.ts`.
+* **P1b — watchdog visibility.** New `WatchdogSource` (e.g. `loop-stalled`): a loop `active` + parked at `'infinity'` for ≥`stuckParkMs` with no post-fire lifecycle marker → surface a signal. File: `harness/improvements/watchdog.ts`.
+* **P2a — dead-man guard.** Optional `maxFires` / `maxDurationSec` on the routine row + `loop:arm`; auto-pause when exceeded (mirror `autoPauseLoopRoutine`). Files: `loop/arm.ts`, `loop.ts`, `loop-fire.ts`, a new migration.
+* **P2b — `loop:status` stall state.** Distinguish “parked, healthy in-flight” from “parked, last fire produced no completion in N×interval”; add `stalledSinceMs` / `lastDeliveryOutcome`. File: `loop.ts`.
+* **P3 — cost-cap attribution.** Land the direct owner→cost rollup so the cap actually bounds a warm-session loop. File: `loop-cost-cap.ts`.
+
+## Gating note
+
+[Section titled “Gating note”](#gating-note)
+
+The loop system is flag-OFF (`papercusp-loops`, `'incomplete'`). **P0/P1 are precisely what ‘incomplete’ means** — without turn-outcome tracking + 429-aware backoff + stall observability, a rate-limit silently kills a loop with no signal and only a ≥30-minute blind retry. Do P0/P1 before flipping `FLAGS.LOOPS` on, and verify the turn-outcome path live (post-storm) before the flip — a rate-limit storm is the exact condition that exercises it.
+
 # The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
 
 > lwwPick / the fed_hlc PG guard use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLES when a no-HLC (pre-314) op sits between two skewed HLC ops, so the fold winner becomes order-dependent and peers can diverge. Latent today; the fix is to compare in one HLC space.
@@ -9337,9 +9444,9 @@ The P-010 work-item unification has **physically landed**: `harness_features_con
 
 [Section titled “The claim cutover (flag)”](#the-claim-cutover-flag)
 
-`SCHEDULER_MAINTAINED_READY` (default **OFF**, `KNOWN_DARK_FLAGS` case `cutover`). `claimFloorsWhereSql` swaps the inline `NOT EXISTS` for `NOT EXISTS (work_item_blocked …)` (indexed) when on. **Both** claim entry points — `claimNextWorkItem` and `getNextWorkItem` — resolve `schedulerMaintainedReadyEnabled()` (fail-CLOSED to the inline predicate) and pass the boolean into the shared fragment, so the two paths can never drift (D-002). OFF is byte-identical to the pre-existing behavior.
+`SCHEDULER_MAINTAINED_READY` (now **default ON** — graduated 2026-06-22 after a sustained live drift=0 verify + the flag-ON claim path green end-to-end). `claimFloorsWhereSql` reads `NOT EXISTS (work_item_blocked …)` (indexed) when on, the inline `NOT EXISTS` when off. **Both** claim entry points — `claimNextWorkItem` and `getNextWorkItem` — resolve `schedulerMaintainedReadyEnabled()` (fail-CLOSED to the inline predicate) and pass the boolean into the shared fragment, so the two paths can never drift (D-002). OFF is the reversible kill-switch back to the byte-identical inline predicate.
 
-**Do not flip it without a live reconciliation showing zero drift.** Run `reconcileReadiness()` (or the inline SQL: `EXCEPT` both ways between `work_item_blocked` and the `work_item_is_blocked()` set over features) — `drift = missing + extra` must be 0. `missing` (oracle-blocked but no sidecar row) is the dangerous one: a blocked item looks ready → a bee claims blocked work.
+**Before changing the default or trusting the sidecar on a new DB, verify zero drift.** Run `reconcileReadiness()` (or the inline SQL: `EXCEPT` both ways between `work_item_blocked` and the `work_item_is_blocked()` set over features) — `drift = missing + extra` must be 0. `missing` (oracle-blocked but no sidecar row) is the dangerous one: a blocked item looks ready → a bee claims blocked work. The claim test pins both arms explicitly (an inline-OFF describe + a sidecar-ON describe) so a fragment bug in either path is caught.
 
 ## Gotchas
 
@@ -13686,6 +13793,51 @@ Tip
 
 A good `decideX` function: takes data, returns a discriminated union, has no async, has no side effects, has tests that exercise every variant. If your function fails any of those, push the impurity further out into the runtime.
 
+# Push vs poll: the 90s dedupe means push is for EVENT-driven data, not continuous gauges/probes
+
+> Before migrating a UI poll to useSyncQuery push, classify the data — write-driven events push cleanly; continuous live gauges and system probes should stay polled. The invalidation bus's 90s source-side dedupe is why.
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+Before you migrate a `setInterval` poll to `useSyncQuery` + push, **classify the data source**. Push (a bridged trigger or `notifySyncInvalidate`) is the right mechanism for **event-driven data that changes on a discrete write**. It is the WRONG mechanism for **continuous live gauges** and **system/external probes** — those should stay polled.
+
+The reason is the invalidation bus’s **90 s source-side dedupe**.
+
+## Why — the 90s dedupe
+
+[Section titled “Why — the 90s dedupe”](#why--the-90s-dedupe)
+
+`createInvalidationBus` (`libs/generic/sync/src/server/invalidation-bus.ts`) suppresses a repeated identical `(name, args)` notify within `DEFAULT_DEDUPE_WINDOW_MS = 90_000`, and `sync-sse.ts` does **not** override it. A bridged table entry (`table-to-query-names.ts`) emits the query **name-only**, so:
+
+* The **first** invalidation in a 90 s window delivers immediately; every identical one for the next 90 s is **dropped**.
+* For a query whose data changes faster than once per 90 s, the client therefore refetches **at most once per 90 s** — regardless of how fast the source moves.
+* Name-only also means two concurrent contexts (e.g. two bench runs) **share the dedupe key** → one’s writes suppress the other’s invalidations.
+
+A *data-bearing* notify (`notifySyncInvalidate(name, args, data)`) hashes the data into the dedupe key, so changing data isn’t suppressed — but then a high-frequency source fires a `pg_notify` **per change** = the notify-storm anti-pattern (see `/internal/docs/performance`).
+
+So neither form streams a fast-changing value well.
+
+## The classification
+
+[Section titled “The classification”](#the-classification)
+
+| Data shape                                                                   | Example                                                                                          | Mechanism                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Event-driven** (changes on a discrete write, events typically >90 s apart) | schedule edit, plan edit, a hive announce/withdraw, a Queen wake, a spawn outcome flip           | **PUSH** — bridge the table or `notifySyncInvalidate` on the write. The dedupe rarely bites; the first event delivers promptly.                                                                       |
+| **Continuous live gauge** (changes every request / sub-second)               | fleet rate usage% / in-flight, a live bench-run progress counter                                 | **POLL** (bounded). The 90 s dedupe would make it feel dead; a per-change notify is a storm. A dedicated non-deduped SSE channel is the only push that beats polling here — usually disproportionate. |
+| **System / external probe** (no backing PG-table write at all)               | OS process list, `pg_stat_activity`, git worktree state, kopia/drizzle-studio external processes | **POLL**. There is nothing to trigger on — the state changes without a PG write.                                                                                                                      |
+| **Editor draft**                                                             | a Vditor/markdown editor’s source                                                                | **GUARDED one-shot** — a live re-fire mid-edit clobbers the draft.                                                                                                                                    |
+
+## How this bit `data-sync-push-completion-2026-06-23`
+
+[Section titled “How this bit data-sync-push-completion-2026-06-23”](#how-this-bit-data-sync-push-completion-2026-06-23)
+
+The audit listed \~40 polls to “migrate to push.” On inspection \~⅓ were continuous gauges (`FleetRateControl`, `AdvEvalsTab` bench-live), system probes (ProcessesTab, PgTab, AdvGitGraphPanel, BackupsTab, StudioTab), or retired components — none of which should be pushed. The genuinely-pushable set was the event-driven reads (schedule/design/plans/discovery/queen-wake/run-pills), which migrated cleanly. See plan decisions D-005 (bench-live), D-006 (the apps/operator poll set), D-007 (fleet-rate gauge).
+
+**Rule of thumb:** if you’d describe the data as “a live meter / how-busy-is-it right now,” it wants polling. If you’d describe it as “the set of X, which changes when someone does Y,” it wants push.
+
 # Queen fires but no-ops (19-80ms runs) — DBOS routine/step context breaks her spawn
 
 > The autonomous Queen wakes on cadence but her runs complete in tens of milliseconds and place no work, because on the green :3070 operator the hive autoloop fires her from inside a DBOS step/transaction.
@@ -13815,7 +13967,7 @@ An operational escalation (“X is cursed / stuck / not green”) is an **alert*
 [Section titled “The fix (queue-pending-accuracy-and-drift-2026-06-16)”](#the-fix-queue-pending-accuracy-and-drift-2026-06-16)
 
 1. **Tier it right.** `coordEscalationToAttention` now calls the shared `isOperationalEscalation(from, hasOptions)` — a `system`/`system:*` sender **with no options** is `alert`, never `decision`. Genuine decisions come from agents (`coord:escalate` / `coord:ask-owner`) and carry a real sender or options. (One reader change demotes the existing flood AND future ones.)
-2. **GC it.** `attention/reconcile-escalations.ts` is an hourly sweep (`dbos/periodic-workflows.ts`) that auto-resolves operational escalations idle past a TTL (`OPERATIONAL_ESCALATION_TTL_MS`, default 3d) — batch-limited so a large backlog drains over several ticks. Genuine (non-system / with options) escalations are **never** auto-resolved.
+2. **GC it.** `attention/reconcile-escalations.ts` is an hourly sweep (`dbos/periodic-workflows.ts`) that auto-resolves operational escalations idle past a TTL (`OPERATIONAL_ESCALATION_TTL_MS`, default 48h — lowered from 3d per infra-perf-robustness-audit-2026-06-18 D-005; reconcile-escalations.ts:40) — batch-limited so a large backlog drains over several ticks. Genuine (non-system / with options) escalations are **never** auto-resolved.
 3. **Stop minting blockers.** The watchdog now emits the cursed-placement escalation as `advisory`, not `blocker` (it has already stopped re-placing — it is informing, not blocked).
 
 ## The invariant (derive-don’t-store) — hold this for every new attention source
@@ -13924,7 +14076,7 @@ The first AIMD cut halved `eff` on every `penalize()` call. Under a fleet, ONE 4
 
 # "We hit the rate limit" is usually account-routing, not real capacity
 
-> Papercusp runs LLM inference over a POOL of many Anthropic accounts behind an inference gateway with a per-account rate governor, so a true usage/quota wall is rare. Agents keep mis-reading a routing/config fault as exhaustion ('we hit the account limit', 'session limit', 'exceeded max wait', a 429) and give up. The two faults that masquerade as a limit: (1) the account-aware routing is gated behind INFERENCE_GATEWAY + INFERENCE_GATEWAY_MULTI_ACCOUNT flags — OFF → spawned bees get no PAPERCUSP_ACCOUNT_ID → the governor keys the account-BLIND global anthropic:opus bucket → one account's 429 pauses it fleet-wide even with 6 idle accounts ('rate-limit pause exceeded max wait', exit 1, ~30ms, $0); (2) the gateway pools only some accounts — selectSpawnAccount pins a bee to a healthy account via x-papercusp-account, but if that account isn't in the gateway's pool the header is ignored and it falls back to its exhausted active() account, so the bee HANGS at $0. Verify with dev:rate_governor_status / accounts:status / the bee's /proc env / the gateway /healthz before concluding a limit.
+> Papercusp runs LLM inference over a POOL of many Anthropic accounts behind an inference gateway with a per-account rate governor, so a true usage/quota wall is rare. Agents keep mis-reading a routing/config fault as exhaustion ('we hit the account limit', 'session limit', 'exceeded max wait', a 429) and give up. Several faults masquerade as a limit: (1) the account-aware routing is gated behind INFERENCE_GATEWAY + INFERENCE_GATEWAY_MULTI_ACCOUNT flags — OFF → spawned bees get no PAPERCUSP_ACCOUNT_ID → the governor keys the account-BLIND global anthropic:opus bucket → one account's 429 pauses it fleet-wide even with 6 idle accounts ('rate-limit pause exceeded max wait', exit 1, ~30ms, $0); (2) the gateway pools only some accounts — selectSpawnAccount pins a bee to a healthy account via x-papercusp-account, but if that account isn't in the gateway's pool the header is ignored and it falls back to its exhausted active() account, so the bee HANGS at $0. Verify with dev:rate_governor_status / accounts:status / the bee's /proc env / the gateway /healthz before concluding a limit.
 
 ## The mistake this prevents
 
@@ -13950,6 +14102,8 @@ Papercusp routes **all** model calls through an **inference gateway** backed by 
 
 **4. The PERSISTED penalty false-pause (a transient 429 → a 16-HOUR fleet-wide lockout).** The worst one, and it SURVIVES RESTARTS. The governor’s pause lives in `harness_shared.agent_rate_budget` (one row per `bucket_key`, `paused_until` epoch-ms — `agent-governor-pg-store.ts`), SHARED by every operator + gym process. When a `429` is classified `accountWide && !retryable` (the usage-cap path in `resilience/retry.ts`), the handler calls `governor.penalize({ resetAt })` with `resetAt` = the account’s **rolling-window** reset (Claude Max 5h/**7d**). `recordPenalty` honored that reset FULLY (no `maxPauseMs`), so a single transient 429 pinned the **account-blind** `anthropic:opus` (+ `sonnet` + `haiku`) bucket to a reset boundary **\~16 h out** — locking the WHOLE fleet out of opus with **rpm 0/45, $0, zero in-flight**, while `api.anthropic.com` direct-probes returned **200** (5h util 0.48 *allowed*, 7d 0.79 *allowed*). The tells: `dev:rate_governor_status` shows `paused:true` with `pausedUntil` a round hour many hours out + `usage.calls 0 / $0`; the pause is identical across `:3070` and `:3170` (it’s the shared PG row); and a process restart does **NOT** clear it (the row reloads on boot — this is why “restart the gateway” alone failed on 2026-06-17). A **rolling-utilization** window recovers continuously, so sitting on its multi-hour reset is always wrong — `recordHeaders` already re-probes a rejected unified window at `ROLLING_WINDOW_REPROBE_MS` (2 min); `penalize()` was the gap. **Fixed** (`resilience/governor.ts`): `penalize()` auto-caps the pause at `ROLLING_WINDOW_REPROBE_MS` for a subscription account (detected via `state.unified`), and bakes that cap into `opts` so the cross-process PG write inherits it (the persisted row never carries `unified`, so an in-memory-only cap would still write 16 h). **To CLEAR a live one** (no verb does it — `accounts:reset-rate` explicitly skips live governor buckets, and they otherwise self-expire only at `paused_until`): `UPDATE harness_shared.agent_rate_budget SET paused_until = 0, pace_delay_ms = 0 WHERE paused_until > <now_ms>` — scoped to the future-paused rows; the next `acquire` reads it fresh, fleet-wide, no restart needed.
 
+**5. The mid-turn death MISCLASSIFIED as a host fault (the GENUINE all-accounts throttle that never shows up as a 429).** Faults 1–4 are config/routing faults where idle capacity exists. This is the one case where the pool *is* (transiently) all-throttled at once — AND the only one that never reaches the debugger as a rate-limit string at all, so it slips past this whole doc’s framing. The shape: a blueprint spawn (queen/worker) is recorded **`infra_loss: "<label> returned HTTP 200 but the agent produced no turn (ok=false, exitCode=1, timedOut=false, outLen=18) — launcher host dead/unstable; recorded failed, not retried (host stability is the fix)"`** (`durable-spawn.ts`, the HTTP-200-but-no-turn classifier). The label sends you hunting a phantom host bug — **the host is fine.** The flight-recorder transcript (`~/.papercusp/flight-recorder/unlabeled-claude-cfg-spawn-*/.../<sid>.jsonl`) shows the agent **ran normally**: its **1st** gateway call succeeded (real cache-creation tokens, a tool call), it got the first `tool_result` — then the process **exited 1 with EMPTY stderr mid-turn** on its **2nd** call. The gateway route log at that timestamp (`PAPERCUSP_GATEWAY_ROUTE_LOG=1`) explains it. Two storm shapes trigger the same death: (a) an all-accounts **429 storm** — `sustainedly limited … no-fresh-account` + `all accounts transiently throttled on <model> → wait Nms`; or (b) the **dominant** one — a **transport-STALL storm** (`upstream fetch STALLED (aborted) … no activity for Nms`), which does **NOT** increment `upstream429`, so the death can land in a window that looks 429-calm (`upstream429` flat). The 1st call slipped through a calm window; the 2nd hit the storm; the in-request **stall-absorb** budget (`PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS`, \~120 s) ran out → the `claude` CLI got an error and died, producing only its bootstrap log lines (stripped by `extractAgentOutput`) → `outLen` ≈ 0. Tell: `spawned_agents` rows for blueprint roles all `failed` with the `infra_loss … no turn … host dead/unstable` string and **wildly varying `duration_ms`** (a few hundred ms to many minutes — the absorb hold), while the host’s own services are healthy and the gateway `/healthz` `aimd.pressure` oscillates (calm when you check, but the route log shows storms at the death timestamps). Unlike 1–4 this genuinely is capacity — but it’s **transient** (the pool recovers; `pressure` returns to 0 with a growing `cleanStreak`), so the fix is the same as always: **add accounts** (owner-authority) so `no-fresh-account` stops happening — NOT “stabilize the host,” and NOT “wait for a multi-hour reset.” A reserved/pinned account (`x-papercusp-account` + excluded from `selectSpawnAccount` rotation) gives a single workload a lane isolated from the fleet storm.
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 [Section titled “The diagnostic recipe (do this BEFORE concluding a limit)”](#the-diagnostic-recipe-do-this-before-concluding-a-limit)
@@ -13958,7 +14112,8 @@ Papercusp routes **all** model calls through an **inference gateway** backed by 
 * **`accounts:status`** — which accounts have headroom (`utilization`, `pausedUntil:0`, `sustainedlyLimited:false`)? If several are idle, you are **not** capacity-gated.
 * **`harness_shared.spawned_agents.error_message`** for the failing spawn — `exceeded max wait` (governor, fault #1) vs `account 'X' paced/paused` vs `session limit`.
 * **The bee’s `/proc/<pid>/environ`** — `PAPERCUSP_ACCOUNT_ID`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS: x-papercusp-account` — which account/gateway did it **actually** use?
-* **The gateway `/healthz`** (`:8788`) — its `accountId` + `unified.rejected`: is it stuck serving one exhausted account? Watch `upstream429` vs `failovers` (fault #3: 429s climb, failovers flat).
+* **The gateway `/healthz`** (`:8788`) — its `accountId` + `unified.rejected`: is it stuck serving one exhausted account? Watch `upstream429` vs `failovers` (fault #3: 429s climb, failovers flat). For fault #5, `aimd.pressure`/`cleanStreak` oscillate — calm when you poll, but the **route log** shows `no-fresh-account` storms at the death timestamps.
+* **A blueprint spawn recorded `infra_loss … no turn … host dead/unstable`?** (fault #5) Do NOT trust the “host” label. Open the flight-recorder transcript (`~/.papercusp/flight-recorder/…/<sid>.jsonl`): if the agent ran normally then stopped **mid-turn** (1st call OK, died on the 2nd), it’s the gateway storm, not the host — cross-check the gateway route log at that timestamp.
 * **`operator_rate_limit_config` (get)** — the fleet-wide `maxSimultaneousAgents` cap. If it’s pinned LOW (e.g. **1**, the floor), the operator serializes governed spawns one-at-a-time — throughput looks “rate-limited” but it’s a **config throttle**, not a quota wall, and with `cap == concurrencyFloor` the operator’s own AIMD has no room to adapt. Often a leftover from an earlier firefight.
 
 ## The two governor processes — pace lives in BOTH, AIMD only in one
@@ -22853,7 +23008,7 @@ Trust what the code **does** (call sites, usage, the path that actually runs), n
 
 [Section titled “Escalating”](#escalating)
 
-If the docs are wrong or missing, surface the gap via a supervisor note or by listing it as a finding in your next artifact. Don’t silently work around — the next agent will hit the same wall. Existing issues are readable via `issues:list`.
+If the docs are wrong or missing, surface the gap via a supervisor note or by listing it as a finding in your next artifact. Don’t silently work around — the next agent will hit the same wall. Existing issues are readable via `work_items:list` (issues are work-items of kind bug/change).
 
 # Agent kickoffs
 
@@ -23215,7 +23370,7 @@ The original implementation plan committed in `f3faf22` is preserved in git hist
 1.  <role>.persona.md         character + behavior rules
 2.  Tools catalog             per-tool guidance from defineTool({ guidance })
 3.  <role>.tools.md           cross-tool patterns + workflows
-─── shared-base policy block (≈10 sections, see below) ───
+─── shared-base policy block (≈13 sections, see below) ───
 4.  coord-legend              how to read injected [coord+N] blocks
 5.  friction-tripwire         file friction you felt
 6.  observation-rubric-nudge  how to grade a turn-end observation
@@ -23226,11 +23381,14 @@ The original implementation plan committed in `f3faf22` is preserved in git hist
 11. deploy-pipeline-note      don't babysit the async pipeline
 12. reuse-first-nudge         extend, don't fork
 13. code-run-note             collapse N tool calls into one code:run
+14. finish-the-rollout-note   built-but-gated-OFF is incomplete; flip it on
+15. agent-activity-truth-note "who's doing what" is a live derived truth
+16. wait-loop-note            waiting? arm a self-wake loop, don't sleep blind
 ─────────────────────────────────────────────────────────
-14. Runtime context           caller-supplied blocks (history, trigger, ...)
+17. Runtime context           caller-supplied blocks (history, trigger, ...)
 ```
 
-Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–13 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 14 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 14 sections.
+Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–16 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 17 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 17 sections.
 
 Caution
 
@@ -23372,22 +23530,25 @@ The order within runtime is caller-controlled. The contract is: runtime always c
 
 [Section titled “The shared-base policy block”](#the-shared-base-policy-block)
 
-Between the tools playbook (section 3) and runtime (section 14), `assembleRolePrompt` injects up to **ten shared-base policy sections** in this order:
+Between the tools playbook (section 3) and runtime (section 17), `assembleRolePrompt` injects up to **thirteen shared-base policy sections** in this order:
 
-| Section                    | What it primes                                                                                                                                            |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `coord-legend`             | how to read the injected `[coord+N]` blocks the PostToolUse hook adds                                                                                     |
-| `friction-tripwire`        | file friction you *felt* (a workaround, a misleading doc, a >3-attempt confusing failure) via `improvements:capture` the moment it hits                   |
-| `observation-rubric-nudge` | when filing a turn-end observation, check `rubrics:list` first and file a structured observation if an active rubric fits                                 |
-| `yield-policy`             | on a `turn:interrupt` yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn                                       |
-| `account-routing-note`     | don’t mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system                                        |
-| `concurrency-first-note`   | don’t back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents      |
-| `testing-standard`         | write tests the project way                                                                                                                               |
-| `deploy-pipeline-note`     | your change ships via an async, self-healing pipeline; don’t babysit or self-diagnose a stall                                                             |
-| `reuse-first-nudge`        | extend an existing durable surface, don’t fork a parallel one                                                                                             |
-| `code-run-note`            | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset) |
+| Section                     | What it primes                                                                                                                                                                   |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coord-legend`              | how to read the injected `[coord+N]` blocks the PostToolUse hook adds                                                                                                            |
+| `friction-tripwire`         | file friction you *felt* (a workaround, a misleading doc, a >3-attempt confusing failure) via `improvements:capture` the moment it hits                                          |
+| `observation-rubric-nudge`  | when filing a turn-end observation, check `rubrics:list` first and file a structured observation if an active rubric fits                                                        |
+| `yield-policy`              | on a `turn:interrupt` yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn                                                              |
+| `account-routing-note`      | don’t mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system                                                               |
+| `concurrency-first-note`    | don’t back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents                             |
+| `testing-standard`          | write tests the project way                                                                                                                                                      |
+| `deploy-pipeline-note`      | your change ships via an async, self-healing pipeline; don’t babysit or self-diagnose a stall                                                                                    |
+| `reuse-first-nudge`         | extend an existing durable surface, don’t fork a parallel one                                                                                                                    |
+| `code-run-note`             | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset)                        |
+| `finish-the-rollout-note`   | a capability built then left gated OFF (flag or env boolean) is incomplete — flipping the gate on is the last step of the task                                                   |
+| `agent-activity-truth-note` | ”who’s doing what” is a live derived truth (`fleet:assignments`: claim + holder-liveness + progress), never a stale coord broadcast that outlives the work                       |
+| `wait-loop-note`            | waiting on something that may never fire? arm a recurring self-wake (`loop:arm` / `hive:declare-wake`) and FIX what’s blocking it — don’t sleep forever on a bare `events:await` |
 
-Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can’t desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all ten.
+Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can’t desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all thirteen.
 
 ## The noun/verb split
 
@@ -27376,6 +27537,18 @@ The library set documented here was chosen, installed, and applied across the ha
 | 5000+ rows of mostly-scalar data, performance is the constraint                                       | `@papercusp/grid-core` `DataGridShell` (canvas)                                                                                                                                                                                           | `<DataGridShell headers data formatters />`                                                                                                                                                                                      |
 | Kanban board (drag cards between status columns)                                                      | vendored Kibo UI primitives on `@dnd-kit`                                                                                                                                                                                                 | `<KanbanProvider columns data onDataChange overlay>` + `KanbanBoard`/`KanbanHeader`/`KanbanCards`/`KanbanCard` from `app/harness/Kanban.tsx` (token CSS in `Kanban.css`; consumer example: `app/admin/plans/PlanKanbanView.tsx`) |
 
+## Token quick-reference
+
+[Section titled “Token quick-reference”](#token-quick-reference)
+
+The design section **does** have a full token-system page: [design tokens](/internal/docs/design/tokens). Use that page when changing tokens or themes. This short version is for component authors:
+
+* Component code uses **semantic CSS variables**: `--bg*` for surfaces, `--fg*` for text, `--border*` for borders, `--accent*` for interactive accent, `--good` / `--warn` / `--bad` for status.
+* Do not use brand primitives like `--sky-400` in components. Those are source palette values generated into `_brand-primitives.css`; themes swap the semantic layer, not the primitive layer.
+* Do not hardcode sky/cyan literals (`#38bdf8`, `#7dd3fc`, `#bae6fd`, `rgba(103,232,249,…)`) in app UI. Use `var(--accent*)` or `color-mix()` over a semantic token.
+* `var(--token, #fallback)` is allowed. The fallback is only for rendering outside a themed root; the token still wins in the app.
+* Raw brand/product/media colors are allowed only for actual brand marks, avatars, user-generated media, screenshots, color swatches, or generated token CSS. When in doubt, route through a semantic token.
+
 ## Hard rules
 
 [Section titled “Hard rules”](#hard-rules)
@@ -27405,6 +27578,16 @@ The library set documented here was chosen, installed, and applied across the ha
 8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@papercusp/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (the markdown-rendering components, e.g. `app/_components/MarkdownEditor.tsx` and `app/settings/SettingsMarkdownEditor.tsx`) — those are content-author tables, not UI tables.
 
 9. **Buttons are flat — no 3D.** In-page action buttons and pills are flat: a solid (or `color-mix`-tinted) background, a 1px border, readable text. Do **not** give them an embossed bevel (`box-shadow: inset 0 1px 0 …`), a raised drop-shadow / glow (`box-shadow: 0 8px … rgba(0,0,0,…)`), a hover-lift or press (`transform: translateY(…)`), or a vertical “sheen” gradient fill (`linear-gradient(180deg, rgba(255,255,255,.05), …)`) — those read as 3D and hurt legibility. Hover/active = change the background/border colour, not the elevation. Keyboard focus rings (`:focus-visible`) are the one box-shadow/outline that stays. *Carve-out: the large top-level **page/tab nav** (e.g. the `/adv` tab strip) is a different category — it may keep its accent treatment.* See [buttons](#buttons) below for the flat recipe.
+
+10. **Anchored panels use the anchored-panel primitive.** If a panel opens under or beside a trigger button, use `<Popover>` from `app/harness/Popover.tsx` or the matching Radix primitive. Do not write a trigger plus a sibling `open && <div role="dialog">…</div>` by hand; that loses portal positioning, outside-click handling, and focus restoration. *Carve-out: cursor-anchored context/status menus that are anchored to generated document content may use a local fixed-position menu if they use menu semantics (`role="menu"` / `menuitem*`), ESC/outside-click close, and a narrow comment explaining why a trigger-based popover is not a fit.*
+
+11. **`aria-modal="true"` is only for real modals.** Use it through `<Modal>` / Dialog, not on non-trapping panels. A top deck, non-blocking overlay, popover, or menu should not claim modal semantics unless it traps focus and prevents interaction with the rest of the app.
+
+12. **Animation libraries are restricted.** For normal app UI use CSS (`[data-anim]`), `@formkit/auto-animate`, or `motion`. Do not add `gsap` / `@gsap/react`. Cross-route flourish effects belong behind `FLAGS.TESTING`; production navigation should be direct and predictable.
+
+13. **Declare UI dependencies before importing them.** A dependency imported by app source must be declared in the owning package’s `package.json`. Do not rely on a transitive or extraneous package that happens to exist in the workspace install tree.
+
+14. **Know which rules are lint-enforced.** `app/_lints/design-primitives.test.ts` covers a subset: native selects/tables/checkboxes/radios, direct confirm, action `title=` tooltips, some typography rules, and selected token leaks. `app/_lints/css-tokens.test.ts` validates token references. The rest of this page is still binding review policy even when no test catches it.
 
 ## Buttons
 
@@ -27450,6 +27633,8 @@ Buttons are **flat**. The look is a solid or `color-mix`-tinted surface, a 1px b
 [Section titled “Soft rules (judgment calls)”](#soft-rules-judgment-calls)
 
 * **Tooltips on grid-cell text.** When you’re rendering thousands of rows in `RichGrid` and want truncation tooltips, `title="…"` on the cell `<span>` is fine. Wrapping each row in a Radix Tooltip mounts thousands of portals and listeners — bad perf. The “no native title=” rule is for *action elements*, not data cells.
+
+* **Native `<datalist>` is allowed for progressive enhancement.** There is no shared combobox primitive yet. If you need browser autocomplete for a plain text input, `<datalist>` is acceptable as long as the field remains usable without it and the option set is small. If the user must choose from a controlled list, use `<Select>` or build a real combobox primitive first.
 
 * **Filter pills vs real tabs.** If clicking the pill swaps which list of items is shown but the surrounding layout is the same, `<Tabs.Root>` + `<Tabs.List>` + `<Tabs.Trigger>` is correct (live example: `app/adv/sessions/AdvSessionsClient.tsx`, the session detail-panel tab strip). If clicking swaps fundamentally different content panels, add a `<Tabs.Content>` per panel. If the pills are mutually-exclusive boolean toggles where each one filters a single list, native `<button aria-pressed>` is also acceptable — `@radix-ui/react-toggle-group` would be ideal but is not currently installed.
 
@@ -29424,10 +29609,6 @@ Three more cheap wins:
 
 Most libraries below are declared in `apps/operator/package.json` and resolved through the monorepo root `node_modules`. Total bundle delta from the migration was \~55 KB gzipped across the harness routes, all tree-shakable.
 
-gsap is an undeclared dependency
-
-`gsap` and `@gsap/react` are imported by `OperatorPanel.tsx` but are **not** declared in `apps/operator/package.json` (or any package.json) and are absent from `node_modules`. They resolve today only by accident of the install tree — verify/restore the declaration before relying on the HUD animation. See the [animation stack](#motion--formkitauto-animate--gsap-for-the-operatorpanel-hud) for what gsap actually drives.
-
 ## `@radix-ui/react-tooltip`
 
 [Section titled “@radix-ui/react-tooltip”](#radix-uireact-tooltip)
@@ -29518,15 +29699,15 @@ Radix Select reserves `value=""` to mean “no value selected”. If your busine
 
 [Section titled “Native \<input> + \<textarea> styling”](#native-input--textarea-styling)
 
-The global input baseline is not currently in source CSS
+The global input baseline IS present in source CSS
 
-This section previously described a `:where(input, textarea)` baseline in `globals.css`. **That rule is not present in current source CSS** (`apps/operator/app/globals.css`) — it was added in May 2026 and appears to have been dropped/relocated during the operator-vite migration. Today the dark-theme look comes from the **harness wrappers’ inline style objects** (`TextInput.tsx`’s `BASE_STYLE`, `Select.tsx`’s `TRIGGER_DEFAULT_STYLE`), not a global selector. An *unwrapped* native `<input>` / `<textarea>` does **not** automatically pick up the dark theme until the baseline is restored — wrap it with `<TextInput>` / `<TextArea>` for now.
+The `:where(input:not([type]), input[type=text|number|email|search|tel|url|password|date|time|datetime-local], textarea)` baseline **is present** in `apps/operator/app/globals.css:629-655`, and the live operator-vite UI loads it (`apps/operator-vite/src/routes/__root.tsx` imports `@/app/globals.css`). It sets `background: var(--bg-2)`, `color: var(--fg)`, a 1px `var(--border)`, `border-radius: 4px`, `font-size: 12px`, `4px 8px` padding, plus an accent focus ring (`:657-673`). So an *unwrapped* native `<input>` / `<textarea>` **does** pick up the dark theme. The harness wrappers (`TextInput.tsx` `BASE_STYLE`, `Select.tsx` `TRIGGER_DEFAULT_STYLE`) layer leading/trailing affordances on top — they are no longer the only styled path. *(An earlier version of this Aside claimed the baseline had been dropped in the operator-vite migration; it has since been restored.)*
 
 **Intended look** (carried by the wrappers’ inline `BASE_STYLE`): `var(--bg-2)` background, `var(--border)` border, `border-radius: 4`, font-size 12, `4px 8px` padding, with an accent-tinted focus ring. This matches the `<Select>` trigger.
 
-**Why a baseline was the goal:** Inputs are scattered across hundreds of sites; migrating every one to a wrapper would be high-churn for low marginal value. A single `:where(...)` specificity-0 rule would fix the visual problem in one place — any site with an inline style or class still winning, so bespoke surfaces (marketplace search, OracleDock composer, etc.) keep their custom look. Restoring that rule is the right fix; until then, prefer the wrapper.
+**Why a baseline was the goal:** Inputs are scattered across hundreds of sites; migrating every one to a wrapper would be high-churn for low marginal value. A single `:where(...)` specificity-0 rule would fix the visual problem in one place — any site with an inline style or class still winning, so bespoke surfaces (marketplace search, OracleDock composer, etc.) keep their custom look. That `:where(...)` baseline is in place (`globals.css:629-655`), so the visual problem is solved app-wide; reach for the wrapper for leading/trailing affordances, not for basic theming.
 
-**Intended selector list** (when restored, intentionally narrow): `input[type=text|number|email|search|tel|url|password|date|time|datetime-local]`, untyped `<input>`, and `<textarea>`. Excluded: `checkbox`/`radio` (use `<Checkbox>`), `range`/`color`/`file` (bespoke widgets), `submit`/`button` (button styling).
+**Selector list** (intentionally narrow): `input[type=text|number|email|search|tel|url|password|date|time|datetime-local]`, untyped `<input>`, and `<textarea>`. Excluded: `checkbox`/`radio` (use `<Checkbox>`), `range`/`color`/`file` (bespoke widgets), `submit`/`button` (button styling).
 
 **Number-input spinner buttons** are *not* suppressed app-wide. The only `::-webkit-(inner|outer)-spin-button` suppression in the operator CSS is scoped to a single component selector (`.operator-budget-custom__input`, `globals.css:5406`). Other number inputs still draw their native up/down arrows.
 
@@ -29538,11 +29719,11 @@ Buttons are flat — no 3D
 
 In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or “sheen” gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). On `/adv` a scoped `.pc-advshell__body` rule enforces it; the top tab strip is exempt.
 
-The native-button baseline and .pc-btn-\* CSS are not in source CSS
+The native-button baseline and .pc-btn-\* CSS ARE in source CSS
 
-This section previously credited a native `<button>` baseline and `.pc-btn-primary` / `.pc-btn-destructive` / `.pc-btn-ghost` rules to `globals.css`. **None of those rules exist in current source CSS.** `Button.tsx` / `SubmitButton.tsx` *apply* the `.pc-btn-*` classes (and tests assert them), but the only place the matching styling lives is the wrappers’ inline `BASE_STYLE` / `TRIGGER_DEFAULT_STYLE` TS objects (plus stale built `dist` artifacts). Applying a bare `.pc-btn-primary` class to a native `<button>` does **not** currently style it. The `<button>` rule that does exist (`globals.css:597`) only sets font/color/cursor inheritance — not bg/border/radius/padding. These were added May 2026 and dropped during the operator-vite migration; restore them or treat the wrapper as the only styled path.
+A native `<button>` baseline and the `.pc-btn-primary` / `.pc-btn-destructive` / `.pc-btn-ghost` variant rules **are present** in `globals.css`: the shared `:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost)` block (`:679-755`) sets fill, a 1px border, `border-radius: 6px`, and hover/focus/disabled states, plus the per-variant colors (`.pc-btn-primary` `:718`, `.pc-btn-destructive` `:730`, `.pc-btn-ghost` `:742`). (A separate bare `button { font/color/cursor }` inheritance rule is at `:623`.) So applying a `.pc-btn-*` class to a native `<button>` **does** style it — `Button.tsx` / `SubmitButton.tsx` rely on exactly that. The wrappers add icon/spinner/sizing affordances on top; they are not the only styled path. *(An earlier version of this Aside claimed these rules had been dropped in the operator-vite migration; they are present.)*
 
-**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (the global native-`<button>` baseline it was meant to layer on is currently missing — see the caution above). It carries the neutral default look inline and adds three variants for the cases where more emphasis is needed:
+**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (it layers on the global native-`<button>` baseline — see the note above). It carries the neutral default look and adds three variants for the cases where more emphasis is needed:
 
 * `variant="primary"` — filled accent for the page’s primary CTA
 * `variant="destructive"` — red tint for delete / clear / forget actions
@@ -29550,7 +29731,7 @@ This section previously credited a native `<button>` baseline and `.pc-btn-prima
 
 **When to use which:**
 
-* Action buttons should use the wrapper for now — the global baseline that would style *unwrapped* `<button>`s is not currently present (see the caution above).
+* Action buttons can use the wrapper for variant/icon/spinner affordances — the global baseline already styles *unwrapped* `<button>`s too (see the note above).
 * Use `<Button variant="primary">` for the **one** save/submit button on a page. Don’t sprinkle primary buttons everywhere; the variant is for the dominant action.
 * Use `<Button variant="destructive">` whenever the button triggers `useConfirmDialog({ destructive: true })` — the visual and the confirm modal both signal “this is dangerous.”
 * Use `<Button variant="ghost">` for icon-only buttons in toolbars or for “Cancel” in a modal footer where you want the primary button to dominate.
@@ -29567,7 +29748,7 @@ import { Button } from '@/app/harness/Button';
 
 The wrapper forwards refs and spreads all native button props. `type` defaults to `"button"` so you don’t accidentally submit a form.
 
-**The variant classes** (`.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) are applied by the wrapper, but **have no CSS rule in current source** — applying one to a bare native `<button>` does not currently reproduce the look. Use the wrapper until the `.pc-btn-*` rules are restored in `globals.css`.
+**The variant classes** (`.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) are applied by the wrapper **and have matching CSS rules** in `globals.css` (`:679-755`) — applying one to a bare native `<button>` reproduces the look. The wrapper adds icon/spinner/sizing affordances on top.
 
 ## `<TextInput>` + `<TextArea>` wrappers
 
@@ -29581,7 +29762,7 @@ The wrapper forwards refs and spreads all native button props. `type` defaults t
 * You want the canonical class hook (`.pc-text-input`) for future restyling. (Note: there is no `.pc-text-input` CSS *rule* in current source — the wrapper carries its look via inline `BASE_STYLE`; the class is a future hook, not an active style.)
 * You want to opt out of any inline-style cascade a parent might be applying.
 
-**Prefer the wrapper for now.** A simple `<input type="text" value … onChange …>` does **not** currently pick up the dark-theme look on its own — the global `:where(input, textarea)` baseline that used to style unwrapped inputs is not present in current source CSS (see the [native input section](#native-input--textarea-styling)). Until it’s restored, wrap text inputs with `<TextInput>` rather than relying on an unwrapped `<input>` matching surrounding fields.
+**Use the wrapper for affordances, not for theming.** A simple `<input type="text" value … onChange …>` **does** pick up the dark-theme look on its own via the global `:where(input, textarea)` baseline (`globals.css:629-655`; see the [native input section](#native-input--textarea-styling)). Reach for `<TextInput>` when you want the wrapper’s leading/trailing slots or validation affordances; a bare `<input>` already matches surrounding fields.
 
 **Don’t override the canonical look with ad-hoc inline styles.** Applying `style={{ background, border, borderRadius, padding }}` to an `<input>` or `<textarea>` drifts the look away from the wrapper’s `BASE_STYLE` (and away from every other input in the harness). If you need a different look in one place, reach for `<TextInput>` and document the deviation; if you need it everywhere, change `BASE_STYLE` in `TextInput.tsx` (or restore + edit the global `globals.css` baseline). A page-local `inputStyleSmall` const that re-states `background: 'var(--bg-3)'` is the failure mode this rule names.
 
@@ -29625,9 +29806,9 @@ The wrapper forwards refs and spreads all native props.
 
 **What:** Native `<input type="checkbox|radio|range">` are *intended* to get `accent-color: var(--accent)` so the native control’s tint (checkmark fill, radio dot, slider track + thumb) recolors to the app accent without breaking the OS rendering or accessibility semantics.
 
-No global accent-color baseline in source CSS
+The global accent-color baseline IS present in source CSS
 
-A *global* `accent-color: var(--accent)` on native checkbox/radio/range is **not** present in current source CSS. The only `accent-color` rules in `globals.css` are component-scoped: `.pc-toggle input` (`:25822`) and `.pc-template-manifest-structured input[type="checkbox"]` (a hardcoded `#22d3ee`, `:17486`). Native controls outside those scopes do **not** pick up the accent tint automatically — restore the global baseline, or tint per-site, until it’s back.
+A *global* `:where(input[type="checkbox"], input[type="radio"], input[type="range"]) { accent-color: var(--accent); }` baseline **is present** in `globals.css:675-677`, so native checkbox/radio/range controls pick up the accent tint automatically. Component-scoped `accent-color` rules also exist (`.pc-toggle input`, `.pc-template-manifest-structured input[type="checkbox"]` with a hardcoded `#22d3ee`), but they are no longer the only source. *(An earlier version of this Aside claimed there was no global baseline; it is present.)*
 
 **Why this exists alongside HR2:** the wrapper is still required for harness interactive UI (HR2 explicit). This is the baseline for native controls that *legitimately can’t* be wrapped:
 
@@ -29943,29 +30124,29 @@ return (
 
 **Do not** introduce `formik`, `@rjsf/core`, `@jsonforms/react`, `uniforms`, or `@formily/react`. They were all considered and rejected in favour of RHF — adding any of them creates two parallel form systems.
 
-## `motion` + `@formkit/auto-animate` (+ `gsap` for the OperatorPanel HUD)
+## `motion` + `@formkit/auto-animate`
 
-[Section titled “motion + @formkit/auto-animate (+ gsap for the OperatorPanel HUD)”](#motion--formkitauto-animate--gsap-for-the-operatorpanel-hud)
+[Section titled “motion + @formkit/auto-animate”](#motion--formkitauto-animate)
 
-**What:** The animation stack. Two general-purpose libraries that complement each other (**use them together, not as alternatives**), plus `gsap` for the bespoke OperatorPanel HUD ring animation.
+**What:** The animation stack. Two general-purpose libraries that complement each other (**use them together, not as alternatives**).
 
 * **`motion`** (the rebrand of `framer-motion` — same engine, same author) — the general-purpose React animation lib. WAAPI-backed since v10, so transforms run on the native compositor. \~41 KB gzip.
 * **`@formkit/auto-animate`** — purpose-built for one job: animate when children of an element are added, removed, or reordered. Drop-in via `useAutoAnimate()`. WAAPI direct, zero React re-renders. \~3 KB gzip.
-* **`gsap`** (+ `@gsap/react`) — drives the **OperatorPanel HUD ring animation** (`OperatorPanel.tsx` — `gsap.timeline()` / `gsap.to()` / `gsap.utils.selector()` via `useGSAP`). It does **not** drive the route warp. (See the [undeclared-dependency caution](#radix-uireact-tooltip) at the top of this page — `gsap`/`@gsap/react` are imported but not in any `package.json`.)
 
-**The “jump-gate” route warp uses WAAPI, not gsap.** `RouteTransitionProvider.tsx` plays the warp overlay via the **Web Animations API** (transform/opacity only — GPU-composited; its own docstring says “no gsap”). This replaced `next-transition-router`, which was dropped in the TanStack Router migration — it serialised navigation through one in-flight transition and swallowed clicks, so on TSR it was pure overhead. The warp is now a capture-phase click listener on the two jump-gate anchors that plays the WAAPI overlay; everything else navigates via plain TanStack `<Link>`.
+**GSAP is not part of the app UI stack.** Do not add `gsap` or `@gsap/react` for operator UI. If an effect needs choreography, use `motion`; if it is a simple open/close, use CSS; if it is list add/remove/reorder, use `auto-animate`.
+
+**The “jump-gate” route warp is testing-only.** `RouteTransitionProvider.tsx` plays the warp overlay via the **Web Animations API** (transform/opacity only — GPU-composited; no gsap), but the app root mounts that provider only when `FLAGS.TESTING` is on. Normal navigation is plain TanStack `<Link>` without a route-transition overlay.
 
 **The rule of three** (memorize this):
 
-| Need                                                                           | Reach for                                                                                   | Why                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Modal / popover / dropdown / tab open + close                                  | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`).                                                                             |
-| **List item add / remove / reorder**                                           | **`auto-animate`**                                                                          | One-line `useAutoAnimate()` ref. Don’t reach for `motion.li` + `AnimatePresence` — it’s more code, more re-renders, same visual result.                                               |
-| Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`**                                                                                | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`.                                                                 |
-| The one cross-route “jump-gate” warp (`/` ⇄ `/adv`)                            | **WAAPI** via `RouteTransitionProvider`                                                     | A capture-phase click listener intercepts only the two jump-gate anchors and plays a Web Animations API overlay (no gsap); all other navigation is plain TanStack `<Link>` (instant). |
-| The OperatorPanel HUD ring intro / loops                                       | **`gsap`** via `OperatorPanel.tsx` (`useGSAP`)                                              | Timeline choreography of the HUD rings; the one place gsap is actually used.                                                                                                          |
+| Need                                                                           | Reach for                                                                                   | Why                                                                                                                                     |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Modal / popover / dropdown / tab open + close                                  | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`).                               |
+| **List item add / remove / reorder**                                           | **`auto-animate`**                                                                          | One-line `useAutoAnimate()` ref. Don’t reach for `motion.li` + `AnimatePresence` — it’s more code, more re-renders, same visual result. |
+| Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`**                                                                                | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`.                   |
+| The testing-only cross-route “jump-gate” warp (`/` ⇄ `/adv`)                   | **WAAPI** via `RouteTransitionProvider`, mounted only behind `FLAGS.TESTING`                | A capture-phase click listener intercepts jump-gate anchors during testing; all normal navigation is plain TanStack `<Link>` (instant). |
 
-**Don’t use** for app UI: `@theatre/core`, `@react-spring/web`, `popmotion`. They’re either overkill, abandoned, or duplicates of what `motion` covers in our context. `gsap` is in the tree but is reserved for the OperatorPanel HUD ring animation above — reach for `motion` / CSS / `auto-animate` for everything else, not GSAP. (And note the route warp is WAAPI, not gsap — don’t add gsap “to match the warp.”)
+**Don’t use** for app UI: `gsap`, `@gsap/react`, `@theatre/core`, `@react-spring/web`, `popmotion`. They’re either overkill, abandoned, or duplicates of what `motion` covers in our context.
 
 **RichGrid lists are NOT auto-animate targets.** Any `RichGrid`-backed virtualized list (e.g. `apps/operator-vite/src/components/adv/AdvConversationsTab.tsx`, `apps/operator/app/adv/harnesses/AdvAgentsPanel.tsx`) uses `useVirtualizer` — `auto-animate` would fight virtualization (animating every scroll). Animations there should target row-level data changes (status pulse, color transition) not row mount/unmount.
 
@@ -32232,7 +32413,7 @@ The operator UI is themed by one set of CSS custom properties. The **default the
 
 The one rule: never hardcode a brand color
 
-Components must reference a **semantic `var(--…)` token**, never a brand primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`, `#7dd3fc`, `#bae6fd`, `rgba(125, 211, 252, …)`, …). A theme can only swap the **semantic** layer — anything hardcoded to a sky value stays blue when the user picks Black. This rule is **audited by review**, not test-enforced: `app/_lints/css-tokens.test.ts` only checks that every `var(--…)` reference in `.tsx` resolves to a defined token (plus a vocabulary sanity check) — it does **not** scan for raw sky hexes or brand primitives. The full do/don’t is the [theme contract](#the-theme-contract--what-agents-must-follow) below.
+Components must reference a **semantic `var(--…)` token**, never a brand primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`, `#7dd3fc`, `#bae6fd`, `rgba(125, 211, 252, …)`, …). A theme can only swap the **semantic** layer — anything hardcoded to a sky value stays blue when the user picks Black. This rule is partly test-enforced and partly review-enforced: `app/_lints/css-tokens.test.ts` checks that every `var(--…)` reference in `.tsx` resolves to a defined token, and `app/_lints/design-primitives.test.ts` blocks brand primitive references plus direct cyan literals in audited active surfaces. The audit is intentionally not whole-repo yet, so the full do/don’t is still binding review policy; see the [theme contract](#the-theme-contract--what-agents-must-follow) below.
 
 Never hand-edit the generated CSS
 
@@ -32328,6 +32509,7 @@ A theme (frost, black, a custom one) is a swap of the **semantic** layer only. F
 3. **A `var(--token, #fallback)` fallback is fine and encouraged** — the token wins; the literal only applies if the var is somehow undefined. That’s *not* a leak. (`border: 1px solid var(--border, rgba(125,211,252,0.15))` ✓.)
 4. **Surfaces use the `--bg` family**, text the `--fg` family, borders `--border`/`--border-strong`, accents the `--accent` family (incl. the accent-tint scale). New dark surfaces → `--bg` / `--bg-1` / `--bg-popover`, **never** a hand-picked dark-navy literal.
 5. **Status & decorative palettes are exempt** — see the next two sections.
+6. **Brand marks, media, and swatches are narrow exceptions.** A logo SVG, avatar, screenshot, user-authored color swatch, or token-dev preview may carry its real color. If the color is part of app chrome, navigation, content panels, cards, buttons, or charts that should theme with the app, it must be semantic-tokenized.
 
 The litmus test
 

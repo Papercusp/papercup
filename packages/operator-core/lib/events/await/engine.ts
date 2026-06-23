@@ -111,6 +111,9 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       payload: opts.payload,
       summary: opts.summary ?? null,
       urgent: opts.urgent,
+      // P0a: persist the emit attribution on the delivery so a later turn-death is
+      // attributable to its source (e.g. a loop fire's `loop:<routineId>`).
+      source: opts.source ?? null,
       workspaceId: ws,
     });
     setImmediate(() => {

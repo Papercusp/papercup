@@ -45,7 +45,81 @@ import {
 } from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { findLiveHost, injectIntoHost } from './psu-pty-discovery';
+import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeOutcome } from './types';
+
+/** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
+ *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
+ *  is at the END of its output, so a tail is enough to classify it. */
+const RESUME_OUTPUT_TAIL_BYTES = Number(process.env.PAPERCUSP_RESUME_OUTPUT_TAIL_BYTES) || 8192;
+
+/** A growing-but-bounded byte tail — keeps only the last `maxBytes`, so an observed
+ *  resume turn that prints megabytes never accumulates more than the tail in memory. */
+export function makeTailCollector(maxBytes: number): { push: (b: Buffer) => void; value: () => string } {
+  let buf = Buffer.alloc(0);
+  return {
+    push: (b: Buffer) => {
+      buf = buf.length === 0 ? Buffer.from(b) : Buffer.concat([buf, b]);
+      if (buf.length > maxBytes) buf = buf.subarray(buf.length - maxBytes);
+    },
+    value: () => buf.toString('utf8'),
+  };
+}
+
+/**
+ * The default detached-resume spawn (P0a). When an `onExit` observer is wired it
+ * spawns with piped stdout/stderr, ACTIVELY DRAINS them into bounded tails (an
+ * undrained pipe would backpressure-deadlock the turn), and fires `onExit` once on
+ * close — so a turn that 429s after the PID is assigned is observable. Without an
+ * observer it is byte-identical to the original (`stdio:'ignore'`, zero overhead).
+ * Always returns the PID immediately (the delivery is 'delivered' on spawn either way);
+ * the observation is asynchronous + best-effort (a missed exit degrades to the
+ * reconcile stuck-park backstop). Exported so the integration test can drive it with a
+ * real subprocess (the deadlock-prone path).
+ */
+export function defaultSpawnDetached(
+  bin: string,
+  args: string[],
+  o: { cwd: string; env: Record<string, string> },
+  onExit?: (exit: ResumeTurnExitRaw) => void,
+): number | null {
+  const child = childSpawn(bin, args, {
+    cwd: o.cwd,
+    env: { ...process.env, ...o.env },
+    detached: true,
+    stdio: onExit ? ['ignore', 'pipe', 'pipe'] : 'ignore',
+  });
+  if (onExit) {
+    const out = makeTailCollector(RESUME_OUTPUT_TAIL_BYTES);
+    const err = makeTailCollector(RESUME_OUTPUT_TAIL_BYTES);
+    // Attaching a `data` listener puts the stream in flowing mode → continuously
+    // drained → no backpressure. Errors on the pipe are swallowed (a dead pipe is not
+    // a turn outcome). unref the pipes so they never keep the operator alive.
+    child.stdout?.on('data', (b: Buffer) => out.push(b));
+    child.stderr?.on('data', (b: Buffer) => err.push(b));
+    child.stdout?.on('error', () => {});
+    child.stderr?.on('error', () => {});
+    child.stdout?.unref?.();
+    child.stderr?.unref?.();
+    let settled = false;
+    const settle = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      try {
+        onExit({ exitCode: code, signal, stdoutTail: out.value(), stderrTail: err.value() });
+      } catch {
+        /* the outcome observer must NEVER throw back into the spawn path */
+      }
+    };
+    // 'close' = stdio fully flushed (complete tails). 'error' (post-pid failure) →
+    // settle as a death. Best-effort: a missed exit degrades to the reconcile stuck-park
+    // backstop (≥30min), exactly as today.
+    child.on('close', (code, signal) => settle(code, signal));
+    child.on('error', () => settle(null, null));
+  }
+  child.unref();
+  return child.pid ?? null;
+}
 
 /** A codex rollout filename ends `…-<uuid>.jsonl`; the trailing UUID is the
  *  conversation id `codex exec resume <uuid>` wants. */
@@ -426,7 +500,22 @@ export interface ExecuteWakeDeps {
   findPty?: typeof findPtyByPid;
   write?: typeof writePty;
   spawnManagedPty?: typeof spawnPty;
-  spawnDetached?: (bin: string, args: string[], opts: { cwd: string; env: Record<string, string> }) => number | null;
+  spawnDetached?: (
+    bin: string,
+    args: string[],
+    opts: { cwd: string; env: Record<string, string> },
+    /** P0a: when provided, the default spawn captures bounded output tails + observes
+     *  the detached turn's exit, firing this on close. */
+    onExit?: (exit: ResumeTurnExitRaw) => void,
+  ) => number | null;
+  /** P0a (loop-wake-rate-limit-robustness): observe the eventual EXIT of a detached
+   *  `resume-headless` turn. Fired best-effort when the subprocess closes, carrying the
+   *  exit code/signal + bounded stdout/stderr tails — the seam the loop turn-outcome
+   *  handler uses to feed the autoloop circuit on a 429 turn-DEATH (the wake records
+   *  `delivered` on spawn, so a later death is otherwise invisible). Absent ⇒ today's
+   *  fire-and-forget (`stdio:'ignore'`, zero capture overhead); delivery still returns
+   *  `delivered` the instant a PID is assigned either way. */
+  onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void;
   kill?: typeof killPty;
   presence?: typeof getPresence;
   alive?: (pid: number | null) => boolean;
@@ -662,18 +751,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // (turn-lifecycle-control P-009).
     if (codexHome) env.CODEX_HOME = codexHome;
 
-    const spawnDetached =
-      deps.spawnDetached ??
-      ((bin: string, args: string[], o: { cwd: string; env: Record<string, string> }) => {
-        const child = childSpawn(bin, args, {
-          cwd: o.cwd,
-          env: { ...process.env, ...o.env },
-          detached: true,
-          stdio: 'ignore',
-        });
-        child.unref();
-        return child.pid ?? null;
-      });
+    const spawnDetached = deps.spawnDetached ?? defaultSpawnDetached;
 
     // A non-PTY resume is HEADLESS one-turn (set in resumeCommandFor) — it must
     // run DETACHED with stdio:'ignore', NOT in a managed pty. In a pty claude's
@@ -685,7 +763,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // `-r … -p` are likewise non-interactive single-turn. The pty path stays as
     // an explicit OMP fallback (promptViaPty), where a live TTY is the point.
     if (!resume.promptViaPty) {
-      const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env });
+      // P0a: forward the detached turn's eventual exit to the outcome handler (if any).
+      // Bound to THIS delivery `d` so the handler can attribute a loop-sourced death to
+      // its routine. The delivery is still 'delivered' the instant a PID lands — the
+      // observation is asynchronous + additive, never on the delivery's hot path.
+      const onExit = deps.onResumeTurnExit
+        ? (exit: ResumeTurnExitRaw) => deps.onResumeTurnExit!(d, exit)
+        : undefined;
+      const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env }, onExit);
       if (pid2) return { kind: 'delivered', channel: 'resume-headless' };
       return { kind: 'error', error: 'headless resume spawn failed' };
     }

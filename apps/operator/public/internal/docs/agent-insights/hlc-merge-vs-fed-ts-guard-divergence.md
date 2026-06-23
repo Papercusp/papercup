@@ -8,7 +8,8 @@ Why two federated cells can "converge" to DIFFERENT values — the merge winners
 A federated write goes through **two** ordering decisions, and they must agree:
 
 1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogsIncremental` →
-   `lwwPick`/`beatsStored`) — since P-010 this orders by the op's **HLC** when
+   `lwwPick`/`beatsStored`, both defined in `projection.ts`) — since P-010 this
+   orders by the op's **HLC** when
    both ops carry one, else falls back to wall-clock `ts`.
 2. **The PG projection LWW guard** (`harness-features.ts` etc.) — the
    `INSERT … ON CONFLICT … WHERE stored.fed_ts IS NULL OR EXCLUDED.fed_ts >=
@@ -53,12 +54,14 @@ so causality (the RECV-seam `observeRemoteHlc` advance) is preserved. The
 merge's HLC order matches the PG guard's `fed_ts` order → no silent rejection
 **FOR THE DRAIN-INTERLEAVE CASE**.
 
-> ⚠️ **INCOMPLETE — see "## REOPENED (D-001)" below.** Seeding the HLC from
-> `op.ts` only guarantees `HLC.physical ≥ op.ts` for the SAME op. It does NOT
-> make the HLC ORDER of two CONCURRENT ops match their `fed_ts` order, because
-> the RECV-seam advance this fix DELIBERATELY PRESERVES raises a peer's clock
-> ABOVE a later write's `ts` (`send(ts)` returns `max(clock.physical, ts)`). The
-> split-brain is still reachable on `staging`.
+> ⚠️ **This 2026-06-14 patch was INCOMPLETE (it closed only the drain-interleave
+> trigger) and was later REOPENED then fully RESOLVED — see "## REOPENED (D-001)"
+> and "## RESOLVED" below.** Seeding the HLC from `op.ts` only guarantees
+> `HLC.physical ≥ op.ts` for the SAME op. It does NOT make the HLC ORDER of two
+> CONCURRENT ops match their `fed_ts` order, because the RECV-seam advance this
+> patch DELIBERATELY PRESERVES raises a peer's clock ABOVE a later write's `ts`
+> (`send(ts)` returns `max(clock.physical, ts)`). The split-brain was still
+> reachable until the D-001 ordering-key fix shipped.
 
 ## Gotchas when reproducing in a rig
 
@@ -118,7 +121,19 @@ disagreement IS the bug.
 `packages/operator-core/lib/sync/hyperbee/__tests__/lww-hlc-fedts-divergence.test.ts`
 (fast, real merge + faithful guard), its `.integration.test.ts` twin (real PG
 projection), and the seeded `convergence-fuzz.test.ts` (monotone sweep GREEN,
-skew sweep finds it). The fix is one ordering-key of record end to end — make the
-PG guard order by HLC (carry an `hlc` column / compare it), or derive `fed_ts`
-from the HLC physical. Cross-cutting (18 projections + capture) → needs a design
-call + migration, NOT a low-risk in-lane patch.
+skew sweep finds it).
+
+## RESOLVED (D-001 fix shipped)
+
+The one-ordering-key-of-record fix landed. Migration
+`314-d001-hlc-ordering-key.sql` adds a **`fed_hlc`** column to the mutable LWW
+tables, and the projection PG guards now order by it (the HLC), with `fed_ts`
+kept only as a fallback when a row predates the column — so the merge fold and
+the PG guard finally use the SAME key. The HLC-winner can no longer be silently
+rejected by a `fed_ts`-loser guard, so concurrent same-key writes converge to one
+value across cells even under recv-advance skew. The seeded `convergence-fuzz`
+suite asserts it: `S0 (D-001) FIXED: the skew sweep fully converges under the
+shipped fed_hlc guard`
+(`packages/operator-core/lib/sync/hyperbee/__tests__/convergence-fuzz.test.ts`).
+The original `lww-hlc-fedts-divergence.test.ts` repro is now the regression
+tripwire.

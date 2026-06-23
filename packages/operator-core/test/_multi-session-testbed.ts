@@ -280,6 +280,7 @@ export function makeDelivery(
     urgent: partial.urgent ?? false,
     minSleepSec: partial.minSleepSec ?? null,
     coalescedCount: partial.coalescedCount ?? 1,
+    source: partial.source ?? null,
     wakeHandle: partial.wakeHandle ?? null,
     note: partial.note ?? null,
   };

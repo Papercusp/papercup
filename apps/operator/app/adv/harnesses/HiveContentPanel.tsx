@@ -187,17 +187,18 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
           <ul className="pc-hivecontent__list" role="list">
             {visibleFeatures.map((f) => (
               <li key={`${f.harnessSlug}:${f.featureId}`}>
-                <button
-                  type="button"
-                  className="pc-hivecontent__row"
-                  onClick={() => drillToMember(f.harnessSlug, f.featureId)}
-                  title={`Open ${f.featureId} in ${f.harnessSlug}`}
-                >
-                  <span className="pc-hivecontent__origin" title={`Member: ${f.harnessSlug}`}>{f.harnessSlug}</span>
-                  <span className="pc-hivecontent__id">{f.featureId}</span>
-                  <span className="pc-hivecontent__title">{f.title ?? '(untitled)'}</span>
-                  {f.status && <StatusPill status={f.status as HarnessStatus} size="xs" />}
-                </button>
+                <Tooltip label={`Open ${f.featureId} in ${f.harnessSlug}`}>
+                  <button
+                    type="button"
+                    className="pc-hivecontent__row"
+                    onClick={() => drillToMember(f.harnessSlug, f.featureId)}
+                  >
+                    <span className="pc-hivecontent__origin" title={`Member: ${f.harnessSlug}`}>{f.harnessSlug}</span>
+                    <span className="pc-hivecontent__id">{f.featureId}</span>
+                    <span className="pc-hivecontent__title">{f.title ?? '(untitled)'}</span>
+                    {f.status && <StatusPill status={f.status as HarnessStatus} size="xs" />}
+                  </button>
+                </Tooltip>
               </li>
             ))}
           </ul>
@@ -210,16 +211,17 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
         <ul className="pc-hivecontent__list" role="list">
           {visiblePlans.map((p) => (
             <li key={`${p.harness}:${p.slug}`}>
-              <button
-                type="button"
-                className="pc-hivecontent__row"
-                onClick={() => drillToMember(p.harness)}
-                title={`Open plan ${p.slug} in ${p.harness}`}
-              >
-                <span className="pc-hivecontent__origin" title={`Member: ${p.harness}`}>{p.harness}</span>
-                <span className="pc-hivecontent__title">{p.title ?? p.slug}</span>
-                {p.status && <StatusPill status={p.status as HarnessStatus} size="xs" />}
-              </button>
+              <Tooltip label={`Open plan ${p.slug} in ${p.harness}`}>
+                <button
+                  type="button"
+                  className="pc-hivecontent__row"
+                  onClick={() => drillToMember(p.harness)}
+                >
+                  <span className="pc-hivecontent__origin" title={`Member: ${p.harness}`}>{p.harness}</span>
+                  <span className="pc-hivecontent__title">{p.title ?? p.slug}</span>
+                  {p.status && <StatusPill status={p.status as HarnessStatus} size="xs" />}
+                </button>
+              </Tooltip>
             </li>
           ))}
         </ul>

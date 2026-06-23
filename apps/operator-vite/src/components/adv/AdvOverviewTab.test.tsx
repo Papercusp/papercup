@@ -292,12 +292,13 @@ describe('AdvOverviewTab component', () => {
     // 'worker' appears as both the roster role tag (agentRole) and the activity actor.
     expect(screen.getAllByText('worker').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('listed the plans')).toBeTruthy();
-    // The activity query is enabled + scoped to the selected harness + workspace.
-    expect(syncEnabled['userActions.byHarness']).toBe(true);
+    // A harness selected → the byHarness query runs, scoped to that harness + workspace
+    // (and the fleet-wide recent feed is NOT used).
     expect(syncArgs['userActions.byHarness']).toMatchObject({
       harnessSlug: 'pot-a',
       workspaceId: 'ws-test',
     });
+    expect(syncArgs['userActions.recent']).toBeUndefined();
   });
 
   it('falls back to `kind` for an activity row with no summary', async () => {

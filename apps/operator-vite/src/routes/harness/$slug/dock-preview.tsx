@@ -14,6 +14,7 @@ import { AddPanelCatalog } from '@/app/harness/dock/AddPanelCatalog';
 import { DockNavChevrons } from '@/app/harness/dock/DockNavChevrons';
 import { DockOnboarding } from '@/app/harness/dock/DockOnboarding';
 import { LayoutsMenu } from '@/app/harness/dock/LayoutsMenu';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 /**
  * /harness/$slug/dock-preview — interactive preview of the dock model
@@ -92,21 +93,22 @@ function DockPreviewPage() {
         <DockNavChevrons />
         <AddPanelCatalog defaultSlug={routeSlug} />
         <LayoutsMenu currentLayoutName="preview" />
-        <button
-          type="button"
-          onClick={() =>
-            openPanel({
-              type: 'data:features',
-              params: { harnessSlug: routeSlug, view: 'compact' },
-              title: `Features: ${routeSlug} (floating)`,
-              floating: { width: 480, height: 320 },
-            })
-          }
-          style={previewBtn}
-          title="Quick: open Features as a floating panel"
-        >
-          + Floating Features
-        </button>
+        <Tooltip label="Quick: open Features as a floating panel">
+          <button
+            type="button"
+            onClick={() =>
+              openPanel({
+                type: 'data:features',
+                params: { harnessSlug: routeSlug, view: 'compact' },
+                title: `Features: ${routeSlug} (floating)`,
+                floating: { width: 480, height: 320 },
+              })
+            }
+            style={previewBtn}
+          >
+            + Floating Features
+          </button>
+        </Tooltip>
         <button
           type="button"
           onClick={() => {
