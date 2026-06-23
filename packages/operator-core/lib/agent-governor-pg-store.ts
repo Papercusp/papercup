@@ -79,7 +79,7 @@ export class PgGovernorStore implements GovernorStore {
     return (await sql.begin(async (tx) => {
       const rows = (await tx`
         SELECT window_start, req_in_window, in_tok_in_window, out_tok_in_window,
-               paused_until, pace_delay_ms, last_acquire_at, limits, rpm_factor, rpm_factor_at
+               paused_until, pace_delay_ms, last_acquire_at, limits
           FROM harness_shared.agent_rate_budget
          WHERE bucket_key = ${key}
          FOR UPDATE
@@ -100,11 +100,10 @@ export class PgGovernorStore implements GovernorStore {
       await tx`
         INSERT INTO harness_shared.agent_rate_budget
           (bucket_key, window_start, req_in_window, in_tok_in_window, out_tok_in_window,
-           paused_until, pace_delay_ms, last_acquire_at, limits, updated_at, rpm_factor, rpm_factor_at)
+           paused_until, pace_delay_ms, last_acquire_at, limits, updated_at)
         VALUES
           (${key}, ${s.windowStart}, ${s.reqInWindow}, ${s.inTokInWindow}, ${s.outTokInWindow},
-           ${s.pausedUntil}, ${s.paceDelayMs}, ${s.lastAcquireAt}, ${JSON.stringify(limitsObj)}::text::jsonb, ${Date.now()},
-           ${s.rpmFactor ?? null}, ${s.rpmFactorAt ?? null})
+           ${s.pausedUntil}, ${s.paceDelayMs}, ${s.lastAcquireAt}, ${JSON.stringify(limitsObj)}::text::jsonb, ${Date.now()})
         ON CONFLICT (bucket_key) DO UPDATE SET
           window_start      = EXCLUDED.window_start,
           req_in_window     = EXCLUDED.req_in_window,
@@ -114,10 +113,14 @@ export class PgGovernorStore implements GovernorStore {
           pace_delay_ms     = EXCLUDED.pace_delay_ms,
           last_acquire_at   = EXCLUDED.last_acquire_at,
           limits            = EXCLUDED.limits,
-          updated_at        = EXCLUDED.updated_at,
-          rpm_factor        = EXCLUDED.rpm_factor,
-          rpm_factor_at     = EXCLUDED.rpm_factor_at
+          updated_at        = EXCLUDED.updated_at
       `;
+      // NOTE (C1, deferred): rpm_factor/rpm_factor_at SELECT+INSERT are intentionally NOT wired here yet —
+      // migration 384 (which adds the columns) has not applied to the live DB, and the gateway/staging-operator
+      // read this code on restart, so SELECTing a not-yet-existent column would break the whole store. rowToState
+      // already reads them shape-tolerantly (undefined when absent) and the governor decreases/syncs rpmFactor in
+      // memory; re-add the two SQL lines (SELECT list + INSERT cols/values/on-conflict) the moment
+      // `information_schema.columns` shows rpm_factor exists, then deploy. Tracked: plan P-001.
       return s;
     })) as GovernorState;
   }

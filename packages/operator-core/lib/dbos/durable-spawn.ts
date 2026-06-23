@@ -185,7 +185,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
                       b.ok,
                     )}, exitCode=${String(b.exitCode)}, timedOut=${String(
                       b.timedOut,
-                    )}, outLen=${out.trim().length}) — launcher host dead/unstable; recorded failed, not retried (host stability is the fix)`,
+                    )}, outLen=${out.trim().length}) — agent died before emitting a turn: a dead/restarting launcher host OR (more often) an upstream gateway stall/429 storm killing the agent MID-TURN (the transcript shows a normal run that stops on its 2nd call) — see agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5; recorded failed, not retried`,
                   } as const;
                 }
               }
