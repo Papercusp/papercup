@@ -28,12 +28,16 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { systemDistinctId } from './flag-distinct-id';
 import { harnessScope, harnessOfScope } from './work-item-scope';
 import {
   PgTaggableStore,
   PgThreadStore,
   PgEntitySubscriptionStore,
   PgLinkStore,
+  LIFECYCLE_STATES,
   type ObjectRef,
   type DeliveryMode,
   type ThreadPostRow,
@@ -806,7 +810,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
 }
 
 /** The issue family's native Lifecycle states (the engineer_issues CHECK). */
-export const ISSUE_FAMILY_STATES: readonly string[] = ['open', 'resolved', 'closed'];
+// Canonical lifecycle vocabulary (P-007) — widened to string[] for the
+// includes(string) call site below; values come from the one LIFECYCLE_STATES.
+export const ISSUE_FAMILY_STATES: readonly string[] = LIFECYCLE_STATES;
 
 /**
  * Normalize a requested lifecycle state onto a family's NATIVE vocabulary
@@ -1190,6 +1196,14 @@ export interface ClaimFloorsOpts {
   swarmId?: string;
   /** Skip high-stakes (redundancy > 1) items (redundancy flag on). */
   excludeRedundant?: boolean;
+  /**
+   * work-item-deps-and-readiness P-005: when true (SCHEDULER_MAINTAINED_READY on), read readiness
+   * from the maintained `work_item_blocked` sidecar (an indexed anti-join) instead of the inline
+   * per-claim NOT EXISTS over work_item_deps + statuses. Behavior-identical; a performance cutover.
+   * Both claim entry points (claimNextWorkItem + getNextWorkItem) resolve the flag and pass it here,
+   * so the two paths can never drift (D-002). Default/false ⇒ the inline predicate (byte-identical).
+   */
+  useMaintainedReady?: boolean;
 }
 export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   const states = opts.states ?? ['todo'];
@@ -1218,7 +1232,21 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- non-terminal — feature terminal = status IN ('passed','deprecated'); issue terminal =
     -- state IN ('resolved','closed') (the cross-family set, ALL_TERMINAL_STATUSES). An
     -- absent blocker ref (no matching feature/issue row) never blocks.
-    AND NOT EXISTS (
+    --
+    -- P-005 maintained-readiness cutover (SCHEDULER_MAINTAINED_READY): when ON, the SAME predicate
+    -- is read from the maintained work_item_blocked sidecar (an indexed anti-join, presence = not
+    -- ready) the wir_ triggers keep exact, instead of recomputing the correlated subquery per claim.
+    -- The two forms are equivalent (the sidecar is materialized from this exact predicate + a
+    -- reconciliation oracle); OFF is the byte-identical inline form.
+    AND ${opts.useMaintainedReady
+      ? sql`NOT EXISTS (
+      SELECT 1
+        FROM harness_shared.work_item_blocked wb
+       WHERE wb.workspace_id = harness_shared.harness_features_consolidated.workspace_id
+         AND wb.harness_slug = harness_shared.harness_features_consolidated.harness_slug
+         AND wb.feature_id   = harness_shared.harness_features_consolidated.feature_id
+    )`
+      : sql`NOT EXISTS (
       SELECT 1
         FROM harness_shared.work_item_deps d
        WHERE d.workspace_id = 'default'
@@ -1238,7 +1266,7 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
                 AND bi.state NOT IN ('resolved', 'closed')
            )
          )
-    )`;
+    )`}`;
 }
 
 /**
@@ -1253,9 +1281,25 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
  * SAME floors the spec-driven `scheduler/get-next.ts` resolver ANDs in, so the two
  * claim paths can never diverge (D-002).
  */
+/**
+ * Whether the scheduler claim reads the maintained `work_item_blocked` sidecar (an indexed
+ * anti-join) vs the inline NOT EXISTS predicate — the SCHEDULER_MAINTAINED_READY cutover (P-005).
+ * Resolved async at BOTH claim entry points (claimNextWorkItem + getNextWorkItem) so the two paths
+ * can never drift (D-002). Fail-CLOSED to the inline predicate (false) on any flag-store error —
+ * the proven path is the safe default.
+ */
+export async function schedulerMaintainedReadyEnabled(): Promise<boolean> {
+  try {
+    return await getFlag(FLAGS.SCHEDULER_MAINTAINED_READY, systemDistinctId());
+  } catch {
+    return false;
+  }
+}
+
 export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
+  const useMaintainedReady = await schedulerMaintainedReadyEnabled();
   // Co-location affinity (P-002): only when the caller passes its Swarm id (it does so
   // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
   // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
@@ -1274,6 +1318,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           states: filter.states,
           swarmId: filter.swarmId,
           excludeRedundant: filter.excludeRedundant,
+          useMaintainedReady,
         })}
           -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
           AND ${filter.kind ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
