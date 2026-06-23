@@ -32,12 +32,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.TESTING, // cut for V1
 
   // ── Genuinely incomplete/unsafe work (per the FLAG_DEFAULTS comments) ──
-  // agent-activity-liveness-truth-2026-06-21 P-003 (D-003): the STALLED leg of the stale-claim
-  // reconciler frees a LIVE agent's non-progressing claim — a live-placement change on a
-  // fleet-critical hot path that D-003 mandates landing ATTENDED/flag-gated. OFF ⇒ only the
-  // dead-holder + confirmed-terminal-spawn legs run (byte-identical reclaim outcome + the new
-  // immediate spawn-death release). Owner flips ON after an attended verify of the stalled leg.
-  FLAGS.RECLAIM_STALLED,
+  // (RECLAIM_STALLED graduated to default-ON 2026-06-23, owner-directed (BRIEF D) after verify — both
+  // legs landed + tested: the work-item STALLED-claim reconciler leg (agent-activity-liveness-truth
+  // P-003; 34 reconciler integration tests) AND the new spawned_agents WEDGED-reclaim leg (durable
+  // DB-truth `reclaimWedgedSpawns`; 12 integration tests; action threshold = the already-live in-memory
+  // wedge reaper's 30-min, so incremental risk is bounded). Reversible kill-switch — removed per the rule.)
   // operator-memory-and-psu-resilience P-008 (WI-147, D-005/D-006): lazy/bounded substrate boot —
   // correctness-critical with fleet-sync blast radius (a wrong eviction → the EI-126 data-divergence
   // class). Binding constraint: stage on :3170 FIRST. OFF ⇒ byte-identical eager boot. Owner flips ON
@@ -347,7 +346,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.DESIGN, 'parked'],
   [FLAGS.TESTING, 'parked'],
   // incomplete — not fully working / unverified on a path that matters
-  [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],

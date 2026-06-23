@@ -1295,12 +1295,18 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ships built + tested + DARK, arming only when self-learning-frontier
   // P-001 closes (consume-edges P-013 live proof + owner ratification). The
   // pending flip is surfaced in the plan's ## Now + every lane report.
-  // OFF by default — DELIBERATE (agent-activity-liveness-truth P-003, D-003): the
-  // STALLED-reclaim leg frees a LIVE agent's claim, a live-placement change on a
-  // fleet-critical hot path that must land ATTENDED. OFF = the dead-holder + the
-  // confirmed-terminal-spawn (immediate spawn-death) reclaim legs only — both safe;
-  // the pending flip is surfaced in the plan's ## Now + the lane report.
-  [FLAGS.RECLAIM_STALLED]: false,
+  // ON by default (owner-directed flip 2026-06-23, after verify) — the master
+  // "reclaim STALLED, not just dead" switch, now arming BOTH legs:
+  //   (a) work-item claims — frees a LIVE-but-non-progressing holder's claim
+  //       (agent-activity-liveness-truth P-003, reconciler `includeStalled`); and
+  //   (b) spawned_agents rows — durably reaps a supervised-LIVE-but-stream-silent
+  //       WEDGED bee (BRIEF D: the DB-truth `reclaimWedgedSpawns` floor over the
+  //       in-memory wedge reaper, action threshold WEDGE_REAP_SILENT_MS=30min).
+  // Both are reversible kill-switches: OFF returns to the dead-holder +
+  // confirmed-terminal-spawn legs only (byte-identical to the pre-flip behaviour).
+  // The wedged leg matches the already-live in-memory reaper's threshold, so the
+  // incremental risk of ON is bounded; flip OFF at /admin/features if it misbehaves.
+  [FLAGS.RECLAIM_STALLED]: true,
   // OFF by default — DELIBERATE (operator-memory-and-psu-resilience P-008 / WI-147,
   // D-005/D-006 BINDING constraint): lazy/bounded substrate boot is correctness-critical
   // with fleet-sync blast radius (a wrong eviction → the EI-126 data-divergence class) and
