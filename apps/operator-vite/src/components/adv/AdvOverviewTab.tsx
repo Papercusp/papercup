@@ -34,17 +34,16 @@ import { Tooltip } from '@/app/harness/Tooltip';
  *
  * Both tiles read via @papercusp/sync (one audited path), replacing the old 8s
  * setInterval over /api/adv/roster + /api/agent-tools/activity/recent
- * (data-sync-push-completion P-006). Their LIVENESS differs by source:
- *  - Roster → `dev.coordPresence`: SSE PUSH-driven (coord_presence carries the
- *    emit_change_notify trigger, so a heartbeat/intent/claim write invalidates live).
- *  - Activity → `userActions.byHarness` / `userActions.recent` (All-Pots): user_actions
- *    is an APPEND-HEAVY log INTENTIONALLY excluded from the per-row change-notify trigger
- *    (a per-row pg_notify on a high-write log is the notify-storm anti-pattern —
- *    cache-tag-trigger-coverage's COVERAGE_EXEMPT; mig 376). So it CANNOT SSE-push today;
- *    it carries a bounded `pollIntervalMs` (the AdvEvalsTab pattern, plan D-001) to keep
- *    the feed live — restoring the cadence the old 8s poll had. (When the append-heavy
- *    DEBOUNCED-invalidation follow-up lands — COVERAGE_EXEMPT's P-005 TODO — the poll can
- *    drop. Found live: data-sync-push-completion D-011.)
+ * (data-sync-push-completion P-006). Both are now SSE PUSH-driven — by different producers:
+ *  - Roster → `dev.coordPresence`: coord_presence carries the per-row emit_change_notify
+ *    trigger, so a heartbeat/intent/claim write invalidates live.
+ *  - Activity → `userActions.byHarness` / `userActions.recent` (All-Pots): user_actions is an
+ *    APPEND-HEAVY log INTENTIONALLY without the per-row trigger (per-row pg_notify on a
+ *    high-write log = notify-storm; COVERAGE_EXEMPT, mig 376). Its live invalidation is the
+ *    server-side DEBOUNCED change-detector (append-heavy-invalidator.ts; P-005/D-012): one
+ *    max(id) poll/table → a synthesized `<table>.changed` invalidation when it advances. So
+ *    NO client poll is needed here (D-011's stopgap pollIntervalMs dropped); the 180s
+ *    drift-repair is the gap insurance if the detector is flag-off/down.
  */
 
 // ── roster: the subset of a `dev.coordPresence` PresenceRecord the Agents tile
@@ -202,25 +201,20 @@ export default function AdvOverviewTab() {
   // Activity (recent action stream). A harness selected → userActions.byHarness (that
   // harness + workspace); All-Pots (no harness) → the fleet-wide userActions.recent feed.
   // One unconditional hook with a computed query (rules-of-hooks safe); the cache key
-  // carries the queryName + args so switching scope re-subscribes. user_actions is
-  // append-heavy → no per-row SSE push (see the file header), so a bounded pollIntervalMs
-  // keeps the feed live (the AdvEvalsTab/D-001 pattern). It's the read side of a small
-  // indexed limit-50 SELECT, NOT the write-side per-row notify the exclusion avoids.
+  // carries the queryName + args so switching scope re-subscribes. SSE push-driven via the
+  // server-side append-heavy DEBOUNCED change-detector (see the file header) — no client poll.
   const activityWsId = getBrowserWorkspaceId();
-  const ACTIVITY_POLL_MS = 8_000;
   const activityQ = useSyncQuery<UserActionRow>(
     activeSlug
       ? {
           queryName: 'userActions.byHarness',
           args: { harnessSlug: activeSlug, workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
           staleTime: 8_000,
-          pollIntervalMs: ACTIVITY_POLL_MS,
         }
       : {
           queryName: 'userActions.recent',
           args: { workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
           staleTime: 8_000,
-          pollIntervalMs: ACTIVITY_POLL_MS,
         },
   );
 

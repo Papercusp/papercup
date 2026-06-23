@@ -46,8 +46,9 @@ export interface AppendHeavyInvalidatorDeps {
   pollMs?: number;
   /** Per-fire dedupe window passed to the bus (ms). Default 5000. */
   dedupeWindowMs?: number;
-  /** Read the table's current max(id). Returns null/undefined when empty. */
-  maxId: (table: string) => Promise<bigint | number | null | undefined>;
+  /** Read the table's current max(id). Returns null/undefined when empty. (postgres-js
+   *  returns a bigint column as a string — BigInt() in the sweep accepts string|number|bigint.) */
+  maxId: (table: string) => Promise<bigint | number | string | null | undefined>;
   /** Emit the synthesized `harness_shared.<table>.changed` invalidation. */
   emitChanged: (eventName: string, dedupeWindowMs: number) => Promise<void>;
   /** setTimeout seam (default global). */

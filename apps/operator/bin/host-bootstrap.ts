@@ -262,6 +262,27 @@ export function runBootstrap(): void {
     startMobileVoiceWs();
   }
   startPushCredentialRefresher();
+  // data-sync-push-completion P-005/D-012: the DEBOUNCED append-heavy change-detector. ONE
+  // host poll per append-heavy log table → a synthesized `<table>.changed` invalidation when
+  // max(id) advances, so userActions.* / auditLog.* / toastLog.* consumers push-update WITHOUT
+  // the per-row notify-storm the trigger exclusion (mig 376) avoids. It fires pg_notify, so it
+  // serves clients on EVERY operator (incl. :3170, which runs no background workers) — hence NOT
+  // gated on backgroundWorkersEnabled (resilient: no bg-host single point of failure). A 2nd host
+  // also running it is harmless — the per-call short dedupe + react-query refetch-coalescing fold
+  // the duplicate fires. Flag-gated (default ON) so it's a clean kill-switch.
+  if (getFlag(FLAGS.APPEND_HEAVY_LIVE_INVALIDATION, 'operator-host')) {
+    void (async () => {
+      try {
+        const { startAppendHeavyInvalidatorHost } = await import(
+          '@papercusp/operator-core/lib/sync-resolver/append-heavy-invalidator'
+        );
+        startAppendHeavyInvalidatorHost({ log: (m) => console.log(m) });
+        console.log('[append-heavy-invalidator] started — debounced live-invalidation for append-heavy logs');
+      } catch (err) {
+        console.error('[append-heavy-invalidator] failed to start:', err);
+      }
+    })();
+  }
   if (!utilityHost) {
     // P2P voice channels: the local binary audio socket (holepunch-voice-channels
     // P-006/D-010). Cheap to start; the voice swarm itself is lazy (first join).

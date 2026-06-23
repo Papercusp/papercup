@@ -87,12 +87,13 @@ const INDEX = resolve(HERE, 'index.ts');
 // use 'OPEN: getOrgPg (BYPASSRLS) read filters harness_slug only … fix = thread workspaceId'.
 //
 // KNOWN LIMITATION (block-grained): a slug-only read whose `eq(...harnessSlug...)` lives in
-// a SHARED HELPER called from the block (e.g. agentRunsConsolidated.* → resolveRunsWithOutcome,
-// which filters `eq(s.harnessSlug, harnessSlug)` on an alias, in a top-level fn outside any
-// block) is invisible to this guard. agent_runs_consolidated + spawned_agents ARE
-// workspace-scoped, so those are a real but separately-tracked cross-tenant read (EI-1763
-// follow-up): the helper must thread workspaceId into both the spawn subquery and the
-// coalesce join. Not fixed here (a 2-table JOIN change), flagged so it isn't lost.
+// a SHARED HELPER called from the block (not inside the block body) is invisible to this
+// guard. The one such case — agentRunsConsolidated.* → resolveRunsWithOutcome (filters on
+// the `s`/`t` aliases in a top-level fn) — has been FIXED BY HAND (EI-1763): the helper now
+// threads an optional workspaceId into both the spawn subquery and the full-outer coalesce
+// join, and its two registry entries expose `workspaceId` in argsSchema. No known helper-form
+// leak remains; this note stands as the reason a future one could still slip past the guard
+// (the guard only inspects per-block bodies), so a slug-filtering helper must scope by hand.
 const OPEN_UNFILTERED: Record<string, string> = {
   'snapshotsConsolidated.bySlug':
     'SAFE: harness_snapshots_consolidated has NO workspace_id column (keyed by harness_slug + ' +

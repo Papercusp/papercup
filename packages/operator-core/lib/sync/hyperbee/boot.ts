@@ -1498,6 +1498,54 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       void recordTelemetryReport({ kind, payload }).catch(() => {});
     });
 
+  // WI-559: the same-hive cross-member SCOPE decision, SHARED by onAnnounce + retryPendingOnce so
+  // the two paths can't drift. Precondition: the IDENTITY decider `admit()` has ALREADY passed for
+  // this frame (sig + channel-2 binding valid, NOT revoked — revoked is checked FIRST, every call,
+  // incl. each retry tick). This only widens SCOPE (slug → identity-membership); it NEVER bypasses
+  // revocation or the read-cut. An out-of-own-scope frame is admitted iff its github_user_id is a
+  // member of THIS harness's hive AND its device is one of that member's REGISTERED pubkeys. If we
+  // have a hive home but that membership has NOT federated to us yet — the asymmetric A→B stall: B
+  // permanently DROPS A's writer core because announces are not re-delivered and B's hive_members
+  // lacked A at announce time — BUFFER the frame for retry instead of conclusively rejecting. The
+  // 5s retry loop re-runs admit() (revoked re-checked) + this check each tick and admits the instant
+  // A federates in, or drops it after the 30-min grace. So a REVOKED / READ-CUT peer can NEVER be
+  // admitted via this buffer: admit() refuses it first on every retry, keeping the C-001 read cut
+  // intact (shared-hive-rekey). Returns the AdmissionResult to RETURN (admit, or pending-buffered),
+  // or null when this is not a same-hive-member candidate (caller falls through to A-003 / conclusive).
+  async function resolveSameHiveMember(frame: SignedAnnounce): Promise<AdmissionResult | null> {
+    const originSlug = frame.harness_slug ?? null;
+    if (!(originSlug != null && originSlug !== slug && frame.github_user_id)) return null;
+    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const myHiveHome =
+      hiveHomeProjectionSlug ??
+      (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+    if (myHiveHome == null) return null;
+    const memberDevices = await loadHiveMembers(myHiveHome, frame.github_user_id);
+    if (memberDevices.includes(frame.device_pubkey)) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'announce_admitted',
+        `same_hive_member origin=${originSlug} hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
+      );
+      return admitPeer(frame);
+    }
+    // MEMBERSHIP-MISS (WI-559) — plausible same-hive cross-member whose hive_members row has not
+    // federated to us yet → BUFFER for retry instead of a conclusive drop. Idempotent: a no-op when
+    // already pending (preserving its grace clock), and the boot event is recorded ONLY on the first
+    // buffering so the 5s retry re-checks don't spam the log.
+    if (!pendingPeers.has(frame.device_pubkey)) {
+      pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'announce_pending',
+        `membership_miss origin=${originSlug} hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
+      );
+    }
+    return { admit: false, reason: 'pending' };
+  }
+
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
     try {
@@ -1578,44 +1626,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     }
     if (!inScope) {
-      // WI-259 STEP 1 (membership-aware admission): a SAME-HIVE cross-member log is
-      // admitted by VERIFIED IDENTITY, even when its signed slug is out of this
-      // harness's own/rebind scope. Identity, NOT slug: `harness_registry` is
-      // per-workspace / un-federated, so a peer has no entry for ANOTHER member's slug
-      // (the peer-instability that makes a slug-set guard fail cross-machine); but
-      // `hive_members` IS federated (P-006). We admit iff the announce's
-      // `github_user_id` is a member of THIS harness's Hive AND its `device_pubkey` is
-      // one of that member's REGISTERED (non-revoked) devices — both already
-      // D-004-verified on the frame above, so this is strictly tighter than a slug.
-      // SAFETY: this only lets the member's LOG replicate; every projection's apply
-      // drops a wrong-slug op (`row.harness_slug !== opts.harnessSlug → return`), so
-      // cross-member CONTENT does not land in PG until WI-259 STEP 2 opts shared-content
-      // in. Ordered BEFORE the A-003 buffer so a member log is admitted immediately
-      // rather than buffered; the owner's hive-home log (origin = the home slug, owner
-      // typically not in hive_members) still falls through to the buffer below.
-      if (originSlug != null && originSlug !== slug && frame.github_user_id) {
-        const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-        const myHiveHome =
-          hiveHomeProjectionSlug ??
-          (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
-        if (myHiveHome != null) {
-          const { loadHiveMemberDevicePubkeys } = await import('../../hive-membership-store');
-          const memberDevices = await loadHiveMemberDevicePubkeys(
-            opts.workspaceId,
-            myHiveHome,
-            frame.github_user_id,
-          ).catch(() => [] as string[]);
-          if (memberDevices.includes(frame.device_pubkey)) {
-            recordBootEvent(
-              opts.workspaceId,
-              opts.harnessSlug,
-              'announce_admitted',
-              `same_hive_member origin=${originSlug} hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
-            );
-            return admitPeer(frame);
-          }
-        }
-      }
+      // WI-259 STEP 1 + WI-559: a SAME-HIVE cross-member log is admitted by VERIFIED IDENTITY
+      // (github_user_id ∈ this hive's members AND device registered), even when its signed slug is
+      // out of this harness's own/rebind scope — `hive_members` is federated (P-006) where the
+      // per-workspace `harness_registry` is not. SAFETY: this only lets the member's LOG replicate;
+      // every projection's apply drops a wrong-slug op, so cross-member CONTENT does not land in PG
+      // until WI-259 STEP 2 opts it in. Ordered BEFORE the A-003 buffer so a member log is admitted
+      // immediately. On a membership-MISS (hive home resolved but not yet federated A in) the helper
+      // BUFFERS for retry rather than letting the frame fall through to a conclusive drop (the WI-559
+      // asymmetric-stall fix). Shared with retryPendingOnce so the decision can't drift.
+      const sameHive = await resolveSameHiveMember(frame);
+      if (sameHive) return sameHive;
       // A-003 fix: the slug scope can be UNRESOLVED at admit time. A joiner's member
       // harness only learns its hive-home slug at the 2c re-key (`hiveHomeProjectionSlug`
       // is set by `rekey`'s rebind, AFTER boot opens the topic + onAnnounce goes live).
@@ -1751,29 +1772,40 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         };
         const decision = await admit(input);
         if (decision.admit) {
-          // A-003: identity is verified, but the SLUG SCOPE may have been unresolved
-          // when this frame was first buffered (the joiner's hive-home rebind had not
-          // happened yet). Re-check scope against the now-current `hiveHomeProjectionSlug`
-          // (the rekey rebind updates it). Admit ONLY if in-scope; if still out-of-scope
-          // because home is STILL unresolved, keep pending (the rebind may yet land); if
-          // out-of-scope with home now RESOLVED, the frame is genuinely foreign →
-          // conclusive reject. (Identity-pending peers re-verified here are in-scope for
-          // this harness, so this gate is transparent to the D-006 channel-2 path.)
+          // A-003 + WI-559: identity is re-verified (admit() above re-checked revocation); now
+          // re-resolve SCOPE against the now-current state, in the SAME order as onAnnounce.
+          //  (1) slug scope — the joiner's hive-home rebind (`hiveHomeProjectionSlug`) may have
+          //      landed since this frame was buffered → admit if now in-scope.
+          //  (2) else, the same-hive MEMBERSHIP — A's `hive_members` row may have federated in
+          //      since the buffer (the WI-559 asymmetric-stall case). resolveSameHiveMember admits
+          //      if A is now a member, re-buffers (idempotent, grace clock preserved) on a still-
+          //      missing membership, or returns null when this is not a same-hive candidate.
+          //  (3) else (not a same-hive candidate) AND home RESOLVED → genuinely foreign → conclusive
+          //      reject; home still unresolved → keep pending for the next tick.
           const originSlug = entry.frame.harness_slug ?? null;
           const inScope = announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug);
           if (inScope) {
             pendingPeers.delete(devicePubkey);
             await admitPeer(entry.frame);
-          } else if (hiveHomeProjectionSlug != null) {
-            pendingPeers.delete(devicePubkey);
-            recordBootEvent(
-              opts.workspaceId,
-              opts.harnessSlug,
-              'announce_rejected',
-              `out-of-scope origin=${originSlug} own=${slug} ${peerLabel(entry.frame.log_core_key)}`,
-            );
+          } else {
+            const sameHive = await resolveSameHiveMember(entry.frame);
+            if (sameHive?.admit) {
+              // resolveSameHiveMember admitted it (called admitPeer) → stop retrying.
+              pendingPeers.delete(devicePubkey);
+            } else if (sameHive && sameHive.reason === 'pending') {
+              // membership still not federated → leave pending (it re-buffered idempotently).
+            } else if (hiveHomeProjectionSlug != null) {
+              // not a same-hive candidate AND home resolved → genuinely foreign → conclusive.
+              pendingPeers.delete(devicePubkey);
+              recordBootEvent(
+                opts.workspaceId,
+                opts.harnessSlug,
+                'announce_rejected',
+                `out-of-scope origin=${originSlug} own=${slug} ${peerLabel(entry.frame.log_core_key)}`,
+              );
+            }
+            // else: home still unresolved → leave pending for the next retry tick.
           }
-          // else: home still unresolved → leave pending for the next retry tick.
         } else if (decision.reason !== 'pending') {
           // Conclusive failure (binding_invalid / bad_sig / revoked) —
           // stop retrying.

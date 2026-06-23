@@ -147,6 +147,40 @@ const DEFAULT_CONFIG: VoiceConfig = {
 
 const STORAGE_KEY = 'papercusp.voice.config.v1';
 
+// ── Voice OUTPUT (TTS) mute — the speaker toggle in the voice bar (owner ask
+// 2026-06-23: "a button next to the mic to enable/disable text-to-speech for
+// the Sentinel responses"). A per-workspace UI preference (localStorage): when
+// muted, non-forced speak() emits nothing, so the Sentinel's spoken replies are
+// silenced WITHOUT leaving voice mode (PTT/STT still work). `force:true`
+// (the /settings/voice test buttons) bypasses it. Default = NOT muted
+// (responses are spoken — the finished voice-out path ships enabled).
+const OUTPUT_MUTED_KEY = 'papercusp.voice.outputMuted.v1';
+
+/** True when the user has muted spoken (TTS) responses via the voice-bar toggle. */
+export function isVoiceOutputMuted(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(wsLocalKey(OUTPUT_MUTED_KEY)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Mute/unmute spoken (TTS) responses; broadcasts so the toggle UI re-syncs. */
+export function setVoiceOutputMuted(muted: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(wsLocalKey(OUTPUT_MUTED_KEY), muted ? '1' : '0');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('papercusp:voiceOutputMutedChanged', { detail: { muted } }),
+      );
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 let state: VoiceState = {
   mode: 'off',
   status: 'off',
@@ -2037,6 +2071,9 @@ export function speak(
     //  gives no audible response". Voice-mode-on is the real gate; Phase 1 of
     //  sentinel-tui-shared-backend-and-cards routes replies through here.)
     if (state.mode === 'off') return;
+    // Voice-output mute (the voice-bar speaker toggle, owner 2026-06-23):
+    // silence spoken replies without leaving voice mode. force:true bypasses.
+    if (isVoiceOutputMuted()) return;
   }
   // Aria-live publish — independent of TTS engine + leader election so
   // screen-reader users always see the same content the leader speaks.

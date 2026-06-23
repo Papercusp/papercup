@@ -55,14 +55,16 @@ const OverwatchTab = lazy(() => import('./OverwatchTab'));
 // (sentinel-herald-2026-06-21).
 const SentinelTab = lazy(() => import('./SentinelTab'));
 
+// `tip` is the hover tooltip (owner ask 2026-06-23) — a one-line "what is this
+// tab for", surfaced via the button's native `title` on hover.
 const TABS = [
-  { id: 'accounts', label: 'Accounts', icon: KeyRound, render: (a: boolean) => <AccountsTab active={a} /> },
-  { id: 'queen', label: 'Queen', icon: Crown, render: (a: boolean) => <QueenTab active={a} /> },
-  { id: 'overwatch', label: 'Overwatch', icon: Eye, render: (a: boolean) => <OverwatchTab active={a} /> },
-  { id: 'sentinel', label: 'Sentinel', icon: Radio, render: (a: boolean) => <SentinelTab active={a} /> },
-  { id: 'swarm', label: 'Swarm', icon: Users, render: (a: boolean) => <SwarmTab active={a} /> },
-  { id: 'voice', label: 'Peers', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
-  { id: 'hives', label: 'Hives', icon: Network, render: (a: boolean) => <HivesTab active={a} /> },
+  { id: 'accounts', label: 'Accounts', icon: KeyRound, tip: 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
+  { id: 'queen', label: 'Queen', icon: Crown, tip: 'The Queen — plans work and places it across the swarm', render: (a: boolean) => <QueenTab active={a} /> },
+  { id: 'overwatch', label: 'Overwatch', icon: Eye, tip: 'Overwatch — supervises fleet & system health, nudges when things drift', render: (a: boolean) => <OverwatchTab active={a} /> },
+  { id: 'sentinel', label: 'Sentinel', icon: Radio, tip: 'Sentinel — your voice/text front-door agent; talks, suggests, and hands work to the Queen', render: (a: boolean) => <SentinelTab active={a} /> },
+  { id: 'swarm', label: 'Swarm', icon: Users, tip: 'The colony — live roster of SU agents & bees and what each is doing', render: (a: boolean) => <SwarmTab active={a} /> },
+  { id: 'voice', label: 'Peers', icon: AudioLines, tip: 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
+  { id: 'hives', label: 'Hives', icon: Network, tip: 'Hives — the cross-device P2P network of connected swarms', render: (a: boolean) => <HivesTab active={a} /> },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -271,6 +273,7 @@ export default function LeftSidebar() {
                       aria-selected={isActive}
                       className={`pclsb__tab pclsb__tab--${x.id}${isActive ? ' is-active' : ''}`}
                       data-testid={`left-sidebar-tab-${x.id}`}
+                      title={x.tip}
                       onClick={() => setTab(x.id)}
                     >
                       <span className="pclsb__tab-icon">
