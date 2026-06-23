@@ -57,17 +57,37 @@ pub struct PlansResponse {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RosterEntry {
+    // `null_as_default`: an `ended`-tier roster entry can carry `ownerId: null`
+    // (a recorded session that never minted a coord owner id) — a bare required
+    // `String` rejects both null and absent, failing the WHOLE roster decode.
+    // The brain-view panes (the only `ended`-tier reader) key off role +
+    // session_id, never owner_id, so "" is a safe default here; the Fleet roster
+    // reads the `active` tier, where ownerId is always present.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub owner_id: String,
-    #[serde(default)]
+    // `null_as_default` on every non-Option scalar: the `ended` roster tier
+    // (synthesized from listEndedAdvSessions, not the presence snapshot) nulls
+    // fields the `active` tier always populates — e.g. a recorded console launch
+    // has `label: null`. A bare required `String` rejects null AND aborts the
+    // whole roster decode, so the brain-view pane regressed to "waiting…". This
+    // hardens the whole class (label/source/liveness/host), not just the one
+    // field that happened to be null today.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub label: String,
     /// client/source: claude · codex · omp · …
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub source: String,
     #[serde(default)]
     pub intent: Option<String>,
-    #[serde(default)]
+    // `null_as_default`: the `ended` roster tier serializes these list fields as
+    // JSON `null`, not `[]` — a bare `#[serde(default)]` only covers an ABSENT
+    // field, so a present `null` aborts the whole roster decode ("invalid type:
+    // null, expected a sequence"). That hard-error is what kept the Overwatch
+    // brain-view pane on "waiting…" once the ended tier was read (its entries
+    // carry `launchArgv: null`).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub current_files: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub liveness: String,
     #[serde(default)]
     pub stale: bool,
@@ -91,7 +111,7 @@ pub struct RosterEntry {
     pub pid_alive: Option<bool>,
     /// Hostname the agent runs on ("" = unknown/local); window-focus only works
     /// same-host.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub host: String,
     /// X11 window id of the agent's external terminal window (console launches).
     #[serde(default)]
@@ -106,8 +126,15 @@ pub struct RosterEntry {
     #[serde(default)]
     pub mode: Option<String>,
     /// adv_sessions row id — the `psu --resume <id>` handle (D-001 ended-session
-    /// route) and the `/api/adv/sessions/focus` `id` lookup.
-    #[serde(default)]
+    /// route) and the `/api/adv/sessions/focus` `id` lookup. `alias = "id"`: the
+    /// `ended` roster tier is raw `AdvSessionRow` JSON, which names this PK plainly
+    /// `id` (never `advSessionId`), so the alias backfills it for ended entries.
+    /// That gives the brain-view's newest-wake selection a real monotonic key
+    /// (the PK rises with each wake) instead of all-zeros — so it picks the LATEST
+    /// ended overwatch/queen wake deterministically, not whatever the server
+    /// happened to list first. Safe: `active`/`pending` entries emit `advSessionId`
+    /// (or omit both), never a conflicting `id`.
+    #[serde(default, alias = "id")]
     pub adv_session_id: Option<i64>,
     /// Whether a joinable adv_sessions launch row exists (resume/focus eligible).
     #[serde(default)]
@@ -119,8 +146,10 @@ pub struct RosterEntry {
     #[serde(default)]
     pub display: Option<String>,
     /// The argv the pui pane runs for a pending workbench launch (a fresh
-    /// `psu …`); empty for a normal entry.
-    #[serde(default)]
+    /// `psu …`); empty for a normal entry. `null_as_default`: the `ended` tier
+    /// serializes this as `null` (see current_files above) — without it the
+    /// whole roster decode fails and the brain-view pane shows "waiting…".
+    #[serde(default, deserialize_with = "null_as_default")]
     pub launch_argv: Vec<String>,
     // ── agent pane-kind (hive-agent-tabs-psu-tui P-001) ── stamped by the backend
     //    (adv-roster.ts via classifyAgentPane); parsed via agent_pane_kind.rs.
@@ -409,7 +438,14 @@ pub struct WakeGroup {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RosterResponse {
-    #[serde(default)]
+    // All three tiers use `null_as_default`, not bare `#[serde(default)]`: the
+    // operator serializes an EMPTY tier as JSON `null` (not `[]` / absent), and
+    // bare `default` only fills an ABSENT field — a present `null` still fails
+    // with "invalid type: null, expected a sequence", aborting the WHOLE decode.
+    // That is exactly the bug that made the Overwatch pane say "waiting…": adding
+    // the `ended` tier surfaced an `"ended": null` payload that hard-errored
+    // roster decode, so resolve_session bailed before selecting anything.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub active: Vec<RosterEntry>,
     /// Recently-ended sessions (`/api/adv/roster` `ended` tier) — the durable
     /// history half of the live roster. The brain-view panes MUST read this: a
@@ -419,12 +455,12 @@ pub struct RosterResponse {
     /// Tailing it from `ended` is exactly the pane's "keeps showing the last
     /// wake's transcript, which persists on disk after the process exits" contract
     /// (brain_view.rs). The Fleet roster ignores this tier (it renders `active`).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub ended: Vec<RosterEntry>,
     /// Pending workbench launches (pui-reactive-session-panes D-006): recorded but
     /// not-yet-running sessions, in a SEPARATE tier from `active`. The pui reads
     /// these to reactively open work-area panes; they never render in the roster.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub pending: Vec<RosterEntry>,
 }
 
@@ -2289,28 +2325,37 @@ mod tests {
     }
 
     #[test]
-    fn parses_ended_tier_with_overwatch_session_id() {
-        // Regression (overwatch-not-running-waiting): the brain-view panes resolve
-        // the autonomous session from the `ended` tier too — a short-lived
+    fn parses_ended_tier_overwatch_with_null_fields_and_id_alias() {
+        // Regression (overwatch "not running — waiting…"): the brain-view panes
+        // resolve the autonomous session from the `ended` tier too — a short-lived
         // overwatch/queen wake is markAdvSessionEnded the instant its invoke
-        // returns, so by the time a pane polls it's in `ended`, NOT `active`. The
-        // tier must deserialize and carry the entry's sessionId (the native uuid
-        // the pane tails). Shape trimmed from the live :3270 /api/adv/roster probe.
-        let j = r#"{"active":[],"ended":[
-            {"ownerId":"s-1782179103429-e2dcccf4","label":"overwatch · papercusp/overwatch",
-             "source":"claude","role":"overwatch","agent":"claude","mode":"console",
-             "host":"","pid":null,"liveness":"ended","stale":false,
-             "sessionId":"5fb7d772-655e-4a64-bba3-2bf522c1d1d9","advSessionId":6946,
+        // returns, so by the time a pane polls it's in `ended`, NOT `active`.
+        //
+        // The `ended` tier is RAW AdvSessionRow JSON (NOT a presence RosterEntry),
+        // so it (a) names the PK `id`, never `advSessionId`, and (b) nulls list +
+        // scalar fields the active tier always populates (`launchArgv`, `ownerId`,
+        // `label`). Both shapes must decode or the WHOLE roster fails and the pane
+        // shows "waiting…". Trimmed verbatim from the live /api/adv/roster probe.
+        let j = r#"{"active":null,"ended":[
+            {"id":6946,"ownerId":null,"label":null,"role":"overwatch","agent":"claude",
+             "mode":"console","planSlug":null,"feature":null,"terminalBin":null,
+             "pid":null,"windowId":null,"ompThreadId":null,"display":null,
+             "launchArgv":null,"launchedAt":null,
+             "sessionId":"5fb7d772-655e-4a64-bba3-2bf522c1d1d9","exitCode":0,
              "workspaceId":"papercusp-workspace","endedAt":"2026-06-23T01:45:07.987Z"}
-        ],"pending":[]}"#;
-        let r: RosterResponse = serde_json::from_str(j).unwrap();
-        assert!(r.active.is_empty());
+        ],"pending":null}"#;
+        let r: RosterResponse = serde_json::from_str(j).expect("ended tier must decode");
+        assert!(r.active.is_empty()); // `null` tier → [], not a decode failure
         assert_eq!(r.ended.len(), 1, "ended tier must deserialize");
         let e = &r.ended[0];
         assert_eq!(e.role.as_deref(), Some("overwatch"));
+        assert_eq!(e.owner_id, ""); // null ownerId → default, not an error
+        assert!(e.launch_argv.is_empty()); // null launchArgv → [], not an error
         // The native uuid the brain-view pane locates + tails MUST survive the
         // round-trip — empty here = the pane filters the entry out (= "waiting…").
         assert_eq!(e.session_id.as_deref(), Some("5fb7d772-655e-4a64-bba3-2bf522c1d1d9"));
+        // `id` (the AdvSessionRow PK) backfills adv_session_id via the alias, so the
+        // pane's newest-wake sort has a real monotonic key for ended entries.
         assert_eq!(e.adv_session_id, Some(6946));
     }
 

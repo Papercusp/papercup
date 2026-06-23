@@ -25,11 +25,12 @@
  * semantics (you should SEE this) — NOT assignment (ownership), which stays a
  * separate, heavier act.
  */
-import { PgEntitySubscriptionStore, objectToTargetRef, type ObjectRef } from '@papercusp/coordination/capabilities';
-import { getOrgPg } from '@papercusp/db-org';
+import { objectToTargetRef, type ObjectRef } from '@papercusp/coordination/capabilities';
 import type { AgentIdentity } from './identity';
 import { sendMessage } from './messages';
+import { wakeRecipients } from './inbox-wake';
 import { resolveBestEffortAgainstRoster } from './recipient-resolve';
+import { getCoordSubscriptionStore } from './subscription-store';
 
 export interface NotifyAgentsOpts {
   /** Agent ownerId prefixes / handles to notify (resolved against the roster). */
@@ -51,6 +52,8 @@ export interface NotifyAgentsResult {
   notified: string[];
   /** Addressees subscribed to the object (durable; superset-ish of notified). */
   subscribed: string[];
+  /** Count of addressees actively re-invoked (only when `wake` was set). */
+  woke: number;
 }
 
 /** @see module docstring. Reach a LIST of named agents on a created object. */

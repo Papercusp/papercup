@@ -147,6 +147,18 @@ export default defineTool({
   agentRoles: [...ALL_ROLES],
   modality: ['text'],
   args: argsSchema,
+  // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-002): plans:get
+  // returns a single plan's full detail (content + items + decisions) — a COMPOSITE object,
+  // NOT a keyed-row collection, so it opts into not_modified-ONLY (no semantic row-delta,
+  // which would silently miss the non-collection fields). The framework's content-hash
+  // revision suppresses the body when the plan for these args is byte-identical to the last
+  // read — an 18KB unchanged plan re-read returns `not_modified` instead of replaying it.
+  // Dormant until a delta-aware client sends `_meta.delta` (WI-514 / Phase 2-3).
+  delta: {
+    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
+    schemaVersion: 'plans-get-v1',
+    maxDeltaAge: 5 * 60_000,
+  },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);

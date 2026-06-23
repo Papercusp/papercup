@@ -46,6 +46,18 @@ describe('queryNamesForTriggerEvent', () => {
     expect(queryNamesForTriggerEvent('harness_shared.hive_settings.changed')).toEqual(['hive.steering']);
   });
 
+  it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {
+    // The schedule lives in COLUMNS on harness_plans (mig 299), so set-schedule /
+    // arm / disarm writes — and the routine engine's schedule_active flips — must
+    // push the Calendar (plans.scheduledOccurrences) + Routines (plans.schedule) panes.
+    const names = queryNamesForTriggerEvent('harness_shared.harness_plans.changed');
+    expect(names).toEqual(
+      expect.arrayContaining(['plans.schedule', 'plans.scheduledOccurrences']),
+    );
+    // and it still busts the directory + per-plan reads it always did
+    expect(names).toEqual(expect.arrayContaining(['plans.list', 'plans.get']));
+  });
+
   it('handles *Consolidated tables', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_features_consolidated.changed')).toEqual(
       expect.arrayContaining(['featuresConsolidated.bySlug', 'featuresConsolidated.byPlanSlug']),

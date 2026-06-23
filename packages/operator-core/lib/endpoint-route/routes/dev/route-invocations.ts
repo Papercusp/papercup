@@ -18,7 +18,9 @@ export default defineTool({
   method: 'GET',
   path: '/dev/route-invocations',
   auth: { trust: ['verified', 'trusted'] }, // /dev surface — loopback-gated by the operator bind host
-  input: z.object({ limit: z.coerce.number().int().positive().max(500).default(100) }),
+  // CLAMP, don't REJECT (clamp-not-reject, P-001/D-002): no `.max()` so a client
+  // limit > 500 can't 400 the /dev Routes panel on a skew; the body Math.min-clamps.
+  input: z.object({ limit: z.coerce.number().int().positive().default(100) }),
   async handler(_req, ctx) {
     const workspaceId = activeWorkspaceId();
     const { sql } = getOrgPg();
@@ -39,7 +41,7 @@ export default defineTool({
           FROM harness_shared.route_invocations
          WHERE workspace_id = ${workspaceId}
          ORDER BY invoked_at DESC
-         LIMIT ${ctx.input.limit}
+         LIMIT ${Math.min(ctx.input.limit, 500)}
       `;
       return Response.json({ rows });
     } catch (err) {

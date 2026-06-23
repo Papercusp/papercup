@@ -255,11 +255,24 @@ describe('sync-resolver v2 registry', () => {
       vi.doUnmock('../toast-log-data');
     });
 
-    it('rejects out-of-range limit', async () => {
+    it('CLAMPS an over-cap limit (clamp-not-reject) and still rejects invalid input', async () => {
+      const limitsCaptured: Array<number | undefined> = [];
+      vi.doMock('../toast-log-data', () => ({
+        listToasts: vi.fn(async (input: { limit?: number }) => {
+          limitsCaptured.push(input.limit);
+          return { toasts: [] };
+        }),
+      }));
       const { resolveNamedQueryV2: r } = await import('./index');
-      await expect(r('toastLog.recent', { limit: 1000 })).rejects.toThrow();
+      // Over-cap CLAMPS to the cap (500), never throws — a newer client asking for
+      // more than this resolver's cap must NOT break the panel with a "Too big"
+      // error (the client/server skew bug; clamp-not-reject, P-001 / D-002).
+      await r('toastLog.recent', { limit: 1000 });
+      expect(limitsCaptured[0]).toBe(500);
+      // Genuinely-invalid input still rejects at arg-parse (must be a positive int).
       await expect(r('toastLog.recent', { limit: -1 })).rejects.toThrow();
       await expect(r('toastLog.recent', { limit: 'twenty' })).rejects.toThrow();
+      vi.doUnmock('../toast-log-data');
     });
   });
 
