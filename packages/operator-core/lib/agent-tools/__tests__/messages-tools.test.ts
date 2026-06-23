@@ -88,6 +88,32 @@ describe('messages:send', () => {
     expect(result.data.kind).toBe('Note');
   });
 
+  it('projects messageIds from result.inserted and drops the raw executed blob', async () => {
+    vi.doMock('../../execute-action', () => ({
+      executeAction: vi.fn(async () => ({
+        ok: true,
+        actionId: '',
+        result: {
+          inserted: [
+            { recipient: 'org', messageId: 'm1' },
+            { recipient: 'sheets', messageId: 'm2' },
+          ],
+          placeholder_reason_flag: false,
+        },
+      })),
+    }));
+    const { default: tool } = await import('../messages/send');
+    const result = (await tool.handler(
+      { to: ['org', 'sheets'], kind: 'Note', subject: 'S', body: 'B', reason: 'Testing the id projection.' },
+      MAKE_CTX(),
+    )) as any;
+    expect(result.data.messageIds).toEqual(['m1', 'm2']);
+    // The old nested ExecuteActionResult wrapper is gone (token tax + always-
+    // empty actionId); the projected shape is flat scalars/arrays only.
+    expect(result.data.executed).toBeUndefined();
+    expect(result.data.placeholderReason).toBeUndefined();
+  });
+
   it('rejects an invalid recipient slug with degraded', async () => {
     vi.doMock('../../execute-action', () => ({ executeAction: vi.fn() }));
     const { default: tool } = await import('../messages/send');

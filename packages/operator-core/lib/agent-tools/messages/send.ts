@@ -50,6 +50,20 @@ export default defineTool({
     parent_message_id: z.string().optional(),
     reason: z.string().min(10),
   }),
+  // Output schema (token-efficient-tool-result-formats P-011): a flat,
+  // non-redundant PROJECTION of the send result — `recipients` + `kind` +
+  // the new `messageIds`. Declaring it advertises the MCP `outputSchema`
+  // and unlocks field projection / the compact wire formats. Replaces the
+  // old `executed: <raw ExecuteActionResult>` blob, which nested an always-
+  // empty `actionId` and a `recipient` already echoed in `recipients` —
+  // pure token tax (no caller reads the MCP tool's wrapper; OperatorPanel
+  // reads the raw HTTP `result.inserted` directly, not this).
+  result: z.object({
+    recipients: z.array(z.string()),
+    kind: z.string(),
+    messageIds: z.array(z.string()),
+    placeholderReason: z.boolean().optional(),
+  }),
   async handler(args, ctx) {
     const bad = args.to.find((s) => !SLUG_RE.test(s));
     if (bad) {
@@ -60,7 +74,7 @@ export default defineTool({
       };
     }
     const kind = args.kind ?? (args.to_feature_id ? 'feature-note' : 'Directive');
-    const result = await executeAction(ctx.principal.slug, {
+    const executed = await executeAction(ctx.principal.slug, {
       actionId: newActionId(),
       action: {
         op: 'send_message',
@@ -74,15 +88,24 @@ export default defineTool({
         reason: args.reason,
       },
     });
-    if (!result.ok) {
+    if (!executed.ok) {
       return {
         data: null,
         degraded: true,
-        degradedReasons: [`executeAction: ${result.error}${result.detail ? ` (${result.detail})` : ''}`],
+        degradedReasons: [`executeAction: ${executed.error}${executed.detail ? ` (${executed.detail})` : ''}`],
       };
     }
+    // doSendMessage returns result.inserted = [{ recipient, messageId }];
+    // project to just the new ids (recipients is echoed above). `?.` keeps
+    // it robust to callers/mocks that resolve a bare `{ ok: true }`.
+    const inserted = (executed.result?.inserted ?? []) as Array<{ recipient: string; messageId: string }>;
     return {
-      data: { recipients: args.to, kind, executed: result },
+      data: {
+        recipients: args.to,
+        kind,
+        messageIds: inserted.map((row) => row.messageId),
+        ...(executed.result?.placeholder_reason_flag ? { placeholderReason: true } : {}),
+      },
     };
   },
 });
