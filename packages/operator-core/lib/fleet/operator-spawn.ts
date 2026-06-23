@@ -47,7 +47,13 @@ import {
   reclaimOrphanedSpawns,
   recordSpawnPid,
   SPAWN_HEARTBEAT_INTERVAL_MS,
+  WEDGE_REAP_SILENT_MS,
 } from './spawn-reclaim';
+// Re-exported for back-compat: the wedge-reap action threshold is now centralised in
+// spawn-reclaim.ts (beside the other reclaim thresholds) so the in-memory reaper here
+// and the durable DB `reclaimWedgedSpawns` sweep cannot drift. Existing importers
+// (`./operator-spawn`) keep working.
+export { WEDGE_REAP_SILENT_MS } from './spawn-reclaim';
 import { wakeParentOnChildDeath } from './parent-wake';
 import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
@@ -196,18 +202,6 @@ function noteSpawnOutput(spawnId: string): void {
   if (e) e.at = Date.now();
   else localSpawnOutput.set(spawnId, { at: Date.now(), persistedAt: 0 });
 }
-
-/**
- * Wedge auto-reap threshold (P-010 / D-006, owner decision 2026-06-11): a bee
- * stream-silent this long is hung, not thinking — bees stream with
- * --include-partial-messages, so thinking deltas + tool_use events keep the
- * stream moving; the only legitimate long silence is awaiting a long local
- * tool call, which 30 minutes absorbs. Override: PAPERCUSP_WEDGE_REAP_MS.
- */
-export const WEDGE_REAP_SILENT_MS = (() => {
-  const raw = Number(process.env.PAPERCUSP_WEDGE_REAP_MS);
-  return Number.isFinite(raw) && raw >= 60_000 ? raw : 30 * 60_000;
-})();
 
 /** Spawns currently being reaped — guards double-fire across ticks while the
  *  cancel + process death settle. */

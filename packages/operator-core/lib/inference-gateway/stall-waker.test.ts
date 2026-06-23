@@ -7,7 +7,7 @@ import { StallWaker, type StallEvent, type StallWakerDeps, type StallWakerOption
 function harness(opts: StallWakerOptions = {}) {
   const state = { t: 1_000_000, beeIdle: true, capBack: true, woken: 1 };
   const queue: StallEvent[] = [];
-  const calls = { wake: [] as string[], cap: 0 };
+  const calls = { wake: [] as string[], cap: 0, unwedge: [] as string[] };
   const deps: StallWakerDeps = {
     fetchStalls: async (since) => ({ now: state.t, stalls: queue.filter((s) => s.at > since) }),
     ownerIsIdle: async () => state.beeIdle,
@@ -18,6 +18,9 @@ function harness(opts: StallWakerOptions = {}) {
     wake: async (ownerId) => {
       calls.wake.push(ownerId);
       return { woken: state.woken };
+    },
+    unwedge: async (ownerId) => {
+      calls.unwedge.push(ownerId);
     },
     now: () => state.t,
     log: () => {},
@@ -115,6 +118,39 @@ test('ROLE-AGNOSTIC — an su/psu session (not a bee spawn) is woken identically
   h.advance(61_000);
   r = await h.w.tick();
   assert.deepEqual(r.woken, ['su-b813f856-99a1-494d-b92e-ae4b81343394'], 'an su/psu session is auto-woken just like a bee');
+});
+
+test('FAST UN-WEDGE — a confirmed-idle errored owner is ESC-unwedged immediately, BEFORE the capacity gate', async () => {
+  const h = harness();
+  h.state.capBack = false; // capacity NOT back — the capacity-gated wake must NOT fire yet
+  h.pushStall({ soonestResetAt: h.state.t + 60_000 }); // reset far in the future
+  const r = await h.w.tick();
+  assert.deepEqual(r.unwedged, ['bee-1'], 'ESC-unwedged on the first idle-confirmed tick, regardless of capacity');
+  assert.deepEqual(r.woken, [], 'but NOT woken — capacity not back, so it is not pushed back into a throttled pool');
+  assert.deepEqual(h.calls.unwedge, ['bee-1']);
+  assert.equal(h.w.pendingCount, 1, 'still pending for the capacity-gated resume');
+});
+
+test('FAST UN-WEDGE — not ESC-stormed within the cooldown, retried after it (session still wedged)', async () => {
+  const h = harness({ unwedgeCooldownMs: 30_000 });
+  h.state.capBack = false;
+  h.pushStall({ soonestResetAt: h.state.t + 60_000 });
+  await h.w.tick();
+  assert.equal(h.calls.unwedge.length, 1);
+  h.advance(10_000); // within cooldown
+  await h.w.tick();
+  assert.equal(h.calls.unwedge.length, 1, 'no re-ESC within the cooldown');
+  h.advance(31_000); // past cooldown
+  await h.w.tick();
+  assert.equal(h.calls.unwedge.length, 2, 're-ESC allowed after the cooldown');
+});
+
+test('FAST UN-WEDGE — a self-recovered (never-idle) owner is NEVER force-ESC\'d', async () => {
+  const h = harness();
+  h.state.beeIdle = false; // recovered on its own CLI retry — still running
+  h.pushStall();
+  await h.w.tick();
+  assert.deepEqual(h.calls.unwedge, [], 'a still-running owner is never force-ESC\'d (false-positive guard)');
 });
 
 test('wake cap — a bee that keeps stalling is given up after maxWakesPerBee', async () => {

@@ -27,15 +27,17 @@
  *   hive-Queen fork (wake-executor.ts:407): a NEW-task warm-inject of a drained
  *   bee re-routes to a FRESH `--session-id` SPAWN (full bee-prompt re-assembly +
  *   the hydration tail) instead of `--resume`-ing the grown transcript. It is
- *   gated by `FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT` — DEFAULT OFF, so the legacy
- *   `--resume` carry asserted below is what runs in production today.
+ *   gated by `FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT` — now DEFAULT ON (flipped 2026-06-23,
+ *   WI-593, after live verification). The legacy `--resume` carry asserted below now runs
+ *   ONLY for a wake WITHOUT the fresh-context marker (an ordinary resume), or as the
+ *   fail-soft fallback when a fresh spawn is not admitted.
  *
- * THESE assertions lock the CURRENT (flag-OFF) carry behavior. When Phase 1 lands
- * and the flag flips ON, the warm-inject-of-a-drained-bee case MUST stop emitting
- * `--resume <prior id>` and instead mint a fresh `--session-id` — i.e. this is the
- * regression that proves Phase 1 changed THIS seam, not another. Within-task wakes
- * (a live session — line 387 PARKs it) never reach the fork and are untouched
- * (D-005): the resume seam is only ever reached for an exited process.
+ * The first describe blocks below use a NO-MARKER delivery, so they assert the
+ * still-live `--resume` path that a non-warm-inject wake (or a not-admitted fork) takes —
+ * unchanged by the flag. The "Phase 1 fork (flag ON)" suite asserts the marker-present
+ * fork: the warm-inject-of-a-drained-bee case mints a fresh `--session-id` SPAWN and emits
+ * NO `--resume <prior id>` carry. Within-task wakes (a live session — line 387 PARKs it)
+ * never reach the fork and are untouched (D-005): the seam is only reached for an exited process.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { executeWake, resumeCommandFor, type ExecuteWakeDeps } from './wake-executor';
@@ -182,12 +184,14 @@ describe('executeWake — warm-inject of a DRAINED bee re-invokes on the SAME se
   });
 });
 
-describe('Phase 1 gate — the fork is not yet live, so the carry above IS production behavior today', () => {
-  it('FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT defaults OFF — the legacy --resume carry is what runs', () => {
-    expect(FLAG_DEFAULTS[FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]).toBe(false);
-    // When this flips ON, the executeWake warm-inject case above MUST stop emitting
-    // `--resume <prior id>` and instead mint a fresh `--session-id` (the fork at
-    // wake-executor.ts:407) — the regression that proves Phase 1 edited this seam.
+describe('Phase 1 gate — the fork is LIVE (default-ON, WI-593); the carry above is now the fail-soft/no-marker fallback', () => {
+  it('FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT defaults ON — a marker-carrying drained-bee warm-inject forks to a fresh spawn', () => {
+    expect(FLAG_DEFAULTS[FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]).toBe(true);
+    // Flipped ON 2026-06-23 after live verification (real executeWake + real getFlag →
+    // channel fresh-context-warm-inject, never --resume). The `--resume` carry asserted in
+    // the block above now runs ONLY for a wake WITHOUT the fresh-context marker (an ordinary
+    // resume) or as the fail-soft fallback when a fresh spawn is not admitted — see the
+    // "Phase 1 fork (flag ON)" suite below for the marker-present fork behavior.
   });
 });
 

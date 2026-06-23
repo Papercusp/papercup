@@ -78,10 +78,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // resolveHiveEpochCrypto returns the notImplemented stub (plaintext, byte-identical to today). Owner
   // flips ON only after the live cut-off witness (WI-560) passes.
   FLAGS.HIVE_REKEY,
-  // inbox-cards-unification Phase D (P-031): durable-escalation mirror of
-  // chat decision cards is still building; the live ctx.askUser path is
-  // unchanged with this off.
-  FLAGS.INBOX_DURABLE_ESCALATIONS,
+  // (INBOX_DURABLE_ESCALATIONS graduated to default-ON 2026-06-23, WI-594 — inbox-cards-
+  // unification Phase D is IMPLEMENTED + wired end-to-end + live-verified (plan D-009 round-trip;
+  // ran ON in papercusp-workspace via a stored runtime override). Finished work ships ON, not
+  // dark — removed from the allowlist per the rule.)
 
   // plan-federation-regrain-2026-06-13 (P-005/P-006): per-PART plan federation.
   // DARK because it is an UNVERIFIED cutover — the cross-machine merge proof
@@ -137,12 +137,9 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // swarm federation test + event-loop latency regression test). Phase 1: skeleton +
   // basic methods. Phase 2: socket handoff + integration tests.
   FLAGS.SUBSTRATE_SIDECAR,
-  // worker-chunk-loop-operator-hosted-2026-06-14 (P-142 / D-003): the operator-
-  // hosted worker:chunk-loop is the coding HOT PATH and ships dark, then
-  // dark-launch → 25/50/100 cohort ramp → retire. OFF = the subprocess chunk
-  // loop, unchanged. Genuinely incomplete-until-ramped per the FLAG_DEFAULTS
-  // comment; flipped per-cohort as parity metrics confirm each step.
-  FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT,
+  // (WORKER_CHUNK_LOOP_BLUEPRINT graduated to default-ON 2026-06-23, owner-directed
+  // flags-default-on sweep / WI-606: behavior-neutral because routing requires a SECOND
+  // per-harness `workerChunkLoop` gate (default false) — the master flag no longer dark.)
   // self-learning-frontier D-001 (owner-ratified dark-ship rule): every
   // frontier LEARNING LOOP ships built + tested + DARK, arming only when the
   // plan's P-001 gate closes (consume-edges P-013 live proof + owner
@@ -269,11 +266,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // 2026-06-15 (owner authorization) — none remain dark. compiled-briefs + touch-set-exclusion are
   // validated by the framework bake-off running concurrently (a 'regressed' verdict auto-reverts
   // the flag off via autoRevertOnRegression / P-015).
-  // bee-context-efficiency-2026-06-14 (sourced from its own FLAG_DEFAULTS comment): an
-  // unverified HOT-PATH change to live bee re-invocation (fresh session vs `--resume`). OFF ⇒
-  // legacy `--resume`, behavior-neutral; flip ON after the P-006 live verification. (Pre-existing
-  // dark flag that was missing from this allowlist — added here to green the gate.)
-  FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT,
+  // (BEE_FRESH_CONTEXT_WARM_INJECT graduated to default-ON 2026-06-23 — WI-593. The Phase-1
+  // fork shipped + tested (carry-seam oracle + 14 fork tests) and was live-verified (real
+  // executeWake + real getFlag → channel fresh-context-warm-inject, never --resume). Fail-soft
+  // to legacy `--resume`; removed from the dark allowlist per the shrink-only rule.)
   // bee-context-efficiency-2026-06-14 P-013 (D-007): the bee transcript-cap recycle BACKSTOP.
   // DEFAULT OFF + the routine is seeded INACTIVE (double-gated) — an unverified bee-lifecycle
   // change that force-recycles over-cap idle bees. OFF ⇒ a no-op (the sweep logs the over-cap
@@ -292,14 +288,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // 305 additive (both ON CONFLICT targets valid, zero live collisions), reversible.)
   // workspace-data-isolation-leaks-2026-06-17 F-M7: ui:dispatch/get_state cross-workspace guard
   // (SU-only surface). DELIBERATE dark ship — reversible; OFF = today's behavior, byte-identical.
-  // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim LEASE,
-  // migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env gate. DEFAULT OFF — once the stale-claim
-  // reaper requeues mid-flight items (GAP 1) + covers the issue family (GAP 2), the stuck-item
-  // risk is closed regardless of the lease, and the lease's heartbeat is wired only into the DBOS
-  // orchestrator (not the general claim tools), so flipping it ON now would add a TTL with no
-  // heartbeat on the self-selection path. Owner flips ON after the recovery layer is exercised;
-  // OFF = today's local SELECT … FOR UPDATE SKIP LOCKED, byte-identical.
-  FLAGS.WORKITEM_CLAIM_LEASE,
+  // (WORKITEM_CLAIM_LEASE graduated to default-ON 2026-06-23 — owner-directed verify+flip (WI-597).
+  // The D-008 gate waited on the recovery layer; it's now in place: the stale-claim reaper requeues
+  // mid-flight items (GAP 1) + covers the issue family (GAP 2), closing the stuck-item risk
+  // regardless of the lease. Mechanism verified green (lease acquire/heartbeat/expiry-steal +
+  // dead-holder reclaim); single-box re-claim gates on work_items.taken_by (liveness-reclaimed),
+  // NOT the lease TTL, so the self-selection no-heartbeat is benign; cross-Swarm double-claims are
+  // reconcile-covered (P-005). Reversible — removed from the dark allowlist per the shrink-only rule.)
   // (SCOPED_SUPERUSER_CLAMP graduated to default-ON 2026-06-23 — owner-directed flip,
   // psu-in-desktop-builds D-002: it is the workspace boundary for a full-tool end-user psu
   // session. Reversible kill-switch; removed from the dark allowlist per the rule.)
@@ -354,16 +349,12 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
-  [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
   [FLAGS.AUTHORITY_RPC_PROTOMUX, 'incomplete'],
   [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
-  [FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT, 'incomplete'],
   [FLAGS.CAPABILITY_ENVELOPE, 'incomplete'],
   [FLAGS.FLEET_CAPABILITY_ONLY, 'incomplete'],
   [FLAGS.CAPABILITY_EXEC_SANDBOX, 'incomplete'],
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
-  [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT, 'incomplete'],
-  [FLAGS.WORKITEM_CLAIM_LEASE, 'incomplete'],
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],

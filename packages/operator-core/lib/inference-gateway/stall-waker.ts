@@ -49,6 +49,9 @@ export interface StallWakerOptions {
   confirmWindowMs?: number;
   /** Don't re-wake the same bee within this cooldown. Default 60 s. */
   wakeCooldownMs?: number;
+  /** Don't re-fast-ESC (un-wedge) the same wedged owner within this cooldown — so a session that keeps
+   *  erroring isn't ESC-stormed. Default 45 s. */
+  unwedgeCooldownMs?: number;
   /** Give up on a bee after this many wake attempts (it isn't resuming). Default 3. */
   maxWakesPerBee?: number;
   /** Forget a pending stall entirely after this long (bound the map; the reset never came). Default 2 h. */
@@ -64,6 +67,7 @@ interface Pending {
 const DEFAULTS: Required<StallWakerOptions> = {
   confirmWindowMs: 2 * 60_000,
   wakeCooldownMs: 60_000,
+  unwedgeCooldownMs: 45_000,
   maxWakesPerBee: 3,
   pendingTtlMs: 2 * 60 * 60_000,
 };
@@ -73,6 +77,7 @@ export class StallWaker {
   /** ownerId → the pending stall we're waiting to act on (one per bee; soonestReset = the max seen). */
   private readonly pending = new Map<string, Pending>();
   private readonly lastWokeAt = new Map<string, number>();
+  private readonly lastUnwedgeAt = new Map<string, number>();
   private readonly wakeCount = new Map<string, number>();
   private readonly opt: Required<StallWakerOptions>;
 
@@ -87,9 +92,10 @@ export class StallWaker {
 
   /** One pass: pull new stalls, then re-evaluate every pending bee. Never throws (each step is guarded);
    *  returns what it pulled + which bees it woke this tick. */
-  async tick(): Promise<{ pulled: number; woken: string[]; dropped: string[] }> {
+  async tick(): Promise<{ pulled: number; woken: string[]; dropped: string[]; unwedged: string[] }> {
     const woken: string[] = [];
     const dropped: string[] = [];
+    const unwedged: string[] = [];
     const now = this.deps.now();
 
     // 1. Pull new stall candidates and fold them into `pending` (one entry per bee).
@@ -134,6 +140,23 @@ export class StallWaker {
         continue;
       }
 
+      // 2a-FAST. UN-WEDGE NOW (owner-requested 2026-06-23): the bee is confirmed idle = its turn DIED on a
+      // gateway error and the CLI is wedged (can't receive ANY message — not even the wake below — until the
+      // dead turn is ESC'd). Don't make it wait out the capacity gate to become reachable: ESC it immediately
+      // so it can receive messages again. Storm-safe (ESC only, NO wake → we don't push it back into a still-
+      // throttled pool); the capacity-gated wake below does the actual resume once budget returns. Cooldowned
+      // so a session that keeps erroring isn't ESC-stormed.
+      if (this.deps.unwedge && now - (this.lastUnwedgeAt.get(ownerId) ?? 0) >= this.opt.unwedgeCooldownMs) {
+        try {
+          await this.deps.unwedge(ownerId);
+          this.lastUnwedgeAt.set(ownerId, now);
+          unwedged.push(ownerId);
+          this.deps.log('info', `stall-waker: fast-ESC un-wedged ${ownerId} (turn died on a gateway error) — reachable again`);
+        } catch (e) {
+          this.deps.log('warn', `stall-waker: unwedge(${ownerId}) failed: ${(e as Error).message}`);
+        }
+      }
+
       // 2b. Wait for the account's reset.
       if (now < info.soonestResetAt) continue;
 
@@ -176,6 +199,6 @@ export class StallWaker {
       }
     }
 
-    return { pulled, woken, dropped };
+    return { pulled, woken, dropped, unwedged };
   }
 }

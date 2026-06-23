@@ -66,6 +66,12 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       const a = rows.find((x) => x.id === accountId);
       return a ? a.available === true : true; // unknown account → trust the reset time we already waited out
     },
+    unwedge: async (ownerId) => {
+      // FAST UN-WEDGE (owner-requested 2026-06-23): ESC ONLY (no wake) — end the turn that died on a gateway
+      // error so the wedged CLI re-arms its inbox-wake watch and can receive messages again immediately,
+      // without waiting for the account's capacity to return. Best-effort: a no-op if there's no live turn.
+      await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: 'gateway error — ESC to re-arm (un-wedge)' });
+    },
     wake: async (ownerId, summary) => {
       // ESC-THEN-WAKE (coord-end-turn P-003): a bee whose turn DIED on a rate limit is stuck mid-errored —
       // NOT sleeping on its inbox-wake key — so a bare wake lands woken:0. Force-ESC ends the dead turn first

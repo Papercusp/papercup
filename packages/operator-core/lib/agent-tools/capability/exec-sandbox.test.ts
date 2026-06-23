@@ -1,12 +1,13 @@
 /**
  * Capability-exec sandbox argv (agent-capability-confinement-2026-06-13 P-022/D-008).
  *
- * bwrap cannot run on this dev box (unprivileged userns is AppArmor-restricted), so
- * the wrap's behavior is pinned at the ARGV level via the injectable `bwrapWorks` /
- * `homeDir` / `bwrapBinary` seam — end-to-end validation is the owner's arming step
+ * The wrap's behavior is pinned at the ARGV level via the injectable `bwrapWorks` /
+ * `homeDir` / `bwrapBinary` / `maskExists` seam (so it is host-independent); the REAL
+ * bwrap + srt exec paths are validated end-to-end by `exec-sandbox.integration.test.ts`
  * on a bwrap-capable host. These tests pin: fail-open both ways (flag-off,
  * bwrap-unavailable → raw), the containment argv (cwd-writable, credential masking,
- * process-namespace isolation), the deny-all-egress lever, and credential-list
+ * process-namespace isolation), skipping a nonexistent mask target (else bwrap
+ * fail-CLOSES under the ro-root), the deny-all-egress lever, and credential-list
  * parity with the fleet sandbox.
  */
 import { describe, it, expect } from 'vitest';
@@ -27,6 +28,10 @@ const base: Omit<BuildSandboxOpts, 'enabled'> = {
   srtBin: null,
   homeDir: '/home/op',
   bwrapBinary: 'bwrap',
+  // The fake homeDir's credential paths don't exist on the test host; pin "all
+  // present" so the mask-argv assertions below stay deterministic. The skip-missing
+  // behavior is covered by its own block.
+  maskExists: () => true,
 };
 
 describe('buildCapabilitySandboxCommand — fail-open', () => {
@@ -130,6 +135,43 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
 
   it('does NOT unshare the network by default (fs/credential containment, egress shared — domain-allowlist is the follow-up)', () => {
     expect(d.argv).not.toContain('--unshare-net');
+  });
+});
+
+describe('buildCapabilitySandboxCommand — skip a nonexistent mask target (fail-OPEN, not fail-closed)', () => {
+  // bwrap can't create a mount point under the ro-root (`Can't mkdir …: Read-only
+  // file system`), so binding a credential path that doesn't exist would abort the
+  // whole command. A missing path has no secret to mask, so it must be skipped.
+  it('omits --tmpfs / --ro-bind for mask paths that do not exist on the host', () => {
+    // Only ~/.ssh + ~/.npmrc exist; the rest are missing and must be skipped.
+    const present = new Set(['/home/op/.ssh', '/home/op/.npmrc']);
+    const d = buildCapabilitySandboxCommand(
+      { cmd: CMD, cwd: CWD },
+      { ...base, enabled: true, maskExists: (abs) => present.has(abs) },
+    );
+    expect(d.mode).toBe('bwrap');
+    // present → masked
+    expect(seq(d.argv, ['--tmpfs', '/home/op/.ssh'])).toBe(true);
+    expect(seq(d.argv, ['--ro-bind', '/dev/null', '/home/op/.npmrc'])).toBe(true);
+    // missing → NOT bound (no --tmpfs / --ro-bind referencing them at all)
+    for (const missing of ['/home/op/.aws', '/home/op/.gnupg', '/home/op/.config/gcloud', '/home/op/.papercusp']) {
+      expect(d.argv).not.toContain(missing);
+    }
+  });
+
+  it('skips ALL mask targets when none exist (still a valid sandbox, just no credential overlays)', () => {
+    const d = buildCapabilitySandboxCommand(
+      { cmd: CMD, cwd: CWD },
+      { ...base, enabled: true, maskExists: () => false },
+    );
+    expect(d.sandboxed).toBe(true);
+    expect(d.mode).toBe('bwrap');
+    for (const dir of CAPABILITY_SANDBOX_MASK_DIRS) {
+      expect(d.argv).not.toContain(`/home/op/${dir}`);
+    }
+    // The core containment (ro-root, writable cwd, ns isolation) is unaffected.
+    expect(seq(d.argv, ['--ro-bind', '/', '/'])).toBe(true);
+    expect(seq(d.argv, ['--bind', CWD, CWD])).toBe(true);
   });
 });
 

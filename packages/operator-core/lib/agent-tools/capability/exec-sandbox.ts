@@ -12,9 +12,13 @@
  * GATED + FAIL-OPEN. The wrap engages only when (a) the `papercusp-capability-exec-sandbox`
  * flag is ON and (b) bwrap actually works on this host. Otherwise the command runs
  * RAW (today's behavior) — so this can never break a host whose unprivileged userns
- * is restricted (e.g. this dev box: bwrap is present but `setting up uid map:
- * Permission denied`). The bwrap argv is unit-tested via an injectable seam;
- * end-to-end validation is gated on a bwrap-capable host (the owner's arming step).
+ * is restricted. The bwrap argv is unit-tested via an injectable seam; the real
+ * bwrap + srt exec paths are validated end-to-end by `exec-sandbox.integration.test.ts`
+ * on a bwrap-capable host (it skips where bwrap can't sandbox, e.g. CI). On Ubuntu
+ * 24.04 a host needs an AppArmor profile granting `/usr/bin/bwrap` the `userns`
+ * permission (`apparmor_restrict_unprivileged_userns=1` otherwise shunts unconfined
+ * bwrap into the restrictive `unprivileged_userns` profile → `setting up uid map:
+ * Permission denied`); see `/etc/apparmor.d/bwrap` and the agent-insights doc.
  *
  * SCOPE (honest): this restores FILESYSTEM + CREDENTIAL containment (the larger
  * blast radius) plus a deny-all-egress lever. DOMAIN-ALLOWLIST egress parity with
@@ -75,9 +79,11 @@ let _bwrapWorksCache: boolean | null = null;
 
 /**
  * True when bwrap is present AND can actually sandbox on this host (cached, like
- * the plugin-loader supervisor's probe). The dev box returns false (unprivileged
- * userns is AppArmor-restricted: `setting up uid map: Permission denied`). Tests
- * inject availability via the `bwrapWorks` opt rather than touching this.
+ * the plugin-loader supervisor's probe). Returns false where the unprivileged
+ * userns is restricted (Ubuntu 24.04 without an AppArmor profile granting bwrap
+ * the `userns` permission → `setting up uid map: Permission denied`), keeping the
+ * exec path fail-open. Tests inject availability via the `bwrapWorks` opt rather
+ * than touching this.
  */
 export function capabilityBwrapWorks(): boolean {
   if (_bwrapWorksCache !== null) return _bwrapWorksCache;
@@ -125,6 +131,12 @@ export interface BuildSandboxOpts {
   homeDir?: string;
   /** bwrap binary (default `'bwrap'`); injected by tests. */
   bwrapBinary?: string;
+  /** Predicate: does a credential-mask target exist on the host? Defaults to
+   *  `existsSync`; injected by tests. A target that does not exist is SKIPPED —
+   *  bwrap cannot create a mount point under the read-only `/` bind (EROFS), so
+   *  binding a nonexistent path is fail-CLOSED, and a path with no file has no
+   *  secret to mask anyway. */
+  maskExists?: (abs: string) => boolean;
 }
 
 /**
@@ -203,6 +215,7 @@ export function buildCapabilitySandboxCommand(
   const home = opts.homeDir ?? homedir();
   const denyAllEgress = opts.denyAllEgress ?? capabilitySandboxDenyAllEgress();
   const bwrap = opts.bwrapBinary ?? 'bwrap';
+  const maskExists = opts.maskExists ?? existsSync;
   const argv: string[] = [
     // Read-only view of the whole host fs (builds/tools must READ it)…
     '--ro-bind', '/', '/',
@@ -222,8 +235,18 @@ export function buildCapabilitySandboxCommand(
   // Dirs read empty via a tmpfs overlay; file credentials (e.g. ~/.npmrc) read
   // empty via `--ro-bind /dev/null` (a tmpfs needs a DIRECTORY mount point, so a
   // tmpfs over a file no-ops and would leave the secret readable).
+  //
+  // SKIP a target that does not exist on the host. bwrap cannot create a mount
+  // point under the read-only `/` bind — `Can't mkdir …: Read-only file system`
+  // for a missing `--tmpfs` dir, `Can't create file at …` for a missing
+  // `--ro-bind /dev/null` file — which aborts the WHOLE command (fail-CLOSED),
+  // not just the mask. A path that does not exist has no secret to hide anyway,
+  // and the read-only home means the sandboxed command cannot create one mid-run,
+  // so skipping is safe. (WI-608: without this, a host merely lacking
+  // `~/.config/gcloud` broke every capability:bash on the bwrap-fallback path.)
   for (const d of CAPABILITY_SANDBOX_MASK_DIRS) {
     const abs = join(home, d);
+    if (!maskExists(abs)) continue;
     if (CAPABILITY_SANDBOX_MASK_FILES.has(d)) argv.push('--ro-bind', '/dev/null', abs);
     else argv.push('--tmpfs', abs);
   }

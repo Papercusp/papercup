@@ -71,10 +71,12 @@ beforeEach(async () => {
 afterEach(async () => { await setLeaseFlag(false); });
 
 describe('workItemClaimLeaseEnabled (owner ratification switch — the WORKITEM_CLAIM_LEASE FLAG)', () => {
-  it('defaults OFF; flips with the flag (sync cache refreshed on flag change)', async () => {
+  it('tracks the flag both ways (sync cache refreshed on flag change)', async () => {
     // P-012/D-008: the gate migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env var to the
-    // runtime-flippable WORKITEM_CLAIM_LEASE flag, read from a SYNC-cached boolean.
-    expect(workItemClaimLeaseEnabled()).toBe(false); // default OFF (KNOWN_DARK_FLAGS)
+    // runtime-flippable WORKITEM_CLAIM_LEASE flag, read from a SYNC-cached boolean. (The flag
+    // graduated to default-ON 2026-06-23, WI-597; beforeEach forces the override OFF, so this
+    // exercises the cache transition independent of the production default.)
+    expect(workItemClaimLeaseEnabled()).toBe(false); // override OFF (beforeEach) → cached false
     await setLeaseFlag(true);
     expect(workItemClaimLeaseEnabled()).toBe(true); // flag ON → cached true
     await setLeaseFlag(false);

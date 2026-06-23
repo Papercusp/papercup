@@ -643,8 +643,10 @@ export const FLAGS = {
   HIVE_ROLE_TIERS: "papercusp-hive-role-tiers",
   // worker-chunk-loop-operator-hosted-2026-06-14 (P-142 / P-004): route the coding
   // director's worker dispatch to the operator-hosted `worker:chunk-loop` op instead
-  // of the subprocess chunk loop. DEFAULT OFF — the staged hot-path rollout's gate
-  // (dark → ramp → retire); OFF = today's subprocess path, unchanged.
+  // of the subprocess chunk loop. DEFAULT ON, but it is the FIRST of a TWO-gate guard —
+  // routing ALSO requires the per-harness `workerChunkLoop` config knob (default false),
+  // which is the real cohort/ramp lever (dark-launch → ramp → retire). Flag-ON alone is
+  // behavior-neutral: every coding worker stays on the subprocess path until a harness opts in.
   WORKER_CHUNK_LOOP_BLUEPRINT: "papercusp-worker-chunk-loop-blueprint",
   // generic-column-filters-2026-06-14 (Phase 2): gates the generic per-column
   // FILTER BAR on the /adv dock panels (RichGrid + non-grid) — the +Add-filter
@@ -824,14 +826,16 @@ export const FLAGS = {
   ISSUES_PER_WORKSPACE: "papercusp-issues-per-workspace",
   // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim
   // LEASE (decentralized-dispatch-scaling P-004) — migrated off the ad-hoc
-  // PAPERCUSP_WORKITEM_CLAIM_LEASE env gate to a runtime-flippable FLAG. DEFAULT OFF
-  // (D-008): once the stale-claim reaper requeues mid-flight items (GAP 1) and covers the
-  // issue family (GAP 2), the stuck-item risk is closed regardless of the lease, so the
-  // lease's TTL+heartbeat is defense-in-depth, not the fix — and its heartbeat is wired
-  // only into the DBOS orchestrator, not the general claim tools, so flipping it ON now
-  // would add a TTL with no heartbeat on the self-selection path. Owner flips ON after the
-  // recovery layer is exercised. Listed in KNOWN_DARK_FLAGS. Read SYNC-cached (deep in the
-  // claim path) via work-item-claim-lease-wiring.ts.
+  // PAPERCUSP_WORKITEM_CLAIM_LEASE env gate to a runtime-flippable FLAG. DEFAULT ON
+  // (graduated 2026-06-23, owner-directed verify+flip, WI-597): the recovery layer the D-008
+  // gate waited on is now in place — the stale-claim reaper requeues mid-flight items (GAP 1)
+  // and covers the issue family (GAP 2), closing the stuck-item risk regardless of the lease.
+  // Verified: lease acquire/heartbeat/expiry-steal + dead-holder reclaim (work-item-claims +
+  // work-items-stale-claims integration tests green). On a single box claim_next gates re-claim
+  // on work_items.taken_by (liveness-reclaimed), NOT the lease TTL, so the self-selection path's
+  // no-heartbeat is benign (worst case: edit-attribution coarseness); cross-Swarm double-claims
+  // are reconcile-covered (P-005). Reversible (OFF = local SELECT … FOR UPDATE SKIP LOCKED).
+  // Read SYNC-cached (deep in the claim path) via work-item-claim-lease-wiring.ts.
   WORKITEM_CLAIM_LEASE: "papercusp-workitem-claim-lease",
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (PHASE 1): scope the routines
   // upsert's ON CONFLICT to (workspace_id, install_slug, name) so a hive in workspace
@@ -1040,10 +1044,15 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // panel (WI-259 P-006, D-010). Additive + inert without a shared hive + federated
   // content; OFF ⇒ the panel is not offered in the dock catalog. Reversible.
   [FLAGS.CROSS_MEMBER_BROWSE]: true,
-  // DEFAULT OFF (exception to alpha flags-default-on): an unverified HOT-PATH change
-  // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
-  // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.
-  [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: false,
+  // DEFAULT ON (alpha flags-default-on): the bee fresh-context warm-inject fork — a
+  // drained bee warm-injected a NEW work-item re-routes to a FRESH spawn (fresh session
+  // + dossier + checkpoint hydration tail) instead of `--resume`-ing its ~138K/turn grown
+  // transcript (bee-context-efficiency-2026-06-14 P-005 / D-018/D-021; WI-593). Flipped ON
+  // 2026-06-23 after live verification (real executeWake + real getFlag → channel
+  // fresh-context-warm-inject, never --resume; carry-seam oracle + 14 fork tests green).
+  // Fail-soft: any spawn over-cap / error falls through to legacy `--resume` (never strands
+  // a wake); within-task wakes PARK upstream so the fork only ever fires at a task boundary.
+  [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: true,
   // DEFAULT ON (alpha flags-default-on) — additive precomputed work-item dossier in the
   // spawn/wake-hydration volatile tail (P-008/P-009). Bounded + fail-soft; OFF ⇒ no
   // dossier section (the agent uses its read tools), otherwise behavior-neutral.
@@ -1100,7 +1109,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (flipped 2026-06-22, owner-directed): per-workspace engineer-issues cutover.
   // Reversible kill-switch; the old `default`-partition issues are preserved so a flip-off restores them.
   [FLAGS.ISSUES_PER_WORKSPACE]: true,
-  [FLAGS.WORKITEM_CLAIM_LEASE]: false,
+  // DEFAULT ON (graduated 2026-06-23, owner-directed verify+flip WI-597): lease mechanism
+  // (acquire/heartbeat/expiry-steal) + recovery layer (stale-claim reaper requeues mid-flight
+  // items + covers the issue family) verified green; reversible kill-switch (OFF = local
+  // SELECT … FOR UPDATE SKIP LOCKED). Removed from KNOWN_DARK_FLAGS per the shrink-only rule.
+  [FLAGS.WORKITEM_CLAIM_LEASE]: true,
   // DEFAULT ON (graduated 2026-06-23, owner-attended cutover) — routines upsert arbitrates ON
   // CONFLICT on the (id) PK when ON vs the equivalent (install_slug,name) unique when OFF. Since
   // id is derived deterministically from (install_slug,name), the two are byte-identical +
@@ -1125,7 +1138,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,
   [FLAGS.TESTING]: false,
-  [FLAGS.INBOX_DURABLE_ESCALATIONS]: false,
+  // DEFAULT ON (WI-594, 2026-06-23): inbox-cards-unification Phase D is IMPLEMENTED + wired
+  // end-to-end (onCard → openEscalation durable PG write → coord:resolve → unblockLinkedCard
+  // resumes the blocked agent) and live-verified (plan D-009 round-trip; ran ON in
+  // papercusp-workspace via a stored runtime override). Flipped to default-ON, removed from
+  // KNOWN_DARK_FLAGS. OFF would revert to the in-memory-only ctx.askUser card (lost on restart).
+  [FLAGS.INBOX_DURABLE_ESCALATIONS]: true,
   // DEFAULT OFF — unverified cutover (needs the 2-machine merge proof, P-008). Off = plans federate as today.
   [FLAGS.PLAN_PART_FEDERATION]: true,
   [FLAGS.PLAN_ATTRIBUTION_BADGES]: true,
@@ -1467,11 +1485,16 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ON 2026-06-22 (auto-doc-editing surface). Thoroughly tested (dispatch + blueprint + flag);
   // best-effort + flag-gated so it can never wedge git-sync.
   [FLAGS.DOC_STEWARD]: true,
-  // DEFAULT OFF (P-142 / D-003) — genuinely incomplete-until-ramped: the operator-hosted
-  // worker:chunk-loop is the coding HOT PATH and ships dark, then dark-launch → 25/50/100
-  // ramp → retire (worker-chunk-loop-operator-hosted-2026-06-14). OFF = the subprocess
-  // chunk loop, unchanged. Flip per-cohort only as the parity metrics confirm at each step.
-  [FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT]: false,
+  // DEFAULT ON (P-142, owner-directed flags-default-on sweep 2026-06-23; the runtime
+  // override was already ON in both workspaces). The master flag is the FIRST of a TWO-gate
+  // guard (orchestrator-runner.ts useWorkerChunkLoopOp): routing a coding worker turn to the
+  // operator-hosted worker:chunk-loop op ALSO requires the per-harness `workerChunkLoop`
+  // config knob (default false). So default-ON is behavior-NEUTRAL — no harness opts in yet,
+  // every coding worker still runs the subprocess path. The per-harness knob is the real
+  // cohort/ramp lever for the owner-watched dark-launch → 25/50/100 ramp → retire
+  // (worker-chunk-loop-operator-hosted-2026-06-14 P-010+): finished work no longer ships dark
+  // while critical harnesses stay protected by the second gate.
+  [FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT]: true,
   // ON by default (alpha flags-default-on policy) — generic-column-filters Phase 2:
   // the filter bar is additive surfacing over the tested @papercusp/grid-core engine
   // (Phase 1). OFF = the bar renders nothing; panels list unfiltered rows.

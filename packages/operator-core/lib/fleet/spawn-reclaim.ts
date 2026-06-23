@@ -164,9 +164,29 @@ export async function heartbeatSpawns(
  * A bee alive-but-silent past this long is a "possibly wedged" candidate
  * (liveness-hardening P-009): the supervisor still beats for it (process
  * alive) but its stream hasn't moved — hung network call, stuck rate-limit
- * loop. DISPLAY/TRIAGE ONLY (plan P-010 owns any auto-action policy).
+ * loop. This is the DISPLAY/TRIAGE threshold (the fleet:tree badge + the
+ * placement-watchdog liveness derive) — a heads-up, not an action trigger.
+ * The RECLAIM action waits for the longer, owner-decided WEDGE_REAP_SILENT_MS
+ * below before killing a live agent.
  */
 export const WEDGE_SILENT_MS = 10 * 60_000;
+
+/**
+ * The ACTION threshold (P-010 / D-006, owner decision 2026-06-11): a bee
+ * stream-silent THIS long with a still-LIVE process is hung, not thinking —
+ * bees stream with --include-partial-messages, so thinking deltas + tool_use
+ * events keep the stream moving; the only legitimate long silence is awaiting a
+ * long local tool call, which 30 minutes absorbs. Used by BOTH the in-memory
+ * wedge reaper (operator-spawn `reapWedgedLocalSpawns`, re-exports this) and the
+ * durable DB-truth `reclaimWedgedSpawns` below, so the two paths cannot drift.
+ * Generously longer than WEDGE_SILENT_MS (the display badge) precisely because
+ * this one KILLS. Override: PAPERCUSP_WEDGE_REAP_MS (floor 60s).
+ * (Centralised here beside the other reclaim thresholds; was in operator-spawn.ts.)
+ */
+export const WEDGE_REAP_SILENT_MS = (() => {
+  const raw = Number(process.env.PAPERCUSP_WEDGE_REAP_MS);
+  return Number.isFinite(raw) && raw >= 60_000 ? raw : 30 * 60_000;
+})();
 
 /**
  * Classify a spawn row as possibly wedged: actively supervised (running, fresh
@@ -414,6 +434,151 @@ export async function reclaimOrphanedSpawns(
     spawnIds: rows.map((r) => r.spawn_id),
     workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
   };
+}
+
+/**
+ * One WEDGED spawn the durable reaper may reclaim (RECLAIM_STALLED). Carries the
+ * row's identity + the observed silence so the injected reap seam can frame the
+ * cancellation reason without re-reading the row.
+ */
+export interface WedgedSpawnCandidate {
+  spawnId: string;
+  workspaceId: string;
+  launcherHost: string | null;
+  launcherBootId: string | null;
+  pid: number | null;
+  heartbeatAt: string | null;
+  lastOutputAt: string | null;
+  /** Observed stream silence at selection time (ms): now − last_output_at. */
+  silentMs: number;
+}
+
+/**
+ * The durable reap seam (INJECTED by the caller — host periodic sweep). Actually
+ * KILL + durably cancel ONE wedged spawn: `cancelSubtree` releases its claims/locks
+ * + flips the row (with a `reclaimed:`-prefixed reason so the placement watchdog
+ * treats it as an infra reclaim, not item-pathology — WI-233), and
+ * `abortLocalSpawn` SIGTERMs the live child. Returns true when reaped. Kept
+ * injectable so this module stays a dependency-light sql unit (mirrors the
+ * `RelaunchSpawnFn` seam) and the test drives the select/gate logic without the
+ * cancel engine. A `false`/throw leaves the row running — the next tick (or the
+ * in-memory reaper) retries; never a half-reap.
+ */
+export type ReapWedgedSpawnFn = (candidate: WedgedSpawnCandidate) => Promise<boolean>;
+
+/**
+ * Reclaim WEDGED spawns — the "stalled, not just dead" half of the spawn-reclaim
+ * floor (RECLAIM_STALLED). Where {@link reclaimOrphanedSpawns} frees rows whose host
+ * DIED (stale heartbeat), this frees rows that are supervised-LIVE (fresh heartbeat)
+ * yet stream-silent past the action threshold — a hung bee that wedges the
+ * concurrency ceiling WITHOUT ever going stale, so the orphan sweep never sees it.
+ * This wires the previously DISPLAY-ONLY {@link isPossiblyWedged} classifier to a
+ * real reclaim action.
+ *
+ * DURABLE SELECTION. Candidates come from DB truth (`heartbeat_at`/`last_output_at`
+ * on `spawned_agents`), not the in-memory `localSpawnOutput` map — so this is a
+ * floor that survives the in-memory wedge reaper's tracking being lost (e.g. across
+ * an operator restart) and is the canonical, restart-safe sibling of the orphan
+ * sweep. It complements (does not replace) the in-memory `reapWedgedLocalSpawns`
+ * fast path; both reap via the same engine and are idempotent, so coexistence is
+ * safe.
+ *
+ * SAFETY (it KILLS a live agent, so the bar is high):
+ *   • Threshold = {@link WEDGE_REAP_SILENT_MS} (the owner-decided 30-min action
+ *     window), NOT the 10-min display badge — a live agent in a legitimate long
+ *     local tool call is never killed.
+ *   • Only rows THIS operator incarnation launched + supervises are eligible
+ *     (`launcher_host` = me AND `launcher_boot_id` = this boot id) — the only ones
+ *     it can actually KILL; a wedged row owned by another live host is that host's
+ *     to reap (the host that holds the handle owns the verdict, mirroring
+ *     `reapWedgedLocalSpawns`).
+ *   • In-process loopback launches (a Queen/overwatch wake recorded with the
+ *     OPERATOR's own pid) are excluded (`pid` present AND `pid <> process.pid`) so
+ *     this can never abort the operator process or a Queen.
+ *   • `isPossiblyWedged` is re-applied per row as the authoritative gate (defends
+ *     against clock skew / a row that emitted between the SELECT and now).
+ *
+ * Flag-gated OFF: the caller passes `reap` only when RECLAIM_STALLED is on. Returns
+ * a {@link ReclaimResult} of what was actually reaped (the seam may decline a row).
+ */
+export async function reclaimWedgedSpawns(
+  sql: Db,
+  reap: ReapWedgedSpawnFn,
+  opts: { silentMs?: number; staleMs?: number; now?: number } = {},
+): Promise<ReclaimResult> {
+  const silentMs = opts.silentMs ?? WEDGE_REAP_SILENT_MS;
+  const staleMs = opts.staleMs ?? RECLAIM_STALE_MS;
+  const now = opts.now ?? Date.now();
+  const silentSec = Math.max(1, Math.round(silentMs / 1000));
+  const staleSec = Math.max(1, Math.round(staleMs / 1000));
+  const me = hostname();
+
+  // DB-truth pre-filter: supervised-LIVE (fresh heartbeat → the orphan sweep does
+  // not own it), stream-silent past the action threshold, launched by THIS
+  // incarnation (killable here), with a real CHILD pid (not an in-process launch
+  // recorded with the operator's own pid). `isPossiblyWedged` below is the
+  // authoritative classification.
+  const candidates = await sql<
+    {
+      spawn_id: string;
+      workspace_id: string;
+      launcher_host: string | null;
+      launcher_boot_id: string | null;
+      pid: number | null;
+      heartbeat_at: string;
+      last_output_at: string | null;
+    }[]
+  >`
+    SELECT spawn_id, workspace_id, launcher_host, launcher_boot_id, pid,
+           heartbeat_at, last_output_at
+      FROM harness_shared.spawned_agents
+     WHERE status IN ('running', 'restarting')
+       AND launcher_host = ${me}
+       AND launcher_boot_id = ${LAUNCHER_BOOT_ID}
+       AND pid IS NOT NULL
+       AND pid <> ${process.pid}
+       AND heartbeat_at >= now() - ${staleSec}::int * interval '1 second'
+       AND last_output_at IS NOT NULL
+       AND last_output_at < now() - ${silentSec}::int * interval '1 second'`;
+  if (candidates.length === 0) {
+    return { reclaimed: 0, spawnIds: [], workspaces: [] };
+  }
+
+  const reaped: string[] = [];
+  const workspaces = new Set<string>();
+  for (const c of candidates) {
+    // Authoritative gate — re-classify against `now` (the SELECT used DB `now()`).
+    if (
+      !isPossiblyWedged(
+        { status: 'running', heartbeatAt: c.heartbeat_at, lastOutputAt: c.last_output_at },
+        { now, silentMs, staleMs },
+      )
+    ) {
+      continue;
+    }
+    const outputMs = c.last_output_at ? new Date(c.last_output_at).getTime() : now;
+    try {
+      const ok = await reap({
+        spawnId: c.spawn_id,
+        workspaceId: c.workspace_id,
+        launcherHost: c.launcher_host,
+        launcherBootId: c.launcher_boot_id,
+        pid: c.pid,
+        heartbeatAt: c.heartbeat_at,
+        lastOutputAt: c.last_output_at,
+        silentMs: Math.max(0, now - outputMs),
+      });
+      if (ok) {
+        reaped.push(c.spawn_id);
+        if (c.workspace_id) workspaces.add(c.workspace_id);
+      }
+    } catch (err) {
+      console.warn(
+        `[wedge-reclaim] reap failed for ${c.spawn_id} (will retry next tick): ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+  return { reclaimed: reaped.length, spawnIds: reaped, workspaces: [...workspaces] };
 }
 
 /**
