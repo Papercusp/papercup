@@ -26,7 +26,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import type { OrgTestDb } from '../../test/_org-test-db';
+import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ dsn: '' }));
 
@@ -47,7 +47,7 @@ const {
   defaultDashboardLayout,
   LayoutConflictError,
 } = mod;
-const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { createOrgTestDb } = await import('../test/_org-test-db');
 
 let n = 0;
 const principal = () => ({ workspaceId: `wb_${++n}_${randomBytes(2).toString('hex')}`, userId: `u_${++n}` });

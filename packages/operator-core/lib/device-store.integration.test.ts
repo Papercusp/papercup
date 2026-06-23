@@ -18,7 +18,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import type { OrgTestDb } from '../../test/_org-test-db';
+import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ appSql: null as any, adminSql: null as unknown }));
 
@@ -45,7 +45,7 @@ const {
   upsertPushToken,
   pushTargetsForWorkspace,
 } = await import('./device-store');
-const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { createOrgTestDb } = await import('../test/_org-test-db');
 
 let n = 0;
 const freshWs = () => `dev_ws_${++n}_${randomBytes(2).toString('hex')}`;

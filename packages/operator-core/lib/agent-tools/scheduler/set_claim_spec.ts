@@ -21,9 +21,9 @@ export default defineTool({
   description:
     "Queen: set/replace a bee's versioned claim spec (view.filter + rank). The bee's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running bee by setting a new spec (the revision bumps; the bee picks it up on its next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision }.",
   guidance: {
-    when: "You are the Queen steering a bee: encode WHICH work and in WHAT order as the bee's claim spec, then let the bee self-pull via get_next. To re-prioritize a running bee, set a new spec.",
+    when: "Handing work to a bee IS authoring its claim spec — this is THE dispatch surface, not micro-dispatch. Encode a scoped VIEW (filter) + ORDERING (rank) over the work-item DAG: describe a LANE by property (plan/paths/tags/priority) for a standing, auto-inflowing, steal-able lane; reach for `id in [...]` ONLY to pin a fixed WAVE (hotfix/cutover/re-driving a known set — it is STATIC: no auto-inflow, no work-stealing). The bee self-pulls via get_next within the global floors. Re-steer a running bee by setting a new spec (the revision bumps; it picks it up on its next get_next), never by re-dispatching.",
     notWhen:
-      'Hand-picking each item for a bee (micro-dispatch) — encode the policy in the spec instead. Global hard floors (blocked/ready/dedup) cannot be set here — the resolver always enforces them.',
+      'Hand-picking each item for a bee (micro-dispatch) — encode the policy in the spec instead. A spec that selects on `id` ALONE for a STANDING lane is hand-listing in disguise (recorded as an id-pin) — write a property filter. Global hard floors (blocked/ready/dedup/cursed) cannot be set here — the resolver always enforces them.',
     chaining: "scheduler:set_claim_spec (you) → the bee's scheduler:get_next pulls per the spec.",
   },
   capability: 'work_items:write',
