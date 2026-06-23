@@ -68,10 +68,6 @@ async function boot(
     },
     governorFor: () => governor,
     maxQueueWaitMs: 80,
-    // RPM smoothing adds ~WINDOW/effRpm (≈1.3s) pace waits that exceed the 80ms test maxQueueWaitMs and would
-    // shed rapid-fire bursts — default it OFF here so existing tests are byte-identical (the smoothing mechanism
-    // is unit-tested in governor.test.ts; a test opts in via { smoothRpm: true } + a realistic maxQueueWaitMs).
-    smoothRpm: false,
     ...opts,
   });
   port = await gw.listen(0);

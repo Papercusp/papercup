@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const getDefaultWakeMode = vi.fn<() => Promise<'auto' | 'manual'>>();
 const countAllPendingWakes = vi.fn<() => Promise<Map<string, number>>>();
 const snapshotGovernors = vi.fn<() => Array<{ key: string; state: { pausedUntil: number } }>>();
+const getLoopStatus = vi.fn<() => Promise<{ active: boolean; intervalSec: number; parked: boolean } | null>>();
 const sqlCalls: string[] = [];
 let beeCount = 0;
 let activityRows: Array<Record<string, unknown>> = [];
@@ -41,6 +42,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
     },
   }),
 }));
+vi.mock('../../../harness/routines/loop', () => ({
+  getLoopStatus: () => getLoopStatus(),
+}));
 
 import glance from './glance';
 
@@ -55,6 +59,7 @@ beforeEach(() => {
   snapshotGovernors.mockReturnValue([]);
   beeCount = 0;
   activityRows = [];
+  getLoopStatus.mockResolvedValue(null);
   sqlCalls.length = 0;
 });
 afterEach(() => vi.clearAllMocks());
@@ -110,6 +115,15 @@ describe('coord:glance', () => {
     sqlCalls.length = 0;
     await glance.handler(parse({ activity_limit: 0 }), ctx);
     expect(sqlCalls.some((q) => q.includes('agent_activity'))).toBe(false);
+  });
+
+  it('self.loop reflects an active engine loop (loop-status-display); null when not looping', async () => {
+    getLoopStatus.mockResolvedValue({ active: true, intervalSec: 120, parked: false });
+    let g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.loop).toEqual({ active: true, intervalSec: 120, parked: false });
+    getLoopStatus.mockResolvedValue(null);
+    g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.loop).toBeNull();
   });
 
   it('bees count rides the fresh-heartbeat nursery query', async () => {

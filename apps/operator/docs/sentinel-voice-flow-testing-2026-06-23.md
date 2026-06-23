@@ -230,3 +230,66 @@ backend congestion — run it when the API is fast:
   but a responsible footprint on the shared box/account. On the first success:
   capture score → run sn-S01 → answer-quality review → CronDelete. (Owner: bump
   back to 2-min or run `--target sentinel` manually once the API has headroom.)
+
+---
+
+## 2026-06-23 (afternoon) — live voice round-trip + 4 fixes shipped
+
+Drove synthetic voice prompts through the REAL post-STT endpoint
+(`POST /api/operator/sentinel-input`) into the live dock Sentinel pane.
+
+**Voice-IN works; answer quality EXCELLENT.** "Status of the hive, top 3?" →
+fully-grounded answer (8× `papercusp-su` tool calls reading live state; correct
+"placement/liveness failure not a token wall" diagnosis; root-cause-ordered top 3).
+
+### Fixes shipped this session (all code-complete; live on next green :3070 deploy unless noted)
+1. **Voice-OUT cross-process buffer** — root cause: `voice:say` runs in the
+   agent-mcp process the psu Sentinel connects to (MCP proxy **:9071 → :3070**),
+   while the webview drains `/api/operator/sentinel-output` on a DIFFERENT process
+   → the old PROCESS-LOCAL in-memory FIFO never bridged them (user heard nothing).
+   Fix: migration **390** (`harness_shared.sentinel_says` global FIFO) +
+   rewrote `sentinel-output-buffer.ts` to push/drain via shared PG. Integration
+   test **5/5**. (CI drizzle-drift gate is now `continue-on-error` — the prior
+   deferral reason is stale.)
+2. **#1 voice:say reliability** — tool IS registered + cap-granted to sentinel; it
+   just wasn't reliably CALLED (produced terminal-text-only). Persona hard-rule in
+   `sentinel.persona.md`: every answering turn MUST `voice:say`; terminal-only = a
+   FAILED turn.
+3. **#2 mirror erroring** — NOT structural (code/caps/tables correct on green;
+   replicated `appendTurn` insert OK; system-source turns land fine) → transient
+   backend congestion during the test. Durable bug was that the Sentinel NARRATED
+   the plumbing failure aloud. Persona: mirror is best-effort/INVISIBLE; never
+   speak tool/backend/mirror failures.
+4. **#3 voice-in boot-window race** — voice-in during the pane's post-relaunch
+   boot lands in a not-ready composer and is dropped. Added `SENTINEL_WARMUP_MS`
+   gate in `sentinel-input.ts`: if the pane registration is <8s old, wait out the
+   warmup before writing (delayed, not dropped).
+- **Reverted** an `--ax-screen-reader` display attempt: screen-reader mode uses
+  no-alt-screen linear output, so on the dock's relaunches each banner STACKS
+  (worse). Repo + `~/.local/bin/psu-sentinel` shim reverted.
+
+### #18 (open, owner-decision) — frequent Sentinel relaunches re-show the banner
+- Two churn sources: whole-dock relaunch (zellij session id churns
+  `pui-dock-3416140`→`3532081`→`3939615`) AND pane-level psu role churn within a
+  session (`3c580`→`e0616`).
+- Bursty, NOT chronic (dock stable 46m+ after a 14:40 burst); does NOT correlate
+  with :3070 deploys (last restart 12:30, burst at 14:40).
+- Within-session role churn is consistent with: the sentinel claude pane EXITS
+  (reason TBD), leaving zellij's "press Enter to re-run", and a voice-in `write 13`
+  (Enter) then triggers the rerun + loses the text — a 2nd voice-in failure mode
+  the warmup gate does NOT cover (it only covers the boot window).
+- Fix lives in deep Tauri/X11 dock-spawn (`papercusp-desktop/src-tauri/src/native_terminal.rs`)
+  + the pui dock-driver (`apps/tui`). Risky to touch mid-session; scoped as WI #18.
+
+### Loop tick 16:08 — exited-pane voice-in guard (item 2 DONE)
+- `sentinel-input.ts`: added `isExitedPaneScreen()` (detects zellij's held-frame
+  footer: `EXIT CODE:` + `re-run`) + a handler guard that, for the registered
+  pane, dump-screens it and returns `409 {exited:true}` instead of writing when
+  the pane is held at the re-run prompt (writing would Enter-trigger a re-run and
+  lose the turn). Unit test `sentinel-input.test.ts` 5/5. Closes the 2nd voice-in
+  failure mode (the warmup gate covers the boot window; this covers a dead pane).
+- Item 1 (live-verify voice-out/persona) still BLOCKED: :3070 has not restarted
+  since 12:30 (pid 1908618), so green runs the OLD in-memory buffer + old persona
+  despite migration 390 being applied + the buffer file present in papercup-release.
+  Green-checkpoint appears held (hive degraded). Not forcing a deploy. Loop will
+  re-check and live-verify once :3070 reloads.

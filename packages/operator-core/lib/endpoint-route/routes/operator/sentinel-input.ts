@@ -45,6 +45,22 @@ function zellijBin(): string {
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;]*m/g;
 
+/**
+ * True when a `dump-screen` shows a zellij command pane whose process has
+ * EXITED and is "held" at the re-run prompt (e.g. the Sentinel's psu/Claude
+ * session crashed or quit). zellij renders that held frame with a distinctive
+ * footer — `<ENTER> re-run … Ctrl-c exit [ EXIT CODE: N ] EXITED`. Writing into
+ * such a pane is harmful: `write-chars` goes nowhere useful and the trailing
+ * Enter (`write 13`) TRIGGERS the re-run, spawning a fresh session AND losing the
+ * voice turn. So voice-in detects this and refuses rather than silently dropping
+ * the user's words into a re-run. Requires BOTH `EXIT CODE:` and a `re-run` hint
+ * so ordinary chat content mentioning "exit code" can't false-positive.
+ */
+export function isExitedPaneScreen(dump: string): boolean {
+  const clean = dump.replace(ANSI, '');
+  return /EXIT CODE:/i.test(clean) && /re-?run/i.test(clean);
+}
+
 /** Resolve the live `pui-dock-*` zellij session (the agent dock), or null. */
 async function resolveDockSession(): Promise<string | null> {
   try {
@@ -134,6 +150,32 @@ export default defineTool({
     }
 
     const z = zellijBin();
+
+    // Exited-pane guard: if the registered pane is HELD at zellij's re-run prompt
+    // (its psu/Claude command exited — crash or quit), do NOT write. `write-chars`
+    // would go nowhere useful and the trailing Enter (`write 13`) would TRIGGER
+    // the re-run — spawning a fresh session AND silently losing this turn. Refuse
+    // explicitly (409 `exited:true`) so the caller can surface "Sentinel is
+    // restarting" / retry instead of dropping the user's words into a re-run. Only
+    // for the registered pane; best-effort (a dump failure falls through to write).
+    if (paneId) {
+      try {
+        const { stdout } = await exec(
+          z,
+          ['-s', session, 'action', 'dump-screen', '--pane-id', paneId],
+          { timeout: 4000 },
+        );
+        if (isExitedPaneScreen(stdout)) {
+          return Response.json(
+            { error: 'sentinel pane exited (held at re-run prompt); not writing', exited: true, session, paneId },
+            { status: 409 },
+          );
+        }
+      } catch {
+        /* dump unavailable — proceed with the write (best-effort guard) */
+      }
+    }
+
     try {
       // `--` end-of-options marker: `text` is user-controlled, so without it a
       // value starting with `-` would be parsed as a zellij flag (argv flag

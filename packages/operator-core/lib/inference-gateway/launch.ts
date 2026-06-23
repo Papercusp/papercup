@@ -336,6 +336,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     upstreamBase: opts.upstreamBase,
     openaiUpstreamBase: process.env.OPENAI_BASE_URL_UPSTREAM || undefined,
     concurrency: opts.concurrency,
+    // Smooth each per-account RPM allowance into an even pace so the fleet can't fire a sub-minute BURST
+    // that trips Anthropic's burst limit (the bare-burst 429 storm, 2026-06-23). Throughput-neutral (the
+    // per-minute count gate still caps the rate). On by default in production; set PAPERCUSP_GATEWAY_RPM_SMOOTH=0
+    // to disable (ops kill-switch). Resolved here at the launch layer so unit tests default it off.
+    smoothRpm: process.env.PAPERCUSP_GATEWAY_RPM_SMOOTH !== '0',
     ...(priorityTiers ? { priorityTiers } : {}),
     fetchImpl: opts.fetchImpl,
     log,

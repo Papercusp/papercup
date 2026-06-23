@@ -173,6 +173,63 @@ def objective_part(g):
     return f'🔭 {obj}'
 
 
+def fmt_interval(sec):
+    """Compact interval label for the loop chip: 120→'2m', 30→'30s', 3600→'1h', 5400→'1h30m'."""
+    try:
+        s = int(sec)
+    except Exception:
+        return '?'
+    if s < 60:
+        return f'{s}s'
+    m = s // 60
+    if m < 60:
+        return f'{m}m'
+    h, rm = m // 60, m % 60
+    return f'{h}h' if rm == 0 else f'{h}h{rm}m'
+
+
+def loop_part(g):
+    """The ⟳ <interval> loop chip when THIS session is on an engine loop (loop:arm), from the
+    glance payload's `self.loop` (loop-status-display-2026-06-23). ADDITIVE + FAIL-OPEN: None when
+    not on a loop, or the operator predates the field, so the existing render is untouched."""
+    if not isinstance(g, dict):
+        return None
+    lp = (g.get('self') or {}).get('loop')
+    if not isinstance(lp, dict) or not lp.get('active'):
+        return None
+    return f'⟳ {fmt_interval(lp.get("intervalSec"))} loop'
+
+
+def term_title(g):
+    """The OSC terminal-title string — LEADS with the loop chip (the surfaced signal), then the
+    session shorthand id + a clipped objective. '' when there's nothing meaningful (skip the write)."""
+    me_id = self_short(me)
+    bits = []
+    lp = (g.get('self') or {}).get('loop') if isinstance(g, dict) else None
+    if isinstance(lp, dict) and lp.get('active'):
+        bits.append(f'⟳{fmt_interval(lp.get("intervalSec"))}')
+    if me_id:
+        bits.append(me_id)
+    obj = (g.get('self') or {}).get('objective') if isinstance(g, dict) else None
+    if isinstance(obj, str) and obj.strip():
+        o = obj.strip()
+        bits.append(o[:40] + ('…' if len(o) > 40 else ''))
+    return ' · '.join(bits)
+
+
+def set_title(title):
+    """Write the OSC-0 terminal title straight to the controlling TTY (NOT via Claude's stdout,
+    which it captures as the statusline body). Fail-open: no tty / not permitted → skip silently."""
+    if not title:
+        return
+    try:
+        with open('/dev/tty', 'w') as tty:
+            tty.write(f'\033]0;{title}\a')
+            tty.flush()
+    except Exception:
+        pass
+
+
 def lead():
     """Line-1 prefix segments: 'papercusp', this agent's own ◇ id chip (◇ = self, paired with ◆ =
     most-recent peer), and — when the gateway knows it — ⇢ <account>, the pool account that served this
@@ -245,6 +302,11 @@ n, peer = peer_glance(glance.get('activity'))
 # fleet shorthand. None (absent/blank/old-operator) → segment simply omitted.
 obj = objective_part(glance)
 parts = ([obj] if obj else []) + lead()
+# ⟳ <interval> loop chip — surfaces that THIS session is on an engine loop (loop:arm) right after
+# the self id, so the human sees the autonomy cadence at a glance (loop-status-display-2026-06-23).
+lpchip = loop_part(glance)
+if lpchip:
+    parts.append(lpchip)
 mode = wake.get('default')
 staged = wake.get('stagedTotal') or 0
 if mode in ('auto', 'manual'):
@@ -277,5 +339,8 @@ if tips:
         # summary to fit — so whenever there's a tip worth surfacing, point at
         # the full structured glance the human can run for the unabridged state.
         lines.append('⋯ run /mcp__papercusp-su__tool:coord:glance for detail')
+# Mirror the loop/objective state into the OS terminal title (written straight to /dev/tty so it
+# bypasses Claude's stdout capture). Refreshed every statusline tick, so it tracks loop arm/end.
+set_title(term_title(glance))
 emit(lines, cols)
 PYEOF
