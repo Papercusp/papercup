@@ -73,6 +73,7 @@ import {
   commentIssue,
   searchIssues,
   promoteIssue,
+  issuesScopeWorkspace,
   type EngineerIssue,
 } from './issues-engineer';
 
@@ -1296,6 +1297,32 @@ export async function schedulerMaintainedReadyEnabled(): Promise<boolean> {
   }
 }
 
+/**
+ * Whether the scheduler may SELF-PICK issue-family work-items (bug|change|task) —
+ * the SCHEDULER_ISSUES_CLAIMABLE gate (work-item-deps-and-readiness-2026-06-22 P-007).
+ *
+ * DEFAULT OFF (owner-authority): adding the issue family to the dispatched backlog is a
+ * brand-new SOURCE of work the autonomous fleet picks up, which the owner ratifies. When
+ * OFF the issue-claim branch + the issue-applicable steer levers are inert, so the claim
+ * path + set_priority / co_locate stay BYTE-IDENTICAL to feature-only behavior. Fail-CLOSED
+ * to OFF (false) on any flag-store error — the proven feature-only path is the safe default.
+ */
+export async function schedulerIssuesClaimableEnabled(): Promise<boolean> {
+  try {
+    return await getFlag(FLAGS.SCHEDULER_ISSUES_CLAIMABLE, systemDistinctId());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The issue family's CLAIMABLE statuses — the not-yet-settled `open` state (the issue
+ * dialect's single in-flight state; the engineer_issues CHECK has only open|resolved|closed).
+ * The scheduler issue-claim branch self-picks an `open`, unblocked issue; terminal
+ * (resolved|closed) issues are excluded by status, blocked ones by the readiness predicate.
+ */
+export const ISSUE_FAMILY_CLAIMABLE_STATES: readonly string[] = ['open'];
+
 export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
@@ -1331,14 +1358,111 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
         FOR UPDATE SKIP LOCKED
      )
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
-  const claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  let claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  // work-item-deps-and-readiness P-007 (SCHEDULER_ISSUES_CLAIMABLE): when a feature-family
+  // candidate is exhausted (no feature claimable), ADDITIVELY fall through to the issue
+  // family — an UNBLOCKED, unclaimed, open bug/change/task becomes self-pickable too.
+  // The gate is checked AFTER the feature path, so the feature UPDATE above is wholly
+  // untouched and the OFF path is byte-identical (no flag read, no second query when a
+  // feature was claimed). A caller-supplied feature-family `kind` NARROWING means "features
+  // only" → never try issues. The issue branch lives in claimNextIssueWorkItem so the
+  // feature claim stays a single, unmodified statement.
+  if (!claimed && !filter.kind && (await schedulerIssuesClaimableEnabled())) {
+    claimed = await claimNextIssueWorkItem(filter, ws, useMaintainedReady);
+  }
   // plugin-system-hive-port P-004: same claimed-event as claimWorkItem.
   if (claimed) {
     void import('./work-items-events')
-      .then((m) => m.emitWorkItemClaimedEvent(claimed, filter.assignee))
+      .then((m) => m.emitWorkItemClaimedEvent(claimed!, filter.assignee))
       .catch(() => {});
   }
   return claimed;
+}
+
+/**
+ * The ISSUE-family half of self-selection (SCHEDULER_ISSUES_CLAIMABLE, P-007) — atomically
+ * claim the oldest UNBLOCKED, unclaimed `open` bug/change/task, mirroring the feature claim's
+ * `UPDATE … WHERE pk = (SELECT … FOR UPDATE SKIP LOCKED)` shape but over the `work_items`
+ * BASE for issue-family kinds (the engineer_issues VIEW doesn't expose feature_order, and the
+ * feature view excludes these rows). KEPT SEPARATE from the feature claim so that path is never
+ * rewritten — this runs ONLY when the flag is on AND no feature was claimable (callers guard).
+ *
+ * Readiness uses the SAME work_item_deps predicate as the feature floor, with the issue's
+ * blocked_ref being its BARE id (issues:link), and a blocker SATISFIED iff TERMINAL/ABSENT
+ * (feature terminal = passed|deprecated; issue terminal = resolved|closed). Priority honors
+ * feature_order (the Queen can now steer issues too, P-007), then oldest-first.
+ */
+async function claimNextIssueWorkItem(
+  filter: ClaimNextFilter,
+  _ws: string,
+  useMaintainedReady: boolean,
+): Promise<WorkItem | null> {
+  const { sql } = getOrgPg();
+  // Scope the issue-claim to the canonical ISSUE workspace (issuesScopeWorkspace — honors the
+  // ISSUES_PER_WORKSPACE flag), NOT the feature activeWorkspaceId(), so the UPDATE and the
+  // getIssue() re-read below agree on the same partition (they'd diverge when ISSUES_PER_WORKSPACE
+  // is OFF: issues live in 'default' while the feature scope is the active workspace).
+  const issueWs = issuesScopeWorkspace();
+  // Issue-family rows carry harness_slug = '' (operator scope) or 'harness:<slug>' → <slug>;
+  // the feature `harness` filter ('papercup'…) is the issue scope here too. Claimable issue
+  // status = 'open'; terminal (resolved|closed) excluded by status, blocked ones by readiness.
+  const states = ISSUE_FAMILY_CLAIMABLE_STATES;
+  const rows = await sql<FeatureRowDb[]>`
+    UPDATE harness_shared.work_items
+       SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
+     WHERE (workspace_id, feature_id) = (
+       SELECT workspace_id, feature_id
+         FROM harness_shared.work_items wi
+        WHERE wi.item_kind IN ('bug', 'change', 'task')
+          AND wi.workspace_id = ${issueWs}
+          AND wi.harness_slug = ${filter.harness}
+          AND (wi.taken_by IS NULL OR wi.taken_by = '')
+          AND wi.status = ANY(${[...states]}::text[])
+          -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
+          AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
+          -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
+          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
+          -- Readiness (P-005/P-007): never self-select a row with a PRESENT, NON-TERMINAL
+          -- blocker. The issue's blocked_ref is its BARE feature_id (issues:link). When the
+          -- maintained sidecar is on (useMaintainedReady), read it; else the inline NOT EXISTS
+          -- over work_item_deps + cross-family blocker statuses. Both forms equivalent.
+          AND ${useMaintainedReady
+            ? sql`NOT EXISTS (
+              SELECT 1 FROM harness_shared.work_item_blocked wb
+               WHERE wb.workspace_id = wi.workspace_id
+                 AND wb.harness_slug = wi.harness_slug
+                 AND wb.feature_id   = wi.feature_id
+            )`
+            : sql`NOT EXISTS (
+              SELECT 1 FROM harness_shared.work_item_deps d
+               WHERE d.workspace_id = 'default'
+                 AND d.dep_type = 'blocks'
+                 AND d.blocked_ref = wi.feature_id
+                 AND (
+                   EXISTS (
+                     SELECT 1 FROM harness_shared.harness_features_consolidated bf
+                      WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                        AND bf.status NOT IN ('passed', 'deprecated')
+                   )
+                   OR EXISTS (
+                     SELECT 1 FROM harness_shared.engineer_issues bi
+                      WHERE bi.workspace_id = 'default'
+                        AND bi.issue_id = d.blocker_ref
+                        AND bi.state NOT IN ('resolved', 'closed')
+                   )
+                 )
+            )`}
+        ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, wi.feature_order ASC NULLS LAST,` : sql``} wi.created_ts ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+     )
+    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  // RETURNING the base row uses the feature column shape; the row IS an issue-family row, so
+  // map it through the issue facade (state dialect, no claim-time columns) for a consistent
+  // WorkItem. featureRowToWorkItem would mislabel family/state, so re-read via the issue path.
+  if (!rows[0]) return null;
+  const issue = await getIssue(rows[0].feature_id);
+  return issue ? issueToWorkItem(issue) : null;
 }
 
 export interface WorkItemObservation {
@@ -1410,8 +1534,22 @@ export async function setWorkItemSwarmAffinity(
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   if (wi.family !== 'feature') {
-    // Issue-family items aren't Queen-placed; no affinity column to set.
-    return { id, harness: wi.harness, swarmAffinity: null };
+    // P-007 (SCHEDULER_ISSUES_CLAIMABLE): once issues join the dispatched backlog the Queen
+    // can co-locate them too — write swarm_affinity on the work_items BASE (the engineer_issues
+    // view doesn't expose it), keyed by (workspace_id, feature_id) since an issue's harness_slug
+    // may be ''. Flag OFF ⇒ issues aren't Queen-placed (no affinity column to set), byte-identical.
+    if (!(await schedulerIssuesClaimableEnabled())) {
+      return { id, harness: wi.harness, swarmAffinity: null };
+    }
+    const { sql } = getOrgPg();
+    const rows = await sql<{ swarm_affinity: string | null }[]>`
+      UPDATE harness_shared.work_items
+         SET swarm_affinity = ${swarm}, updated_ts = ${Date.now()}
+       WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
+         AND item_kind IN ('bug', 'change', 'task')
+      RETURNING swarm_affinity`;
+    if (!rows[0]) return null;
+    return { id, harness: wi.harness, swarmAffinity: rows[0].swarm_affinity };
   }
   const { sql } = getOrgPg();
   const rows = await sql<{ swarm_affinity: string | null }[]>`
@@ -1430,7 +1568,17 @@ export async function getWorkItemSwarmAffinity(
 ): Promise<SwarmAffinityResult | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  if (wi.family !== 'feature') return { id, harness: wi.harness, swarmAffinity: null };
+  if (wi.family !== 'feature') {
+    // P-007: read the issue's stored affinity off the base when issues are claimable; else null
+    // (byte-identical to the feature-only behavior).
+    if (!(await schedulerIssuesClaimableEnabled())) return { id, harness: wi.harness, swarmAffinity: null };
+    const { sql } = getOrgPg();
+    const rows = await sql<{ swarm_affinity: string | null }[]>`
+      SELECT swarm_affinity FROM harness_shared.work_items
+       WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
+         AND item_kind IN ('bug', 'change', 'task') LIMIT 1`;
+    return { id, harness: wi.harness, swarmAffinity: rows[0]?.swarm_affinity ?? null };
+  }
   const { sql } = getOrgPg();
   const rows = await sql<{ swarm_affinity: string | null }[]>`
     SELECT swarm_affinity FROM harness_shared.harness_features_consolidated
@@ -1480,7 +1628,26 @@ export async function setWorkItemPriority(
 ): Promise<WorkItemPriorityResult | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  if (wi.family !== 'feature') return { id, harness: wi.harness, priority: null, applicable: false };
+  if (wi.family !== 'feature') {
+    // P-007 (SCHEDULER_ISSUES_CLAIMABLE): issues join the dispatched backlog, so the Queen's
+    // feature_order steer applies to them too — write it on the work_items BASE (the
+    // engineer_issues view doesn't expose feature_order), keyed by (workspace_id, feature_id).
+    // No steering-lease arbitration: an issue isn't the per-Hive harness frontier the lease
+    // single-writers. Flag OFF ⇒ applicable:false (no feature_order), byte-identical.
+    if (!(await schedulerIssuesClaimableEnabled())) {
+      return { id, harness: wi.harness, priority: null, applicable: false };
+    }
+    const ordIssue = priority === null ? null : Math.trunc(priority);
+    const { sql } = getOrgPg();
+    const rows = await sql<{ feature_order: number | null }[]>`
+      UPDATE harness_shared.work_items
+         SET feature_order = ${ordIssue}, updated_ts = ${Date.now()}
+       WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
+         AND item_kind IN ('bug', 'change', 'task')
+      RETURNING feature_order`;
+    if (!rows[0]) return null;
+    return { id, harness: wi.harness, priority: rows[0].feature_order, applicable: true };
+  }
   const ord = priority === null ? null : Math.trunc(priority);
   const { sql } = getOrgPg();
   // P-011 single-steerer lease (D-004, hive-network-surface): cross-Swarm
@@ -1554,7 +1721,25 @@ export async function bumpWorkItemPriority(
 ): Promise<WorkItemPriorityResult | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  if (wi.family !== 'feature') return { id, harness: wi.harness, priority: null, applicable: false };
+  if (wi.family !== 'feature') {
+    // P-007: bump an issue to the head/tail of the ISSUE backlog (the work_items base, issue
+    // kinds, same workspace) when issues are claimable; else applicable:false (byte-identical).
+    if (!(await schedulerIssuesClaimableEnabled())) {
+      return { id, harness: wi.harness, priority: null, applicable: false };
+    }
+    const { sql } = getOrgPg();
+    const issueWs = issuesScopeWorkspace();
+    const extI = await sql<{ min_ord: number | null; max_ord: number | null }[]>`
+      SELECT MIN(feature_order) AS min_ord, MAX(feature_order) AS max_ord
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${issueWs}
+         AND item_kind IN ('bug', 'change', 'task')
+         AND feature_id <> ${id}`;
+    const minI = extI[0]?.min_ord ?? null;
+    const maxI = extI[0]?.max_ord ?? null;
+    const targetI = position === 'top' ? (minI === null ? 0 : minI - 1) : (maxI === null ? 0 : maxI + 1);
+    return setWorkItemPriority(id, targetI, opts);
+  }
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
   const ext = await sql<{ min_ord: number | null; max_ord: number | null }[]>`
@@ -1577,7 +1762,17 @@ export async function getWorkItemPriority(
 ): Promise<WorkItemPriorityResult | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  if (wi.family !== 'feature') return { id, harness: wi.harness, priority: null, applicable: false };
+  if (wi.family !== 'feature') {
+    // P-007: read the issue's feature_order off the base when issues are claimable; else
+    // applicable:false (byte-identical to the feature-only behavior).
+    if (!(await schedulerIssuesClaimableEnabled())) return { id, harness: wi.harness, priority: null, applicable: false };
+    const { sql } = getOrgPg();
+    const rows = await sql<{ feature_order: number | null }[]>`
+      SELECT feature_order FROM harness_shared.work_items
+       WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
+         AND item_kind IN ('bug', 'change', 'task') LIMIT 1`;
+    return { id, harness: wi.harness, priority: rows[0]?.feature_order ?? null, applicable: true };
+  }
   const { sql } = getOrgPg();
   const rows = await sql<{ feature_order: number | null }[]>`
     SELECT feature_order FROM harness_shared.harness_features_consolidated
