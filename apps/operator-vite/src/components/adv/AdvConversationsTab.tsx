@@ -380,14 +380,15 @@ function ConvFrame({
   return (
     <div className="pc-advconv__shell">
       <aside className="pc-plans__rail pc-advconv__nav">
-        <div className="pc-plans__rail-actions">
+        {/* One wrapping action group — the + Ask primary plus the view-switcher
+            buttons, each flex:1 so they tile two-per-row exactly like the Create
+            sidebar's rail-actions, not full-width stacked. */}
+        <div className="pc-plans__rail-actions pc-advconv__nav-actions" aria-label="Conversations view">
           <Tooltip label="Ask the agents a question — opens a question conversation routed to topic subscribers; answers land in Q&A.">
             <button type="button" className="pc-plans__new-plan" onClick={() => setAskOpen(true)} aria-label="Ask the agents">
               <Plus size={14} aria-hidden /> Ask
             </button>
           </Tooltip>
-        </div>
-        <div className="pc-advconv__nav-views" role="tablist" aria-label="Conversations view">
           {CURATED_VIEW_DEFS.map(navBtn)}
           <span className="pc-advconv__nav-sep" role="separator" aria-orientation="horizontal" />
           {RAW_VIEW_DEFS.map(navBtn)}
@@ -2232,19 +2233,20 @@ function AdvConvStyles() {
         width: clamp(232px, 23vw, 300px);
         min-height: 0;
       }
-      .pc-advconv__nav-views {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        padding: 8px 10px;
-        border-bottom: 1px solid color-mix(in srgb, var(--advconv-accent), transparent 88%);
+      /* The Ask primary + view buttons share one wrapping group (pc-plans__rail-actions
+         from plans.css gives the flex-wrap + 6px gap + padding + border-bottom);
+         we only force equal heights so the Ask button lines up with the tabs. */
+      .pc-advconv__nav-actions {
+        align-items: stretch;
       }
       .pc-advconv__navbtn {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        width: 100%;
-        padding: 7px 10px;
+        justify-content: center;
+        gap: 7px;
+        flex: 1 1 auto;
+        min-width: 88px;
+        padding: 8px 10px;
         border: 1px solid color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 66%);
         border-radius: 8px;
         background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 91%);
@@ -2252,7 +2254,7 @@ function AdvConvStyles() {
         font-size: 12px;
         font-weight: 600;
         letter-spacing: 0;
-        text-align: left;
+        text-align: center;
         cursor: pointer;
         transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
@@ -2268,10 +2270,13 @@ function AdvConvStyles() {
         color: var(--fg, #e7f7ff);
         font-weight: 700;
       }
+      /* Full-width row break between the curated views and the raw event log —
+         forces "Raw events" onto its own line below the divider. */
       .pc-advconv__nav-sep {
-        height: 1px;
-        margin: 5px 4px;
-        background: var(--advconv-border);
+        flex-basis: 100%;
+        height: 0;
+        margin: 1px 0;
+        border-top: 1px solid var(--advconv-border);
       }
       .pc-advconv__navfilters {
         display: flex;
@@ -3177,8 +3182,6 @@ function AdvConvStyles() {
       @media (max-width: 920px) {
         .pc-advconv__shell { flex-direction: column; }
         .pc-advconv__nav { width: auto; border-right: none; border-bottom: 1px solid var(--advconv-border); }
-        .pc-advconv__nav-views { flex-direction: row; flex-wrap: wrap; }
-        .pc-advconv__navbtn { width: auto; flex: 1 1 auto; justify-content: center; }
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advconv__replyhead { flex-direction: column; }

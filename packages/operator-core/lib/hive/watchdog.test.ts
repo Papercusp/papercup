@@ -269,6 +269,42 @@ describe('hiveWatchdogSweep (P-011 / D-003: every condition gates)', () => {
   });
 });
 
+describe('K1 workspace-loop de-dup (workspace-scoped-coordination P-003)', () => {
+  const stale = () =>
+    readHiveWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: NOW - (watchdogStaleSec() + 60) * 1_000 });
+
+  it('the sweep consumes the DE-DUPED workspace-loop set, not the raw per-hive set (ON ⇒ one loop)', async () => {
+    // Simulate flag ON: listStartedHives would return N per-hive rows, but the
+    // de-duped liveness set collapses to ONE workspace loop — the sweep must run
+    // exactly once, not N times.
+    listStartedHives.mockResolvedValue([
+      { workspaceId: WS, installSlug: 'hive-a' },
+      { workspaceId: WS, installSlug: 'hive-b' },
+      { workspaceId: WS, installSlug: 'hive-c' },
+    ]);
+    listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: WS, installSlug: 'papercusp' }]);
+    stale();
+    demandRow = { todo_items: 2, started_plans: 0 };
+    const res = await hiveWatchdogSweep({ now: NOW });
+    // ONE workspace loop → ONE arm, not three.
+    expect(res).toHaveLength(1);
+    expect(listStartedWorkspaceLoops).toHaveBeenCalledTimes(1);
+    expect(listStartedHives).not.toHaveBeenCalled();
+  });
+
+  it('boot check also consumes the de-duped workspace-loop set', async () => {
+    listStartedHives.mockResolvedValue([
+      { workspaceId: WS, installSlug: 'hive-a' },
+      { workspaceId: WS, installSlug: 'hive-b' },
+    ]);
+    listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: WS, installSlug: 'papercusp' }]);
+    const res = await hiveBootCheck();
+    expect(res).toHaveLength(1);
+    expect(listStartedWorkspaceLoops).toHaveBeenCalledTimes(1);
+    expect(listStartedHives).not.toHaveBeenCalled();
+  });
+});
+
 describe('hiveDemandCheck (P-011)', () => {
   it('demand = queued feature-family work OR started plans', async () => {
     demandRow = { todo_items: 0, started_plans: 0 };

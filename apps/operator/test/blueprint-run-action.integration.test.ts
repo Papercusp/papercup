@@ -56,10 +56,12 @@ beforeAll(async () => {
   // getOrgPg() opens with search_path [harness_shared, papercusp_shared, public].
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS papercusp_shared');
 
-  // work_items BASE table (harness_features_consolidated) — the columns the action writes,
-  // incl. P-020/mig-135's item_kind + payload. PK (harness_slug, feature_id).
+  // work_items BASE table — head's canonical work-item store. migration 135 (P-020)
+  // moved the base off `harness_features_consolidated`, which is now a VIEW over
+  // work_items: the action INSERTs into work_items, the assertions read the compat view.
+  // The columns are the ones the action writes (incl. item_kind + payload). PK (harness_slug, feature_id).
   await sql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
+    CREATE TABLE harness_shared.work_items (
       harness_slug       text NOT NULL,
       feature_id         text NOT NULL,
       title              text,
@@ -75,6 +77,13 @@ beforeAll(async () => {
       updated_ts         bigint,
       PRIMARY KEY (harness_slug, feature_id)
     )
+  `);
+  // harness_features_consolidated is a compat VIEW over work_items in head. A simple
+  // `SELECT *` view over one table is auto-updatable, so the test's DELETE/SELECT
+  // against the view still behave exactly as against the base table.
+  await sql.unsafe(`
+    CREATE VIEW harness_shared.harness_features_consolidated AS
+      SELECT * FROM harness_shared.work_items
   `);
 
   // routines table (the relevant columns + the (install_slug, name) unique key).
@@ -96,6 +105,8 @@ beforeAll(async () => {
       updated_at     timestamptz NOT NULL DEFAULT now(),
       metadata       jsonb,
       workspace_id   text NOT NULL,
+      reschedule_interval_sec integer,
+      target_owner_id text,
       UNIQUE (install_slug, name)
     )
   `);

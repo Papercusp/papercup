@@ -563,7 +563,48 @@ export async function spawnAgentInHarness(
     return fail(`spawn rejected: unknown role "${role}" — known roles: ${AGENT_ROLES.join(', ')}`);
   }
   if (role === 'worker' && !input.chunkId) {
-    return fail('spawn rejected: role="worker" requires a chunk id (spawn a scoper first to chunk the feature)');
+    return fail(
+      'spawn rejected: role="worker" requires a chunk id — that\'s the coding-FACTORY pipeline ' +
+        '(scoper→worker, push-based). For a coding-hive worker that self-pulls its work via a ' +
+        'claim-spec (scheduler:get_next), spawn role="bee" instead.',
+    );
+  }
+
+  // coding-hive `bee` vs coding-factory `scoper` mix-up guard
+  // (coding-hive-bee-vs-coding-factory-scoper-2026-06-23). Two distinct execution models share this
+  // chokepoint and were being CONFLATED: the coding-FACTORY is a PUSH pipeline (scoper→architect→worker→…)
+  // where each role is handed a FEATURE_ID by the orchestrator's spine (NEXT_SCOPER/NEXT_ARCHITECT/… all
+  // carry `extras:["FEATURE_ID={feature}"]`); the coding-HIVE worker is the `bee` — a SELF-PULLING agent
+  // the Queen steers with a claim-spec (scheduler:set_claim_spec) and that pulls its own work via
+  // scheduler:get_next. The observed failure mode: an agent spawned role="scoper" and set claim-specs on it
+  // to test the hive handoff — a scoper NEVER calls get_next, so the spec is INERT and the scoper, lacking a
+  // pushed FEATURE_ID, has nothing to do. A factory role launched with NO pushed-feature context is almost
+  // always this mistake. The factory's own spine ALWAYS pushes FEATURE_ID (blueprint.yaml edges), so a
+  // legitimate factory spawn carries it (as input.featureId / a FEATURE_ID= extra) or an input.chunkId — and
+  // this guard does NOT fire for those. Role-scoped + conservative: only the push-pipeline roles, only when
+  // NO feature context is present.
+  const FACTORY_PIPELINE_ROLES = new Set([
+    'scoper',
+    'architect',
+    'validator',
+    'documenter',
+    'curator',
+    'director',
+  ]);
+  if (FACTORY_PIPELINE_ROLES.has(role)) {
+    const hasFeatureExtra = (input.extras ?? []).some((e) => e.startsWith('FEATURE_ID='));
+    const hasFeatureContext = !!input.featureId || hasFeatureExtra || !!input.chunkId;
+    if (!hasFeatureContext) {
+      return fail(
+        `spawn rejected: role="${role}" is a coding-FACTORY push-pipeline role ` +
+          '(scoper→architect→worker→validator→…) — these are normally PUSHED a FEATURE_ID by the ' +
+          'orchestrator spine (NEXT_SCOPER/NEXT_ARCHITECT/… all carry FEATURE_ID), so spawning one with no ' +
+          'pushed-feature context (no featureId, no FEATURE_ID= extra, no chunkId) has nothing to do. ' +
+          'If you meant a coding-HIVE worker that self-pulls its work via a claim-spec ' +
+          '(scheduler:set_claim_spec + scheduler:get_next), that is role="bee", NOT a factory role. ' +
+          'To genuinely run the factory pipeline, push the FEATURE_ID (pass featureId / a FEATURE_ID= extra).',
+      );
+    }
   }
   // overwatch-role-2026-06-15 (B-10 / D-009): the OVERWATCH role ships DARK behind
   // papercusp-overwatch (default OFF) until B-12's live staging proof. The role is

@@ -110,6 +110,11 @@ export default defineTool({
       .nullable()
       .optional()
       .describe('P-009 (ADVISORY): decomposition-aggressiveness hint the Queen reads in her wake brief — serial ↔ balanced ↔ max-parallel lanes. null clears it (Queen\'s own judgement).'),
+    modelOverrides: z
+      .record(z.string().max(120))
+      .nullable()
+      .optional()
+      .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the fleet:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
     pauseNewWork: z
       .boolean()
       .optional()

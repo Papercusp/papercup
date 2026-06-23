@@ -187,7 +187,7 @@ describe('spawnAgentInHarness — happy path', () => {
 
   it('a non-zero child exit finishes the row failed with the stderr tail', async () => {
     vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: '', exitCode: 1, stderr: 'boom' });
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     await flush();
     expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -205,7 +205,7 @@ describe('spawnAgentInHarness — happy path', () => {
     // cause invisible in fleet:tree / the Brew tab.
     const sessionMsg = "You've hit your session limit · resets 7:30pm (America/New_York)";
     vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: '', exitCode: 0, stderr: sessionMsg });
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     await flush();
     expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -247,6 +247,56 @@ describe('spawnAgentInHarness — overwatch flag gate (overwatch-role-2026-06-15
   });
 });
 
+describe('spawnAgentInHarness — coding-factory role needs a pushed FEATURE_ID (coding-hive-bee-vs-coding-factory-scoper-2026-06-23)', () => {
+  it('rejects a coding-FACTORY pipeline role with NO pushed-feature context, pointing at role="bee"', async () => {
+    // A scoper spawned with no featureId / FEATURE_ID= extra / chunkId is the
+    // observed mistake (testing the coding-hive handoff by spawning a scoper +
+    // setting claim-specs on it — inert). The guard refuses + names the bee unit.
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('coding-FACTORY');
+    expect(res.error).toContain('role="bee"');
+    expect(res.error).not.toContain('unknown role');
+    // refused BEFORE any child process launches
+    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+
+  it('allows a coding-FACTORY pipeline role WHEN a FEATURE_ID is pushed (the legit factory path)', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1',
+      harness: 'demo',
+      role: 'scoper',
+      featureId: 'F-123',
+    });
+    await flush();
+    // the guard passed → the spawn proceeds (happy-path mocks launch + finish it)
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeFalsy();
+    expect(spawnInvokeOnce).toHaveBeenCalled();
+  });
+
+  it('also accepts a FEATURE_ID= extra as pushed-feature context (the spine pushes it via extras)', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1',
+      harness: 'demo',
+      role: 'scoper',
+      extras: ['FEATURE_ID=F-456'],
+    });
+    await flush();
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeFalsy();
+    expect(spawnInvokeOnce).toHaveBeenCalled();
+  });
+
+  it('a bee with no feature context is unaffected by the factory guard (the self-pulling unit)', async () => {
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    await flush();
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeFalsy();
+    expect(spawnInvokeOnce).toHaveBeenCalled();
+  });
+});
+
 describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-007)', () => {
   const findUpdate = () => {
     const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
@@ -258,7 +308,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
   it('mints + records a session_id and threads forceSessionId for a claude backend', async () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     try {
-      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
       expect(res.ok).toBe(true);
 
       // forceSessionId (a uuid) is threaded to the launcher so buildInvokeOnce bakes --session-id.
@@ -280,7 +330,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
     // so relying on the unset-env default would mint a uuid and fail in the gate.
     vi.stubEnv('AGENT_CMD', 'omp -p');
     try {
-      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
       expect(res.ok).toBe(true);
       const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
       expect(opts?.forceSessionId).toBeUndefined();
@@ -293,7 +343,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
   it('mints NO session id for the codex backend (codex resumes by CODEX_HOME rollout)', async () => {
     vi.stubEnv('AGENT_CMD', 'codex exec');
     try {
-      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
       expect(res.ok).toBe(true);
       const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
       expect(opts?.forceSessionId).toBeUndefined();
@@ -309,7 +359,7 @@ describe('spawnAgentInHarness — backend-aware gateway account routing', () => 
     vi.stubEnv('AGENT_CMD', 'codex exec');
     vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
     try {
-      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
       expect(res.ok).toBe(true);
 
       expect(resolveSpawnGatewayEnv).toHaveBeenCalledWith(expect.objectContaining({
@@ -341,7 +391,7 @@ describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', ()
       return new Promise((res) => { resolveChild = res; });
     }) as never);
 
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     expect(captured).toBeInstanceOf(AbortSignal);
     expect(captured!.aborted).toBe(false);
@@ -365,7 +415,7 @@ describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', ()
   it('abortLocalSpawn returns false for an unknown / already-finished spawn', async () => {
     expect(abortLocalSpawn('s-nonexistent')).toBe(false);
     // A spawn that finished normally is de-registered → not abortable.
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     await flush();
     expect(abortLocalSpawn(res.spawnId!)).toBe(false);
   });
@@ -373,7 +423,7 @@ describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', ()
 
 describe('spawnAgentInHarness — harness resolution', () => {
   it('defaults to the single registered harness when none is named', async () => {
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', role: 'bee' });
     expect(res.ok).toBe(true);
     expect(res.harness).toBe('demo');
   });
@@ -382,7 +432,7 @@ describe('spawnAgentInHarness — harness resolution', () => {
     vi.mocked(loadHarnessRegistry).mockResolvedValue({
       projects: [PROJECT, { ...PROJECT, slug: 'other' }],
     } as never);
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('2 are registered');
     expect(res.error).toContain('demo');
@@ -391,7 +441,7 @@ describe('spawnAgentInHarness — harness resolution', () => {
 
   it('rejects an unregistered harness, naming the registered ones, and records the failed attempt', async () => {
     vi.mocked(resolveProject).mockResolvedValue(null as never);
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'nope', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'nope', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('"nope" is not a registered project');
     expect(res.error).toContain('demo');
@@ -422,7 +472,7 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
 
   it('remaps the "<project>-su" MCP slug to its project and spawns against it', async () => {
     onlyResolves('papercup');
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'papercup-su', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'papercup-su', role: 'bee' });
     expect(res.ok).toBe(true);
     // the nursery row + child env carry the REMAPPED project slug, not the -su MCP slug
     expect(res.harness).toBe('papercup');
@@ -443,14 +493,14 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
     vi.mocked(resolveProject).mockImplementation(
       (async (s: string) => (s === home ? HOME_PROJECT : null)) as never,
     );
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'papercusp-su', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'papercusp-su', role: 'bee' });
     expect(res.ok).toBe(true);
     expect(res.harness).toBe(home);
   });
 
   it('does NOT silently normalize an arbitrary wrong slug — a non -su typo still rejects', async () => {
     vi.mocked(resolveProject).mockResolvedValue(null as never);
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'paprcup', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'paprcup', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('"paprcup" is not a registered project');
     expect(spawnInvokeOnce).not.toHaveBeenCalled();
@@ -459,7 +509,7 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
   it('rejects a "<base>-su" slug whose stripped base is also unregistered (remap only when the project exists)', async () => {
     // foo-su strips to foo, which is not a project → no remap, normal rejection.
     vi.mocked(resolveProject).mockResolvedValue(null as never);
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'foo-su', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'foo-su', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('"foo-su" is not a registered project');
     expect(spawnInvokeOnce).not.toHaveBeenCalled();
@@ -532,7 +582,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
   it('rejects when the workspace is at the running-spawn ceiling', async () => {
     const ceiling = spawnConcurrencyCeiling();
     runningCount = ceiling;
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain(`ceiling ${ceiling}`);
     expect(spawnInvokeOnce).not.toHaveBeenCalled();
@@ -589,7 +639,7 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
 
   it('does NOT pin a non-bee role even under the bench flag (only bench bees are pinned)', async () => {
     process.env[KEY] = 'claim + implement your lone bench feature';
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
     expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();
@@ -655,7 +705,7 @@ describe('spawnAgentInHarness — idempotency dedupe (P-017 / EI-73)', () => {
   it('a retry with a matched idempotencyKey returns the ORIGINAL spawn, launching nothing', async () => {
     dupRows = [{ spawn_id: 's-original-123' }];
     const res = await spawnAgentInHarness({
-      workspaceId: 'ws-1', harness: 'demo', role: 'scoper', idempotencyKey: 'retry-key-1',
+      workspaceId: 'ws-1', harness: 'demo', role: 'bee', idempotencyKey: 'retry-key-1',
     });
     expect(res.ok).toBe(true);
     expect(res.spawnId).toBe('s-original-123');
@@ -666,7 +716,7 @@ describe('spawnAgentInHarness — idempotency dedupe (P-017 / EI-73)', () => {
 
   it('an unmatched idempotencyKey spawns normally and stamps the key on the row', async () => {
     const res = await spawnAgentInHarness({
-      workspaceId: 'ws-1', harness: 'demo', role: 'scoper', idempotencyKey: 'fresh-key',
+      workspaceId: 'ws-1', harness: 'demo', role: 'bee', idempotencyKey: 'fresh-key',
     });
     expect(res.ok).toBe(true);
     expect(res.deduped).toBeUndefined();
@@ -680,7 +730,7 @@ describe('spawnAgentInHarness — idempotency dedupe (P-017 / EI-73)', () => {
   });
 
   it('a spawn without a key never touches the dedupe probe', async () => {
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
     const probe = sqlMock.mock.calls.find(
@@ -693,7 +743,7 @@ describe('spawnAgentInHarness — idempotency dedupe (P-017 / EI-73)', () => {
 describe('over-ceiling slot-wait — queue + await, never a silent drop (D-004)', () => {
   it('an over-ceiling rejection carries the wake key + the events:await instruction', async () => {
     runningCount = spawnConcurrencyCeiling();
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(false);
     // The caller sleeps on this exact key and retries on wake — no drop, no busy-wait.
     expect(res.awaitEvent).toBe(spawnSlotEventKey('ws-1'));
@@ -701,7 +751,7 @@ describe('over-ceiling slot-wait — queue + await, never a silent drop (D-004)'
   });
 
   it('a finished spawn announces the freed slot on the workspace slot key', async () => {
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     await flush();
     await flush(); // the announce is a void-chained promise off the finally
@@ -715,7 +765,7 @@ describe('over-ceiling slot-wait — queue + await, never a silent drop (D-004)'
     vi.mocked(reclaimOrphanedSpawns).mockResolvedValue({
       reclaimed: 2, spawnIds: ['s-a', 's-b'], workspaces: ['ws-1', 'ws-2'],
     });
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     await flush();
     const keys = vi.mocked(emitAwaitedEvent).mock.calls.map((c) => c[0].key);
@@ -724,7 +774,7 @@ describe('over-ceiling slot-wait — queue + await, never a silent drop (D-004)'
   });
 
   it('a successful under-ceiling spawn result carries NO awaitEvent', async () => {
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     expect(res.awaitEvent ?? null).toBeNull();
   });

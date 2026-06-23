@@ -69,6 +69,13 @@ export const OWNER_STEERING_KEYS = {
   // queen-steering-panel P-009 (decomposition-aggressiveness hint): ADVISORY —
   // surfaced in the wake brief, no hard seam (the Queen self-governs decomposition).
   decomposition: 'owner-steering:decomposition',
+  // model-override-sidebar-2026-06-23: SESSION-NOW per-role MODEL overrides for the
+  // FRONT-DOOR agents that launch OUTSIDE the fleet:spawn tier path — `sentinel`
+  // (the dock psu/Claude TUI) and `overwatch` (the supervisor invoke loop). role →
+  // `model[:effort]` spec; absent ⇒ the workspace default (agent-config models.<role>
+  // → CLI default). Session-only: lives here in hive_settings (resets with the Hive),
+  // NOT the workspace agent-config default.
+  modelOverrides: 'owner-steering:model-overrides',
 } as const;
 
 /** The idle background activities the owner can gate per-Hive (P-006, D-005). Each
@@ -126,6 +133,11 @@ export interface OwnerSteering {
    *  ADVISORY: surfaced in the wake brief so the Queen self-governs; no hard seam.
    *  null ⇒ default (the Queen's own judgement). */
   decomposition?: DecompositionMode | null;
+  /** SESSION per-role MODEL overrides (model-override-sidebar-2026-06-23) for the
+   *  front-door agents launched OUTSIDE the fleet:spawn tier path — `sentinel` (dock
+   *  psu TUI) and `overwatch` (invoke loop). role → `model[:effort]` spec;
+   *  absent/empty ⇒ workspace default. null ⇒ no overrides. */
+  modelOverrides?: Record<string, string> | null;
 }
 
 export const DEFAULT_OWNER_STEERING: OwnerSteering = {
@@ -141,6 +153,7 @@ export const DEFAULT_OWNER_STEERING: OwnerSteering = {
   idleActivities: null,
   autoScaleOut: null,
   decomposition: null,
+  modelOverrides: null,
 };
 
 function asStringArray(v: unknown): string[] {
@@ -163,6 +176,17 @@ function asCeilings(v: unknown): Record<string, string> | null {
   const out: Record<string, string> = {};
   for (const [role, tier] of Object.entries(v as Record<string, unknown>)) {
     if (typeof tier === 'string' && tier.trim()) out[role] = tier;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Decode a stored per-role model-override map (role→`model[:effort]` spec), dropping
+ *  blank specs. null ⇒ no override. (model-override-sidebar-2026-06-23.) */
+function asModelOverrides(v: unknown): Record<string, string> | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out: Record<string, string> = {};
+  for (const [role, spec] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof spec === 'string' && spec.trim()) out[role] = spec.trim();
   }
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -236,6 +260,7 @@ export async function getOwnerSteering(
     idleActivities: asIdleActivities(byKey.get(OWNER_STEERING_KEYS.idleActivities)),
     autoScaleOut: asBoolOrNull(byKey.get(OWNER_STEERING_KEYS.autoScaleOut)),
     decomposition: asDecomposition(byKey.get(OWNER_STEERING_KEYS.decomposition)),
+    modelOverrides: asModelOverrides(byKey.get(OWNER_STEERING_KEYS.modelOverrides)),
   };
 }
 
@@ -260,6 +285,9 @@ export interface OwnerSteeringPatch {
   autoScaleOut?: boolean | null;
   /** Session decomposition hint (P-009); null clears it. */
   decomposition?: DecompositionMode | null;
+  /** Session per-role model overrides (model-override-sidebar-2026-06-23); null / {}
+   *  clears them. Merge-semantics are the caller's job: pass the full desired map. */
+  modelOverrides?: Record<string, string> | null;
   /** Wipe ALL steering keys back to {@link DEFAULT_OWNER_STEERING}. */
   clear?: boolean;
 }
@@ -313,6 +341,9 @@ export async function setOwnerSteering(
   }
   if (patch.decomposition !== undefined) {
     writes.push([OWNER_STEERING_KEYS.decomposition, asDecomposition(patch.decomposition)]);
+  }
+  if (patch.modelOverrides !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.modelOverrides, asModelOverrides(patch.modelOverrides)]);
   }
   if (patch.pauseNewWork !== undefined) {
     writes.push([OWNER_STEERING_KEYS.pauseNewWork, patch.pauseNewWork === true]);

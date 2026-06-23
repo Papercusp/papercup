@@ -240,8 +240,11 @@ describe('AdvConversationsTab — Create-style shell', () => {
     expect(styles).not.toContain('pc-advconv__viewtabs');
     const navRule = styles.match(/\.pc-advconv__nav\s*{[^}]*}/)?.[0] ?? '';
     expect(navRule).toContain('width:');
+    // The switcher buttons tile two-per-row (flex:1 wrap, like Create's
+    // rail-actions), not full-width stacked.
     const btnRule = styles.match(/\.pc-advconv__navbtn\s*{[^}]*}/)?.[0] ?? '';
-    expect(btnRule).toContain('width: 100%');
+    expect(btnRule).toContain('flex: 1 1 auto');
+    expect(btnRule).not.toContain('width: 100%');
   });
 
   it('opens the Ask composer from the + Ask action', async () => {

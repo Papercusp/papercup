@@ -12,14 +12,24 @@ vi.mock('../dev-data', async (orig) => ({
 vi.mock('../hive/started', async (orig) => ({
   ...(await orig<typeof import('../hive/started')>()),
   listStartedHives: vi.fn(),
+  getHiveStarted: vi.fn(),
+}));
+// K1 (workspace-scoped-coordination P-003): stub the flag read; the OFF default
+// (the dark default) is what every legacy test below relies on.
+vi.mock('../workspace-brain-scope', async (orig) => ({
+  ...(await orig<typeof import('../workspace-brain-scope')>()),
+  isWorkspaceCoordinationOn: vi.fn(async () => false),
 }));
 
 import { resolveTickHarnesses } from './orchestrator-loop';
 import { listAllHarnesses } from '../dev-data';
-import { listStartedHives } from '../hive/started';
+import { listStartedHives, getHiveStarted } from '../hive/started';
+import { isWorkspaceCoordinationOn } from '../workspace-brain-scope';
 
 const mockAll = vi.mocked(listAllHarnesses);
 const mockStarted = vi.mocked(listStartedHives);
+const mockGetStarted = vi.mocked(getHiveStarted);
+const mockWsCoord = vi.mocked(isWorkspaceCoordinationOn);
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -64,5 +74,34 @@ describe('resolveTickHarnesses — placement gated on the Start-Hive bit (#3)', 
     mockAll.mockResolvedValue({ harnesses: [{ slug: 'papercup' }] } as never);
     mockStarted.mockRejectedValue(new Error('db down'));
     expect(await resolveTickHarnesses('ws')).toEqual([]);
+  });
+});
+
+describe('resolveTickHarnesses — K1 workspace-brain re-key (P-003)', () => {
+  test('flag ON → each candidate is gated on the read-fallback-aware getHiveStarted (workspace sentinel widens to all started hives)', async () => {
+    process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES = '*';
+    mockWsCoord.mockResolvedValue(true);
+    mockAll.mockResolvedValue({
+      harnesses: [{ slug: 'papercup' }, { slug: 'papercup-hive' }, { slug: 'smoke-x' }],
+    } as never);
+    // The batch read still backs the fast-path / fail-safe (must resolve), but ON
+    // the per-candidate getHiveStarted decides membership.
+    mockStarted.mockResolvedValue([{ workspaceId: 'ws', installSlug: 'ws' }]); // sentinel row
+    // The workspace sentinel started bit resolves true for the two real hives,
+    // false for a never-registered candidate.
+    mockGetStarted.mockImplementation(async (_ws: string, slug: string) => slug !== 'smoke-x');
+    expect(await resolveTickHarnesses('ws')).toEqual(['papercup', 'papercup-hive']);
+  });
+
+  test('flag ON + a per-candidate read failure → that candidate fails closed (not placed)', async () => {
+    process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES = '*';
+    mockWsCoord.mockResolvedValue(true);
+    mockAll.mockResolvedValue({ harnesses: [{ slug: 'papercup' }, { slug: 'boom' }] } as never);
+    mockStarted.mockResolvedValue([{ workspaceId: 'ws', installSlug: 'ws' }]);
+    mockGetStarted.mockImplementation(async (_ws: string, slug: string) => {
+      if (slug === 'boom') throw new Error('read failed');
+      return true;
+    });
+    expect(await resolveTickHarnesses('ws')).toEqual(['papercup']);
   });
 });
