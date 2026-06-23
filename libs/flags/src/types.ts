@@ -1557,10 +1557,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // tests); the desktop's use-state-snapshots is the LIVE client (always sends ?delta=1, applies
   // deltas with a checksum/keep-stale fallback). Reversible kill-switch — OFF reverts to full snapshots.
   [FLAGS.STATE_SNAPSHOT_DELTAS]: true,
-  // DEFAULT OFF (agent-tool-delta-client-rollout-2026-06-23 P-006): a reversible CUTOVER
-  // kill-switch for the sync resource rows-delta. OFF ⇒ no codec injected ⇒ full re-fetch
-  // (byte-identical). Owner flips ON after an attended running-desktop verify. KNOWN_DARK (cutover).
-  [FLAGS.SYNC_RESOURCE_DELTA]: false,
+  // DEFAULT ON (agent-tool-delta-client-rollout-2026-06-23 P-006, owner-directed flip 2026-06-23):
+  // the sync resource rows-delta. ON ⇒ the SyncDeltaCodec is injected ⇒ plans.attention/plans.list
+  // re-fetch as row deltas (the ~327GB/3d win) instead of full row sets. Round-trip-proven
+  // (negotiateRowsDelta + SyncDeltaCodec + batch-fetcher, 588 delta tests). The merge is done in
+  // CODE (DeltaToolClient.ingest), guarded by a checksum that refetches FULL on any mismatch — a
+  // wrong merge degrades to a refetch, never a wrong view. Reversible kill-switch: OFF ⇒ no codec
+  // ⇒ full re-fetch (byte-identical). NO LLM is in this path — it is server↔desktop transport only.
+  [FLAGS.SYNC_RESOURCE_DELTA]: true,
   // DEFAULT ON (queen-bee-spawn-reclaim-relaunch-2026-06-22, EI-85): the boot reconcile
   // re-launches a reclaimed queen/bee whose durable work-item is non-terminal so the
   // work survives a host restart. Bounded (non-terminal work only, ceiling-gated re-fire)

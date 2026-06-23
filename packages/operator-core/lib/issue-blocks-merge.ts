@@ -69,7 +69,7 @@ export async function getBlockingIssuesForPlan(planSlug: string): Promise<Blocki
     SELECT l.dst_ref, l.src_ref AS issue_id
       FROM harness_shared.coord_links l
       JOIN harness_shared.engineer_issues i
-        ON i.workspace_id = ${DEFAULT_COORD_WORKSPACE} AND i.issue_id = l.src_ref
+        ON i.issue_id = l.src_ref
      WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE}
        AND l.rel = 'blocks'
        AND l.src_kind = 'issue'
@@ -101,7 +101,7 @@ export async function getAllBlockedPlanItems(): Promise<Map<string, string[]>> {
     SELECT l.dst_ref, l.src_ref AS issue_id
       FROM harness_shared.coord_links l
       JOIN harness_shared.engineer_issues i
-        ON i.workspace_id = ${DEFAULT_COORD_WORKSPACE} AND i.issue_id = l.src_ref
+        ON i.issue_id = l.src_ref
      WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE}
        AND l.rel = 'blocks'
        AND l.src_kind = 'issue'
@@ -187,7 +187,7 @@ export async function getBlockedFeatures(): Promise<Map<string, string[]>> {
     SELECT l.dst_ref, l.src_ref AS issue_id
       FROM harness_shared.coord_links l
       JOIN harness_shared.engineer_issues i
-        ON i.workspace_id = ${DEFAULT_COORD_WORKSPACE} AND i.issue_id = l.src_ref
+        ON i.issue_id = l.src_ref
      WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE}
        AND l.rel = 'blocks'
        AND l.src_kind = 'issue'

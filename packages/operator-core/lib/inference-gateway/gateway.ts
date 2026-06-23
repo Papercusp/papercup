@@ -1473,7 +1473,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (circuitOpen) {
               const now = Date.now();
               const stableFor = now - (egressLastOpenAt.get(active.accountId) ?? 0);
-              const reopen = stableFor < EGRESS_FLAP_RESET_MS ? (egressReopenCount.get(active.accountId) ?? 0) + 1 : 0;
+              // C2: only ESCALATE the flap backoff for a DEAD proxy (connect-error). A TTFB STALL (Anthropic
+              // holding) hits every account repeatedly during a hold-storm; doubling its open would exile a
+              // budget-healthy account up to EGRESS_CIRCUIT_OPEN_MAX_MS when it recovers in seconds — keep stalls
+              // at the BASE open so they rejoin fast (the absorb + half-open probe carry the recovery).
+              const reopen = !stalled && stableFor < EGRESS_FLAP_RESET_MS ? (egressReopenCount.get(active.accountId) ?? 0) + 1 : 0;
               egressReopenCount.set(active.accountId, reopen);
               egressLastOpenAt.set(active.accountId, now);
               openMs = Math.min(EGRESS_CIRCUIT_OPEN_MS * 2 ** reopen, EGRESS_CIRCUIT_OPEN_MAX_MS);

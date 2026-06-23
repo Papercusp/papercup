@@ -103,7 +103,20 @@ export async function resolveSpawnGatewayEnv(opts: {
   const provider = accountProviderForInteractiveBackend(backend);
   if (!provider) return {};
   let accountId: string | undefined;
-  if (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system')) {
+  // Owner-directed dedicated-account pin (2026-06-23): when PAPERCUSP_SPAWN_ACCOUNT_PIN names a
+  // pool account, force it for the matching hive's spawns — so the queen→bee→scout→overwatch
+  // autonomous loop can be verified in a lane isolated from the shared-pool stall storm (the
+  // pinned account then carries only that hive's light load, not the whole fleet's). Scope with
+  // PAPERCUSP_SPAWN_ACCOUNT_PIN_SLUG (one install slug; pins ALL slugs when unset). This is
+  // operational ROUTING config (peer of ANTHROPIC_BASE_URL / PAPERCUSP_GATEWAY_PORT), NOT a
+  // feature toggle — reversible by unsetting the env, and a no-op everywhere the env is absent.
+  // Tradeoff: a pinned spawn does NOT fail over (it can only use the pinned account), so pin only
+  // a LIGHT, isolated workload — never the whole fleet.
+  const pinAccount = process.env.PAPERCUSP_SPAWN_ACCOUNT_PIN?.trim();
+  const pinSlug = process.env.PAPERCUSP_SPAWN_ACCOUNT_PIN_SLUG?.trim();
+  if (pinAccount && (!pinSlug || pinSlug === opts.slug)) {
+    accountId = pinAccount;
+  } else if (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system')) {
     const { selectSpawnAccount } = await import('../deployment/account-pool-store');
     accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
   }

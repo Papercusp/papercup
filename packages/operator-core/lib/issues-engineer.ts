@@ -37,6 +37,7 @@ import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
+import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
@@ -104,18 +105,23 @@ export interface EngineerIssueDetail extends EngineerIssue {
   links: { rel: string; dst: ObjectRef }[];
 }
 
-// ── Capability stores (the coordination layer runs in the single coord workspace
-//    DEFAULT_COORD_WORKSPACE; SU broadcasts via '*' there). engineer_issues' own
-//    workspace_id is a domain column; issue ids are global so the ObjectRef is
-//    unambiguous across domain workspaces. ──────────────────────────────────────
-// workspace-data-isolation-leaks-2026-06-17 F (owner D-001): scope the engineer-issues
-// store (rows + their tags/threads/links/subscriptions) to the ACTIVE workspace when
-// papercusp-issues-per-workspace is ON, else the legacy shared `default` coord workspace.
-// Both the capability stores (via coordOpts.getWorkspaceId) and the engineer_issues row
-// queries below resolve through THIS, so they flip together. SYNC (cached flag refreshed on
-// an initial read + every flag change — the lexicon/configure.ts pattern). While unloaded it
-// reads false ⇒ 'default' (today's behavior, safe). EI-<n> ids stay GLOBALLY allocated
-// (nextIssueId is unchanged), so the global ObjectRef contract is preserved.
+// ── Workspace scoping has TWO independent axes (EI-2760, the green-gate fix):
+//
+//  1. The engineer_issues ROWS are DOMAIN data → scoped per-workspace by
+//     issuesScopeWorkspace() (workspace-data-isolation-leaks D-001: rows isolate when
+//     papercusp-issues-per-workspace is ON, else the legacy shared 'default').
+//  2. Their COORD METADATA (tags / threads / subscriptions / links) is SUBSTRATE data —
+//     it rides the shared coordination plane and is keyed by the GLOBAL issue id. Every
+//     substrate CONSUMER (fanoutForObject, topics-feed, issue-blocks-merge) reads it under
+//     the COORD scope (coordScopeWorkspace). So the metadata stores MUST write under that
+//     SAME coord scope, NOT the issue-row scope — otherwise, in any non-'default' workspace,
+//     writes (issuesScope) and consumers (coordScope) silently desync and fan-out / topic
+//     feeds / plan-item blocks all deliver nothing. D-001 scoped BOTH axes by the row scope;
+//     that was the regression. Per-workspace issue COORDINATION returns coherently when the
+//     substrate itself goes per-workspace (COORD_PER_WORKSPACE) — the rows already isolate.
+//
+// EI-<n> ids stay GLOBALLY allocated (nextIssueId is unchanged), so the global ObjectRef
+// contract that lets metadata key by issue id across workspaces holds. ──────────────────
 let issuesPerWorkspaceOn = false;
 let issuesFlagReadAtMs = 0;
 // Self-heal cadence for the cached flag (EI-1460). Short enough that a flip is
@@ -150,7 +156,9 @@ export function issuesScopeWorkspace(): string {
   return issuesPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
 }
 
-const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, getWorkspaceId: () => issuesScopeWorkspace() };
+// Substrate stores resolve under the COORD scope (axis 2 above) so writes land where every
+// consumer reads. The engineer_issues ROW queries below keep issuesScopeWorkspace() (axis 1).
+const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, getWorkspaceId: () => coordScopeWorkspace() };
 const tags = new PgTaggableStore(coordOpts);
 const threads = new PgThreadStore(coordOpts);
 const subs = new PgEntitySubscriptionStore(coordOpts);
@@ -571,7 +579,7 @@ export async function listIssueAgesByTopic(topic: string): Promise<IssueAgeRow[]
     SELECT ei.issue_id, ei.created_at
       FROM harness_shared.engineer_issues ei
       JOIN harness_shared.coord_links cl
-        ON cl.workspace_id = ${issuesScopeWorkspace()}
+        ON cl.workspace_id = ${coordScopeWorkspace()}
        AND cl.rel = 'tagged'
        AND cl.src_kind = ${ISSUE_KIND}
        AND cl.src_ref = ei.issue_id
