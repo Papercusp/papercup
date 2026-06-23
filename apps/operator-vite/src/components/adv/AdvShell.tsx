@@ -766,6 +766,86 @@ export default function AdvShell({
           background: color-mix(in srgb, var(--accent), transparent 74%);
           color: #e7f7ff;
         }
+        .pc-advshell__hives-pill-wrap {
+          position: relative;
+          flex: 0 0 auto;
+        }
+        .pc-advshell__action--hives {
+          background: #0f1b2d;
+          color: #b9f6d3;
+          border-color: rgba(52, 211, 153, 0.38);
+        }
+        .pc-advshell__action--hives:hover,
+        .pc-advshell__action--hives[aria-expanded="true"] {
+          background: #13243a;
+          border-color: rgba(52, 211, 153, 0.58);
+          color: #d9ffe8;
+        }
+        .pc-advshell__action--hives.is-running {
+          box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.14);
+        }
+        .pc-advshell__hives-pop {
+          position: absolute;
+          top: calc(100% + 6px);
+          right: 0;
+          z-index: 80;
+          width: min(340px, calc(100vw - 28px));
+          overflow: visible;
+          border: 1px solid rgba(125, 211, 252, 0.26);
+          border-radius: 10px;
+          background:
+            linear-gradient(180deg, #111c2f 0%, #0b1525 100%);
+          box-shadow:
+            0 18px 44px rgba(0, 0, 0, 0.54),
+            0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+        }
+        .pc-advshell__hives-pop::before {
+          content: "";
+          position: absolute;
+          top: -6px;
+          right: 24px;
+          width: 10px;
+          height: 10px;
+          transform: rotate(45deg);
+          border-left: 1px solid rgba(125, 211, 252, 0.26);
+          border-top: 1px solid rgba(125, 211, 252, 0.26);
+          background: #111c2f;
+        }
+        .pc-advshell__hives-pop .pclsb-panel {
+          position: relative;
+          gap: 6px;
+          max-height: min(420px, calc(100vh - 96px));
+          padding: 10px;
+          overflow: auto;
+          border-radius: inherit;
+          background: transparent;
+        }
+        .pc-advshell__hives-pop .pclsb-panel__bar {
+          min-height: 26px;
+          padding: 0 1px 7px;
+          border-bottom: 1px solid rgba(125, 211, 252, 0.16);
+        }
+        .pc-advshell__hives-pop .pclsb-panel__bar-label {
+          color: #b9d4e8;
+        }
+        .pc-advshell__hives-pop .pclsb-row {
+          padding: 8px 9px;
+          border-color: rgba(125, 211, 252, 0.16);
+          background: #0f1b2d;
+        }
+        .pc-advshell__hives-pop .pclsb-row + .pclsb-row {
+          margin-top: 4px;
+        }
+        .pc-advshell__hives-pop .pclsb-row__title {
+          color: #e7f7ff;
+        }
+        .pc-advshell__hives-pop .pclsb-row__sub {
+          color: #8aa4bd;
+        }
+        .pc-advshell__hives-pop .pclsb-panel__empty,
+        .pc-advshell__hives-pop .pclsb-panel__error {
+          background: #0f1b2d;
+        }
         /* Shared = a non-interactive status badge (green "done" tint) shown in
            place of the Share button once the harness has been shared. */
         .pc-advshell__action--shared {

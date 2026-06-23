@@ -25,12 +25,13 @@ export default function HivesRunningPill() {
   const running = countStarted(hives);
 
   return (
-    <div className="pc-advshell__hives-pill-wrap" style={{ position: 'relative' }}>
+    <div className="pc-advshell__hives-pill-wrap">
       <button
         type="button"
         className={`pc-advshell__action pc-advshell__action--hives${running > 0 ? ' is-running' : ''}`}
         data-testid="hives-running-pill"
         aria-expanded={open}
+        aria-controls="pc-advshell-hives-pop"
         title="Start/stop hives — click to expand"
         onClick={() => void setOpen(!open)}
       >
@@ -39,19 +40,11 @@ export default function HivesRunningPill() {
       </button>
       {open && (
         <div
+          id="pc-advshell-hives-pop"
           className="pc-advshell__hives-pop"
           data-testid="hives-running-pop"
-          style={{
-            position: 'absolute',
-            top: '100%',
-            right: 0,
-            zIndex: 50,
-            minWidth: 300,
-            marginTop: 4,
-            boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
-            borderRadius: 6,
-            overflow: 'hidden',
-          }}
+          role="dialog"
+          aria-label="Local hives"
         >
           <LocalHivesControl />
         </div>

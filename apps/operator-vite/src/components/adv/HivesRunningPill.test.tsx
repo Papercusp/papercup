@@ -92,7 +92,11 @@ describe('<HivesRunningPill>', () => {
     expect(screen.queryByTestId('local-hives-control')).toBeNull();
     nuqs.open = true;
     rerender(<HivesRunningPill />);
-    expect(screen.getByTestId('hives-running-pop')).toBeTruthy();
+    const pop = screen.getByTestId('hives-running-pop');
+    expect(pop).toBeTruthy();
+    expect(pop.getAttribute('role')).toBe('dialog');
+    expect(pop.getAttribute('aria-label')).toBe('Local hives');
+    expect(screen.getByTestId('hives-running-pill').getAttribute('aria-controls')).toBe(pop.id);
     expect(screen.getByTestId('local-hives-control')).toBeTruthy();
   });
 });
