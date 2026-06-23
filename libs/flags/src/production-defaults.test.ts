@@ -47,14 +47,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
-  // (SCHEDULER_MAINTAINED_READY graduated to default-ON 2026-06-23, owner-directed — the maintained-
-  // readiness sidecar cutover; prerequisite met: mig 379 folded into the shared claim-test fixture so every
-  // claim test has the sidecar; live drift=0; flag-ON claim path 9/9. Reversible kill-switch. Removed per the rule.)
-  // work-item-deps-and-readiness-2026-06-22 P-007: SCHEDULER_ISSUES_CLAIMABLE — issues self-pickable by the
-  // scheduler claim. OWNER-RATIFIED ON via runtime override (flags:set), but kept default-FALSE here because
-  // flipping the DEFAULT ripples through many tests asserting feature-only behavior (a separate test
-  // migration). owner-authority + behavior-changing dispatch source; OFF in code ⇒ feature-only byte-identical.
-  FLAGS.SCHEDULER_ISSUES_CLAIMABLE,
+  // (SCHEDULER_MAINTAINED_READY + SCHEDULER_ISSUES_CLAIMABLE graduated to default-ON 2026-06-23, owner-
+  // directed/ratified. MAINTAINED_READY: the maintained-readiness sidecar cutover (mig 379 folded into the
+  // shared claim-test fixture so every claim test has the sidecar; live drift=0; flag-ON claim path 9/9).
+  // ISSUES_CLAIMABLE: the owner ratified adding issues to the fleet's dispatch backlog (additive feature-miss
+  // branch; issue readiness uses the inline predicate; claim tests pinned per-arm). Both reversible
+  // kill-switches; finished + owner-ratified ships ON — removed per the rule.)
   // (PLAN_WORKITEM_PROMOTION + PLAN_ITEM_CLAIM_AUTO_CONVERT graduated to default-ON 2026-06-22,
   // owner-directed — the work-items-everywhere ledger's two halves were built+tested but left dark
   // (promotion dogfood-verified D-007; claim-auto-convert 48 green tests). Finished work ships ON,
@@ -412,7 +410,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.GRADUATION_TRACKER, 'owner-authority'],
   [FLAGS.QUEEN_AUTONOMY_ARMED, 'owner-authority'],
   [FLAGS.QUEEN_FULL_AUTONOMY, 'owner-authority'],
-  [FLAGS.SCHEDULER_ISSUES_CLAIMABLE, 'owner-authority'],
   [FLAGS.SCOUT_EXPERIMENT_RAIL, 'owner-authority'],
   [FLAGS.OVERWATCH, 'owner-authority'],
   [FLAGS.SENTINEL, 'owner-authority'],

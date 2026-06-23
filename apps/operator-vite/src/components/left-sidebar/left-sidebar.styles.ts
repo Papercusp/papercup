@@ -465,6 +465,49 @@ body.has-left-sidebar .pc-header {
   color: var(--fg-dim, #b9d4e8);
 }
 
+/* Colony tab (SwarmTab) — agent icon, expandable agent row, inline expansion. */
+.pclsb-agent + .pclsb-agent {
+  margin-top: 5px;
+}
+.pclsb-row__icon {
+  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1;
+}
+.pclsb-row__chev {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--fg-mute, #7f9bb4);
+  opacity: 0.7;
+}
+.pclsb-expand {
+  margin: 5px 0 2px 6px;
+  padding: 6px 8px 8px 10px;
+  border-left: 2px solid color-mix(in oklab, var(--pclsb-current-accent), transparent 35%);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in oklab, var(--pclsb-current-accent), transparent 95%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pclsb-expand__head {
+  margin: 6px 0 1px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-expand__head:first-child {
+  margin-top: 0;
+}
+.pclsb-expand__empty {
+  padding: 2px 4px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--fg-mute, #7f9bb4);
+}
+
 /* KVRow / DetailGrid (components/ui/KVRow.tsx) — a label→value detail list.
    DetailGrid is a <dl> stacking <div.pclsb-kv-row> rows, each holding a
    <dt> label (muted, left) and a <dd> value (mono, right). Mirrors .pcdar-kv. */

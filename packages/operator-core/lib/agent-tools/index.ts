@@ -523,21 +523,11 @@ import './release/checkpoint-config';
 // release-pipeline-resilience-2026-06-09 P-015 — the manual deploy lever + gate-unblock diagnosis:
 import './release/deploy';
 
-// Engineer issues — the agent-facing issue surface on the coordination substrate
-// (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.
-import './issues/create';
-import './issues/list';
-import './issues/get';
-import './issues/update';
-import './issues/comment';
-import './issues/claim';
-import './issues/release';
-import './issues/close';
-import './issues/tag';
-import './issues/subscribe';
-import './issues/search';
-import './issues/link';
-import './issues/promote';
+// Engineer issues (bug/change): the agent-facing issues:* TOOL surface was RETIRED onto the
+// unified work_items:* surface (coordination-unification-2026-06-23 P-015 / D-011). The
+// engineer-issues STORE stays — work_items:* dispatches to it for the issue family; the 13
+// thin issues/*.ts wrappers were deleted. Agents use work_items:{create,list,get,update,
+// comment,claim,release,set_state(=close),tag,subscribe,search,link,promote}.
 
 // Rubrics — the shared-standards store (rubric-driven-observations-2026-06-20 P-002).
 // A rubric = the standard for a system characteristic (model + method + rating scale +

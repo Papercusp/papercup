@@ -33,7 +33,7 @@ export default defineTool({
     "Tag one OR many coordination objects (issue / conversation / feature / plan) with a topic so each appears in that topic's feed and its changes reach the topic's subscribers. Pass remove:true to untag. Single: { object_kind, object_ref, topic, remove? }. Many heterogeneous: items:[{ object_kind, object_ref, topic, remove? }]. Returns { ok, results:[{ ok, topic, object, topics? | error }], counts } — correlate by topic (not position); one failure never fails the rest.",
   guidance: {
     when: 'You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic. Tag several at once via items:[…].',
-    notWhen: "The topic does not exist yet — topics:create it first (prefer an existing one). For an issue you can also use issues:tag.",
+    notWhen: "The topic does not exist yet — topics:create it first (prefer an existing one). For an issue you can also use work_items:tag.",
     chaining: 'topics:list → topics:tag { object_kind, object_ref, topic } → topics:feed { topic }.',
   },
   capability: 'coord:write',

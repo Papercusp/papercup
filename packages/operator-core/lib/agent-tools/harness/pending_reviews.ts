@@ -17,7 +17,7 @@ export default defineTool({
   description: 'List unresolved pending-review entries for a harness slug (optionally per phase).',
   guidance: {
     when: 'User asks "anything pending review?", "what needs my approval?". The dedicated tool for plan-review state.',
-    notWhen: 'For open ISSUES (problems, bugs), use `issues:list`. For all pending hook events, use `pending_events:list`.',
+    notWhen: 'For open ISSUES (problems, bugs), use `work_items:list`. For all pending hook events, use `pending_events:list`.',
   },
   capability: 'harness:read',
   requirePrincipal: false,

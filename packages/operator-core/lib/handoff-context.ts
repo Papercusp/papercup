@@ -27,7 +27,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { wrapUntrusted } from '@papercusp/orchestrator/prompt-build';
-import { getFeatureBlockers } from './dbos/feature-blockers-edges';
+import { defaultBlockingStore } from './work-item-blocking';
 import { getWorkItem } from './work-items';
 import { isAutoPickable, loadTrustedGithubUserIds } from './work-items-admission';
 import { getPlanContextBySlug } from './plan-context-for-feature';
@@ -190,7 +190,7 @@ export async function getSpawnHandoffContext(opts: {
   // ── predecessorSummaries: direct blocked_by upstreams ─────────────────────
   let predecessorSummaries: HandoffEntry[] = [];
   try {
-    const blockers = (await getFeatureBlockers(harness)).get(featureId) ?? [];
+    const blockers = (await defaultBlockingStore.blockersFor(harness)).get(featureId) ?? [];
     const raw: RawHandoffEntry[] = [];
     for (const predId of blockers.slice(0, MAX_PREDECESSORS)) {
       const wi = await getWorkItem(predId, harness).catch(() => null);

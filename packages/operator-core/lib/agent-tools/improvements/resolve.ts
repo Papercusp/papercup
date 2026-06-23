@@ -22,7 +22,7 @@ export default defineTool({
     'Close the loop on a captured papercusp improvement you worked: outcome `fixed` (requires testsRun — the verification evidence) marks it resolved so it leaves the queue; `could-not-fix` releases it for a retry (exhausted retries route to a human); `needs-human` routes it to the human queue permanently.',
   guidance: {
     when: 'You finished working a dispatched/claimed improvement (usually as the implement worker). Fixed + tests green → outcome fixed with the evidence. Could not make it work → could-not-fix with what you tried. The fix would touch a protected surface (operator-core safety / deploy machinery / a migration) or needs judgment → needs-human.',
-    notWhen: 'You only want to comment progress — issues:comment. You are closing a non-improvement issue — issues:close. The item was never captured (no EI/WI id) — improvements:capture it first if it is worth tracking.',
+    notWhen: 'You only want to comment progress — work_items:comment. You are closing a non-improvement issue — work_items:set_state. The item was never captured (no EI/WI id) — improvements:capture it first if it is worth tracking.',
     chaining: 'improvements:digest → (dispatch/claim) → implement + test → improvements:resolve { id, outcome, summary, testsRun }.',
   },
   capability: 'coord:write',

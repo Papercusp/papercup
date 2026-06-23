@@ -208,6 +208,15 @@ const DEFAULT_AIMD_FLOOR = Number(process.env.PAPERCUSP_GATEWAY_AIMD_FLOOR) || 4
 const DEFAULT_AIMD_DECREASE_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_AIMD_DECREASE_THRESHOLD) || 6;
 /** Consecutive clean 2xx that earn one additive +1 step back toward the cap (gentle recovery). */
 const DEFAULT_AIMD_INCREASE_EVERY = Number(process.env.PAPERCUSP_GATEWAY_AIMD_INCREASE_EVERY) || 8;
+// Fix 2 — serviceable-count admission clamp knobs (2026-06-23 thundering-herd fix). Live admission is clamped to
+// MIN(aimd-effective, serviceableAccounts × PER_ACCOUNT_ADMISSION), floored at MIN_SERVICEABLE_ADMISSION so the
+// pool always keeps a probe path. SERVICEABLE_CLAMP_MODEL is the (most-constrained) model whose per-(model,account)
+// governor pause the serviceability check reads. OFF (PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP=0) ⇒ no clamp.
+const SERVICEABLE_CLAMP_ON = process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP !== '0';
+const PER_ACCOUNT_ADMISSION = Number(process.env.PAPERCUSP_GATEWAY_PER_ACCOUNT_ADMISSION) || 4;
+const MIN_SERVICEABLE_ADMISSION = Number(process.env.PAPERCUSP_GATEWAY_MIN_ADMISSION) || 2;
+const SERVICEABLE_CLAMP_TICK_MS = Number(process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP_TICK_MS) || 2000;
+const SERVICEABLE_CLAMP_MODEL = process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP_MODEL || 'claude-opus-4';
 /** Max requests allowed to WAIT for an admission slot before the gateway sheds load (429 + retry-after)
  *  instead of growing the backlog. Under a SUSTAINED pool-wide upstream throttle every in-flight request
  *  squats its slot for the full internal wait budget, so the queue would otherwise grow without bound
@@ -358,7 +367,7 @@ export interface AccountPool {
   /** Count of accounts currently IN rotation (not exhausted/paused) — the live capacity denominator the
    *  priority-tier `/stats` reports alongside the per-tier demand so an operator sees headroom vs queueing.
    *  Optional: a single-account pool omits it (the gateway then reports 1). */
-  healthyCount?(): number;
+  healthyCount?(extra?: (accountId: string) => boolean): number;
 }
 
 export interface GatewayDeps {
@@ -727,6 +736,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // down → fewer concurrent upstream calls → lower per-IP RPM → the throttle eases, breaking the
   // retry-storm amplification) and additively recovers toward the cap as calls succeed. Fed by
   // aimd.recordThrottle() on each upstream 429 + aimd.recordSuccess() on each forwarded 2xx below.
+  // SERVICEABLE-COUNT ADMISSION CLAMP (2026-06-23 thundering-herd fix): the AIMD cap reacts to admission-QUEUE
+  // pressure, NOT to how many accounts can actually SERVE. When only 1-2 accounts are unpaused it would still
+  // admit the full cap, so a resume-burst piles all of it onto the few healthy accounts and 429s them into a
+  // cascade (the observed aviynw→definitelyahuman chain). `serviceableAdmissionCapFn` (assigned below, once the
+  // pool + governors exist) returns (serviceable accounts × PER_ACCOUNT_ADMISSION), floored so the pool can
+  // always probe back; `applyAdmissionCap` sets live concurrency to MIN(aimd-effective, that), and a periodic
+  // tick re-applies it as accounts pause/recover (not just on an AIMD change). Identity (∞) until assigned, and
+  // OFF (PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP=0) ⇒ byte-identical to the old `setMaxConcurrent(eff)`.
+  let serviceableAdmissionCapFn: () => number = () => Number.POSITIVE_INFINITY;
+  let lastAimdEff = concurrency;
+  const applyAdmissionCap = (eff: number): void => {
+    lastAimdEff = eff;
+    const capped = Math.max(1, Math.min(eff, serviceableAdmissionCapFn()));
+    queue.setMaxConcurrent(capped);
+    // TIER-AWARE SHEDDING (step 4): as live concurrency shrinks (AIMD storm OR few serviceable accounts), shed
+    // the bottom tier caps (4→3→2, holding tier 1) by the SAME number of lost slots — so the protected
+    // interactive lane keeps its full ceiling while the sheddable batch bands give up headroom first. On
+    // recovery the caps re-grow. No-op without the tier layer (flag-OFF stays byte-identical).
+    if (tiered) {
+      const shedCaps = shedTierCaps(baseTierCaps, concurrency - capped);
+      for (const [t, cap] of Object.entries(shedCaps)) queue.setTierCap(Number(t), cap);
+    }
+  };
   const aimd = new AimdConcurrencyController({
     cap: concurrency,
     floor: deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR,
@@ -734,16 +766,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     decreaseThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
     increaseEvery: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
     onChange: (eff) => {
-      queue.setMaxConcurrent(eff);
-      // TIER-AWARE SHEDDING (step 4): as AIMD shrinks live concurrency under a sustained storm, also shrink
-      // the bottom tier caps (4→3→2, holding tier 1) by the SAME number of lost slots — so the protected
-      // interactive lane keeps its full ceiling while the sheddable batch bands give up headroom first. On
-      // recovery (`eff` climbs back toward the cap) the caps re-grow toward their steady-state baseline.
-      // No-op without the tier layer (flag-OFF stays byte-identical).
-      if (tiered) {
-        const shedCaps = shedTierCaps(baseTierCaps, concurrency - eff);
-        for (const [t, cap] of Object.entries(shedCaps)) queue.setTierCap(Number(t), cap);
-      }
+      applyAdmissionCap(eff);
       log('warn', `inference-gateway: AIMD admission concurrency → ${eff}/${concurrency} (effective/cap)`);
     },
   });
@@ -774,6 +797,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (g.state.limits.maxConcurrent < concurrency) g.state.limits.maxConcurrent = concurrency;
     return g;
   };
+
+  // Fix 2 (serviceable-count admission clamp): now that `pool` + `governorForAccount` exist, give the clamp its
+  // real implementation + start the periodic re-clamp. An account is SERVICEABLE iff the pool has it in rotation
+  // (no hard-429 / transport-circuit pause — what `active()` round-robins over) AND its governor for the
+  // representative model isn't predictively paused (near its rolling cap). Conservative by design: a tighter
+  // count → a tighter clamp → safer under a storm; the MIN floor still lets the pool probe its way back.
+  serviceableAdmissionCapFn = () => {
+    if (!SERVICEABLE_CLAMP_ON || !pool.healthyCount) return Number.POSITIVE_INFINITY;
+    const now = Date.now();
+    const serviceable = pool.healthyCount((id) => governorForAccount(SERVICEABLE_CLAMP_MODEL, id).state.pausedUntil <= now);
+    return Math.max(MIN_SERVICEABLE_ADMISSION, serviceable * PER_ACCOUNT_ADMISSION);
+  };
+  // Re-apply the clamp on a cadence so it tracks accounts pausing/recovering even while the AIMD effective is
+  // stable (e.g. pinned at the floor under a storm) — onChange alone only fires on an AIMD change. Unref'd so it
+  // never holds the process open; cleared on close().
+  const serviceableClampTimer = SERVICEABLE_CLAMP_ON ? setInterval(() => applyAdmissionCap(lastAimdEff), SERVICEABLE_CLAMP_TICK_MS) : undefined;
+  serviceableClampTimer?.unref?.();
 
   // Per-account egress dispatchers (per-account IP routing — D-003): a Max subscription can be pinned
   // to its own outbound IP via an HTTP/SOCKS proxy or a bound source address, so N subscriptions don't
@@ -2224,6 +2264,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     },
     close(): Promise<void> {
       if (selfHealTimer) clearInterval(selfHealTimer);
+      if (serviceableClampTimer) clearInterval(serviceableClampTimer);
       // Tear down any per-account egress dispatchers (best-effort; they hold sockets).
       for (const d of dispatcherCache.values()) void (d as { close?: () => Promise<void> }).close?.();
       dispatcherCache.clear();

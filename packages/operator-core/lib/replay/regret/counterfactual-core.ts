@@ -49,7 +49,7 @@ export function candidateChangesFor(finding: DivergenceFinding): CandidateChange
           title: 'Escalate or file the blocker instead of grinding',
           promptDelta:
             'HARD RULE: on a third consecutive tool failure of any kind, stop work, record the blocker ' +
-            '(issues:create or work_items:set_state blocked with the error verbatim), and end the turn.',
+            '(work_items:create or work_items:set_state blocked with the error verbatim), and end the turn.',
           rationale: 'When stop-and-replan cannot recover, surfacing the blocker beats burning the budget.',
           fromTurn,
         },

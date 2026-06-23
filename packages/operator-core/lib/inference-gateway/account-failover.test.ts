@@ -199,4 +199,17 @@ describe('createFailoverPool — deeper edges (depth pass, su-7f3e0376)', () => 
     expect(p.active().accountId).toBe('solo');
     expect(p.select!('a')).toBeNull(); // departed accounts are gone
   });
+
+  it('healthyCount(extra) — the optional predicate narrows the serviceable count to what the gateway will actually serve (Fix 2, 2026-06-23)', () => {
+    const t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c'), acct('d')], { now: () => t });
+    expect(p.healthyCount!()).toBe(4); // no predicate → all in rotation (pool-available)
+    p.onExhausted('a', t + 3_600_000); // a hard-paused (exhaustedUntil) → drops out of the pool-available set
+    expect(p.healthyCount!()).toBe(3);
+    // The gateway passes a governor-not-paused predicate: 'b'/'c' are predictively governor-paused (near their
+    // rolling cap) though the pool still has them available — WITHOUT the predicate they'd be miscounted as
+    // healthy (the over-report that masks a thundering herd). WITH it, only 'd' is truly serviceable.
+    const govPaused = new Set(['b', 'c']);
+    expect(p.healthyCount!((id) => !govPaused.has(id))).toBe(1); // only 'd' (a pool-exhausted, b/c gov-paused)
+  });
 });

@@ -20,7 +20,7 @@
   "harness:get": "low",
   "harness:status": "low",
   "harness:dispatch:*": "high",
-  "issues:list": "low",
+  "work_items:list": "low",
   "pending_events:list": "low",
   "pending_events:write": "high",
   "hindsight:recall": "low",

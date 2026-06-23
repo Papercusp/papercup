@@ -50,9 +50,11 @@ const CAN: Array<{ path: string; via: string }> = [
   { path: '../../../agent-tools/db/check_drift.js', via: 'locks:read' },
   { path: '../../../agent-tools/db/next_migration.js', via: 'locks:write' },
   { path: '../../../agent-tools/harness_docs/record.js', via: 'docs:write' },
-  { path: '../../../agent-tools/issues/list.js', via: 'coord:read (issues:read surface)' },
-  { path: '../../../agent-tools/issues/get.js', via: 'coord:read (issues:read surface)' },
-  { path: '../../../agent-tools/issues/create.js', via: 'coord:write + COORD_ROLES' },
+  // issues:* retired onto work_items:* (coordination-unification-2026-06-23 P-015) — the
+  // bee's engineering surface is now the unified work-item tools:
+  { path: '../../../agent-tools/work_items/list.js', via: 'work_items:read (unified work-item surface)' },
+  { path: '../../../agent-tools/work_items/get.js', via: 'work_items:read (unified work-item surface)' },
+  { path: '../../../agent-tools/work_items/create.js', via: 'work_items:write + COORD_ROLES' },
   { path: '../../../agent-tools/improvements/capture.js', via: 'coord:write + COORD_ROLES' },
   { path: '../../../agent-tools/plans/edit.js', via: 'plans:write (D-005 parity)' },
   { path: '../../../agent-tools/plans/set-status.js', via: 'plans:write (D-005 parity)' },

@@ -6,7 +6,7 @@
  * role-scoped (signed) caller ONLY if that caller's role is in this list. The bee
  * coordinates (coord:declare-intent/send/await-inbox), maintains its work-list
  * (work_items:*), and — the P-001 contract — creates + reads ideas and issues
- * (improvements:capture, issues:create/list/get) which all gate on COORD_ROLES.
+ * (improvements:capture, work_items:create/list/get) which all gate on COORD_ROLES.
  * If `bee` silently dropped out of this constant, every one of those would start
  * failing `role_not_allowed` for a bee-role-scoped URL with no other signal. Pin it.
  */
@@ -14,7 +14,7 @@ import { describe, test, expect } from 'vitest';
 import { COORD_ROLES } from './roles';
 
 describe('COORD_ROLES', () => {
-  test('bee is a coord role (P-001 — improvements:capture + issues:* resolve for a bee URL)', () => {
+  test('bee is a coord role (P-001 — improvements:capture + work_items:* resolve for a bee URL)', () => {
     expect(COORD_ROLES).toContain('bee');
   });
 
@@ -43,16 +43,16 @@ describe('COORD_ROLES', () => {
     }
   });
 
-  test('the COORD_ROLES-gated idea/issue tools actually admit bee (the consumer half)', async () => {
+  test('the COORD_ROLES-gated idea/work-item tools actually admit bee (the consumer half)', async () => {
     // Capability alone is not enough; the tool's agentRoles allowlist must include
     // the caller's role (mirrors the scanner output-contract test in
     // role-principal-caps.test.ts). These three are the P-001 "bees can already
-    // create + read ideas/issues" contract — verify, don't assume.
+    // create + read ideas/work-items" contract — verify, don't assume.
     const { default: capture } = await import('../improvements/capture.js');
-    const { default: createIssue } = await import('../issues/create.js');
-    const { default: listIssues } = await import('../issues/list.js');
+    const { default: createWorkItem } = await import('../work_items/create.js');
+    const { default: listWorkItems } = await import('../work_items/list.js');
     expect(capture.agentRoles).toContain('bee');
-    expect(createIssue.agentRoles).toContain('bee');
-    expect(listIssues.agentRoles).toContain('bee');
+    expect(createWorkItem.agentRoles).toContain('bee');
+    expect(listWorkItems.agentRoles).toContain('bee');
   });
 });

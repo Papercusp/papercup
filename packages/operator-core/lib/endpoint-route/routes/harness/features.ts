@@ -23,7 +23,8 @@ import { emitFeatureAuthored, emitFeatureQueued } from '../../../harness/usage-e
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { auditFeatureChange } from '../../../feature-audit';
 import { firePluginLifecycle } from '../../../plugin-host-runtime';
-import { getFeatureBlockers, syncFeatureBlockEdges } from '../../../dbos/feature-blockers-edges';
+import { syncFeatureBlockEdges } from '../../../dbos/feature-blockers-edges';
+import { defaultBlockingStore } from '../../../work-item-blocking';
 import {
   resolveBlockedByRefs,
   detectDependencyCycle,
@@ -483,7 +484,7 @@ const importFeatures = defineTool({
         `;
         // EI-1 (D-027): existing blocker sets come from the coord_links rel='blocks'
         // edges (the legacy blocked_by column is dropped), keyed blocked → blockers.
-        const blockers = await getFeatureBlockers(project.slug);
+        const blockers = await defaultBlockingStore.blockersFor(project.slug);
         existing = rows.map((r) => ({ id: r.feature_id, title: r.title, blocked_by: blockers.get(r.feature_id) ?? [] }));
       } catch (e) {
         // Deps are correctness-critical — don't silently skip validation.

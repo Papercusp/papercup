@@ -117,9 +117,15 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
   }
 
   /** Accounts currently IN rotation (budget available, not paused) — the live capacity denominator the
-   *  priority-tier `/stats` reports. Counts the same `available()` predicate `active()` round-robins over. */
-  function healthyCount(): number {
-    return live.reduce((n, e) => n + (available(e) ? 1 : 0), 0);
+   *  priority-tier `/stats` reports + the serviceable-count admission clamp. Counts the same `available()`
+   *  predicate `active()` round-robins over. The optional `extra` predicate further narrows to accounts the
+   *  CALLER also considers serviceable: `available()` here only sees the pool's `exhaustedUntil` (a hard-429 /
+   *  transport-circuit pause), NOT the per-(model,account) governor's PREDICTIVE pausedUntil — so without it a
+   *  97%-7d governor-paused account counts as "healthy", over-reporting capacity and masking a thundering herd
+   *  (audit 2026-06-23). The gateway passes a governor-not-paused check so the count matches what `active()` +
+   *  the capacity-walk will actually serve. */
+  function healthyCount(extra?: (accountId: string) => boolean): number {
+    return live.reduce((n, e) => n + (available(e) && (!extra || extra(e.accountId)) ? 1 : 0), 0);
   }
 
   return { active, onExhausted, select, reload, readmit, healthyCount };

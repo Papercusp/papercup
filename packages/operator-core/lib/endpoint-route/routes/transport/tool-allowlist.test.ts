@@ -21,7 +21,7 @@ import {
 const SURFACE = [
   { name: 'harness:status' },
   { name: 'harness:list' },
-  { name: 'issues:list' },
+  { name: 'work_items:list' },
   { name: 'chat:ask_choice' },
   { name: 'plans:get' },
   { name: 'features:get' }, // not in the operator set — a cross-role tool
@@ -54,12 +54,12 @@ describe('filterListingsByAllowlist', () => {
   });
 
   it('narrows to exactly the named tools when an allowlist is given (operator)', () => {
-    const allow = parseToolsAllowlist('harness:status,harness:list,issues:list,chat:ask_choice,plans:get');
+    const allow = parseToolsAllowlist('harness:status,harness:list,work_items:list,chat:ask_choice,plans:get');
     const out = filterListingsByAllowlist(SURFACE, allow);
     expect(out.map((t) => t.name)).toEqual([
       'harness:status',
       'harness:list',
-      'issues:list',
+      'work_items:list',
       'chat:ask_choice',
       'plans:get',
     ]);

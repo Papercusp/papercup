@@ -24,7 +24,7 @@ export const S02_MULTISTEP_INVESTIGATION: Scenario = {
   version: 1,
   target: 'operator',
   description:
-    'A patient admin asks the operator to list open issues across the sheets harness, group them by severity, and recommend which to fix first. The operator should call issues:list, then either continue narrating with <continue/> tags or terminate cleanly. Narrating intent ("Checking...") without continuing or stopping is a terminationFit failure (V8 F1).',
+    'A patient admin asks the operator to list open issues across the sheets harness, group them by severity, and recommend which to fix first. The operator should call work_items:list, then either continue narrating with <continue/> tags or terminate cleanly. Narrating intent ("Checking...") without continuing or stopping is a terminationFit failure (V8 F1).',
   persona: PATIENT_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 10, maxWallSecs: 180, maxCostUsd: 2.0 },
@@ -32,7 +32,7 @@ export const S02_MULTISTEP_INVESTIGATION: Scenario = {
   asserts: [
     {
       kind: 'tool_called',
-      name: 'issues:list',
+      name: 'work_items:list',
       minTimes: 1,
     },
     { kind: 'continue_chain_within_cap', maxTurns: 5, maxSecs: 300 },

@@ -4,7 +4,7 @@
  * promoteConversation, which mints the issue + re-parents the thread, is mocked).
  * Pins the store-error → per-item { ok:false, error } mapping and the success
  * shaping: the minted issue, thread_carried flag, the hint that interpolates the
- * new issue id into the issues:comment follow-up (keyed by id), and that ids:[…]
+ * new issue id into the work_items:comment follow-up (keyed by id), and that ids:[…]
  * fans the same severity across many.
  *
  * In-tree (operator-core, tab-visible).
@@ -32,7 +32,7 @@ describe('conversations:promote handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
   });
 
-  it('on success surfaces the issue, thread_carried, and an issues:comment hint (keyed by id)', async () => {
+  it('on success surfaces the issue, thread_carried, and a work_items:comment hint (keyed by id)', async () => {
     promoteM.mockResolvedValue({
       conversation: { id: 'c1', state: 'promoted' },
       issue: { id: 'EI-9' },

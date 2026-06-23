@@ -37,10 +37,10 @@ describe('auth gating (missing bearer/workspace class)', () => {
     // dispatcher's role+capability+quota check (define-tool.ts §"role-gated").
     // That dispatcher-path gating is covered separately (see file header), so
     // role-gated tools don't belong in this principal+tx assertion.
-    // NOTE: issues:list is intentionally NOT here — it's a role-gated defineTool
-    // (requirePrincipal:false, capability coord:read), so the projected wrapper
-    // does NOT self-gate on principal+tx. Its unauthenticated-rejection is via
-    // the handler's resolveAgentIdentity gate, covered in the next test.
+    // NOTE: a role-gated coordination defineTool (e.g. work_items:claim_next —
+    // requirePrincipal:false, capability work_items:write) is intentionally NOT here:
+    // the projected wrapper does NOT self-gate on principal+tx. Its unauthenticated-
+    // rejection is via the handler's resolveAgentIdentity gate, covered in the next test.
     const names = ['features:get', 'features:history', 'audit:list', 'harness:list'];
     for (const name of names) {
       const t = lookupByMcpName(name) as ProjFn | undefined;
@@ -54,14 +54,18 @@ describe('auth gating (missing bearer/workspace class)', () => {
   });
 
   it('role-gated coordination tools reject an unauthenticated (empty-ctx) call via the identity gate', async () => {
-    // issues:list (engineer-issues D-003) is role-gated, not principal-gated: its
-    // handler resolves the caller's coordination identity first, which throws when
-    // the ctx carries no power-user/superuser/principal. Guards that the
-    // requirePrincipal:false path still can't be invoked anonymously.
-    for (const name of ['issues:list']) {
-      const t = lookupByMcpName(name) as ProjFn | undefined;
-      expect(t, `${name} present in registry`).toBeTruthy();
-      await expect(t!.fn({}, {})).rejects.toThrow(/identity|authenticated|principal|capability/i);
+    // work_items:claim_next (unify-work-items, engineer-issues D-003) is role-gated, not
+    // principal-gated: its handler resolves the caller's coordination identity FIRST
+    // (resolveAgentIdentity), which throws when the ctx carries no power-user/superuser/
+    // principal. Guards that the requirePrincipal:false path still can't be invoked
+    // anonymously. (Args are minimally VALID — `{ harness }` — so the projected wrapper's
+    // arg-validation passes and the call reaches the in-handler identity gate, rather than
+    // short-circuiting on invalid_args. work_items:list is NOT a fit here: it's a
+    // workspace-scoped cached read that does not resolve a coordination identity.)
+    for (const args of [{ name: 'work_items:claim_next', input: { harness: 'gate-probe' } }]) {
+      const t = lookupByMcpName(args.name) as ProjFn | undefined;
+      expect(t, `${args.name} present in registry`).toBeTruthy();
+      await expect(t!.fn(args.input, {})).rejects.toThrow(/identity|authenticated|principal|capability/i);
     }
   });
 

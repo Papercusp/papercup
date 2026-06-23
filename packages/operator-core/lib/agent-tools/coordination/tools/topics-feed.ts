@@ -23,7 +23,7 @@ export default defineTool({
   guidance: {
     when: 'To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind. Read several areas at once via topics:[…].',
     notWhen: 'You want messages waiting for you (coord:inbox) or just the list of topics (topics:list).',
-    chaining: 'topics:list → topics:feed { topic } → issues:get / conversations:get on an item.',
+    chaining: 'topics:list → topics:feed { topic } → work_items:get / conversations:get on an item.',
   },
   capability: 'coord:read',
   requirePrincipal: false,

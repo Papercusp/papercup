@@ -28,7 +28,7 @@ export default defineTool({
     'Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. Pass `paths` when you know the files involved — it feeds the protected-path safety gate. Pass lane:"observation" for a turn-end-reflection PRE-IDEA — it files into a separate lane that NEVER enters the work queue (Scout-digest + the Observations pane only).',
   guidance: {
     when: 'You hit a papercusp DX / tooling / code friction worth fixing but out of your current scope. File it here so it lands in the triage backlog instead of being lost. Use kind=bug for something broken, kind=change for a desired improvement, kind=feature for net-new (the last two stay human-gated). Include `paths` (repo-relative files involved) when known — the auto-implement risk gate reads them.',
-    notWhen: 'A problem in a MANAGED harness/project (not papercusp itself) — that is issues:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
+    notWhen: 'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
     chaining: 'improvements:capture { kind, title, paths? } → (later) improvements:digest triages it → an agent claims + fixes it self/inline, or the auto-implement loop picks up the bugs and improvements:resolve closes them.',
   },
   capability: 'coord:write',
@@ -145,7 +145,7 @@ export default defineTool({
               body:
                 `${id.ownerLabel} tagged you on improvement ${captured.issue.id}: ${captured.issue.title ?? args.title}` +
                 (args.body ? `\n\n${args.body.slice(0, 600)}` : '') +
-                `\n\n— it's on your radar: issues:get ${captured.issue.id} (comment / claim there).`,
+                `\n\n— it's on your radar: work_items:get ${captured.issue.id} (comment / claim there).`,
               harnessSlug: args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : undefined,
             }).catch(() => null)
           : null;

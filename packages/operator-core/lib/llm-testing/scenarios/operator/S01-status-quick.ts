@@ -25,7 +25,7 @@ export const S01_STATUS_QUICK: Scenario = {
   version: 1,
   target: 'operator',
   description:
-    'A brief admin asks for a quick status summary of the sheets harness. The operator should call harness:status (or features:get / issues:list as needed), summarize, and stop. No <continue/> chain expected.',
+    'A brief admin asks for a quick status summary of the sheets harness. The operator should call harness:status (or features:get / work_items:list as needed), summarize, and stop. No <continue/> chain expected.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 6, maxWallSecs: 90, maxCostUsd: 1.0 },

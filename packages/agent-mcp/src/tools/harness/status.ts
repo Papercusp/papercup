@@ -48,7 +48,7 @@ export default defineTool({
     'Read the live status of one OR many harnesses in ONE call — pass `slug` for one or `slugs` for several. Each result carries current phase, status, budget/spend, and recent-activity. Returns { ok, results:[{ ok, slug, status, recentActivity, ... | error }], counts } — correlate each result by its slug, not by position; a not-found harness comes back as that item\'s { ok:false } without failing the rest.',
   guidance: {
     when: 'User asks "what is harness X doing right now?", "is sheets active?", or you need recent-activity counts + phase. Polling all hive members? Pass every slug at once via `slugs` instead of calling per harness.',
-    notWhen: 'For "what\'s WRONG with X", use `issues:list` (problems-side view). For static facts about the harness, use `harness:get`. Bulk: single `slug` | `slugs[]` → { ok, results, counts }; correlate by slug not position; one not-found never fails the rest.',
+    notWhen: 'For "what\'s WRONG with X", use `work_items:list` (problems-side view). For static facts about the harness, use `harness:get`. Bulk: single `slug` | `slugs[]` → { ok, results, counts }; correlate by slug not position; one not-found never fails the rest.',
   },
   args: z
     .object({

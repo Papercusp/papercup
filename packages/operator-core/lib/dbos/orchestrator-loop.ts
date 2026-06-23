@@ -87,7 +87,7 @@ import {
   leaseFeatureForExecutor,
   type WorkItemClaimLeaseHandle,
 } from '../work-item-claim-lease-wiring';
-import { getFeatureBlockers } from './feature-blockers-edges';
+import { defaultBlockingStore } from '../work-item-blocking';
 import { selectReady } from './frontier-readiness';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 import { getResourceProfile } from '../resource-profile';
@@ -753,7 +753,7 @@ export async function readFrontierFeatures(
   // index were dropped (migration 155); getFeatureBlockers reads the harness's
   // blocker sets in one indexed query (the cheap dispatch read D-027 specifies).
   // computeFrontier is unaffected — only the data source for `blockedBy` changed.
-  const edgeBlockers = await getFeatureBlockers(slug);
+  const edgeBlockers = await defaultBlockingStore.blockersFor(slug);
   return rows.map((r) => ({
     id: r.feature_id,
     status: r.status,

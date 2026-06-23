@@ -7,7 +7,7 @@
  *
  * NOT duplicated here (already covered elsewhere):
  *   - tool-auth-gating.test.ts — the projected WRAPPER's principal+tx gate
- *     (`t.fn({}, {})` throws), issues:list's identity gate, and the
+ *     (`t.fn({}, {})` throws), work_items:list's identity gate, and the
  *     operator-converse allowedTools↔registry sync.
  *   - transport-mcp-notifications.test.ts — buildMcpToolContext's emit /
  *     notifications/progress wiring.

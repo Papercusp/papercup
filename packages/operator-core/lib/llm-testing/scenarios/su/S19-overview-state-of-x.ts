@@ -5,7 +5,7 @@
  * Question: when the user wants the full picture of one harness — its status, its
  * escalations, AND the open issues — does the engineer REACH for the ONE
  * harness:overview bundle, or fan out harness:status + harness:escalation +
- * issues:list one round-trip at a time?
+ * work_items:list one round-trip at a time?
  *
  * Load-bearing assert (ERROR): harness:overview is called. Secondary: the bundled
  * primitives are NOT hand-fanned.
@@ -24,7 +24,7 @@ export const SU_S19_OVERVIEW_STATE_OF_X: Scenario = {
   target: 'su',
   transport: 'in-process',
   description:
-    'A developer asks the engineer: give me the full picture of the sheets harness — its current status, any escalations needing attention, and the open issues filed against it. That is the "state of X" view harness:overview folds into one call. The engineer should call harness:overview { harness: "sheets" } once rather than fanning out harness:status + harness:escalation + issues:list separately.',
+    'A developer asks the engineer: give me the full picture of the sheets harness — its current status, any escalations needing attention, and the open issues filed against it. That is the "state of X" view harness:overview folds into one call. The engineer should call harness:overview { harness: "sheets" } once rather than fanning out harness:status + harness:escalation + work_items:list separately.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 5, maxWallSecs: 150, maxCostUsd: 1.5 },
@@ -39,10 +39,10 @@ export const SU_S19_OVERVIEW_STATE_OF_X: Scenario = {
       suggestion:
         'For "what\'s the state of harness X", call harness:overview { harness } — it folds status + escalations + the open-issues snapshot into one round-trip.',
     }),
-    assertToolCallCountAtMost(['harness:status', 'harness:escalation', 'issues:list'], 1, {
+    assertToolCallCountAtMost(['harness:status', 'harness:escalation', 'work_items:list'], 1, {
       name: 'does-not-hand-fan-the-overview-primitives',
       claim:
-        'The engineer fanned out the overview primitives (harness:status / harness:escalation / issues:list) ' +
+        'The engineer fanned out the overview primitives (harness:status / harness:escalation / work_items:list) ' +
         'separately instead of folding them into the single harness:overview call.',
       suggestion: 'harness:overview bundles those — prefer it for a "state of X" question.',
     }),

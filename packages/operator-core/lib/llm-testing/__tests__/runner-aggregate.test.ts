@@ -130,7 +130,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'oracle', 'architect', 'su', 'queen', 'overwatch']).toContain(s.target);
+      expect(['operator', 'oracle', 'architect', 'su', 'queen', 'bee', 'overwatch']).toContain(s.target);
     }
   });
 

@@ -39,9 +39,9 @@ export default defineTool({
     when:
       'A conversation has concluded that there is a concrete, trackable problem — turn it into an issue so it can be claimed, prioritized, and promoted to a feature. Promote several at once via ids:[…] or items:[…].',
     notWhen:
-      'A question that just needs an answer → conversations:resolve (captures the answer). An open discussion still in progress → leave it. To file a fresh issue unrelated to a conversation → issues:create.',
+      'A question that just needs an answer → conversations:resolve (captures the answer). An open discussion still in progress → leave it. To file a fresh issue unrelated to a conversation → work_items:create.',
     chaining:
-      'conversations:get → conversations:promote → issues:get / issues:claim. The issue keeps the conversation\'s thread; further discussion uses issues:comment.',
+      'conversations:get → conversations:promote → work_items:get / work_items:claim. The issue keeps the conversation\'s thread; further discussion uses work_items:comment.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -96,7 +96,7 @@ export default defineTool({
           issue: res.issue,
           thread_carried: res.thread_reparented,
           notified_subscribers: res.delivered,
-          hint: `Promoted to engineer issue ${res.issue.id}. The conversation is closed; the discussion continues via issues:comment { id: "${res.issue.id}" }.`,
+          hint: `Promoted to engineer issue ${res.issue.id}. The conversation is closed; the discussion continues via work_items:comment { id: "${res.issue.id}" }.`,
         };
       },
       { keyOf: (it) => ({ id: it.id }) },

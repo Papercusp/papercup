@@ -20,8 +20,8 @@ import './tools/features/list_related';
 import './tools/features/tag_vocabulary';
 import './tools/goals/list';
 import './tools/goals/get';
-// issues:* redefined operator-side (apps/operator/lib/agent-tools/issues/*) —
-// engineer-issues-2026-06-03 D-003. The per-harness stub here was retired.
+// issues:* fully RETIRED onto the unified work_items:* surface (coordination-unification-
+// 2026-06-23 P-015 / D-011). The engineer-issues STORE persists; work_items:* dispatches to it.
 import './tools/messages/inbox';
 import './tools/messages/outbox';
 import './tools/audit/list';

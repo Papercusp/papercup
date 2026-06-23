@@ -55,7 +55,8 @@ export interface HarnessOverviewResult {
  * fold doesn't need to round-trip a tool; this also gives the TRUE total via countIssues.
  * Injectable so composeHarnessOverview stays a pure, unit-testable composition.
  * (coordination-unification-2026-06-23 P-009 — reads the store directly for the TRUE
- * total instead of round-tripping the issues:list tool; that tool stays registered.)
+ * total instead of round-tripping a tool — the issues:list tool it used to fold was
+ * retired onto work_items:* in P-015.)
  */
 export type IssuesSnapshotReader = (
   filter: ListIssuesFilter,

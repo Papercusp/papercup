@@ -53,7 +53,7 @@ const SUFFIX_MUTATORS = [
   'coord:send', 'coord:escalate', 'coord:handoff', 'coord:declare-intent', 'events:emit', 'watch:create',
   'messages:send', 'messages:dismiss',
   'memory:remember', 'memory:forget',
-  'issues:create', 'topics:create', 'agent_chats:create',
+  'topics:create', 'agent_chats:create',
   'backup:restore', 'storage:prune', 'autoloop:control', 'discovery:set_hive',
   'flags:set', 'trust:add',
   'autonomy:policy_set', 'autonomy:record_disposition',
@@ -74,7 +74,7 @@ describe('effect-marker audit (B-CX-EFFECT): known mutators are effect:write', (
 
   // Control: genuine readers must STAY 'read'. Guards against an over-broad flip (which
   // would gate everything) AND proves the effect field is actually populated, not defaulted.
-  it.each(['coord:inbox', 'work_items:list', 'plans:get', 'memory:search', 'issues:list'])(
+  it.each(['coord:inbox', 'work_items:list', 'plans:get', 'memory:search', 'work_items:get'])(
     "reader '%s' stays effect:'read'",
     (name) => {
       const tool = lookupByMcpName(name);

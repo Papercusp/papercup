@@ -33,7 +33,7 @@ import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/sourc
 import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
 import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 import type { Ranked } from '../queue-ranker';
-import { getFeatureBlockers } from '../dbos/feature-blockers-edges';
+import { defaultBlockingStore } from '../work-item-blocking';
 import { selectReady, type ReadinessNode } from '../dbos/frontier-readiness';
 
 const MS_PER_DAY = 86_400_000;
@@ -441,7 +441,7 @@ export async function fetchHarnessBlockGraph(
   workspaceId: string,
   harness: string,
 ): Promise<HarnessBlockGraph> {
-  const blockers = await getFeatureBlockers(harness);
+  const blockers = await defaultBlockingStore.blockersFor(harness);
   const blockerIds = new Set<string>();
   for (const arr of blockers.values()) for (const b of arr) blockerIds.add(b);
   let statuses = new Map<string, string>();

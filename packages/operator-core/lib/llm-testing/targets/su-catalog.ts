@@ -183,7 +183,7 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   {
     name: 'harness:overview',
     description:
-      "One 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:status + harness:escalation [+ harness:list] + issues:list folded into ONE round-trip. Prefer it over calling those separately for a 'what's the state of X' question.",
+      "One 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:status + harness:escalation [+ harness:list] + work_items:list folded into ONE round-trip. Prefer it over calling those separately for a 'what's the state of X' question.",
     input: obj({
       harness: { type: 'string' },
       issueState: { type: 'string' },
@@ -195,16 +195,11 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     description: 'Instantiate a harness from a blueprint.',
     input: obj({ slug: { type: 'string' }, blueprint: { type: 'string' } }, ['slug', 'blueprint']),
   },
-  // --- issues / work intake ---
+  // --- work items / work intake ---
   {
-    name: 'issues:create',
-    description: 'File a discovered problem that is out of current scope (title, severity, topics).',
-    input: obj({ title: { type: 'string' }, severity: { type: 'string' } }, ['title']),
-  },
-  {
-    name: 'issues:list',
-    description: 'List issues (bug/change) for a harness.',
-    input: obj({ slug: { type: 'string' } }),
+    name: 'work_items:create',
+    description: 'File a discovered problem that is out of current scope (title, severity, topics). Requires a `kind` (e.g. bug).',
+    input: obj({ kind: { type: 'string' }, title: { type: 'string' }, severity: { type: 'string' } }, ['kind', 'title']),
   },
   // --- search (workspace-global) ---
   {

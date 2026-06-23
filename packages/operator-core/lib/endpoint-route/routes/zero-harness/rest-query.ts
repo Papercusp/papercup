@@ -7,6 +7,8 @@
  */
 import { gzipSync } from 'node:zlib';
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';
+import { resourceDeltaConfig } from '../../../sync-resolver/resource-delta-config';
+import { negotiateRowsDelta } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -49,7 +51,32 @@ export default defineTool({
       if (req.signal.aborted) {
         return new Response(null, { status: 499 });
       }
-      const body = JSON.stringify({ rows, version: String(Date.now()) });
+      // P-006 (the ~327GB sync win): rows-delta for a DELTA-AWARE client — one that sent
+      // `&delta=<cursor>` (or `&delta=` cold to opt in). Absent → today's exact full path,
+      // byte-identical; a resource with no delta config also serves full. The full-view
+      // checksum lets the client verify its merge + refetch on any mismatch, so a wrong/stale
+      // key can only cost a refetch (no win), never a wrong view. Inert until a client opts in.
+      const deltaParam = u.searchParams.get('delta');
+      const dcfg = deltaParam !== null ? resourceDeltaConfig(name) : undefined;
+      let body: string;
+      if (dcfg && Array.isArray(rows)) {
+        const field = dcfg.itemKeyField;
+        const neg = negotiateRowsDelta({
+          cursor: deltaParam || undefined,
+          rows,
+          itemKey: (r) => String((r as Record<string, unknown>)[field]),
+          itemKeyField: field,
+          schemaVersion: dcfg.schemaVersion,
+        });
+        const meta = { mode: neg.mode, cursor: neg.cursor, checksum: neg.checksum, itemKeyField: neg.itemKeyField };
+        body = JSON.stringify(
+          neg.mode === 'delta'
+            ? { changes: neg.changes, version: String(Date.now()), delta: meta }
+            : { rows: neg.rows, version: String(Date.now()), delta: meta },
+        );
+      } else {
+        body = JSON.stringify({ rows, version: String(Date.now()) });
+      }
       const acceptsGzip = (req.headers.get('accept-encoding') ?? '').toLowerCase().includes('gzip');
       if (acceptsGzip && body.length >= 1024) {
         return new Response(gzipSync(body), {

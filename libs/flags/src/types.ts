@@ -1555,13 +1555,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // work survives a host restart. Bounded (non-terminal work only, ceiling-gated re-fire)
   // and reversible; OFF ⇒ legacy reclaim-to-`failed`, byte-identical.
   [FLAGS.SPAWN_RECLAIM_RELAUNCH]: true,
-  // DEFAULT OFF in code, OWNER-RATIFIED ON via runtime override (work-item-deps-and-readiness P-007,
-  // 2026-06-23). Issues being self-pickable by the scheduler is a BEHAVIOR change (the fleet works
-  // bug/change/task items, not just features) — the owner enabled it; set ON in prod via flags:set.
-  // Kept default-FALSE because flipping the DEFAULT ripples through many tests that assert feature-only
-  // behavior (a separate test migration). Additive: feature claim untouched; the issue-claim branch runs
-  // only on a feature-miss. OFF ⇒ feature-only, byte-identical. KNOWN_DARK_FLAGS 'owner-authority'.
-  [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false,
+  // DEFAULT ON (work-item-deps-and-readiness-2026-06-22 P-007, OWNER-RATIFIED 2026-06-23): ISSUE-family
+  // work-items (bug/change/task) are self-pickable by the scheduler claim — the fleet's dispatch backlog
+  // now includes issues, not just features. The owner personally ratified this dispatch-source expansion.
+  // Additive: the feature claim is untouched; the issue-claim branch runs only on a feature-miss; issue
+  // readiness uses the inline work_item_deps predicate (the maintained sidecar is feature-only). OFF is the
+  // reversible kill-switch back to feature-only (byte-identical).
+  [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

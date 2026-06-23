@@ -110,7 +110,7 @@ function usesSeamHelper(src: string): boolean {
  *      `toList<number>(…)`, locks:release `mergeIds(args.lock_id, args.lock_ids)`;
  *   2. a plural id-array arg `*ids:`/`*Ids: z.array(…)` (the homogeneous "many"
  *      half paired with a scalar singular) — e.g. processes:kill `pids:`,
- *      issues:claim `ids:`, plans:set-status `itemIds:`;
+ *      work_items:claim `ids:`, plans:set-status `itemIds:`;
  *   3. a compound `items: z.array(…)` arg (the heterogeneous-record path) — e.g.
  *      features:get `items:[{ slug, feature_id }]`, coord:send `items:[{ to,… }]`.
  *  (2)/(3) are matched whitespace-tolerantly so a multi-line `items: z\n .array(`

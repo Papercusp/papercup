@@ -433,7 +433,7 @@ describe('POST /api/mcp?power_user=1 (tools/list profile gate)', () => {
     expect(names).not.toContain('intel:artifacts');  // tagged profile: 'engineer' (P-013)
     expect(names).not.toContain('intel:spawn_tree'); // tagged profile: 'engineer' (P-013)
     expect(names).not.toContain('harness:get');      // tagged profile: 'engineer'
-    expect(names).not.toContain('issues:list');      // tagged profile: 'engineer'
+    expect(names).not.toContain('work_items:list');  // tagged profile: 'engineer'
     expect(names).not.toContain('audit:list');       // tagged profile: 'engineer'
 
     // Group B/C — no profile tag — must appear.

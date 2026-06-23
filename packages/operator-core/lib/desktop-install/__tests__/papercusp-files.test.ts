@@ -158,6 +158,29 @@ describe('installPapercuspFiles', () => {
     expect(playbook).toContain('## Tail');
   });
 
+  it('projects the canonical deploy-pipeline note into the ENGINEER playbook at the project-guide anchor', async () => {
+    // recipes-reuse-activation follow-up: a cross-cutting behavioral note (DEPLOY_PIPELINE_NOTE)
+    // lives in ONE source and is PROJECTED into su (engineer) — not hand-mirrored, not loose in
+    // CLAUDE.md. A base carrying the project-guide marker (the injection anchor) gets it.
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Base\n\n<!-- PAPERCUSP-SU:PROJECT-GUIDE -->\n\n## Tail\n`,
+    );
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+
+    // the canonical DEPLOY_PIPELINE_NOTE is projected in, incl. the owner-directed
+    // "a RED gate is everyone's job to FIX, no owner-ask" directive...
+    expect(playbook).toContain('## The deploy pipeline is ASYNC');
+    expect(playbook).toContain('do NOT ask the owner');
+    expect(playbook).toContain('even if it is not your lane');
+    // ...exactly once (one source, one projection)...
+    expect(playbook.split('## The deploy pipeline is ASYNC').length - 1).toBe(1);
+    // ...sitting in the body BEFORE the project-guide slot, not appended at the very end.
+    expect(playbook.indexOf('do NOT ask the owner')).toBeLessThan(playbook.indexOf('## Tail'));
+  });
+
   it('splices the GENERATED workspace map at its marker (staging-branch-pipeline-2026-06-06)', async () => {
     const MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
     await fs.writeFile(

@@ -7,9 +7,13 @@
  */
 import { gzipSync } from 'node:zlib';
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';
+import { resourceDeltaConfig } from '../../../sync-resolver/resource-delta-config';
+import { negotiateRowsDelta } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
 
-interface BatchQuery { name: string; args?: unknown }
+// P-006: a delta-aware client adds `delta: <cursor>` ('' to opt in cold) per query; absent →
+// today's {rows, version} slot (byte-identical). Inert until the client opts in.
+interface BatchQuery { name: string; args?: unknown; delta?: string }
 
 export default defineTool({
   method: 'POST',
@@ -50,6 +54,21 @@ export default defineTool({
           const v2 = await resolveNamedQueryV2(q.name, q.args ?? {});
           if (v2 === NAME_NOT_FOUND) {
             return { error: `unknown queryName: ${q.name}` };
+          }
+          const dcfg = q.delta !== undefined ? resourceDeltaConfig(q.name) : undefined;
+          if (dcfg && Array.isArray(v2)) {
+            const field = dcfg.itemKeyField;
+            const neg = negotiateRowsDelta({
+              cursor: q.delta || undefined,
+              rows: v2,
+              itemKey: (r) => String((r as Record<string, unknown>)[field]),
+              itemKeyField: field,
+              schemaVersion: dcfg.schemaVersion,
+            });
+            const meta = { mode: neg.mode, cursor: neg.cursor, checksum: neg.checksum, itemKeyField: neg.itemKeyField };
+            return neg.mode === 'delta'
+              ? { changes: neg.changes, version, delta: meta }
+              : { rows: neg.rows, version, delta: meta };
           }
           return { rows: v2, version };
         } catch (err: any) {

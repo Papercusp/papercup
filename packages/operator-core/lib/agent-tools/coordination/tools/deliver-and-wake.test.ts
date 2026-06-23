@@ -379,7 +379,9 @@ describe('coord:message-agent', () => {
     );
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
     expect(keys).toEqual([inboxWakeKey('su-owner')]);
-    expect(out(res).to).toBe('su-owner');
+    // message-agent is multi-recipient (P-003 unification): `to` is always the
+    // resolved addressee ARRAY — a single `to:'su-owner'` comes back as ['su-owner'].
+    expect(out(res).to).toEqual(['su-owner']);
   }, 15_000);
 
   it('without wake, fires no wake key', async () => {

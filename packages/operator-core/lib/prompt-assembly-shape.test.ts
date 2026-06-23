@@ -45,7 +45,7 @@ const fixture = [
     capabilities: ['harness:read'],
     guidance: {
       when: 'User asks "what is harness X doing right now?", "is sheets active?", or you need recent-activity counts + phase.',
-      notWhen: 'For "what\'s WRONG with X", use `issues:list` (problems-side view). For static facts about the harness, use `harness:get`.',
+      notWhen: 'For "what\'s WRONG with X", use `work_items:list` (problems-side view). For static facts about the harness, use `harness:get`.',
     },
   },
   {
@@ -85,13 +85,13 @@ describe('Phase 1d — backfilled guidance reaches the assembled prompt', () => 
     expect(text).toContain('Chaining: Pair with `harness:get`');
   });
 
-  it('disambiguates harness:status from issues:list via notWhen', async () => {
+  it('disambiguates harness:status from work_items:list via notWhen', async () => {
     // This is the core Phase 1d acceptance: the model must be able to
     // read the catalog and know that "what's wrong" is NOT harness:status.
     const { renderToolsCatalog } = await import('./prompt-assembly');
     const text = renderToolsCatalog('operator', ['harness:status']);
     expect(text).toContain('Not when:');
-    expect(text).toContain('issues:list');
+    expect(text).toContain('work_items:list');
     expect(text).toContain('problems-side');
   });
 

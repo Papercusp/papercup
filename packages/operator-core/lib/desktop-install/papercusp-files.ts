@@ -20,6 +20,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROJECT_GUIDE_MARKER } from './splice-tooling-overlay';
+import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWorkspaceMapSection } from './workspace-map';
 import { renderWireSchemasSection } from '../prompt-assembly';
 import { renderCoordLegend } from '../coord-schema';
@@ -201,6 +202,29 @@ async function resolveProjectGuideText(
 }
 
 /**
+ * Project the shared, cross-cutting BEHAVIORAL note(s) — canonical constants owned by
+ * `@papercusp/orchestrator` (re-exported through operator-core's policy wrappers) — into the
+ * su playbook from the SINGLE source. Currently `DEPLOY_PIPELINE_NOTE` (the "deploy pipeline is
+ * async; a RED gate is EVERYONE's job to FIX, no owner-ask, even out of lane" directive), which
+ * the su base playbook otherwise misses entirely while the spawned-bee + operator-launched bases
+ * already inject it programmatically (prompt-build.ts / prompt-assembly.ts). This keeps such a
+ * universal directive in ONE place that projects to EVERY base, model/provider-agnostic (a plain
+ * string spliced regardless of model), ADDITIVELY — su's existing condensed notes and the `.md`
+ * prompt files are left untouched. Inserted just before the project-guide section so it sits in
+ * the playbook body, not buried under the 600-line guide.
+ */
+function injectSharedBaseNotes(text: string): string {
+  // Anchor on the project-guide marker: it is the one marker still un-spliced at this point AND a
+  // reliable "this is a real su playbook" signal (engineer/power carry it; minimal/test bases do
+  // not). Insert the note just BEFORE it; NEVER append, so a marker-less base is returned untouched
+  // (mirrors spliceGeneratedSection's no-append contract).
+  if (!text.includes(PROJECT_GUIDE_MARKER)) return text;
+  const note = renderDeployPipelineNote();
+  if (!note) return text;
+  return text.split(PROJECT_GUIDE_MARKER).join(`${note}\n\n${PROJECT_GUIDE_MARKER}`);
+}
+
+/**
  * Write the base playbook with the OMP tooling overlay spliced in at
  * the marker (or appended, if a pre-marker base is ever encountered).
  * Node port of `render_playbook` from install-standalone-mcp.sh.
@@ -218,6 +242,7 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   let out = spliceGeneratedSection(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
   out = spliceGeneratedSection(out, COORD_LEGEND_MARKER, renderCoordLegend());
   out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  out = injectSharedBaseNotes(out);
   // Project guide (P-001): engineer-profile install splices the repo's CLAUDE.md.
   if (out.includes(PROJECT_GUIDE_MARKER)) {
     const { text } = await resolveProjectGuideText(baseSrc, undefined);
@@ -425,15 +450,18 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   );
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
   const withMap = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  // Only the ENGINEER profile works the Papercusp repo (where this pipeline + its green gate live);
+  // the power profile manages an EXTERNAL repo, so the Papercusp-specific note does not apply there.
+  const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withMap) : withMap;
   // Project guide (P-001 / D-002): splice the repo's CLAUDE.md so a psu session
   // gets the full project conventions via psu, not client auto-load. Only read
   // the (large) guide file when the base actually carries the marker.
-  let text = withMap;
+  let text = withNotes;
   let projectGuideSource = '';
-  if (withMap.includes(PROJECT_GUIDE_MARKER)) {
+  if (withNotes.includes(PROJECT_GUIDE_MARKER)) {
     const guide = await resolveProjectGuideText(baseSource, input.projectGuideSource);
     projectGuideSource = guide.source;
-    text = spliceGeneratedSection(withMap, PROJECT_GUIDE_MARKER, renderProjectGuideSection(guide.text));
+    text = spliceGeneratedSection(withNotes, PROJECT_GUIDE_MARKER, renderProjectGuideSection(guide.text));
   }
   return { text, baseSource, overlaySource, projectGuideSource };
 }

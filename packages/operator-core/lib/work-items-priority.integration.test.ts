@@ -23,6 +23,8 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -230,6 +232,12 @@ describe('claimNextWorkItem honours the Queen priority only under the lease (P-0
 });
 
 describe('issue-family is a no-op (not the dispatched backlog)', () => {
+  // This describes the FEATURE-ONLY world (SCHEDULER_ISSUES_CLAIMABLE OFF). The flag now defaults ON
+  // (issues self-pickable + steerable, owner-ratified P-007), so pin it OFF to assert the kill-switch
+  // path stays byte-identical. (The ON behavior is covered by claim-issues-claimable.)
+  beforeEach(() => setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false }));
+  afterEach(() => setFlagOverridesForTest({}));
+
   it('returns applicable:false and writes nothing', async () => {
     await db.sql`
       INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title)

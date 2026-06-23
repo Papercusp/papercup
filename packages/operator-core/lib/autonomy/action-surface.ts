@@ -259,22 +259,10 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     humanSurface: 'Improvements digest',
     coverage: 'covered',
   },
-  {
-    id: 'ideation.triage-promote-issue',
-    label: 'Triage / promote an engineer issue',
-    category: 'ideation-intake',
-    reversibility: 'reversible',
-    authority: 'system',
-    // NOTE: issues:promote/close are KEPT here deliberately — they classify to
-    // ideation-intake (suggestedPosture 'low-risk'), distinct from work_items:* which
-    // classify to work-prioritization ('early-autonomy'). The namespace split encodes a
-    // real autonomy-posture distinction (issue-triage < work-steering), so these are NOT
-    // collapsible onto work_items:* without an owner autonomy-policy decision
-    // (coordination-unification-2026-06-23 D-009).
-    queenVerbs: ['issues:promote', 'issues:close'],
-    humanSurface: 'Issues board',
-    coverage: 'covered',
-  },
+  // (ideation.triage-promote-issue REMOVED — coordination-unification-2026-06-23 D-011:
+  //  issues:* retired; promoting/closing a bug/change is now a work_items op, already
+  //  covered by work.set-state. Issue-triage folds into work-prioritization — ideation-intake
+  //  stays covered by grade-scout-idea + triage-improvement.)
   {
     id: 'ideation.promote-conversation',
     label: 'Promote a conversation → tracked work',

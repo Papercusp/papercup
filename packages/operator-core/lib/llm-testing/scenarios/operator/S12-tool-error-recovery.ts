@@ -4,7 +4,7 @@
  * Persona: precise admin who asks the operator to look up something
  * that doesn't exist ("show me issue I-99999-does-not-exist").
  *
- * The brain naturally calls a lookup tool (issues:get or
+ * The brain naturally calls a lookup tool (work_items:get or
  * harness:status) which returns an error. The test checks that the
  * brain RECOVERS — does not loop on the same failing call, and
  * surfaces a useful response.

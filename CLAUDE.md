@@ -172,21 +172,6 @@ work in the tree. Merge conflicts go to a `merge-resolver` agent, not you. From
 auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
-**A RED green-checkpoint gate is EVERYONE's job to FIX — don't ask the owner, even
-if it isn't your lane.** A red gate blocks `main` from fast-forwarding, so it freezes
-**every** agent's deploy to `:3070`, not just yours — and the auto-fixer is unreliable
-(a gate-fix agent once died and the reds sat unworked ~3h, freezing the whole fleet).
-So if you spot a red/stalled gate (`dev:pipeline_position` / `/admin/git`) — or your
-change is waiting behind one — **diagnose the failing check** (`dev:build_status` + the
-failing test / lint / typecheck / build) **and FIX it**: a confirmed-unrelated flake →
-quarantine it accountably; a real regression → fix it. Do this **even when the break is
-in a package or lane that isn't yours, and even when you aren't personally blocked** —
-this is the explicit exception to "stay in your lane"; a green tree is a shared
-responsibility. **Don't wait for permission and don't ask the owner** — fixing a red
-gate is always authorized; make the fix and leave the diff for git-sync. Only coordinate
-to avoid colliding with a live fixer (`fleet:assignments` / `coord:presence`): if someone
-alive is actively on it, help them or take a different red; otherwise it's yours.
-
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
 > `git clean -fd`, not `git stash`. The tree is edited CONCURRENTLY by the whole

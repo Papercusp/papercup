@@ -33,9 +33,9 @@ export default defineTool({
   name: 'messages:send',
   capability: 'messages:write',
   guidance: {
-    when: 'Forward a note/directive to another agent. Harness-level: operator → "tell the worker to retry". Feature-scoped: pass `to_feature_id` (+ `from_feature_id`) to post on one feature\'s pipeline thread. Always paraphrase + confirm out loud first; sends are durable.',
-    notWhen: 'For a transient agent↔agent ping or handoff use `coord:send` (the live coord_event_log inbox) — messages:send is the DURABLE supervisor→agent directive path (supervisor_notes), a SEPARATE inbox; don\'t cross-wire them (coordination-unification-2026-06-23 P-010). For dispatching WORK use a `<spawn>` tag — messages are notes, spawns are work. For replying in the user\'s chat, just speak. To read replies use `messages:inbox` (feature-scoped via `feature_id`).',
-    chaining: 'Read replies with `messages:inbox`; soft-hide a handled message with `messages:dismiss`.',
+    when: 'Forward a DURABLE note/directive to another agent (operator → "tell the worker to retry"). Feature-scoped: pass `to_feature_id` (+`from_feature_id`) to post on a feature\'s pipeline thread.',
+    notWhen: 'A transient agent↔agent ping/handoff → `coord:send` (the live coord inbox); messages:send is the DURABLE supervisor→agent path (supervisor_notes), a SEPARATE inbox — don\'t cross-wire (coordination-unification-2026-06-23 P-010). Dispatch WORK via a `<spawn>` tag, not a message.',
+    chaining: 'Read replies with `messages:inbox`; soft-hide a handled one with `messages:dismiss`.',
   },
   args: z.object({
     to: z.array(z.string().min(1)).min(1),
