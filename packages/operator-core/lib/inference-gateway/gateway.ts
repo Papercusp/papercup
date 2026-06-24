@@ -22,6 +22,10 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 import {
   governorForBackend,
+  snapshotGovernors,
+  effectiveRpm,
+  effectivePaceMs,
+  effectiveRpmFactor,
   PriorityAdmissionQueue,
   QueueFullError,
   AimdConcurrencyController,
@@ -593,6 +597,30 @@ export interface GatewayStats {
   beeFacing503: { egressExhausted: number; tokenStall: number };
   /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
   unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
+  /** RPM-SMOOTHING observability (hive-inference-gateway-stability P-005): is the burst-dodging pace
+   *  actually engaged, AS DATA not inference. The gateway runs its OWN per-account governor registry
+   *  (invisible to dev:rate_governor_status), so this is the only window into "is smoothing working".
+   *  `engaged` = the gateway-wide smoothRpm config; `byAccount` = each gateway governor's effective pace:
+   *  `smoothRpm` engaged on it, the configured `rpm` floor, the time-decayed learned `rpmFactor`, the
+   *  effective per-minute allowance `effRpm` = floor(rpm × rpmFactor), the header-driven `paceDelayMs`,
+   *  and the EFFECTIVE inter-request pace ENFORCED `effectivePaceMs` = max(paceDelayMs, smoothing floor
+   *  60_000/effRpm). effectivePaceMs > 0 ⇒ requests are being spaced (the burst-dodge is live). Present
+   *  only once a per-account governor exists; ABSENT (undefined) on a never-served gateway so the payload
+   *  stays byte-identical to before. */
+  smoothing?: {
+    engaged: boolean;
+    byAccount: Record<
+      string,
+      {
+        smoothRpm: boolean;
+        rpm: number | null;
+        rpmFactor: number;
+        effRpm: number | null;
+        paceDelayMs: number;
+        effectivePaceMs: number;
+      }
+    >;
+  };
   pausedUntil: number;
   /** Prompt-cache instrumentation (#0, 2026-06-21): per-account + total cache read/write tokens with
    *  hit/miss counts, failover-induced misses tagged. `hitRate` = read/(read+create+input) — how much of
@@ -1224,6 +1252,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
           tiers: admission.byTier,
         }
       : undefined;
+    // P-005 smoothing observability: surface each gateway per-account governor's EFFECTIVE pace so
+    // "is smoothing working?" is data. Enumerate the gateway's own registry (only the gateway sets
+    // `smoothRpm` on a per-account governor → typeof boolean uniquely selects them; the fleet
+    // concurrency governor leaves it undefined). The active/bound account is added from `snap` first
+    // so it is present even when a test injects governors via deps.governorFor (registry bypassed).
+    const now = Date.now();
+    const paceEntry = (st: typeof snap) => ({
+      smoothRpm: st.smoothRpm === true,
+      rpm: st.limits.rpm ?? null,
+      rpmFactor: Math.round(effectiveRpmFactor(st, now) * 1000) / 1000,
+      effRpm: effectiveRpm(st, now),
+      paceDelayMs: st.paceDelayMs,
+      effectivePaceMs: effectivePaceMs(st, now),
+    });
+    const smoothingByAccount: NonNullable<GatewayStats['smoothing']>['byAccount'] = {};
+    if (typeof snap.smoothRpm === 'boolean') smoothingByAccount[active.accountId] = paceEntry(snap);
+    for (const gs of snapshotGovernors()) {
+      if (gs.accountId && typeof gs.state.smoothRpm === 'boolean' && !smoothingByAccount[gs.accountId]) {
+        smoothingByAccount[gs.accountId] = paceEntry(gs.state);
+      }
+    }
+    const smoothing = Object.keys(smoothingByAccount).length
+      ? { engaged: smoothRpm, byAccount: smoothingByAccount }
+      : undefined;
     return {
       accountId: active.accountId,
       upstreamBase,
@@ -1256,6 +1308,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       unified: snap.unified,
+      ...(smoothing ? { smoothing } : {}),
       pausedUntil: snap.pausedUntil,
       cache: cacheSnapshot(),
     };
