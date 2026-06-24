@@ -51,7 +51,15 @@ describe('routeByHive (P-003 Phase B)', () => {
   });
 
   it('fails soft per task (a resolve error falls back to the harness slug)', async () => {
-    h.hiveHomeSlugForHarness.mockRejectedValue(new Error('pg down'));
+    // mockRejectedValueONCE, not the persistent mockRejectedValue: a *persistent*
+    // rejected-promise mock leaks a stray unhandled rejection under this suite's
+    // `beforeEach(mockReset)` (a Vitest 4 mock-machinery quirk — the reset/teardown
+    // path re-invokes the persistent impl with no `.catch`). This repo's vitest
+    // config has no `dangerouslyIgnoreUnhandledErrors`, so that stray rejection
+    // fails the test even though routeByHive DOES catch the one it awaits. The
+    // queued single rejection is consumed by routeByHive's lone resolver call,
+    // proving fail-soft without leaving a persistent rejecter to leak.
+    h.hiveHomeSlugForHarness.mockRejectedValueOnce(new Error('pg down'));
     const byHive = await routeByHive([task('WI-1', 'proj-a')], 'ws');
     expect(byHive).toEqual({ 'proj-a': 1 });
   });
