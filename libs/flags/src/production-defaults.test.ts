@@ -300,10 +300,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // (SCOPED_SUPERUSER_CLAMP graduated to default-ON 2026-06-23 — owner-directed flip,
   // psu-in-desktop-builds D-002: it is the workspace boundary for a full-tool end-user psu
   // session. Reversible kill-switch; removed from the dark allowlist per the rule.)
-  // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED Queen+Scout workspace-scoping
-  // gate. DARK because the per-hive→workspace re-key is a multi-part hot-path change to the live
-  // wake/learning loop (P-003 Queen A+B+C + P-002 Scout) not yet built end-to-end + canary'd.
-  // OFF ⇒ today's per-hive brains, byte-identical. Owner flips ON post-canary.
+  // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED Queen+Scout+Overwatch workspace-scoping
+  // gate. NOW BUILT END-TO-END + unit-tested (2026-06-23): P-002 Scout + P-003 Queen Phase A (started.ts
+  // K1 re-key) + Phase B (cross-hive survey/dispatch widening) + Phase C (Overwatch control-state re-key);
+  // started-/control-state-/survey-workspace-scope tests green; OFF = today's per-hive brains, byte-identical.
+  // STILL DARK pending the remaining condition: the OWNER-ATTENDED CANARY flip. The per-hive→workspace
+  // re-key mutates the LIVE wake/watchdog hot-path (a botched cutover wedges fleet wakes), so it must be
+  // flipped + watched on a HEALTHY fleet, never blind — do NOT graduate this until that canary runs.
   FLAGS.WORKSPACE_COORDINATION,
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the engine-managed-loop
   // master gate (loop:arm — the tracked replacement for Claude /loop). DEFAULT OFF because the
