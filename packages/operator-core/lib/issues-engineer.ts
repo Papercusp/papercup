@@ -39,6 +39,7 @@ import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
@@ -612,8 +613,19 @@ export async function commentIssue(id: string, body: string, authorId?: string):
   const issue = await getIssue(id);
   if (!issue) return null;
   const created = nowIso();
-  const thread = await threads.getOrCreateThread(issueRef(id), { thread_id: threadId(id), title: issue.title, created_by: issue.createdBy ?? undefined, created_ts: issue.createdAt });
-  const post = await threads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: created });
+  // The durable write (get-or-create thread + add post) runs in ONE bounded txn
+  // (pg-bounded-txn): ATOMIC so the post row + the coord_threads post_count bump
+  // commit together (no half-write a retry would duplicate), and BOUNDED by a
+  // SET LOCAL statement_timeout so a stalled query fails fast + typed instead of
+  // hanging the MCP call indefinitely (the admin pool has no default
+  // statement_timeout). A tx-bound PgThreadStore reuses the exact tested store SQL.
+  const post = await boundedOrgTxn(async (tx) => {
+    const txThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
+    const thread = await txThreads.getOrCreateThread(issueRef(id), { thread_id: threadId(id), title: issue.title, created_by: issue.createdBy ?? undefined, created_ts: issue.createdAt });
+    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: created });
+  });
+  // Fan-out is best-effort + deadline-bounded (fanoutForObject) — it runs AFTER the
+  // durable write commits and can never hang or roll back the caller's comment.
   await deliver(issue, 'commented', `issue ${id} — new comment${authorId ? ` from ${authorId}` : ''}`, authorId ?? 'substrate');
   return post;
 }

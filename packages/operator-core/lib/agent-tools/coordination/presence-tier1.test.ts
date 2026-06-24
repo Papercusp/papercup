@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { computeLastActiveSecAgo, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
+import {
+  computeIntentStale,
+  computeLastActiveSecAgo,
+  INTENT_STALE_SEC,
+  mergeTier1,
+  type PresenceTier1Joins,
+} from './presence-tier1';
 
 const NOW = 1_700_000_000_000;
 const iso = (ms: number): string => new Date(ms).toISOString();
@@ -17,6 +23,29 @@ describe('computeLastActiveSecAgo', () => {
 
   it('clamps a future stamp to 0 (clock skew never goes negative)', () => {
     expect(computeLastActiveSecAgo(iso(NOW + 5_000), NOW)).toBe(0);
+  });
+});
+
+describe('computeIntentStale', () => {
+  it('null when activity is unknown (cannot judge a federated/never-active peer)', () => {
+    expect(computeIntentStale(null)).toBeNull();
+  });
+
+  it('false while genuine activity is within the threshold', () => {
+    expect(computeIntentStale(0)).toBe(false);
+    expect(computeIntentStale(INTENT_STALE_SEC - 1)).toBe(false);
+    expect(computeIntentStale(INTENT_STALE_SEC)).toBe(false); // boundary: exactly at threshold is NOT yet stale
+  });
+
+  it('true once genuine activity is past the threshold — the idle-but-heartbeating case', () => {
+    expect(computeIntentStale(INTENT_STALE_SEC + 1)).toBe(true);
+    // an su host idle 3h43m but still beating every 60s → its declared intent is stale
+    expect(computeIntentStale(3 * 60 * 60 + 43 * 60)).toBe(true);
+  });
+
+  it('honors an explicit threshold override', () => {
+    expect(computeIntentStale(100, 60)).toBe(true);
+    expect(computeIntentStale(50, 60)).toBe(false);
   });
 });
 
@@ -46,6 +75,7 @@ describe('mergeTier1', () => {
       ownerId: 'a',
       ownerLabel: 'lbl-a', // base field preserved
       lastActiveSecAgo: 10,
+      intentStale: false, // active 10s ago → its intent is current
       claimedItems: ['P-001', 'P-002'],
       model: 'opus',
       awaitingEvent: true,
@@ -54,9 +84,17 @@ describe('mergeTier1', () => {
     });
   });
 
-  it('a record with no join entry (e.g. a federated peer) gets lastActiveSecAgo only', () => {
+  it('flags intentStale TRUE for an idle-but-present agent (the heartbeat-alive-but-not-working case)', () => {
+    // No join entry needed — intentStale is derived purely from last_active_at.
+    const out = mergeTier1([rec('su-idle', iso(NOW - (INTENT_STALE_SEC + 60) * 1000))], new Map(), NOW);
+    expect(out[0].lastActiveSecAgo).toBe(INTENT_STALE_SEC + 60);
+    expect(out[0].intentStale).toBe(true);
+  });
+
+  it('a record with no join entry (e.g. a federated peer) gets lastActiveSecAgo + intentStale only', () => {
     const out = mergeTier1([rec('fed:1@boxA', null)], new Map(), NOW);
     expect(out[0].lastActiveSecAgo).toBeNull();
+    expect(out[0].intentStale).toBeNull(); // activity unknown → cannot judge
     expect((out[0] as Partial<PresenceTier1Joins>).claimedItems).toBeUndefined();
     expect((out[0] as Partial<PresenceTier1Joins>).wakeMode).toBeUndefined();
   });

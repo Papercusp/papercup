@@ -106,6 +106,11 @@ describe('POST /api/discovery/join-hive (Gap 9)', () => {
     expect(bustProjectsLiteCache).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards an optional hivePubkey so stale discovery caches do not block re-keying', async () => {
+    await post({ hiveId: 'acme', hivePubkey: '  pubkey==  ', memberLinks: [LINK] });
+    expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ hivePubkey: 'pubkey==' });
+  });
+
   it('omits a blank title (defaults downstream)', async () => {
     await post({ hiveId: 'acme', title: '   ', memberLinks: [LINK] });
     expect(joinHiveAsView.mock.calls[0][0]).not.toHaveProperty('title');

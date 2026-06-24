@@ -282,6 +282,21 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     expect(calls.identities).toEqual([]); // skipped, not crashed
   });
 
+  it('uses an explicit owner pubkey even when the local directory cache misses', async () => {
+    const { deps, calls } = fakes();
+    deps.resolveHivePubkey = async () => null;
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(calls.identities[0]).toMatchObject({
+      homeSlug: 'shop-hive',
+      pubkeyBase64: HIVE_PUBKEY,
+      keychainId: 'remote:shop-hive',
+    });
+  });
+
   it('an identity-write failure NEVER fails the join', async () => {
     const { deps } = fakes();
     deps.upsertHiveIdentity = async () => {

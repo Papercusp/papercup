@@ -485,6 +485,61 @@ This bit the Queen-autonomy settings page: the ceiling slider wrote to PG but th
 * [Adding a reactive table](/internal/docs/agent-insights/adding-a-reactive-table) — the producer side (PG trigger + `notifySyncInvalidate`)
 * `packages/operator-core/lib/sync-sse.ts` — the LISTEN handler + SSE fan-out
 
+# A coordination WRITE tool hangs forever — the admin pool has no statement_timeout
+
+> When work_items:comment (or any getOrgPg()-based mutating tool) HANGS indefinitely instead of failing, the cause is that the harness_admin pool has a role-default lock_timeout (15s) but NO statement_timeout — so a query that stalls for any non-lock reason runs unbounded. A JS/AbortController watchdog can't cancel an in-flight postgres-js query; only a DB-side statement_timeout can. Fix interactive admin-pool writes with boundedOrgTxn (SET LOCAL statement_timeout + atomic txn); leave migrations unbounded.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+An agent reports a coordination **write** tool — `work_items:comment` is the one that surfaced this — **hung** (never returned), then **timed out on a bounded retry**, and a follow-up `work_items:get detail:true` shows **no new row landed**. It reads like a flaky transport; it is not. It is an *unbounded database query* on a write path that has no per-statement time budget.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`work_items:comment` → `commentWorkItem` → `commentIssue` (issue family) or the feature branch of `commentWorkItem` runs its queries (`getIssue`, `getOrCreateThread`, `addPost`, the fan-out) directly on the **`harness_admin`** pool (`getOrgPg().sql`).
+
+That pool’s role defaults are:
+
+```plaintext
+harness_admin → lock_timeout=15s, idle_in_transaction_session_timeout=60s
+```
+
+There is **deliberately NO `statement_timeout`** — migrations and long maintenance tooling share this same pool and must be allowed to run unbounded (see `connection.ts`; the GUC is set per-session, not on the role). The cost of that omission falls on *interactive* writes:
+
+* A query that **lock-waits** fails at 15s (`55P03`) — slow, but bounded.
+* A query that stalls for **any non-lock reason** — a CPU-starved / event-loop-blocked operator, a slow scan, a buffer wait — runs **UNBOUNDED** and hangs the MCP call until the client transport gives up.
+
+A JS watchdog cannot save you here
+
+The route stack arms a 30s `AbortController` watchdog (`route-stack.ts`), but **postgres-js does not cancel an in-flight query when the signal aborts** — the 408 only materializes once the handler finally returns. The ONLY thing that actually unblocks a wedged query is a DB-side `statement_timeout` (PG `57014`). Reach for the DB timeout, not a `Promise.race`.
+
+Two aggravating factors on the same path:
+
+1. **Non-atomic durable write.** `PgThreadStore.addPost` did `INSERT … coord_thread_posts` then a *separate* `UPDATE coord_threads SET post_count = post_count + 1` as two auto-commit statements. A stall between them half-writes; worse, if the INSERT commits and the call then appears to fail, a client retry **duplicates** the comment.
+2. **Best-effort fan-out that could still hang.** `fanoutForObject` was documented “best-effort — a delivery failure cannot break the caller’s write” and caught *errors*, but did not bound *slowness*: a stalled subscriber-resolve / `appendLine` hung the caller.
+
+## Fix — `boundedOrgTxn` + atomic write + bounded fan-out
+
+[Section titled “Fix — boundedOrgTxn + atomic write + bounded fan-out”](#fix--boundedorgtxn--atomic-write--bounded-fan-out)
+
+`packages/operator-core/lib/pg-bounded-txn.ts` adds `boundedOrgTxn(fn, opts)` — the interactive-WRITE counterpart to `pg-read-query`’s bounded READ ONLY txn, and a lighter sibling of `locks/inWorkspaceTxn` (no per-workspace advisory lock). It wraps a unit of admin-pool writes in ONE transaction with `SET LOCAL statement_timeout` (15s) + `lock_timeout` (8s), so the work is:
+
+* **ATOMIC** — partial writes can’t half-land and a post-stall retry can’t duplicate; and
+* **BOUNDED** — a stall surfaces as a typed `OrgTxnTimeoutError` (mapped from PG `57014`/`55P03`) that the caller turns into a clean `{ ok:false, error }` (bulk tools get this for free via `runBulk`), instead of an indefinite hang.
+
+`commentIssue` and the feature comment path now run get-or-create-thread + add-post inside `boundedOrgTxn` via a **tx-bound `PgThreadStore`** (`new PgThreadStore({ ...coordOpts, getSql: () => tx })`) — reusing the exact tested store SQL, atomic and bounded. The fan-out runs *after* the durable write commits and is wrapped in a wall-clock `withDeadline` so the best-effort contract holds for slowness, not just errors. Migrations keep calling `getOrgPg()` directly and stay unbounded.
+
+## When you hit this again
+
+[Section titled “When you hit this again”](#when-you-hit-this-again)
+
+* A `getOrgPg()`-based **mutating** tool that can hang → route its durable write through `boundedOrgTxn` (don’t reach for `getOrgPg().sql` raw on an interactive write path).
+* Don’t try to fix a DB hang with an `AbortController` / `Promise.race` alone — add the `SET LOCAL statement_timeout`. The JS race is only a secondary guard for best-effort, fire-and-forget work (like a fan-out).
+* The whole interactive-write class shares this gap; a connection-level default `statement_timeout` with a migration-runner opt-out would fix it at the source, but touches the deploy/migration path — that’s a separate, reviewed change (tracked as WI-766, which also covers `conversations:post`).
+
 # Calling defineTool tools from an in-process /admin route
 
 > defineTool projections register POST-only and require identity via readIdentity(ctx). An admin route proxying them needs a synthesized POST + ?superuser=1 + ?client= + validateSuperuser, not a passthrough.
@@ -2996,6 +3051,7 @@ The injection is a **tail append** — it lands *after* the latest tool result, 
 
 * **No MCP `tools/list_changed`** is emitted, so a tool-surface change (add/remove a verb) leaves *running* agent sessions with a **stale cached catalog** until they relaunch. New sessions are correct.
 * **Codex coord hook is SU-only** (pipeline-role sessions coordinate via `messages:send`/`inbox`, not the SU coord bus) and activates server-side on the next operator restart (the `:3070` host has no hot-reload).
+* **Codex managed-PTY turn injection needs a longer submit settle than Claude, plus a redundant submit.** The injected text can land in Codex’s compose box while the submit CR is still treated as paste/input, leaving the message visible but unsubmitted until a human presses Enter. `psu-pty-host.mjs` therefore derives the CR plan from `PAPERCUSP_AGENT`: Claude/OMP keep the single 150 ms CR path; Codex uses the longer `PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS` path (default 500 ms), then a second delayed CR (`PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS`, default 300 ms). Do not collapse this back to one global delay without a live Codex coord-injection check.
 * **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a real OMP turn to observe.
 
 # Integration-testing coord modules with module-level PG handles
@@ -9760,6 +9816,89 @@ The substrate engine is **pervasively coupled** to the main operator process:
 
 A real cutover means the sidecar must HOST the full `bootHarnessSubstrate` (corestore + swarm + merge loop + PG projections) and the main process must route every `handle.append()` over IPC and read PG-only — or a narrower “replication-offload” design (main keeps the engine, hands raw swarm sockets to the sidecar for `corestore.replicate`, the part already built) that offloads only the merkle-verify CPU/RSS. Either is a tracked multi-session feature, never an overnight flip. (Orthogonal to lazy boot per D-018/D-019.)
 
+# Live 2-machine K-CUT re-key witness — the working recipe + the federation gaps (WI-560)
+
+> How to run the live fed-a/fed-b K0→K1→K-revoke→K-CUT re-key cut-off witness on the linux-test-vm rig, what actually works, and the two real blockers that keep the JOINER (fed-b) from receiving the federated epoch keys: (1) live announce→admit needs a gh-ATTESTED device announce, absent on the gh-unauthed VMs — so admit fed-b via the owner approval path (seed the pending-join + hive:membership_decide); (2) the hive_epoch_keys projection rides the repo-LESS hive HOME log, and a joiner only peers a HOME its operator booted at STARTUP — a view-join after startup never boots the home substrate (repo-bound MEMBERS federate fine without gh; repo-less HOMES need gh-auth announce). Owner-side K-CUT is fully verifiable on fed-a regardless. Discovered 2026-06-24 running WI-560.
+
+The C-001 read-plane re-key flip (`papercusp-hive-rekey`) is owner-gated on a **live 2-machine K-CUT witness** (WI-560; see [hive-rekey-flip-readiness](/internal/docs/agent-insights/hive-rekey-flip-readiness)). This page is what running it on the `scripts/linux-test-vm` rig actually taught: the re-key **mechanism** is green end-to-end at the authoritative OWNER layer, and the only thing standing between that and the joiner-side confirmation is **federation transport**, not the re-key code.
+
+Use the versioned driver
+
+`papercusp-desktop/scripts/linux-test-vm/fed.sh` SELF-DISCOVERS the VMs’ dynamic operator/PG ports (they change on every desktop restart). The ad-hoc `/tmp/fed.sh` with hardcoded ports goes stale after any restart — don’t trust it across a reboot.
+
+## The witness, owner-side (this part WORKS, fully on fed-a)
+
+[Section titled “The witness, owner-side (this part WORKS, fully on fed-a)”](#the-witness-owner-side-this-part-works-fully-on-fed-a)
+
+Mechanism map (all gated on `papercusp-hive-rekey`, ON on the rig):
+
+* **K0 admit/grant** — owner admits a member ⇒ `upsertHiveMember` ⇒ `grantEpochKeysToMembers` wraps epoch `[0..current]` to the new device (owner-self-gated on `loadHivePubkey`). `hive-membership-admission.ts` + `hive-epoch-boundary-wiring.ts`.
+* **K1 owner re-key** — a benign boundary that KEEPS everyone: `hive-set-listing.ts` go-private ⇒ `advanceEpochOnHiveBoundary` with **no cutOff** ⇒ epoch++ wrapped to ALL current members.
+* **K-revoke** — `hive:ban_member` ⇒ `hive-revoke-contributor.ts` `revokeHiveContributor` ⇒ `advanceEpochOnHiveBoundary(cutOffPubkeys=[target device])` ⇒ epoch++ wrapped to **remaining members only**. Ban is Hive-native (owner = holds the hive key via `loadHivePubkey`), **NOT gh-repo-admin** — no GitHub token needed to ban.
+* **K-CUT** — the revoked device simply has no row at the new epoch; no such row exists to author or federate, so it can never reach the cut member.
+
+Verified live on fed-a (fresh isolated hive `wi560k-hive`, member ← a public repo), epoch × device wrap matrix:
+
+| epoch | owner device | revoked device | event                     |
+| ----- | ------------ | -------------- | ------------------------- |
+| 0     | ✓            | ✓              | admit/grant               |
+| 1     | ✓            | ✓              | owner re-key (go-private) |
+| 2     | ✓            | **✗**          | ban → cut                 |
+
+The owner-side cut is the thing the flag actually gates, and it composes with the already -green hermetic content read-cut witness (`hive-epoch-read-cut-witness.test.ts`).
+
+## Gap 1 — admitting the joiner: the live announce→admit needs gh attestation
+
+[Section titled “Gap 1 — admitting the joiner: the live announce→admit needs gh attestation”](#gap-1--admitting-the-joiner-the-live-announceadmit-needs-gh-attestation)
+
+On the rig **both VMs are gh-unauthed**, so a joiner cannot produce the attested device announce that the owner’s substrate admission (`admitAnnouncedPeerAsOwner` / `drainAdmissionQueue`) consumes — the joiner materializes only as a read-only VIEW (`joinHiveAsView`), never a crypto member (this is the long-standing “fed-b is a view-joiner but has 0 epoch rows” symptom).
+
+**Recipe that works** — drive the owner approval path the WI explicitly allows. Seed the pending-join on the OWNER (the part the gh gap blocks) then admit through the real verb:
+
+```sh
+# on fed-a (owner): seed fed-b's pending join with its real device pubkey
+fed.sh a sql "INSERT INTO harness_shared.hive_pending_joins
+ (workspace_id,harness_slug,github_user_id,github_username,device_attestations,status,
+  requested_at,origin,created_at,updated_at)
+ VALUES ('default','<hive-home>',<joiner_gh_id>,'<login>',
+  '[{\"device_pubkey\":\"<joiner_device_b64>\",\"gist_id\":\"manual\",\"gist_url\":\"\",
+     \"device_label\":\"fed-b\",\"created_at\":0,\"signature_by_device\":\"\"}]'::jsonb,
+  'pending',(extract(epoch from now())*1000)::bigint,'local',
+  (extract(epoch from now())*1000)::bigint,(extract(epoch from now())*1000)::bigint)"
+# admit through the PRODUCTION verb (runs approvePendingJoin → upsertHiveMember → grant)
+fed.sh a mcp hive:membership_decide '{"hive":"<hive-home>","githubUserId":<id>,"decision":"approve","workspace":"default"}'
+```
+
+The grant/cut path is 100% production code; only the *discovery* of the device is shortcut (the gh-attestation concern is orthogonal to the re-key mechanism). The real fix for live admission is restoring gh auth on the VMs (WI-757).
+
+## Gap 2 — delivering to the joiner: repo-LESS homes don’t federate without gh + a boot
+
+[Section titled “Gap 2 — delivering to the joiner: repo-LESS homes don’t federate without gh + a boot”](#gap-2--delivering-to-the-joiner-repo-less-homes-dont-federate-without-gh--a-boot)
+
+This is the one that blocks the joiner-side confirmation:
+
+* **Repo-bound MEMBER harnesses federate fine without gh auth** — they rendezvous on the public repo topic (`shared_repo_binding_cache.harness_topic`). On the rig fed-b actively peers hello-world / fixawitness / spoon-knife members + a freshly-joined member clone.
+* **The repo-LESS hive HOME needs the gh-auth-bound announce** (`local-announce-identity` → `resolveLocalAnnounceIdentity` throws when gh-unauthed ⇒ `boot.ts` keeps it local-only; see [substrate-swarm-self-heal-no-restart](/internal/docs/agent-insights/substrate-swarm-self-heal-no-restart)
+  * the [restart runbook §6](/internal/docs/agent-insights/federation-rig-restart-runbook)).
+* **`hive_epoch_keys` (and `hive_members`) federate over the HOME log** (the A-003 hive-home seam), NOT the member topic. So even when the joiner peers the member, the epoch keys never arrive.
+* **A joiner only peers a HOME its operator booted at STARTUP.** `joinHiveAsView` clones the member harnesses but does NOT boot the home substrate; the home boots on the operator’s startup sweep. A hive view-joined AFTER startup is never peered until the next restart (the WI-559 self-heal join-retry only retries a boot that was *attempted* and failed).
+
+### To complete the live joiner-side receipt
+
+[Section titled “To complete the live joiner-side receipt”](#to-complete-the-live-joiner-side-receipt)
+
+1. Restore gh auth on the OWNER VM with its **correct historical identity** (host `gh auth token` piped over ssh — runbook §6; reversible, no restart) so the home announces.
+2. Re-publish the hive (a go-private K1 WITHDRAWS it — re-`discovery:set_hive public` after).
+3. **Restart the JOINER’s operator** so it boots the post-startup-joined hive’s home substrate (this changes the joiner’s dynamic port — coordinate; other rig agents depend on it).
+
+Then the joiner replicates the owner’s home log and ends up holding epoch 0..K-1 (the keys it legitimately had) but **never the post-ban epoch** — the live K-CUT, and (with content encryption on) the AEAD content read-cut.
+
+## Adjacent bug observed
+
+[Section titled “Adjacent bug observed”](#adjacent-bug-observed)
+
+`hive:create_from_repo` via the **superuser MCP** fails `member_create_failed / hive_not_found` because the MCP session resolves `ctx.workspaceId='*'` while hives live in `default`; the HTTP API route (`activeWorkspaceId()='default'`) works. Same EI-3409 class the versioned `fed.sh` documents (`FED_MCP_WS=default`). Pass `workspace:"default"` or use the route.
+
 # Pair every schema-ensure module with a live-PG regression sentinel
 
 > Unit tests can't catch CREATE TABLE typos, missing CHECK constraints, or PG-side DDL incompatibilities. A 2-second live verifier (boot embedded PG → call your ensures → assert the resulting schema) catches them all and gives you a one-line pre-commit gate.
@@ -12576,6 +12715,67 @@ When overwatch *does* launch, it goes through the **loopback invoke route** (`de
 
 **A feature gated by BOTH a flag and a separate “started”/“armed” control-bit has two independent off-switches; “enabled” means the AND of them — and the AND is invisible unless you surface it.** When you add a second gate (a control-bit beside a flag), also add the cross-check: a flag ON with its arm OFF should *warn*, never *silently no-op*. Otherwise you get the dark-flag trap one level deeper — the flag audit says “ON ✅”, and the thing still does nothing. See also `overwatch-role-2026-06-15` and the flags discipline in `CLAUDE.md` (a feature that’s “enabled” but does nothing is dead code, however green the flag).
 
+# Cross-member content federates to JOINERS but not the OWNER — the owner's home harness resolved hiveHomeSlug=undefined
+
+> WI-259 STEP 2 (the membership-aware content-apply guard) worked for a JOINER but silently dropped EVERY cross-member op on the hive OWNER, because boot's resolveHiveHomeProjectionSlug only resolves the JOINER rebind (joinerHiveHomeSlug → null for an owner). STEP-1 admit resolved the owner home via hiveHomeSlugForHarness; STEP-2 apply didn't → decideMemberContentOp hit its no-hiveHome 'drop' branch → fed-b→fed-a 'discovers 0'. Fix: an owner-home fallback for the content-guard hiveHomeSlug, GATED on bindingResolvesHiveHomeProjection so non-hive boots pay zero extra getOrgPg cost.
+
+## What
+
+[Section titled “What”](#what)
+
+A shared hive federates a MEMBER’s feature/plan/issue content across its members (WI-259, plan `shared-hive-member-content-federation-2026-06-20`). STEP 1 admits a same-hive cross-member LOG by author identity; STEP 2 — the membership-aware apply guard (`decideMemberContentOp` in `member-content-guard.ts`) — applies a cross-member op iff its verified source-log device ∈ the hive’s current members.
+
+STEP 2 was unit-green and worked for a **JOINER** receiving the owner’s content (A→B). But the **OWNER** receiving a member’s content (B→A) silently materialized **zero** rows: the live symptom reported as *“fed-b → fed-a discovers 0”*.
+
+## Why (the admit/apply asymmetry — the keystone)
+
+[Section titled “Why (the admit/apply asymmetry — the keystone)”](#why-the-admitapply-asymmetry--the-keystone)
+
+`decideMemberContentOp` needs a `hiveHomeSlug` to engage; without one it returns `'drop'` via its **no-hiveHome** branch (member-content-guard.ts: *“a non-hive harness — there are no members to admit from → drop”*). For an op to apply on the receiver, the receiver’s content projections must have been built with a `hiveHomeSlug`.
+
+* **Joiner** (member harness): boot resolves `hiveHomeProjectionSlug` via the 2c rebind (`joinerHiveHomeSlug`, reads the `remote_hive` view), so its content projections get `hiveHomeSlug = <hive-home>` → the guard engages → A→B applies. ✅
+* **Owner** (the hive-home harness, slug *IS* the hive home): `joinerHiveHomeSlug` reads `remote_hive` — and the owner is **not** a remote hive of itself → returns `null` → `hiveHomeProjectionSlug = undefined` → its content projections ran with `hiveHomeSlug = undefined` → the guard hit **no-hiveHome ‘drop’** for **every** cross-member op → the owner discovers 0. ❌
+
+The tell: STEP-1 admission (`resolveSameHiveMember` in boot.ts) ALREADY resolves the owner’s home — it uses `hiveHomeProjectionSlug ?? hiveHomeSlugForHarness(ws, slug)` (and `hiveHomeSlugForHarness` returns the own slug for an owner via `getHiveBySlug`). So the owner **admitted** the member’s log but then **dropped** its content. STEP-1 resolved the home; STEP-2 didn’t. Same harness, two different hive-home resolutions — that gap is the bug.
+
+This is why the plan’s A→B-centric diagnosis (D-013→D-016) “eliminated hiveHomeSlug resolution”: for the A→B direction the receiver is a joiner, whose hiveHomeSlug IS set. The owner-receiving (B→A) direction has the distinct undefined.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Resolve the OWNER’s own hive-home for the content-guard `hiveHomeSlug` too — the same way STEP-1 admit does — and thread it as a fallback into `buildScopedApply` + `registerAllHarnessProjections` (boot.ts):
+
+```ts
+const ownHiveHomeSlug = await (async () => {
+  // GATED — the same gate the joiner resolution uses — so a non-hive boot pays ZERO
+  // extra getOrgPg cost (the common path stays byte-identical).
+  if (!bindingResolvesHiveHomeProjection(opts.swarmBinding)) return undefined;
+  try {
+    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const home = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
+    return home === opts.harnessSlug ? home : undefined; // only when THIS harness owns the hive
+  } catch { return undefined; }
+})();
+// …
+hiveHomeSlug: hiveHomeSlug ?? ownHiveHomeSlug, // joiner keeps its rebind ⇒ the `??` is a no-op
+```
+
+Scoped to `home === own slug` so a joiner keeps its rebound `hiveHomeProjectionSlug` (the `??` never fires) and `hiveHomeProjectionSlug` itself — used by A-003 slug-scope, admit, and rekey — is left **untouched**. Setting `hiveHomeSlug = ownSlug` for the owner is a no-op for the `hiveScoped` remap (`ownSlug === harnessSlug` ⇒ no remap) and only newly engages the 6 content projections’ guard.
+
+## The two traps (don’t repeat these)
+
+[Section titled “The two traps (don’t repeat these)”](#the-two-traps-dont-repeat-these)
+
+1. **Don’t add an UNGATED getOrgPg call to the boot hot path.** The first cut resolved `ownHiveHomeSlug` unconditionally. For a private/`local`-binding harness (the common case + most boot tests) that added a brand-new boot-time `getOrgPg` query, which under load hit the real PG and pushed timing-sensitive boots over their windows (`admission-pending-retry.test.ts` went 1s → 18s and failed). Gate it on `bindingResolvesHiveHomeProjection(binding)` (`kind==='hive' || 'topic'`): only a harness actually peered on a hive topic — where it can receive cross-member content — does the one-shot lookup. (See `/internal/docs/performance` on per-boot PG opens.)
+2. **Don’t trust a STEP-2 test that stubs `resolveAuthorDevice`.** The existing green close-gate test passes `applyOverride` with a hardcoded `hiveHomeSlug` and a stubbed `resolveAuthorDevice`, so it never exercised boot’s real resolution — which is exactly why the owner gap survived. The regression test for this fix boots the OWNER with the REAL `bootHarnessSubstrate` scopedApply (NO `applyOverride`, NO stub) so boot’s real `admittedIdentities → resolveAuthorDevice → resolveHiveMemberDeviceSet` chain AND the owner-home resolution are on the path. It boots both peers on a `hive` binding (a real shared owner is on the hive topic, never `local`) and env-routes `getOrgPg` at a migrated org DB (harness\_admin → RLS-bypass) so the owner’s real projections write there. Teeth-verified: it FAILS pre-fix at “never reached the OWNER’s PG” and passes post-fix.
+
+## Note
+
+[Section titled “Note”](#note)
+
+This is the CONTENT-apply (code) layer only. A live 2-machine witness additionally needs the swarm peered (FED-2 self-heal / `substrate-swarm-self-heal-no-restart`) and the build deployed to both VMs (the rig — `federation-rig-restart-runbook`); those are separate lanes from this fix.
+
 # Add a P2P request/response RPC channel by riding the existing Hyperswarm connection
 
 > To reach a NAT'd peer for an RPC (lock authority, eviction relay-probe), don't resolve a URL — multiplex a protomux channel onto the connection the substrate already holds open. The connection IS the address. Mirror cross-hive-swarm-transport.ts; touch NOTHING in swarm.ts.
@@ -12727,6 +12927,70 @@ Before any edit under `apps/operator/app/harness/*`:
 5. **If paperclip stomps your edit, re-apply and commit** rather than trying to coordinate. The race-and-commit approach is faster than pause-and-coordinate.
 
 Anywhere outside `apps/operator/app/harness/*` is paperclip-safe; edit normally.
+
+# The dogfood papercusp hive is a PER-OWNER shared P2P hive (Solution C)
+
+> How a fresh install makes `papercusp` a P2P-shared hive that merges across the OWNER's own devices — per-owner identity in a private gist (never baked), an owner-signed allowlist policy as the admission gate, and the two bootstrap hook points. Gated by DOGFOOD_PAPERCUSP_HIVE_SHARE (default ON).
+
+## What this is
+
+[Section titled “What this is”](#what-this-is)
+
+On a packaged desktop install, the `papercusp` dogfood hive isn’t just cloned locally — it is set up as a **P2P-shared hive that merges data across the OWNER’s own devices**, with **no secret baked into the binary**. This is “Solution C”: a *per-owner* shared identity (a stranger who installs the app can never join your hive), gated by `DOGFOOD_PAPERCUSP_HIVE_SHARE` (default **ON**).
+
+## The two facts that shape the design
+
+[Section titled “The two facts that shape the design”](#the-two-facts-that-shape-the-design)
+
+1. **A hive’s Ed25519 keypair is its TOPIC + announce identity, not a writer key.** The substrate is “Model B” (per-device single-writer logs + read-merge — see `sync/hyperbee/peer-log.ts`), *not* Autobase. So sharing one keypair across devices is **safe** (no writer conflict): they just land on the same federation topic (`deriveHiveFederationTopic(pubkey)`) and read-merge as distinct writers.
+2. **Discovery and data-merge are two SEPARATE gates.** The keypair gets devices onto the same topic (discovery). The actual **merge** is gated by **membership**: `classifySameHiveMember` (boot.ts) admits a remote device’s log only if its `(github_user_id, device)` is in `hive_members`. A shared keypair grants discovery but **not** membership.
+
+So Solution C has to solve BOTH: get the owner’s devices onto one identity, AND admit them to merge.
+
+## How it works
+
+[Section titled “How it works”](#how-it-works)
+
+### Identity — a per-owner PRIVATE gist (never baked)
+
+[Section titled “Identity — a per-owner PRIVATE gist (never baked)”](#identity--a-per-owner-private-gist-never-baked)
+
+`papercusp-shared-identity-gist.ts` stores the hive identity (Ed25519 private key DER + the invite secret) in a **private GitHub gist** (`public:false`, filename `papercusp-hive-identity.json`) tied to the owner’s account. The first device generates + publishes it; later devices `fetchOwnerHiveIdentity` and adopt it. The private key is therefore protected by the owner’s GitHub auth — the same surface guarding their private repos — and is **not** in the app binary.
+
+> The stricter “private key never leaves the creating device” posture is the remote-hive JOIN variant (share only the pubkey) — a heavier follow-up, deliberately not done.
+
+### Admission — the owner-signed ALLOWLIST policy (no new security code)
+
+[Section titled “Admission — the owner-signed ALLOWLIST policy (no new security code)”](#admission--the-owner-signed-allowlist-policy-no-new-security-code)
+
+The “auto-admit my own devices, refuse strangers” behavior is **the existing audited policy gate**, not new code. `goSharedHive` calls `authorHivePolicy` with `{ membership: 'allowlist', allowlist: [<owner github login>] }`. Then `evaluateMembershipAdmission` (hive-membership-policy.ts) admits a joiner iff its login is allowlisted. The `github_user_id`/login is authenticated via the device attestation binding (can’t be spoofed). **This is essential** — the default `open` mode would admit any stranger on the topic.
+
+### The two bootstrap hook points (`bootstrap-papercusp-hive.ts`)
+
+[Section titled “The two bootstrap hook points (bootstrap-papercusp-hive.ts)”](#the-two-bootstrap-hook-points-bootstrap-papercusp-hivets)
+
+`papercusp-hive-share.ts` exposes three flag-gated, best-effort, never-throwing entry points wired around hive creation:
+
+* **`adoptSharedHiveIdentity()`** — runs *before* create. If the owner already has an identity gist (a prior device made it), inject that keypair into the keychain so `ensurePapercuspHive` → `loadOrGenerateHiveKeypair` **loads** it (same pubkey ⇒ same topic) instead of minting a fresh per-device one.
+* **`goSharedHive(state)`** — runs *after* create. First device publishes its just-minted keypair + a fresh invite secret to the gist; then BOTH paths announce on the **invite** topic (`setHiveListing` — not `public`, so no global directory / Cupboard leak) and author the allowlist policy.
+* **`shareExistingHive()`** — the already-present / re-boot / “enable-later” path: publishes (first device) / announces / sets the policy on a hive that already exists, **skipping** if a gist holds an identity whose pubkey ≠ this hive’s (a pre-existing mismatch can’t be retroactively adopted).
+
+The owner’s GitHub login + token come from `resolveLocalGithubIdentity` (reads the gh token); no gh auth ⇒ the whole thing no-ops and retries next boot.
+
+## Security model (why C, not “bake one key”)
+
+[Section titled “Security model (why C, not “bake one key”)”](#security-model-why-c-not-bake-one-key)
+
+* The private key is in the owner’s **private gist**, never the public binary — strangers can’t get it.
+* A stranger who somehow lands on the topic is **refused by the allowlist** (only the owner’s login is admitted). The membership gate is what protects the DATA; the topic merely needs the pubkey to discover.
+
+## Gotchas / how to verify
+
+[Section titled “Gotchas / how to verify”](#gotchas--how-to-verify)
+
+* **Single-device smoke** (what’s verifiable on one box): after the share step, `harness_shared.hive_policy` has the signed `{allowlist:[login], membership:'allowlist'}` row, and the `harness_registry` payload’s `hiveDirectoryMeta.papercusp` has `visibility:'invite'` + an `inviteSecret`. If a restart keeps the **same** inviteSecret, the gist persisted (the gh token has the `gist` scope and the fetch/adopt round-trips).
+* **2-device data-merge** can ONLY be witnessed with a real second device of the same GitHub login — it adopts the gist identity, gets auto-admitted by the allowlist, and federates. That’s the part to check live.
+* The flag is `DOGFOOD_PAPERCUSP_HIVE_SHARE` (default ON). OFF ⇒ the share hooks are a pure no-op (local-only hive, byte-identical to pre-C).
 
 # Patching memory METADATA (scope / kind / workspace / anchors) — vec-safe, via memory:update
 

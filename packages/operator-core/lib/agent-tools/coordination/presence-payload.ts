@@ -50,6 +50,9 @@ export type RosterRow = UnifiedPresenceRecord &
   Partial<
     {
       lastActiveSecAgo: number | null;
+      /** Derived from lastActiveSecAgo: the declared intent is stale (the agent
+       *  is process-alive but genuinely idle past the threshold). null = unknown. */
+      intentStale: boolean | null;
       /** P-001: live | parked | ended (null for a federated/unknown row). */
       sessionState: SessionState | null;
       /** P-001: a live inbox-wake await exists → a wake will be delivered. */
@@ -97,6 +100,7 @@ export const PRESENCE_STATE_FIELDS = [
  *  snapshot (coord:presence), which is their use case. */
 export const PRESENCE_LIVENESS_FIELDS = [
   'lastActiveSecAgo',
+  'intentStale',
   'stale',
   'sessionState',
   'wakeable',
@@ -180,6 +184,10 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     ...identity,
     ...state,
     lastActiveSecAgo: (liveness.lastActiveSecAgo as number | null | undefined) ?? null,
+    // Stale-ownership signal: TRUE ⇒ this agent's declared intent/lane is NOT being
+    // actively progressed (idle past the threshold though its process still beats),
+    // so a reader must not treat its work as "handled". Always present for a reader.
+    intentStale: (liveness.intentStale as boolean | null | undefined) ?? null,
     // P-001: the coordinator's "can I hand this agent work?" signals. Emitted as
     // explicit nulls for a federated/unknown row (its await lives on its home
     // instance, so we cannot derive them locally) rather than omitted, so the

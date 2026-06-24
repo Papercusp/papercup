@@ -204,6 +204,31 @@ export async function insertFanoutNotify(
   return rows.length > 0;
 }
 
+/** Deadline for the synchronous best-effort fan-out (fanoutForObject). Generous
+ *  enough that a normal multi-subscriber fan-out never trips it, tight enough that
+ *  a wedged query can't hang the caller's write. Override via PAPERCUSP_FANOUT_DEADLINE_MS. */
+const FANOUT_DEADLINE_MS = Math.max(1000, Number(process.env.PAPERCUSP_FANOUT_DEADLINE_MS) || 10_000);
+
+/**
+ * Resolve `p`, but if it hasn't settled within `ms`, resolve to `fallback` so the
+ * caller is never blocked longer than the deadline. The losing promise keeps
+ * running (its result is ignored) — fine for an idempotent, best-effort fan-out
+ * whose misses the at-least-once outbox drain redelivers. `p` never rejects here
+ * (its body catches), so no unhandled rejection can escape the abandoned branch.
+ */
+export async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+    if (typeof timer?.unref === 'function') timer.unref();
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * The production fan-out consumer the drain calls per outbox row. Best-effort at
  * the drain level is NOT used: errors propagate so the drain's at-least-once
@@ -247,13 +272,25 @@ export async function fanoutForObject(
     stores?: Parameters<typeof resolveObjectSubscribers>[1];
   } = {},
 ): Promise<number> {
-  try {
-    const subscribers = (
-      await resolveObjectSubscribers(object, opts.stores ?? { subscriptions, tags, topics })
-    ).filter((s) => opts.excludeId == null || s.subscriber_id !== opts.excludeId);
-    const { deliverInjectMany } = await import('../../agent-tools/coordination/fanout-delivery');
-    return await deliverInjectMany(subscribers, ev, opts.sink);
-  } catch {
-    return 0;
-  }
+  // Best-effort means it must never break OR HANG the caller's write. The catch
+  // already absorbs ERRORS; the deadline absorbs SLOWNESS — a stalled subscriber
+  // resolve / appendLine (the admin pool has no default statement_timeout) must
+  // not block the comment/issue/conversation write that triggered the fan-out.
+  // On deadline we abandon the fan-out (returns 0) and let the caller proceed;
+  // the at-least-once outbox drain redelivers anything genuinely missed.
+  return withDeadline(
+    (async () => {
+      try {
+        const subscribers = (
+          await resolveObjectSubscribers(object, opts.stores ?? { subscriptions, tags, topics })
+        ).filter((s) => opts.excludeId == null || s.subscriber_id !== opts.excludeId);
+        const { deliverInjectMany } = await import('../../agent-tools/coordination/fanout-delivery');
+        return await deliverInjectMany(subscribers, ev, opts.sink);
+      } catch {
+        return 0;
+      }
+    })(),
+    FANOUT_DEADLINE_MS,
+    0,
+  );
 }

@@ -5,6 +5,11 @@
  * safe to assign/wake":
  *   - lastActiveSecAgo — seconds since GENUINE activity (last_active_at, D-003),
  *     distinct from the keepalive-polluted heartbeat.
+ *   - intentStale      — derived: TRUE when lastActiveSecAgo is past the staleness
+ *     threshold, so a reader knows the agent's declared intent / lane is NOT being
+ *     actively progressed even though its process still heartbeats (stale-ownership-
+ *     activity-truth: the 60s supervisor beat keeps a parked/idle psu host "alive",
+ *     so a heartbeat-only read makes peers/Queen think abandoned work is handled).
  *   - claimedItems     — the agent's plan-item lane (plan_item_claims).
  *   - model            — its model tier (spawned_agents.model_tier).
  *   - awaitingEvent(+key/note) — is it parked on an events:await (blocked-on)?
@@ -23,6 +28,10 @@ import { getAllWakeModeOverrides, getDefaultWakeMode, type WakeMode } from './wa
 export interface PresenceTier1 {
   /** Seconds since genuine activity (last_active_at), or null if never/unknown. */
   lastActiveSecAgo: number | null;
+  /** Derived: TRUE when genuine activity is staler than INTENT_STALE_SEC, so the
+   *  agent's declared intent / lane should be read as NOT actively progressing
+   *  (its process may still heartbeat). null when activity is unknown. */
+  intentStale: boolean | null;
   /** Plan-item ids the agent currently holds (its lane). */
   claimedItems: string[];
   /** Model tier the agent runs on (opus/sonnet/haiku…), or null. */
@@ -37,9 +46,9 @@ export interface PresenceTier1 {
   wakeMode: WakeMode;
 }
 
-/** The join-derived half of the enrichment (everything except the
- *  record-derived lastActiveSecAgo). */
-export type PresenceTier1Joins = Omit<PresenceTier1, 'lastActiveSecAgo'>;
+/** The join-derived half of the enrichment (everything except the record-derived
+ *  lastActiveSecAgo + its derived intentStale). */
+export type PresenceTier1Joins = Omit<PresenceTier1, 'lastActiveSecAgo' | 'intentStale'>;
 
 /** Pure: seconds since lastActiveAt (clamped ≥0), or null when unset/unparseable. */
 export function computeLastActiveSecAgo(lastActiveAt: string | null, nowMs: number): number | null {
@@ -47,6 +56,29 @@ export function computeLastActiveSecAgo(lastActiveAt: string | null, nowMs: numb
   const t = Date.parse(lastActiveAt);
   if (Number.isNaN(t)) return null;
   return Math.max(0, Math.round((nowMs - t) / 1000));
+}
+
+/** Staleness threshold (seconds) past which a declared intent / lane is read as
+ *  NOT actively progressing. A psu host's supervisor beat refreshes heartbeat_at
+ *  every 60s while the OS process lives — independent of genuine work — so a
+ *  parked/idle session reads as a live owner forever on a heartbeat-only check
+ *  (stale-ownership-activity-truth). last_active_at (mig 277) bumps ONLY on real
+ *  activity; this threshold is how stale that may get before "who's on what"
+ *  stops trusting the declared intent. Default 30m; env-overridable. */
+export const INTENT_STALE_SEC = (() => {
+  const v = Number(process.env.PAPERCUSP_INTENT_STALE_SEC ?? 30 * 60);
+  return Number.isFinite(v) && v > 0 ? v : 30 * 60;
+})();
+
+/** Pure: is a declared intent STALE — genuine activity older than the threshold?
+ *  null when activity is unknown (lastActiveSecAgo null → can't judge). Exported so
+ *  the boundary is unit-tested without PG. */
+export function computeIntentStale(
+  lastActiveSecAgo: number | null,
+  thresholdSec: number = INTENT_STALE_SEC,
+): boolean | null {
+  if (lastActiveSecAgo == null) return null;
+  return lastActiveSecAgo > thresholdSec;
 }
 
 /**
@@ -112,10 +144,15 @@ export function mergeTier1<T extends { ownerId: string; lastActiveAt: string | n
   records: T[],
   joins: Map<string, PresenceTier1Joins>,
   nowMs: number,
-): Array<T & { lastActiveSecAgo: number | null } & Partial<PresenceTier1Joins>> {
-  return records.map((r) => ({
-    ...r,
-    lastActiveSecAgo: computeLastActiveSecAgo(r.lastActiveAt, nowMs),
-    ...(joins.get(r.ownerId) ?? {}),
-  }));
+): Array<T & { lastActiveSecAgo: number | null; intentStale: boolean | null } & Partial<PresenceTier1Joins>> {
+  return records.map((r) => {
+    const lastActiveSecAgo = computeLastActiveSecAgo(r.lastActiveAt, nowMs);
+    return {
+      ...r,
+      ...(joins.get(r.ownerId) ?? {}),
+      // Derived AFTER the joins spread so neither the record nor a join can shadow it.
+      lastActiveSecAgo,
+      intentStale: computeIntentStale(lastActiveSecAgo),
+    };
+  });
 }

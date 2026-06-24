@@ -2,7 +2,7 @@
  * POST /api/discovery/join-hive — join a discovered hive AS A HIVE
  * (hive-from-repo-hardening-2026-06-11 P-007 / D-007).
  *
- * Body: { hiveId, title?, memberLinks: string[] }
+ * Body: { hiveId, title?, hivePubkey?, memberLinks: string[] }
  * Composes the existing per-member-link join for every link, then
  * materializes the joiner-side registry VIEW (a `remote_hive`-flagged
  * kind:'hive' entry + hive_slug on the joined members) so the Harnesses tab
@@ -21,7 +21,7 @@ export default defineTool({
   auth: 'loopback',
   timeoutSec: 600,
   async handler(req) {
-    let body: { hiveId?: string; title?: string; memberLinks?: unknown } = {};
+    let body: { hiveId?: string; title?: string; hivePubkey?: unknown; memberLinks?: unknown } = {};
     try {
       body = (await req.json()) as typeof body;
     } catch {
@@ -48,6 +48,9 @@ export default defineTool({
     const res = await joinHiveAsView({
       hiveId,
       ...(typeof body.title === 'string' && body.title.trim() ? { title: body.title.trim() } : {}),
+      ...(typeof body.hivePubkey === 'string' && body.hivePubkey.trim()
+        ? { hivePubkey: body.hivePubkey.trim() }
+        : {}),
       memberLinks,
       workspaceId: activeWorkspaceId(),
     });

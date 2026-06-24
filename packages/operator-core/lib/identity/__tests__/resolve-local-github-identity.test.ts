@@ -25,4 +25,14 @@ describe('resolveLocalGithubIdentity', () => {
     });
     expect(r).toEqual({ kind: 'gh_auth_required' });
   });
+
+  it('returns gh_auth_required when GET /user throws', async () => {
+    const r = await resolveLocalGithubIdentity({
+      getToken: async () => ({ kind: 'ok', token: 'tok' }),
+      getUser: async () => {
+        throw new Error('Connect Timeout Error');
+      },
+    });
+    expect(r).toEqual({ kind: 'gh_auth_required' });
+  });
 });

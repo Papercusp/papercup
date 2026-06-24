@@ -49,6 +49,7 @@ import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { autoPickableWhereSql } from './work-items-admission';
 import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
 import {
@@ -1909,13 +1910,20 @@ export async function commentWorkItem(id: string, body: string, authorId?: strin
   if (wi.family === 'issue') return commentIssue(id, body, authorId);
   // feature-family: thread on the feature ObjectRef + fan out to the work-item's subscribers.
   const ref = workItemObjectRef(wi);
-  const thread = await threads.getOrCreateThread(ref, {
-    thread_id: `work-item-thread-${id}`,
-    title: wi.title,
-    created_by: authorId ?? undefined,
-    created_ts: wi.createdAt,
+  // Durable write (get-or-create thread + add post) in ONE bounded txn: ATOMIC
+  // (post row + post_count bump commit together) + BOUNDED (SET LOCAL
+  // statement_timeout) so a stalled admin-pool query fails fast + typed rather
+  // than hanging the MCP call. Mirrors commentIssue. See pg-bounded-txn.ts.
+  const post = await boundedOrgTxn(async (tx) => {
+    const txThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
+    const thread = await txThreads.getOrCreateThread(ref, {
+      thread_id: `work-item-thread-${id}`,
+      title: wi.title,
+      created_by: authorId ?? undefined,
+      created_ts: wi.createdAt,
+    });
+    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: nowIso() });
   });
-  const post = await threads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: nowIso() });
   const ev: InjectEvent = {
     from: authorId ?? 'substrate',
     subject: `${FEATURE_KIND}:${ref.ref}`,

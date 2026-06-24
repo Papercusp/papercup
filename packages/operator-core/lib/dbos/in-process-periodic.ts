@@ -354,9 +354,11 @@ const staleClaimSweepCheck: PeriodicCheck = {
     // The PLAN-ITEM analog (EI-179): delete claims whose lease lapsed past grace AND
     // whose holder is gone. The durable ASSIGNMENT (mig 140) is untouched HERE — the
     // assignment reaper below handles it.
-    const { reclaimExpiredPlanItemClaims, reclaimStaleDeadHolderPlanItemAssignments } = await import(
-      '../plan-items/stale-claims'
-    );
+    const {
+      reclaimExpiredPlanItemClaims,
+      reclaimStaleDeadHolderPlanItemAssignments,
+      reclaimStalledLivePlanItemAssignments,
+    } = await import('../plan-items/stale-claims');
     const pr = await reclaimExpiredPlanItemClaims(sql);
     if (pr.released.length > 0) {
       console.warn(
@@ -385,6 +387,26 @@ const staleClaimSweepCheck: PeriodicCheck = {
       );
     }
 
+    // The STALLED-but-ALIVE assignment leg (stale-ownership-activity-truth): release a
+    // durable assignment whose holder is process-ALIVE (heartbeating) but has done no
+    // GENUINE activity (last_active_at) within the window — the "agent wandered off but
+    // its process lingers, so the item still reads as assigned/handled" gap. Gated by
+    // RECLAIM_STALLED (same switch as the work-item stalled leg) — a live-placement
+    // change D-003 ships behind that flag.
+    let sar = { released: [] as typeof ar.released };
+    if (includeStalled) {
+      sar = await reclaimStalledLivePlanItemAssignments(sql);
+      if (sar.released.length > 0) {
+        console.warn(
+          `[stale-claims] soft-released ${sar.released.length} STALLED-but-alive plan-item assignment(s) ` +
+            `(holder heartbeating but genuinely idle past the activity window): ` +
+            sar.released
+              .map((c) => `${c.harness_slug}/${c.plan_slug}#${c.item_id}<-${c.former_assignee}`)
+              .join(', '),
+        );
+      }
+    }
+
     // P-009 heartbeat — record this run (always, even when nothing was freed) so the
     // system-health reader can detect a WEDGED scheduler (last-run aged out).
     try {
@@ -392,7 +414,7 @@ const staleClaimSweepCheck: PeriodicCheck = {
       await recordSweepRun(
         sql,
         STALE_CLAIM_SWEEP_NAME,
-        r.released.length + ir.released.length + pr.released.length + ar.released.length,
+        r.released.length + ir.released.length + pr.released.length + ar.released.length + sar.released.length,
       );
     } catch {
       /* best-effort heartbeat */

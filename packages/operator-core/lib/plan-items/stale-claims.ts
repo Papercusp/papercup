@@ -50,6 +50,7 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
+import { STALE_MS } from '../liveness';
 
 type Db = Sql | TransactionSql;
 
@@ -208,6 +209,114 @@ export async function reclaimStaleDeadHolderPlanItemAssignments(
          AND NOT EXISTS (
            SELECT 1 FROM harness_shared.agent_name_sessions s
              JOIN live_alias h ON h.alias = s.session_owner_id
+            WHERE s.workspace_id = asg.workspace_id AND s.agent_name = asg.assignee_name
+         )
+         FOR UPDATE OF asg SKIP LOCKED
+    )
+    UPDATE harness_shared.plan_item_assignments asg
+       SET released_ts = now(), origin = 'local'
+      FROM dead d
+     WHERE asg.workspace_id = d.workspace_id AND asg.harness_slug = d.harness_slug
+       AND asg.plan_slug = d.plan_slug AND asg.item_id = d.item_id
+    RETURNING d.workspace_id, d.harness_slug, d.plan_slug, d.item_id,
+              d.former_assignee, d.reserved_secs`;
+  return { released: rows };
+}
+
+// ── STALLED-but-ALIVE ASSIGNMENT reaper (stale-ownership-activity-truth) ──────
+//
+// The two reapers above release a CLAIM lease and a DEAD-holder ASSIGNMENT. Both
+// treat "alive" as a fresh coord_presence HEARTBEAT — but a psu host's supervisor
+// beat refreshes heartbeat_at every 60s while the OS process lives, INDEPENDENT of
+// whether the agent does any work. So an agent that wandered off / is blocked but
+// whose process lingers keeps its durable assignment forever: the dead-holder leg
+// never fires (it heartbeats), yet peers/Queen read the item as "assigned + handled"
+// while no work happens. This is the owner-reported gap: "items stay assigned to su
+// agents who haven't been active on them for a long time."
+//
+// This reaper closes it: soft-release an ACTIVE assignment whose holder is
+// process-ALIVE but has done NO GENUINE activity (last_active_at, mig 277 — bumped
+// ONLY by real activity, never by the keepalive beat) within the activity window,
+// using the SAME name-aware resolution as the dead-holder reaper (the name itself OR
+// any session that adopted it). It mirrors the work-item "stalled" leg
+// (reclaimStaleWorkItemClaims includeStalled) and is gated by the SAME flag
+// (RECLAIM_STALLED) — freeing a live holder's reservation is the live-placement
+// change D-003 says ships behind that switch. A genuinely-working holder bumps
+// last_active_at every turn, so it is never robbed; only a process-alive-but-idle
+// holder past the window is released, returning the item to the unassigned pool.
+
+/** How long an assignment's holder may be process-alive-but-genuinely-idle before
+ *  the stalled leg soft-releases it. Shorter than the dead-holder grace (60m): a
+ *  holder that is DEMONSTRABLY present (heartbeating) but doing nothing on ANY item
+ *  for this long has wandered off the work. Env-overridable. */
+export const STALE_PLAN_ASSIGNMENT_ACTIVITY_MS = (() => {
+  const v = Number(process.env.PAPERCUSP_PLAN_ASSIGNMENT_ACTIVITY_MS ?? 30 * 60 * 1000);
+  return Number.isFinite(v) && v > 0 ? v : 30 * 60 * 1000;
+})();
+
+/**
+ * Soft-release (released_ts = now()) every ACTIVE plan-item assignment whose holder
+ * is process-ALIVE (fresh heartbeat on the name or an adopting session) but has had
+ * NO genuine activity (last_active_at) within `activityMs` on ANY of those aliases,
+ * and that has been reserved at least that long. The dead-holder reaper handles the
+ * not-alive case; this is its alive-but-idle complement. One atomic statement.
+ */
+export async function reclaimStalledLivePlanItemAssignments(
+  sql: Db,
+  opts: { activityMs?: number; livenessMs?: number } = {},
+): Promise<PlanAssignmentSweepResult> {
+  const activitySec = Math.max(1, Math.round((opts.activityMs ?? STALE_PLAN_ASSIGNMENT_ACTIVITY_MS) / 1000));
+  // Process-aliveness uses the TIGHT liveness window (heartbeat every 60s → a >grace
+  // gap means the process is gone, which is the dead-holder leg's job, not this one).
+  const livenessSec = Math.max(1, Math.round((opts.livenessMs ?? STALE_MS) / 1000));
+  const rows = await sql<ReleasedPlanAssignment[]>`
+    WITH
+    -- Process-ALIVE aliases (fresh heartbeat within the tight liveness window).
+    live_alias AS (
+      SELECT owner_id AS alias
+        FROM harness_shared.coord_presence
+       WHERE heartbeat_at IS NOT NULL
+         AND (now() - heartbeat_at) < make_interval(secs => ${livenessSec})
+      UNION
+      SELECT a.alias
+        FROM harness_shared.spawned_agents n
+        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+       WHERE n.status IN ('running', 'restarting')
+         AND n.heartbeat_at IS NOT NULL
+         AND (now() - n.heartbeat_at) < make_interval(secs => ${livenessSec})
+         AND a.alias IS NOT NULL AND a.alias <> ''
+    ),
+    -- GENUINELY-ACTIVE aliases (fresh last_active_at) — the real-work clock (mig 277),
+    -- NOT the keepalive heartbeat. A holder in live_alias but NOT here is "stalled".
+    active_alias AS (
+      SELECT owner_id AS alias
+        FROM harness_shared.coord_presence
+       WHERE last_active_at IS NOT NULL
+         AND (now() - last_active_at) < make_interval(secs => ${activitySec})
+    ),
+    dead AS (
+      SELECT asg.workspace_id, asg.harness_slug, asg.plan_slug, asg.item_id,
+             asg.assignee_name AS former_assignee,
+             EXTRACT(EPOCH FROM (now() - asg.assigned_ts))::float8 AS reserved_secs
+        FROM harness_shared.plan_item_assignments asg
+       WHERE asg.released_ts IS NULL
+         AND asg.assignee_name IS NOT NULL AND asg.assignee_name <> ''
+         AND asg.assigned_ts IS NOT NULL
+         AND (now() - asg.assigned_ts) > make_interval(secs => ${activitySec})
+         -- Holder is process-ALIVE (name itself OR an adopting session heartbeats)…
+         AND (
+           EXISTS (SELECT 1 FROM live_alias h WHERE h.alias = asg.assignee_name)
+           OR EXISTS (
+             SELECT 1 FROM harness_shared.agent_name_sessions s
+               JOIN live_alias h ON h.alias = s.session_owner_id
+              WHERE s.workspace_id = asg.workspace_id AND s.agent_name = asg.assignee_name
+           )
+         )
+         -- …but NOT genuinely active anywhere (name itself NOR any adopting session).
+         AND NOT EXISTS (SELECT 1 FROM active_alias h WHERE h.alias = asg.assignee_name)
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.agent_name_sessions s
+             JOIN active_alias h ON h.alias = s.session_owner_id
             WHERE s.workspace_id = asg.workspace_id AND s.agent_name = asg.assignee_name
          )
          FOR UPDATE OF asg SKIP LOCKED

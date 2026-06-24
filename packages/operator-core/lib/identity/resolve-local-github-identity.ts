@@ -54,9 +54,10 @@ export async function resolveLocalGithubIdentity(
   const getToken = opts.getToken ?? getGhAuthToken;
   const getUser = opts.getUser ?? getAuthenticatedGithubUser;
 
-  const tok = await getToken();
+  const tok = await getToken().catch(() => null);
+  if (!tok) return { kind: 'gh_auth_required' };
   if (tok.kind !== 'ok' || !tok.token) return { kind: 'gh_auth_required' };
-  const user = await getUser();
+  const user = await getUser().catch(() => null);
   if (!user) return { kind: 'gh_auth_required' };
   return { kind: 'ok', token: tok.token, githubUserId: user.id, githubLogin: user.login };
 }

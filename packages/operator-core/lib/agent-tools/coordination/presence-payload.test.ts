@@ -57,6 +57,7 @@ const MAXIMAL_ROW: RosterRow = {
   revoked: false,
   // — liveness —
   lastActiveSecAgo: 42,
+  intentStale: false,
   stale: false,
   sessionState: 'live',
   wakeable: true,
@@ -100,7 +101,7 @@ describe('partitionPresenceRow', () => {
     const { identity, state, liveness } = partitionPresenceRow(MAXIMAL_ROW);
     expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', hiveSlug: 'papercup-hive' });
     expect(state).toMatchObject({ intent: 'doing things', claimedItems: ['P-001'], wakeMode: 'auto' });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, stale: false, sessionState: 'live', wakeable: true });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, stale: false, sessionState: 'live', wakeable: true });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');
@@ -169,6 +170,7 @@ describe('byte-stability (D-006)', () => {
     expect(emitted).toHaveProperty('ownerId', 'su-a');
     expect(emitted).toHaveProperty('startedAt'); // stable identity timestamp — kept
     expect(emitted).toHaveProperty('lastActiveSecAgo');
+    expect(emitted).toHaveProperty('intentStale'); // stale-ownership signal, always emitted
     // P-001 wakeability signals are always emitted (null when un-derived).
     expect(emitted).toHaveProperty('sessionState');
     expect(emitted).toHaveProperty('wakeable');

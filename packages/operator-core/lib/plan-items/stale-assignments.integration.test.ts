@@ -29,7 +29,8 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { reclaimStaleDeadHolderPlanItemAssignments } = await import('./stale-claims');
+const { reclaimStaleDeadHolderPlanItemAssignments, reclaimStalledLivePlanItemAssignments } =
+  await import('./stale-claims');
 
 const WS = 'ws-stale-plan-assignments';
 const HARNESS = 'papercup';
@@ -49,7 +50,8 @@ beforeAll(async () => {
   // Minimal stubs for the liveness join — only the columns the live_alias CTE reads.
   await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
     owner_id text NOT NULL,
-    heartbeat_at timestamptz DEFAULT now() NOT NULL )`;
+    heartbeat_at timestamptz DEFAULT now() NOT NULL,
+    last_active_at timestamptz )`;
   await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
     spawn_id text, session_owner text, run_id text, status text, heartbeat_at timestamptz )`;
 }, 90_000);
@@ -77,6 +79,14 @@ async function active(itemId: string): Promise<boolean> {
   const r = await db.sql`SELECT 1 FROM harness_shared.plan_item_assignments
                           WHERE item_id = ${itemId} AND released_ts IS NULL`;
   return r.length > 0;
+}
+
+/** Insert a presence row with explicit heartbeat + genuine-activity ages (secs ago).
+ *  lastActiveAgoSecs = null ⇒ never genuinely active (last_active_at NULL). */
+async function presence(owner: string, heartbeatAgoSecs: number, lastActiveAgoSecs: number | null): Promise<void> {
+  const la = lastActiveAgoSecs == null ? null : new Date(Date.now() - lastActiveAgoSecs * 1000);
+  await db.sql`INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at, last_active_at)
+               VALUES (${owner}, now() - make_interval(secs => ${heartbeatAgoSecs}), ${la})`;
 }
 
 describe('reclaimStaleDeadHolderPlanItemAssignments (EI-2535 assignment GC)', () => {
@@ -151,5 +161,74 @@ describe('reclaimStaleDeadHolderPlanItemAssignments (EI-2535 assignment GC)', ()
     const r = await reclaimStaleDeadHolderPlanItemAssignments(db.sql, { graceMs: GRACE });
     expect(r.released.map((x) => x.item_id).sort()).toEqual(['P-010', 'P-011', 'P-012']);
     expect(await active('P-013')).toBe(true);
+  });
+});
+
+describe('reclaimStalledLivePlanItemAssignments (alive-but-idle ASSIGNMENT GC)', () => {
+  const ACTIVITY = 30 * 60 * 1000; // 30 min genuine-activity window
+  const HB_FRESH = 5; //         heartbeat 5s ago → process ALIVE
+  const HB_DEAD = 20 * 60; //    heartbeat 20min ago → process GONE (> 10m liveness window)
+  const ACT_STALE = 2 * 60 * 60; // last genuine activity 2h ago → idle
+  const ACT_FRESH = 60; //        last genuine activity 60s ago → working
+
+  it('reaps an assignment whose holder is process-ALIVE but genuinely idle past the window', async () => {
+    await assign('P-101', 'su-idle', STALE_SECS);
+    await presence('su-idle', HB_FRESH, ACT_STALE); // heartbeating but doing no real work
+    const r = await reclaimStalledLivePlanItemAssignments(db.sql, { activityMs: ACTIVITY });
+    expect(r.released.map((x) => x.item_id)).toEqual(['P-101']);
+    expect(r.released[0]!.former_assignee).toBe('su-idle');
+    expect(await active('P-101')).toBe(false);
+  });
+
+  it('reaps a holder that heartbeats but has NEVER been genuinely active (last_active_at NULL)', async () => {
+    await assign('P-102', 'su-never', STALE_SECS);
+    await presence('su-never', HB_FRESH, null);
+    const r = await reclaimStalledLivePlanItemAssignments(db.sql, { activityMs: ACTIVITY });
+    expect(r.released.map((x) => x.item_id)).toEqual(['P-102']);
+  });
+
+  it('does NOT reap a genuinely-active holder (fresh last_active_at)', async () => {
+    await assign('P-103', 'su-working', STALE_SECS);
+    await presence('su-working', HB_FRESH, ACT_FRESH);
+    const r = await reclaimStalledLivePlanItemAssignments(db.sql, { activityMs: ACTIVITY });
+    expect(r.released).toEqual([]);
+    expect(await active('P-103')).toBe(true);
+  });
+
+  it("does NOT reap a DEAD-process holder — that is the dead-holder leg's job, not this one", async () => {
+    await assign('P-104', 'su-gone', STALE_SECS);
+    await presence('su-gone', HB_DEAD, ACT_STALE); // heartbeat stale → not process-alive here
+    const r = await reclaimStalledLivePlanItemAssignments(db.sql, { activityMs: ACTIVITY });
+    expect(r.released).toEqual([]);
+    expect(await active('P-104')).toBe(true);
+  });
+
+  it('does NOT reap an assignment reserved within the activity window', async () => {
+    await assign('P-105', 'su-fresh-assign', FRESH_SECS); // reserved 60s ago
+    await presence('su-fresh-assign', HB_FRESH, ACT_STALE);
+    const r = await reclaimStalledLivePlanItemAssignments(db.sql, { activityMs: ACTIVITY });
+    expect(r.released).toEqual([]);
+    expect(await active('P-105')).toBe(true);
+  });
+
+  it('reaps a stable name whose ADOPTING session is alive-but-stalled', async () => {
+    await assign('P-106', 'builder-x', STALE_SECS);
+    await db.sql`INSERT INTO harness_shared.agent_name_sessions
+      (workspace_id, session_owner_id, agent_name, owner_user)
+      VALUES (${WS}, 'su-adopt-idle', 'builder-x', 'su-adopt-idle')`;
+    await presence('su-adopt-idle', HB_FRESH, ACT_STALE);
+    const r = await reclaimStalledLivePlanItemAssignments(db.sql, { activityMs: ACTIVITY });
+    expect(r.released.map((x) => x.item_id)).toEqual(['P-106']);
+  });
+
+  it('does NOT reap a stable name whose adopting session is genuinely active', async () => {
+    await assign('P-107', 'builder-y', STALE_SECS);
+    await db.sql`INSERT INTO harness_shared.agent_name_sessions
+      (workspace_id, session_owner_id, agent_name, owner_user)
+      VALUES (${WS}, 'su-adopt-busy', 'builder-y', 'su-adopt-busy')`;
+    await presence('su-adopt-busy', HB_FRESH, ACT_FRESH);
+    const r = await reclaimStalledLivePlanItemAssignments(db.sql, { activityMs: ACTIVITY });
+    expect(r.released).toEqual([]);
+    expect(await active('P-107')).toBe(true);
   });
 });

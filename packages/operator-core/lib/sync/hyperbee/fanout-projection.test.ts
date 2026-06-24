@@ -11,6 +11,7 @@ import {
   getSubscribableMapping,
   runFanoutForOutboxRow,
   registerSubscribableTable,
+  withDeadline,
   type OutboxFanoutRow,
 } from './fanout-projection';
 
@@ -127,5 +128,16 @@ describe('runFanoutForOutboxRow', () => {
     const n = await runFanoutForOutboxRow(row, { resolve: async () => SUBS, deliver: rec.deliver });
     expect(n).toBe(2); // mention subscriber NOT included — a delete is not a resolution
     expect(rec.calls.every((c) => c.ev.isResolution === false)).toBe(true);
+  });
+});
+
+describe('withDeadline (best-effort fan-out must never HANG the caller, only ever fail-soft)', () => {
+  it('returns the promise value when it settles before the deadline', async () => {
+    expect(await withDeadline(Promise.resolve(7), 1000, -1)).toBe(7);
+  });
+
+  it('returns the fallback when the promise outlives the deadline (a wedged subscriber query)', async () => {
+    const wedged = new Promise<number>(() => {}); // never settles — models a stalled DB call
+    expect(await withDeadline(wedged, 5, -1)).toBe(-1);
   });
 });
