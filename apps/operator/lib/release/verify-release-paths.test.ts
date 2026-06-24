@@ -85,6 +85,71 @@ describe('verifyReleasePaths', () => {
   });
 });
 
+// ── decouple-agent-prompts-from-release-gate-2026-06-20 P-004 ────────────────
+// The verifier is the deploy-time DIVERGENCE GUARD: when a prompt-root override
+// is active, prompts MUST resolve OUTSIDE the release tree (decoupled). An
+// override that silently no-ops (prompts still under release) FAILS the gate, so
+// "I edited a prompt" can never silently mean "not live".
+describe('verifyReleasePaths — prompt decoupling (P-004 divergence guard)', () => {
+  const savedEnv: Record<string, string | undefined> = {};
+  const extraTmps: string[] = [];
+  beforeEach(() => {
+    savedEnv.PAPERCUSP_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    savedEnv.PAPERCUSP_PROMPT_ROOT = process.env.PAPERCUSP_PROMPT_ROOT;
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    delete process.env.PAPERCUSP_PROMPT_ROOT;
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    for (const d of extraTmps.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('override active + integration prompts present ⇒ operatorPrompts is decoupled and ok (resolves outside release)', () => {
+    // A separate integration tree carrying the operator prompts.
+    const integRoot = mkdtempSync(join(tmpdir(), 'rel-integ-'));
+    extraTmps.push(integRoot);
+    mkdirSync(join(integRoot, 'apps/operator/prompts'), { recursive: true });
+    writeFileSync(join(integRoot, 'apps/operator/prompts', 'operator.md'), '# integration prompt');
+    process.env.PAPERCUSP_INTEGRATION_ROOT = integRoot;
+
+    const r = verifyReleasePaths(release);
+    const byName = Object.fromEntries(r.checks.map((c) => [c.name, c]));
+    // operatorPrompts resolved into the integration tree, flagged decoupled, NOT under release, and OK.
+    expect(byName.operatorPrompts.decoupled).toBe(true);
+    expect(byName.operatorPrompts.underRelease).toBe(false);
+    expect(byName.operatorPrompts.exists).toBe(true);
+    // code/template reads stay release-scoped and pass.
+    expect(byName.sqlMigrations.underRelease).toBe(true);
+    expect(r.ok).toBe(true);
+  });
+
+  it('override active but integration prompts MISSING ⇒ silent no-op caught (prompts fell back under release ⇒ FAIL)', () => {
+    // Override points at a tree with NO apps/operator/prompts → promptsDir() falls
+    // back to the cwd (release) prompts. That is the silent no-op the guard catches.
+    const integRoot = mkdtempSync(join(tmpdir(), 'rel-integ-empty-'));
+    extraTmps.push(integRoot);
+    process.env.PAPERCUSP_INTEGRATION_ROOT = integRoot;
+
+    const r = verifyReleasePaths(release);
+    expect(r.ok).toBe(false);
+    expect(r.failures.some((f) => /decoupling SILENTLY no-op/.test(f))).toBe(true);
+    const byName = Object.fromEntries(r.checks.map((c) => [c.name, c]));
+    expect(byName.operatorPrompts.decoupled).toBe(true);
+    expect(byName.operatorPrompts.underRelease).toBe(true);
+  });
+
+  it('no override ⇒ operatorPrompts stays release-scoped (byte-identical to pre-decouple)', () => {
+    const r = verifyReleasePaths(release);
+    const byName = Object.fromEntries(r.checks.map((c) => [c.name, c]));
+    expect(byName.operatorPrompts.decoupled).toBe(false);
+    expect(byName.operatorPrompts.underRelease).toBe(true);
+    expect(r.ok).toBe(true);
+  });
+});
+
 // The CLI output contract — the deploy parses verify-paths's stdout, so a
 // trailing human line on stdout broke it (JSON.parse choked, deploy aborted +
 // rolled back, 2026-06-05). Lock the contract: stdout carries exactly ONE

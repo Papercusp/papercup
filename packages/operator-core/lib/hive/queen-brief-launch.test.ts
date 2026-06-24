@@ -28,6 +28,10 @@ vi.mock('../fleet/placement-gather', () => ({ gatherLiveBees: (...a: unknown[]) 
 vi.mock('../agent-tools/coordination/messages', () => ({ readInbox: (...a: unknown[]) => readInbox(...a) }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+// The capacity gather (P-002) hits the live gateway /stats — mock it so the brief tests are HERMETIC
+// (no dependency on a running :8788). Default: unreachable ⇒ the Capacity panel is omitted (fail-soft).
+const fetchGatewayHeadroom = vi.fn(async (..._a: unknown[]) => ({ reachable: false }) as Record<string, unknown>);
+vi.mock('../inference-gateway/observability', () => ({ fetchGatewayHeadroom: (...a: unknown[]) => fetchGatewayHeadroom(...a) }));
 // owner-steering (C-1): default = un-steered (today's behaviour). isPausedNow kept
 // faithful (pure) so the gather's expired-pause normalization is exercised for real.
 const getOwnerSteering = vi.fn(async (..._a: unknown[]) => ({
@@ -93,8 +97,26 @@ test('computeQueenWakeBrief — an EXPIRED pausedUntil is normalized away (no st
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
   getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: 1 });
   const out = await computeQueenWakeBrief('ws-1', 'papercup');
-  assert.doesNotMatch(out!, /PAUSED/);
+  // Specific to the owner-steering pause directive (not a bare /PAUSED/, which now also matches the
+  // capacity panel's "POOL PAUSED" — the steering pause renders "start NO new work").
+  assert.doesNotMatch(out!, /start NO new work/);
   assert.doesNotMatch(out!, /### Owner steering directive/);
+});
+
+// queen-capacity-aware-dispatch-2026-06-22 P-002 — the Capacity panel flows from the gateway oracle.
+test('computeQueenWakeBrief — capacity panel flows from the gateway oracle, fail-soft when unreachable', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  // default mock = unreachable ⇒ panel omitted, brief still renders (fail-soft)
+  let out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.doesNotMatch(out!, /Inference capacity:/);
+  // reachable + tiered ⇒ the panel renders the bee-tier dispatchBudget (cap 20 − inFlight 6 − queued 3 = 11)
+  fetchGatewayHeadroom.mockResolvedValueOnce({
+    reachable: true, utilization: 0.2, utilizationPct: 20, paused: false, rejected: false, inFlight: 2, queueDepth: 0,
+    priorityTiers: { healthyAccounts: 8, tier1Reserve: 4, tiers: [{ tier: 3, cap: 20, inFlight: 6, queued: 3 }] },
+  });
+  out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.match(out!, /Inference capacity:.*~11 bee slot\(s\) free/);
 });
 
 test('computeQueenWakeBrief — eligibleHives scopes the survey via allowedHarnesses (B-04 round-2, C-2)', async () => {

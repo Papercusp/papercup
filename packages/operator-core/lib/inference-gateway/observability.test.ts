@@ -62,6 +62,33 @@ test('projectHeadroom — paused/rejected window reflected', () => {
   assert.equal(h.resetInSec, 600);
 });
 
+test('projectHeadroom — surfaces the bound account smoothing pace (P-005)', () => {
+  const now = 1_000_000;
+  const h = projectHeadroom(
+    baseStats({
+      accountId: 'acct-main',
+      smoothing: {
+        engaged: true,
+        byAccount: {
+          'acct-main': { smoothRpm: true, rpm: 60, rpmFactor: 0.5, effRpm: 30, paceDelayMs: 0, effectivePaceMs: 2000 },
+          'acct-other': { smoothRpm: true, rpm: 60, rpmFactor: 1, effRpm: 60, paceDelayMs: 0, effectivePaceMs: 1000 },
+        },
+      },
+    }),
+    now,
+  );
+  assert.equal(h.smoothingEngaged, true);
+  assert.equal(h.smoothRpm, true);
+  assert.equal(h.effectivePaceMs, 2000, 'the BOUND account (acct-main) pace, not another account');
+  assert.equal(h.effRpm, 30);
+});
+
+test('projectHeadroom — smoothing absent (fresh gateway) leaves smoothing fields undefined', () => {
+  const h = projectHeadroom(baseStats(), 1_000_000);
+  assert.equal(h.smoothingEngaged, undefined);
+  assert.equal(h.effectivePaceMs, undefined);
+});
+
 test('projectHeadroom — no unified window yet (fresh gateway) leaves window fields undefined', () => {
   const h = projectHeadroom(baseStats(), 1_000_000);
   assert.equal(h.reachable, true);

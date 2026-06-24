@@ -92,6 +92,25 @@ test('renderQueenBrief — floor-only (no carry-note) omits the carry-note secti
   assert.doesNotMatch(out2, /### Your carry-note/);
 });
 
+// queen-capacity-aware-dispatch-2026-06-22 P-002 — the inference-capacity panel.
+test('renderQueenBrief — capacity panel renders dispatchBudget + advice when present, omitted when absent', () => {
+  const withCap = renderQueenBrief({
+    floor: {
+      frontier: frontier3,
+      capacity: { factor: 0.5, dispatchBudget: 7, utilizationPct: 92, paused: false, advice: 'tightening (factor 0.50) → trim low-priority placements; ~7 bee slots free' },
+    },
+  });
+  assert.match(withCap, /Inference capacity:.*~7 bee slot\(s\) free.*util 92%.*factor 0\.50/);
+  assert.match(withCap, /tightening.*trim low-priority/);
+  // paused pool surfaces the warning marker
+  const paused = renderQueenBrief({
+    floor: { frontier: frontier3, capacity: { factor: 0, dispatchBudget: 0, utilizationPct: 100, paused: true, advice: 'pool SATURATED' } },
+  });
+  assert.match(paused, /⚠ POOL PAUSED/);
+  // absent ⇒ no panel
+  assert.doesNotMatch(renderQueenBrief({ floor: { frontier: frontier3 } }), /Inference capacity:/);
+});
+
 // overwatch-role-2026-06-15 B-09 / D-004 — the who-watches-the-watcher reverse
 // leg: the Queen's brief carries overwatch's liveness.
 test('renderQueenBrief — overwatchAlive undefined ⇒ the cross-monitor line is omitted (no noise when overwatch is not in play)', () => {

@@ -111,6 +111,9 @@ export async function defaultRunWorkerChunkLoop(
     pg: getOrgPg().sql as unknown as NonNullable<InvokeContext['pg']>,
     workspaceId,
     extraSpawnEnv,
+    // P-020 metrics: label this run as the operator-hosted op path so the outcome
+    // record (recordWorkerChunkOutcome) distinguishes it from the subprocess path.
+    executionPath: 'op',
   };
 
   const lockCoordinator = await buildChunkLockCoordinator(projectDir);

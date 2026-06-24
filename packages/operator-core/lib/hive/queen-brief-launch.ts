@@ -37,19 +37,14 @@ import { parsePriorityTierMap } from '@papercusp/papercusp-shared/agent';
 
 /** Live inference-pool capacity → the floor's Capacity panel (queen-capacity-aware-dispatch P-002). The
  *  SOURCE-side read of the shared gateway oracle (D-007), so the Queen sizes the batch to what the pool can
- *  FEED. Fail-soft + gated: when the gateway is off / unreachable / the fetch errors, returns undefined and
- *  the panel is omitted (never blocks the brief, never shows a misleading reading). */
+ *  FEED. Fail-soft: when the gateway is off/unreachable (a connection-refused fails fast, well under the
+ *  timeout) or the fetch errors, returns undefined and the panel is omitted — never blocks the brief, never
+ *  renders a misleading reading. No flag gate needed: the unreachable fail-soft already covers gateway-off. */
 async function gatherCapacity(): Promise<BriefCapacity | undefined> {
   try {
-    const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
-    const [gwOn, clampArmed] = await Promise.all([
-      getFlag(FLAGS.INFERENCE_GATEWAY, 'system').catch(() => false),
-      getFlag(FLAGS.QUEEN_CAPACITY_DISPATCH, 'system').catch(() => false),
-    ]);
-    if (!gwOn) return undefined; // no capacity oracle when the gateway is off → omit the panel
     const hr = await fetchGatewayHeadroom({ timeoutMs: 1200 });
-    if (!hr.reachable) return undefined; // fail-soft: omit rather than render a misleading "unreachable" panel
-    const r = buildCapacityReport(hr, { clampArmed, tierMap: parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP) });
+    if (!hr.reachable) return undefined;
+    const r = buildCapacityReport(hr, { clampArmed: false, tierMap: parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP) });
     return { factor: r.factor, dispatchBudget: r.dispatchBudget, utilizationPct: r.utilizationPct, paused: r.paused, advice: r.advice };
   } catch {
     return undefined;

@@ -60,7 +60,7 @@ beforeEach(async () => {
 async function seedPlan(slug: string, opStatus: string, items: { id: string; status: string }[], harness = 'demo') {
   await db.sql`
     INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status, items)
-    VALUES (${WS}, ${harness}, ${slug}, ${opStatus}, ${JSON.stringify(items)}::jsonb)`;
+    VALUES (${WS}, ${harness}, ${slug}, ${opStatus}, ${db.sql.json(items)})`;
 }
 async function seedWorkItem(planSlug: string, harness = 'demo', feature = 'F-1') {
   await db.sql`

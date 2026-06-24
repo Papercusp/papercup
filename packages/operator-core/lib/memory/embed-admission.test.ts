@@ -142,6 +142,11 @@ describe('header helpers', () => {
   it('retryAfterMs returns undefined when absent', () => {
     expect(retryAfterMs({})).toBeUndefined();
   });
+
+  it('headersToRecord tolerates undefined/null headers (mocked fetch, edge transports)', () => {
+    expect(headersToRecord(undefined)).toEqual({});
+    expect(headersToRecord(null)).toEqual({});
+  });
 });
 
 describe('EmbedShedError', () => {

@@ -20,7 +20,10 @@ vi.mock('@papercusp/db-org', async () => {
 });
 
 const pauseTool = (await import('./pause')).default;
-const call = (slug: string, harness = 'web') => pauseTool.handler({ slug, harness } as never, {} as never) as Promise<{ content: { text: string }[] }>;
+// The bulk-refactored tools return a structured `{ data: { ok, results, counts } }`
+// envelope (../_bulk bulkContent), NOT the legacy MCP `{ content:[{text}] }` shape —
+// the dispatch layer renders the content; the raw handler hands back `{ data }`.
+const call = (slug: string, harness = 'web') => pauseTool.handler({ slug, harness } as never, {} as never) as Promise<{ data: { results: Record<string, unknown>[] } }>;
 const statusOf = async (plan: string) =>
   (await rootSql<{ op_status: string | null }[]>`SELECT op_status FROM harness_shared.harness_plans WHERE plan_slug=${plan}`)[0]?.op_status;
 
@@ -63,13 +66,13 @@ beforeEach(async () => {
 describe('plans:pause handler (PG)', () => {
   it('pauses a STARTED plan', async () => {
     const res = await call('started-plan');
-    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ slug: 'started-plan', status: 'paused' });
+    expect(res.data.results[0]).toMatchObject({ slug: 'started-plan', status: 'paused' });
     expect(await statusOf('started-plan')).toBe('paused');
   });
 
   it('a never-started plan (null op_status) returns notStarted and is NOT written', async () => {
     const res = await call('never-started');
-    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ notStarted: true });
+    expect(res.data.results[0]).toMatchObject({ notStarted: true });
     expect(await statusOf('never-started')).toBeNull(); // still null — the op_status IS NOT NULL guard held
   });
 

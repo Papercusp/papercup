@@ -78,12 +78,16 @@ export class EmbedShedError extends Error {
   }
 }
 
-/** A fetch `Headers` → the plain record `recordResponse` wants (governor lowercases keys). */
-export function headersToRecord(h: Headers): Record<string, string | undefined> {
+/** A fetch `Headers` → the plain record `recordResponse` wants (governor lowercases keys).
+ *  Null-safe: a response with no/odd headers (mocked fetch, edge transports) yields `{}` rather
+ *  than throwing on the embed hot path. */
+export function headersToRecord(h: Headers | null | undefined): Record<string, string | undefined> {
   const o: Record<string, string | undefined> = {};
-  h.forEach((v, k) => {
-    o[k] = v;
-  });
+  if (h && typeof h.forEach === 'function') {
+    h.forEach((v, k) => {
+      o[k] = v;
+    });
+  }
   return o;
 }
 

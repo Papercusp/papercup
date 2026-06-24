@@ -45,12 +45,23 @@ export interface GatewayHeadroom {
   totalRequests?: number;
   upstream429?: number;
   queued429?: number;
+  /** RPM-smoothing summary for the bound account (P-005): is the burst-dodging pace ENGAGED, and the
+   *  EFFECTIVE inter-request pace (ms) actually enforced on it. `effectivePaceMs > 0` ⇒ requests are
+   *  being spaced (smoothing is live, not just configured). Undefined when the gateway has no per-account
+   *  governor yet. */
+  smoothingEngaged?: boolean;
+  smoothRpm?: boolean;
+  effectivePaceMs?: number;
+  /** The bound account's effective per-minute allowance = floor(rpm × learned factor). */
+  effRpm?: number | null;
   error?: string;
 }
 
 /** Project a raw gateway /stats payload into the normalized headroom read-model. */
 export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayHeadroom {
   const u = stats.unified;
+  // P-005: surface the bound account's smoothing pace (the /stats `smoothing.byAccount[accountId]` entry).
+  const sm = stats.smoothing?.byAccount?.[stats.accountId];
   return {
     reachable: true,
     accountId: stats.accountId,
@@ -68,6 +79,10 @@ export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayH
     totalRequests: stats.totalRequests,
     upstream429: stats.upstream429,
     queued429: stats.queued429,
+    smoothingEngaged: stats.smoothing?.engaged,
+    smoothRpm: sm?.smoothRpm,
+    effectivePaceMs: sm?.effectivePaceMs,
+    effRpm: sm?.effRpm,
   };
 }
 
