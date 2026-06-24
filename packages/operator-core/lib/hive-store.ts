@@ -196,6 +196,59 @@ export async function insertHiveIfAbsent(
   return { record: existing, created: false };
 }
 
+/**
+ * Get-or-create a REMOTE hive identity row for a joiner view.
+ *
+ * Owned Hive identities are immutable. A joiner-side remote view is different:
+ * its pubkey is learned from the owner's directory announce, so a stale prior
+ * join can leave the view slug pointed at an obsolete pubkey. This helper may
+ * repair only rows that are already marked `remote:*`; local owned rows are
+ * returned unchanged on conflict.
+ */
+export async function upsertRemoteHiveIdentity(
+  input: InsertHiveInput,
+  sql?: Sql,
+): Promise<{ record: HiveRecord; created: boolean; repaired: boolean }> {
+  if (!input.keychainId.startsWith('remote:')) {
+    throw new Error('upsertRemoteHiveIdentity requires a remote:* keychain id');
+  }
+  const s = pg(sql);
+  const pk = pubkeyToBytea(input.pubkeyBase64);
+  const now = Date.now();
+  const rows = (await s.unsafe(
+    `INSERT INTO harness_shared.hives (${COLS})
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+     ON CONFLICT (workspace_id, home_slug) DO UPDATE
+       SET public_key = EXCLUDED.public_key,
+           keychain_id = EXCLUDED.keychain_id,
+           title = COALESCE(EXCLUDED.title, harness_shared.hives.title),
+           description = COALESCE(EXCLUDED.description, harness_shared.hives.description),
+           updated_at = EXCLUDED.updated_at
+       WHERE harness_shared.hives.keychain_id LIKE 'remote:%'
+     RETURNING ${COLS}`,
+    [
+      input.workspaceId,
+      input.homeSlug,
+      pk,
+      input.keychainId,
+      input.title ?? null,
+      input.description ?? null,
+      now,
+    ],
+  )) as unknown as HiveRow[];
+  if (rows[0]) {
+    const record = rowToRecord(rows[0]);
+    return { record, created: record.createdAt === now, repaired: record.createdAt !== now };
+  }
+  const existing = await getHiveBySlug(input.workspaceId, input.homeSlug, sql);
+  if (!existing) {
+    throw new Error(
+      `upsertRemoteHiveIdentity: conflict on (${input.workspaceId}, ${input.homeSlug}) but no row found`,
+    );
+  }
+  return { record: existing, created: false, repaired: false };
+}
+
 /** Edit a Hive's directory metadata (title/description). No identity side effects. */
 export async function updateHiveMeta(
   workspaceId: string,

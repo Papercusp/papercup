@@ -28,6 +28,7 @@ import { generateEd25519KeypairDer } from './identity/ed25519';
 import { hiveKeychainId } from './identity/hive-keypair';
 import {
   insertHiveIfAbsent,
+  upsertRemoteHiveIdentity,
   getHiveBySlug,
   getHiveByPubkey,
   listHives,
@@ -121,6 +122,39 @@ describe('Phase-0 Hive identity seam (keypair encoding → hives table → feder
     expect(rotated.record.pubkeyBase64).toBe(pub1); // unchanged — NOT pub2
 
     expect(await listHives(WS, db.sql)).toHaveLength(1); // never duplicated
+  });
+
+  it('repairs stale remote view identities but never clobbers owned hive identities', async () => {
+    const staleRemote = mintPubkey();
+    const freshRemote = mintPubkey();
+    await insertHiveIfAbsent(
+      { workspaceId: WS, homeSlug: 'remote-view', pubkeyBase64: staleRemote, keychainId: 'remote:old' },
+      db.sql,
+    );
+
+    const repaired = await upsertRemoteHiveIdentity(
+      { workspaceId: WS, homeSlug: 'remote-view', pubkeyBase64: freshRemote, keychainId: 'remote:new' },
+      db.sql,
+    );
+    expect(repaired.created).toBe(false);
+    expect(repaired.repaired).toBe(true);
+    expect(repaired.record.pubkeyBase64).toBe(freshRemote);
+    expect(repaired.record.keychainId).toBe('remote:new');
+
+    const owned = mintPubkey();
+    const ownedKeychainId = hiveKeychainId(WS, 'owned');
+    await insertHiveIfAbsent(
+      { workspaceId: WS, homeSlug: 'owned', pubkeyBase64: owned, keychainId: ownedKeychainId },
+      db.sql,
+    );
+    const attempted = await upsertRemoteHiveIdentity(
+      { workspaceId: WS, homeSlug: 'owned', pubkeyBase64: mintPubkey(), keychainId: 'remote:not-owned' },
+      db.sql,
+    );
+    expect(attempted.created).toBe(false);
+    expect(attempted.repaired).toBe(false);
+    expect(attempted.record.pubkeyBase64).toBe(owned);
+    expect(attempted.record.keychainId).toBe(ownedKeychainId);
   });
 
   it('resolves a Hive by its pubkey (dial identity) and enforces one-pubkey-one-Hive (UNIQUE)', async () => {

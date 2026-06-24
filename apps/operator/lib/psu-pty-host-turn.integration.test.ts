@@ -147,6 +147,7 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         cwd: '/tmp',
         env: {
           ...process.env,
+          PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           // Fast, deterministic idle gate (not exercised here — bridgeTty off —
@@ -216,6 +217,7 @@ describe('psu-pty-host idle gate defers a turn while busy, submits once idle (C2
         cwd: '/tmp',
         env: {
           ...process.env,
+          PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: String(idleMs),
@@ -292,6 +294,7 @@ describe('psu-pty-host cross-agent socket isolation (C1 / EI-153 class)', () => 
 
       const baseEnv = (id: string) => ({
         ...process.env,
+        PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_SID: id,
         TERM: 'xterm-256color',
         PAPERCUSP_PSU_PTY_IDLE_MS: '120',

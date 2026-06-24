@@ -13,6 +13,7 @@ import {
   decodeControl,
   controlBytes,
   controlWrites,
+  turnSubmitCrDelayForAgent,
   makeIdleGate,
   makeActivityTracker,
   ACTIVITY_PERSIST_MS,
@@ -90,6 +91,34 @@ describe('controlWrites — a turn submits via a SEPARATE delayed CR (paste-dete
   it('the total bytes still match controlBytes (text + CR), just delivered in two writes', () => {
     const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
     expect(controlWrites(d).map((s) => s.data).join('')).toBe(controlBytes(d));
+  });
+});
+
+describe('turnSubmitCrDelayForAgent', () => {
+  it('keeps Claude/OMP on the existing submit delay', () => {
+    expect(turnSubmitCrDelayForAgent('claude', {})).toBe(150);
+    expect(turnSubmitCrDelayForAgent('omp', {})).toBe(150);
+    expect(turnSubmitCrDelayForAgent('', {})).toBe(150);
+  });
+  it('uses a longer Codex settle so injected coord turns submit after paste handling clears', () => {
+    expect(turnSubmitCrDelayForAgent('codex', {})).toBe(500);
+    expect(turnSubmitCrDelayForAgent(' CODEX ', {})).toBe(500);
+  });
+  it('allows a Codex-specific override without changing Claude', () => {
+    const env = {
+      PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '175',
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '650',
+    };
+    expect(turnSubmitCrDelayForAgent('codex', env)).toBe(650);
+    expect(turnSubmitCrDelayForAgent('claude', env)).toBe(175);
+  });
+  it('ignores invalid delay overrides', () => {
+    const env = {
+      PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: 'nope',
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '-1',
+    };
+    expect(turnSubmitCrDelayForAgent('codex', env)).toBe(500);
+    expect(turnSubmitCrDelayForAgent('claude', env)).toBe(150);
   });
 });
 

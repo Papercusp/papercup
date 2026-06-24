@@ -73,6 +73,11 @@ const DEFAULT_IDLE_WAIT_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_IDLE_CAP_M
  *  Enter ("the wake text appeared but the turn didn't start"). An isolated CR,
  *  arriving after the paste settles, registers as a real submit. */
 const TURN_SUBMIT_CR_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_CR_MS) || 150;
+/** Codex's compose box needs a longer settle before the submit CR. With the
+ *  Claude-tuned delay, live coord injections can leave the text sitting in
+ *  Codex's input box until a human presses Enter. */
+const CODEX_TURN_SUBMIT_CR_DELAY_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS) || 500;
 
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
@@ -273,6 +278,21 @@ export function controlWrites(decoded, crDelayMs = TURN_SUBMIT_CR_DELAY_MS) {
   ];
 }
 
+/** The submit delay is backend-specific because each interactive TUI has its
+ *  own paste/compose handling. Keep the wire protocol backend-neutral; the
+ *  hosting psu process already knows its child agent via PAPERCUSP_AGENT. */
+export function turnSubmitCrDelayForAgent(agent, env = process.env) {
+  const globalOverride = Number(env.PAPERCUSP_PSU_PTY_SUBMIT_CR_MS);
+  const codexOverride = Number(env.PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS);
+  const normalized = String(agent || '').trim().toLowerCase();
+  if (normalized === 'codex') {
+    if (Number.isFinite(codexOverride) && codexOverride > 0) return codexOverride;
+    return CODEX_TURN_SUBMIT_CR_DELAY_MS;
+  }
+  if (Number.isFinite(globalOverride) && globalOverride > 0) return globalOverride;
+  return TURN_SUBMIT_CR_DELAY_MS;
+}
+
 /**
  * Connect to a live host's control socket and inject `text` as a submitted turn
  * (idle-gated). Used by tooling/tests; the OPERATOR's wake-executor implements
@@ -414,7 +434,8 @@ export function hostThroughPty(o) {
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
-        for (const step of controlWrites(msg)) {
+        const crDelayMs = turnSubmitCrDelayForAgent(env.PAPERCUSP_AGENT, env);
+        for (const step of controlWrites(msg, crDelayMs)) {
           if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
           child.write(step.data);
         }

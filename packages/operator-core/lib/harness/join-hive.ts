@@ -46,7 +46,7 @@ import {
   type SeedGitSyncRoutineOpts,
   type SeedGitSyncRoutineOutcome,
 } from './git-sync/git-sync-routine';
-import { insertHiveIfAbsent } from '../hive-store';
+import { upsertRemoteHiveIdentity } from '../hive-store';
 
 // ── Shapes ─────────────────────────────────────────────────────────────────────
 
@@ -280,13 +280,14 @@ export async function joinHiveAsView(
   //      keychain_id is a NON-SIGNING placeholder — a joiner never signs or
   //      announces a Hive it does not own (this remote view "never announces",
   //      per the §2 contract above), so the keypair-less identity is correct.
-  //      insertHiveIfAbsent is ON CONFLICT DO NOTHING, so a real OWNED identity
-  //      for this slug (if one ever exists) always wins.
+  //      upsertRemoteHiveIdentity repairs only rows whose keychain_id is already
+  //      remote:*; a real OWNED identity for this slug (if one ever exists)
+  //      always wins unchanged.
   const resolveHivePubkey = deps.resolveHivePubkey ?? defaultResolveHivePubkey;
   const upsertHiveIdentity =
     deps.upsertHiveIdentity ??
     ((input: { workspaceId: string; homeSlug: string; pubkeyBase64: string; keychainId: string }) =>
-      insertHiveIfAbsent({ ...input, title: opts.title ?? opts.hiveId }));
+      upsertRemoteHiveIdentity({ ...input, title: opts.title ?? opts.hiveId }));
   try {
     const pubkeyBase64 = await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null);
     if (pubkeyBase64) {
