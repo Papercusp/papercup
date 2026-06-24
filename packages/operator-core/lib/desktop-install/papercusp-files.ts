@@ -366,11 +366,19 @@ function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, n
  * survives — these shims run under bash on macOS / Linux / the WSL distro.
  */
 async function writeShim(shimPath: string, launcherPath: string, label: string): Promise<boolean> {
+  // Use the BUNDLED node (sidecar/bin/node, next to scripts/<launcher>) by
+  // absolute path, NOT a bare `node`. An end user running this from a plain
+  // macOS Terminal almost never has Node on PATH — `exec node …` then fails
+  // with "command not found: node" even though the shim itself resolves. Fall
+  // back to PATH `node` only in a dev/unbundled layout where the bundled node
+  // isn't present (the dev box has node on PATH).
+  const bundledNode = path.join(path.dirname(path.dirname(launcherPath)), 'bin', 'node');
+  const nodeCmd = (await pathExists(bundledNode)) ? bundledNode : 'node';
   const body =
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
     '# Refreshed on every boot; do not edit. Execs the bundled Node launcher.\n' +
-    `exec node ${JSON.stringify(launcherPath)} "$@"\n`;
+    `exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@"\n`;
   await fs.writeFile(shimPath, body, { mode: 0o755 });
   // writeFile honors mode only on creation; chmod to guarantee on overwrite.
   await fs.chmod(shimPath, 0o755);

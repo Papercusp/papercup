@@ -235,6 +235,15 @@ substitute the right column.
 
 ## 3. Global elements (every page except auth)
 
+The `.pc-header` mascot/wordmark **brand pair** (§3.1) and the entire **Oracle
+dock** (§3.2, `.oracle-fab` / `OracleDock`) were **not** carried into the live
+`operator-vite` `/adv` Tauri shell (confirmed by source grep + live DOM, E2E
+sweep 2026-06-23). The `/adv` header is `.pc-advshell__header` with a text
+kicker, and `WorkspaceSwitcher` (`.pc-workspace-trigger`) is the live header
+control. The live conversational surface is the **Conversations tab** agent
+chat, not a global "Reply to Papercup…" composer. See the §13 retired-surfaces
+note. Treat the rest of §3.1/§3.2 below as historical reference.
+
 ### 3.1 Header bar
 
 Selectors: `header.pc-header`, `.pc-header .brand`, `.pc-header nav`.
@@ -1255,10 +1264,9 @@ the per-panel detail lives in the panels themselves, not here.
 [ /admin]               /admin/{plans,git,features,tables,dbos,run}: each mounts; /admin/git pipeline view renders
 [ /cupboard]            list + detail render; error state shows friendly copy + Retry
 [ /coord]               coordination view mounts
-[ Oracle dock]          fab, send, navigate, persistence, new chat
-[ Operator chat]        "Reply to Papercup…" composer present and sends
+[ Conversations chat]   Conversations tab → live agent-chat composer present and sends (replaces the old global "Operator chat" / "Reply to Papercup…" surface — see retired note)
 [ Keyboard]             ⌘K palette, Esc closes modals/popovers, Mod+I → conversations
-[ Header]               brand pair, WorkspaceSwitcher, SessionIndicator
+[ Header]               WorkspaceSwitcher present; the /adv header uses a text kicker ("Advanced orchestration"), NOT a mascot/wordmark brand pair (legacy — see retired note)
 [ Empty states]         no work items, empty conversations views, empty Tests domains
 [ Error states]         API 500 on a panel fetch → friendly error + retry (no crash); dead-origin recovery page
 ```
@@ -1273,6 +1281,15 @@ switcher**, and everything under the **harness-snapshot system**
 §5–§8 below describe the legacy Next-era `/harness`, `/pi`, and
 `/marketplace` pages — treat them as historical reference, not coverage
 targets; the live product surface is `/adv` inside the Tauri shell.
+
+**Also confirmed ABSENT from the live `operator-vite` `/adv` shell** (E2E sweep
+2026-06-23, verified by source grep + live DOM): the **Oracle dock** (`.oracle-fab` /
+`OracleDock` — §3.2; only a polyfill comment remains in operator-vite), the
+**global "Operator chat" / "Reply to Papercup…" composer** (the live conversational
+surface is the **Conversations tab** agent-chat composer), and the marketing-style
+**`.pc-header` mascot/wordmark brand pair** (§3.1 — the `/adv` shell header is
+`.pc-advshell__header` with a text kicker). Treat §3.1's brand row and all of §3.2
+as historical; the global `.pc-header`/`.oracle-fab` selectors do not exist on `/adv`.
 :::
 
 ## 14. What "PASS" means

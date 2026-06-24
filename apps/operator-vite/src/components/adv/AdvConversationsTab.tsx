@@ -395,6 +395,13 @@ function ConvFrame({
         </div>
         {filters != null && <div className="pc-plans__group pc-advconv__navfilters">{filters}</div>}
         {list != null && <div className="pc-advconv__navlist">{list}</div>}
+        {/* Full-width views (Messages / Raw events) have no rail list, which left
+            the sidebar empty below the switcher. Fill it with the view's blurb so
+            the space reads as intentional context, not a broken empty panel. */}
+        {list == null && (() => {
+          const d = VIEW_DEFS.find((v) => v.id === view);
+          return d ? <p className="pc-advconv__nav-hint">{d.desc}</p> : null;
+        })()}
       </aside>
       <main className={`pc-advconv__main${list == null ? ' pc-advconv__main--wide' : ''}`}>{detail}</main>
       <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => void setView('threads')} />
@@ -2285,6 +2292,16 @@ function AdvConvStyles() {
         flex-direction: column;
         gap: 6px;
       }
+      /* Sidebar blurb shown for the full-width views (no rail list) so the
+         sidebar isn't an empty panel below the switcher. */
+      .pc-advconv__nav-hint {
+        margin: 0;
+        padding: 12px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--fg-mute, #7f9bb4);
+        border-top: 1px solid color-mix(in srgb, var(--advconv-border), transparent 30%);
+      }
       .pc-advconv__navlist {
         flex: 1 1 auto;
         min-height: 0;
@@ -2538,8 +2555,14 @@ function AdvConvStyles() {
       .pc-advconv__main .pc-coord__detail {
         flex: 1 1 auto;
         min-height: 0;
+        /* Neutralize coordination.css's .pc-coord__detail cap (max-height:74vh +
+           a grey border-left + padding-left). The pre-restructure CSS overrode
+           these; dropping that override let the detail get capped at 74vh, which
+           left a dead gap below the card — the reported glitch. */
+        max-height: none;
         overflow-y: auto;
         border: 1px solid var(--advconv-border);
+        border-left: 1px solid var(--advconv-border);
         border-radius: 12px;
         background: var(--advconv-panel);
         backdrop-filter: blur(12px);

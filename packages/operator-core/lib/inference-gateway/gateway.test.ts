@@ -1636,6 +1636,52 @@ test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: pe
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
 }, 90_000);
 
+test('[B-GW-1 G1] FLEET-WIDE bare-burst → rotate-retry SUPPRESSED (no cross-account amplification): ≈1 upstream call, ZERO failover', async () => {
+  // WI-649: under a FLEET-WIDE bare-burst the limit is a SHARED edge throttle bursting most of the pool at
+  // once (G2/WI-650 D-001: the bare-burst limit is shared/aggregate, NOT per-account), so rotating A→B→C
+  // finds NO capacity and just multiplies upstream load — the observed self-sustaining storm (/stats:
+  // upstream429=152 vs totalRequests=63 ⇒ 2.4× + failovers=108). The fix detects ≥half the pool already
+  // OUT OF ROTATION and SUPPRESSES the rotate-retry: the request falls through to the bounded transient-WAIT
+  // (it absorbs + recovers when the shared burst clears) instead of fanning out a fresh upstream call per
+  // account. CONTRAST: the "few accounts maxed → rotate to healthy" path is preserved — the bare-429 failover
+  // test + the budget-aware MAXED+HEALTHY test above still rotate, because there <half the pool is penalized.
+  resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B'), acct('C'), acct('D')]);
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        // The reachable account hits the shared transient burst: bare 429 (rate_limit_error, NO window headers).
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+      } else {
+        // The short shared burst cleared — capacity returns on the SAME account (no rotation needed).
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, content: 'recovered' }));
+      }
+    },
+    { pool, governorFor: undefined, concurrency: 8, aimd: { floor: 2 } },
+  );
+  // SIMULATE the fleet-wide state that concurrent in-flight requests create under the shared edge throttle:
+  // HALF the 4-account pool (A, B) is already out of rotation. With ≥half penalized, rotating this bare-429
+  // onto "another" account is futile (the same shared throttle), so the gateway must NOT rotate.
+  pool.onExhausted('A', Date.now() + 60_000);
+  pool.onExhausted('B', Date.now() + 60_000);
+
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'the request ABSORBED the fleet-wide bare-burst (bounded wait + retry on the SAME account) and recovered — not a forwarded error');
+  assert.equal(JSON.parse(await r.text()).content, 'recovered', 'the forwarded body is the recovered 200, not the burst error');
+  const s = (await (await ask('/stats')).json()) as { failovers: number; bareBurstRotateSuppressed: number; inFlight: number };
+  // THE FIX: no cross-account rotation happened. The OLD loop would have rotated C→D (a fresh upstream call on
+  // each) before giving up — exactly the 2.4× / 108-failover amplification that sustained the storm.
+  assert.equal(s.failovers, 0, `ZERO cross-account rotation under fleet-wide bare-burst (got ${s.failovers}; the pre-fix loop would rotate C→D here)`);
+  assert.ok(s.bareBurstRotateSuppressed >= 1, `the storm-suppressor engaged at least once (got ${s.bareBurstRotateSuppressed})`);
+  assert.equal(calls, 2, `≈1 upstream call/request: one bare-burst + one recover-on-the-same-account, NOT a per-account fan-out (got ${calls})`);
+  assert.equal(s.inFlight, 0, 'no admission slot leaked');
+}, 30_000);
+
 test('[soft-pin] a PINNED request whose account is SLAMMED by concurrent sessions yields to a healthy sibling (pinned-concentration fix)', async () => {
   // Owner-reported: unpinned 10+ sessions are fine (they spread), but PINNING several sessions to ONE account
   // breaks after a few — they pile onto that account's per-account RPM/burst limit while the pool sits idle.

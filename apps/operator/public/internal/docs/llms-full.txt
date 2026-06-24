@@ -2329,6 +2329,73 @@ The win is largest exactly where contexts are biggest: **bees average 19.4 turns
 
 > Caveats: the saving is per multi-step flow, not a fleet-wide multiplier (single-call turns are unaffected). The `tool_name` / `session_id` attribution columns (B-TOK-2) aren’t backfilled yet, so per-tool round-trip counts come from the flow shape, not from joined telemetry — refine the N figures once attribution is flowing. Numbers are from a 24h window and will drift.
 
+# coding-hive `bee` (self-pulls a claim-spec) vs coding-factory `scoper` (gets a FEATURE_ID pushed) — don't conflate them
+
+> Papercusp has TWO distinct coding execution models that share the fleet:spawn chokepoint, and agents repeatedly conflate their work units. The coding HIVE is a queen + self-pulling `bee`s: the Queen steers a bee with a versioned claim-spec (scheduler:set_claim_spec) and the bee PULLS its own next item via scheduler:get_next. The coding-FACTORY is the OPPOSITE — a PUSH pipeline (scoper→architect→worker→validator→documenter→curator, driven by a director's spine) where each role is HANDED a FEATURE_ID by the orchestrator (NEXT_SCOPER/NEXT_ARCHITECT/… all carry extras:["FEATURE_ID={feature}"]) and NEVER calls get_next. The exact observed failure: an agent spawned role="scoper" and set claim-specs on it to test the coding-hive handoff — but a scoper never self-pulls, so the claim-spec is INERT and (lacking a pushed FEATURE_ID) the scoper has nothing to do. For a claim-spec self-pulling worker the role is "bee", NEVER scoper. operator-spawn now REFUSES a factory pipeline role spawned with no pushed-feature context and points at role="bee"; set_claim_spec WARNS when its beeId resolves to a non-self-pulling role.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+An agent wanted to test the coding-**hive** work-handoff. It **spawned `role="scoper"`** and then **set claim-specs on that scoper** (`scheduler:set_claim_spec`) expecting it to pull work. It never pulled anything. **`scoper` is the wrong unit.** A scoper is a coding-**factory** role: it is *pushed* a `FEATURE_ID` by the orchestrator and **never calls `scheduler:get_next`**, so a claim-spec set on it is **inert** — it just sits in `bee_claim_specs` and steers nothing. And because no `FEATURE_ID` was pushed, the scoper had nothing to do either. The right unit for a claim-spec self-pulling worker is **`role="bee"`**.
+
+The tooling did not flag this. It does now (see *The durable guards* below).
+
+## The two models (they share `fleet:spawn`, but they are opposites)
+
+[Section titled “The two models (they share fleet:spawn, but they are opposites)”](#the-two-models-they-share-fleetspawn-but-they-are-opposites)
+
+### coding HIVE — PULL (queen + self-pulling bees)
+
+[Section titled “coding HIVE — PULL (queen + self-pulling bees)”](#coding-hive--pull-queen--self-pulling-bees)
+
+* Blueprint: `blueprints/coding/blueprint.yaml` (`id: coding`, `kind: hive`) — the Queen (roles `operator` / `queen`). Its worker is the **`bee`**: `blueprints/bee/blueprint.yaml` (`id: bee`, a single-role launch blueprint — the Queen’s “place one generic worker” primitive).
+* The Queen **steers, doesn’t dispatch**: she writes a bee a versioned **claim-spec** (`scheduler:set_claim_spec` → `bee_claim_specs`, mig 372) = a scoped **VIEW** (filter) + **ORDERING** (rank) over the live work-item DAG (`packages/operator-core/lib/scheduler/claim-spec.ts`).
+* The bee **self-pulls**: it calls **`scheduler:get_next`** (`packages/operator-core/lib/agent-tools/scheduler/get_next.ts`), which atomically claims the next item that satisfies `(global hard floors AND spec.view.filter)`, ordered by `spec.rank`. No spec ⇒ `DEFAULT_CLAIM_SPEC` (== `work_items:claim_next` oldest-first).
+* Re-steering a running bee = bumping its spec revision; the bee picks it up on its next `get_next`. **The pull is the bee’s; the scheduling judgment is the Queen’s.**
+
+### coding-FACTORY — PUSH (director-driven pipeline)
+
+[Section titled “coding-FACTORY — PUSH (director-driven pipeline)”](#coding-factory--push-director-driven-pipeline)
+
+* Blueprint: `blueprints/coding-factory/blueprint.yaml` (`id: coding-factory`, `kind: harness`). A per-feature **director** emits a decision verb each turn; the spine maps it to the next role: `scoper → architect → worker → validator → reviewer → documenter → curator`.
+* Each lifecycle edge **carries the feature**: `NEXT_SCOPER`, `NEXT_ARCHITECT`, `NEXT_VALIDATOR`, `NEXT_WORKER`, … all declare `extras: ["FEATURE_ID={feature}"]` (and `worker` additionally needs a chunk). **The role is HANDED its `FEATURE_ID`; it does not self-select.**
+* A factory role **never calls `scheduler:get_next`** and a claim-spec means nothing to it.
+
+|                   | coding HIVE                                           | coding-FACTORY                                                   |
+| ----------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
+| worker unit       | **`bee`**                                             | `scoper`/`architect`/`worker`/`validator`/`documenter`/`curator` |
+| how it gets work  | **PULLS** via `scheduler:get_next` per its claim-spec | **PUSHED** a `FEATURE_ID` by the director’s spine                |
+| Queen’s lever     | `scheduler:set_claim_spec` (steer)                    | n/a (the director dispatches)                                    |
+| claim-spec on it? | yes — that’s the point                                | **INERT** — it never calls `get_next`                            |
+
+## How to do it properly
+
+[Section titled “How to do it properly”](#how-to-do-it-properly)
+
+To test (or run) a coding-hive self-pulling handoff:
+
+1. **Spawn a bee** — `fleet:spawn { role: "bee", harness: "<slug>", brief?: "…" }`. NOT scoper.
+2. **Set its claim-spec** — `scheduler:set_claim_spec { beeId: "<the bee's session/owner id>", spec: { …view.filter + rank… } }`. Describe a **lane by property** (plan/paths/tags/priority) for a standing, auto-inflowing, steal-able lane; reserve `id in [...]` for a fixed wave.
+3. **The bee pulls** — the bee calls `scheduler:get_next` and claims the next item the spec selects within the global floors. Re-steer it by setting a new spec (the revision bumps; it picks it up on its next `get_next`).
+
+To run the coding-**factory** pipeline instead, push the feature: spawn the role *with* a `FEATURE_ID` (`featureId` / a `FEATURE_ID=` extra; `worker` also needs a chunk), or — better — let the harness autoloop / director dispatch the pipeline for you.
+
+## The durable guards
+
+[Section titled “The durable guards”](#the-durable-guards)
+
+* **`operator-spawn.ts` refuses an unfed factory role.** A spawn of a factory **pipeline** role (`scoper`/`architect`/`validator`/`documenter`/`curator`/`director`) with **no pushed-feature context** (no `featureId`, no `FEATURE_ID=` extra, no `chunkId`) is **rejected** with a message that names the bee alternative. A legitimate factory spawn always carries `FEATURE_ID` (the blueprint edges push it), so this never breaks the real factory. (`role="worker"` keeps its older, stricter chunk-id requirement, with the same bee hint.)
+* **`scheduler:set_claim_spec` warns on a non-self-pulling target.** Best-effort, it looks up the `beeId`’s spawned `child_role` in `harness_shared.spawned_agents`; if it resolves to anything other than a self-pulling role (`bee`/`queen`), the result carries a prominent `warning` that the spec is inert and asks “did you mean to spawn a bee?”. It does **not** hard-reject (the `beeId` may be a plain session id with no nursery row, or a queen) and swallows lookup errors.
+* **Point-of-use guidance** on `fleet:spawn`, `scheduler:set_claim_spec`, and `scheduler:get_next` spells out the hive-bee-vs-factory-scoper distinction inline.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `claim-spec.ts` — the claim-spec schema/validator + `DEFAULT_CLAIM_SPEC` + the `isIdOnlySelector` id-pin tripwire.
+* `role-config.ts` (`AGENT_ROLES`) — `bee` is “DECOUPLED from the pipeline guards”; the pipeline roles apply only inside a `kind:'harness'` coding harness.
+
 # Parsing tagged compact tool results (TOON / CSV)
 
 > Tool results are no longer always JSON — the MCP transport delivers compact TOON by default, prefixed with a `format: <fmt>` marker. How to read each format, where the pagination cursor + row count went, and how to force JSON when you need it.
@@ -6646,6 +6713,57 @@ Working example with all the trimmings (dispatch queue, parked responses, script
 
 For per-slug subsystems (git-sync’s routine rows, `(slug, phase)` escalation rows, `git-sync:<slug>` lock resources), N “peer machines” can be simulated as N member slugs in ONE process + ONE test PG, each slug owning its own checkout of one shared bare origin: peers share *nothing* but the origin — exactly the real multi-stack topology — while every race interleaving becomes deterministic and scriptable. That is how the P-010 two-peer convergence verification (plan `git-sync-any-hive-2026-06-12` D-007) replaced a “stand up a second isolated operator stack” manual run with a permanent regression suite. Check which state is actually per-slug before reusing this: anything keyed on a process-global singleton (one workspace pin, one registry) is shared and would diverge from the multi-stack reality.
 
+# The hive approval-membership gate lives at the owner admission seam
+
+> membership:'approval' is enforced by ownerAdmitOrPend in boot.ts drainAdmissionQueue — not by the joiner; the per-op enforcer and the join orchestrator deliberately do NOT decide approval.
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+A shared hive’s `membership:'approval'` policy is enforced **on the OWNER side**, at the substrate admission seam (`boot.ts` `drainAdmissionQueue`), via **`ownerAdmitOrPend`** (`hive-membership-admission.ts`). When the owner admits a binding-verified peer’s announce it does NOT unconditionally trust-admit; it consults the owner-signed policy:
+
+* **already a member** → refresh the row (idempotent epoch re-grant on reconnect).
+* **not a member, open/allowlisted** → `upsertHiveMember` (trust-admit).
+* **not a member, approval mode** → `recordPendingJoin` (a federated pending request, written by the owner so it reaches the joiner + the `hive:membership_pending` queue); the peer is **not** trust-admitted until `hive:membership_decide` approves.
+* **not a member, banned / not-allowlisted** → neither.
+
+## The trap (WI-639, fixed 2026-06-23)
+
+[Section titled “The trap (WI-639, fixed 2026-06-23)”](#the-trap-wi-639-fixed-2026-06-23)
+
+Approval mode was **built but unwired** — for a while it was a complete no-op (a verified joiner was auto-admitted exactly as if `membership:'open'`). Three things conspired:
+
+1. **`evaluateJoinAdmission`** (the function that records the pending request) had **zero live callers**. The 6-step join orchestrator (`joinSharedHarness` → `handleJoinLink` → `joinHiveAsView`) never calls it — joining is about cloning + attestation + booting the substrate, not membership policy.
+2. **`drainAdmissionQueue`** in `boot.ts` UNCONDITIONALLY `upsertHiveMember`’d every binding-verified, non-revoked peer (the comment even said “including OPEN-mode auto-admit”). No `getHivePolicy` / membership-mode check.
+3. **`policy-admission.ts`** (`decidePolicyOp`) enforces only ban → allowlist → takedown → content **per op**. It deliberately does NOT decide approval — its header says *“approval admission stays the JOIN gate’s job”*. But that gate was #1 (unwired).
+
+So nothing created a pending row, and the owner admitted before any approval.
+
+## Why the fix lives at the owner seam (not the joiner)
+
+[Section titled “Why the fix lives at the owner seam (not the joiner)”](#why-the-fix-lives-at-the-owner-seam-not-the-joiner)
+
+The owner is online + authoritative, and it already receives + verifies the joiner’s announce. Having the **owner** write the pending row (origin=`local` on the owner) matches the existing decision-federation model (the owner writes the `hive_members` row on approve and the `denied` status on deny). The pending row then federates back to the joiner so the joiner sees “pending” — robust even if the joiner is offline. This avoids a chicken-and-egg where a joiner-written pending row needs the owner to admit its core first.
+
+## Invariants — what `ownerAdmitOrPend` does NOT touch
+
+[Section titled “Invariants — what ownerAdmitOrPend does NOT touch”](#invariants--what-owneradmitorpend-does-not-touch)
+
+It gates ONLY the membership-UPSERT decision. **Core admission, the `revoked` set, the C-001 read-cut/epoch decrypt gate, and per-op policy enforcement are unchanged** (each at its own seam). A pending/refused peer’s *content* is still gated by the P-002 membership guard, so nothing federates as a member before approval. With no policy or `open` mode the outcome is `admit` → **byte-equivalent** to the prior behavior, so existing hives are unaffected (no flag needed — it’s naturally scoped to approval/allowlist-policy hives, which are owner opt-in).
+
+## Federated table note
+
+[Section titled “Federated table note”](#federated-table-note)
+
+`hive_pending_joins` **is** a federated table (it has a Hyperbee projection + op-key + a `substrate_outbox` capture) — so a recorded pending request, and the owner’s approve/deny decision, both federate. (An older WI-559 note listing the federated set omitted it; that list was incomplete.)
+
+## Tests
+
+[Section titled “Tests”](#tests)
+
+`hive-membership-admission.test.ts` (unit) + `hive-membership-admission.integration.test.ts` (real PG, incl. the `substrate_outbox` put that proves federation) cover all `ownerAdmitOrPend` branches end to end.
+
 # Rubric method: hive-coordination-health (the 14-criteria scorecard)
 
 > The investigation method behind the `hive-coordination-health` rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 14 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's `method_ref`; the structured part (criteria keys, rating scale, drift markers) lives in the `rubrics` store.
@@ -7760,6 +7878,84 @@ The inbox emitter is two pure functions:
 * **Inline chat needs a bounded height.** `ChatPanel` is `height:100%`; give the inline host (`.pc-plan-chat-inline`) a fixed height or it collapses.
 
 See the plan `inbox-cards-unification-2026-05-31` and the predecessor `planning-attention-importance-2026-05-31` (P-017, superseded).
+
+# The inference-gateway bare-burst 429 is a SHARED edge throttle, not a per-account rate/concurrency wall
+
+> WI-650/G2 decisive experiment. The fleet's dominant 429 (bare-burst: x-should-retry=true, NO retry-after, NO anthropic-ratelimit-* headers) is NOT triggered by any single account's request rate or concurrency. A single Max account, framed as Claude Code, egressing through its own proxy IP, sustains 64 simultaneous opus + 16-concurrent/10-rps haiku (>300 requests) with ZERO bare-burst 429s — far above the gateway's own per-account cap of 3 concurrent. Yet production throws hundreds of bare-bursts across all accounts at once, each header-less. A 429 stripped of ALL rate-limit metadata is the signature of an infrastructure/edge-layer throttle (Cloudflare or Anthropic's pre-app gateway) keyed on a dimension SHARED across the accounts (the org and/or the proxy-IP range), tripped only by the AGGREGATE fleet. Consequences: rotating to a 'fresh' account does NOT escape it (it adds to the shared pressure), per-account RPM smoothing is the wrong knob, and more accounts only buy burst headroom if they are DISTINCT orgs/IPs.
+
+## The question (WI-650 / BRIEF G2)
+
+[Section titled “The question (WI-650 / BRIEF G2)”](#the-question-wi-650--brief-g2)
+
+The gateway 429s with a **bare-burst** at only \~3.5 upstream-calls/min/account, util headers **absent**, across **all** accounts — far under the 45/min floor the governor assumes. So the binding limit is **not** per-minute request count. Is it per-second rate? a concurrency cap? a per-IP/edge (CDN) throttle? cross-account correlation? And is the 429 from Anthropic’s app layer or a CDN edge?
+
+## The decisive experiment
+
+[Section titled “The decisive experiment”](#the-decisive-experiment)
+
+`scripts/burst-probe.ts` — an operational runner (not a committed test; it makes real upstream calls). It **bypasses the gateway’s own governor** (per-account RPM smoothing + a `maxConcurrent≈3` admission cap) and fires **direct at `api.anthropic.com`**, replicating the gateway’s exact upstream request:
+
+* the account’s real OAuth Bearer (resolved via the live pool’s credentialRef),
+* `anthropic-version: 2023-06-01` + `anthropic-beta: oauth-2025-04-20`,
+* the account’s **dedicated egress proxy** → the **same source IP** the gateway uses (so a per-IP/edge throttle is measured against the real IP),
+* **critically**, the first `system` block = the Claude Code identity (`"You are Claude Code, Anthropic's official CLI for Claude."`). On a Max OAuth token a request whose first system block is **not** the CC identity is shunted to a far stricter bucket and 429s — probing without it measures the *wrong* limit. (The gateway notes this at `gateway.ts` \~1556.)
+
+`max_tokens:1`, tiny body, on the **healthiest** account (`aviynw7`, 7d util \~0.30).
+
+### Result — a single account does NOT hit the bare-burst
+
+[Section titled “Result — a single account does NOT hit the bare-burst”](#result--a-single-account-does-not-hit-the-bare-burst)
+
+| model     | sweep                                                | result                    |
+| --------- | ---------------------------------------------------- | ------------------------- |
+| haiku-4-5 | rate 1/2/5/10 per-s × conc 1..16, 12/cell (240 reqs) | **0** bare-burst, all 200 |
+| opus-4-8  | 8, 16, 32 **simultaneous** (96 reqs)                 | **0** bare-burst, all 200 |
+| opus-4-8  | **64 simultaneous** (1 wave)                         | **0** bare-burst, all 200 |
+
+At 64 concurrent opus, p50 latency rose to \~2.6s (real upstream queueing) but **not one rejection**. The per-account ceiling is **≥64 concurrent** — and the gateway’s own per-account cap is just **3**, so no single account ever approaches its real ceiling.
+
+### Yet production is a bare-burst storm
+
+[Section titled “Yet production is a bare-burst storm”](#yet-production-is-a-bare-burst-storm)
+
+`journalctl --user -u papercup-inference-gateway | grep 429-shape` over 2h:
+
+* **455 `429-shape=bare-burst`** vs **27 `429-shape=rate-window`** — bare-burst dominates \~17:1.
+* Every bare-burst line: `x-should-retry=true retry-after=-ms util5h=- util7d=-` — i.e. a 429 with **no `retry-after`, no `anthropic-ratelimit-*` headers at all**, firing across many accounts (`aviynw`, `aviynw4/6/7/8/10`) within the same minutes.
+* The `rate-window` 429s, by contrast, DO carry headers (`util5h=1.0`, `retry-after` up to \~129h) — those are the genuine **5h/7d quota walls** on the depleted accounts, a different beast.
+
+## The answer
+
+[Section titled “The answer”](#the-answer)
+
+**The bare-burst limit is NOT per-account.** A single account framed as Claude Code, through its own egress IP, sustains ≥64 concurrent opus / ≥16-concurrent-10-rps haiku with zero bare-bursts. The bare-burst is therefore a throttle on a dimension **shared across the accounts** — the Anthropic **organization** and/or the **proxy-IP range** — tripped by the **aggregate fleet**, not any one account.
+
+**It is an edge/infrastructure-layer throttle, not the app-layer rate-limiter.** Anthropic’s app-layer `rate_limit_error` always attaches `retry-after` + `anthropic-ratelimit-*` (the rate-window 429s prove it). A 429 stripped of *all* that metadata, carrying only `x-should-retry: true`, is the signature of a pre-app layer (Cloudflare edge / load-balancer) rejecting before the app attaches rate-limit headers. (The exact origin string — `server` / `cf-ray` — is now captured per bare-burst by the `[bare-burst-origin …]` suffix added to the gateway 429-log; read it from journald to confirm Cloudflare-edge vs Anthropic-edge.)
+
+## Why it matters — de-risks G1/G3/G5
+
+[Section titled “Why it matters — de-risks G1/G3/G5”](#why-it-matters--de-risks-g1g3g5)
+
+* **G1 (retry/rotation amplification — WI-649):** correct lever. Since the throttle is *shared*, rotating a bare-burst to a “fresh” account does **not** escape it — the rotated retry adds to the same aggregate pressure, so a bare-burst spawns more bare-bursts (the storm). Suppressing rotation under a fleet-wide bare-burst (what G1 does) is right.
+* **G3 (demand-shaping):** shape the **aggregate** fleet request rate, not per-account RPM. Per-account smoothing can’t help a limit that isn’t per-account.
+* **G5 (capacity):** more accounts add burst headroom **only if they are distinct orgs / distinct egress IPs**. Same-org (or same proxy-subnet) accounts share the wall, so adding them does not raise the aggregate burst ceiling.
+
+## How to re-measure
+
+[Section titled “How to re-measure”](#how-to-re-measure)
+
+```bash
+# dry-run (resolve account + print the request, send nothing)
+tsx scripts/burst-probe.ts --dry-run
+# one real request (shape check)
+PAPERCUSP_BURST_PROBE=1 tsx scripts/burst-probe.ts --one
+# a sweep (defaults to aviynw7 + haiku; --opus / --model / --rates / --conc / --per-cell)
+PAPERCUSP_BURST_PROBE=1 tsx scripts/burst-probe.ts --model claude-opus-4-8 --rates 1000 --conc 8,16,32 --per-cell 32
+```
+
+Guarded: refuses to fire without `PAPERCUSP_BURST_PROBE=1` (or `--yes`). Pick a **budget-healthy** account (`accounts:status`) — a burst can briefly trip its transient throttle.
+
+To confirm Cloudflare-vs-Anthropic origin from real traffic: `journalctl --user -u papercup-inference-gateway | grep bare-burst-origin`.
 
 # Provisioning per-account egress IPs for the inference gateway (the per-IP → per-account capacity lever)
 
@@ -58879,6 +59075,10 @@ The §3–§13 route tests below were written for verdict; the same intent maps 
 
 [Section titled “3. Global elements (every page except auth)”](#3-global-elements-every-page-except-auth)
 
+§3.1 brand pair + §3.2 Oracle dock are LEGACY — not on the live /adv shell
+
+The `.pc-header` mascot/wordmark **brand pair** (§3.1) and the entire **Oracle dock** (§3.2, `.oracle-fab` / `OracleDock`) were **not** carried into the live `operator-vite` `/adv` Tauri shell (confirmed by source grep + live DOM, E2E sweep 2026-06-23). The `/adv` header is `.pc-advshell__header` with a text kicker, and `WorkspaceSwitcher` (`.pc-workspace-trigger`) is the live header control. The live conversational surface is the **Conversations tab** agent chat, not a global “Reply to Papercup…” composer. See the §13 retired-surfaces note. Treat the rest of §3.1/§3.2 below as historical reference.
+
 ### 3.1 Header bar
 
 [Section titled “3.1 Header bar”](#31-header-bar)
@@ -59980,10 +60180,9 @@ The checklist mirrors the **live `/adv` shell** (the Vite SPA — `ADV_TABS` in 
 [ /admin]               /admin/{plans,git,features,tables,dbos,run}: each mounts; /admin/git pipeline view renders
 [ /cupboard]            list + detail render; error state shows friendly copy + Retry
 [ /coord]               coordination view mounts
-[ Oracle dock]          fab, send, navigate, persistence, new chat
-[ Operator chat]        "Reply to Papercup…" composer present and sends
+[ Conversations chat]   Conversations tab → live agent-chat composer present and sends (replaces the old global "Operator chat" / "Reply to Papercup…" surface — see retired note)
 [ Keyboard]             ⌘K palette, Esc closes modals/popovers, Mod+I → conversations
-[ Header]               brand pair, WorkspaceSwitcher, SessionIndicator
+[ Header]               WorkspaceSwitcher present; the /adv header uses a text kicker ("Advanced orchestration"), NOT a mascot/wordmark brand pair (legacy — see retired note)
 [ Empty states]         no work items, empty conversations views, empty Tests domains
 [ Error states]         API 500 on a panel fetch → friendly error + retry (no crash); dead-origin recovery page
 ```
@@ -59991,6 +60190,8 @@ The checklist mirrors the **live `/adv` shell** (the Vite SPA — `ADV_TABS` in 
 Retired surfaces — do NOT e2e these
 
 Rows the old checklist carried for surfaces that are now retired or transitional (EI-301): the `/harness` page’s **add-plugin popover**, the **DepartmentHarnessDashboard** (“dept”), the **PlanReview / Checkpoint / Promotion / Escalation banners**, the **staging/testing/production phase switcher**, and everything under the **harness-snapshot system** (`/snapshots`, marketplace snapshots tab, in-harness SnapshotsPanel). §5–§8 below describe the legacy Next-era `/harness`, `/pi`, and `/marketplace` pages — treat them as historical reference, not coverage targets; the live product surface is `/adv` inside the Tauri shell.
+
+**Also confirmed ABSENT from the live `operator-vite` `/adv` shell** (E2E sweep 2026-06-23, verified by source grep + live DOM): the **Oracle dock** (`.oracle-fab` / `OracleDock` — §3.2; only a polyfill comment remains in operator-vite), the **global “Operator chat” / “Reply to Papercup…” composer** (the live conversational surface is the **Conversations tab** agent-chat composer), and the marketing-style **`.pc-header` mascot/wordmark brand pair** (§3.1 — the `/adv` shell header is `.pc-advshell__header` with a text kicker). Treat §3.1’s brand row and all of §3.2 as historical; the global `.pc-header`/`.oracle-fab` selectors do not exist on `/adv`.
 
 ## 14. What “PASS” means
 
