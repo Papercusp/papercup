@@ -518,8 +518,10 @@ export const FLAGS = {
   // auth:set_full_access_roles REPLACES the baked TESTING_FULL_ACCESS_ROLES bypass set (the strongest
   // escalation in the system, so the override is gated here), clamp:set_safe_tools NARROWS the
   // scoped-SU cross-workspace allowlist (tighten-only), and exec_sandbox:set_policy ADDS sandbox mask
-  // dirs / forces deny-all-egress (tighten-only). OFF (default) ⇒ the sync-cache stays empty ⇒ every
-  // surface uses its baked literal ⇒ byte-identical. The owner flips this ON to ratify the auth dials.
+  // dirs / forces deny-all-egress (tighten-only). It ALSO gates capability_tier:set (P-010) — a
+  // runtime capability→tier override consulted by papercuspTierFor before the baked table. OFF
+  // (default) ⇒ every §G sync-cache stays empty ⇒ every surface uses its baked literal ⇒
+  // byte-identical. The owner flips this ON to ratify the §G auth-config dials.
   AUTH_CONFIG_OVERRIDES: "papercusp-auth-config-overrides",
   // live-configurability-audit-2026-06-20 P-019 — the testing-phase full-access master switch, the
   // env→flag conversion of the PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off kill-switch (gate-bypass.ts).
