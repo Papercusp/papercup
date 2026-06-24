@@ -267,7 +267,10 @@ body = json.dumps({
 }).encode()
 
 req = urllib.request.Request(
-    operator_url.rstrip('/') + '/api/mcp?superuser=1&client='
+    # format=json: the MCP result-format default flipped to compact (TOON-rendered
+    # text); this hook json.loads the tool result, so it MUST request json or the
+    # parse fails and lock protection silently drops (fail-open).
+    operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
     + urllib.parse.quote(owner, safe=''),
     data=body,
     headers={

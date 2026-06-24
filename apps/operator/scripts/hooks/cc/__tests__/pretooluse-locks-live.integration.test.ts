@@ -105,7 +105,9 @@ async function callTool(client: string, tool: string, args: unknown): Promise<Re
       },
       body: JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call',
-        params: { name: tool, arguments: args },
+        // _meta.format:'json' — the MCP result-format default flipped to compact (TOON);
+        // this test JSON.parses item.text, so declare json per-call (P-009 negotiation).
+        params: { name: tool, arguments: args, _meta: { format: 'json' } },
       }),
       signal: AbortSignal.timeout(15_000),
     },
@@ -119,7 +121,15 @@ async function callTool(client: string, tool: string, args: unknown): Promise<Re
       const cand = JSON.parse(line);
       if (cand && typeof cand === 'object' && 'result' in cand) {
         for (const item of (cand.result?.content ?? [])) {
-          if (item.type === 'text') return JSON.parse(item.text);
+          if (item.type === 'text') {
+            // Bulk-standardized locks verbs return { ok, results:[{…}], counts }; every
+            // call here is single-item, so flatten the lone result onto the envelope.
+            const parsed = JSON.parse(item.text) as Record<string, unknown>;
+            const results = parsed.results as Array<Record<string, unknown>> | undefined;
+            return Array.isArray(results) && results.length === 1 && parsed.counts != null
+              ? { ...parsed, ...results[0] }
+              : parsed;
+          }
         }
       }
     } catch { /* not the result line */ }

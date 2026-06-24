@@ -69,14 +69,17 @@ async function seedIssue(o: {
   // never matches — the text hop forces it to parse as a jsonb OBJECT.
   const payload = o.watchdogKey ? JSON.stringify({ watchdogKey: o.watchdogKey }) : null;
   const createdIso = new Date(o.createdAtMs ?? BET_CREATED_MS - 5 * DAY_MS).toISOString();
+  // engineer_issues is a VIEW over work_items (post-374), so `INSERT … ON CONFLICT`
+  // fails ("no unique or exclusion constraint matching the ON CONFLICT specification").
+  // Upsert via the view's INSTEAD OF triggers instead: DELETE then INSERT (the trigger
+  // routes both through to the work_items base row).
+  await db.adminSql`
+    DELETE FROM harness_shared.engineer_issues WHERE workspace_id = ${WS} AND issue_id = ${o.id}`;
   await db.adminSql`
     INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, title, state, payload, created_at, updated_at)
     VALUES (${WS}, ${o.id}, ${'seed ' + o.id}, ${o.state ?? 'open'},
-            ${payload}::text::jsonb, ${createdIso}, ${createdIso})
-    ON CONFLICT (workspace_id, issue_id) DO UPDATE
-      SET state = EXCLUDED.state, payload = EXCLUDED.payload, created_at = EXCLUDED.created_at
-  `;
+            ${payload}::text::jsonb, ${createdIso}, ${createdIso})`;
 }
 
 /** Seed a harness_plan row (PK workspace_id, harness_slug, plan_slug). */
@@ -95,6 +98,13 @@ beforeAll(async () => {
   savedEnv.HARNESS_DATABASE_URL = process.env.HARNESS_DATABASE_URL;
   process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
   process.env.HARNESS_DATABASE_URL = db.appDsn;
+  // Pin the ambient workspace to WS (=DEFAULT_COORD_WORKSPACE). The probes read
+  // engineer_issues under coordScopeWorkspace(), which COORD_PER_WORKSPACE (default-ON)
+  // resolves to activeWorkspaceId() — so without pinning it the probes look in the dev
+  // box's ambient workspace ≠ the 'default' the issues are seeded under, and every probe
+  // returns null (subject vanished). afterAll restores via savedEnv.
+  savedEnv.PAPERCUSP_WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID;
+  process.env.PAPERCUSP_WORKSPACE_ID = WS;
   _resetUrlCacheForTests();
   await _resetForTests();
 }, 180_000);
