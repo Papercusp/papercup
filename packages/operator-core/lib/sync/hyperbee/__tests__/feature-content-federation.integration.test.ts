@@ -1377,7 +1377,10 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         workspaceRoot: rootOwner,
         workspaceId: WORKSPACE_ID,
         harnessSlug: HIVE_HOME,
-        swarmBinding: BINDING,
+        // A real shared OWNER is on the hive topic (kind:'hive') — NOT a private 'local' binding;
+        // this is what makes `bindingResolvesHiveHomeProjection` true so the owner-home fallback
+        // (boot.ts ownHiveHomeSlug) engages. Both peers derive the SAME topic from this pubkey.
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
         swarmOverride: swarmOwner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idMember.userId ? 'verified' : 'fail',
@@ -1396,7 +1399,9 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         workspaceRoot: rootMember,
         workspaceId: WORKSPACE_ID,
         harnessSlug: MEMBER_SLUG,
-        swarmBinding: BINDING,
+        // Same hive topic as the owner (same pubkey) so they peer; the member is a JOINER, so its
+        // own-home fallback resolves undefined (member slug ≠ its hive home) — it uses applyOverride.
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
         swarmOverride: swarmMember,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idOwner.userId ? 'verified' : 'fail',

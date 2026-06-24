@@ -713,24 +713,27 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const pendingMemberContent = new PendingMembershipContent();
 
   // WI-559 / FED-1 (fed-b→fed-a "discovers 0"): the OWNER's hive-home harness must resolve the
-  // WI-259 content-guard hiveHomeSlug too. `resolveHiveHomeProjectionSlug` (above) only resolves the
-  // JOINER rebind via `joinerHiveHomeSlug` (the remote_hive view → null for an owner), so an owner's
-  // home harness ran the 6 content projections with hiveHomeSlug=undefined → `decideMemberContentOp`
-  // hit its no-hiveHome 'drop' branch for EVERY cross-member op, so a member's content never
-  // materialized on the owner. This is the admit/apply ASYMMETRY: STEP-1 admission
-  // (`resolveSameHiveMember`) already resolves the home as `hiveHomeProjectionSlug ??
-  // hiveHomeSlugForHarness(ws, slug)`, but STEP-2 apply only used `hiveHomeProjectionSlug`. Resolve
-  // the OWNER's own hive-home here and thread it as the content-guard FALLBACK below. Scoped to the
-  // case where THIS harness IS its own hive home (home === own slug) so joiner / non-hive resolution
-  // stays byte-unchanged: a joiner passes its rebound `hiveHomeProjectionSlug` (≠ null ⇒ the `??`
-  // never reaches this); a non-hive harness resolves null here ⇒ undefined (today's behavior).
+  // WI-259 content-guard hiveHomeSlug too. `resolveHiveHomeProjectionSlug` (above) resolves only the
+  // JOINER rebind via `joinerHiveHomeSlug` (remote_hive view → null for an owner), so an owner's home
+  // harness ran the 6 content projections with hiveHomeSlug=undefined → `decideMemberContentOp` hit
+  // its no-hiveHome 'drop' branch for EVERY cross-member op → a member's content never materialized on
+  // the owner. This closes the admit/apply ASYMMETRY: STEP-1 admission (`resolveSameHiveMember`)
+  // already resolves the home as `hiveHomeProjectionSlug ?? hiveHomeSlugForHarness(ws, slug)`, but
+  // STEP-2 apply only used `hiveHomeProjectionSlug`. We resolve the OWNER's own hive-home here and
+  // thread it as the content-guard FALLBACK below (scoped to home === own slug, so a joiner keeps its
+  // rebound `hiveHomeProjectionSlug` and the `??` is a no-op; a non-hive/non-owner harness → undefined).
+  // GATED on `bindingResolvesHiveHomeProjection` — the SAME gate the joiner resolution above uses — so
+  // a harness NOT on a hive/topic topic (the common boot path, e.g. a private 'local'/'gh' harness)
+  // pays ZERO extra getOrgPg cost and is byte-identical to today; only a harness actually peered on a
+  // hive topic (where it can receive cross-member content) does the one-shot owner-home lookup.
   const ownHiveHomeSlug = await (async (): Promise<string | undefined> => {
+    if (!bindingResolvesHiveHomeProjection(opts.swarmBinding)) return undefined;
     try {
       const { hiveHomeSlugForHarness } = await import('../../hive-federation');
       const home = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
       return home === opts.harnessSlug ? home : undefined;
     } catch {
-      return undefined; // fail-open: today's behavior (no cross-member apply) — boot never throws here
+      return undefined; // fail-open: today's behavior (no cross-member apply on the owner)
     }
   })();
 
