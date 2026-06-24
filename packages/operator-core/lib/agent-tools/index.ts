@@ -538,6 +538,8 @@ import './quota/set-tool';
 import './auth/set-full-access-roles';
 import './clamp/set-safe-tools';
 import './exec_sandbox/set-policy';
+// live-configurability-audit-2026-06-20 P-010 — runtime capability→tier override (DARK §G umbrella):
+import './capability/set-tier';
 // release-pipeline-resilience-2026-06-09 P-015 — the manual deploy lever + gate-unblock diagnosis:
 import './release/deploy';
 

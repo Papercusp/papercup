@@ -18,7 +18,12 @@ import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ dsn: '' }));
 
-vi.mock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => h.dsn }));
+vi.mock('./embedded-pg-discovery', () => ({
+  getHarnessAdminUrl: () => h.dsn,
+  // recordChainEvent's DB layer resolves the admin URL via getHarnessAdminUrlWithSource
+  // ({url, source}); the mock must provide it or the write fails (caught + warned → 0 rows).
+  getHarnessAdminUrlWithSource: () => ({ url: h.dsn, source: 'test' }),
+}));
 
 const { recordChainEvent } = await import('./operator-continue-chains');
 const { createOrgTestDb } = await import('../test/_org-test-db');

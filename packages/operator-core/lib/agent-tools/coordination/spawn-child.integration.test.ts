@@ -75,7 +75,7 @@ const DATE = '2026-06-07';
 const SEED = childSeedSlug(CHILD_SLUG, DATE);
 
 /** harness_plans — the columns withPlanLock writes + the op_* start columns
- *  (mirrors migration 122 + 125/128 normalize + 284 initiative; PK identical). */
+ *  (mirrors migration 122 + 125/128 normalize + 284 initiative + 329 template; PK identical). */
 const HARNESS_PLANS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
     workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
@@ -89,6 +89,10 @@ const HARNESS_PLANS_DDL = `
     items jsonb DEFAULT '[]'::jsonb NOT NULL, decisions jsonb DEFAULT '[]'::jsonb NOT NULL,
     now_state text, now_next text, origin text DEFAULT 'local' NOT NULL,
     initiative text,
+    -- migration 329 (plan-template-mechanism) + 331 (promote-policy): the withPlanLock
+    -- seed-plan write records the spawning template + the promote policy; without these
+    -- the INSERT fails "column <name> does not exist".
+    template text, promote_policy jsonb,
     created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug))`;
 
@@ -120,7 +124,7 @@ async function fakeImport(childSlug: string, payload: ImportPayload) {
         (${WS}, ${childSlug}, ${f.id}, ${f.title}, ${f.summary ?? null}, 'todo', 'feature',
          ${JSON.stringify(f.metadata)}::text::jsonb,
          ${f.claims && f.claims.length > 0 ? JSON.stringify(f.claims) : null},
-         ${f.source_plan_slug}, ${JSON.stringify(f.source_plan_item_ids)}::text::jsonb, 'local')
+         ${f.source_plan_slug}, ${f.source_plan_item_ids ?? null}, 'local')
       ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
         title = EXCLUDED.title, summary = EXCLUDED.summary
     `;

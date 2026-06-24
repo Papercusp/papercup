@@ -383,8 +383,8 @@ describe('fleet_assignment change-feed (P-005/P-006)', () => {
   it('work-item claim scalar change → wake (features + issues); status churn → silent', async () => {
     await admin`
       INSERT INTO harness_shared.harness_features_consolidated
-        (workspace_id, harness_slug, feature_id, title, status, taken_by, taken_at)
-      VALUES (${WS}, 'demo', 'FA-TEST-FEED', 'feed feature', 'todo', 'su-wf', now())
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, taken_by, taken_at)
+      VALUES (${WS}, 'demo', 'FA-TEST-FEED', 'feed feature', 'todo', 'feature', 'su-wf', now())
     `;
     await vi.waitFor(() => {
       expect(received.some((c) => c.source === 'work_item_claim' && c.agentId === 'su-wf')).toBe(true);
