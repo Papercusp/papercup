@@ -736,7 +736,14 @@ export async function readFrontierFeatures(
     }>
   >`
     SELECT feature_id, status, feature_order,
-           metadata->>'source_plan' AS source_plan
+           -- ledger P-004: the plan slug a work-item belongs to now lives in the
+           -- first-class source_plan_slug COLUMN (written by plan-to-work-item
+           -- promotion + convert-at-pickup), with the legacy metadata->>'source_plan'
+           -- JSONB key kept only for pre-promotion features. Read both, column-first.
+           -- harness_shared.work_items is the qualified consolidated surface, which
+           -- always exposes source_plan_slug, so this is robust even for harnesses
+           -- whose SELECT*-frozen per-harness view predates the column.
+           COALESCE(source_plan_slug, metadata->>'source_plan') AS source_plan
       FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${slug}
@@ -748,8 +755,14 @@ export async function readFrontierFeatures(
        -- view-transparent (same columns, same indexes) — a pure surface repoint.
        AND item_kind = 'feature'
        AND (
-         (metadata->>'source_plan') IS NULL
-         OR (metadata->>'source_plan') IN (
+         -- ledger P-004: gate on source_plan_slug (column) with the legacy
+         -- metadata fallback. Before this, promoted work-items (source_plan_slug
+         -- set, metadata->>'source_plan' NULL) hit the IS-NULL leg and were treated
+         -- as plan-less "always eligible", so a promoted item from a STOPPED /
+         -- never-started plan was wrongly dispatchable. Now they are gated by their
+         -- plan's started-state exactly like legacy plan features.
+         COALESCE(source_plan_slug, metadata->>'source_plan') IS NULL
+         OR COALESCE(source_plan_slug, metadata->>'source_plan') IN (
            SELECT plan_slug
              FROM harness_shared.harness_plans
             WHERE workspace_id = ${workspaceId}
