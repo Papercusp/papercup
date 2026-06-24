@@ -82,6 +82,35 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [ship-papercusp-as-single-hive 2026-06-23, owner-directed] On a PACKAGED desktop
+  // install, ensure the `papercusp` dogfood hive exists — clone the repo on first
+  // boot (too large to bundle, ~5GB) and home on it — so the app ships with
+  // `papercusp` as its single hive instead of an empty/unresolved home (this is what
+  // makes the home-harness validation ABOVE resolve on a fresh packaged install,
+  // BUG-1). Desktop-only (never hijacks a dev/server operator's workspace),
+  // flag-gated, fire-and-forget + non-fatal: a missing `gh` auth / no network / an
+  // already-present hive all no-op cleanly and the NEXT boot retries.
+  if (process.env.PAPERCUSP_DESKTOP === '1') {
+    void (async () => {
+      try {
+        if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_HIVE, 'system'))) return;
+        const { bootstrapPapercuspHive } = await import(
+          '@papercusp/operator-core/lib/harness/bootstrap-papercusp-hive'
+        );
+        const res = await bootstrapPapercuspHive();
+        if (res.state !== 'skipped') {
+          console.log(
+            `[papercusp-hive] ${res.state}: ${res.slug ?? '(none)'}${res.path ? ` @ ${res.path}` : ''}`,
+          );
+        } else if (res.reason) {
+          console.log(`[papercusp-hive] not created this boot: ${res.reason}`);
+        }
+      } catch (e) {
+        console.warn('[papercusp-hive] bootstrap failed (non-fatal):', (e as Error)?.message ?? e);
+      }
+    })();
+  }
+
   // [power] P5-3 of operator-scalability-event-loop-2026-06-16 — detect the power
   // source ONCE and fold onBattery into the resource profile BEFORE the background
   // machinery reads it. Fire-and-forget + first thing at boot so it (a few fast fs
