@@ -47,7 +47,10 @@ async function callTool(name: string, args: Record<string, unknown>, urlSuffix: 
   const r = await fetch(`${baseUrl}/api/mcp${urlSuffix}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    // _meta.format:'json' — the MCP result-format default flipped to compact (TOON-
+    // rendered text); this test JSON.parses the result content, so declare json per-call
+    // (P-009 negotiation: _meta.format wins over the URL ?format=).
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args, _meta: { format: 'json' } } }),
   });
   const body = await r.text();
   const dataLine = body.split('\n').find((l) => l.startsWith('data:'));

@@ -88,7 +88,10 @@ async function callTool(
   };
   if (mcpSessionId) headers['Mcp-Session-Id'] = mcpSessionId;
 
-  const res = await fetch(`${BASE}/api/mcp?superuser=1&all_workspaces=1&client=${encodeURIComponent(agent)}`, {
+  // format=json: the MCP result-format negotiation default flipped to `compact`
+  // (TOON-rendered text), so a programmatic consumer that JSON.parses the result
+  // content must declare json explicitly (P-009 _meta.format / ?format= seam).
+  const res = await fetch(`${BASE}/api/mcp?superuser=1&all_workspaces=1&format=json&client=${encodeURIComponent(agent)}`, {
     method: 'POST',
     headers,
     body,
@@ -103,11 +106,22 @@ async function callTool(
   };
   if (envelope.error) return { _rpcError: envelope.error } as Record<string, unknown>;
   const text = envelope.result?.content?.[0]?.text ?? '{}';
+  let parsed: Record<string, unknown>;
   try {
-    return JSON.parse(text) as Record<string, unknown>;
+    parsed = JSON.parse(text) as Record<string, unknown>;
   } catch {
     return { _raw: text } as Record<string, unknown>;
   }
+  // The entangled locks verbs (heartbeat/release/cancel_wait) are bulk-standardized
+  // and return the keyed-array envelope { ok, results:[{…}], counts }. Every call here
+  // is single-item, so surface the lone per-item result merged onto the envelope —
+  // r.extended/released/cancelled resolve as before. Flat verbs (acquire/queue) have
+  // no `results` and pass through unchanged.
+  const results = parsed.results as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(results) && results.length === 1 && parsed.counts != null) {
+    return { ...parsed, ...results[0] };
+  }
+  return parsed;
 }
 
 /** Release all locks for an agent unconditionally (best-effort cleanup). */
