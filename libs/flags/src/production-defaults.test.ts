@@ -339,6 +339,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the psu shim check). Owner ratified the end-user exposure; per D-002 the surface is the full
   // engineer profile, workspace-clamped by SCOPED_SUPERUSER_CLAMP. Removed from the dark allowlist
   // per the rule.)
+  // Solution C — per-owner SHARED papercusp hive on install. OWNER-AUTHORITY + ATTENDED-CUTOVER,
+  // NOT unfinished work: announcing a hive is the owner's explicit go-live step (ensure-papercusp-hive
+  // header), it ships a release behavior that broadcasts on the P2P network, and the actual fleet
+  // DATA-MERGE can only be witnessed with a SECOND device — same shape as HIVE_REKEY above. The
+  // per-owner identity (private gist) + allowlist policy are code-complete + unit-tested; OFF ⇒ the
+  // bootstrap's share step is a pure no-op (today's local-only hive, byte-identical). The owner flips
+  // ON after a live 2-device merge witness. Pending flip surfaced in the completion report.
+  FLAGS.DOGFOOD_PAPERCUSP_HIVE_SHARE,
 ]);
 
 /**
@@ -368,6 +376,9 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
   [FLAGS.AUTH_CONFIG_OVERRIDES, 'owner-authority'],
+  // owner-authority — announcing the dogfood hive on the P2P network is the owner's
+  // explicit go-live step; the owner ratifies it after a live 2-device merge witness.
+  [FLAGS.DOGFOOD_PAPERCUSP_HIVE_SHARE, 'owner-authority'],
 ]);
 
 /**

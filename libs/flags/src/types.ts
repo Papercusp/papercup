@@ -1076,6 +1076,17 @@ export const FLAGS = {
   // boot, so it can never break a fresh launch. OFF ⇒ the app boots with no default
   // hive (bare onboarding). The repo is too large to bundle (~5GB) → clone-on-boot.
   DOGFOOD_PAPERCUSP_HIVE: "papercusp-dogfood-papercusp-hive",
+  // DARK (owner-authority + needs a 2nd device to verify): announce the dogfood
+  // `papercusp` hive as a SHARED P2P hive on install, under a PER-OWNER identity
+  // (Solution C). The hive keypair + invite secret live in a per-owner PRIVATE
+  // GitHub gist (never baked into the binary — a stranger who installs the app
+  // can't get them), are injected into the keychain so all of the owner's devices
+  // share ONE hive identity, and an owner-signed allowlist policy admits ONLY the
+  // owner's own GitHub login (strangers refused). Default OFF: announcing a hive is
+  // the owner's explicit go-live step (ensure-papercusp-hive header), and fleet
+  // data-merge can only be verified with a second device — the owner flips it on
+  // after that attended check.
+  DOGFOOD_PAPERCUSP_HIVE_SHARE: "papercusp-dogfood-papercusp-hive-share",
   // DEFAULT ON (alpha flags-default-on): the shared embed-TPM admission lane
   // (watchdog-and-exposed-systems-improvement-2026-06-18 P-002). Routes BOTH embed paths
   // (search:semantic/work_items:search + memory:*) through ONE RateLimitGovernor whose
@@ -1752,6 +1763,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (owner-directed 2026-06-23): clone-on-first-boot of the `papercusp`
   // dogfood hive. Best-effort + non-fatal (no gh auth → no-op + retry next boot).
   [FLAGS.DOGFOOD_PAPERCUSP_HIVE]: true,
+  // DARK (owner-authority + 2nd-device verify): per-owner SHARED papercusp hive
+  // on install (Solution C). See the FLAGS comment. Owner flips ON after the
+  // attended 2-device merge check. Allowlisted in production-defaults.test.ts.
+  [FLAGS.DOGFOOD_PAPERCUSP_HIVE_SHARE]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
