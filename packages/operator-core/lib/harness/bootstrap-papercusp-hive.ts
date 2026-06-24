@@ -34,6 +34,7 @@ import { recordFromRepoStep } from './from-repo-progress';
 import {
   adoptSharedHiveIdentity,
   goSharedHive,
+  shareExistingHive,
   type SharedHiveState,
 } from './papercusp-hive-share';
 
@@ -115,6 +116,9 @@ export interface BootstrapPapercuspHiveDeps {
    *  (invite) + set the owner-only allowlist policy. Default: goSharedHive (a no-op
    *  when adoptShare returned null). */
   goShare?: (state: SharedHiveState | null) => Promise<void>;
+  /** Solution C: share an ALREADY-PRESENT hive (flag enabled after create, or a
+   *  re-boot). Default: shareExistingHive (no-op when the flag is off). */
+  shareExisting?: () => Promise<void>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -268,6 +272,7 @@ export async function bootstrapPapercuspHive(
   const ref = dogfoodRef(deps.ref);
   const adoptShare = deps.adoptShare ?? adoptSharedHiveIdentity;
   const goShare = deps.goShare ?? goSharedHive;
+  const shareExisting = deps.shareExisting ?? shareExistingHive;
 
   // 1. Idempotent: the `papercusp` hive already exists → home + done. Nothing to
   //    download, so BOTH phases are already terminal (the setup gate is satisfied).
@@ -277,6 +282,8 @@ export async function bootstrapPapercuspHive(
       setHome(PAPERCUSP_WORKSPACE_ID);
       record('clone', 'done', { detail: 'already present' });
       record('submodules', 'done');
+      // Solution C: share an already-present hive (flag enabled after create / re-boot).
+      await shareExisting();
       return { state: 'already-present', slug: PAPERCUSP_HIVE_SLUG };
     }
   } catch {

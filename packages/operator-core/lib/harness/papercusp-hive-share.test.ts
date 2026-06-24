@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { adoptSharedHiveIdentity, goSharedHive, type SharedHiveState } from './papercusp-hive-share';
+import {
+  adoptSharedHiveIdentity,
+  goSharedHive,
+  shareExistingHive,
+  type SharedHiveState,
+} from './papercusp-hive-share';
 import type { OwnerHiveIdentity } from './papercusp-shared-identity-gist';
 
 const okId = async () => ({ kind: 'ok' as const, token: 'tok', githubUserId: 7, githubLogin: 'avi' });
@@ -155,5 +160,81 @@ describe('goSharedHive', () => {
         },
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('shareExistingHive (enable-later / re-boot path)', () => {
+  it('no-ops when the flag is off — no gh resolve', async () => {
+    const resolveGithub = vi.fn();
+    await shareExistingHive({ isEnabled: async () => false, resolveGithub });
+    expect(resolveGithub).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when gh is not authenticated', async () => {
+    const setListing = vi.fn(setOk);
+    await shareExistingHive({
+      isEnabled: async () => true,
+      resolveGithub: async () => ({ kind: 'gh_auth_required' as const }),
+      setListing,
+    });
+    expect(setListing).not.toHaveBeenCalled();
+  });
+
+  it('first device (no gist): publishes the local key + announces + policy', async () => {
+    let published: OwnerHiveIdentity | undefined;
+    let listing: { visibility?: string } | undefined;
+    let policy: { policy?: { allowlist?: string[] } } | undefined;
+    await shareExistingHive({
+      isEnabled: async () => true,
+      resolveGithub: okId,
+      fetchIdentity: async () => null,
+      loadKey: async () => ({ kind: 'ok' as const, value: Buffer.from('localkey') }),
+      randomSecret: () => 's',
+      derivePubkey: () => 'pub',
+      publishIdentity: async (_t, id) => {
+        published = id;
+        return { gistId: 'g' };
+      },
+      setListing: async (i) => {
+        listing = i;
+        return {} as unknown as never;
+      },
+      authorPolicy: async (i) => {
+        policy = i;
+        return { ok: true } as unknown as never;
+      },
+    });
+    expect(published).toMatchObject({ inviteSecret: 's' });
+    expect(listing).toMatchObject({ visibility: 'invite' });
+    expect(policy?.policy?.allowlist).toEqual(['avi']);
+  });
+
+  it('gist matches this hive pubkey → announces with the gist secret', async () => {
+    let listing: { inviteSecret?: string } | undefined;
+    const gist: OwnerHiveIdentity = { ...EXISTING, pubkeyBase64: 'match-pub' };
+    await shareExistingHive({
+      isEnabled: async () => true,
+      resolveGithub: okId,
+      fetchIdentity: async () => gist,
+      loadPubkey: async () => 'match-pub',
+      setListing: async (i) => {
+        listing = i;
+        return {} as unknown as never;
+      },
+      authorPolicy: async () => ({ ok: true }) as unknown as never,
+    });
+    expect(listing).toMatchObject({ inviteSecret: gist.inviteSecret });
+  });
+
+  it('gist pubkey MISMATCHES this hive → skips (no announce of a wrong identity)', async () => {
+    const setListing = vi.fn(setOk);
+    await shareExistingHive({
+      isEnabled: async () => true,
+      resolveGithub: okId,
+      fetchIdentity: async () => ({ ...EXISTING, pubkeyBase64: 'gist-pub' }),
+      loadPubkey: async () => 'different-local-pub',
+      setListing,
+    });
+    expect(setListing).not.toHaveBeenCalled();
   });
 });

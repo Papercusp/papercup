@@ -173,3 +173,40 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
     // best-effort — a failed announce / policy author retries on the next boot.
   }
 }
+
+/**
+ * Enable sharing on an ALREADY-PRESENT hive — the "go shared on a hive that was
+ * created before the flag was on" path (and every subsequent boot). Unlike the
+ * create path it does NOT inject a key (the hive's identity is already fixed); it
+ * resolves the owner, then publishes (first device) / announces / sets the policy.
+ *
+ * Guard: if a gist already holds an identity whose pubkey does NOT match THIS hive's
+ * actual pubkey, the local hive was created independently and can't retroactively
+ * adopt the shared identity — SKIP (announcing a mismatched identity would put this
+ * device on a different topic). To converge, that device must be re-created with the
+ * flag on so the create path adopts the gist first.
+ *
+ * Idempotent + best-effort + flag-gated; a no-op when the flag is off.
+ */
+export async function shareExistingHive(deps: HiveShareDeps = {}): Promise<void> {
+  const isEnabled = deps.isEnabled ?? defaultIsEnabled;
+  if (!(await isEnabled())) return;
+
+  const resolveGithub = deps.resolveGithub ?? resolveLocalGithubIdentity;
+  const fetchIdentity = deps.fetchIdentity ?? fetchOwnerHiveIdentity;
+  const loadPubkey = deps.loadPubkey ?? loadHivePubkey;
+
+  try {
+    const id = await resolveGithub();
+    if (id.kind !== 'ok') return;
+    const existing = await fetchIdentity(id.token);
+    if (existing) {
+      const localPubkey = await loadPubkey(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG);
+      // Only announce a gist identity that matches this hive's real pubkey.
+      if (localPubkey && localPubkey !== existing.pubkeyBase64) return;
+    }
+    await goSharedHive({ githubLogin: id.githubLogin, token: id.token, existing }, deps);
+  } catch {
+    // best-effort
+  }
+}
