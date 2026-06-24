@@ -16,6 +16,7 @@
  * so even an accidental double-call from a different bootstrap path is safe.
  */
 import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mount';
+import cluster from 'node:cluster';
 import { ensureHarnessFsWatcher } from '@papercusp/operator-core/lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-status-sweep';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
@@ -376,10 +377,23 @@ export function runBootstrap(): void {
   // Harness FS watcher — mirrors .papercusp/{summary.md,pending-reviews,proposals}
   // to PG so panels can read via Zero push instead of polling. Idempotent;
   // pinned to globalThis to survive Next dev module re-evaluation.
-  try {
-    ensureHarnessFsWatcher();
-  } catch (e) {
-    console.warn('[api] harness-fs-watcher failed to start:', (e as Error)?.message ?? e);
+  //
+  // EI-3385: PRIMARY-ONLY. This does a recursive chokidar watch over every harness tree
+  // (~62k inotify watches per process on a busy box). Run in every clustered REQUEST
+  // worker it multiplied past the kernel watch ceiling and crash-looped :3070 at 32
+  // workers. It's a single-writer FS→PG mirror; request workers read the mirrored rows
+  // via @papercusp/sync, so exactly ONE process should run it. `cluster.isPrimary` is
+  // the right gate: true on the cluster primary AND on a non-clustered single-process
+  // host, false only on a forked request worker — so it keeps working in single-process
+  // mode (:3170 / desktop) and stops multiplying across cluster workers. (Gating on
+  // backgroundWorkersEnabled() would NOT work: the dev-api drop-in sets
+  // PAPERCUSP_BACKGROUND_WORKERS=0 service-wide, so the primary reads it false too.)
+  if (cluster.isPrimary) {
+    try {
+      ensureHarnessFsWatcher();
+    } catch (e) {
+      console.warn('[api] harness-fs-watcher failed to start:', (e as Error)?.message ?? e);
+    }
   }
 
   // Phase 3: harness_status / harness_lanes sweeper. PID-liveness based —
@@ -407,12 +421,20 @@ export function runBootstrap(): void {
   // across ~/.claude and every per-session CLAUDE_CONFIG_DIR fork so rotating
   // refresh tokens never mutually invalidate (the every-terminal-relogin
   // cascade, claude-credential-sync-2026-06-10). Flag is consulted per pass.
-  try {
-    startClaudeCredentialSync({
-      isEnabled: () => getFlag(FLAGS.CLAUDE_CRED_SYNC, 'operator-host'),
-    });
-  } catch (e) {
-    console.warn('[claude-cred-sync] failed to start:', (e as Error)?.message ?? e);
+  //
+  // EI-3385: PRIMARY-ONLY (cluster.isPrimary). It watches per-session .claude config
+  // files (an inotify watcher; its UNCAUGHT ENOSPC was the fatal crash at 32 workers).
+  // One converger per host keeps the creds converged for everyone; request workers don't
+  // each need their own watcher. (See the harness-fs-watcher note above for why the gate
+  // is cluster.isPrimary rather than backgroundWorkersEnabled().)
+  if (cluster.isPrimary) {
+    try {
+      startClaudeCredentialSync({
+        isEnabled: () => getFlag(FLAGS.CLAUDE_CRED_SYNC, 'operator-host'),
+      });
+    } catch (e) {
+      console.warn('[claude-cred-sync] failed to start:', (e as Error)?.message ?? e);
+    }
   }
 
   // TTL-based row expiry. Replaces ad-hoc lazy-deletes scattered across
