@@ -208,13 +208,15 @@ export interface PlacementObservation {
    *  — an item that genuinely crashes bees pre-tool-call ALSO shows 0 tool calls, so it must
    *  still eventually curse (at infraBreakerThreshold), never retry forever. Default false. */
   servingBeeMadeNoToolCalls?: boolean;
-  /** F-FIX-041 — this sweep is a post-dormancy RECOVERY sweep: the gap since this
-   *  hive's previous sweep exceeded the dormancy grace, so the operator/bg-host was
-   *  down in between and a "lost" placement is INFRA-induced, not item-pathology.
-   *  An ITEM-INDEPENDENT signal (computed from the watchdog's own run cadence, not
-   *  per-bee) — an item cannot fake "the operator was dormant". Counted toward the
-   *  BOUNDED infra breaker (infraBreakerThreshold), not the 3-strike pathology breaker.
-   *  Default false. */
+  /** F-FIX-041 / WI-677 — this sweep is a post-dormancy RECOVERY sweep: the gap since
+   *  this hive's previous sweep exceeded the dormancy grace, so the operator/bg-host was
+   *  down in between and a "lost" placement is INFRA-induced, not item-pathology. An
+   *  ITEM-INDEPENDENT signal (computed from the watchdog's own run cadence, not per-bee)
+   *  — an item cannot fake "the operator was dormant", and an operator-wide outage can
+   *  never BE item-pathology. So it is FULLY EXEMPT: keeps BOTH counters flat and never
+   *  curses (WI-677 — F-FIX-041 wrongly counted it toward the bounded infra breaker, so a
+   *  host restart cursed the whole frontier in lockstep at infraBreakerThreshold). Only
+   *  the per-item zombie signal below keeps the bounded breaker. Default false. */
   postDormancySweep?: boolean;
   now: number;
 }
@@ -290,33 +292,59 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
     };
   }
 
-  // F-FIX-041 — an INFRA-induced loss with NO proof of a fair attempt: a post-dormancy
-  // recovery sweep (operator/bg-host was down — item-INDEPENDENT) OR a no-fair-attempt
-  // zombie (serving bee made 0 tool calls — EI-1758). Count it toward the BOUNDED infra
-  // breaker, NOT the 3-strike pathology breaker, so an infra outage doesn't false-curse a
-  // tractable item. The bound is the safety property: even if a genuinely-wedging item's
-  // losses were all mis-attributed to infra (e.g. it crashes bees pre-tool-call, so it too
-  // shows 0 tool calls), it STILL curses at infraBreakerThreshold — never the unbounded
-  // retry of EI-865. (Ordered AFTER the cursed latch + debounce so a cursed item stays
-  // latched and a mid-recovery wake is still debounced.)
-  if (obs.postDormancySweep || obs.servingBeeMadeNoToolCalls) {
-    const why = obs.postDormancySweep
-      ? 'post-dormancy recovery sweep (operator/bg-host was down)'
-      : 'serving bee made 0 tool calls (no-fair-attempt / zombie)';
+  // WI-677 — a post-dormancy recovery sweep (operator/bg-host was DOWN) is an
+  // ITEM-INDEPENDENT infra loss: it is computed from the watchdog's OWN run cadence,
+  // not from anything about this item, so an item can never fake it AND it can never be
+  // mis-attributed pathology. FULLY EXEMPT — keep BOTH counters flat, never curse (same
+  // class as servingBeeReclaimedWhileActive's proof-of-life). The F-FIX-041 bug was
+  // counting THIS signal toward the bounded infra breaker: a host restart fires it for
+  // EVERY placement in LOCKSTEP, so a string of restarts/dormancy windows climbs all of
+  // them to infraBreakerThreshold together and curses the whole frontier at once (the
+  // 31-item place_batch deadlock this fixes — all rows were fail_count=0, infra=12). The
+  // bound's safety rationale ("eventually curses even if mis-attributed") only holds for a
+  // PER-ITEM signal that COULD be pathology; an operator-wide outage is not that, so
+  // counting it is a pure false-positive generator. A genuinely-doomed item still curses
+  // via the 3-strike pathology breaker (bees that RUN and fail) or the bounded zombie
+  // breaker below (bees that crash pre-tool-call) — neither of which a dormant operator
+  // masks. (Ordered AFTER the cursed latch + debounce, BEFORE the zombie path so a sweep
+  // that is both dormant AND zombie attributes to the item-independent cause.)
+  if (obs.postDormancySweep) {
+    return {
+      kind: 'recover',
+      nextFailCount: obs.failCount, // FLAT — the operator being down says nothing about the item
+      nextInfraLossCount: obs.infraLossCount, // FLAT — fully exempt, never accrues toward any breaker
+      reason:
+        'post-dormancy recovery sweep (operator/bg-host was down) — item-independent infra loss, ' +
+        'fully exempt from both breakers (re-placing, not counting)',
+    };
+  }
+
+  // F-FIX-041 — a no-fair-attempt zombie (serving bee made 0 tool calls across its life —
+  // an EI-1758 zombie booted without MCP tools, or a bee that died before any work). UNLIKE
+  // post-dormancy this IS a per-item signal that COULD be item-pathology (an item that
+  // crashes bees pre-tool-call ALSO shows 0 tool calls), so it CANNOT be fully exempted
+  // without risking the EI-865 unbounded-retry bug. Count it toward the BOUNDED infra
+  // breaker, NOT the 3-strike pathology breaker: a tractable item lost to a string of
+  // zombies gets infraBreakerThreshold graced re-places, but the BOUND guarantees even an
+  // all-zombie-attributed wedging item STILL curses (never unbounded). (place_batch then
+  // still RE-PLACES a fail_count-0 zombie-curse on the Queen's deliberate path — see
+  // loadCursedWorkItemIds — so a fixed-infra item is never permanently deadlocked; the
+  // bound here only halts the watchdog's autonomous recovery-wake storm.)
+  if (obs.servingBeeMadeNoToolCalls) {
     const nextInfraLossCount = obs.infraLossCount + 1;
     if (nextInfraLossCount >= cfg.infraBreakerThreshold) {
       return {
         kind: 'breaker',
         nextFailCount: obs.failCount, // the pathology count is untouched
         nextInfraLossCount,
-        reason: `${nextInfraLossCount} infra-induced losses (>= infra breaker ${cfg.infraBreakerThreshold}) — ${why}`,
+        reason: `${nextInfraLossCount} no-fair-attempt (zombie) losses (>= infra breaker ${cfg.infraBreakerThreshold}) — serving bee made 0 tool calls`,
       };
     }
     return {
       kind: 'recover',
-      nextFailCount: obs.failCount, // pathology count held FLAT — infra losses don't progress it
+      nextFailCount: obs.failCount, // pathology count held FLAT — a zombie loss doesn't progress it
       nextInfraLossCount,
-      reason: `infra-induced loss (${why}) — counted toward the bounded infra breaker, not the pathology breaker`,
+      reason: 'serving bee made 0 tool calls (no-fair-attempt / zombie) — counted toward the bounded infra breaker, not the pathology breaker',
     };
   }
 
