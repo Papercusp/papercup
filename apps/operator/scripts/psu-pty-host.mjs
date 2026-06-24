@@ -78,6 +78,11 @@ const TURN_SUBMIT_CR_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_CR_M
  *  Codex's input box until a human presses Enter. */
 const CODEX_TURN_SUBMIT_CR_DELAY_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS) || 500;
+/** If Codex treats the first submit CR as paste/input, the text is visibly left
+ *  in the compose box. A second delayed CR is the same manual action the user
+ *  had to take, but delivered by the host. Codex-only; Claude/OMP stay single-CR. */
+const CODEX_TURN_RESUBMIT_CR_DELAY_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS) || 300;
 
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
@@ -278,19 +283,40 @@ export function controlWrites(decoded, crDelayMs = TURN_SUBMIT_CR_DELAY_MS) {
   ];
 }
 
+function positiveNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 /** The submit delay is backend-specific because each interactive TUI has its
  *  own paste/compose handling. Keep the wire protocol backend-neutral; the
  *  hosting psu process already knows its child agent via PAPERCUSP_AGENT. */
 export function turnSubmitCrDelayForAgent(agent, env = process.env) {
-  const globalOverride = Number(env.PAPERCUSP_PSU_PTY_SUBMIT_CR_MS);
-  const codexOverride = Number(env.PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS);
   const normalized = String(agent || '').trim().toLowerCase();
   if (normalized === 'codex') {
-    if (Number.isFinite(codexOverride) && codexOverride > 0) return codexOverride;
-    return CODEX_TURN_SUBMIT_CR_DELAY_MS;
+    return positiveNumber(env.PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS, CODEX_TURN_SUBMIT_CR_DELAY_MS);
   }
-  if (Number.isFinite(globalOverride) && globalOverride > 0) return globalOverride;
-  return TURN_SUBMIT_CR_DELAY_MS;
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_CR_MS, TURN_SUBMIT_CR_DELAY_MS);
+}
+
+function codexTurnResubmitCrDelay(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS, CODEX_TURN_RESUBMIT_CR_DELAY_MS);
+}
+
+/** Backend-aware write plan for an injected turn. Codex receives one redundant
+ *  delayed submit CR because the first CR can be consumed as input, leaving the
+ *  turn text visible but unsent. */
+export function controlWritesForAgent(decoded, agent, env = process.env) {
+  if (decoded.mode === 'raw') return controlWrites(decoded);
+  const normalized = String(agent || '').trim().toLowerCase();
+  if (normalized !== 'codex') {
+    return controlWrites(decoded, turnSubmitCrDelayForAgent(agent, env));
+  }
+  return [
+    { data: decoded.data, delayMs: 0 },
+    { data: '\r', delayMs: turnSubmitCrDelayForAgent(agent, env) },
+    { data: '\r', delayMs: codexTurnResubmitCrDelay(env) },
+  ];
 }
 
 /**
@@ -434,8 +460,7 @@ export function hostThroughPty(o) {
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
-        const crDelayMs = turnSubmitCrDelayForAgent(env.PAPERCUSP_AGENT, env);
-        for (const step of controlWrites(msg, crDelayMs)) {
+        for (const step of controlWritesForAgent(msg, env.PAPERCUSP_AGENT, env)) {
           if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
           child.write(step.data);
         }

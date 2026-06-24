@@ -78,13 +78,16 @@ your locks explain themselves.
 - **Codex coord hook is SU-only** (pipeline-role sessions coordinate via
   `messages:send`/`inbox`, not the SU coord bus) and activates server-side on the
   next operator restart (the `:3070` host has no hot-reload).
-- **Codex managed-PTY turn injection needs a longer submit settle than Claude.**
+- **Codex managed-PTY turn injection needs a longer submit settle than Claude,
+  plus a redundant submit.**
   The injected text can land in Codex's compose box while the submit CR is still
   treated as paste/input, leaving the message visible but unsubmitted until a
-  human presses Enter. `psu-pty-host.mjs` therefore derives the CR delay from
-  `PAPERCUSP_AGENT`: Claude/OMP keep the 150 ms path; Codex uses the longer
-  `PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS` path (default 500 ms). Do not collapse
-  this back to one global delay without a live Codex coord-injection check.
+  human presses Enter. `psu-pty-host.mjs` therefore derives the CR plan from
+  `PAPERCUSP_AGENT`: Claude/OMP keep the single 150 ms CR path; Codex uses the
+  longer `PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS` path (default 500 ms), then a
+  second delayed CR (`PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS`, default 300 ms).
+  Do not collapse this back to one global delay without a live Codex
+  coord-injection check.
 - **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the
   fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a
   real OMP turn to observe.

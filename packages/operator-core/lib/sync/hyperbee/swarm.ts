@@ -728,17 +728,21 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
   // invisible. Loud-warn that exact case so it never has to be re-diagnosed by packet capture.
   const envBootstrap = process.env.PAPERCUSP_DHT_BOOTSTRAP?.trim();
   if (opts.bootstrap?.length) {
-    console.warn(
+    // Informational (console.info, not warn) so the fail-on-console test gate stays
+    // a defect signal — still captured in the operator's stdout log for observability.
+    console.info(
       `[swarm] DHT bootstrap = ISOLATED ${opts.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')}`,
     );
   } else if (envBootstrap) {
+    // The genuine misconfig (env set but resolved empty) — keep this LOUD (console.warn):
+    // it is a real defect signal, and it never fires in clean tests (they don't set the var).
     console.warn(
       `[swarm] ⚠ PAPERCUSP_DHT_BOOTSTRAP is set ("${envBootstrap}") but resolved to NO bootstrap — ` +
         `this swarm will join the PUBLIC DHT, so isolated 2-machine federation is BROKEN ` +
         `(public-DHT NAT hairpin). Check parseDhtBootstrap + that the var reaches THIS process before first swarm use.`,
     );
   } else {
-    console.warn('[swarm] DHT bootstrap = PUBLIC DHT (no PAPERCUSP_DHT_BOOTSTRAP set)');
+    console.info('[swarm] DHT bootstrap = PUBLIC DHT (no PAPERCUSP_DHT_BOOTSTRAP set)');
   }
   // P-003: the firewall runs BEFORE the Noise handshake completes — it cheaply
   // rejects banned keys without spending handshake CPU. Hyperswarm only hands

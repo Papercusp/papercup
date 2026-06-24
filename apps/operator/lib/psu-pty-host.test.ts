@@ -13,6 +13,7 @@ import {
   decodeControl,
   controlBytes,
   controlWrites,
+  controlWritesForAgent,
   turnSubmitCrDelayForAgent,
   makeIdleGate,
   makeActivityTracker,
@@ -119,6 +120,40 @@ describe('turnSubmitCrDelayForAgent', () => {
     };
     expect(turnSubmitCrDelayForAgent('codex', env)).toBe(500);
     expect(turnSubmitCrDelayForAgent('claude', env)).toBe(150);
+  });
+});
+
+describe('controlWritesForAgent', () => {
+  it('keeps Claude turns on the normal two-step paste-safe write plan', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    expect(controlWritesForAgent(d, 'claude', {})).toEqual([
+      { data: 'wake-turn', delayMs: 0 },
+      { data: '\r', delayMs: 150 },
+    ]);
+  });
+  it('adds a Codex-only redundant delayed submit CR for text left in the compose box', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    expect(controlWritesForAgent(d, 'codex', {})).toEqual([
+      { data: 'wake-turn', delayMs: 0 },
+      { data: '\r', delayMs: 500 },
+      { data: '\r', delayMs: 300 },
+    ]);
+  });
+  it('lets Codex submit and resubmit delays be tuned independently', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    const env = {
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '800',
+      PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '450',
+    };
+    expect(controlWritesForAgent(d, 'codex', env)).toEqual([
+      { data: 'wake-turn', delayMs: 0 },
+      { data: '\r', delayMs: 800 },
+      { data: '\r', delayMs: 450 },
+    ]);
+  });
+  it('does not add submit bytes to raw control messages for any backend', () => {
+    const d = decodeControl(encodeControl({ mode: 'raw', data: '\x03' }));
+    expect(controlWritesForAgent(d, 'codex', {})).toEqual([{ data: '\x03', delayMs: 0 }]);
   });
 });
 
