@@ -121,6 +121,15 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // signup on a single-owner box mints real accounts. The zero-users
   // bootstrap path in the route keeps fresh installs working while dark.
   FLAGS.OPEN_SIGNUP,
+  // live-configurability-audit-2026-06-20 P-019: the §G auth/sandbox override umbrella. OWNER-AUTHORITY
+  // (not unfinished work) — it gates an ESCALATION surface: auth:set_full_access_roles can WIDEN the
+  // TESTING_FULL_ACCESS_ROLES gate-bypass set (the strongest escalation in the system). The sibling
+  // dials it gates (clamp:set_safe_tools, exec_sandbox:set_policy) are tighten-only, but the cluster
+  // shares one dark flag the owner flips to ratify. OFF (default) ⇒ the auth-config sync-cache stays
+  // empty ⇒ every surface uses its baked literal ⇒ byte-identical. Code-complete + unit-tested; the
+  // owner flips ON to enable the dials. (papercusp-testing-full-access — the env→flag kill-switch — is
+  // default-ON, NOT dark: ON reproduces today's testing-phase bypass exactly.)
+  FLAGS.AUTH_CONFIG_OVERRIDES,
   // (FLAGS.AUTHORITY_RPC_PROTOMUX graduated to default-ON 2026-06-23, WI-607:
   // shared-hive-hardening-2026-06-13 P-003 / D-003 — the option-(c) protomux
   // lock-authority RPC transport's contended cross-peer serialization is now
@@ -358,6 +367,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
+  [FLAGS.AUTH_CONFIG_OVERRIDES, 'owner-authority'],
 ]);
 
 /**
