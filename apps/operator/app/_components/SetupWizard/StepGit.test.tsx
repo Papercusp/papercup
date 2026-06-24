@@ -3,8 +3,9 @@
  * StepGit.test.tsx — render-tier coverage for the SetupWizard "Git identity"
  * step. Seeds identity / preflight / pty-commands / agent-auth-status from a
  * per-URL fetch router, then drives the git-identity save form (success + error)
- * and asserts the alpha-gated GitHub section. Tooltip passes through, the pty
- * tauri detector + InlinePtyTerminal are stubbed.
+ * and asserts the GitHub section is enabled (no longer alpha-gated) but gated on
+ * the GitHub CLI being installed. Tooltip passes through, the pty tauri detector
+ * + InlinePtyTerminal are stubbed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -115,12 +116,17 @@ describe('StepGit (SetupWizard git-identity step)', () => {
     expect(await screen.findByText(/bad email/i)).toBeTruthy();
   });
 
-  it('the GitHub section is alpha-disabled: the sign-in button is disabled with the alpha hint', async () => {
+  it('the GitHub section is enabled (no longer alpha-gated) but gated on the GitHub CLI being installed', async () => {
     installFetch();
     render(<StepGit />);
     await screen.findByText('Not configured.');
     const ghBtn = screen.getByRole('button', { name: /Sign in to GitHub/i }) as HTMLButtonElement;
+    // Preflight reports `gh` missing (+ the stubbed non-Tauri detector) → the button
+    // stays disabled and the CLI-not-detected hint shows the install path.
     expect(ghBtn.disabled).toBe(true);
-    expect(screen.getByText(/GitHub sign-in is disabled while Papercusp is in alpha/i)).toBeTruthy();
+    expect(screen.getByText(/GitHub CLI not detected/i)).toBeTruthy();
+    // The old alpha-gate hint is gone now that GitHub auth is re-enabled (dogfood
+    // clone-on-first-boot needs the sign-in), so it must NOT render.
+    expect(screen.queryByText(/disabled while Papercusp is in alpha/i)).toBeNull();
   });
 });
