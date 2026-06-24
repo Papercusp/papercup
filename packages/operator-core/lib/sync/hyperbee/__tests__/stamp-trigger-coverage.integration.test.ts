@@ -56,7 +56,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
-import { CDC_CAPTURED_TABLES } from '../feature-issue-op-keys';
+import { CDC_CAPTURED_TABLES, cdcPhysicalTable } from '../feature-issue-op-keys';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../../..');
@@ -163,8 +163,10 @@ describe('federated CDC tables — every fed_hlc table has the LWW stamp trigger
     const withTrigger = await stampTriggerTables();
 
     // The fed_hlc-bearing federated CDC tables that lack the stamp trigger. By the
-    // invariant this must be EXACTLY the documented-exempt set.
-    const missing = CDC_CAPTURED_TABLES.filter((t) => withHlc.has(t) && !withTrigger.has(t)).sort();
+    // invariant this must be EXACTLY the documented-exempt set. The trigger lives on the
+    // PHYSICAL base relation (post-374 the work-item families are views over work_items,
+    // which carries the trigger), so introspect cdcPhysicalTable(t).
+    const missing = CDC_CAPTURED_TABLES.filter((t) => withHlc.has(t) && !withTrigger.has(cdcPhysicalTable(t))).sort();
     const exempt = Object.keys(STAMP_EXEMPT).sort();
 
     expect(
@@ -189,8 +191,9 @@ describe('federated CDC tables — every fed_hlc table has the LWW stamp trigger
     const stale: string[] = [];
     for (const t of Object.keys(STAMP_EXEMPT)) {
       // An exemption is stale if the table is no longer CDC-federated, no longer
-      // carries fed_hlc, or has SINCE gained the trigger (the GA cutover landed).
-      if (!cdc.has(t) || !withHlc.has(t) || withTrigger.has(t)) stale.push(t);
+      // carries fed_hlc, or has SINCE gained the trigger (the GA cutover landed) — on
+      // its physical base relation.
+      if (!cdc.has(t) || !withHlc.has(t) || withTrigger.has(cdcPhysicalTable(t))) stale.push(t);
     }
     expect(
       stale,
@@ -245,15 +248,19 @@ describe('federated CDC tables — capture trigger physically attached (DDL-atta
 
   it('sanity: capture triggers introspect (a representative table is present)', async () => {
     const withCapture = await captureTriggerTables();
+    // Post-374 harness_features_consolidated is a VIEW over work_items, which physically
+    // carries the capture trigger — introspect the physical base relation.
     expect(
-      withCapture.has('harness_features_consolidated'),
+      withCapture.has(cdcPhysicalTable('harness_features_consolidated')),
       'capture-trigger introspection returned nothing — query/migration broken',
     ).toBe(true);
   });
 
   it('every CDC-captured table has its capture_*_outbox trigger attached in the migrated DB', async () => {
     const withCapture = await captureTriggerTables();
-    const missing = CDC_CAPTURED_TABLES.filter((t) => !withCapture.has(t)).sort();
+    // The capture trigger lives on the physical base relation (the work-item families are
+    // views over work_items, which carries capture_work_items_outbox) — check that.
+    const missing = CDC_CAPTURED_TABLES.filter((t) => !withCapture.has(cdcPhysicalTable(t))).sort();
     expect(
       missing,
       `CDC-captured table(s) are in the in-code op-key map (CDC_CAPTURED_TABLES) but have NO ` +

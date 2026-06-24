@@ -7317,6 +7317,105 @@ The misread conflates three true-but-unrelated facts: (a) the BEE forced session
 
 `grep -n 'randomUUID\|--session-id' spawn.ts invoke.ts` shows the fresh mint + `--session-id` create. `resumeCommandFor` (`--resume`) is reached only from `executeWake`, which is the await/inbox pump — not the hive routine/blueprint path. Don’t trust a prose claim that “the Queen resumes” without tracing the `fireLaunchBlueprint('hive') → invoke?bpkind=hive → --session-id` chain.
 
+# HIVE_REKEY (C-001 read-plane re-key) flip-readiness — code-complete, owner-gated on the live 2-machine cut witness
+
+> The papercusp-hive-rekey flip is an ATTENDED security cutover, not a code task. The op-path is wired end-to-end (encrypt-on-write, decrypt-on-read, advance-on-boundary), the hermetic end-to-end content read-cut witness is green, and ~88 re-key tests pass. The ONE remaining gate is the live 2-machine K-CUT-on-content witness (WI-560, blocked on WI-559 peering). This is the exact flip surface (3 edits), the evidence, the residual risk, and the go/no-go the owner ratifies against.
+
+## TL;DR — what the owner is deciding
+
+[Section titled “TL;DR — what the owner is deciding”](#tldr--what-the-owner-is-deciding)
+
+`papercusp-hive-rekey` (FLAGS.HIVE\_REKEY) is the master gate for the shared-hive **read-plane re-key** (C-001): hive CONTENT is AEAD-encrypted under a per-epoch group key, and a removed/excluded member loses the ability to **READ** post-boundary content (key-denial **and** ciphertext-unreadability), not just the ability to write.
+
+**This is no longer a code task.** As of 2026-06-24 the op-path is wired end-to-end, the hermetic **end-to-end content read-cut witness is green**, and \~88 re-key tests pass. WI-403’s 2026-06-22 note (“advanceEpochAndWrap + encrypt-on-write + decrypt-on-read are NOT yet in the live op path — resolveHiveEpochCrypto returns the notImplemented stub”) is **STALE** — that wiring has since landed.
+
+The flag stays dark **only** because flipping it begins encrypting **live** federated content: a crypto/op-path bug would break federation reads for a whole hive. So the dark case is an **attended security cutover** (owner-authority), gated on the **live 2-machine K-CUT-on-content witness** (WI-560) + owner ratification — exactly the carve-out the CLAUDE.md dark-flag rule reserves for a “reversible CUTOVER kill-switch needing an attended live verify the OWNER runs.”
+
+The owner performs the flip; an agent must not flip it.
+
+## What is wired (the live op-path)
+
+[Section titled “What is wired (the live op-path)”](#what-is-wired-the-live-op-path)
+
+All flag-gated on `papercusp-hive-rekey`; **OFF ⇒ byte-identical to today** (no encryption, the `notImplementedHiveEpochCrypto` fail-closed stub).
+
+| Concern                          | Where                                                           | Note                                                                                                                                                                         |
+| -------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Flag gate / crypto resolve       | `hive-epoch-serving.ts` `resolveHiveEpochCrypto(enabled)`       | `true` ⇒ real `createHiveEpochCrypto()` (sodium); `false` ⇒ fail-closed stub (never silent plaintext)                                                                        |
+| Boot composition (flag FIRST)    | `hive-epoch-boot-deps.ts` `buildHiveRekeyBootDeps`              | one cached flag read; `null` for OFF / non-hive / no-device — cheap off-path                                                                                                 |
+| Encrypt-on-write                 | `wire-outbox.ts` → `outbox-drain.ts` (`epochEncrypt.encryptOp`) | exclude-set: `shouldEncryptOpForRekey` encrypts all CONTENT, keeps admission/key/policy tags plaintext (`REKEY_PLAINTEXT_TAGS`), fail-closed (new tag defaults to encrypted) |
+| Decrypt-on-read                  | `boot.ts` `rekeyDeps.epochGate(enforcedApply)`                  | op carries its `epoch`; gate resolves epoch key → decrypt, else defers (pending-epoch buffer)                                                                                |
+| Advance-on-boundary (revoke)     | `hive-revoke-contributor.ts` → `advanceEpochOnHiveBoundary`     | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud `rekey_boundary_skipped` boot event if it no-ops                            |
+| Advance-on-boundary (go-private) | `hive-set-listing.ts` → `advanceEpochOnHiveBoundary`            | re-keys to all current members (no cutOff)                                                                                                                                   |
+| Deferred-content drain           | `boot.ts` `epochDrainQueue` / `onEpochKeyApplied`               | re-applies buffered content once a member’s key row arrives                                                                                                                  |
+
+## Witness evidence (re-ran 2026-06-24, this checkout, staging)
+
+[Section titled “Witness evidence (re-ran 2026-06-24, this checkout, staging)”](#witness-evidence-re-ran-2026-06-24-this-checkout-staging)
+
+* **Hermetic end-to-end content read-cut witness — `hive-epoch-read-cut-witness.test.ts` 2/2 GREEN.** Drives the **REAL** XChaCha20-Poly1305 + Ed25519 sealed-box crypto through the **production op-path capabilities** (`buildEpochEncryptCapability` → federated op → `buildEpochDecryptGate` + `createEpochKeyProvider`) across the full lifecycle **K0 → K1 → K-revoke → K-CUT**:
+
+  * K-CUT (revoked B): replicates the identical epoch-2 ciphertext bytes but the decrypt gate defers it forever (no epoch-2 key row ever arrives) AND B’s only held key (epoch 1) **fails the real AEAD** against the epoch-2 ciphertext → content read-cut, not mere key-denial.
+  * K-CUT (remaining C): unwraps epoch-2 and decrypts the post-boundary content.
+  * Forward-cut only: B still reads the OLD epoch-1 content it legitimately holds.
+  * Flag-OFF arm: `resolveHiveEpochCrypto(false)` returns the stub that **rejects** rather than ever shipping plaintext.
+
+* **Re-key unit suite — 86/86 GREEN** across 14 files (crypto-impl, op-gate, boundary, boundary-wiring, key-provider, keys, producer, serving, state, content-ops, pending-epoch, drain, enforcement-compose-order, read-cut witness).
+
+* **`outbox-drain-rekey.integration.test.ts` — 6/6 GREEN** (encrypt-on-capture integration).
+
+### Test-context flag flip (why the witness needs no exclusive window)
+
+[Section titled “Test-context flag flip (why the witness needs no exclusive window)”](#test-context-flag-flip-why-the-witness-needs-no-exclusive-window)
+
+The witness flips the flag **at the call site** — `resolveHiveEpochCrypto(true)` is exactly the code path the prod flip enables — never the global PostHog flag. So it is the **evidence the owner ratifies against**, not the flip itself, and it runs green without consuming the global exclusive re-key window.
+
+## The flip surface (the owner’s LAST step — 3 edits)
+
+[Section titled “The flip surface (the owner’s LAST step — 3 edits)”](#the-flip-surface-the-owners-last-step--3-edits)
+
+1. `libs/flags/src/types.ts` (\~line 1658): `[FLAGS.HIVE_REKEY]: false` → `true`.
+2. `libs/flags/src/production-defaults.test.ts`: remove `FLAGS.HIVE_REKEY` from `KNOWN_DARK_FLAGS` (the set SHRINKS — allowed; the high-watermark is a ceiling).
+3. `libs/flags/src/production-defaults.test.ts`: remove `[FLAGS.HIVE_REKEY, 'incomplete']` from `DARK_FLAG_CASE` (the 1:1 coverage test fails otherwise).
+
+The runtime override `flags:set papercusp-hive-rekey=true` is **already ON on this dev host**, so `:3170`/desktop already exercise the real crypto here; the **prod default** edit above is the real flip. (Note: the `DARK_FLAG_CASE` tag is `'incomplete'`, but the authoritative dark comment now describes an **attended cutover** — the case shifted once the op-path landed; the flip removes the entry either way.)
+
+## Residual gate — what is NOT yet green (the real owner decision)
+
+[Section titled “Residual gate — what is NOT yet green (the real owner decision)”](#residual-gate--what-is-not-yet-green-the-real-owner-decision)
+
+The **LIVE 2-machine K-CUT-on-content witness** (`WI-560`) has **not** run green. It is blocked on:
+
+* **`WI-559` (F-PEER):** the 2-machine hive peer connection goes **stale on idle** — content written on fed-a stops reaching fed-b after a long-idle window (last root-cause: P-007 snapshot cursor-seeding skipping pre-snapshot ops on a fresh cursor; fix owed in `boot.ts`). No durable green idle-reconnect witness yet.
+* **`WI-560` (F-MEMBER-KCUT):** fed-b is a VIEW-joiner but **not yet a real crypto member** (`hive_epoch_keys` has 0 rows for it) — the member-admission path on the 2-machine rig isn’t cracked, so a true K-revoke→K-CUT on the binary hasn’t been witnessed.
+
+These prove the composition on REAL federation hardware (idle reconnect + a removed device’s machine never receiving the new key). The hermetic witness proves the **crypto + op-path composition**; the live witness proves it **survives real peering**. The owner is deciding whether to flip on the hermetic evidence (accepting v1 risk + monitoring) or to hold for the live green.
+
+### v1 scope the owner should know (back-compat, D-003)
+
+[Section titled “v1 scope the owner should know (back-compat, D-003)”](#v1-scope-the-owner-should-know-back-compat-d-003)
+
+v1 encrypts **NEW hives only**; existing hives stay legacy-unencrypted + documented. So a flip does not retroactively encrypt or break existing hives — it changes the write path for hives created under the flag. This materially lowers the blast radius of a flip.
+
+## Known non-blocker — a pre-existing RED that is NOT this flip
+
+[Section titled “Known non-blocker — a pre-existing RED that is NOT this flip”](#known-non-blocker--a-pre-existing-red-that-is-not-this-flip)
+
+`packages/operator-core/lib/shared-hive-loop/revoked-swarm.integration.test.ts` fails on `staging` HEAD, but it is **flag-independent and not a re-key defect**:
+
+* The failure is `vitest-fail-on-console` tripping on a `console.error("[hive-rekey] owner admit failed … getOrgPg outside cell scope — wrap the call in rig.runAsCell()")`.
+* Root cause: the **WI-639/WI-280 membership-admission** fire-and-forget path (`admitAnnouncedPeerAsOwner`, `boot.ts:1128`) runs **outside** the composition-rig’s cell scope, so the test’s own `getOrgPg` mock (test line 50) throws. The `[hive-rekey]` prefix is only because the epoch re-grant lives inside `upsertHiveMember` — the admit block is **NOT** gated on HIVE\_REKEY.
+* Confirmed flag-independent: forcing the flag off still fails; the cached last run shows it already red while all 14 hive-epoch files were green.
+* Filed separately (see WI tracking); it does **not** change the flip decision.
+
+## Go / No-Go
+
+[Section titled “Go / No-Go”](#go--no-go)
+
+* **Code readiness: GO.** Op-path wired, hermetic end-to-end content read-cut witness green, \~88 re-key tests green, OFF path byte-identical.
+* **Cutover readiness: owner’s call.** Recommended path: flip in an **attended window** after `WI-559` peering is stabilized and `WI-560` runs the live K-CUT green — OR consciously accept the v1 (new-hives-only, D-003) risk and flip on the hermetic witness while monitoring federation health, given the flip is reversible (OFF restores plaintext byte-identically).
+* **Reversibility:** the flag is a clean kill-switch — flipping OFF returns the `notImplementedHiveEpochCrypto` stub (no encryption), so a bad cutover is recoverable by flipping back (new content written while ON would need its hive re-keyed, but the read path degrades safely).
+
 # Re-keying a hyperbee harness onto a new swarm topic must be IN PLACE, never via reboot
 
 > A harness that goes shared (joins or publishes a hive after boot) must switch from its gh-repo topic to the hive-pubkey topic. Doing that with rebootHarness (close + re-boot the Corestore-backed substrate) silently breaks the OWNER's corestore replication-SERVING of its own log core — the re-keyed owner admits + connects to the joiner and knows its log length, but fires ZERO upload events, so the joiner downloads zero blocks (contig=0) and the feature never crosses. Re-key IN PLACE instead with handle.rekey / rekeyHarness — leave the old topic + join the new one while keeping the store, open cores, and replication streams ALIVE. The symptom is asymmetric — the joiner serves its log to the owner fine; only the owner-to-joiner direction is dead.
@@ -18397,75 +18496,59 @@ In this app the only Channel surface is **endpoint-IPC** (`papercusp-desktop/src
 * A *new* Channel surface (anything else taking `tauri::ipc::Channel`) needs the same page-load flush discipline — Channels never self-clean across reloads.
 * Capture evidence with `tauri-agent-tools console-monitor --pid <pid> --duration 30000 --json` (duration is **milliseconds**; the agent-e2e doc’s `--duration 100` examples are too short to catch periodic bursts).
 
-# Tauri IPC "access control checks" on Linux — wry registers custom schemes secure-only, not CORS-enabled
+# Tauri IPC "access control checks" console flood on Linux — fix it in the SPA, not wry
 
-> Why the desktop logs 'Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks' on every navigation, and the vendored-wry one-liner that fixes it.
+> The desktop logs 'Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks' on every navigation. The reliable fix intercepts the ipc:// fetch in the desktop fetch wrapper (force postMessage) — NOT a wry/CORS patch (which couldn't be made to work).
 
 ## Symptom
 
 [Section titled “Symptom”](#symptom)
 
-The Tauri desktop console logs, on **every navigation**:
+The Tauri desktop console logs, repeatedly (once per `/api` call → a flood):
 
 ```plaintext
 Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks.
 ```
 
-(often followed by Tauri’s own `IPC custom protocol failed, Tauri will now use the postMessage interface instead`). The app still works — Tauri falls back to the postMessage IPC transport — but the error pollutes the console and the IPC custom-protocol fast path never runs.
+The app still works (Tauri carries IPC over its postMessage transport), but the console is unusable.
 
 ## Root cause
 
 [Section titled “Root cause”](#root-cause)
 
-Papercusp loads the operator UI from a **remote `http://127.0.0.1:<port>` origin** (`frontendDist`/`devUrl` in `tauri.conf.json`), **not** the bundled `tauri://` asset protocol. Tauri’s injected IPC script always tries the `ipc://localhost/<cmd>` **custom-protocol fetch first** on non-Android (`canUseCustomProtocol = osName !== 'android'`).
+Papercusp loads the operator UI from a **remote `http://127.0.0.1:<port>` origin** (`frontendDist`/`devUrl`), not the bundled `tauri://` asset protocol. Tauri’s injected IPC script tries the `ipc://localhost/<cmd>` **custom-protocol fetch first** on non-Android. On Linux/WebKitGTK, wry registers custom URI schemes secure-only (never CORS-enabled), and the page origin is a remote `http://` one — so WebKitGTK rejects the cross-origin `ipc://` fetch with “access control checks”, even though Tauri’s IPC handler returns `Access-Control-Allow-Origin: *`.
 
-On Linux/WebKitGTK, **wry registers custom URI schemes only as `register_uri_scheme_as_secure`, never `register_uri_scheme_as_cors_enabled`** (`wry/src/webkitgtk/web_context.rs::register_uri_scheme`). So WebKitGTK blocks the **cross-origin** `ipc://` fetch from the `http://127.0.0.1` page *before* it ever honors the response — even though Tauri’s IPC protocol handler already returns `Access-Control-Allow-Origin: *`. Tauri’s `.catch` then logs the warn and falls back to postMessage.
+## The fix that works — SPA-level, force postMessage
 
-The Tauri **capability** `remote.urls` (`capabilities/default.json`) governs the *permission* layer (which commands a remote origin may call) — it does **NOT** fix this WebKitGTK CORS-on-custom-scheme layer. Different concern.
+[Section titled “The fix that works — SPA-level, force postMessage”](#the-fix-that-works--spa-level-force-postmessage)
 
-## Two traps when fixing this
+Intercept the `ipc://` fetch in the desktop’s own `window.fetch` wrapper (`installDesktopIpcPolyfills`, `libs/generic/desktop-ipc/src/desktop-bootstrap.ts`) and **reject it before any native fetch is issued**. Tauri’s init script catches the rejection and transparently retries the invoke over its **postMessage** transport — the path that already carries every IPC call on this platform. Because no native `ipc://` fetch is ever made, the WebKit engine never evaluates it and **cannot log the access-control error**. The matching one-per-load Tauri `console.warn('IPC custom protocol failed …')` is filtered in the same place.
 
-[Section titled “Two traps when fixing this”](#two-traps-when-fixing-this)
+This is purely a SPA/TypeScript change, so it ships via the operator-vite bundle and takes effect on the next SPA rebuild + a desktop **reload** — on ANY binary (no Rust rebuild, works on old desktop builds too). The app’s `endpoint_invoke` command (and the channel-data path) fall back to postMessage cleanly; behavior is identical minus the console noise.
 
-1. **It is NOT in the already-vendored `tauri-runtime-wry`.** The scheme registration lives in **wry**; `tauri-runtime-wry` registers protocols through wry’s `with_asynchronous_custom_protocol` and wry exposes its WebKit context only `pub(crate)`. So the fix requires vendoring **wry itself** (`[patch.crates-io] wry = { path = "vendor/wry" }`, same pattern as the existing `tauri-runtime-wry` patch).
-2. **Timing: it must run BEFORE the web process spawns.** Registering `register_uri_scheme_as_cors_enabled` *post-`webview.build()`* (e.g. via `WebViewExtUnix::webview().web_context().security_manager()`) is **too late** — verified: the warn still fires. WebKitGTK reads scheme registrations at web-process spawn. The fix must sit right next to wry’s existing `register_uri_scheme_as_secure` call, which runs at the correct pre-spawn moment.
+## What did NOT work (don’t repeat this)
 
-## The fix
+[Section titled “What did NOT work (don’t repeat this)”](#what-did-not-work-dont-repeat-this)
 
-[Section titled “The fix”](#the-fix)
+* **Patching wry to register the scheme CORS-enabled** (`register_uri_scheme_as_cors_enabled` next to the `_as_secure` call in `wry/src/webkitgtk/web_context.rs`, via a vendored `[patch.crates-io] wry`). It compiled, but could not be verified to silence the error on WebKitGTK, and it pins wry to a vendored copy. Reverted. If you revisit a wry-level fix, you MUST prove it before relying on it — see verification below.
+* A **post-build** `register_uri_scheme_as_cors_enabled` in `tauri-runtime-wry` — too late; WebKitGTK reads scheme registrations before the web process spawns.
 
-In vendored `wry/src/webkitgtk/web_context.rs`, right after the `_as_secure` registration, add (note: the webkit2gtk 2.0.2 method is `_as_cors_enabled`, not `_as_cors_allowed`):
+## Verification — the bridge traps (this cost hours)
 
-```rust
-self.os.context.security_manager().ok_or(Error::MissingManager)?
-  .register_uri_scheme_as_cors_enabled(name);
-```
+[Section titled “Verification — the bridge traps (this cost hours)”](#verification--the-bridge-traps-this-cost-hours)
 
-Drop the vendored-wry patch when a released wry registers custom schemes as CORS-enabled upstream.
+`tauri-agent-tools` could NOT reliably confirm/deny the fix; trust these instead:
 
-## How to verify (the reliable way)
+* **`eval`-based `fetch('ipc://…')` is INVALID.** The bridge’s eval runs in a context that does not reproduce the page’s CORS, so it returns `AbortError`/pending on BOTH a buggy and a fixed binary.
+* **`console-monitor` across a reload is unreliable** — it loses the post-reload console (a sentinel warn emitted after reload was not captured), so a captured warn may be stale buffer.
+* **The capture bundle’s `console-errors.json` is errors-only** and the WebKit engine error bypasses the JS `console.*` hook — so it never appears there.
+* **What DID work — count real `ipc://` fetches.** Wrap `window.fetch` via eval to increment a counter on `ipc://` URLs, then watch it over a few seconds of live app traffic: `window.__a=0; const o=window.fetch; window.fetch=(u,...r)=>{if(String(u).startsWith('ipc://'))window.__a++;return o(u,...r)};` Pre-fix it climbs (\~273 over 5s, custom-protocol active); with the interceptor it stays **0** (Tauri latched to postMessage → no ipc:// fetch is ever issued → no possible access-control error).
 
-[Section titled “How to verify (the reliable way)”](#how-to-verify-the-reliable-way)
+## Gotcha: multiple desktop instances / ports
 
-`tauri-agent-tools console-monitor` across a reload is **unreliable** here — it reads a stale buffer and misses post-reload messages (a sentinel `console.warn` emitted after reload was not captured). Verify **deterministically** via `eval` instead — perform the `ipc://` fetch directly and inspect the outcome:
+[Section titled “Gotcha: multiple desktop instances / ports”](#gotcha-multiple-desktop-instances--ports)
 
-```js
-// CORS-rejected → rejects immediately with "...access control checks".
-// CORS-allowed  → request proceeds to the handler (stays pending / AbortError on a timeout).
-await fetch('ipc://localhost/endpoint_invoke', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'Tauri-Callback': '1', 'Tauri-Error': '2', 'Tauri-Invoke-Key': 'probe' },
-  body: '{}', signal: AbortSignal.timeout(1500),
-})
-```
-
-An `AbortError` (the fetch was in-flight) confirms CORS now passes; an “access control checks” rejection means it’s still broken.
-
-## Related
-
-[Section titled “Related”](#related)
-
-The webview→Rust IPC succeeding at the WebKit layer is separate from the Rust→Node-sidecar socket (`endpoint-ipc`); if that socket is down (`dev:service_health` shows `ipc socket unreachable`), `endpoint_invoke` returns an error and `desktop-bootstrap.ts`’s `isIpcUnavailable` falls back to HTTP **silently** (no console error). See `libs/generic/desktop-ipc/src/desktop-bootstrap.ts`.
+The dev box runs several desktops at once on different content ports — the `npm run dev` shell (`:3270`, working-tree dist), the fleet staging operator (`:3170`, the separate `papercup-staging` checkout), the green release (`:3070`, `papercup-release`). They serve DIFFERENT SPA builds. A fix in the canonical tree reaches `:3270` immediately (rebuild + reload) but `:3170`/`:3070` only after their own sync + rebuild/deploy. Confirm WHICH port the affected window is on (its address bar) before concluding a fix didn’t land — you may be looking at a stale build.
 
 # Testing lock-authority eviction across machines (the ≥3-peer harness)
 
@@ -24513,7 +24596,7 @@ The original implementation plan committed in `f3faf22` is preserved in git hist
 1.  <role>.persona.md         character + behavior rules
 2.  Tools catalog             per-tool guidance from defineTool({ guidance })
 3.  <role>.tools.md           cross-tool patterns + workflows
-─── shared-base policy block (≈13 sections, see below) ───
+─── shared-base policy block (≈14 sections, see below) ───
 4.  coord-legend              how to read injected [coord+N] blocks
 5.  friction-tripwire         file friction you felt
 6.  observation-rubric-nudge  how to grade a turn-end observation
@@ -24527,11 +24610,12 @@ The original implementation plan committed in `f3faf22` is preserved in git hist
 14. finish-the-rollout-note   built-but-gated-OFF is incomplete; flip it on
 15. agent-activity-truth-note "who's doing what" is a live derived truth
 16. wait-loop-note            waiting? arm a self-wake loop, don't sleep blind
+17. peer-wake-note            you can WAKE a peer; handing work off isn't enough
 ─────────────────────────────────────────────────────────
-17. Runtime context           caller-supplied blocks (history, trigger, ...)
+18. Runtime context           caller-supplied blocks (history, trigger, ...)
 ```
 
-Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–16 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 17 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 17 sections.
+Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–16 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 17 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 18 sections.
 
 Caution
 
@@ -24673,25 +24757,26 @@ The order within runtime is caller-controlled. The contract is: runtime always c
 
 [Section titled “The shared-base policy block”](#the-shared-base-policy-block)
 
-Between the tools playbook (section 3) and runtime (section 17), `assembleRolePrompt` injects up to **thirteen shared-base policy sections** in this order:
+Between the tools playbook (section 3) and runtime (section 18), `assembleRolePrompt` injects up to **fourteen shared-base policy sections** in this order:
 
-| Section                     | What it primes                                                                                                                                                                   |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `coord-legend`              | how to read the injected `[coord+N]` blocks the PostToolUse hook adds                                                                                                            |
-| `friction-tripwire`         | file friction you *felt* (a workaround, a misleading doc, a >3-attempt confusing failure) via `improvements:capture` the moment it hits                                          |
-| `observation-rubric-nudge`  | when filing a turn-end observation, check `rubrics:list` first and file a structured observation if an active rubric fits                                                        |
-| `yield-policy`              | on a `turn:interrupt` yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn                                                              |
-| `account-routing-note`      | don’t mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system                                                               |
-| `concurrency-first-note`    | don’t back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents                             |
-| `testing-standard`          | write tests the project way                                                                                                                                                      |
-| `deploy-pipeline-note`      | your change ships via an async, self-healing pipeline; don’t babysit or self-diagnose a stall                                                                                    |
-| `reuse-first-nudge`         | extend an existing durable surface, don’t fork a parallel one                                                                                                                    |
-| `code-run-note`             | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset)                        |
-| `finish-the-rollout-note`   | a capability built then left gated OFF (flag or env boolean) is incomplete — flipping the gate on is the last step of the task                                                   |
-| `agent-activity-truth-note` | ”who’s doing what” is a live derived truth (`fleet:assignments`: claim + holder-liveness + progress), never a stale coord broadcast that outlives the work                       |
-| `wait-loop-note`            | waiting on something that may never fire? arm a recurring self-wake (`loop:arm` / `hive:declare-wake`) and FIX what’s blocking it — don’t sleep forever on a bare `events:await` |
+| Section                     | What it primes                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `coord-legend`              | how to read the injected `[coord+N]` blocks the PostToolUse hook adds                                                                                                                                                                                                                                                    |
+| `friction-tripwire`         | file friction you *felt* (a workaround, a misleading doc, a >3-attempt confusing failure) via `improvements:capture` the moment it hits                                                                                                                                                                                  |
+| `observation-rubric-nudge`  | when filing a turn-end observation, check `rubrics:list` first and file a structured observation if an active rubric fits                                                                                                                                                                                                |
+| `yield-policy`              | on a `turn:interrupt` yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn                                                                                                                                                                                                      |
+| `account-routing-note`      | don’t mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system                                                                                                                                                                                                       |
+| `concurrency-first-note`    | don’t back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents                                                                                                                                                                     |
+| `testing-standard`          | write tests the project way                                                                                                                                                                                                                                                                                              |
+| `deploy-pipeline-note`      | your change ships via an async, self-healing pipeline; don’t babysit or self-diagnose a stall                                                                                                                                                                                                                            |
+| `reuse-first-nudge`         | extend an existing durable surface, don’t fork a parallel one                                                                                                                                                                                                                                                            |
+| `code-run-note`             | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset)                                                                                                                                                                |
+| `finish-the-rollout-note`   | a capability built then left gated OFF (flag or env boolean) is incomplete — flipping the gate on is the last step of the task                                                                                                                                                                                           |
+| `agent-activity-truth-note` | ”who’s doing what” is a live derived truth (`fleet:assignments`: claim + holder-liveness + progress), never a stale coord broadcast that outlives the work                                                                                                                                                               |
+| `wait-loop-note`            | waiting on something that may never fire? arm a recurring self-wake (`loop:arm` / `hive:declare-wake`) and FIX what’s blocking it — don’t sleep forever on a bare `events:await`                                                                                                                                         |
+| `peer-wake-note`            | a parked agent sleeps until something re-invokes it, so handing work off doesn’t make a peer act — WAKE the peer you depend on (`coord:dispatch` / `coord:handoff` for new work, `coord:wake` to resume an assigned lane) and verify it landed (`woken` / `recipient_absent`); the active complement of `wait-loop-note` |
 
-Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can’t desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all thirteen.
+Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can’t desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all fourteen.
 
 ## The noun/verb split
 

@@ -129,6 +129,18 @@ const DEFAULT_PENDING_RETRY_MS = 5000;
  * enough for normal GitHub propagation lag while bounding the retry budget.
  */
 const BOOT_PENDING_GRACE_MS = 30 * 60 * 1000; // 30 minutes
+/**
+ * WI-752 / FED-2 — JOIN-retry self-heal. The boot-time swarm join is one-shot;
+ * a TRANSIENT failure (DHT not ready, a gh-identity / keychain blip, a momentary
+ * network fault) lands the harness LOCAL-ONLY with NO swarm join to refresh, and
+ * pre-WI-752 it stayed local-only until an operator RESTART. So a failed join is
+ * retried on a bounded exponential backoff (base → cap) until it succeeds —
+ * federation then establishes with no restart, and a PERMANENT cause (genuinely
+ * unauthenticated, etc.) simply backs off at the cap, self-healing the instant
+ * the cause clears (e.g. a gh token is restored). `swarmJoinRetryMs: 0` disables.
+ */
+const DEFAULT_SWARM_JOIN_RETRY_MS = 15_000;
+const SWARM_JOIN_RETRY_CAP_MS = 5 * 60 * 1000; // 5 minutes
 // Stage 6 (DoS Phase-4 reshape): cap how many ops the merge ingests from any
 // single author per pass. A noisy/Sybil peer bloats only its OWN log, so this
 // bounds per-pass ingest rather than mitigating a shared-structure flood.
@@ -244,6 +256,25 @@ export interface BootHarnessOpts {
    * Set to 0 to disable the retry timer entirely (tests that don't need it).
    */
   pendingRetryMs?: number;
+  /**
+   * WI-752 / FED-2 substrate-swarm self-heal cadence (ms), forwarded to
+   * `joinHarnessSwarm`. Production leaves these undefined → the proven defaults
+   * (`DEFAULT_SUBSTRATE_REFRESH_MS` / `_FAST_WINDOW_MS` / `_SLOW_REFRESH_MS`) so
+   * a dropped/aged-out peer re-pairs without an operator restart. Tests set a
+   * small `swarmRefreshMs` to drive the re-peer loop quickly, or `0` to disable
+   * it (and drive `discovery.refresh()` by hand). See swarm.ts.
+   */
+  swarmRefreshMs?: number;
+  swarmFastWindowMs?: number;
+  swarmSlowRefreshMs?: number;
+  /**
+   * WI-752 / FED-2 join-retry base interval (ms). When the boot-time swarm join
+   * FAILS (→ local-only), retry it on a bounded exponential backoff starting at
+   * this value (capped at `SWARM_JOIN_RETRY_CAP_MS`) until it succeeds — so a
+   * transient join failure self-heals with no operator restart. Default
+   * `DEFAULT_SWARM_JOIN_RETRY_MS`; `0` disables the retry (tests).
+   */
+  swarmJoinRetryMs?: number;
   /**
    * Test seam (A-003) — override how the joiner's hive-home projection slug is
    * resolved. Production leaves this undefined and `resolveHiveHomeProjectionSlug`
@@ -1983,6 +2014,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         buildOurAnnounce,
         onAnnounce,
         offloadReplication,
+        // WI-752 / FED-2: forward the self-heal re-peer cadence (defaults applied
+        // inside joinHarnessSwarm when these are undefined).
+        refreshMs: opts.swarmRefreshMs,
+        fastWindowMs: opts.swarmFastWindowMs,
+        slowRefreshMs: opts.swarmSlowRefreshMs,
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
           // eslint-disable-next-line no-console

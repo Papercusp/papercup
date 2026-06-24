@@ -1,93 +1,73 @@
-# Tauri IPC \"access control checks\" on Linux — wry registers custom schemes secure-only, not CORS-enabled
+# Tauri IPC \"access control checks\" console flood on Linux — fix it in the SPA, not wry
 URL: /internal/docs/agent-insights/tauri-ipc-cors-remote-origin-webkitgtk
 
-Why the desktop logs 'Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks' on every navigation, and the vendored-wry one-liner that fixes it.
+The desktop logs 'Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks' on every navigation. The reliable fix intercepts the ipc:// fetch in the desktop fetch wrapper (force postMessage) — NOT a wry/CORS patch (which couldn't be made to work).
 
 ## Symptom
 
-The Tauri desktop console logs, on **every navigation**:
+The Tauri desktop console logs, repeatedly (once per `/api` call → a flood):
 
 ```
 Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks.
 ```
 
-(often followed by Tauri's own `IPC custom protocol failed, Tauri will now use the
-postMessage interface instead`). The app still works — Tauri falls back to the
-postMessage IPC transport — but the error pollutes the console and the IPC
-custom-protocol fast path never runs.
+The app still works (Tauri carries IPC over its postMessage transport), but the console is unusable.
 
 ## Root cause
 
-Papercusp loads the operator UI from a **remote `http://127.0.0.1:<port>` origin**
-(`frontendDist`/`devUrl` in `tauri.conf.json`), **not** the bundled `tauri://`
-asset protocol. Tauri's injected IPC script always tries the `ipc://localhost/<cmd>`
-**custom-protocol fetch first** on non-Android (`canUseCustomProtocol = osName !== 'android'`).
+Papercusp loads the operator UI from a **remote `http://127.0.0.1:<port>` origin** (`frontendDist`/`devUrl`),
+not the bundled `tauri://` asset protocol. Tauri's injected IPC script tries the
+`ipc://localhost/<cmd>` **custom-protocol fetch first** on non-Android. On Linux/WebKitGTK, wry
+registers custom URI schemes secure-only (never CORS-enabled), and the page origin is a remote
+`http://` one — so WebKitGTK rejects the cross-origin `ipc://` fetch with "access control checks",
+even though Tauri's IPC handler returns `Access-Control-Allow-Origin: *`.
 
-On Linux/WebKitGTK, **wry registers custom URI schemes only as
-`register_uri_scheme_as_secure`, never `register_uri_scheme_as_cors_enabled`**
-(`wry/src/webkitgtk/web_context.rs::register_uri_scheme`). So WebKitGTK blocks the
-**cross-origin** `ipc://` fetch from the `http://127.0.0.1` page *before* it ever
-honors the response — even though Tauri's IPC protocol handler already returns
-`Access-Control-Allow-Origin: *`. Tauri's `.catch` then logs the warn and falls
-back to postMessage.
+## The fix that works — SPA-level, force postMessage
 
-The Tauri **capability** `remote.urls` (`capabilities/default.json`) governs the
-*permission* layer (which commands a remote origin may call) — it does **NOT**
-fix this WebKitGTK CORS-on-custom-scheme layer. Different concern.
+Intercept the `ipc://` fetch in the desktop's own `window.fetch` wrapper
+(`installDesktopIpcPolyfills`, `libs/generic/desktop-ipc/src/desktop-bootstrap.ts`) and **reject it
+before any native fetch is issued**. Tauri's init script catches the rejection and transparently
+retries the invoke over its **postMessage** transport — the path that already carries every IPC
+call on this platform. Because no native `ipc://` fetch is ever made, the WebKit engine never
+evaluates it and **cannot log the access-control error**. The matching one-per-load Tauri
+`console.warn('IPC custom protocol failed …')` is filtered in the same place.
 
-## Two traps when fixing this
+This is purely a SPA/TypeScript change, so it ships via the operator-vite bundle and takes effect
+on the next SPA rebuild + a desktop **reload** — on ANY binary (no Rust rebuild, works on old
+desktop builds too). The app's `endpoint_invoke` command (and the channel-data path) fall back to
+postMessage cleanly; behavior is identical minus the console noise.
 
-1. **It is NOT in the already-vendored `tauri-runtime-wry`.** The scheme
-   registration lives in **wry**; `tauri-runtime-wry` registers protocols through
-   wry's `with_asynchronous_custom_protocol` and wry exposes its WebKit context
-   only `pub(crate)`. So the fix requires vendoring **wry itself**
-   (`[patch.crates-io] wry = { path = "vendor/wry" }`, same pattern as the
-   existing `tauri-runtime-wry` patch).
-2. **Timing: it must run BEFORE the web process spawns.** Registering
-   `register_uri_scheme_as_cors_enabled` *post-`webview.build()`* (e.g. via
-   `WebViewExtUnix::webview().web_context().security_manager()`) is **too late** —
-   verified: the warn still fires. WebKitGTK reads scheme registrations at web-process
-   spawn. The fix must sit right next to wry's existing `register_uri_scheme_as_secure`
-   call, which runs at the correct pre-spawn moment.
+## What did NOT work (don't repeat this)
 
-## The fix
+* **Patching wry to register the scheme CORS-enabled** (`register_uri_scheme_as_cors_enabled` next
+  to the `_as_secure` call in `wry/src/webkitgtk/web_context.rs`, via a vendored `[patch.crates-io]
+  wry`). It compiled, but could not be verified to silence the error on WebKitGTK, and it pins wry
+  to a vendored copy. Reverted. If you revisit a wry-level fix, you MUST prove it before relying on
+  it — see verification below.
+* A **post-build** `register_uri_scheme_as_cors_enabled` in `tauri-runtime-wry` — too late;
+  WebKitGTK reads scheme registrations before the web process spawns.
 
-In vendored `wry/src/webkitgtk/web_context.rs`, right after the `_as_secure`
-registration, add (note: the webkit2gtk 2.0.2 method is `_as_cors_enabled`, not
-`_as_cors_allowed`):
+## Verification — the bridge traps (this cost hours)
 
-```rust
-self.os.context.security_manager().ok_or(Error::MissingManager)?
-  .register_uri_scheme_as_cors_enabled(name);
-```
+`tauri-agent-tools` could NOT reliably confirm/deny the fix; trust these instead:
 
-Drop the vendored-wry patch when a released wry registers custom schemes as
-CORS-enabled upstream.
+* **`eval`-based `fetch('ipc://…')` is INVALID.** The bridge's eval runs in a context that does not
+  reproduce the page's CORS, so it returns `AbortError`/pending on BOTH a buggy and a fixed binary.
+* **`console-monitor` across a reload is unreliable** — it loses the post-reload console (a sentinel
+  warn emitted after reload was not captured), so a captured warn may be stale buffer.
+* **The capture bundle's `console-errors.json` is errors-only** and the WebKit engine error bypasses
+  the JS `console.*` hook — so it never appears there.
+* **What DID work — count real `ipc://` fetches.** Wrap `window.fetch` via eval to increment a
+  counter on `ipc://` URLs, then watch it over a few seconds of live app traffic:
+  `window.__a=0; const o=window.fetch; window.fetch=(u,...r)=>{if(String(u).startsWith('ipc://'))window.__a++;return o(u,...r)};`
+  Pre-fix it climbs (\~273 over 5s, custom-protocol active); with the interceptor it stays **0**
+  (Tauri latched to postMessage → no ipc:// fetch is ever issued → no possible access-control error).
 
-## How to verify (the reliable way)
+## Gotcha: multiple desktop instances / ports
 
-`tauri-agent-tools console-monitor` across a reload is **unreliable** here — it
-reads a stale buffer and misses post-reload messages (a sentinel `console.warn`
-emitted after reload was not captured). Verify **deterministically** via `eval`
-instead — perform the `ipc://` fetch directly and inspect the outcome:
-
-```js
-// CORS-rejected → rejects immediately with "...access control checks".
-// CORS-allowed  → request proceeds to the handler (stays pending / AbortError on a timeout).
-await fetch('ipc://localhost/endpoint_invoke', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'Tauri-Callback': '1', 'Tauri-Error': '2', 'Tauri-Invoke-Key': 'probe' },
-  body: '{}', signal: AbortSignal.timeout(1500),
-})
-```
-
-An `AbortError` (the fetch was in-flight) confirms CORS now passes; an
-"access control checks" rejection means it's still broken.
-
-## Related
-
-The webview→Rust IPC succeeding at the WebKit layer is separate from the
-Rust→Node-sidecar socket (`endpoint-ipc`); if that socket is down (`dev:service_health`
-shows `ipc socket unreachable`), `endpoint_invoke` returns an error and
-`desktop-bootstrap.ts`'s `isIpcUnavailable` falls back to HTTP **silently** (no
-console error). See `libs/generic/desktop-ipc/src/desktop-bootstrap.ts`.
+The dev box runs several desktops at once on different content ports — the `npm run dev` shell
+(`:3270`, working-tree dist), the fleet staging operator (`:3170`, the separate `papercup-staging`
+checkout), the green release (`:3070`, `papercup-release`). They serve DIFFERENT SPA builds. A fix
+in the canonical tree reaches `:3270` immediately (rebuild + reload) but `:3170`/`:3070` only after
+their own sync + rebuild/deploy. Confirm WHICH port the affected window is on (its address bar)
+before concluding a fix didn't land — you may be looking at a stale build.

@@ -49,7 +49,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
-import { CDC_CAPTURED_TABLES } from '../feature-issue-op-keys';
+import { CDC_CAPTURED_TABLES, cdcPhysicalTable } from '../feature-issue-op-keys';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../../..');
@@ -100,7 +100,10 @@ const RLS_EXEMPT: Record<string, string> = {
   coord_event_log: 'Isolated by explicit workspace_id filtering (coordination/messages.ts WHERE workspace_id=coordWorkspaceId). No RLS backstop.',
   coord_threads: 'Isolated by explicit workspace_id filtering (coordination store). No RLS backstop.',
   coord_thread_posts: 'Isolated by explicit workspace_id filtering (coordination store). No RLS backstop.',
-  engineer_issues: 'Isolated by explicit workspace_id filtering (issues-engineer.ts WHERE workspace_id=issuesScopeWorkspace). No RLS backstop.',
+  // NOTE: engineer_issues is NO LONGER exempt — post-mig-374 it is a VIEW over the
+  // work_items base table, which mig-402 gives an RLS backstop (ENABLE ROW LEVEL SECURITY +
+  // work_items_workspace_isolation). The guard maps both work-item families to their
+  // physical base via cdcPhysicalTable(), so engineer_issues is now covered by work_items's RLS.
   plan_item_assignments: 'Isolated by explicit workspace_id filtering (plan-items/assignments.ts WHERE workspace_id=ws). No RLS backstop.',
   contributor_usage_events:
     'Append-only usage ledger; workspace_id added late (mig-301, which notes it "does not actually federate"). ' +
@@ -180,7 +183,9 @@ describe('federated CDC tables — workspace RLS is enabled + policy present (te
   it('every workspace-scoped federated table has RLS ENABLED (except documented RLS_EXEMPT)', async () => {
     const scoped = await fedTablesWithWorkspaceId();
     const enabled = await rlsEnabled();
-    const missing = scoped.filter((t) => !enabled.has(t) && !(t in RLS_EXEMPT)).sort();
+    // RLS lives on the PHYSICAL base relation — post-374 the work-item families are views
+    // over work_items (which mig-402 RLS-enables), so check cdcPhysicalTable(t).
+    const missing = scoped.filter((t) => !enabled.has(cdcPhysicalTable(t)) && !(t in RLS_EXEMPT)).sort();
     expect(
       missing,
       `Federated, workspace-scoped table(s) DO NOT have RLS enabled — a remote op for one ` +
@@ -194,7 +199,9 @@ describe('federated CDC tables — workspace RLS is enabled + policy present (te
   it('every workspace-scoped federated table has a workspace-ISOLATION policy (not just any policy)', async () => {
     const scoped = await fedTablesWithWorkspaceId();
     const isoPolicy = await workspaceIsoPolicyTables();
-    const missing = scoped.filter((t) => !isoPolicy.has(t) && !(t in RLS_EXEMPT)).sort();
+    // Policy lives on the PHYSICAL base relation (cdcPhysicalTable maps the work-item
+    // families to work_items, where mig-402 attaches work_items_workspace_isolation).
+    const missing = scoped.filter((t) => !isoPolicy.has(cdcPhysicalTable(t)) && !(t in RLS_EXEMPT)).sort();
     expect(
       missing,
       `Federated, workspace-scoped table(s) have no policy whose predicate references ` +
@@ -208,8 +215,11 @@ describe('federated CDC tables — workspace RLS is enabled + policy present (te
   it('no RLS_EXEMPT entry is stale (still a federated, workspace-scoped table lacking RLS)', async () => {
     const scoped = new Set(await fedTablesWithWorkspaceId());
     const enabled = await rlsEnabled();
+    // An exemption is stale once its PHYSICAL base relation gains RLS (e.g. mig-402 gives
+    // work_items RLS, which now backstops both work-item families) or it stops being a
+    // federated, workspace-scoped table.
     const stale = Object.keys(RLS_EXEMPT)
-      .filter((t) => !scoped.has(t) || enabled.has(t))
+      .filter((t) => !scoped.has(t) || enabled.has(cdcPhysicalTable(t)))
       .sort();
     expect(
       stale,

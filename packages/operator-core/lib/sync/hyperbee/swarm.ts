@@ -128,6 +128,19 @@ export interface JoinHarnessSwarmOpts {
    * declined → in-process fallback).
    */
   offloadReplication?: (socket: unknown, peerInfo?: unknown) => boolean;
+  /**
+   * WI-752 / FED-2 self-heal: FAST per-topic `discovery.refresh()` cadence (ms)
+   * during the post-join / post-peer-loss window. Default
+   * `DEFAULT_SUBSTRATE_REFRESH_MS`. `0` DISABLES the self-heal loop entirely
+   * (byte-identical to the pre-WI-752 join — tests that drive refresh by hand).
+   */
+  refreshMs?: number;
+  /** How long the FAST cadence runs after a join / losing the last peer (ms).
+   *  Default `DEFAULT_SUBSTRATE_FAST_WINDOW_MS`. */
+  fastWindowMs?: number;
+  /** Steady-state keepalive cadence once the fast window lapses (ms).
+   *  Default `DEFAULT_SUBSTRATE_SLOW_REFRESH_MS`. */
+  slowRefreshMs?: number;
 }
 
 /** Announce-channel opts for one hive on one peer connection. */
@@ -407,6 +420,36 @@ export function extractPublicKeyHex(peerInfo: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * SELF-HEAL re-peer cadence (WI-752 / FED-2). The per-harness substrate swarm
+ * joins its topic ONCE; if an established peer connection later dies (idle /
+ * timeout / reset / mid-replication death) or the topic's DHT announce ages out,
+ * NOTHING re-announces + re-looks-up the topic, so the peer is never
+ * rediscovered and federation stays DEAD until an operator restart re-runs the
+ * whole join (the WI-559/WI-752 "federation sat dead ~7h" symptom). So
+ * `joinHarnessSwarm` runs the SAME two-speed `discovery.refresh()` loop the
+ * hive-directory gossip already uses (directory-swarm.ts):
+ *
+ *   - FAST cadence (`DEFAULT_SUBSTRATE_REFRESH_MS`) inside the post-join /
+ *     post-peer-loss window (`DEFAULT_SUBSTRATE_FAST_WINDOW_MS`). The first DHT
+ *     announce/lookup round reliably MISSES on a fresh node and nothing internal
+ *     retries for minutes — `discovery.refresh()` is empirically the ONLY
+ *     reliable reconnect driver (see directory-swarm.ts's module header + the
+ *     swarm-chaos test, which only converges because it calls refresh itself).
+ *   - SLOW keepalive (`DEFAULT_SUBSTRATE_SLOW_REFRESH_MS`) otherwise, so the
+ *     topic stays announced (a FUTURE drop can always re-pair) without hammering
+ *     the public DHT forever.
+ *
+ * Losing the last peer re-arms the fast window (the connection handler's socket
+ * `close` listener) so reconnection is snappy. `refreshMs: 0` disables the loop
+ * entirely — the byte-identical pre-WI-752 join (used by tests that drive
+ * refresh by hand). The timer is `unref()`d (never holds the process open) and
+ * cleared on `close()`.
+ */
+export const DEFAULT_SUBSTRATE_REFRESH_MS = 2500;
+export const DEFAULT_SUBSTRATE_FAST_WINDOW_MS = 30_000;
+export const DEFAULT_SUBSTRATE_SLOW_REFRESH_MS = 60_000;
+
 export async function joinHarnessSwarm(
   opts: JoinHarnessSwarmOpts,
 ): Promise<SwarmHandle> {
@@ -418,6 +461,12 @@ export async function joinHarnessSwarm(
 
   const guard = opts.guard ?? getSwarmGuard();
   let connectionCount = 0;
+  // WI-752 self-heal state: the start of the current FAST-refresh window (join
+  // time; re-armed on every peer-socket `close`) and the last refresh tick (for
+  // the slow keepalive). Declared before `handler` so the close listener can
+  // re-arm the window.
+  let fastWindowStartMs = Date.now();
+  let lastRefreshMs = 0;
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
     // An unclean peer disconnect (reset / timeout / mid-replication death)
@@ -428,6 +477,14 @@ export async function joinHarnessSwarm(
     // consumer to handle connection errors. The reconnect path is discovery's
     // job — the error itself is just churn.
     (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown })?.on?.('error', () => {});
+    // WI-752 self-heal: re-arm the FAST refresh window when this peer socket
+    // closes, so a dropped peer re-pairs snappily (the DHT round after a loss
+    // reliably needs several refreshes — see directory-swarm.ts). Best-effort;
+    // counting ALL peer closes (the shared swarm dedups one socket per peer
+    // across topics) only ever schedules a few extra harmless refreshes.
+    (socket as { once?: (ev: string, fn: () => void) => unknown })?.once?.('close', () => {
+      fastWindowStartMs = Date.now();
+    });
     const remotePublicKeyHex = extractPublicKeyHex(peerInfo);
     const remoteIp = extractRemoteIp(socket);
 
@@ -534,12 +591,45 @@ export async function joinHarnessSwarm(
     void discovery.flushed().catch(() => {});
   }
 
+  // ── WI-752 / FED-2 self-heal re-peer loop ──
+  // Re-run this topic's DHT announce+lookup on a two-speed cadence so a dropped
+  // peer / aged-out announce re-pairs WITHOUT an operator restart (see the
+  // constant block above + directory-swarm.ts). FAST inside the post-join /
+  // post-peer-loss window, then a SLOW keepalive. `refreshMs: 0` disables it.
+  const refreshMs = opts.refreshMs ?? DEFAULT_SUBSTRATE_REFRESH_MS;
+  const fastWindowMs = opts.fastWindowMs ?? DEFAULT_SUBSTRATE_FAST_WINDOW_MS;
+  const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SUBSTRATE_SLOW_REFRESH_MS;
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  if (refreshMs > 0) {
+    refreshTimer = setInterval(() => {
+      const now = Date.now();
+      const inFastWindow = now - fastWindowStartMs < fastWindowMs;
+      const slowDue = now - lastRefreshMs >= slowRefreshMs;
+      if (!inFastWindow && !slowDue) return;
+      lastRefreshMs = now;
+      try {
+        // Re-announce (server) + re-lookup (client) — the same call the
+        // swarm-chaos test uses as its deterministic reconnect driver. A throw
+        // / rejection must never crash the host.
+        void Promise.resolve(discovery?.refresh?.({ client: true, server: true })).catch(() => {});
+      } catch {
+        // best-effort — refresh is keepalive, not load-bearing for this tick
+      }
+    }, refreshMs);
+    refreshTimer.unref?.();
+  }
+
   const handle: SwarmHandle = {
     topicHex: opts.topic.toString('hex'),
     get connectionCount() {
       return connectionCount;
     },
     async close() {
+      // WI-752: stop the self-heal loop FIRST so no refresh fires after leave.
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
       if (opts.swarm.off) opts.swarm.off('connection', handler);
       try {
         await opts.swarm.leave(opts.topic);

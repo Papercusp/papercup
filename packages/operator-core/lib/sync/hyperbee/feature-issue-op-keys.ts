@@ -131,6 +131,30 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
 export const CDC_CAPTURED_TABLES: readonly string[] = Object.keys(TABLE_NAME_TO_TABLE_TAG);
 
 /**
+ * The PHYSICAL relation backing each federated logical `table_name`. Post-mig-374
+ * (work-items-unify) the two unified work-item families — `engineer_issues` and
+ * `harness_features_consolidated` — are VIEWS over the `work_items` base table, which
+ * physically carries their capture (`capture_work_items_outbox`), LWW-stamp
+ * (`stamp_local_federated_write_trg`) and RLS apparatus. The capture trigger demuxes by
+ * `item_kind` and stamps the LOGICAL `table_name` on each op (mig-375) so the read-side
+ * projections demux unchanged — but anything introspecting the PHYSICAL schema (the
+ * rls / stamp / capture COVERAGE GUARDS) must look at the base table, not the view, or it
+ * checks an object that can never carry a row trigger or RLS. Every other federated table
+ * is its own physical relation (identity).
+ */
+export const CDC_PHYSICAL_TABLE: Readonly<Record<string, string>> = {
+  engineer_issues: 'work_items',
+  harness_features_consolidated: 'work_items',
+};
+
+/** The physical relation backing a federated logical `table_name` (identity for the
+ *  non-unified tables). The coverage guards introspect THIS, since triggers + RLS live on
+ *  the base table, not the post-374 views. */
+export function cdcPhysicalTable(tableName: string): string {
+  return CDC_PHYSICAL_TABLE[tableName] ?? tableName;
+}
+
+/**
  * Shape of one `substrate_outbox` row, as the drain reads it. `row` is the
  * `to_jsonb` of the full consolidated row (a superset of the projection row),
  * or `null` for a `del`.
