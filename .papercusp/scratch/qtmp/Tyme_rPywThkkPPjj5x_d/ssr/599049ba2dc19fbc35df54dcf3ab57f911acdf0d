@@ -1,0 +1,38 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","SU_ROLES"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/toast-log-data.ts", {"importedNames":["listToasts"]});
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "notifications:recent",
+  profile: "engineer",
+  description: "List recent toast notifications shown in the app (errors, warnings, info, success).",
+  capability: "notifications:read",
+  guidance: {
+    when: `Read recent toast notifications shown to the user — for "did I miss anything?" / replay.`,
+    notWhen: `For PERSISTENT inbox items, use \`messages:inbox\`. Notifications are ephemeral toasts.`
+  },
+  requirePrincipal: false,
+  // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads
+  // recent notifications/toasts to spot "why did the app just error?" drift.
+  agentRoles: [...__vite_ssr_import_1__.SU_ROLES, "overwatch"],
+  args: __vite_ssr_import_0__.z.object({
+    level: __vite_ssr_import_0__.z.enum(["default", "info", "success", "warning", "error", "loading", "all"]).optional(),
+    limit: __vite_ssr_import_0__.z.number().int().positive().max(500).optional()
+  }),
+  async handler(args) {
+    const { toasts } = await (0,__vite_ssr_import_2__.listToasts)({ limit: args.limit });
+    const filtered = args.level && args.level !== "all" ? toasts.filter((t) => t.level === args.level) : toasts;
+    return {
+      content: [
+        { type: "text", text: JSON.stringify({ count: filtered.length, notifications: filtered }) }
+      ]
+    };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVFBO0FBQ0E7QUFDQTs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsYUFBYTtBQUFBLEVBQ2IsWUFBWTtBQUFBLEVBQ1osVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLEVBQ1g7QUFBQSxFQUNBLGtCQUFrQjtBQUFBO0FBQUE7QUFBQSxFQUdsQixZQUFZLENBQUMsR0FBRyxnQ0FBVSxXQUFXO0FBQUEsRUFDckMsTUFBTSx3QkFBRSxPQUFPO0FBQUEsSUFDYixPQUFPLHdCQUFFLEtBQUssQ0FBQyxXQUFXLFFBQVEsV0FBVyxXQUFXLFNBQVMsV0FBVyxLQUFLLENBQUMsRUFBRSxTQUFTO0FBQUEsSUFDN0YsT0FBTyx3QkFBRSxPQUFPLEVBQUUsSUFBSSxFQUFFLFNBQVMsRUFBRSxJQUFJLEdBQUcsRUFBRSxTQUFTO0FBQUEsRUFDdkQsQ0FBQztBQUFBLEVBQ0QsTUFBTSxRQUFRLE1BQU07QUFDbEIsVUFBTSxFQUFFLE9BQU8sSUFBSSxTQUFNLGtDQUFXLEVBQUUsT0FBTyxLQUFLLE1BQU0sQ0FBQztBQUN6RCxVQUFNLFdBQ0osS0FBSyxTQUFTLEtBQUssVUFBVSxRQUFRLE9BQU8sT0FBTyxDQUFDLE1BQU0sRUFBRSxVQUFVLEtBQUssS0FBSyxJQUFJO0FBQ3RGLFdBQU87QUFBQSxNQUNMLFNBQVM7QUFBQSxRQUNQLEVBQUUsTUFBTSxRQUFRLE1BQU0sS0FBSyxVQUFVLEVBQUUsT0FBTyxTQUFTLFFBQVEsZUFBZSxTQUFTLENBQUMsRUFBRTtBQUFBLE1BQzVGO0FBQUEsSUFDRjtBQUFBLEVBQ0Y7QUFDRixDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJub3RpZmljYXRpb25zX3JlY2VudC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIG5vdGlmaWNhdGlvbnM6cmVjZW50IOKAlCBsaXN0IHJlY2VudCB0b2FzdCBub3RpZmljYXRpb25zIHNob3duXG4gKiBhbnl3aGVyZSBpbiB0aGUgYXBwIChlcnJvcnMsIHdhcm5pbmdzLCBpbmZvKS5cbiAqXG4gKiBDYWxscyBsaXN0VG9hc3RzKCkgaW4gbGliL3RvYXN0LWxvZy1kYXRhLnRzIGRpcmVjdGx5IOKAlCBzYW1lIGZ1bmN0aW9uXG4gKiB0aGUgR0VUIC9hcGkvdG9hc3QtbG9nIHJvdXRlIHByb2plY3RzLiBObyBIVFRQIHJvdW5kdHJpcC5cbiAqL1xuXG5pbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wsIFNVX1JPTEVTIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgbGlzdFRvYXN0cyB9IGZyb20gJy4uLy4uL3RvYXN0LWxvZy1kYXRhJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICdub3RpZmljYXRpb25zOnJlY2VudCcsXG4gIHByb2ZpbGU6ICdlbmdpbmVlcicsXG4gIGRlc2NyaXB0aW9uOiAnTGlzdCByZWNlbnQgdG9hc3Qgbm90aWZpY2F0aW9ucyBzaG93biBpbiB0aGUgYXBwIChlcnJvcnMsIHdhcm5pbmdzLCBpbmZvLCBzdWNjZXNzKS4nLFxuICBjYXBhYmlsaXR5OiAnbm90aWZpY2F0aW9uczpyZWFkJyxcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiBgUmVhZCByZWNlbnQgdG9hc3Qgbm90aWZpY2F0aW9ucyBzaG93biB0byB0aGUgdXNlciDigJQgZm9yIFwiZGlkIEkgbWlzcyBhbnl0aGluZz9cIiAvIHJlcGxheS5gLFxuICAgIG5vdFdoZW46IGBGb3IgUEVSU0lTVEVOVCBpbmJveCBpdGVtcywgdXNlIFxcYG1lc3NhZ2VzOmluYm94XFxgLiBOb3RpZmljYXRpb25zIGFyZSBlcGhlbWVyYWwgdG9hc3RzLmAsXG4gIH0sXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICAvLyArIG92ZXJ3YXRjaCAob3ZlcndhdGNoLXJvbGUtMjAyNi0wNi0xNSBCLTAxKTogdGhlIHN5c3RlbS1oZWFsdGggc3VwZXJ2aXNvciByZWFkc1xuICAvLyByZWNlbnQgbm90aWZpY2F0aW9ucy90b2FzdHMgdG8gc3BvdCBcIndoeSBkaWQgdGhlIGFwcCBqdXN0IGVycm9yP1wiIGRyaWZ0LlxuICBhZ2VudFJvbGVzOiBbLi4uU1VfUk9MRVMsICdvdmVyd2F0Y2gnXSxcbiAgYXJnczogei5vYmplY3Qoe1xuICAgIGxldmVsOiB6LmVudW0oWydkZWZhdWx0JywgJ2luZm8nLCAnc3VjY2VzcycsICd3YXJuaW5nJywgJ2Vycm9yJywgJ2xvYWRpbmcnLCAnYWxsJ10pLm9wdGlvbmFsKCksXG4gICAgbGltaXQ6IHoubnVtYmVyKCkuaW50KCkucG9zaXRpdmUoKS5tYXgoNTAwKS5vcHRpb25hbCgpLFxuICB9KSxcbiAgYXN5bmMgaGFuZGxlcihhcmdzKSB7XG4gICAgY29uc3QgeyB0b2FzdHMgfSA9IGF3YWl0IGxpc3RUb2FzdHMoeyBsaW1pdDogYXJncy5saW1pdCB9KTtcbiAgICBjb25zdCBmaWx0ZXJlZCA9XG4gICAgICBhcmdzLmxldmVsICYmIGFyZ3MubGV2ZWwgIT09ICdhbGwnID8gdG9hc3RzLmZpbHRlcigodCkgPT4gdC5sZXZlbCA9PT0gYXJncy5sZXZlbCkgOiB0b2FzdHM7XG4gICAgcmV0dXJuIHtcbiAgICAgIGNvbnRlbnQ6IFtcbiAgICAgICAgeyB0eXBlOiAndGV4dCcsIHRleHQ6IEpTT04uc3RyaW5naWZ5KHsgY291bnQ6IGZpbHRlcmVkLmxlbmd0aCwgbm90aWZpY2F0aW9uczogZmlsdGVyZWQgfSkgfSxcbiAgICAgIF0sXG4gICAgfTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL29wZXJhdG9yL25vdGlmaWNhdGlvbnNfcmVjZW50LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9hZ2VudC10b29scy9vcGVyYXRvci9ub3RpZmljYXRpb25zX3JlY2VudC50cyIsIi9saWIvYWdlbnQtdG9vbHMvb3BlcmF0b3Ivbm90aWZpY2F0aW9uc19yZWNlbnQudHMiLFtdXQ==
