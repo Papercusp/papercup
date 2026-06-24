@@ -405,6 +405,63 @@ describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two dist
   });
 });
 
+describe('evaluatePlacement — EI-3216 infra-attribution gates the per-item wake + escalation', () => {
+  // The degenerate loop this fixes: a fleet-wide no-bees window made EVERY placement a
+  // no-fair-attempt zombie loss, so the whole frontier cursed at fail_count=0 /
+  // infra_loss_count=infraBreakerThreshold — flooding the queue with "failed 0×" owner
+  // advisories AND firing a Queen recovery wake per item every ~5min. `infraAttributed`
+  // tags an ITEM-INDEPENDENT infra decision so the handler suppresses BOTH per-item the
+  // recovery wake (recover) and the owner escalation (breaker), recording placement state
+  // only (the placements.cursed health metric is the real surface). A genuine item-pathology
+  // curse stays NOT-infra-attributed → it still wakes + escalates with its real count.
+
+  it('an INFRA/zombie breaker (the "failed 0×" curse) is infraAttributed — the handler skips the owner escalation', () => {
+    const d = evaluatePlacement(
+      obs({ servingBeeMadeNoToolCalls: true, failCount: 0, infraLossCount: CFG.infraBreakerThreshold - 1 }),
+      CFG,
+    );
+    expect(d.kind).toBe('breaker');
+    if (d.kind === 'breaker') {
+      expect(d.nextFailCount).toBe(0); // the literal "failed 0×" — cursed via the infra breaker
+      expect(d.nextInfraLossCount).toBe(CFG.infraBreakerThreshold);
+      expect(d.infraAttributed).toBe(true);
+    }
+  });
+
+  it('a genuine item-PATHOLOGY breaker is NOT infraAttributed — it still escalates, with a real (>=threshold) count', () => {
+    const d = evaluatePlacement(obs({ placementStatus: 'working', failCount: CFG.breakerThreshold - 1 }), CFG);
+    expect(d.kind).toBe('breaker');
+    if (d.kind === 'breaker') {
+      expect(d.nextFailCount).toBe(CFG.breakerThreshold); // never "failed 0×"
+      expect(d.nextFailCount).toBeGreaterThanOrEqual(CFG.breakerThreshold);
+      expect(d.infraAttributed).toBeFalsy();
+    }
+  });
+
+  it('an infra recover (zombie / post-dormancy) is infraAttributed — the handler skips the per-item Queen wake', () => {
+    for (const infraObs of [
+      obs({ servingBeeMadeNoToolCalls: true }),
+      obs({ postDormancySweep: true }),
+    ]) {
+      const d = evaluatePlacement(infraObs, CFG);
+      expect(d.kind).toBe('recover');
+      if (d.kind === 'recover') expect(d.infraAttributed).toBe(true);
+    }
+  });
+
+  it('a genuine item-pathology recover is NOT infraAttributed — the per-item recovery wake still fires', () => {
+    const d = evaluatePlacement(obs({ hasLiveHolder: false, failCount: 0 }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.infraAttributed).toBeFalsy();
+  });
+
+  it('a reclaimed-while-active (proof-of-life) recover is NOT infraAttributed — a genuinely-worked item still wakes the Queen to re-anchor', () => {
+    const d = evaluatePlacement(obs({ servingBeeReclaimedWhileActive: true }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.infraAttributed).toBeFalsy();
+  });
+});
+
 describe('P-023 — reconcile "steer, don\'t dispatch" WITH the completion mandate', () => {
   // The decider is the structural proof that the Queen PROPOSES placement + DRIVES
   // completion, while bees DISPOSE their own sequencing:

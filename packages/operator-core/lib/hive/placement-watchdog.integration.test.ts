@@ -277,7 +277,10 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(p?.infra_loss_count).toBe(1); // routed to the BOUNDED infra counter instead
     expect(out.find((r) => r.workItemId === 'F-DORMANT')?.decision).toBe('recover');
     expect(mocks.openEscalation).not.toHaveBeenCalled(); // no curse → no escalation
-    expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1); // re-placement wake still fires
+    // EI-3216 — a dormancy loss is item-independent INFRA: it re-places silently (the recovering
+    // row is surfaced in hive:status) but does NOT fire a per-item Queen recovery wake. A host
+    // restart fires this for EVERY placement in lockstep, so a wake-per-item was a 32-wake storm.
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
   });
 
   it('F-FIX-041 contrast: the SAME loss on a NORMAL-cadence sweep (recent last_seen_at) DOES curse — the gap gates the grace', async () => {
@@ -325,6 +328,10 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(p?.infra_loss_count).toBe(1); // routed to the bounded infra counter
     expect(out.find((r) => r.workItemId === 'F-ZOMBIE')?.decision).toBe('recover');
     expect(mocks.openEscalation).not.toHaveBeenCalled();
+    // EI-3216 — a no-fair-attempt zombie loss is INFRA, not item-pathology: re-place silently,
+    // NO per-item Queen recovery wake (re-placing just makes another zombie). This is the source
+    // of the ~5min Queen wake storm during a fleet-wide no-bees window.
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
   });
 
   it('F-FIX-041 BOUND: infra losses STILL curse at the infra breaker threshold (no unbounded retry)', async () => {
@@ -346,8 +353,14 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     const p = await readPlacement('F-INFRA-MAX');
     expect(p?.status).toBe('cursed'); // bounded — infra losses DO eventually curse
     expect(p?.infra_loss_count).toBe(CFG.infraBreakerThreshold);
+    expect(p?.fail_count).toBe(0); // the "failed 0×" case — cursed via the infra breaker, not pathology
     expect(out.find((r) => r.workItemId === 'F-INFRA-MAX')?.decision).toBe('breaker');
-    expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
+    // EI-3216 — an INFRA-attributed curse (fail_count=0) records `cursed` for the health metric
+    // but does NOT open a per-item owner escalation: a "failed 0× — stopped auto-re-placing"
+    // advisory is queue noise the owner can't act on per item (the 32-row flood this fixes).
+    // Only a genuine item-PATHOLOGY curse (the F-200/F-HEALTHY tests) escalates.
+    expect(mocks.openEscalation).not.toHaveBeenCalled();
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled(); // a breaker never re-places/wakes either
   });
 
   it('EI-865: an already-cursed item is LATCHED on re-sweep — failCount frozen, no re-escalation, no wake', async () => {
