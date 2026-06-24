@@ -1137,9 +1137,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.SCOPED_SUPERUSER_CLAMP]: true,
   // DEFAULT OFF (deliberate, NOT alpha default-on) — the shared workspace-scoped-coordination
   // re-key (Queen + Scout per-hive→workspace) is a hot-path live-loop change; reversible
-  // kill-switch the owner flips ON post-canary. OFF = today's per-hive brains, byte-identical.
-  // Listed in KNOWN_DARK_FLAGS.
-  [FLAGS.WORKSPACE_COORDINATION]: false,
+  // workspace-scoped Queen+Scout+Overwatch. Graduated to default-ON 2026-06-23 (owner-directed flip)
+  // after Phase A/B/C built + unit-tested (OFF was byte-identical). Hot-path cutover — watched live.
+  [FLAGS.WORKSPACE_COORDINATION]: true,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

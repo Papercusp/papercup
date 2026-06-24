@@ -300,14 +300,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // (SCOPED_SUPERUSER_CLAMP graduated to default-ON 2026-06-23 — owner-directed flip,
   // psu-in-desktop-builds D-002: it is the workspace boundary for a full-tool end-user psu
   // session. Reversible kill-switch; removed from the dark allowlist per the rule.)
-  // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED Queen+Scout+Overwatch workspace-scoping
-  // gate. NOW BUILT END-TO-END + unit-tested (2026-06-23): P-002 Scout + P-003 Queen Phase A (started.ts
-  // K1 re-key) + Phase B (cross-hive survey/dispatch widening) + Phase C (Overwatch control-state re-key);
-  // started-/control-state-/survey-workspace-scope tests green; OFF = today's per-hive brains, byte-identical.
-  // STILL DARK pending the remaining condition: the OWNER-ATTENDED CANARY flip. The per-hive→workspace
-  // re-key mutates the LIVE wake/watchdog hot-path (a botched cutover wedges fleet wakes), so it must be
-  // flipped + watched on a HEALTHY fleet, never blind — do NOT graduate this until that canary runs.
-  FLAGS.WORKSPACE_COORDINATION,
+  // (WORKSPACE_COORDINATION graduated to default-ON 2026-06-23 — owner-directed flip. Built end-to-end +
+  // unit-tested: P-002 Scout + P-003 Queen Phase A/B/C + Overwatch re-key; OFF was byte-identical. The
+  // per-hive→workspace re-key is a hot-path cutover, so it's watched live (brain-loop liveness) + is
+  // instantly revertible via flags:set if it wedges wakes. Removed from the dark allowlist per the rule.)
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the engine-managed-loop
   // master gate (loop:arm — the tracked replacement for Claude /loop). DEFAULT OFF because the
   // loop engine is multi-part (B-LOOP-1 schema + B-LOOP-2 completion-rebase + B-LOOP-3 warm-wake
@@ -353,7 +349,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
-  [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],
 ]);
