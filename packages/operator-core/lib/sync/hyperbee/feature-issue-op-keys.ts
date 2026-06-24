@@ -235,6 +235,11 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     goal_id: strOrNull(row.goal_id),
     taken_by: strOrNull(row.taken_by),
     taken_at: isoOrMsToEpochMs(row.taken_at),
+    // migration 357 (agent-activity-liveness-truth): the item-scoped progress signal,
+    // bumped on real state transitions. It pairs with taken_by/taken_at for cross-cell
+    // stalled-item detection, so it MUST federate — else a peer reads NULL and wrongly
+    // flags an actively-worked item as stalled (the exact bug 357 fixed). TIMESTAMPTZ → epoch ms.
+    last_progress_at: isoOrMsToEpochMs(row.last_progress_at),
     expires_at: isoOrMsToEpochMs(row.expires_at),
     // Work-item dispatch columns (D-013 + dispatch-scaling): without these a
     // Queen reorder / swarm pin / redundancy declaration never federated and

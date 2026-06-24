@@ -50,6 +50,9 @@ export interface HarnessFeatureRow {
   goal_id: string | null;
   taken_by: string | null;
   taken_at: number | null;             // epoch ms → TIMESTAMPTZ via to_timestamp
+  // mig 357 — item-scoped progress signal; epoch ms → TIMESTAMPTZ. OPTIONAL on the wire
+  // (pre-357 log history omits it → writeToPg maps absent → NULL).
+  last_progress_at?: number | null;
   expires_at: number | null;
   /**
    * Work-item DISPATCH columns (unify-work-items D-013 + dispatch-scaling):
@@ -113,6 +116,7 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (!isStringOrNull(r.goal_id)) return false;
   if (!isStringOrNull(r.taken_by)) return false;
   if (!isNumberOrNull(r.taken_at)) return false;
+  if (r.last_progress_at !== undefined && !isNumberOrNull(r.last_progress_at)) return false; // mig 357 — optional on the wire
   if (!isNumberOrNull(r.expires_at)) return false;
   // Dispatch columns are OPTIONAL on the wire (absent in pre-2026-06-10 log
   // history) — tolerate undefined, validate when present.
@@ -213,7 +217,7 @@ async function writeToPg(
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, title, summary, status, attempts, claims, notes,
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
-       ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,
+       ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, last_progress_at, expires_at,
        item_kind, feature_order, swarm_affinity, redundancy, payload,
        design_spec_id, design_status, needs_design, discarded_design_work,
        source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
@@ -227,6 +231,7 @@ async function writeToPg(
        ${row.needs_human_review},
        ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${row.taken_by},
        ${row.taken_at == null ? null : sql`to_timestamp(${row.taken_at} / 1000.0)`},
+       ${row.last_progress_at == null ? null : sql`to_timestamp(${row.last_progress_at} / 1000.0)`},
        ${row.expires_at == null ? null : sql`to_timestamp(${row.expires_at} / 1000.0)`},
        -- Dispatch columns: item_kind is NOT NULL DEFAULT 'feature' in PG, so an
        -- op that doesn't carry it (pre-2026-06-10 history) inserts the default.
@@ -261,6 +266,7 @@ async function writeToPg(
       goal_id = EXCLUDED.goal_id,
       taken_by = EXCLUDED.taken_by,
       taken_at = EXCLUDED.taken_at,
+      last_progress_at = EXCLUDED.last_progress_at,
       expires_at = EXCLUDED.expires_at,
       -- item_kind is the immutable discriminator: never let an op that doesn't
       -- carry it (defaulted to 'feature' above) flip a research-task/chunk back.

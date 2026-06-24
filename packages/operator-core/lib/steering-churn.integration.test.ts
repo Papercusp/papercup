@@ -53,7 +53,17 @@ beforeAll(async () => {
     DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   `).simple();
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(readFileSync(resolve(SQL_DIR, '232-steering-churn.sql'), 'utf8')).simple();
+  // Migration 232 attaches record_steering_churn_trg to harness_features_consolidated,
+  // which was the BASE table when 232 shipped. Post-374, hfc is a VIEW (work_items is
+  // the base) and 374's rename carried the trigger onto work_items — so an AFTER
+  // INSERT/UPDATE row trigger can only live on work_items now (it fails "is a view" on
+  // hfc). Retarget the trigger's DDL to the post-374 base; a write through the hfc/
+  // engineer_issues view still routes to work_items and fires it.
+  const mig232 = readFileSync(resolve(SQL_DIR, '232-steering-churn.sql'), 'utf8').replaceAll(
+    'ON harness_shared.harness_features_consolidated',
+    'ON harness_shared.work_items',
+  );
+  await db.sql.unsafe(mig232).simple();
 });
 
 afterAll(async () => {
