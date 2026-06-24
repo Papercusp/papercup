@@ -82,6 +82,17 @@ interface Props {
   onStartToggle?: () => void;
 }
 
+// Perf rule #2 (performance.mdx): never render an unvirtualized list of >~50
+// rows. The plan rail can hold the whole corpus (~559 plans: Draft+Ready+Running
+// live, plus the much larger Shipped/Superseded archive). Rendering all of them
+// mounted ~14.4k DOM nodes and cost a ~1.8s warm tab-switch every time the Create
+// tab re-mounts (measured, app-impersonation-e2e-round6 D-001). Smart-order floats
+// the LIVE buckets to the top, so a bounded initial render shows everything the
+// user acts on; the long archival tail is revealed on demand via "show all". The
+// imperative handle below still operates over the full `sorted` list — only the
+// DOM render is capped.
+const RAIL_RENDER_CAP = 80;
+
 const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   { list, selectedSlugs, query, searchHitSlugs, onSelect, onStartToggle }: Props,
   ref,
@@ -94,6 +105,10 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const [dragOverSlug, setDragOverSlug] = useState<string | null>(null);
   // Optimistic running-plans order — null means "use server order".
   const [runningOrder, setRunningOrder] = useState<string[] | null>(null);
+  // Perf (D-001): cap the rendered rows; reveal the archival tail on demand.
+  // Resets to false on every mount — and the Create panel re-mounts on each tab
+  // switch — so every Create visit starts with the cheap, bounded render.
+  const [showAll, setShowAll] = useState(false);
 
   // Filter reads — PlanFilters / PlanBucketTabs own the writes; same keys.
   // Plan-status is now multi-select (`?pBuckets=`); empty = all buckets.
@@ -304,6 +319,14 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     return <p className="pc-plans__placeholder">{msg}</p>;
   }
 
+  // Perf cap (D-001): render at most RAIL_RENDER_CAP rows unless the user opts
+  // into the full list. `sorted` is smart-ordered (live buckets first), so the
+  // bounded window holds everything actionable; the archival tail is one click
+  // away. A drag-reorder only applies to `running` plans, which sort to the very
+  // top and are therefore always within the rendered window.
+  const renderList = showAll ? sorted : sorted.slice(0, RAIL_RENDER_CAP);
+  const hiddenCount = sorted.length - renderList.length;
+
   return (
     <>
       {hasRunning && (
@@ -320,7 +343,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
         onDragOver={hasRunning ? (e) => e.preventDefault() : undefined}
         onDrop={hasRunning ? handleDrop : undefined}
       >
-        {sorted.map((p) => {
+        {renderList.map((p) => {
           const isRunning = bucketOf(p) === 'running';
           const canReorder = hasRunning && isRunning;
           return (
@@ -341,6 +364,16 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
           );
         })}
       </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          className="pc-plan-rail__show-all"
+          onClick={() => setShowAll(true)}
+          aria-label={`Show all ${sorted.length} plans (${hiddenCount} more)`}
+        >
+          Show all {sorted.length} plans <span aria-hidden="true">({hiddenCount} more)</span>
+        </button>
+      )}
     </>
   );
 });

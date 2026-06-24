@@ -198,3 +198,37 @@ describe('PlanRail pSort ordering', () => {
     expect(rowSlugs(byTitle.container as HTMLElement)).toEqual(['alpha', 'bravo']);
   });
 });
+
+// Recurrence guard for app-impersonation-e2e-round6 D-001: the rail used to
+// render the ENTIRE plan corpus unvirtualized (~559 rows / ~14.4k DOM nodes),
+// costing a ~1.8s warm tab-switch every time the Create tab re-mounted. The
+// render is now capped (RAIL_RENDER_CAP) with a "Show all" escape hatch. This
+// pins the bounded-render contract so a future change can't quietly re-introduce
+// the all-rows mount.
+describe('PlanRail render cap (perf D-001)', () => {
+  const renderedRows = (c: HTMLElement) =>
+    c.querySelectorAll('.pc-plan-rail__item[data-plan-slug]').length;
+
+  it('caps the rendered rows for a large corpus and reveals the rest on demand', () => {
+    const plans = Array.from({ length: 130 }, (_, i) =>
+      plan(`p-${String(i).padStart(3, '0')}`, { startStatus: null }),
+    );
+    const { container, getByRole } = renderRail(plans);
+    // Bounded initial render — NOT all 130 rows mounted (perf rule #2).
+    const initial = renderedRows(container as HTMLElement);
+    expect(initial).toBeGreaterThan(0);
+    expect(initial).toBeLessThanOrEqual(80);
+    // The escape hatch reveals the full corpus on demand.
+    fireEvent.click(getByRole('button', { name: /Show all 130 plans/ }));
+    expect(renderedRows(container as HTMLElement)).toBe(130);
+  });
+
+  it('renders the whole list inline (no "Show all") when it fits under the cap', () => {
+    const plans = Array.from({ length: 12 }, (_, i) =>
+      plan(`q-${i}`, { startStatus: null }),
+    );
+    const { container, queryByRole } = renderRail(plans);
+    expect(renderedRows(container as HTMLElement)).toBe(12);
+    expect(queryByRole('button', { name: /Show all/ })).toBeNull();
+  });
+});

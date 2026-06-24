@@ -186,6 +186,17 @@ export function attributeBreach(steps: ProbeStep[], slowMs = 2_000): string {
 export function breachDisposition(verdict: ProbeVerdict, steps: ProbeStep[]): 'ok' | 'note' | 'file' {
   if (verdict.ok) return 'ok';
   if (verdict.sloBreached && classifyBreach(steps) === 'db-wide') return 'note';
+  // EI-3019: a step that failed SOLELY because its per-workspace txn could not
+  // serialize in time (WorkspaceContendedError — pg 55P03/57014) is the same
+  // transient shared-box contention as the db-wide SLO breach above, just
+  // surfacing as a step failure rather than an SLO breach — downgrade it instead
+  // of minting a bogus correctness bug. A GENUINE correctness failure
+  // (mutual-exclusion breach, regrant refused, dead query) returns {ok:false}
+  // WITHOUT throwing, so `contended` stays false and it still FILES (fail open).
+  if (verdict.failedStep) {
+    const failed = steps.find((s) => s.step === verdict.failedStep);
+    if (failed?.contended) return 'note';
+  }
   return 'file';
 }
 
@@ -213,7 +224,13 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
       steps.push({ step, ok: r.ok, ms: now() - t0, detail: r.detail });
       return r.ok;
     } catch (err) {
-      steps.push({ step, ok: false, ms: now() - t0, detail: err instanceof Error ? err.message : String(err) });
+      steps.push({
+        step,
+        ok: false,
+        ms: now() - t0,
+        detail: err instanceof Error ? err.message : String(err),
+        contended: isContentionTimeout(err),
+      });
       return false;
     }
   };

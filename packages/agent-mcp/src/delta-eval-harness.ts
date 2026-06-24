@@ -31,15 +31,28 @@
  * real-tool re-execution that feeds it lives in the integration test alongside.
  */
 
-import { getEncoding } from 'js-tiktoken';
 import { encode } from '@papercusp/result-encoding';
 import { encodeDeltaCursor, DELTA_SMALL_RESPONSE_BYTES } from '@papercusp/tooldef';
 
-const enc = getEncoding('o200k_base');
+// PERF (FCP): `js-tiktoken` ships multi-MB BPE rank tables (`o200k_base` ≈ 5.5MB).
+// This module is reachable from the `@papercusp/agent-mcp` barrel, which the
+// operator webview imports (e.g. chat/LocalCardHost) — a STATIC `import` here put
+// that 5.5MB into the eager client boot bundle and was the dominant ~2s
+// first-contentful-paint cost (E2E perf sweep 2026-06-23; the tokenizer is
+// eval-only — `tokens`/`evalSnapshotTransition` have no prod caller). Dynamic-import
+// it so it splits into a lazy chunk loaded only when the eval path actually runs.
+// See /internal/docs/performance (rule 14 / A5 module-init side-effect).
+let _encPromise: Promise<{ encode(s: string): unknown[] }> | undefined;
+function loadEnc(): Promise<{ encode(s: string): unknown[] }> {
+  if (!_encPromise) {
+    _encPromise = import('js-tiktoken').then((m) => m.getEncoding('o200k_base'));
+  }
+  return _encPromise;
+}
 
-/** Token count of a string under the frontier-proxy tokenizer. */
-export function tokens(s: string): number {
-  return enc.encode(s).length;
+/** Token count of a string under the frontier-proxy tokenizer. Async: the tokenizer is lazy-loaded (see above). */
+export async function tokens(s: string): Promise<number> {
+  return (await loadEnc()).encode(s).length;
 }
 
 export type Row = Record<string, unknown>;
@@ -254,11 +267,11 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * pick the winner, and verify the delta merge. `base === null` models a missing
  * base (post-compaction) → the only correct answer is a full re-send.
  */
-export function evalSnapshotTransition(base: Row[] | null, next: Row[], opts: DeltaEvalOpts = {}): SnapshotEval {
+export async function evalSnapshotTransition(base: Row[] | null, next: Row[], opts: DeltaEvalOpts = {}): Promise<SnapshotEval> {
   const fullJsonText = JSON.stringify(envelope(next));
   const fullToonText = `format: toon\n${encode(envelope(next), 'toon')}`;
-  const fullJson = tokens(fullJsonText);
-  const fullToon = tokens(fullToonText);
+  const fullJson = await tokens(fullJsonText);
+  const fullToon = await tokens(fullToonText);
 
   const delta = computeListDelta(base, next, opts);
   const smallResponse = Buffer.byteLength(fullJsonText) < DELTA_SMALL_RESPONSE_BYTES;
@@ -269,13 +282,13 @@ export function evalSnapshotTransition(base: Row[] | null, next: Row[], opts: De
 
   if (delta.mode === 'not_modified') {
     const cursor = evalCursor(checksumRows(next, opts.itemKey ?? 'id'));
-    notModified = tokens(`mode: not_modified\ncount: ${delta.counts.total}\ncursor: ${cursor}`);
+    notModified = await tokens(`mode: not_modified\ncount: ${delta.counts.total}\ncursor: ${cursor}`);
     // base must equal next for not_modified to be honest; verify.
     correct = base !== null && deepEqual(base, next);
   } else if (delta.mode === 'delta') {
     const cursor = evalCursor(delta.checksum);
     const wire = { put: delta.put, remove: delta.remove, order: delta.order, counts: delta.counts };
-    deltaTok = tokens(`mode: delta\nformat: toon\n${encode(wire, 'toon')}\ncursor: ${cursor}`);
+    deltaTok = await tokens(`mode: delta\nformat: toon\n${encode(wire, 'toon')}\ncursor: ${cursor}`);
     correct = base !== null && deepEqual(applyListDelta(base, delta, opts), next);
   }
 
