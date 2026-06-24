@@ -56,6 +56,8 @@ export interface JoinHiveOpts {
   hiveId: string;
   /** Display title (defaults to hiveId). */
   title?: string;
+  /** Owner Hive identity pubkey from the discovery listing/invite. */
+  hivePubkey?: string;
   /** The announce's full per-member join links. */
   memberLinks: string[];
   workspaceId: string;
@@ -295,7 +297,9 @@ export async function joinHiveAsView(
         repairKeychainIds: [hiveKeychainId(opts.workspaceId, hiveSlug)],
       }));
   try {
-    const pubkeyBase64 = await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null);
+    const pubkeyBase64 =
+      (typeof opts.hivePubkey === 'string' && opts.hivePubkey.trim() ? opts.hivePubkey.trim() : null) ??
+      (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
     if (pubkeyBase64) {
       await upsertHiveIdentity({
         workspaceId: opts.workspaceId,
