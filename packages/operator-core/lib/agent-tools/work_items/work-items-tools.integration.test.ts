@@ -159,27 +159,15 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HFC_DDL);
-  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
-  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
-  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
-  // user_trust_list (migration 276) — the claim path's auto-pickable trust-leg join
-  // (autoPickableWhereSql) consults it; harness_features_consolidated gained the
-  // matching verified_author_github_user_id column in 273 (added to the shared fixture).
-  await db.sql.unsafe(readMigration('276-user-trust-list.sql')).simple();
-  // Per-assignee rank columns (local-hive P-020, migration 178 §1) — this test uses a
-  // minimal hand-rolled HFC DDL + the 131 issues table, so add the columns the unified
-  // FEATURE_COLS/ISSUE_COLS selects now include.
-  await db.sql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated
-      ADD COLUMN IF NOT EXISTS assignee_rank integer,
-      ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
-    ALTER TABLE harness_shared.engineer_issues
-      ADD COLUMN IF NOT EXISTS assignee_rank integer,
-      ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
-      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';
-  `).simple();
+  // HFC_DDL (the shared _work-items-schema fixture) is the COMPLETE post-374 schema:
+  // the work_items BASE table (with item_kind/assignee_rank/rank_writer/rank_updated_at),
+  // the harness_features_consolidated + engineer_issues compat VIEWS (engineer_issues
+  // exposes signal_origin from payload->_ei and carries the INSTEAD OF DML trigger),
+  // user_trust_list, work_item_deps and the readiness sidecar. The legacy per-test
+  // bootstrap (applying table-era migs 131/142/152/276 + ALTER TABLE engineer_issues)
+  // is now redundant AND broken — post-374 engineer_issues is a VIEW, so
+  // `ALTER TABLE engineer_issues` fails "is not a table". Everything those migrations
+  // added now lives in HFC_DDL.
 }, 90_000);
 
 afterAll(async () => {
@@ -187,11 +175,14 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.engineer_issues,
+  // engineer_issues + harness_features_consolidated are VIEWS over work_items
+  // (post-374) — truncate the BASE table; the views clear with it. work_item_deps +
+  // work_item_blocked are the readiness sidecars HFC_DDL now creates, cleared too.
+  await db.sql`TRUNCATE harness_shared.work_items,
+                       harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
-                       harness_shared.harness_features_consolidated,
                        harness_shared.coord_event_log RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
 });

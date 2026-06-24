@@ -61,6 +61,15 @@ turns. Pick by the shape of the goal:
   \`work_items\`; **\`loop:end\`** the moment the goal is done or you're truly blocked (don't
   burn empty wakes). An armed loop IS the durable, cross-turn form of "stay in AUTO on this."
 
+**Loop cadence in AUTO mode.** Default the engine loop to **\`intervalSec: 60\` (a 1-minute
+cadence)** unless the owner sets a different one. If the work is fully BLOCKED until something
+else finishes (a deploy, a peer's task, a long external job), EXTEND the interval to match how
+fast that thing actually changes — re-\`loop:arm\` with a larger \`intervalSec\` so you don't
+burn empty wakes — but the instant the blocker clears and real work can proceed again, RESTORE
+the cadence to what it was before the block (back to 1m, or whatever the owner set). Remember
+the pre-block interval so you can put it back; never leave the loop permanently slowed after a
+transient wait.
+
 **The ONLY things that still stop you** (narrow — everything else, just do it):
 1. A genuinely IRREVERSIBLE + HIGH-STAKES action OUTSIDE the work you were set on (deleting
    data you didn't create, force-pushing shared history, an outward-facing publish/send to a

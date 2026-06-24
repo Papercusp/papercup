@@ -2,9 +2,10 @@
 
 
 import { Tooltip } from '@/app/harness/Tooltip';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
 import { InlinePtyTerminal } from './InlinePtyTerminal';
+import { startDogfoodBootstrap } from '../useDogfoodBootstrapProgress';
 
 /**
  * GitHub sign-in (`gh auth login`) is fully wired, but gated off while
@@ -98,6 +99,20 @@ export function StepGit() {
 
   const configured = Boolean(identity?.name && identity?.email);
   const ghSignedIn = authStatus.github === true;
+
+  // Dogfood clone-on-first-boot trigger (desktop UI part C): the moment GitHub
+  // auth is confirmed (the boot-time bootstrap no-ops before `gh` is signed in),
+  // kick the Papercusp workspace clone so it runs DURING the rest of setup — the
+  // banner shows it and the finish gate usually finds it already done. The
+  // endpoint is idempotent + single-flight, so a second call is a no-op; this
+  // ref ensures we fire AT MOST once per signed-in success regardless of polls.
+  const bootstrapKickedRef = useRef(false);
+  useEffect(() => {
+    if (ghSignedIn && !bootstrapKickedRef.current) {
+      bootstrapKickedRef.current = true;
+      void startDogfoodBootstrap();
+    }
+  }, [ghSignedIn]);
 
   const saveIdentity = async () => {
     setSaving(true);

@@ -19,6 +19,8 @@ import { StepTelemetry } from './StepTelemetry';
 import { StepWelcome } from './StepWelcome';
 import { StepWorkspace } from './StepWorkspace';
 import { useWizardStatuses } from './useWizardStatuses';
+import { BootstrapFinishGate } from './BootstrapFinishGate';
+import { useDogfoodBootstrapProgress } from '../useDogfoodBootstrapProgress';
 
 interface Props {
   readonly mode: 'first-run' | 'settings';
@@ -31,6 +33,13 @@ export function SetupWizard({ mode }: Props) {
   const [stepId, setStepId] = useQueryState('step');
   const [finishing, setFinishing] = useState(false);
   const [recap, setRecap] = useState<null | { dest: string }>(null);
+  // Dogfood clone-on-first-boot gate (desktop UI part B): when the user hits
+  // Finish but the Papercusp workspace is still downloading, we BLOCK on
+  // `gating` (the finish view → BootstrapFinishGate) and auto-advance to the
+  // recap the moment the flow is ready. `dest` is the already-computed landing
+  // route so the gate's onReady can finalize without recomputing.
+  const [gating, setGating] = useState<null | { dest: string }>(null);
+  const bootstrap = useDogfoodBootstrapProgress({ enabled: mode === 'first-run' });
 
   useEffect(() => {
     refreshAll();
@@ -113,6 +122,18 @@ export function SetupWizard({ mode }: Props) {
       } catch {
         // Timeout/network failure → fall through to /harness.
       }
+      // Gate on the dogfood clone-on-first-boot (desktop UI part B): if the
+      // Papercusp workspace is still downloading, BLOCK on the finish gate
+      // rather than dropping the user into an app whose default hive isn't
+      // there yet. The gate auto-advances (→ proceedToRecap) the moment the
+      // flow is ready; an empty/degraded sync surfaces a soft Retry, never a
+      // permanent block. When already ready, fall straight through to the recap.
+      if (!bootstrap.ready) {
+        setGating({ dest });
+        setFinishing(false);
+        void markFinished;
+        return;
+      }
       // Show the recap immediately; saving completion can finish in the background.
       setRecap({ dest });
       setFinishing(false);
@@ -123,6 +144,21 @@ export function SetupWizard({ mode }: Props) {
     await markFinished;
     setFinishing(false);
   };
+
+  // Dogfood clone-on-first-boot finish gate (desktop UI part B). Blocks entry
+  // while the Papercusp workspace downloads; onReady promotes gating → recap so
+  // the user lands on the recap (and then the app) the instant it's ready.
+  if (gating && !recap) {
+    return (
+      <BootstrapFinishGate
+        onReady={() => {
+          setRecap({ dest: gating.dest });
+          setGating(null);
+        }}
+        onCancel={() => setGating(null)}
+      />
+    );
+  }
 
   if (recap) {
     const completed = SETUP_STEPS.filter((s) => statuses[s.id] === 'ok');

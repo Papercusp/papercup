@@ -111,6 +111,7 @@ describe('scenario registry', () => {
       'su-S24-delta-fallback-compacted',
       'su-S25-delta-wrong-merge-detector',
       'su-S26-take-charge-dont-wait',
+      'su-S27-woke-to-dispatch-claims',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',

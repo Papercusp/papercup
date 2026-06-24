@@ -19,6 +19,10 @@ const h = vi.hoisted(() => ({
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   state: { dbosOn: true },
+  // P-006: deterministic gateway-throttle corroboration (a real probe would reach the live :8788
+  // gateway and make these tests flake). false ⇒ a no-turn death classifies infra_loss (legacy);
+  // flip to true to exercise the capacity_shed path.
+  gatewayThrottled: { value: false },
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -38,6 +42,11 @@ vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn })
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+// P-006: the gateway-throttle probe is mocked so the capacity_shed vs infra_loss classification is
+// deterministic (the real gatewayWholesaleThrottled would fetch the live :8788 gateway → flaky).
+vi.mock('../inference-gateway/observability', () => ({
+  gatewayWholesaleThrottled: vi.fn(async () => h.gatewayThrottled.value),
+}));
 
 import { durableSpawnFire, durableSpawnFireImpl, startDurableSpawns, isPermanentSpawnStatus } from './durable-spawn';
 
@@ -56,6 +65,7 @@ beforeEach(() => {
   h.finishSpawn.mockClear();
   h.loopbackFetch.mockReset();
   h.loopbackFetch.mockImplementation(async () => ({ ok: true, status: 200 }));
+  h.gatewayThrottled.value = false; // default: gateway healthy ⇒ a no-turn death is infra_loss
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => { vi.restoreAllMocks(); });
@@ -202,6 +212,28 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     const fin = h.finishSpawn.mock.calls[0][1];
     expect(fin.status).toBe('failed');
     expect(String(fin.errorMessage)).toContain('infra_loss');
+  });
+
+  it('records `failed` + capacity_shed (RETRYABLE → THROWS) when a clean mid-turn exit-1 coincides with a wholesale-throttled gateway (P-006)', async () => {
+    h.gatewayThrottled.value = true; // the gateway pool was all-throttled at death
+    h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: 'partial turn', timedOut: false, stderr: '' }));
+    // capacity_shed THROWS so the step-retry re-fires through the paced gateway — NOT a terminal phantom host death.
+    await expect(
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+    ).rejects.toThrow(/capacity_shed/);
+    const fin = h.finishSpawn.mock.calls[0][1];
+    expect(fin.status).toBe('failed');
+    expect(String(fin.errorMessage)).toContain('capacity_shed');
+    expect(String(fin.errorMessage)).not.toContain('host dead');
+  });
+
+  it('records `failed` + infra_loss (NOT capacity_shed) for a clean mid-turn exit-1 when the gateway is HEALTHY', async () => {
+    h.gatewayThrottled.value = false; // gateway not throttled ⇒ a real host loss, terminal
+    h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: 'partial turn', timedOut: false, stderr: '' }));
+    await expect(
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+    ).resolves.toBeUndefined(); // infra_loss does NOT throw
+    expect(String(h.finishSpawn.mock.calls[0][1].errorMessage)).toContain('infra_loss');
   });
 
   it('records `failed` + infra_loss when 200 + ok:true but agentOutput is empty (0-token wake)', async () => {

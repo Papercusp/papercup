@@ -40,6 +40,12 @@ import { RecorderHost } from '@papercusp/testing-shell';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import ChromeShell from '@/app/_components/ChromeShell';
+// Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
+// (desktop UI part A). Mounted here — inside RootSyncProvider, at the router
+// root — so it can read the `hiveFromRepo.progress` sync rows and overlay EVERY
+// route (it self-hides when the flow is ready / has no rows). Non-blocking:
+// position:fixed at the top, routes scroll underneath.
+import { DogfoodBootstrapBanner } from '@/app/_components/DogfoodBootstrapBanner';
 import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
@@ -155,6 +161,10 @@ function RootComponent() {
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
         <GlobalShortcutDispatcher />
+        {/* Dogfood clone-on-first-boot progress bar (desktop UI part A) — inside
+            RootSyncProvider so it reads `hiveFromRepo.progress`; fixed at the top,
+            overlays every route, self-hides when ready / no rows. */}
+        <DogfoodBootstrapBanner />
         {/* B6 — navigation progress bar. ProgressProvider renders the bar
             DOM + supplies the useProgress context (shared with RouteLink
             et al. via the @bprogress/next alias shim); NavigationProgress

@@ -80,6 +80,16 @@ export default defineTool({
           await store.deleteHiveInstancePromptOverride(ws, hiveSlug, name);
           cleared = true;
         } else {
+          // Additive-override guard (owner directive 2026-06-24): an override is APPENDED
+          // after the generated blueprint persona, so it must only ADD the hive-specific
+          // delta — never re-state what the generated base already supplies. Warn (do NOT
+          // gate — overrides are the owner's to author) when it duplicates base content.
+          const { additiveOverrideWarning } = await import('../../../hive-override-additive-guard');
+          const warning = additiveOverrideWarning(md);
+          if (warning) {
+            extra = { ...extra, warning };
+            console.warn(`[hive-override-set] ${hiveSlug}/${name}: ${warning}`);
+          }
           await store.setHiveInstancePromptOverride(ws, hiveSlug, name, md);
         }
       } else {

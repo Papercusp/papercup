@@ -130,6 +130,9 @@ import { SU_S25_DELTA_WRONG_MERGE_DETECTOR } from './su/S25-delta-wrong-merge-de
 // SU-S26: behavioral test for the "never wait for a calm window / take charge" policy's
 // STALLED-DEPENDENCY clause — the agent must FORCE a stalled git-sync/pipeline, not wait/punt.
 import { SU_S26_TAKE_CHARGE_DONT_WAIT } from './su/S26-take-charge-dont-wait';
+// SU-S27: fleet-dispatch-wake-clarity P-003 — a woken agent that finds a DIRECTED dispatch in its
+// inbox must CLAIM + WORK the lane this turn, never read-and-repark (the su-6ef6 black-hole).
+import { SU_S27_WOKE_TO_DISPATCH_CLAIMS } from './su/S27-woke-to-dispatch-claims';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
@@ -263,6 +266,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S25_DELTA_WRONG_MERGE_DETECTOR,
   // behavioral test for the take-charge / never-wait-on-a-stalled-dependency policy
   SU_S26_TAKE_CHARGE_DONT_WAIT,
+  SU_S27_WOKE_TO_DISPATCH_CLAIMS,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

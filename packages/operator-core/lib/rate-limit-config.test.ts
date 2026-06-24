@@ -15,6 +15,9 @@ vi.mock('@papercusp/sse', () => ({ getChannel: () => ({ onPublish: () => () => {
 vi.mock('@papercusp/papercusp-shared/agent', () => ({
   setGlobalConcurrencyCap: () => {},
   setGlobalConcurrencyFloor: () => {},
+  setProviderFloorOverride: () => {},
+  setAimdTuning: () => {},
+  AIMD_CLEAN_TURNS_PER_STEP: 5,
 }));
 vi.mock('./operator-state-pg', () => ({ readOperatorState: async () => null, writeOperatorState: async () => {} }));
 vi.mock('./resource-profile', () => ({
@@ -44,5 +47,34 @@ describe('clampRateLimitConfig (Gap 4 — malformed-input coercion)', () => {
 
   it('a non-number max (string) → profile default (typeof guard, not Number coercion)', () => {
     expect(clampRateLimitConfig({ maxSimultaneousAgents: '12' } as never).maxSimultaneousAgents).toBe(PROFILE_DEFAULT_MAX);
+  });
+});
+
+describe('clampRateLimitConfig — P-021 providerFloors + aimd', () => {
+  it('omits providerFloors / aimd entirely when absent (byte-identical base config)', () => {
+    const cfg = clampRateLimitConfig({ maxSimultaneousAgents: 4 });
+    expect(cfg).toEqual({ maxSimultaneousAgents: 4, concurrencyFloor: 1 });
+    expect('providerFloors' in cfg).toBe(false);
+    expect('aimd' in cfg).toBe(false);
+  });
+
+  it('keeps valid per-provider floors and drops invalid fields / empty entries', () => {
+    const cfg = clampRateLimitConfig({
+      providerFloors: {
+        anthropic: { maxConcurrent: 2, rpm: 30 },
+        openai: { rpm: -5 }, // invalid → entry dropped
+        unknown: { maxConcurrent: 3.9 }, // floors to 3
+      },
+    } as never);
+    expect(cfg.providerFloors).toEqual({ anthropic: { maxConcurrent: 2, rpm: 30 }, unknown: { maxConcurrent: 3 } });
+  });
+
+  it('clamps aimd: keeps a valid decreaseFactor ∈ (0,1) + cleanTurnsPerStep, drops out-of-range', () => {
+    expect(clampRateLimitConfig({ aimd: { decreaseFactor: 0.25, cleanTurnsPerStep: 3 } } as never).aimd).toEqual({
+      decreaseFactor: 0.25,
+      cleanTurnsPerStep: 3,
+    });
+    // decreaseFactor must be strictly inside (0,1); 1 and 0 are rejected → aimd dropped.
+    expect('aimd' in clampRateLimitConfig({ aimd: { decreaseFactor: 1 } } as never)).toBe(false);
   });
 });
