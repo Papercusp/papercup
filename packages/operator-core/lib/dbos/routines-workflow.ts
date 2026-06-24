@@ -26,6 +26,7 @@
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { queueConcurrency } from './queue-concurrency';
+import { ROUTINES_QUEUE, ROUTINES_CRITICAL_QUEUE, queueForRoutine } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
@@ -43,7 +44,14 @@ import { operatorApiBase } from '../operator-api-base';
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
 const operatorBase = operatorApiBase;
 
-const routinesQueue = new WorkflowQueue('routines', { concurrency: queueConcurrency(4) });
+const routinesQueue = new WorkflowQueue(ROUTINES_QUEUE, { concurrency: queueConcurrency(4) });
+// Protected lane for critical QUICK routines (git-sync) — a saturated shared `routines` queue (long
+// routines holding every slot) must never starve fleet-wide persistence (the 2026-06-23 7h commit-freeze).
+// Low concurrency: git-sync fires are quick AND serializing them avoids git-index contention across the
+// per-hive git-sync routines. Instantiated at module load so DBOS listens on it; fires route here via
+// queueForRoutine(). Both names exported so a boot/deploy check can assert DBOS is listening on each.
+const routinesCriticalQueue = new WorkflowQueue(ROUTINES_CRITICAL_QUEUE, { concurrency: queueConcurrency(2) });
+export const ROUTINE_FIRE_QUEUES = [routinesQueue.name, routinesCriticalQueue.name] as const;
 
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
 export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;
@@ -206,7 +214,9 @@ async function routinesTickImpl(): Promise<void> {
     if (!claimed) continue;
     try {
       await DBOS.startWorkflow(routineFireWorkflow, {
-        queueName: routinesQueue.name,
+        // routines-queue-starvation fix (2026-06-23): git-sync → the protected `routines-critical` lane so a
+        // saturated shared queue can't starve commits; every other routine → the shared `routines` queue.
+        queueName: queueForRoutine(r.targetRole),
         enqueueOptions: { deduplicationID: `routine:${r.id}` },
         // A fire PENDING on a DEAD executor holds this dedup ID forever (DBOS
         // recovery is per-executor), silently collapsing every later fire while
