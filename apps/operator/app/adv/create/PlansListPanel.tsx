@@ -15,7 +15,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * the original Plans tab.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { ClipboardList, Eye, Inbox, Plus, Terminal } from 'lucide-react';
 import { toast } from 'sonner';
@@ -99,13 +99,32 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
   // The plan list filters whichever view is active: in Plans view it OPENS the
   // plan full-width (?plan) — a plain select, not a toggle, since the Plans
   // view always shows a plan; in Inbox/Sessions it toggles the ?itemPlans filter.
-  const onSelectPlan = (s: string) => {
-    if (view === 'plans') {
-      void setPlan(s);
-    } else {
-      void setItemPlans(itemPlans.includes(s) ? itemPlans.filter((x) => x !== s) : [...itemPlans, s]);
-    }
-  };
+  //
+  // STABLE identity (refs for the live view/itemPlans) so PlanRail's memoized
+  // rows don't all re-render on every keystroke/selection — the 559-row rail is
+  // unvirtualized, so a fresh callback here re-rendered every row (~1s lag, read
+  // as "clicking a plan does nothing"). setPlan/setItemPlans are stable nuqs setters.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const itemPlansRef = useRef(itemPlans);
+  itemPlansRef.current = itemPlans;
+  const onSelectPlan = useCallback(
+    (s: string) => {
+      if (viewRef.current === 'plans') {
+        void setPlan(s);
+      } else {
+        const cur = itemPlansRef.current;
+        void setItemPlans(cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]);
+      }
+    },
+    [setPlan, setItemPlans],
+  );
+  // Stable onStartToggle (ref to the live planList) for the same memo reason.
+  const planListRef = useRef(maps.planList);
+  planListRef.current = maps.planList;
+  const onStartToggle = useCallback(() => {
+    planListRef.current.refresh();
+  }, []);
   const selectedSlugs = view === 'plans' ? (plan ? [plan] : []) : itemPlans;
 
   return (
@@ -196,7 +215,7 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
           query={debouncedQ}
           searchHitSlugs={searchHitSlugs}
           onSelect={onSelectPlan}
-          onStartToggle={() => maps.planList.refresh()}
+          onStartToggle={onStartToggle}
         />
       </div>
     </div>

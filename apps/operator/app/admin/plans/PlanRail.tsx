@@ -15,7 +15,7 @@
  */
 
 import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
-import { forwardRef, useImperativeHandle, useMemo, useCallback, useState, useRef } from 'react';
+import { forwardRef, memo, useImperativeHandle, useMemo, useCallback, useState, useRef } from 'react';
 import { Play, Pause, Clock, Repeat, CalendarClock } from 'lucide-react';
 import { AuthorBadge } from '../../_components/AuthorBadge';
 import {
@@ -135,16 +135,13 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     const bucketed = fBuckets.length
       ? filtered.filter((p) => fBuckets.includes(bucketOf(p)))
       : filtered;
-    const sel = new Set(selectedSlugs);
-    const cmp = comparePlans(fSort);
-    const raw = [...bucketed].sort((a, b) => {
-      // Plans toggled into the filter float to the very top regardless
-      // of the chosen sort order — they're the working set.
-      const selA = sel.has(a.slug) ? 0 : 1;
-      const selB = sel.has(b.slug) ? 0 : 1;
-      if (selA !== selB) return selA - selB;
-      return cmp(a, b);
-    });
+    // Selection does NOT reorder the list. Floating the selected plan to the top
+    // re-ran applyPlanFilters + re-sorted + reordered all rows on every click
+    // (measured ~1s at 559 plans — the "clicking a plan does nothing" report).
+    // Selection now only highlights (`is-active`); the order is selection-stable,
+    // so `sorted` no longer depends on the selection and the memoized rows skip,
+    // making a click instant.
+    const raw = [...bucketed].sort(comparePlans(fSort));
     // Apply local drag-reorder override for running plans (P-045).
     if (!runningOrder) return raw;
     const orderMap = new Map(runningOrder.map((s, i) => [s, i]));
@@ -157,7 +154,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       return 0;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fInitiative, fView, fViewerEmail, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fScheduled, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
+  }, [plans, fBucketsKey, fOwner, fInitiative, fView, fViewerEmail, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fScheduled, fSort, query, searchHitSlugs, runningOrder]);
 
   useImperativeHandle(
     ref,
@@ -327,11 +324,12 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
           const isRunning = bucketOf(p) === 'running';
           const canReorder = hasRunning && isRunning;
           return (
-            <PlanRow
+            <PlanRowMemo
               key={p.slug}
               plan={p}
+              slug={p.slug}
               active={selectedSlugs.includes(p.slug)}
-              onSelect={() => onSelect(p.slug)}
+              onSelect={onSelect}
               onStartToggle={onStartToggle}
               showDragHandle={canReorder}
               isDragging={dragSlug === p.slug}
@@ -351,6 +349,7 @@ export default PlanRail;
 
 function PlanRow({
   plan,
+  slug,
   active,
   onSelect,
   onStartToggle,
@@ -362,8 +361,12 @@ function PlanRow({
   onHandleDragEnd,
 }: {
   plan: PlanListRow;
+  /** Passed alongside `plan` so the (stable) `onSelect` can be memo-friendly —
+   *  the row calls `onSelect(slug)` instead of a per-row closure, so memo only
+   *  re-renders the rows whose `active` actually flipped on a selection. */
+  slug: string;
   active: boolean;
-  onSelect: () => void;
+  onSelect: (slug: string) => void;
   onStartToggle?: () => void;
   showDragHandle?: boolean;
   isDragging?: boolean;
@@ -437,7 +440,7 @@ function PlanRow({
       <button
         type="button"
         className={`pc-plan-row${showDragHandle ? ' has-drag-handle' : ''}${active ? ' is-active' : ''}`}
-        onClick={onSelect}
+        onClick={() => onSelect(slug)}
         aria-label={`Open plan ${title} (${plan.slug})`}
         aria-current={active ? 'page' : undefined}
       >
@@ -492,6 +495,16 @@ function PlanRow({
     </li>
   );
 }
+
+/**
+ * Memoized — the rail renders ALL plans (no virtualization), so without this a
+ * single selection or filter change re-renders every row (measured ~1s at 559
+ * plans, which read as "clicking a plan does nothing"). With stable callbacks
+ * (onSelect(slug) + a stable onStartToggle from PlansListPanel), memo re-renders
+ * only the rows whose props actually changed — typically the two whose `active`
+ * flipped — so selecting a plan is instant.
+ */
+const PlanRowMemo = memo(PlanRow);
 
 function StatusPill({ status }: { status: PlanStatus }) {
   return <span className={`pc-pill pc-pill--${status}`}>{status}</span>;

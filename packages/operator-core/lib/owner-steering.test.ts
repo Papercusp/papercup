@@ -71,7 +71,26 @@ describe('getOwnerSteering — decode + defaults', () => {
       idleActivities: null,
       autoScaleOut: null,
       decomposition: null,
+      modelOverrides: null,
     } satisfies OwnerSteering);
+  });
+
+  it('decodes per-role model overrides (sentinel/overwatch), dropping blank specs', async () => {
+    listHiveSettings.mockResolvedValue(
+      rows({
+        [OWNER_STEERING_KEYS.modelOverrides]: { sentinel: 'opus:high', overwatch: 'sonnet', queen: '  ' },
+      }),
+    );
+    // Blank/whitespace specs are dropped; valid ones are trimmed-through.
+    expect((await getOwnerSteering('ws', 'hive')).modelOverrides).toEqual({
+      sentinel: 'opus:high',
+      overwatch: 'sonnet',
+    });
+  });
+
+  it('treats an empty / all-blank model-override map as no override (null)', async () => {
+    listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.modelOverrides]: { queen: '' } }));
+    expect((await getOwnerSteering('ws', 'hive')).modelOverrides).toBeNull();
   });
 
   it('decodes a model-tier session override (D-006) + drops malformed tiers', async () => {
