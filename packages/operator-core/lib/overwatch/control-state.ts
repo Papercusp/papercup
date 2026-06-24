@@ -17,8 +17,25 @@
  *
  * No migration: it reuses the existing KV table + its `ON CONFLICT (key)` upsert,
  * exactly as hive/started.ts does.
+ *
+ * K1 workspace-brain re-key (workspace-scoped-coordination-2026-06-20 P-004 /
+ * D-006/D-007 — Phase C, a direct mirror of the Queen's Phase A in hive/started.ts
+ * and the Scout's Phase P-002 in scout/scheduler.ts): when
+ * FLAGS.WORKSPACE_COORDINATION is ON, the overwatch's started bit + cadence
+ * collapse to ONE row per WORKSPACE — the install dimension is replaced by the
+ * shared workspace SENTINEL (= workspaceId) via `workspaceBrainScopeKey`, so the
+ * one workspace Overwatch has a single control state spanning all the workspace's
+ * hives. Every read ships a READ-FALLBACK to the legacy per-hive row
+ * (`workspaceBrainReadKeys`) so the live single-hive workspace stays
+ * zero-regression pre-backfill. Flag OFF (the dark default) ⇒ the legacy
+ * per-(ws,install) keying, BYTE-IDENTICAL to today.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import {
+  isWorkspaceCoordinationOn,
+  workspaceBrainScopeKey,
+  workspaceBrainReadKeys,
+} from '../workspace-brain-scope';
 
 const STARTED_PREFIX = 'overwatch_started:';
 const CADENCE_PREFIX = 'overwatch_cadence_sec:';
@@ -62,51 +79,68 @@ async function writeSetting(key: string, value: string, description: string): Pr
   `;
 }
 
-/** Whether the overwatch is started (default false — born paused/idle, like the hive). */
+/** Whether the overwatch is started (default false — born paused/idle, like the hive).
+ *  K1: ON ⇒ read the workspace-sentinel row first, then fall back to the legacy
+ *  per-hive row (zero regression pre-backfill). OFF ⇒ the per-hive row only,
+ *  byte-identical to today (exactly one key = installSlug). */
 export async function getOverwatchStarted(workspaceId: string, installSlug: string): Promise<boolean> {
-  return (await readSetting(startedKey(workspaceId, installSlug))) === 'true';
+  const on = await isWorkspaceCoordinationOn();
+  for (const scope of workspaceBrainReadKeys(workspaceId, installSlug, on)) {
+    const v = await readSetting(startedKey(workspaceId, scope));
+    if (v != null) return v === 'true';
+  }
+  return false;
 }
 
+/** K1: ON ⇒ write the workspace-sentinel row (the install dimension collapses);
+ *  OFF ⇒ the per-hive row, byte-identical to today. */
 export async function setOverwatchStarted(
   workspaceId: string,
   installSlug: string,
   started: boolean,
 ): Promise<void> {
+  const scope = workspaceBrainScopeKey(workspaceId, installSlug, await isWorkspaceCoordinationOn());
   await writeSetting(
-    startedKey(workspaceId, installSlug),
+    startedKey(workspaceId, scope),
     started ? 'true' : 'false',
     'Start/Pause Overwatch state (overwatch-role B-07). true = the overwatch supervisor loop should be running; the loop (B-04) + liveness watchdog (B-09) hold the wake-armed invariant only while true.',
   );
 }
 
-/** The configured wake cadence (seconds), clamped; the default when unset/invalid. */
+/** The configured wake cadence (seconds), clamped; the default when unset/invalid.
+ *  K1: ON ⇒ prefer the workspace-sentinel row, then fall back to the legacy
+ *  per-hive row. OFF ⇒ the per-hive row only, byte-identical to today. */
 export async function getOverwatchCadenceSec(workspaceId: string, installSlug: string): Promise<number> {
-  const raw = await readSetting(cadenceKey(workspaceId, installSlug));
-  const n = raw === undefined ? NaN : Number(raw);
-  return Number.isFinite(n) ? clampOverwatchCadenceSec(n) : DEFAULT_OVERWATCH_CADENCE_SEC;
+  const on = await isWorkspaceCoordinationOn();
+  for (const scope of workspaceBrainReadKeys(workspaceId, installSlug, on)) {
+    const raw = await readSetting(cadenceKey(workspaceId, scope));
+    if (raw !== undefined) {
+      const n = Number(raw);
+      return Number.isFinite(n) ? clampOverwatchCadenceSec(n) : DEFAULT_OVERWATCH_CADENCE_SEC;
+    }
+  }
+  return DEFAULT_OVERWATCH_CADENCE_SEC;
 }
 
-/** Persist the wake cadence (clamped); returns the clamped value actually stored. */
+/** Persist the wake cadence (clamped); returns the clamped value actually stored.
+ *  K1: ON ⇒ write the workspace-sentinel row; OFF ⇒ the per-hive row, byte-identical. */
 export async function setOverwatchCadenceSec(
   workspaceId: string,
   installSlug: string,
   sec: number,
 ): Promise<number> {
   const clamped = clampOverwatchCadenceSec(sec);
+  const scope = workspaceBrainScopeKey(workspaceId, installSlug, await isWorkspaceCoordinationOn());
   await writeSetting(
-    cadenceKey(workspaceId, installSlug),
+    cadenceKey(workspaceId, scope),
     String(clamped),
     'Overwatch wake cadence in seconds (overwatch-role B-07). The loop (B-04) declares its next wake this far out while started.',
   );
   return clamped;
 }
 
-/**
- * Every (workspace, install) currently marked started — the loop's routine sweep
- * (B-04) and the liveness watchdog (B-09) iterate exactly this set, mirroring
- * `listStartedHives()`.
- */
-export async function listStartedOverwatches(): Promise<Array<{ workspaceId: string; installSlug: string }>> {
+/** Parse the raw `overwatch_started:<ws>:<install>` rows currently marked started. */
+async function readStartedRows(): Promise<Array<{ workspaceId: string; installSlug: string }>> {
   const { sql } = getOrgPg();
   const rows = await sql`
     SELECT key FROM harness_shared.operator_settings
@@ -120,6 +154,62 @@ export async function listStartedOverwatches(): Promise<Array<{ workspaceId: str
     const i = rest.indexOf(':');
     if (i <= 0) continue;
     out.push({ workspaceId: rest.slice(0, i), installSlug: rest.slice(i + 1) });
+  }
+  return out;
+}
+
+/**
+ * Every (workspace, install) currently marked started — the raw set, mirroring
+ * `listStartedHives()`.
+ *
+ * Byte-identical to today: the raw per-(ws,install) started rows, parsed. The
+ * workspace-brain de-dup (K1, when WORKSPACE_COORDINATION is ON) lives in
+ * `listStartedWorkspaceOverwatches()` — this raw read stays untouched so the
+ * pane's hive-resolver (snapshot.ts `resolveOverwatchInstallSlug`) keeps seeing
+ * real hive slugs, exactly as the Queen's `listStartedHives` stays raw for the
+ * per-hive placement gate.
+ */
+export async function listStartedOverwatches(): Promise<Array<{ workspaceId: string; installSlug: string }>> {
+  return readStartedRows();
+}
+
+/**
+ * The DE-DUPED Overwatch-supervisor loop set (K1, workspace-scoped-coordination
+ * P-004 / D-006 — Phase C, the exact mirror of the Queen's
+ * `listStartedWorkspaceLoops()` in hive/started.ts). The supervisor seams (the
+ * watchdog boot/sweep, the cross-monitor, the scorecard-backstop) must run ONE
+ * supervisor per workspace under the workspace Overwatch, not N per-hive
+ * supervisors.
+ *
+ * - OFF (the dark default) ⇒ the raw per-(ws,install) set, BYTE-IDENTICAL to
+ *   `listStartedOverwatches()` — every existing supervisor seam is unchanged.
+ * - ON ⇒ collapse to ONE entry per started workspace, seated at the workspace's
+ *   home hive (`resolveHiveHomeSlug`, = `PAPERCUSP_HIVE_HOME_SLUG`), so the single
+ *   workspace supervisor's liveness/wake keys resolve against the same install the
+ *   overwatch-wake routine (./liveness) is keyed to. The seat-home falls back to
+ *   the row's own install slug when no env home is set (multi-home pre-flip stays
+ *   sane); for the live single-hive workspace papercusp==papercusp-workspace the
+ *   seat-home IS that hive → zero regression.
+ */
+export async function listStartedWorkspaceOverwatches(): Promise<
+  Array<{ workspaceId: string; installSlug: string }>
+> {
+  const rows = await readStartedRows();
+  if (!(await isWorkspaceCoordinationOn())) return rows;
+  // ON: one supervisor per workspace, seated at the workspace home hive. Lazy
+  // import of resolveHiveHomeSlug keeps this module free of hive/wake.ts's
+  // import-time side effects (the same lazy-import discipline hive/started.ts
+  // uses for its own listStartedWorkspaceLoops).
+  const { resolveHiveHomeSlug } = await import('../hive/wake');
+  const seen = new Set<string>();
+  const out: Array<{ workspaceId: string; installSlug: string }> = [];
+  for (const r of rows) {
+    if (seen.has(r.workspaceId)) continue;
+    seen.add(r.workspaceId);
+    // The env home is workspace-agnostic today (single live workspace); fall back
+    // to this row's install when unset so a never-env'd box still resolves a seat.
+    const seatHome = resolveHiveHomeSlug(undefined, undefined) ?? r.installSlug;
+    out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
   }
   return out;
 }

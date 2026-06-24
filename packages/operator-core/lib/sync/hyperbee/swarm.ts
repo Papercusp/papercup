@@ -115,6 +115,19 @@ export interface JoinHarnessSwarmOpts {
    * the announce exchange to do anything; omit alongside `ourAnnounce`.
    */
   onAnnounce?: (frame: SignedAnnounce) => Promise<AdmissionResult> | void;
+  /**
+   * SUBSTRATE_SIDECAR Option B (WI-604) replication-offload seam. When supplied,
+   * the connection handler calls this with each accepted peer socket INSTEAD of
+   * `store.replicate(socket)`. A truthy return means the offload claimed the
+   * socket (it is being handed to / replicated by the sidecar) so the in-process
+   * `store.replicate` is SKIPPED — handing the merkle-verify CPU + replication
+   * RSS off the main event loop (the EI-79 win). A falsy return means the offload
+   * declined (no sidecar / not wired) and the handler replicates in-process as
+   * usual. OMITTED (the default + the flag-OFF path) ⇒ byte-identical in-process
+   * replication. MUST be synchronous + non-throwing (a throw is treated as
+   * declined → in-process fallback).
+   */
+  offloadReplication?: (socket: unknown, peerInfo?: unknown) => boolean;
 }
 
 /** Announce-channel opts for one hive on one peer connection. */
@@ -447,14 +460,34 @@ export async function joinHarnessSwarm(
       .catch(() => {});
 
     try {
-      // corestore.replicate(socket) plugs the corestore into the peer's
-      // connection as an EXTERNAL stream (replaces the old replicate(true) +
-      // manual bidi pipe). This both starts Hypercore replication AND attaches
-      // the shared muxer at `socket.userData` — which the announce channel then
-      // rides (spike Step 5). corestore handles the stream lifecycle.
-      opts.store.replicate(socket);
+      // SUBSTRATE_SIDECAR Option B (WI-604): offer the raw socket to the sidecar
+      // for replication. When it CLAIMS the socket (truthy), the merkle-verify
+      // CPU + replication RSS run in the sidecar and we MUST NOT also replicate
+      // in-process. When it declines (no sidecar / not wired) — or the seam is
+      // omitted (flag OFF, the default) — fall through to the byte-identical
+      // in-process path. A throw is treated as declined (fail-safe to local).
+      let offloaded = false;
+      if (opts.offloadReplication) {
+        try {
+          offloaded = opts.offloadReplication(socket, peerInfo) === true;
+        } catch {
+          offloaded = false; // fail-safe → in-process replication below
+        }
+      }
+      if (!offloaded) {
+        // corestore.replicate(socket) plugs the corestore into the peer's
+        // connection as an EXTERNAL stream (replaces the old replicate(true) +
+        // manual bidi pipe). This both starts Hypercore replication AND attaches
+        // the shared muxer at `socket.userData` — which the announce channel then
+        // rides (spike Step 5). corestore handles the stream lifecycle.
+        opts.store.replicate(socket);
+      }
       // Open the announce channel on the SAME connection's muxer: exchange
       // signed announces so admitted peer logs get aggregated (Model B Stage 4b).
+      // NOTE (Option B caveat): when `offloaded` is true the raw socket has been
+      // handed to the sidecar, so this in-process announce channel cannot ride
+      // it — admission must move to / be driven from the sidecar in the full
+      // cutover. See substrate-replication-offload.ts "KNOWN LIMITATION".
       openAnnounceChannel(socket, opts.topic, {
         ourAnnounce: opts.ourAnnounce,
         buildOurAnnounce: opts.buildOurAnnounce,

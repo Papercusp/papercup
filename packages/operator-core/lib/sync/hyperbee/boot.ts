@@ -73,6 +73,7 @@ import {
   type HyperswarmLike,
   type SwarmHandle,
 } from './swarm';
+import { offloadReplicationToSidecar } from './substrate-replication-offload';
 import {
   buildAnnounce,
   verifyAnnounce,
@@ -374,6 +375,17 @@ export interface BootHarnessOpts {
    * (the RECV seam) so receive-advances land on the right peer's clock.
    */
   hlcClock?: HlcClock;
+  /**
+   * SUBSTRATE_SIDECAR Option B test seam (WI-604). Production leaves this
+   * undefined: the offload is gated by the real OFF-by-default SUBSTRATE_SIDECAR
+   * flag and routes through `offloadReplicationToSidecar` (the real sidecar child
+   * + IPC client). A test injects a `(socket, peerInfo) => boolean` to drive the
+   * connection handler's offload branch deterministically WITHOUT spawning the
+   * sidecar — e.g. to assert the in-process `store.replicate` is bypassed when the
+   * offload claims the socket. When defined it is the SOURCE OF TRUTH (the flag
+   * read is skipped) so a test never depends on global flag state.
+   */
+  sidecarOffloadOverride?: (socket: unknown, peerInfo?: unknown) => boolean;
 }
 
 export interface BootedHarnessHandle {
@@ -1022,6 +1034,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let lastSnapshotCoversUpTo = snapshotEnabled
     ? ((await findLatestSnapshotIndex(ownLog).catch(() => null)) ?? 0)
     : 0;
+
+  // ── SUBSTRATE_SIDECAR Option B replication-offload (WI-604) ── FLAG-GATED, dark.
+  // Read ONCE at boot (boot-scoped, like the snapshot + authority transports). When
+  // ON, the swarm connection handler hands each accepted peer socket to the sidecar
+  // for `corestore.replicate()` (offloading merkle-verify CPU + replication RSS — the
+  // EI-79 win) INSTEAD of replicating in-process; the substrate engine + own log +
+  // every `handle.append()` caller stay in-process untouched. OFF (the default) ⇒ the
+  // offload seam is never passed to joinHarnessSwarm, so replication is byte-identical
+  // in-process. A test may force it via `sidecarOffloadOverride` without the flag.
+  const sidecarOffloadEnabled =
+    opts.sidecarOffloadOverride !== undefined
+      ? false // an explicit override seam is the source of truth (see joinForBinding)
+      : await getFlag(FLAGS.SUBSTRATE_SIDECAR, 'system').catch(() => false);
 
   // ── Admission queue (audit P-022, EI-115/EI-116 contributor) ── admitPeer
   // used to mutate admitted/pubkeyToLogKey/admittedIdentities directly while a
@@ -1923,6 +1948,33 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const signOurAnnounce = (bytes: Buffer) => signAnnounce(identity.keychainId, bytes);
       const buildOurAnnounce = () => buildAnnounce(announceBody, signOurAnnounce);
       const ourAnnounce = await buildOurAnnounce();
+      // SUBSTRATE_SIDECAR Option B (WI-604): build the replication-offload seam.
+      // A test override wins; else, when the OFF-by-default flag is ON, route each
+      // accepted peer socket to the sidecar via offloadReplicationToSidecar.
+      // undefined (flag OFF + no override) ⇒ joinHarnessSwarm replicates in-process,
+      // byte-identical to today.
+      const offloadReplication:
+        | ((socket: unknown, peerInfo?: unknown) => boolean)
+        | undefined =
+        opts.sidecarOffloadOverride ??
+        (sidecarOffloadEnabled
+          ? (socket: unknown) =>
+              offloadReplicationToSidecar(socket, {
+                workspaceId: opts.workspaceId,
+                harnessSlug: opts.harnessSlug,
+                workspaceRoot: opts.workspaceRoot,
+                onResult: (r) => {
+                  recordBootEvent(
+                    opts.workspaceId,
+                    opts.harnessSlug,
+                    r.ok ? 'peer_connected' : 'swarm_join_failed',
+                    r.ok
+                      ? `sidecar-replicating conn=${r.connectionId ?? '?'}`
+                      : `sidecar handoff failed: ${r.error ?? 'unknown'}`,
+                  );
+                },
+              })
+          : undefined);
       swarmHandle = await joinHarnessSwarm({
         store,
         topic,
@@ -1930,6 +1982,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ourAnnounce,
         buildOurAnnounce,
         onAnnounce,
+        offloadReplication,
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
           // eslint-disable-next-line no-console

@@ -14,10 +14,13 @@ const getFlag = vi.fn();
 vi.mock('@papercusp/flags/server', () => ({ getFlag: (...a: unknown[]) => getFlag(...a) }));
 
 const getOverwatchStarted = vi.fn();
-const listStartedOverwatches = vi.fn();
+// K1 (workspace-scoped-coordination P-004 — Phase C): listGuardedOverwatches now
+// consumes the DE-DUPED supervisor set (listStartedWorkspaceOverwatches), the exact
+// mirror of the Queen watchdog consuming listStartedWorkspaceLoops.
+const listStartedWorkspaceOverwatches = vi.fn();
 vi.mock('./control-state', () => ({
   getOverwatchStarted: (...a: unknown[]) => getOverwatchStarted(...a),
-  listStartedOverwatches: (...a: unknown[]) => listStartedOverwatches(...a),
+  listStartedWorkspaceOverwatches: (...a: unknown[]) => listStartedWorkspaceOverwatches(...a),
 }));
 
 const declareOverwatchTimeWake = vi.fn();
@@ -65,7 +68,7 @@ beforeEach(() => {
   midTurnRows = [];
   getFlag.mockResolvedValue(true); // flag ON by default in tests
   getOverwatchStarted.mockResolvedValue(true);
-  listStartedOverwatches.mockResolvedValue([{ workspaceId: WS, installSlug: SLUG }]);
+  listStartedWorkspaceOverwatches.mockResolvedValue([{ workspaceId: WS, installSlug: SLUG }]);
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
   unarmed();
 });
@@ -74,10 +77,10 @@ describe('listGuardedOverwatches (the activation gate — inert until on)', () =
   it('flag OFF ⇒ empty (the role ships dark, B-10/D-009)', async () => {
     getFlag.mockResolvedValue(false);
     expect(await listGuardedOverwatches()).toEqual([]);
-    expect(listStartedOverwatches).not.toHaveBeenCalled();
+    expect(listStartedWorkspaceOverwatches).not.toHaveBeenCalled();
   });
 
-  it('flag ON ⇒ exactly B-07s started set', async () => {
+  it('flag ON ⇒ exactly B-07s started supervisor set', async () => {
     expect(await listGuardedOverwatches()).toEqual([{ workspaceId: WS, installSlug: SLUG }]);
   });
 });
@@ -132,7 +135,7 @@ describe('the three seams', () => {
   });
 
   it('boot check sweeps every guarded overwatch', async () => {
-    listStartedOverwatches.mockResolvedValue([
+    listStartedWorkspaceOverwatches.mockResolvedValue([
       { workspaceId: WS, installSlug: 'h1' },
       { workspaceId: WS, installSlug: 'h2' },
     ]);
@@ -157,7 +160,7 @@ describe('overwatchWatchdogSweep (every condition gates)', () => {
     });
 
   it('no guarded overwatches → nothing', async () => {
-    listStartedOverwatches.mockResolvedValue([]);
+    listStartedWorkspaceOverwatches.mockResolvedValue([]);
     expect(await overwatchWatchdogSweep({ now: NOW })).toHaveLength(0);
   });
 

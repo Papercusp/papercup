@@ -9,16 +9,26 @@
  *    operator RSS sub-linearly in harness count. OFF ⇒ the reaper never starts;
  *    boot is byte-identical to eager all-harness boot.
  *
- *  - SUBSTRATE_SIDECAR (P-009, WI-604): process-isolate the substrate in a
- *    dedicated sidecar. CURRENTLY DARK + INCOMPLETE — the sidecar bin holds only
- *    the socket-handoff replication spike; swarm-join, the merge loop, admission,
- *    and the PG projection writers are still stubbed, and the request hot paths
- *    (feature-queue / distributed-claim / work-item-lease / lock-events /
- *    presence) all call `handle.append()` IN-PROCESS. A real cutover is the
- *    multi-session re-architecture P-009 was dropped for. So even ON, this path
- *    spawns the sidecar, health-checks it, then FALLS BACK to in-process boot —
- *    it is a no-op-but-wasteful spawn, which is why the flag stays OFF. Do not
- *    flip it without finishing the in-process→sidecar relocation.
+ *  - SUBSTRATE_SIDECAR (P-009/WI-604): Option B "replication-offload". The
+ *    substrate engine + EVERY `handle.append()` caller (feature-queue /
+ *    distributed-claim / work-item-lease / lock-events / presence) + the merge
+ *    loop stay IN-PROCESS (zero producer churn). When ON, the swarm connection
+ *    handler (boot.ts `joinForBinding` → joinHarnessSwarm `offloadReplication`)
+ *    hands each accepted peer SOCKET to the sidecar for `corestore.replicate()`
+ *    — offloading the merkle-verify CPU + replication RSS (the EI-79 win) off the
+ *    main event loop. The 3-phase handoff (openStore → prepareSocketHandoff →
+ *    send(socket)+attachSocket) lives in substrate-replication-offload.ts. OFF
+ *    (the default) ⇒ the offload seam is never wired; replication is byte-identical
+ *    in-process.
+ *
+ *    STILL DARK (KNOWN LIMITATION): corestore 7.x holds a PROCESS-LEVEL RocksDB
+ *    lock per storage path, so the sidecar cannot open the harness store while the
+ *    main process's in-process engine also holds it (the offload's openStore throws
+ *    "File descriptor could not be locked", the handoff fails gracefully, the
+ *    socket is dropped). Reconciling store ownership (relocate the merge/own-log
+ *    into the sidecar, or serve merge reads over IPC) is the remaining sub-task —
+ *    see agent-insights/lazy-substrate-boot-and-sidecar.mdx. The wiring + a
+ *    same-box two-sidecar convergence proof exist + are tested; the flag stays OFF.
  */
 
 import { getFlag } from '@papercusp/flags/server';

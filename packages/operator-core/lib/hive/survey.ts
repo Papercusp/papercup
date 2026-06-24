@@ -605,3 +605,103 @@ export async function surveyHive(
 
   return { home: membership.home, members: membership.members, scope: membership.scope, plans, frontier, frontierBlocked: blockedCount };
 }
+
+// ── Cross-hive workspace survey (P-003 / D-002 — the central dispatcher) ───────
+
+/**
+ * The workspace-wide survey the ONE central-dispatcher Queen reads when
+ * FLAGS.WORKSPACE_COORDINATION is ON (workspace-scoped-coordination-2026-06-20
+ * P-003 / D-002): every hive in the workspace, surveyed individually so ideation
+ * stays focused (`perHive` — the per-hive sections, mitigating the D-004
+ * cross-domain-dilution risk), PLUS one cross-hive ranked backlog
+ * (`crossHive`) merged from all hives and re-ranked by the SAME placement
+ * registry so the Queen prioritizes across hives and dispatches by cross-hive
+ * priority. Every candidate carries its `hive` tag (the source/target-hive
+ * routing of P-001) so the placement path lands work on the right hive's bees.
+ */
+export interface WorkspaceSurvey {
+  /** Per-hive sections — one {@link HiveSurvey} per hive, tagged by home slug. */
+  perHive: Array<{ hive: string; survey: HiveSurvey }>;
+  /** The cross-hive ranked backlog (all hives merged + re-ranked, hive-tagged). */
+  crossHive: {
+    plans: Ranked<PlacementCandidate>[];
+    frontier: Ranked<PlacementCandidate>[];
+    frontierBlocked: number;
+  };
+  /** The hive home slugs surveyed (registry order). */
+  hives: string[];
+}
+
+/**
+ * Survey the WHOLE workspace for the central-dispatcher Queen (P-003). Resolves
+ * every hive (registry `kind:'hive'` projects), surveys each individually (the
+ * focused per-hive sections), then merges + RE-RANKS the combined candidate sets
+ * into one cross-hive backlog so cross-hive priority is a single ordering. Each
+ * candidate carries its `hive` tag so {@link surveyHive}'s `harness` field +
+ * this tag together route a placement onto the right hive's bees.
+ *
+ * Falls back to surveying the supplied home hive alone when no hive resolves (a
+ * never-registered box stays sane). The caller decides whether to call this
+ * (WORKSPACE_COORDINATION ON) or {@link surveyHive} (OFF, byte-identical to today).
+ */
+export async function surveyWorkspace(
+  workspaceId: string,
+  opts: {
+    frontierLimit?: number;
+    scopeFilter?: ScopeFilter;
+    deps?: Partial<SurveyDeps>;
+    /** Resolve the workspace's hive home slugs. Default: the registry's
+     *  `kind:'hive'` projects (injectable so this unit-tests without PG). */
+    listHiveSlugs?: (ws: string) => Promise<string[]>;
+    /** Fallback home when no hive resolves (the per-hive survey seat). */
+    fallbackHome?: string;
+  } = {},
+): Promise<WorkspaceSurvey> {
+  const listHiveSlugs =
+    opts.listHiveSlugs ??
+    (async (ws: string): Promise<string[]> => {
+      const { listHives } = await import('../agent-tools/hive/_resolve');
+      return (await listHives(ws)).map((h) => h.slug);
+    });
+
+  let hiveSlugs = await listHiveSlugs(workspaceId).catch(() => [] as string[]);
+  if (hiveSlugs.length === 0 && opts.fallbackHome) hiveSlugs = [opts.fallbackHome];
+  // De-dup + stable order (registry order); a workspace==hive shape is one entry.
+  hiveSlugs = Array.from(new Set(hiveSlugs));
+
+  const perHive = await Promise.all(
+    hiveSlugs.map(async (hive) => ({
+      hive,
+      survey: await surveyHive(workspaceId, hive, {
+        frontierLimit: opts.frontierLimit,
+        scopeFilter: opts.scopeFilter,
+        deps: opts.deps,
+      }),
+    })),
+  );
+
+  // Merge every hive's candidates (each tagged with its source/target hive — the
+  // P-001 routing tag) and re-rank through the ONE placement registry, so the
+  // cross-hive priority is a SINGLE ordering, never a per-hive sort concatenated.
+  // The ranker is hive-agnostic and re-derives the rank from the candidate fields,
+  // so re-ranking the union is correct; the `hive` tag rides through as metadata
+  // the placement path routes on.
+  const planCandidates: PlacementCandidate[] = [];
+  const frontierCandidates: PlacementCandidate[] = [];
+  let frontierBlocked = 0;
+  for (const { hive, survey } of perHive) {
+    for (const c of survey.plans) planCandidates.push({ ...c, hive });
+    for (const c of survey.frontier) frontierCandidates.push({ ...c, hive });
+    frontierBlocked += survey.frontierBlocked;
+  }
+  const [plans, frontier] = await Promise.all([
+    rankPlacements(planCandidates),
+    rankPlacements(frontierCandidates),
+  ]);
+
+  return {
+    perHive,
+    crossHive: { plans, frontier, frontierBlocked },
+    hives: hiveSlugs,
+  };
+}

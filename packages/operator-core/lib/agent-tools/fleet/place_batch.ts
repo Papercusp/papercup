@@ -30,6 +30,8 @@ import { gatherFrontier, gatherLiveBees } from '../../fleet/placement-gather';
 import { admitConflictFree } from '../../fleet/admit-conflict-free';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
+import { hiveHomeSlugForHarness } from '../../hive-federation';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
 
@@ -186,11 +188,24 @@ export default defineTool({
       now: Date.now(),
     });
 
+    // P-003 (workspace-scoped-coordination-2026-06-20 / D-002): cross-hive routing
+    // VISIBILITY for the central dispatcher. The route itself is already per-task
+    // (`task.harness` → spawnAgentInHarness / affinity place onto that harness's —
+    // hence that HIVE's — bees), so a cross-hive batch routes correctly with no
+    // change to the live path. When WORKSPACE_COORDINATION is ON we ALSO resolve
+    // each task's target hive (via the harness→hive tag, P-001) and surface the
+    // per-hive routing breakdown so the Queen can SEE the cross-hive fan-out. OFF
+    // (the dark default) ⇒ no resolution, no `byHive` key — BYTE-IDENTICAL to today.
+    let byHive: Record<string, number> | undefined;
+    if (await isWorkspaceCoordinationOn().catch(() => false)) {
+      byHive = await routeByHive(tasks, workspaceId);
+    }
+
     if (args.dry_run) {
       return json({
         ok: true,
         dry_run: true,
-        surveyed: { frontier: tasks.length, bees: bees.length, headroom, ...(capacity.throttled ? { rawHeadroom, capacity: capacity.reason } : {}) },
+        surveyed: { frontier: tasks.length, bees: bees.length, headroom, ...(byHive ? { byHive } : {}), ...(capacity.throttled ? { rawHeadroom, capacity: capacity.reason } : {}) },
         plan: summarizePlan(plan),
         skipped,
       });
@@ -205,7 +220,7 @@ export default defineTool({
     const warnings = buildPlacementWarnings({ spawned: exec.summary.spawned ?? 0, wakeMode });
     return json({
       ok: true,
-      surveyed: { frontier: tasks.length, bees: bees.length, headroom, ...(capacity.throttled ? { rawHeadroom, capacity: capacity.reason } : {}) },
+      surveyed: { frontier: tasks.length, bees: bees.length, headroom, ...(byHive ? { byHive } : {}), ...(capacity.throttled ? { rawHeadroom, capacity: capacity.reason } : {}) },
       ...exec,
       ...(warnings.length ? { warnings } : {}),
       skipped,
@@ -215,6 +230,36 @@ export default defineTool({
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+}
+
+/**
+ * P-003 (workspace-scoped-coordination / D-002): tally the batch's target HIVES.
+ * Each task already routes by `task.harness` (spawn/affinity land it on that
+ * harness's bees); this resolves the harness → its home hive (the P-001
+ * source/target-hive tag, via `hiveHomeSlugForHarness`) so the central dispatcher
+ * can SEE the cross-hive fan-out of one batch. Called ONLY when
+ * WORKSPACE_COORDINATION is ON (so it never adds reads to the dark-default path).
+ * A harness with no resolvable hive (operator-scope / un-tagged) buckets under
+ * its own harness slug so the count is never silently dropped. Fail-soft per task.
+ */
+export async function routeByHive(
+  tasks: readonly PlacementTask[],
+  workspaceId: string,
+): Promise<Record<string, number>> {
+  const byHive: Record<string, number> = {};
+  await Promise.all(
+    tasks.map(async (t) => {
+      const harness = t.harness ?? null;
+      let hive: string;
+      if (!harness) {
+        hive = '(no-harness)';
+      } else {
+        hive = (await hiveHomeSlugForHarness(workspaceId, harness).catch(() => null)) ?? harness;
+      }
+      byHive[hive] = (byHive[hive] ?? 0) + 1;
+    }),
+  );
+  return byHive;
 }
 
 /**

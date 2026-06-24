@@ -3,6 +3,14 @@
  *
  * Spawns the substrate sidecar process (apps/operator/bin/substrate-sidecar.ts)
  * as a child process when the SUBSTRATE_SIDECAR flag is ON.
+ *
+ * Option B (replication-offload, WI-604): the spawn enables the Node child IPC
+ * channel (`stdio: [..., 'ipc']`) so the swarm connection handler can transfer a
+ * raw peer socket to the sidecar out-of-band via `subprocess.send(msg, socket)`
+ * (the sidecar's `registerHandleListener` correlates the handle to a prepared
+ * handoff token). `getSubstrateSidecarProcess()` exposes the live child for that
+ * transfer. ALL of this is dark — gated by the OFF-by-default SUBSTRATE_SIDECAR
+ * flag; the OFF path never spawns, so the IPC channel is byte-irrelevant there.
  */
 
 import { spawn, ChildProcess } from 'node:child_process';
@@ -60,9 +68,15 @@ export async function spawnSubstrateSidecar(socketPath?: string): Promise<void> 
     const cmd = isTs ? 'npx' : 'node';
     const args = isTs ? ['tsx', sidecarScript] : [sidecarScript];
 
+    // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel —
+    // the out-of-band Duplex *handle* transport the Option B socket-handoff
+    // rides (`subprocess.send(msg, socket)` → sidecar's process.on('message',
+    // (msg, handle))). Without it `process.send` is undefined in the child and
+    // the handle listener no-ops, so the raw socket can never cross the process
+    // boundary. Harmless on the OFF path (the sidecar is never spawned there).
     sidecarProcess = spawn(cmd, args, {
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       detached: false,
     });
 
@@ -124,6 +138,26 @@ export async function spawnSubstrateSidecar(socketPath?: string): Promise<void> 
  */
 export function isSubstrateSidecarRunning(): boolean {
   return !!sidecarProcess && !sidecarProcess.killed;
+}
+
+/**
+ * The live sidecar child process, or null when not spawned. Exposed for the
+ * Option B socket-handoff: the swarm connection handler calls
+ * `proc.send({ kind: 'substrate:socketHandle', handoffToken }, socket)` to
+ * transfer a raw peer socket to the sidecar over the child IPC channel. Returns
+ * null (and the caller falls back to in-process replication) when the sidecar
+ * is absent or its IPC channel is unavailable.
+ */
+export function getSubstrateSidecarProcess(): ChildProcess | null {
+  if (!sidecarProcess || sidecarProcess.killed) return null;
+  return sidecarProcess;
+}
+
+/** Test seam — inject a fake sidecar ChildProcess (for the handoff unit test)
+ *  without spawning the real `npx tsx` child. Pass null to reset. */
+export function _setSubstrateSidecarProcessForTests(proc: ChildProcess | null): void {
+  sidecarProcess = proc;
+  sidecarReady = !!proc;
 }
 
 /**

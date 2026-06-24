@@ -67,6 +67,8 @@ export interface InstallResult extends InstallPaths {
   psuLauncherSource: string;
   /** Resolved ptool launcher the shim points at. Empty when not found. */
   ptoolLauncherSource: string;
+  /** Shell-profile files updated to put ~/.papercusp/bin on PATH (empty if none). */
+  pathProfilesUpdated: string[];
 }
 
 export interface InstallOpts {
@@ -375,6 +377,46 @@ async function writeShim(shimPath: string, launcherPath: string, label: string):
   return true;
 }
 
+/**
+ * Ensure ~/.papercusp/bin is on the user's shell PATH so `psu` / `ptool` work in
+ * ANY terminal the user opens — not only the in-app "+" console (which sets PATH
+ * itself). Appends an idempotent, marker-guarded block to the common login +
+ * interactive shell profiles; the `case` guard makes the export a no-op when the
+ * dir is already on PATH (safe across multiple sourcings). Only profiles that
+ * already exist are touched, except when the user has NO profile at all (fresh
+ * account) — then ~/.zprofile is seeded (zsh is the macOS default).
+ * (psu-in-desktop-builds: "access psu from whatever the native console is".)
+ */
+async function ensureBinOnPath(home: string, binDir: string): Promise<string[]> {
+  const marker = '# papercusp psu PATH (managed by Papercusp.app)';
+  const block =
+    `\n${marker} >>>\n` +
+    `case ":$PATH:" in *":${binDir}:"*) ;; *) export PATH="${binDir}:$PATH" ;; esac\n` +
+    `# papercusp psu PATH <<<\n`;
+  const touched: string[] = [];
+  let anyExisting = false;
+  for (const name of ['.zprofile', '.zshrc', '.bash_profile', '.bashrc', '.profile']) {
+    const fp = path.join(home, name);
+    let content: string | null = null;
+    try {
+      content = await fs.readFile(fp, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+    if (content === null) continue; // don't create a profile that isn't there
+    anyExisting = true;
+    if (content.includes(marker)) continue; // already added — idempotent
+    await fs.writeFile(fp, content + block, { mode: 0o644 });
+    touched.push(fp);
+  }
+  if (!anyExisting) {
+    const fp = path.join(home, '.zprofile');
+    await fs.writeFile(fp, block, { mode: 0o644 });
+    touched.push(fp);
+  }
+  return touched;
+}
+
 async function pathExists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
@@ -448,6 +490,11 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const ptoolShimWritten = ptoolLauncherSource
     ? await writeShim(paths.ptoolPath, ptoolLauncherSource, 'defineTool CLI (ptool)')
     : false;
+  // Put ~/.papercusp/bin on the user's shell PATH so psu/ptool resolve in ANY
+  // terminal they open (the in-app "+" console sets PATH itself, but a plain
+  // Terminal does not). Only when a shim actually landed.
+  const pathProfilesUpdated =
+    psuShimWritten || ptoolShimWritten ? await ensureBinOnPath(home, paths.binDir) : [];
 
   return {
     ...paths,
@@ -460,6 +507,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     ptoolShimWritten,
     psuLauncherSource: psuShimWritten && psuLauncherSource ? psuLauncherSource : '',
     ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
+    pathProfilesUpdated,
   };
 }
 

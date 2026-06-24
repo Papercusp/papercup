@@ -31,7 +31,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { getOverwatchStarted, listStartedOverwatches } from './control-state';
+import { getOverwatchStarted, listStartedWorkspaceOverwatches } from './control-state';
 import { declareOverwatchTimeWake, overwatchLivenessCheck } from './liveness';
 
 // ── tunables (env-overridable, mirroring the hive watchdog) ───────────────────
@@ -63,12 +63,19 @@ export async function overwatchEnabled(): Promise<boolean> {
  * The set of overwatches the backstop guards: those B-07's control bit marks
  * STARTED (`overwatch:start`), but ONLY while the overwatch flag is on
  * (B-10/D-009 — defence-in-depth: the start tool is itself flag-gated, so this
- * is belt-and-braces). v1 is per-hive (D-005).
+ * is belt-and-braces).
+ *
+ * K1 (workspace-scoped-coordination P-004 / D-006 — Phase C): consumes the
+ * DE-DUPED supervisor set (`listStartedWorkspaceOverwatches`) so a workspace with
+ * N started hives is guarded by ONE workspace supervisor when
+ * WORKSPACE_COORDINATION is ON (the exact mirror of the Queen watchdog consuming
+ * `listStartedWorkspaceLoops`). OFF (the dark default) ⇒ the raw per-(ws,install)
+ * set, BYTE-IDENTICAL to today.
  */
 export async function listGuardedOverwatches(): Promise<Array<{ workspaceId: string; installSlug: string }>> {
   if (!(await overwatchEnabled())) return [];
   try {
-    return await listStartedOverwatches();
+    return await listStartedWorkspaceOverwatches();
   } catch {
     return [];
   }

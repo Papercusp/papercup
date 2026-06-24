@@ -165,6 +165,16 @@ export default defineConfig({
       target: 'react',
       routesDirectory: './src/routes',
       generatedRouteTree: './src/routeTree.gen.ts',
+      // Automatic route code-splitting (perf: FCP). Without this, every route's
+      // `component` (all 81 — admin, pi, gym, editors, dockview panes, …) is
+      // statically imported into routeTree.gen.ts → the eager boot bundle
+      // (~14MB raw across the entry + modulepreload graph), which is the ~2s
+      // FCP. autoCodeSplitting moves each route's non-critical config
+      // (component/errorComponent/notFoundComponent) into its own lazy chunk so
+      // boot loads only the entry + the matched route; loaders stay critical so
+      // data prefetch isn't delayed. See /internal/docs/performance + the E2E
+      // perf sweep (2026-06-23). Measured: drops the eager src-* mega-chunks.
+      autoCodeSplitting: true,
     }),
     react(),
     // Watch-build only: prune the chunks that emptyOutDir:false now retains.

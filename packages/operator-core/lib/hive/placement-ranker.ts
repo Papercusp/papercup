@@ -54,6 +54,14 @@ export interface PlacementCandidate {
   view: PlacementView;
   /** The member harness this plan/item belongs to. */
   harness: string;
+  /**
+   * The HOME hive slug this candidate's harness belongs to (P-001's source-hive
+   * tag, resolved via the registry `hive_slug`). Set ONLY by the workspace-scoped
+   * cross-hive survey (surveyWorkspace, WORKSPACE_COORDINATION ON) so the central
+   * dispatcher can group + ROUTE placements onto the right hive's bees. Absent in
+   * the per-hive (flag-OFF) survey — there is one hive, so the tag is implicit.
+   */
+  hive?: string;
   title: string;
   /** Plan/item importance (urgent..low). Default 'normal'. */
   importance?: Importance;

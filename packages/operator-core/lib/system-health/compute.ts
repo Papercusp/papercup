@@ -385,11 +385,25 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     let frontier = 0, frontierBlocked = 0, startedPlans = 0;
     if (hiveSlug) {
       try {
-        const { surveyHive } = await import('../hive/survey');
-        const survey = await surveyHive(ws, hiveSlug);
-        frontier = survey.frontier.length;
-        frontierBlocked = survey.frontierBlocked;
-        startedPlans = survey.plans.length;
+        // K1 (workspace-scoped-coordination P-003 / D-002): the ONE central-dispatcher
+        // Queen's work-feed spans ALL the workspace's hives when WORKSPACE_COORDINATION
+        // is ON — so the Health/Overwatch work-feed counts the cross-hive backlog, not
+        // one representative hive. OFF (the dark default) ⇒ the single-hive surveyHive,
+        // byte-identical to today.
+        const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
+        if (await isWorkspaceCoordinationOn()) {
+          const { surveyWorkspace } = await import('../hive/survey');
+          const ws_survey = await surveyWorkspace(ws, { fallbackHome: hiveSlug });
+          frontier = ws_survey.crossHive.frontier.length;
+          frontierBlocked = ws_survey.crossHive.frontierBlocked;
+          startedPlans = ws_survey.crossHive.plans.length;
+        } else {
+          const { surveyHive } = await import('../hive/survey');
+          const survey = await surveyHive(ws, hiveSlug);
+          frontier = survey.frontier.length;
+          frontierBlocked = survey.frontierBlocked;
+          startedPlans = survey.plans.length;
+        }
       } catch { /* survey unreadable — leave zeros, dead-routine signal still computes */ }
     }
     // Dead routines (EI-584): active routines whose next_fire_at is long overdue —
