@@ -98,11 +98,19 @@ async function seedBee(owner: string, featureId: string, status: string): Promis
 }
 
 async function blocksEdge(blocker: string, blocked: string): Promise<void> {
-  // Readiness blocking moved coord_links → work_item_deps (migration 383 dropped the
-  // dead coord_links blocks trigger; P-004 cutover — the Queen survey + scheduler claim
-  // read blocking from work_item_deps, and migration 379's wir_* triggers maintain the
-  // work_item_blocked sidecar from it). A coord_links rel='blocks' edge is now inert, so
-  // it never gates the dispatch. blocked_ref/blocker_ref are harness-qualified (HIVE#id).
+  // A wave blocks-edge has TWO consumers post P-004, so the promote/convert path (and
+  // therefore this seed) writes BOTH:
+  //   • coord_links rel='blocks' — the placement-watchdog edge-resolution sweep
+  //     (reconcileOneHive, placement-watchdog.ts) reads it to emit the `unblocked`
+  //     decision + the placement-unblocked wake when a blocker completes. (mig 383 only
+  //     dropped the dead change-notify TRIGGER on it, NOT this read path.)
+  //   • work_item_deps — the readiness GATE (Queen survey + scheduler claim, the P-004
+  //     seam) reads it; migration 379's wir_* triggers maintain the work_item_blocked
+  //     sidecar from it so the blocked tier2 lane is held out of the dispatch.
+  // src_ref=blocker→dst_ref=blocked (coord_links); blocked_ref/blocker_ref harness-qualified.
+  await sql`
+    INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+    VALUES ('default', 'feature', ${HIVE + '#' + blocker}, 'feature', ${HIVE + '#' + blocked}, 'blocks')`;
   await sql`
     INSERT INTO harness_shared.work_item_deps
       (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
