@@ -157,6 +157,48 @@ describe('Phase-0 Hive identity seam (keypair encoding → hives table → feder
     expect(attempted.record.keychainId).toBe(ownedKeychainId);
   });
 
+  it('repairs explicitly authorized legacy remote view keychain ids', async () => {
+    const staleRemote = mintPubkey();
+    const freshRemote = mintPubkey();
+    const legacyKeychainId = hiveKeychainId(WS, 'legacy-remote-view');
+    await insertHiveIfAbsent(
+      {
+        workspaceId: WS,
+        homeSlug: 'legacy-remote-view',
+        pubkeyBase64: staleRemote,
+        keychainId: legacyKeychainId,
+      },
+      db.sql,
+    );
+
+    const protectedAttempt = await upsertRemoteHiveIdentity(
+      {
+        workspaceId: WS,
+        homeSlug: 'legacy-remote-view',
+        pubkeyBase64: freshRemote,
+        keychainId: 'remote:legacy-remote-view',
+      },
+      db.sql,
+    );
+    expect(protectedAttempt.repaired).toBe(false);
+    expect(protectedAttempt.record.pubkeyBase64).toBe(staleRemote);
+    expect(protectedAttempt.record.keychainId).toBe(legacyKeychainId);
+
+    const repaired = await upsertRemoteHiveIdentity(
+      {
+        workspaceId: WS,
+        homeSlug: 'legacy-remote-view',
+        pubkeyBase64: freshRemote,
+        keychainId: 'remote:legacy-remote-view',
+        repairKeychainIds: [legacyKeychainId],
+      },
+      db.sql,
+    );
+    expect(repaired.repaired).toBe(true);
+    expect(repaired.record.pubkeyBase64).toBe(freshRemote);
+    expect(repaired.record.keychainId).toBe('remote:legacy-remote-view');
+  });
+
   it('resolves a Hive by its pubkey (dial identity) and enforces one-pubkey-one-Hive (UNIQUE)', async () => {
     const pub = mintPubkey();
     await insertHiveIfAbsent(

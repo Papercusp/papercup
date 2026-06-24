@@ -44,6 +44,15 @@ export interface InsertHiveInput {
   description?: string | null;
 }
 
+export interface UpsertRemoteHiveIdentityInput extends InsertHiveInput {
+  /**
+   * Explicit legacy keychain ids that this caller has proven are remote-view
+   * artifacts, not locally owned hives. Kept opt-in so owned identities remain
+   * immutable by default.
+   */
+  repairKeychainIds?: string[];
+}
+
 /** Raw Ed25519 public key length — asserted on store so a malformed key never
  *  lands as a Hive identity. */
 export const ED25519_RAW_PUBKEY_BYTES = 32;
@@ -206,7 +215,7 @@ export async function insertHiveIfAbsent(
  * returned unchanged on conflict.
  */
 export async function upsertRemoteHiveIdentity(
-  input: InsertHiveInput,
+  input: UpsertRemoteHiveIdentityInput,
   sql?: Sql,
 ): Promise<{ record: HiveRecord; created: boolean; repaired: boolean }> {
   if (!input.keychainId.startsWith('remote:')) {
@@ -215,6 +224,7 @@ export async function upsertRemoteHiveIdentity(
   const s = pg(sql);
   const pk = pubkeyToBytea(input.pubkeyBase64);
   const now = Date.now();
+  const repairKeychainIds = (input.repairKeychainIds ?? []).filter(Boolean);
   const rows = (await s.unsafe(
     `INSERT INTO harness_shared.hives (${COLS})
        VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
@@ -225,6 +235,7 @@ export async function upsertRemoteHiveIdentity(
            description = COALESCE(EXCLUDED.description, harness_shared.hives.description),
            updated_at = EXCLUDED.updated_at
        WHERE harness_shared.hives.keychain_id LIKE 'remote:%'
+          OR harness_shared.hives.keychain_id = ANY($8::text[])
      RETURNING ${COLS}`,
     [
       input.workspaceId,
@@ -234,6 +245,7 @@ export async function upsertRemoteHiveIdentity(
       input.title ?? null,
       input.description ?? null,
       now,
+      repairKeychainIds,
     ],
   )) as unknown as HiveRow[];
   if (rows[0]) {
