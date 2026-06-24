@@ -513,6 +513,20 @@ export const FLAGS = {
   // kill-switch: the override store is empty by default ⇒ baked 5s/5s ⇒ byte-identical; flip OFF to ignore
   // any stored override and force the defaults. Operational (not auth/spend), so not dark.
   TXN_TIMEOUTS_CONFIG: "papercusp-txn-timeouts-config",
+  // live-configurability-audit-2026-06-20 P-019 — the §G AUTH/SANDBOX runtime-override umbrella.
+  // DARK (owner-authority): when ON, the operator_auth_config store's overrides apply —
+  // auth:set_full_access_roles REPLACES the baked TESTING_FULL_ACCESS_ROLES bypass set (the strongest
+  // escalation in the system, so the override is gated here), clamp:set_safe_tools NARROWS the
+  // scoped-SU cross-workspace allowlist (tighten-only), and exec_sandbox:set_policy ADDS sandbox mask
+  // dirs / forces deny-all-egress (tighten-only). OFF (default) ⇒ the sync-cache stays empty ⇒ every
+  // surface uses its baked literal ⇒ byte-identical. The owner flips this ON to ratify the auth dials.
+  AUTH_CONFIG_OVERRIDES: "papercusp-auth-config-overrides",
+  // live-configurability-audit-2026-06-20 P-019 — the testing-phase full-access master switch, the
+  // env→flag conversion of the PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off kill-switch (gate-bypass.ts).
+  // Default-ON = the testing-phase role+capability bypass (operator/queen/bee/overwatch/sentinel/scout)
+  // stays enabled exactly as today; flip OFF to globally DISABLE testing-full-access (least-privilege).
+  // Not dark — ON reproduces current behaviour; this is just the kill-switch as a runtime flag.
+  TESTING_FULL_ACCESS: "papercusp-testing-full-access",
   // agent-capability-confinement-2026-06-13 B-06 (P-011) ⨯ queen-autonomy-policy D-012/P-110:
   // the Queen decision-ledger ACTION-CHOKEPOINT emit — one append-only row per governed
   // (tier != 'low') action by a non-SU principal, from the dispatch postInvoke seam. ON by
@@ -1513,6 +1527,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // P-020 — txn-timeouts config is operational + safe (empty store = byte-identical 5s/5s); ships
   // ON per the default-on policy, as a kill-switch (OFF forces the baked 5s/5s txn timeouts).
   [FLAGS.TXN_TIMEOUTS_CONFIG]: true,
+  // P-019 — the §G auth/sandbox override umbrella is DARK (default OFF, KNOWN_DARK_FLAGS): it gates an
+  // OWNER-AUTHORITY escalation surface (auth:set_full_access_roles can widen the all-gates bypass set).
+  // OFF ⇒ the sync-cache stays empty ⇒ every surface uses its baked literal ⇒ byte-identical. The owner
+  // flips it ON to ratify the auth dials.
+  [FLAGS.AUTH_CONFIG_OVERRIDES]: false,
+  // P-019 — testing-full-access master switch is ON by default (the env→flag conversion preserves the
+  // current testing-phase bypass exactly); OFF is the kill-switch (testing-full-access globally off).
+  [FLAGS.TESTING_FULL_ACCESS]: true,
   // ON by default — Phase-0 foundation record-keeping (B-06 / P-011), same call as
   // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
   // OFF is the kill-switch (the emit no-ops).
