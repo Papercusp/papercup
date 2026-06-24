@@ -82,10 +82,38 @@ export function isTransientPgConnectionError(e: unknown): boolean {
 }
 
 /**
+ * EI-3385: a file watcher (chokidar / fs.watch — the harness-fs-watcher over
+ * per-harness lockfiles + enabled-plugins, the session-claude config watcher, …)
+ * hits the kernel inotify ceiling and throws
+ * `ENOSPC: System limit for number of file watchers reached, watch '<path>'`. A high
+ * cluster-worker count multiplied the per-process watchers past the system budget and
+ * the session-claude watcher's ENOSPC surfaced as an UNCAUGHT exception →
+ * crash-looped :3070 for the whole fleet (2026-06-24). A missing file watcher only
+ * degrades a background convenience (a watched file just isn't auto-reloaded); it must
+ * NEVER down the multi-tenant host.
+ *
+ * Scoped TIGHTLY to the inotify WATCH ENOSPC so a genuine disk-full ENOSPC (which is
+ * a real fatal condition) still fails fast: matched only when `syscall === 'watch'`
+ * OR the message names the watcher limit. A disk-full ENOSPC carries syscall
+ * 'write'/'open' and the message "no space left on device", so it is NOT swallowed.
+ */
+export function isBenignFileWatcherError(e: unknown): boolean {
+  const x = e as { code?: string; syscall?: string; message?: string } | null;
+  if (!x || x.code !== 'ENOSPC') return false;
+  return x.syscall === 'watch' || /number of file watchers|inotify/i.test(x.message ?? '');
+}
+
+/**
  * Any process-level error that is client-caused + request-scoped, OR a transient
- * recoverable infra blip (a torn-down PG connection) → the host guards log it and
- * KEEP RUNNING. Everything else stays fail-fast (exit).
+ * recoverable infra blip (a torn-down PG connection, an exhausted file-watcher
+ * budget) → the host guards log it and KEEP RUNNING. Everything else stays fail-fast
+ * (exit).
  */
 export function isBenignHostError(e: unknown): boolean {
-  return isBenignStreamClose(e) || isBenignRequestParse(e) || isTransientPgConnectionError(e);
+  return (
+    isBenignStreamClose(e) ||
+    isBenignRequestParse(e) ||
+    isTransientPgConnectionError(e) ||
+    isBenignFileWatcherError(e)
+  );
 }

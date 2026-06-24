@@ -10,11 +10,35 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  isBenignFileWatcherError,
   isBenignHostError,
   isBenignRequestParse,
   isBenignStreamClose,
   isTransientPgConnectionError,
 } from './host-benign-errors';
+
+/** The inotify watch-exhaustion error Node throws from chokidar/fs.watch when the
+ *  kernel file-watcher budget is full (EI-3385 — crash-looped :3070 at 32 workers).
+ *  `via` picks how it's recognizable: 'syscall' sets syscall='watch' (no message
+ *  match needed), 'message' relies on the message text only. */
+function watcherEnospc(via: 'syscall' | 'message' = 'syscall'): Error {
+  const e = Object.assign(
+    new Error("ENOSPC: System limit for number of file watchers reached, watch '/home/x/.papercusp/.../.claude.json.lock'"),
+    { code: 'ENOSPC', errno: -28 },
+  );
+  if (via === 'syscall') (e as { syscall?: string }).syscall = 'watch';
+  return e;
+}
+
+/** A genuine DISK-FULL ENOSPC — same code, but syscall 'write' + "no space left on
+ *  device". This is a real fatal condition and must NOT be swallowed. */
+function diskFullEnospc(): Error {
+  return Object.assign(new Error('ENOSPC: no space left on device, write'), {
+    code: 'ENOSPC',
+    errno: -28,
+    syscall: 'write',
+  });
+}
 
 /** Build the exact postgres-js null-socket-write TypeError that crash-looped
  *  :3070 (2026-06-18): the message Node throws + a stack inside postgres-js's
@@ -125,16 +149,36 @@ describe('isTransientPgConnectionError (2026-06-18 — torn-down PG connection m
   });
 });
 
+describe('isBenignFileWatcherError (EI-3385 — inotify exhaustion must not crash-loop the host)', () => {
+  it('classifies inotify watch-ENOSPC as benign (by syscall and by message)', () => {
+    expect(isBenignFileWatcherError(watcherEnospc('syscall'))).toBe(true);
+    expect(isBenignFileWatcherError(watcherEnospc('message'))).toBe(true);
+  });
+
+  it('does NOT swallow a genuine disk-full ENOSPC (real fatal condition stays fatal)', () => {
+    // Same ENOSPC code, but syscall 'write' + "no space left on device" — must fail fast.
+    expect(isBenignFileWatcherError(diskFullEnospc())).toBe(false);
+  });
+
+  it('does NOT swallow unrelated errors', () => {
+    expect(isBenignFileWatcherError(Object.assign(new Error('x'), { code: 'EACCES', syscall: 'watch' }))).toBe(false);
+    expect(isBenignFileWatcherError(new Error('boom'))).toBe(false);
+    expect(isBenignFileWatcherError(null)).toBe(false);
+  });
+});
+
 describe('isBenignHostError (the combined fail-fast boundary)', () => {
   it('is true for every benign class', () => {
     expect(isBenignHostError(realJsonParseError('{bad'))).toBe(true);
     expect(isBenignHostError(Object.assign(new Error('x'), { code: 'ERR_INVALID_STATE' }))).toBe(true);
     expect(isBenignHostError(pgNullWriteError('cjs'))).toBe(true); // the 2026-06-18 (EI-1405) crash-loop fix — real incident CJS stack
+    expect(isBenignHostError(watcherEnospc())).toBe(true); // EI-3385 — inotify exhaustion
   });
 
   it('is FALSE for a real host bug — the guard must still exit on these', () => {
     expect(isBenignHostError(new TypeError("Cannot read properties of undefined (reading 'foo')"))).toBe(false);
     expect(isBenignHostError(new Error('PG pool exhausted'))).toBe(false);
     expect(isBenignHostError(new RangeError('Maximum call stack size exceeded'))).toBe(false);
+    expect(isBenignHostError(diskFullEnospc())).toBe(false); // disk-full is real — must still exit
   });
 });
