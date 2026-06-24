@@ -138,7 +138,7 @@ function unwrap(toolResult: { status: number; body: unknown }): Response {
  * shapes to client code (line ~21). Non-bulk shapes (a top-level `{ error }`
  * from a trust/validation failure) pass through unchanged.
  */
-function unwrapBulkGet(toolResult: { status: number; body: unknown }): Response {
+export function unwrapBulkGet(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status !== 200) {
     return Response.json(toolResult.body, { status: toolResult.status });
   }

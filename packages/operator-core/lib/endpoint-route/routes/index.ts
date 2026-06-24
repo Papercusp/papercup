@@ -304,6 +304,7 @@ import desktopVoiceConfig from './desktop/voice-config';
 import desktopWorkspaceValidate from './desktop/workspace-validate';
 import desktopInstallPapercuspFiles from './desktop/install-papercusp-files';
 import desktopInstallOmpIntegration from './desktop/install-omp-integration';
+import desktopBootstrapHiveStart from './desktop/bootstrap-hive-start';
 import { desktopGithubUser } from './desktop/github-user';
 import adminBackupOrphanCleanup from './admin/backup-orphan-cleanup';
 import adminCommands from './admin/commands';
@@ -720,6 +721,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopWorkspaceValidate as AnyRoute),
   ...flatten(desktopInstallPapercuspFiles as AnyRoute[]),
   ...flatten(desktopInstallOmpIntegration as AnyRoute[]),
+  ...flatten(desktopBootstrapHiveStart as AnyRoute[]),
   desktopGithubUser,
   ...flatten(adminBackupOrphanCleanup as AnyRoute),
   ...flatten(adminCommands as AnyRoute),

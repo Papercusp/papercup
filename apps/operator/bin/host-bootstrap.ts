@@ -94,10 +94,12 @@ export function runBootstrap(): void {
     void (async () => {
       try {
         if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_HIVE, 'system'))) return;
-        const { bootstrapPapercuspHive } = await import(
+        const { startBootstrapPapercuspHive } = await import(
           '@papercusp/operator-core/lib/harness/bootstrap-papercusp-hive'
         );
-        const res = await bootstrapPapercuspHive();
+        // Single-flight: shares ONE run with the wizard's post-gh-auth
+        // /api/desktop/bootstrap-hive/start trigger (no double clone).
+        const res = await startBootstrapPapercuspHive().done;
         if (res.state !== 'skipped') {
           console.log(
             `[papercusp-hive] ${res.state}: ${res.slug ?? '(none)'}${res.path ? ` @ ${res.path}` : ''}`,

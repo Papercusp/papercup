@@ -189,6 +189,40 @@ function submodulePercent(done: number, total: number): number {
   return Math.min(100, Math.round((done / total) * 100));
 }
 
+/** Process single-flight for the dogfood bootstrap (see startBootstrapPapercuspHive). */
+let bootstrapInFlight: Promise<BootstrapPapercuspHiveResult> | null = null;
+
+/**
+ * Single-flight trigger for "start the dogfood clone NOW" — used by BOTH the
+ * boot path and the setup-wizard's post-gh-auth "start" endpoint, so they share
+ * ONE run instead of racing two clones. Returns the `progressId` immediately (the
+ * UI subscribes to it) and a `done` promise that resolves when the hive is created
+ * (the clone finished; submodules keep filling in the background).
+ *
+ * A SUCCESS is cached for the process (idempotent; never re-run racing the
+ * background submodule fill). A `skipped` result (e.g. auth_required because gh
+ * isn't signed in yet at boot) RELEASES the latch so the next trigger — the
+ * wizard, after the user completes the GitHub step — re-runs and actually clones.
+ */
+export function startBootstrapPapercuspHive(deps: BootstrapPapercuspHiveDeps = {}): {
+  progressId: string;
+  done: Promise<BootstrapPapercuspHiveResult>;
+} {
+  if (!bootstrapInFlight) {
+    bootstrapInFlight = bootstrapPapercuspHive(deps).then(
+      (res) => {
+        if (res.state === 'skipped') bootstrapInFlight = null; // allow a retry
+        return res;
+      },
+      (err) => {
+        bootstrapInFlight = null;
+        throw err;
+      },
+    );
+  }
+  return { progressId: BOOTSTRAP_PROGRESS_ID, done: bootstrapInFlight };
+}
+
 /**
  * Ensure the `papercusp` dogfood hive exists, cloning the repo first when there's
  * no local checkout (packaged install). Idempotent + best-effort + non-fatal.

@@ -94,4 +94,81 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(res.reason).toBe('create_failed');
     expect(deps.setHomeWorkspace).not.toHaveBeenCalled();
   });
+
+  it('records the clone + submodules progress sequence for a fresh clone', async () => {
+    const events: string[] = [];
+    const deps = spyDeps({
+      recordProgress: vi.fn((step, status, extra) =>
+        events.push(`${step}:${status}${extra?.percent != null ? `@${extra.percent}` : ''}`),
+      ),
+      // Drive the submodule callbacks synchronously so we can assert recording.
+      initSubmodules: vi.fn((_root, opts) => {
+        opts?.onProgress?.(1, 4);
+        opts?.onDone?.(true);
+      }),
+    });
+    await bootstrapPapercuspHive(deps);
+    expect(events).toContain('clone:running@0');
+    expect(events).toContain('clone:done');
+    expect(events).toContain('submodules:running@0');
+    expect(events).toContain('submodules:running@25'); // 1/4 submodules
+    expect(events).toContain('submodules:done');
+  });
+
+  it('records clone:done + submodules:skipped for a LOCAL checkout (no download)', async () => {
+    const events: string[] = [];
+    const deps = spyDeps({
+      detectRoot: vi.fn(() => '/home/dev/papercup'),
+      recordProgress: vi.fn((step, status) => events.push(`${step}:${status}`)),
+    });
+    await bootstrapPapercuspHive(deps);
+    expect(events).toContain('clone:done');
+    expect(events).toContain('submodules:skipped');
+    expect(deps.initSubmodules).not.toHaveBeenCalled();
+  });
+
+  it('records clone:error and skips the submodule phase on a clone failure', async () => {
+    const events: string[] = [];
+    const deps = spyDeps({
+      clone: vi.fn(async () => ({ code: 'auth_required' as const, message: 'nope' })),
+      recordProgress: vi.fn((step, status) => events.push(`${step}:${status}`)),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('skipped');
+    expect(events).toContain('clone:error');
+    expect(events).not.toContain('submodules:running');
+  });
+
+  it('pins the clone to PAPERCUP_DOGFOOD_REPO_REF (release pin) and is shallow by default', async () => {
+    const prev = process.env.PAPERCUP_DOGFOOD_REPO_REF;
+    process.env.PAPERCUP_DOGFOOD_REPO_REF = 'desktop-v0.0.2';
+    try {
+      const deps = spyDeps();
+      await bootstrapPapercuspHive(deps);
+      expect(deps.clone).toHaveBeenCalledWith(
+        PAPERCUP_DOGFOOD_REPO_URL,
+        expect.objectContaining({ ref: 'desktop-v0.0.2', shallow: true }),
+      );
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUP_DOGFOOD_REPO_REF;
+      else process.env.PAPERCUP_DOGFOOD_REPO_REF = prev;
+    }
+  });
+
+  it('omits ref when no pin is baked (dev) — default branch, still shallow', async () => {
+    const prev = process.env.PAPERCUP_DOGFOOD_REPO_REF;
+    delete process.env.PAPERCUP_DOGFOOD_REPO_REF;
+    try {
+      const deps = spyDeps();
+      await bootstrapPapercuspHive(deps);
+      const opts = (deps.clone as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as {
+        ref?: string;
+        shallow?: boolean;
+      };
+      expect(opts.ref).toBeUndefined();
+      expect(opts.shallow).toBe(true);
+    } finally {
+      if (prev !== undefined) process.env.PAPERCUP_DOGFOOD_REPO_REF = prev;
+    }
+  });
 });
