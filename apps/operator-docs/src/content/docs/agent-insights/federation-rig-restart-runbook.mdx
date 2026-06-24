@@ -13,6 +13,7 @@ documents:
   - papercusp-desktop/bin/live-federation-gate.sh
   - papercusp-desktop/bin/vm-federation.sh
   - papercusp-desktop/scripts/linux-test-vm/vmctl
+  - papercusp-desktop/scripts/linux-test-vm/fed.sh
   - packages/operator-core/lib/sync/hyperbee/local-announce-identity.ts
   - packages/operator-core/lib/hive-directory-boot.ts
 plans:
@@ -211,10 +212,50 @@ actively investigating. The durable fix (persist/restore auth across restart + a
 loud no-identity health signal) is tracked in WI-757.
 </Aside>
 
+## 7. Driving the live fed VMs — `fed.sh` (port self-discovery, WI-754)
+
+`papercusp-desktop/scripts/linux-test-vm/fed.sh` is the **versioned** driver for
+the 2-machine fed-a / fed-b VMs — the reliable replacement for the ad-hoc
+`/tmp/fed.sh` that **hardcoded the VMs' dynamic operator/PG ports**. Those ports
+are picked fresh on every operator restart and old listeners linger, so a
+hardcoded (or even "latest `[serve]` log line") port goes stale and silently hits
+the wrong / a dead listener (EI-3409 / WI-559 burned ~30 min on exactly this). The
+versioned script **discovers the LIVE ports on each call**: it SSHes in (stable
+host-forward port), gathers candidate loopback ports, and picks the operator =
+the one answering `GET /api/desktop/preflight` with **2xx** and PG = the one that
+accepts a `harness_admin` psql — so it survives app/VM restarts with no edits.
+
+```sh
+cd papercusp-desktop/scripts/linux-test-vm
+./fed.sh a ports                       # show the discovered operator/PG ports
+./fed.sh a sql  "select count(*) from harness_features"
+./fed.sh a api  GET /api/discovery/hives
+./fed.sh a mcp  hive:report '{"hive":"…"}'
+./fed.sh a ssh  'gh auth status'       # raw ssh (used by §6's gh-auth restore)
+./fed.sh b rediscover                  # force a fresh probe (after a restart)
+```
+
+Ports are cached per-VM under `~/.papercusp/fed-rig-ports.<vm>` for
+`FED_PORT_TTL` (default 600s); `rediscover` (or deleting the cache) forces a fresh
+probe. SSH host-forward ports default to `2225` (a) / `2226` (b) — override with
+`FED_SSH_A` / `FED_SSH_B`.
+
+<Aside type="caution" title="EI-3409 — workspace-scoped MCP writes">
+Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use
+`'default'`, so a hive created via `mcp` lands in the wrong workspace and the
+routes return `not_owner_swarm`. For a workspace-scoped WRITE tool
+(`hive:create` / `hive:takedown` / `hive:report` / `hive:moderation_*`), pass
+`"workspace":"default"` in the args — or set `FED_MCP_WS=default` and `fed.sh`
+injects it for you (opt-in; off by default because blanket injection breaks READ
+tools whose schema rejects an unknown `workspace` key). The durable fix
+(superuser ctx resolving the concrete workspace) is tracked on **EI-3409**.
+</Aside>
+
 ## Quick reference
 
 | symptom | do |
 | --- | --- |
+| drive a live fed VM (stale `/tmp/fed.sh` ports) | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754) |
 | crashed/timed-out run left debris | `bin/reap-orphans.sh` (§1) |
 | one known run's `$WORK` to clean | `bin/cleanup-run.sh <WORK>` (§1) |
 | "API never came up" / wrong port | now self-heals (WI-754, §3); read the dumped diagnostic |

@@ -1232,6 +1232,244 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   );
 
   // ──────────────────────────────────────────────────────────────────────────
+  // WI-559 / FED-1 (fed-b→fed-a "discovers 0") — the OWNER-side apply.
+  //
+  // The WI-259 P-002 case above proves a JOINER (member harness; its hiveHomeSlug is set via the
+  // 2c rebind) applies a cross-member op. It did NOT cover the OTHER direction: the hive OWNER
+  // (whose RECEIVING harness IS the hive home) applying a MEMBER's content. Boot's
+  // `resolveHiveHomeProjectionSlug` only resolves the JOINER rebind (`joinerHiveHomeSlug` → null
+  // for an owner), so the owner's home harness ran the 6 content projections with
+  // hiveHomeSlug=undefined → `decideMemberContentOp` returned 'drop' (no-hiveHome) for EVERY
+  // cross-member op → fed-b→fed-a "discovers 0". The fix resolves the owner's OWN hive-home (the
+  // same way STEP-1 admit's `resolveSameHiveMember` already does: `hiveHomeProjectionSlug ??
+  // hiveHomeSlugForHarness`) and threads it as the content-guard fallback (the admit/apply
+  // asymmetry closed).
+  //
+  // This case is the FAITHFUL proof (the existing cases all hardcode `hiveHomeSlug` + stub
+  // `resolveAuthorDevice` through `applyOverride`, so none exercises boot's REAL resolution). The
+  // RECEIVER (the OWNER) boots with the REAL `bootHarnessSubstrate` scopedApply — NO
+  // `applyOverride`, NO stubbed `resolveAuthorDevice` — so boot's real
+  // `admittedIdentities → resolveAuthorDevice → resolveHiveMemberDeviceSet` chain AND the new
+  // owner-home resolution are on the path end-to-end. getOrgPg() is env-routed at the migrated
+  // org DB (harness_admin → RLS-bypass), so the owner's real projections write there.
+  // PRE-FIX this assertion FAILS (the op is dropped no-hiveHome); POST-FIX it lands.
+  // ──────────────────────────────────────────────────────────────────────────
+  it(
+    'WI-559/FED-1: the OWNER (hive-home) harness APPLIES a member’s cross-member feature via the REAL boot scopedApply — fed-b→fed-a no longer "discovers 0"',
+    async () => {
+      const HIVE_HOME = 'fed1-owner-home'; // the OWNER's harness slug IS the hive home
+      const MEMBER_SLUG = 'fed1-member'; // the author member's slug (≠ the home)
+
+      // ── Env-route getOrgPg() at a migrated org DB: the OWNER's REAL scopedApply writes here
+      //    (getOrgPg = harness_admin, RLS-bypass) AND boot's STEP-1 + guard reads resolve here. ──
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
+      const prevAppUrl = process.env.HARNESS_DATABASE_URL;
+      const prevWs = process.env.PAPERCUSP_WORKSPACE_ID;
+      const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      // pgbouncer default-on on a server-class host rewrites the getOrgPg URL → :6432 (native PG),
+      // bypassing this throwaway testcontainer DB — force the documented kill-switch OFF.
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+        else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
+        if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
+        else process.env.HARNESS_DATABASE_URL = prevAppUrl;
+        if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+        else process.env.PAPERCUSP_WORKSPACE_ID = prevWs;
+        if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+        else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+        if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+        else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
+      const idMember = makeIdentityOverride('member', 7, 'kc-member');
+
+      // ── Seed the hive + the MEMBER's membership in the org DB. getHiveBySlug(HIVE_HOME) truthy
+      //    ⇒ hiveHomeSlugForHarness(HIVE_HOME) === HIVE_HOME ⇒ the owner-home fallback engages. ──
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.hives
+          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-owner-home', 'Owner Home', null, 1, 1)
+      `;
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.hive_members
+          (workspace_id, hive_home_slug, github_user_id, github_username,
+           device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idMember.userId}, 'member',
+                ${JSON.stringify([
+                  {
+                    device_pubkey: idMember.devicePubkey,
+                    gist_id: 'gist-member',
+                    gist_url: 'https://gist.github.com/member',
+                    device_label: 'member-dev',
+                    created_at: 1,
+                    signature_by_device: 'sig',
+                  },
+                ])}::text::jsonb,
+                '{}'::text[], 'verified')
+      `;
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/owner-home', harness_kind: 'hive' },
+            { slug: MEMBER_SLUG, path: '/tmp/member', hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+
+      // Sanity: the owner-home resolution + member set resolve as the fix relies on.
+      const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
+      const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
+      expect(await hiveHomeSlugForHarness(WORKSPACE_ID, HIVE_HOME)).toBe(HIVE_HOME);
+      expect((await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME)).has(idMember.devicePubkey)).toBe(
+        true,
+      );
+      _clearHiveMemberDeviceSetCacheForTest();
+
+      // The MEMBER author's per-peer DB (its content origin) + its own member slug.
+      const dbMember: FreshPgDb = await createFreshPgDb('fed1member');
+      cleanups.push(() => dbMember.cleanup());
+      await setupPeerSchema(dbMember.sql, MEMBER_SLUG);
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const swarmOwner = makeSwarm(testnet.bootstrap);
+      const swarmMember = makeSwarm(testnet.bootstrap);
+      const rootOwner = makeWorkspaceRoot('fed1-owner-');
+      const rootMember = makeWorkspaceRoot('fed1-member-');
+
+      let handleOwner: BootedHarnessHandle | undefined;
+      let handleMember: BootedHarnessHandle | undefined;
+      let applyMember: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+
+      // ── Boot the OWNER: harnessSlug = the hive home; NO applyOverride → the REAL boot scopedApply
+      //    (getOrgPg → orgDb). This is what exercises the owner-home hiveHomeSlug fallback. ──
+      handleOwner = await bootHarnessSubstrate({
+        workspaceRoot: rootOwner,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: HIVE_HOME,
+        swarmBinding: BINDING,
+        swarmOverride: swarmOwner,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idMember.userId ? 'verified' : 'fail',
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idOwner.override,
+      });
+      cleanups.push(async () => {
+        await handleOwner?.close();
+        await closeHarnessStore({ workspaceRoot: rootOwner, harnessSlug: HIVE_HOME });
+      });
+
+      // ── Boot the MEMBER author: its own slug + per-peer apply (its content origin). ──
+      handleMember = await bootHarnessSubstrate({
+        workspaceRoot: rootMember,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: MEMBER_SLUG,
+        swarmBinding: BINDING,
+        swarmOverride: swarmMember,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idOwner.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyMember ??= buildPeerApply(dbMember.sql, handleMember!.ownLog.keyHex);
+          return applyMember(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idMember.override,
+      });
+      cleanups.push(async () => {
+        await handleMember?.close();
+        await closeHarnessStore({ workspaceRoot: rootMember, harnessSlug: MEMBER_SLUG });
+      });
+
+      expect(handleOwner.swarm).not.toBeNull();
+      expect(handleMember.swarm).not.toBeNull();
+      expect(handleOwner.swarm!.topicHex).toBe(handleMember.swarm!.topicHex);
+
+      // ── The MEMBER writes a feature under its own slug → real trigger → outbox → drain → log. ──
+      await dbMember.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${MEMBER_SLUG}, 'F-fed1', 'Member→owner feature', 'from member', 'todo', 0, 'local', 5001, 5001, 5001)
+      `;
+      expect(await countOutbox(dbMember.sql, 'harness_features_consolidated', 'F-fed1')).toBe(1);
+      const drained = await drainOutboxOnce(handleMember, dbMember.sql);
+      expect(drained, "the member's F-fed1 was not drained to its log").toBeGreaterThanOrEqual(1);
+
+      // ── Precondition: the OWNER ADMITS the member's log (STEP-1 by membership identity). ──
+      const ownerAdmittedMember =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleOwner!.mergeNow(), handleMember!.mergeNow()]);
+            return handleOwner!.admitted.has(handleMember!.ownLog.keyHex) ? true : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? false;
+      expect(
+        ownerAdmittedMember,
+        "the owner did NOT admit the member's log — STEP-1 membership admission did not fire " +
+          '(seeded hives/hive_members/registry must resolve under getOrgPg())',
+      ).toBe(true);
+
+      // ── THE PROOF: the member's cross-member feature LANDS in the owner's PG (getOrgPg/orgDb)
+      //    under the MEMBER's slug. PRE-FIX the owner's scopedApply ran hiveHomeSlug=undefined and
+      //    dropped it (no-hiveHome); POST-FIX the owner-home fallback engages the membership guard
+      //    (member device ∈ members) and applies it. ──
+      const landed = await pollUntil(
+        async () => {
+          await Promise.all([handleOwner!.mergeNow(), handleMember!.mergeNow()]);
+          return await readFeatureForSlug(orgDb.adminSql, MEMBER_SLUG, 'F-fed1');
+        },
+        { timeoutMs: 20_000, intervalMs: 250 },
+      );
+      expect(
+        landed,
+        "the member's feature never reached the OWNER's PG — WI-559/FED-1: the owner's home harness " +
+          'dropped the admitted cross-member op (owner-home hiveHomeSlug fallback not engaged)',
+      ).toBeTruthy();
+      expect(landed).toMatchObject({
+        feature_id: 'F-fed1',
+        title: 'Member→owner feature',
+        status: 'todo',
+        origin: 'remote',
+      });
+    },
+    60_000,
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
   // WI-259 P-004 — CONTENT-BEFORE-MEMBERSHIP defer / replay (the capstone).
   //
   // A member A's content op and A's `hive_members` row federate as SEPARATE ops, and the merge

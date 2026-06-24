@@ -1,7 +1,7 @@
 # Federation rig — restart / recovery runbook (wedged smokes, stale ports, leaked VMs)
 URL: /internal/docs/agent-insights/federation-rig-restart-runbook
 
-How to recover the two-instance federation rig when a run wedges or leaves debris: reap ONLY dead runs (reap-orphans.sh) or one run (cleanup-run.sh) — never a broad pkill/rm (EI-1739); clear stale Xvfb / testnet-DHT / orphaned sidecars; free or self-discover wedged ports (the WI-754 self-heal); reset/relaunch the linux-test-vm VMs (vmctl); and restart the scheduled live-federation-gate.
+How to recover the two-instance federation rig when a run wedges or leaves debris: reap ONLY dead runs (reap-orphans.sh) or one run (cleanup-run.sh) — never a broad pkill/rm (EI-1739); clear stale Xvfb / testnet-DHT / orphaned sidecars; free or self-discover wedged ports (the WI-754 self-heal); reset/relaunch the linux-test-vm VMs (vmctl); restart the scheduled live-federation-gate; and — when a peer is up but silently local-only (announces nothing, discovers nothing) — restore its MISSING gh auth, the most common dead-link cause after a VM reset (WI-757).
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -142,15 +142,102 @@ GATE_NO_FILE=1 SKIP_FROMREPO=1 bin/live-federation-gate.sh   # log-only, skip th
 It's a routine — check / re-arm it via `routines:list` / `routines:set` (it does
 **not** push the live `:3070`; it builds + boots isolated instances).
 
+## 6. Peer is up but silently local-only — missing gh auth (WI-757)
+
+The single most common reason the live link is dead after a `vmctl reset` /
+re-image (§4): the peer has **no GitHub auth**, so it never federates — yet it
+boots, serves its API, and looks healthy. The federation **announce binds the
+device identity to a GitHub user** (`local-announce-identity.ts`): with no `gh`
+token, `resolveLocalAnnounceIdentity` throws and `boot.ts`'s swarm-join catch
+treats it as **"stay local-only — don't federate."** The peer then **announces
+nothing and discovers nothing**, silently — there is no loud signal; the only
+tell is `reachablePeers: 0` on an explicit announce. (This masquerades as a deep
+substrate/admission/cursor bug — check auth FIRST.)
+
+Symptoms:
+
+* `GET /api/discovery/hives` on the peer returns `count: 0`.
+* `POST /api/discovery/set-hive {visibility:"public"}` and
+  `POST /api/harness/hives/from-repo` return
+  `announced:false, reachablePeers:0, error:"local-announce-identity: gh not authenticated"`.
+* Cross-machine: the peer's hives never appear on any other peer's directory.
+
+Check it FIRST:
+
+```sh
+ssh -i ~/.ssh/papercup-vm-linux -p <sshPort> tester@127.0.0.1 'gh auth status'
+# "You are not logged into any GitHub hosts" → this IS your dead link.
+```
+
+Restore (reversible; **no operator restart needed** — `hive-directory-boot`
+lazily re-wires the directory on the next browse/announce):
+
+```sh
+# from the HOST (gh-authed); pipe the token over ssh STDIN, never argv:
+printf '%s' "$(gh auth token)" | \
+  ssh -i ~/.ssh/papercup-vm-linux -p <sshPort> tester@127.0.0.1 'gh auth login --with-token'
+# then re-announce (or just browse) → announced:true, reachablePeers>0
+```
+
+Use the identity the peer historically announced as (its
+`harness_shared.shared_presence.github_user_id`) — for fed-a that is `papercupai`
+(279242982); fed-b uses a different account. An operator-process restart
+**preserves** `~/.config/gh`; only a full **VM re-image** wipes it — so prefer a
+process restart over a reset, and re-auth after any reset.
+
+A restart to force a swarm re-peer must be coordinated with whoever owns the live
+federation/self-heal work (FED-2) — don't restart a peer another agent is
+actively investigating. The durable fix (persist/restore auth across restart + a
+loud no-identity health signal) is tracked in WI-757.
+
+## 7. Driving the live fed VMs — `fed.sh` (port self-discovery, WI-754)
+
+`papercusp-desktop/scripts/linux-test-vm/fed.sh` is the **versioned** driver for
+the 2-machine fed-a / fed-b VMs — the reliable replacement for the ad-hoc
+`/tmp/fed.sh` that **hardcoded the VMs' dynamic operator/PG ports**. Those ports
+are picked fresh on every operator restart and old listeners linger, so a
+hardcoded (or even "latest `[serve]` log line") port goes stale and silently hits
+the wrong / a dead listener (EI-3409 / WI-559 burned \~30 min on exactly this). The
+versioned script **discovers the LIVE ports on each call**: it SSHes in (stable
+host-forward port), gathers candidate loopback ports, and picks the operator =
+the one answering `GET /api/desktop/preflight` with **2xx** and PG = the one that
+accepts a `harness_admin` psql — so it survives app/VM restarts with no edits.
+
+```sh
+cd papercusp-desktop/scripts/linux-test-vm
+./fed.sh a ports                       # show the discovered operator/PG ports
+./fed.sh a sql  "select count(*) from harness_features"
+./fed.sh a api  GET /api/discovery/hives
+./fed.sh a mcp  hive:report '{"hive":"…"}'
+./fed.sh a ssh  'gh auth status'       # raw ssh (used by §6's gh-auth restore)
+./fed.sh b rediscover                  # force a fresh probe (after a restart)
+```
+
+Ports are cached per-VM under `~/.papercusp/fed-rig-ports.<vm>` for
+`FED_PORT_TTL` (default 600s); `rediscover` (or deleting the cache) forces a fresh
+probe. SSH host-forward ports default to `2225` (a) / `2226` (b) — override with
+`FED_SSH_A` / `FED_SSH_B`.
+
+Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use
+`'default'`, so a hive created via `mcp` lands in the wrong workspace and the
+routes return `not_owner_swarm`. For a workspace-scoped WRITE tool
+(`hive:create` / `hive:takedown` / `hive:report` / `hive:moderation_*`), pass
+`"workspace":"default"` in the args — or set `FED_MCP_WS=default` and `fed.sh`
+injects it for you (opt-in; off by default because blanket injection breaks READ
+tools whose schema rejects an unknown `workspace` key). The durable fix
+(superuser ctx resolving the concrete workspace) is tracked on **EI-3409**.
+
 ## Quick reference
 
-| symptom                           | do                                                            |
-| --------------------------------- | ------------------------------------------------------------- |
-| crashed/timed-out run left debris | `bin/reap-orphans.sh` (§1)                                    |
-| one known run's `$WORK` to clean  | `bin/cleanup-run.sh <WORK>` (§1)                              |
-| "API never came up" / wrong port  | now self-heals (WI-754, §3); read the dumped diagnostic       |
-| stale `Xvfb` on a smoke display   | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                     |
-| wedged Linux VM                   | `./vmctl reset` / `down` / `up <name>` (§4)                   |
-| wedged Mac VM                     | QMP recovery, never pkill (§4)                                |
-| re-run the scheduled gate         | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5) |
-| **anything**                      | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)  |
+| symptom                                                                 | do                                                                      |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754) |
+| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                              |
+| one known run's `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                        |
+| "API never came up" / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                 |
+| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                               |
+| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                             |
+| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                          |
+| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)           |
+| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)             |
+| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)            |

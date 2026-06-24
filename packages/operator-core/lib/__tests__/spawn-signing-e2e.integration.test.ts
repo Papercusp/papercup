@@ -120,12 +120,18 @@ describe('spawn-signing e2e', () => {
     expect(r.text).toContain('invalid_signature');
   });
 
-  itLive('unsigned + claimed context → empty tool list (strict mode)', async () => {
+  itLive('unsigned + claimed context → loud auth-fail, NO tools (strict mode, WI-574)', async () => {
     const p = freshParams();
     const r = await mcp(p, LIST_TOOLS);
     expect(r.status).toBe(200);
-    const match = r.text.match(/"tools":\s*(\[[^\]]*\])/);
-    expect(match?.[1]).toBe('[]');
+    // WI-574 (loud auth-fail): an unsigned request that CLAIMS a spawn context now FAILS LOUDLY
+    // rather than silently advertising an empty tool list — "tools": [] is indistinguishable from
+    // a healthy zero-tool server, which masked broken/expired credentials. The session exposes NO
+    // tools, surfaced as an mcp_auth_failed JSON-RPC error (not an empty list).
+    expect(r.text).toContain('mcp_auth_failed');
+    expect(r.text).toContain('spawn_sig_missing_sig_required_mode');
+    // …and it must never leak an actual (populated) tool list.
+    expect(/"tools":\s*\[\s*\{/.test(r.text)).toBe(false);
   });
 
   itLive('bare /api/mcp (no claim) → full tool catalog', async () => {
