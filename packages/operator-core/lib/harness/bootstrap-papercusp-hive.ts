@@ -223,6 +223,11 @@ export function startBootstrapPapercuspHive(deps: BootstrapPapercuspHiveDeps = {
   return { progressId: BOOTSTRAP_PROGRESS_ID, done: bootstrapInFlight };
 }
 
+/** Test seam — clear the single-flight latch between cases. */
+export function __resetBootstrapInFlight(): void {
+  bootstrapInFlight = null;
+}
+
 /**
  * Ensure the `papercusp` dogfood hive exists, cloning the repo first when there's
  * no local checkout (packaged install). Idempotent + best-effort + non-fatal.

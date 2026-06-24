@@ -72,10 +72,12 @@ export async function decideMemberContentOp(
   // Own slug — apply (today's behavior; no membership work on the hot common path).
   if (rowHarnessSlug === opts.harnessSlug) return 'apply';
   // Cross-slug op on a NON-hive harness — there are no members to admit from → drop (not deferrable).
-  if (!opts.hiveHomeSlug) return 'drop';
+  if (!opts.hiveHomeSlug)
+    return traceMemberDecision('drop', 'no-hiveHome', rowHarnessSlug, opts, sourceLogDevicePubkey);
   // Cross-member op with no VERIFIED source-log identity — cannot confirm membership, and there is
   // no author identity to key a deferral on → drop (fail-closed).
-  if (!sourceLogDevicePubkey) return 'drop';
+  if (!sourceLogDevicePubkey)
+    return traceMemberDecision('drop', 'no-srcDevice', rowHarnessSlug, opts, sourceLogDevicePubkey);
   // Membership lives in `harness_shared.hive_members` — WORKSPACE-shared, NOT per-harness content.
   // Read it from the workspace source (getOrgPg, sql omitted), the SAME seam STEP 1 admission uses
   // (boot.ts onAnnounce → resolveHiveMemberDeviceSet with no sql). Do NOT pass `opts.sql`: that is the
@@ -85,7 +87,40 @@ export async function decideMemberContentOp(
   const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.hiveHomeSlug, undefined, deps);
   // Member NOW → apply. Author identified but not yet a member → DEFER (P-004): the member row may
   // simply not have federated to this peer yet (content-before-membership ordering).
-  return memberSet.has(sourceLogDevicePubkey) ? 'apply' : 'defer';
+  if (memberSet.has(sourceLogDevicePubkey)) return 'apply';
+  return traceMemberDecision(
+    'defer',
+    `not-in-member-set(size=${memberSet.size})`,
+    rowHarnessSlug,
+    opts,
+    sourceLogDevicePubkey,
+  );
+}
+
+/**
+ * WI-259 D-015 live-apply diagnostic. When a cross-member content op is NOT applied
+ * ('drop'/'defer'), log the exact branch + facts so a live witness can see WHY the
+ * federated apply silently materializes 0 rows on a peer (the keystone gap behind the
+ * 2-machine A→B = 0 rows). Env-gated by PAPERCUSP_A003_TRACE (the same flag boot.ts's
+ * `[A-003]` boot-resolution trace uses) — OFF by default, so zero hot-path / prod
+ * impact. Transparent pass-through: returns `decision` unchanged.
+ */
+function traceMemberDecision(
+  decision: MemberContentDecision,
+  reason: string,
+  rowHarnessSlug: string,
+  opts: MemberContentGuardOpts,
+  sourceLogDevicePubkey: string | null | undefined,
+): MemberContentDecision {
+  if (process.env.PAPERCUSP_A003_TRACE === '1') {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[A-003] member-guard ${decision} (${reason}): own=${opts.harnessSlug} row=${rowHarnessSlug} ` +
+        `hiveHome=${opts.hiveHomeSlug ?? '<none>'} ` +
+        `srcDev=${sourceLogDevicePubkey ? sourceLogDevicePubkey.slice(0, 10) : '<null>'}`,
+    );
+  }
+  return decision;
 }
 
 /**

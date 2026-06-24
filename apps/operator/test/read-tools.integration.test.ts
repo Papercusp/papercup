@@ -164,10 +164,15 @@ beforeAll(async () => {
 
   // ── Seed features: h1 has F-1 (todo) + F-2 (passed); h2 has F-9 (scope guard).
   const feat = async (slug: string, id: string, title: string, summary: string, status: string, tags: string[], order: number, seeAlso: string[]) => {
+    // item_kind='feature' is REQUIRED post-374: harness_features_consolidated is now
+    // a VIEW (`… WHERE item_kind <> ALL('bug','change','task')`) over the work_items
+    // base table. A seed that omits item_kind lands NULL in the base row, and
+    // `NULL <> ALL(…)` is NULL (not true) → the row is invisible through the view, so
+    // every features:get/search read returns empty. Features carry item_kind='feature'.
     await pg`
       INSERT INTO harness_shared.harness_features_consolidated
-        (workspace_id, harness_slug, feature_id, title, summary, status, tags, see_also, updated_ts)
-      VALUES (${WS}, ${slug}, ${id}, ${title}, ${summary}, ${status}, ${pg.json(tags)}, ${seeAlso}, ${order})`;
+        (workspace_id, harness_slug, feature_id, title, summary, status, tags, see_also, updated_ts, item_kind)
+      VALUES (${WS}, ${slug}, ${id}, ${title}, ${summary}, ${status}, ${pg.json(tags)}, ${seeAlso}, ${order}, 'feature')`;
   };
   await feat('h1', 'F-1', 'Auth login', 'auth and api login work', 'todo', ['auth', 'api'], 2, ['F-2']);
   await feat('h1', 'F-2', 'Auth tokens', 'more auth token handling', 'passed', ['auth'], 1, []);
@@ -365,14 +370,19 @@ describe('harness:get', () => {
 describe('harness:status', () => {
   it('returns project status + recent audit activity', async () => {
     const { r } = await call('harness:status', { slug: 'h1' });
-    const row = payload(r) as { slug: string; recentActivity: Array<{ subject: string }> };
+    // harness:status is bulk-standardized → the per-slug status is results[0]
+    // (same envelope as features:get above), not a flat top-level object.
+    const env = payload(r) as { results: Array<{ slug: string; recentActivity: Array<{ subject: string }> }> };
+    const row = env.results[0];
     expect(row.slug).toBe('h1');
     expect(row.recentActivity.length).toBeGreaterThan(0);
     expect(row.recentActivity[0].subject).toBe('h1');
   });
-  it('not-found → null + degraded', async () => {
+  it('not-found → that item fails (ok:false), batch ok stays true', async () => {
     const { r } = await call('harness:status', { slug: 'nope' });
-    expect((payload(r) as { data: null }).data).toBeNull();
+    const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean }> };
+    expect(env.ok).toBe(true);
+    expect(env.results[0].ok).toBe(false);
   });
 });
 

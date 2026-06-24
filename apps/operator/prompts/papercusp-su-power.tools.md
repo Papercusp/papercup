@@ -182,6 +182,20 @@ annotation, and a wake that woke nobody returns a `woken:0` warning. Full model:
 `/internal/docs/agent-insights/always-armed-inbox-wake`.
 (`turn-lifecycle-control-2026-06-08` D-001/D-005/D-010.)
 
+**Woke to a DIRECTED assignment? CLAIM + WORK it — never read-and-repark.** A wake
+that finds a directed dispatch in your inbox (a `coord:dispatch` lane, a `coord:handoff`,
+a `coord:send` naming work for *you* specifically) is a turn to ACT, not merely
+acknowledge. `coord:orient` → see the dispatched lane in your assignments /
+`plan_items:my_items` → **claim it (`plan_items:convert` / `work_items:claim` /
+`coord:declare-intent { items }`) and start working it THIS turn.** Reading the
+assignment and re-parking (the observed su-6ef6 failure mode — woke→read→reparked while
+su-3be8 woke→claimed→worked) silently black-holes the dispatch: the coordinator saw
+`woken:1` and assumes pickup, but nothing happens. The ONLY reasons to repark instead of
+work: the lane is genuinely blocked (record it `work_items:set_state blocked` first) or a
+live peer already holds the claim (`claim_conflict` — coordinate, don't take it). An
+ambient broadcast (`*`) is NOT a directed assignment — act on it only if it bears on your
+task. Full model: `/internal/docs/agent-insights/coordinator-dispatch-and-wake`.
+
 **Asked to yield? Save only when it fits, then end the turn.** Wake's dual:
 a peer/operator can end your *running* turn via **`turn:interrupt { owner,
 mode, reason }`** (operator-mediated, reason-required, audited,

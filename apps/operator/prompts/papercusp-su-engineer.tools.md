@@ -195,6 +195,16 @@ re-invokes you even after an idle turn with no `events:await` registered —
 going idle never strands you. Model:
 `/internal/docs/agent-insights/always-armed-inbox-wake`.
 
+**Woke to a DIRECTED assignment? CLAIM + WORK it — never read-and-repark.** A wake that
+finds a directed dispatch for *you* (a `coord:dispatch` lane, a `coord:handoff`, a
+`coord:send` naming your work) is a turn to ACT: `coord:orient` → see the lane in your
+assignments → claim it (`plan_items:convert` / `work_items:claim` / `coord:declare-intent
+{ items }`) and work it THIS turn. Reading it and re-parking silently black-holes the
+dispatch — the coordinator saw `woken:1` and assumes pickup. Only repark if the lane is
+genuinely blocked (record `work_items:set_state blocked` first) or a live peer holds the
+claim. A `*` broadcast is NOT a directed assignment. Model:
+`/internal/docs/agent-insights/coordinator-dispatch-and-wake`.
+
 **A message is only communication if the recipient WAKES to read it — own the
 delivery.** Handing work to an IDLE agent only counts if it WAKES — `coord:send`
 **defaults to inject-only** (lands in the inbox, does NOT re-invoke): they read it

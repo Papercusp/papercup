@@ -18,8 +18,10 @@ import { defineTool } from '@papercusp/agent-mcp';
 import {
   readWorkerChunkOutcomes,
   summarizeWorkerChunkOutcomes,
+  decideRampAdvance,
   type ChunkLoopOutcomeRecord,
   type OrchestratorPg,
+  type RampStep,
 } from '@papercusp/orchestrator';
 
 export default defineTool({
@@ -51,6 +53,10 @@ export default defineTool({
       .max(50)
       .optional()
       .describe('Include up to N most-recent raw records for inspection (default 0).'),
+    rampStep: z
+      .union([z.literal(0), z.literal(25), z.literal(50), z.literal(100)])
+      .optional()
+      .describe('Current ramp cohort % (0|25|50|100). When set, include the deterministic ramp-gate recommendation (advance/hold/rollback, P-021) for this step.'),
   }),
   async handler(args) {
     const windowHours = args.windowHours ?? 168;
@@ -78,6 +84,8 @@ export default defineTool({
 
     const metrics = summarizeWorkerChunkOutcomes(rows);
     const sampleLimit = args.sampleLimit ?? 0;
+    const rampRecommendation =
+      args.rampStep !== undefined ? decideRampAdvance(metrics, args.rampStep as RampStep) : undefined;
     return {
       content: [
         {
@@ -88,6 +96,7 @@ export default defineTool({
             harnessSlug: args.harnessSlug ?? null,
             totalRows: rows.length,
             metrics,
+            rampRecommendation,
             sample: sampleLimit > 0 ? rows.slice(0, sampleLimit) : undefined,
           }),
         },

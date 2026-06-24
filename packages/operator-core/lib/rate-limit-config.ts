@@ -16,10 +16,41 @@
  * in-process bus suffices; PG LISTEN/NOTIFY is the documented multi-process extension.
  */
 import { getChannel } from '@papercusp/sse';
-import { setGlobalConcurrencyCap, setGlobalConcurrencyFloor } from '@papercusp/papercusp-shared/agent';
+import {
+  setGlobalConcurrencyCap,
+  setGlobalConcurrencyFloor,
+  setProviderFloorOverride,
+  setAimdTuning,
+  AIMD_CLEAN_TURNS_PER_STEP,
+} from '@papercusp/papercusp-shared/agent';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { getResourceProfile } from './resource-profile';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
+
+/** P-021: a provider's runtime cold-start floor override (subscription buckets get no header headroom,
+    so this static floor is their only rpm gate). Absent fields keep the baked DEFAULT_FLOORS value. */
+export interface ProviderFloorConfig {
+  maxConcurrent?: number;
+  rpm?: number;
+}
+
+/** P-021: the AIMD response-curve tuning. */
+export interface AimdTuningConfig {
+  /** Additive-increase cadence: +1 effective concurrency per N consecutive clean turns. */
+  cleanTurnsPerStep?: number;
+  /** Multiplicative-decrease factor ∈ (0,1) applied to effective concurrency on a penalty (0.5 = halve). */
+  decreaseFactor?: number;
+}
+
+/** The providers the governor buckets by (mirrors TurnProvider in papercusp-shared). */
+export const GOVERNOR_PROVIDERS = ['anthropic', 'openai', 'unknown'] as const;
+export type GovernorProvider = (typeof GOVERNOR_PROVIDERS)[number];
+
+/** The baked AIMD defaults — applyCached restores these when no override is set, keeping the config declarative. */
+export const DEFAULT_AIMD_TUNING: Required<AimdTuningConfig> = {
+  cleanTurnsPerStep: AIMD_CLEAN_TURNS_PER_STEP,
+  decreaseFactor: 0.5,
+};
 
 export interface RateLimitConfig {
   /** Fleet-wide cap on concurrently-running agent spawns. The governor's global gate + the
@@ -28,6 +59,10 @@ export interface RateLimitConfig {
   maxSimultaneousAgents: number;
   /** AIMD floor (D-005): the effective concurrency never adapts below this. */
   concurrencyFloor: number;
+  /** P-021: per-provider cold-start FLOOR overrides ({maxConcurrent, rpm}). Absent ⇒ baked DEFAULT_FLOORS. */
+  providerFloors?: Partial<Record<GovernorProvider, ProviderFloorConfig>>;
+  /** P-021: AIMD response-curve tuning. Absent ⇒ baked DEFAULT_AIMD_TUNING. */
+  aimd?: AimdTuningConfig;
 }
 
 /** Absolute ceiling the route/UI allow a user to set (defense-in-depth above the orchestrator's
@@ -53,11 +88,54 @@ function clampInt(v: unknown, fallback: number, lo: number, hi: number): number 
   return Math.max(lo, Math.min(hi, n));
 }
 
+/** Optional positive int within [lo,hi], or undefined when absent/invalid (an OPTIONAL override field). */
+function optInt(v: unknown, lo: number, hi: number): number | undefined {
+  const n = typeof v === 'number' ? Math.floor(v) : Number.NaN;
+  if (!Number.isFinite(n) || n < lo || n > hi) return undefined;
+  return n;
+}
+
+/** Clamp the per-provider floor overrides, dropping invalid fields + empty entries (P-021). */
+function clampProviderFloors(
+  input: Partial<RateLimitConfig>['providerFloors'],
+): RateLimitConfig['providerFloors'] {
+  if (!input || typeof input !== 'object') return undefined;
+  const out: Partial<Record<GovernorProvider, ProviderFloorConfig>> = {};
+  for (const provider of GOVERNOR_PROVIDERS) {
+    const raw = input[provider];
+    if (!raw || typeof raw !== 'object') continue;
+    const entry: ProviderFloorConfig = {};
+    const mc = optInt(raw.maxConcurrent, 1, 256);
+    const rpm = optInt(raw.rpm, 1, 100_000);
+    if (mc !== undefined) entry.maxConcurrent = mc;
+    if (rpm !== undefined) entry.rpm = rpm;
+    if (Object.keys(entry).length) out[provider] = entry;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Clamp the AIMD curve tuning, dropping invalid fields (P-021). decreaseFactor ∈ (0,1). */
+function clampAimd(input: AimdTuningConfig | undefined): AimdTuningConfig | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const out: AimdTuningConfig = {};
+  const cps = optInt(input.cleanTurnsPerStep, 1, 1000);
+  if (cps !== undefined) out.cleanTurnsPerStep = cps;
+  if (typeof input.decreaseFactor === 'number' && input.decreaseFactor > 0 && input.decreaseFactor < 1) {
+    out.decreaseFactor = input.decreaseFactor;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Coerce arbitrary input into a valid config (the route validates; this is the safety floor). */
 export function clampRateLimitConfig(input: Partial<RateLimitConfig> | null | undefined): RateLimitConfig {
   const max = clampInt(input?.maxSimultaneousAgents, DEFAULT_RATE_LIMIT_CONFIG.maxSimultaneousAgents, 1, RATE_LIMIT_MAX_CEILING);
   const floor = clampInt(input?.concurrencyFloor, DEFAULT_RATE_LIMIT_CONFIG.concurrencyFloor, 1, max);
-  return { maxSimultaneousAgents: max, concurrencyFloor: floor };
+  const cfg: RateLimitConfig = { maxSimultaneousAgents: max, concurrencyFloor: floor };
+  const providerFloors = clampProviderFloors(input?.providerFloors);
+  if (providerFloors) cfg.providerFloors = providerFloors;
+  const aimd = clampAimd(input?.aimd);
+  if (aimd) cfg.aimd = aimd;
+  return cfg;
 }
 
 const CHANNEL = 'rate-limit-config-changes';
@@ -82,6 +160,16 @@ function applyCached(cfg: RateLimitConfig): void {
   // next acquire (D-004/D-005).
   setGlobalConcurrencyCap(cfg.maxSimultaneousAgents);
   setGlobalConcurrencyFloor(cfg.concurrencyFloor);
+  // P-021: push the per-provider floor overrides + AIMD curve. DECLARATIVE — a provider absent from
+  // the config clears its override (setProviderFloorOverride is unchanged-guarded so a benign re-apply
+  // never re-seats a header-learned bucket), and an absent aimd block restores the baked defaults.
+  for (const provider of GOVERNOR_PROVIDERS) {
+    setProviderFloorOverride(provider, cfg.providerFloors?.[provider]);
+  }
+  setAimdTuning({
+    cleanTurnsPerStep: cfg.aimd?.cleanTurnsPerStep ?? DEFAULT_AIMD_TUNING.cleanTurnsPerStep,
+    decreaseFactor: cfg.aimd?.decreaseFactor ?? DEFAULT_AIMD_TUNING.decreaseFactor,
+  });
 }
 
 /** Load from PG, install into the governor, and subscribe to live changes. Idempotent; call once
@@ -132,6 +220,15 @@ registerOverrideConcern({
     for (const k of ['maxSimultaneousAgents', 'concurrencyFloor'] as const) {
       if (cfg[k] !== def[k]) entries.push({ key: k, effective: cfg[k], default: def[k], layer: 'pg-settings' });
     }
+    // P-021: surface the per-provider floor + AIMD-curve overrides when set (default = baked governor floors).
+    if (cfg.providerFloors) {
+      for (const provider of GOVERNOR_PROVIDERS) {
+        if (cfg.providerFloors[provider]) {
+          entries.push({ key: `providerFloors.${provider}`, effective: cfg.providerFloors[provider], default: 'DEFAULT_FLOORS baked', layer: 'pg-settings' });
+        }
+      }
+    }
+    if (cfg.aimd) entries.push({ key: 'aimd', effective: cfg.aimd, default: DEFAULT_AIMD_TUNING, layer: 'pg-settings' });
     return entries;
   },
   capture: () => readRateLimitConfig(),
@@ -145,4 +242,7 @@ export function __resetRateLimitConfigForTest(): void {
   booted = false;
   setGlobalConcurrencyCap(undefined);
   setGlobalConcurrencyFloor(undefined);
+  // P-021: also clear the per-provider floor overrides + restore the baked AIMD curve.
+  for (const provider of GOVERNOR_PROVIDERS) setProviderFloorOverride(provider, undefined);
+  setAimdTuning(DEFAULT_AIMD_TUNING);
 }

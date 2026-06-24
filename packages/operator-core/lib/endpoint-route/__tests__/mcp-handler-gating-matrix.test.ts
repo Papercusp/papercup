@@ -534,6 +534,30 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('hive_forbidden');
   });
 
+  // P-016/P-014b: the search + memory surfaces scope by `harness_slug` (not the
+  // `harness` arg the P-014a check keys on). memory:* are scoped-safe crossWorkspace
+  // → they REACH this clamp; reject a `harness_slug` targeting a sibling hive.
+  it('flag ON: rejects a `harness_slug` outside the hive subtree (search/memory key)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness_slug: 'hiveB-home' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: rejects memory:search targeting a SIBLING hive via harness_slug', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('memory:search', { query: 'x', harness_slug: 'hiveB-home' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: ALLOWS a `harness_slug` within the hive subtree', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness_slug: 'hiveA-member' }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(seen.at(-1)?.tool).toBe('gatingtest:scoped');
+  });
+
   it('flag OFF: a hive-harness session may pass a foreign `hive` arg (unchanged)', async () => {
     h.scopedClampFlag.value = false;
     const res = await callTool('gatingtest:scoped', { hive: 'hiveB-home' }, hiveScoped());

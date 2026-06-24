@@ -7,9 +7,17 @@
  * real partial unique index.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+
+// Pin the ambient active workspace to DEFAULT_COORD_WORKSPACE ('default'), the
+// scope this hermetic test wires everywhere (stores + reads use WS='default').
+// COORD_PER_WORKSPACE graduated default-ON, so coordScopeWorkspace() (used by
+// insertFanoutNotify's INSERT) returns activeWorkspaceId() instead of 'default' —
+// the notify would land under a different workspace than the test reads, so every
+// notifyRowsFor() comes back empty. Pinning activeWorkspaceId()='default' keeps the
+// deliver/read on the same scope (same module log.ts imports → mocked here).
 import {
   ensureCoordCapabilityTables,
   PgEntitySubscriptionStore,
@@ -21,6 +29,11 @@ import {
 } from '@papercusp/coordination/capabilities';
 import { insertFanoutNotify, runFanoutForOutboxRow, type OutboxFanoutRow } from './fanout-projection';
 import type { InjectEvent } from '../../agent-tools/coordination/fanout-delivery';
+
+vi.mock('../../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, activeWorkspaceId: () => 'default' };
+});
 
 const WS = 'default'; // fanout-projection writes under DEFAULT_COORD_WORKSPACE
 

@@ -13,9 +13,27 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
   RATE_LIMIT_MAX_CEILING,
+  GOVERNOR_PROVIDERS,
   readRateLimitConfig,
   writeRateLimitConfig,
 } from '../../rate-limit-config';
+
+const floorSchema = z
+  .object({
+    maxConcurrent: z.number().int().min(1).max(256).optional(),
+    rpm: z.number().int().min(1).max(100_000).optional(),
+  })
+  .strict();
+// per-provider floor overrides, keyed by the governor providers (anthropic/openai/unknown).
+const providerFloorsSchema = z
+  .object(Object.fromEntries(GOVERNOR_PROVIDERS.map((p) => [p, floorSchema.optional()])))
+  .strict();
+const aimdSchema = z
+  .object({
+    cleanTurnsPerStep: z.number().int().min(1).max(1000).optional(),
+    decreaseFactor: z.number().gt(0).lt(1).optional(),
+  })
+  .strict();
 
 export default defineTool({
   name: 'operator:rate_limit_config',

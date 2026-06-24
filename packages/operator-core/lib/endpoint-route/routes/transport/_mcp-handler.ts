@@ -1162,6 +1162,31 @@ const handler = createMcpHandler(
                   };
                 }
               }
+              // P-016/P-014b: the harness check above keys on `harness`, but the
+              // search + memory surfaces (search:fulltext/semantic, memory:search/
+              // list/remember) scope by `harness_slug` — a hive-scoped session could
+              // otherwise target a SIBLING-hive harness's prose/recall through that
+              // arg. Reject a `harness_slug` that resolves outside the hive subtree
+              // (same escapes rule as `harness`).
+              const argHarnessSlug =
+                args && typeof args === 'object' && typeof (args as Record<string, unknown>).harness_slug === 'string'
+                  ? ((args as Record<string, unknown>).harness_slug as string).trim()
+                  : '';
+              if (argHarnessSlug) {
+                const escapes =
+                  argHarnessSlug === 'all' ||
+                  argHarnessSlug === '*' ||
+                  (await hiveHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarnessSlug)) !== scopeHive;
+                if (escapes) {
+                  return {
+                    isError: true,
+                    content: [{
+                      type: 'text' as const,
+                      text: `harness_forbidden: harness_slug "${argHarnessSlug}" is outside this session's hive "${scopeHive}".`,
+                    }],
+                  };
+                }
+              }
               // P-016/P-014b: confine the workspace-GLOBAL read surfaces (coord/
               // fleet/presence) per-hive. The harness-arg + cross_harness checks
               // above cover the harness-keyed reads; this closes the surfaces that

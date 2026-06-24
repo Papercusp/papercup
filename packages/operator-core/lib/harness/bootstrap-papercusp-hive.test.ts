@@ -1,9 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   bootstrapPapercuspHive,
+  startBootstrapPapercuspHive,
+  __resetBootstrapInFlight,
   PAPERCUP_DOGFOOD_REPO_URL,
   type BootstrapPapercuspHiveDeps,
 } from './bootstrap-papercusp-hive';
+
+beforeEach(() => __resetBootstrapInFlight());
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 
@@ -79,7 +83,9 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     });
     const res = await bootstrapPapercuspHive(deps);
     expect(res.state).toBe('cloned-and-created');
-    const arg = deps.ensureHive.mock.calls[0][0] as { pathOverride?: string };
+    const arg = (deps.ensureHive as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as {
+      pathOverride?: string;
+    };
     expect(arg.pathOverride).toMatch(/\/clones\/papercusp$/);
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
   });
@@ -170,5 +176,36 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     } finally {
       if (prev !== undefined) process.env.PAPERCUP_DOGFOOD_REPO_REF = prev;
     }
+  });
+});
+
+describe('startBootstrapPapercuspHive (single-flight)', () => {
+  it('shares ONE run + the SAME progressId across concurrent triggers', async () => {
+    let cloneCount = 0;
+    const deps = spyDeps({
+      clone: vi.fn(async () => {
+        cloneCount += 1;
+        return { path: '/clones/papercusp', parsed: { owner: 'Papercusp', repo: 'papercup', cloneUrl: 'x' } };
+      }),
+      initSubmodules: vi.fn(),
+    });
+    const a = startBootstrapPapercuspHive(deps);
+    const b = startBootstrapPapercuspHive(deps);
+    expect(a.progressId).toBe(b.progressId);
+    expect(a.done).toBe(b.done); // same promise — not two clones
+    await a.done;
+    expect(cloneCount).toBe(1);
+  });
+
+  it('releases the latch on a skipped result so a later trigger retries', async () => {
+    const failing = spyDeps({ clone: vi.fn(async () => ({ code: 'auth_required' as const, message: 'x' })) });
+    const first = await startBootstrapPapercuspHive(failing).done;
+    expect(first.state).toBe('skipped'); // gh not signed in yet
+
+    // After gh auth, a second trigger actually clones (latch was released).
+    const ok = spyDeps({ initSubmodules: vi.fn() });
+    const second = await startBootstrapPapercuspHive(ok).done;
+    expect(second.state).toBe('cloned-and-created');
+    expect(ok.clone).toHaveBeenCalledTimes(1);
   });
 });

@@ -146,6 +146,16 @@ export interface RigResult {
   gatewayUpstream429: number;
   /** Per-account upstream bare-burst 429s — rotation/clustering signal (P-004). */
   perAccount429: Record<string, number>;
+  /** Cross-account failovers (rotations) the storm provoked — the fan-out denominator (P-004). */
+  failovers: number;
+  /** G1 (WI-649) bare-429 rotate-retries SUPPRESSED because ≥half the pool was out of rotation — the
+   *  damping that stops a fleet-wide bare-burst from multiplying upstream load (P-004). */
+  bareBurstRotateSuppressed: number;
+  /** 429s shed at admission because the WHOLE pool was throttled (fail-fast, frees the slot). */
+  shedAllThrottled: number;
+  /** Fan-out ratio = upstream calls per LOGICAL request (upstream429+ok)/n ≈ how much one bee request
+   *  multiplied into upstream load via rotation-retry. >1 ⇒ amplification. */
+  upstreamCallsPerRequest: number;
   wallMs: number;
 }
 
@@ -205,18 +215,24 @@ export async function runGatewayBurstRig(opts: RigOptions = {}): Promise<RigResu
   const t0 = Date.now();
   const results = await Promise.all(Array.from({ length: n }, (_, i) => fire(i)));
   const wallMs = Date.now() - t0;
-  const gatewayUpstream429 = gw.stats().upstream429;
+  const stats = gw.stats();
   await gw.close();
 
+  const ok = results.filter((r) => r.status === 200).length;
+  const totalUpstreamCalls = upstream.total();
   return {
     n,
-    ok: results.filter((r) => r.status === 200).length,
+    ok,
     beeFacing429: results.filter((r) => r.status === 429).length,
     beeFacing503: results.filter((r) => r.status === 503).length,
     otherFail: results.filter((r) => r.status !== 200 && r.status !== 429 && r.status !== 503).length,
     upstream429: upstream.upstream429(),
-    gatewayUpstream429,
+    gatewayUpstream429: stats.upstream429,
     perAccount429: upstream.perAccount429(),
+    failovers: stats.failovers,
+    bareBurstRotateSuppressed: stats.bareBurstRotateSuppressed,
+    shedAllThrottled: stats.shedAllThrottled,
+    upstreamCallsPerRequest: Math.round((totalUpstreamCalls / n) * 100) / 100,
     wallMs,
   };
 }
