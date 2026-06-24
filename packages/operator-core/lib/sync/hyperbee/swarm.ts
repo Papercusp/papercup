@@ -719,12 +719,33 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
     }
   ).default;
   const guard = getSwarmGuard();
+  const opts = swarmConstructorOpts();
+  // B-FED-DHT observability (2026-06-24, su-34db4): make the effective DHT visible at
+  // construction. Without this, "did this process join the ISOLATED testnet or the PUBLIC
+  // DHT?" required tcpdump archaeology — and the silent-fallback failure mode (env set but
+  // resolved bootstrap empty → hyperdht's `opts.bootstrap || BOOTSTRAP_NODES` quietly uses
+  // the public DHT → isolated 2-machine federation breaks via public-DHT NAT hairpin) was
+  // invisible. Loud-warn that exact case so it never has to be re-diagnosed by packet capture.
+  const envBootstrap = process.env.PAPERCUSP_DHT_BOOTSTRAP?.trim();
+  if (opts.bootstrap?.length) {
+    console.warn(
+      `[swarm] DHT bootstrap = ISOLATED ${opts.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')}`,
+    );
+  } else if (envBootstrap) {
+    console.warn(
+      `[swarm] ⚠ PAPERCUSP_DHT_BOOTSTRAP is set ("${envBootstrap}") but resolved to NO bootstrap — ` +
+        `this swarm will join the PUBLIC DHT, so isolated 2-machine federation is BROKEN ` +
+        `(public-DHT NAT hairpin). Check parseDhtBootstrap + that the var reaches THIS process before first swarm use.`,
+    );
+  } else {
+    console.warn('[swarm] DHT bootstrap = PUBLIC DHT (no PAPERCUSP_DHT_BOOTSTRAP set)');
+  }
   // P-003: the firewall runs BEFORE the Noise handshake completes — it cheaply
   // rejects banned keys without spending handshake CPU. Hyperswarm only hands
   // the firewall the remote public key, so IP-level bans are enforced in the
   // connection handler instead.
   _sharedSwarm = new Swarm({
-    ...swarmConstructorOpts(),
+    ...opts,
     firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
   });
   return _sharedSwarm;
