@@ -40,22 +40,45 @@ const ADV_PHASE = 'staging';
  * pre-computed per-card props from loadHarnessInsights — so this is a thin
  * fetch wrapper.
  */
+// Stale-while-revalidate cache for the per-harness insights payload, pinned to
+// globalThis (perf rule A18) so it survives the panel's mount/unmount churn —
+// the /adv body re-mounts the active panel on every tab switch (D-002). Without
+// it, each Insights visit blanked to "Loading…" and refetched the ~2.3s no-store
+// endpoint, so every warm tab-switch cost ~2.4s (app-impersonation-e2e round6
+// D-002/P-021). Now a revisit renders the cached cards instantly and refreshes
+// in the background. (Proper follow-up: migrate to useSyncQuery once an insights
+// sync resolver exists; this is the contained, server-change-free fix.)
+const ADV_INSIGHTS_CACHE_KEY = '__advInsightsCache';
+type AdvInsightsCache = Map<string, InsightsTabProps>;
+const advInsightsCache: AdvInsightsCache =
+  ((globalThis as Record<string, unknown>)[ADV_INSIGHTS_CACHE_KEY] as AdvInsightsCache | undefined) ??
+  ((globalThis as Record<string, unknown>)[ADV_INSIGHTS_CACHE_KEY] = new Map() as AdvInsightsCache);
+
 function AdvInsightsTab({ slug }: { slug: string }) {
-  const [insights, setInsights] = useState<InsightsTabProps | null>(null);
+  const [insights, setInsights] = useState<InsightsTabProps | null>(() => advInsightsCache.get(slug) ?? null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancel = false;
-    setInsights(null);
+    // Stale-while-revalidate: render cached cards immediately; only blank to the
+    // "Loading…" state for a slug we have never fetched. Always refetch to refresh.
+    const cached = advInsightsCache.get(slug) ?? null;
+    setInsights(cached);
     setError(null);
     fetch(`/api/harness/${encodeURIComponent(slug)}/insights`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((body: { insights?: InsightsTabProps }) => {
         if (cancel) return;
-        if (body?.insights) setInsights(body.insights);
-        else setError('insights payload missing');
+        if (body?.insights) {
+          advInsightsCache.set(slug, body.insights);
+          setInsights(body.insights);
+        } else if (!cached) {
+          setError('insights payload missing');
+        }
       })
       .catch((e: unknown) => {
-        if (!cancel) setError(e instanceof Error ? e.message : String(e));
+        // Keep showing stale cards if we have them; only surface the error on a
+        // cold visit with nothing cached.
+        if (!cancel && !cached) setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancel = true;
