@@ -8,11 +8,12 @@ import { InlinePtyTerminal } from './InlinePtyTerminal';
 import { startDogfoodBootstrap } from '../useDogfoodBootstrapProgress';
 
 /**
- * GitHub sign-in (`gh auth login`) is fully wired, but gated off while
- * Papercusp is in alpha. Keep the button + pty flow in the code; flip
- * this to `false` to re-enable when GitHub integration ships.
+ * GitHub sign-in (`gh auth login`) — fully wired (pty flow + bundled-gh
+ * resolution in preflight + setup-pty-commands). ENABLED: the dogfood
+ * clone-on-first-boot needs a GitHub sign-in to clone the private repo,
+ * so the wizard must offer it. (Was alpha-gated off; re-enabled.)
  */
-const GITHUB_AUTH_ALPHA_DISABLED: boolean = true;
+const GITHUB_AUTH_ALPHA_DISABLED: boolean = false;
 
 interface GitIdentity {
   name?: string;

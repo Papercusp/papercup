@@ -48,6 +48,12 @@ export const BOOTSTRAP_PROGRESS_ID = 'bootstrap-papercusp-hive';
 export type BootstrapProgressStep = 'clone' | 'submodules';
 export type BootstrapProgressStatus = 'running' | 'done' | 'error' | 'skipped';
 
+/** Detail recorded on the `clone` step (kept at 0% `running`, NOT `error`) when
+ *  the clone can't start yet because GitHub isn't signed in — so the banner stays
+ *  visible at 0% and prompts the user instead of flashing a failure. The wizard's
+ *  GitHub step re-triggers the bootstrap once signed in. The UI matches on this. */
+export const AWAITING_GH_SIGNIN_DETAIL = 'Sign in to GitHub to begin the download';
+
 /** Pin ref (branch OR tag) baked into a release build so the dogfood hive
  *  matches the desktop binary exactly. Unset (dev builds) ⇒ the remote default
  *  branch (main). See bin/release-local.sh (stage 3). */
@@ -295,6 +301,12 @@ export async function bootstrapPapercuspHive(
         root = join(defaultClonesDir(), PAPERCUSP_HIVE_SLUG);
         cloned = true;
         record('clone', 'done', { detail: 'adopted existing clone' });
+      } else if (res.code === 'auth_required') {
+        // Not a failure — GitHub just isn't signed in yet. Keep the clone step at
+        // 0% `running` with the sign-in prompt (banner stays visible, no error),
+        // and skip; the wizard's GitHub step re-triggers the bootstrap after sign-in.
+        record('clone', 'running', { percent: 0, detail: AWAITING_GH_SIGNIN_DETAIL });
+        return { state: 'skipped', slug: null, reason: 'clone auth_required: awaiting GitHub sign-in' };
       } else {
         record('clone', 'error', { detail: res.code });
         return { state: 'skipped', slug: null, reason: `clone ${res.code}: ${res.message}`.slice(0, 200) };

@@ -131,3 +131,22 @@ export function noteMemoryFailure(err: unknown): void {
     }
   }
 }
+
+/**
+ * Map an embedder failure to a CLEAN, actionable degraded reason for the memory tools —
+ * or null if it isn't an embed failure (let those propagate to handler_error).
+ *
+ * mem0-timeout-fix-2026-06-24: a budget-exhausted embed (org-wide TPM 429 / 5xx /
+ * connection stall) now FAILS FAST — the embedder budget (`EMBED_TOTAL_BUDGET_MS`,
+ * configure.ts) is coupled UNDER this module's tool deadline. Surfacing the failure as a
+ * recognized `reason` (rather than an opaque `handler_error`) lets the agent narrate
+ * ACCURATELY ("memory embeddings are rate-limited") instead of the misleading "mem0 timed
+ * out (backend slow), retrying…" that the old 10s-hang `memory_timeout` produced. Matches
+ * the `openai_embed_failed_<status>` message thrown by `buildOpenAiEmbedder`.
+ */
+export function embedFailureReason(err: unknown): string | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/openai_embed_failed_429/.test(msg)) return 'embed_rate_limited';
+  if (/openai_embed_failed/.test(msg)) return 'embed_unavailable';
+  return null;
+}

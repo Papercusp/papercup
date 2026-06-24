@@ -53,6 +53,27 @@ async function checkBinary(bin: string, args: string[] = ['--version']): Promise
           }
         }
       }
+      // gh ships bundled in the desktop sidecar (build-desktop-sidecar.sh →
+      // sidecar/bin/gh), but a GUI launch's operator process rarely has it on
+      // PATH — so the Setup Wizard's "Sign in to GitHub" button would read as
+      // "not installed". Probe the bundled location + common installs.
+      if (bin === 'gh') {
+        const candidates = [
+          `${process.cwd()}/bin/gh`,
+          `${process.cwd()}/../bin/gh`,
+          '/usr/local/bin/gh',
+          '/opt/homebrew/bin/gh',
+        ];
+        for (const path of candidates) {
+          if (existsSync(path)) {
+            try {
+              const probe = await exec(path, args, { timeout: 5000 });
+              const out = (probe.stdout || probe.stderr).trim().split(/\r?\n/)[0] ?? '';
+              return { name: bin, status: 'ok', detail: `${out} (bundled)` };
+            } catch {/* fall through */}
+          }
+        }
+      }
       return { name: bin, status: 'missing', detail: `${bin} not on PATH` };
     }
     return { name: bin, status: 'error', detail: String(err?.message ?? err) };

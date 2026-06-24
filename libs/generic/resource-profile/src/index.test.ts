@@ -139,6 +139,34 @@ describe('deriveResourceProfile — server (128 cores, native PG)', () => {
   });
 });
 
+describe('clusterable — EI-3377: a server clusters regardless of the embeddedPg signal', () => {
+  // The papercusp detectEmbeddedPg() misfires to true on any host with an explicit
+  // DATABASE_URL (EI-2403), so a native-PG SERVER read embeddedPg=true and collapsed
+  // httpWorkers to 1. clusterable now gates on hostClass alone, so the cluster
+  // recommendation is identical whether embeddedPg is true or false at the same host
+  // size — the connection ceiling (maxClusterWorkersForConnBudget) is what bounds it.
+  const native = deriveResourceProfile(
+    signals({ cores: 128, embeddedPg: false, totalMemBytes: 512 * GIB, freeMemBytes: 512 * GIB }),
+  );
+  const misfired = deriveResourceProfile(
+    signals({ cores: 128, embeddedPg: true, totalMemBytes: 512 * GIB, freeMemBytes: 512 * GIB }),
+  );
+
+  it('still recommends clustering when embeddedPg=true (was wrongly 1 pre-fix)', () => {
+    expect(misfired.httpWorkers).toBeGreaterThan(1);
+    expect(misfired.processCount).toBe(misfired.httpWorkers + 1);
+  });
+
+  it('recommends the SAME worker count regardless of embeddedPg', () => {
+    expect(misfired.httpWorkers).toBe(native.httpWorkers);
+  });
+
+  it('a desktop (laptop/workstation) still never clusters, embeddedPg or not', () => {
+    expect(deriveResourceProfile(signals({ cores: 4, embeddedPg: true })).httpWorkers).toBe(1);
+    expect(deriveResourceProfile(signals({ cores: 16, embeddedPg: true })).httpWorkers).toBe(1);
+  });
+});
+
 describe('backgroundInProcess — split only on a server with dedicated PG', () => {
   it('keeps background in-process on a laptop (native or embedded PG)', () => {
     expect(deriveResourceProfile(signals({ cores: 4, embeddedPg: false })).backgroundInProcess).toBe(true);

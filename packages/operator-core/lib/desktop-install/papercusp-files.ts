@@ -445,6 +445,46 @@ async function firstExisting(candidates: string[]): Promise<string | null> {
   return null;
 }
 
+/**
+ * psu execs the chosen agent CLI BY NAME, expecting it on PATH — but a GUI
+ * app's operator child rarely inherits the user's login PATH, so a `claude` /
+ * `codex` installed under `~/.local/bin` (etc.) is invisible and `psu → claude`
+ * exits immediately ("can't launch the agent"). `~/.papercusp/bin` IS on psu's
+ * PATH (ensureBinOnPath), so symlink any agent CLI we find there. Best-effort +
+ * idempotent. (`omp`/`gh` ship bundled in the sidecar; a CLI absent everywhere
+ * is the WI-681 install gap, surfaced separately — not something we can link.)
+ */
+async function ensureAgentClisLinked(home: string, binDir: string): Promise<string[]> {
+  const linked: string[] = [];
+  const searchDirs = [
+    path.join(home, '.local', 'bin'),
+    '/usr/local/bin',
+    '/opt/homebrew/bin',
+    path.join(home, '.cargo', 'bin'),
+  ];
+  for (const agent of ['claude', 'codex']) {
+    const dest = path.join(binDir, agent);
+    try {
+      await fs.access(dest);
+      continue; // already linked/present
+    } catch {
+      /* not there yet — try to link it */
+    }
+    for (const dir of searchDirs) {
+      const src = path.join(dir, agent);
+      try {
+        await fs.access(src);
+        await fs.symlink(src, dest);
+        linked.push(agent);
+        break;
+      } catch {
+        /* not in this dir / link failed — try next */
+      }
+    }
+  }
+  return linked;
+}
+
 export function resolveInstallPaths(home: string): InstallPaths {
   const papercuspDir = path.join(home, '.papercusp');
   const binDir = path.join(papercuspDir, 'bin');
@@ -507,6 +547,11 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // Terminal does not). Only when a shim actually landed.
   const pathProfilesUpdated =
     psuShimWritten || ptoolShimWritten ? await ensureBinOnPath(home, paths.binDir) : [];
+
+  // Link any user-installed agent CLIs (claude/codex) into the psu bin dir so
+  // `psu → <agent>` launches out of the box — without this, a fresh install
+  // where claude lives in ~/.local/bin makes psu exit immediately (can't exec it).
+  await ensureAgentClisLinked(home, paths.binDir);
 
   return {
     ...paths,

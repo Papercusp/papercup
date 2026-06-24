@@ -133,16 +133,35 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(deps.initSubmodules).not.toHaveBeenCalled();
   });
 
-  it('records clone:error and skips the submodule phase on a clone failure', async () => {
+  it('records clone:error and skips the submodule phase on a real clone failure', async () => {
     const events: string[] = [];
     const deps = spyDeps({
-      clone: vi.fn(async () => ({ code: 'auth_required' as const, message: 'nope' })),
+      clone: vi.fn(async () => ({ code: 'not_found' as const, message: 'nope' })),
       recordProgress: vi.fn((step, status) => events.push(`${step}:${status}`)),
     });
     const res = await bootstrapPapercuspHive(deps);
     expect(res.state).toBe('skipped');
     expect(events).toContain('clone:error');
     expect(events).not.toContain('submodules:running');
+  });
+
+  it('parks clone at 0% running (NOT error) with the sign-in prompt on auth_required', async () => {
+    const rows: Array<{ step: string; status: string; extra?: { percent?: number; detail?: string } }> = [];
+    const deps = spyDeps({
+      clone: vi.fn(async () => ({ code: 'auth_required' as const, message: 'Authentication failed' })),
+      recordProgress: vi.fn((step, status, extra) => rows.push({ step, status, extra })),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('skipped');
+    expect(res.reason).toMatch(/auth_required/);
+    // NOT an error — a 0% running clone row carrying the sign-in prompt.
+    expect(rows.some((r) => r.step === 'clone' && r.status === 'error')).toBe(false);
+    const pending = rows.find(
+      (r) => r.step === 'clone' && r.status === 'running' && /sign in to github/i.test(r.extra?.detail ?? ''),
+    );
+    expect(pending).toBeDefined();
+    expect(pending!.extra?.percent).toBe(0);
+    expect(rows.some((r) => r.step === 'submodules')).toBe(false);
   });
 
   it('pins the clone to PAPERCUP_DOGFOOD_REPO_REF (release pin) and is shallow by default', async () => {

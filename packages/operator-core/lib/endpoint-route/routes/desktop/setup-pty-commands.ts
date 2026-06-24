@@ -123,6 +123,15 @@ export function buildGithubLoginSpec(home: string): SpawnSpec {
   const resolved = (() => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { existsSync } = require('node:fs') as typeof import('node:fs');
+      // The Tauri pty child gets NO inherited PATH (empty env), so a bare `gh`
+      // resolves against /usr/bin:/bin only. Prefer the gh BUNDLED in the
+      // sidecar (build-desktop-sidecar.sh → sidecar/bin/gh) — on a fresh GUI
+      // machine that's the only gh present.
+      for (const p of [`${process.cwd()}/bin/gh`, `${process.cwd()}/../bin/gh`]) {
+        if (existsSync(p)) return p;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
       const r = spawnSync('which', ['gh'], { encoding: 'utf8' });
       return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;

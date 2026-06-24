@@ -171,6 +171,10 @@ describe('outboxRowToLocalWriteOp — features', () => {
       taken_by: 'alice',
       // TIMESTAMPTZ ISO strings converted back to epoch ms.
       taken_at: Date.parse('2024-05-29T12:00:00.000Z'),
+      // migration 357 (agent-activity-liveness-truth): item-scoped progress signal
+      // federates alongside taken_by/taken_at for cross-cell stalled detection. NULL
+      // here because this fixture's source row predates it → mapper maps absent → null.
+      last_progress_at: null,
       expires_at: Date.parse('2024-05-29T13:00:00.000Z'),
       // Dispatch columns federate (su-ae509 2026-06-10 — Queen steering was
       // dropped here, never reaching remote swarms).

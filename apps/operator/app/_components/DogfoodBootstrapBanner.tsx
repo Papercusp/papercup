@@ -37,6 +37,11 @@ export function DogfoodBootstrapBanner() {
   const pct = p.activePercent;
   const detail = p.activeDetail;
   const isError = p.hasError;
+  // The bootstrap parks the clone at 0% `running` with a "Sign in to GitHub…"
+  // detail when auth isn't ready yet (bootstrap-papercusp-hive AWAITING_GH_SIGNIN_DETAIL).
+  // Surface that prompt as the headline (and keep the 0% bar visible) instead of
+  // the generic "Downloading…" label.
+  const awaitingAuth = !isError && !!detail && /sign in to github/i.test(detail);
 
   return (
     <div
@@ -84,6 +89,8 @@ export function DogfoodBootstrapBanner() {
       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {isError ? (
           <>Setting up Papercusp workspace failed — finish setup to retry.</>
+        ) : awaitingAuth ? (
+          <>Setting up Papercusp workspace — <strong>{detail}</strong></>
         ) : (
           <>
             Setting up Papercusp workspace — {label}
