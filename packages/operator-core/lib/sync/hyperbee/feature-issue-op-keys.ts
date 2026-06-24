@@ -312,6 +312,11 @@ function toPlanValue(row: Record<string, unknown>): HarnessPlanRow {
     updated: strOrNull(row.updated),
     owner: strOrNull(row.owner),
     initiative: strOrNull(row.initiative),
+    // mig 329/331 — plan-template provenance + auto-promote policy (federate; part of
+    // the plan definition). template is TEXT; template_data + promote_policy are jsonb blobs.
+    template: strOrNull(row.template),
+    template_data: row.template_data ?? null,
+    promote_policy: row.promote_policy ?? null,
     supersedes: Array.isArray(row.supersedes)
       ? row.supersedes.filter((s): s is string => typeof s === 'string')
       : [],
