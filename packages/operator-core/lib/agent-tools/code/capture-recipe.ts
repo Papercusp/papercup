@@ -18,7 +18,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { ProjectedTool } from '@papercusp/agent-mcp';
-import { checkScript } from '@papercusp/tooldef';
+import { checkScript, ensureParseCheckReady } from '@papercusp/tooldef';
 import {
   upsertRecipe,
   recordRecipeRun,
@@ -191,6 +191,7 @@ export async function captureRecipe(
 ): Promise<CaptureRecipeResult | null> {
   const log = deps.log ?? (() => {});
   try {
+    await ensureParseCheckReady(); // lazy-load the TS compiler before extractToolsUsed→checkScript (kept out of the eager client bundle)
     const toolsUsed = safe(() => extractToolsUsed(input.script, input.tools, input.allowed), []);
     const { title, description } = deriveTitleDescription(input.script, toolsUsed, {
       title: input.title,

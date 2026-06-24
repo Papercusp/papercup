@@ -8,13 +8,18 @@
  * integration test + the run.test.ts capture-trigger test; this file pins the
  * deterministic derivation logic with no PG.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { ensureParseCheckReady } from '@papercusp/tooldef';
 import {
   recipeSlug,
   recipeId,
   deriveTitleDescription,
   extractToolsUsed,
 } from './capture-recipe';
+
+// extractToolsUsed → checkScript uses a lazy-loaded TS compiler (kept out of the
+// eager client bundle) — warm it once before the suite.
+beforeAll(async () => { await ensureParseCheckReady(); });
 
 const mkTool = (name: string) => ({ expose: { mcp: { name } } }) as never;
 const TOOLS = [
