@@ -117,7 +117,8 @@ describe('installPapercuspFiles', () => {
     expect(result.psuPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'psu'));
     const psu = await fs.readFile(result.psuPath, 'utf8');
     expect(psu).toMatch(/^#!\/usr\/bin\/env bash\n/);
-    expect(psu).toContain(`exec node ${JSON.stringify(result.psuLauncherSource)} "$@"`);
+    // No bundled node beside the dev launcher in the fixture → falls back to PATH `node`.
+    expect(psu).toContain(`exec "node" ${JSON.stringify(result.psuLauncherSource)} "$@"`);
     expect((await fs.stat(result.psuPath)).mode & 0o777).toBe(0o755);
     expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
   });
@@ -130,6 +131,21 @@ describe('installPapercuspFiles', () => {
     expect(result.psuLauncherSource).toBe(path.join(tmpAppRoot, 'scripts', 'psu.mjs'));
     const psu = await fs.readFile(result.psuPath, 'utf8');
     expect(psu).toContain(path.join(tmpAppRoot, 'scripts', 'psu.mjs'));
+  });
+
+  it('shim execs the BUNDLED node (absolute path) when present beside the launcher (A2)', async () => {
+    // A packaged sidecar has bin/node next to scripts/<launcher>. The shim MUST
+    // use it by absolute path — an end user's plain Terminal has no `node` on
+    // PATH, so a bare `exec node …` fails with "command not found: node".
+    await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'psu.mjs'), '// bundled psu\n');
+    await fs.mkdir(path.join(tmpAppRoot, 'bin'), { recursive: true });
+    await fs.writeFile(path.join(tmpAppRoot, 'bin', 'node'), '#!/bin/sh\n', { mode: 0o755 });
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const psu = await fs.readFile(result.psuPath, 'utf8');
+    const bundledNode = path.join(tmpAppRoot, 'bin', 'node');
+    const launcher = path.join(tmpAppRoot, 'scripts', 'psu.mjs');
+    expect(psu).toContain(`exec ${JSON.stringify(bundledNode)} ${JSON.stringify(launcher)} "$@"`);
+    expect(psu).not.toContain('exec "node"'); // not the PATH fallback
   });
 
   it('missing psu launcher: psuShimWritten=false, no throw, other artifacts land (A2)', async () => {
