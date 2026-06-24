@@ -139,10 +139,23 @@ export function buildGithubLoginSpec(home: string): SpawnSpec {
       return null;
     }
   })();
+  // Force HTTPS + the web/device flow. The dogfood clone uses an HTTPS remote,
+  // so SSH is never needed — and gh's interactive SSH path tries to generate +
+  // UPLOAD an SSH key, which fails with "key is already in use" when a matching
+  // key is already on the user's account (exit 1). `--git-protocol https` skips
+  // the protocol prompt AND the SSH-key upload entirely; `--web` runs the
+  // browser/device-code flow and `gh` then configures the git credential helper
+  // for HTTPS so the private clone authenticates.
+  const args = ['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web'];
   if (resolved) {
-    return { command: resolved, args: ['auth', 'login'], cwd: home, env: {} };
+    return { command: resolved, args, cwd: home, env: {} };
   }
-  return { command: 'bash', args: ['-lc', 'gh auth login'], cwd: home, env: {} };
+  return {
+    command: 'bash',
+    args: ['-lc', 'gh auth login --hostname github.com --git-protocol https --web'],
+    cwd: home,
+    env: {},
+  };
 }
 
 export default defineTool({

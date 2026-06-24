@@ -60,6 +60,7 @@ import { renderTurnEndObservation } from './turn-end-observation-policy';
 import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
 import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
 import { renderWaitLoopNote } from './wait-loop-policy';
+import { renderPeerWakeNote } from './peer-wake-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
@@ -624,6 +625,18 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (waitLoopNote) {
     parts.push(waitLoopNote);
     sections.push({ name: 'wait-loop-note', chars: waitLoopNote.length });
+  }
+
+  // Peer-wake note (owner directive 2026-06-24) — the SHARED base every operator-launched role
+  // inherits, mirroring the spawned-bee base. A parked agent sleeps until something re-invokes it, so
+  // handing work off does not make a peer act; you can (and usually must) WAKE the peer you depend on
+  // (coord:dispatch / coord:handoff for new work, coord:wake to resume an assigned lane) and verify it
+  // landed. The active complement of the wait-loop note. Sourced from the one PEER_WAKE_NOTE constant
+  // (orchestrator) so this base, the spawned-bee base, and the su playbooks can't desync.
+  const peerWakeNote = renderPeerWakeNote();
+  if (peerWakeNote) {
+    parts.push(peerWakeNote);
+    sections.push({ name: 'peer-wake-note', chars: peerWakeNote.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

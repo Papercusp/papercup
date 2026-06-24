@@ -260,6 +260,27 @@ describe('installPapercuspFiles', () => {
     expect(playbook.indexOf('Arm a self-wake LOOP')).toBeLessThan(playbook.indexOf('## Tail'));
   });
 
+  it('projects the canonical peer-wake note into the ENGINEER playbook at the project-guide anchor', async () => {
+    // owner directive 2026-06-24: the "you can WAKE a peer; a parked agent sleeps until something
+    // re-invokes it, so handing work off is not enough" directive lives in ONE source (PEER_WAKE_NOTE)
+    // and is PROJECTED into su (engineer) alongside the deploy + wait-loop notes — not hand-mirrored.
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Base\n\n<!-- PAPERCUSP-SU:PROJECT-GUIDE -->\n\n## Tail\n`,
+    );
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+
+    // the canonical PEER_WAKE_NOTE is projected in...
+    expect(playbook).toContain('## You can WAKE a peer');
+    expect(playbook).toContain('coord:wake');
+    // ...exactly once (one source, one projection)...
+    expect(playbook.split('## You can WAKE a peer').length - 1).toBe(1);
+    // ...sitting in the body BEFORE the project-guide slot, not appended at the very end.
+    expect(playbook.indexOf('You can WAKE a peer')).toBeLessThan(playbook.indexOf('## Tail'));
+  });
+
   it('splices the GENERATED workspace map at its marker (staging-branch-pipeline-2026-06-06)', async () => {
     const MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
     await fs.writeFile(

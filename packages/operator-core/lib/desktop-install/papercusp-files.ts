@@ -23,6 +23,7 @@ import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COOR
 import { renderAutoModePolicy } from '../auto-mode-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
+import { renderPeerWakeNote } from '../peer-wake-policy';
 import { renderWorkspaceMapSection } from './workspace-map';
 import { renderWireSchemasSection } from '../prompt-assembly';
 import { renderCoordLegend } from '../coord-schema';
@@ -223,11 +224,13 @@ async function resolveProjectGuideText(
  * Project the shared, cross-cutting BEHAVIORAL notes — canonical constants owned by
  * `@papercusp/orchestrator` (re-exported through operator-core's policy wrappers) — into the
  * su playbook from the SINGLE source. Currently `DEPLOY_PIPELINE_NOTE` (the "deploy pipeline is
- * async; a RED gate is EVERYONE's job to FIX, no owner-ask, even out of lane" directive) and
+ * async; a RED gate is EVERYONE's job to FIX, no owner-ask, even out of lane" directive),
  * `WAIT_LOOP_NOTE` (the "waiting on something? arm a self-wake LOOP — never sleep on an event that
- * may never fire; re-check + FIX what's preventing it" directive) — both of which the su base
- * playbook otherwise misses entirely while the spawned-bee + operator-launched bases already inject
- * them programmatically (prompt-build.ts / prompt-assembly.ts). This keeps such universal directives
+ * may never fire; re-check + FIX what's preventing it" directive), and `PEER_WAKE_NOTE` (the "you can
+ * WAKE a peer; a parked agent sleeps until something re-invokes it, so handing work off is not enough"
+ * directive) — all of which the su base playbook otherwise misses entirely while the spawned-bee +
+ * operator-launched bases already inject them programmatically (prompt-build.ts / prompt-assembly.ts).
+ * This keeps such universal directives
  * in ONE place that projects to EVERY base, model/provider-agnostic (plain strings spliced
  * regardless of model), ADDITIVELY — su's existing condensed notes and the `.md` prompt files are
  * left untouched. Inserted just before the project-guide section so they sit in the playbook body,
@@ -239,7 +242,7 @@ function injectSharedBaseNotes(text: string): string {
   // not). Insert the notes just BEFORE it; NEVER append, so a marker-less base is returned untouched
   // (mirrors spliceGeneratedSection's no-append contract).
   if (!text.includes(PROJECT_GUIDE_MARKER)) return text;
-  const notes = [renderDeployPipelineNote(), renderWaitLoopNote()].filter((n) => n && n.trim());
+  const notes = [renderDeployPipelineNote(), renderWaitLoopNote(), renderPeerWakeNote()].filter((n) => n && n.trim());
   if (notes.length === 0) return text;
   return text.split(PROJECT_GUIDE_MARKER).join(`${notes.join('\n\n')}\n\n${PROJECT_GUIDE_MARKER}`);
 }

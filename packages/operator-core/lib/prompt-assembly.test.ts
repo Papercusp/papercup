@@ -374,6 +374,19 @@ describe('assembleRolePrompt — wait-loop note (owner directive 2026-06-23)', (
   });
 });
 
+describe('assembleRolePrompt — peer-wake note (owner directive 2026-06-24)', () => {
+  it('injects the "you can WAKE a peer; handing work off is not enough" note into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## You can WAKE a peer');
+    expect(out.text).toContain('coord:dispatch');
+    expect(out.text).toContain('coord:wake');
+    expect(out.text).toContain('recipient_absent');
+    expect(out.sections.some((s) => s.name === 'peer-wake-note')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — concurrency-first note (owner directive 2026-06-20)', () => {
   it('injects the "never wait for a calm window; a non-resource block is a BUG to fix" note into the SHARED base every role inherits', async () => {
     mockTools.length = 0;
