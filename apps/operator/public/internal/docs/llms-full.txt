@@ -2290,6 +2290,66 @@ The in-app “Via browser (OAuth)” tab is kept but defaulted-off and labelled 
 
 `account-link-cli.ts` now drives the working one-click OAuth flow (pty `claude setup-token`); it replaced the removed `account-link-store.ts`, which built the non-working-standalone hand-built URL. `deploy-accounts-register.ts` is the working paste path. Both surface in Settings → Deploy Accounts + the /adv Accounts tab. (accounts-pool-tab-2026-06-15 D-005/D-013/D-014/D-015/D-016/D-017.)
 
+# Scaling the operator cluster crash-loops :3070 — per-process file watchers exhaust inotify
+
+> Raising PAPERCUSP_CLUSTER to a high worker count (e.g. 32) crash-loops :3070 with an inotify ENOSPC (System limit for number of file watchers reached). Each operator process runs the harness-fs-watcher (recursive chokidar, ~62k inotify watches) + claude-credential-sync, so N workers multiply the watch count N× past the kernel ceiling; the credential-sync watcher's ENOSPC is an UNCAUGHT exception → fatal → systemd respawn → crash loop. Fix is to gate those watchers on cluster.isPrimary (one process, not every worker), make watcher-ENOSPC a benign host error, and (interim) raise fs.inotify.max_user_watches. Do NOT gate on backgroundWorkersEnabled().
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+You raise `PAPERCUSP_CLUSTER` (the request-worker count, see the `50-cluster.conf` systemd drop-in) to a high number and `:3070` flaps — `READY 32 listeners` for a moment, then listeners collapse (32 → 11 → 0). The journal is full of:
+
+```plaintext
+[hono-host] fatal uncaughtException — exiting: Error: ENOSPC: System limit for
+number of file watchers reached, watch '…/.papercusp/session-claude/…/.claude.json.lock'
+[harness-fs-watcher] enabled-plugins chokidar error: ENOSPC: System limit … reached
+```
+
+Each fatal exit → systemd respawn → respawn re-hits ENOSPC → **crash loop**, full outage of the green operator.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`node:cluster` runs the SAME `runBootstrap()` in every process — the primary **and** every request worker. Two of the things it starts are recursive `chokidar` / `fs.watch` file watchers:
+
+* **`ensureHarnessFsWatcher()`** — watches every registered project’s `.papercusp/` tree to mirror it into PG. On a box with many harnesses this is **\~62,000 inotify watches per process** (measured).
+* **`startClaudeCredentialSync()`** — a `recursive: true` watch on the session-claude root.
+
+So `N` workers hold `N × 62k` watches. At 15 workers the box sat at \~1.2M watches; at 32 workers it projects to \~2.2M, which crossed the (then) `fs.inotify.max_user_watches` = 2,097,152 ceiling. inotify `inotify_add_watch` then returns `ENOSPC`, and the credential-sync watcher’s error was **uncaught** → the hono-host fatal guard exited.
+
+Caution
+
+The kernel limit being hit is `fs.inotify.max_user_watches` (a per-**user** total across all processes), NOT a per-process ulimit and NOT `max_user_instances`. Because it is per-user, the dev box’s *whole fleet* (agents, harnesses, federation lanes, VS Code) shares the budget — the cluster just tips an already-busy box over.
+
+## Fixes
+
+[Section titled “Fixes”](#fixes)
+
+Three layers, in order of correctness:
+
+1. **Run the watchers on ONE process — gate on `cluster.isPrimary`** (the real fix). In `host-bootstrap.ts` both watchers are wrapped in `if (cluster.isPrimary) { … }`. `cluster.isPrimary` is `true` on the cluster primary **and** on a non-clustered single-process host (`:3170`, desktop), `false` only on a forked request worker — so the watcher keeps working everywhere it did before, but stops multiplying across cluster workers (33 procs × 62k → 1 × 62k). Safe because request workers read the mirrored rows via `@papercusp/sync` / the converged on-disk creds; they never needed their own watcher.
+
+2. **Make watcher-ENOSPC a benign host error** (robustness). `host-benign-errors.ts` `isBenignFileWatcherError()` classifies inotify watch-ENOSPC as log-and-keep-serving instead of fatal. Scoped to `syscall === 'watch'` / the “number of file watchers” message so a genuine **disk-full** ENOSPC (`syscall` write/open, “no space left on device”) still fails fast. A missing file watcher must only degrade a background convenience, never down the multi-tenant host.
+
+3. **Raise the kernel ceiling** (interim capacity, `/etc/sysctl.conf` `fs.inotify.max_user_watches`, persistent). On 2026-06-24 it was raised 2,097,152 → 4,194,304 to let 32 workers run before fix #1 deployed. Once #1 ships the cluster needs only \~62k watches and this raise is no longer load-bearing (but a big fleet box benefits from the headroom regardless).
+
+Danger
+
+**Do NOT gate these watchers on `backgroundWorkersEnabled()`.** The dev-api drop-in sets `PAPERCUSP_BACKGROUND_WORKERS=0` **service-wide**, which the cluster *primary* inherits too (only workers additionally get it via the cluster `workerEnv`). So `backgroundWorkersEnabled()` is `false` on the primary as well — gating on it would disable the FS→PG mirror on **every** process and silently stale the harness panels. `cluster.isPrimary` is the correct signal. (Alternatively: stop setting `BACKGROUND_WORKERS=0` service-wide and let the cluster set it on workers only.)
+
+## Scaling the cluster safely
+
+[Section titled “Scaling the cluster safely”](#scaling-the-cluster-safely)
+
+* Bump `PAPERCUSP_CLUSTER` in `~/.config/systemd/user/papercup-dev-api.service.d/50-cluster.conf`, `systemctl --user daemon-reload`, then restart via the `dev-server` resource lock.
+* After restart, **verify it holds** — sample `ss -ltnp | grep :3070 | grep -oE 'pid=[0-9]+' | sort -u | wc -l` several times over \~45s (a one-shot check misses a crash loop), and `journalctl --user -u papercup-dev-api.service | grep -c ENOSPC` (must be 0).
+* Watch budget: `cat /proc/*/fdinfo/* | grep -c '^inotify'` is total watches in use; compare to `/proc/sys/fs/inotify/max_user_watches`. Per-worker cost ≈ the harness count, so it grows as harnesses accumulate.
+* Connections are NOT the limit (PgBouncer bounds PG backends independent of worker count — see [pg-connection-exhaustion](/internal/docs/agent-insights/pg-connection-exhaustion-too-many-clients)). The file-watcher budget is.
+
+Tracked as EI-3385.
+
 # code:run — when to reach for it, worked exemplars, and the measured payoff
 
 > The code-mode rollout (B-CX-3) — collapse a multi-step tool flow into ONE code:run instead of paying an inference round-trip per call. Two before/after exemplars + a real measured token/cost saving from agent_usage_samples.
@@ -18337,6 +18397,76 @@ In this app the only Channel surface is **endpoint-IPC** (`papercusp-desktop/src
 * A *new* Channel surface (anything else taking `tauri::ipc::Channel`) needs the same page-load flush discipline — Channels never self-clean across reloads.
 * Capture evidence with `tauri-agent-tools console-monitor --pid <pid> --duration 30000 --json` (duration is **milliseconds**; the agent-e2e doc’s `--duration 100` examples are too short to catch periodic bursts).
 
+# Tauri IPC "access control checks" on Linux — wry registers custom schemes secure-only, not CORS-enabled
+
+> Why the desktop logs 'Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks' on every navigation, and the vendored-wry one-liner that fixes it.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The Tauri desktop console logs, on **every navigation**:
+
+```plaintext
+Fetch API cannot load ipc://localhost/endpoint_invoke due to access control checks.
+```
+
+(often followed by Tauri’s own `IPC custom protocol failed, Tauri will now use the postMessage interface instead`). The app still works — Tauri falls back to the postMessage IPC transport — but the error pollutes the console and the IPC custom-protocol fast path never runs.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+Papercusp loads the operator UI from a **remote `http://127.0.0.1:<port>` origin** (`frontendDist`/`devUrl` in `tauri.conf.json`), **not** the bundled `tauri://` asset protocol. Tauri’s injected IPC script always tries the `ipc://localhost/<cmd>` **custom-protocol fetch first** on non-Android (`canUseCustomProtocol = osName !== 'android'`).
+
+On Linux/WebKitGTK, **wry registers custom URI schemes only as `register_uri_scheme_as_secure`, never `register_uri_scheme_as_cors_enabled`** (`wry/src/webkitgtk/web_context.rs::register_uri_scheme`). So WebKitGTK blocks the **cross-origin** `ipc://` fetch from the `http://127.0.0.1` page *before* it ever honors the response — even though Tauri’s IPC protocol handler already returns `Access-Control-Allow-Origin: *`. Tauri’s `.catch` then logs the warn and falls back to postMessage.
+
+The Tauri **capability** `remote.urls` (`capabilities/default.json`) governs the *permission* layer (which commands a remote origin may call) — it does **NOT** fix this WebKitGTK CORS-on-custom-scheme layer. Different concern.
+
+## Two traps when fixing this
+
+[Section titled “Two traps when fixing this”](#two-traps-when-fixing-this)
+
+1. **It is NOT in the already-vendored `tauri-runtime-wry`.** The scheme registration lives in **wry**; `tauri-runtime-wry` registers protocols through wry’s `with_asynchronous_custom_protocol` and wry exposes its WebKit context only `pub(crate)`. So the fix requires vendoring **wry itself** (`[patch.crates-io] wry = { path = "vendor/wry" }`, same pattern as the existing `tauri-runtime-wry` patch).
+2. **Timing: it must run BEFORE the web process spawns.** Registering `register_uri_scheme_as_cors_enabled` *post-`webview.build()`* (e.g. via `WebViewExtUnix::webview().web_context().security_manager()`) is **too late** — verified: the warn still fires. WebKitGTK reads scheme registrations at web-process spawn. The fix must sit right next to wry’s existing `register_uri_scheme_as_secure` call, which runs at the correct pre-spawn moment.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+In vendored `wry/src/webkitgtk/web_context.rs`, right after the `_as_secure` registration, add (note: the webkit2gtk 2.0.2 method is `_as_cors_enabled`, not `_as_cors_allowed`):
+
+```rust
+self.os.context.security_manager().ok_or(Error::MissingManager)?
+  .register_uri_scheme_as_cors_enabled(name);
+```
+
+Drop the vendored-wry patch when a released wry registers custom schemes as CORS-enabled upstream.
+
+## How to verify (the reliable way)
+
+[Section titled “How to verify (the reliable way)”](#how-to-verify-the-reliable-way)
+
+`tauri-agent-tools console-monitor` across a reload is **unreliable** here — it reads a stale buffer and misses post-reload messages (a sentinel `console.warn` emitted after reload was not captured). Verify **deterministically** via `eval` instead — perform the `ipc://` fetch directly and inspect the outcome:
+
+```js
+// CORS-rejected → rejects immediately with "...access control checks".
+// CORS-allowed  → request proceeds to the handler (stays pending / AbortError on a timeout).
+await fetch('ipc://localhost/endpoint_invoke', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Tauri-Callback': '1', 'Tauri-Error': '2', 'Tauri-Invoke-Key': 'probe' },
+  body: '{}', signal: AbortSignal.timeout(1500),
+})
+```
+
+An `AbortError` (the fetch was in-flight) confirms CORS now passes; an “access control checks” rejection means it’s still broken.
+
+## Related
+
+[Section titled “Related”](#related)
+
+The webview→Rust IPC succeeding at the WebKit layer is separate from the Rust→Node-sidecar socket (`endpoint-ipc`); if that socket is down (`dev:service_health` shows `ipc socket unreachable`), `endpoint_invoke` returns an error and `desktop-bootstrap.ts`’s `isIpcUnavailable` falls back to HTTP **silently** (no console error). See `libs/generic/desktop-ipc/src/desktop-bootstrap.ts`.
+
 # Testing lock-authority eviction across machines (the ≥3-peer harness)
 
 > A φ+SWIM eviction proof needs ≥3 peers (a 2-machine test never evicts), and a PG-less frame supplies presence via an in-memory /alive heartbeat seam. How the eviction-agent harness proves P-016 over real Hetzner machines.
@@ -19264,6 +19394,50 @@ Don’t. Bare `tsc` is a fast-but-noisy file-level check, not a project-correctn
 [Section titled “Why this was costly”](#why-this-was-costly)
 
 This session, I twice spent meaningful time investigating “new” errors in `lib/agent-tools/plans/*` that turned out to be the pre- existing baseline. Stashing the diff and re-running `tsc` confirmed they were already there. The diagnosis loop is fast (1–2 minutes with `git stash push -u <files>` + re-run) but it shouldn’t be necessary — knowing the baseline exists short-circuits the chase.
+
+# Two harness dispatch models: queen/bee `coding` (live) vs `coding-factory` DBOS orchestrator — don't conflate them
+
+> When reasoning about how a hive scales agents to its work-item backlog, there are TWO different mechanisms in the repo. The queen/bee hive (`coding`, kind:hive, spine.decider:queen) is the live, actively-developed path. The DBOS-orchestrator `coding-factory` (decider:director + a `dispatch:` block, driven by orchestrator-loop.ts) is a DIFFERENT model and is NOT the path in active use (owner, 2026-06-24). `work` extends `coding`, so anything built on `work` inherits the queen/bee model — do not base its dispatch design on orchestrator-loop.ts.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+You ask “does the framework auto-scale agents to a work-item backlog, or does something hand-place them?” — read `packages/operator-core/lib/dbos/orchestrator-loop.ts`, see that it auto-dispatches a durable pipeline per ready work-item up to a blueprint-declared `dispatch.concurrency` (30s backstop tick + `refillHarnessOnSettle`), and conclude **“the framework already autoscales — no glue needed.”**
+
+That conclusion is **true for `coding-factory`, false for the hives actually in use.** `orchestrator-loop.ts` is the DBOS-orchestrator / “factory” dispatch path. It is **not** the path a queen/bee `coding` hive runs on.
+
+## The two models
+
+[Section titled “The two models”](#the-two-models)
+
+|                              | queen/bee hive (`coding`)                                                                                                      | factory (`coding-factory`)                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `kind`                       | **`hive`**                                                                                                                     | harness (default)                                                                               |
+| `spine.decider`              | **`queen`**                                                                                                                    | `director`                                                                                      |
+| `dispatch:` block            | —                                                                                                                              | **yes** (`{ concurrency, priority, readiness, costCapUsd, safetyCeiling }`)                     |
+| Who scales agents to backlog | **the Queen** — wakes (`hive/wake.ts`), reads the frontier, places/spawns bees via fleet placement (`fleet/operator-spawn.ts`) | the **DBOS orchestrator** (`orchestrator-loop.ts`) — deterministic, blueprint-`dispatch`-driven |
+| Status                       | **LIVE — actively used + developed**                                                                                           | a different model; **per owner (2026-06-24) may not be working / not the path in use**          |
+
+Verify the discriminators directly in the YAML: `coding` declares `kind: hive` + `spine.decider: queen`; `coding-factory` has no `kind: hive` and declares `spine.decider: director` + a `dispatch:` section.
+
+## Why it matters: `work` extends `coding`
+
+[Section titled “Why it matters: work extends coding”](#why-it-matters-work-extends-coding)
+
+`libs/papercusp/packages/harness/blueprints/work/blueprint.yaml` is `extends: coding` (`kind: hive`). So **anything built on `work` inherits the queen/bee model**, not the factory. The oddsmith ops hive (`oddsmith-ops` extends `work`) is therefore a queen/bee hive: its analysts are scaled to the bet-analysis backlog by the **Queen + fleet placement**, governed by the hive blueprint’s placement / wake / fleet knobs and the Queen prompt — **NOT** by `orchestrator-loop.ts`.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+When you need to know how a hive scales workers to its backlog:
+
+1. Check the blueprint’s `kind` + `spine.decider`. `kind: hive` + `decider: queen` → **queen/bee model** → the dispatch mechanism is the Queen + `fleet/*` + `hive/wake.ts`. Read those, not `orchestrator-loop.ts`.
+2. Only a `director` + `dispatch:` blueprint (the `coding-factory` lineage) is driven by the DBOS orchestrator-loop.
+3. **Do not base a design on `coding-factory` / `orchestrator-loop.ts`** — it is not the path in active use and may not be working. Model on the live `coding` queen/bee hive (and the things that `extends: coding`, like `work`).
+
+> This is exactly the kind of finding that survives a single confident code-read getting it wrong: `orchestrator-loop.ts` *is* real and *does* autoscale — for the wrong blueprint. The discriminator is `kind`/`decider`, not “is there dispatch code somewhere.”
 
 # Two federation paths for the same row can't coexist — cut over with mutual exclusion, not parallel writes
 
@@ -20623,6 +20797,45 @@ psql "$DATABASE_URL" -c "SELECT workspace_id, jsonb_array_length(payload->'proje
 ```
 
 See also \[\[workspaces-root-vs-remapped-home]] (the *other* workspace-resolution trap — `homedir()` landing in a nested registry under the desktop’s HOME remap) and \[\[forward-defined-registry-entries]].
+
+# Workspace-scoped memory recall (the per-owner user-pool bleed fix)
+
+> Memory recall fans out over opaque SCOPE KEYS (user.id | harness:<slug> | hive:<slug>), not a workspace column — so the per-owner user pool is recalled in every workspace and a hive's `project` learnings bleed across all the owner's work. How migration 398 promotes the scope keys to real GENERATED columns and how the dark-cutover MEMORY_WORKSPACE_SCOPED_RECALL filter scopes the user pool conservatively (owner-tier + legacy NULL kept), plus how to verify-flip it.
+
+## The model: recall is scope-key fan-out, not a workspace filter
+
+[Section titled “The model: recall is scope-key fan-out, not a workspace filter”](#the-model-recall-is-scope-key-fan-out-not-a-workspace-filter)
+
+`memory_canonical` is one row per fact `(id, payload jsonb, …, state)`. There is **no workspace column in the recall path** — the store recalls by an opaque **scope key** held in `payload->>'user_id'`, which is overloaded: a user uuid (the per-owner pool), `harness:<slug>`, or `hive:<slug>`. `CanonicalVectorStore.search/list` post-filter each mem0 filter key against `payload->>'<key>'`. The recall callers (`memory/injection.ts`, `agent-tools/memory/search.ts`) fan out over `[user.id, harness:<slug>…, hive:<slug>…]` and merge.
+
+The harness/hive pools are correctly scoped. **The `user.id` pool is recalled in EVERY workspace** — so an owner’s `project`-kind memories surface in all their workspaces (the isolation leak). `payload.workspace_id` exists (remember.ts stamps `metadata.workspace_id = ctx.principal.workspaceId`) but it was an attribution tag, never the recall axis. (The legacy `workspace:`/`shared` SCOPE was deliberately deprecated + drained — do **not** revive it; that would change the write-side scope-key model.)
+
+## The fix (data-scoping-audit P-006 / D-004 / D-012)
+
+[Section titled “The fix (data-scoping-audit P-006 / D-004 / D-012)”](#the-fix-data-scoping-audit-p-006--d-004--d-012)
+
+**Structural — migration 398.** Promote the scope keys to first-class, indexed columns: `memory_canonical.user_id` + `workspace_id` as `GENERATED ALWAYS AS (payload->>'…') STORED`. This auto-backfills every existing row, stays in lockstep with the payload the store already writes (zero code change, behavior-neutral), and makes scope filterable/indexable without a jsonb dig. (Same generated-mirror trick normalizes `workspace`→`workspace_id` on the telemetry tables in mig 399.)
+
+**Behavioral — `keepUserPoolHitForWorkspace` (workspace-scope-recall.ts).** A CONSERVATIVE, NULL-safe post-filter on the **user pool only**, wired into both recall paths (injection.ts filters `userResults`; search.ts filters hits where `scope === user.id`). Drop a hit **only** when it explicitly carries a *different* `workspace_id` AND is not owner-tier:
+
+* no / empty / non-string `workspace_id` (legacy, pre-stamping — the bulk of rows) → **keep**
+* owner-tier `kind` ∈ `{user, feedback, reference}` (personal facts follow the owner) → **keep**
+* no active workspace to compare → **keep** (fail-open)
+* otherwise (a `project` hit tagged with another workspace) → **drop**
+
+So flipping it never silently guts recall: only *new* cross-workspace `project` memories are scoped out; harness/hive pools are untouched.
+
+## The flag is a dark CUTOVER — verify before flipping
+
+[Section titled “The flag is a dark CUTOVER — verify before flipping”](#the-flag-is-a-dark-cutover--verify-before-flipping)
+
+`FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL` (`papercusp-memory-workspace-scoped-recall`) defaults **OFF** and is registered `DARK_FLAG_CASE='cutover'`: a reversible kill-switch flipped after an **attended live recall-hit-rate verify** (the filter is complete + unit-tested, but recall is emergent — confirm hit-rate isn’t degraded before defaulting ON). OFF = byte-identical to today, so it ships safely without breaking the legacy memory tests. To verify: sample real recall queries with the flag ON vs OFF and confirm only cross-workspace `project` hits drop (owner-tier + same-ws + legacy-NULL all still surface).
+
+## Related: the wider `workspace_id DEFAULT 'default'` substrate is NOT this
+
+[Section titled “Related: the wider workspace\_id DEFAULT 'default' substrate is NOT this”](#related-the-wider-workspace_id-default-default-substrate-is-not-this)
+
+29 coord\_*/event\_*/consolidated tables still carry `workspace_id text DEFAULT 'default'` with live `'default'` data and no fill-trigger (P-007). Dropping those defaults is owner-gated coord/presence SUBSTRATE work (writers must thread workspace\_id first; the data must migrate off `'default'`) — see `data-scoping-audit-2026-06-22` D-013. The `lint:no-workspace-default` guard (`scripts/check-workspace-default-sql.mjs`) flags any NEW `workspace_id DEFAULT 'default'` so it can’t creep back while that attended migration is pending.
 
 # The workspaces root lives above the HOME-remap boundary
 

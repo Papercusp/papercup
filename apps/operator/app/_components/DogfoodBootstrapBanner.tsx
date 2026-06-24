@@ -57,13 +57,19 @@ export function DogfoodBootstrapBanner() {
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        padding: '5px 14px',
-        fontSize: 12,
-        fontWeight: 500,
+        padding: '7px 14px',
+        fontSize: 12.5,
+        fontWeight: 600,
         color: isError ? 'var(--bad, #ef4444)' : 'var(--fg, #e8e8e8)',
-        background: isError ? 'var(--bad-bg, rgba(239,68,68,0.10))' : 'var(--bg-2, #14161c)',
-        borderBottom: `1px solid ${isError ? 'var(--bad, #ef4444)' : 'var(--border, #2a2d36)'}`,
-        boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+        // OPAQUE, high-contrast bar — never the translucent `--bg-2` glass tier
+        // (rgba ~0.045 alpha), which rendered the bar nearly invisible. Solid
+        // `--bg-1` is opaque in every theme; the accent border + glow make the
+        // active setup state clearly visible app-wide.
+        background: isError ? 'var(--bad-bg-solid, #2a1618)' : 'var(--bg-1, #0b1220)',
+        borderBottom: `2px solid ${isError ? 'var(--bad, #ef4444)' : 'var(--accent, #6366f1)'}`,
+        boxShadow: isError
+          ? '0 2px 10px rgba(239,68,68,0.25)'
+          : '0 2px 10px rgba(0,0,0,0.45)',
         // Non-blocking: the bar never traps pointer/scroll for the rest of the app.
         // It is fixed at the very top; routes scroll underneath.
       }}

@@ -45,7 +45,7 @@ filters `userResults`; search.ts filters hits where `scope === user.id`). Drop a
 when it explicitly carries a *different* `workspace_id` AND is not owner-tier:
 
 - no / empty / non-string `workspace_id` (legacy, pre-stamping — the bulk of rows) → **keep**
-- owner-tier `kind` ∈ {user, feedback, reference} (personal facts follow the owner) → **keep**
+- owner-tier `kind` ∈ `{user, feedback, reference}` (personal facts follow the owner) → **keep**
 - no active workspace to compare → **keep** (fail-open)
 - otherwise (a `project` hit tagged with another workspace) → **drop**
 
