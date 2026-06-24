@@ -1043,11 +1043,23 @@ export const FLAGS = {
   // boot, so it can never break a fresh launch. OFF ⇒ the app boots with no default
   // hive (bare onboarding). The repo is too large to bundle (~5GB) → clone-on-boot.
   DOGFOOD_PAPERCUSP_HIVE: "papercusp-dogfood-papercusp-hive",
+  // DEFAULT ON (alpha flags-default-on): the shared embed-TPM admission lane
+  // (watchdog-and-exposed-systems-improvement-2026-06-18 P-002). Routes BOTH embed paths
+  // (search:semantic/work_items:search + memory:*) through ONE RateLimitGovernor whose
+  // itpm + concurrency caps hold aggregate OpenAI embed rate UNDER the org 1M-TPM ceiling, so
+  // the high-volume bench path can't exhaust the org and starve production memory (the
+  // 2026-06-17 incident root cause, D-003). Bench sheds → BM25; memory passes through. Safe
+  // default-on — additive + reversible; OFF ⇒ a byte-identical passthrough (ungoverned, the
+  // pre-P-002 behaviour). The kill-switch if admission ever mis-paces a hot path.
+  EMBED_ADMISSION: "papercusp-embed-admission",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
+  // DEFAULT ON (alpha flags-default-on): the shared embed-TPM admission lane (P-002). Additive +
+  // reversible; OFF ⇒ ungoverned passthrough (pre-P-002 behaviour). See FLAGS.EMBED_ADMISSION.
+  [FLAGS.EMBED_ADMISSION]: true,
   // DEFAULT ON (alpha flags-default-on): the cross-member browse "Hive content" rollup
   // panel (WI-259 P-006, D-010). Additive + inert without a shared hive + federated
   // content; OFF ⇒ the panel is not offered in the dock catalog. Reversible.
