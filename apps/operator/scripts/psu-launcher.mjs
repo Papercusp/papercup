@@ -32,7 +32,33 @@ export const AGENTS = ['claude', 'omp', 'codex'];
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN = '<no-plan>';
 
-const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:3070';
+/**
+ * Resolve the operator's base URL. Precedence:
+ *   1. PAPERCUSP_OPERATOR_URL env — explicit override (highest).
+ *   2. ~/.papercusp/operator.json `httpUrl` (or `port`) — the DESKTOP operator's
+ *      ACTUAL address. A shipped Tauri desktop app runs its operator on a
+ *      dynamically-assigned localhost port (rewritten on every boot), NOT a
+ *      fixed :3070, and records it here. Without this, psu in a desktop install
+ *      always reaches for a dead :3070 and fails with "operator unreachable".
+ *   3. http://localhost:3070 — the dev-box default (a fixed-port operator under
+ *      systemd). The desktop never has operator.json missing, and the dev box
+ *      never WRITES operator.json in steady state, so each environment lands on
+ *      the right branch with no cross-contamination.
+ * Exported for tests. Pure aside from the two file reads + env.
+ */
+export function resolveOperatorUrl({ env = process.env, home = homedir() } = {}) {
+  if (env.PAPERCUSP_OPERATOR_URL) return env.PAPERCUSP_OPERATOR_URL;
+  try {
+    const d = JSON.parse(readFileSync(join(home, '.papercusp', 'operator.json'), 'utf8'));
+    if (d && typeof d.httpUrl === 'string' && d.httpUrl) return d.httpUrl;
+    if (d && d.port) return `http://127.0.0.1:${d.port}`;
+  } catch {
+    /* no/!readable operator.json (the dev box) → dev-port fallback below */
+  }
+  return 'http://localhost:3070';
+}
+
+const OPERATOR_URL = resolveOperatorUrl();
 
 /**
  * Per-request timeout (ms). `fetch` has no default timeout, so a wedged or
@@ -772,12 +798,22 @@ export function selectionsFromArgs(args) {
   return { agent: p.agent, workspace: p.workspace, harness: p.harness, plan: p.plan };
 }
 
-function readToken() {
+export function readToken({ home = homedir() } = {}) {
   try {
-    return readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+    return readFileSync(join(home, '.papercusp', 'superuser-token'), 'utf8').trim();
   } catch {
-    return '';
+    /* no superuser-token file → fall back to the desktop operator's token below */
   }
+  // The desktop operator records its bearer in operator.json (== superuser-token
+  // when both exist). Falling back here keeps psu authenticated even if only the
+  // operator.json discovery file is present in a fresh desktop install.
+  try {
+    const d = JSON.parse(readFileSync(join(home, '.papercusp', 'operator.json'), 'utf8'));
+    if (d && typeof d.token === 'string' && d.token) return d.token.trim();
+  } catch {
+    /* none → unauthenticated (dev-box open operator) */
+  }
+  return '';
 }
 
 /**

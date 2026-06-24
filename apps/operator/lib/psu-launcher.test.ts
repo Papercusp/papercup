@@ -38,6 +38,8 @@ import {
   NATIVE_SCHEDULER_DENY_FLAG,
   BRAIN_TOMBSTONE_MESSAGE,
   fetchWithResilience,
+  resolveOperatorUrl,
+  readToken,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
@@ -1154,5 +1156,62 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
       }),
     ).rejects.toThrow(/could not reach/);
     expect(n).toBe(1); // single attempt — no retry when the caller owns the signal
+  });
+});
+
+describe('operator endpoint resolution (desktop vs dev box)', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'psu-op-'));
+    mkdirSync(join(home, '.papercusp'), { recursive: true });
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  const writeOperatorJson = (obj: unknown) =>
+    writeFileSync(join(home, '.papercusp', 'operator.json'), JSON.stringify(obj));
+
+  describe('resolveOperatorUrl', () => {
+    it('falls back to the dev-box :3070 when no operator.json (the dev box)', () => {
+      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://localhost:3070');
+    });
+
+    it('reads the desktop operator httpUrl from operator.json (the shipping bug fix)', () => {
+      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689', port: '24689', token: 'abc' });
+      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://127.0.0.1:24689');
+    });
+
+    it('synthesizes a URL from port when httpUrl is absent', () => {
+      writeOperatorJson({ port: '31337', token: 'abc' });
+      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://127.0.0.1:31337');
+    });
+
+    it('PAPERCUSP_OPERATOR_URL env overrides operator.json (explicit wins)', () => {
+      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
+      expect(
+        resolveOperatorUrl({ env: { PAPERCUSP_OPERATOR_URL: 'http://override:9999' }, home }),
+      ).toBe('http://override:9999');
+    });
+
+    it('falls back to :3070 on a malformed operator.json', () => {
+      writeFileSync(join(home, '.papercusp', 'operator.json'), '{ not json');
+      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://localhost:3070');
+    });
+  });
+
+  describe('readToken', () => {
+    it('prefers the superuser-token file', () => {
+      writeFileSync(join(home, '.papercusp', 'superuser-token'), 'tok-from-file\n');
+      writeOperatorJson({ token: 'tok-from-operator-json' });
+      expect(readToken({ home })).toBe('tok-from-file');
+    });
+
+    it('falls back to operator.json.token when superuser-token is absent (fresh desktop)', () => {
+      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689', token: 'tok-from-operator-json' });
+      expect(readToken({ home })).toBe('tok-from-operator-json');
+    });
+
+    it('returns empty string when neither source exists (dev-box open operator)', () => {
+      expect(readToken({ home })).toBe('');
+    });
   });
 });
