@@ -352,6 +352,50 @@ export async function attemptFlakeAbsorption(
 export const HOST_ENV_STRIP = ['AGENT_MODELS'];
 
 /**
+ * Per-fork V8 old-space cap (MiB) the gate FORCES onto the spawned vitest forks.
+ *
+ * The bg-host / staging hosts run with `NODE_OPTIONS=--max-old-space-size=131072`
+ * (a 128 GiB heap for the long-lived host). Inherited UNCHANGED by the spawned
+ * `test:affected` → vitest, it told EACH of the 8 concurrent forks it had 128 GiB
+ * of headroom, so V8 deferred old-space GC and the forks bloated; under the shared
+ * box's live-fleet load that tipped into ENOMEM / OOM-killed workers, surfacing as
+ * the VARYING, pass-in-isolation reds that held `main` for ~16h (different files
+ * each hourly run, every one green on an isolated re-run — pure memory-pressure
+ * flake, no deterministic break). 4 GiB is far above any unit file's real working
+ * set (they pass at V8's ~2 GiB default in CI/local) yet lets all 8 forks fit in
+ * ~32 GiB with headroom and GC normally. Same rule as the PAPERCUSP_*/AGENT_MODELS
+ * strip below: the host's identity must never define green.
+ */
+export const GREEN_CHECKPOINT_FORK_HEAP_MB = 4096;
+
+/**
+ * Strip any inherited `--max-old-space-size` (both `=value` and space-separated
+ * `--flag value` forms, and the `_` spelling) from a NODE_OPTIONS string and pin
+ * it to {@link GREEN_CHECKPOINT_FORK_HEAP_MB}, preserving every other token
+ * (e.g. `--expose-gc`). Total + pure: an empty/undefined input yields just the
+ * pinned heap flag, so the gate's per-fork heap is DETERMINISTIC regardless of
+ * what the host launched the bg-host with.
+ */
+export function sanitizeForkNodeOptions(
+  nodeOptions: string | undefined,
+  heapMb: number = GREEN_CHECKPOINT_FORK_HEAP_MB,
+): string {
+  const toks = (nodeOptions ?? '').split(/\s+/).filter(Boolean);
+  const kept: string[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (/^--max[-_]old[-_]space[-_]size$/.test(t)) {
+      i++; // also drop its value (the next token)
+      continue;
+    }
+    if (/^--max[-_]old[-_]space[-_]size=/.test(t)) continue;
+    kept.push(t);
+  }
+  kept.push(`--max-old-space-size=${heapMb}`);
+  return kept.join(' ');
+}
+
+/**
  * Build the GREEN suite's environment — the COMMITTED DEFAULTS, with the host's
  * identity stripped — as a fresh env (so realCheckpointDeps.runGreen's env logic,
  * which twice held `main` red for hours via leaked env, is unit-testable without
