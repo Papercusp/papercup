@@ -97,7 +97,7 @@ describe('delta replay — re-execute plans:list-shaped tool against a fixture D
     const delta = computeListDelta(base, next, { itemKey: 'slug' });
     expect(delta.mode).toBe('not_modified');
 
-    const e = evalSnapshotTransition(base, next, { itemKey: 'slug' });
+    const e = await evalSnapshotTransition(base, next, { itemKey: 'slug' });
     expect(e.mode).toBe('not_modified');
     expect(e.correct).toBe(true);
     expect(e.savedVsFullPct).toBeGreaterThan(95);
@@ -126,7 +126,7 @@ describe('delta replay — re-execute plans:list-shaped tool against a fixture D
     const merged = applyListDelta(base, delta, { itemKey: 'slug' });
     expect(merged).toEqual(next);
 
-    const e = evalSnapshotTransition(base, next, { itemKey: 'slug' });
+    const e = await evalSnapshotTransition(base, next, { itemKey: 'slug' });
     expect(e.correct).toBe(true);
     expect(e.winner).toBe('delta');
     const fullBaseline = Math.min(e.tokens.fullJson, e.tokens.fullToon);

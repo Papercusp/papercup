@@ -186,9 +186,9 @@ describe('checksumRows', () => {
 /* ─── The win is real: token measurement on the dominant views ───────────── */
 
 describe('evalSnapshotTransition — token ROI on plans:list-shaped payloads', () => {
-  it('UNCHANGED 60-plan view → not_modified, >99% saving vs full-TOON, merge correct', () => {
+  it('UNCHANGED 60-plan view → not_modified, >99% saving vs full-TOON, merge correct', async () => {
     const base = workspaceView(60);
-    const e = evalSnapshotTransition(base, workspaceView(60), KEY);
+    const e = await evalSnapshotTransition(base, workspaceView(60), KEY);
     expect(e.mode).toBe('not_modified');
     expect(e.correct).toBe(true);
     expect(e.winner).toBe('not_modified');
@@ -199,11 +199,11 @@ describe('evalSnapshotTransition — token ROI on plans:list-shaped payloads', (
     expect(e.tokens.fullToon).toBeGreaterThan(3000);
   });
 
-  it('ONE row changed in a 60-plan view → delta « full, big saving, merge correct', () => {
+  it('ONE row changed in a 60-plan view → delta « full, big saving, merge correct', async () => {
     const base = workspaceView(60);
     const next = workspaceView(60);
     next[42] = planRow(42, { status: 'shipped', nextAction: 'a newly edited next-action line' });
-    const e = evalSnapshotTransition(base, next, KEY);
+    const e = await evalSnapshotTransition(base, next, KEY);
     expect(e.mode).toBe('delta');
     expect(e.correct).toBe(true);
     expect(e.winner).toBe('delta');
@@ -213,19 +213,19 @@ describe('evalSnapshotTransition — token ROI on plans:list-shaped payloads', (
     expect(e.savedVsFullPct).toBeGreaterThan(75);
   });
 
-  it('FINDING: TOON-compact does NOT universally beat JSON — on the nested plans:list row shape it is WORSE, so the delta path is the only real win', () => {
+  it('FINDING: TOON-compact does NOT universally beat JSON — on the nested plans:list row shape it is WORSE, so the delta path is the only real win', async () => {
     // plans:list rows carry a nested `itemCounts` object + long `nextAction`
     // strings → TOON cannot tabularize them and its nested form exceeds compact
     // JSON. The harness reports both so the negotiator picks min(json,toon); the
     // delta/not_modified saving is shape-INDEPENDENT and dominates either way.
-    const e = evalSnapshotTransition(workspaceView(60), workspaceView(60), KEY);
+    const e = await evalSnapshotTransition(workspaceView(60), workspaceView(60), KEY);
     expect(e.tokens.fullToon).toBeGreaterThan(e.tokens.fullJson); // TOON loses here
     expect(e.winner).toBe('not_modified'); // ...but the delta path still wins big
     expect(e.savedVsFullPct).toBeGreaterThan(99);
   });
 
-  it('base absent → full re-send, no merge claimed', () => {
-    const e = evalSnapshotTransition(null, workspaceView(20), KEY);
+  it('base absent → full re-send, no merge claimed', async () => {
+    const e = await evalSnapshotTransition(null, workspaceView(20), KEY);
     expect(e.mode).toBe('full');
     expect(e.reason).toBe('base_absent');
     expect(e.correct).toBeNull();
@@ -233,10 +233,10 @@ describe('evalSnapshotTransition — token ROI on plans:list-shaped payloads', (
     expect(e.tokens.delta).toBeNull();
   });
 
-  it('tiny body (small-response bypass) → winner is full, never a delta round-trip', () => {
+  it('tiny body (small-response bypass) → winner is full, never a delta round-trip', async () => {
     const base: Row[] = [{ slug: 'a', n: 1 }];
     const next: Row[] = [{ slug: 'a', n: 2 }];
-    const e = evalSnapshotTransition(base, next, KEY);
+    const e = await evalSnapshotTransition(base, next, KEY);
     expect(e.winner === 'full_toon' || e.winner === 'full_json').toBe(true);
   });
 });
