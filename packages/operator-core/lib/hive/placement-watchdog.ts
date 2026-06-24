@@ -224,11 +224,29 @@ export interface PlacementObservation {
 export type PlacementDecision =
   | { kind: 'healthy' }
   | { kind: 'completed' }
-  | { kind: 'recover'; nextFailCount: number; nextInfraLossCount: number; reason: string }
+  | { kind: 'recover'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
   | { kind: 'debounced' }
-  | { kind: 'breaker'; nextFailCount: number; nextInfraLossCount: number; reason: string }
+  | { kind: 'breaker'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
   | { kind: 'latched' }
   | { kind: 'abandon'; reason: string };
+
+/**
+ * EI-3216 — `infraAttributed` marks a recover/breaker whose loss is an
+ * ITEM-INDEPENDENT INFRA condition (an operator-dormancy sweep, or a no-fair-attempt
+ * zombie bee that made 0 tool calls — typically the whole fleet booting bees without
+ * MCP, or no bees spawning at all), NOT item-pathology. The Queen/owner cannot fix
+ * such a loss by re-placing or investigating THIS item (a re-place just makes another
+ * zombie), so:
+ *   - an infra `recover` does NOT fire a per-item Queen recovery wake, and
+ *   - an infra `breaker` curse does NOT open a per-item owner escalation.
+ * The placement is still re-placed / recorded `cursed` (the `placements.cursed` health
+ * metric + hive:status are the real cursed-state surface); only the per-item NOISE is
+ * suppressed. Without this, a fleet-wide no-bees window cursed the whole frontier at
+ * `fail_count=0, infra_loss_count=12`, flooding the queue with "failed 0×" advisories
+ * and waking the Queen every ~5min to do nothing actionable. A genuine item-pathology
+ * curse (a bee that RAN and failed `breakerThreshold` times) is NOT infra-attributed —
+ * it still wakes + escalates with its real (non-zero) count.
+ */
 
 /**
  * The completion-guarantee contract for ONE placement (P-020 + P-021), pure:
@@ -313,6 +331,9 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
       kind: 'recover',
       nextFailCount: obs.failCount, // FLAT — the operator being down says nothing about the item
       nextInfraLossCount: obs.infraLossCount, // FLAT — fully exempt, never accrues toward any breaker
+      // EI-3216 — item-independent infra: re-place silently, do NOT wake the Queen per item
+      // (a host restart fires this for EVERY placement in lockstep — that's a 32-wake storm).
+      infraAttributed: true,
       reason:
         'post-dormancy recovery sweep (operator/bg-host was down) — item-independent infra loss, ' +
         'fully exempt from both breakers (re-placing, not counting)',
@@ -337,6 +358,11 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
         kind: 'breaker',
         nextFailCount: obs.failCount, // the pathology count is untouched
         nextInfraLossCount,
+        // EI-3216 — an infra/zombie curse (fail_count=0) records `cursed` but does NOT open a
+        // per-item owner escalation: the breaker tripped on bee-boot infra, not item-pathology,
+        // so a "failed 0× — stopped auto-re-placing" advisory is pure queue noise the owner
+        // can't act on per item. The placements.cursed health metric is the real surface.
+        infraAttributed: true,
         reason: `${nextInfraLossCount} no-fair-attempt (zombie) losses (>= infra breaker ${cfg.infraBreakerThreshold}) — serving bee made 0 tool calls`,
       };
     }
@@ -344,6 +370,9 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
       kind: 'recover',
       nextFailCount: obs.failCount, // pathology count held FLAT — a zombie loss doesn't progress it
       nextInfraLossCount,
+      // EI-3216 — re-place silently: a no-fair-attempt zombie loss is infra, not item-pathology,
+      // so it does NOT fire a per-item Queen recovery wake (re-placing makes another zombie).
+      infraAttributed: true,
       reason: 'serving bee made 0 tool calls (no-fair-attempt / zombie) — counted toward the bounded infra breaker, not the pathology breaker',
     };
   }
@@ -831,7 +860,14 @@ export async function reconcileOneHive(
             disposition: 'recover',
             bumpRecovery: true,
           });
-          await fireRecoveryWake(workspaceId, queenOwner, unitId, base.harnessSlug, decision.nextFailCount);
+          // EI-3216 — an ITEM-INDEPENDENT infra loss (operator dormancy / no-fair-attempt
+          // zombie) re-places silently: it does NOT fire a per-item Queen recovery wake (the
+          // Queen can't fix bee-boot infra by re-placing THIS item, and a fleet-wide no-bees
+          // window would fire one wake PER placement — the ~5min wake storm). The recovering
+          // row is still surfaced in hive:status, so she drives it on her next natural survey.
+          if (!decision.infraAttributed) {
+            await fireRecoveryWake(workspaceId, queenOwner, unitId, base.harnessSlug, decision.nextFailCount);
+          }
           out.push({
             workspaceId,
             installSlug,
@@ -841,7 +877,15 @@ export async function reconcileOneHive(
           });
           break;
         case 'breaker': {
-          const msgId = await escalateCursedPlacement(unitId, base.harnessSlug, decision.nextFailCount);
+          // EI-3216 — only a genuine item-PATHOLOGY curse (a bee that RAN and failed
+          // `breakerThreshold` times) opens a per-item owner escalation. An infra-attributed
+          // curse (the bounded no-fair-attempt zombie breaker, fail_count=0) records `cursed`
+          // for the health metric but skips the escalation: a "failed 0×" advisory is queue
+          // noise the owner can't act on per item (the fleet-wide bee-boot infra is the real
+          // problem, surfaced in aggregate). This is the source of the 32-row "failed 0×" flood.
+          const msgId = decision.infraAttributed
+            ? null
+            : await escalateCursedPlacement(unitId, base.harnessSlug, decision.nextFailCount);
           await upsertPlacement(sql, {
             ...base,
             status: 'cursed',
