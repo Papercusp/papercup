@@ -23,6 +23,11 @@ import { ALL_FLAG_KEYS, FLAGS, FLAG_DEFAULTS, type FlagKey } from './types';
  * flips to default-ON.
  */
 const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
+  // cutover — workspace-scoped memory recall (data-scoping-audit P-006 / D-012): a reversible
+  // kill-switch flipped after an attended live recall-hit-rate verify (the conservative
+  // NULL-safe filter is complete + unit-tested, but a shared-recall behavior change wants the
+  // live A/B before defaulting ON).
+  FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL,
   // (CAPABILITY_GRANT_TOOL + WORKITEM_REDUNDANCY + CAPABILITY_ENVELOPE_OVERRIDES graduated to
   // default-ON 2026-06-22 — owner ratified the owner-authority flips in-session.)
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
@@ -340,6 +345,8 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
  */
 type DarkCase = 'incomplete' | 'owner-authority' | 'cutover' | 'parked';
 const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase>([
+  // cutover — reversible kill-switch, owner flips after an attended live verify
+  [FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL, 'cutover'],
   // parked — deliberately out of V1 scope
   [FLAGS.CLOUDFLARE_PUBLISH, 'parked'],
   [FLAGS.HARNESS_PHASES, 'parked'],

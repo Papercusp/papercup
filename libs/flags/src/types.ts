@@ -433,6 +433,11 @@ export const FLAGS = {
   // (~$0.05 embeddings/run, no LLM); ON by default so the monitoring panel has
   // data. OFF cuts the bench (and the precision chips degrade to "—").
   MEMORY_PRECISION_BENCH: "papercusp-memory-precision-bench",
+  // data-scoping-audit-2026-06-22 P-006 / D-004 / D-012: workspace-scope the memory RECALL
+  // user-pool (drop cross-workspace `project` hits; keep owner-tier user/feedback/reference
+  // + legacy NULL-workspace rows). Dark CUTOVER — the flip is the attended live recall-
+  // hit-rate verify. Rides migration 398's generated workspace_id column.
+  MEMORY_WORKSPACE_SCOPED_RECALL: "papercusp-memory-workspace-scoped-recall",
   // self-learning-frontier-2026-06-12 (P-031 / FB-20): Red Queen vaccination —
   // `system:red-queen-drill` plants origin=drill synthetic frictions in the
   // SANDBOX workspace ('red-queen-sandbox'), detects them with a real watchdog
@@ -1415,6 +1420,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // work, so it ships enabled. The @singleton routine row is materialized by the
   // seed CLI post-deploy (singletonActive:true → seeds ACTIVE).
   [FLAGS.MEMORY_PRECISION_BENCH]: true,
+  // OFF (dark CUTOVER) — workspace-scoped memory recall is a reversible kill-switch the
+  // owner flips after an attended live recall-hit-rate verify (data-scoping-audit P-006 /
+  // D-012). Conservative + NULL-safe, but a shared-recall behavior change.
+  [FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL]: false,
   // OFF by default — same D-001 dark-ship rule as the loops above: the Red
   // Queen plants synthetic frictions and files origin=drill captures (new
   // capture volume, even though the drill lane never reaches organic
