@@ -88,6 +88,7 @@
   --pc-danger: var(--bad);
   --bg-danger: rgba(251, 113, 133, 0.1); /* rose-400 @ 0.1 */
   --bad-bg: rgba(251, 113, 133, 0.1);
+  --bad-bg-solid: #2a1618; /* opaque error-banner bg (solid counterpart of --bad-bg) — DogfoodBootstrapBanner */
   --error-bg: rgba(251, 113, 133, 0.1);
   --pc-color-danger-bg: rgba(251, 113, 133, 0.1);
   /* warning → amber */
