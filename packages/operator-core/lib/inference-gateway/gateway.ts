@@ -1926,6 +1926,27 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const u5 = hobj['anthropic-ratelimit-unified-5h-utilization'] ?? hobj['anthropic-ratelimit-unified-utilization'] ?? '-';
             const u7 = hobj['anthropic-ratelimit-unified-7d-utilization'] ?? '-';
             shape429Suffix = ` [429-shape=${shape429} x-should-retry=${shouldRetry} retry-after=${reset.retryAfterMs ?? '-'}ms util5h=${u5} util7d=${u7}]`;
+            // BARE-BURST ORIGIN CAPTURE (WI-650/G2): a bare-burst is the unexplained throttle the fleet hits at
+            // util≪1 — and the G2 experiment proved it is NOT a per-account rate/concurrency wall (one account
+            // sustains ≥64 concurrent opus with zero bare-bursts), so it is a SHARED edge/infra-layer throttle.
+            // On THAT shape, append the provenance headers that say WHO threw it: a Cloudflare/edge throttle
+            // carries `server: cloudflare` + `cf-ray` (and usually NO Anthropic request-id); an Anthropic
+            // app-layer 429 carries `request-id`/`anthropic-organization-id`. Captured into the same suffix so
+            // every production bare-burst self-classifies in journald — "Anthropic or CDN edge?" reads from data.
+            if (shape429 === 'bare-burst') {
+              const origin = ([
+                ['server', hobj['server']],
+                ['cf-ray', hobj['cf-ray']],
+                ['via', hobj['via']],
+                ['req-id', hobj['request-id'] ?? hobj['x-request-id']],
+                ['org', hobj['anthropic-organization-id']],
+                ['unified-status', hobj['anthropic-ratelimit-unified-status']],
+              ] as const)
+                .filter(([, v]) => v !== undefined)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(' ');
+              shape429Suffix += ` [bare-burst-origin ${origin || 'no-provenance-headers'}]`;
+            }
           }
           if (up.status === 529) {
             // SERVER overload — NOT account budget; don't penalize/rotate the account, just back off + retry.

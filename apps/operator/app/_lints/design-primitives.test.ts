@@ -35,6 +35,13 @@ const LEGACY_NATIVE_SELECT_FILES = new Set([
   // panel. Allowlisted so a new internal panel doesn't red the whole fleet's gate;
   // migrate to the shared Select primitive as a follow-up.
   'operator-vite/src/components/dev-admin-rail/panels/ToolUsagePanel.tsx',
+  // TEMPORARY (gate-unblock 2026-06-23, model-override-sidebar-2026-06-23) — the new
+  // left-rail per-agent session model-override control. The shared Select primitive
+  // (operator/app/harness/Select.tsx) lives in the apps/operator Next app and isn't
+  // yet available to the operator-vite app (same constraint as ToolUsagePanel above).
+  // Allowlisted so a new control doesn't red the whole fleet's gate; migrate to a
+  // Vite-available Select primitive as a follow-up.
+  'operator-vite/src/components/left-sidebar/ModelOverride.tsx',
 ]);
 
 const LEGACY_NATIVE_CHECKBOX_FILES = new Set([
