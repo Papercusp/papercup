@@ -348,7 +348,7 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
  * | serializationWorkers | cores - 2  (0 ⇒ inline; only earned past ~4 cores)   |   0   |    8    |
  * | embedBatchSize       | 32 * 2^hostClassTier (laptop 32 / wkstn 64 / srv 128)|  16   |  256    |
  * | backgroundInProcess  | false only on a server-class host w/ native PG; else true | — | — |
- * | httpWorkers          | (server & native PG) ? min(cores-1, connBudget) : 1 |   1   |   32    |
+ * | httpWorkers          | server ? min(cores-1, connBudget) : 1 (EI-3377)     |   1   |   32    |
  */
 export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile {
   // Normalize cores to a finite >=1 integer. A non-finite signal (NaN from a
@@ -405,18 +405,28 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   const database = deriveDatabaseTuning(signals);
 
   // HTTP worker processes for a clustered deploy (P3-2). >1 ONLY on a server-class
-  // host with a DEDICATED PG (same gate as backgroundInProcess=false): a big
-  // multi-tenant box that benefits from spreading request serving across cores. A
-  // laptop/workstation — or any embedded-PG/desktop host — stays 1 (clustering buys
-  // nothing for one user, and the desktop owns the single-socket PTY/IPC servers a
-  // round-robin cluster can't share). The count is the MIN of two ceilings: cores-1
-  // (reserve a core for the background primary), capped at 32; AND the PG CONNECTION
-  // BUDGET (maxClusterWorkersForConnBudget) — without that second cap, cores-1 on a
-  // 128-core/512-conn box forks 32 workers and over-subscribes max_connections,
-  // re-creating the 2026-06-17 exhaustion. RECOMMENDED count only — forked only when
-  // clustering is explicitly enabled (default-off); the operator feeds processCount
-  // into PG pool sizing.
-  const clusterable = hostClass === 'server' && !embeddedPg;
+  // host: a big multi-tenant box that benefits from spreading request serving across
+  // cores. A laptop/workstation stays 1 (clustering buys nothing for one user, and a
+  // desktop owns the single-socket PTY/IPC servers a round-robin cluster can't share);
+  // hostClass is the robust desktop discriminator — a real embedded-PG desktop is
+  // ALWAYS laptop/workstation-class, never 'server'. The count is the MIN of two
+  // ceilings: cores-1 (reserve a core for the background primary), capped at 32; AND
+  // the PG CONNECTION BUDGET (maxClusterWorkersForConnBudget) — without that second
+  // cap, cores-1 on a 128-core/512-conn box forks 32 workers and over-subscribes
+  // max_connections, re-creating the 2026-06-17 exhaustion. RECOMMENDED count only —
+  // forked only when clustering is explicitly enabled (default-off); the operator
+  // feeds processCount into PG pool sizing.
+  //
+  // EI-3377: gated on hostClass ALONE, NOT `!embeddedPg`. The papercusp detector
+  // detectEmbeddedPg() misfires to true on any host with an explicit DATABASE_URL
+  // (EI-2403), so a native-PG server (the whole point of clustering) wrongly read
+  // embeddedPg=true and collapsed httpWorkers to 1. The connection concern embeddedPg
+  // stood proxy for is already handled directly by maxClusterWorkersForConnBudget, and
+  // the desktop concern by hostClass — so the embeddedPg term was both redundant and
+  // (given the misfire) actively wrong. Same rationale pgbouncerEnabled()/pg-listen-hub
+  // already adopted. A genuine server-with-embedded-PG only changes its RECOMMENDED
+  // count; clustering is still opt-in (PAPERCUSP_CLUSTER), so nothing forks unbidden.
+  const clusterable = hostClass === 'server';
   const httpWorkers = clusterable
     ? clamp(Math.min(cores - 1, maxClusterWorkersForConnBudget(database)), 1, 32)
     : 1;

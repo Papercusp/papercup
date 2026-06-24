@@ -2,10 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildOpenAiEmbedder,
   EMBED_MAX_ATTEMPTS,
+  EMBED_TOTAL_BUDGET_MS,
   parseOpenAiDurationMs,
   retryDelayFromHeaders,
   nextEmbedBackoffMs,
 } from './configure';
+import { memoryToolTimeoutMs } from './op-deadline';
 
 // The OpenAI embedder used to throw on the FIRST non-OK response with no retry,
 // so a burst of memory writes (learning-pack seeding fires items in concurrent
@@ -61,11 +63,30 @@ describe('buildOpenAiEmbedder — transient-failure resilience', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('rides out a SUSTAINED 429 across the full attempt budget before giving up', async () => {
+  it('rides out a SUSTAINED hintless 429 until the wall-clock BUDGET is spent, then gives up', async () => {
+    // mem0-timeout-fix-2026-06-24: the embed budget is now coupled UNDER the 10s memory-tool
+    // deadline (EMBED_TOTAL_BUDGET_MS), so a sustained 429 with NO server reset hint gives up
+    // when the budget is exhausted — FEWER than EMBED_MAX_ATTEMPTS tries — rather than riding a
+    // 50s retry well past the deadline (which surfaced as `memory_timeout`).
     const fetchMock = vi.fn().mockResolvedValue(new Response('still rate limited', { status: 429 }));
     vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      buildOpenAiEmbedder('sk', { sleep: noSleep, rand: () => 1 })('x'),
+    ).rejects.toThrow(/openai_embed_failed_429/);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1); // it DID retry
+    expect(fetchMock.mock.calls.length).toBeLessThan(EMBED_MAX_ATTEMPTS); // but budget-bounded, not attempt-bounded
+  });
+
+  it('gives up FAST (one attempt) when the server reset window exceeds the remaining budget', async () => {
+    // The org-wide 1M-TPM drain returns 429 with `x-ratelimit-reset-tokens` ~15m — far longer
+    // than the embed budget. Sleeping the whole budget for a reset that won't arrive in time is
+    // pure latency, so we give up immediately with a clean failure (mem0-timeout-fix-2026-06-24).
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('drained', { status: 429, headers: { 'x-ratelimit-reset-tokens': '900s' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
     await expect(buildOpenAiEmbedder('sk', { sleep: noSleep })('x')).rejects.toThrow(/openai_embed_failed_429/);
-    expect(fetchMock).toHaveBeenCalledTimes(EMBED_MAX_ATTEMPTS); // 1 + (EMBED_MAX_ATTEMPTS-1) retries
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no doomed wait — fail fast & clean
   });
 
   it('honors the server Retry-After hint for the backoff wait', async () => {
@@ -125,6 +146,14 @@ describe('nextEmbedBackoffMs', () => {
     expect(nextEmbedBackoffMs(0, 2000, 0, { rand: () => 0 })).toBe(2000);
   });
 
+  it('gives up (null) when the server reset hint is LONGER than the remaining budget', () => {
+    // The doomed-wait case (mem0-timeout-fix-2026-06-24): reset 900s ≫ 5s remaining budget →
+    // the reset can't arrive before we must give up, so don't sleep for it — fail fast.
+    expect(nextEmbedBackoffMs(0, 900_000, 0, { maxTotalWaitMs: 5_000 })).toBeNull();
+    // But a hint that FITS the budget is still honored.
+    expect(nextEmbedBackoffMs(0, 2_000, 0, { maxTotalWaitMs: 5_000, rand: () => 0 })).toBe(2_000);
+  });
+
   it('widens reset-moment jitter so clients on the SAME reset window do not re-fire in sync (anti-herd)', () => {
     // Two clients both told "reset in 5s" get DIFFERENT waits — spread across the jitter
     // window — so they don't all hammer OpenAI at the exact reset boundary.
@@ -133,5 +162,15 @@ describe('nextEmbedBackoffMs', () => {
     expect(a).toBe(5000); // reset honored exactly when jitter draws 0
     expect(b).toBeGreaterThan(6000); // a different client is jittered later
     expect((b as number) - (a as number)).toBeGreaterThan(1000); // spread > 1s across the herd
+  });
+});
+
+describe('embed budget ↔ memory deadline coupling (anti-drift)', () => {
+  it('keeps EMBED_TOTAL_BUDGET_MS under the memory-tool deadline so a throttled embed fails CLEAN, not as memory_timeout', () => {
+    // ROOT CAUSE of the 2026-06-24 mem0 timeouts: the embed retry budget (~50s, sized for the
+    // old 60s transport cap) outlived the 10s memory-tool deadline (B1) after it was added, so a
+    // 429/slow embed rode past the deadline and surfaced as `memory_timeout`. This guard fails the
+    // build if the two drift apart again.
+    expect(EMBED_TOTAL_BUDGET_MS).toBeLessThan(memoryToolTimeoutMs());
   });
 });

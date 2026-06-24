@@ -50,22 +50,37 @@ const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
 
-// ── Embedder retry budget (watchdog-embed-resilience-and-dedup-2026-06-17 P-001;
-//    patience raised 2026-06-18 per owner ask, to ride out longer TPM bursts) ──
+// ── Embedder retry budget (watchdog-embed-resilience-and-dedup-2026-06-17 P-001) ──
 // A sustained org-wide TPM 429 on text-embedding-3-small (1M TPM) hard-failed
-// memory:remember/search FLEET-WIDE on 2026-06-17. We ride the spikes out on the
+// memory:remember/search FLEET-WIDE on 2026-06-17. We ride SHORT spikes out on the
 // SAME embedder (no fallback) with a header-aware, JITTERED, budget-capped retry.
-// Budget is ~50s — just UNDER the 60s per-tool-call timeout. SAFE for a multi-fact
-// memory:remember because mem0 embeds facts in PARALLEL (Promise.all, mem0-client.ts
-// embedBatch), so a call's embed phase is bounded by the SLOWEST single embed, not
-// the sum — N facts don't multiply the wait.
+//
+// ⚠ DEADLINE COUPLING (mem0-timeout-fix-2026-06-24): the budget MUST stay UNDER the
+// memory-tool deadline (`memoryToolTimeoutMs`, op-deadline.ts — default 10_000ms).
+// HISTORY: this budget was once ~50s ("just under the 60s transport cap"), but B1
+// (infra-fail-fast-build-integrity-2026-06-19) later bounded every memory backend
+// call at 10s WITHOUT re-coupling this budget — so a throttled embed rode its own 50s
+// retry well past the 10s deadline and surfaced as `memory_timeout` (an opaque hang +
+// the agent's "mem0 timed out, retrying…" narration) instead of a fast, clean
+// degraded envelope. Keep `EMBED_TOTAL_BUDGET_MS` < the deadline so a 429/slow embed
+// FAILS FAST and CLEAN. A guard test (configure.test.ts) asserts this invariant.
+// SAFE for a multi-fact memory:remember because mem0 embeds facts in PARALLEL
+// (Promise.all, mem0-client.ts embedBatch) — a call's embed phase is bounded by the
+// SLOWEST single embed, not the sum.
 // THUNDERING HERD: full jitter on the exponential path AND a widened jitter on the
 // reset-header path (EMBED_RESET_JITTER_MS) so many clients waiting on the SAME reset
 // window don't all re-fire at the exact same moment.
-export const EMBED_MAX_ATTEMPTS = 12; // 1 try + 11 retries
-const EMBED_MAX_TOTAL_WAIT_MS = 50_000; // never block ONE embed call past this (< the 60s tool timeout)
+export const EMBED_MAX_ATTEMPTS = 12; // 1 try + 11 retries (the WALL-CLOCK budget stops it first)
+// Overall wall-clock budget for ONE embed call (all attempts + backoff sleeps + the
+// actual fetch time). Must be < memoryToolTimeoutMs (10_000) with headroom for the PG
+// op + overhead so the embed gives up BEFORE the outer deadline fires. Env-tunable.
+export const EMBED_TOTAL_BUDGET_MS = Number(process.env.PAPERCUSP_EMBED_TOTAL_BUDGET_MS) || 7_000;
+// Per-attempt fetch abort: a single OpenAI embed RTT is ~200ms; a call exceeding this
+// is a network/connection STALL, so abort it (a hung fetch must not eat the budget).
+export const EMBED_FETCH_TIMEOUT_MS = Number(process.env.PAPERCUSP_EMBED_FETCH_TIMEOUT_MS) || 5_000;
+const EMBED_MAX_TOTAL_WAIT_MS = EMBED_TOTAL_BUDGET_MS; // cumulative-backoff budget (≤ wall budget)
 const EMBED_BACKOFF_BASE_MS = 500;
-const EMBED_BACKOFF_CAP_MS = 8_000; // per-attempt ceiling (exponential / no-hint path)
+const EMBED_BACKOFF_CAP_MS = 3_000; // per-attempt ceiling (exponential / no-hint path)
 const EMBED_RESET_JITTER_MS = 2_500; // spread post-reset retries across this window (anti-herd)
 
 // Dodge bundler static analysis — @huggingface/transformers is an
@@ -157,9 +172,14 @@ export function nextEmbedBackoffMs(
   if (remaining <= 0) return null;
   let wait: number;
   if (serverHintMs != null && serverHintMs > 0) {
-    // Honor the server's FULL reset window (bounded only by the remaining budget below)
-    // + a WIDENED jitter so many clients waiting on the SAME reset don't all re-fire at
-    // once — de-correlates the retry storm at the window boundary (anti-thundering-herd).
+    // FAIL-FAST (mem0-timeout-fix-2026-06-24): when the server's reset window is LONGER
+    // than our remaining budget, the reset will NOT arrive before we have to give up — so
+    // sleeping the whole budget just to fail anyway is pure latency. Give up NOW (clean,
+    // fast degraded envelope) rather than burning the budget on a doomed wait. This is the
+    // case that hit memory:* during the org-wide 1M-TPM drain (reset ~15m ≫ 7s budget).
+    if (serverHintMs > remaining) return null;
+    // Otherwise honor the server's reset window + a WIDENED jitter so many clients waiting
+    // on the SAME reset don't all re-fire at once (anti-thundering-herd).
     wait = serverHintMs + Math.floor(rand() * EMBED_RESET_JITTER_MS);
   } else {
     // Full jitter over an exponential window, with a small floor.
@@ -185,11 +205,20 @@ export function nextEmbedBackoffMs(
 export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {}): EmbedFn {
   const maxAttempts = opts.maxAttempts ?? EMBED_MAX_ATTEMPTS;
   const sleep = opts.sleep ?? realSleep;
+  const totalBudgetMs = opts.maxTotalWaitMs ?? EMBED_TOTAL_BUDGET_MS;
   return async (text: string): Promise<number[]> => {
     let lastErr: Error | null = null;
     let waitedMs = 0;
     const adm = embedAdmission();
+    // Wall-clock deadline for the WHOLE embed (fetch time + backoff sleeps), so a stalled
+    // fetch or a long retry chain can't overshoot the memory-tool deadline (B1, 10s) and
+    // surface as `memory_timeout` (mem0-timeout-fix-2026-06-24). The per-attempt fetch is
+    // additionally aborted at EMBED_FETCH_TIMEOUT_MS (or the remaining budget, whichever is
+    // smaller) so one hung connection never eats the budget.
+    const embedDeadlineAt = Date.now() + totalBudgetMs;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const remainingBudgetMs = embedDeadlineAt - Date.now();
+      if (remainingBudgetMs <= 0) break; // budget spent → surface the failure now
       let serverHintMs: number | null = null;
       // MEMORY lane of the shared embed-TPM admission governor
       // (watchdog-and-exposed-systems-improvement-2026-06-18 P-002). Production recall must
@@ -206,6 +235,9 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
             input: text,
             dimensions: EMBEDDER_DIM,
           }),
+          // Abort a STALLED connection so it can't consume the whole embed budget; bound by
+          // the remaining wall-clock budget so the abort never pushes past the deadline.
+          signal: AbortSignal.timeout(Math.max(1, Math.min(EMBED_FETCH_TIMEOUT_MS, remainingBudgetMs))),
         });
         adm.recordResponse(headersToRecord(r.headers)); // learn the live limit / pause on remaining=0
         if (r.ok) {
@@ -229,8 +261,12 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         slot?.release();
       }
       if (attempt >= maxAttempts - 1) break; // out of attempts — surface the failure now
-      const waitMs = nextEmbedBackoffMs(attempt, serverHintMs, waitedMs, opts);
-      if (waitMs == null) break; // total-wait budget spent — surface the failure now
+      let waitMs = nextEmbedBackoffMs(attempt, serverHintMs, waitedMs, opts);
+      if (waitMs == null) break; // backoff budget spent / reset won't arrive in time
+      // Clamp to the remaining WALL-CLOCK budget (fetch time already consumed counts) so the
+      // sleep can't push the total embed past the memory-tool deadline.
+      waitMs = Math.min(waitMs, embedDeadlineAt - Date.now());
+      if (waitMs <= 0) break;
       waitedMs += waitMs;
       await sleep(waitMs);
     }

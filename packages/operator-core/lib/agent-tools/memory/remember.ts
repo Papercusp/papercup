@@ -21,6 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
+import { embedFailureReason } from '../../memory/configure';
 import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
@@ -316,6 +317,14 @@ export default defineTool({
       if (err instanceof MemoryUnavailableError) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: err.reason }) }],
+        };
+      }
+      // mem0-timeout-fix-2026-06-24: a fast-failed embed (org TPM 429 / 5xx / stall) surfaces
+      // as a CLEAN reason so the agent narrates accurately instead of as an opaque handler_error.
+      const embedReason = embedFailureReason(err);
+      if (embedReason) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: embedReason }) }],
         };
       }
       throw err;

@@ -18,6 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
+import { embedFailureReason } from '../../memory/configure';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { isEphemeralBenchmarkHarnessSlug } from '../../harness/improvements/watchdog';
@@ -132,6 +133,14 @@ export default defineTool({
       if (err instanceof MemoryTimeoutError) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout', results: [] }) }],
+        };
+      }
+      // mem0-timeout-fix-2026-06-24: a fast-failed embed (org TPM 429 / 5xx / stall) surfaces
+      // as a CLEAN reason + empty results, not an opaque handler_error.
+      const embedReason = embedFailureReason(err);
+      if (embedReason) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: embedReason, results: [] }) }],
         };
       }
       throw err;
