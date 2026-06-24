@@ -37,6 +37,12 @@ import {
   shareExistingHive,
   type SharedHiveState,
 } from './papercusp-hive-share';
+import {
+  bakedCanonicalHiveInvite,
+  joinCanonicalPapercuspHive,
+  type CanonicalHiveInvite,
+} from './papercusp-hive-join';
+import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
 
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';
@@ -54,11 +60,9 @@ export const BOOTSTRAP_PROGRESS_ID = 'bootstrap-papercusp-hive';
 export type BootstrapProgressStep = 'clone' | 'submodules';
 export type BootstrapProgressStatus = 'running' | 'done' | 'error' | 'skipped';
 
-/** Detail recorded on the `clone` step (kept at 0% `running`, NOT `error`) when
- *  the clone can't start yet because GitHub isn't signed in — so the banner stays
- *  visible at 0% and prompts the user instead of flashing a failure. The wizard's
- *  GitHub step re-triggers the bootstrap once signed in. The UI matches on this. */
-export const AWAITING_GH_SIGNIN_DETAIL = 'Sign in to GitHub to begin the download';
+/** Re-exported from ./bootstrap-papercusp-hive-detail (shared with the join path,
+ *  papercusp-hive-join.ts, without an import cycle). */
+export { AWAITING_GH_SIGNIN_DETAIL };
 
 /** Pin ref (branch OR tag) baked into a release build so the dogfood hive
  *  matches the desktop binary exactly. Unset (dev builds) ⇒ the remote default
@@ -119,6 +123,12 @@ export interface BootstrapPapercuspHiveDeps {
   /** Solution C: share an ALREADY-PRESENT hive (flag enabled after create, or a
    *  re-boot). Default: shareExistingHive (no-op when the flag is off). */
   shareExisting?: () => Promise<void>;
+  /** JOIN-the-canonical pivot: the baked canonical hive invite (pubkey+secret). When
+   *  present, JOIN the canonical hive instead of clone+create. Default:
+   *  bakedCanonicalHiveInvite() (null on dev builds → per-owner create fallback). */
+  canonicalInvite?: CanonicalHiveInvite | null;
+  /** The join orchestration. Default: joinCanonicalPapercuspHive. */
+  joinCanonical?: typeof joinCanonicalPapercuspHive;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -288,6 +298,20 @@ export async function bootstrapPapercuspHive(
     }
   } catch {
     /* registry not ready yet — fall through; ensureHive re-checks idempotently */
+  }
+
+  // 1b. JOIN-the-canonical pivot: when the build baked the canonical hive invite
+  //     (pubkey+secret, no private key), JOIN the ONE canonical `papercusp` hive
+  //     (clones the member repos + federates the owner's plans/work-items) INSTEAD of
+  //     the clone+create+Solution-C path below. Per-owner create is the no-invite
+  //     fallback. Best-effort: a skip (gh unauth / owner offline) retries next boot.
+  const canonicalInvite = bakedCanonicalHiveInvite(deps.canonicalInvite);
+  if (canonicalInvite) {
+    const joinCanonical = deps.joinCanonical ?? joinCanonicalPapercuspHive;
+    const joinRes = await joinCanonical(canonicalInvite, { record });
+    return joinRes.state === 'joined'
+      ? { state: 'cloned-and-created', slug: joinRes.slug }
+      : { state: 'skipped', slug: joinRes.slug, reason: joinRes.reason };
   }
 
   // 2. Resolve the repo: a local checkout (dev box / a prior clone on PATH) wins;
