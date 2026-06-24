@@ -61,6 +61,17 @@ export const WORKSPACE_MAP_MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
 export const PROJECT_GUIDE_MARKER = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
 
 /**
+ * Marker for the generated "## AUTO mode" section (auto-mode-policy.ts) — the
+ * owner's "act, don't ask" switch + its relationship to the engine loop. Authored
+ * ONCE in `renderAutoModePolicy()` and spliced into the engineer + power su
+ * playbooks by `renderSuPlaybook` / `writeSplicedPlaybook`, so the two surfaces
+ * can't desync (it used to be a hand-maintained copy in papercusp-su-engineer.tools.md
+ * only — power had none). Same splice contract: an absent marker leaves the section
+ * out (a future profile can opt out); an empty section removes the marker.
+ */
+export const AUTO_MODE_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
+
+/**
  * Splice generated `content` into `base` at `marker`. Replaces ALL marker
  * occurrences; with an absent marker the content is appended (when non-empty);
  * an empty content with a present marker just removes it. Generalizes the

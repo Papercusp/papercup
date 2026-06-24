@@ -15,6 +15,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   queued429: 1,
   shed429: 0,
   shedAllThrottled: 0,
+  bareBurstRotateSuppressed: 0,
   maxQueued: 256,
   concurrencyCap: 24,
   aimd: { effective: 24, cap: 24, floor: 4, pressure: 0, cleanStreak: 0, decreases: 0, increases: 0 },

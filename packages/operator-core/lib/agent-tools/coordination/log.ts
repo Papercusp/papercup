@@ -90,6 +90,7 @@ export const coordLog: CoordEventLog = {
   appendLine: (surface, writerKey, line) => impl.appendLine(surface, writerKey, line),
   readLines: (surface, opts) => impl.readLines(surface, opts),
   putEvent: (surface, msgId, record) => impl.putEvent(surface, msgId, record),
+  putEvents: (surface, records) => impl.putEvents(surface, records),
   readEvents: (surface) => impl.readEvents(surface),
   readEventsBounded: (surface, opts) => impl.readEventsBounded(surface, opts),
   getEvent: (surface, msgId) => impl.getEvent(surface, msgId),

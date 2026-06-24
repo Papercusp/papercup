@@ -113,9 +113,11 @@ WorkingDirectory per Step B), `systemctl --user disable old && enable new`, migr
 watchdog target, `daemon-reload`, restart.
 Units: `papercup-bg-host`, `papercup-staging-api`, `papercup-pg-tunnel`, `papercup-vm-mac`,
 their `*-watchdog` siblings, **and `papercup-dev-api` LAST** (its restart bounces :3070 / the MCP).
-Verify: all active under new names; :3070 responds; bg-host routines fire; git-sync commits
-(its `auto-commit ${slug}` label flips papercup→papercusp once the content-path slug resolves
-to the renamed dir — that is the symptom that closes P-005's "git-sync label" sub-item).
+Verify: all active under new names; :3070 responds; bg-host routines fire; git-sync commits.
+(NB: git-sync's `auto-commit ${slug}` label ALREADY reads `papercusp` — `${slug}` is the migrated
+harness slug, not the dir name; live commits flipped to `auto-commit papercusp` post-P-003. The
+early `auto-commit papercup` commits were historical. So P-005's "git-sync label" sub-item is
+already satisfied; the dir rename does not change it.)
 
 ---
 

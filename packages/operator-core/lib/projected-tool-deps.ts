@@ -18,6 +18,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { mergeRoleQuota } from './quota-overrides';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,
@@ -448,7 +449,10 @@ const overrideToolImpl: ToolDispatchOverrideFn = (toolName, args, ctx) => {
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // Papercusp quota windowing: workers→chunk/perChunk, power-user→session,
   // everyone else→run/perRun (plan P-011, formerly baked in the engine).
-  computeQuotaWindow: papercuspComputeQuotaWindow,
+  // P-018: a runtime per-(tool,role) override (quota:set_tool) is MERGED over the baked
+  // rolesQuota[role] before the window/ceiling is resolved — empty override map ⇒ byte-identical.
+  computeQuotaWindow: (ctx, roleQuota, toolName) =>
+    papercuspComputeQuotaWindow(ctx, toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota),
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
   overrideTool: overrideToolImpl,

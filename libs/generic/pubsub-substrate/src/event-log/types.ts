@@ -71,10 +71,18 @@ export interface CoordEventLog {
    * non-empty, filters on the envelope `kind`. Use for paginated reads (e.g.
    * coord:escalations over a large backlog) where the unbounded `readEvents`
    * would return — and buffer — the entire history. (EI-1548.)
+   *
+   * `opts.sinceTs` (ISO) restricts to events strictly LATER than it, and
+   * `opts.planSlug` to one plan — both pushed into the storage read (the PG
+   * backend filters in SQL; the fs/in-memory backends filter the loaded set) so
+   * a watermark-advancing delta caller (coord:plan-events at turn start, ×fleet)
+   * reads only its tail instead of the whole surface (the unbounded-read hole
+   * EI-1737 / fleet-concurrency-first P-005). All optional + backward-compatible:
+   * a backend that ignores them stays correct, just less I/O-narrowed.
    */
   readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[] },
+    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
   ): Promise<CoordEnvelope[]>;
 
   /** Read one per-event record by msg_id, or null. */

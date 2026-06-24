@@ -66,11 +66,13 @@ function makeCtx() {
 }
 
 async function runStart(): Promise<{ data: Record<string, unknown>; isError: boolean }> {
+  // Bulk-pattern tools return a structured `{ data: { ok, results, counts } }`
+  // envelope (../_bulk bulkContent) — the per-slug result is data.results[0], and
+  // a failure shows as counts.failed > 0 (no legacy `content[0].text` / isError).
   const res = (await startTool.handler({ harness: HARNESS, slug: SLUG } as never, makeCtx())) as {
-    content: { text: string }[];
-    isError?: boolean;
+    data: { results: Record<string, unknown>[]; counts?: { failed?: number } };
   };
-  return { data: JSON.parse(res.content[0].text), isError: res.isError === true };
+  return { data: res.data.results[0], isError: (res.data.counts?.failed ?? 0) > 0 };
 }
 
 async function frontmatterStatus(): Promise<string | null> {

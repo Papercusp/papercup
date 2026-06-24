@@ -147,6 +147,18 @@ export class FsCoordLog implements CoordEventLog {
     await fs.writeFile(file, JSON.stringify(record, null, 2), 'utf8');
   }
 
+  async putEvents(
+    surface: EventSurface,
+    records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,
+  ): Promise<void> {
+    // No fs batch primitive — one file per record, same as putEvent. Semantically
+    // equal to N putEvent calls; the PG backend is where the batch collapses to a
+    // single multi-row INSERT. An empty array no-ops.
+    for (const { msgId, record } of records) {
+      await this.putEvent(surface, msgId, record);
+    }
+  }
+
   async readEvents(surface: EventSurface): Promise<CoordEnvelope[]> {
     const dir = this.eventDir(surface);
     let entries: string[];
@@ -172,7 +184,7 @@ export class FsCoordLog implements CoordEventLog {
 
   async readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[] },
+    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
   ): Promise<CoordEnvelope[]> {
     // Fs stores one file per event with no append-order column, so approximate
     // NEWEST-FIRST by the envelope `ts` (creation time ≈ append order), tie-broken
@@ -180,7 +192,12 @@ export class FsCoordLog implements CoordEventLog {
     // the portable best-effort — EI-1548.) Reads the dir once, then bounds.
     const all = await this.readEvents(surface);
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
-    const filtered = kinds && kinds.length ? all.filter((r) => kinds.includes(r.kind)) : all;
+    const filtered = all.filter(
+      (r) =>
+        (!kinds || !kinds.length || kinds.includes(r.kind)) &&
+        (!opts.sinceTs || (typeof r.ts === 'string' && r.ts > opts.sinceTs)) &&
+        (!opts.planSlug || r.plan_slug === opts.planSlug),
+    );
     filtered.sort((a, b) => {
       const byTs = String(b.ts ?? '').localeCompare(String(a.ts ?? ''));
       return byTs !== 0 ? byTs : String(b.msg_id ?? '').localeCompare(String(a.msg_id ?? ''));

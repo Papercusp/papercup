@@ -385,6 +385,7 @@ import './computer/list-desktops';
 import './dev/restart';
 import './dev/service_health';
 import './dev/rate_governor_status';
+import './dev/worker_chunk_loop_metrics';
 import './db/migrate';
 import './db/check_drift';
 import './db/next_migration';
@@ -527,6 +528,8 @@ import './hive/control-policy';
 import './release/checkpoint-config';
 // live-configurability-audit-2026-06-20 P-022 — runtime Scout workspace spend-ceiling override:
 import './learning/set-scout-budget';
+// live-configurability-audit-2026-06-20 P-018 — runtime per-(tool,role) quota overrides:
+import './quota/set-tool';
 // release-pipeline-resilience-2026-06-09 P-015 — the manual deploy lever + gate-unblock diagnosis:
 import './release/deploy';
 

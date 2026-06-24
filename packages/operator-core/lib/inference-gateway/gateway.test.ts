@@ -864,6 +864,45 @@ test('no per-account egress → no dispatcher (default shared egress)', async ()
   assert.equal(captured?.dispatcher, undefined, 'no egress → fetch gets no dispatcher');
 });
 
+test('stats().smoothing surfaces per-account EFFECTIVE pace when smoothRpm is engaged (P-005 — is pacing working, as data)', () => {
+  // The gateway runs its OWN per-account governor registry (invisible to dev:rate_governor_status), so
+  // /stats is the only window into whether the burst-dodging smoothing pace is actually engaged.
+  const acct: ActiveAccount = { accountId: 'sm-acct', token: async () => 'T' };
+  const pool: AccountPool = { active: () => acct, peek: () => acct, onExhausted: () => null };
+  const governor = new RateLimitGovernor({ maxConcurrent: 20, rpm: 60 }); // 60rpm → 1000ms smoothed
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+    governorFor: () => governor,
+    smoothRpm: true,
+  });
+  const s = gw.stats();
+  assert.equal(s.smoothing?.engaged, true, 'smoothing engaged gateway-wide');
+  const entry = s.smoothing?.byAccount?.['sm-acct'];
+  assert.ok(entry, 'the bound account appears in smoothing.byAccount');
+  assert.equal(entry?.smoothRpm, true, 'the per-account governor has smoothRpm on');
+  assert.equal(entry?.effRpm, 60, 'effRpm = floor(rpm × factor) = 60');
+  assert.equal(entry?.effectivePaceMs, 1000, '60rpm smoothed → 1000ms ENFORCED inter-request pace (pacing is live)');
+});
+
+test('stats().smoothing reports engaged:false when smoothRpm is OFF (config visible, pace floor not applied) (P-005)', () => {
+  const acct: ActiveAccount = { accountId: 'off-acct', token: async () => 'T' };
+  const pool: AccountPool = { active: () => acct, peek: () => acct, onExhausted: () => null };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20, rpm: 60 }),
+    // smoothRpm omitted → defaults OFF
+  });
+  const s = gw.stats();
+  assert.equal(s.smoothing?.engaged, false, 'gateway-wide smoothing off');
+  const entry = s.smoothing?.byAccount?.['off-acct'];
+  assert.equal(entry?.smoothRpm, false, 'per-account smoothRpm off');
+  assert.equal(entry?.effectivePaceMs, 0, 'no smoothing floor → no enforced pace (free burst, the pre-fix behavior)');
+});
+
 test('per-account egress isolation: each pinned account routes via its OWN dispatcher; cached per-account; localAddress builds an Agent (B-GW-3 / per-account IP routing, D-003)', async () => {
   // The capacity win: each Max subscription egresses from its OWN IP, so Anthropic's per-IP opus
   // throttle becomes per-ACCOUNT (rotation works + ~8× aggregate RPM). Proof, in one request flow:

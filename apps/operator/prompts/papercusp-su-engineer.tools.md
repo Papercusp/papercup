@@ -283,46 +283,7 @@ draining peers first is the polite default on a busy box. Design:
 (migrations not yet applied to the live DB) and **`dev:service_health`**
 (probes dev endpoints before you chase a "connection refused").
 
-## AUTO mode — the owner's switch for "act, don't ask"
-
-**AUTO mode** is a mode the owner can switch on to have you run autonomously — act
-on your own judgment and keep moving, without stopping to ask.
-
-When the owner says **"AUTO mode"** (or "go into / stay in AUTO mode", "run
-autonomously", "don't ask — just go with your judgment"), treat it as a STANDING
-authorization for the rest of the session, until they say "exit AUTO mode" or the
-session ends. It IS the "durably authorized / explicitly told to proceed without
-asking" grant the cautious rules already carve out for. While it is active, these
-rules are **SUSPENDED**:
-
-- **Confirm before write-side calls → SUSPENDED** — act on judgment, report after.
-- **"A stale 'yes' doesn't carry across topics" → SUSPENDED** — the AUTO grant IS
-  the carry; one authorization covers every action + topic this session. Never
-  re-confirm per new thing.
-- **ASK before you defer → DECIDE, then DISCLOSE** — make the scope call; list
-  every deferral + assumption in your status report so the owner can correct it
-  after the fact. You still surface everything; you just don't BLOCK on it.
-- **Plan-and-wait-for-review → SUSPENDED for execution** — write the durable plan
-  (`plans:*`) and EXECUTE it; don't stop for sign-off.
-- **"Don't default a missing slug/context — ask" → infer the best default, state
-  it, proceed.**
-- **LOOP CONTINUOUSLY** — never end a turn to ask "should I continue?"; take the
-  obvious next step and run until the work is done.
-
-**Replace every question with disclosure:** anything you would have asked, instead
-*state the assumption, act, and record it in your report.* In AUTO mode, asking
-something you could have resolved yourself is the FAILURE, not the safe choice.
-
-**The ONLY things that still stop you** (narrow — everything else, just do it):
-1. A genuinely IRREVERSIBLE + HIGH-STAKES action OUTSIDE the work you were set on
-   (deleting data you didn't create, force-pushing shared history, an
-   outward-facing publish/send to a real party, spending real money) — and even
-   then, prefer a reversible path; stop only if there is truly none.
-2. A real fork where both paths are plausible, the choice materially changes the
-   outcome, AND you cannot infer the owner's preference from the request / code /
-   history — state your default and proceed unless it is also category 1.
-
-Bias hard toward action + disclosure.
+<!-- PAPERCUSP-SU:AUTO-MODE -->
 
 ## Looping — recur via the ENGINE loop, not Claude /loop
 

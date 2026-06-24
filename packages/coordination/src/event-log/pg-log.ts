@@ -292,6 +292,41 @@ export class PgCoordLog implements CoordEventLog {
     `;
   }
 
+  async putEvents(
+    surface: EventSurface,
+    records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,
+  ): Promise<void> {
+    if (records.length === 0) return;
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const ws = this.resolveWs();
+    // The batch win (escalation-drain WI-346 / round3 P-001): write N records in
+    // ONE statement instead of N separate `putEvent` INSERTs. Per-row putEvent
+    // costs N round-trips AND — inside a DBOS step-budgeted reconcile — N steps,
+    // capping a drain tick at a few hundred. One multi-row INSERT is one
+    // round-trip + one DBOS step, so a large backlog drains in a single tick.
+    //
+    // Bind the rows as parallel text[] arrays and expand with `unnest`. `body`
+    // goes through `::text::jsonb` per-row exactly like putEvent/appendLine: the
+    // explicit text cast forces postgres-js to store a real jsonb OBJECT under
+    // BOTH the prod handle and a fresh/testcontainer pool (agent-insight
+    // postgres-js-jsonb-binding). Same ON CONFLICT upsert as putEvent — caller
+    // must pass distinct msgIds within one batch (a re-put of an existing id
+    // upserts; two identical ids in ONE batch would trip the ON CONFLICT
+    // "cannot affect row a second time" — escalation resolves use fresh msg_ids).
+    const msgIds = records.map((r) => r.msgId);
+    const bodies = records.map((r) => JSON.stringify(r.record));
+    const harnessSlugs = records.map((r) => r.record.harness_slug ?? null);
+    await sql`
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
+      SELECT ${ws}, ${surface}, NULL, t.msg_id, t.body::text::jsonb, t.harness_slug
+        FROM unnest(${msgIds}::text[], ${bodies}::text[], ${harnessSlugs}::text[])
+          AS t(msg_id, body, harness_slug)
+      ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
+      DO UPDATE SET body = EXCLUDED.body, ts = now(), harness_slug = EXCLUDED.harness_slug
+    `;
+  }
+
   async readEvents(surface: EventSurface): Promise<CoordEnvelope[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -305,7 +340,7 @@ export class PgCoordLog implements CoordEventLog {
 
   async readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[] },
+    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
   ): Promise<CoordEnvelope[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -314,21 +349,21 @@ export class PgCoordLog implements CoordEventLog {
     // coord_event_log_surface_id (workspace_id, surface, id) index.
     const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
-    const rows =
-      kinds && kinds.length
-        ? await sql<{ body: unknown }[]>`
-            SELECT body FROM harness_shared.coord_event_log
-             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-               AND body->>'kind' = ANY(${kinds}::text[])
-             ORDER BY id DESC
-             LIMIT ${limit}
-          `
-        : await sql<{ body: unknown }[]>`
-            SELECT body FROM harness_shared.coord_event_log
-             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-             ORDER BY id DESC
-             LIMIT ${limit}
-          `;
+    // since_ts / plan_slug pushdown (EI-1737 / fleet-concurrency-first P-005):
+    // the watermark-advancing coord:plan-events delta (turn start, ×fleet) reads
+    // only its tail instead of the whole surface. Composed as optional `AND`s; an
+    // omitted filter is a no-op (postgres-js inlines the conditional fragments).
+    const sinceTs = typeof opts.sinceTs === 'string' && opts.sinceTs ? opts.sinceTs : null;
+    const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+         ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
+         ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
+         ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
+       ORDER BY id DESC
+       LIMIT ${limit}
+    `;
     return rows.map((r) => parseBody(r.body));
   }
 

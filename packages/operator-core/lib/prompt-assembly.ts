@@ -164,6 +164,8 @@ export interface AssembledSection {
     | 'concurrency-first-note'
     | 'deploy-pipeline-note'
     | 'reuse-first-nudge'
+    | 'work-record-note'
+    | 'turn-end-observation'
     | 'code-run-note'
     | 'finish-the-rollout-note'
     | 'agent-activity-truth-note'

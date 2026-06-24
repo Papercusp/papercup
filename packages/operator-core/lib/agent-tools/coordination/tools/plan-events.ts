@@ -82,12 +82,13 @@ export default defineTool({
           filesBack: args.files_back,
         }),
     );
-    // EI-1737: an unbounded plan-event history (a no-arg call) used to return multi-MB
-    // that hard-fails the agent result cap. readPlanEvents returns ts-ASCENDING → keep
-    // the NEWEST `limit` (slice the tail). This is a universal, backend-agnostic RESULT
-    // bound; `total`/`truncated` tell the caller more exist so they can widen by
-    // since_ts/plan_slug/files_back/limit. (Pushing the bound down to the PG read so it
-    // also caps the I/O is a follow-up — tracked on EI-1737.)
+    // readPlanEvents now bounds the STORAGE read to the newest READ_PLAN_EVENTS_BOUND
+    // matching (EI-1737 / fleet-concurrency-first P-005 — since_ts/plan_slug pushed into
+    // the coord_event_log index scan), so a no-arg call no longer serializes the whole
+    // ~3.5MB history on the event loop ×fleet-size. We still apply the per-call
+    // presentation `limit` here (newest `limit`, ts-ASCENDING); `total`/`truncated` tell
+    // the caller more exist within the bounded window so they can widen by
+    // since_ts/plan_slug/limit.
     const events = all.length > limit ? all.slice(-limit) : all;
     return {
       content: [

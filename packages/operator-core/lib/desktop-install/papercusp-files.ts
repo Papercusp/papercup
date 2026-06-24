@@ -19,7 +19,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROJECT_GUIDE_MARKER } from './splice-tooling-overlay';
+import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER } from './splice-tooling-overlay';
+import { renderAutoModePolicy } from '../auto-mode-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
 import { renderWorkspaceMapSection } from './workspace-map';
@@ -261,6 +262,9 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   let out = spliceGeneratedSection(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
   out = spliceGeneratedSection(out, COORD_LEGEND_MARKER, renderCoordLegend());
   out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  // AUTO mode (act-don't-ask switch + its AUTO↔loop relationship) — profile-agnostic, so
+  // both engineer + power get the one canonical clause spliced here at the marker.
+  out = spliceGeneratedSection(out, AUTO_MODE_MARKER, renderAutoModePolicy());
   out = injectSharedBaseNotes(out);
   // Project guide (P-001): engineer-profile install splices the repo's CLAUDE.md.
   if (out.includes(PROJECT_GUIDE_MARKER)) {
@@ -593,9 +597,13 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   );
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
   const withMap = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  // AUTO mode is profile-agnostic (the act-don't-ask grant + its AUTO↔loop relationship apply to
+  // every interactive su surface), so splice it BEFORE the engineer-only shared-base notes — both
+  // engineer + power carry the marker and get the one canonical clause.
+  const withAuto = spliceGeneratedSection(withMap, AUTO_MODE_MARKER, renderAutoModePolicy());
   // Only the ENGINEER profile works the Papercusp repo (where this pipeline + its green gate live);
   // the power profile manages an EXTERNAL repo, so the Papercusp-specific note does not apply there.
-  const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withMap) : withMap;
+  const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withAuto) : withAuto;
   // Project guide (P-001 / D-002): splice the repo's CLAUDE.md so a psu session
   // gets the full project conventions via psu, not client auto-load. Only read
   // the (large) guide file when the base actually carries the marker.

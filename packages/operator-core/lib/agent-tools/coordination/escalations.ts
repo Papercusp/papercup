@@ -221,9 +221,9 @@ export async function archiveResolvedEscalations(
   }
   
   // Archive by creating a special "archived" resolution event
-  // (idempotent: if already archived, this is a no-op from the fold perspective)
-  let archived = 0;
-  for (const msgId of toArchive) {
+  // (idempotent: if already archived, this is a no-op from the fold perspective).
+  // WI-346: collect + write in one batched putEvents (was one putEvent per row).
+  const archiveWrites = toArchive.map((msgId) => {
     const archiveEv: EscalationResolvedEvent = {
       ts: new Date().toISOString(),
       msg_id: newMsgId(),
@@ -234,10 +234,11 @@ export async function archiveResolvedEscalations(
       summary: 'auto-archived: resolved escalation aged beyond retention',
       choice: 'auto-archived',
     };
-    await coordLog.putEvent('escalations', archiveEv.msg_id, archiveEv);
-    archived += 1;
-  }
-  
+    return { msgId: archiveEv.msg_id, record: archiveEv };
+  });
+  await coordLog.putEvents('escalations', archiveWrites);
+  const archived = archiveWrites.length;
+
   return { scanned: opens.length, archived, truncated: toArchive.length >= limit };
 }
 
@@ -292,6 +293,14 @@ export async function resolveEscalationsBatch(
   // Also guard against the same msg_id appearing twice in `inputs`.
   const resolvedThisBatch = new Set<string>();
 
+  // WI-346 / round3 P-001: collect the sibling resolved-events and write them in
+  // a SINGLE multi-row INSERT (coordLog.putEvents) instead of one putEvent per
+  // resolve. The per-row write made the reconcile cost N round-trips AND N DBOS
+  // steps, capping a drain tick at ~150 even with a 2500-item batch — the lane
+  // never actually drained the ~11k operational backlog. One putEvents = one
+  // round-trip + one DBOS step, so a tick drains its whole batch.
+  const toWrite: { msgId: string; record: EscalationResolvedEvent }[] = [];
+
   for (const input of inputs) {
     const open = openById.get(input.msg_id);
     if (!open) {
@@ -318,10 +327,13 @@ export async function resolveEscalationsBatch(
     };
     if (input.resolver !== undefined) ev.by = input.resolver;
     if (input.note !== undefined) ev.note = input.note;
-    await coordLog.putEvent('escalations', ev.msg_id, ev);
+    toWrite.push({ msgId: ev.msg_id, record: ev });
     resolvedThisBatch.add(input.msg_id);
     result.resolved += 1;
   }
+
+  // Single batched write for every resolve in this sweep (no-op on empty).
+  await coordLog.putEvents('escalations', toWrite);
 
   return result;
 }

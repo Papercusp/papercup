@@ -544,6 +544,8 @@ Codex). At install time `install-standalone-mcp.sh` splices the guidance for
 your client below; Papercusp coordination (`coord:*`, `locks:*`) is
 identical on every client.
 
+<!-- PAPERCUSP-SU:AUTO-MODE -->
+
 **To RECUR on a cadence, declare an ENGINE loop — do NOT self-pace with your
 client's native `/loop` / `ScheduleWakeup`.** When you and the user want to keep
 working a plan/goal **warm** on a recurring cadence ("put this on a loop"), call

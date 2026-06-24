@@ -102,6 +102,13 @@ export type WatchdogSource =
   // learning-slo.ts; flag-gated dark per D-001 until the P-001 arming gate):
   | 'triage-entropy' | 'capture-consume-imbalance' | 'mttsh-regression'
   | 'governor-starvation' | 'memory-zero-hit'
+  // the perf/reliability REGRESSION RIG (infra-perf-reliability-audit-round4 P-013 —
+  // system-health/perf-regression-rig.ts; flag-gated on papercusp-perf-regression-rig,
+  // DEFAULT ON). Snapshots four reliability SLO metrics (event-loop-lag p95, PG
+  // connection saturation %, the dispatch-orphan rate that silently regressed to 91%,
+  // the coord open-escalation backlog) to harness_shared.perf_regression_snapshots and
+  // FILES on a budget breach so the round-2/3/4 perf gains can't silently regress:
+  | 'perf-regression'
   // the routines ENGINE itself is dead — every active routine overdue at once
   // (the 06-12 DBOS incident class). Detected OUT-OF-BAND by lib/red-queen/
   // engine-death.ts (P-031 / FB-20) since the watchdog rides the engine it
@@ -1864,6 +1871,18 @@ export async function defaultPapercuspCollectors(
     {
       name: 'papercusp-memory-recall-zero-hit',
       collect: () => import('./learning-slo').then((m) => m.memoryZeroHitCollector(opts)),
+    },
+    // infra-perf-reliability-audit-round4 P-013: the perf/reliability regression rig —
+    // snapshots four reliability SLO metrics (event-loop-lag p95, PG connection
+    // saturation %, the dispatch-orphan rate that silently regressed to 91%, coord
+    // open-escalation backlog) to harness_shared.perf_regression_snapshots and files on
+    // a budget breach. Flag-gated on papercusp-perf-regression-rig (DEFAULT ON — reports
+    // a 'disabled' note while OFF); SQL + in-memory only, additive + read-mostly,
+    // dormant-tolerant (a missing table/metric is a note, never a throw).
+    {
+      name: 'papercusp-perf-regression',
+      collect: () =>
+        import('../../system-health/perf-regression-rig').then((m) => m.collectPerfRegressionSnapshot(workspaceId)),
     },
     // unified-work-item-ledger P-009: the recurrence guard for the P-003 silent-zero
     // promotion class — a started+eligible plan with open items but ZERO work-items.

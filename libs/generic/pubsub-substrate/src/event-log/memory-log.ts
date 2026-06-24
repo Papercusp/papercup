@@ -36,17 +36,32 @@ export class InMemoryCoordLog implements CoordEventLog {
     this.events.set(surface, m);
   }
 
+  async putEvents(
+    surface: EventSurface,
+    records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,
+  ): Promise<void> {
+    if (records.length === 0) return;
+    const m = this.events.get(surface) ?? new Map<string, CoordEnvelope>();
+    for (const { msgId, record } of records) m.set(msgId, record);
+    this.events.set(surface, m);
+  }
+
   async readEvents(surface: EventSurface): Promise<CoordEnvelope[]> {
     return [...(this.events.get(surface)?.values() ?? [])];
   }
 
   async readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[] },
+    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
   ): Promise<CoordEnvelope[]> {
     const all = [...(this.events.get(surface)?.values() ?? [])];
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
-    const filtered = kinds && kinds.length ? all.filter((r) => kinds.includes(r.kind)) : all;
+    const filtered = all.filter(
+      (r) =>
+        (!kinds || !kinds.length || kinds.includes(r.kind)) &&
+        (!opts.sinceTs || (typeof r.ts === 'string' && r.ts > opts.sinceTs)) &&
+        (!opts.planSlug || r.plan_slug === opts.planSlug),
+    );
     // Newest-first (insertion order = append order), bounded — mirrors PgCoordLog.
     const limit = Math.max(1, Math.floor(opts.limit) || 1);
     return filtered.reverse().slice(0, limit);

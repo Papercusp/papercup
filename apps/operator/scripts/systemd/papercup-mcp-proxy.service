@@ -10,6 +10,12 @@ Type=simple
 WorkingDirectory=/home/marsh-office/papercupai-workspace/papercup/apps/operator
 Environment=PAPERCUSP_MCP_PROXY_PORT=9071
 # :3071-3079 are taken on the dev box; 9071 is free. Override TARGET/RETRY via env if needed.
+# Pin Node 25 (ABI 141) like the rest of the fleet (infra-fail-fast-build-integrity P-003):
+# linuxbrew Node 25 first, nvm22 dropped — without this the unit inherits the ambient
+# systemd-user PATH (which carries nvm Node 22). The proxy is a pure TCP/HTTP passthrough
+# with no native addons, so the Node major is functionally irrelevant here — this is for
+# fleet consistency + so a reboot never brings the proxy up on the wrong Node.
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/marsh-office/.cargo/bin:/home/marsh-office/.local/bin:/home/marsh-office/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/bash -c 'exec npx tsx bin/mcp-proxy.ts'
 Restart=always
 RestartSec=5

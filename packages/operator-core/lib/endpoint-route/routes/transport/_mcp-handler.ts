@@ -1127,6 +1127,7 @@ const handler = createMcpHandler(
           // scopeHive (the hive home AND each member resolve to the home; D-006).
           // The harder half — confining the workspace-global coord/fleet/search/
           // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
+          let hiveScopeForDispatch: string | null = null;
           if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*') {
             const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
             const scopeHive = await hiveHomeSlugForHarness(
@@ -1134,6 +1135,7 @@ const handler = createMcpHandler(
               spawnRes.ctx.harnessSlug,
             );
             if (scopeHive) {
+              hiveScopeForDispatch = scopeHive;
               if (toolName.startsWith('cross_harness:')) {
                 return {
                   isError: true,
@@ -1162,6 +1164,28 @@ const handler = createMcpHandler(
                   };
                 }
               }
+              // P-016/P-014b: confine the workspace-GLOBAL read surfaces (coord/
+              // fleet/presence) per-hive. The harness-arg + cross_harness checks
+              // above cover the harness-keyed reads; this closes the surfaces that
+              // take a `hive` arg or a cross-hive `scope` selector. A `hive` arg
+              // naming a DIFFERENT hive is an explicit sibling-hive read on any
+              // tool (coord:presence, hive:get/status, coord:wake, …) → reject it.
+              // (coord:presence's scope:'workspace'|'all' DEFAULT is force-narrowed
+              // to the hive at the dispatchArgs site below — friction-free, a no-op
+              // in a single-hive workspace where hive == workspace.)
+              const argHive =
+                args && typeof args === 'object' && typeof (args as Record<string, unknown>).hive === 'string'
+                  ? ((args as Record<string, unknown>).hive as string).trim()
+                  : '';
+              if (argHive && argHive !== scopeHive) {
+                return {
+                  isError: true,
+                  content: [{
+                    type: 'text' as const,
+                    text: `hive_forbidden: hive "${argHive}" is outside this session's hive "${scopeHive}".`,
+                  }],
+                };
+              }
             }
           }
           // Power-user / scoped-superuser workspace clamp (defense in depth). The
@@ -1171,10 +1195,24 @@ const handler = createMcpHandler(
           // the only current one). We overwrite that arg with the clamped
           // workspace before the tool sees it — this defends every tool, present
           // and future, without a per-tool audit.
-          const dispatchArgs =
+          let dispatchArgs =
             (spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object' && 'workspace' in args
               ? { ...args, workspace: spawnRes.ctx.workspaceId }
               : args;
+          // P-016/P-014b: force coord:presence to the confined hive for a
+          // hive-scoped session. Its scope DEFAULTS to a workspace-wide roster for
+          // an SU caller (presence-snapshot's SU→workspace fallback), which would
+          // surface sibling hives. Narrow the breadth (scope:'hive'+hive) so the
+          // default no-arg read self-confines; a single-hive workspace is a no-op
+          // (hive == workspace). An explicit foreign `hive` was already rejected.
+          if (
+            hiveScopeForDispatch &&
+            toolName === 'coord:presence' &&
+            dispatchArgs &&
+            typeof dispatchArgs === 'object'
+          ) {
+            dispatchArgs = { ...(dispatchArgs as Record<string, unknown>), scope: 'hive', hive: hiveScopeForDispatch };
+          }
           // Replay lookup (P-046 / EI-68) — placed after the profile gate so a
           // replay grants nothing a fresh call wouldn't. Keys are scoped to the
           // caller's STABLE identity: uiClientId (the per-session SID for

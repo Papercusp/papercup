@@ -76,6 +76,32 @@ export function describeCoordEventLogConformance(
       expect((await log.getEvent('handoffs', 'k1'))?.from).toBe('B');
     });
 
+    it('putEvents: batch write round-trips every record, empty is a no-op (WI-346)', async () => {
+      // Empty batch must not throw and must write nothing.
+      await log.putEvents('escalations', []);
+      expect(await log.readEvents('escalations')).toEqual([]);
+      // A batch of distinct records all round-trip — same keying as putEvent.
+      await log.putEvents('escalations', [
+        { msgId: 'b1', record: envelope({ msg_id: 'b1', kind: 'escalation', from: 'A', to: ['human'] }) },
+        { msgId: 'b2', record: envelope({ msg_id: 'b2', kind: 'escalation', from: 'A', to: ['human'] }) },
+        { msgId: 'b3', record: envelope({ msg_id: 'b3', kind: 'escalation_resolved', from: 'A', to: ['human'], related_msg_id: 'b1' }) },
+      ]);
+      expect((await log.readEvents('escalations')).map((r) => r.msg_id).sort()).toEqual(['b1', 'b2', 'b3']);
+      expect((await log.getEvent('escalations', 'b2'))?.kind).toBe('escalation');
+    });
+
+    it('putEvents: a re-put on an existing msg_id upserts, not duplicates (WI-346)', async () => {
+      await log.putEvent('handoffs', 'u1', envelope({ msg_id: 'u1', kind: 'handoff', from: 'A' }));
+      await log.putEvents('handoffs', [
+        { msgId: 'u1', record: envelope({ msg_id: 'u1', kind: 'handoff', from: 'B' }) },
+        { msgId: 'u2', record: envelope({ msg_id: 'u2', kind: 'handoff', from: 'C' }) },
+      ]);
+      const all = await log.readEvents('handoffs');
+      expect(all.filter((r) => r.msg_id === 'u1')).toHaveLength(1);
+      expect((await log.getEvent('handoffs', 'u1'))?.from).toBe('B');
+      expect(all.map((r) => r.msg_id).sort()).toEqual(['u1', 'u2']);
+    });
+
     it('empty surfaces read as []', async () => {
       expect(await log.readLines('messages')).toEqual([]);
       expect(await log.readEvents('handoffs')).toEqual([]);

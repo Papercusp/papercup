@@ -77,8 +77,9 @@ async function runSetPlanStatus(
   const res = (await setPlanStatusTool.handler(
     { harness: HARNESS, slug: SLUG, status } as never,
     makeCtx(),
-  )) as { content: { text: string }[]; isError?: boolean };
-  return { data: JSON.parse(res.content[0].text), isError: res.isError === true };
+  )) as { data: { results: Record<string, unknown>[]; counts?: { failed?: number } } };
+  // Bulk-pattern envelope: per-slug result at data.results[0]; failure ⇒ counts.failed > 0.
+  return { data: res.data.results[0], isError: (res.data.counts?.failed ?? 0) > 0 };
 }
 
 /** Seed the plan row at `status` AND force a started op-row — i.e. the exact
