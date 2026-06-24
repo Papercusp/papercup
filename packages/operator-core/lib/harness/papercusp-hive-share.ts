@@ -1,0 +1,173 @@
+/**
+ * papercusp-hive-share — Solution C orchestration: announce the dogfood `papercusp`
+ * hive as a SHARED P2P hive under a PER-OWNER identity, gated by
+ * DOGFOOD_PAPERCUSP_HIVE_SHARE (default OFF / dark).
+ *
+ * Two hook points around the hive create in bootstrap-papercusp-hive:
+ *
+ *   adoptSharedHiveIdentity()  — BEFORE the hive is created. If the owner already
+ *     has a hive-identity gist (a prior device of theirs created it), inject that
+ *     keypair into the keychain so `ensurePapercuspHive` creates the hive under the
+ *     OWNER's identity (same pubkey ⇒ same federation topic) instead of minting a
+ *     fresh per-device one. Returns the state threaded to goSharedHive, or null to
+ *     skip sharing this boot (flag off / no gh / not resolvable).
+ *
+ *   goSharedHive(state)        — AFTER the hive is created + homed. The FIRST device
+ *     (no gist yet) publishes its just-minted keypair + a fresh invite secret to a
+ *     per-owner PRIVATE gist; then BOTH paths announce the hive on the INVITE topic
+ *     (go-live on the federation topic, no public/Cupboard leak) and set an
+ *     owner-signed ALLOWLIST policy naming ONLY the owner's GitHub login — so the
+ *     owner's own devices auto-merge and strangers on the topic are refused.
+ *
+ * Everything is BEST-EFFORT + never throws: a failure (no network, missing `gist`
+ * scope, …) just skips/retries on the next boot. The shared identity's PRIVATE key
+ * never leaves the owner's private gist — it is NOT baked into the binary (the
+ * Solution-C security property).
+ *
+ * All collaborators are injectable seams for hermetic unit tests.
+ */
+
+import { randomBytes } from 'node:crypto';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
+import { keychainStore, keychainLoad } from '../identity/keychain';
+import { hiveKeychainId, HIVE_KEYPAIR_SERVICE } from '../identity/hive-keypair';
+import { pubkeyBase64FromDer } from '../identity/ed25519';
+import { setHiveListing } from '../hive-set-listing';
+import { authorHivePolicy } from '../hive-policy-author';
+import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
+import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
+import {
+  fetchOwnerHiveIdentity,
+  publishOwnerHiveIdentity,
+  type OwnerHiveIdentity,
+} from './papercusp-shared-identity-gist';
+
+/** State threaded from the BEFORE hook (adopt) to the AFTER hook (goShared). */
+export interface SharedHiveState {
+  /** The owner's GitHub login — the sole allowlist entry (auto-admit my devices). */
+  githubLogin: string;
+  /** The owner's gh token — used to publish the identity gist on the first device. */
+  token: string;
+  /** The identity fetched from the gist; null ⇒ THIS device is the first/creator. */
+  existing: OwnerHiveIdentity | null;
+}
+
+export interface HiveShareDeps {
+  isEnabled?: () => Promise<boolean>;
+  resolveGithub?: typeof resolveLocalGithubIdentity;
+  fetchIdentity?: typeof fetchOwnerHiveIdentity;
+  publishIdentity?: typeof publishOwnerHiveIdentity;
+  storeKey?: (keychainId: string, value: Buffer, service: string) => Promise<unknown>;
+  loadKey?: (keychainId: string, service: string) => Promise<{ kind: 'ok'; value: Buffer } | { kind: 'error' }>;
+  setListing?: typeof setHiveListing;
+  authorPolicy?: typeof authorHivePolicy;
+  randomSecret?: () => string;
+  /** Derive the raw-32 pubkey (base64) from the private DER. Default: pubkeyBase64FromDer. */
+  derivePubkey?: (der: Buffer) => string;
+}
+
+async function defaultIsEnabled(): Promise<boolean> {
+  try {
+    return await getFlag(FLAGS.DOGFOOD_PAPERCUSP_HIVE_SHARE, 'system');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * BEFORE the hive is created: adopt the owner's existing shared identity if present.
+ * Returns the state for goSharedHive, or null when sharing is skipped this boot.
+ */
+export async function adoptSharedHiveIdentity(deps: HiveShareDeps = {}): Promise<SharedHiveState | null> {
+  const isEnabled = deps.isEnabled ?? defaultIsEnabled;
+  if (!(await isEnabled())) return null;
+
+  const resolveGithub = deps.resolveGithub ?? resolveLocalGithubIdentity;
+  const fetchIdentity = deps.fetchIdentity ?? fetchOwnerHiveIdentity;
+  const storeKey =
+    deps.storeKey ?? ((id, value, service) => keychainStore(id, value, service));
+
+  try {
+    const id = await resolveGithub();
+    if (id.kind !== 'ok') return null; // no gh yet → can't share; retry next boot
+    const existing = await fetchIdentity(id.token);
+    if (existing) {
+      // Adopt the owner's hive identity BEFORE the hive is created, so
+      // ensurePapercuspHive → loadOrGenerateHiveKeypair LOADS it (same pubkey ⇒ same
+      // federation topic) instead of minting a conflicting per-device identity.
+      await storeKey(
+        hiveKeychainId(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG),
+        Buffer.from(existing.privateKeyDer, 'base64'),
+        HIVE_KEYPAIR_SERVICE,
+      );
+    }
+    return { githubLogin: id.githubLogin, token: id.token, existing };
+  } catch {
+    return null; // best-effort
+  }
+}
+
+/**
+ * AFTER the hive is created + homed: publish the identity gist (first device only),
+ * then announce (invite) + set the owner-only allowlist policy. No-op when `state`
+ * is null. Best-effort; never throws.
+ */
+export async function goSharedHive(state: SharedHiveState | null, deps: HiveShareDeps = {}): Promise<void> {
+  if (!state) return;
+
+  const publishIdentity = deps.publishIdentity ?? publishOwnerHiveIdentity;
+  const loadKey = deps.loadKey ?? ((id, service) => keychainLoad(id, service));
+  const setListing = deps.setListing ?? setHiveListing;
+  const authorPolicy = deps.authorPolicy ?? authorHivePolicy;
+  const randomSecret = deps.randomSecret ?? (() => randomBytes(32).toString('hex'));
+  const derivePubkey = deps.derivePubkey ?? pubkeyBase64FromDer;
+
+  try {
+    let inviteSecret = state.existing?.inviteSecret;
+
+    if (!state.existing) {
+      // First device: read the just-minted hive keypair and publish it (+ a fresh
+      // invite secret) to the per-owner private gist, so the owner's NEXT device
+      // adopts the same identity.
+      const loaded = await loadKey(hiveKeychainId(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG), HIVE_KEYPAIR_SERVICE);
+      if (loaded.kind !== 'ok') return; // can't read our own key — skip, retry next boot
+      inviteSecret = randomSecret();
+      await publishIdentity(state.token, {
+        version: 1,
+        privateKeyDer: Buffer.from(loaded.value).toString('base64'),
+        pubkeyBase64: derivePubkey(loaded.value),
+        inviteSecret,
+      });
+    }
+    if (!inviteSecret) return;
+
+    // Go-live on the INVITE topic (not `public` — no global directory / Cupboard
+    // leak of the private dogfood repo). This also triggers the harness to JOIN the
+    // federation topic (derived from the shared pubkey) so the owner's devices find
+    // each other.
+    await setListing(
+      {
+        hiveId: PAPERCUSP_HIVE_SLUG,
+        title: 'Papercusp',
+        description: 'Papercusp building itself — shared dogfood hive.',
+        visibility: 'invite',
+        inviteSecret,
+      },
+      PAPERCUSP_WORKSPACE_ID,
+    );
+
+    // Owner-only admission. Default policy is `open` (admit ANY peer on the topic),
+    // which would let a stranger merge — so this allowlist is the ESSENTIAL gate:
+    // admit ONLY the owner's own GitHub login (authenticated via the device
+    // attestation binding, not spoofable), refuse everyone else.
+    await authorPolicy({
+      workspaceId: PAPERCUSP_WORKSPACE_ID,
+      hiveHomeSlug: PAPERCUSP_HIVE_SLUG,
+      policy: { membership: 'allowlist', allowlist: [state.githubLogin] },
+    });
+  } catch {
+    // best-effort — a failed announce / policy author retries on the next boot.
+  }
+}

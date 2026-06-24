@@ -31,6 +31,11 @@ import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import { loadHarnessRegistry } from '../harness-registry';
 import { readRegistry, writeRegistry } from '../workspace-registry';
 import { recordFromRepoStep } from './from-repo-progress';
+import {
+  adoptSharedHiveIdentity,
+  goSharedHive,
+  type SharedHiveState,
+} from './papercusp-hive-share';
 
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';
@@ -101,6 +106,15 @@ export interface BootstrapPapercuspHiveDeps {
     status: BootstrapProgressStatus,
     extra?: { percent?: number; detail?: string },
   ) => void;
+  /** Solution C (DOGFOOD_PAPERCUSP_HIVE_SHARE, default-off/dark): adopt the owner's
+   *  SHARED hive identity from their per-owner gist BEFORE the hive is created.
+   *  Default: adoptSharedHiveIdentity (returns null — sharing skipped — when the
+   *  flag is off / gh unauth). */
+  adoptShare?: () => Promise<SharedHiveState | null>;
+  /** Solution C: AFTER create, publish the identity gist (first device) + announce
+   *  (invite) + set the owner-only allowlist policy. Default: goSharedHive (a no-op
+   *  when adoptShare returned null). */
+  goShare?: (state: SharedHiveState | null) => Promise<void>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -252,6 +266,8 @@ export async function bootstrapPapercuspHive(
     ((step, status, extra) => recordFromRepoStep(BOOTSTRAP_PROGRESS_ID, step, status, extra));
   const shallow = deps.cloneShallow ?? true;
   const ref = dogfoodRef(deps.ref);
+  const adoptShare = deps.adoptShare ?? adoptSharedHiveIdentity;
+  const goShare = deps.goShare ?? goSharedHive;
 
   // 1. Idempotent: the `papercusp` hive already exists → home + done. Nothing to
   //    download, so BOTH phases are already terminal (the setup gate is satisfied).
@@ -318,6 +334,13 @@ export async function bootstrapPapercuspHive(
     }
   }
 
+  // 2b. Solution C (flag-gated, default-off): adopt the owner's SHARED hive identity
+  //     from their per-owner private gist BEFORE create, so the hive is created
+  //     under the OWNER's identity (one federation topic across their devices)
+  //     rather than a fresh per-device one. No-op when the flag is off / gh unauth /
+  //     no gist yet (then this device is the creator and publishes it in step 4b).
+  const sharedState = await adoptShare();
+
   // 3. Create the single `papercusp` hive linked to the repo in place.
   const hiveRes = await ensureHive({ pathOverride: root });
   if (hiveRes.state === 'skipped') {
@@ -327,6 +350,12 @@ export async function bootstrapPapercuspHive(
 
   // 4. Make papercusp-workspace the home so the hive is VISIBLE (see header).
   setHome(PAPERCUSP_WORKSPACE_ID);
+
+  // 4b. Solution C (flag-gated): go shared — publish the per-owner identity gist
+  //     (first device only), announce on the invite topic (go-live on the
+  //     federation topic), and set the owner-only allowlist policy. No-op when
+  //     sharedState is null (sharing skipped this boot).
+  await goShare(sharedState);
 
   // 5. Submodules. A fresh clone fills them in the BACKGROUND (non-blocking) and
   //    records the terminal `submodules` step when done — that (plus the hive
