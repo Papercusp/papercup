@@ -52,15 +52,24 @@ describe('defaultDeciderDeps — the dynamic imports resolve against real PG (B-
     const armed = await deps.isArmed();
     expect(typeof armed).toBe('boolean');
   });
+
+  it('isFullAutonomy resolves to a boolean without throwing (the grant-flag import works + fail-dark)', async () => {
+    const deps = defaultDeciderDeps(db.adminSql, 'default');
+    const granted = await deps.isFullAutonomy();
+    expect(typeof granted).toBe('boolean');
+  });
 });
 
 describe('resolveAutonomyDecision — end-to-end against the real autonomy_policy store', () => {
   it('default (all categories never-auto) ⇒ gated, with the live store as the source', async () => {
     const decision = await resolveAutonomyDecision(
       { action: 'memory:remember', riskTier: 'trivial', reversibility: 'reversible' },
-      // Force armed so the gate is exercised on the REAL ceiling, not short-circuited
-      // by the unarmed flag — proving never-auto from the live store still gates.
-      { ...defaultDeciderDeps(db.adminSql, 'default'), isArmed: async () => true },
+      // Force armed AND pin the owner full-autonomy grant OFF so the SUBSTANTIVE gate is
+      // exercised on the REAL ceiling — not short-circuited by the unarmed flag, nor lifted
+      // wholesale by the grant (QUEEN_FULL_AUTONOMY). We deliberately don't lean on either
+      // flag's ambient default here; the grant's own gate-lifting behaviour is covered in
+      // decider.test.ts (both directions). Proves never-auto from the live store still gates.
+      { ...defaultDeciderDeps(db.adminSql, 'default'), isArmed: async () => true, isFullAutonomy: async () => false },
     );
     expect(decision.category).toBe('knowledge-curation'); // memory:* → knowledge-curation
     expect(decision.effectiveCeiling).toBe('never-auto');
@@ -78,7 +87,10 @@ describe('resolveAutonomyDecision — end-to-end against the real autonomy_polic
       { category: 'knowledge-curation', ceiling: 'moderate', graduatedLevel: 'moderate', reason: 'decider int-test' },
       'tester',
     );
-    const deps = { ...defaultDeciderDeps(db.adminSql, WS), isArmed: async () => true };
+    // Pin the grant OFF too: this test exercises the risk/ceiling/irreversible gates, which the
+    // owner full-autonomy grant would lift wholesale to `auto` (see decideAutonomy) — so the gate
+    // is only meaningful with the grant inactive (mirrors decider.test.ts's gating cases).
+    const deps = { ...defaultDeciderDeps(db.adminSql, WS), isArmed: async () => true, isFullAutonomy: async () => false };
 
     const lowRisk = await resolveAutonomyDecision(
       { action: 'memory:remember', riskTier: 'low', reversibility: 'reversible' },
@@ -104,7 +116,7 @@ describe('resolveAutonomyDecision — end-to-end against the real autonomy_polic
     expect(irreversible.reasons).toContain('irreversible-action');
   });
 
-  it('unarmed (the live default flag) ⇒ gated even with a lowered ceiling — the arming gate holds', async () => {
+  it('unarmed ⇒ gated even with a lowered ceiling — the arming gate holds', async () => {
     const WS = 'ws-decider-unarmed';
     await setAutonomyPolicy(
       db.adminSql,
@@ -112,11 +124,15 @@ describe('resolveAutonomyDecision — end-to-end against the real autonomy_polic
       { category: 'knowledge-curation', ceiling: 'moderate', graduatedLevel: 'moderate', reason: 'unarmed int-test' },
       'tester',
     );
-    // defaultDeciderDeps.isArmed() reads the REAL flag — false by default (P-092
-    // unflipped in the test env), so even a lowered ceiling stays gated.
+    // Pin the UNARMED state explicitly (and the grant OFF) to exercise the arming-gate-holds
+    // invariant deterministically — mirrors the sibling tests that force `isArmed: true`. We no
+    // longer lean on the QUEEN_AUTONOMY_ARMED ambient default (it now defaults ON per the alpha
+    // flags-default-on flip; with all-never-auto ceilings that stays behavior-neutral, but a
+    // gating test must not depend on it). With autonomy NOT armed, even a lowered+unlocked ceiling
+    // must still gate. That the live arming/grant flag wiring resolves is covered above.
     const decision = await resolveAutonomyDecision(
       { action: 'memory:remember', riskTier: 'low', reversibility: 'reversible' },
-      defaultDeciderDeps(db.adminSql, WS),
+      { ...defaultDeciderDeps(db.adminSql, WS), isArmed: async () => false, isFullAutonomy: async () => false },
     );
     expect(decision.armed).toBe(false);
     expect(decision.posture).toBe('gated');

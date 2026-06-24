@@ -131,17 +131,20 @@ describe('buildLoginSpec', () => {
 });
 
 describe('buildGithubLoginSpec', () => {
-  it('spawns `gh auth login` (not /login like claude/omp)', () => {
+  it('spawns `gh auth login` forced to HTTPS + web/device flow (never SSH)', () => {
     const spec = buildGithubLoginSpec('/home/u');
     expect(spec.cwd).toBe('/home/u');
     expect(spec.env).toEqual({});
-    // gh resolves to an absolute path when installed (the PTY child has no PATH);
-    // otherwise it falls back to `bash -lc 'gh auth login'`. Accept either form.
+    // Force --git-protocol https --web so gh never takes the SSH-key-upload path
+    // (which fails "key is already in use" when a matching key is already on the
+    // account) and the HTTPS dogfood clone authenticates. gh resolves to an
+    // absolute path when installed (the PTY child has no PATH); otherwise it
+    // falls back to `bash -lc '…'`. Accept either form.
     if (spec.command === 'bash') {
-      expect(spec.args).toEqual(['-lc', 'gh auth login']);
+      expect(spec.args).toEqual(['-lc', 'gh auth login --hostname github.com --git-protocol https --web']);
     } else {
       expect(spec.command.endsWith('gh')).toBe(true);
-      expect(spec.args).toEqual(['auth', 'login']);
+      expect(spec.args).toEqual(['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web']);
     }
   });
 });
