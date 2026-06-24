@@ -36,6 +36,21 @@ vi.mock('../plans/source', () => ({
       : null,
 }));
 
+// Pin PLAN_ITEM_CLAIM_AUTO_CONVERT OFF (it graduated default-ON). This lifecycle
+// test exercises the BARE plan-item claim path (asserts result.status:'claimed')
+// and its minimal fixture has no work_items convert schema; with the flag ON the
+// claim mints a work_item via convertPlanItem and fails on the absent schema. The
+// auto-convert path has its own coverage (convertPlanItem tests). Other flags
+// delegate to the real resolver unchanged.
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/flags/server')>();
+  return {
+    ...actual,
+    getFlag: async (flag: string, distinct: string) =>
+      flag === 'papercusp-claim-auto-convert' ? false : actual.getFlag(flag, distinct),
+  };
+});
+
 // Tool default exports.
 const adoptName = (await import('./adopt-name')).default;
 const assign = (await import('./assign')).default;

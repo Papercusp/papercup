@@ -1229,6 +1229,52 @@ Generalizes to ANY self-healing loop with a watchdog (nursery reclaim, plan-impl
 * EI-403 (durable dispatch + host-restart Option B recovery), EI-404 (worker-exit back-edge), EI-406 (env-failure attempt rollback).
 * The nursery-slot sibling (EI-493/EI-85): a dead bee whose `localSpawnAborts` entry leaks keeps being heartbeated → never goes stale → never reclaimed → holds a ceiling slot. Same family (a dead worker’s cleanup not firing), different layer (fleet spawn/heartbeat).
 
+# Auto-implement "host-restart" orphans are gateway-deaths, not operator restarts
+
+> The improvement_dispatches orphan rate (~91-98%) is workers dying mid-turn on the inference gateway, misattributed by the boot collector as host-restart victims and re-dispatched into the same storm — NOT the operator's SIGTERM drain.
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+If you see a high **auto-implement dispatch-orphan rate** (`harness_shared.improvement_dispatches.outcome='orphaned'`, dominated by `resolved_by='host-restart-recovery'`), do **NOT** assume the operator is restarting and chase the SIGTERM/DBOS-drain shutdown path. That diagnosis is stale. The real cause is almost always **the dispatched worker agent dying mid-turn on the inference gateway** (`[durable-spawn] infra_loss … agent produced no turn`), which the boot orphan-collector then **misattributes** as a host-restart victim and re-dispatches straight back into the same gateway storm — a churn loop. See `rate-limit-is-usually-account-routing-not-capacity`.
+
+## Evidence (2026-06-24, su-54b32)
+
+[Section titled “Evidence (2026-06-24, su-54b32)”](#evidence-2026-06-24-su-54b32)
+
+The round-3 plan (`infra-perf-reliability-audit-round3-2026-06-19` P-005) framed this as: deploy SIGTERMs the cluster → 90s DBOS drain hang → SIGKILL orphans 78% of dispatches. **That framing is disproven live:**
+
+* `papercup-dev-api`: `NRestarts=0`, **10.5h uptime**, `TimeoutStopUSec` already lowered to **15s** (not 90s). It is not restarting hourly.
+* `papercup-bg-host` (the DBOS routines primary) is installed + running, also not flapping.
+* `improvement_dispatches` (7d): 130/195 orphans are `host-restart-recovery`, **but** the bg-host journal is full of `[durable-spawn] infra_loss: … returned HTTP 200 but the agent produced no turn (exitCode=1) — agent died before emitting a turn … upstream gateway stall/429 storm killing the agent MID-TURN`, plus repeated `TypeError: fetch failed`.
+* Live orphan rate at the time: **0.978** (45/46 in 24h).
+
+## Mechanism
+
+[Section titled “Mechanism”](#mechanism)
+
+1. The auto-implement dispatch fires a worker agent (spawned `detached: true` in `orchestrator-runner.ts`; the operator only `killTree`s it on explicit abort/timeout, never on its own shutdown). `fire_result='ok'` — the worker launches.
+2. The worker makes \~1-2 model calls, hits a gateway 429/stall, and dies before producing a turn → `infra_loss`. The `EI-404` back-edge never fires (no resolving turn).
+3. The boot/periodic orphan-collector (`orphaned-dispatch.ts` `collectOrphanedDispatchSignals` → `isHostRestartVictim`) uses the heuristic **“fired before this process boot ⟹ dead host-restart victim”**, marks it `host-restart-recovery`, releases the claim, rolls the attempt back, and the next implement tick **re-dispatches** — into the same unhealthy gateway → repeat. The `EI-1689` thrash breaker eventually routes the item to a human (`needs-human`).
+
+So the label `host-restart-recovery` is a **misattribution**: the worker died of gateway loss, not a host restart.
+
+## What actually fixes it
+
+[Section titled “What actually fixes it”](#what-actually-fixes-it)
+
+* **Root**: inference-gateway stability (429/stall) — owned by `inference-gateway-stability-ownership-2026-06-23` (durable-spawn misclassification + account-pool routing). The orphan rate cannot reach 0 until gateway-loss stops killing workers mid-turn. Do not duplicate that work here.
+* **Misattribution/churn** (`orphaned-dispatch.ts`): distinguish `infra_loss` (gateway) from a genuine host restart, and back off re-dispatch when the gateway is unhealthy instead of churning into the storm.
+* **Detection**: the perf/reliability regression rig (`system-health/perf-regression-rig.ts`, watchdog collector `perf-regression`, flag `papercusp-perf-regression-rig`) now tracks **dispatch-orphan-rate** as an SLO (crit at 0.6) so this can never again regress silently — it ran at 91-98% with nothing watching.
+
+## Don’t
+
+[Section titled “Don’t”](#dont)
+
+* Don’t lower `TimeoutStopUSec` further or rewrite the SIGTERM/DBOS-drain path to “fix orphans” — the drain is already fast (15s) and the operator isn’t the one dying.
+* Don’t treat `host-restart-recovery` rows as proof of operator restarts — cross-check the bg-host journal for `infra_loss` first.
+
 # The autoloop is the routines engine now (Pot operator + self-declared wake)
 
 > After autoloop-pot-operator-rebuild, there is no setInterval autoloop ticker — the DBOS routines engine fires each harness's blueprint-declared schedule, and a Pot operator decides its own next wake via pot:declare-wake. autoloop:control flips routine rows, not a timer.
@@ -2933,6 +2979,73 @@ The producer is drivable via `_coordInboxTestSeam` (mirrors `_stopForTests`): `p
 [Section titled “Provenance”](#provenance)
 
 Proven by the coordination-federation test-coverage pass (41 tests, 2026-06-04, su-06a38). Lifted from the Claude memory archive (`project_coord_federation_test_coverage`) during the claude-memory-projection-integration boundary split.
+
+# Coordinator dispatch & wake — hand a lane to a peer in ONE call, and read "wakeable" not "active"
+
+> How a coordinator/Queen reliably gets work picked up by another agent — coord:dispatch (assign+wake+confirm), the presence wakeable/sessionState signal that tells you who can actually take work, and why a dead session shows as a fake "parked" target until the reclaim lane GCs its dangling inbox-wake await.
+
+## What this fixes
+
+[Section titled “What this fixes”](#what-this-fixes)
+
+A coordinator (an su handing work to a peer, or the Queen placing a lane) repeatedly hit the same four-step confusion when trying to get an agent to actually pick up work:
+
+1. **`coord:presence` showed dead sessions as “active”.** A just-ended su session keeps a fresh `heartbeat_at` for up to 10 min, so an `active:17` count was really \~6 — you could not tell who could take work from who was a stale/ended row.
+2. **`coord:send` injects but does not wake.** A plain send lands in the inbox, seen on the recipient’s *next* turn — an idle agent never gets one, so the work silently stalls.
+3. **The wake key was undiscoverable.** Waking meant hand-composing `events:emit` on the `coord:inbox-wake:<ownerId>` key — a format you had to reverse-engineer.
+4. **A woken agent did not reliably ACT on the assignment** — some woke → read → re-parked instead of claiming + working the directed lane.
+
+The fixes: a `wakeable`/`sessionState` signal on presence, a single `coord:dispatch` primitive, and a reclaim lane that stops dead sessions from masquerading as live targets.
+
+## The rule: read `sessionState` / `wakeable`, NEVER raw `active`
+
+[Section titled “The rule: read sessionState / wakeable, NEVER raw active”](#the-rule-read-sessionstate--wakeable-never-raw-active)
+
+`coord:presence` enriches every row with two derived signals (`presence-wakeability.ts`):
+
+* **`wakeable`** — a live `coord:inbox-wake:<id>` standing await exists, so a wake **will** be delivered. This is the authoritative woken:1-vs-woken:0 signal.
+* **`sessionState`** — `live` (a turn is running now) · `parked` (wakeable but idle — **the ideal dispatch target**, a wake resumes it) · `ended` (NOT wakeable — a dead/zombie row; it needs a **relaunch**, never a wake) · `recorded` (authoritatively live per the session log but not yet coord-wakeable).
+
+So: **before dispatching, find a `parked` (or `live`) target. An `ended` target cannot be woken — relaunch/resume it instead.** Read `summary.wakeable`, not the `active` count.
+
+## coord:dispatch — assign + wake + confirm, in ONE call
+
+[Section titled “coord:dispatch — assign + wake + confirm, in ONE call”](#coorddispatch--assign--wake--confirm-in-one-call)
+
+`coord:dispatch { to, planSlug?, items?[], note }` (`tools/dispatch.ts`) replaces the hand-composed `plan_items:assign` + `coord:send` + `events:emit` + key-format ritual. It:
+
+1. reads the target’s `sessionState`/`wakeable` (so the result tells you what you dispatched to),
+2. **assigns the lane** — `plan_items:assign` of `items` in `planSlug` to `to` (durable; survives the target sleeping/dying — omit `planSlug`+`items` for a pure directed wake),
+3. **delivers the note + wakes** — `coord:send { wake:'required' }` persists the directed note to the target’s inbox AND fires its `coord:inbox-wake:<id>` key, and
+4. returns `{ ok, to, sessionState, wakeable, assigned, delivered, woken, warning? }`.
+
+It is composed (the in-process re-dispatch pattern, like `coord:orient`) — it builds no second wake pump; it reuses `coord:send`’s deliver-and-wake, which owns the `recipient_absent`/`recipient_dead` honesty signal.
+
+**Read the result, not your hope.** A dispatch to a non-wakeable target is a LOUD miss, never a silent `woken:0`:
+
+* `woken: 1+` → the target was parked and is now running your lane.
+* `warning` + `recipient_dead` / `sessionState: 'ended'` → the lane was **assigned durably** but no live process will pick it up until the target is **relaunched/resumed**. Re-dispatch to a `parked`/`live` agent or respawn this one. Do NOT assume it landed.
+
+```plaintext
+coord:presence → pick a `parked` target → coord:dispatch { to, planSlug, items, note }
+  → check woken / warning → (woken target) coord:orient → plan_items:my_items → claim + work
+```
+
+## The woken agent’s contract: claim + work, don’t re-park
+
+[Section titled “The woken agent’s contract: claim + work, don’t re-park”](#the-woken-agents-contract-claim--work-dont-re-park)
+
+A wake starts a turn; the directed `note` is in the inbox (and the `[coord+N]` injection). A woken agent that finds a **directed assignment** must `coord:orient` → see the dispatched lane (`plan_items:my_items` / its claimed items) → **claim + work it**, not read-and-repark. Re-parking on a directed dispatch is the failure mode that makes a confirmed `woken:1` still do nothing.
+
+## Why a dead session can still look “parked”: the reclaim lane
+
+[Section titled “Why a dead session can still look “parked”: the reclaim lane”](#why-a-dead-session-can-still-look-parked-the-reclaim-lane)
+
+Every idle agent arms a standing `coord:inbox-wake:<self>` await. A **clean** session end cancels it; a process that **crashes/is killed** never runs that hygiene, so the await row persists — and `presence`/`fetchWakeability` reads exactly that row to derive `wakeable`/`parked`. Result: a dead session shows as a live dispatch target (the “misleading zombie pile”), and the dangling await even **protects** its ghost adv\_session from the idle-session-reaper (it counts a standing await as “alive”).
+
+The **reclaim lane** (`idle-session-reaper.ts` slice 4, `reclaimDanglingInboxWakeAwaits`) is the SessionEnd-hygiene the dead process never ran: it cancels the inbox-wake await of any owner that is **not** live-or-resumable (no fresh presence heartbeat, no running bee, no in-flight wake, no OPEN adv\_session). A *parked-but-resumable* session (open adv\_session — the wake-executor can `--resume` it) keeps its await; only a session that is genuinely over loses it and flips from a false `parked` to an honest `ended`. (Work-item *claims* of dead owners are released separately by the stale-claims reaper, which already uses a heartbeat/running-bee liveness rule that is not await-polluted.)
+
+So if a coordinator sees a stale “parked” pile, the reclaim sweep — fired by the `system:idle-session-reaper` routine — converges it to honest `ended`, and reclaim “fires on dead sessions” as designed.
 
 # Workspace-agnostic tools need `crossWorkspace: true` (or they fail on fleet sessions)
 
@@ -5046,6 +5159,65 @@ If a subscription bucket is paused with no live pressure, or an account reads ex
 
 Also operational: the gateway loads its account pool **only at boot** (no hot-reload) — after registering/removing accounts you must restart `papercup-inference-gateway.service` to re-pool, else it dead-ends on a stale subset. A standing durable improvement would be to hot-reload the pool.
 
+# High FCP: server/eval libs leak into the eager client bundle via barrels
+
+> The operator SPA's ~2s first-contentful-paint was server-only heavy libs (js-tiktoken, the TypeScript compiler) dragged into the eager boot graph by barrel re-exports. How to diagnose (sourcemap attribution) + fix (lazy import / barrel hygiene / route code-splitting).
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The operator `/adv` shell’s **first-contentful-paint sat at \~2s** (reload, prod bundle) while the doc server response was \~43ms — i.e. it was **all JS parse/exec**, not network. Measured on `bin/desktop-preview-prod` (real `React.production`, the only honest FCP harness; a debug `tauri dev` build auto-opens devtools which inflates RSS and skews timing).
+
+## Root cause (recurring — it hit twice)
+
+[Section titled “Root cause (recurring — it hit twice)”](#root-cause-recurring--it-hit-twice)
+
+The eager boot bundle was **\~14 MB raw** (entry `<script>` + the whole `modulepreload` graph, which executes before React renders). Two **server- / eval-only heavy libs** were dragged into it by **barrel re-exports of server-only code that the webview transitively imports**:
+
+* **`js-tiktoken` (5.5 MB BPE tables)** — `packages/agent-mcp/src/delta-eval-harness.ts` did `import { getEncoding } from 'js-tiktoken'` + `const enc = getEncoding('o200k_base')` at **module top-level** (an eager side-effect), for an eval-only `tokens()`. The agent-mcp barrel (`index.ts`) re-exports that module, and the webview imports the barrel (e.g. `chat/LocalCardHost`) → 5.5 MB eager.
+* **The TypeScript compiler (3.4 MB)** — `libs/generic/tooldef/src/code-orchestration/parse-check.ts` did `import ts from 'typescript'` for a server-side AST walk (`checkScript`, the `code:run` parse-check). Both the `tooldef` **and** `agent-mcp` barrels re-export `code-orchestration`, and the webview imports both barrels → the whole compiler eager. **162 of 163 tooldef-barrel importers never use code-orchestration** — they paid 3.4 MB for nothing.
+
+Contributing: **TanStack Router `autoCodeSplitting` was OFF**, so all \~81 route `component`s were statically imported into `routeTree.gen.ts` → the entry chunk (turning it on dropped the entry 2.5 MB → 281 KB, but the barrel leaks above dominated FCP).
+
+## How to diagnose (don’t guess — attribute)
+
+[Section titled “How to diagnose (don’t guess — attribute)”](#how-to-diagnose-dont-guess--attribute)
+
+Grepping minified chunks for lib names is unreliable (`"plate"` matches `"template"`; app code is mangled). **Attribute via the sourcemap `sources`:**
+
+```sh
+cd apps/operator-vite && npx vite build --sourcemap true
+# then, for the biggest EAGER chunk (entry + modulepreload from dist/index.html):
+python3 - <<'PY'
+import json, collections
+m = json.load(open('dist/assets/<biggest-src-chunk>.js.map'))
+agg = collections.Counter()
+for i, s in enumerate(m['sources']):
+    parts = [p for p in s.replace('../','').split('/') if p not in ('','.')]
+    grp = ('nm/'+parts[parts.index('node_modules')+1]) if 'node_modules' in parts else '/'.join(parts[:3])
+    agg[grp] += len((m.get('sourcesContent') or [None]*len(m['sources']))[i] or '')
+for g, n in agg.most_common(15): print(f'{n//1024:>7} KB  {g}')
+PY
+```
+
+Compute the **eager set** = the entry `<script src>` + every `modulepreload` `href` in `dist/index.html` (those execute before paint), then sum their file sizes. The rolldown build also prints `INEFFECTIVE_DYNAMIC_IMPORT` warnings — each names a module whose dynamic-import split was defeated by a competing static import (more leak candidates, e.g. `operator-core/lib/work-items.ts`).
+
+## The fix pattern
+
+[Section titled “The fix pattern”](#the-fix-pattern)
+
+For a heavy lib reachable from the eager client graph but only used server/eval-side, **make the import lazy** so it splits into its own chunk fetched only when that path runs:
+
+* **Async consumer** → just `const { x } = await import('heavy-lib')` inside the function (see `delta-eval-harness.ts`: `tokens`/`evalSnapshotTransition` became async; their only callers were tests).
+* **Consumer must stay sync** (e.g. `checkScript`, exercised by a \~20-call test suite) → **lazy-warmup singleton**: a `let _lib`, an async `ensureXReady()` that does the dynamic `import()` once, and a sync accessor that throws if not warmed. Call `await ensureXReady()` at the (already-async) runtime entry points; tests warm in `beforeAll`. Keeps the sync API + avoids an async cascade through every caller. Use `import type` for the lib’s types (erased) so type annotations don’t re-pull it. (See `parse-check.ts`.)
+* **Routes** → set `autoCodeSplitting: true` on the `tanstackRouter` vite plugin.
+* **Barrel hygiene** (the deeper fix): don’t `export *` server-only subtrees (`code-orchestration`) through a barrel that clients import; deep-import in the few real server consumers instead.
+
+Caution
+
+Verify on `bin/desktop-preview-prod` (prod React) and re-attribute the eager set — the FCP number alone is load-noisy on the shared box (grade the **eager bundle bytes**, which are load-independent, plus FCP medians). Confirmed wins (2026-06-23 E2E sweep): eager bundle **13.86 MB → 2.35 MB (−83%)**, FCP **1927 → 932 ms (−52%)**.
+
 # Flag flips on PostHog-less boxes — MCP flags:set fails, the HTTP route works
 
 > MCP `flags:set` returns `flag-backend-not-configured` on any box without PostHog (this dev box included) — that does NOT mean flags are broken. The HTTP route `POST /api/flags/set` (loopback, no auth header needed from the box) has a PG-override fallback the MCP projection lacks: it writes the flip to the PG override store, publishes the change bus event, and records the flag:set audit row. Symptoms that mean READ THIS — "flag-backend-not- configured" from flags:set, a flag flip that silently never lands, audit rows showing backend pg-override.
@@ -5084,6 +5256,32 @@ The route (`packages/operator-core/lib/endpoint-route/routes/flags/set.ts`, `aut
 * Reads are fine everywhere; only the MCP *write* lacks the fallback. Filed as EI-407 (transport divergence — the endpoint system promises one tool per verb across HTTP/MCP/IPC).
 * The audit trail for ANY flag flip is `audit:list` with action `flag:set` (singular — `flags:set` as an action filter matches nothing).
 * Observed during the consume-edges P-013 supervised proof (2026-06-12): both the protective pause and the un-pause of `papercusp-improvement-auto-implement` rode the pg-override fallback.
+
+# A flag default graduating OFF→ON silently breaks legacy tests that assert the OFF contract
+
+> When a feature flag's DEFAULT flips to ON, legacy unit tests that assert the OFF/legacy behavior WITHOUT pinning the flag silently start exercising the ON path — their assertions break and red the green-checkpoint gate. Fix = pin the flag explicitly in the legacy test. Symptom + fix + check.
+
+**Symptom signature.** The green-checkpoint gate goes RED — for *hours*, across multiple candidates — on a handful of unit tests in a package you didn’t think you touched. Each failing test asserts a *legacy* behavior contract (`expect(...).toBe(false)`, “is per (workspace, install)”, “defaults installSlug to ‘op’”) and reproduces deterministically in isolation. Re-running doesn’t fix it. On 2026-06-24 this red the gate \~8h and pulled in 3 agents before the cause was named.
+
+**Why.** A flag-gated re-key ships dark, then its **default graduates to ON** (the repo’s normal end-state — finished work never ships dark). The NEW behavior gets its own `*-workspace-scope.test.ts` sibling that drives the flag ON deterministically. But the **pre-existing** unit tests still assert the OLD (flag-OFF) contract and **never pinned the flag** — they relied on the default being OFF. The moment the default flips, those tests silently exercise the ON path and their assertions break. Nothing about the flip touches the test file, so the red looks like it came from nowhere.
+
+Concrete case (workspace-scoped-coordination, `WORKSPACE_COORDINATION`): the brain re-key (`workspace-brain-scope.ts`) collapses per-(workspace,install) state to one row per workspace when ON. `control-state.test.ts` (“is per (workspace, install)”) and `scout-cycle.test.ts` (“defaults installSlug to ‘op’”) asserted the per-hive OFF contract → broke on graduation.
+
+**The fix (per failing legacy test).** Pin the flag to its OFF value so the test deterministically exercises the legacy/kill-switch path it was written for — independent of the production default. Mock the flag-gate helper, not PostHog:
+
+```ts
+// Pin WORKSPACE_COORDINATION OFF so these unit tests exercise the per-(ws,install)
+// keying path they were written for — independent of the production default,
+// which graduated to ON. The ON path is covered by *-workspace-scope.test.ts.
+vi.mock('../../workspace-brain-scope.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isWorkspaceCoordinationOn: () => Promise.resolve(false) };
+});
+```
+
+This is correct, not gaming: the OFF path is the reversible kill-switch and must stay tested. The ON path lives in the sibling `*-workspace-scope.test.ts`.
+
+**Check before you graduate a flag default to ON.** Grep every test that touches the flag-gated code path; any that asserts the OFF-behavior contract WITHOUT explicitly pinning the flag will break on the flip. Pin them OFF (or move the assertion to the ON contract) in the SAME change that flips the default — don’t let the green gate discover it for you. This is the contract-break cousin of [default-on-flag-glue-vs-hermetic-unit-tests](/internal/docs/agent-insights/default-on-flag-glue-vs-hermetic-unit-tests) (that one is the live-PG-write hazard; this one is the assertion break).
 
 # Fleet bee killed by the DBOS invoke timeout (was 600s/10 min; default now 45 min)
 
@@ -6959,6 +7157,55 @@ Rate only what the live evidence supports; an unobservable criterion is `unknown
 * `hive-coordination-test-loop-2026-06-20` D-001 — the owner’s original 13-question scorecard this rubric crystallizes.
 * `rubrics:get { rubric_id: 'hive-coordination-health' }` — the structured rubric (criteria keys, rating scale, drift markers).
 
+# Hive instance prompt overrides must be ADDITIVE — never a wholesale base snapshot
+
+> A hive's promptOverride.<role> is APPENDED after the generated blueprint persona, so it must carry only the hive-specific delta — never a full copy of the generated base. A wholesale snapshot silently duplicates content and freezes it (a stale section drifts from the generated source forever). Covers the additive-append mechanism, the papercup-hive su wholesale-snapshot incident + fix, how to put generic content in the generated base (marker + render note), the warn-only guard, and the re-seed path.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+A hive’s per-role prompt override (`hive_settings` key `promptOverride.<role>`, federated over the hive peer-log) is **APPENDED after** the generated blueprint persona — it **specializes, it never replaces** (`getHiveInstancePromptOverride` → `role-launch-spec` appends `inst`; the store’s own comment: *“the override SPECIALIZES … it does not replace the role”*). So an override must contain **only the hive-specific delta**. The default prompt is the GENERATED chain (`blueprints/<chain>/prompts/<role>.md` + the spliced sections + the client tooling overlay); a hive adds its specifics on top. **Generated by default; the override only when a user explicitly authors one — and even then, only the additive part.**
+
+## The trap (what went wrong)
+
+[Section titled “The trap (what went wrong)”](#the-trap-what-went-wrong)
+
+It is tempting to author an override by copying the whole assembled prompt and tweaking it. That is a **wholesale snapshot**, and it is wrong two ways:
+
+1. **It duplicates.** The override re-states sections the generated base already supplies (AUTO mode, looping, coordination, “Who you are”, wire schemas…). The assembled prompt then carries each twice.
+2. **It freezes.** The snapshot is a point-in-time copy in PG. When the generated source changes (e.g. the `## AUTO mode` clause is reworded/consolidated), the override keeps the **stale** copy forever — and because it’s appended *last*, the stale version is what the agent reads.
+
+Real incident (2026-06-24): `papercusp/promptOverride.su` was a \~21.6 KB wholesale copy of `hive-instances/papercup-hive.su.md`. With `su-blueprint-persona` ON, the generated su base is the *generic* `blueprints/base/prompts/su.md` (which carried no AUTO mode), so **every** Papercusp-specific section — including a now-stale `## AUTO mode` — was riding the frozen snapshot. A fresh edit to the canonical AUTO clause never reached the live hive psu, and consolidating AUTO would have produced a *contradictory double* (fresh generated + stale appended).
+
+## The fix pattern
+
+[Section titled “The fix pattern”](#the-fix-pattern)
+
+When you find generic content trapped in an override, **move it to the generated chain and slim the override to the delta**:
+
+1. **Put the generic/cross-cutting content in the generated base**, authored once. The clean mechanism is a render function + a splice marker (mirrors `renderWireSchemasSection` / `renderCoordLegend`): e.g. `renderAutoModePolicy()` in `auto-mode-policy.ts`, spliced at `AUTO_MODE_MARKER` by `renderSuPlaybook` / `writeSplicedPlaybook`. Add the marker to the bases that should carry it (`blueprints/base/prompts/su.md`, `papercusp-su-engineer.tools.md`, `papercusp-su-power.tools.md`). An absent marker is a clean no-op (a base may opt out).
+2. **Re-seed the override without the moved content.** `hive-instances/<hive>.<role>.md` is the version-controlled SOURCE; the live copy is the federated `promptOverride.<role>` in `hive_settings` (they DIVERGE — the file is not auto-synced). Re-seed via the loopback write path: `POST /api/agent-mcp/hive-override-set { hiveSlug, kind:'prompt', name:'<role>', value:<file md> }` (an empty value CLEARS it). Verify the PG row updated (`harness_shared.hive_settings`).
+
+## The guard
+
+[Section titled “The guard”](#the-guard)
+
+`hive-override-additive-guard.ts` (`additiveOverrideWarning(md)`) detects the smell — an override that re-states a base-owned section heading or embeds a `PAPERCUSP-SU:` splice marker — and the `hive-override-set` route surfaces it as a **non-blocking warning** (overrides are the owner’s to author; we flag, we don’t gate). If you’re adding a new generic section to the base, add its heading to `BASE_OWNED_HEADINGS` so the guard keeps catching copies of it.
+
+## Why it’s not flag- or materialization-sensitive
+
+[Section titled “Why it’s not flag- or materialization-sensitive”](#why-its-not-flag--or-materialization-sensitive)
+
+The su prompt is assembled by `renderSuPlaybook` on **both** paths — `su-blueprint-persona` OFF (base = `papercusp-su-engineer.tools.md`) and ON (base = the generic `blueprints/base/prompts/su.md`) — so the marker belongs in whichever base a path uses. Prompt files resolve from the integration/staging tree (`promptHarnessRoot` → `PAPERCUSP_PROMPT_ROOT`/`PAPERCUSP_INTEGRATION_ROOT`, else `harnessRoot()` = `libs/papercusp/packages/harness`), so editing the canonical `libs/` source goes live for new sessions without a release. The `.papercusp/.materialized/` + desktop `sidecar/harness/` copies are generated artifacts — they regenerate from `libs/` at build; don’t hand-edit them.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [override-settings-backbone](/internal/docs/agent-insights/override-settings-backbone) — the broader hive override + local-blueprint settings backbone.
+* [engine-managed-loops](/internal/docs/agent-insights/engine-managed-loops) — `loop:arm` cadence, which the AUTO-mode clause references.
+
 # The Hive Queen is already fresh-per-wake (--session-id), not a forever-session
 
 > Every declared/event/watchdog Queen wake spawns a FRESH claude session via the hive launch blueprint (--session-id <new uuid>), carrying NO transcript. The only --resume path is the generic wake-executor inbox/await delivery channel. Map of the wake paths + where resume-vs-fresh is decided.
@@ -7931,6 +8178,19 @@ At 64 concurrent opus, p50 latency rose to \~2.6s (real upstream queueing) but *
 **The bare-burst limit is NOT per-account.** A single account framed as Claude Code, through its own egress IP, sustains ≥64 concurrent opus / ≥16-concurrent-10-rps haiku with zero bare-bursts. The bare-burst is therefore a throttle on a dimension **shared across the accounts** — the Anthropic **organization** and/or the **proxy-IP range** — tripped by the **aggregate fleet**, not any one account.
 
 **It is an edge/infrastructure-layer throttle, not the app-layer rate-limiter.** Anthropic’s app-layer `rate_limit_error` always attaches `retry-after` + `anthropic-ratelimit-*` (the rate-window 429s prove it). A 429 stripped of *all* that metadata, carrying only `x-should-retry: true`, is the signature of a pre-app layer (Cloudflare edge / load-balancer) rejecting before the app attaches rate-limit headers. (The exact origin string — `server` / `cf-ray` — is now captured per bare-burst by the `[bare-burst-origin …]` suffix added to the gateway 429-log; read it from journald to confirm Cloudflare-edge vs Anthropic-edge.)
+
+## Post-deploy confirmation: the storm was rotation-AMPLIFIED (G1 collapsed it)
+
+[Section titled “Post-deploy confirmation: the storm was rotation-AMPLIFIED (G1 collapsed it)”](#post-deploy-confirmation-the-storm-was-rotation-amplified-g1-collapsed-it)
+
+When G1’s fleet-wide-bare-burst **rotation suppression** (WI-649) + this G2 capture were restarted live on `:8788` (2026-06-24 \~01:14Z), the bare-burst storm **collapsed immediately**:
+
+| window                                   | bare-burst          | rate-window                 |
+| ---------------------------------------- | ------------------- | --------------------------- |
+| 2h **before** (rotate-on-429 active)     | **455** (\~3.8/min) | 27                          |
+| \~6.5min **after** (rotation suppressed) | **0**               | 12 (genuine 7d quota walls) |
+
+A shared edge throttle that **vanishes the instant you stop rotating-and-retrying across accounts** is the signature of **self-inflicted amplification**: one bare-burst → immediate cross-account rotate+retry → more aggregate pressure on the shared limit → more bare-bursts (a positive-feedback storm). Removing the rotation (G1) broke the loop. This end-to-end result corroborates the G2 verdict — the limit is shared/aggregate, not per-account — and means the bare-burst origin string is, for now, **uncapturable because there are no bare-bursts**; the instrument stays in place to name the origin on the next one. The residual 429s are all `rate-window` — the genuine 5h/7d quota walls (G5/capacity, not G1/G3).
 
 ## Why it matters — de-risks G1/G3/G5
 
@@ -13207,6 +13467,54 @@ WHERE invoked_at > now() - interval '2 hours' GROUP BY 1 ORDER BY 1 DESC;
 
 If `reads ≫ writes` and the per-hour read count is flat around the clock, the bottleneck is poll cadence (lever 2), not payload (handled by lever 1). Tracked as **EI-2661** (egress) / **WI-545** (move the UI poll onto an SSE/sync delta or `not_modified`).
 
+# Plans vs work-items — how a plan item becomes claimable, and which surface a coordinator pushes work onto
+
+> A plan item (P-NNN) is authoring/intent; a work-item (WI-/F-NNN) is the claimable execution unit. The two bridges (plans:start promotion + plan_items:convert at pickup), how the lane is claimed, and what a coordinator/Queen actually pushes work onto.
+
+## The two surfaces
+
+[Section titled “The two surfaces”](#the-two-surfaces)
+
+* **Plans (`plans:*`)** — the PG-canonical authoring + intent layer. A plan has items `P-NNN` (each with an `effectiveStatus`: todo / wip / blocked / needs-human / done / dropped), decisions, a `## Now` anchor, and per-item **claim leases** (the “lane”). This is where a human/su/Queen decides *what should happen* and in what order.
+* **Work-items (`work_items:*`)** — the claimable **execution** queue: `WI-NNN` (task/bug/change) and `F-NNN` (feature). `claim_next` / the Queen’s placement offer `todo` work-items to agents. This is where work is *picked up and done*.
+
+A plan item is **not** directly claimable. It becomes claimable only as a work-item, via one of two bridges.
+
+## Bridge 1 — `plans:start` promotion (the bulk path)
+
+[Section titled “Bridge 1 — plans:start promotion (the bulk path)”](#bridge-1--plansstart-promotion-the-bulk-path)
+
+`plans:start` (the same verb a human, su, or the Queen calls) auto-promotes every **OPEN** plan-item into a placeable, **UNCLAIMED** work-item (`plan-workitem-promotion.ts`, `computePromotions`). The work-item is `kind:'feature'`, carries `source_plan_item_ids` (the idempotency key with the slug, so re-starting never double-mints), and lands in the queue for the Queen/self-selection to place. Gated by `papercusp-plan-workitem-promotion`. This is why “I started a plan but the Queen sat idle” was a bug — without promotion a started plan minted zero work-items.
+
+## Bridge 2 — `plan_items:convert` (convert-at-pickup, the single path)
+
+[Section titled “Bridge 2 — plan\_items:convert (convert-at-pickup, the single path)”](#bridge-2--plan_itemsconvert-convert-at-pickup-the-single-path)
+
+`plan_items:convert` is **THE pickup verb**: it takes the policy-checked plan-item lease, mints (or resumes) the work\_item execution record **with the caller as assignee**, links it back to the plan item, and flips the plan item `todo→wip` + broadcasts the claim (via `emits:`). The work-item’s later lifecycle **reflects back** onto the plan item (`plan-items/reflect-rules.ts`: `complete→done`, `release→todo`). So “working a plan item” = convert it first — there is no untracked self-item.
+
+## Claiming the LANE (declaration, not execution)
+
+[Section titled “Claiming the LANE (declaration, not execution)”](#claiming-the-lane-declaration-not-execution)
+
+Distinct from minting a work-item, a coordinator/agent declares the **lane** it owns on the plan:
+
+* `coord:declare-intent { current_plan_slug, items:['P-001',…] }` — claims those items’ leases (auto-releases ones moved off). `coord:orient { planSlug, planItems }` does the same on wake.
+* `plans:set-status P-001 wip` — auto-claims that item; `done`/`dropped` releases it.
+* `plan_items:claim` — the live grip; `plan_items:assign` — **push** an item to ANOTHER named agent (intra-user; the target reads it via `plan_items:my_items`).
+
+A `claim_conflict` means a live peer holds the lease — coordinate, don’t take it.
+
+## What a coordinator/Queen actually pushes work onto
+
+[Section titled “What a coordinator/Queen actually pushes work onto”](#what-a-coordinatorqueen-actually-pushes-work-onto)
+
+* **Hand a specific plan lane to a peer + get it picked up NOW** → `coord:dispatch { to, planSlug, items, note }` — it `plan_items:assign`s the lane (durable) AND wakes + confirms (see [coordinator-dispatch-and-wake](/internal/docs/agent-insights/coordinator-dispatch-and-wake)).
+* **Hand a lane durably without a wake** → `plan_items:assign` (the target pulls it on its next turn).
+* **Feed the open claimable queue** → `plans:start` (bulk promotion) or `work_items:create` directly.
+* **The Queen** places ranked *work-items* onto bees (it does not hand out raw plan items) — the hive scheduler’s `get_next` offers a bee a floor-AND-spec-compliant work-item.
+
+Rule of thumb: **author + sequence on the plan (P-NNN); claim + execute on the work-item (WI-/F-NNN).** A coordinator pushing plan work to a peer uses `coord:dispatch` / `plan_items:assign`; a coordinator feeding the open pool uses `plans:start` / `work_items:create`.
+
 # Plugin tools after a deploy: the empty-registry window (gitnexus was never down)
 
 > unknown_tool on a plugin tool (gitnexus.*, repomix.pack, design-phase.*) right after an operator restart meant the projected-tool registry hadn't been populated yet — registration was lazy (first getPluginHost() call), and :3070 restarts on every deploy. Fixed by an eager boot warm in host-bootstrap; diagnosis recipe + the misdiagnosis trap.
@@ -14492,6 +14800,8 @@ Papercusp routes **all** model calls through an **inference gateway** backed by 
 **4. The PERSISTED penalty false-pause (a transient 429 → a 16-HOUR fleet-wide lockout).** The worst one, and it SURVIVES RESTARTS. The governor’s pause lives in `harness_shared.agent_rate_budget` (one row per `bucket_key`, `paused_until` epoch-ms — `agent-governor-pg-store.ts`), SHARED by every operator + gym process. When a `429` is classified `accountWide && !retryable` (the usage-cap path in `resilience/retry.ts`), the handler calls `governor.penalize({ resetAt })` with `resetAt` = the account’s **rolling-window** reset (Claude Max 5h/**7d**). `recordPenalty` honored that reset FULLY (no `maxPauseMs`), so a single transient 429 pinned the **account-blind** `anthropic:opus` (+ `sonnet` + `haiku`) bucket to a reset boundary **\~16 h out** — locking the WHOLE fleet out of opus with **rpm 0/45, $0, zero in-flight**, while `api.anthropic.com` direct-probes returned **200** (5h util 0.48 *allowed*, 7d 0.79 *allowed*). The tells: `dev:rate_governor_status` shows `paused:true` with `pausedUntil` a round hour many hours out + `usage.calls 0 / $0`; the pause is identical across `:3070` and `:3170` (it’s the shared PG row); and a process restart does **NOT** clear it (the row reloads on boot — this is why “restart the gateway” alone failed on 2026-06-17). A **rolling-utilization** window recovers continuously, so sitting on its multi-hour reset is always wrong — `recordHeaders` already re-probes a rejected unified window at `ROLLING_WINDOW_REPROBE_MS` (2 min); `penalize()` was the gap. **Fixed** (`resilience/governor.ts`): `penalize()` auto-caps the pause at `ROLLING_WINDOW_REPROBE_MS` for a subscription account (detected via `state.unified`), and bakes that cap into `opts` so the cross-process PG write inherits it (the persisted row never carries `unified`, so an in-memory-only cap would still write 16 h). **To CLEAR a live one** (no verb does it — `accounts:reset-rate` explicitly skips live governor buckets, and they otherwise self-expire only at `paused_until`): `UPDATE harness_shared.agent_rate_budget SET paused_until = 0, pace_delay_ms = 0 WHERE paused_until > <now_ms>` — scoped to the future-paused rows; the next `acquire` reads it fresh, fleet-wide, no restart needed.
 
 **5. The mid-turn death MISCLASSIFIED as a host fault (the GENUINE all-accounts throttle that never shows up as a 429).** Faults 1–4 are config/routing faults where idle capacity exists. This is the one case where the pool *is* (transiently) all-throttled at once — AND the only one that never reaches the debugger as a rate-limit string at all, so it slips past this whole doc’s framing. The shape: a blueprint spawn (queen/worker) is recorded **`infra_loss: "<label> returned HTTP 200 but the agent produced no turn (ok=false, exitCode=1, timedOut=false, outLen=18) — launcher host dead/unstable; recorded failed, not retried (host stability is the fix)"`** (`durable-spawn.ts`, the HTTP-200-but-no-turn classifier). The label sends you hunting a phantom host bug — **the host is fine.** The flight-recorder transcript (`~/.papercusp/flight-recorder/unlabeled-claude-cfg-spawn-*/.../<sid>.jsonl`) shows the agent **ran normally**: its **1st** gateway call succeeded (real cache-creation tokens, a tool call), it got the first `tool_result` — then the process **exited 1 with EMPTY stderr mid-turn** on its **2nd** call. The gateway route log at that timestamp (`PAPERCUSP_GATEWAY_ROUTE_LOG=1`) explains it. Two storm shapes trigger the same death: (a) an all-accounts **429 storm** — `sustainedly limited … no-fresh-account` + `all accounts transiently throttled on <model> → wait Nms`; or (b) the **dominant** one — a **transport-STALL storm** (`upstream fetch STALLED (aborted) … no activity for Nms`), which does **NOT** increment `upstream429`, so the death can land in a window that looks 429-calm (`upstream429` flat). The 1st call slipped through a calm window; the 2nd hit the storm; the in-request **stall-absorb** budget (`PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS`, \~120 s) ran out → the `claude` CLI got an error and died, producing only its bootstrap log lines (stripped by `extractAgentOutput`) → `outLen` ≈ 0. Tell: `spawned_agents` rows for blueprint roles all `failed` with the `infra_loss … no turn … host dead/unstable` string and **wildly varying `duration_ms`** (a few hundred ms to many minutes — the absorb hold), while the host’s own services are healthy and the gateway `/healthz` `aimd.pressure` oscillates (calm when you check, but the route log shows storms at the death timestamps). Unlike 1–4 this genuinely is capacity — but it’s **transient** (the pool recovers; `pressure` returns to 0 with a growing `cleanStreak`), so the fix is the same as always: **add accounts** (owner-authority) so `no-fresh-account` stops happening — NOT “stabilize the host,” and NOT “wait for a multi-hour reset.” A reserved/pinned account (`x-papercusp-account` + excluded from `selectSpawnAccount` rotation) gives a single workload a lane isolated from the fleet storm.
+
+**6. The residual bare-burst that smoothing can’t fix — a CLOUDFLARE EDGE per-IP throttle, not the account rate.** After the account-rate fixes (RPM smoothing — spreads each account’s per-minute allowance so it can’t fire as a sub-minute burst; `inference-gateway-stability-ownership-2026-06-23` P-002), a bare-burst 429 storm can *persist at a low per-account rate* (\~3.5 upstream-calls/min/account, **13× under** the `DEFAULT_FLOORS.anthropic` 45/min floor) with **no util headers** across all accounts. Smoothing is a NO-OP here (at \~17 s natural spacing its 1333 ms pace floor never binds) — because this is **not** the account budget at all. The gateway already tags the provenance; read it in journald (`journalctl --user -u papercup-inference-gateway.service`): `upstream 429 → internal retry … on '<acct>' [429-shape=bare-burst x-should-retry=true retry-after=-ms util5h=- util7d=-] [bare-burst-origin server=cloudflare cf-ray=…-EWR org=…]`. **`server=cloudflare` + `cf-ray` + absent `util5h/util7d`** = the 429 was generated at the **Cloudflare EDGE** (a per-IP/colo throttle), not by Anthropic’s account-budget limiter (which would set `anthropic-ratelimit-unified-*`). Tell: the bursts cluster on the SAME accounts whose **egress proxies are failing** (`/stats` `egressFailsByAccount` high, `egressCircuitOpens` climbing) and on a couple of `cf-ray` colos (e.g. LAX/EWR) — i.e. it is keyed to the (flaky Rayobyte) **egress IPs**, not the account. The P-002 rate-pacer structurally cannot reduce it, and the rotation-retry then **fans it out** (a bare-burst rotates 400 ms onto a fresh account and re-fires un-paced → `upstreamCallsPerRequest`≈2; `bareBurstRotateSuppressed` shows the G1 damping working but only once ≥half the pool is out). The fix is **egress-IP**, not account-rate: treat a `server=cloudflare` bare-burst as a per-egress-IP throttle → cool/rotate the **egress IP**, fix/replace the flaky proxy, and/or a per-egress-IP rate cap. Reproduce + measure any fix with the vitest rig (`inference-gateway/load-test-rig.ts` → `runGatewayBurstRig`, reports `upstream429`/`failovers`/ `bareBurstRotateSuppressed`/`upstreamCallsPerRequest`).
 
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
@@ -18441,6 +18751,79 @@ Recent example: a new column on `harness_features` added as `string()` because t
 
 The Zero schema file lives at `libs/zero-harness/src/schema.ts`. The authoritative pitfall list is at [Data Sync → pitfalls](/internal/docs/data-sync/pitfalls) item #2 — this insight is a short pointer.
 
+# Token audit P-013: the ≥40% gate is confounded by a work-model regime shift (interactive → fleet)
+
+> Why the token-usage-reduction-audit acceptance gate (weekly cache-read+write down ≥40% at flat throughput) cannot be read off raw weekly volume: the dominant token population migrated from interactive psu sessions to autonomous fleet subprocess runs between the baseline and the re-measure. Raw drop is ~85%, but it is not cleanly lever-attributable. The sound forward metric is per-unit (cache/session by source).
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+`token-usage-reduction-audit-2026-06-09` P-013 gates the plan on “weekly cache-read+write MTok down **≥40%** at **flat task throughput**” vs the D-003 baseline of **20.77 GTok cache-read/wk** (measured 2026-06-10). Re-measured 2026-06-24:
+
+* **Raw weekly cache-read+write is down \~85%** (06-15, the first clean full week: **\~3.2 GTok** total vs 20.77 GTok baseline) — numerically far past 40%.
+* **But it is NOT cleanly attributable to the reduction levers.** Between the baseline and now the dominant token *population* migrated: the work-model shifted from **interactive psu sessions** (`source='interactive'`) to **autonomous fleet subprocess runs** (`source='jsonl'`). “At flat task throughput” is therefore violated — throughput did not stay flat on a comparable path; the whole workload moved to an inherently cheaper-per-unit path (short bee runs vs long 200k-context psu sessions).
+
+So the honest verdict: **the ≥40% target is met in raw volume, with a major confound.** The sound forward acceptance metric is **per-unit** (cache per session, by source), not raw weekly volume against a single-regime baseline that no longer reflects the workload.
+
+## The three sources (what the buckets mean)
+
+[Section titled “The three sources (what the buckets mean)”](#the-three-sources-what-the-buckets-mean)
+
+`harness_shared.agent_usage_samples.source` ([`agent-usage-telemetry.ts`](packages/operator-core/lib/agent-usage-telemetry.ts)):
+
+* **`interactive`** — ingested `~/.claude/projects/**/*.jsonl` assistant-message usage (human/psu Claude-Code sessions), via the [`interactive-usage-ingest`](packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts) routine (cron every 10 min). **This is the population the D-003 baseline measured.**
+* **`jsonl`** — subprocess agent-run results (the fleet bees), written by [`usage-sample-pg.ts`](libs/papercusp/packages/orchestrator/src/usage-sample-pg.ts).
+* **`headers`** — in-process anthropic-direct calls.
+
+## The data (clean weeks; the 06-08/06-09/06-10 windows are backfill-skewed — D-005)
+
+[Section titled “The data (clean weeks; the 06-08/06-09/06-10 windows are backfill-skewed — D-005)”](#the-data-clean-weeks-the-06-0806-0906-10-windows-are-backfill-skewed--d-005)
+
+| week (start) | source      | sessions | cache MTok (read+write) | per session |
+| ------------ | ----------- | -------- | ----------------------- | ----------- |
+| 2026-06-15   | jsonl       | 1,672    | 3,042                   | 1.82        |
+| 2026-06-15   | interactive | \~0¹     | 168                     | —           |
+| 2026-06-22²  | jsonl       | 484      | 731                     | 1.51        |
+| 2026-06-22²  | interactive | 4        | 184                     | 45.97       |
+
+¹ `session_id` is null for older interactive samples (attribution landed recently) so the distinct-session count under-reads; the MTok is real. ² 06-22 is a partial week (re-measured mid-week).
+
+Baseline (D-003, 2026-06-10, the same `interactive` population): **20.77 GTok cache-read/wk across \~76k psu calls; 95% of all volume was interactive psu sessions.** That population is now **0–4 sessions/wk**.
+
+## Why this is a regime shift, not (only) a lever win
+
+[Section titled “Why this is a regime shift, not (only) a lever win”](#why-this-is-a-regime-shift-not-only-a-lever-win)
+
+* The baseline regime was *human drives long psu sessions* (D-004: psu context p50=224k, p90=578k). Those are expensive per session and there were thousands of them.
+* The current regime is *autonomous fleet*: thousands of **short** bee subprocess runs (`jsonl`, \~1.5–1.8 MTok/session) plus a handful of interactive sessions. The interactive sessions that remain are still large per session (06-22: \~46 MTok/session) — they did **not** get \~99% cheaper; there are just far fewer of them.
+* So the \~85% raw weekly drop is dominated by **where the work runs**, not purely by the per-call efficiency levers.
+
+## The levers DID ship (and are independently guarded)
+
+[Section titled “The levers DID ship (and are independently guarded)”](#the-levers-did-ship-and-are-independently-guarded)
+
+The reduction levers are real and test-gated regardless of the volume confound: `plans:get` payload diet (D-004 F1), byte-stable prompt prefixes + prefix-hash tests (P-009), the prefix slim (CLAUDE.md 48→15KB, SU playbook 51.6→26.9KB, …), the pre-validator test-digest hook (P-010), role-scoped spawn catalogs + guidance-budget lint (P-011), committed per-role model tiers (P-012). Per-unit, fleet `jsonl` runs at \~1.5–1.8 MTok/session — in the neighborhood of P-010’s \~1 MTok/run validator target.
+
+## Recommendation
+
+[Section titled “Recommendation”](#recommendation)
+
+1. **Do not read P-013 off raw weekly volume vs the 20.77 GTok baseline** — the baseline regime no longer exists, so the comparison conflates “levers worked” with “work migrated”.
+2. **Track acceptance per-unit going forward**: cache per session by source, week-over-week, via the (healthy, weekly) `token-weekly-report` routine ([`token-report-action.ts`](packages/operator-core/lib/harness/routines/token-report-action.ts)). A regression shows up as a rising per-session number on a stable source, which the migration can’t mask.
+3. The acceptance **decision** (accept the ≥40%-raw-with-caveat as closing P-013, or re-baseline to a per-unit gate) is an owner call — both telemetry routines are firing, so either reading is available on demand.
+
+## Verifying the routines are live (so a low number is real, not a stalled ingest)
+
+[Section titled “Verifying the routines are live (so a low number is real, not a stalled ingest)”](#verifying-the-routines-are-live-so-a-low-number-is-real-not-a-stalled-ingest)
+
+```plaintext
+routines:list → interactive-usage-ingest (active, every 10 min) + token-weekly-report (active, Mondays 13:00 UTC)
+dev:pg_query  → SELECT source, max(ts) FROM harness_shared.agent_usage_samples GROUP BY source
+```
+
+A *fresh* `max(ts)` on `source='interactive'` (it was minutes-old at this re-measure) proves the ingest is current — so a small weekly `interactive` total is a real low, not a stuck watermark.
+
 # Tool result freshness: the delta base-presence contract
 
 > How an agent tool answers `not_modified` instead of replaying an unchanged snapshot into the model's context — who owns the cursor, how the harness proves it still holds the base, and why this is base-presence-safe with no semantic deltas. The server half (framework plumbing) of agent-tool-delta-protocol; the harness half is the contract this page pins.
@@ -20034,6 +20417,63 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 [Section titled “Why this is the shape it is”](#why-this-is-the-shape-it-is)
 
 D-001..D-010 on `windows-desktop-release-readiness-2026-06-11` carry the full rationale (build-on-VM, bundle-the-rootfs, NSIS-only, unsigned alpha, ext4 PG, payload trims, navigate-after-discovery, statics-pre-operator, breakaway restart).
+
+# worker:chunk-loop dark-launch — the metrics surface + ramp gate, and how to run it
+
+> The operator-hosted worker:chunk-loop op routes a coding worker through the operator process instead of the subprocess invoke-once path. Routing is a TWO-gate guard in orchestrator-runner.ts useWorkerChunkLoopOp: the papercusp-worker-chunk-loop-blueprint flag (default-ON) AND a per-harness workerChunkLoop config knob (default false, set on ZERO harnesses → every coding worker still runs the subprocess path). To dark-launch you set workerChunkLoop:true on ONE non-critical CODING harness (NOT papercup/papercusp) via its instance config (Blueprint Settings → POST /api/harness/:slug/spec; the key lands in configOverrides and configGet reads it), then dispatch a real feature. Outcomes are now recorded per-run (migration 397, harness_shared.worker_chunk_loop_outcomes) at the single runWorkerChunkLoop convergence point, labelled by execution path (op vs subprocess). Read them with dev:worker_chunk_loop_metrics (completion-rate + outcome distribution by path + op−subprocess delta); pass rampStep to get the deterministic advance/hold/rollback recommendation (decideRampAdvance). The actual %-advance and the dark-launch RUN are owner-attended.
+
+## What this is
+
+[Section titled “What this is”](#what-this-is)
+
+The `worker:chunk-loop` op runs the coding worker’s chunk loop **inside the operator process** (a near-port of `runWorkerChunkLoop`) instead of spawning the `invoke-once` subprocess. The value is finer crash-recovery + one execution model on the **coding hot path** — so it ships behind a staged dark → ramp → retire rollout, never a blind cutover.
+
+## Routing — the two-gate guard
+
+[Section titled “Routing — the two-gate guard”](#routing--the-two-gate-guard)
+
+`orchestrator-runner.ts` `useWorkerChunkLoopOp({ role, flagEnabled, harnessOptIn })` returns true only when **all three** hold:
+
+* `role === 'worker'`
+* `flagEnabled` — `papercusp-worker-chunk-loop-blueprint` (default-**ON**)
+* `harnessOptIn` — `configGet(cfg, 'workerChunkLoop', false) === true`, from `readEffectiveHarnessConfig` (blueprint knobs ⊕ the workspace-PG instance config)
+
+The knob is set on **zero** harnesses, so every coding worker still runs the subprocess path. Flipping the flag alone changes nothing — the knob is the real gate.
+
+## Dark-launch a harness (owner-attended)
+
+[Section titled “Dark-launch a harness (owner-attended)”](#dark-launch-a-harness-owner-attended)
+
+1. Pick **one non-critical CODING harness** — NOT `papercup`/`papercusp`. (As of 2026-06-24 no live non-critical coding harness exists; stand one up first.)
+2. Set `workerChunkLoop: true` in its **instance config** — Blueprint Settings panel → `POST /api/harness/:slug/spec`. The key is not a declared blueprint param, but `splitConfigJson` routes any non-typed key into `configOverrides` and `instanceEntryToConfig` spreads it back, so `configGet` reads it. Reversible: set it back to `false`.
+3. Ensure the Brief-15 wiring is **deployed** to the operator running that harness (`:3170` staging, or the green pipeline to `:3070` — the metrics tool + table land via the normal deploy).
+4. Dispatch one real coding feature → the op path fires → an outcome row lands.
+
+## Reading the metrics
+
+[Section titled “Reading the metrics”](#reading-the-metrics)
+
+Every `runWorkerChunkLoop` call (both paths) writes ONE row to `harness_shared.worker_chunk_loop_outcomes` at the convergence point in `run-worker-chunk-loop.ts` (best-effort — a persist hiccup never fails the loop), labelled `execution_path` = `op` | `subprocess` via `InvokeContext.executionPath` (the op runner sets `'op'`; the subprocess path defaults to `'subprocess'`).
+
+`dev:worker_chunk_loop_metrics { windowHours?, harnessSlug?, rampStep? }` returns per-path **completion rate** + **outcome distribution** (completed/escalated/planning\_failed/aborted) + avg chunks-committed + avg replan-strikes, plus the **op−subprocess completion-rate delta**. It degrades to a zeroed empty result before any rows exist.
+
+## Deciding a ramp step (owner-gated per step)
+
+[Section titled “Deciding a ramp step (owner-gated per step)”](#deciding-a-ramp-step-owner-gated-per-step)
+
+Pass `rampStep` (0|25|50|100) and the tool adds a `rampRecommendation` from the pure `decideRampAdvance` (`worker-chunk-ramp.ts`):
+
+* **advance** — op has ≥ `minOpSamples` (20) runs AND op completion-rate is within `completionParityTolerance` (0.02) of subprocess AND no op-specific `planning_failed` spike.
+* **hold** — not enough op samples, or op below parity but not regressed.
+* **rollback** — op completion-rate is `regressionThreshold` (0.05) below subprocess, OR the op `planning_failed` rate exceeds subprocess by `maxPlanningFailedRateDelta` (0.05). The planning\_failed guard is deliberate: a mis-built operator-side `InvokeContext` (the D-005 risk) shows up as the op path failing to PLAN, which raw completion-rate can mask.
+
+The recommendation is advisory — the actual cohort %-advance is the owner’s call per step.
+
+## Gotcha — migration renumber drift
+
+[Section titled “Gotcha — migration renumber drift”](#gotcha--migration-renumber-drift)
+
+The table was first authored as `394-worker-chunk-loop-outcomes.sql`, hit a concurrent migration-number collision, and was renamed to `397-…` (reserved via `db:next-migration`). Both filenames are recorded in `schema_migrations`; `db:check_drift` will show `394-worker-chunk-loop-outcomes.sql` as an “extra” (applied-but-file-gone) — **benign**. The migration’s privilege/RLS block is gated on the policy not already existing, so a re-apply on the in-use table is a lock-free no-op (avoids the 2026-06-09 lock\_timeout deploy-wedge class).
 
 # The workspace-domain split (EI-295)
 

@@ -21,6 +21,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, type MemoryEntry } from './backend';
+import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
 import { memoryTierOf } from './two-tier';
@@ -327,6 +328,14 @@ export async function buildMemoryContextBlock(
     }
   } catch {
     /* hygiene, never load-bearing */
+  }
+
+  // data-scoping-audit P-006 / D-004 / D-012 (dark cutover): workspace-scope the per-owner
+  // USER pool — drop a `project` hit explicitly tagged with a DIFFERENT workspace; keep
+  // owner-tier (user/feedback/reference) + legacy NULL-workspace rows. The harness/hive
+  // pools are already correctly scoped. Conservative + NULL-safe; OFF = today's behavior.
+  if (userResults.length > 0 && (await isMemoryWorkspaceScopedRecallOn())) {
+    userResults = userResults.filter((h) => keepUserPoolHitForWorkspace(h, input.workspaceId));
   }
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 

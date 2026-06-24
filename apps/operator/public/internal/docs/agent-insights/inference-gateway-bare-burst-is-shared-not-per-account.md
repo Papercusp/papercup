@@ -66,6 +66,24 @@ pre-app layer (Cloudflare edge / load-balancer) rejecting before the app attache
 `[bare-burst-origin …]` suffix added to the gateway 429-log; read it from journald to confirm
 Cloudflare-edge vs Anthropic-edge.)
 
+## Post-deploy confirmation: the storm was rotation-AMPLIFIED (G1 collapsed it)
+
+When G1's fleet-wide-bare-burst **rotation suppression** (WI-649) + this G2 capture were restarted live
+on `:8788` (2026-06-24 \~01:14Z), the bare-burst storm **collapsed immediately**:
+
+| window                                   | bare-burst          | rate-window                 |
+| ---------------------------------------- | ------------------- | --------------------------- |
+| 2h **before** (rotate-on-429 active)     | **455** (\~3.8/min) | 27                          |
+| \~6.5min **after** (rotation suppressed) | **0**               | 12 (genuine 7d quota walls) |
+
+A shared edge throttle that **vanishes the instant you stop rotating-and-retrying across accounts** is
+the signature of **self-inflicted amplification**: one bare-burst → immediate cross-account rotate+retry
+→ more aggregate pressure on the shared limit → more bare-bursts (a positive-feedback storm). Removing
+the rotation (G1) broke the loop. This end-to-end result corroborates the G2 verdict — the limit is
+shared/aggregate, not per-account — and means the bare-burst origin string is, for now, **uncapturable
+because there are no bare-bursts**; the instrument stays in place to name the origin on the next one.
+The residual 429s are all `rate-window` — the genuine 5h/7d quota walls (G5/capacity, not G1/G3).
+
 ## Why it matters — de-risks G1/G3/G5
 
 * **G1 (retry/rotation amplification — WI-649):** correct lever. Since the throttle is *shared*,

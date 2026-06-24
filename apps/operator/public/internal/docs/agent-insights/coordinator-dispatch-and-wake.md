@@ -1,0 +1,95 @@
+# Coordinator dispatch & wake — hand a lane to a peer in ONE call, and read "wakeable" not "active"
+URL: /internal/docs/agent-insights/coordinator-dispatch-and-wake
+
+How a coordinator/Queen reliably gets work picked up by another agent — coord:dispatch (assign+wake+confirm), the presence wakeable/sessionState signal that tells you who can actually take work, and why a dead session shows as a fake "parked" target until the reclaim lane GCs its dangling inbox-wake await.
+
+## What this fixes
+
+A coordinator (an su handing work to a peer, or the Queen placing a lane) repeatedly
+hit the same four-step confusion when trying to get an agent to actually pick up work:
+
+1. **`coord:presence` showed dead sessions as "active".** A just-ended su session keeps a
+   fresh `heartbeat_at` for up to 10 min, so an `active:17` count was really \~6 — you
+   could not tell who could take work from who was a stale/ended row.
+2. **`coord:send` injects but does not wake.** A plain send lands in the inbox, seen on the
+   recipient's *next* turn — an idle agent never gets one, so the work silently stalls.
+3. **The wake key was undiscoverable.** Waking meant hand-composing `events:emit` on the
+   `coord:inbox-wake:<ownerId>` key — a format you had to reverse-engineer.
+4. **A woken agent did not reliably ACT on the assignment** — some woke → read → re-parked
+   instead of claiming + working the directed lane.
+
+The fixes: a `wakeable`/`sessionState` signal on presence, a single `coord:dispatch`
+primitive, and a reclaim lane that stops dead sessions from masquerading as live targets.
+
+## The rule: read `sessionState` / `wakeable`, NEVER raw `active`
+
+`coord:presence` enriches every row with two derived signals
+(`presence-wakeability.ts`):
+
+* **`wakeable`** — a live `coord:inbox-wake:<id>` standing await exists, so a wake **will**
+  be delivered. This is the authoritative woken:1-vs-woken:0 signal.
+* **`sessionState`** — `live` (a turn is running now) · `parked` (wakeable but idle — **the
+  ideal dispatch target**, a wake resumes it) · `ended` (NOT wakeable — a dead/zombie row;
+  it needs a **relaunch**, never a wake) · `recorded` (authoritatively live per the session
+  log but not yet coord-wakeable).
+
+So: **before dispatching, find a `parked` (or `live`) target. An `ended` target cannot be
+woken — relaunch/resume it instead.** Read `summary.wakeable`, not the `active` count.
+
+## coord:dispatch — assign + wake + confirm, in ONE call
+
+`coord:dispatch { to, planSlug?, items?[], note }` (`tools/dispatch.ts`) replaces the
+hand-composed `plan_items:assign` + `coord:send` + `events:emit` + key-format ritual. It:
+
+1. reads the target's `sessionState`/`wakeable` (so the result tells you what you dispatched to),
+2. **assigns the lane** — `plan_items:assign` of `items` in `planSlug` to `to` (durable; survives
+   the target sleeping/dying — omit `planSlug`+`items` for a pure directed wake),
+3. **delivers the note + wakes** — `coord:send { wake:'required' }` persists the directed note to
+   the target's inbox AND fires its `coord:inbox-wake:<id>` key, and
+4. returns `{ ok, to, sessionState, wakeable, assigned, delivered, woken, warning? }`.
+
+It is composed (the in-process re-dispatch pattern, like `coord:orient`) — it builds no second
+wake pump; it reuses `coord:send`'s deliver-and-wake, which owns the
+`recipient_absent`/`recipient_dead` honesty signal.
+
+**Read the result, not your hope.** A dispatch to a non-wakeable target is a LOUD miss, never a
+silent `woken:0`:
+
+* `woken: 1+` → the target was parked and is now running your lane.
+* `warning` + `recipient_dead` / `sessionState: 'ended'` → the lane was **assigned durably** but no
+  live process will pick it up until the target is **relaunched/resumed**. Re-dispatch to a
+  `parked`/`live` agent or respawn this one. Do NOT assume it landed.
+
+```
+coord:presence → pick a `parked` target → coord:dispatch { to, planSlug, items, note }
+  → check woken / warning → (woken target) coord:orient → plan_items:my_items → claim + work
+```
+
+## The woken agent's contract: claim + work, don't re-park
+
+A wake starts a turn; the directed `note` is in the inbox (and the `[coord+N]` injection). A
+woken agent that finds a **directed assignment** must `coord:orient` → see the dispatched lane
+(`plan_items:my_items` / its claimed items) → **claim + work it**, not read-and-repark. Re-parking
+on a directed dispatch is the failure mode that makes a confirmed `woken:1` still do nothing.
+
+## Why a dead session can still look "parked": the reclaim lane
+
+Every idle agent arms a standing `coord:inbox-wake:<self>` await. A **clean** session end
+cancels it; a process that **crashes/is killed** never runs that hygiene, so the await row
+persists — and `presence`/`fetchWakeability` reads exactly that row to derive `wakeable`/`parked`.
+Result: a dead session shows as a live dispatch target (the "misleading zombie pile"), and the
+dangling await even **protects** its ghost adv\_session from the idle-session-reaper (it counts a
+standing await as "alive").
+
+The **reclaim lane** (`idle-session-reaper.ts` slice 4, `reclaimDanglingInboxWakeAwaits`) is the
+SessionEnd-hygiene the dead process never ran: it cancels the inbox-wake await of any owner that
+is **not** live-or-resumable (no fresh presence heartbeat, no running bee, no in-flight wake, no
+OPEN adv\_session). A *parked-but-resumable* session (open adv\_session — the wake-executor can
+`--resume` it) keeps its await; only a session that is genuinely over loses it and flips from a
+false `parked` to an honest `ended`. (Work-item *claims* of dead owners are released separately by
+the stale-claims reaper, which already uses a heartbeat/running-bee liveness rule that is not
+await-polluted.)
+
+So if a coordinator sees a stale "parked" pile, the reclaim sweep — fired by the
+`system:idle-session-reaper` routine — converges it to honest `ended`, and reclaim "fires on dead
+sessions" as designed.

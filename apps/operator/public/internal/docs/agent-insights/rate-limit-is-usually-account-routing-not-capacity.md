@@ -114,6 +114,29 @@ same as always: **add accounts** (owner-authority) so `no-fresh-account` stops h
 the host," and NOT "wait for a multi-hour reset." A reserved/pinned account (`x-papercusp-account` +
 excluded from `selectSpawnAccount` rotation) gives a single workload a lane isolated from the fleet storm.
 
+**6. The residual bare-burst that smoothing can't fix — a CLOUDFLARE EDGE per-IP throttle, not the account
+rate.** After the account-rate fixes (RPM smoothing — spreads each account's per-minute allowance so it
+can't fire as a sub-minute burst; `inference-gateway-stability-ownership-2026-06-23` P-002), a bare-burst
+429 storm can *persist at a low per-account rate* (\~3.5 upstream-calls/min/account, **13× under** the
+`DEFAULT_FLOORS.anthropic` 45/min floor) with **no util headers** across all accounts. Smoothing is a NO-OP
+here (at \~17 s natural spacing its 1333 ms pace floor never binds) — because this is **not** the account
+budget at all. The gateway already tags the provenance; read it in journald
+(`journalctl --user -u papercup-inference-gateway.service`):
+`upstream 429 → internal retry … on '<acct>' [429-shape=bare-burst x-should-retry=true retry-after=-ms
+util5h=- util7d=-] [bare-burst-origin server=cloudflare cf-ray=…-EWR org=…]`. **`server=cloudflare` +
+`cf-ray` + absent `util5h/util7d`** = the 429 was generated at the **Cloudflare EDGE** (a per-IP/colo
+throttle), not by Anthropic's account-budget limiter (which would set `anthropic-ratelimit-unified-*`). Tell:
+the bursts cluster on the SAME accounts whose **egress proxies are failing** (`/stats`
+`egressFailsByAccount` high, `egressCircuitOpens` climbing) and on a couple of `cf-ray` colos (e.g. LAX/EWR)
+— i.e. it is keyed to the (flaky Rayobyte) **egress IPs**, not the account. The P-002 rate-pacer structurally
+cannot reduce it, and the rotation-retry then **fans it out** (a bare-burst rotates 400 ms onto a fresh
+account and re-fires un-paced → `upstreamCallsPerRequest`≈2; `bareBurstRotateSuppressed` shows the G1 damping
+working but only once ≥half the pool is out). The fix is **egress-IP**, not account-rate: treat a
+`server=cloudflare` bare-burst as a per-egress-IP throttle → cool/rotate the **egress IP**, fix/replace the
+flaky proxy, and/or a per-egress-IP rate cap. Reproduce + measure any fix with the vitest rig
+(`inference-gateway/load-test-rig.ts` → `runGatewayBurstRig`, reports `upstream429`/`failovers`/
+`bareBurstRotateSuppressed`/`upstreamCallsPerRequest`).
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 * **`dev:rate_governor_status`** — is the paused bucket the **global** `anthropic:opus`

@@ -418,6 +418,8 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
       expect(r.text).toContain('## AUTO mode — the owner\'s switch for "act, don\'t ask"');
       // the fleshed-out AUTO↔loop relationship must be present
       expect(r.text).toContain('AUTO mode + the engine loop are the two halves');
+      // the AUTO-mode loop cadence default (1m) must be present (owner directive 2026-06-24)
+      expect(r.text).toContain('intervalSec: 60');
       // the generated marker comment must never ship literally
       expect(r.text).not.toContain(AUTO_MARKER);
     }

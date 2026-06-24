@@ -34,8 +34,14 @@ vi.mock('../workspace-registry', async (importOriginal) => ({
 // rate-limit-config imports the governor host-seam + SSE bus at module load — stub them so the
 // import is side-effect-free in the test process.
 vi.mock('@papercusp/papercusp-shared/agent', () => ({
+  // The mock replaces the WHOLE module, so it must carry every named export the SUT
+  // (rate-limit-config.applyCached) imports — it lagged when governor-registry.ts
+  // grew the provider-floor + AIMD tuning surface (a missing-mock-export drift).
   setGlobalConcurrencyCap: vi.fn(),
   setGlobalConcurrencyFloor: vi.fn(),
+  setProviderFloorOverride: vi.fn(),
+  setAimdTuning: vi.fn(),
+  AIMD_CLEAN_TURNS_PER_STEP: 5,
 }));
 vi.mock('@papercusp/sse', () => ({
   getChannel: () => ({ onPublish: vi.fn(), publish: vi.fn() }),

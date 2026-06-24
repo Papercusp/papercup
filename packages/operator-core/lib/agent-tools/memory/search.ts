@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
+import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
@@ -134,6 +135,14 @@ export default defineTool({
         };
       }
       throw err;
+    }
+
+    // data-scoping-audit P-006 / D-004 / D-012 (dark cutover): workspace-scope the USER
+    // pool — drop `project` hits tagged with a different workspace; keep owner-tier +
+    // legacy NULL-workspace. harness pools (scope `harness:*`) pass through untouched.
+    if (await isMemoryWorkspaceScopedRecallOn()) {
+      const activeWs = ctx.principal?.workspaceId;
+      hits = hits.filter((h) => h.scope !== user.id || keepUserPoolHitForWorkspace(h, activeWs));
     }
 
     // memory_feedback consumer (EI-366 / consume-edges P-031): drop hits the

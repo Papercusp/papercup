@@ -35,7 +35,11 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -114,10 +118,18 @@ const { default: expandTool } = await import('./expand');
 // A superuser engineer ctx: resolveAgentIdentity reads uiClientId as the ownerId.
 const CTX = { isSuperuser: true, uiClientId: 'su-tester', workspaceId: 'default' } as never;
 
-/** Invoke a tool handler and parse its single JSON text envelope. */
+/** Invoke a tool handler and return its structured payload. Bulk-standardized verbs
+ *  (create/claim/set_state/release/tag/promote) hand back `{ data: { ok, results,
+ *  counts } }` via _bulk bulkContent; non-bulk verbs (e.g. work_items:expand) still
+ *  return the legacy `{ content:[{text}] }`. Accept either. */
 async function call(tool: { handler: (a: never, c: never) => Promise<unknown> }, args: Record<string, unknown>) {
-  const res = (await tool.handler(args as never, CTX)) as { content: { text: string }[] };
-  return JSON.parse(res.content[0]!.text) as Record<string, unknown>;
+  const res = (await tool.handler(args as never, CTX)) as {
+    data?: Record<string, unknown>;
+    content?: { text: string }[];
+  };
+  if (res.data !== undefined) return res.data;
+  if (res.content?.[0]?.text) return JSON.parse(res.content[0].text) as Record<string, unknown>;
+  return res as Record<string, unknown>;
 }
 
 /**
@@ -159,6 +171,8 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim trust-leg join (mig 276)
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL); // work_item_deps + work_item_blocked readiness (migs 367/379) — claimNextWorkItem references them UNCONDITIONALLY
   // HFC_DDL (the shared _work-items-schema fixture) is the COMPLETE post-374 schema:
   // the work_items BASE table (with item_kind/assignee_rank/rank_writer/rank_updated_at),
   // the harness_features_consolidated + engineer_issues compat VIEWS (engineer_issues
