@@ -227,6 +227,27 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
     for (const st of topics.values()) openTopicChannel(socket, st);
   };
   opts.swarm.on('connection', handler);
+  // Shared-swarm late join (the symmetric case of joinHarnessSwarm's seeding in
+  // swarm.ts, WI-647): the directory gossip is wired LAZILY
+  // (ensureHiveDirectoryWired) — typically AFTER the substrate already opened
+  // the shared A↔B socket. That socket never re-emits 'connection', so without
+  // seeding from the swarm's EXISTING connections the `sockets` set stays empty
+  // → a later joinTopic opens its channel on NOTHING → reachablePeers:0 forever
+  // (no DHT re-pair on an air-gapped / long-lived link). Treat each existing
+  // socket exactly like a fresh connection so the directory channel pairs over
+  // the already-established substrate socket. topics is empty at creation, so
+  // this only populates `sockets`; the caller's joinTopic then opens channels.
+  try {
+    for (const socket of opts.swarm.connections ?? []) {
+      try {
+        handler(socket);
+      } catch {
+        /* per-socket best-effort — a bad existing socket can't block creation */
+      }
+    }
+  } catch {
+    /* connections iteration is best-effort (absent on minimal fakes) */
+  }
 
   // Keep every topic's announce + lookup converging in the background (cleared
   // on close). discovery.refresh() re-runs the full DHT round for that topic —

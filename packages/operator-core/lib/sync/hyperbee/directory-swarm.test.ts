@@ -114,6 +114,7 @@ function fakeSwarm() {
   const joined: Buffer[] = [];
   const left: Buffer[] = [];
   const refreshed: Buffer[] = [];
+  const connections = new Set<unknown>();
   return {
     swarm: {
       join(t: Buffer) {
@@ -133,11 +134,23 @@ function fakeSwarm() {
       off() {
         handler = null;
       },
+      // The live Set the real Hyperswarm exposes — gossip seeds from it at
+      // creation so a socket opened BEFORE the gossip was wired still pairs.
+      connections,
     },
     /** Simulate an inbound connection; returns its socket (muxer via userData). */
     connect(): { userData?: FakeMux } {
       const socket: { userData?: FakeMux } = {};
+      connections.add(socket);
       handler?.(socket);
+      return socket;
+    },
+    /** A socket the swarm ALREADY had before the gossip attached its handler
+     *  (e.g. the substrate's A↔B socket): present in `connections`, but it never
+     *  re-emits 'connection'. The WI-647 case. */
+    preconnect(): { userData?: FakeMux } {
+      const socket: { userData?: FakeMux } = {};
+      connections.add(socket);
       return socket;
     },
     get handler() {
@@ -244,6 +257,30 @@ describe('createDirectoryGossip', () => {
     g.joinTopic(TOPIC2); // late join — must reach the existing socket
     expect(socket.userData!.channels).toHaveLength(2);
     expect(socket.userData!.channels[1].id?.toString('hex')).toBe(HEX2);
+  });
+
+  it('seeds from EXISTING swarm connections at creation, so a lazily-wired gossip pairs over an already-open socket (WI-647)', async () => {
+    const f = fakeSwarm();
+    // The substrate already opened the shared A↔B socket BEFORE the directory
+    // gossip is wired — it lives in swarm.connections but never re-emits
+    // 'connection'.
+    const preexisting = f.preconnect();
+    const g = createDirectoryGossip({
+      swarm: f.swarm,
+      onAnnounce: () => {},
+      getOwnAnnounces: (hex) => (hex === HEX ? [frame('mine')] : []),
+      refreshMs: 0,
+    });
+    // Joining the global topic must open + pair its channel on the PRE-EXISTING
+    // socket — not only on sockets seen via a future 'connection' event.
+    g.joinTopic(TOPIC);
+    expect(preexisting.userData!.channels).toHaveLength(1);
+    expect(preexisting.userData!.channels[0].id?.toString('hex')).toBe(HEX);
+    preexisting.userData!.channels[0].pairRemote();
+    await tick();
+    // The peer is reachable (was 0 before the fix) and gets our scoped announce.
+    expect(g.openChannelCount(HEX)).toBe(1);
+    expect(preexisting.userData!.channels[0].sent.map((s) => (s as SignedHiveAnnounce).hive_id)).toEqual(['mine']);
   });
 
   it('the pair-notifier lazily accepts a remote open ONLY for a joined topic', () => {
