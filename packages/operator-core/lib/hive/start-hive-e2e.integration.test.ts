@@ -105,7 +105,22 @@ async function dispatch(tool: string, args: Record<string, unknown>): Promise<Re
   const res = await dispatchProjectedTool(projected!, tool, args, ctx() as never, PROJECTED_DEPS);
   expect(res.ok, `${tool} dispatch failed: ${JSON.stringify(res.error ?? null)}`).toBe(true);
   const text = (res.result?.content as Array<{ text: string }>)[0]?.text;
-  return text ? JSON.parse(text) : {};
+  const parsed = text ? JSON.parse(text) : {};
+  // plans:start (and the other bulk tools) now return the house bulk envelope
+  // `{ ok, results:[{ slug, status, transitioned, … }], counts }` via _bulk's
+  // bulkContent (bulk-endpoint-standardization-2026-06-21). The per-item result
+  // we assert against lives in results[0] for a single-slug call; unwrap it so
+  // the existing `out.status` / `out.transitioned` assertions read the same
+  // values they did before the bulk migration.
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { results?: unknown }).results) &&
+    (parsed as { counts?: unknown }).counts !== undefined
+  ) {
+    return ((parsed as { results: Record<string, unknown>[] }).results[0] ?? {});
+  }
+  return parsed;
 }
 
 const insertPlan = async (slug: string) =>

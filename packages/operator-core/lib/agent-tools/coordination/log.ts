@@ -93,6 +93,7 @@ export const coordLog: CoordEventLog = {
   putEvents: (surface, records) => impl.putEvents(surface, records),
   readEvents: (surface) => impl.readEvents(surface),
   readEventsBounded: (surface, opts) => impl.readEventsBounded(surface, opts),
+  readLinesBounded: (surface, opts) => impl.readLinesBounded(surface, opts),
   getEvent: (surface, msgId) => impl.getEvent(surface, msgId),
 };
 

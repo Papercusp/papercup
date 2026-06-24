@@ -8,6 +8,33 @@ import {
   queenCapacityHeadroom,
   DEFAULT_CAPACITY_DISPATCH_CONFIG as CFG,
 } from './capacity-dispatch';
+import { planBatchPlacement } from './batch-placement';
+import type { PlacementTask } from './placement-affinity';
+
+test('capacity-aware dispatch SCENARIO — FEW placed when the pool is saturated, MANY when idle (P-005)', () => {
+  // The end-to-end Queen behavior: the SAME importance-ranked frontier dispatches broadly when the pool is
+  // idle and is throttled to the floor (top-ranked first, tail deferred) when it is saturated. Composes the
+  // real capacity clamp with the real batch placement planner — deterministic, no LLM.
+  const frontier: PlacementTask[] = Array.from({ length: 12 }, (_, i) => ({ id: `wi-${i}`, harness: 'h', title: `t${i}` }));
+  const rawHeadroom = 12; // the raw spawn ceiling before the capacity clamp
+
+  // ABUNDANT pool → no clamp → place the WHOLE frontier.
+  const abundant = computeCapacityHeadroom(rawHeadroom, { reachable: true, utilization: 0.1, queueDepth: 0 });
+  assert.equal(abundant.headroom, 12);
+  const planHi = planBatchPlacement({ tasks: frontier, bees: [], headroom: abundant.headroom });
+  assert.equal(planHi.spawnCount, 12);
+  assert.equal(planHi.unplacedCount, 0);
+
+  // SATURATED pool (paused) → clamp to the floor → place only a FEW; defer the rest to the next wake.
+  const scarce = computeCapacityHeadroom(rawHeadroom, { reachable: true, utilization: 1, paused: true, queueDepth: 40 });
+  assert.equal(scarce.headroom, CFG.minHeadroom); // floor 2
+  const planLo = planBatchPlacement({ tasks: frontier, bees: [], headroom: scarce.headroom });
+  assert.equal(planLo.spawnCount, CFG.minHeadroom);
+  assert.equal(planLo.unplacedCount, frontier.length - CFG.minHeadroom); // 10 deferred to the next wake
+  // The frontier is importance-ordered, so the TOP-ranked flow and the LOWEST-priority tail is deferred.
+  assert.equal(planLo.decisions[0].disposition, 'spawn', 'highest-priority task placed even under saturation');
+  assert.equal(planLo.decisions[frontier.length - 1].disposition, 'unplaced', 'lowest-priority task deferred under saturation');
+});
 
 test('capacityFactor — headroom-independent; matches computeCapacityHeadroom.factor', () => {
   // unreachable ⇒ 1 (fail-safe)

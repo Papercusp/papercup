@@ -400,6 +400,35 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     const generic = await renderSuPlaybook({ agent: 'claude', profile: 'generic', operatorAppRoot: tmpAppRoot });
     expect(generic.text).toContain('# Engineer base');
   });
+
+  // auto-mode consolidation (owner directive 2026-06-24): the one canonical AUTO-mode clause
+  // (auto-mode-policy.ts) is spliced into BOTH the engineer + power su bases at AUTO_MODE_MARKER —
+  // it used to be hand-copied into papercusp-su-engineer.tools.md only (power had none).
+  it('splices the canonical AUTO mode clause at the AUTO-MODE marker (engineer + power)', async () => {
+    const AUTO_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
+    for (const [profile, baseName, label] of [
+      ['engineer', 'papercusp-su-engineer.tools.md', '# Engineer base'],
+      ['power', 'papercusp-su-power.tools.md', '# Power base'],
+    ] as const) {
+      await fs.writeFile(
+        path.join(tmpAppRoot, 'prompts', baseName),
+        `${label}\n\n${AUTO_MARKER}\n\n${MARKER}\n\n## Tail\n`,
+      );
+      const r = await renderSuPlaybook({ agent: 'claude', profile, operatorAppRoot: tmpAppRoot });
+      expect(r.text).toContain('## AUTO mode — the owner\'s switch for "act, don\'t ask"');
+      // the fleshed-out AUTO↔loop relationship must be present
+      expect(r.text).toContain('AUTO mode + the engine loop are the two halves');
+      // the generated marker comment must never ship literally
+      expect(r.text).not.toContain(AUTO_MARKER);
+    }
+  });
+
+  it('AUTO-MODE marker absent → clause omitted, no literal marker (opt-out base)', async () => {
+    // The beforeEach fixture base carries NO auto-mode marker — a base may opt out.
+    const r = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: tmpAppRoot });
+    expect(r.text).not.toContain('## AUTO mode');
+    expect(r.text).not.toContain('<!-- PAPERCUSP-SU:AUTO-MODE -->');
+  });
 });
 
 describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', () => {

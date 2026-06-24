@@ -184,7 +184,7 @@ export class FsCoordLog implements CoordEventLog {
 
   async readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
+    opts: { limit: number; kinds?: string[] },
   ): Promise<CoordEnvelope[]> {
     // Fs stores one file per event with no append-order column, so approximate
     // NEWEST-FIRST by the envelope `ts` (creation time ≈ append order), tie-broken
@@ -192,18 +192,32 @@ export class FsCoordLog implements CoordEventLog {
     // the portable best-effort — EI-1548.) Reads the dir once, then bounds.
     const all = await this.readEvents(surface);
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
-    const filtered = all.filter(
-      (r) =>
-        (!kinds || !kinds.length || kinds.includes(r.kind)) &&
-        (!opts.sinceTs || (typeof r.ts === 'string' && r.ts > opts.sinceTs)) &&
-        (!opts.planSlug || r.plan_slug === opts.planSlug),
-    );
+    const filtered = kinds && kinds.length ? all.filter((r) => kinds.includes(r.kind)) : all;
     filtered.sort((a, b) => {
       const byTs = String(b.ts ?? '').localeCompare(String(a.ts ?? ''));
       return byTs !== 0 ? byTs : String(b.msg_id ?? '').localeCompare(String(a.msg_id ?? ''));
     });
     const limit = Math.max(1, Math.floor(opts.limit) || 1);
     return filtered.slice(0, limit);
+  }
+
+  async readLinesBounded(
+    surface: LineSurface,
+    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[] },
+  ): Promise<CoordEnvelope[]> {
+    // Lines have true append order (jsonl), so read the surface then bound to the
+    // newest N. The fs backend is dev/test only; production is PgCoordLog (the SQL
+    // pushdown). filesBack is subsumed by the newest-N bound.
+    const all = await this.readLines(surface);
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const filtered = all.filter(
+      (r) =>
+        (!kinds || !kinds.length || kinds.includes(r.kind)) &&
+        (!opts.sinceTs || (typeof r.ts === 'string' && r.ts > opts.sinceTs)) &&
+        (!opts.planSlug || r.plan_slug === opts.planSlug),
+    );
+    const limit = Math.max(1, Math.floor(opts.limit) || 1);
+    return filtered.slice(-limit).reverse();
   }
 
   async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {

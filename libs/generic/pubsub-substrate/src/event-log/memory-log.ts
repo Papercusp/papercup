@@ -52,9 +52,21 @@ export class InMemoryCoordLog implements CoordEventLog {
 
   async readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
+    opts: { limit: number; kinds?: string[] },
   ): Promise<CoordEnvelope[]> {
     const all = [...(this.events.get(surface)?.values() ?? [])];
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const filtered = kinds && kinds.length ? all.filter((r) => kinds.includes(r.kind)) : all;
+    // Newest-first (insertion order = append order), bounded — mirrors PgCoordLog.
+    const limit = Math.max(1, Math.floor(opts.limit) || 1);
+    return filtered.reverse().slice(0, limit);
+  }
+
+  async readLinesBounded(
+    surface: LineSurface,
+    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[] },
+  ): Promise<CoordEnvelope[]> {
+    const all = this.lines.get(surface) ?? [];
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const filtered = all.filter(
       (r) =>
@@ -64,7 +76,7 @@ export class InMemoryCoordLog implements CoordEventLog {
     );
     // Newest-first (insertion order = append order), bounded — mirrors PgCoordLog.
     const limit = Math.max(1, Math.floor(opts.limit) || 1);
-    return filtered.reverse().slice(0, limit);
+    return filtered.slice(-limit).reverse();
   }
 
   async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {

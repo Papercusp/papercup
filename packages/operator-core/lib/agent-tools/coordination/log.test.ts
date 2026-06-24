@@ -29,6 +29,7 @@ function fakeLog(extra: Partial<{ workspaceId: string; getSql: () => unknown }> 
     putEvent: vi.fn(async () => {}),
     readEvents: vi.fn(async () => []),
     readEventsBounded: vi.fn(async () => []),
+    readLinesBounded: vi.fn(async () => []),
     getEvent: vi.fn(async () => null),
     ...extra,
   } as unknown as CoordEventLog;

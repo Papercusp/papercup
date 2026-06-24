@@ -90,6 +90,27 @@ export function describeCoordEventLogConformance(
       expect((await log.getEvent('escalations', 'b2'))?.kind).toBe('escalation');
     });
 
+    it('readLinesBounded: newest-first, limit, since_ts + plan_slug pushdown (plan-events, EI-1737)', async () => {
+      // Append five plan_event lines across two plans, ascending ts.
+      const at = (n: number) => `2026-01-0${n}T00:00:00.000Z`;
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q1', kind: 'plan_event', from: 'system', plan_slug: 'alpha', ts: at(1) }));
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q2', kind: 'plan_event', from: 'system', plan_slug: 'beta', ts: at(2) }));
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q3', kind: 'plan_event', from: 'system', plan_slug: 'alpha', ts: at(3) }));
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q4', kind: 'plan_event', from: 'system', plan_slug: 'beta', ts: at(4) }));
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q5', kind: 'plan_event', from: 'system', plan_slug: 'alpha', ts: at(5) }));
+
+      // newest-first, bounded
+      expect((await log.readLinesBounded('plan-events', { limit: 2 })).map((r) => r.msg_id)).toEqual(['q5', 'q4']);
+      // since_ts pushdown: strictly later than at(3) → q4, q5 (newest-first)
+      expect((await log.readLinesBounded('plan-events', { limit: 10, sinceTs: at(3) })).map((r) => r.msg_id)).toEqual(['q5', 'q4']);
+      // plan_slug pushdown: only alpha, newest-first
+      expect((await log.readLinesBounded('plan-events', { limit: 10, planSlug: 'alpha' })).map((r) => r.msg_id)).toEqual(['q5', 'q3', 'q1']);
+      // combined since_ts + plan_slug
+      expect((await log.readLinesBounded('plan-events', { limit: 10, planSlug: 'alpha', sinceTs: at(1) })).map((r) => r.msg_id)).toEqual(['q5', 'q3']);
+      // empty surface → []
+      expect(await log.readLinesBounded('messages', { limit: 5 })).toEqual([]);
+    });
+
     it('putEvents: a re-put on an existing msg_id upserts, not duplicates (WI-346)', async () => {
       await log.putEvent('handoffs', 'u1', envelope({ msg_id: 'u1', kind: 'handoff', from: 'A' }));
       await log.putEvents('handoffs', [

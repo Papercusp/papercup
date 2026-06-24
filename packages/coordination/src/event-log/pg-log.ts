@@ -340,7 +340,7 @@ export class PgCoordLog implements CoordEventLog {
 
   async readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
+    opts: { limit: number; kinds?: string[] },
   ): Promise<CoordEnvelope[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -349,10 +349,39 @@ export class PgCoordLog implements CoordEventLog {
     // coord_event_log_surface_id (workspace_id, surface, id) index.
     const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
-    // since_ts / plan_slug pushdown (EI-1737 / fleet-concurrency-first P-005):
-    // the watermark-advancing coord:plan-events delta (turn start, ×fleet) reads
-    // only its tail instead of the whole surface. Composed as optional `AND`s; an
-    // omitted filter is a no-op (postgres-js inlines the conditional fragments).
+    const rows =
+      kinds && kinds.length
+        ? await sql<{ body: unknown }[]>`
+            SELECT body FROM harness_shared.coord_event_log
+             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+               AND body->>'kind' = ANY(${kinds}::text[])
+             ORDER BY id DESC
+             LIMIT ${limit}
+          `
+        : await sql<{ body: unknown }[]>`
+            SELECT body FROM harness_shared.coord_event_log
+             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+             ORDER BY id DESC
+             LIMIT ${limit}
+          `;
+    return rows.map((r) => parseBody(r.body));
+  }
+
+  async readLinesBounded(
+    surface: LineSurface,
+    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[] },
+  ): Promise<CoordEnvelope[]> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // Line surfaces (`messages`/`plan-events`) live in the SAME coord_event_log
+    // table, so this is the line parallel of readEventsBounded: newest-first,
+    // hard-clamped LIMIT, ORDER BY id DESC riding the coord_event_log_surface_id
+    // index. The since_ts / plan_slug pushdown (EI-1737 / fleet-concurrency-first
+    // P-005) keeps the watermark-advancing coord:plan-events delta (turn start,
+    // ×fleet) reading only its tail instead of the whole ~3.5MB surface. Optional
+    // `AND`s — an omitted filter inlines to an empty fragment (no-op).
+    const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const sinceTs = typeof opts.sinceTs === 'string' && opts.sinceTs ? opts.sinceTs : null;
     const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
     const rows = await sql<{ body: unknown }[]>`

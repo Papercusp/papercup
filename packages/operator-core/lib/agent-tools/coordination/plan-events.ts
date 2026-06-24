@@ -105,7 +105,7 @@ export async function readPlanEvents(
   // for any caller whose matching tail fits in the bound (every real caller).
   const singlePlan =
     opts.planSlugs && opts.planSlugs.length === 1 ? opts.planSlugs[0] : undefined;
-  const bounded = await coordLog.readEventsBounded('plan-events', {
+  const bounded = await coordLog.readLinesBounded('plan-events', {
     limit,
     kinds: ['plan_event'],
     ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),

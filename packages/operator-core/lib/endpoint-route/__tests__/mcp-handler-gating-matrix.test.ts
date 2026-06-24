@@ -502,6 +502,45 @@ describe('scoped-superuser hive clamp', () => {
     expect(seen.at(-1)?.tool).toBe('gatingtest:scoped');
   });
 
+  // P-016/P-014b: confine the workspace-GLOBAL read surfaces per-hive. A `hive`
+  // arg naming a DIFFERENT hive is a cross-hive read on ANY tool → rejected;
+  // coord:presence's scope:'workspace'|'all' selector widens past the hive →
+  // rejected (its default already resolves to the caller's own hive).
+  it('flag ON: rejects a `hive` arg naming a DIFFERENT hive (any tool)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { hive: 'hiveB-home' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('hive_forbidden');
+  });
+
+  it('flag ON: ALLOWS a `hive` arg equal to the session\'s own hive', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { hive: 'hiveA-home' }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(seen.at(-1)?.tool).toBe('gatingtest:scoped');
+  });
+
+  it('flag ON: rejects coord:presence scope:\'workspace\' (widens past the hive)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('coord:presence', { scope: 'workspace' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('hive_forbidden');
+  });
+
+  it('flag ON: rejects coord:presence scope:\'all\' (every-workspace roster)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('coord:presence', { scope: 'all' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('hive_forbidden');
+  });
+
+  it('flag OFF: a hive-harness session may pass a foreign `hive` arg (unchanged)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool('gatingtest:scoped', { hive: 'hiveB-home' }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:scoped-ok');
+  });
+
   it('flag OFF: a hive-harness session may still use cross_harness:* (unchanged)', async () => {
     h.scopedClampFlag.value = false;
     const res = await callTool('cross_harness:probe', {}, hiveScoped());

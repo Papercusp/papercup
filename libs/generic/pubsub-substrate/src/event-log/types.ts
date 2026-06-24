@@ -71,18 +71,30 @@ export interface CoordEventLog {
    * non-empty, filters on the envelope `kind`. Use for paginated reads (e.g.
    * coord:escalations over a large backlog) where the unbounded `readEvents`
    * would return — and buffer — the entire history. (EI-1548.)
-   *
-   * `opts.sinceTs` (ISO) restricts to events strictly LATER than it, and
-   * `opts.planSlug` to one plan — both pushed into the storage read (the PG
-   * backend filters in SQL; the fs/in-memory backends filter the loaded set) so
-   * a watermark-advancing delta caller (coord:plan-events at turn start, ×fleet)
-   * reads only its tail instead of the whole surface (the unbounded-read hole
-   * EI-1737 / fleet-concurrency-first P-005). All optional + backward-compatible:
-   * a backend that ignores them stays correct, just less I/O-narrowed.
    */
   readEventsBounded(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; sinceTs?: string; planSlug?: string },
+    opts: { limit: number; kinds?: string[] },
+  ): Promise<CoordEnvelope[]>;
+
+  /**
+   * Read LINE-surface records (`messages` / `plan-events`), BOUNDED — the line
+   * parallel of {@link readEventsBounded}. Capped at `opts.limit` rows at the
+   * storage layer and returned NEWEST-FIRST (descending append order). Optional
+   * pushdowns narrow the storage read: `opts.sinceTs` (ISO) keeps only lines
+   * strictly LATER than it, `opts.planSlug` only one plan, `opts.kinds` only
+   * those envelope kinds. The PG backend filters in SQL (riding the
+   * surface-ordered index); the fs/in-memory backends filter the loaded set.
+   *
+   * Closes the unbounded `readLines` hole for the hot plan-events delta: orient's
+   * per-turn coord:plan-events (×fleet-size) read+parsed the WHOLE ~3.5MB history
+   * on the single event loop (EI-1737 / fleet-concurrency-first P-005). A
+   * watermark-advancing caller now reads only its tail. Backward-compatible:
+   * `readLines` (unbounded) is unchanged for callers that need the full surface.
+   */
+  readLinesBounded(
+    surface: LineSurface,
+    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[] },
   ): Promise<CoordEnvelope[]>;
 
   /** Read one per-event record by msg_id, or null. */
