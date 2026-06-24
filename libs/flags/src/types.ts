@@ -293,6 +293,18 @@ export const FLAGS = {
   // behavior). Safe always-on (only sheds at ≥90% saturation, no-op without a finite cap,
   // hysteresis + transition-debounce, self-recovering); the flag is the escape hatch.
   CONNECTION_PRESSURE_GOVERNOR: "papercusp-connection-pressure-governor",
+  // infra-perf-reliability-audit-round4-2026-06-19 P-013: the perf/reliability
+  // REGRESSION RIG. ON (alpha default-on): the perf-regression collector
+  // (system-health/perf-regression-rig.ts) rides the existing improvement-watchdog
+  // tick, snapshots the four key reliability SLO metrics (event-loop-lag p95, PG
+  // connection saturation %, the dispatch-orphan rate that silently regressed to
+  // 91%, and the coord open-escalation backlog) to harness_shared.perf_regression_snapshots,
+  // and FILES a watchdog signal on a budget breach so the round-2/3/4 perf gains
+  // can't silently regress. SQL + in-memory only, zero LLM spend; a missing
+  // table/metric returns a graceful note. OFF = the collector reports a 'disabled'
+  // note and emits nothing (the kill-switch). NOT dark — finished, additive,
+  // read-mostly monitoring; flipping it OFF only blinds the regression watch.
+  PERF_REGRESSION_RIG: "papercusp-perf-regression-rig",
   // inference-gateway-robustness-audit-2026-06-20 (gateway P2 / B-GW-4): the fleet
   // OPUS-BUDGET governor. ON (alpha default-on): as the aggregate Claude-Max 5h opus
   // utilization climbs, a spawn's NON-CRITICAL opus tier-escalation is shed back to
@@ -1438,6 +1450,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // only at ≥90% PG saturation (rare with PgBouncer on), no-op without a finite cap,
   // self-recovering. backend-connection-scaling C5-1 kill-switch.
   [FLAGS.CONNECTION_PRESSURE_GOVERNOR]: true,
+  // ON by default (alpha flags-default-on) — infra-perf-reliability-audit-round4 P-013:
+  // the perf/reliability regression rig. Finished, additive, read-mostly monitoring
+  // (snapshots SLO metrics + files on a budget breach); flipping it OFF only blinds
+  // the regression watch. The flag-ON IS the arming act — there is no separate routine
+  // or governor budget (it rides the existing improvement-watchdog tick, SQL-only).
+  [FLAGS.PERF_REGRESSION_RIG]: true,
   // ON by default (alpha flags-default-on) — B-GW-4 opus-budget pacing. Safe always-on:
   // only sheds a non-critical opus ESCALATION to sonnet under 5h budget pressure, never
   // below a role floor; self-healing as the window decays. Escape hatch flag.
