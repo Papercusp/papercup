@@ -1,0 +1,69 @@
+__vite_ssr_exportName__("ORACLE_RUBRIC_VERSION", () => { try { return ORACLE_RUBRIC_VERSION } catch {} });
+__vite_ssr_exportName__("ORACLE_RUBRIC", () => { try { return ORACLE_RUBRIC } catch {} });
+const ORACLE_RUBRIC_VERSION = "1.0.0";
+const ORACLE_RUBRIC = {
+  version: ORACLE_RUBRIC_VERSION,
+  axes: [
+    {
+      id: "helpfulness",
+      description: "Did the user reach their stated goal?",
+      anchors: {
+        bad: "Goal not addressed; assistant talks past the user or refuses without cause.",
+        ideal: "Goal achieved efficiently — minimum turns, no detours."
+      }
+    },
+    {
+      id: "groundedness",
+      description: "Are factual claims backed by tool calls / docs / context?",
+      anchors: {
+        bad: "Hallucinated state — claims about repo/harness/feature contents without a tool result to back them.",
+        ideal: "Every factual claim cites a tool result, doc, or prior context message."
+      }
+    },
+    {
+      id: "citationAccuracy",
+      description: "When citing a doc or feature, are the references real and locatable?",
+      anchors: {
+        bad: "Invented file paths, made-up section headings, wrong feature ids.",
+        ideal: "Every citation matches a real artifact the user can open."
+      }
+    },
+    {
+      id: "speculation",
+      description: "When asked something not in the workspace, does the assistant refuse rather than guess?",
+      anchors: {
+        bad: "Confidently guesses the answer to an out-of-scope question.",
+        ideal: 'States the limit ("I do not see this in the docs") and offers next steps.'
+      }
+    },
+    {
+      id: "tone",
+      description: "Tone matches an expert read-only assistant — terse, factual, no preening.",
+      anchors: {
+        bad: "Grovelling apologies, over-eager helpfulness, lecturing.",
+        ideal: "Crisp. Factual. No filler."
+      }
+    },
+    {
+      id: "tools",
+      description: "Right tool, right args, no fabricated tool names.",
+      anchors: {
+        bad: "Hallucinated tool name; wrong/missing args; unnecessary calls.",
+        ideal: "Minimal correct tool set; reaches for docs:* / harness:* when appropriate."
+      }
+    },
+    {
+      id: "terminationFit",
+      description: "Does the answer end cleanly when complete?",
+      anchors: {
+        bad: "Trails off mid-thought, asks an unnecessary follow-up.",
+        ideal: "Terminates when the question is answered."
+      }
+    }
+  ],
+  criticality: "normal"
+};
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFlTyxNQUFNLHdCQUF3QjtBQUU5QixNQUFNLGdCQUE2QjtBQUFBLEVBQ3hDLFNBQVM7QUFBQSxFQUNULE1BQU07QUFBQSxJQUNKO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixhQUFhO0FBQUEsTUFDYixTQUFTO0FBQUEsUUFDUCxLQUFLO0FBQUEsUUFDTCxPQUFPO0FBQUEsTUFDVDtBQUFBLElBQ0Y7QUFBQSxJQUNBO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixhQUFhO0FBQUEsTUFDYixTQUFTO0FBQUEsUUFDUCxLQUFLO0FBQUEsUUFDTCxPQUFPO0FBQUEsTUFDVDtBQUFBLElBQ0Y7QUFBQSxJQUNBO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixhQUFhO0FBQUEsTUFDYixTQUFTO0FBQUEsUUFDUCxLQUFLO0FBQUEsUUFDTCxPQUFPO0FBQUEsTUFDVDtBQUFBLElBQ0Y7QUFBQSxJQUNBO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixhQUFhO0FBQUEsTUFDYixTQUFTO0FBQUEsUUFDUCxLQUFLO0FBQUEsUUFDTCxPQUFPO0FBQUEsTUFDVDtBQUFBLElBQ0Y7QUFBQSxJQUNBO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixhQUFhO0FBQUEsTUFDYixTQUFTO0FBQUEsUUFDUCxLQUFLO0FBQUEsUUFDTCxPQUFPO0FBQUEsTUFDVDtBQUFBLElBQ0Y7QUFBQSxJQUNBO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixhQUFhO0FBQUEsTUFDYixTQUFTO0FBQUEsUUFDUCxLQUFLO0FBQUEsUUFDTCxPQUFPO0FBQUEsTUFDVDtBQUFBLElBQ0Y7QUFBQSxJQUNBO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixhQUFhO0FBQUEsTUFDYixTQUFTO0FBQUEsUUFDUCxLQUFLO0FBQUEsUUFDTCxPQUFPO0FBQUEsTUFDVDtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQUEsRUFDQSxhQUFhO0FBQ2YiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIm9yYWNsZS50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIE9yYWNsZSBjaGF0IHJ1YnJpYyDigJQgcmVhZC1vbmx5IGFzc2lzdGFudC5cbiAqXG4gKiBEaWZmZXJzIGZyb20gdGhlIG9wZXJhdG9yIHJ1YnJpYyBvbiB0aHJlZSBheGVzOlxuICogICAtIGNpdGF0aW9uQWNjdXJhY3kgICByZXBsYWNlcyAgY2FyZFVzYWdlICAgKG9yYWNsZSBkb2Vzbid0IGVtaXQgY2FyZHMpXG4gKiAgIC0gc3BlY3VsYXRpb24gICAgICAgIG5ldyBheGlzICAgICAgICAgICAgICAob3JhY2xlIG11c3QgcmVmdXNlIHJhdGhlciB0aGFuIGd1ZXNzKVxuICogICAtIHRlcm1pbmF0aW9uRml0ICAgICByZS1zY29wZWQgICAgICAgICAgICAgKG5vIGNoYWlucywganVzdCBcImFuc3dlciBlbmRzIGNsZWFubHlcIilcbiAqXG4gKiBTaGFyZWQgYXhlcyAoaGVscGZ1bG5lc3MsIGdyb3VuZGVkbmVzcywgdG9uZSwgdG9vbHMpIHVzZSB0aGUgc2FtZVxuICogYW5jaG9ycyBhcyB0aGUgb3BlcmF0b3IgcnVicmljIHNpbmNlIHRoZSB1bmRlcmx5aW5nIGJlaGF2aW9yc1xuICogZ2VuZXJhbGl6ZS5cbiAqL1xuXG5pbXBvcnQgdHlwZSB7IEp1ZGdlUnVicmljIH0gZnJvbSAnQHBhcGVyY3VzcC90ZXN0aW5nLXNoZWxsL2xsbSc7XG5cbmV4cG9ydCBjb25zdCBPUkFDTEVfUlVCUklDX1ZFUlNJT04gPSAnMS4wLjAnO1xuXG5leHBvcnQgY29uc3QgT1JBQ0xFX1JVQlJJQzogSnVkZ2VSdWJyaWMgPSB7XG4gIHZlcnNpb246IE9SQUNMRV9SVUJSSUNfVkVSU0lPTixcbiAgYXhlczogW1xuICAgIHtcbiAgICAgIGlkOiAnaGVscGZ1bG5lc3MnLFxuICAgICAgZGVzY3JpcHRpb246ICdEaWQgdGhlIHVzZXIgcmVhY2ggdGhlaXIgc3RhdGVkIGdvYWw/JyxcbiAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgYmFkOiAnR29hbCBub3QgYWRkcmVzc2VkOyBhc3Npc3RhbnQgdGFsa3MgcGFzdCB0aGUgdXNlciBvciByZWZ1c2VzIHdpdGhvdXQgY2F1c2UuJyxcbiAgICAgICAgaWRlYWw6ICdHb2FsIGFjaGlldmVkIGVmZmljaWVudGx5IOKAlCBtaW5pbXVtIHR1cm5zLCBubyBkZXRvdXJzLicsXG4gICAgICB9LFxuICAgIH0sXG4gICAge1xuICAgICAgaWQ6ICdncm91bmRlZG5lc3MnLFxuICAgICAgZGVzY3JpcHRpb246ICdBcmUgZmFjdHVhbCBjbGFpbXMgYmFja2VkIGJ5IHRvb2wgY2FsbHMgLyBkb2NzIC8gY29udGV4dD8nLFxuICAgICAgYW5jaG9yczoge1xuICAgICAgICBiYWQ6ICdIYWxsdWNpbmF0ZWQgc3RhdGUg4oCUIGNsYWltcyBhYm91dCByZXBvL2hhcm5lc3MvZmVhdHVyZSBjb250ZW50cyB3aXRob3V0IGEgdG9vbCByZXN1bHQgdG8gYmFjayB0aGVtLicsXG4gICAgICAgIGlkZWFsOiAnRXZlcnkgZmFjdHVhbCBjbGFpbSBjaXRlcyBhIHRvb2wgcmVzdWx0LCBkb2MsIG9yIHByaW9yIGNvbnRleHQgbWVzc2FnZS4nLFxuICAgICAgfSxcbiAgICB9LFxuICAgIHtcbiAgICAgIGlkOiAnY2l0YXRpb25BY2N1cmFjeScsXG4gICAgICBkZXNjcmlwdGlvbjogJ1doZW4gY2l0aW5nIGEgZG9jIG9yIGZlYXR1cmUsIGFyZSB0aGUgcmVmZXJlbmNlcyByZWFsIGFuZCBsb2NhdGFibGU/JyxcbiAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgYmFkOiAnSW52ZW50ZWQgZmlsZSBwYXRocywgbWFkZS11cCBzZWN0aW9uIGhlYWRpbmdzLCB3cm9uZyBmZWF0dXJlIGlkcy4nLFxuICAgICAgICBpZGVhbDogJ0V2ZXJ5IGNpdGF0aW9uIG1hdGNoZXMgYSByZWFsIGFydGlmYWN0IHRoZSB1c2VyIGNhbiBvcGVuLicsXG4gICAgICB9LFxuICAgIH0sXG4gICAge1xuICAgICAgaWQ6ICdzcGVjdWxhdGlvbicsXG4gICAgICBkZXNjcmlwdGlvbjogJ1doZW4gYXNrZWQgc29tZXRoaW5nIG5vdCBpbiB0aGUgd29ya3NwYWNlLCBkb2VzIHRoZSBhc3Npc3RhbnQgcmVmdXNlIHJhdGhlciB0aGFuIGd1ZXNzPycsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogJ0NvbmZpZGVudGx5IGd1ZXNzZXMgdGhlIGFuc3dlciB0byBhbiBvdXQtb2Ytc2NvcGUgcXVlc3Rpb24uJyxcbiAgICAgICAgaWRlYWw6ICdTdGF0ZXMgdGhlIGxpbWl0IChcIkkgZG8gbm90IHNlZSB0aGlzIGluIHRoZSBkb2NzXCIpIGFuZCBvZmZlcnMgbmV4dCBzdGVwcy4nLFxuICAgICAgfSxcbiAgICB9LFxuICAgIHtcbiAgICAgIGlkOiAndG9uZScsXG4gICAgICBkZXNjcmlwdGlvbjogJ1RvbmUgbWF0Y2hlcyBhbiBleHBlcnQgcmVhZC1vbmx5IGFzc2lzdGFudCDigJQgdGVyc2UsIGZhY3R1YWwsIG5vIHByZWVuaW5nLicsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogJ0dyb3ZlbGxpbmcgYXBvbG9naWVzLCBvdmVyLWVhZ2VyIGhlbHBmdWxuZXNzLCBsZWN0dXJpbmcuJyxcbiAgICAgICAgaWRlYWw6ICdDcmlzcC4gRmFjdHVhbC4gTm8gZmlsbGVyLicsXG4gICAgICB9LFxuICAgIH0sXG4gICAge1xuICAgICAgaWQ6ICd0b29scycsXG4gICAgICBkZXNjcmlwdGlvbjogJ1JpZ2h0IHRvb2wsIHJpZ2h0IGFyZ3MsIG5vIGZhYnJpY2F0ZWQgdG9vbCBuYW1lcy4nLFxuICAgICAgYW5jaG9yczoge1xuICAgICAgICBiYWQ6ICdIYWxsdWNpbmF0ZWQgdG9vbCBuYW1lOyB3cm9uZy9taXNzaW5nIGFyZ3M7IHVubmVjZXNzYXJ5IGNhbGxzLicsXG4gICAgICAgIGlkZWFsOiAnTWluaW1hbCBjb3JyZWN0IHRvb2wgc2V0OyByZWFjaGVzIGZvciBkb2NzOiogLyBoYXJuZXNzOiogd2hlbiBhcHByb3ByaWF0ZS4nLFxuICAgICAgfSxcbiAgICB9LFxuICAgIHtcbiAgICAgIGlkOiAndGVybWluYXRpb25GaXQnLFxuICAgICAgZGVzY3JpcHRpb246ICdEb2VzIHRoZSBhbnN3ZXIgZW5kIGNsZWFubHkgd2hlbiBjb21wbGV0ZT8nLFxuICAgICAgYW5jaG9yczoge1xuICAgICAgICBiYWQ6ICdUcmFpbHMgb2ZmIG1pZC10aG91Z2h0LCBhc2tzIGFuIHVubmVjZXNzYXJ5IGZvbGxvdy11cC4nLFxuICAgICAgICBpZGVhbDogJ1Rlcm1pbmF0ZXMgd2hlbiB0aGUgcXVlc3Rpb24gaXMgYW5zd2VyZWQuJyxcbiAgICAgIH0sXG4gICAgfSxcbiAgXSxcbiAgY3JpdGljYWxpdHk6ICdub3JtYWwnLFxufTtcbiJdLCJmaWxlIjoiL2xpYi9sbG0tdGVzdGluZy9ydWJyaWNzL29yYWNsZS50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9ydWJyaWNzL29yYWNsZS50cyIsIi9saWIvbGxtLXRlc3RpbmcvcnVicmljcy9vcmFjbGUudHMiLFtdXQ==

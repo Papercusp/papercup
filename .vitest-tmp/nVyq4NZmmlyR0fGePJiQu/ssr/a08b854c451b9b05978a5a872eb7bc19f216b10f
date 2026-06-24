@@ -1,0 +1,70 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","expect","it"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/user-profile/visible-harnesses.ts", {"importedNames":["visibleHarnessesForViewer"]});
+
+
+const harnesses = [
+  { harness_slug: "public-one", privacy: "shared-public" },
+  { harness_slug: "secret-one", privacy: "shared-private" },
+  { harness_slug: "no-binding" }
+  // missing binding row
+];
+(0,__vite_ssr_import_0__.describe)("visibleHarnessesForViewer", () => {
+  (0,__vite_ssr_import_0__.it)("anonymous viewer sees public + missing-binding, never shared-private", () => {
+    const out = (0,__vite_ssr_import_1__.visibleHarnessesForViewer)({
+      subjectGithubUserId: 42,
+      viewerGithubUserId: null,
+      harnesses,
+      viewerMembership: /* @__PURE__ */ new Set()
+    });
+    (0,__vite_ssr_import_0__.expect)(out.map((h) => h.harness_slug)).toEqual(["public-one", "no-binding"]);
+  });
+  (0,__vite_ssr_import_0__.it)("subject viewing own profile sees shared-private rows", () => {
+    const out = (0,__vite_ssr_import_1__.visibleHarnessesForViewer)({
+      subjectGithubUserId: 42,
+      viewerGithubUserId: 42,
+      harnesses,
+      viewerMembership: /* @__PURE__ */ new Set()
+    });
+    (0,__vite_ssr_import_0__.expect)(out.map((h) => h.harness_slug)).toEqual([
+      "public-one",
+      "secret-one",
+      "no-binding"
+    ]);
+  });
+  (0,__vite_ssr_import_0__.it)("member viewer unlocks the shared-private harness they belong to", () => {
+    const out = (0,__vite_ssr_import_1__.visibleHarnessesForViewer)({
+      subjectGithubUserId: 42,
+      viewerGithubUserId: 99,
+      harnesses,
+      viewerMembership: /* @__PURE__ */ new Set(["secret-one"])
+    });
+    (0,__vite_ssr_import_0__.expect)(out.map((h) => h.harness_slug)).toEqual([
+      "public-one",
+      "secret-one",
+      "no-binding"
+    ]);
+  });
+  (0,__vite_ssr_import_0__.it)("non-member viewer cannot see a shared-private harness", () => {
+    const out = (0,__vite_ssr_import_1__.visibleHarnessesForViewer)({
+      subjectGithubUserId: 42,
+      viewerGithubUserId: 99,
+      harnesses,
+      viewerMembership: /* @__PURE__ */ new Set(["some-other-harness"])
+    });
+    (0,__vite_ssr_import_0__.expect)(out.map((h) => h.harness_slug)).toEqual(["public-one", "no-binding"]);
+  });
+  (0,__vite_ssr_import_0__.it)("empty harness list yields empty", () => {
+    (0,__vite_ssr_import_0__.expect)(
+      (0,__vite_ssr_import_1__.visibleHarnessesForViewer)({
+        subjectGithubUserId: 42,
+        viewerGithubUserId: null,
+        harnesses: [],
+        viewerMembership: /* @__PURE__ */ new Set()
+      })
+    ).toEqual([]);
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBSUE7QUFDQTs7O0FBRUEsTUFBTSxZQUFZO0FBQUEsRUFDaEIsRUFBRSxjQUFjLGNBQWMsU0FBUyxnQkFBZ0I7QUFBQSxFQUN2RCxFQUFFLGNBQWMsY0FBYyxTQUFTLGlCQUFpQjtBQUFBLEVBQ3hELEVBQUUsY0FBYyxhQUFhO0FBQUE7QUFDL0I7R0FFQSxnQ0FBUyw2QkFBNkIsTUFBTTtBQUMxQywrQkFBRyx3RUFBd0UsTUFBTTtBQUMvRSxVQUFNLFNBQU0saURBQTBCO0FBQUEsTUFDcEMscUJBQXFCO0FBQUEsTUFDckIsb0JBQW9CO0FBQUEsTUFDcEI7QUFBQSxNQUNBLGtCQUFrQixvQkFBSSxJQUFJO0FBQUEsSUFDNUIsQ0FBQztBQUNELHFDQUFPLElBQUksSUFBSSxDQUFDLE1BQU0sRUFBRSxZQUFZLENBQUMsRUFBRSxRQUFRLENBQUMsY0FBYyxZQUFZLENBQUM7QUFBQSxFQUM3RSxDQUFDO0FBRUQsK0JBQUcsd0RBQXdELE1BQU07QUFDL0QsVUFBTSxTQUFNLGlEQUEwQjtBQUFBLE1BQ3BDLHFCQUFxQjtBQUFBLE1BQ3JCLG9CQUFvQjtBQUFBLE1BQ3BCO0FBQUEsTUFDQSxrQkFBa0Isb0JBQUksSUFBSTtBQUFBLElBQzVCLENBQUM7QUFDRCxxQ0FBTyxJQUFJLElBQUksQ0FBQyxNQUFNLEVBQUUsWUFBWSxDQUFDLEVBQUUsUUFBUTtBQUFBLE1BQzdDO0FBQUEsTUFDQTtBQUFBLE1BQ0E7QUFBQSxJQUNGLENBQUM7QUFBQSxFQUNILENBQUM7QUFFRCwrQkFBRyxtRUFBbUUsTUFBTTtBQUMxRSxVQUFNLFNBQU0saURBQTBCO0FBQUEsTUFDcEMscUJBQXFCO0FBQUEsTUFDckIsb0JBQW9CO0FBQUEsTUFDcEI7QUFBQSxNQUNBLGtCQUFrQixvQkFBSSxJQUFJLENBQUMsWUFBWSxDQUFDO0FBQUEsSUFDMUMsQ0FBQztBQUNELHFDQUFPLElBQUksSUFBSSxDQUFDLE1BQU0sRUFBRSxZQUFZLENBQUMsRUFBRSxRQUFRO0FBQUEsTUFDN0M7QUFBQSxNQUNBO0FBQUEsTUFDQTtBQUFBLElBQ0YsQ0FBQztBQUFBLEVBQ0gsQ0FBQztBQUVELCtCQUFHLHlEQUF5RCxNQUFNO0FBQ2hFLFVBQU0sU0FBTSxpREFBMEI7QUFBQSxNQUNwQyxxQkFBcUI7QUFBQSxNQUNyQixvQkFBb0I7QUFBQSxNQUNwQjtBQUFBLE1BQ0Esa0JBQWtCLG9CQUFJLElBQUksQ0FBQyxvQkFBb0IsQ0FBQztBQUFBLElBQ2xELENBQUM7QUFDRCxxQ0FBTyxJQUFJLElBQUksQ0FBQyxNQUFNLEVBQUUsWUFBWSxDQUFDLEVBQUUsUUFBUSxDQUFDLGNBQWMsWUFBWSxDQUFDO0FBQUEsRUFDN0UsQ0FBQztBQUVELCtCQUFHLG1DQUFtQyxNQUFNO0FBQzFDO0FBQUEsU0FDRSxpREFBMEI7QUFBQSxRQUN4QixxQkFBcUI7QUFBQSxRQUNyQixvQkFBb0I7QUFBQSxRQUNwQixXQUFXLENBQUM7QUFBQSxRQUNaLGtCQUFrQixvQkFBSSxJQUFJO0FBQUEsTUFDNUIsQ0FBQztBQUFBLElBQ0gsRUFBRSxRQUFRLENBQUMsQ0FBQztBQUFBLEVBQ2QsQ0FBQztBQUNILENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbInZpc2libGUtaGFybmVzc2VzLnRlc3QudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiB2aXNpYmxlSGFybmVzc2VzRm9yVmlld2VyIOKAlCDCpzE4IHByaXZhY3ktZmlsdGVyIHNlYW0gdGVzdHMgKFAtMDcyYikuXG4gKi9cblxuaW1wb3J0IHsgZGVzY3JpYmUsIGV4cGVjdCwgaXQgfSBmcm9tICd2aXRlc3QnO1xuaW1wb3J0IHsgdmlzaWJsZUhhcm5lc3Nlc0ZvclZpZXdlciB9IGZyb20gJy4uL3Zpc2libGUtaGFybmVzc2VzJztcblxuY29uc3QgaGFybmVzc2VzID0gW1xuICB7IGhhcm5lc3Nfc2x1ZzogJ3B1YmxpYy1vbmUnLCBwcml2YWN5OiAnc2hhcmVkLXB1YmxpYycgfSxcbiAgeyBoYXJuZXNzX3NsdWc6ICdzZWNyZXQtb25lJywgcHJpdmFjeTogJ3NoYXJlZC1wcml2YXRlJyB9LFxuICB7IGhhcm5lc3Nfc2x1ZzogJ25vLWJpbmRpbmcnIH0sIC8vIG1pc3NpbmcgYmluZGluZyByb3dcbl07XG5cbmRlc2NyaWJlKCd2aXNpYmxlSGFybmVzc2VzRm9yVmlld2VyJywgKCkgPT4ge1xuICBpdCgnYW5vbnltb3VzIHZpZXdlciBzZWVzIHB1YmxpYyArIG1pc3NpbmctYmluZGluZywgbmV2ZXIgc2hhcmVkLXByaXZhdGUnLCAoKSA9PiB7XG4gICAgY29uc3Qgb3V0ID0gdmlzaWJsZUhhcm5lc3Nlc0ZvclZpZXdlcih7XG4gICAgICBzdWJqZWN0R2l0aHViVXNlcklkOiA0MixcbiAgICAgIHZpZXdlckdpdGh1YlVzZXJJZDogbnVsbCxcbiAgICAgIGhhcm5lc3NlcyxcbiAgICAgIHZpZXdlck1lbWJlcnNoaXA6IG5ldyBTZXQoKSxcbiAgICB9KTtcbiAgICBleHBlY3Qob3V0Lm1hcCgoaCkgPT4gaC5oYXJuZXNzX3NsdWcpKS50b0VxdWFsKFsncHVibGljLW9uZScsICduby1iaW5kaW5nJ10pO1xuICB9KTtcblxuICBpdCgnc3ViamVjdCB2aWV3aW5nIG93biBwcm9maWxlIHNlZXMgc2hhcmVkLXByaXZhdGUgcm93cycsICgpID0+IHtcbiAgICBjb25zdCBvdXQgPSB2aXNpYmxlSGFybmVzc2VzRm9yVmlld2VyKHtcbiAgICAgIHN1YmplY3RHaXRodWJVc2VySWQ6IDQyLFxuICAgICAgdmlld2VyR2l0aHViVXNlcklkOiA0MixcbiAgICAgIGhhcm5lc3NlcyxcbiAgICAgIHZpZXdlck1lbWJlcnNoaXA6IG5ldyBTZXQoKSxcbiAgICB9KTtcbiAgICBleHBlY3Qob3V0Lm1hcCgoaCkgPT4gaC5oYXJuZXNzX3NsdWcpKS50b0VxdWFsKFtcbiAgICAgICdwdWJsaWMtb25lJyxcbiAgICAgICdzZWNyZXQtb25lJyxcbiAgICAgICduby1iaW5kaW5nJyxcbiAgICBdKTtcbiAgfSk7XG5cbiAgaXQoJ21lbWJlciB2aWV3ZXIgdW5sb2NrcyB0aGUgc2hhcmVkLXByaXZhdGUgaGFybmVzcyB0aGV5IGJlbG9uZyB0bycsICgpID0+IHtcbiAgICBjb25zdCBvdXQgPSB2aXNpYmxlSGFybmVzc2VzRm9yVmlld2VyKHtcbiAgICAgIHN1YmplY3RHaXRodWJVc2VySWQ6IDQyLFxuICAgICAgdmlld2VyR2l0aHViVXNlcklkOiA5OSxcbiAgICAgIGhhcm5lc3NlcyxcbiAgICAgIHZpZXdlck1lbWJlcnNoaXA6IG5ldyBTZXQoWydzZWNyZXQtb25lJ10pLFxuICAgIH0pO1xuICAgIGV4cGVjdChvdXQubWFwKChoKSA9PiBoLmhhcm5lc3Nfc2x1ZykpLnRvRXF1YWwoW1xuICAgICAgJ3B1YmxpYy1vbmUnLFxuICAgICAgJ3NlY3JldC1vbmUnLFxuICAgICAgJ25vLWJpbmRpbmcnLFxuICAgIF0pO1xuICB9KTtcblxuICBpdCgnbm9uLW1lbWJlciB2aWV3ZXIgY2Fubm90IHNlZSBhIHNoYXJlZC1wcml2YXRlIGhhcm5lc3MnLCAoKSA9PiB7XG4gICAgY29uc3Qgb3V0ID0gdmlzaWJsZUhhcm5lc3Nlc0ZvclZpZXdlcih7XG4gICAgICBzdWJqZWN0R2l0aHViVXNlcklkOiA0MixcbiAgICAgIHZpZXdlckdpdGh1YlVzZXJJZDogOTksXG4gICAgICBoYXJuZXNzZXMsXG4gICAgICB2aWV3ZXJNZW1iZXJzaGlwOiBuZXcgU2V0KFsnc29tZS1vdGhlci1oYXJuZXNzJ10pLFxuICAgIH0pO1xuICAgIGV4cGVjdChvdXQubWFwKChoKSA9PiBoLmhhcm5lc3Nfc2x1ZykpLnRvRXF1YWwoWydwdWJsaWMtb25lJywgJ25vLWJpbmRpbmcnXSk7XG4gIH0pO1xuXG4gIGl0KCdlbXB0eSBoYXJuZXNzIGxpc3QgeWllbGRzIGVtcHR5JywgKCkgPT4ge1xuICAgIGV4cGVjdChcbiAgICAgIHZpc2libGVIYXJuZXNzZXNGb3JWaWV3ZXIoe1xuICAgICAgICBzdWJqZWN0R2l0aHViVXNlcklkOiA0MixcbiAgICAgICAgdmlld2VyR2l0aHViVXNlcklkOiBudWxsLFxuICAgICAgICBoYXJuZXNzZXM6IFtdLFxuICAgICAgICB2aWV3ZXJNZW1iZXJzaGlwOiBuZXcgU2V0KCksXG4gICAgICB9KSxcbiAgICApLnRvRXF1YWwoW10pO1xuICB9KTtcbn0pO1xuIl0sImZpbGUiOiIvbGliL3VzZXItcHJvZmlsZS9fX3Rlc3RzX18vdmlzaWJsZS1oYXJuZXNzZXMudGVzdC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi91c2VyLXByb2ZpbGUvX190ZXN0c19fL3Zpc2libGUtaGFybmVzc2VzLnRlc3QudHMiLCIvbGliL3VzZXItcHJvZmlsZS9fX3Rlc3RzX18vdmlzaWJsZS1oYXJuZXNzZXMudGVzdC50cyIsW11d

@@ -1,0 +1,47 @@
+__vite_ssr_exportName__("PIPE_TESTWRITER_CREATES_TESTS", () => { try { return PIPE_TESTWRITER_CREATES_TESTS } catch {} });
+const PIPE_TESTWRITER_CREATES_TESTS = {
+  id: "PIPE-testwriter-creates-tests",
+  version: 1,
+  role: "test-writer",
+  description: "Given a feature with an implementation and acceptance criteria, the test-writer must write at least one real *.test.ts/*.spec.ts file whose cases exercise the criteria.",
+  setup: {
+    feature: {
+      id: "F-TW-1",
+      title: "clamp helper",
+      spec: "Add clamp(n, lo, hi): returns n bounded to [lo, hi].",
+      acceptance: [
+        "clamp returns n when lo ≤ n ≤ hi",
+        "clamp returns lo when n < lo",
+        "clamp returns hi when n > hi"
+      ],
+      status: "todo"
+    },
+    files: [
+      { path: "src/clamp.ts", content: "export const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));\n" }
+    ]
+  },
+  asserts: [
+    { kind: "exit_code_is", expected: 0 },
+    // The decisive deterministic guarantee: a real test file was created.
+    { kind: "file_created", matching: /\.(test|spec)\.(ts|tsx|js)$/, minCount: 1 }
+  ],
+  rubric: {
+    version: "1",
+    axes: [
+      {
+        id: "testsAreReal",
+        description: "Are the written tests real, executable cases that exercise the clamp acceptance criteria (in-range, below-lo, above-hi) — not empty stubs or placeholders?",
+        anchors: {
+          bad: "An empty test file, a single trivial assertion, or a TODO/placeholder; criteria not exercised.",
+          ideal: "Distinct cases covering all three criteria with concrete expected values."
+        }
+      }
+    ],
+    criticality: "high"
+  },
+  caps: { maxWallSecs: 600, maxCostUsd: 1 }
+};
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVlPLE1BQU0sZ0NBQWtEO0FBQUEsRUFDN0QsSUFBSTtBQUFBLEVBQ0osU0FBUztBQUFBLEVBQ1QsTUFBTTtBQUFBLEVBQ04sYUFDRTtBQUFBLEVBQ0YsT0FBTztBQUFBLElBQ0wsU0FBUztBQUFBLE1BQ1AsSUFBSTtBQUFBLE1BQ0osT0FBTztBQUFBLE1BQ1AsTUFBTTtBQUFBLE1BQ04sWUFBWTtBQUFBLFFBQ1Y7QUFBQSxRQUNBO0FBQUEsUUFDQTtBQUFBLE1BQ0Y7QUFBQSxNQUNBLFFBQVE7QUFBQSxJQUNWO0FBQUEsSUFDQSxPQUFPO0FBQUEsTUFDTCxFQUFFLE1BQU0sZ0JBQWdCLFNBQVMsK0ZBQStGO0FBQUEsSUFDbEk7QUFBQSxFQUNGO0FBQUEsRUFDQSxTQUFTO0FBQUEsSUFDUCxFQUFFLE1BQU0sZ0JBQWdCLFVBQVUsRUFBRTtBQUFBO0FBQUEsSUFFcEMsRUFBRSxNQUFNLGdCQUFnQixVQUFVLCtCQUErQixVQUFVLEVBQUU7QUFBQSxFQUMvRTtBQUFBLEVBQ0EsUUFBUTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsTUFBTTtBQUFBLE1BQ0o7QUFBQSxRQUNFLElBQUk7QUFBQSxRQUNKLGFBQWE7QUFBQSxRQUNiLFNBQVM7QUFBQSxVQUNQLEtBQUs7QUFBQSxVQUNMLE9BQU87QUFBQSxRQUNUO0FBQUEsTUFDRjtBQUFBLElBQ0Y7QUFBQSxJQUNBLGFBQWE7QUFBQSxFQUNmO0FBQUEsRUFDQSxNQUFNLEVBQUUsYUFBYSxLQUFLLFlBQVksRUFBRTtBQUMxQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiUElQRS10ZXN0d3JpdGVyLWNyZWF0ZXMtdGVzdHMudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBQSVBFLXRlc3R3cml0ZXItY3JlYXRlcy10ZXN0cyAoUC0wMzApIOKAlCB0aGUgdGVzdC13cml0ZXIgcm9sZSBhY3R1YWxseSBDUkVBVEVTXG4gKiByZWFsIHRlc3QgZmlsZXMgZm9yIGEgZmVhdHVyZSdzIGFjY2VwdGFuY2UgY3JpdGVyaWEgKG5vdCBlbXB0eSBzdHVicywgbm90IGFcbiAqIFwiSSB3b3VsZCB3cml0ZeKAplwiIG5hcnJhdGlvbikuXG4gKlxuICogVGhlIGhlYWRsaW5lIGJlaGF2aW9yYWwgZ3VhcmFudGVlIGJlaGluZCB0aGUgR0VORVJBVEVfVEVTVFMgZGlzcGF0Y2ggdmVyYlxuICogKHdpcmluZyBwcm92ZW4gYnkgUC0wMjk7IGJlaGF2aW9yIHByb3ZlbiBoZXJlKS4gRGV0ZXJtaW5pc3RpYyBoYWxmOiBhXG4gKiAqLnRlc3QudHMgLyAqLnNwZWMudHMgZmlsZSBhcHBlYXJzLiBCZWhhdmlvcmFsIGhhbGYgKGp1ZGdlKTogdGhlIHRlc3RzIGFyZVxuICogcmVhbCBhbmQgZXhlcmNpc2UgdGhlIGFjY2VwdGFuY2UgY3JpdGVyaWEuXG4gKi9cbmltcG9ydCB0eXBlIHsgUGlwZWxpbmVTY2VuYXJpbyB9IGZyb20gJ0BwYXBlcmN1c3AvdGVzdGluZy1zaGVsbC9sbG0nO1xuXG5leHBvcnQgY29uc3QgUElQRV9URVNUV1JJVEVSX0NSRUFURVNfVEVTVFM6IFBpcGVsaW5lU2NlbmFyaW8gPSB7XG4gIGlkOiAnUElQRS10ZXN0d3JpdGVyLWNyZWF0ZXMtdGVzdHMnLFxuICB2ZXJzaW9uOiAxLFxuICByb2xlOiAndGVzdC13cml0ZXInLFxuICBkZXNjcmlwdGlvbjpcbiAgICAnR2l2ZW4gYSBmZWF0dXJlIHdpdGggYW4gaW1wbGVtZW50YXRpb24gYW5kIGFjY2VwdGFuY2UgY3JpdGVyaWEsIHRoZSB0ZXN0LXdyaXRlciBtdXN0IHdyaXRlIGF0IGxlYXN0IG9uZSByZWFsICoudGVzdC50cy8qLnNwZWMudHMgZmlsZSB3aG9zZSBjYXNlcyBleGVyY2lzZSB0aGUgY3JpdGVyaWEuJyxcbiAgc2V0dXA6IHtcbiAgICBmZWF0dXJlOiB7XG4gICAgICBpZDogJ0YtVFctMScsXG4gICAgICB0aXRsZTogJ2NsYW1wIGhlbHBlcicsXG4gICAgICBzcGVjOiAnQWRkIGNsYW1wKG4sIGxvLCBoaSk6IHJldHVybnMgbiBib3VuZGVkIHRvIFtsbywgaGldLicsXG4gICAgICBhY2NlcHRhbmNlOiBbXG4gICAgICAgICdjbGFtcCByZXR1cm5zIG4gd2hlbiBsbyDiiaQgbiDiiaQgaGknLFxuICAgICAgICAnY2xhbXAgcmV0dXJucyBsbyB3aGVuIG4gPCBsbycsXG4gICAgICAgICdjbGFtcCByZXR1cm5zIGhpIHdoZW4gbiA+IGhpJyxcbiAgICAgIF0sXG4gICAgICBzdGF0dXM6ICd0b2RvJyxcbiAgICB9LFxuICAgIGZpbGVzOiBbXG4gICAgICB7IHBhdGg6ICdzcmMvY2xhbXAudHMnLCBjb250ZW50OiAnZXhwb3J0IGNvbnN0IGNsYW1wID0gKG46IG51bWJlciwgbG86IG51bWJlciwgaGk6IG51bWJlcikgPT4gTWF0aC5taW4oaGksIE1hdGgubWF4KGxvLCBuKSk7XFxuJyB9LFxuICAgIF0sXG4gIH0sXG4gIGFzc2VydHM6IFtcbiAgICB7IGtpbmQ6ICdleGl0X2NvZGVfaXMnLCBleHBlY3RlZDogMCB9LFxuICAgIC8vIFRoZSBkZWNpc2l2ZSBkZXRlcm1pbmlzdGljIGd1YXJhbnRlZTogYSByZWFsIHRlc3QgZmlsZSB3YXMgY3JlYXRlZC5cbiAgICB7IGtpbmQ6ICdmaWxlX2NyZWF0ZWQnLCBtYXRjaGluZzogL1xcLih0ZXN0fHNwZWMpXFwuKHRzfHRzeHxqcykkLywgbWluQ291bnQ6IDEgfSxcbiAgXSxcbiAgcnVicmljOiB7XG4gICAgdmVyc2lvbjogJzEnLFxuICAgIGF4ZXM6IFtcbiAgICAgIHtcbiAgICAgICAgaWQ6ICd0ZXN0c0FyZVJlYWwnLFxuICAgICAgICBkZXNjcmlwdGlvbjogJ0FyZSB0aGUgd3JpdHRlbiB0ZXN0cyByZWFsLCBleGVjdXRhYmxlIGNhc2VzIHRoYXQgZXhlcmNpc2UgdGhlIGNsYW1wIGFjY2VwdGFuY2UgY3JpdGVyaWEgKGluLXJhbmdlLCBiZWxvdy1sbywgYWJvdmUtaGkpIOKAlCBub3QgZW1wdHkgc3R1YnMgb3IgcGxhY2Vob2xkZXJzPycsXG4gICAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgICBiYWQ6ICdBbiBlbXB0eSB0ZXN0IGZpbGUsIGEgc2luZ2xlIHRyaXZpYWwgYXNzZXJ0aW9uLCBvciBhIFRPRE8vcGxhY2Vob2xkZXI7IGNyaXRlcmlhIG5vdCBleGVyY2lzZWQuJyxcbiAgICAgICAgICBpZGVhbDogJ0Rpc3RpbmN0IGNhc2VzIGNvdmVyaW5nIGFsbCB0aHJlZSBjcml0ZXJpYSB3aXRoIGNvbmNyZXRlIGV4cGVjdGVkIHZhbHVlcy4nLFxuICAgICAgICB9LFxuICAgICAgfSxcbiAgICBdLFxuICAgIGNyaXRpY2FsaXR5OiAnaGlnaCcsXG4gIH0sXG4gIGNhcHM6IHsgbWF4V2FsbFNlY3M6IDYwMCwgbWF4Q29zdFVzZDogMSB9LFxufTtcbiJdLCJmaWxlIjoiL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3MvcGlwZWxpbmUvUElQRS10ZXN0d3JpdGVyLWNyZWF0ZXMtdGVzdHMudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3MvcGlwZWxpbmUvUElQRS10ZXN0d3JpdGVyLWNyZWF0ZXMtdGVzdHMudHMiLCIvbGliL2xsbS10ZXN0aW5nL3NjZW5hcmlvcy9waXBlbGluZS9QSVBFLXRlc3R3cml0ZXItY3JlYXRlcy10ZXN0cy50cyIsW11d

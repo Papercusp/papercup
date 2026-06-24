@@ -1,0 +1,61 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","expect","it"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/work-item-scope.ts", {"importedNames":["assertScopeWellFormed","harnessScope","harnessOfScope","OPERATOR_SCOPE"]});
+
+
+(0,__vite_ssr_import_0__.describe)("work-item scope guards (unified-work-item-ledger P-001)", () => {
+  (0,__vite_ssr_import_0__.describe)("assertScopeWellFormed", () => {
+    (0,__vite_ssr_import_0__.it)("accepts the operator (global) scope", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)((0,__vite_ssr_import_1__.OPERATOR_SCOPE))).not.toThrow();
+    });
+    (0,__vite_ssr_import_0__.it)("accepts a well-formed harness scope", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)("harness:papercusp")).not.toThrow();
+    });
+    (0,__vite_ssr_import_0__.it)("rejects an empty string", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)("")).toThrow(/non-empty string/);
+    });
+    (0,__vite_ssr_import_0__.it)("rejects a whitespace-only string", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)("   ")).toThrow(/non-empty string/);
+    });
+    (0,__vite_ssr_import_0__.it)("rejects a harness: prefix with an empty slug", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)("harness:")).toThrow(/non-empty harness slug/);
+    });
+    (0,__vite_ssr_import_0__.it)("rejects a harness: prefix with a whitespace slug", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)("harness:   ")).toThrow(/non-empty harness slug/);
+    });
+  });
+  (0,__vite_ssr_import_0__.describe)("harnessScope", () => {
+    (0,__vite_ssr_import_0__.it)("maps null/undefined to the explicit operator scope", () => {
+      (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.harnessScope)(null)).toBe((0,__vite_ssr_import_1__.OPERATOR_SCOPE));
+      (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.harnessScope)(void 0)).toBe((0,__vite_ssr_import_1__.OPERATOR_SCOPE));
+    });
+    (0,__vite_ssr_import_0__.it)("builds a harness scope from a slug", () => {
+      (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.harnessScope)("papercusp")).toBe("harness:papercusp");
+    });
+    (0,__vite_ssr_import_0__.it)("trims the slug", () => {
+      (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.harnessScope)("  papercusp  ")).toBe("harness:papercusp");
+    });
+    (0,__vite_ssr_import_0__.it)("throws on a blank harness (never silently collapses to operator)", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.harnessScope)("")).toThrow(/blank harness/);
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.harnessScope)("   ")).toThrow(/blank harness/);
+    });
+    (0,__vite_ssr_import_0__.it)("produces scopes that pass the well-formed guard", () => {
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)((0,__vite_ssr_import_1__.harnessScope)("papercusp"))).not.toThrow();
+      (0,__vite_ssr_import_0__.expect)(() => (0,__vite_ssr_import_1__.assertScopeWellFormed)((0,__vite_ssr_import_1__.harnessScope)(null))).not.toThrow();
+    });
+  });
+  (0,__vite_ssr_import_0__.describe)("harnessOfScope", () => {
+    (0,__vite_ssr_import_0__.it)("returns null for the operator scope", () => {
+      (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.harnessOfScope)((0,__vite_ssr_import_1__.OPERATOR_SCOPE))).toBeNull();
+    });
+    (0,__vite_ssr_import_0__.it)("returns the slug for a harness scope", () => {
+      (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.harnessOfScope)("harness:papercusp")).toBe("papercusp");
+    });
+    (0,__vite_ssr_import_0__.it)("round-trips with harnessScope", () => {
+      (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.harnessOfScope)((0,__vite_ssr_import_1__.harnessScope)("papercusp"))).toBe("papercusp");
+    });
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTs7O0dBRUEsZ0NBQVMsMkRBQTJELE1BQU07QUFDeEUscUNBQVMseUJBQXlCLE1BQU07QUFDdEMsaUNBQUcsdUNBQXVDLE1BQU07QUFDOUMsdUNBQU8sU0FBTSxnREFBc0IscUNBQWMsQ0FBQyxFQUFFLElBQUksUUFBUTtBQUFBLElBQ2xFLENBQUM7QUFDRCxpQ0FBRyx1Q0FBdUMsTUFBTTtBQUM5Qyx1Q0FBTyxTQUFNLDZDQUFzQixtQkFBbUIsQ0FBQyxFQUFFLElBQUksUUFBUTtBQUFBLElBQ3ZFLENBQUM7QUFDRCxpQ0FBRywyQkFBMkIsTUFBTTtBQUNsQyx1Q0FBTyxTQUFNLDZDQUFzQixFQUFFLENBQUMsRUFBRSxRQUFRLGtCQUFrQjtBQUFBLElBQ3BFLENBQUM7QUFDRCxpQ0FBRyxvQ0FBb0MsTUFBTTtBQUMzQyx1Q0FBTyxTQUFNLDZDQUFzQixLQUFLLENBQUMsRUFBRSxRQUFRLGtCQUFrQjtBQUFBLElBQ3ZFLENBQUM7QUFDRCxpQ0FBRyxnREFBZ0QsTUFBTTtBQUN2RCx1Q0FBTyxTQUFNLDZDQUFzQixVQUFVLENBQUMsRUFBRSxRQUFRLHdCQUF3QjtBQUFBLElBQ2xGLENBQUM7QUFDRCxpQ0FBRyxvREFBb0QsTUFBTTtBQUMzRCx1Q0FBTyxTQUFNLDZDQUFzQixhQUFhLENBQUMsRUFBRSxRQUFRLHdCQUF3QjtBQUFBLElBQ3JGLENBQUM7QUFBQSxFQUNILENBQUM7QUFFRCxxQ0FBUyxnQkFBZ0IsTUFBTTtBQUM3QixpQ0FBRyxzREFBc0QsTUFBTTtBQUM3RCwwQ0FBTyxvQ0FBYSxJQUFJLENBQUMsRUFBRSxRQUFLLHFDQUFjO0FBQzlDLDBDQUFPLG9DQUFhLE1BQVMsQ0FBQyxFQUFFLFFBQUsscUNBQWM7QUFBQSxJQUNyRCxDQUFDO0FBQ0QsaUNBQUcsc0NBQXNDLE1BQU07QUFDN0MsMENBQU8sb0NBQWEsV0FBVyxDQUFDLEVBQUUsS0FBSyxtQkFBbUI7QUFBQSxJQUM1RCxDQUFDO0FBQ0QsaUNBQUcsa0JBQWtCLE1BQU07QUFDekIsMENBQU8sb0NBQWEsZUFBZSxDQUFDLEVBQUUsS0FBSyxtQkFBbUI7QUFBQSxJQUNoRSxDQUFDO0FBQ0QsaUNBQUcsb0VBQW9FLE1BQU07QUFDM0UsdUNBQU8sU0FBTSxvQ0FBYSxFQUFFLENBQUMsRUFBRSxRQUFRLGVBQWU7QUFDdEQsdUNBQU8sU0FBTSxvQ0FBYSxLQUFLLENBQUMsRUFBRSxRQUFRLGVBQWU7QUFBQSxJQUMzRCxDQUFDO0FBQ0QsaUNBQUcsbURBQW1ELE1BQU07QUFDMUQsdUNBQU8sU0FBTSxnREFBc0Isb0NBQWEsV0FBVyxDQUFDLENBQUMsRUFBRSxJQUFJLFFBQVE7QUFDM0UsdUNBQU8sU0FBTSxnREFBc0Isb0NBQWEsSUFBSSxDQUFDLENBQUMsRUFBRSxJQUFJLFFBQVE7QUFBQSxJQUN0RSxDQUFDO0FBQUEsRUFDSCxDQUFDO0FBRUQscUNBQVMsa0JBQWtCLE1BQU07QUFDL0IsaUNBQUcsdUNBQXVDLE1BQU07QUFDOUMsMENBQU8seUNBQWUscUNBQWMsQ0FBQyxFQUFFLFNBQVM7QUFBQSxJQUNsRCxDQUFDO0FBQ0QsaUNBQUcsd0NBQXdDLE1BQU07QUFDL0MsMENBQU8sc0NBQWUsbUJBQW1CLENBQUMsRUFBRSxLQUFLLFdBQVc7QUFBQSxJQUM5RCxDQUFDO0FBQ0QsaUNBQUcsaUNBQWlDLE1BQU07QUFDeEMsMENBQU8seUNBQWUsb0NBQWEsV0FBVyxDQUFDLENBQUMsRUFBRSxLQUFLLFdBQVc7QUFBQSxJQUNwRSxDQUFDO0FBQUEsRUFDSCxDQUFDO0FBQ0gsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsid29yay1pdGVtLXNjb3BlLnRlc3QudHMiXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgZGVzY3JpYmUsIGV4cGVjdCwgaXQgfSBmcm9tICd2aXRlc3QnO1xuaW1wb3J0IHsgYXNzZXJ0U2NvcGVXZWxsRm9ybWVkLCBoYXJuZXNzU2NvcGUsIGhhcm5lc3NPZlNjb3BlLCBPUEVSQVRPUl9TQ09QRSB9IGZyb20gJy4vd29yay1pdGVtLXNjb3BlJztcblxuZGVzY3JpYmUoJ3dvcmstaXRlbSBzY29wZSBndWFyZHMgKHVuaWZpZWQtd29yay1pdGVtLWxlZGdlciBQLTAwMSknLCAoKSA9PiB7XG4gIGRlc2NyaWJlKCdhc3NlcnRTY29wZVdlbGxGb3JtZWQnLCAoKSA9PiB7XG4gICAgaXQoJ2FjY2VwdHMgdGhlIG9wZXJhdG9yIChnbG9iYWwpIHNjb3BlJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KCgpID0+IGFzc2VydFNjb3BlV2VsbEZvcm1lZChPUEVSQVRPUl9TQ09QRSkpLm5vdC50b1Rocm93KCk7XG4gICAgfSk7XG4gICAgaXQoJ2FjY2VwdHMgYSB3ZWxsLWZvcm1lZCBoYXJuZXNzIHNjb3BlJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KCgpID0+IGFzc2VydFNjb3BlV2VsbEZvcm1lZCgnaGFybmVzczpwYXBlcmN1c3AnKSkubm90LnRvVGhyb3coKTtcbiAgICB9KTtcbiAgICBpdCgncmVqZWN0cyBhbiBlbXB0eSBzdHJpbmcnLCAoKSA9PiB7XG4gICAgICBleHBlY3QoKCkgPT4gYXNzZXJ0U2NvcGVXZWxsRm9ybWVkKCcnKSkudG9UaHJvdygvbm9uLWVtcHR5IHN0cmluZy8pO1xuICAgIH0pO1xuICAgIGl0KCdyZWplY3RzIGEgd2hpdGVzcGFjZS1vbmx5IHN0cmluZycsICgpID0+IHtcbiAgICAgIGV4cGVjdCgoKSA9PiBhc3NlcnRTY29wZVdlbGxGb3JtZWQoJyAgICcpKS50b1Rocm93KC9ub24tZW1wdHkgc3RyaW5nLyk7XG4gICAgfSk7XG4gICAgaXQoJ3JlamVjdHMgYSBoYXJuZXNzOiBwcmVmaXggd2l0aCBhbiBlbXB0eSBzbHVnJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KCgpID0+IGFzc2VydFNjb3BlV2VsbEZvcm1lZCgnaGFybmVzczonKSkudG9UaHJvdygvbm9uLWVtcHR5IGhhcm5lc3Mgc2x1Zy8pO1xuICAgIH0pO1xuICAgIGl0KCdyZWplY3RzIGEgaGFybmVzczogcHJlZml4IHdpdGggYSB3aGl0ZXNwYWNlIHNsdWcnLCAoKSA9PiB7XG4gICAgICBleHBlY3QoKCkgPT4gYXNzZXJ0U2NvcGVXZWxsRm9ybWVkKCdoYXJuZXNzOiAgICcpKS50b1Rocm93KC9ub24tZW1wdHkgaGFybmVzcyBzbHVnLyk7XG4gICAgfSk7XG4gIH0pO1xuXG4gIGRlc2NyaWJlKCdoYXJuZXNzU2NvcGUnLCAoKSA9PiB7XG4gICAgaXQoJ21hcHMgbnVsbC91bmRlZmluZWQgdG8gdGhlIGV4cGxpY2l0IG9wZXJhdG9yIHNjb3BlJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KGhhcm5lc3NTY29wZShudWxsKSkudG9CZShPUEVSQVRPUl9TQ09QRSk7XG4gICAgICBleHBlY3QoaGFybmVzc1Njb3BlKHVuZGVmaW5lZCkpLnRvQmUoT1BFUkFUT1JfU0NPUEUpO1xuICAgIH0pO1xuICAgIGl0KCdidWlsZHMgYSBoYXJuZXNzIHNjb3BlIGZyb20gYSBzbHVnJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KGhhcm5lc3NTY29wZSgncGFwZXJjdXNwJykpLnRvQmUoJ2hhcm5lc3M6cGFwZXJjdXNwJyk7XG4gICAgfSk7XG4gICAgaXQoJ3RyaW1zIHRoZSBzbHVnJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KGhhcm5lc3NTY29wZSgnICBwYXBlcmN1c3AgICcpKS50b0JlKCdoYXJuZXNzOnBhcGVyY3VzcCcpO1xuICAgIH0pO1xuICAgIGl0KCd0aHJvd3Mgb24gYSBibGFuayBoYXJuZXNzIChuZXZlciBzaWxlbnRseSBjb2xsYXBzZXMgdG8gb3BlcmF0b3IpJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KCgpID0+IGhhcm5lc3NTY29wZSgnJykpLnRvVGhyb3coL2JsYW5rIGhhcm5lc3MvKTtcbiAgICAgIGV4cGVjdCgoKSA9PiBoYXJuZXNzU2NvcGUoJyAgICcpKS50b1Rocm93KC9ibGFuayBoYXJuZXNzLyk7XG4gICAgfSk7XG4gICAgaXQoJ3Byb2R1Y2VzIHNjb3BlcyB0aGF0IHBhc3MgdGhlIHdlbGwtZm9ybWVkIGd1YXJkJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KCgpID0+IGFzc2VydFNjb3BlV2VsbEZvcm1lZChoYXJuZXNzU2NvcGUoJ3BhcGVyY3VzcCcpKSkubm90LnRvVGhyb3coKTtcbiAgICAgIGV4cGVjdCgoKSA9PiBhc3NlcnRTY29wZVdlbGxGb3JtZWQoaGFybmVzc1Njb3BlKG51bGwpKSkubm90LnRvVGhyb3coKTtcbiAgICB9KTtcbiAgfSk7XG5cbiAgZGVzY3JpYmUoJ2hhcm5lc3NPZlNjb3BlJywgKCkgPT4ge1xuICAgIGl0KCdyZXR1cm5zIG51bGwgZm9yIHRoZSBvcGVyYXRvciBzY29wZScsICgpID0+IHtcbiAgICAgIGV4cGVjdChoYXJuZXNzT2ZTY29wZShPUEVSQVRPUl9TQ09QRSkpLnRvQmVOdWxsKCk7XG4gICAgfSk7XG4gICAgaXQoJ3JldHVybnMgdGhlIHNsdWcgZm9yIGEgaGFybmVzcyBzY29wZScsICgpID0+IHtcbiAgICAgIGV4cGVjdChoYXJuZXNzT2ZTY29wZSgnaGFybmVzczpwYXBlcmN1c3AnKSkudG9CZSgncGFwZXJjdXNwJyk7XG4gICAgfSk7XG4gICAgaXQoJ3JvdW5kLXRyaXBzIHdpdGggaGFybmVzc1Njb3BlJywgKCkgPT4ge1xuICAgICAgZXhwZWN0KGhhcm5lc3NPZlNjb3BlKGhhcm5lc3NTY29wZSgncGFwZXJjdXNwJykpKS50b0JlKCdwYXBlcmN1c3AnKTtcbiAgICB9KTtcbiAgfSk7XG59KTtcbiJdLCJmaWxlIjoiL2xpYi93b3JrLWl0ZW0tc2NvcGUudGVzdC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi93b3JrLWl0ZW0tc2NvcGUudGVzdC50cyIsIi9saWIvd29yay1pdGVtLXNjb3BlLnRlc3QudHMiLFtdXQ==

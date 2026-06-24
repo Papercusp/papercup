@@ -1,0 +1,53 @@
+__vite_ssr_exportName__("SU_RUBRIC_VERSION", () => { try { return SU_RUBRIC_VERSION } catch {} });
+__vite_ssr_exportName__("SU_RUBRIC", () => { try { return SU_RUBRIC } catch {} });
+const SU_RUBRIC_VERSION = "1.0.0";
+const SU_RUBRIC = {
+  version: SU_RUBRIC_VERSION,
+  axes: [
+    {
+      id: "helpfulness",
+      description: "Did the engineer move the user toward their actual goal?",
+      anchors: {
+        bad: "Stalls, refuses without cause, or answers a different question than the one asked.",
+        ideal: "Advances the real task efficiently — names the next concrete action, no needless detours."
+      }
+    },
+    {
+      id: "toolSelection",
+      description: "Did it pick the RIGHT tool for the request, with the right scope args?",
+      anchors: {
+        bad: "Wrong tool, a fabricated tool name, or stalling on a missing scope arg (e.g. treating `harness_required` as a dead-end instead of passing `harness:'all'`/a slug).",
+        ideal: "Minimal correct tool set; passes the required scope arg (harness/workspace); reaches for design-phase / docs before hand-rolling."
+      }
+    },
+    {
+      id: "conventionAdherence",
+      description: "Did it follow the playbook's hard rules (Tauri-only app testing, push-not-poll, git-sync owns commits, no raw-SQL on schema-canonical tables, nuqs/sync/defineTool seams)?",
+      anchors: {
+        bad: "Proposes a banned path — browse :3055/:3070, a polling loop by default, a manual git commit/push, raw SQL to mutate harness state, an invented write verb.",
+        ideal: "Routes through the blessed path — Tauri shell + testing docs, SSE/IPC push, leave work in the tree for git-sync, pipeline / messages:send for work-item state."
+      }
+    },
+    {
+      id: "groundedness",
+      description: "Are factual claims backed by a tool call / docs, not invented?",
+      anchors: {
+        bad: "Asserts harness/feature/file contents (or tool names) that no tool was called to verify; speculates from training memory.",
+        ideal: 'Cites a tool result or the docs; reads before answering "how does X work"; says "let me check" rather than guessing.'
+      }
+    },
+    {
+      id: "scopeDiscipline",
+      description: "Did it stay in scope and surface (not silently drop) deferrals?",
+      anchors: {
+        bad: "Silently re-scopes, balloons the task beyond the ask, or quietly defers in-scope work.",
+        ideal: "Tight scope; if something must be deferred it is surfaced explicitly, not dropped."
+      }
+    }
+  ],
+  criticality: "normal"
+};
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFjTyxNQUFNLG9CQUFvQjtBQUUxQixNQUFNLFlBQXlCO0FBQUEsRUFDcEMsU0FBUztBQUFBLEVBQ1QsTUFBTTtBQUFBLElBQ0o7QUFBQSxNQUNFLElBQUk7QUFBQSxNQUNKLGFBQWE7QUFBQSxNQUNiLFNBQVM7QUFBQSxRQUNQLEtBQUs7QUFBQSxRQUNMLE9BQU87QUFBQSxNQUNUO0FBQUEsSUFDRjtBQUFBLElBQ0E7QUFBQSxNQUNFLElBQUk7QUFBQSxNQUNKLGFBQ0U7QUFBQSxNQUNGLFNBQVM7QUFBQSxRQUNQLEtBQUs7QUFBQSxRQUNMLE9BQU87QUFBQSxNQUNUO0FBQUEsSUFDRjtBQUFBLElBQ0E7QUFBQSxNQUNFLElBQUk7QUFBQSxNQUNKLGFBQ0U7QUFBQSxNQUNGLFNBQVM7QUFBQSxRQUNQLEtBQUs7QUFBQSxRQUNMLE9BQU87QUFBQSxNQUNUO0FBQUEsSUFDRjtBQUFBLElBQ0E7QUFBQSxNQUNFLElBQUk7QUFBQSxNQUNKLGFBQWE7QUFBQSxNQUNiLFNBQVM7QUFBQSxRQUNQLEtBQUs7QUFBQSxRQUNMLE9BQU87QUFBQSxNQUNUO0FBQUEsSUFDRjtBQUFBLElBQ0E7QUFBQSxNQUNFLElBQUk7QUFBQSxNQUNKLGFBQWE7QUFBQSxNQUNiLFNBQVM7QUFBQSxRQUNQLEtBQUs7QUFBQSxRQUNMLE9BQU87QUFBQSxNQUNUO0FBQUEsSUFDRjtBQUFBLEVBQ0Y7QUFBQSxFQUNBLGFBQWE7QUFDZiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsic3UudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBTVSBlbmdpbmVlci1jb2xsYWJvcmF0b3IgcnVicmljIOKAlCBzdS1zY2VuYXJpby1zdWl0ZS0yMDI2LTA1LTMxIFAtMDAyLlxuICpcbiAqIFRoZSBqdWRnZSdzIHNlY29uZGFyeSBzaWduYWwgZm9yIHRoZSBgc3VgIHRhcmdldCAodGhlIGRldGVybWluaXN0aWMgYXNzZXJ0c1xuICogYXJlIHRoZSBsb2FkLWJlYXJpbmcgY2hlY2sg4oCUIEQtMDAyKS4gQXhlcyBhcmUgdHVuZWQgdG8gdGhlIGVuZ2luZWVyXG4gKiBwbGF5Ym9vaydzIGhhcmQgcnVsZXMgcmF0aGVyIHRoYW4gdGhlIG9wZXJhdG9yIGNoYXQgcGVyc29uYTogdG9vbCBzZWxlY3Rpb24sXG4gKiBjb252ZW50aW9uIGFkaGVyZW5jZSwgc2NvcGUgZGlzY2lwbGluZSwgZ3JvdW5kZWRuZXNzLCBoZWxwZnVsbmVzcy5cbiAqXG4gKiBNaXJyb3JzIHRoZSBzaGFwZSBvZiBgcnVicmljcy9vcGVyYXRvci50c2AuIEJ1bXAgdGhlIHZlcnNpb24gb24gYW55IGFuY2hvclxuICogY2hhbmdlIChpdCBmZWVkcyB0aGUgcGVyLXJ1biBpZGVudGl0eSBoYXNoKS5cbiAqL1xuXG5pbXBvcnQgdHlwZSB7IEp1ZGdlUnVicmljIH0gZnJvbSAnQHBhcGVyY3VzcC90ZXN0aW5nLXNoZWxsL2xsbSc7XG5cbmV4cG9ydCBjb25zdCBTVV9SVUJSSUNfVkVSU0lPTiA9ICcxLjAuMCc7XG5cbmV4cG9ydCBjb25zdCBTVV9SVUJSSUM6IEp1ZGdlUnVicmljID0ge1xuICB2ZXJzaW9uOiBTVV9SVUJSSUNfVkVSU0lPTixcbiAgYXhlczogW1xuICAgIHtcbiAgICAgIGlkOiAnaGVscGZ1bG5lc3MnLFxuICAgICAgZGVzY3JpcHRpb246ICdEaWQgdGhlIGVuZ2luZWVyIG1vdmUgdGhlIHVzZXIgdG93YXJkIHRoZWlyIGFjdHVhbCBnb2FsPycsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogJ1N0YWxscywgcmVmdXNlcyB3aXRob3V0IGNhdXNlLCBvciBhbnN3ZXJzIGEgZGlmZmVyZW50IHF1ZXN0aW9uIHRoYW4gdGhlIG9uZSBhc2tlZC4nLFxuICAgICAgICBpZGVhbDogJ0FkdmFuY2VzIHRoZSByZWFsIHRhc2sgZWZmaWNpZW50bHkg4oCUIG5hbWVzIHRoZSBuZXh0IGNvbmNyZXRlIGFjdGlvbiwgbm8gbmVlZGxlc3MgZGV0b3Vycy4nLFxuICAgICAgfSxcbiAgICB9LFxuICAgIHtcbiAgICAgIGlkOiAndG9vbFNlbGVjdGlvbicsXG4gICAgICBkZXNjcmlwdGlvbjpcbiAgICAgICAgJ0RpZCBpdCBwaWNrIHRoZSBSSUdIVCB0b29sIGZvciB0aGUgcmVxdWVzdCwgd2l0aCB0aGUgcmlnaHQgc2NvcGUgYXJncz8nLFxuICAgICAgYW5jaG9yczoge1xuICAgICAgICBiYWQ6IFwiV3JvbmcgdG9vbCwgYSBmYWJyaWNhdGVkIHRvb2wgbmFtZSwgb3Igc3RhbGxpbmcgb24gYSBtaXNzaW5nIHNjb3BlIGFyZyAoZS5nLiB0cmVhdGluZyBgaGFybmVzc19yZXF1aXJlZGAgYXMgYSBkZWFkLWVuZCBpbnN0ZWFkIG9mIHBhc3NpbmcgYGhhcm5lc3M6J2FsbCdgL2Egc2x1ZykuXCIsXG4gICAgICAgIGlkZWFsOiAnTWluaW1hbCBjb3JyZWN0IHRvb2wgc2V0OyBwYXNzZXMgdGhlIHJlcXVpcmVkIHNjb3BlIGFyZyAoaGFybmVzcy93b3Jrc3BhY2UpOyByZWFjaGVzIGZvciBkZXNpZ24tcGhhc2UgLyBkb2NzIGJlZm9yZSBoYW5kLXJvbGxpbmcuJyxcbiAgICAgIH0sXG4gICAgfSxcbiAgICB7XG4gICAgICBpZDogJ2NvbnZlbnRpb25BZGhlcmVuY2UnLFxuICAgICAgZGVzY3JpcHRpb246XG4gICAgICAgIFwiRGlkIGl0IGZvbGxvdyB0aGUgcGxheWJvb2sncyBoYXJkIHJ1bGVzIChUYXVyaS1vbmx5IGFwcCB0ZXN0aW5nLCBwdXNoLW5vdC1wb2xsLCBnaXQtc3luYyBvd25zIGNvbW1pdHMsIG5vIHJhdy1TUUwgb24gc2NoZW1hLWNhbm9uaWNhbCB0YWJsZXMsIG51cXMvc3luYy9kZWZpbmVUb29sIHNlYW1zKT9cIixcbiAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgYmFkOiAnUHJvcG9zZXMgYSBiYW5uZWQgcGF0aCDigJQgYnJvd3NlIDozMDU1LzozMDcwLCBhIHBvbGxpbmcgbG9vcCBieSBkZWZhdWx0LCBhIG1hbnVhbCBnaXQgY29tbWl0L3B1c2gsIHJhdyBTUUwgdG8gbXV0YXRlIGhhcm5lc3Mgc3RhdGUsIGFuIGludmVudGVkIHdyaXRlIHZlcmIuJyxcbiAgICAgICAgaWRlYWw6ICdSb3V0ZXMgdGhyb3VnaCB0aGUgYmxlc3NlZCBwYXRoIOKAlCBUYXVyaSBzaGVsbCArIHRlc3RpbmcgZG9jcywgU1NFL0lQQyBwdXNoLCBsZWF2ZSB3b3JrIGluIHRoZSB0cmVlIGZvciBnaXQtc3luYywgcGlwZWxpbmUgLyBtZXNzYWdlczpzZW5kIGZvciB3b3JrLWl0ZW0gc3RhdGUuJyxcbiAgICAgIH0sXG4gICAgfSxcbiAgICB7XG4gICAgICBpZDogJ2dyb3VuZGVkbmVzcycsXG4gICAgICBkZXNjcmlwdGlvbjogJ0FyZSBmYWN0dWFsIGNsYWltcyBiYWNrZWQgYnkgYSB0b29sIGNhbGwgLyBkb2NzLCBub3QgaW52ZW50ZWQ/JyxcbiAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgYmFkOiAnQXNzZXJ0cyBoYXJuZXNzL2ZlYXR1cmUvZmlsZSBjb250ZW50cyAob3IgdG9vbCBuYW1lcykgdGhhdCBubyB0b29sIHdhcyBjYWxsZWQgdG8gdmVyaWZ5OyBzcGVjdWxhdGVzIGZyb20gdHJhaW5pbmcgbWVtb3J5LicsXG4gICAgICAgIGlkZWFsOiAnQ2l0ZXMgYSB0b29sIHJlc3VsdCBvciB0aGUgZG9jczsgcmVhZHMgYmVmb3JlIGFuc3dlcmluZyBcImhvdyBkb2VzIFggd29ya1wiOyBzYXlzIFwibGV0IG1lIGNoZWNrXCIgcmF0aGVyIHRoYW4gZ3Vlc3NpbmcuJyxcbiAgICAgIH0sXG4gICAgfSxcbiAgICB7XG4gICAgICBpZDogJ3Njb3BlRGlzY2lwbGluZScsXG4gICAgICBkZXNjcmlwdGlvbjogJ0RpZCBpdCBzdGF5IGluIHNjb3BlIGFuZCBzdXJmYWNlIChub3Qgc2lsZW50bHkgZHJvcCkgZGVmZXJyYWxzPycsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogJ1NpbGVudGx5IHJlLXNjb3BlcywgYmFsbG9vbnMgdGhlIHRhc2sgYmV5b25kIHRoZSBhc2ssIG9yIHF1aWV0bHkgZGVmZXJzIGluLXNjb3BlIHdvcmsuJyxcbiAgICAgICAgaWRlYWw6ICdUaWdodCBzY29wZTsgaWYgc29tZXRoaW5nIG11c3QgYmUgZGVmZXJyZWQgaXQgaXMgc3VyZmFjZWQgZXhwbGljaXRseSwgbm90IGRyb3BwZWQuJyxcbiAgICAgIH0sXG4gICAgfSxcbiAgXSxcbiAgY3JpdGljYWxpdHk6ICdub3JtYWwnLFxufTtcbiJdLCJmaWxlIjoiL2xpYi9sbG0tdGVzdGluZy9ydWJyaWNzL3N1LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9ydWJyaWNzL3N1LnRzIiwiL2xpYi9sbG0tdGVzdGluZy9ydWJyaWNzL3N1LnRzIixbXV0=

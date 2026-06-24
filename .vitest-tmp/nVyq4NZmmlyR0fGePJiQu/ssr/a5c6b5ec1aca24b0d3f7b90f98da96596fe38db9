@@ -1,0 +1,24 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_export_default__ = [
+	{
+		name: "papercup-org",
+		version: "0.1.0",
+		description: "5-department fictional company with cross-dept message bus, directives, and an automated YouTube briefing pipeline.",
+		author: "Papercusp Team",
+		license: "MIT",
+		plugins: [
+			"briefings@0.1.0"
+		],
+		homepage: "https://papercupai.com"
+	},
+	{
+		name: "papercup-coding",
+		version: "0.1.0",
+		description: "Solo coding harness: scoper plans features, workers implement, validators verify, reviewers gate proposals. Drop in a SPEC.md and go.",
+		author: "Papercusp Team",
+		license: "MIT",
+		plugins: [
+		]
+	}
+];
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9lbmRwb2ludC1yb3V0ZS9yb3V0ZXMvbWFya2V0cGxhY2UvZmFsbGJhY2stY2F0YWxvZy5qc29uIiwiL2xpYi9lbmRwb2ludC1yb3V0ZS9yb3V0ZXMvbWFya2V0cGxhY2UvZmFsbGJhY2stY2F0YWxvZy5qc29uIixbXV0=

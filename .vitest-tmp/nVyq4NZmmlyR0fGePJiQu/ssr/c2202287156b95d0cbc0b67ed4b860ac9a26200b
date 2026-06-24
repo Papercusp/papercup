@@ -1,0 +1,47 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","it","expect"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/endpoint-route/routes/admin/testing-run.ts", {"importedNames":["toSpawn"]});
+
+
+(0,__vite_ssr_import_0__.describe)("toSpawn — cargo runner", () => {
+  (0,__vite_ssr_import_0__.it)("without manifestPath: selects the crate via -p from the repo root (unchanged)", () => {
+    const r = (0,__vite_ssr_import_1__.toSpawn)({ kind: "cargo", crate: "pui-companion" });
+    if ("error" in r) throw new Error(r.error);
+    (0,__vite_ssr_import_0__.expect)(r.command).toBe("cargo");
+    (0,__vite_ssr_import_0__.expect)(r.args).toEqual(["test", "-p", "pui-companion", "--message-format=json"]);
+  });
+  (0,__vite_ssr_import_0__.it)("with manifestPath: targets the crate manifest and omits -p (EI-1610)", () => {
+    const r = (0,__vite_ssr_import_1__.toSpawn)({
+      kind: "cargo",
+      crate: "pui-companion",
+      manifestPath: "apps/pui-companion-proto/Cargo.toml"
+    });
+    if ("error" in r) throw new Error(r.error);
+    (0,__vite_ssr_import_0__.expect)(r.args).toEqual([
+      "test",
+      "--manifest-path",
+      "apps/pui-companion-proto/Cargo.toml",
+      "--message-format=json"
+    ]);
+    (0,__vite_ssr_import_0__.expect)(r.args).not.toContain("-p");
+  });
+  (0,__vite_ssr_import_0__.it)("threads the test filter alongside manifestPath; label still names the crate", () => {
+    const r = (0,__vite_ssr_import_1__.toSpawn)({ kind: "cargo", crate: "c", test: "my_test", manifestPath: "x/Cargo.toml" });
+    if ("error" in r) throw new Error(r.error);
+    (0,__vite_ssr_import_0__.expect)(r.args).toEqual([
+      "test",
+      "--manifest-path",
+      "x/Cargo.toml",
+      "my_test",
+      "--message-format=json"
+    ]);
+    (0,__vite_ssr_import_0__.expect)(r.label).toBe("cargo c::my_test");
+  });
+  (0,__vite_ssr_import_0__.it)("still errors when crate is missing (manifestPath does not bypass the guard)", () => {
+    const r = (0,__vite_ssr_import_1__.toSpawn)({ kind: "cargo", manifestPath: "x/Cargo.toml" });
+    (0,__vite_ssr_import_0__.expect)("error" in r).toBe(true);
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBU0E7QUFDQTs7O0dBRUEsZ0NBQVMsMEJBQTBCLE1BQU07QUFDdkMsK0JBQUcsaUZBQWlGLE1BQU07QUFDeEYsVUFBTSxPQUFJLCtCQUFRLEVBQUUsTUFBTSxTQUFTLE9BQU8sZ0JBQWdCLENBQUM7QUFDM0QsUUFBSSxXQUFXLEVBQUcsT0FBTSxJQUFJLE1BQU0sRUFBRSxLQUFLO0FBQ3pDLHFDQUFPLEVBQUUsT0FBTyxFQUFFLEtBQUssT0FBTztBQUM5QixxQ0FBTyxFQUFFLElBQUksRUFBRSxRQUFRLENBQUMsUUFBUSxNQUFNLGlCQUFpQix1QkFBdUIsQ0FBQztBQUFBLEVBQ2pGLENBQUM7QUFFRCwrQkFBRyx3RUFBd0UsTUFBTTtBQUMvRSxVQUFNLE9BQUksK0JBQVE7QUFBQSxNQUNoQixNQUFNO0FBQUEsTUFDTixPQUFPO0FBQUEsTUFDUCxjQUFjO0FBQUEsSUFDaEIsQ0FBQztBQUNELFFBQUksV0FBVyxFQUFHLE9BQU0sSUFBSSxNQUFNLEVBQUUsS0FBSztBQUN6QyxxQ0FBTyxFQUFFLElBQUksRUFBRSxRQUFRO0FBQUEsTUFDckI7QUFBQSxNQUNBO0FBQUEsTUFDQTtBQUFBLE1BQ0E7QUFBQSxJQUNGLENBQUM7QUFDRCxxQ0FBTyxFQUFFLElBQUksRUFBRSxJQUFJLFVBQVUsSUFBSTtBQUFBLEVBQ25DLENBQUM7QUFFRCwrQkFBRywrRUFBK0UsTUFBTTtBQUN0RixVQUFNLE9BQUksK0JBQVEsRUFBRSxNQUFNLFNBQVMsT0FBTyxLQUFLLE1BQU0sV0FBVyxjQUFjLGVBQWUsQ0FBQztBQUM5RixRQUFJLFdBQVcsRUFBRyxPQUFNLElBQUksTUFBTSxFQUFFLEtBQUs7QUFDekMscUNBQU8sRUFBRSxJQUFJLEVBQUUsUUFBUTtBQUFBLE1BQ3JCO0FBQUEsTUFDQTtBQUFBLE1BQ0E7QUFBQSxNQUNBO0FBQUEsTUFDQTtBQUFBLElBQ0YsQ0FBQztBQUNELHFDQUFPLEVBQUUsS0FBSyxFQUFFLEtBQUssa0JBQWtCO0FBQUEsRUFDekMsQ0FBQztBQUVELCtCQUFHLCtFQUErRSxNQUFNO0FBQ3RGLFVBQU0sT0FBSSwrQkFBUSxFQUFFLE1BQU0sU0FBUyxjQUFjLGVBQWUsQ0FBZTtBQUMvRSxxQ0FBTyxXQUFXLENBQUMsRUFBRSxLQUFLLElBQUk7QUFBQSxFQUNoQyxDQUFDO0FBQ0gsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsidGVzdGluZy1ydW4udGVzdC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIHRlc3RpbmctcnVuIOKAlCB0aGUgY2FyZ28gcnVubmVyJ3MgYC0tbWFuaWZlc3QtcGF0aGAgc3VwcG9ydCAoRUktMTYxMCkuXG4gKlxuICogQSBzdGFuZGFsb25lIGZpcnN0LXBhcnR5IGNyYXRlIChhcHBzL3R1aSwgYXBwcy9wdWktY29tcGFuaW9uLXByb3RvLCDigKYpIGhhcyBub1xuICogcm9vdCBDYXJnby50b21sIHdvcmtzcGFjZSwgc28gYGNhcmdvIHRlc3QgLXAgPGNyYXRlPmAgZnJvbSB0aGUgcmVwbyByb290IGZhaWxzXG4gKiB3aXRoIFwiY291bGQgbm90IGZpbmQgQ2FyZ28udG9tbFwiLiBXaXRoIGBtYW5pZmVzdFBhdGhgLCB0aGUgcnVubmVyIHBvaW50cyBjYXJnb1xuICogYXQgdGhlIGNyYXRlJ3Mgb3duIG1hbmlmZXN0IGluc3RlYWQg4oCUIGFuZCBmYWxscyBiYWNrIHRvIHRoZSB1bmNoYW5nZWQgYC1wYFxuICogd29ya3NwYWNlIHBhdGggd2hlbiBvbWl0dGVkLlxuICovXG5pbXBvcnQgeyBkZXNjcmliZSwgaXQsIGV4cGVjdCB9IGZyb20gJ3ZpdGVzdCc7XG5pbXBvcnQgeyB0b1NwYXduLCB0eXBlIFRlc3RSdW5uZXIgfSBmcm9tICcuL3Rlc3RpbmctcnVuJztcblxuZGVzY3JpYmUoJ3RvU3Bhd24g4oCUIGNhcmdvIHJ1bm5lcicsICgpID0+IHtcbiAgaXQoJ3dpdGhvdXQgbWFuaWZlc3RQYXRoOiBzZWxlY3RzIHRoZSBjcmF0ZSB2aWEgLXAgZnJvbSB0aGUgcmVwbyByb290ICh1bmNoYW5nZWQpJywgKCkgPT4ge1xuICAgIGNvbnN0IHIgPSB0b1NwYXduKHsga2luZDogJ2NhcmdvJywgY3JhdGU6ICdwdWktY29tcGFuaW9uJyB9KTtcbiAgICBpZiAoJ2Vycm9yJyBpbiByKSB0aHJvdyBuZXcgRXJyb3Ioci5lcnJvcik7XG4gICAgZXhwZWN0KHIuY29tbWFuZCkudG9CZSgnY2FyZ28nKTtcbiAgICBleHBlY3Qoci5hcmdzKS50b0VxdWFsKFsndGVzdCcsICctcCcsICdwdWktY29tcGFuaW9uJywgJy0tbWVzc2FnZS1mb3JtYXQ9anNvbiddKTtcbiAgfSk7XG5cbiAgaXQoJ3dpdGggbWFuaWZlc3RQYXRoOiB0YXJnZXRzIHRoZSBjcmF0ZSBtYW5pZmVzdCBhbmQgb21pdHMgLXAgKEVJLTE2MTApJywgKCkgPT4ge1xuICAgIGNvbnN0IHIgPSB0b1NwYXduKHtcbiAgICAgIGtpbmQ6ICdjYXJnbycsXG4gICAgICBjcmF0ZTogJ3B1aS1jb21wYW5pb24nLFxuICAgICAgbWFuaWZlc3RQYXRoOiAnYXBwcy9wdWktY29tcGFuaW9uLXByb3RvL0NhcmdvLnRvbWwnLFxuICAgIH0pO1xuICAgIGlmICgnZXJyb3InIGluIHIpIHRocm93IG5ldyBFcnJvcihyLmVycm9yKTtcbiAgICBleHBlY3Qoci5hcmdzKS50b0VxdWFsKFtcbiAgICAgICd0ZXN0JyxcbiAgICAgICctLW1hbmlmZXN0LXBhdGgnLFxuICAgICAgJ2FwcHMvcHVpLWNvbXBhbmlvbi1wcm90by9DYXJnby50b21sJyxcbiAgICAgICctLW1lc3NhZ2UtZm9ybWF0PWpzb24nLFxuICAgIF0pO1xuICAgIGV4cGVjdChyLmFyZ3MpLm5vdC50b0NvbnRhaW4oJy1wJyk7XG4gIH0pO1xuXG4gIGl0KCd0aHJlYWRzIHRoZSB0ZXN0IGZpbHRlciBhbG9uZ3NpZGUgbWFuaWZlc3RQYXRoOyBsYWJlbCBzdGlsbCBuYW1lcyB0aGUgY3JhdGUnLCAoKSA9PiB7XG4gICAgY29uc3QgciA9IHRvU3Bhd24oeyBraW5kOiAnY2FyZ28nLCBjcmF0ZTogJ2MnLCB0ZXN0OiAnbXlfdGVzdCcsIG1hbmlmZXN0UGF0aDogJ3gvQ2FyZ28udG9tbCcgfSk7XG4gICAgaWYgKCdlcnJvcicgaW4gcikgdGhyb3cgbmV3IEVycm9yKHIuZXJyb3IpO1xuICAgIGV4cGVjdChyLmFyZ3MpLnRvRXF1YWwoW1xuICAgICAgJ3Rlc3QnLFxuICAgICAgJy0tbWFuaWZlc3QtcGF0aCcsXG4gICAgICAneC9DYXJnby50b21sJyxcbiAgICAgICdteV90ZXN0JyxcbiAgICAgICctLW1lc3NhZ2UtZm9ybWF0PWpzb24nLFxuICAgIF0pO1xuICAgIGV4cGVjdChyLmxhYmVsKS50b0JlKCdjYXJnbyBjOjpteV90ZXN0Jyk7XG4gIH0pO1xuXG4gIGl0KCdzdGlsbCBlcnJvcnMgd2hlbiBjcmF0ZSBpcyBtaXNzaW5nIChtYW5pZmVzdFBhdGggZG9lcyBub3QgYnlwYXNzIHRoZSBndWFyZCknLCAoKSA9PiB7XG4gICAgY29uc3QgciA9IHRvU3Bhd24oeyBraW5kOiAnY2FyZ28nLCBtYW5pZmVzdFBhdGg6ICd4L0NhcmdvLnRvbWwnIH0gYXMgVGVzdFJ1bm5lcik7XG4gICAgZXhwZWN0KCdlcnJvcicgaW4gcikudG9CZSh0cnVlKTtcbiAgfSk7XG59KTtcbiJdLCJmaWxlIjoiL2xpYi9lbmRwb2ludC1yb3V0ZS9yb3V0ZXMvYWRtaW4vdGVzdGluZy1ydW4udGVzdC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9lbmRwb2ludC1yb3V0ZS9yb3V0ZXMvYWRtaW4vdGVzdGluZy1ydW4udGVzdC50cyIsIi9saWIvZW5kcG9pbnQtcm91dGUvcm91dGVzL2FkbWluL3Rlc3RpbmctcnVuLnRlc3QudHMiLFtdXQ==

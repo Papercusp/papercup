@@ -1,0 +1,23 @@
+__vite_ssr_exportName__("installAdapter", () => { try { return __vite_ssr_import_0__.installAdapter } catch {} });
+__vite_ssr_exportName__("uninstallAdapter", () => { try { return __vite_ssr_import_0__.uninstallAdapter } catch {} });
+__vite_ssr_exportName__("listAdapters", () => { try { return __vite_ssr_import_0__.listAdapters } catch {} });
+__vite_ssr_exportName__("adaptersForEcosystem", () => { try { return __vite_ssr_import_0__.adaptersForEcosystem } catch {} });
+__vite_ssr_exportName__("pickAdapter", () => { try { return __vite_ssr_import_0__.pickAdapter } catch {} });
+__vite_ssr_exportName__("clearAdapterPick", () => { try { return __vite_ssr_import_0__.clearAdapterPick } catch {} });
+__vite_ssr_exportName__("getAdapter", () => { try { return __vite_ssr_import_0__.getAdapter } catch {} });
+__vite_ssr_exportName__("getAdapterFor", () => { try { return __vite_ssr_import_0__.getAdapterFor } catch {} });
+__vite_ssr_exportName__("getAdapterWithCapability", () => { try { return __vite_ssr_import_0__.getAdapterWithCapability } catch {} });
+__vite_ssr_exportName__("supportsIrVersion", () => { try { return __vite_ssr_import_0__.supportsIrVersion } catch {} });
+__vite_ssr_exportName__("unionUiGlobs", () => { try { return __vite_ssr_import_0__.unionUiGlobs } catch {} });
+__vite_ssr_exportName__("AdapterConflictError", () => { try { return __vite_ssr_import_0__.AdapterConflictError } catch {} });
+__vite_ssr_exportName__("IrVersionMismatchError", () => { try { return __vite_ssr_import_0__.IrVersionMismatchError } catch {} });
+__vite_ssr_exportName__("_resetAdapterRegistryForTests", () => { try { return __vite_ssr_import_0__._resetAdapterRegistryForTests } catch {} });
+__vite_ssr_exportName__("checkAdapterConformant", () => { try { return __vite_ssr_import_1__.checkAdapterConformant } catch {} });
+__vite_ssr_exportName__("assertAdapterConformant", () => { try { return __vite_ssr_import_1__.assertAdapterConformant } catch {} });
+__vite_ssr_exportName__("AdapterConformanceError", () => { try { return __vite_ssr_import_1__.AdapterConformanceError } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/lib/design-adapter/registry.ts", {"importedNames":["installAdapter","uninstallAdapter","listAdapters","adaptersForEcosystem","pickAdapter","clearAdapterPick","getAdapter","getAdapterFor","getAdapterWithCapability","supportsIrVersion","unionUiGlobs","AdapterConflictError","IrVersionMismatchError","_resetAdapterRegistryForTests"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/design-adapter/conformance.ts", {"importedNames":["checkAdapterConformant","assertAdapterConformant","AdapterConformanceError"]});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7Ozs7Ozs7Ozs7Ozs7Ozs7QUFrQkE7QUFnQkEiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImluZGV4LnRzIl0sInNvdXJjZXNDb250ZW50IjpbImV4cG9ydCB0eXBlIHtcbiAgRGVzaWduRWNvc3lzdGVtQWRhcHRlcixcbiAgQWRhcHRlckNhcGFiaWxpdHksXG4gIFJlZ2lzdHJ5RW50cnksXG4gIFJlZ2lzdHJ5U3VyZmFjZSxcbiAgUHJldmlld1N1cmZhY2UsXG4gIFByZXZpZXdTcGVjLFxuICBUb2tlbnNTdXJmYWNlLFxuICBNb2NrSW5wdXRTdXJmYWNlLFxuICBDb2RlRW1pdFN1cmZhY2UsXG4gIEV4cG9ydFRhcmdldFN1cmZhY2UsXG4gIFNvdXJjZVBvaW50ZXIsXG4gIEZpbGVFbWl0LFxuICBJbWFnZUFzc2V0LFxuICBEdGNnVG9rZW4sXG4gIER0Y2dEb2MsXG4gIENvZGVFbWl0VGFyZ2V0LFxufSBmcm9tICcuL2NvbnRyYWN0JztcbmV4cG9ydCB7XG4gIGluc3RhbGxBZGFwdGVyLFxuICB1bmluc3RhbGxBZGFwdGVyLFxuICBsaXN0QWRhcHRlcnMsXG4gIGFkYXB0ZXJzRm9yRWNvc3lzdGVtLFxuICBwaWNrQWRhcHRlcixcbiAgY2xlYXJBZGFwdGVyUGljayxcbiAgZ2V0QWRhcHRlcixcbiAgZ2V0QWRhcHRlckZvcixcbiAgZ2V0QWRhcHRlcldpdGhDYXBhYmlsaXR5LFxuICBzdXBwb3J0c0lyVmVyc2lvbixcbiAgdW5pb25VaUdsb2JzLFxuICBBZGFwdGVyQ29uZmxpY3RFcnJvcixcbiAgSXJWZXJzaW9uTWlzbWF0Y2hFcnJvcixcbiAgX3Jlc2V0QWRhcHRlclJlZ2lzdHJ5Rm9yVGVzdHMsXG59IGZyb20gJy4vcmVnaXN0cnknO1xuZXhwb3J0IHtcbiAgY2hlY2tBZGFwdGVyQ29uZm9ybWFudCxcbiAgYXNzZXJ0QWRhcHRlckNvbmZvcm1hbnQsXG4gIEFkYXB0ZXJDb25mb3JtYW5jZUVycm9yLFxuICB0eXBlIENvbmZvcm1hbmNlRmFpbHVyZSxcbiAgdHlwZSBDb25mb3JtYW5jZU9wdGlvbnMsXG59IGZyb20gJy4vY29uZm9ybWFuY2UnO1xuIl0sImZpbGUiOiIvbGliL2Rlc2lnbi1hZGFwdGVyL2luZGV4LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9kZXNpZ24tYWRhcHRlci9pbmRleC50cyIsIi9saWIvZGVzaWduLWFkYXB0ZXIvaW5kZXgudHMiLFtdXQ==

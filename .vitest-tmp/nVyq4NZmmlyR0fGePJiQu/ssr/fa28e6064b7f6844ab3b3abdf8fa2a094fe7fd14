@@ -1,0 +1,82 @@
+__vite_ssr_exportName__("OPERATOR_RUBRIC_VERSION", () => { try { return OPERATOR_RUBRIC_VERSION } catch {} });
+__vite_ssr_exportName__("OPERATOR_RUBRIC", () => { try { return OPERATOR_RUBRIC } catch {} });
+__vite_ssr_exportName__("OPERATOR_RUBRIC_HIGH_CRITICALITY", () => { try { return OPERATOR_RUBRIC_HIGH_CRITICALITY } catch {} });
+const OPERATOR_RUBRIC_VERSION = "1.1.0";
+const OPERATOR_RUBRIC = {
+  version: OPERATOR_RUBRIC_VERSION,
+  axes: [
+    {
+      id: "helpfulness",
+      description: "Did the user reach their stated goal?",
+      anchors: {
+        bad: "Goal not addressed; assistant talks past the user or refuses without cause.",
+        ideal: "Goal achieved efficiently — minimum turns, no unnecessary detours."
+      }
+    },
+    {
+      id: "groundedness",
+      description: "Are factual claims backed by tool calls or context?",
+      anchors: {
+        bad: "Hallucinated state — claims about harness/feature/issue contents that no tool was called to verify.",
+        ideal: "Every factual claim cites a tool result or context message; no invention."
+      }
+    },
+    {
+      id: "terminationFit",
+      description: "Does the SUT stop / continue at the right moments?",
+      anchors: {
+        bad: "Stops mid-task without <continue/> (narrates intent then quits); or loops past the goal.",
+        ideal: "Terminates exactly when the goal is met. Asks for input only when ambiguous. Uses <continue/> when more work is required."
+      }
+    },
+    {
+      id: "cardUsage",
+      description: "Are choice/state cards used where appropriate, prose where appropriate?",
+      anchors: {
+        bad: "Free-text dump where a multi-choice card was clearly right; or card spam on prose moments.",
+        ideal: "Cards on choice/state moments, prose on narrative moments. voiceAnswerable set when the user is in voice mode."
+      }
+    },
+    {
+      id: "tone",
+      description: "Persona-appropriate tone. No apologetic spirals, no lecturing.",
+      anchors: {
+        bad: "Grovelling apologies, preachy disclaimers, mismatched register (chatty when persona is terse).",
+        ideal: "Crisp, register matches persona expectations."
+      }
+    },
+    {
+      id: "tools",
+      description: "Right tool, right args, no fabricated tool names.",
+      anchors: {
+        bad: "Hallucinated tool name; wrong/missing args; unnecessary tool calls.",
+        ideal: "Minimal correct tool set. Args match schema. No invented tools."
+      }
+    },
+    {
+      id: "speakability",
+      description: "VOICE scenarios only. Scope = the text the operator emits for TTS, NOT the voice transport (ElevenLabs/OpenAI Realtime is a future VoiceTarget).",
+      anchors: {
+        bad: "Wall of text in voice mode; long lists; markdown; code blocks.",
+        ideal: "≤2 sentences per turn unless the user asked for detail. No markdown. No code blocks unless the user is technical."
+      }
+    },
+    {
+      id: "ideasOwnership",
+      description: "Whose ideas drive the conversation. Operator should pull intent out of the user's vague phrasing, not inject its own. Synthesis §10: ideas are theirs to bring.",
+      anchors: {
+        bad: "Operator volunteers its own ideas as questions ('Have you considered X?', 'What if you tried Y?'). Steers, leads, suggests.",
+        ideal: "Operator asks for the user's concrete example without leading. Pulls latent intent out of vague phrasing. Stays in the user's frame."
+      }
+    }
+  ],
+  criticality: "normal"
+};
+const OPERATOR_RUBRIC_HIGH_CRITICALITY = {
+  ...OPERATOR_RUBRIC,
+  criticality: "high"
+};
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7O0FBZU8sTUFBTSwwQkFBMEI7QUFFaEMsTUFBTSxrQkFBK0I7QUFBQSxFQUMxQyxTQUFTO0FBQUEsRUFDVCxNQUFNO0FBQUEsSUFDSjtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFBYTtBQUFBLE1BQ2IsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsSUFDQTtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFBYTtBQUFBLE1BQ2IsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsSUFDQTtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFBYTtBQUFBLE1BQ2IsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsSUFDQTtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFBYTtBQUFBLE1BQ2IsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsSUFDQTtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFBYTtBQUFBLE1BQ2IsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsSUFDQTtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFBYTtBQUFBLE1BQ2IsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsSUFDQTtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFDRTtBQUFBLE1BQ0YsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsSUFDQTtBQUFBLE1BQ0UsSUFBSTtBQUFBLE1BQ0osYUFDRTtBQUFBLE1BQ0YsU0FBUztBQUFBLFFBQ1AsS0FBSztBQUFBLFFBQ0wsT0FBTztBQUFBLE1BQ1Q7QUFBQSxJQUNGO0FBQUEsRUFDRjtBQUFBLEVBQ0EsYUFBYTtBQUNmO0FBTU8sTUFBTSxtQ0FBZ0Q7QUFBQSxFQUMzRCxHQUFHO0FBQUEsRUFDSCxhQUFhO0FBQ2YiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIm9wZXJhdG9yLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogT3BlcmF0b3IgY2hhdCBydWJyaWMg4oCUIMKnNi4xXG4gKlxuICogQXhlcyBzY29yZWQgMC4uNSBieSB0aGUganVkZ2UuIEFuY2hvcnMgZ3VpZGUgdGhlIGp1ZGdlIHByb21wdDsgdmVyc2lvblxuICogaXMgcmVjb3JkZWQgb24gZXZlcnkgcnVuIHNvIGhpc3RvcmljYWwgc2NvcmVzIHN0YXkgY29tcGFyYWJsZS5cbiAqXG4gKiBBZGRpbmcgYW4gYXhpcyBidW1wcyB0aGUgdmVyc2lvbi4gUmVtb3Zpbmcgb25lIGJ1bXBzICsgc2NlbmFyaW9zIGRyb3BcbiAqIHRoZWlyIHJlZmVyZW5jZS4gQ2hhbmdpbmcgYW4gYW5jaG9yIGJ1bXBzICsgaWRlbnRpdHlfaGFzaCBjaGFuZ2VzLlxuICovXG5cbmltcG9ydCB0eXBlIHsgSnVkZ2VSdWJyaWMgfSBmcm9tICdAcGFwZXJjdXNwL3Rlc3Rpbmctc2hlbGwvbGxtJztcblxuLy8gMS4xLjAg4oCUIGFkZGVkIGBpZGVhc093bmVyc2hpcGAgYXhpcyAob3BlcmF0b3ItYmVoYXZpb3ItdGVzdHMtMjAyNi0wNS0xNC5tZCDCpzQuNCkuXG4vLyBJZGVudGl0eSBoYXNoIGZvciBhbnkgc2NlbmFyaW8gdXNpbmcgdGhpcyBydWJyaWMgd2lsbCBjaGFuZ2Ugb24gdGhlIG5leHQgcnVuO1xuLy8gaGlzdG9yaWNhbCBzY29yZXMgdW5kZXIgMS4wLjAgc3RheSBpbiBQRyBidXQgZG9uJ3QgdHJlbmQtY29tcGFyZSB0byBuZXcgcnVucy5cbmV4cG9ydCBjb25zdCBPUEVSQVRPUl9SVUJSSUNfVkVSU0lPTiA9ICcxLjEuMCc7XG5cbmV4cG9ydCBjb25zdCBPUEVSQVRPUl9SVUJSSUM6IEp1ZGdlUnVicmljID0ge1xuICB2ZXJzaW9uOiBPUEVSQVRPUl9SVUJSSUNfVkVSU0lPTixcbiAgYXhlczogW1xuICAgIHtcbiAgICAgIGlkOiAnaGVscGZ1bG5lc3MnLFxuICAgICAgZGVzY3JpcHRpb246ICdEaWQgdGhlIHVzZXIgcmVhY2ggdGhlaXIgc3RhdGVkIGdvYWw/JyxcbiAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgYmFkOiBcIkdvYWwgbm90IGFkZHJlc3NlZDsgYXNzaXN0YW50IHRhbGtzIHBhc3QgdGhlIHVzZXIgb3IgcmVmdXNlcyB3aXRob3V0IGNhdXNlLlwiLFxuICAgICAgICBpZGVhbDogXCJHb2FsIGFjaGlldmVkIGVmZmljaWVudGx5IOKAlCBtaW5pbXVtIHR1cm5zLCBubyB1bm5lY2Vzc2FyeSBkZXRvdXJzLlwiLFxuICAgICAgfSxcbiAgICB9LFxuICAgIHtcbiAgICAgIGlkOiAnZ3JvdW5kZWRuZXNzJyxcbiAgICAgIGRlc2NyaXB0aW9uOiAnQXJlIGZhY3R1YWwgY2xhaW1zIGJhY2tlZCBieSB0b29sIGNhbGxzIG9yIGNvbnRleHQ/JyxcbiAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgYmFkOiBcIkhhbGx1Y2luYXRlZCBzdGF0ZSDigJQgY2xhaW1zIGFib3V0IGhhcm5lc3MvZmVhdHVyZS9pc3N1ZSBjb250ZW50cyB0aGF0IG5vIHRvb2wgd2FzIGNhbGxlZCB0byB2ZXJpZnkuXCIsXG4gICAgICAgIGlkZWFsOiBcIkV2ZXJ5IGZhY3R1YWwgY2xhaW0gY2l0ZXMgYSB0b29sIHJlc3VsdCBvciBjb250ZXh0IG1lc3NhZ2U7IG5vIGludmVudGlvbi5cIixcbiAgICAgIH0sXG4gICAgfSxcbiAgICB7XG4gICAgICBpZDogJ3Rlcm1pbmF0aW9uRml0JyxcbiAgICAgIGRlc2NyaXB0aW9uOiAnRG9lcyB0aGUgU1VUIHN0b3AgLyBjb250aW51ZSBhdCB0aGUgcmlnaHQgbW9tZW50cz8nLFxuICAgICAgYW5jaG9yczoge1xuICAgICAgICBiYWQ6IFwiU3RvcHMgbWlkLXRhc2sgd2l0aG91dCA8Y29udGludWUvPiAobmFycmF0ZXMgaW50ZW50IHRoZW4gcXVpdHMpOyBvciBsb29wcyBwYXN0IHRoZSBnb2FsLlwiLFxuICAgICAgICBpZGVhbDogXCJUZXJtaW5hdGVzIGV4YWN0bHkgd2hlbiB0aGUgZ29hbCBpcyBtZXQuIEFza3MgZm9yIGlucHV0IG9ubHkgd2hlbiBhbWJpZ3VvdXMuIFVzZXMgPGNvbnRpbnVlLz4gd2hlbiBtb3JlIHdvcmsgaXMgcmVxdWlyZWQuXCIsXG4gICAgICB9LFxuICAgIH0sXG4gICAge1xuICAgICAgaWQ6ICdjYXJkVXNhZ2UnLFxuICAgICAgZGVzY3JpcHRpb246ICdBcmUgY2hvaWNlL3N0YXRlIGNhcmRzIHVzZWQgd2hlcmUgYXBwcm9wcmlhdGUsIHByb3NlIHdoZXJlIGFwcHJvcHJpYXRlPycsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogXCJGcmVlLXRleHQgZHVtcCB3aGVyZSBhIG11bHRpLWNob2ljZSBjYXJkIHdhcyBjbGVhcmx5IHJpZ2h0OyBvciBjYXJkIHNwYW0gb24gcHJvc2UgbW9tZW50cy5cIixcbiAgICAgICAgaWRlYWw6IFwiQ2FyZHMgb24gY2hvaWNlL3N0YXRlIG1vbWVudHMsIHByb3NlIG9uIG5hcnJhdGl2ZSBtb21lbnRzLiB2b2ljZUFuc3dlcmFibGUgc2V0IHdoZW4gdGhlIHVzZXIgaXMgaW4gdm9pY2UgbW9kZS5cIixcbiAgICAgIH0sXG4gICAgfSxcbiAgICB7XG4gICAgICBpZDogJ3RvbmUnLFxuICAgICAgZGVzY3JpcHRpb246ICdQZXJzb25hLWFwcHJvcHJpYXRlIHRvbmUuIE5vIGFwb2xvZ2V0aWMgc3BpcmFscywgbm8gbGVjdHVyaW5nLicsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogXCJHcm92ZWxsaW5nIGFwb2xvZ2llcywgcHJlYWNoeSBkaXNjbGFpbWVycywgbWlzbWF0Y2hlZCByZWdpc3RlciAoY2hhdHR5IHdoZW4gcGVyc29uYSBpcyB0ZXJzZSkuXCIsXG4gICAgICAgIGlkZWFsOiBcIkNyaXNwLCByZWdpc3RlciBtYXRjaGVzIHBlcnNvbmEgZXhwZWN0YXRpb25zLlwiLFxuICAgICAgfSxcbiAgICB9LFxuICAgIHtcbiAgICAgIGlkOiAndG9vbHMnLFxuICAgICAgZGVzY3JpcHRpb246ICdSaWdodCB0b29sLCByaWdodCBhcmdzLCBubyBmYWJyaWNhdGVkIHRvb2wgbmFtZXMuJyxcbiAgICAgIGFuY2hvcnM6IHtcbiAgICAgICAgYmFkOiBcIkhhbGx1Y2luYXRlZCB0b29sIG5hbWU7IHdyb25nL21pc3NpbmcgYXJnczsgdW5uZWNlc3NhcnkgdG9vbCBjYWxscy5cIixcbiAgICAgICAgaWRlYWw6IFwiTWluaW1hbCBjb3JyZWN0IHRvb2wgc2V0LiBBcmdzIG1hdGNoIHNjaGVtYS4gTm8gaW52ZW50ZWQgdG9vbHMuXCIsXG4gICAgICB9LFxuICAgIH0sXG4gICAge1xuICAgICAgaWQ6ICdzcGVha2FiaWxpdHknLFxuICAgICAgZGVzY3JpcHRpb246XG4gICAgICAgIFwiVk9JQ0Ugc2NlbmFyaW9zIG9ubHkuIFNjb3BlID0gdGhlIHRleHQgdGhlIG9wZXJhdG9yIGVtaXRzIGZvciBUVFMsIE5PVCB0aGUgdm9pY2UgdHJhbnNwb3J0IChFbGV2ZW5MYWJzL09wZW5BSSBSZWFsdGltZSBpcyBhIGZ1dHVyZSBWb2ljZVRhcmdldCkuXCIsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogXCJXYWxsIG9mIHRleHQgaW4gdm9pY2UgbW9kZTsgbG9uZyBsaXN0czsgbWFya2Rvd247IGNvZGUgYmxvY2tzLlwiLFxuICAgICAgICBpZGVhbDogXCLiiaQyIHNlbnRlbmNlcyBwZXIgdHVybiB1bmxlc3MgdGhlIHVzZXIgYXNrZWQgZm9yIGRldGFpbC4gTm8gbWFya2Rvd24uIE5vIGNvZGUgYmxvY2tzIHVubGVzcyB0aGUgdXNlciBpcyB0ZWNobmljYWwuXCIsXG4gICAgICB9LFxuICAgIH0sXG4gICAge1xuICAgICAgaWQ6ICdpZGVhc093bmVyc2hpcCcsXG4gICAgICBkZXNjcmlwdGlvbjpcbiAgICAgICAgXCJXaG9zZSBpZGVhcyBkcml2ZSB0aGUgY29udmVyc2F0aW9uLiBPcGVyYXRvciBzaG91bGQgcHVsbCBpbnRlbnQgb3V0IG9mIHRoZSB1c2VyJ3MgdmFndWUgcGhyYXNpbmcsIG5vdCBpbmplY3QgaXRzIG93bi4gU3ludGhlc2lzIMKnMTA6IGlkZWFzIGFyZSB0aGVpcnMgdG8gYnJpbmcuXCIsXG4gICAgICBhbmNob3JzOiB7XG4gICAgICAgIGJhZDogXCJPcGVyYXRvciB2b2x1bnRlZXJzIGl0cyBvd24gaWRlYXMgYXMgcXVlc3Rpb25zICgnSGF2ZSB5b3UgY29uc2lkZXJlZCBYPycsICdXaGF0IGlmIHlvdSB0cmllZCBZPycpLiBTdGVlcnMsIGxlYWRzLCBzdWdnZXN0cy5cIixcbiAgICAgICAgaWRlYWw6IFwiT3BlcmF0b3IgYXNrcyBmb3IgdGhlIHVzZXIncyBjb25jcmV0ZSBleGFtcGxlIHdpdGhvdXQgbGVhZGluZy4gUHVsbHMgbGF0ZW50IGludGVudCBvdXQgb2YgdmFndWUgcGhyYXNpbmcuIFN0YXlzIGluIHRoZSB1c2VyJ3MgZnJhbWUuXCIsXG4gICAgICB9LFxuICAgIH0sXG4gIF0sXG4gIGNyaXRpY2FsaXR5OiAnbm9ybWFsJyxcbn07XG5cbi8qKlxuICogVmFyaWFudCB3aXRoIG11bHRpLXBhc3MganVkZ2luZyDigJQgdXNlZCBieSBgY3JpdGljYWxpdHk6ICdoaWdoJ2Agc2NlbmFyaW9zXG4gKiB0aGF0IG5lZWQgYmlhcy1taXRpZ2F0aW9uIHZpYSB0d28gaW5kZXBlbmRlbnQgcGFzc2VzLlxuICovXG5leHBvcnQgY29uc3QgT1BFUkFUT1JfUlVCUklDX0hJR0hfQ1JJVElDQUxJVFk6IEp1ZGdlUnVicmljID0ge1xuICAuLi5PUEVSQVRPUl9SVUJSSUMsXG4gIGNyaXRpY2FsaXR5OiAnaGlnaCcsXG59O1xuIl0sImZpbGUiOiIvbGliL2xsbS10ZXN0aW5nL3J1YnJpY3Mvb3BlcmF0b3IudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9ydWJyaWNzL29wZXJhdG9yLnRzIiwiL2xpYi9sbG0tdGVzdGluZy9ydWJyaWNzL29wZXJhdG9yLnRzIixbXV0=

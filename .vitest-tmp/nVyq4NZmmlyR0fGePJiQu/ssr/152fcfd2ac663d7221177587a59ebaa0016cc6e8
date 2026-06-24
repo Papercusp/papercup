@@ -1,0 +1,49 @@
+__vite_ssr_exportName__("S06_SPAWN_WORKER", () => { try { return S06_SPAWN_WORKER } catch {} });
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/testing-shell/src/llm/index.ts", {"importedNames":["PATIENT_ADMIN"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/llm-testing/rubrics/operator.ts", {"importedNames":["OPERATOR_RUBRIC"]});
+
+
+const S06_SPAWN_WORKER = {
+  id: "op-S06-spawn-worker",
+  version: 1,
+  target: "operator",
+  description: 'Admin asks the operator to fix a known issue by dispatching a worker. The operator should either emit a <spawn role="worker" feature="..."/> tag or call the harness:spawn tool directly. Asking for clarification first (via a choice card) is also acceptable; the judge scores cardUsage.',
+  persona: __vite_ssr_import_0__.PATIENT_ADMIN,
+  goal: { kind: "state_reached", predicate: "worker dispatched or clarification card emitted" },
+  caps: { maxTurns: 5, maxWallSecs: 90, maxCostUsd: 1.5 },
+  runMatrix: { repeat: 3, variancePolicy: "flag-if-disagreement" },
+  realWorkspace: true,
+  asserts: [
+    // Either the spawn fired OR a choice card asked which feature to spawn against.
+    // Both are valid; the judge's cardUsage axis scores the choice qualitatively.
+    {
+      kind: "custom",
+      name: "spawn-or-choice",
+      eval: (run) => {
+        const spawnTagged = run.turns.some(
+          (t) => t.controlTags.some((c) => c.tag === "spawn")
+        );
+        const spawnCalled = run.toolInvocations.some(
+          (t) => /(^|:|__)harness[:_]spawn$|spawn_dispatch/i.test(t.toolName)
+        );
+        const choiceCard = run.turns.some(
+          (t) => t.cards.some((c) => c.kind === "choice")
+        );
+        if (spawnTagged || spawnCalled || choiceCard) return [];
+        return [{
+          assertKind: "custom:spawn-or-choice",
+          severity: "error",
+          claim: "Neither a <spawn/> tag, a harness:spawn tool call, nor a choice card was produced.",
+          suggestion: "Operator should dispatch the worker or ask which feature to act on."
+        }];
+      }
+    }
+  ],
+  rubric: __vite_ssr_import_1__.OPERATOR_RUBRIC
+};
+const __vite_ssr_export_default__ = S06_SPAWN_WORKER;
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFrQkE7QUFDQTs7O0FBR08sTUFBTSxtQkFBNkI7QUFBQSxFQUN4QyxJQUFJO0FBQUEsRUFDSixTQUFTO0FBQUEsRUFDVCxRQUFRO0FBQUEsRUFDUixhQUNFO0FBQUEsRUFDRixTQUFTO0FBQUEsRUFDVCxNQUFNLEVBQUUsTUFBTSxpQkFBaUIsV0FBVyxrREFBa0Q7QUFBQSxFQUM1RixNQUFNLEVBQUUsVUFBVSxHQUFHLGFBQWEsSUFBSSxZQUFZLElBQUk7QUFBQSxFQUN0RCxXQUFXLEVBQUUsUUFBUSxHQUFHLGdCQUFnQix1QkFBdUI7QUFBQSxFQUMvRCxlQUFlO0FBQUEsRUFDZixTQUFTO0FBQUE7QUFBQTtBQUFBLElBR1A7QUFBQSxNQUNFLE1BQU07QUFBQSxNQUNOLE1BQU07QUFBQSxNQUNOLE1BQU0sQ0FBQyxRQUFRO0FBQ2IsY0FBTSxjQUFjLElBQUksTUFBTTtBQUFBLFVBQUssQ0FBQyxNQUNsQyxFQUFFLFlBQVksS0FBSyxDQUFDLE1BQU0sRUFBRSxRQUFRLE9BQU87QUFBQSxRQUM3QztBQUNBLGNBQU0sY0FBYyxJQUFJLGdCQUFnQjtBQUFBLFVBQUssQ0FBQyxNQUM1Qyw0Q0FBNEMsS0FBSyxFQUFFLFFBQVE7QUFBQSxRQUM3RDtBQUNBLGNBQU0sYUFBYSxJQUFJLE1BQU07QUFBQSxVQUFLLENBQUMsTUFDakMsRUFBRSxNQUFNLEtBQUssQ0FBQyxNQUFNLEVBQUUsU0FBUyxRQUFRO0FBQUEsUUFDekM7QUFDQSxZQUFJLGVBQWUsZUFBZSxXQUFZLFFBQU8sQ0FBQztBQUN0RCxlQUFPLENBQUM7QUFBQSxVQUNOLFlBQVk7QUFBQSxVQUNaLFVBQVU7QUFBQSxVQUNWLE9BQU87QUFBQSxVQUNQLFlBQVk7QUFBQSxRQUNkLENBQUM7QUFBQSxNQUNIO0FBQUEsSUFDRjtBQUFBLEVBQ0Y7QUFBQSxFQUNBLFFBQVE7QUFDVjtBQUVBLG9DQUFlIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJTMDYtc3Bhd24td29ya2VyLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogUzA2IOKAlCBzcGF3bi13b3JrZXJcbiAqXG4gKiBQZXJzb25hOiBwYXRpZW50IGFkbWluIGFza2luZyB0aGUgb3BlcmF0b3IgdG8gZGlzcGF0Y2ggYSB3b3JrZXIuXG4gKlxuICogR29hbDogb3BlcmF0b3IgZW1pdHMgYSA8c3Bhd24gcm9sZT1cIndvcmtlclwiIC4uLi8+IHRhZyDigJQgb3IgaW52b2tlc1xuICogICAgICAgaGFybmVzczpzcGF3biBkaXJlY3RseSDigJQgc28gYSB3b3JrZXIgYWdlbnQgdGFrZXMgb3ZlciB0aGUgd29yay5cbiAqXG4gKiBDb3ZlcnM6IEI3IChzcGF3biBkaXNwYXRjaGVkKSwgQjE5IChtZXNzYWdlczpzZW5kIG1heSBhbHNvXG4gKiAgICAgICAgIGZpcmUgaWYgdGhlIG9wZXJhdG9yIGNvb3JkaW5hdGVzIGJlZm9yZWhhbmQpLlxuICpcbiAqIERldGVybWluaXN0aWMgYXNzZXJ0czpcbiAqICAgLSBzcGF3bl9kaXNwYXRjaGVkIChsb29rcyBhdCB0b29sX2ludm9jYXRpb25zIGZvciBoYXJuZXNzOnNwYXduKVxuICogICAtIGNvbnRyb2xfdGFnX3ByZXNlbnQgJ3NwYXduJyBPUiBqdWRnZSBjYXJkVXNhZ2UgZmluZGluZyBpZiB0aGVcbiAqICAgICBvcGVyYXRvciBpbnN0ZWFkIGFza3MgZm9yIGNvbmZpcm1hdGlvbiB2aWEgYSBjYXJkIChhbHNvIGEgdmFsaWRcbiAqICAgICBVWCwganVzdCBkaWZmZXJlbnQgcGF0aClcbiAqL1xuXG5pbXBvcnQgeyBQQVRJRU5UX0FETUlOIH0gZnJvbSAnQHBhcGVyY3VzcC90ZXN0aW5nLXNoZWxsL2xsbSc7XG5pbXBvcnQgeyBPUEVSQVRPUl9SVUJSSUMgfSBmcm9tICcuLi8uLi9ydWJyaWNzL29wZXJhdG9yJztcbmltcG9ydCB0eXBlIHsgU2NlbmFyaW8gfSBmcm9tICdAcGFwZXJjdXNwL3Rlc3Rpbmctc2hlbGwvbGxtJztcblxuZXhwb3J0IGNvbnN0IFMwNl9TUEFXTl9XT1JLRVI6IFNjZW5hcmlvID0ge1xuICBpZDogJ29wLVMwNi1zcGF3bi13b3JrZXInLFxuICB2ZXJzaW9uOiAxLFxuICB0YXJnZXQ6ICdvcGVyYXRvcicsXG4gIGRlc2NyaXB0aW9uOlxuICAgICdBZG1pbiBhc2tzIHRoZSBvcGVyYXRvciB0byBmaXggYSBrbm93biBpc3N1ZSBieSBkaXNwYXRjaGluZyBhIHdvcmtlci4gVGhlIG9wZXJhdG9yIHNob3VsZCBlaXRoZXIgZW1pdCBhIDxzcGF3biByb2xlPVwid29ya2VyXCIgZmVhdHVyZT1cIi4uLlwiLz4gdGFnIG9yIGNhbGwgdGhlIGhhcm5lc3M6c3Bhd24gdG9vbCBkaXJlY3RseS4gQXNraW5nIGZvciBjbGFyaWZpY2F0aW9uIGZpcnN0ICh2aWEgYSBjaG9pY2UgY2FyZCkgaXMgYWxzbyBhY2NlcHRhYmxlOyB0aGUganVkZ2Ugc2NvcmVzIGNhcmRVc2FnZS4nLFxuICBwZXJzb25hOiBQQVRJRU5UX0FETUlOLFxuICBnb2FsOiB7IGtpbmQ6ICdzdGF0ZV9yZWFjaGVkJywgcHJlZGljYXRlOiAnd29ya2VyIGRpc3BhdGNoZWQgb3IgY2xhcmlmaWNhdGlvbiBjYXJkIGVtaXR0ZWQnIH0sXG4gIGNhcHM6IHsgbWF4VHVybnM6IDUsIG1heFdhbGxTZWNzOiA5MCwgbWF4Q29zdFVzZDogMS41IH0sXG4gIHJ1bk1hdHJpeDogeyByZXBlYXQ6IDMsIHZhcmlhbmNlUG9saWN5OiAnZmxhZy1pZi1kaXNhZ3JlZW1lbnQnIH0sXG4gIHJlYWxXb3Jrc3BhY2U6IHRydWUsXG4gIGFzc2VydHM6IFtcbiAgICAvLyBFaXRoZXIgdGhlIHNwYXduIGZpcmVkIE9SIGEgY2hvaWNlIGNhcmQgYXNrZWQgd2hpY2ggZmVhdHVyZSB0byBzcGF3biBhZ2FpbnN0LlxuICAgIC8vIEJvdGggYXJlIHZhbGlkOyB0aGUganVkZ2UncyBjYXJkVXNhZ2UgYXhpcyBzY29yZXMgdGhlIGNob2ljZSBxdWFsaXRhdGl2ZWx5LlxuICAgIHtcbiAgICAgIGtpbmQ6ICdjdXN0b20nLFxuICAgICAgbmFtZTogJ3NwYXduLW9yLWNob2ljZScsXG4gICAgICBldmFsOiAocnVuKSA9PiB7XG4gICAgICAgIGNvbnN0IHNwYXduVGFnZ2VkID0gcnVuLnR1cm5zLnNvbWUoKHQpID0+XG4gICAgICAgICAgdC5jb250cm9sVGFncy5zb21lKChjKSA9PiBjLnRhZyA9PT0gJ3NwYXduJyksXG4gICAgICAgICk7XG4gICAgICAgIGNvbnN0IHNwYXduQ2FsbGVkID0gcnVuLnRvb2xJbnZvY2F0aW9ucy5zb21lKCh0KSA9PlxuICAgICAgICAgIC8oXnw6fF9fKWhhcm5lc3NbOl9dc3Bhd24kfHNwYXduX2Rpc3BhdGNoL2kudGVzdCh0LnRvb2xOYW1lKSxcbiAgICAgICAgKTtcbiAgICAgICAgY29uc3QgY2hvaWNlQ2FyZCA9IHJ1bi50dXJucy5zb21lKCh0KSA9PlxuICAgICAgICAgIHQuY2FyZHMuc29tZSgoYykgPT4gYy5raW5kID09PSAnY2hvaWNlJyksXG4gICAgICAgICk7XG4gICAgICAgIGlmIChzcGF3blRhZ2dlZCB8fCBzcGF3bkNhbGxlZCB8fCBjaG9pY2VDYXJkKSByZXR1cm4gW107XG4gICAgICAgIHJldHVybiBbe1xuICAgICAgICAgIGFzc2VydEtpbmQ6ICdjdXN0b206c3Bhd24tb3ItY2hvaWNlJyxcbiAgICAgICAgICBzZXZlcml0eTogJ2Vycm9yJyxcbiAgICAgICAgICBjbGFpbTogJ05laXRoZXIgYSA8c3Bhd24vPiB0YWcsIGEgaGFybmVzczpzcGF3biB0b29sIGNhbGwsIG5vciBhIGNob2ljZSBjYXJkIHdhcyBwcm9kdWNlZC4nLFxuICAgICAgICAgIHN1Z2dlc3Rpb246ICdPcGVyYXRvciBzaG91bGQgZGlzcGF0Y2ggdGhlIHdvcmtlciBvciBhc2sgd2hpY2ggZmVhdHVyZSB0byBhY3Qgb24uJyxcbiAgICAgICAgfV07XG4gICAgICB9LFxuICAgIH0sXG4gIF0sXG4gIHJ1YnJpYzogT1BFUkFUT1JfUlVCUklDLFxufTtcblxuZXhwb3J0IGRlZmF1bHQgUzA2X1NQQVdOX1dPUktFUjtcbiJdLCJmaWxlIjoiL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3Mvb3BlcmF0b3IvUzA2LXNwYXduLXdvcmtlci50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3Mvb3BlcmF0b3IvUzA2LXNwYXduLXdvcmtlci50cyIsIi9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL29wZXJhdG9yL1MwNi1zcGF3bi13b3JrZXIudHMiLFtdXQ==

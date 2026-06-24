@@ -1,0 +1,102 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","it","expect"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/blueprint/materialize-triggers.ts", {"importedNames":["triggerRoutineSpecs","DEFAULT_SCHEDULE_ACTION","SINGLETON_TRIGGER_HOST_SLUG"]});
+
+
+(0,__vite_ssr_import_0__.describe)("triggerRoutineSpecs (P-021 / D-018)", () => {
+  (0,__vite_ssr_import_0__.it)("returns [] when the blueprint declares no triggers", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.triggerRoutineSpecs)({})).toEqual([]);
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.triggerRoutineSpecs)({ triggers: void 0 })).toEqual([]);
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.triggerRoutineSpecs)({ triggers: { schedule: [] } })).toEqual([]);
+  });
+  (0,__vite_ssr_import_0__.it)("maps each schedule entry to a cron routine spec (target_role = its action)", () => {
+    const specs = (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+      triggers: {
+        schedule: [
+          { cron: "0 0 9 * * *", action: "system:blueprint-run" },
+          { cron: "*/30 * * * * *", action: "system:git-sync" }
+        ]
+      }
+    });
+    (0,__vite_ssr_import_0__.expect)(specs).toEqual([
+      { name: "bp-schedule-0", cron: "0 0 9 * * *", targetRole: "system:blueprint-run", singleton: false, singletonActive: false },
+      { name: "bp-schedule-1", cron: "*/30 * * * * *", targetRole: "system:git-sync", singleton: false, singletonActive: false }
+    ]);
+  });
+  (0,__vite_ssr_import_0__.it)("defaults a missing action to system:blueprint-run", () => {
+    const specs = (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+      triggers: { schedule: [{ cron: "0 0 * * * *" }] }
+    });
+    (0,__vite_ssr_import_0__.expect)(specs).toHaveLength(1);
+    (0,__vite_ssr_import_0__.expect)(specs[0].targetRole).toBe((0,__vite_ssr_import_1__.DEFAULT_SCHEDULE_ACTION));
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.DEFAULT_SCHEDULE_ACTION)).toBe("system:blueprint-run");
+  });
+  (0,__vite_ssr_import_0__.it)("names are stable + unique per entry index (the upsert key with install_slug)", () => {
+    const specs = (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+      triggers: {
+        schedule: [
+          { cron: "a", action: "system:blueprint-run" },
+          { cron: "b", action: "system:blueprint-run" },
+          { cron: "c", action: "system:blueprint-run" }
+        ]
+      }
+    });
+    const names = specs.map((s) => s.name);
+    (0,__vite_ssr_import_0__.expect)(names).toEqual(["bp-schedule-0", "bp-schedule-1", "bp-schedule-2"]);
+    (0,__vite_ssr_import_0__.expect)(new Set(names).size).toBe(names.length);
+  });
+});
+(0,__vite_ssr_import_0__.describe)("triggerRoutineSpecs — workspace-singleton triggers (D-018)", () => {
+  (0,__vite_ssr_import_0__.it)("singleton defaults to false (a plain entry is per-install)", () => {
+    const specs = (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+      id: "demo",
+      triggers: { schedule: [{ cron: "0 0 9 * * *", action: "system:blueprint-run" }] }
+    });
+    (0,__vite_ssr_import_0__.expect)(specs[0].singleton).toBe(false);
+    (0,__vite_ssr_import_0__.expect)(specs[0].name).toBe("bp-schedule-0");
+  });
+  (0,__vite_ssr_import_0__.it)("a singleton entry is named blueprint-uniquely (carries the blueprint id)", () => {
+    const specs = (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+      id: "regret",
+      triggers: {
+        schedule: [
+          { cron: "0 0 9 * * *", action: "system:blueprint-run" },
+          // per-install
+          { cron: "0 35 */6 * * *", action: "system:blueprint-run", singleton: true }
+          // singleton
+        ]
+      }
+    });
+    (0,__vite_ssr_import_0__.expect)(specs).toEqual([
+      { name: "bp-schedule-0", cron: "0 0 9 * * *", targetRole: "system:blueprint-run", singleton: false, singletonActive: false },
+      { name: "bp-singleton-regret-1", cron: "0 35 */6 * * *", targetRole: "system:blueprint-run", singleton: true, singletonActive: false }
+    ]);
+  });
+  (0,__vite_ssr_import_0__.it)("two different blueprints never collide on the singleton name (it embeds the id)", () => {
+    const a = (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+      id: "regret",
+      triggers: { schedule: [{ cron: "x", action: "system:blueprint-run", singleton: true }] }
+    });
+    const b = (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+      id: "negative-space",
+      triggers: { schedule: [{ cron: "x", action: "system:blueprint-run", singleton: true }] }
+    });
+    (0,__vite_ssr_import_0__.expect)(a[0].name).toBe("bp-singleton-regret-0");
+    (0,__vite_ssr_import_0__.expect)(b[0].name).toBe("bp-singleton-negative-space-0");
+    (0,__vite_ssr_import_0__.expect)(a[0].name).not.toBe(b[0].name);
+  });
+  (0,__vite_ssr_import_0__.it)("throws when a singleton trigger is declared without a blueprint id", () => {
+    (0,__vite_ssr_import_0__.expect)(
+      () => (0,__vite_ssr_import_1__.triggerRoutineSpecs)({
+        triggers: { schedule: [{ cron: "x", action: "system:blueprint-run", singleton: true }] }
+      })
+    ).toThrow(/singleton.*requires the blueprint id/i);
+  });
+  (0,__vite_ssr_import_0__.it)("the reserved host-slug is disjoint from real harness slugs (leading @)", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.SINGLETON_TRIGGER_HOST_SLUG)).toBe("@singleton");
+    (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.SINGLETON_TRIGGER_HOST_SLUG.startsWith("@")).toBe(true);
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,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QUFBQSxFQUNuRCxDQUFDO0FBRUQsK0JBQUcsMEVBQTBFLE1BQU07QUFDakYsd0NBQU8sa0RBQTJCLEVBQUUsS0FBSyxZQUFZO0FBQ3JELHFDQUFPLGtEQUE0QixXQUFXLEdBQUcsQ0FBQyxFQUFFLEtBQUssSUFBSTtBQUFBLEVBQy9ELENBQUM7QUFDSCxDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJtYXRlcmlhbGl6ZS10cmlnZ2Vycy50ZXN0LnRzIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IGRlc2NyaWJlLCBpdCwgZXhwZWN0IH0gZnJvbSAndml0ZXN0JztcbmltcG9ydCB7XG4gIHRyaWdnZXJSb3V0aW5lU3BlY3MsXG4gIERFRkFVTFRfU0NIRURVTEVfQUNUSU9OLFxuICBTSU5HTEVUT05fVFJJR0dFUl9IT1NUX1NMVUcsXG59IGZyb20gJy4vbWF0ZXJpYWxpemUtdHJpZ2dlcnMnO1xuXG5kZXNjcmliZSgndHJpZ2dlclJvdXRpbmVTcGVjcyAoUC0wMjEgLyBELTAxOCknLCAoKSA9PiB7XG4gIGl0KCdyZXR1cm5zIFtdIHdoZW4gdGhlIGJsdWVwcmludCBkZWNsYXJlcyBubyB0cmlnZ2VycycsICgpID0+IHtcbiAgICBleHBlY3QodHJpZ2dlclJvdXRpbmVTcGVjcyh7fSkpLnRvRXF1YWwoW10pO1xuICAgIGV4cGVjdCh0cmlnZ2VyUm91dGluZVNwZWNzKHsgdHJpZ2dlcnM6IHVuZGVmaW5lZCB9KSkudG9FcXVhbChbXSk7XG4gICAgZXhwZWN0KHRyaWdnZXJSb3V0aW5lU3BlY3MoeyB0cmlnZ2VyczogeyBzY2hlZHVsZTogW10gfSB9KSkudG9FcXVhbChbXSk7XG4gIH0pO1xuXG4gIGl0KCdtYXBzIGVhY2ggc2NoZWR1bGUgZW50cnkgdG8gYSBjcm9uIHJvdXRpbmUgc3BlYyAodGFyZ2V0X3JvbGUgPSBpdHMgYWN0aW9uKScsICgpID0+IHtcbiAgICBjb25zdCBzcGVjcyA9IHRyaWdnZXJSb3V0aW5lU3BlY3Moe1xuICAgICAgdHJpZ2dlcnM6IHtcbiAgICAgICAgc2NoZWR1bGU6IFtcbiAgICAgICAgICB7IGNyb246ICcwIDAgOSAqICogKicsIGFjdGlvbjogJ3N5c3RlbTpibHVlcHJpbnQtcnVuJyB9LFxuICAgICAgICAgIHsgY3JvbjogJyovMzAgKiAqICogKiAqJywgYWN0aW9uOiAnc3lzdGVtOmdpdC1zeW5jJyB9LFxuICAgICAgICBdLFxuICAgICAgfSxcbiAgICB9KTtcbiAgICBleHBlY3Qoc3BlY3MpLnRvRXF1YWwoW1xuICAgICAgeyBuYW1lOiAnYnAtc2NoZWR1bGUtMCcsIGNyb246ICcwIDAgOSAqICogKicsIHRhcmdldFJvbGU6ICdzeXN0ZW06Ymx1ZXByaW50LXJ1bicsIHNpbmdsZXRvbjogZmFsc2UsIHNpbmdsZXRvbkFjdGl2ZTogZmFsc2UgfSxcbiAgICAgIHsgbmFtZTogJ2JwLXNjaGVkdWxlLTEnLCBjcm9uOiAnKi8zMCAqICogKiAqIConLCB0YXJnZXRSb2xlOiAnc3lzdGVtOmdpdC1zeW5jJywgc2luZ2xldG9uOiBmYWxzZSwgc2luZ2xldG9uQWN0aXZlOiBmYWxzZSB9LFxuICAgIF0pO1xuICB9KTtcblxuICBpdCgnZGVmYXVsdHMgYSBtaXNzaW5nIGFjdGlvbiB0byBzeXN0ZW06Ymx1ZXByaW50LXJ1bicsICgpID0+IHtcbiAgICAvLyBBIGxvb3NlL3VucGFyc2VkIGVudHJ5IHdpdGhvdXQgYGFjdGlvbmAgKHRoZSBab2Qgc2NoZW1hIGRlZmF1bHRzIGl0LCBidXQgZ3VhcmQgYW55d2F5KS5cbiAgICBjb25zdCBzcGVjcyA9IHRyaWdnZXJSb3V0aW5lU3BlY3Moe1xuICAgICAgdHJpZ2dlcnM6IHsgc2NoZWR1bGU6IFt7IGNyb246ICcwIDAgKiAqICogKicgfSBhcyB7IGNyb246IHN0cmluZzsgYWN0aW9uOiBzdHJpbmcgfV0gfSxcbiAgICB9KTtcbiAgICBleHBlY3Qoc3BlY3MpLnRvSGF2ZUxlbmd0aCgxKTtcbiAgICBleHBlY3Qoc3BlY3NbMF0udGFyZ2V0Um9sZSkudG9CZShERUZBVUxUX1NDSEVEVUxFX0FDVElPTik7XG4gICAgZXhwZWN0KERFRkFVTFRfU0NIRURVTEVfQUNUSU9OKS50b0JlKCdzeXN0ZW06Ymx1ZXByaW50LXJ1bicpO1xuICB9KTtcblxuICBpdCgnbmFtZXMgYXJlIHN0YWJsZSArIHVuaXF1ZSBwZXIgZW50cnkgaW5kZXggKHRoZSB1cHNlcnQga2V5IHdpdGggaW5zdGFsbF9zbHVnKScsICgpID0+IHtcbiAgICBjb25zdCBzcGVjcyA9IHRyaWdnZXJSb3V0aW5lU3BlY3Moe1xuICAgICAgdHJpZ2dlcnM6IHtcbiAgICAgICAgc2NoZWR1bGU6IFtcbiAgICAgICAgICB7IGNyb246ICdhJywgYWN0aW9uOiAnc3lzdGVtOmJsdWVwcmludC1ydW4nIH0sXG4gICAgICAgICAgeyBjcm9uOiAnYicsIGFjdGlvbjogJ3N5c3RlbTpibHVlcHJpbnQtcnVuJyB9LFxuICAgICAgICAgIHsgY3JvbjogJ2MnLCBhY3Rpb246ICdzeXN0ZW06Ymx1ZXByaW50LXJ1bicgfSxcbiAgICAgICAgXSxcbiAgICAgIH0sXG4gICAgfSk7XG4gICAgY29uc3QgbmFtZXMgPSBzcGVjcy5tYXAoKHMpID0+IHMubmFtZSk7XG4gICAgZXhwZWN0KG5hbWVzKS50b0VxdWFsKFsnYnAtc2NoZWR1bGUtMCcsICdicC1zY2hlZHVsZS0xJywgJ2JwLXNjaGVkdWxlLTInXSk7XG4gICAgZXhwZWN0KG5ldyBTZXQobmFtZXMpLnNpemUpLnRvQmUobmFtZXMubGVuZ3RoKTtcbiAgfSk7XG59KTtcblxuZGVzY3JpYmUoJ3RyaWdnZXJSb3V0aW5lU3BlY3Mg4oCUIHdvcmtzcGFjZS1zaW5nbGV0b24gdHJpZ2dlcnMgKEQtMDE4KScsICgpID0+IHtcbiAgaXQoJ3NpbmdsZXRvbiBkZWZhdWx0cyB0byBmYWxzZSAoYSBwbGFpbiBlbnRyeSBpcyBwZXItaW5zdGFsbCknLCAoKSA9PiB7XG4gICAgY29uc3Qgc3BlY3MgPSB0cmlnZ2VyUm91dGluZVNwZWNzKHtcbiAgICAgIGlkOiAnZGVtbycsXG4gICAgICB0cmlnZ2VyczogeyBzY2hlZHVsZTogW3sgY3JvbjogJzAgMCA5ICogKiAqJywgYWN0aW9uOiAnc3lzdGVtOmJsdWVwcmludC1ydW4nIH1dIH0sXG4gICAgfSk7XG4gICAgZXhwZWN0KHNwZWNzWzBdLnNpbmdsZXRvbikudG9CZShmYWxzZSk7XG4gICAgZXhwZWN0KHNwZWNzWzBdLm5hbWUpLnRvQmUoJ2JwLXNjaGVkdWxlLTAnKTtcbiAgfSk7XG5cbiAgaXQoJ2Egc2luZ2xldG9uIGVudHJ5IGlzIG5hbWVkIGJsdWVwcmludC11bmlxdWVseSAoY2FycmllcyB0aGUgYmx1ZXByaW50IGlkKScsICgpID0+IHtcbiAgICBjb25zdCBzcGVjcyA9IHRyaWdnZXJSb3V0aW5lU3BlY3Moe1xuICAgICAgaWQ6ICdyZWdyZXQnLFxuICAgICAgdHJpZ2dlcnM6IHtcbiAgICAgICAgc2NoZWR1bGU6IFtcbiAgICAgICAgICB7IGNyb246ICcwIDAgOSAqICogKicsIGFjdGlvbjogJ3N5c3RlbTpibHVlcHJpbnQtcnVuJyB9LCAvLyBwZXItaW5zdGFsbFxuICAgICAgICAgIHsgY3JvbjogJzAgMzUgKi82ICogKiAqJywgYWN0aW9uOiAnc3lzdGVtOmJsdWVwcmludC1ydW4nLCBzaW5nbGV0b246IHRydWUgfSwgLy8gc2luZ2xldG9uXG4gICAgICAgIF0sXG4gICAgICB9LFxuICAgIH0pO1xuICAgIGV4cGVjdChzcGVjcykudG9FcXVhbChbXG4gICAgICB7IG5hbWU6ICdicC1zY2hlZHVsZS0wJywgY3JvbjogJzAgMCA5ICogKiAqJywgdGFyZ2V0Um9sZTogJ3N5c3RlbTpibHVlcHJpbnQtcnVuJywgc2luZ2xldG9uOiBmYWxzZSwgc2luZ2xldG9uQWN0aXZlOiBmYWxzZSB9LFxuICAgICAgeyBuYW1lOiAnYnAtc2luZ2xldG9uLXJlZ3JldC0xJywgY3JvbjogJzAgMzUgKi82ICogKiAqJywgdGFyZ2V0Um9sZTogJ3N5c3RlbTpibHVlcHJpbnQtcnVuJywgc2luZ2xldG9uOiB0cnVlLCBzaW5nbGV0b25BY3RpdmU6IGZhbHNlIH0sXG4gICAgXSk7XG4gIH0pO1xuXG4gIGl0KCd0d28gZGlmZmVyZW50IGJsdWVwcmludHMgbmV2ZXIgY29sbGlkZSBvbiB0aGUgc2luZ2xldG9uIG5hbWUgKGl0IGVtYmVkcyB0aGUgaWQpJywgKCkgPT4ge1xuICAgIGNvbnN0IGEgPSB0cmlnZ2VyUm91dGluZVNwZWNzKHtcbiAgICAgIGlkOiAncmVncmV0JyxcbiAgICAgIHRyaWdnZXJzOiB7IHNjaGVkdWxlOiBbeyBjcm9uOiAneCcsIGFjdGlvbjogJ3N5c3RlbTpibHVlcHJpbnQtcnVuJywgc2luZ2xldG9uOiB0cnVlIH1dIH0sXG4gICAgfSk7XG4gICAgY29uc3QgYiA9IHRyaWdnZXJSb3V0aW5lU3BlY3Moe1xuICAgICAgaWQ6ICduZWdhdGl2ZS1zcGFjZScsXG4gICAgICB0cmlnZ2VyczogeyBzY2hlZHVsZTogW3sgY3JvbjogJ3gnLCBhY3Rpb246ICdzeXN0ZW06Ymx1ZXByaW50LXJ1bicsIHNpbmdsZXRvbjogdHJ1ZSB9XSB9LFxuICAgIH0pO1xuICAgIGV4cGVjdChhWzBdLm5hbWUpLnRvQmUoJ2JwLXNpbmdsZXRvbi1yZWdyZXQtMCcpO1xuICAgIGV4cGVjdChiWzBdLm5hbWUpLnRvQmUoJ2JwLXNpbmdsZXRvbi1uZWdhdGl2ZS1zcGFjZS0wJyk7XG4gICAgZXhwZWN0KGFbMF0ubmFtZSkubm90LnRvQmUoYlswXS5uYW1lKTtcbiAgfSk7XG5cbiAgaXQoJ3Rocm93cyB3aGVuIGEgc2luZ2xldG9uIHRyaWdnZXIgaXMgZGVjbGFyZWQgd2l0aG91dCBhIGJsdWVwcmludCBpZCcsICgpID0+IHtcbiAgICBleHBlY3QoKCkgPT5cbiAgICAgIHRyaWdnZXJSb3V0aW5lU3BlY3Moe1xuICAgICAgICB0cmlnZ2VyczogeyBzY2hlZHVsZTogW3sgY3JvbjogJ3gnLCBhY3Rpb246ICdzeXN0ZW06Ymx1ZXByaW50LXJ1bicsIHNpbmdsZXRvbjogdHJ1ZSB9XSB9LFxuICAgICAgfSksXG4gICAgKS50b1Rocm93KC9zaW5nbGV0b24uKnJlcXVpcmVzIHRoZSBibHVlcHJpbnQgaWQvaSk7XG4gIH0pO1xuXG4gIGl0KCd0aGUgcmVzZXJ2ZWQgaG9zdC1zbHVnIGlzIGRpc2pvaW50IGZyb20gcmVhbCBoYXJuZXNzIHNsdWdzIChsZWFkaW5nIEApJywgKCkgPT4ge1xuICAgIGV4cGVjdChTSU5HTEVUT05fVFJJR0dFUl9IT1NUX1NMVUcpLnRvQmUoJ0BzaW5nbGV0b24nKTtcbiAgICBleHBlY3QoU0lOR0xFVE9OX1RSSUdHRVJfSE9TVF9TTFVHLnN0YXJ0c1dpdGgoJ0AnKSkudG9CZSh0cnVlKTtcbiAgfSk7XG59KTtcbiJdLCJmaWxlIjoiL2xpYi9ibHVlcHJpbnQvbWF0ZXJpYWxpemUtdHJpZ2dlcnMudGVzdC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9ibHVlcHJpbnQvbWF0ZXJpYWxpemUtdHJpZ2dlcnMudGVzdC50cyIsIi9saWIvYmx1ZXByaW50L21hdGVyaWFsaXplLXRyaWdnZXJzLnRlc3QudHMiLFtdXQ==
