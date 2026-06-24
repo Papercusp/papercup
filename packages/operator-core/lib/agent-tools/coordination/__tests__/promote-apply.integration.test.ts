@@ -44,8 +44,14 @@ import {
 // migration 295). Seed + verify there, not the fixture's generic 'default', or the
 // tool's readPlanBySlug looks in the wrong workspace → plan_not_found.
 import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 
-const PARENT_HARNESS = 'papercup';
+// plans:promote reads the plan at the operator-home scope (no harness arg on the
+// tool → resolvePlanScope returns operatorHomeHarnessSlug() / PAPERCUSP_WORKSPACE_ID).
+// Seed under that home slug — 'papercusp' post papercup→papercusp migration
+// (LEGACY_DEFAULT_HOME_HARNESS flipped 2026-06-20) — not the stale 'papercup'
+// literal, or the tool's readPlanBySlug looks in the wrong harness → plan_not_found.
+const PARENT_HARNESS = operatorHomeHarnessSlug();
 const RUN = Math.random().toString(36).slice(2, 8);
 const SLUG = `zzz-promote-apply-${RUN}-2026-06-13`;
 const TARGET = `zzz-promote-apply-target-${RUN}`;

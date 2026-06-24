@@ -79,6 +79,12 @@ const argsSchema = z
       .describe(
         "Return only the body of the section whose heading matches (case-insensitive), plus meta — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Overrides mode.",
       ),
+    includeRaw: z
+      .boolean()
+      .optional()
+      .describe(
+        "Also return the EXACT raw markdown file bytes as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole document through plans:set-content (whose CAS hashes the raw bytes) and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.",
+      ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
     message: "Provide slug or slugs.",
@@ -206,12 +212,16 @@ export default defineTool({
           {
             tool: "plans:get",
             // Folds EVERY output-determining dimension: slug + resolved harness +
-            // mode + heading. workspace scope is added by cachedRead from ctx.
+            // mode + heading + includeRaw. workspace scope is added by cachedRead
+            // from ctx. includeRaw MUST be here — else a slim agent-cached entry
+            // (no `raw`) would be served to a UI caller that asked for raw, and
+            // the editor would break intermittently on cache state.
             key: {
               slug,
               harness: opts.harnessSlug,
               mode: args.mode ?? "sections",
               heading: args.heading ?? null,
+              includeRaw: args.includeRaw ?? false,
             },
             tags: ["harness_plans", "plan_revisions", "plan_runs"],
             softTtlMs: PLANS_GET_SOFT_TTL_MS,
@@ -254,8 +264,13 @@ export default defineTool({
                 };
               } else if ((args.mode ?? "sections") === "full") {
                 // Legacy plans are prose-only — full includes the body; meta/sections omit it.
-                // (No `raw` — for a legacy plan it's byte-identical to prose; plans:export has it.)
-                payload = { ...legacyBase, prose: parsed.prose };
+                // (Raw is byte-identical to prose for a legacy plan; only surfaced when the
+                // caller opts in via includeRaw — see the non-legacy branch below.)
+                payload = {
+                  ...legacyBase,
+                  prose: parsed.prose,
+                  ...(args.includeRaw ? { raw: parsed.raw } : {}),
+                };
               }
               return { ok: true as const, ...payload };
             }
@@ -432,7 +447,16 @@ export default defineTool({
             };
             const payload =
               mode === "full"
-                ? { ...structured, prose: parsed.prose }
+                ? {
+                    ...structured,
+                    prose: parsed.prose,
+                    // Opt-in EXACT raw bytes (P-008 drops these by default to keep
+                    // agent payloads slim). The plans admin UI sets includeRaw so its
+                    // Edit mode round-trips the whole document through set-content,
+                    // whose CAS hashes the raw bytes — prose+frontmatter reconstructed
+                    // would not byte-match.
+                    ...(args.includeRaw ? { raw: parsed.raw } : {}),
+                  }
                 : structured;
             return { ok: true as const, ...payload };
           },

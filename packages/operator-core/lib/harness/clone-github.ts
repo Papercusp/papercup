@@ -33,7 +33,7 @@
  * our env vars or process state.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { workspacesRoot } from '../workspace-registry';
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
@@ -182,6 +182,103 @@ export interface CloneOpts {
   shallow?: boolean;
   /** Hard timeout (ms) for the whole clone — protects against runaway. Default 5 min. */
   timeoutMs?: number;
+  /**
+   * Pin the clone to a branch OR tag via `git clone --branch <ref>` (composes
+   * with `shallow` for a `--depth 1 --branch <tag>` exact-version clone — the
+   * dogfood release pin). Omit to take the remote's default branch (today's
+   * behavior for the create-from-URL flow).
+   */
+  ref?: string;
+  /**
+   * Receives live progress parsed from `git clone --progress` stderr — the
+   * `Receiving objects: N%` (download) and `Resolving deltas: N%` phases. Callers
+   * that surface a progress bar throttle these. Omitted ⇒ no progress wiring (the
+   * create-from-URL flow today); behavior is otherwise identical.
+   */
+  onProgress?: (p: { phase: 'receiving' | 'resolving'; percent: number }) => void;
+}
+
+export interface GitCloneOutcome {
+  ok: boolean;
+  /** stderr (trimmed, tail-capped) on failure; '' on success. */
+  message: string;
+  /** True when git itself was missing (ENOENT). */
+  gitMissing?: boolean;
+}
+
+/** Pure parser for one `git clone --progress` stderr segment. Exported for
+ *  tests — git emits these with \r rewrites; we split then match each segment. */
+export function parseGitProgressLine(
+  seg: string,
+): { phase: 'receiving' | 'resolving'; percent: number } | null {
+  const r = /Receiving objects:\s+(\d+)%/.exec(seg);
+  if (r) return { phase: 'receiving', percent: Number(r[1]) };
+  const d = /Resolving deltas:\s+(\d+)%/.exec(seg);
+  if (d) return { phase: 'resolving', percent: Number(d[1]) };
+  return null;
+}
+
+/**
+ * Run `git clone --progress`, streaming receiving/resolving percentages to
+ * `onProgress`, buffering stderr (tail-capped) for error classification, with a
+ * hard timeout that SIGTERM→SIGKILLs a runaway. Never rejects — resolves a
+ * GitCloneOutcome the caller maps to a CloneResult/CloneError. Replaces the
+ * buffered execFile so progress can stream; the classification/timeout/cleanup
+ * contract is preserved.
+ */
+export function runGitClone(
+  args: string[],
+  timeoutMs: number,
+  onProgress?: CloneOpts['onProgress'],
+): Promise<GitCloneOutcome> {
+  return new Promise((resolveOutcome) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      // Disable interactive prompts — the credential helper either has creds or
+      // we surface auth_required immediately (never block on a password prompt).
+      child = spawn('git', args, { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    } catch (e) {
+      resolveOutcome({ ok: false, message: (e as Error).message || 'git spawn failed', gitMissing: true });
+      return;
+    }
+
+    let stderr = '';
+    let settled = false;
+    const finish = (o: GitCloneOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveOutcome(o);
+    };
+
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      const hard = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* */ } }, 2000);
+      hard.unref?.();
+      finish({ ok: false, message: `git clone timed out after ${Math.round(timeoutMs / 1000)}s` });
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stderr?.on('data', (buf: Buffer) => {
+      const chunk = buf.toString();
+      stderr += chunk;
+      // git progress is unbounded \r-rewrites; keep only the tail (the fatal
+      // error line is last) so classification still works without OOM.
+      if (stderr.length > 64 * 1024) stderr = stderr.slice(-64 * 1024);
+      if (!onProgress) return;
+      for (const seg of chunk.split(/[\r\n]+/)) {
+        const p = parseGitProgressLine(seg);
+        if (p) onProgress(p);
+      }
+    });
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      finish({ ok: false, message: e.message || 'git spawn failed', gitMissing: e.code === 'ENOENT' });
+    });
+    child.on('close', (code) => {
+      if (code === 0) finish({ ok: true, message: '' });
+      else finish({ ok: false, message: stderr.trim() || `git clone exited with code ${code}` });
+    });
+  });
 }
 
 /**
@@ -225,39 +322,27 @@ export async function cloneGithubRepo(
 
   await mkdir(dirname(dest), { recursive: true });
 
-  const args = ['clone'];
+  const args = ['clone', '--progress'];
   if (opts.shallow) args.push('--depth', '1');
+  if (opts.ref) args.push('--branch', opts.ref);
   args.push(parsed.cloneUrl, dest);
 
-  try {
-    await execFileP('git', args, {
-      timeout: opts.timeoutMs ?? 5 * 60 * 1000,
-      // Disable interactive prompts — credential helper either has
-      // creds or we surface auth_required immediately.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    });
+  const outcome = await runGitClone(args, opts.timeoutMs ?? 5 * 60 * 1000, opts.onProgress);
+  if (outcome.ok) {
     const defaultBranch = await readCloneDefaultBranch(dest);
     return { path: dest, parsed, ...(defaultBranch ? { defaultBranch } : {}) };
-  } catch (e: unknown) {
-    // execFile error shape: { code: number, stdout, stderr, killed, signal, message }
-    const err = e as { code?: unknown; stderr?: string; message?: string };
-    const stderr = typeof err.stderr === 'string' ? err.stderr : '';
-    const message = stderr.trim() || err.message || 'git clone failed';
-
-    // Clean up half-cloned dest so caller can retry.
-    try { await rm(dest, { recursive: true, force: true }); } catch { /* best-effort */ }
-
-    if (err.code === 'ENOENT' || /command not found|ENOENT/.test(message)) {
-      return {
-        code: 'git_missing',
-        message: 'git is not installed or not on PATH',
-      };
-    }
-    return {
-      code: classifyGitError(message),
-      message: message.slice(0, 500),
-    };
   }
+
+  // Clean up half-cloned dest so caller can retry.
+  try { await rm(dest, { recursive: true, force: true }); } catch { /* best-effort */ }
+
+  if (outcome.gitMissing || /command not found|ENOENT/.test(outcome.message)) {
+    return { code: 'git_missing', message: 'git is not installed or not on PATH' };
+  }
+  return {
+    code: classifyGitError(outcome.message),
+    message: outcome.message.slice(0, 500),
+  };
 }
 
 export function isCloneError(r: CloneResult | CloneError): r is CloneError {

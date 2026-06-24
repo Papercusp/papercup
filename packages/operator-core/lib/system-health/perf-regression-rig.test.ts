@@ -187,8 +187,6 @@ function fakeSql(handlers: { match: RegExp; rows?: unknown[]; throws?: Error }[]
     if (h.throws) return Promise.reject(h.throws);
     return Promise.resolve(h.rows ?? []);
   };
-  // `sql.json(...)` is used by the INSERT — make it a no-op passthrough.
-  (tag as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => v;
   return {
     sql: tag as unknown as Sql,
     get inserts() {

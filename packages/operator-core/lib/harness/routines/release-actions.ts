@@ -139,6 +139,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     summary?: string;
     failingTests?: string[];
     flakeSuspects?: string[];
+    advancedTo?: string;
   } | null;
   if (parsed?.reason) {
     status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
@@ -149,6 +150,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     detail.green = parsed.green ?? null;
     if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
     if (parsed.from) detail.from = parsed.from.slice(0, 12);
+    // P-016: on a partial advance, record the prefix sha `main` was FF'd to (the red
+    // tip stays in `candidate`) so /admin/git shows WHERE main landed vs the held tip.
+    if (parsed.advancedTo) detail.advancedTo = parsed.advancedTo.slice(0, 12);
     // P-003 (git-sync-dx-hardening): persist the failing-test reason in the
     // append-only event so WHY the gate was red survives the per-tick metadata
     // overwrite (capped — the full list also goes to the release-fixer).
@@ -173,7 +177,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
   // release-fixer agent to diagnose + fix the failing test — the test-failure
   // sibling of git-sync's merge-resolver. Fail-safe + deduped per red-candidate.
-  if (status === 'not-green' && candidate) {
+  // P-016 (D-010): on 'advanced-prefix' the longest-green PREFIX was promoted but the
+  // batch TIP is still red — `candidate` is that red tip + `failingTests` its failures,
+  // so the fixer dispatch is identical to a full hold (it must still fix the red tip).
+  if ((status === 'not-green' || status === 'advanced-prefix') && candidate) {
     await dispatchReleaseFixer(ctx, candidate, failingTests).catch((e) =>
       console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -247,7 +254,10 @@ async function trackGateStall(
   candidate?: string,
   failingTests?: string[],
 ): Promise<void> {
-  const isGreen = status === 'advanced' || status === 'up-to-date';
+  // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
+  // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
+  // a full advance — the red tip is tracked separately via the release-fixer dispatch.
+  const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
   // P-006: every non-green verdict counts toward the stall streak — INCLUDING 'error'
   // (a green-checkpoint script crash, the 25-min timeout, or unparseable JSON). The old
   // code early-returned on 'error', so a persistently crashing/hanging suite never

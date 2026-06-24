@@ -30,6 +30,14 @@ const base = arg('--base', process.env.AFFECTED_BASE || 'origin/main');
 const runIntegration = has('--integration');
 const runAll = has('--all');
 const dry = has('--dry');
+// P-016 (release-pipeline-resilience-2026-06-09 D-010): range + print-only mode for the
+// green-checkpoint's longest-green-PREFIX salvage. With --range-from/--range-to, the
+// changed-file set is the two-dot diff of that commit range (NOT the working tree), and
+// --print-affected emits one `AFFECTED_WS\t<name>` line per affected workspace and exits
+// WITHOUT running any tests — a cheap git+graph affected-set probe per candidate prefix.
+const rangeFrom = arg('--range-from', null);
+const rangeTo = arg('--range-to', null);
+const printAffected = has('--print-affected');
 const runElSuite = has('--el-suite');
 const excludeArg = arg('--exclude', '');
 const excludes = new Set(excludeArg.split(',').filter(Boolean));
@@ -64,6 +72,12 @@ function sh(cmd) {
 // `git ls-files --others` does not recurse into submodules, so it needs no such
 // flag. Throws on a genuine git error so the caller can decide to warn or bail.
 function changedFiles() {
+  if (rangeFrom && rangeTo) {
+    // P-016: two-dot range — files changed BY the commits in (rangeFrom, rangeTo]. No
+    // working-tree / untracked component: we're probing a historical commit prefix for
+    // the green-checkpoint salvage, not diffing the live tree.
+    return sh(`git diff --name-only --ignore-submodules=all ${rangeFrom}..${rangeTo}`).split('\n').filter(Boolean);
+  }
   const committed = sh(`git diff --name-only --ignore-submodules=all ${base}...HEAD`).split('\n').filter(Boolean);
   const uncommitted = sh('git diff --name-only --ignore-submodules=all HEAD').split('\n').filter(Boolean);
   const untracked = sh('git ls-files --others --exclude-standard').split('\n').filter(Boolean);
@@ -117,6 +131,15 @@ for (const ws of wsByDir.values()) {
     if (!reverseDeps.has(dep)) reverseDeps.set(dep, new Set());
     reverseDeps.get(dep).add(ws.name);
   }
+}
+
+// P-016 (D-010): print-only affected-set probe for the green-checkpoint longest-green-
+// prefix salvage. Emit one machine-parseable `AFFECTED_WS\t<name>` line per affected
+// workspace and exit BEFORE any test run / EL-suite auto-trigger. affectedWorkspaces()
+// is a hoisted function declaration, so it is callable here.
+if (printAffected) {
+  for (const ws of affectedWorkspaces()) console.log(`AFFECTED_WS\t${ws.name}`);
+  process.exit(0);
 }
 
 function affectedWorkspaces() {

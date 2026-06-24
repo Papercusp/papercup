@@ -21,9 +21,9 @@ export default defineTool({
   description:
     'Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list additionally receives a coord inbox notification (notify policy — never wakes). Use the key your waiter registered (events:await tells them what to wait on).',
   guidance: {
-    when: 'Announcing that the thing a peer is blocked on has happened: their requested work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it.',
+    when: 'Announcing that the thing a peer is blocked on has happened: their requested work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT — re-invoke its turn — the key is `coord:inbox-wake:<ownerId>`, but prefer the higher-level verbs that hide the key: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:\'required\'} to message+wake.)',
     notWhen:
-      'General status narration — lifecycle auto-emits + work_items:complete already cover it. Conversation — coord:send. If nobody could plausibly be awaiting the key and you have no `to`, the emit reaches no one (it is not a log).',
+      'General status narration — lifecycle auto-emits + work_items:complete already cover it. Conversation — coord:send. Waking a specific agent — use coord:wake / coord:dispatch (they fire the inbox-wake key for you + report woken/dead). If nobody could plausibly be awaiting the key and you have no `to`, the emit reaches no one (it is not a log).',
     chaining: 'Peer: events:await { event: K } → you: do the work → events:emit { event: K, summary } → peer wakes.',
   },
   capability: 'coord:write',

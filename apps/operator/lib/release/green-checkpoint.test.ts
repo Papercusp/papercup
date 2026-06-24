@@ -509,3 +509,142 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
     expect(called).toBe(false); // a broad red is never load-flake absorption
   });
 });
+
+// P-016 (release-pipeline-resilience-2026-06-09 D-010): longest-green-PREFIX FF — a red
+// batch TIP no longer holds the clean prefix hostage. The invariant under test: `main`
+// only ever FFs to a commit that ITSELF ran green (the confirm-run), so a wrong prefix
+// guess just holds (today's behavior), never deploys untested code. Env-armed (default-OFF).
+describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
+  // Build a real commit chain c1(ready) → c2 → c3 → c4(candidate) so advanceReady /
+  // isAncestor work; stub the NEW deps (commitsInRange / affectedWorkspacesForRange) and
+  // the two runGreen calls (1 = candidate red, 2 = confirm on the chosen prefix).
+  function partialDeps(opts: {
+    candidateFailingTests?: string[];
+    affected: Record<string, string[]>; // sha → affected workspace names for that prefix's range
+    commits: string[]; // lastReady..candidate, OLDEST-FIRST full shas
+    confirmGreen: boolean;
+  }): { deps: CheckpointDeps; calls: string[] } {
+    const calls: string[] = [];
+    let runGreenN = 0;
+    const deps: CheckpointDeps = {
+      setupTree: async (ref) => { calls.push(`setup:${ref.slice(0, 7)}`); },
+      runGreen: async () => {
+        runGreenN++;
+        if (runGreenN === 1) {
+          calls.push('runGreen:candidate');
+          return { green: false, summary: 'red', failingTests: opts.candidateFailingTests };
+        }
+        calls.push('runGreen:confirm');
+        return { green: opts.confirmGreen, summary: opts.confirmGreen ? 'all pass' : 'still red' };
+      },
+      advance: (c) => { calls.push(`advance:${c.slice(0, 7)}`); return advanceReady(repo, c, 'ready'); },
+      push: async () => { calls.push('push'); },
+      broadcast: async () => { calls.push('broadcast'); },
+      escalate: async () => { calls.push('escalate'); },
+      clearEscalation: async () => { calls.push('clearEscalation'); },
+      commitsInRange: async () => { calls.push('commitsInRange'); return opts.commits; },
+      affectedWorkspacesForRange: async (_from, to) => { calls.push(`affected:${to.slice(0, 7)}`); return opts.affected[to] ?? []; },
+      log: () => {},
+    };
+    return { deps, calls };
+  }
+
+  beforeEach(() => { process.env.PAPERCUSP_PARTIAL_GREEN_GATE = '1'; });
+  afterEach(() => { delete process.env.PAPERCUSP_PARTIAL_GREEN_GATE; });
+
+  async function chain() {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('b', '2', 'c2'); // touches ws "other"
+    const c3 = await commit('b', '3', 'c3'); // touches ws "other"
+    const c4 = await commit('c', '4', 'c4'); // touches ws "failing" (the red tip)
+    return { c1, c2, c3, c4 };
+  }
+
+  it('advances `main` to the longest GREEN prefix and holds the red tip', async () => {
+    const { c2, c3, c4 } = await chain();
+    const { deps, calls } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c2]: ['@ws/other'], [c3]: ['@ws/other'], [c4]: ['@ws/failing', '@ws/other'] },
+      commits: [c2, c3, c4],
+      confirmGreen: true,
+    });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, reason: 'advanced-prefix', candidate: c4, advancedTo: c3, green: false });
+    expect(r.failingTests).toEqual(['@ws/failing']); // red tip's signature preserved for the fixer
+    expect(await revParse(repo, 'ready')).toBe(c3); // FF'd to the longest clean prefix, NOT the red tip
+    expect(calls).toContain('runGreen:confirm');
+    expect(calls).toContain('advance:' + c3.slice(0, 7));
+  });
+
+  it('holds (no advance) when the confirm-run on the prefix is RED — never FFs to unconfirmed', async () => {
+    const { c1, c3, c4 } = await chain();
+    const { deps } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c4]: ['@ws/failing'] }, // c3 not listed ⇒ clean ⇒ chosen as the prefix to confirm
+      commits: [c3, c4],
+      confirmGreen: false, // the chosen prefix did NOT confirm green ⇒ must hold
+    });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(r.advanced).toBe(false);
+    expect(await revParse(repo, 'ready')).toBe(c1); // unchanged — no FF to an unconfirmed commit
+  });
+
+  it('holds when the FIRST new commit already implicates a failing workspace (no clean prefix)', async () => {
+    const { c1, c2, c3, c4 } = await chain();
+    const { deps, calls } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c2]: ['@ws/failing'], [c3]: ['@ws/failing'], [c4]: ['@ws/failing'] },
+      commits: [c2, c3, c4],
+      confirmGreen: true,
+    });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(await revParse(repo, 'ready')).toBe(c1); // unchanged
+    expect(calls).not.toContain('runGreen:confirm'); // no clean prefix ⇒ never even confirms
+  });
+
+  it('holds when the failure is not workspace-localizable (only file-path / build failures)', async () => {
+    const { c1, c2, c3, c4 } = await chain();
+    const { deps } = partialDeps({
+      candidateFailingTests: ['lib/foo.test.ts', '@papercusp/operator-vite'], // file path + build sentinel, no ws-name match
+      affected: { [c4]: ['@ws/failing', '@ws/other'] },
+      commits: [c2, c3, c4],
+      confirmGreen: true,
+    });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green'); // failingWs ∩ affected = ∅ ⇒ decline, don't guess
+    expect(await revParse(repo, 'ready')).toBe(c1);
+  });
+
+  it('holds when there is only ONE new commit (the red tip itself — nothing behind it)', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('c', '2', 'c2'); // the single red commit
+    const { deps, calls } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c2]: ['@ws/failing'] },
+      commits: [c2],
+      confirmGreen: true,
+    });
+    const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(calls).not.toContain('runGreen:confirm');
+  });
+
+  it('is OFF by default — without PAPERCUSP_PARTIAL_GREEN_GATE a red candidate holds exactly as before', async () => {
+    delete process.env.PAPERCUSP_PARTIAL_GREEN_GATE; // override the beforeEach arm
+    const { c1, c2, c3, c4 } = await chain();
+    const { deps, calls } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c2]: ['@ws/other'], [c3]: ['@ws/other'], [c4]: ['@ws/failing'] },
+      commits: [c2, c3, c4],
+      confirmGreen: true,
+    });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green'); // gate OFF ⇒ no salvage attempt
+    expect(await revParse(repo, 'ready')).toBe(c1);
+    expect(calls).not.toContain('commitsInRange'); // the salvage path never ran
+  });
+});

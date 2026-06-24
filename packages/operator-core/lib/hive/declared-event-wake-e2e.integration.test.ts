@@ -105,7 +105,22 @@ async function dispatch(tool: string, args: Record<string, unknown>): Promise<Re
   const res = await dispatchProjectedTool(projected!, tool, args, ctx() as never, PROJECTED_DEPS);
   expect(res.ok, `${tool} dispatch failed: ${JSON.stringify(res.error ?? null)}`).toBe(true);
   const text = (res.result?.content as Array<{ text: string }>)[0]?.text;
-  return text ? JSON.parse(text) : {};
+  const parsed = text ? JSON.parse(text) : {};
+  // plans:start now returns the house bulk envelope `{ ok, results:[…], counts }`
+  // via _bulk's bulkContent (bulk-endpoint-standardization-2026-06-21); the
+  // per-item result we assert against (slug, status, transitioned, …) lives in
+  // results[0] for a single-slug call. hive:declare-wake still returns a flat
+  // `{ ok, mode, eventRules, … }`, which lacks results/counts and is passed
+  // through unchanged. Unwrap only the bulk envelope.
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { results?: unknown }).results) &&
+    (parsed as { counts?: unknown }).counts !== undefined
+  ) {
+    return ((parsed as { results: Record<string, unknown>[] }).results[0] ?? {});
+  }
+  return parsed;
 }
 
 const insertPlan = async (slug: string) =>

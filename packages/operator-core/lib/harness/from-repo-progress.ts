@@ -14,13 +14,20 @@
  * Rows are transient UX, not state — capped + TTL-swept, never persisted.
  */
 
-export type FromRepoStep = 'lookup' | 'clone' | 'detect' | 'create' | 'seed' | 'publish';
+// `submodules` is the dogfood clone-on-first-boot's second phase
+// (bootstrap-papercusp-hive) — the create-from-URL flow doesn't emit it.
+export type FromRepoStep = 'lookup' | 'clone' | 'submodules' | 'detect' | 'create' | 'seed' | 'publish';
 export type FromRepoStepStatus = 'running' | 'done' | 'error' | 'skipped';
 
 export interface FromRepoProgressRow {
   step: FromRepoStep;
   status: FromRepoStepStatus;
   ts: number;
+  /** 0–100 for a phase with a real byte/object measure (git clone --progress,
+   *  submodule N/total). Absent for instantaneous steps. */
+  percent?: number;
+  /** Short human detail, e.g. "8/27 submodules". Optional. */
+  detail?: string;
 }
 
 const TTL_MS = 15 * 60 * 1000;
@@ -39,17 +46,38 @@ function sweep(now: number): void {
   for (const [id] of byAge.slice(0, store.size - MAX_ENTRIES)) store.delete(id);
 }
 
-/** Record a step transition + fire the sync invalidate (best-effort). */
+/** Record a step transition + fire the sync invalidate (best-effort).
+ *  `extra.percent` / `extra.detail` carry a measured progress for a long phase
+ *  (git clone --progress, submodule N/total). Callers should THROTTLE percent
+ *  ticks (e.g. emit every few %) — this still coalesces a `running` stream into
+ *  one evolving row so the store never grows per tick. */
 export function recordFromRepoStep(
   progressId: string,
   step: FromRepoStep,
   status: FromRepoStepStatus,
+  extra?: { percent?: number; detail?: string },
 ): void {
   if (!progressId) return;
   const now = Date.now();
   sweep(now);
   const entry = store.get(progressId) ?? { rows: [], touched: now };
-  entry.rows.push({ step, status, ts: now });
+  const row: FromRepoProgressRow = {
+    step,
+    status,
+    ts: now,
+    ...(extra?.percent != null
+      ? { percent: Math.max(0, Math.min(100, Math.round(extra.percent))) }
+      : {}),
+    ...(extra?.detail ? { detail: extra.detail } : {}),
+  };
+  // Coalesce a same-step `running` progress stream into ONE evolving row (a
+  // clone emits ~100 percent ticks); status transitions (running→done) append.
+  const last = entry.rows[entry.rows.length - 1];
+  if (last && last.step === step && last.status === 'running' && status === 'running') {
+    entry.rows[entry.rows.length - 1] = row;
+  } else {
+    entry.rows.push(row);
+  }
   entry.touched = now;
   store.set(progressId, entry);
   // Lazy import avoids a cycle (sync-sse pulls broad operator infra).

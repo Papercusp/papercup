@@ -101,6 +101,10 @@ const KNOWN_ENV_CAPABILITY_GATES = {
     reviewBy: '2026-07-31',
     reason: 'Design-phase invocation gate — blocks feature runs until design accepted/ignored. Built + 11 tests, OFF everywhere. DECIDE: enable per-workspace or migrate to a FLAG.',
   },
+  PAPERCUSP_PARTIAL_GREEN_GATE: {
+    reviewBy: '2026-07-31',
+    reason: 'Longest-green-PREFIX FF for the green-checkpoint gate (release-pipeline-resilience-2026-06-09 P-016 / D-010): when armed, a red batch TIP no longer hostages the clean prefix — `main` FFs to the longest prefix that ITSELF runs green (confirm-gated; the always-tested-green invariant holds). Built + unit-tested, OFF. Default-OFF + env-armed (the established perf/delta-gate pattern) because D-010 calls for an OWNER-ATTENDED live cutover of the fleet-critical gate. DECIDE: arm on the green-checkpoint routine after attended verify, or migrate to a FLAG.',
+  },
   PAPERCUSP_AGENT_GOVERNOR: {
     reviewBy: '2026-07-31',
     reason: 'Agent-spawn rate governance (budget-based backpressure). Built, OFF. Scaling-relevant (thousands-of-agents). DECIDE: enable or migrate to a FLAG.',

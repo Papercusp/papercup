@@ -200,6 +200,17 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // engineer_issues = the issue-family compat view over work_items (post-374; the base
   // table is the real producer above).
   'harness_shared.engineer_issues': ['workItems.byHarness'],
+  // coord_links = the rel='blocks' feature/work-item blocking edge table (EI-1/D-027,
+  // the single source of truth for blocking) + the rel='implements' plan↔work-item
+  // ledger edges. A blocks-edge add/remove is the single most important
+  // READINESS-changing mutation — it flips a work-item between ready/blocked — yet the
+  // table emitted NO change-notify before caching-layer-tag-eca P-013 (mig-396 attaches
+  // emit_change_notify here). Mapping it makes a blocker change live-refresh the
+  // work-items grid (blocked/ready badges) AND brings the table under the cache-tag
+  // coverage guard. Coarse by design: the row trigger fires on ALL rels (implements /
+  // relates too), so an implements write also busts workItems.byHarness — harmless +
+  // bus-deduped at coord_links's low write rate (~30/hr).
+  'harness_shared.coord_links': ['workItems.byHarness'],
   'harness_shared.agent_runs_consolidated': [
     'agentRunsConsolidated.bySlug',
     'agentRunsConsolidated.recent',

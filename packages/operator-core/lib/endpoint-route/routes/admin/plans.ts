@@ -127,6 +127,40 @@ function unwrap(toolResult: { status: number; body: unknown }): Response {
   return Response.json(toolResult.body, { status: toolResult.status });
 }
 
+/**
+ * `plans:get` is now a BULK tool: even a single-slug call returns the runBulk
+ * envelope `{ ok, results: [plan], counts }` (get.ts → bulkContent). The plans
+ * admin UI (usePlan → fetchPlan) is single-plan and reads `data.raw/prose/
+ * frontmatter/contentHash` straight off the response — so without this it gets
+ * the envelope, `data.raw`/`data.prose` are undefined, and PlanDetail renders a
+ * BLANK editor (the symptom: select a plan, nothing shows). Unwrap `results[0]`
+ * here so the route keeps its documented contract — present clean single-object
+ * shapes to client code (line ~21). Non-bulk shapes (a top-level `{ error }`
+ * from a trust/validation failure) pass through unchanged.
+ */
+function unwrapBulkGet(toolResult: { status: number; body: unknown }): Response {
+  if (toolResult.status !== 200) {
+    return Response.json(toolResult.body, { status: toolResult.status });
+  }
+  const body = toolResult.body as { content?: Array<{ type: string; text?: string }> };
+  const text = body.content?.find((c) => c.type === 'text')?.text;
+  if (text === undefined) return Response.json({});
+  let env: unknown;
+  try {
+    env = JSON.parse(text);
+  } catch {
+    return new Response(text, { headers: { 'content-type': 'text/plain' } });
+  }
+  if (env && typeof env === 'object' && Array.isArray((env as { results?: unknown }).results)) {
+    const plan = (env as { results: unknown[] }).results[0];
+    return Response.json(
+      plan ?? { error: { code: 'not_found', message: 'Plan not found.' } },
+    );
+  }
+  // Not the bulk envelope (e.g. a bare { error } from trust/validation) — pass through.
+  return Response.json(env as Record<string, unknown>);
+}
+
 function collectHeaders(req: Request): Record<string, string | undefined> {
   const m: Record<string, string | undefined> = {};
   req.headers.forEach((v, k) => {
@@ -175,6 +209,10 @@ async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> 
   } else if (body.harness == null) {
     body.harness = 'all';
   }
+  // The admin Edit mode round-trips the whole document through plans:set-content
+  // (CAS hashes the exact raw bytes), so the UI needs `raw` — which P-008 drops
+  // from plans:get by default. Opt in for the single-plan `get` the editor loads.
+  if (verb === 'get') body.includeRaw = true;
   const result = await handleHttpToolRequest(
     {
       method: 'POST',
@@ -185,7 +223,7 @@ async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> 
     },
     HOST_EXTRAS,
   );
-  return unwrap(result);
+  return verb === 'get' ? unwrapBulkGet(result) : unwrap(result);
 }
 
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {

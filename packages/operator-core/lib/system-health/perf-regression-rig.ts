@@ -422,6 +422,9 @@ export async function collectPerfRegressionSnapshot(
   // throw: the rig must never break the watchdog tick it rides). `breached` carries the
   // tick's breaches for the audit trail.
   try {
+    // jsonb write: bind as `${JSON.stringify(x)}::jsonb` — NOT sql.json(), which throws
+    // under the repo's postgres-js ("Buffer.byteLength received Object"; see
+    // gym/store.ts, rationale/pg-store.ts) and is mistyped against JSONValue here.
     await sql`
       INSERT INTO harness_shared.perf_regression_snapshots
         (workspace_id, loop_lag_p95_ms, conn_saturation_pct, dispatch_orphan_rate, dispatch_sample,
@@ -429,7 +432,7 @@ export async function collectPerfRegressionSnapshot(
       VALUES
         (${workspaceId}, ${metrics.loopLagP95Ms}, ${metrics.connSaturationPct}, ${metrics.dispatchOrphanRate},
          ${metrics.dispatchSample}, ${metrics.coordOpenEscalations},
-         ${sql.json(breaches as unknown as object)})`;
+         ${JSON.stringify(breaches)}::jsonb)`;
   } catch (e) {
     if (isMissingTableError(e, 'perf_regression_snapshots')) {
       notes.push('dormant: perf_regression_snapshots not migrated yet (mig 395) — snapshot not persisted');

@@ -22,6 +22,7 @@ function spyDeps(over: Partial<BootstrapPapercuspHiveDeps> = {}) {
     })),
     setHomeWorkspace: vi.fn(),
     initSubmodules: vi.fn(),
+    recordProgress: vi.fn(),
     ...over,
   };
   return deps as unknown as BootstrapPapercuspHiveDeps & typeof deps;
@@ -56,7 +57,7 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     );
     expect(deps.ensureHive).toHaveBeenCalledWith({ pathOverride: '/clones/papercusp' });
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
-    expect(deps.initSubmodules).toHaveBeenCalledWith('/clones/papercusp');
+    expect(deps.initSubmodules).toHaveBeenCalledWith('/clones/papercusp', expect.any(Object));
     expect(res.state).toBe('cloned-and-created');
     expect(res.path).toBe('/clones/papercusp');
   });

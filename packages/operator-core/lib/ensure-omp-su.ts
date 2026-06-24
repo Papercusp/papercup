@@ -174,6 +174,18 @@ async function ensurePapercuspBootstrap(): Promise<void> {
   } catch (e) {
     dlog(`OMP integration failed: ${(e as Error).message}`);
   }
+
+  // Register claude's user-level papercusp-su MCP too (the claude sibling of
+  // the omp merge above) so a `psu → claude` session has its tools. No-ops
+  // cleanly when ~/.claude.json is absent (claude never launched).
+  try {
+    const { installClaudeIntegration } = await import('./desktop-install/claude-integration');
+    const c = await installClaudeIntegration();
+    if (c.changed) dlog('claude MCP integration registered papercusp-su in ~/.claude.json');
+    else if (c.reason && c.reason !== 'claude_not_initialized') dlog(`claude MCP integration: ${c.reason}`);
+  } catch (e) {
+    dlog(`claude MCP integration failed: ${(e as Error).message}`);
+  }
 }
 
 

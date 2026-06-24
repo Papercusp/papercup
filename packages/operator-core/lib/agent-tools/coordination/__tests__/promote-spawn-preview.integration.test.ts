@@ -27,15 +27,19 @@ import { childSeedSlug } from '../spawn-child';
 // migration 295). Seed + verify there, not the fixture's generic 'default', or the
 // tool's readPlanBySlug looks in the wrong workspace → plan_not_found.
 import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import {
   setupPlanPgFixture,
   seedPlan,
   type PlanPgFixture,
 } from '../../plans/__tests__/_pg-tool-fixture';
 
-// plans:promote reads the plan at the papercup-primary scope (no harness arg
-// on the tool) — seed under 'papercup' with throwaway slugs + targeted cleanup.
-const PARENT_HARNESS = 'papercup';
+// plans:promote reads the plan at the operator-home scope (no harness arg on the
+// tool → resolvePlanScope returns operatorHomeHarnessSlug() / PAPERCUSP_WORKSPACE_ID).
+// Seed under that home slug — 'papercusp' post papercup→papercusp migration
+// (LEGACY_DEFAULT_HOME_HARNESS flipped 2026-06-20) — not the stale 'papercup'
+// literal, or the tool's readPlanBySlug looks in the wrong harness → plan_not_found.
+const PARENT_HARNESS = operatorHomeHarnessSlug();
 const RUN = Math.random().toString(36).slice(2, 8);
 const MIXED_SLUG = `zzz-spawn-preview-mixed-${RUN}-2026-06-07`;
 const PURE_SLUG = `zzz-spawn-preview-pure-${RUN}-2026-06-07`;

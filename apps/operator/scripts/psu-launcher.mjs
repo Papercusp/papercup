@@ -1346,6 +1346,13 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
 
 function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   const env = { ...process.env, ...envelopeEnv };
+  // Export the RESOLVED operator url to every agent child so claude's user-level
+  // papercusp-su MCP url (`${PAPERCUSP_OPERATOR_URL:-…}/api/mcp?…`, written by
+  // desktop-install/claude-integration) resolves to the LIVE operator on each
+  // launch. The desktop operator binds a dynamic localhost port per boot, so a
+  // baked url would go stale; env-interpolation + this export self-heal it.
+  // OPERATOR_URL already honors an explicit PAPERCUSP_OPERATOR_URL override.
+  env.PAPERCUSP_OPERATOR_URL = OPERATOR_URL;
   // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
   // through a managed pty + owner-only control socket so the operator can inject
   // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking

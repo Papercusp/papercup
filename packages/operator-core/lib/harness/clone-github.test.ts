@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,6 +11,8 @@ import {
   defaultClonesDir,
   isCloneError,
   readCloneDefaultBranch,
+  runGitClone,
+  parseGitProgressLine,
 } from './clone-github';
 
 const execFileP = promisify(execFile);
@@ -304,5 +306,90 @@ describe('readCloneDefaultBranch (P-002 hive-from-github-url)', () => {
     await mkdir(empty, { recursive: true });
     await execFileP('git', ['init', '-q', '-b', 'main'], { cwd: empty });
     expect(await readCloneDefaultBranch(empty)).toBe('main');
+  });
+});
+
+describe('parseGitProgressLine (clone --progress stderr)', () => {
+  it('parses Receiving objects %', () => {
+    expect(parseGitProgressLine('Receiving objects:  42% (420/1000), 1.2 MiB | 3 MiB/s')).toEqual({
+      phase: 'receiving',
+      percent: 42,
+    });
+  });
+  it('parses Resolving deltas %', () => {
+    expect(parseGitProgressLine('Resolving deltas: 100% (50/50), done.')).toEqual({
+      phase: 'resolving',
+      percent: 100,
+    });
+  });
+  it('returns null for non-progress lines', () => {
+    expect(parseGitProgressLine("Cloning into 'x'...")).toBeNull();
+    expect(parseGitProgressLine('')).toBeNull();
+    expect(parseGitProgressLine('remote: Counting objects: 5')).toBeNull();
+  });
+});
+
+describe('runGitClone — streaming clone + ref pinning', () => {
+  let dir: string;
+  let bare: string; // bare repo: main(c1, tag v1) + feature(c2)
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'rungitclone-'));
+    const src = join(dir, 'src');
+    await mkdir(src, { recursive: true });
+    await writeFile(join(src, 'f.txt'), 'one\n');
+    await execFileP('git', ['init', '-q', '-b', 'main', src]);
+    await execFileP('git', ['-C', src, 'config', 'user.email', 't@t']);
+    await execFileP('git', ['-C', src, 'config', 'user.name', 't']);
+    await execFileP('git', ['-C', src, 'add', '-A']);
+    await execFileP('git', ['-C', src, 'commit', '-q', '-m', 'c1']);
+    await execFileP('git', ['-C', src, 'tag', 'v1']);
+    await execFileP('git', ['-C', src, 'checkout', '-q', '-b', 'feature']);
+    await writeFile(join(src, 'f.txt'), 'two\n');
+    await execFileP('git', ['-C', src, 'commit', '-q', '-am', 'c2']);
+    await execFileP('git', ['-C', src, 'checkout', '-q', 'main']);
+    bare = join(dir, 'repo.git');
+    await execFileP('git', ['clone', '-q', '--bare', src, bare]);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('clones successfully (ok:true) and any progress is well-formed', async () => {
+    const dest = join(dir, 'clone-ok');
+    const calls: { phase: string; percent: number }[] = [];
+    // --no-local forces the object-transfer path so progress can emit.
+    const r = await runGitClone(['clone', '--progress', '--no-local', bare, dest], 30_000, (p) => calls.push(p));
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(dest, '.git'))).toBe(true);
+    for (const c of calls) {
+      expect(['receiving', 'resolving']).toContain(c.phase);
+      expect(c.percent).toBeGreaterThanOrEqual(0);
+      expect(c.percent).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it('pins to a TAG via --branch + --depth 1 (the exact-version dogfood clone)', async () => {
+    const dest = join(dir, 'clone-tag');
+    const r = await runGitClone(['clone', '--progress', '--depth', '1', '--branch', 'v1', bare, dest], 30_000);
+    expect(r.ok).toBe(true);
+    expect(await readFile(join(dest, 'f.txt'), 'utf8')).toBe('one\n'); // v1 == c1
+  });
+
+  it('pins to a BRANCH via --branch', async () => {
+    const dest = join(dir, 'clone-branch');
+    const r = await runGitClone(['clone', '--progress', '--branch', 'feature', bare, dest], 30_000);
+    expect(r.ok).toBe(true);
+    expect(await readFile(join(dest, 'f.txt'), 'utf8')).toBe('two\n'); // feature == c2
+    const { stdout } = await execFileP('git', ['-C', dest, 'symbolic-ref', '--short', 'HEAD']);
+    expect(stdout.trim()).toBe('feature');
+  });
+
+  it('fails (ok:false) on a nonexistent ref', async () => {
+    const dest = join(dir, 'clone-noref');
+    const r = await runGitClone(['clone', '--progress', '--branch', 'no-such-ref', bare, dest], 30_000);
+    expect(r.ok).toBe(false);
+    expect(r.message.length).toBeGreaterThan(0);
   });
 });

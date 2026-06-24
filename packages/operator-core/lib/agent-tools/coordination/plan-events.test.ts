@@ -8,14 +8,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 
-vi.mock('./log', () => ({ coordLog: { appendLine: vi.fn(), readLines: vi.fn() } }));
+vi.mock('./log', () => ({ coordLog: { appendLine: vi.fn(), readLines: vi.fn(), readLinesBounded: vi.fn() } }));
 vi.mock('./identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
-import { emitPlanEvent, emitPlanEventForCaller, readPlanEvents } from './plan-events';
+import { emitPlanEvent, emitPlanEventForCaller, readPlanEvents, READ_PLAN_EVENTS_BOUND } from './plan-events';
 import { coordLog } from './log';
 import { resolveAgentIdentity } from './identity';
 
-const mockLog = coordLog as unknown as { appendLine: ReturnType<typeof vi.fn>; readLines: ReturnType<typeof vi.fn> };
+const mockLog = coordLog as unknown as {
+  appendLine: ReturnType<typeof vi.fn>;
+  readLines: ReturnType<typeof vi.fn>;
+  readLinesBounded: ReturnType<typeof vi.fn>;
+};
 const mockResolve = resolveAgentIdentity as unknown as ReturnType<typeof vi.fn>;
 
 /** The envelope passed to coordLog.appendLine on the most recent call. */
@@ -100,24 +104,44 @@ describe('emitPlanEventForCaller — best-effort', () => {
   });
 });
 
-describe('readPlanEvents — filesBack passthrough + filterPlanEvents', () => {
+describe('readPlanEvents — bounded storage read + filterPlanEvents (EI-1737 / P-005)', () => {
   const planEvt = (over: Partial<CoordEnvelope>): CoordEnvelope => ({
     ts: '2026-06-23T12:00:00.000Z', msg_id: 'm', from: 'x', to: ['*'], kind: 'plan_event',
     plan_slug: 'p', event: 'created', ...over,
   });
 
-  it('passes {filesBack} only when filesBack > 0', async () => {
-    mockLog.readLines.mockResolvedValue([]);
-    await readPlanEvents({ filesBack: 3 });
-    expect(mockLog.readLines).toHaveBeenLastCalledWith('plan-events', { filesBack: 3 });
-    await readPlanEvents({ filesBack: 0 });
-    expect(mockLog.readLines).toHaveBeenLastCalledWith('plan-events', undefined);
+  it('reads BOUNDED (newest-N) and pushes since_ts + a single plan_slug into the storage read', async () => {
+    mockLog.readLinesBounded.mockResolvedValue([]);
+    // single plan_slug + since_ts → both pushed down
+    await readPlanEvents({ since_ts: '2026-06-23T00:00:00.000Z', planSlugs: ['solo'] });
+    expect(mockLog.readLinesBounded).toHaveBeenLastCalledWith('plan-events', {
+      limit: READ_PLAN_EVENTS_BOUND,
+      kinds: ['plan_event'],
+      sinceTs: '2026-06-23T00:00:00.000Z',
+      planSlug: 'solo',
+    });
+    // MULTIPLE plan_slugs → NOT pushed down (filterPlanEvents handles the multi-slug set)
+    await readPlanEvents({ planSlugs: ['a', 'b'] });
+    expect(mockLog.readLinesBounded).toHaveBeenLastCalledWith('plan-events', {
+      limit: READ_PLAN_EVENTS_BOUND,
+      kinds: ['plan_event'],
+    });
+    // no args → just the bound + kind
     await readPlanEvents();
-    expect(mockLog.readLines).toHaveBeenLastCalledWith('plan-events', undefined);
+    expect(mockLog.readLinesBounded).toHaveBeenLastCalledWith('plan-events', {
+      limit: READ_PLAN_EVENTS_BOUND,
+      kinds: ['plan_event'],
+    });
+    // an explicit limit overrides the default bound (still clamped ≤1000 in storage)
+    await readPlanEvents({ limit: 50 });
+    expect(mockLog.readLinesBounded).toHaveBeenLastCalledWith('plan-events', {
+      limit: 50,
+      kinds: ['plan_event'],
+    });
   });
 
   it('drops non-plan_event lines, filters by planSlugs/events, and sorts ascending', async () => {
-    mockLog.readLines.mockResolvedValue([
+    mockLog.readLinesBounded.mockResolvedValue([
       planEvt({ msg_id: 'c', ts: '2026-06-23T12:00:02.000Z', plan_slug: 'keep', event: 'created' }),
       planEvt({ msg_id: 'a', ts: '2026-06-23T12:00:00.000Z', plan_slug: 'keep', event: 'created' }),
       planEvt({ msg_id: 'b', ts: '2026-06-23T12:00:01.000Z', plan_slug: 'drop', event: 'created' }),

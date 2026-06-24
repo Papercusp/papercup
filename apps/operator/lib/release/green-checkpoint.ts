@@ -85,6 +85,16 @@ export interface CheckpointDeps {
    *  flag-gated (a no-op `pass` unless PAPERCUSP_DELTA_GATE=1) so existing stubs
    *  need not provide it and the default deploy behaviour is unchanged. */
   deltaGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  /** P-016 (release-pipeline-resilience-2026-06-09 D-010): the commit shas between
+   *  `from` (exclusive) and `to` (inclusive), OLDEST-FIRST, full shas — the batch the
+   *  green-checkpoint is gating. Used by the longest-green-PREFIX salvage to know which
+   *  prefixes exist. Optional + injected so existing stubs are unaffected. */
+  commitsInRange?(from: string, to: string): Promise<string[]>;
+  /** P-016 (D-010): the workspace NAMES affected by the diff `from..to` (changed files
+   *  → workspaces → reverse-dep expansion — `affected-tests.mjs --print-affected`), or
+   *  null when it can't be computed (caller then declines the salvage, never guesses).
+   *  Pure git+graph, NO test run, so the prefix scan is cheap. Optional + injected. */
+  affectedWorkspacesForRange?(from: string, to: string): Promise<string[] | null>;
   log(s: string): void;
 }
 
@@ -93,7 +103,11 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'create-failed' | 'perf-held' | 'delta-held';
+  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'delta-held';
+  /** P-016 (D-010): on a PARTIAL advance (reason 'advanced-prefix'), the sha `main`
+   *  was FF'd to — the longest GREEN prefix — while `candidate` stays the red TIP (so
+   *  failingTests + the release-fixer still target the real failure). Absent otherwise. */
+  advancedTo?: string;
   summary?: string;
   /** P-012: a stable signature of what failed (test files / workspaces) on the
    *  not-green path, so the release-fixer dispatch dedups by FAILURE, not candidate sha. */
@@ -423,6 +437,115 @@ export interface CheckpointOpts {
   noPush?: boolean;
 }
 
+/**
+ * P-016 (release-pipeline-resilience-2026-06-09 D-010): is the longest-green-PREFIX
+ * FF gate armed? DEFAULT-OFF — when off, a red candidate holds `main` exactly as it
+ * does today (whole-batch all-or-nothing). Env-armed opt-in, mirroring the perf/delta
+ * gates, because partial FF is the deepest change to the single most fleet-critical
+ * gate and D-010 calls for an OWNER-ATTENDED live cutover ("build attended not blind").
+ */
+export function partialGreenGateEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_PARTIAL_GREEN_GATE === '1';
+}
+
+/**
+ * P-016 (D-010): salvage the LONGEST GREEN PREFIX when the candidate (the batch tip) is
+ * red, so one unrelated red commit no longer holds every clean change behind it hostage.
+ *
+ * Strategy — cheap-locate, then CONFIRM:
+ *   1. `failingWs` = the workspaces that actually failed (the failure signature ∩ the
+ *      batch's affected set). If the failure can't be localized to a workspace (build
+ *      break / bare FAIL <file>), we decline — never guess.
+ *   2. Walk the batch commits oldest→newest; the affected set is monotonic in prefix
+ *      length, so the longest prefix whose CUMULATIVE affected set touches NO failing
+ *      workspace is the salvage candidate. All git+graph, no test runs — cheap.
+ *   3. CONFIRM by running the gate ONCE on that prefix. `main` only ever FFs to a commit
+ *      that ITSELF ran green — so the invariant "`main` is always a tested-green state"
+ *      is preserved; a wrong guess just fails the confirm and holds (today's behavior).
+ *
+ * Returns a partial-advance CheckpointResult (reason 'advanced-prefix') or null (hold).
+ * `candidate` stays the RED tip so the failing-test signature + release-fixer dispatch
+ * keep targeting the real failure; `advancedTo` carries the prefix `main` moved to.
+ */
+async function tryLongestGreenPrefix(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  lastReady: string,
+  candidate: string,
+  failingTests: string[] | undefined,
+  noPush: boolean,
+): Promise<CheckpointResult | null> {
+  if (!deps.commitsInRange || !deps.affectedWorkspacesForRange) return null; // not wired (e.g. a minimal stub)
+  if (!failingTests?.length) return null; // no signature → can't localize → don't guess
+  const commits = await deps.commitsInRange(lastReady, candidate); // oldest→newest, full shas
+  if (commits.length <= 1) return null; // only the red tip itself — nothing to salvage behind it
+
+  const fullAffected = await deps.affectedWorkspacesForRange(lastReady, candidate);
+  if (!fullAffected) return null; // resolver couldn't compute → hold (safe)
+  const failingSig = new Set(failingTests);
+  // The failing WORKSPACES = those in the batch's affected set whose name is in the
+  // failure signature. File-path entries (FAIL <file>) and the build sentinel won't
+  // match a workspace name, so they fall out — if nothing localizes, we decline.
+  const failingWs = new Set(fullAffected.filter((w) => failingSig.has(w)));
+  if (failingWs.size === 0) return null; // failure not workspace-localizable → hold
+
+  // Longest prefix (oldest-first) whose cumulative affected set avoids every failing ws.
+  let prefixTip: string | null = null;
+  for (const sha of commits.slice(0, -1)) { // exclude the red tip itself
+    const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
+    if (!aff) break; // can't compute this prefix → stop at the last clean one
+    if (aff.some((w) => failingWs.has(w))) break; // this commit (cumulatively) touches a failing ws
+    prefixTip = sha; // clean so far — extend the prefix
+  }
+  if (!prefixTip) return null; // the very first new commit already implicates a failing ws
+
+  // CONFIRM the prefix is itself green before FF-ing `main` to it (the invariant guard).
+  deps.log(
+    `partial-green-gate: candidate ${candidate.slice(0, 8)} red (failing ws: ${[...failingWs].join(', ')}); ` +
+      `confirming longest clean prefix ${prefixTip.slice(0, 8)}`,
+  );
+  await deps.setupTree(prefixTip);
+  const confirm = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  if (!confirm.green) {
+    deps.log(`partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`);
+    return null; // affected reasoning was incomplete; stay safe
+  }
+  const adv = await deps.advance(prefixTip);
+  if (!adv.advanced) return null;
+  if (!noPush) await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
+  deps.log(
+    `✅ partial-green-gate: ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${prefixTip.slice(0, 8)} ` +
+      `(longest green prefix; tip ${candidate.slice(0, 8)} still red)`,
+  );
+  await deps
+    .broadcast(
+      `🟧 green-checkpoint: PARTIAL advance — \`${cfg.releaseRef}\` → ${prefixTip.slice(0, 8)} (longest GREEN prefix), tip ${candidate.slice(0, 8)} still red`,
+      `Was ${adv.from?.slice(0, 8) ?? 'unset'}. One unrelated red no longer hostages the clean prefix — it is now deployable. The red tip's failing tests still need a fix (release-fixer dispatched).`,
+    )
+    .catch(() => {});
+  // The prefix is a real green advance — wake any agent awaiting "the next green".
+  void import('@papercusp/operator-core/lib/events/await/engine')
+    .then(({ emitAwaitedEvent }) =>
+      emitAwaitedEvent({
+        key: 'release:green',
+        summary: `${cfg.releaseRef} advanced to ${prefixTip!.slice(0, 8)} (longest green prefix; tip ${candidate.slice(0, 8)} held red)`,
+        payload: { sha: prefixTip, from: adv.from, partial: true, redTip: candidate },
+        source: 'green-checkpoint',
+      }),
+    )
+    .catch(() => {});
+  return {
+    advanced: true,
+    candidate, // the RED tip — keeps failingTests + the release-fixer targeting the real failure
+    advancedTo: prefixTip,
+    from: adv.from,
+    green: false, // the candidate (tip) is NOT green; `main` advanced to a green PREFIX
+    reason: 'advanced-prefix',
+    summary: confirm.summary,
+    failingTests,
+  };
+}
+
 export async function runGreenCheckpoint(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -502,6 +625,21 @@ export async function runGreenCheckpoint(
           )
           .catch(() => {});
       }
+    }
+    // P-016 (D-010): longest-green-PREFIX FF. With the gate ARMED, a red TIP no longer
+    // holds the clean PREFIX behind it hostage — `main` FFs to the longest prefix that
+    // ITSELF runs green (confirm-gated, so the "always tested-green" invariant holds).
+    // Runs AFTER the red escalate/broadcast/emit above, so the red tip is still fully
+    // surfaced + the release-fixer still dispatched on it. Default-OFF (env-armed); a
+    // failure here just falls through to the normal hold. (release-pipeline-resilience P-016)
+    if (lastReady && partialGreenGateEnabledFromEnv()) {
+      const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush).catch(
+        (e) => {
+          deps.log(`partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`);
+          return null;
+        },
+      );
+      if (partial) return partial;
     }
     return { advanced: false, candidate, from: lastReady, green: false, reason: 'not-green', summary, failingTests };
   }
@@ -742,6 +880,32 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       return { green, summary, failingTests, ...(flakeSuspects?.length ? { flakeSuspects } : {}) };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
+    // P-016 (D-010): the batch commits oldest-first (full shas), from the integration
+    // repo's own history — `from..to` excludes `from`, includes `to`.
+    async commitsInRange(from, to) {
+      const r = await exec('git', ['-C', cfg.integrationRoot, 'log', '--reverse', '--format=%H', `${from}..${to}`], {
+        allowNonZero: true,
+      });
+      if (r.code !== 0) return [];
+      return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    },
+    // P-016 (D-010): affected workspace NAMES for the diff `from..to`, via the shared
+    // resolver's range+print mode (changed files → workspaces → reverse-deps). Pure
+    // git+graph, no test run. Returns null on any resolver failure so the caller holds.
+    async affectedWorkspacesForRange(from, to) {
+      const script = path.join(cfg.integrationRoot, 'scripts/affected-tests.mjs');
+      const r = await exec('node', [script, '--range-from', from, '--range-to', to, '--print-affected'], {
+        cwd: cfg.integrationRoot,
+        allowNonZero: true,
+      });
+      if (r.code !== 0) return null;
+      const prefix = 'AFFECTED_WS\t';
+      return r.stdout
+        .split('\n')
+        .filter((l) => l.startsWith(prefix))
+        .map((l) => l.slice(prefix.length).trim())
+        .filter(Boolean);
+    },
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.

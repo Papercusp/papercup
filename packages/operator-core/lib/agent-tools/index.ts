@@ -417,6 +417,10 @@ import './coordination/tools/send';
 // coord:presence + plan_items:assign + coord:send (deliver-and-wake). Flags an
 // `ended`/not-wakeable target loudly instead of a silent woken:0.
 import './coordination/tools/dispatch';
+// The discoverable "wake a parked agent NOW" alias (fleet-dispatch-wake-clarity P-006):
+// fires the target's inbox-wake key (reusing wakeRecipients) so it re-orients on its
+// already-claimed lane — closes the coord:wake/coord:nudge 404 gap.
+import './coordination/tools/wake';
 // Open a work-item-scoped conversation with an agent — the inbox "Message owner"
 // action (inbox-tiering-and-message-agent-2026-06-05, D-004).
 import './coordination/tools/message-agent';

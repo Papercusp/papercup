@@ -446,7 +446,7 @@ export function runBootstrap(): void {
   if (process.env.PAPERCUSP_DESKTOP === '1') {
     import('@papercusp/operator-core/lib/desktop-install/papercusp-files')
       .then(({ installPapercuspFiles }) => installPapercuspFiles())
-      .then((r) => {
+      .then(async (r) => {
         const minted = [
           r.minted.token ? 'token' : null,
           r.minted.agentId ? 'agent-id' : null,
@@ -456,6 +456,24 @@ export function runBootstrap(): void {
         console.log(
           `[desktop-install] papercusp-files ok (${minted}; playbook=${r.playbookWritten} ext=${r.extensionWritten})`,
         );
+        // Register the user-level `papercusp-su` MCP into ~/.claude.json so a
+        // desktop `psu → claude` session actually has its tools. Nothing else in
+        // the cross-platform desktop boot did this (the omp/claude MCP merge sat
+        // only in the Linux-only ensureOmpSuInstalled), which is why a mac user
+        // hit "MCP tools aren't up". Reads the token + agent-id installPapercuspFiles
+        // just minted; the env-interpolated url self-heals across the dynamic
+        // operator port (psu exports PAPERCUSP_OPERATOR_URL). Best-effort, no-ops
+        // cleanly when claude was never launched (~/.claude.json absent).
+        try {
+          const { installClaudeIntegration } = await import(
+            '@papercusp/operator-core/lib/desktop-install/claude-integration'
+          );
+          const c = await installClaudeIntegration();
+          if (c.changed) console.log('[desktop-install] claude MCP ok (registered papercusp-su in ~/.claude.json)');
+          else if (c.reason) console.log(`[desktop-install] claude MCP skipped (${c.reason})`);
+        } catch (e) {
+          console.warn('[desktop-install] claude MCP registration failed:', (e as Error)?.message ?? e);
+        }
       })
       .catch((e) => {
         console.warn('[desktop-install] papercusp-files failed:', (e as Error)?.message ?? e);
