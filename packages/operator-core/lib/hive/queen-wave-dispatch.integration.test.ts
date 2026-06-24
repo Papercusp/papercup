@@ -103,12 +103,14 @@ async function blocksEdge(blocker: string, blocked: string): Promise<void> {
     VALUES ('default', 'feature', ${HIVE + '#' + blocker}, 'feature', ${HIVE + '#' + blocked}, 'blocks')`;
 }
 
-/** EI-865 — seed a cursed breaker ledger row for a lane (the latched-out state). */
-async function seedCursed(id: string): Promise<void> {
+/** EI-865 / WI-677 — seed a cursed breaker ledger row for a lane (the latched-out state).
+ *  `failCount` defaults to 3 (a genuine PATHOLOGY curse, hard-blocked); pass 0 with a high
+ *  `infraLossCount` to seed an INFRA false-curse (the WI-677 deadlock signature). */
+async function seedCursed(id: string, failCount = 3, infraLossCount = 0): Promise<void> {
   await sql`
     INSERT INTO harness_shared.hive_placements
-      (workspace_id, install_slug, work_item_id, harness_slug, status, fail_count)
-    VALUES (${WS}, ${HIVE}, ${id}, ${HIVE}, 'cursed', 3)`;
+      (workspace_id, install_slug, work_item_id, harness_slug, status, fail_count, infra_loss_count)
+    VALUES (${WS}, ${HIVE}, ${id}, ${HIVE}, 'cursed', ${failCount}, ${infraLossCount})`;
 }
 
 /** Mark a tier1 lane completed by its placed bee — terminal status + held by the bee. */
@@ -212,6 +214,34 @@ describe('queen wave dispatch — wave ordering through bee placement (real PG, 
       id: 'F-701',
       reason: 'cursed — the placement breaker has halted re-placing this item',
     });
+  });
+
+  it('WI-677: an INFRA false-curse (fail_count 0, infra_loss_count 12) is RE-PLACED, while a pathology curse (fail_count 3) is still blocked', async () => {
+    // The deadlock: after the EI-85 host restart the bounded infra breaker cursed genuinely-
+    // ready items at fail_count=0 / infra_loss_count=12, and place_batch then refused them
+    // forever. The fix keys the hard-block on fail_count >= breakerThreshold, so a fail_count-0
+    // infra-curse re-enters the frontier (and clears on completion) while a real 3-strike curse
+    // stays halted.
+    await seedLane({ id: 'F-800', brief: 'a healthy ready lane', order: 1 });
+    await seedLane({ id: 'F-801', brief: 'an INFRA-false-cursed lane (host restart victim)', order: 2 });
+    await seedLane({ id: 'F-802', brief: 'a genuinely pathology-cursed lane', order: 3 });
+    await seedCursed('F-801', 0, 12); // infra false-curse — the WI-677 signature
+    await seedCursed('F-802', 3, 0); // genuine 3-strike pathology curse
+
+    // Backlog path: the infra-cursed lane is BACK in the frontier; the pathology curse stays out.
+    const backlog = await gatherFrontier({ harness: HIVE, workspaceId: WS, limit: 10 });
+    expect(backlog.tasks.map((t) => t.id).sort()).toEqual(['F-800', 'F-801']);
+    expect(backlog.tasks.map((t) => t.id)).not.toContain('F-802');
+
+    // Explicit-id path (what the Queen's place_batch does): the infra-cursed lane re-places;
+    // the pathology curse is still skipped with the breaker reason.
+    const byId = await gatherFrontier({ ids: ['F-800', 'F-801', 'F-802'], workspaceId: WS, limit: 10 });
+    expect(byId.tasks.map((t) => t.id).sort()).toEqual(['F-800', 'F-801']);
+    expect(byId.skipped).toContainEqual({
+      id: 'F-802',
+      reason: 'cursed — the placement breaker has halted re-placing this item',
+    });
+    expect(byId.skipped.map((s) => s.id)).not.toContain('F-801');
   });
 
   it('a generate-derived lane with no blocker is placeable immediately, carrying its substituted brief', async () => {

@@ -276,19 +276,52 @@ describe('evaluatePlacement — WI-233 a reaper-reclaim of a STILL-ALIVE bee doe
   });
 });
 
-describe('evaluatePlacement — F-FIX-041 bounded infra-loss breaker (infra losses do not false-curse, but still bound-curse)', () => {
-  // Two infra signals — operator dormancy (postDormancySweep, item-independent) and a
-  // no-fair-attempt zombie (servingBeeMadeNoToolCalls) — feed the BOUNDED infra_loss_count
-  // (cursing at infraBreakerThreshold), NOT the 3-strike pathology fail_count. The bound is
-  // the safety property (no unbounded retry, even if a signal mis-attributes a wedging item).
+describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two distinct classes)', () => {
+  // WI-677 split the two infra signals that F-FIX-041 had bundled:
+  //   • operator dormancy (postDormancySweep) — ITEM-INDEPENDENT (the whole operator was
+  //     down). An operator-wide outage can NEVER be item-pathology, so it is FULLY EXEMPT:
+  //     BOTH counters flat, never curses (same class as reclaimedWhileActive's proof-of-life).
+  //     F-FIX-041 wrongly counted it toward the bounded breaker, so a host restart cursed
+  //     the whole frontier in lockstep at infraBreakerThreshold (the WI-677 deadlock).
+  //   • no-fair-attempt zombie (servingBeeMadeNoToolCalls) — PER-ITEM and ambiguous (an
+  //     item that crashes bees pre-tool-call also shows 0 tool calls), so it keeps the
+  //     BOUNDED infra breaker: graced re-places, but still curses at the bound (no
+  //     unbounded retry — the EI-865 safety property).
 
-  it('dormancy loss → recover: pathology fail_count held FLAT, bounded infra_loss_count++', () => {
+  it('WI-677 RECURRENCE GUARD (a): a dormancy/host-restart loss is FULLY EXEMPT — neither counter climbs, never curses', () => {
     const d = evaluatePlacement(obs({ postDormancySweep: true, failCount: 0, infraLossCount: 0 }), CFG);
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') {
       expect(d.nextFailCount).toBe(0); // pathology count untouched
-      expect(d.nextInfraLossCount).toBe(1); // infra count climbs
+      expect(d.nextInfraLossCount).toBe(0); // FLAT — item-independent, accrues toward NO breaker
     }
+  });
+
+  it('WI-677 RECURRENCE GUARD (a): a dormancy loss NEVER curses, even one short of the infra bound (the lockstep-curse the deadlock came from)', () => {
+    // The exact pre-fix failure: a string of host restarts climbed every placement to
+    // infraBreakerThreshold and cursed it at fail_count=0. Now dormancy never accrues, so it
+    // can never reach the bound — even seeded one short, it recovers FLAT, never `breaker`.
+    const d = evaluatePlacement(obs({ postDormancySweep: true, failCount: 0, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') {
+      expect(d.nextFailCount).toBe(0);
+      expect(d.nextInfraLossCount).toBe(CFG.infraBreakerThreshold - 1); // held — does NOT climb to the bound
+    }
+  });
+
+  it('the dormancy latch holds across MANY post-restart sweeps — neither counter ever climbs, item never curses', () => {
+    let storedFail = 0;
+    let storedInfra = 0;
+    for (let i = 0; i < 100; i++) {
+      const d = evaluatePlacement(obs({ placementStatus: 'working', postDormancySweep: true, failCount: storedFail, infraLossCount: storedInfra }), CFG);
+      expect(d.kind).toBe('recover');
+      if (d.kind === 'recover') {
+        storedFail = d.nextFailCount;
+        storedInfra = d.nextInfraLossCount;
+      }
+    }
+    expect(storedFail).toBe(0);
+    expect(storedInfra).toBe(0); // never climbed → never cursed, no matter how long the operator flaps
   });
 
   it('zombie loss (0 tool calls) → recover: pathology fail_count held FLAT, bounded infra_loss_count++', () => {
@@ -296,13 +329,13 @@ describe('evaluatePlacement — F-FIX-041 bounded infra-loss breaker (infra loss
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') {
       expect(d.nextFailCount).toBe(0);
-      expect(d.nextInfraLossCount).toBe(1);
+      expect(d.nextInfraLossCount).toBe(1); // the per-item zombie signal still climbs the bounded breaker
     }
   });
 
   it('an infra loss does NOT trip the 3-strike pathology breaker (the false-curse the fix targets)', () => {
     // failCount 2 + a NORMAL loss trips the pathology breaker; the SAME count with an infra
-    // signal recovers (the loss goes to the bounded infra counter instead).
+    // signal recovers (dormancy: fully exempt; zombie: goes to the bounded infra counter).
     const normal = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2 }), CFG);
     expect(normal.kind).toBe('breaker');
     for (const infraObs of [
@@ -315,14 +348,21 @@ describe('evaluatePlacement — F-FIX-041 bounded infra-loss breaker (infra loss
     }
   });
 
-  it('BOUND: infra losses STILL curse at infraBreakerThreshold — never an unbounded exemption', () => {
-    // One below the infra threshold + another infra loss → the infra breaker trips (cursed),
-    // so even an all-infra-attributed (or mis-attributed) item eventually halts.
-    const dorm = evaluatePlacement(obs({ postDormancySweep: true, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
-    expect(dorm.kind).toBe('breaker');
-    if (dorm.kind === 'breaker') expect(dorm.nextInfraLossCount).toBe(CFG.infraBreakerThreshold);
+  it('BOUND: a ZOMBIE loss STILL curses at infraBreakerThreshold — never an unbounded exemption', () => {
+    // One below the infra threshold + another ZOMBIE loss → the infra breaker trips (cursed),
+    // so even an all-zombie-attributed (or mis-attributed) item eventually halts. dormancy
+    // (item-independent) does NOT — see the dormancy guard above.
     const zomb = evaluatePlacement(obs({ servingBeeMadeNoToolCalls: true, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
     expect(zomb.kind).toBe('breaker');
+    if (zomb.kind === 'breaker') expect(zomb.nextInfraLossCount).toBe(CFG.infraBreakerThreshold);
+  });
+
+  it('dormancy takes precedence over a co-occurring zombie signal (a host-restart reap shows both — attribute to the item-independent cause)', () => {
+    // A host restart reaps a bee mid-work: postDormancySweep AND (often) 0-tool-calls both
+    // read true. The item-independent cause wins → fully exempt, NOT the bounded breaker.
+    const d = evaluatePlacement(obs({ postDormancySweep: true, servingBeeMadeNoToolCalls: true, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextInfraLossCount).toBe(CFG.infraBreakerThreshold - 1); // held — dormancy exemption wins
   });
 
   it('SAFETY: a genuine item-pathology loss (no infra signal) still curses at the 3-strike breaker', () => {

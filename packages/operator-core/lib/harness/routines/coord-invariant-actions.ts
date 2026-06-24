@@ -87,6 +87,29 @@ export interface ProbeStep {
   ok: boolean;
   ms: number;
   detail?: string;
+  /** True when this step failed SOLELY because its per-workspace txn could not
+   *  serialize in time — a `WorkspaceContendedError` (pg 55P03 lock_timeout /
+   *  57014 statement_timeout), i.e. transient shared-box contention, NOT a coord
+   *  correctness regression. Drives the file-vs-note disposition (EI-3019). */
+  contended?: boolean;
+}
+
+/** PG SQLSTATEs / error shapes that mean "same-workspace contention timeout"
+ *  (advisory-lock lock_timeout 55P03 / statement_timeout 57014) — the locks layer
+ *  maps these into a `WorkspaceContendedError`. We detect by name OR raw code so
+ *  the check is robust whether the wrapper or the raw postgres error propagates. */
+const CONTENTION_PG_CODES = new Set(['55P03', '57014']);
+
+/** Pure: was a thrown error a transient same-workspace contention timeout (vs a
+ *  real correctness/logic failure)? Exported for unit tests. */
+export function isContentionTimeout(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { name?: string; code?: string; pgCode?: string };
+  if (e.name === 'WorkspaceContendedError') return true;
+  return (
+    (typeof e.pgCode === 'string' && CONTENTION_PG_CODES.has(e.pgCode)) ||
+    (typeof e.code === 'string' && CONTENTION_PG_CODES.has(e.code))
+  );
 }
 
 export interface ProbeVerdict {

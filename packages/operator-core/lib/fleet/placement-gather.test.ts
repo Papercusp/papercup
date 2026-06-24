@@ -6,7 +6,7 @@
  * fallback harness parameter.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { workItemToTask, partitionTasksByReadiness } from './placement-gather';
+import { workItemToTask, partitionTasksByReadiness, isPlacementHardBlocked } from './placement-gather';
 import type { PlacementTask } from './placement-affinity';
 
 describe('workItemToTask — harness backfill for EI items (F-FIX-033)', () => {
@@ -54,6 +54,34 @@ describe('workItemToTask — harness backfill for EI items (F-FIX-033)', () => {
     };
     const task = workItemToTask(ei as any, '   ');
     expect(task.harness).toBeNull();
+  });
+});
+
+describe('isPlacementHardBlocked — WI-677 cursed-filter keys on genuine pathology, not the bare status', () => {
+  // place_batch's loadCursedWorkItemIds hard-blocks a `cursed` item ONLY when its
+  // fail_count has reached the 3-strike pathology breaker. A fail_count-0 `cursed` row is
+  // an INFRA false-curse (host-restart / dormancy / zombie hit the bounded infra breaker
+  // with zero genuine task failures) and stays RE-PLACEABLE — the WI-677 deadlock fix.
+  const BREAKER = 3; // placementConfig().breakerThreshold default
+
+  it('RECURRENCE GUARD (b): a fail_count-0 cursed item is NOT hard-blocked → place_batch re-places it', () => {
+    // The 31 deadlocked items (WI-349 et al.) were all fail_count=0, infra_loss_count=12.
+    expect(isPlacementHardBlocked(0, BREAKER)).toBe(false);
+  });
+
+  it('a fail_count below the breaker threshold is not hard-blocked (still re-placeable)', () => {
+    expect(isPlacementHardBlocked(1, BREAKER)).toBe(false);
+    expect(isPlacementHardBlocked(2, BREAKER)).toBe(false);
+  });
+
+  it('a genuinely pathology-cursed item (fail_count >= breakerThreshold) IS hard-blocked (the breaker still halts a doomed item)', () => {
+    expect(isPlacementHardBlocked(3, BREAKER)).toBe(true);
+    expect(isPlacementHardBlocked(4, BREAKER)).toBe(true);
+  });
+
+  it('honors a custom (lower) breaker threshold', () => {
+    expect(isPlacementHardBlocked(1, 1)).toBe(true); // threshold 1 → first genuine failure blocks
+    expect(isPlacementHardBlocked(0, 1)).toBe(false); // a fail_count-0 infra-curse is still re-placeable
   });
 });
 
