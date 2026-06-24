@@ -66,6 +66,7 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { maybeBatchNudge, CODE_RUN_CAPABLE_ROLES } from '../../../code-run-batch-nudge';
+import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { logVerificationFailure, verifySpawnParams } from '../../../spawn-signing';
@@ -135,9 +136,12 @@ const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
 ]);
 
 /** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —
- *  it self-confines to the caller's own workspace and is read-only (EI-1810). */
+ *  it self-confines to the caller's own workspace and is read-only (EI-1810).
+ *  P-019: the runtime clamp:set_safe_tools dial can NARROW this allowlist (tighten-only) — a tool in
+ *  the operator's safeToolsRemove set is treated as NOT safe (the clamp then denies it from a scoped
+ *  session). It can only REMOVE entries, never add, so it can only tighten the cross-workspace gate. */
 function isScopedSafeCrossWorkspaceTool(toolName: string): boolean {
-  return SCOPED_SAFE_CROSSWORKSPACE.has(toolName);
+  return SCOPED_SAFE_CROSSWORKSPACE.has(toolName) && !authSafeToolsRemoveSet().has(toolName);
 }
 
 /**

@@ -36,6 +36,7 @@ import { join } from 'node:path';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { srtBinOnPath, buildFleetSrtSettings, wrapSpawnWithSrt } from '@papercusp/orchestrator';
+import { authSandboxMaskAdditions, authSandboxDenyAllEgressOverride } from '../../auth-config-overrides';
 
 /**
  * Credential dirs masked (tmpfs mounted over them, so they read empty) inside the
@@ -168,7 +169,10 @@ export function __resetCapabilitySrtSettings(): void {
 /** `PAPERCUSP_CAPABILITY_SANDBOX_DENY_ALL_EGRESS=1` → `--unshare-net` (no network). */
 export function capabilitySandboxDenyAllEgress(): boolean {
   const v = (process.env.PAPERCUSP_CAPABILITY_SANDBOX_DENY_ALL_EGRESS ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'on';
+  const envDeny = v === '1' || v === 'true' || v === 'on';
+  // P-019: the runtime exec_sandbox:set_policy override can only FORCE deny (tighten-only) — it can
+  // never re-open egress the env locked down.
+  return envDeny || authSandboxDenyAllEgressOverride() === true;
 }
 
 /**
@@ -244,7 +248,9 @@ export function buildCapabilitySandboxCommand(
   // and the read-only home means the sandboxed command cannot create one mid-run,
   // so skipping is safe. (WI-608: without this, a host merely lacking
   // `~/.config/gcloud` broke every capability:bash on the bwrap-fallback path.)
-  for (const d of CAPABILITY_SANDBOX_MASK_DIRS) {
+  // P-019: union any runtime add-only mask dirs (exec_sandbox:set_policy) over the baked set —
+  // tighten-only (extra masks; the baked set is never removable). Additions are dirs ⇒ tmpfs.
+  for (const d of [...CAPABILITY_SANDBOX_MASK_DIRS, ...authSandboxMaskAdditions()]) {
     const abs = join(home, d);
     if (!maskExists(abs)) continue;
     if (CAPABILITY_SANDBOX_MASK_FILES.has(d)) argv.push('--ro-bind', '/dev/null', abs);
