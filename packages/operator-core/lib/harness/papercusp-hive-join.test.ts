@@ -1,0 +1,126 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  bakedCanonicalHiveInvite,
+  joinCanonicalPapercuspHive,
+  type CanonicalHiveInvite,
+  type JoinCanonicalDeps,
+} from './papercusp-hive-join';
+
+const okId = async () => ({ kind: 'ok' as const, token: 'tok', githubUserId: 7, githubLogin: 'aviynw' });
+const INVITE: CanonicalHiveInvite = { pubkeyBase64: 'PUB==', inviteSecret: 'sec' };
+
+describe('bakedCanonicalHiveInvite', () => {
+  const orig = { ...process.env };
+  afterEach(() => {
+    process.env = { ...orig };
+  });
+
+  it('explicit override wins', () => {
+    expect(bakedCanonicalHiveInvite(INVITE)).toEqual(INVITE);
+  });
+  it('reads env when BOTH present', () => {
+    process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = 'P';
+    process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = 'S';
+    expect(bakedCanonicalHiveInvite()).toEqual({ pubkeyBase64: 'P', inviteSecret: 'S' });
+  });
+  it('null when unset (per-owner fallback)', () => {
+    delete process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY;
+    delete process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
+    expect(bakedCanonicalHiveInvite()).toBeNull();
+  });
+  it('null when only one present', () => {
+    process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = 'P';
+    delete process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
+    expect(bakedCanonicalHiveInvite()).toBeNull();
+  });
+});
+
+describe('joinCanonicalPapercuspHive', () => {
+  const baseDeps = (over: Partial<JoinCanonicalDeps> = {}): JoinCanonicalDeps => ({
+    resolveGithub: okId,
+    ensureWired: async () => ({
+      joinInviteTopic: async () => undefined,
+      confirmInviteAnnounce: async () => ({ found: true, hive: { hiveId: 'papercusp', memberLinks: ['link1'] } }),
+    }),
+    joinHive: async () => ({ ok: true, hiveSlug: 'papercusp' }),
+    setHomeWorkspace: () => {},
+    ...over,
+  });
+
+  it('gh unauth → skipped + parks on the sign-in prompt', async () => {
+    const records: Array<[string, string, { detail?: string } | undefined]> = [];
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      resolveGithub: async () => ({ kind: 'gh_auth_required' as const }),
+      record: (s, st, e) => records.push([s, st, e]),
+    });
+    expect(res.state).toBe('skipped');
+    expect(records.some((r) => /sign in to github/i.test(r[2]?.detail ?? ''))).toBe(true);
+  });
+
+  it('no directory wiring → skipped', async () => {
+    const res = await joinCanonicalPapercuspHive(INVITE, { ...baseDeps(), ensureWired: async () => null });
+    expect(res.state).toBe('skipped');
+  });
+
+  it('owner offline (confirm not found) → skipped', async () => {
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      ensureWired: async () => ({ joinInviteTopic: async () => undefined, confirmInviteAnnounce: async () => ({ found: false }) }),
+    });
+    expect(res.state).toBe('skipped');
+    expect(res.reason).toContain('owner offline');
+  });
+
+  it('found + member-links → joins → joined', async () => {
+    let joined: { memberLinks?: string[]; workspaceId?: string } | undefined;
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      joinHive: async (o) => {
+        joined = o;
+        return { ok: true, hiveSlug: 'papercusp' };
+      },
+    });
+    expect(res.state).toBe('joined');
+    expect(res.slug).toBe('papercusp');
+    expect(joined?.memberLinks).toEqual(['link1']);
+    expect(joined?.workspaceId).toBeTruthy();
+  });
+
+  it('falls back to listDiscovered for member-links when the confirm omits them', async () => {
+    let joined: { memberLinks?: string[] } | undefined;
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      ensureWired: async () => ({
+        joinInviteTopic: async () => undefined,
+        confirmInviteAnnounce: async () => ({ found: true, hive: { hiveId: 'papercusp', memberLinks: [] } }),
+      }),
+      listDiscovered: async () => [{ hiveId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['link2'] }],
+      joinHive: async (o) => {
+        joined = o;
+        return { ok: true, hiveSlug: 'papercusp' };
+      },
+    });
+    expect(res.state).toBe('joined');
+    expect(joined?.memberLinks).toEqual(['link2']);
+  });
+
+  it('join failure → skipped', async () => {
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      joinHive: async () => ({ ok: false, error: 'boom' }),
+    });
+    expect(res.state).toBe('skipped');
+    expect(res.reason).toContain('boom');
+  });
+
+  it('never throws on an internal error', async () => {
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      ensureWired: async () => {
+        throw new Error('wire boom');
+      },
+    });
+    expect(res.state).toBe('skipped');
+  });
+});

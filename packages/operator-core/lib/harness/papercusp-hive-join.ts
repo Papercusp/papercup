@@ -91,11 +91,11 @@ async function defaultEnsureWired(workspaceId: string) {
   return ensureHiveDirectoryWired(workspaceId) as ReturnType<NonNullable<JoinCanonicalDeps['ensureWired']>>;
 }
 
-async function defaultListDiscovered() {
+async function defaultListDiscovered(): Promise<
+  Array<{ hiveId: string; hivePubkey?: string; memberLinks?: string[] }>
+> {
   const { getHiveDirectory } = await import('../hive-directory-deps');
-  return getHiveDirectory().listDiscoveredHives({ includeExpired: true }) as Promise<
-    Array<{ hiveId: string; hivePubkey?: string; memberLinks?: string[] }>
-  >;
+  return getHiveDirectory().listDiscoveredHives({ includeExpired: true });
 }
 
 async function defaultJoinHive(opts: { hiveId: string; title?: string; memberLinks: string[]; workspaceId: string }) {
