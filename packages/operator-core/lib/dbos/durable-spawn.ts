@@ -173,11 +173,25 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           // no-turn death identically — a 429'd/dead-launcher spawn is `failed`
           // (infra_loss), never silently `done` (docs-audit 2026-06-23 #1).
           const bodyText = typeof r.text === 'function' ? await r.text().catch(() => '') : '';
-          const outcome = agentProducedTurn(bodyText, input.label ?? '');
-          if (!outcome.ran) {
-            return { ok: false, infraLoss: true, detail: outcome.detail } as const;
+          const prelim = agentProducedTurn(bodyText, input.label ?? '');
+          if (prelim.ran) return { ok: true } as const;
+          // No turn. Corroborate with the LIVE gateway state to tell a CAPACITY-SHED
+          // (the all-accounts 429 storm killed the agent mid-turn — RETRYABLE) from a
+          // genuine launcher-host loss (terminal). H13/P-006: a capacity shed was being
+          // mislabeled `infra_loss` / "host dead/unstable" → sent debuggers hunting a
+          // phantom host bug (~2h) when the real cause was the gateway storm.
+          const { gatewayWholesaleThrottled } = await import('../inference-gateway/observability');
+          const gatewayThrottled = await gatewayWholesaleThrottled().catch(() => false);
+          const outcome = agentProducedTurn(bodyText, input.label ?? '', { gatewayThrottled });
+          if (outcome.failureClass === 'capacity_shed') {
+            // RETRYABLE: THROW so the step retry (maxAttempts:3, 10s/20s backoff) re-fires
+            // through the PACED gateway once capacity returns — instead of recording a
+            // terminal phantom host death. The `capacity_shed:` prefix makes the persisted
+            // error self-diagnosing (capacity event, NOT infra_loss). After the retries
+            // exhaust it lands `failed` with the capacity_shed label, never "host dead".
+            throw new Error(`capacity_shed:${outcome.detail.trim()}`);
           }
-          return { ok: true } as const;
+          return { ok: false, infraLoss: true, detail: outcome.detail } as const;
         }
         // Capture the response body so a non-2xx fire is self-diagnosing: the bare
         // status (`→ HTTP 400`) tells the watchdog/operator nothing about WHICH
