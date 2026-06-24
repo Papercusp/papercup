@@ -1035,6 +1035,14 @@ export const FLAGS = {
   // exposure before it defaults on. OFF ⇒ the entry is not offered; the bundled
   // psu shim is inert (dev/internal launch is unchanged). KNOWN_DARK_FLAGS.
   PSU_END_USER: "papercusp-psu-end-user",
+
+  // DEFAULT ON (owner-directed 2026-06-23, ship-papercusp-as-single-hive): on first
+  // boot a PACKAGED desktop install clones github.com/Papercusp/papercup and creates
+  // the `papercusp` dogfood hive (Papercusp building itself), then homes on it. Safe
+  // default-on — it no-ops without gh auth or a local repo and retries on the next
+  // boot, so it can never break a fresh launch. OFF ⇒ the app boots with no default
+  // hive (bare onboarding). The repo is too large to bundle (~5GB) → clone-on-boot.
+  DOGFOOD_PAPERCUSP_HIVE: "papercusp-dogfood-papercusp-hive",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1678,6 +1686,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // sidecar; windows: vm-smoke-windows.sh 9/9 incl the psu shim check). The
   // discoverable superuser-session entry is now live. Reversible — set false to revert.
   [FLAGS.PSU_END_USER]: true,
+  // DEFAULT ON (owner-directed 2026-06-23): clone-on-first-boot of the `papercusp`
+  // dogfood hive. Best-effort + non-fatal (no gh auth → no-op + retry next boot).
+  [FLAGS.DOGFOOD_PAPERCUSP_HIVE]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
