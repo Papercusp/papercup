@@ -32,7 +32,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
 import { keychainStore, keychainLoad } from '../identity/keychain';
-import { hiveKeychainId, HIVE_KEYPAIR_SERVICE } from '../identity/hive-keypair';
+import { hiveKeychainId, HIVE_KEYPAIR_SERVICE, loadHivePubkey } from '../identity/hive-keypair';
 import { pubkeyBase64FromDer } from '../identity/ed25519';
 import { setHiveListing } from '../hive-set-listing';
 import { authorHivePolicy } from '../hive-policy-author';
@@ -66,6 +66,8 @@ export interface HiveShareDeps {
   randomSecret?: () => string;
   /** Derive the raw-32 pubkey (base64) from the private DER. Default: pubkeyBase64FromDer. */
   derivePubkey?: (der: Buffer) => string;
+  /** This hive's actual pubkey (null if not the owner box). Default: loadHivePubkey. */
+  loadPubkey?: (workspaceId: string, slug: string) => Promise<string | null>;
 }
 
 async function defaultIsEnabled(): Promise<boolean> {
