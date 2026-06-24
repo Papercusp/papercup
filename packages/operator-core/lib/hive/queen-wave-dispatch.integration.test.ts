@@ -98,9 +98,15 @@ async function seedBee(owner: string, featureId: string, status: string): Promis
 }
 
 async function blocksEdge(blocker: string, blocked: string): Promise<void> {
+  // Readiness blocking moved coord_links → work_item_deps (migration 383 dropped the
+  // dead coord_links blocks trigger; P-004 cutover — the Queen survey + scheduler claim
+  // read blocking from work_item_deps, and migration 379's wir_* triggers maintain the
+  // work_item_blocked sidecar from it). A coord_links rel='blocks' edge is now inert, so
+  // it never gates the dispatch. blocked_ref/blocker_ref are harness-qualified (HIVE#id).
   await sql`
-    INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
-    VALUES ('default', 'feature', ${HIVE + '#' + blocker}, 'feature', ${HIVE + '#' + blocked}, 'blocks')`;
+    INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+    VALUES ('default', 'feature', ${HIVE + '#' + blocked}, 'feature', ${HIVE + '#' + blocker}, 'blocks')`;
 }
 
 /** EI-865 / WI-677 — seed a cursed breaker ledger row for a lane (the latched-out state).
@@ -140,7 +146,7 @@ describe('queen wave dispatch — wave ordering through bee placement (real PG, 
   beforeEach(async () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.coord_links, harness_shared.adv_sessions `;
+    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked, harness_shared.coord_links, harness_shared.adv_sessions `;
     await seedQueenSession();
   });
 

@@ -50,6 +50,23 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 // create; the real module wires a PG LISTEN bus (host-only). Stub the notify.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
+// Pin the Scout OVERLAY rails OFF. This test asserts the BASE cycle = exactly 9
+// step-tagged LLM calls (3 ideate / 3 critique / 3 recombine). SCOUT_EXPERIMENT_RAIL
+// (and SCOUT_RUBRIC_RAIL) graduated default-ON and each spends an EXTRA, untagged
+// LLM call per testable proposal (forkTestableToExperiments → generateExperimentRequest),
+// pushing the count to 10. The overlay rails have their own coverage; keep this test on
+// the base cycle. Other flags delegate to the real resolver.
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/flags/server')>();
+  return {
+    ...actual,
+    getFlag: async (flag: string, distinct: string) =>
+      flag === 'papercusp-scout-experiment-rail' || flag === 'papercusp-scout-rubric-rail'
+        ? false
+        : actual.getFlag(flag, distinct),
+  };
+});
+
 import { _resetForTests } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes (same as _pg-tool-fixture)
 import { _resetUrlCacheForTests } from '../../../../libs/papercusp/libs/db/src/connection';
