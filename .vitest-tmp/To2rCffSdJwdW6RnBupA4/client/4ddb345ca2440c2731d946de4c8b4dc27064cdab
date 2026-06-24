@@ -1,0 +1,773 @@
+__vite_ssr_exportName__("default", () => { try { return ScheduledCalendarTab } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/index.js", {"importedNames":["useCallback","useEffect","useMemo","useRef","useState"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@fullcalendar/react/dist/index.js", {"importedNames":["default"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@fullcalendar/daygrid/index.js", {"importedNames":["default"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@fullcalendar/timegrid/index.js", {"importedNames":["default"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@fullcalendar/interaction/index.js", {"importedNames":["default"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@radix-ui/react-tooltip/dist/index.mjs");
+const __vite_ssr_import_7__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["CalendarPlus","ExternalLink","Pencil","X"]});
+const __vite_ssr_import_8__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/nuqs/dist/index.js", {"importedNames":["parseAsString","parseAsStringEnum","useQueryState"]});
+const __vite_ssr_import_9__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/generic/sync/src/index.ts", {"importedNames":["useSyncQuery"]});
+const __vite_ssr_import_10__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Modal.tsx", {"importedNames":["Modal"]});
+const __vite_ssr_import_11__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx", {"importedNames":["Tooltip"]});
+const __vite_ssr_import_12__ = await __vite_ssr_import__("/src/components/adv/ScheduledRoutinesPane.tsx", {"importedNames":["default"]});
+const __vite_ssr_import_13__ = await __vite_ssr_import__("/src/components/adv/ScheduleEditor.tsx", {"importedNames":["default","runScheduleTool"]});
+const __vite_ssr_import_14__ = await __vite_ssr_import__("/src/components/adv/scheduled-calendar.css");
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const VIEW_VALUES = ["dayGridMonth", "timeGridWeek", "timeGridDay"];
+function ScheduledCalendarTab() {
+  const calRef = (0,__vite_ssr_import_1__.useRef)(null);
+  const [view, setView] = (0,__vite_ssr_import_8__.useQueryState)("calView", (0,__vite_ssr_import_8__.parseAsStringEnum)(VIEW_VALUES).withDefault("dayGridMonth"));
+  const [selected, setSelected] = (0,__vite_ssr_import_8__.useQueryState)("calPlan", (0,__vite_ssr_import_8__.parseAsString));
+  const [range, setRange] = (0,__vite_ssr_import_1__.useState)(null);
+  const { data, loading, invalidate } = (0,__vite_ssr_import_9__.useSyncQuery)({
+    queryName: "plans.scheduledOccurrences",
+    args: { rangeStartMs: range?.startMs ?? 0, rangeEndMs: range?.endMs ?? 0 },
+    enabled: !!range
+  });
+  const occurrences = (0,__vite_ssr_import_1__.useMemo)(() => data ?? [], [data]);
+  const [editor, setEditor] = (0,__vite_ssr_import_1__.useState)(null);
+  const [pickerOpen, setPickerOpen] = (0,__vite_ssr_import_1__.useState)(false);
+  const { data: projectsData } = (0,__vite_ssr_import_9__.useSyncQuery)({
+    queryName: "harnessProjects.lite",
+    args: {},
+    enabled: pickerOpen,
+    staleTime: 6e4
+  });
+  const harnessSlugs = (0,__vite_ssr_import_1__.useMemo)(
+    () => (projectsData ?? []).map((p) => p.slug).filter((s) => !!s),
+    [projectsData]
+  );
+  const { data: planListData } = (0,__vite_ssr_import_9__.useSyncQuery)({
+    queryName: "plans.list",
+    args: harnessSlugs.length > 0 ? { harness_slugs: harnessSlugs } : {},
+    enabled: pickerOpen
+  });
+  const planList = (0,__vite_ssr_import_1__.useMemo)(() => Array.isArray(planListData) ? planListData : [], [planListData]);
+  const { data: schedData, invalidate: invalidateSchedules } = (0,__vite_ssr_import_9__.useSyncQuery)({ queryName: "plans.schedule", args: {} });
+  const scheduleBySlug = (0,__vite_ssr_import_1__.useMemo)(() => {
+    const m = /* @__PURE__ */ new Map();
+    for (const s of schedData ?? []) m.set(s.templateSlug, s);
+    return m;
+  }, [schedData]);
+  const afterWrite = (0,__vite_ssr_import_1__.useCallback)(() => {
+    void invalidate?.();
+    void invalidateSchedules?.();
+  }, [invalidate, invalidateSchedules]);
+  const events = (0,__vite_ssr_import_1__.useMemo)(
+    () => occurrences.map((o) => ({
+      id: `${o.templateSlug}:${o.occurrenceMs}`,
+      title: o.title ?? o.templateSlug,
+      start: new Date(o.occurrenceMs).toISOString(),
+      extendedProps: o,
+      classNames: [
+        "pc-sched-event",
+        o.scheduleActive ? "pc-sched-event--armed" : "pc-sched-event--paused",
+        o.lastOutcome ? `pc-sched-event--${o.lastOutcome}` : "",
+        o.kind === "one-shot" ? "pc-sched-event--oneshot" : ""
+      ].filter(Boolean)
+    })),
+    [occurrences]
+  );
+  const stats = (0,__vite_ssr_import_1__.useMemo)(() => {
+    let armed = 0;
+    let paused = 0;
+    let oneShot = 0;
+    let failed = 0;
+    let partial = 0;
+    for (const o of occurrences) {
+      if (o.scheduleActive) armed += 1;
+      else paused += 1;
+      if (o.kind === "one-shot") oneShot += 1;
+      if (o.lastOutcome === "failed") failed += 1;
+      if (o.lastOutcome === "partial" || o.lastOutcome === "timed-out") partial += 1;
+    };
+    return { total: occurrences.length, armed, paused, oneShot, failed, partial };
+  }, [occurrences]);
+  const onDatesSet = (0,__vite_ssr_import_1__.useCallback)(
+    (arg) => {
+      setRange({ startMs: arg.start.getTime(), endMs: arg.end.getTime() });
+      if (arg.view.type !== view && VIEW_VALUES.includes(arg.view.type)) {
+        void setView(arg.view.type);
+      }
+    },
+    [view, setView]
+  );
+  (0,__vite_ssr_import_1__.useEffect)(() => {
+    const api = calRef.current?.getApi();
+    if (api && api.view.type !== view) api.changeView(view);
+  }, [view]);
+  const onEventClick = (0,__vite_ssr_import_1__.useCallback)(
+    (arg) => {
+      const slug = arg.event.extendedProps.templateSlug;
+      void setSelected(slug);
+    },
+    [setSelected]
+  );
+  const onDateClick = (0,__vite_ssr_import_1__.useCallback)(
+    (arg) => {
+      if (!selected) {
+        setPickerOpen(true);
+        return;
+      };
+      const row = occurrences.find((o) => o.templateSlug === selected);
+      setEditor({
+        slug: selected,
+        title: row?.title ?? selected,
+        harness: row?.harnessSlug,
+        seedDate: arg.date.toISOString(),
+        seedMode: "one-shot",
+        isArmed: row?.scheduleActive ?? false
+      });
+    },
+    [selected, occurrences]
+  );
+  const onEventDrop = (0,__vite_ssr_import_1__.useCallback)(
+    async (arg) => {
+      const o = arg.event.extendedProps;
+      const newStart = arg.event.start;
+      if (!newStart) {
+        arg.revert();
+        return;
+      };
+      const hArg = o.harnessSlug ? { harness: o.harnessSlug } : {};
+      if (o.kind === "one-shot") {
+        const r2 = await (0,__vite_ssr_import_13__.runScheduleTool)("plans:set-schedule", {
+          slug: o.templateSlug,
+          ...hArg,
+          schedule: null,
+          scheduledAt: newStart.toISOString()
+        });
+        if (!r2.ok) arg.revert();
+        else afterWrite();
+        return;
+      };
+      const cur = scheduleBySlug.get(o.templateSlug);
+      if (!cur?.schedule?.rrule) {
+        arg.revert();
+        setEditor({ slug: o.templateSlug, title: o.title, harness: o.harnessSlug, isArmed: o.scheduleActive });
+        return;
+      };
+      const oldIso = new Date(o.occurrenceMs).toISOString();
+      const next = {
+        ...cur.schedule,
+        exdate: [...cur.schedule.exdate ?? [], oldIso],
+        rdate: [...cur.schedule.rdate ?? [], newStart.toISOString()]
+      };
+      const r = await (0,__vite_ssr_import_13__.runScheduleTool)("plans:set-schedule", {
+        slug: o.templateSlug,
+        ...hArg,
+        schedule: next,
+        expiresAt: cur.expiresAt,
+        tzid: cur.tzid
+      });
+      if (!r.ok) arg.revert();
+      else afterWrite();
+    },
+    [afterWrite, scheduleBySlug]
+  );
+  const selectedPlan = (0,__vite_ssr_import_1__.useMemo)(() => {
+    if (!selected) return null;
+    const rows = occurrences.filter((o) => o.templateSlug === selected);
+    if (rows.length === 0) return null;
+    const now = Date.now();
+    const upcoming = rows.filter((o) => o.occurrenceMs >= now).sort((a, b) => a.occurrenceMs - b.occurrenceMs);
+    return { row: rows[0], upcoming: upcoming.slice(0, 5) };
+  }, [selected, occurrences]);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(__vite_ssr_import_6__.Provider, { delayDuration: 250, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "pc-sched-cal__masthead", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__titleblock", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-sched-cal__eyebrow", children: "Scheduled plans" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 284,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h2", { children: "Calendar" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 285,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 283,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__stats", "aria-label": "Calendar occurrence summary", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: stats.total }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 288,
+            columnNumber: 19
+          }, this),
+          " in view"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 288,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: stats.armed }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 289,
+            columnNumber: 19
+          }, this),
+          " armed"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 289,
+          columnNumber: 13
+        }, this),
+        stats.failed > 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "is-danger", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: stats.failed }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 290,
+            columnNumber: 61
+          }, this),
+          " failed"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 290,
+          columnNumber: 33
+        }, this) : null,
+        stats.partial > 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "is-warn", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: stats.partial }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 291,
+            columnNumber: 60
+          }, this),
+          " partial"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 291,
+          columnNumber: 34
+        }, this) : null,
+        stats.paused > 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: stats.paused }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 292,
+            columnNumber: 39
+          }, this),
+          " paused"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 292,
+          columnNumber: 33
+        }, this) : null,
+        stats.oneShot > 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: stats.oneShot }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 293,
+            columnNumber: 40
+          }, this),
+          " one-shot"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 293,
+          columnNumber: 34
+        }, this) : null,
+        loading ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "Loading" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 294,
+          columnNumber: 24
+        }, this) : null
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 287,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_11__.Tooltip), { label: "Author a schedule for a plan", side: "bottom", align: "end", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("button", { type: "button", className: "pc-sched-cal__add", onClick: () => setPickerOpen(true), children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_7__.CalendarPlus), { size: 14, "aria-hidden": true }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 298,
+          columnNumber: 15
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "Schedule" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 299,
+          columnNumber: 15
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 297,
+        columnNumber: 13
+      }, this) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 296,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+      lineNumber: 282,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__legend", "aria-label": "Calendar status legend", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("i", { className: "pc-sched-cal__swatch pc-sched-cal__swatch--success" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 304,
+          columnNumber: 17
+        }, this),
+        " last run ok"
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 304,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("i", { className: "pc-sched-cal__swatch pc-sched-cal__swatch--failed" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 305,
+          columnNumber: 17
+        }, this),
+        " last run failed"
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 305,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("i", { className: "pc-sched-cal__swatch pc-sched-cal__swatch--partial" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 306,
+          columnNumber: 17
+        }, this),
+        " partial"
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 306,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("i", { className: "pc-sched-cal__swatch pc-sched-cal__swatch--paused" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 307,
+          columnNumber: 17
+        }, this),
+        " paused"
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 307,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-sched-cal__oneshot", children: "italic = one-shot" }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 308,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+      lineNumber: 303,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__body", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("aside", { className: "pc-sched-cal__routines", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_12__.default), { onSelect: (slug) => void setSelected(slug) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 312,
+        columnNumber: 13
+      }, this) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 311,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__main", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_2__.default),
+        {
+          ref: calRef,
+          plugins: [__vite_ssr_import_3__.default, __vite_ssr_import_4__.default, __vite_ssr_import_5__.default],
+          initialView: view,
+          headerToolbar: { left: "prev,next today", center: "title", right: "dayGridMonth,timeGridWeek,timeGridDay" },
+          events,
+          datesSet: onDatesSet,
+          eventClick: onEventClick,
+          dateClick: onDateClick,
+          eventDrop: onEventDrop,
+          editable: true,
+          eventStartEditable: true,
+          eventDurationEditable: false,
+          height: "100%",
+          nowIndicator: true,
+          dayMaxEvents: 4,
+          firstDay: 1
+        },
+        void 0,
+        false,
+        {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 315,
+          columnNumber: 13
+        },
+        this
+      ) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 314,
+        columnNumber: 11
+      }, this),
+      selectedPlan && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("aside", { className: "pc-sched-cal__aside", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__aside-head", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h3", { children: selectedPlan.row.title ?? selectedPlan.row.templateSlug }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 337,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            "button",
+            {
+              type: "button",
+              className: "pc-sched-cal__iconbtn",
+              onClick: () => void setSelected(null),
+              "aria-label": "Close selected plan",
+              children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_7__.X), { size: 14, "aria-hidden": true }, void 0, false, {
+                fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+                lineNumber: 344,
+                columnNumber: 19
+              }, this)
+            },
+            void 0,
+            false,
+            {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+              lineNumber: 338,
+              columnNumber: 17
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 336,
+          columnNumber: 15
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dl", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "Plan" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 348,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: selectedPlan.row.templateSlug }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 349,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "Pot" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 350,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: selectedPlan.row.harnessSlug }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 351,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "State" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 352,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: selectedPlan.row.scheduleActive ? "Armed (firing)" : "Paused (disarmed)" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 353,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "Kind" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 354,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: selectedPlan.row.kind === "one-shot" ? "One-shot" : "Recurring" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 355,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "Last run" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 356,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: selectedPlan.row.lastOutcome ?? "—" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 357,
+            columnNumber: 17
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 347,
+          columnNumber: 15
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h3", { children: "Next fires" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 359,
+          columnNumber: 15
+        }, this),
+        selectedPlan.upcoming.length === 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-sched-cal__empty pc-sched-cal__empty--compact", children: "No upcoming occurrences in view." }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 361,
+          columnNumber: 17
+        }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("ul", { className: "pc-sched-cal__next-list", children: selectedPlan.upcoming.map((o) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("li", { children: new Date(o.occurrenceMs).toLocaleString() }, o.occurrenceMs, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 365,
+          columnNumber: 21
+        }, this)) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 363,
+          columnNumber: 17
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-sched-cal__planlink", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("a", { href: `/adv?tab=plans&plan=${encodeURIComponent(selectedPlan.row.templateSlug)}`, children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_7__.ExternalLink), { size: 12, "aria-hidden": true }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 373,
+            columnNumber: 19
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "Open plan" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 374,
+            columnNumber: 19
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 372,
+          columnNumber: 17
+        }, this) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 371,
+          columnNumber: 15
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__actions", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "button",
+          {
+            type: "button",
+            className: "pc-sched-cal__edit",
+            onClick: () => setEditor({
+              slug: selectedPlan.row.templateSlug,
+              title: selectedPlan.row.title,
+              harness: selectedPlan.row.harnessSlug,
+              isArmed: selectedPlan.row.scheduleActive
+            }),
+            children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_7__.Pencil), { size: 12, "aria-hidden": true }, void 0, false, {
+                fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+                lineNumber: 390,
+                columnNumber: 19
+              }, this),
+              "Edit schedule"
+            ]
+          },
+          void 0,
+          true,
+          {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 378,
+            columnNumber: 17
+          },
+          this
+        ) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 377,
+          columnNumber: 15
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 335,
+        columnNumber: 13
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+      lineNumber: 310,
+      columnNumber: 9
+    }, this),
+    pickerOpen && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      SchedulePicker,
+      {
+        plans: planList,
+        onPick: (p) => {
+          setPickerOpen(false);
+          setEditor({ slug: p.slug, title: p.title, harness: p.harness, isArmed: p.scheduleActive ?? false });
+        },
+        onClose: () => setPickerOpen(false)
+      },
+      void 0,
+      false,
+      {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 399,
+        columnNumber: 11
+      },
+      this
+    ),
+    editor && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_10__.Modal),
+      {
+        open: true,
+        onOpenChange: (open) => {
+          if (!open) setEditor(null);
+        },
+        title: `Edit schedule for ${editor.title ?? editor.slug}`,
+        contentClassName: "pc-sched-cal__modal-card",
+        children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          (0,__vite_ssr_import_13__.default),
+          {
+            planSlug: editor.slug,
+            planTitle: editor.title,
+            harness: editor.harness,
+            seedDate: editor.seedDate,
+            seedMode: editor.seedMode,
+            initial: scheduleBySlug.get(editor.slug) ?? null,
+            isArmed: editor.isArmed,
+            onClose: () => setEditor(null),
+            onSaved: afterWrite
+          },
+          void 0,
+          false,
+          {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 418,
+            columnNumber: 13
+          },
+          this
+        )
+      },
+      void 0,
+      false,
+      {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 410,
+        columnNumber: 11
+      },
+      this
+    )
+  ] }, void 0, true, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+    lineNumber: 281,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+    lineNumber: 280,
+    columnNumber: 5
+  }, this);
+};
+function SchedulePicker({
+  plans,
+  onPick,
+  onClose
+}) {
+  const [q, setQ] = (0,__vite_ssr_import_1__.useState)("");
+  const filtered = (0,__vite_ssr_import_1__.useMemo)(() => {
+    const needle = q.trim().toLowerCase();
+    const rows = needle ? plans.filter((p) => p.slug.toLowerCase().includes(needle) || (p.title ?? "").toLowerCase().includes(needle)) : plans;
+    return [...rows].sort((a, b) => {
+      const sa = a.scheduled ? 1 : 0;
+      const sb = b.scheduled ? 1 : 0;
+      if (sa !== sb) return sa - sb;
+      return (a.title ?? a.slug).localeCompare(b.title ?? b.slug);
+    }).slice(0, 60);
+  }, [plans, q]);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+    (0,__vite_ssr_import_10__.Modal),
+    {
+      open: true,
+      onOpenChange: (open) => {
+        if (!open) onClose();
+      },
+      title: "Schedule a plan",
+      contentClassName: "pc-sched-cal__modal-card pc-sched-cal__picker-card",
+      children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__picker", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-sched-cal__picker-head", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: "Schedule a plan" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 475,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("button", { type: "button", onClick: onClose, "aria-label": "Close picker", className: "pc-sched-cal__iconbtn", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_7__.X), { size: 14, "aria-hidden": true }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 477,
+            columnNumber: 13
+          }, this) }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 476,
+            columnNumber: 11
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 474,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "input",
+          {
+            type: "search",
+            value: q,
+            onChange: (e) => setQ(e.target.value),
+            placeholder: "Filter plans...",
+            "aria-label": "Filter plans",
+            className: "pc-sched-cal__picker-search"
+          },
+          void 0,
+          false,
+          {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 480,
+            columnNumber: 9
+          },
+          this
+        ),
+        filtered.length === 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-sched-cal__empty pc-sched-cal__empty--compact", children: "No plans match." }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 489,
+          columnNumber: 11
+        }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("ul", { className: "pc-sched-cal__picker-list", children: filtered.map((p) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("li", { children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("button", { type: "button", onClick: () => onPick(p), className: "pc-sched-cal__picker-row", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: p.title ?? p.slug }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 495,
+            columnNumber: 19
+          }, this),
+          p.scheduled ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("em", { className: p.scheduleActive ? "is-armed" : "", children: p.scheduleActive ? "armed" : "scheduled" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+            lineNumber: 497,
+            columnNumber: 21
+          }, this) : null
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 494,
+          columnNumber: 17
+        }, this) }, `${p.harness}:${p.slug}`, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 493,
+          columnNumber: 15
+        }, this)) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+          lineNumber: 491,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+        lineNumber: 473,
+        columnNumber: 7
+      }, this)
+    },
+    void 0,
+    false,
+    {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx",
+      lineNumber: 465,
+      columnNumber: 5
+    },
+    this
+  );
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,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QUMsUUFBRyxXQUFVLDZCQUNYLG1CQUFTLElBQUksQ0FBQyxNQUNiLGlEQUFDLFFBQ0MsMkRBQUMsWUFBTyxNQUFLLFVBQVMsU0FBUyxNQUFNLE9BQU8sQ0FBQyxHQUFHLFdBQVUsNEJBQ3hEO0FBQUEsMkRBQUMsVUFBTSxZQUFFLFNBQVMsRUFBRSxRQUFwQjtBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUF5QjtBQUFBLFVBQ3hCLEVBQUUsWUFDRCxpREFBQyxRQUFHLFdBQVcsRUFBRSxpQkFBaUIsYUFBYSxJQUFLLFlBQUUsaUJBQWlCLFVBQVUsZUFBakY7QUFBQTtBQUFBO0FBQUE7QUFBQSxpQkFBNkYsSUFDM0Y7QUFBQSxhQUpOO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFLQSxLQU5PLEdBQUcsRUFBRSxPQUFPLElBQUksRUFBRSxJQUFJLElBQS9CO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFPQSxDQUNELEtBVkg7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQVdBO0FBQUEsV0E3Qko7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQStCQTtBQUFBO0FBQUEsSUF2Q0Y7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBd0NBO0FBRUoiLCJuYW1lcyI6WyJyIl0sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIlNjaGVkdWxlZENhbGVuZGFyVGFiLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIENhbGVuZGFyIHRhYiDigJQgdGhlIHNjaGVkdWxhYmxlIHRpbWUtc3VyZmFjZSBmb3Igc2NoZWR1bGVkL3JlY3VycmluZyBwbGFuc1xuICogKHNjaGVkdWxlZC1yZWN1cnJpbmctcGxhbnMtMjAyNi0wNi0xNiBQLTAxOC9QLTAxOSkuIEZ1bGxDYWxlbmRhciByZW5kZXJzIHRoZVxuICogYmFja2VuZC1jb21wdXRlZCBvY2N1cnJlbmNlcyAocGxhbnMuc2NoZWR1bGVkT2NjdXJyZW5jZXMpIGZvciB0aGUgdmlzaWJsZVxuICogd2luZG93IOKAlCB0aGUgcnJ1bGUgbGliIG9uIHRoZSBiYWNrZW5kIGlzIHRoZSBzaW5nbGUgc291cmNlIG9mIHRydXRoLCBzbyB0aGVcbiAqIGNhbGVuZGFyIFVJIGxpYiBzdGF5cyBzd2FwcGFibGUgKEQtMDA0KS4gVmlldyArIHNlbGVjdGlvbiBsaXZlIGluIG51cXMgc28gdGhlXG4gKiBzdXJmYWNlIGlzIGRlZXAtbGlua2FibGUgYW5kIGFnZW50LWRyaXZhYmxlICh1aTpkaXNwYXRjaCkuXG4gKlxuICogdjEgcmVuZGVycyArIGluc3BlY3RzLiBEcmFnLWRyb3AgcmVzY2hlZHVsaW5nICsgdGhlIFJSVUxFIHJlY3VycmVuY2UgZWRpdG9yIGFyZVxuICogUC0wMjAgKGxheWVyZWQgb24gdG9wIHZpYSB0aGUgaW50ZXJhY3Rpb24gcGx1Z2luICsgcGxhbnM6c2V0LXNjaGVkdWxlKS5cbiAqL1xuaW1wb3J0IHsgdXNlQ2FsbGJhY2ssIHVzZUVmZmVjdCwgdXNlTWVtbywgdXNlUmVmLCB1c2VTdGF0ZSB9IGZyb20gJ3JlYWN0JztcbmltcG9ydCBGdWxsQ2FsZW5kYXIgZnJvbSAnQGZ1bGxjYWxlbmRhci9yZWFjdCc7XG5pbXBvcnQgZGF5R3JpZFBsdWdpbiBmcm9tICdAZnVsbGNhbGVuZGFyL2RheWdyaWQnO1xuaW1wb3J0IHRpbWVHcmlkUGx1Z2luIGZyb20gJ0BmdWxsY2FsZW5kYXIvdGltZWdyaWQnO1xuaW1wb3J0IGludGVyYWN0aW9uUGx1Z2luIGZyb20gJ0BmdWxsY2FsZW5kYXIvaW50ZXJhY3Rpb24nO1xuaW1wb3J0IHR5cGUgeyBEYXRlc1NldEFyZywgRXZlbnRDbGlja0FyZywgRXZlbnREcm9wQXJnLCBFdmVudElucHV0IH0gZnJvbSAnQGZ1bGxjYWxlbmRhci9jb3JlJztcbmltcG9ydCB0eXBlIHsgRGF0ZUNsaWNrQXJnIH0gZnJvbSAnQGZ1bGxjYWxlbmRhci9pbnRlcmFjdGlvbic7XG5pbXBvcnQgKiBhcyBUb29sdGlwUHJpbWl0aXZlIGZyb20gJ0ByYWRpeC11aS9yZWFjdC10b29sdGlwJztcbmltcG9ydCB7IENhbGVuZGFyUGx1cywgRXh0ZXJuYWxMaW5rLCBQZW5jaWwsIFggfSBmcm9tICdsdWNpZGUtcmVhY3QnO1xuaW1wb3J0IHsgcGFyc2VBc1N0cmluZywgcGFyc2VBc1N0cmluZ0VudW0sIHVzZVF1ZXJ5U3RhdGUgfSBmcm9tICdudXFzJztcbmltcG9ydCB7IHVzZVN5bmNRdWVyeSB9IGZyb20gJ0BwYXBlcmN1c3Avc3luYyc7XG5pbXBvcnQgeyBNb2RhbCB9IGZyb20gJ0AvYXBwL2hhcm5lc3MvTW9kYWwnO1xuaW1wb3J0IHsgVG9vbHRpcCB9IGZyb20gJ0AvYXBwL2hhcm5lc3MvVG9vbHRpcCc7XG5pbXBvcnQgU2NoZWR1bGVkUm91dGluZXNQYW5lIGZyb20gJy4vU2NoZWR1bGVkUm91dGluZXNQYW5lJztcbmltcG9ydCBTY2hlZHVsZUVkaXRvciwgeyBydW5TY2hlZHVsZVRvb2wsIHR5cGUgU2NoZWR1bGVNb2RlIH0gZnJvbSAnLi9TY2hlZHVsZUVkaXRvcic7XG5pbXBvcnQgJy4vc2NoZWR1bGVkLWNhbGVuZGFyLmNzcyc7XG5cbnR5cGUgQ2FsVmlldyA9ICdkYXlHcmlkTW9udGgnIHwgJ3RpbWVHcmlkV2VlaycgfCAndGltZUdyaWREYXknO1xuXG5pbnRlcmZhY2UgU2NoZWR1bGVkT2NjdXJyZW5jZVJvdyB7XG4gIHRlbXBsYXRlU2x1Zzogc3RyaW5nO1xuICB0aXRsZTogc3RyaW5nIHwgbnVsbDtcbiAgaGFybmVzc1NsdWc6IHN0cmluZztcbiAgb2NjdXJyZW5jZU1zOiBudW1iZXI7XG4gIGtpbmQ6ICdyZWN1cnJpbmcnIHwgJ29uZS1zaG90JztcbiAgc2NoZWR1bGVBY3RpdmU6IGJvb2xlYW47XG4gIGxhc3RPdXRjb21lOiBzdHJpbmcgfCBudWxsO1xufVxuXG4vKiogVGhlIG9wZW4gc2NoZWR1bGUtZWRpdG9yIHRhcmdldCAoUC0wMjApLiAqL1xuaW50ZXJmYWNlIEVkaXRvclN0YXRlIHtcbiAgc2x1Zzogc3RyaW5nO1xuICB0aXRsZTogc3RyaW5nIHwgbnVsbDtcbiAgLyoqIFRoZSBwbGFuJ3MgaGFybmVzcyDigJQgdGhyZWFkZWQgdG8gdGhlIHdyaXRlIHRvb2xzIGZvciBub24tcHJpbWFyeSBwb3RzIChELTAyMCkuICovXG4gIGhhcm5lc3M/OiBzdHJpbmc7XG4gIC8qKiBJU08gZGF0ZSB0aGUgZWRpdG9yIHNlZWRzIG9uIChmcm9tIGEgZGF5LWNsaWNrIOKGkiBvbmUtc2hvdCkuICovXG4gIHNlZWREYXRlPzogc3RyaW5nO1xuICBzZWVkTW9kZT86IFNjaGVkdWxlTW9kZTtcbiAgaXNBcm1lZDogYm9vbGVhbjtcbn1cblxuLyoqIFRoZSBmaWVsZHMgdGhlIFwiU2NoZWR1bGUgYSBwbGFuXCIgcGlja2VyIHJlYWRzIG9mZiBwbGFucy5saXN0IChQLTAyMSBzY2hlZHVsZSBnbGFuY2UpLiAqL1xuaW50ZXJmYWNlIFBsYW5MaXN0TGl0ZSB7XG4gIHNsdWc6IHN0cmluZztcbiAgdGl0bGU6IHN0cmluZyB8IG51bGw7XG4gIHNjaGVkdWxlZD86IGJvb2xlYW47XG4gIHNjaGVkdWxlQWN0aXZlPzogYm9vbGVhbjtcbiAgaGFybmVzczogc3RyaW5nO1xufVxuXG4vKiogQSBwbGFuJ3MgcmF3IGF1dGhvcmVkIHNjaGVkdWxlIChwbGFucy5zY2hlZHVsZSByb3cpIOKAlCBkcml2ZXMgZWRpdG9yIHByZS1maWxsICsgcGVyLW9jY3VycmVuY2UgZHJhZyAoRC0wMjApLiAqL1xuaW50ZXJmYWNlIFBsYW5TY2hlZHVsZVJvdyB7XG4gIHRlbXBsYXRlU2x1Zzogc3RyaW5nO1xuICB0aXRsZTogc3RyaW5nIHwgbnVsbDtcbiAgaGFybmVzc1NsdWc6IHN0cmluZztcbiAgc2NoZWR1bGU6IHtcbiAgICBraW5kPzogc3RyaW5nO1xuICAgIHJydWxlPzogc3RyaW5nO1xuICAgIGR0c3RhcnQ/OiBzdHJpbmc7XG4gICAgdHppZD86IHN0cmluZztcbiAgICByZGF0ZT86IHN0cmluZ1tdO1xuICAgIGV4ZGF0ZT86IHN0cmluZ1tdO1xuICAgIGNyb24/OiBzdHJpbmc7XG4gIH0gfCBudWxsO1xuICBzY2hlZHVsZWRBdDogc3RyaW5nIHwgbnVsbDtcbiAgZXhwaXJlc0F0OiBzdHJpbmcgfCBudWxsO1xuICB0emlkOiBzdHJpbmcgfCBudWxsO1xuICBzY2hlZHVsZUFjdGl2ZTogYm9vbGVhbjtcbn1cblxuY29uc3QgVklFV19WQUxVRVM6IENhbFZpZXdbXSA9IFsnZGF5R3JpZE1vbnRoJywgJ3RpbWVHcmlkV2VlaycsICd0aW1lR3JpZERheSddO1xuXG5leHBvcnQgZGVmYXVsdCBmdW5jdGlvbiBTY2hlZHVsZWRDYWxlbmRhclRhYigpIHtcbiAgY29uc3QgY2FsUmVmID0gdXNlUmVmPEZ1bGxDYWxlbmRhciB8IG51bGw+KG51bGwpO1xuICBjb25zdCBbdmlldywgc2V0Vmlld10gPSB1c2VRdWVyeVN0YXRlKCdjYWxWaWV3JywgcGFyc2VBc1N0cmluZ0VudW08Q2FsVmlldz4oVklFV19WQUxVRVMpLndpdGhEZWZhdWx0KCdkYXlHcmlkTW9udGgnKSk7XG4gIGNvbnN0IFtzZWxlY3RlZCwgc2V0U2VsZWN0ZWRdID0gdXNlUXVlcnlTdGF0ZSgnY2FsUGxhbicsIHBhcnNlQXNTdHJpbmcpO1xuICAvLyBWaXNpYmxlIHdpbmRvdyDigJQgc2V0IGZyb20gRnVsbENhbGVuZGFyJ3MgZGF0ZXNTZXQgc28gdGhlIHN5bmMgcXVlcnkgdHJhY2tzIHRoZSB2aWV3LlxuICBjb25zdCBbcmFuZ2UsIHNldFJhbmdlXSA9IHVzZVN0YXRlPHsgc3RhcnRNczogbnVtYmVyOyBlbmRNczogbnVtYmVyIH0gfCBudWxsPihudWxsKTtcblxuICBjb25zdCB7IGRhdGEsIGxvYWRpbmcsIGludmFsaWRhdGUgfSA9IHVzZVN5bmNRdWVyeTxTY2hlZHVsZWRPY2N1cnJlbmNlUm93Pih7XG4gICAgcXVlcnlOYW1lOiAncGxhbnMuc2NoZWR1bGVkT2NjdXJyZW5jZXMnLFxuICAgIGFyZ3M6IHsgcmFuZ2VTdGFydE1zOiByYW5nZT8uc3RhcnRNcyA/PyAwLCByYW5nZUVuZE1zOiByYW5nZT8uZW5kTXMgPz8gMCB9LFxuICAgIGVuYWJsZWQ6ICEhcmFuZ2UsXG4gIH0pO1xuICBjb25zdCBvY2N1cnJlbmNlcyA9IHVzZU1lbW8oKCkgPT4gZGF0YSA/PyBbXSwgW2RhdGFdKTtcblxuICAvLyDilIDilIAgU2NoZWR1bGUgZWRpdG9yICsgZHJhZy1kcm9wIChQLTAyMCkg4pSA4pSAXG4gIC8vIFRoZSBlZGl0b3IgYXV0aG9ycyBhIHBsYW4ncyBzY2hlZHVsZSAocmVjdXJyaW5nIFJSVUxFIG9yIG9uZS1zaG90KSB2aWFcbiAgLy8gcGxhbnM6c2V0LXNjaGVkdWxlIGFuZCBhcm1zIGl0IHZpYSBwbGFuczphcm0tc2NoZWR1bGUuIGBudWxsYCA9IGNsb3NlZC5cbiAgY29uc3QgW2VkaXRvciwgc2V0RWRpdG9yXSA9IHVzZVN0YXRlPEVkaXRvclN0YXRlIHwgbnVsbD4obnVsbCk7XG4gIGNvbnN0IFtwaWNrZXJPcGVuLCBzZXRQaWNrZXJPcGVuXSA9IHVzZVN0YXRlKGZhbHNlKTtcbiAgLy8gVGhlIHBsYW4gbGlzdCAoaW5jbC4gUC0wMjEgc2NoZWR1bGUgZmllbGRzKSBwb3dlcnMgdGhlIFwiU2NoZWR1bGUgYSBwbGFuXCJcbiAgLy8gcGlja2VyIOKAlCBwaWNrIGFuIHVuc2NoZWR1bGVkIHBsYW4gdG8gZ2l2ZSBpdCBhIGZpcnN0IHNjaGVkdWxlLlxuICAvLyBXb3Jrc3BhY2Utd2lkZSBwbGFuIHBpY2tlciAoRC0wMjAgaXRlbSAzKTogZmFuIHBsYW5zLmxpc3QgYWNyb3NzIGV2ZXJ5IGhhcm5lc3NcbiAgLy8gc28gYW4gdW5zY2hlZHVsZWQgcGxhbiBpbiBhIE5PTi1wcmltYXJ5IHBvdCBpcyBzY2hlZHVsYWJsZSB0b28gKHRoZSBzYW1lXG4gIC8vIHByb2plY3RzL2xpdGUgc291cmNlIFF1ZWVuVGFiIHVzZXMpLiBMSVZFLXF1ZXJpZWQgbGF6aWx5IOKAlCBgZW5hYmxlZDogcGlja2VyT3BlbmBcbiAgLy8ga2VlcHMgdGhlIGNyb3NzLWhhcm5lc3MgZmFuLW91dCBvZmYgdW50aWwgdGhlIHBpY2tlciBvcGVucywgYW5kIHRoZSByZWdpc3RyeVxuICAvLyBsaXN0IG5vdyBhdXRvLXVwZGF0ZXMgb24gY3JlYXRlL2RlbGV0ZS9yZW5hbWUvZm9yayAoRUktMjA2LCBkYXRhLXN5bmMtcHVzaFxuICAvLyBQLTAxMCkgaW5zdGVhZCBvZiB0aGUgb2xkIG9uZS1zaG90IGZldGNoLlxuICBjb25zdCB7IGRhdGE6IHByb2plY3RzRGF0YSB9ID0gdXNlU3luY1F1ZXJ5PHsgc2x1Zzogc3RyaW5nIH0+KHtcbiAgICBxdWVyeU5hbWU6ICdoYXJuZXNzUHJvamVjdHMubGl0ZScsXG4gICAgYXJnczoge30sXG4gICAgZW5hYmxlZDogcGlja2VyT3BlbixcbiAgICBzdGFsZVRpbWU6IDYwXzAwMCxcbiAgfSk7XG4gIGNvbnN0IGhhcm5lc3NTbHVncyA9IHVzZU1lbW8oXG4gICAgKCkgPT4gKHByb2plY3RzRGF0YSA/PyBbXSkubWFwKChwKSA9PiBwLnNsdWcpLmZpbHRlcigocyk6IHMgaXMgc3RyaW5nID0+ICEhcyksXG4gICAgW3Byb2plY3RzRGF0YV0sXG4gICk7XG4gIGNvbnN0IHsgZGF0YTogcGxhbkxpc3REYXRhIH0gPSB1c2VTeW5jUXVlcnk8UGxhbkxpc3RMaXRlPih7XG4gICAgcXVlcnlOYW1lOiAncGxhbnMubGlzdCcsXG4gICAgYXJnczogaGFybmVzc1NsdWdzLmxlbmd0aCA+IDAgPyB7IGhhcm5lc3Nfc2x1Z3M6IGhhcm5lc3NTbHVncyB9IDoge30sXG4gICAgZW5hYmxlZDogcGlja2VyT3BlbixcbiAgfSk7XG4gIGNvbnN0IHBsYW5MaXN0ID0gdXNlTWVtbygoKSA9PiAoQXJyYXkuaXNBcnJheShwbGFuTGlzdERhdGEpID8gcGxhbkxpc3REYXRhIDogW10pLCBbcGxhbkxpc3REYXRhXSk7XG4gIC8vIEVhY2ggc2NoZWR1bGVkIHBsYW4ncyBSQVcgc2NoZWR1bGUgKHJydWxlL3NjaGVkdWxlZEF0L2V4ZGF0ZS9yZGF0ZSkg4oCUIGVkaXRvclxuICAvLyBwcmUtZmlsbCArIHRoZSBwZXItb2NjdXJyZW5jZSBFWERBVEUvUkRBVEUgZHJhZyByZWFkIHRoaXMgKEQtMDIwKS5cbiAgY29uc3QgeyBkYXRhOiBzY2hlZERhdGEsIGludmFsaWRhdGU6IGludmFsaWRhdGVTY2hlZHVsZXMgfSA9IHVzZVN5bmNRdWVyeTxQbGFuU2NoZWR1bGVSb3c+KHsgcXVlcnlOYW1lOiAncGxhbnMuc2NoZWR1bGUnLCBhcmdzOiB7fSB9KTtcbiAgY29uc3Qgc2NoZWR1bGVCeVNsdWcgPSB1c2VNZW1vKCgpID0+IHtcbiAgICBjb25zdCBtID0gbmV3IE1hcDxzdHJpbmcsIFBsYW5TY2hlZHVsZVJvdz4oKTtcbiAgICBmb3IgKGNvbnN0IHMgb2Ygc2NoZWREYXRhID8/IFtdKSBtLnNldChzLnRlbXBsYXRlU2x1Zywgcyk7XG4gICAgcmV0dXJuIG07XG4gIH0sIFtzY2hlZERhdGFdKTtcbiAgY29uc3QgYWZ0ZXJXcml0ZSA9IHVzZUNhbGxiYWNrKCgpID0+IHtcbiAgICB2b2lkIGludmFsaWRhdGU/LigpO1xuICAgIHZvaWQgaW52YWxpZGF0ZVNjaGVkdWxlcz8uKCk7XG4gIH0sIFtpbnZhbGlkYXRlLCBpbnZhbGlkYXRlU2NoZWR1bGVzXSk7XG5cbiAgY29uc3QgZXZlbnRzOiBFdmVudElucHV0W10gPSB1c2VNZW1vKFxuICAgICgpID0+XG4gICAgICBvY2N1cnJlbmNlcy5tYXAoKG8pID0+ICh7XG4gICAgICAgIGlkOiBgJHtvLnRlbXBsYXRlU2x1Z306JHtvLm9jY3VycmVuY2VNc31gLFxuICAgICAgICB0aXRsZTogby50aXRsZSA/PyBvLnRlbXBsYXRlU2x1ZyxcbiAgICAgICAgc3RhcnQ6IG5ldyBEYXRlKG8ub2NjdXJyZW5jZU1zKS50b0lTT1N0cmluZygpLFxuICAgICAgICBleHRlbmRlZFByb3BzOiBvLFxuICAgICAgICBjbGFzc05hbWVzOiBbXG4gICAgICAgICAgJ3BjLXNjaGVkLWV2ZW50JyxcbiAgICAgICAgICBvLnNjaGVkdWxlQWN0aXZlID8gJ3BjLXNjaGVkLWV2ZW50LS1hcm1lZCcgOiAncGMtc2NoZWQtZXZlbnQtLXBhdXNlZCcsXG4gICAgICAgICAgby5sYXN0T3V0Y29tZSA/IGBwYy1zY2hlZC1ldmVudC0tJHtvLmxhc3RPdXRjb21lfWAgOiAnJyxcbiAgICAgICAgICBvLmtpbmQgPT09ICdvbmUtc2hvdCcgPyAncGMtc2NoZWQtZXZlbnQtLW9uZXNob3QnIDogJycsXG4gICAgICAgIF0uZmlsdGVyKEJvb2xlYW4pLFxuICAgICAgfSkpLFxuICAgIFtvY2N1cnJlbmNlc10sXG4gICk7XG4gIGNvbnN0IHN0YXRzID0gdXNlTWVtbygoKSA9PiB7XG4gICAgbGV0IGFybWVkID0gMDtcbiAgICBsZXQgcGF1c2VkID0gMDtcbiAgICBsZXQgb25lU2hvdCA9IDA7XG4gICAgbGV0IGZhaWxlZCA9IDA7XG4gICAgbGV0IHBhcnRpYWwgPSAwO1xuICAgIGZvciAoY29uc3QgbyBvZiBvY2N1cnJlbmNlcykge1xuICAgICAgaWYgKG8uc2NoZWR1bGVBY3RpdmUpIGFybWVkICs9IDE7XG4gICAgICBlbHNlIHBhdXNlZCArPSAxO1xuICAgICAgaWYgKG8ua2luZCA9PT0gJ29uZS1zaG90Jykgb25lU2hvdCArPSAxO1xuICAgICAgaWYgKG8ubGFzdE91dGNvbWUgPT09ICdmYWlsZWQnKSBmYWlsZWQgKz0gMTtcbiAgICAgIGlmIChvLmxhc3RPdXRjb21lID09PSAncGFydGlhbCcgfHwgby5sYXN0T3V0Y29tZSA9PT0gJ3RpbWVkLW91dCcpIHBhcnRpYWwgKz0gMTtcbiAgICB9XG4gICAgcmV0dXJuIHsgdG90YWw6IG9jY3VycmVuY2VzLmxlbmd0aCwgYXJtZWQsIHBhdXNlZCwgb25lU2hvdCwgZmFpbGVkLCBwYXJ0aWFsIH07XG4gIH0sIFtvY2N1cnJlbmNlc10pO1xuXG4gIGNvbnN0IG9uRGF0ZXNTZXQgPSB1c2VDYWxsYmFjayhcbiAgICAoYXJnOiBEYXRlc1NldEFyZykgPT4ge1xuICAgICAgc2V0UmFuZ2UoeyBzdGFydE1zOiBhcmcuc3RhcnQuZ2V0VGltZSgpLCBlbmRNczogYXJnLmVuZC5nZXRUaW1lKCkgfSk7XG4gICAgICAvLyBLZWVwIHRoZSBVUkwgdmlldyBwYXJhbSBpbiBzeW5jIHdpdGggRnVsbENhbGVuZGFyJ3Mgb3duIHRvb2xiYXIuXG4gICAgICBpZiAoYXJnLnZpZXcudHlwZSAhPT0gdmlldyAmJiBWSUVXX1ZBTFVFUy5pbmNsdWRlcyhhcmcudmlldy50eXBlIGFzIENhbFZpZXcpKSB7XG4gICAgICAgIHZvaWQgc2V0Vmlldyhhcmcudmlldy50eXBlIGFzIENhbFZpZXcpO1xuICAgICAgfVxuICAgIH0sXG4gICAgW3ZpZXcsIHNldFZpZXddLFxuICApO1xuXG4gIC8vIFVSTCDihpIgRnVsbENhbGVuZGFyIChhZ2VudCB1aTpkaXNwYXRjaCAvIGRlZXAgbGluayBzZXRzID9jYWxWaWV3PSkuXG4gIHVzZUVmZmVjdCgoKSA9PiB7XG4gICAgY29uc3QgYXBpID0gY2FsUmVmLmN1cnJlbnQ/LmdldEFwaSgpO1xuICAgIGlmIChhcGkgJiYgYXBpLnZpZXcudHlwZSAhPT0gdmlldykgYXBpLmNoYW5nZVZpZXcodmlldyk7XG4gIH0sIFt2aWV3XSk7XG5cbiAgY29uc3Qgb25FdmVudENsaWNrID0gdXNlQ2FsbGJhY2soXG4gICAgKGFyZzogRXZlbnRDbGlja0FyZykgPT4ge1xuICAgICAgY29uc3Qgc2x1ZyA9IChhcmcuZXZlbnQuZXh0ZW5kZWRQcm9wcyBhcyBTY2hlZHVsZWRPY2N1cnJlbmNlUm93KS50ZW1wbGF0ZVNsdWc7XG4gICAgICB2b2lkIHNldFNlbGVjdGVkKHNsdWcpO1xuICAgIH0sXG4gICAgW3NldFNlbGVjdGVkXSxcbiAgKTtcblxuICAvLyBDbGljay9kcmFnIG9udG8gYSBkYXkgPSBhIG9uZS1zaG90IGZvciB0aGUgU0VMRUNURUQgcGxhbiAoUC0wMjApLiBXaXRoIG5vXG4gIC8vIHBsYW4gc2VsZWN0ZWQgdGhlcmUncyBubyB0YXJnZXQsIHNvIG9wZW4gdGhlIHBpY2tlciB0byBjaG9vc2Ugb25lIGluc3RlYWQuXG4gIGNvbnN0IG9uRGF0ZUNsaWNrID0gdXNlQ2FsbGJhY2soXG4gICAgKGFyZzogRGF0ZUNsaWNrQXJnKSA9PiB7XG4gICAgICBpZiAoIXNlbGVjdGVkKSB7XG4gICAgICAgIHNldFBpY2tlck9wZW4odHJ1ZSk7XG4gICAgICAgIHJldHVybjtcbiAgICAgIH1cbiAgICAgIGNvbnN0IHJvdyA9IG9jY3VycmVuY2VzLmZpbmQoKG8pID0+IG8udGVtcGxhdGVTbHVnID09PSBzZWxlY3RlZCk7XG4gICAgICBzZXRFZGl0b3Ioe1xuICAgICAgICBzbHVnOiBzZWxlY3RlZCxcbiAgICAgICAgdGl0bGU6IHJvdz8udGl0bGUgPz8gc2VsZWN0ZWQsXG4gICAgICAgIGhhcm5lc3M6IHJvdz8uaGFybmVzc1NsdWcsXG4gICAgICAgIHNlZWREYXRlOiBhcmcuZGF0ZS50b0lTT1N0cmluZygpLFxuICAgICAgICBzZWVkTW9kZTogJ29uZS1zaG90JyxcbiAgICAgICAgaXNBcm1lZDogcm93Py5zY2hlZHVsZUFjdGl2ZSA/PyBmYWxzZSxcbiAgICAgIH0pO1xuICAgIH0sXG4gICAgW3NlbGVjdGVkLCBvY2N1cnJlbmNlc10sXG4gICk7XG5cbiAgLy8gRHJhZyBhbiBldmVudCB0byBhIG5ldyBkYXkuIEEgb25lLXNob3QganVzdCBtb3ZlcyAocmV3cml0ZSBzY2hlZHVsZWRBdCkuIEFcbiAgLy8gcmVjdXJyaW5nIG9jY3VycmVuY2UgY2FuJ3QgYmUgbW92ZWQgaW4gaXNvbGF0aW9uIHdpdGhvdXQgdGhlIHNvdXJjZSBSUlVMRVxuICAvLyAodGhlIG9jY3VycmVuY2Ugcm93IGRvZXNuJ3QgY2FycnkgaXQpLCBzbyByZXZlcnQgKyBvcGVuIHRoZSBlZGl0b3IgZm9yIGFuXG4gIC8vIGVkaXQtYWxsIOKAlCBwZXItb2NjdXJyZW5jZSBFWERBVEUrUkRBVEUgZHJhZyBpcyBhIGRvY3VtZW50ZWQgZm9sbG93LW9uLlxuICBjb25zdCBvbkV2ZW50RHJvcCA9IHVzZUNhbGxiYWNrKFxuICAgIGFzeW5jIChhcmc6IEV2ZW50RHJvcEFyZykgPT4ge1xuICAgICAgY29uc3QgbyA9IGFyZy5ldmVudC5leHRlbmRlZFByb3BzIGFzIFNjaGVkdWxlZE9jY3VycmVuY2VSb3c7XG4gICAgICBjb25zdCBuZXdTdGFydCA9IGFyZy5ldmVudC5zdGFydDtcbiAgICAgIGlmICghbmV3U3RhcnQpIHtcbiAgICAgICAgYXJnLnJldmVydCgpO1xuICAgICAgICByZXR1cm47XG4gICAgICB9XG4gICAgICBjb25zdCBoQXJnID0gby5oYXJuZXNzU2x1ZyA/IHsgaGFybmVzczogby5oYXJuZXNzU2x1ZyB9IDoge307XG4gICAgICBpZiAoby5raW5kID09PSAnb25lLXNob3QnKSB7XG4gICAgICAgIGNvbnN0IHIgPSBhd2FpdCBydW5TY2hlZHVsZVRvb2woJ3BsYW5zOnNldC1zY2hlZHVsZScsIHtcbiAgICAgICAgICBzbHVnOiBvLnRlbXBsYXRlU2x1ZyxcbiAgICAgICAgICAuLi5oQXJnLFxuICAgICAgICAgIHNjaGVkdWxlOiBudWxsLFxuICAgICAgICAgIHNjaGVkdWxlZEF0OiBuZXdTdGFydC50b0lTT1N0cmluZygpLFxuICAgICAgICB9KTtcbiAgICAgICAgaWYgKCFyLm9rKSBhcmcucmV2ZXJ0KCk7XG4gICAgICAgIGVsc2UgYWZ0ZXJXcml0ZSgpO1xuICAgICAgICByZXR1cm47XG4gICAgICB9XG4gICAgICAvLyBSZWN1cnJpbmcgb2NjdXJyZW5jZSDihpIgZWRpdC1USElTLW9jY3VycmVuY2U6IGV4Y2x1ZGUgdGhlIG9yaWdpbmFsIGZpcmVcbiAgICAgIC8vIChFWERBVEUpIGFuZCBwaW4gdGhlIGRyYWdnZWQgb25lIChSREFURSkuIE5lZWRzIHRoZSBzb3VyY2UgUlJVTEU7IGlmIHdlXG4gICAgICAvLyBkb24ndCBoYXZlIGl0LCBmYWxsIGJhY2sgdG8gb3BlbmluZyB0aGUgZWRpdG9yIChlZGl0LWFsbCkuXG4gICAgICBjb25zdCBjdXIgPSBzY2hlZHVsZUJ5U2x1Zy5nZXQoby50ZW1wbGF0ZVNsdWcpO1xuICAgICAgaWYgKCFjdXI/LnNjaGVkdWxlPy5ycnVsZSkge1xuICAgICAgICBhcmcucmV2ZXJ0KCk7XG4gICAgICAgIHNldEVkaXRvcih7IHNsdWc6IG8udGVtcGxhdGVTbHVnLCB0aXRsZTogby50aXRsZSwgaGFybmVzczogby5oYXJuZXNzU2x1ZywgaXNBcm1lZDogby5zY2hlZHVsZUFjdGl2ZSB9KTtcbiAgICAgICAgcmV0dXJuO1xuICAgICAgfVxuICAgICAgY29uc3Qgb2xkSXNvID0gbmV3IERhdGUoby5vY2N1cnJlbmNlTXMpLnRvSVNPU3RyaW5nKCk7XG4gICAgICBjb25zdCBuZXh0ID0ge1xuICAgICAgICAuLi5jdXIuc2NoZWR1bGUsXG4gICAgICAgIGV4ZGF0ZTogWy4uLihjdXIuc2NoZWR1bGUuZXhkYXRlID8/IFtdKSwgb2xkSXNvXSxcbiAgICAgICAgcmRhdGU6IFsuLi4oY3VyLnNjaGVkdWxlLnJkYXRlID8/IFtdKSwgbmV3U3RhcnQudG9JU09TdHJpbmcoKV0sXG4gICAgICB9O1xuICAgICAgY29uc3QgciA9IGF3YWl0IHJ1blNjaGVkdWxlVG9vbCgncGxhbnM6c2V0LXNjaGVkdWxlJywge1xuICAgICAgICBzbHVnOiBvLnRlbXBsYXRlU2x1ZyxcbiAgICAgICAgLi4uaEFyZyxcbiAgICAgICAgc2NoZWR1bGU6IG5leHQsXG4gICAgICAgIGV4cGlyZXNBdDogY3VyLmV4cGlyZXNBdCxcbiAgICAgICAgdHppZDogY3VyLnR6aWQsXG4gICAgICB9KTtcbiAgICAgIGlmICghci5vaykgYXJnLnJldmVydCgpO1xuICAgICAgZWxzZSBhZnRlcldyaXRlKCk7XG4gICAgfSxcbiAgICBbYWZ0ZXJXcml0ZSwgc2NoZWR1bGVCeVNsdWddLFxuICApO1xuXG4gIGNvbnN0IHNlbGVjdGVkUGxhbiA9IHVzZU1lbW8oKCkgPT4ge1xuICAgIGlmICghc2VsZWN0ZWQpIHJldHVybiBudWxsO1xuICAgIGNvbnN0IHJvd3MgPSBvY2N1cnJlbmNlcy5maWx0ZXIoKG8pID0+IG8udGVtcGxhdGVTbHVnID09PSBzZWxlY3RlZCk7XG4gICAgaWYgKHJvd3MubGVuZ3RoID09PSAwKSByZXR1cm4gbnVsbDtcbiAgICBjb25zdCBub3cgPSBEYXRlLm5vdygpO1xuICAgIGNvbnN0IHVwY29taW5nID0gcm93cy5maWx0ZXIoKG8pID0+IG8ub2NjdXJyZW5jZU1zID49IG5vdykuc29ydCgoYSwgYikgPT4gYS5vY2N1cnJlbmNlTXMgLSBiLm9jY3VycmVuY2VNcyk7XG4gICAgcmV0dXJuIHsgcm93OiByb3dzWzBdLCB1cGNvbWluZzogdXBjb21pbmcuc2xpY2UoMCwgNSkgfTtcbiAgfSwgW3NlbGVjdGVkLCBvY2N1cnJlbmNlc10pO1xuXG4gIHJldHVybiAoXG4gICAgPFRvb2x0aXBQcmltaXRpdmUuUHJvdmlkZXIgZGVsYXlEdXJhdGlvbj17MjUwfT5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsXCI+XG4gICAgICAgIDxoZWFkZXIgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19tYXN0aGVhZFwiPlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX190aXRsZWJsb2NrXCI+XG4gICAgICAgICAgICA8cCBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX2V5ZWJyb3dcIj5TY2hlZHVsZWQgcGxhbnM8L3A+XG4gICAgICAgICAgICA8aDI+Q2FsZW5kYXI8L2gyPlxuICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19zdGF0c1wiIGFyaWEtbGFiZWw9XCJDYWxlbmRhciBvY2N1cnJlbmNlIHN1bW1hcnlcIj5cbiAgICAgICAgICAgIDxzcGFuPjxzdHJvbmc+e3N0YXRzLnRvdGFsfTwvc3Ryb25nPiBpbiB2aWV3PC9zcGFuPlxuICAgICAgICAgICAgPHNwYW4+PHN0cm9uZz57c3RhdHMuYXJtZWR9PC9zdHJvbmc+IGFybWVkPC9zcGFuPlxuICAgICAgICAgICAge3N0YXRzLmZhaWxlZCA+IDAgPyA8c3BhbiBjbGFzc05hbWU9XCJpcy1kYW5nZXJcIj48c3Ryb25nPntzdGF0cy5mYWlsZWR9PC9zdHJvbmc+IGZhaWxlZDwvc3Bhbj4gOiBudWxsfVxuICAgICAgICAgICAge3N0YXRzLnBhcnRpYWwgPiAwID8gPHNwYW4gY2xhc3NOYW1lPVwiaXMtd2FyblwiPjxzdHJvbmc+e3N0YXRzLnBhcnRpYWx9PC9zdHJvbmc+IHBhcnRpYWw8L3NwYW4+IDogbnVsbH1cbiAgICAgICAgICAgIHtzdGF0cy5wYXVzZWQgPiAwID8gPHNwYW4+PHN0cm9uZz57c3RhdHMucGF1c2VkfTwvc3Ryb25nPiBwYXVzZWQ8L3NwYW4+IDogbnVsbH1cbiAgICAgICAgICAgIHtzdGF0cy5vbmVTaG90ID4gMCA/IDxzcGFuPjxzdHJvbmc+e3N0YXRzLm9uZVNob3R9PC9zdHJvbmc+IG9uZS1zaG90PC9zcGFuPiA6IG51bGx9XG4gICAgICAgICAgICB7bG9hZGluZyA/IDxzcGFuPkxvYWRpbmc8L3NwYW4+IDogbnVsbH1cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICA8VG9vbHRpcCBsYWJlbD1cIkF1dGhvciBhIHNjaGVkdWxlIGZvciBhIHBsYW5cIiBzaWRlPVwiYm90dG9tXCIgYWxpZ249XCJlbmRcIj5cbiAgICAgICAgICAgIDxidXR0b24gdHlwZT1cImJ1dHRvblwiIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fYWRkXCIgb25DbGljaz17KCkgPT4gc2V0UGlja2VyT3Blbih0cnVlKX0+XG4gICAgICAgICAgICAgIDxDYWxlbmRhclBsdXMgc2l6ZT17MTR9IGFyaWEtaGlkZGVuIC8+XG4gICAgICAgICAgICAgIDxzcGFuPlNjaGVkdWxlPC9zcGFuPlxuICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgPC9Ub29sdGlwPlxuICAgICAgICA8L2hlYWRlcj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX2xlZ2VuZFwiIGFyaWEtbGFiZWw9XCJDYWxlbmRhciBzdGF0dXMgbGVnZW5kXCI+XG4gICAgICAgICAgPHNwYW4+PGkgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19zd2F0Y2ggcGMtc2NoZWQtY2FsX19zd2F0Y2gtLXN1Y2Nlc3NcIiAvPiBsYXN0IHJ1biBvazwvc3Bhbj5cbiAgICAgICAgICA8c3Bhbj48aSBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX3N3YXRjaCBwYy1zY2hlZC1jYWxfX3N3YXRjaC0tZmFpbGVkXCIgLz4gbGFzdCBydW4gZmFpbGVkPC9zcGFuPlxuICAgICAgICAgIDxzcGFuPjxpIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fc3dhdGNoIHBjLXNjaGVkLWNhbF9fc3dhdGNoLS1wYXJ0aWFsXCIgLz4gcGFydGlhbDwvc3Bhbj5cbiAgICAgICAgICA8c3Bhbj48aSBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX3N3YXRjaCBwYy1zY2hlZC1jYWxfX3N3YXRjaC0tcGF1c2VkXCIgLz4gcGF1c2VkPC9zcGFuPlxuICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fb25lc2hvdFwiPml0YWxpYyA9IG9uZS1zaG90PC9zcGFuPlxuICAgICAgICA8L2Rpdj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX2JvZHlcIj5cbiAgICAgICAgICA8YXNpZGUgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19yb3V0aW5lc1wiPlxuICAgICAgICAgICAgPFNjaGVkdWxlZFJvdXRpbmVzUGFuZSBvblNlbGVjdD17KHNsdWcpID0+IHZvaWQgc2V0U2VsZWN0ZWQoc2x1Zyl9IC8+XG4gICAgICAgICAgPC9hc2lkZT5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fbWFpblwiPlxuICAgICAgICAgICAgPEZ1bGxDYWxlbmRhclxuICAgICAgICAgICAgICByZWY9e2NhbFJlZn1cbiAgICAgICAgICAgICAgcGx1Z2lucz17W2RheUdyaWRQbHVnaW4sIHRpbWVHcmlkUGx1Z2luLCBpbnRlcmFjdGlvblBsdWdpbl19XG4gICAgICAgICAgICAgIGluaXRpYWxWaWV3PXt2aWV3fVxuICAgICAgICAgICAgICBoZWFkZXJUb29sYmFyPXt7IGxlZnQ6ICdwcmV2LG5leHQgdG9kYXknLCBjZW50ZXI6ICd0aXRsZScsIHJpZ2h0OiAnZGF5R3JpZE1vbnRoLHRpbWVHcmlkV2Vlayx0aW1lR3JpZERheScgfX1cbiAgICAgICAgICAgICAgZXZlbnRzPXtldmVudHN9XG4gICAgICAgICAgICAgIGRhdGVzU2V0PXtvbkRhdGVzU2V0fVxuICAgICAgICAgICAgICBldmVudENsaWNrPXtvbkV2ZW50Q2xpY2t9XG4gICAgICAgICAgICAgIGRhdGVDbGljaz17b25EYXRlQ2xpY2t9XG4gICAgICAgICAgICAgIGV2ZW50RHJvcD17b25FdmVudERyb3B9XG4gICAgICAgICAgICAgIGVkaXRhYmxlXG4gICAgICAgICAgICAgIGV2ZW50U3RhcnRFZGl0YWJsZVxuICAgICAgICAgICAgICBldmVudER1cmF0aW9uRWRpdGFibGU9e2ZhbHNlfVxuICAgICAgICAgICAgICBoZWlnaHQ9XCIxMDAlXCJcbiAgICAgICAgICAgICAgbm93SW5kaWNhdG9yXG4gICAgICAgICAgICAgIGRheU1heEV2ZW50cz17NH1cbiAgICAgICAgICAgICAgZmlyc3REYXk9ezF9XG4gICAgICAgICAgICAvPlxuICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIHtzZWxlY3RlZFBsYW4gJiYgKFxuICAgICAgICAgICAgPGFzaWRlIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fYXNpZGVcIj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX2FzaWRlLWhlYWRcIj5cbiAgICAgICAgICAgICAgICA8aDM+e3NlbGVjdGVkUGxhbi5yb3cudGl0bGUgPz8gc2VsZWN0ZWRQbGFuLnJvdy50ZW1wbGF0ZVNsdWd9PC9oMz5cbiAgICAgICAgICAgICAgICA8YnV0dG9uXG4gICAgICAgICAgICAgICAgICB0eXBlPVwiYnV0dG9uXCJcbiAgICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9faWNvbmJ0blwiXG4gICAgICAgICAgICAgICAgICBvbkNsaWNrPXsoKSA9PiB2b2lkIHNldFNlbGVjdGVkKG51bGwpfVxuICAgICAgICAgICAgICAgICAgYXJpYS1sYWJlbD1cIkNsb3NlIHNlbGVjdGVkIHBsYW5cIlxuICAgICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICAgIDxYIHNpemU9ezE0fSBhcmlhLWhpZGRlbiAvPlxuICAgICAgICAgICAgICAgIDwvYnV0dG9uPlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPGRsPlxuICAgICAgICAgICAgICAgIDxkdD5QbGFuPC9kdD5cbiAgICAgICAgICAgICAgICA8ZGQ+e3NlbGVjdGVkUGxhbi5yb3cudGVtcGxhdGVTbHVnfTwvZGQ+XG4gICAgICAgICAgICAgICAgPGR0PlBvdDwvZHQ+XG4gICAgICAgICAgICAgICAgPGRkPntzZWxlY3RlZFBsYW4ucm93Lmhhcm5lc3NTbHVnfTwvZGQ+XG4gICAgICAgICAgICAgICAgPGR0PlN0YXRlPC9kdD5cbiAgICAgICAgICAgICAgICA8ZGQ+e3NlbGVjdGVkUGxhbi5yb3cuc2NoZWR1bGVBY3RpdmUgPyAnQXJtZWQgKGZpcmluZyknIDogJ1BhdXNlZCAoZGlzYXJtZWQpJ308L2RkPlxuICAgICAgICAgICAgICAgIDxkdD5LaW5kPC9kdD5cbiAgICAgICAgICAgICAgICA8ZGQ+e3NlbGVjdGVkUGxhbi5yb3cua2luZCA9PT0gJ29uZS1zaG90JyA/ICdPbmUtc2hvdCcgOiAnUmVjdXJyaW5nJ308L2RkPlxuICAgICAgICAgICAgICAgIDxkdD5MYXN0IHJ1bjwvZHQ+XG4gICAgICAgICAgICAgICAgPGRkPntzZWxlY3RlZFBsYW4ucm93Lmxhc3RPdXRjb21lID8/ICfigJQnfTwvZGQ+XG4gICAgICAgICAgICAgIDwvZGw+XG4gICAgICAgICAgICAgIDxoMz5OZXh0IGZpcmVzPC9oMz5cbiAgICAgICAgICAgICAge3NlbGVjdGVkUGxhbi51cGNvbWluZy5sZW5ndGggPT09IDAgPyAoXG4gICAgICAgICAgICAgICAgPHAgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19lbXB0eSBwYy1zY2hlZC1jYWxfX2VtcHR5LS1jb21wYWN0XCI+Tm8gdXBjb21pbmcgb2NjdXJyZW5jZXMgaW4gdmlldy48L3A+XG4gICAgICAgICAgICAgICkgOiAoXG4gICAgICAgICAgICAgICAgPHVsIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fbmV4dC1saXN0XCI+XG4gICAgICAgICAgICAgICAgICB7c2VsZWN0ZWRQbGFuLnVwY29taW5nLm1hcCgobykgPT4gKFxuICAgICAgICAgICAgICAgICAgICA8bGkga2V5PXtvLm9jY3VycmVuY2VNc30+XG4gICAgICAgICAgICAgICAgICAgICAge25ldyBEYXRlKG8ub2NjdXJyZW5jZU1zKS50b0xvY2FsZVN0cmluZygpfVxuICAgICAgICAgICAgICAgICAgICA8L2xpPlxuICAgICAgICAgICAgICAgICAgKSl9XG4gICAgICAgICAgICAgICAgPC91bD5cbiAgICAgICAgICAgICAgKX1cbiAgICAgICAgICAgICAgPHAgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19wbGFubGlua1wiPlxuICAgICAgICAgICAgICAgIDxhIGhyZWY9e2AvYWR2P3RhYj1wbGFucyZwbGFuPSR7ZW5jb2RlVVJJQ29tcG9uZW50KHNlbGVjdGVkUGxhbi5yb3cudGVtcGxhdGVTbHVnKX1gfT5cbiAgICAgICAgICAgICAgICAgIDxFeHRlcm5hbExpbmsgc2l6ZT17MTJ9IGFyaWEtaGlkZGVuIC8+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj5PcGVuIHBsYW48L3NwYW4+XG4gICAgICAgICAgICAgICAgPC9hPlxuICAgICAgICAgICAgICA8L3A+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19hY3Rpb25zXCI+XG4gICAgICAgICAgICAgICAgPGJ1dHRvblxuICAgICAgICAgICAgICAgICAgdHlwZT1cImJ1dHRvblwiXG4gICAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX2VkaXRcIlxuICAgICAgICAgICAgICAgICAgb25DbGljaz17KCkgPT5cbiAgICAgICAgICAgICAgICAgICAgc2V0RWRpdG9yKHtcbiAgICAgICAgICAgICAgICAgICAgICBzbHVnOiBzZWxlY3RlZFBsYW4ucm93LnRlbXBsYXRlU2x1ZyxcbiAgICAgICAgICAgICAgICAgICAgICB0aXRsZTogc2VsZWN0ZWRQbGFuLnJvdy50aXRsZSxcbiAgICAgICAgICAgICAgICAgICAgICBoYXJuZXNzOiBzZWxlY3RlZFBsYW4ucm93Lmhhcm5lc3NTbHVnLFxuICAgICAgICAgICAgICAgICAgICAgIGlzQXJtZWQ6IHNlbGVjdGVkUGxhbi5yb3cuc2NoZWR1bGVBY3RpdmUsXG4gICAgICAgICAgICAgICAgICAgIH0pXG4gICAgICAgICAgICAgICAgICB9XG4gICAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgICAgPFBlbmNpbCBzaXplPXsxMn0gYXJpYS1oaWRkZW4gLz5cbiAgICAgICAgICAgICAgICAgIEVkaXQgc2NoZWR1bGVcbiAgICAgICAgICAgICAgICA8L2J1dHRvbj5cbiAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICA8L2FzaWRlPlxuICAgICAgICAgICl9XG4gICAgICAgIDwvZGl2PlxuXG4gICAgICAgIHtwaWNrZXJPcGVuICYmIChcbiAgICAgICAgICA8U2NoZWR1bGVQaWNrZXJcbiAgICAgICAgICAgIHBsYW5zPXtwbGFuTGlzdH1cbiAgICAgICAgICAgIG9uUGljaz17KHApID0+IHtcbiAgICAgICAgICAgICAgc2V0UGlja2VyT3BlbihmYWxzZSk7XG4gICAgICAgICAgICAgIHNldEVkaXRvcih7IHNsdWc6IHAuc2x1ZywgdGl0bGU6IHAudGl0bGUsIGhhcm5lc3M6IHAuaGFybmVzcywgaXNBcm1lZDogcC5zY2hlZHVsZUFjdGl2ZSA/PyBmYWxzZSB9KTtcbiAgICAgICAgICAgIH19XG4gICAgICAgICAgICBvbkNsb3NlPXsoKSA9PiBzZXRQaWNrZXJPcGVuKGZhbHNlKX1cbiAgICAgICAgICAvPlxuICAgICAgICApfVxuXG4gICAgICAgIHtlZGl0b3IgJiYgKFxuICAgICAgICAgIDxNb2RhbFxuICAgICAgICAgICAgb3BlblxuICAgICAgICAgICAgb25PcGVuQ2hhbmdlPXsob3BlbjogYm9vbGVhbikgPT4ge1xuICAgICAgICAgICAgICBpZiAoIW9wZW4pIHNldEVkaXRvcihudWxsKTtcbiAgICAgICAgICAgIH19XG4gICAgICAgICAgICB0aXRsZT17YEVkaXQgc2NoZWR1bGUgZm9yICR7ZWRpdG9yLnRpdGxlID8/IGVkaXRvci5zbHVnfWB9XG4gICAgICAgICAgICBjb250ZW50Q2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19tb2RhbC1jYXJkXCJcbiAgICAgICAgICA+XG4gICAgICAgICAgICA8U2NoZWR1bGVFZGl0b3JcbiAgICAgICAgICAgICAgcGxhblNsdWc9e2VkaXRvci5zbHVnfVxuICAgICAgICAgICAgICBwbGFuVGl0bGU9e2VkaXRvci50aXRsZX1cbiAgICAgICAgICAgICAgaGFybmVzcz17ZWRpdG9yLmhhcm5lc3N9XG4gICAgICAgICAgICAgIHNlZWREYXRlPXtlZGl0b3Iuc2VlZERhdGV9XG4gICAgICAgICAgICAgIHNlZWRNb2RlPXtlZGl0b3Iuc2VlZE1vZGV9XG4gICAgICAgICAgICAgIGluaXRpYWw9e3NjaGVkdWxlQnlTbHVnLmdldChlZGl0b3Iuc2x1ZykgPz8gbnVsbH1cbiAgICAgICAgICAgICAgaXNBcm1lZD17ZWRpdG9yLmlzQXJtZWR9XG4gICAgICAgICAgICAgIG9uQ2xvc2U9eygpID0+IHNldEVkaXRvcihudWxsKX1cbiAgICAgICAgICAgICAgb25TYXZlZD17YWZ0ZXJXcml0ZX1cbiAgICAgICAgICAgIC8+XG4gICAgICAgICAgPC9Nb2RhbD5cbiAgICAgICAgKX1cbiAgICAgIDwvZGl2PlxuICAgIDwvVG9vbHRpcFByaW1pdGl2ZS5Qcm92aWRlcj5cbiAgKTtcbn1cbi8qKiBQbGFuIHBpY2tlciBmb3IgXCJTY2hlZHVsZSBhIHBsYW5cIiDigJQgY2hvb3NlIGFueSBwbGFuIHRvIChyZSlhdXRob3IgaXRzIHNjaGVkdWxlLlxuICogIFVuc2NoZWR1bGVkIHBsYW5zIGZsb2F0IHRvIHRoZSB0b3AgKHRoZSBjb21tb24gY2FzZSk7IGFscmVhZHktc2NoZWR1bGVkIG9uZXNcbiAqICByZW1haW4gcGlja2FibGUgdG8gZWRpdC4gUmV1c2VzIHRoZSBQLTAyMSBgc2NoZWR1bGVkYCBnbGFuY2Ugb2ZmIHBsYW5zLmxpc3QuICovXG5mdW5jdGlvbiBTY2hlZHVsZVBpY2tlcih7XG4gIHBsYW5zLFxuICBvblBpY2ssXG4gIG9uQ2xvc2UsXG59OiB7XG4gIHBsYW5zOiBQbGFuTGlzdExpdGVbXTtcbiAgb25QaWNrOiAocDogUGxhbkxpc3RMaXRlKSA9PiB2b2lkO1xuICBvbkNsb3NlOiAoKSA9PiB2b2lkO1xufSkge1xuICBjb25zdCBbcSwgc2V0UV0gPSB1c2VTdGF0ZSgnJyk7XG4gIGNvbnN0IGZpbHRlcmVkID0gdXNlTWVtbygoKSA9PiB7XG4gICAgY29uc3QgbmVlZGxlID0gcS50cmltKCkudG9Mb3dlckNhc2UoKTtcbiAgICBjb25zdCByb3dzID0gbmVlZGxlXG4gICAgICA/IHBsYW5zLmZpbHRlcigocCkgPT4gcC5zbHVnLnRvTG93ZXJDYXNlKCkuaW5jbHVkZXMobmVlZGxlKSB8fCAocC50aXRsZSA/PyAnJykudG9Mb3dlckNhc2UoKS5pbmNsdWRlcyhuZWVkbGUpKVxuICAgICAgOiBwbGFucztcbiAgICAvLyBVbnNjaGVkdWxlZCBmaXJzdCwgdGhlbiBieSB0aXRsZS9zbHVnLlxuICAgIHJldHVybiBbLi4ucm93c11cbiAgICAgIC5zb3J0KChhLCBiKSA9PiB7XG4gICAgICAgIGNvbnN0IHNhID0gYS5zY2hlZHVsZWQgPyAxIDogMDtcbiAgICAgICAgY29uc3Qgc2IgPSBiLnNjaGVkdWxlZCA/IDEgOiAwO1xuICAgICAgICBpZiAoc2EgIT09IHNiKSByZXR1cm4gc2EgLSBzYjtcbiAgICAgICAgcmV0dXJuIChhLnRpdGxlID8/IGEuc2x1ZykubG9jYWxlQ29tcGFyZShiLnRpdGxlID8/IGIuc2x1Zyk7XG4gICAgICB9KVxuICAgICAgLnNsaWNlKDAsIDYwKTtcbiAgfSwgW3BsYW5zLCBxXSk7XG5cbiAgcmV0dXJuIChcbiAgICA8TW9kYWxcbiAgICAgIG9wZW5cbiAgICAgIG9uT3BlbkNoYW5nZT17KG9wZW46IGJvb2xlYW4pID0+IHtcbiAgICAgICAgaWYgKCFvcGVuKSBvbkNsb3NlKCk7XG4gICAgICB9fVxuICAgICAgdGl0bGU9XCJTY2hlZHVsZSBhIHBsYW5cIlxuICAgICAgY29udGVudENsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fbW9kYWwtY2FyZCBwYy1zY2hlZC1jYWxfX3BpY2tlci1jYXJkXCJcbiAgICA+XG4gICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fcGlja2VyXCI+XG4gICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19waWNrZXItaGVhZFwiPlxuICAgICAgICAgIDxzdHJvbmc+U2NoZWR1bGUgYSBwbGFuPC9zdHJvbmc+XG4gICAgICAgICAgPGJ1dHRvbiB0eXBlPVwiYnV0dG9uXCIgb25DbGljaz17b25DbG9zZX0gYXJpYS1sYWJlbD1cIkNsb3NlIHBpY2tlclwiIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9faWNvbmJ0blwiPlxuICAgICAgICAgICAgPFggc2l6ZT17MTR9IGFyaWEtaGlkZGVuIC8+XG4gICAgICAgICAgPC9idXR0b24+XG4gICAgICAgIDwvZGl2PlxuICAgICAgICA8aW5wdXRcbiAgICAgICAgICB0eXBlPVwic2VhcmNoXCJcbiAgICAgICAgICB2YWx1ZT17cX1cbiAgICAgICAgICBvbkNoYW5nZT17KGUpID0+IHNldFEoZS50YXJnZXQudmFsdWUpfVxuICAgICAgICAgIHBsYWNlaG9sZGVyPVwiRmlsdGVyIHBsYW5zLi4uXCJcbiAgICAgICAgICBhcmlhLWxhYmVsPVwiRmlsdGVyIHBsYW5zXCJcbiAgICAgICAgICBjbGFzc05hbWU9XCJwYy1zY2hlZC1jYWxfX3BpY2tlci1zZWFyY2hcIlxuICAgICAgICAvPlxuICAgICAgICB7ZmlsdGVyZWQubGVuZ3RoID09PSAwID8gKFxuICAgICAgICAgIDxwIGNsYXNzTmFtZT1cInBjLXNjaGVkLWNhbF9fZW1wdHkgcGMtc2NoZWQtY2FsX19lbXB0eS0tY29tcGFjdFwiPk5vIHBsYW5zIG1hdGNoLjwvcD5cbiAgICAgICAgKSA6IChcbiAgICAgICAgICA8dWwgY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19waWNrZXItbGlzdFwiPlxuICAgICAgICAgICAge2ZpbHRlcmVkLm1hcCgocCkgPT4gKFxuICAgICAgICAgICAgICA8bGkga2V5PXtgJHtwLmhhcm5lc3N9OiR7cC5zbHVnfWB9PlxuICAgICAgICAgICAgICAgIDxidXR0b24gdHlwZT1cImJ1dHRvblwiIG9uQ2xpY2s9eygpID0+IG9uUGljayhwKX0gY2xhc3NOYW1lPVwicGMtc2NoZWQtY2FsX19waWNrZXItcm93XCI+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj57cC50aXRsZSA/PyBwLnNsdWd9PC9zcGFuPlxuICAgICAgICAgICAgICAgICAge3Auc2NoZWR1bGVkID8gKFxuICAgICAgICAgICAgICAgICAgICA8ZW0gY2xhc3NOYW1lPXtwLnNjaGVkdWxlQWN0aXZlID8gJ2lzLWFybWVkJyA6ICcnfT57cC5zY2hlZHVsZUFjdGl2ZSA/ICdhcm1lZCcgOiAnc2NoZWR1bGVkJ308L2VtPlxuICAgICAgICAgICAgICAgICAgKSA6IG51bGx9XG4gICAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgIDwvbGk+XG4gICAgICAgICAgICApKX1cbiAgICAgICAgICA8L3VsPlxuICAgICAgICApfVxuICAgICAgPC9kaXY+XG4gICAgPC9Nb2RhbD5cbiAgKTtcbn1cbiJdLCJmaWxlIjoiL3NyYy9jb21wb25lbnRzL2Fkdi9TY2hlZHVsZWRDYWxlbmRhclRhYi50c3gifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yLXZpdGUvc3JjL2NvbXBvbmVudHMvYWR2L1NjaGVkdWxlZENhbGVuZGFyVGFiLnRzeCIsIi9zcmMvY29tcG9uZW50cy9hZHYvU2NoZWR1bGVkQ2FsZW5kYXJUYWIudHN4IixbXV0=

@@ -1,0 +1,60 @@
+__vite_ssr_exportName__("Tooltip", () => { try { return Tooltip } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/jsx-dev-runtime.js", {"importedNames":["Fragment","jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@radix-ui/react-tooltip/dist/index.mjs");
+"use client";
+
+
+const CONTENT_STYLE = {
+  maxWidth: 320,
+  padding: "6px 10px",
+  fontSize: 12,
+  lineHeight: 1.45,
+  background: "color-mix(in srgb, var(--bg-1), transparent 4%)",
+  color: "#f5f5f7",
+  border: "1px solid rgba(255,255,255,0.1)",
+  borderRadius: 6,
+  boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+  zIndex: 200
+};
+function Tooltip({ label, children, side = "top", align = "center" }) {
+  if (!label) return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx",
+    lineNumber: 25,
+    columnNumber: 22
+  }, this);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(__vite_ssr_import_1__.Provider, { delayDuration: 250, skipDelayDuration: 150, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(__vite_ssr_import_1__.Root, { children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(__vite_ssr_import_1__.Trigger, { asChild: true, children }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx",
+      lineNumber: 29,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(__vite_ssr_import_1__.Portal, { children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(__vite_ssr_import_1__.Content, { "data-anim": "fade", sideOffset: 6, side, align, style: CONTENT_STYLE, children: [
+      label,
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(__vite_ssr_import_1__.Arrow, { style: { fill: "color-mix(in srgb, var(--bg-1), transparent 4%)" }, width: 10, height: 5 }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx",
+        lineNumber: 33,
+        columnNumber: 13
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx",
+      lineNumber: 31,
+      columnNumber: 11
+    }, this) }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx",
+      lineNumber: 30,
+      columnNumber: 9
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx",
+    lineNumber: 28,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator/app/harness/Tooltip.tsx",
+    lineNumber: 27,
+    columnNumber: 5
+  }, this);
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQXdCcUI7QUF0QnJCOzs7O0FBR0EsTUFBTSxnQkFBcUM7QUFBQSxFQUN6QyxVQUFVO0FBQUEsRUFDVixTQUFTO0FBQUEsRUFDVCxVQUFVO0FBQUEsRUFDVixZQUFZO0FBQUEsRUFDWixZQUFZO0FBQUEsRUFDWixPQUFPO0FBQUEsRUFDUCxRQUFRO0FBQUEsRUFDUixjQUFjO0FBQUEsRUFDZCxXQUFXO0FBQUEsRUFDWCxRQUFRO0FBQ1Y7QUFFTyxTQUFTLFFBQVEsRUFBRSxPQUFPLFVBQVUsT0FBTyxPQUFPLFFBQVEsU0FBUyxHQUt2RTtBQUNELE1BQUksQ0FBQyxNQUFPLFFBQU8sdUZBQUcsWUFBSDtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBQVk7QUFDL0IsU0FDRSxpREFBQyxzQkFBRyxVQUFILEVBQVksZUFBZSxLQUFLLG1CQUFtQixLQUNsRCwyREFBQyxzQkFBRyxNQUFILEVBQ0M7QUFBQSxxREFBQyxzQkFBRyxTQUFILEVBQVcsU0FBTyxNQUFFLFlBQXJCO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FBOEI7QUFBQSxJQUM5QixpREFBQyxzQkFBRyxRQUFILEVBQ0MsMkRBQUMsc0JBQUcsU0FBSCxFQUFXLGFBQVUsUUFBTyxZQUFZLEdBQUcsTUFBWSxPQUFjLE9BQU8sZUFDMUU7QUFBQTtBQUFBLE1BQ0QsaURBQUMsc0JBQUcsT0FBSCxFQUFTLE9BQU8sRUFBRSxNQUFNLGtEQUFrRCxHQUFHLE9BQU8sSUFBSSxRQUFRLEtBQWpHO0FBQUE7QUFBQTtBQUFBO0FBQUEsYUFBb0c7QUFBQSxTQUZ0RztBQUFBO0FBQUE7QUFBQTtBQUFBLFdBR0EsS0FKRjtBQUFBO0FBQUE7QUFBQTtBQUFBLFdBS0E7QUFBQSxPQVBGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FRQSxLQVRGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FVQTtBQUVKIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJUb29sdGlwLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyIndXNlIGNsaWVudCc7XG5cbmltcG9ydCAqIGFzIFJUIGZyb20gJ0ByYWRpeC11aS9yZWFjdC10b29sdGlwJztcbmltcG9ydCB0eXBlIHsgUmVhY3ROb2RlIH0gZnJvbSAncmVhY3QnO1xuXG5jb25zdCBDT05URU5UX1NUWUxFOiBSZWFjdC5DU1NQcm9wZXJ0aWVzID0ge1xuICBtYXhXaWR0aDogMzIwLFxuICBwYWRkaW5nOiAnNnB4IDEwcHgnLFxuICBmb250U2l6ZTogMTIsXG4gIGxpbmVIZWlnaHQ6IDEuNDUsXG4gIGJhY2tncm91bmQ6ICdjb2xvci1taXgoaW4gc3JnYiwgdmFyKC0tYmctMSksIHRyYW5zcGFyZW50IDQlKScsXG4gIGNvbG9yOiAnI2Y1ZjVmNycsXG4gIGJvcmRlcjogJzFweCBzb2xpZCByZ2JhKDI1NSwyNTUsMjU1LDAuMSknLFxuICBib3JkZXJSYWRpdXM6IDYsXG4gIGJveFNoYWRvdzogJzAgNHB4IDE2cHggcmdiYSgwLDAsMCwwLjQpJyxcbiAgekluZGV4OiAyMDAsXG59O1xuXG5leHBvcnQgZnVuY3Rpb24gVG9vbHRpcCh7IGxhYmVsLCBjaGlsZHJlbiwgc2lkZSA9ICd0b3AnLCBhbGlnbiA9ICdjZW50ZXInIH06IHtcbiAgbGFiZWw6IFJlYWN0Tm9kZTtcbiAgY2hpbGRyZW46IFJlYWN0Tm9kZTtcbiAgc2lkZT86ICd0b3AnIHwgJ3JpZ2h0JyB8ICdib3R0b20nIHwgJ2xlZnQnO1xuICBhbGlnbj86ICdzdGFydCcgfCAnY2VudGVyJyB8ICdlbmQnO1xufSkge1xuICBpZiAoIWxhYmVsKSByZXR1cm4gPD57Y2hpbGRyZW59PC8+O1xuICByZXR1cm4gKFxuICAgIDxSVC5Qcm92aWRlciBkZWxheUR1cmF0aW9uPXsyNTB9IHNraXBEZWxheUR1cmF0aW9uPXsxNTB9PlxuICAgICAgPFJULlJvb3Q+XG4gICAgICAgIDxSVC5UcmlnZ2VyIGFzQ2hpbGQ+e2NoaWxkcmVufTwvUlQuVHJpZ2dlcj5cbiAgICAgICAgPFJULlBvcnRhbD5cbiAgICAgICAgICA8UlQuQ29udGVudCBkYXRhLWFuaW09XCJmYWRlXCIgc2lkZU9mZnNldD17Nn0gc2lkZT17c2lkZX0gYWxpZ249e2FsaWdufSBzdHlsZT17Q09OVEVOVF9TVFlMRX0+XG4gICAgICAgICAgICB7bGFiZWx9XG4gICAgICAgICAgICA8UlQuQXJyb3cgc3R5bGU9e3sgZmlsbDogJ2NvbG9yLW1peChpbiBzcmdiLCB2YXIoLS1iZy0xKSwgdHJhbnNwYXJlbnQgNCUpJyB9fSB3aWR0aD17MTB9IGhlaWdodD17NX0gLz5cbiAgICAgICAgICA8L1JULkNvbnRlbnQ+XG4gICAgICAgIDwvUlQuUG9ydGFsPlxuICAgICAgPC9SVC5Sb290PlxuICAgIDwvUlQuUHJvdmlkZXI+XG4gICk7XG59XG4iXSwiZmlsZSI6Ii9AZnMvaG9tZS9tYXJzaC1vZmZpY2UvcGFwZXJjdXBhaS13b3Jrc3BhY2UvcGFwZXJjdXAvYXBwcy9vcGVyYXRvci9hcHAvaGFybmVzcy9Ub29sdGlwLnRzeCJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yL2FwcC9oYXJuZXNzL1Rvb2x0aXAudHN4IiwiL0Bmcy9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yL2FwcC9oYXJuZXNzL1Rvb2x0aXAudHN4IixbXV0=

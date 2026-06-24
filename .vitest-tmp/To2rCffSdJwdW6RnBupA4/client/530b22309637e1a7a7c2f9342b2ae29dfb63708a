@@ -1,0 +1,170 @@
+__vite_ssr_exportName__("default", () => { try { return DbHealthPanel } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/generic/sync/src/index.ts", {"importedNames":["useSyncQuery"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/components/dev-admin-rail/panel-kit.tsx", {"importedNames":["PanelBar","PanelState"]});
+
+
+
+function fmtDur(s) {
+  if (s < 1) return `${Math.round(s * 1e3)}ms`;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.round(s / 60)}m`;
+}
+function DbHealthPanel({ active }) {
+  const health = (0,__vite_ssr_import_1__.useSyncQuery)({
+    queryName: "dev.pgHealth",
+    enabled: active,
+    staleTime: 1e4
+  });
+  const queries = (0,__vite_ssr_import_1__.useSyncQuery)({
+    queryName: "dev.pgActiveQueries",
+    args: { limit: 50 },
+    enabled: active,
+    staleTime: 1e4
+  });
+  const h = health.data?.[0];
+  const rows = queries.data ?? [];
+  const refresh = () => {
+    health.invalidate();
+    queries.invalidate();
+  };
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-panel", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_2__.PanelBar),
+      {
+        label: "DB health",
+        fetching: health.fetching || queries.fetching,
+        onRefresh: refresh
+      },
+      void 0,
+      false,
+      {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+        lineNumber: 53,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.PanelState), { loading: health.loading && !h, error: health.error ?? queries.error }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+      lineNumber: 58,
+      columnNumber: 7
+    }, this),
+    h && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-kv", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__k", children: "connections" }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+        lineNumber: 61,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__v", children: [
+        h.totalConnections,
+        " total · ",
+        h.activeConnections,
+        " active · ",
+        h.idleConnections,
+        " idle"
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+        lineNumber: 62,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__k", children: "version" }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+        lineNumber: 65,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__v", title: h.version, children: h.version.replace(/^PostgreSQL ([\d.]+).*$/, "$1") || h.version }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+        lineNumber: 66,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+      lineNumber: 60,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-panel__bar", style: { marginTop: 4 }, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-panel__bar-label", children: [
+      "Active queries (",
+      rows.length,
+      ")"
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+      lineNumber: 72,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+      lineNumber: 71,
+      columnNumber: 7
+    }, this),
+    rows.length === 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-panel__empty", children: "No active queries." }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+      lineNumber: 75,
+      columnNumber: 9
+    }, this) : rows.map((q) => {
+      const idleInTx = q.state === "idle in transaction";
+      const slow = q.duration_seconds > 5;
+      return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "span",
+          {
+            className: `pcdar-dot ${idleInTx ? "is-down" : slow ? "" : "is-up"}`,
+            "aria-hidden": "true"
+          },
+          void 0,
+          false,
+          {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+            lineNumber: 82,
+            columnNumber: 15
+          },
+          this
+        ),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__main", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__sub", title: q.query, children: q.query.replace(/\s+/g, " ").slice(0, 80) }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+            lineNumber: 87,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__sub", style: { fontFamily: "inherit" }, children: [
+            "pid ",
+            q.pid,
+            " · ",
+            q.state ?? "?",
+            " · ",
+            fmtDur(q.duration_seconds),
+            q.application_name ? ` · ${q.application_name}` : ""
+          ] }, void 0, true, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+            lineNumber: 90,
+            columnNumber: 17
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+          lineNumber: 86,
+          columnNumber: 15
+        }, this),
+        idleInTx ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill is-bad", children: "idle-in-tx" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+          lineNumber: 96,
+          columnNumber: 17
+        }, this) : slow ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill is-warn", children: "slow" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+          lineNumber: 98,
+          columnNumber: 17
+        }, this) : null
+      ] }, q.pid, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+        lineNumber: 81,
+        columnNumber: 13
+      }, this);
+    })
+  ] }, void 0, true, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DbHealthPanel.tsx",
+    lineNumber: 52,
+    columnNumber: 5
+  }, this);
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,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QUFBQTtBQUFBO0FBQUE7QUFBQSxRQUdBO0FBQUEsUUFDQSxpREFBQyxTQUFJLFdBQVUsbUJBQ2I7QUFBQSwyREFBQyxTQUFJLFdBQVUsa0JBQWlCLE9BQU8sRUFBRSxPQUN0QyxZQUFFLE1BQU0sUUFBUSxRQUFRLEdBQUcsRUFBRSxNQUFNLEdBQUcsRUFBRSxLQUQzQztBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUVBO0FBQUEsVUFDQSxpREFBQyxTQUFJLFdBQVUsa0JBQWlCLE9BQU8sRUFBRSxZQUFZLFVBQVUsR0FBRztBQUFBO0FBQUEsWUFDM0QsRUFBRTtBQUFBLFlBQUk7QUFBQSxZQUFJLEVBQUUsU0FBUztBQUFBLFlBQUk7QUFBQSxZQUFJLE9BQU8sRUFBRSxnQkFBZ0I7QUFBQSxZQUMxRCxFQUFFLG1CQUFtQixNQUFNLEVBQUUsZ0JBQWdCLEtBQUs7QUFBQSxlQUZyRDtBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUdBO0FBQUEsYUFQRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBUUE7QUFBQSxRQUNDLFdBQ0MsaURBQUMsVUFBSyxXQUFVLHFCQUFvQiwwQkFBcEM7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUE4QyxJQUM1QyxPQUNGLGlEQUFDLFVBQUssV0FBVSxzQkFBcUIsb0JBQXJDO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBeUMsSUFDdkM7QUFBQSxXQWxCSSxFQUFFLEtBQVo7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQW1CQTtBQUFBLElBRUosQ0FBQztBQUFBLE9BbERMO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FvREE7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiRGJIZWFsdGhQYW5lbC50c3giXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBEQiBoZWFsdGggcGVlayAoUC0wMDcpIOKAlCBwb29sIHVzYWdlICsgdGhlIGN1cnJlbnRseS1ydW5uaW5nIHF1ZXJpZXMsIHRvIGNhdGNoXG4gKiB0aGUgbGVha2VkLWxvY2sgLyBpZGxlLWluLXRyYW5zYWN0aW9uIHdlZGdlIGNsYXNzIGJlZm9yZSBpdCBiaXRlcy4gUmVhZHMgdHdvXG4gKiBzeW5jIHF1ZXJpZXM6IGBkZXYucGdIZWFsdGhgIChzbmFwc2hvdCDihpIgZGF0YVswXSkgYW5kIGBkZXYucGdBY3RpdmVRdWVyaWVzYFxuICogKGZsYXQgcm93cywgb2xkZXN0IGZpcnN0KS4gTWFudWFsIHJlZnJlc2ggcmUtcmVhZHMgYm90aC5cbiAqL1xuaW1wb3J0IHsgdXNlU3luY1F1ZXJ5IH0gZnJvbSAnQHBhcGVyY3VzcC9zeW5jJztcbmltcG9ydCB7IFBhbmVsQmFyLCBQYW5lbFN0YXRlIH0gZnJvbSAnLi4vcGFuZWwta2l0JztcblxuaW50ZXJmYWNlIFBnSGVhbHRoIHtcbiAgdmVyc2lvbjogc3RyaW5nO1xuICB0b3RhbENvbm5lY3Rpb25zOiBudW1iZXI7XG4gIGFjdGl2ZUNvbm5lY3Rpb25zOiBudW1iZXI7XG4gIGlkbGVDb25uZWN0aW9uczogbnVtYmVyO1xufVxuaW50ZXJmYWNlIFBnQWN0aXZlUXVlcnkge1xuICBwaWQ6IG51bWJlcjtcbiAgc3RhdGU6IHN0cmluZyB8IG51bGw7XG4gIHF1ZXJ5OiBzdHJpbmc7XG4gIGR1cmF0aW9uX3NlY29uZHM6IG51bWJlcjtcbiAgYXBwbGljYXRpb25fbmFtZTogc3RyaW5nIHwgbnVsbDtcbiAgY2xpZW50X2FkZHI6IHN0cmluZyB8IG51bGw7XG59XG5cbmZ1bmN0aW9uIGZtdER1cihzOiBudW1iZXIpOiBzdHJpbmcge1xuICBpZiAocyA8IDEpIHJldHVybiBgJHtNYXRoLnJvdW5kKHMgKiAxMDAwKX1tc2A7XG4gIGlmIChzIDwgNjApIHJldHVybiBgJHtzLnRvRml4ZWQoMSl9c2A7XG4gIHJldHVybiBgJHtNYXRoLnJvdW5kKHMgLyA2MCl9bWA7XG59XG5cbmV4cG9ydCBkZWZhdWx0IGZ1bmN0aW9uIERiSGVhbHRoUGFuZWwoeyBhY3RpdmUgfTogeyBhY3RpdmU6IGJvb2xlYW4gfSkge1xuICBjb25zdCBoZWFsdGggPSB1c2VTeW5jUXVlcnk8UGdIZWFsdGg+KHtcbiAgICBxdWVyeU5hbWU6ICdkZXYucGdIZWFsdGgnLFxuICAgIGVuYWJsZWQ6IGFjdGl2ZSxcbiAgICBzdGFsZVRpbWU6IDEwXzAwMCxcbiAgfSk7XG4gIGNvbnN0IHF1ZXJpZXMgPSB1c2VTeW5jUXVlcnk8UGdBY3RpdmVRdWVyeT4oe1xuICAgIHF1ZXJ5TmFtZTogJ2Rldi5wZ0FjdGl2ZVF1ZXJpZXMnLFxuICAgIGFyZ3M6IHsgbGltaXQ6IDUwIH0sXG4gICAgZW5hYmxlZDogYWN0aXZlLFxuICAgIHN0YWxlVGltZTogMTBfMDAwLFxuICB9KTtcbiAgY29uc3QgaCA9IGhlYWx0aC5kYXRhPy5bMF07XG4gIGNvbnN0IHJvd3MgPSBxdWVyaWVzLmRhdGEgPz8gW107XG5cbiAgY29uc3QgcmVmcmVzaCA9ICgpID0+IHtcbiAgICBoZWFsdGguaW52YWxpZGF0ZSgpO1xuICAgIHF1ZXJpZXMuaW52YWxpZGF0ZSgpO1xuICB9O1xuXG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1wYW5lbFwiPlxuICAgICAgPFBhbmVsQmFyXG4gICAgICAgIGxhYmVsPVwiREIgaGVhbHRoXCJcbiAgICAgICAgZmV0Y2hpbmc9e2hlYWx0aC5mZXRjaGluZyB8fCBxdWVyaWVzLmZldGNoaW5nfVxuICAgICAgICBvblJlZnJlc2g9e3JlZnJlc2h9XG4gICAgICAvPlxuICAgICAgPFBhbmVsU3RhdGUgbG9hZGluZz17aGVhbHRoLmxvYWRpbmcgJiYgIWh9IGVycm9yPXtoZWFsdGguZXJyb3IgPz8gcXVlcmllcy5lcnJvcn0gLz5cbiAgICAgIHtoICYmIChcbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1rdlwiPlxuICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLWt2X19rXCI+Y29ubmVjdGlvbnM8L3NwYW4+XG4gICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGNkYXIta3ZfX3ZcIj5cbiAgICAgICAgICAgIHtoLnRvdGFsQ29ubmVjdGlvbnN9IHRvdGFsIMK3IHtoLmFjdGl2ZUNvbm5lY3Rpb25zfSBhY3RpdmUgwrcge2guaWRsZUNvbm5lY3Rpb25zfSBpZGxlXG4gICAgICAgICAgPC9zcGFuPlxuICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLWt2X19rXCI+dmVyc2lvbjwvc3Bhbj5cbiAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1rdl9fdlwiIHRpdGxlPXtoLnZlcnNpb259PlxuICAgICAgICAgICAge2gudmVyc2lvbi5yZXBsYWNlKC9eUG9zdGdyZVNRTCAoW1xcZC5dKykuKiQvLCAnJDEnKSB8fCBoLnZlcnNpb259XG4gICAgICAgICAgPC9zcGFuPlxuICAgICAgICA8L2Rpdj5cbiAgICAgICl9XG4gICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjZGFyLXBhbmVsX19iYXJcIiBzdHlsZT17eyBtYXJnaW5Ub3A6IDQgfX0+XG4gICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLXBhbmVsX19iYXItbGFiZWxcIj5BY3RpdmUgcXVlcmllcyAoe3Jvd3MubGVuZ3RofSk8L3NwYW4+XG4gICAgICA8L2Rpdj5cbiAgICAgIHtyb3dzLmxlbmd0aCA9PT0gMCA/IChcbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1wYW5lbF9fZW1wdHlcIj5ObyBhY3RpdmUgcXVlcmllcy48L2Rpdj5cbiAgICAgICkgOiAoXG4gICAgICAgIHJvd3MubWFwKChxKSA9PiB7XG4gICAgICAgICAgY29uc3QgaWRsZUluVHggPSBxLnN0YXRlID09PSAnaWRsZSBpbiB0cmFuc2FjdGlvbic7XG4gICAgICAgICAgY29uc3Qgc2xvdyA9IHEuZHVyYXRpb25fc2Vjb25kcyA+IDU7XG4gICAgICAgICAgcmV0dXJuIChcbiAgICAgICAgICAgIDxkaXYga2V5PXtxLnBpZH0gY2xhc3NOYW1lPVwicGNkYXItcm93XCI+XG4gICAgICAgICAgICAgIDxzcGFuXG4gICAgICAgICAgICAgICAgY2xhc3NOYW1lPXtgcGNkYXItZG90ICR7aWRsZUluVHggPyAnaXMtZG93bicgOiBzbG93ID8gJycgOiAnaXMtdXAnfWB9XG4gICAgICAgICAgICAgICAgYXJpYS1oaWRkZW49XCJ0cnVlXCJcbiAgICAgICAgICAgICAgLz5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1yb3dfX21haW5cIj5cbiAgICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjZGFyLXJvd19fc3ViXCIgdGl0bGU9e3EucXVlcnl9PlxuICAgICAgICAgICAgICAgICAge3EucXVlcnkucmVwbGFjZSgvXFxzKy9nLCAnICcpLnNsaWNlKDAsIDgwKX1cbiAgICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjZGFyLXJvd19fc3ViXCIgc3R5bGU9e3sgZm9udEZhbWlseTogJ2luaGVyaXQnIH19PlxuICAgICAgICAgICAgICAgICAgcGlkIHtxLnBpZH0gwrcge3Euc3RhdGUgPz8gJz8nfSDCtyB7Zm10RHVyKHEuZHVyYXRpb25fc2Vjb25kcyl9XG4gICAgICAgICAgICAgICAgICB7cS5hcHBsaWNhdGlvbl9uYW1lID8gYCDCtyAke3EuYXBwbGljYXRpb25fbmFtZX1gIDogJyd9XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICB7aWRsZUluVHggPyAoXG4gICAgICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGNkYXItcGlsbCBpcy1iYWRcIj5pZGxlLWluLXR4PC9zcGFuPlxuICAgICAgICAgICAgICApIDogc2xvdyA/IChcbiAgICAgICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1waWxsIGlzLXdhcm5cIj5zbG93PC9zcGFuPlxuICAgICAgICAgICAgICApIDogbnVsbH1cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICk7XG4gICAgICAgIH0pXG4gICAgICApfVxuICAgIDwvZGl2PlxuICApO1xufVxuIl0sImZpbGUiOiIvc3JjL2NvbXBvbmVudHMvZGV2LWFkbWluLXJhaWwvcGFuZWxzL0RiSGVhbHRoUGFuZWwudHN4In0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yLXZpdGUvc3JjL2NvbXBvbmVudHMvZGV2LWFkbWluLXJhaWwvcGFuZWxzL0RiSGVhbHRoUGFuZWwudHN4IiwiL3NyYy9jb21wb25lbnRzL2Rldi1hZG1pbi1yYWlsL3BhbmVscy9EYkhlYWx0aFBhbmVsLnRzeCIsW11d

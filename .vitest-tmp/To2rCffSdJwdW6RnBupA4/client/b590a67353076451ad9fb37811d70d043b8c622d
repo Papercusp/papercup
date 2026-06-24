@@ -1,0 +1,722 @@
+__vite_ssr_exportName__("default", () => { try { return RecipesClient } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/index.js", {"importedNames":["useMemo","useRef"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/nuqs/dist/index.js", {"importedNames":["parseAsStringEnum","useQueryState"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@tanstack/react-virtual/dist/esm/index.js", {"importedNames":["useVirtualizer"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/generic/sync/src/index.ts", {"importedNames":["useSyncQuery"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/packages/operator-core/lib/sync-resolver/list-meta.ts", {"importedNames":["readListTotal","listCountLabel"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["Beaker","GitMerge","TrendingUp"]});
+
+
+
+
+
+
+
+const STATUS_VALUES = ["all", "active", "promoted", "retired", "merged"];
+const SORT_VALUES = ["lastRun", "runCount", "successRate", "title"];
+const SORT_LABELS = {
+  lastRun: "Last run",
+  runCount: "Runs",
+  successRate: "Success",
+  title: "Title"
+};
+function fmtAgo(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const ms = Date.now() - t;
+  if (ms < 0) return "just now";
+  const s = Math.floor(ms / 1e3);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+function successRate(runCount, successCount) {
+  if (runCount <= 0) return null;
+  return Math.max(0, Math.min(1, successCount / runCount));
+}
+function pct(v) {
+  return v == null ? "—" : `${Math.round(v * 100)}%`;
+}
+function statusTone(status) {
+  if (status === "active" || status === "promoted" || status === "retired" || status === "merged") return status;
+  return "other";
+}
+function ToolBadges({ tools }) {
+  if (!tools || tools.length === 0) return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__mute", children: "—" }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+    lineNumber: 85,
+    columnNumber: 44
+  }, this);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__tools", children: tools.map((t) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("code", { className: "pc-recipes__toolbadge", children: t }, t, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+    lineNumber: 89,
+    columnNumber: 9
+  }, this)) }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+    lineNumber: 87,
+    columnNumber: 5
+  }, this);
+}
+function RecipesClient() {
+  const recipesQ = (0,__vite_ssr_import_4__.useSyncQuery)({ queryName: "codeRecipes", args: {}, staleTime: 3e4 });
+  const candidatesQ = (0,__vite_ssr_import_4__.useSyncQuery)({
+    queryName: "recipeCandidates",
+    args: {},
+    staleTime: 3e4
+  });
+  const [status, setStatus] = (0,__vite_ssr_import_2__.useQueryState)(
+    "rstatus",
+    (0,__vite_ssr_import_2__.parseAsStringEnum)([...STATUS_VALUES]).withDefault("all")
+  );
+  const [sort, setSort] = (0,__vite_ssr_import_2__.useQueryState)("rsort", (0,__vite_ssr_import_2__.parseAsStringEnum)([...SORT_VALUES]).withDefault("lastRun"));
+  const rawRecipeRows = recipesQ.data ?? [];
+  const allRecipes = rawRecipeRows;
+  const totalRecipes = (0,__vite_ssr_import_5__.readListTotal)(rawRecipeRows);
+  const candidates = candidatesQ.data?.[0] ?? { promoteCandidates: [], mergeClusters: [] };
+  const rows = (0,__vite_ssr_import_1__.useMemo)(() => {
+    const filtered = status === "all" ? allRecipes : allRecipes.filter((r) => r.status === status);
+    const sorted = [...filtered];
+    sorted.sort((a, b) => {
+      switch (sort) {
+        case "runCount":
+          return b.runCount - a.runCount || a.id.localeCompare(b.id);
+        case "successRate": {
+          const ra = successRate(a.runCount, a.successCount) ?? -1;
+          const rb = successRate(b.runCount, b.successCount) ?? -1;
+          return rb - ra || b.runCount - a.runCount;
+        }
+        case "title":
+          return a.title.localeCompare(b.title);
+        case "lastRun":
+        default: {
+          const ta = a.lastRunAt ? Date.parse(a.lastRunAt) : 0;
+          const tb = b.lastRunAt ? Date.parse(b.lastRunAt) : 0;
+          return tb - ta || b.runCount - a.runCount;
+        }
+      }
+    });
+    return sorted;
+  }, [allRecipes, status, sort]);
+  const counts = (0,__vite_ssr_import_1__.useMemo)(() => {
+    const c = { all: allRecipes.length, active: 0, promoted: 0, retired: 0, merged: 0 };
+    for (const r of allRecipes) {
+      if (r.status === "active") c.active++;
+      else if (r.status === "promoted") c.promoted++;
+      else if (r.status === "retired") c.retired++;
+      else if (r.status === "merged") c.merged++;
+    };
+    return c;
+  }, [allRecipes]);
+  const loading = recipesQ.loading && allRecipes.length === 0;
+  const tableScrollRef = (0,__vite_ssr_import_1__.useRef)(null);
+  const rowVirtualizer = (0,__vite_ssr_import_3__.useVirtualizer)({
+    count: rows.length,
+    getScrollElement: () => tableScrollRef.current,
+    estimateSize: () => 56,
+    overscan: 12,
+    measureElement: typeof window !== "undefined" && navigator.userAgent.indexOf("Firefox") === -1 ? (el) => el?.getBoundingClientRect().height : void 0
+  });
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "pc-recipes__head", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__title", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.Beaker), { size: 16, "aria-hidden": true }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 178,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h2", { children: "Code recipes" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 180,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "Reusable code:run scripts captured on successful runs, shared across your hive. Read-only — promote, merge, and retire are the Queen's actions." }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 181,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 179,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 177,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__stats", "aria-label": "Recipe corpus summary", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("b", { children: (0,__vite_ssr_import_5__.listCountLabel)(allRecipes.length, totalRecipes) }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 189,
+            columnNumber: 13
+          }, this),
+          " total"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 188,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("b", { children: counts.active }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 192,
+            columnNumber: 13
+          }, this),
+          " active"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 191,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("b", { children: counts.promoted }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 195,
+            columnNumber: 13
+          }, this),
+          " promoted"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 194,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("b", { children: counts.retired }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 198,
+            columnNumber: 13
+          }, this),
+          " retired"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 197,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 187,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+      lineNumber: 176,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { className: "pc-recipes__candidates", "aria-label": "Promotion candidates", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h3", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.TrendingUp), { size: 13, "aria-hidden": true }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 206,
+          columnNumber: 11
+        }, this),
+        " Promote candidates",
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__mute", children: [
+          candidates.promoteCandidates.length,
+          " ranked by promotion score — file a work-item to graduate one into a tool"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 207,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 205,
+        columnNumber: 9
+      }, this),
+      candidates.promoteCandidates.length === 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-recipes__empty", children: "No promote candidates right now." }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 212,
+        columnNumber: 11
+      }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("ol", { className: "pc-recipes__candlist", children: candidates.promoteCandidates.map((c) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("li", { className: "pc-recipes__cand", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__candmain", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: c.title }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 218,
+            columnNumber: 19
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__candid", children: c.id }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 219,
+            columnNumber: 19
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-recipes__mute", children: c.description }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 220,
+            columnNumber: 19
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 217,
+          columnNumber: 17
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dl", { className: "pc-recipes__candsignals", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "score" }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 224,
+              columnNumber: 21
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__score", children: c.promotionScore.toFixed(2) }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 226,
+              columnNumber: 23
+            }, this) }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 225,
+              columnNumber: 21
+            }, this)
+          ] }, void 0, true, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 223,
+            columnNumber: 19
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "runs" }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 230,
+              columnNumber: 21
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: c.runCount }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 231,
+              columnNumber: 21
+            }, this)
+          ] }, void 0, true, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 229,
+            columnNumber: 19
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "agents" }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 234,
+              columnNumber: 21
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: c.distinctAgents }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 235,
+              columnNumber: 21
+            }, this)
+          ] }, void 0, true, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 233,
+            columnNumber: 19
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: "success" }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 238,
+              columnNumber: 21
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: pct(c.successRate) }, void 0, false, {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 239,
+              columnNumber: 21
+            }, this)
+          ] }, void 0, true, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 237,
+            columnNumber: 19
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 222,
+          columnNumber: 17
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__candtools", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ToolBadges, { tools: c.toolsUsed }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 243,
+          columnNumber: 19
+        }, this) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 242,
+          columnNumber: 17
+        }, this)
+      ] }, c.id, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 216,
+        columnNumber: 15
+      }, this)) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 214,
+        columnNumber: 11
+      }, this),
+      candidates.mergeClusters.length > 0 && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__clusters", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h3", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.GitMerge), { size: 13, "aria-hidden": true }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 253,
+            columnNumber: 15
+          }, this),
+          " Merge clusters",
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__mute", children: [
+            candidates.mergeClusters.length,
+            " near-duplicate group(s) — consolidate via recipes:merge"
+          ] }, void 0, true, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 254,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 252,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("ul", { className: "pc-recipes__clusterlist", children: candidates.mergeClusters.map((cl) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("li", { className: "pc-recipes__cluster", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__clusterids", children: cl.recipeIds.map((id) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("code", { className: "pc-recipes__toolbadge", children: id }, id, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 263,
+            columnNumber: 23
+          }, this)) }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 261,
+            columnNumber: 19
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__mute", children: cl.reason }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 268,
+            columnNumber: 19
+          }, this)
+        ] }, cl.recipeIds.join("+"), true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 260,
+          columnNumber: 17
+        }, this)) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 258,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 251,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+      lineNumber: 204,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { className: "pc-recipes__tablewrap", "aria-label": "Recipes", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__controls", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__filters", role: "group", "aria-label": "Filter by status", children: STATUS_VALUES.map((s) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "button",
+          {
+            type: "button",
+            className: `pc-recipes__chip${status === s ? " is-active" : ""}`,
+            "aria-pressed": status === s,
+            onClick: () => void setStatus(s),
+            children: s === "all" ? `all (${counts.all})` : `${s} (${counts[s]})`
+          },
+          s,
+          false,
+          {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 281,
+            columnNumber: 15
+          },
+          this
+        )) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 279,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__sort", role: "group", "aria-label": "Sort recipes", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "sort" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 293,
+            columnNumber: 13
+          }, this),
+          SORT_VALUES.map((s) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            "button",
+            {
+              type: "button",
+              className: `pc-recipes__sortbtn${sort === s ? " is-active" : ""}`,
+              "aria-pressed": sort === s,
+              onClick: () => void setSort(s),
+              children: SORT_LABELS[s]
+            },
+            s,
+            false,
+            {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 295,
+              columnNumber: 15
+            },
+            this
+          ))
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 292,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 278,
+        columnNumber: 9
+      }, this),
+      loading ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-recipes__empty", children: "Loading recipes…" }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 309,
+        columnNumber: 11
+      }, this) : rows.length === 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-recipes__empty", children: allRecipes.length === 0 ? "No recipes captured yet." : "No recipes match this filter." }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 311,
+        columnNumber: 11
+      }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__table", role: "table", "aria-label": "Recipes", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__thead", role: "rowgroup", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__tr pc-recipes__tr--head", role: "row", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { role: "columnheader", children: "Recipe" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 318,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { role: "columnheader", className: "pc-recipes__num", children: "Runs" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 319,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { role: "columnheader", className: "pc-recipes__num", children: "Agents" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 322,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { role: "columnheader", className: "pc-recipes__num", children: "Success" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 325,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { role: "columnheader", children: "Last run" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 328,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { role: "columnheader", children: "Status" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 329,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { role: "columnheader", children: "Tools" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+            lineNumber: 330,
+            columnNumber: 17
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 317,
+          columnNumber: 15
+        }, this) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 316,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__tablescroll", ref: tableScrollRef, role: "rowgroup", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__vspacer", style: { height: rowVirtualizer.getTotalSize() }, children: virtualItems.map((vi) => {
+          const r = rows[vi.index];
+          const distinct = r.distinctAgents;
+          return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            "div",
+            {
+              "data-index": vi.index,
+              ref: rowVirtualizer.measureElement,
+              className: "pc-recipes__tr pc-recipes__tr--virtual",
+              role: "row",
+              style: { transform: `translateY(${vi.start}px)` },
+              children: [
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "cell", children: [
+                  /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pc-recipes__name", children: [
+                    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: r.title }, void 0, false, {
+                      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                      lineNumber: 353,
+                      columnNumber: 27
+                    }, this),
+                    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__rid", children: r.id }, void 0, false, {
+                      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                      lineNumber: 354,
+                      columnNumber: 27
+                    }, this)
+                  ] }, void 0, true, {
+                    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                    lineNumber: 352,
+                    columnNumber: 25
+                  }, this),
+                  r.description ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "pc-recipes__desc", children: r.description }, void 0, false, {
+                    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                    lineNumber: 356,
+                    columnNumber: 42
+                  }, this) : null,
+                  r.authorRole ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__author", children: [
+                    "by ",
+                    r.authorRole
+                  ] }, void 0, true, {
+                    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                    lineNumber: 357,
+                    columnNumber: 41
+                  }, this) : null
+                ] }, void 0, true, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 351,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "cell", className: "pc-recipes__num", children: r.runCount }, void 0, false, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 359,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "cell", className: "pc-recipes__num", children: typeof distinct === "number" ? distinct : "—" }, void 0, false, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 360,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "cell", className: "pc-recipes__num", children: pct(successRate(r.runCount, r.successCount)) }, void 0, false, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 361,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "cell", children: fmtAgo(r.lastRunAt) }, void 0, false, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 362,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "cell", children: [
+                  /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: `pc-recipes__status pc-recipes__status--${statusTone(r.status)}`, children: r.status }, void 0, false, {
+                    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                    lineNumber: 364,
+                    columnNumber: 25
+                  }, this),
+                  r.promotedTool ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pc-recipes__promoted", children: [
+                    "→ ",
+                    r.promotedTool
+                  ] }, void 0, true, {
+                    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                    lineNumber: 365,
+                    columnNumber: 43
+                  }, this) : null
+                ] }, void 0, true, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 363,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "cell", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ToolBadges, { tools: r.toolsUsed }, void 0, false, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 368,
+                  columnNumber: 25
+                }, this) }, void 0, false, {
+                  fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+                  lineNumber: 367,
+                  columnNumber: 23
+                }, this)
+              ]
+            },
+            r.id,
+            true,
+            {
+              fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+              lineNumber: 343,
+              columnNumber: 21
+            },
+            this
+          );
+        }) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 338,
+          columnNumber: 15
+        }, this) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+          lineNumber: 337,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+        lineNumber: 315,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+      lineNumber: 277,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("style", { children: `
+        .pc-recipes { display: flex; flex-direction: column; gap: 16px; padding: 16px 18px; color: var(--fg, #e6f2fb); }
+        .pc-recipes h2 { margin: 0; font-size: 18px; font-weight: 720; }
+        .pc-recipes__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+        .pc-recipes__title { display: flex; gap: 10px; align-items: flex-start; }
+        .pc-recipes__title p { margin: 3px 0 0; font-size: 12px; color: var(--fg-mute, #8aa6bd); max-width: 60ch; }
+        .pc-recipes__stats { display: flex; gap: 14px; font-size: 12px; color: var(--fg-dim, #aac4d8); }
+        .pc-recipes__stats b { color: var(--fg, #e6f2fb); font-size: 14px; }
+        .pc-recipes__mute { color: var(--fg-mute, #8aa6bd); font-weight: 400; font-size: 11.5px; }
+        .pc-recipes__empty { color: var(--fg-mute, #8aa6bd); font-size: 12.5px; padding: 8px 2px; }
+
+        .pc-recipes__candidates { border: 1px solid var(--border, rgba(125,211,252,0.16)); border-radius: 10px; padding: 12px 14px; background: rgba(255,255,255,0.015); }
+        .pc-recipes__candidates h3 { margin: 0 0 8px; font-size: 13px; font-weight: 660; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .pc-recipes__candlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+        .pc-recipes__cand { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; border-top: 1px solid var(--border, rgba(125,211,252,0.1)); padding-top: 8px; }
+        .pc-recipes__cand:first-child { border-top: none; padding-top: 0; }
+        .pc-recipes__candmain { min-width: 220px; flex: 1; }
+        .pc-recipes__candmain strong { font-size: 13px; }
+        .pc-recipes__candmain p { margin: 2px 0 0; }
+        .pc-recipes__candid, .pc-recipes__rid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: var(--fg-mute, #8aa6bd); margin-left: 8px; }
+        .pc-recipes__candsignals { display: flex; gap: 12px; margin: 0; }
+        .pc-recipes__candsignals dt { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #8aa6bd); }
+        .pc-recipes__candsignals dd { margin: 1px 0 0; font-size: 13px; font-weight: 640; }
+        .pc-recipes__score { color: var(--accent, #7dd3fc); }
+        .pc-recipes__candtools { max-width: 280px; }
+
+        .pc-recipes__clusters { margin-top: 12px; }
+        .pc-recipes__clusterlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+        .pc-recipes__cluster { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+        .pc-recipes__clusterids { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+        .pc-recipes__controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+        .pc-recipes__filters { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+        .pc-recipes__chip { border: 1px solid var(--border, rgba(125,211,252,0.16)); background: rgba(255,255,255,0.02); color: var(--fg-dim, #aac4d8); border-radius: 999px; font-size: 11.5px; padding: 3px 10px; cursor: pointer; }
+        .pc-recipes__chip.is-active { color: #f7fdff; border-color: var(--accent, #7dd3fc); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 90%); }
+        .pc-recipes__sort { font-size: 11.5px; color: var(--fg-mute, #8aa6bd); display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .pc-recipes__sortbtn { border: 1px solid var(--border, rgba(125,211,252,0.16)); background: rgba(255,255,255,0.02); color: var(--fg-dim, #aac4d8); border-radius: 999px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
+        .pc-recipes__sortbtn.is-active { color: #f7fdff; border-color: var(--accent, #7dd3fc); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 90%); }
+
+        .pc-recipes__tablewrap { overflow-x: auto; }
+        .pc-recipes__table { width: 100%; min-width: 780px; font-size: 12px; }
+        /* Virtualized body: a fixed-height scroll viewport; rows are absolutely
+           positioned inside the getTotalSize() spacer (translateY per row). */
+        .pc-recipes__tablescroll { position: relative; max-height: min(70vh, 720px); overflow-y: auto; }
+        .pc-recipes__vspacer { position: relative; width: 100%; }
+        .pc-recipes__tr--virtual { position: absolute; top: 0; left: 0; width: 100%; }
+        .pc-recipes__tr { display: grid; grid-template-columns: minmax(260px, 2fr) 64px 72px 78px 90px minmax(120px, 0.8fr) minmax(180px, 1.1fr); }
+        .pc-recipes__tr--head { border-bottom: 1px solid var(--border, rgba(125,211,252,0.16)); }
+        .pc-recipes__tr--head > span { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #8aa6bd); padding: 6px 8px; font-weight: 660; }
+        .pc-recipes__tr > div { padding: 8px; border-bottom: 1px solid var(--border, rgba(125,211,252,0.08)); min-width: 0; }
+        .pc-recipes__num { text-align: right; font-variant-numeric: tabular-nums; }
+        .pc-recipes__name { display: flex; align-items: baseline; flex-wrap: wrap; }
+        .pc-recipes__name strong { font-size: 12.5px; }
+        .pc-recipes__desc { margin: 2px 0 0; color: var(--fg-mute, #8aa6bd); max-width: 48ch; }
+        .pc-recipes__author { font-size: 10.5px; color: var(--fg-mute, #8aa6bd); }
+        .pc-recipes__tools { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+        .pc-recipes__toolbadge { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; background: color-mix(in oklab, var(--accent, #38bdf8), transparent 90%); border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 82%); border-radius: 4px; padding: 1px 5px; color: var(--fg-dim, #aac4d8); }
+        .pc-recipes__status { font-size: 10.5px; border-radius: 4px; padding: 1px 7px; text-transform: capitalize; border: 1px solid transparent; }
+        .pc-recipes__status--active { color: #34d399; border-color: rgba(52,211,153,0.4); background: rgba(52,211,153,0.08); }
+        .pc-recipes__status--promoted { color: var(--accent-strong, var(--accent)); border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 60%); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 92%); }
+        .pc-recipes__status--retired { color: #94a3b8; border-color: rgba(148,163,184,0.35); background: rgba(148,163,184,0.06); }
+        .pc-recipes__status--merged { color: #c084fc; border-color: rgba(192,132,252,0.4); background: rgba(192,132,252,0.08); }
+        .pc-recipes__status--other { color: var(--fg-mute, #8aa6bd); border-color: var(--border, rgba(125,211,252,0.16)); }
+        .pc-recipes__promoted { font-size: 10.5px; color: var(--fg-mute, #8aa6bd); margin-left: 6px; }
+      ` }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+      lineNumber: 379,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/RecipesClient.tsx",
+    lineNumber: 175,
+    columnNumber: 5
+  }, this);
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,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QUFBQTtBQUFBLGVBbUNBLEtBcENGO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFxQ0E7QUFBQSxXQTNERjtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBNERBO0FBQUEsU0FsR0o7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQW9HQTtBQUFBLElBRUEsaURBQUMsV0FBTztBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTs7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBOztBQUFBO0FBQUE7QUFBQTtBQUFBOztBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBOztBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FBUjtBQUFBO0FBQUE7QUFBQTtBQUFBLFdBZ0VFO0FBQUEsT0E1UUo7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQTZRQTtBQUVKIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJSZWNpcGVzQ2xpZW50LnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIFJlY2lwZXNDbGllbnQg4oCUIHRoZSByZWFkLW9ubHkgL2FkbWluL3JlY2lwZXMgZGFzaGJvYXJkIG92ZXIgdGhlIGNvZGU6cnVuIFJFQ0lQRVxuICogY29ycHVzIChjb2RlLXJlY2lwZXMtMjAyNi0wNi0yMSBQLTAwOSkuXG4gKlxuICogVHdvIGxpdmUgc3luYyByZWFkcywgbm8gcG9sbGluZywgbm8gbXV0YXRpb25zOlxuICogICAtIGBjb2RlUmVjaXBlc2AgICAgICDihpIgdGhlIGhpdmUncyByZWNpcGUgcm93cyAobmV3ZXN0LXJ1biAvIG1vc3QtcnVuIGZpcnN0KSxcbiAqICAgICAgICAgICAgICAgICAgICAgICAgICByZW5kZXJlZCBhcyBhIHNvcnRhYmxlLWJ5LVVSTCB0YWJsZS5cbiAqICAgLSBgcmVjaXBlQ2FuZGlkYXRlc2Ag4oaSIHRoZSBRdWVlbidzIERFVEVSTUlOSVNUSUMgZ3JhZHVhdGlvbiB3b3JrbGlzdCAocHJvbW90ZVxuICogICAgICAgICAgICAgICAgICAgICAgICAgIGNhbmRpZGF0ZXMgYnkgcHJvbW90aW9uU2NvcmUgKyBuZWFyLWR1cGxpY2F0ZSBtZXJnZVxuICogICAgICAgICAgICAgICAgICAgICAgICAgIGNsdXN0ZXJzKSwgcmVuZGVyZWQgYXMgYSByZWFkLW9ubHkgQ2FuZGlkYXRlcyBzZWN0aW9uLlxuICpcbiAqIFN0cmljdGx5IGEgREFTSEJPQVJEOiBwcm9tb3RlL3JldGlyZS9tZXJnZSBhcmUgdGhlIFF1ZWVuJ3MgYWN0aW9ucyAodmlhXG4gKiB3b3JrLWl0ZW1zIC8gcmVjaXBlczptZXJnZSAvIHJlY2lwZXM6c3dlZXApLCBuZXZlciB3aXJlZCBoZXJlLiBCb3RoIHF1ZXJpZXMgZmlyZVxuICogbm90aWZ5U3luY0ludmFsaWRhdGUgb24gZXZlcnkgcmVjaXBlIHdyaXRlIChjYXB0dXJlIC8gc3dlZXAgLyBtZXJnZSksIHNvIHRoZSB0YWJcbiAqIHVwZGF0ZXMgbGl2ZSBvdmVyIGRlc2t0b3AgU1NFLlxuICpcbiAqIFN0YXRlIHRoYXQncyB1c2VyLW1lYW5pbmdmdWwgbGl2ZXMgaW4gdGhlIFVSTCB2aWEgbnVxcyAoQ0xBVURFLm1kKTogdGhlIHJlY2lwZVxuICogU1RBVFVTIGZpbHRlciAoYHJzdGF0dXNgKSArIHRoZSB0YWJsZSBTT1JUIChgcnNvcnRgKSBhcmUgZGVlcC1saW5rYWJsZSBhbmRcbiAqIGFnZW50LWRyaXZlYWJsZSAodWk6Z2V0X3N0YXRlIC8gdWk6ZGlzcGF0Y2gpLiBSZW5kZXItb25seSBkZXJpdmF0aW9ucyBzdGF5IGluXG4gKiB1c2VNZW1vLlxuICovXG5pbXBvcnQgeyB1c2VNZW1vLCB1c2VSZWYgfSBmcm9tICdyZWFjdCc7XG5pbXBvcnQgeyBwYXJzZUFzU3RyaW5nRW51bSwgdXNlUXVlcnlTdGF0ZSB9IGZyb20gJ251cXMnO1xuaW1wb3J0IHsgdXNlVmlydHVhbGl6ZXIgfSBmcm9tICdAdGFuc3RhY2svcmVhY3QtdmlydHVhbCc7XG5pbXBvcnQgeyB1c2VTeW5jUXVlcnkgfSBmcm9tICdAcGFwZXJjdXNwL3N5bmMnO1xuaW1wb3J0IHsgcmVhZExpc3RUb3RhbCwgbGlzdENvdW50TGFiZWwgfSBmcm9tICdAcGFwZXJjdXNwL29wZXJhdG9yLWNvcmUvbGliL3N5bmMtcmVzb2x2ZXIvbGlzdC1tZXRhJztcbmltcG9ydCB7IEJlYWtlciwgR2l0TWVyZ2UsIFRyZW5kaW5nVXAgfSBmcm9tICdsdWNpZGUtcmVhY3QnO1xuaW1wb3J0IHR5cGUgeyBDb2RlUmVjaXBlUm93IH0gZnJvbSAnQHBhcGVyY3VzcC9vcGVyYXRvci1jb3JlL2xpYi9jb2RlLXJlY2lwZXMtc3RvcmUnO1xuaW1wb3J0IHR5cGUge1xuICBQcm9tb3RlQ2FuZGlkYXRlLFxuICBNZXJnZUNsdXN0ZXIsXG59IGZyb20gJ0BwYXBlcmN1c3Avb3BlcmF0b3ItY29yZS9saWIvY29kZS1yZWNpcGVzLWNhbmRpZGF0ZXMnO1xuXG4vLyBUaGUgcmVjaXBlQ2FuZGlkYXRlcyBxdWVyeSByZXR1cm5zIGEgc2luZ2xlIGVudmVsb3BlIHJvdyAod3JhcHBlZCBpbiBhIDEtZWxlbVxuLy8gYXJyYXkgcGVyIHRoZSByZXNvbHZlcidzIGZsYXQtcm93IGNvbnRyYWN0KS5cbmludGVyZmFjZSBDYW5kaWRhdGVzRW52ZWxvcGUge1xuICBwcm9tb3RlQ2FuZGlkYXRlczogUHJvbW90ZUNhbmRpZGF0ZVtdO1xuICBtZXJnZUNsdXN0ZXJzOiBNZXJnZUNsdXN0ZXJbXTtcbn1cblxuY29uc3QgU1RBVFVTX1ZBTFVFUyA9IFsnYWxsJywgJ2FjdGl2ZScsICdwcm9tb3RlZCcsICdyZXRpcmVkJywgJ21lcmdlZCddIGFzIGNvbnN0O1xudHlwZSBTdGF0dXNGaWx0ZXIgPSAodHlwZW9mIFNUQVRVU19WQUxVRVMpW251bWJlcl07XG5cbmNvbnN0IFNPUlRfVkFMVUVTID0gWydsYXN0UnVuJywgJ3J1bkNvdW50JywgJ3N1Y2Nlc3NSYXRlJywgJ3RpdGxlJ10gYXMgY29uc3Q7XG50eXBlIFNvcnRLZXkgPSAodHlwZW9mIFNPUlRfVkFMVUVTKVtudW1iZXJdO1xuXG5jb25zdCBTT1JUX0xBQkVMUzogUmVjb3JkPFNvcnRLZXksIHN0cmluZz4gPSB7XG4gIGxhc3RSdW46ICdMYXN0IHJ1bicsXG4gIHJ1bkNvdW50OiAnUnVucycsXG4gIHN1Y2Nlc3NSYXRlOiAnU3VjY2VzcycsXG4gIHRpdGxlOiAnVGl0bGUnLFxufTtcblxuLyoqIFwiM2QgYWdvXCIgLyBcIjJoIGFnb1wiIC8gXCLigJRcIiBmcm9tIGFuIElTTyB0aW1lc3RhbXAuICovXG5mdW5jdGlvbiBmbXRBZ28oaXNvOiBzdHJpbmcgfCBudWxsKTogc3RyaW5nIHtcbiAgaWYgKCFpc28pIHJldHVybiAn4oCUJztcbiAgY29uc3QgdCA9IERhdGUucGFyc2UoaXNvKTtcbiAgaWYgKE51bWJlci5pc05hTih0KSkgcmV0dXJuICfigJQnO1xuICBjb25zdCBtcyA9IERhdGUubm93KCkgLSB0O1xuICBpZiAobXMgPCAwKSByZXR1cm4gJ2p1c3Qgbm93JztcbiAgY29uc3QgcyA9IE1hdGguZmxvb3IobXMgLyAxMDAwKTtcbiAgaWYgKHMgPCA2MCkgcmV0dXJuIGAke3N9cyBhZ29gO1xuICBjb25zdCBtID0gTWF0aC5mbG9vcihzIC8gNjApO1xuICBpZiAobSA8IDYwKSByZXR1cm4gYCR7bX1tIGFnb2A7XG4gIGNvbnN0IGggPSBNYXRoLmZsb29yKG0gLyA2MCk7XG4gIGlmIChoIDwgMjQpIHJldHVybiBgJHtofWggYWdvYDtcbiAgcmV0dXJuIGAke01hdGguZmxvb3IoaCAvIDI0KX1kIGFnb2A7XG59XG5cbi8qKiBzdWNjZXNzX2NvdW50IC8gcnVuX2NvdW50IGFzIGEgcGVyY2VudCBzdHJpbmcsIG9yIFwi4oCUXCIgd2hlbiBuZXZlciBydW4uICovXG5mdW5jdGlvbiBzdWNjZXNzUmF0ZShydW5Db3VudDogbnVtYmVyLCBzdWNjZXNzQ291bnQ6IG51bWJlcik6IG51bWJlciB8IG51bGwge1xuICBpZiAocnVuQ291bnQgPD0gMCkgcmV0dXJuIG51bGw7XG4gIHJldHVybiBNYXRoLm1heCgwLCBNYXRoLm1pbigxLCBzdWNjZXNzQ291bnQgLyBydW5Db3VudCkpO1xufVxuZnVuY3Rpb24gcGN0KHY6IG51bWJlciB8IG51bGwpOiBzdHJpbmcge1xuICByZXR1cm4gdiA9PSBudWxsID8gJ+KAlCcgOiBgJHtNYXRoLnJvdW5kKHYgKiAxMDApfSVgO1xufVxuXG5mdW5jdGlvbiBzdGF0dXNUb25lKHN0YXR1czogc3RyaW5nKTogJ2FjdGl2ZScgfCAncHJvbW90ZWQnIHwgJ3JldGlyZWQnIHwgJ21lcmdlZCcgfCAnb3RoZXInIHtcbiAgaWYgKHN0YXR1cyA9PT0gJ2FjdGl2ZScgfHwgc3RhdHVzID09PSAncHJvbW90ZWQnIHx8IHN0YXR1cyA9PT0gJ3JldGlyZWQnIHx8IHN0YXR1cyA9PT0gJ21lcmdlZCcpIHJldHVybiBzdGF0dXM7XG4gIHJldHVybiAnb3RoZXInO1xufVxuXG5mdW5jdGlvbiBUb29sQmFkZ2VzKHsgdG9vbHMgfTogeyB0b29sczogc3RyaW5nW10gfSkge1xuICBpZiAoIXRvb2xzIHx8IHRvb2xzLmxlbmd0aCA9PT0gMCkgcmV0dXJuIDxzcGFuIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX211dGVcIj7igJQ8L3NwYW4+O1xuICByZXR1cm4gKFxuICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX3Rvb2xzXCI+XG4gICAgICB7dG9vbHMubWFwKCh0KSA9PiAoXG4gICAgICAgIDxjb2RlIGtleT17dH0gY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fdG9vbGJhZGdlXCI+XG4gICAgICAgICAge3R9XG4gICAgICAgIDwvY29kZT5cbiAgICAgICkpfVxuICAgIDwvc3Bhbj5cbiAgKTtcbn1cblxuZXhwb3J0IGRlZmF1bHQgZnVuY3Rpb24gUmVjaXBlc0NsaWVudCgpIHtcbiAgY29uc3QgcmVjaXBlc1EgPSB1c2VTeW5jUXVlcnk8Q29kZVJlY2lwZVJvdz4oeyBxdWVyeU5hbWU6ICdjb2RlUmVjaXBlcycsIGFyZ3M6IHt9LCBzdGFsZVRpbWU6IDMwXzAwMCB9KTtcbiAgY29uc3QgY2FuZGlkYXRlc1EgPSB1c2VTeW5jUXVlcnk8Q2FuZGlkYXRlc0VudmVsb3BlPih7XG4gICAgcXVlcnlOYW1lOiAncmVjaXBlQ2FuZGlkYXRlcycsXG4gICAgYXJnczoge30sXG4gICAgc3RhbGVUaW1lOiAzMF8wMDAsXG4gIH0pO1xuXG4gIGNvbnN0IFtzdGF0dXMsIHNldFN0YXR1c10gPSB1c2VRdWVyeVN0YXRlKFxuICAgICdyc3RhdHVzJyxcbiAgICBwYXJzZUFzU3RyaW5nRW51bTxTdGF0dXNGaWx0ZXI+KFsuLi5TVEFUVVNfVkFMVUVTXSkud2l0aERlZmF1bHQoJ2FsbCcpLFxuICApO1xuICBjb25zdCBbc29ydCwgc2V0U29ydF0gPSB1c2VRdWVyeVN0YXRlKCdyc29ydCcsIHBhcnNlQXNTdHJpbmdFbnVtPFNvcnRLZXk+KFsuLi5TT1JUX1ZBTFVFU10pLndpdGhEZWZhdWx0KCdsYXN0UnVuJykpO1xuXG4gIC8vIFJlYWQgdGhlIFJBVyBzeW5jZWQgcm93cyAocm93WzBdIGNhcnJpZXMgYF9tZXRhLnRvdGFsYCBmcm9tIHRoZSByZXNvbHZlcidzXG4gIC8vIGF0dGFjaExpc3RNZXRhKSBCRUZPUkUgYW55IC5tYXAvLmZpbHRlciB0aGF0IHdvdWxkIGRyb3AgX21ldGEuIGFsbFJlY2lwZXMgaXNcbiAgLy8gdGhlIHNhbWUgYXJyYXksIGp1c3QgdHlwZWQgZm9yIHRoZSB0YWJsZTsgcmVhZExpc3RUb3RhbCByZWFkcyBvZmYgcm93WzBdLlxuICBjb25zdCByYXdSZWNpcGVSb3dzID0gcmVjaXBlc1EuZGF0YSA/PyBbXTtcbiAgY29uc3QgYWxsUmVjaXBlcyA9IHJhd1JlY2lwZVJvd3M7XG4gIGNvbnN0IHRvdGFsUmVjaXBlcyA9IHJlYWRMaXN0VG90YWwocmF3UmVjaXBlUm93cyk7XG4gIGNvbnN0IGNhbmRpZGF0ZXMgPSBjYW5kaWRhdGVzUS5kYXRhPy5bMF0gPz8geyBwcm9tb3RlQ2FuZGlkYXRlczogW10sIG1lcmdlQ2x1c3RlcnM6IFtdIH07XG5cbiAgY29uc3Qgcm93cyA9IHVzZU1lbW8oKCkgPT4ge1xuICAgIGNvbnN0IGZpbHRlcmVkID0gc3RhdHVzID09PSAnYWxsJyA/IGFsbFJlY2lwZXMgOiBhbGxSZWNpcGVzLmZpbHRlcigocikgPT4gci5zdGF0dXMgPT09IHN0YXR1cyk7XG4gICAgY29uc3Qgc29ydGVkID0gWy4uLmZpbHRlcmVkXTtcbiAgICBzb3J0ZWQuc29ydCgoYSwgYikgPT4ge1xuICAgICAgc3dpdGNoIChzb3J0KSB7XG4gICAgICAgIGNhc2UgJ3J1bkNvdW50JzpcbiAgICAgICAgICByZXR1cm4gYi5ydW5Db3VudCAtIGEucnVuQ291bnQgfHwgYS5pZC5sb2NhbGVDb21wYXJlKGIuaWQpO1xuICAgICAgICBjYXNlICdzdWNjZXNzUmF0ZSc6IHtcbiAgICAgICAgICBjb25zdCByYSA9IHN1Y2Nlc3NSYXRlKGEucnVuQ291bnQsIGEuc3VjY2Vzc0NvdW50KSA/PyAtMTtcbiAgICAgICAgICBjb25zdCByYiA9IHN1Y2Nlc3NSYXRlKGIucnVuQ291bnQsIGIuc3VjY2Vzc0NvdW50KSA/PyAtMTtcbiAgICAgICAgICByZXR1cm4gcmIgLSByYSB8fCBiLnJ1bkNvdW50IC0gYS5ydW5Db3VudDtcbiAgICAgICAgfVxuICAgICAgICBjYXNlICd0aXRsZSc6XG4gICAgICAgICAgcmV0dXJuIGEudGl0bGUubG9jYWxlQ29tcGFyZShiLnRpdGxlKTtcbiAgICAgICAgY2FzZSAnbGFzdFJ1bic6XG4gICAgICAgIGRlZmF1bHQ6IHtcbiAgICAgICAgICBjb25zdCB0YSA9IGEubGFzdFJ1bkF0ID8gRGF0ZS5wYXJzZShhLmxhc3RSdW5BdCkgOiAwO1xuICAgICAgICAgIGNvbnN0IHRiID0gYi5sYXN0UnVuQXQgPyBEYXRlLnBhcnNlKGIubGFzdFJ1bkF0KSA6IDA7XG4gICAgICAgICAgcmV0dXJuIHRiIC0gdGEgfHwgYi5ydW5Db3VudCAtIGEucnVuQ291bnQ7XG4gICAgICAgIH1cbiAgICAgIH1cbiAgICB9KTtcbiAgICByZXR1cm4gc29ydGVkO1xuICB9LCBbYWxsUmVjaXBlcywgc3RhdHVzLCBzb3J0XSk7XG5cbiAgY29uc3QgY291bnRzID0gdXNlTWVtbygoKSA9PiB7XG4gICAgY29uc3QgYyA9IHsgYWxsOiBhbGxSZWNpcGVzLmxlbmd0aCwgYWN0aXZlOiAwLCBwcm9tb3RlZDogMCwgcmV0aXJlZDogMCwgbWVyZ2VkOiAwIH07XG4gICAgZm9yIChjb25zdCByIG9mIGFsbFJlY2lwZXMpIHtcbiAgICAgIGlmIChyLnN0YXR1cyA9PT0gJ2FjdGl2ZScpIGMuYWN0aXZlKys7XG4gICAgICBlbHNlIGlmIChyLnN0YXR1cyA9PT0gJ3Byb21vdGVkJykgYy5wcm9tb3RlZCsrO1xuICAgICAgZWxzZSBpZiAoci5zdGF0dXMgPT09ICdyZXRpcmVkJykgYy5yZXRpcmVkKys7XG4gICAgICBlbHNlIGlmIChyLnN0YXR1cyA9PT0gJ21lcmdlZCcpIGMubWVyZ2VkKys7XG4gICAgfVxuICAgIHJldHVybiBjO1xuICB9LCBbYWxsUmVjaXBlc10pO1xuXG4gIGNvbnN0IGxvYWRpbmcgPSByZWNpcGVzUS5sb2FkaW5nICYmIGFsbFJlY2lwZXMubGVuZ3RoID09PSAwO1xuXG4gIC8vIFZpcnR1YWxpemUgdGhlIHJlY2lwZSB0YWJsZTogaXRzIHJvd3MgYXJlIHZhcmlhYmxlLWhlaWdodCAobXVsdGktbGluZVxuICAvLyBkZXNjcmlwdGlvbiArIHdyYXBwaW5nIHRvb2wgYmFkZ2VzKSwgc28gd2Uga2VlcCB0aGUgZXhpc3Rpbmcgcm93IG1hcmt1cCBhbmRcbiAgLy8gbW91bnQgb25seSB0aGUgdmlzaWJsZSB3aW5kb3cgdmlhIFRhblN0YWNrIHVzZVZpcnR1YWxpemVyIHdpdGggbWVhc3VyZUVsZW1lbnRcbiAgLy8gKGV4YWN0IG9mZnNldHMgYXMgcm93cyB3cmFwKS4gVGhlIHNjcm9sbCBjb250YWluZXIgaXMgcGMtcmVjaXBlc19fdGFibGVzY3JvbGwuXG4gIGNvbnN0IHRhYmxlU2Nyb2xsUmVmID0gdXNlUmVmPEhUTUxEaXZFbGVtZW50IHwgbnVsbD4obnVsbCk7XG4gIGNvbnN0IHJvd1ZpcnR1YWxpemVyID0gdXNlVmlydHVhbGl6ZXIoe1xuICAgIGNvdW50OiByb3dzLmxlbmd0aCxcbiAgICBnZXRTY3JvbGxFbGVtZW50OiAoKSA9PiB0YWJsZVNjcm9sbFJlZi5jdXJyZW50LFxuICAgIGVzdGltYXRlU2l6ZTogKCkgPT4gNTYsXG4gICAgb3ZlcnNjYW46IDEyLFxuICAgIG1lYXN1cmVFbGVtZW50OlxuICAgICAgdHlwZW9mIHdpbmRvdyAhPT0gJ3VuZGVmaW5lZCcgJiYgbmF2aWdhdG9yLnVzZXJBZ2VudC5pbmRleE9mKCdGaXJlZm94JykgPT09IC0xXG4gICAgICAgID8gKGVsKSA9PiBlbD8uZ2V0Qm91bmRpbmdDbGllbnRSZWN0KCkuaGVpZ2h0XG4gICAgICAgIDogdW5kZWZpbmVkLFxuICB9KTtcbiAgY29uc3QgdmlydHVhbEl0ZW1zID0gcm93VmlydHVhbGl6ZXIuZ2V0VmlydHVhbEl0ZW1zKCk7XG5cbiAgcmV0dXJuIChcbiAgICA8ZGl2IGNsYXNzTmFtZT1cInBjLXJlY2lwZXNcIj5cbiAgICAgIDxoZWFkZXIgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19faGVhZFwiPlxuICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX3RpdGxlXCI+XG4gICAgICAgICAgPEJlYWtlciBzaXplPXsxNn0gYXJpYS1oaWRkZW4gLz5cbiAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgPGgyPkNvZGUgcmVjaXBlczwvaDI+XG4gICAgICAgICAgICA8cD5cbiAgICAgICAgICAgICAgUmV1c2FibGUgY29kZTpydW4gc2NyaXB0cyBjYXB0dXJlZCBvbiBzdWNjZXNzZnVsIHJ1bnMsIHNoYXJlZCBhY3Jvc3MgeW91ciBoaXZlLiBSZWFkLW9ubHkg4oCUIHByb21vdGUsIG1lcmdlLFxuICAgICAgICAgICAgICBhbmQgcmV0aXJlIGFyZSB0aGUgUXVlZW4mYXBvcztzIGFjdGlvbnMuXG4gICAgICAgICAgICA8L3A+XG4gICAgICAgICAgPC9kaXY+XG4gICAgICAgIDwvZGl2PlxuICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX3N0YXRzXCIgYXJpYS1sYWJlbD1cIlJlY2lwZSBjb3JwdXMgc3VtbWFyeVwiPlxuICAgICAgICAgIDxzcGFuPlxuICAgICAgICAgICAgPGI+e2xpc3RDb3VudExhYmVsKGFsbFJlY2lwZXMubGVuZ3RoLCB0b3RhbFJlY2lwZXMpfTwvYj4gdG90YWxcbiAgICAgICAgICA8L3NwYW4+XG4gICAgICAgICAgPHNwYW4+XG4gICAgICAgICAgICA8Yj57Y291bnRzLmFjdGl2ZX08L2I+IGFjdGl2ZVxuICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICA8c3Bhbj5cbiAgICAgICAgICAgIDxiPntjb3VudHMucHJvbW90ZWR9PC9iPiBwcm9tb3RlZFxuICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICA8c3Bhbj5cbiAgICAgICAgICAgIDxiPntjb3VudHMucmV0aXJlZH08L2I+IHJldGlyZWRcbiAgICAgICAgICA8L3NwYW4+XG4gICAgICAgIDwvZGl2PlxuICAgICAgPC9oZWFkZXI+XG5cbiAgICAgIHsvKiDilIDilIAgQ2FuZGlkYXRlczogdGhlIFF1ZWVuJ3MgZGV0ZXJtaW5pc3RpYyBncmFkdWF0aW9uIHdvcmtsaXN0IOKUgOKUgCAqL31cbiAgICAgIDxzZWN0aW9uIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX2NhbmRpZGF0ZXNcIiBhcmlhLWxhYmVsPVwiUHJvbW90aW9uIGNhbmRpZGF0ZXNcIj5cbiAgICAgICAgPGgzPlxuICAgICAgICAgIDxUcmVuZGluZ1VwIHNpemU9ezEzfSBhcmlhLWhpZGRlbiAvPiBQcm9tb3RlIGNhbmRpZGF0ZXNcbiAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19tdXRlXCI+XG4gICAgICAgICAgICB7Y2FuZGlkYXRlcy5wcm9tb3RlQ2FuZGlkYXRlcy5sZW5ndGh9IHJhbmtlZCBieSBwcm9tb3Rpb24gc2NvcmUg4oCUIGZpbGUgYSB3b3JrLWl0ZW0gdG8gZ3JhZHVhdGUgb25lIGludG8gYSB0b29sXG4gICAgICAgICAgPC9zcGFuPlxuICAgICAgICA8L2gzPlxuICAgICAgICB7Y2FuZGlkYXRlcy5wcm9tb3RlQ2FuZGlkYXRlcy5sZW5ndGggPT09IDAgPyAoXG4gICAgICAgICAgPHAgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fZW1wdHlcIj5ObyBwcm9tb3RlIGNhbmRpZGF0ZXMgcmlnaHQgbm93LjwvcD5cbiAgICAgICAgKSA6IChcbiAgICAgICAgICA8b2wgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fY2FuZGxpc3RcIj5cbiAgICAgICAgICAgIHtjYW5kaWRhdGVzLnByb21vdGVDYW5kaWRhdGVzLm1hcCgoYykgPT4gKFxuICAgICAgICAgICAgICA8bGkga2V5PXtjLmlkfSBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19jYW5kXCI+XG4gICAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19jYW5kbWFpblwiPlxuICAgICAgICAgICAgICAgICAgPHN0cm9uZz57Yy50aXRsZX08L3N0cm9uZz5cbiAgICAgICAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX2NhbmRpZFwiPntjLmlkfTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDxwIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX211dGVcIj57Yy5kZXNjcmlwdGlvbn08L3A+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAgPGRsIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX2NhbmRzaWduYWxzXCI+XG4gICAgICAgICAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgICAgICAgICA8ZHQ+c2NvcmU8L2R0PlxuICAgICAgICAgICAgICAgICAgICA8ZGQ+XG4gICAgICAgICAgICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fc2NvcmVcIj57Yy5wcm9tb3Rpb25TY29yZS50b0ZpeGVkKDIpfTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgPC9kZD5cbiAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgICAgICAgPGR0PnJ1bnM8L2R0PlxuICAgICAgICAgICAgICAgICAgICA8ZGQ+e2MucnVuQ291bnR9PC9kZD5cbiAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgICAgICAgPGR0PmFnZW50czwvZHQ+XG4gICAgICAgICAgICAgICAgICAgIDxkZD57Yy5kaXN0aW5jdEFnZW50c308L2RkPlxuICAgICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgICAgICAgICA8ZHQ+c3VjY2VzczwvZHQ+XG4gICAgICAgICAgICAgICAgICAgIDxkZD57cGN0KGMuc3VjY2Vzc1JhdGUpfTwvZGQ+XG4gICAgICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgICA8L2RsPlxuICAgICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fY2FuZHRvb2xzXCI+XG4gICAgICAgICAgICAgICAgICA8VG9vbEJhZGdlcyB0b29scz17Yy50b29sc1VzZWR9IC8+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgIDwvbGk+XG4gICAgICAgICAgICApKX1cbiAgICAgICAgICA8L29sPlxuICAgICAgICApfVxuXG4gICAgICAgIHtjYW5kaWRhdGVzLm1lcmdlQ2x1c3RlcnMubGVuZ3RoID4gMCAmJiAoXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19jbHVzdGVyc1wiPlxuICAgICAgICAgICAgPGgzPlxuICAgICAgICAgICAgICA8R2l0TWVyZ2Ugc2l6ZT17MTN9IGFyaWEtaGlkZGVuIC8+IE1lcmdlIGNsdXN0ZXJzXG4gICAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX211dGVcIj5cbiAgICAgICAgICAgICAgICB7Y2FuZGlkYXRlcy5tZXJnZUNsdXN0ZXJzLmxlbmd0aH0gbmVhci1kdXBsaWNhdGUgZ3JvdXAocykg4oCUIGNvbnNvbGlkYXRlIHZpYSByZWNpcGVzOm1lcmdlXG4gICAgICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICAgIDwvaDM+XG4gICAgICAgICAgICA8dWwgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fY2x1c3Rlcmxpc3RcIj5cbiAgICAgICAgICAgICAge2NhbmRpZGF0ZXMubWVyZ2VDbHVzdGVycy5tYXAoKGNsKSA9PiAoXG4gICAgICAgICAgICAgICAgPGxpIGtleT17Y2wucmVjaXBlSWRzLmpvaW4oJysnKX0gY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fY2x1c3RlclwiPlxuICAgICAgICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fY2x1c3Rlcmlkc1wiPlxuICAgICAgICAgICAgICAgICAgICB7Y2wucmVjaXBlSWRzLm1hcCgoaWQpID0+IChcbiAgICAgICAgICAgICAgICAgICAgICA8Y29kZSBrZXk9e2lkfSBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX190b29sYmFkZ2VcIj5cbiAgICAgICAgICAgICAgICAgICAgICAgIHtpZH1cbiAgICAgICAgICAgICAgICAgICAgICA8L2NvZGU+XG4gICAgICAgICAgICAgICAgICAgICkpfVxuICAgICAgICAgICAgICAgICAgPC9zcGFuPlxuICAgICAgICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fbXV0ZVwiPntjbC5yZWFzb259PC9zcGFuPlxuICAgICAgICAgICAgICAgIDwvbGk+XG4gICAgICAgICAgICAgICkpfVxuICAgICAgICAgICAgPC91bD5cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgKX1cbiAgICAgIDwvc2VjdGlvbj5cblxuICAgICAgey8qIOKUgOKUgCBSZWNpcGUgdGFibGUg4pSA4pSAICovfVxuICAgICAgPHNlY3Rpb24gY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fdGFibGV3cmFwXCIgYXJpYS1sYWJlbD1cIlJlY2lwZXNcIj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19jb250cm9sc1wiPlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fZmlsdGVyc1wiIHJvbGU9XCJncm91cFwiIGFyaWEtbGFiZWw9XCJGaWx0ZXIgYnkgc3RhdHVzXCI+XG4gICAgICAgICAgICB7U1RBVFVTX1ZBTFVFUy5tYXAoKHMpID0+IChcbiAgICAgICAgICAgICAgPGJ1dHRvblxuICAgICAgICAgICAgICAgIGtleT17c31cbiAgICAgICAgICAgICAgICB0eXBlPVwiYnV0dG9uXCJcbiAgICAgICAgICAgICAgICBjbGFzc05hbWU9e2BwYy1yZWNpcGVzX19jaGlwJHtzdGF0dXMgPT09IHMgPyAnIGlzLWFjdGl2ZScgOiAnJ31gfVxuICAgICAgICAgICAgICAgIGFyaWEtcHJlc3NlZD17c3RhdHVzID09PSBzfVxuICAgICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHZvaWQgc2V0U3RhdHVzKHMpfVxuICAgICAgICAgICAgICA+XG4gICAgICAgICAgICAgICAge3MgPT09ICdhbGwnID8gYGFsbCAoJHtjb3VudHMuYWxsfSlgIDogYCR7c30gKCR7Y291bnRzW3NdfSlgfVxuICAgICAgICAgICAgICA8L2J1dHRvbj5cbiAgICAgICAgICAgICkpfVxuICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fc29ydFwiIHJvbGU9XCJncm91cFwiIGFyaWEtbGFiZWw9XCJTb3J0IHJlY2lwZXNcIj5cbiAgICAgICAgICAgIDxzcGFuPnNvcnQ8L3NwYW4+XG4gICAgICAgICAgICB7U09SVF9WQUxVRVMubWFwKChzKSA9PiAoXG4gICAgICAgICAgICAgIDxidXR0b25cbiAgICAgICAgICAgICAgICBrZXk9e3N9XG4gICAgICAgICAgICAgICAgdHlwZT1cImJ1dHRvblwiXG4gICAgICAgICAgICAgICAgY2xhc3NOYW1lPXtgcGMtcmVjaXBlc19fc29ydGJ0biR7c29ydCA9PT0gcyA/ICcgaXMtYWN0aXZlJyA6ICcnfWB9XG4gICAgICAgICAgICAgICAgYXJpYS1wcmVzc2VkPXtzb3J0ID09PSBzfVxuICAgICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHZvaWQgc2V0U29ydChzKX1cbiAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgIHtTT1JUX0xBQkVMU1tzXX1cbiAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICApKX1cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgPC9kaXY+XG5cbiAgICAgICAge2xvYWRpbmcgPyAoXG4gICAgICAgICAgPHAgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fZW1wdHlcIj5Mb2FkaW5nIHJlY2lwZXPigKY8L3A+XG4gICAgICAgICkgOiByb3dzLmxlbmd0aCA9PT0gMCA/IChcbiAgICAgICAgICA8cCBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19lbXB0eVwiPlxuICAgICAgICAgICAge2FsbFJlY2lwZXMubGVuZ3RoID09PSAwID8gJ05vIHJlY2lwZXMgY2FwdHVyZWQgeWV0LicgOiAnTm8gcmVjaXBlcyBtYXRjaCB0aGlzIGZpbHRlci4nfVxuICAgICAgICAgIDwvcD5cbiAgICAgICAgKSA6IChcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX3RhYmxlXCIgcm9sZT1cInRhYmxlXCIgYXJpYS1sYWJlbD1cIlJlY2lwZXNcIj5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fdGhlYWRcIiByb2xlPVwicm93Z3JvdXBcIj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX190ciBwYy1yZWNpcGVzX190ci0taGVhZFwiIHJvbGU9XCJyb3dcIj5cbiAgICAgICAgICAgICAgICA8c3BhbiByb2xlPVwiY29sdW1uaGVhZGVyXCI+UmVjaXBlPC9zcGFuPlxuICAgICAgICAgICAgICAgIDxzcGFuIHJvbGU9XCJjb2x1bW5oZWFkZXJcIiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19udW1cIj5cbiAgICAgICAgICAgICAgICAgIFJ1bnNcbiAgICAgICAgICAgICAgICA8L3NwYW4+XG4gICAgICAgICAgICAgICAgPHNwYW4gcm9sZT1cImNvbHVtbmhlYWRlclwiIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX251bVwiPlxuICAgICAgICAgICAgICAgICAgQWdlbnRzXG4gICAgICAgICAgICAgICAgPC9zcGFuPlxuICAgICAgICAgICAgICAgIDxzcGFuIHJvbGU9XCJjb2x1bW5oZWFkZXJcIiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19udW1cIj5cbiAgICAgICAgICAgICAgICAgIFN1Y2Nlc3NcbiAgICAgICAgICAgICAgICA8L3NwYW4+XG4gICAgICAgICAgICAgICAgPHNwYW4gcm9sZT1cImNvbHVtbmhlYWRlclwiPkxhc3QgcnVuPC9zcGFuPlxuICAgICAgICAgICAgICAgIDxzcGFuIHJvbGU9XCJjb2x1bW5oZWFkZXJcIj5TdGF0dXM8L3NwYW4+XG4gICAgICAgICAgICAgICAgPHNwYW4gcm9sZT1cImNvbHVtbmhlYWRlclwiPlRvb2xzPC9zcGFuPlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgey8qIFZpcnR1YWxpemVkIGJvZHk6IG9ubHkgdGhlIHZpc2libGUgd2luZG93IG1vdW50cyAodmFyaWFibGUtaGVpZ2h0XG4gICAgICAgICAgICAgICAgcm93cyBtZWFzdXJlZCB2aWEgbWVhc3VyZUVsZW1lbnQpLCBzbyBhIDEwMDAtcmVjaXBlIGNvcnB1cyBzdGF5c1xuICAgICAgICAgICAgICAgIGNoZWFwLiBSb3dzIGFyZSBhYnNvbHV0ZWx5IHBvc2l0aW9uZWQgaW5zaWRlIGEgZ2V0VG90YWxTaXplKClcbiAgICAgICAgICAgICAgICBzcGFjZXI7IHRoZSBzY3JvbGwgY29udGFpbmVyIG93bnMgdGhlIG92ZXJmbG93LiAqL31cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fdGFibGVzY3JvbGxcIiByZWY9e3RhYmxlU2Nyb2xsUmVmfSByb2xlPVwicm93Z3JvdXBcIj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX192c3BhY2VyXCIgc3R5bGU9e3sgaGVpZ2h0OiByb3dWaXJ0dWFsaXplci5nZXRUb3RhbFNpemUoKSB9fT5cbiAgICAgICAgICAgICAgICB7dmlydHVhbEl0ZW1zLm1hcCgodmkpID0+IHtcbiAgICAgICAgICAgICAgICAgIGNvbnN0IHIgPSByb3dzW3ZpLmluZGV4XTtcbiAgICAgICAgICAgICAgICAgIGNvbnN0IGRpc3RpbmN0ID0gKHIgYXMgQ29kZVJlY2lwZVJvdyAmIHsgZGlzdGluY3RBZ2VudHM/OiBudW1iZXIgfSkuZGlzdGluY3RBZ2VudHM7XG4gICAgICAgICAgICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgICAgICAgICA8ZGl2XG4gICAgICAgICAgICAgICAgICAgICAga2V5PXtyLmlkfVxuICAgICAgICAgICAgICAgICAgICAgIGRhdGEtaW5kZXg9e3ZpLmluZGV4fVxuICAgICAgICAgICAgICAgICAgICAgIHJlZj17cm93VmlydHVhbGl6ZXIubWVhc3VyZUVsZW1lbnR9XG4gICAgICAgICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fdHIgcGMtcmVjaXBlc19fdHItLXZpcnR1YWxcIlxuICAgICAgICAgICAgICAgICAgICAgIHJvbGU9XCJyb3dcIlxuICAgICAgICAgICAgICAgICAgICAgIHN0eWxlPXt7IHRyYW5zZm9ybTogYHRyYW5zbGF0ZVkoJHt2aS5zdGFydH1weClgIH19XG4gICAgICAgICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICAgICAgICA8ZGl2IHJvbGU9XCJjZWxsXCI+XG4gICAgICAgICAgICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX25hbWVcIj5cbiAgICAgICAgICAgICAgICAgICAgICAgICAgPHN0cm9uZz57ci50aXRsZX08L3N0cm9uZz5cbiAgICAgICAgICAgICAgICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fcmlkXCI+e3IuaWR9PC9zcGFuPlxuICAgICAgICAgICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAgICAgICAgICB7ci5kZXNjcmlwdGlvbiA/IDxwIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX2Rlc2NcIj57ci5kZXNjcmlwdGlvbn08L3A+IDogbnVsbH1cbiAgICAgICAgICAgICAgICAgICAgICAgIHtyLmF1dGhvclJvbGUgPyA8c3BhbiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19hdXRob3JcIj5ieSB7ci5hdXRob3JSb2xlfTwvc3Bhbj4gOiBudWxsfVxuICAgICAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgICAgIDxkaXYgcm9sZT1cImNlbGxcIiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19udW1cIj57ci5ydW5Db3VudH08L2Rpdj5cbiAgICAgICAgICAgICAgICAgICAgICA8ZGl2IHJvbGU9XCJjZWxsXCIgY2xhc3NOYW1lPVwicGMtcmVjaXBlc19fbnVtXCI+e3R5cGVvZiBkaXN0aW5jdCA9PT0gJ251bWJlcicgPyBkaXN0aW5jdCA6ICfigJQnfTwvZGl2PlxuICAgICAgICAgICAgICAgICAgICAgIDxkaXYgcm9sZT1cImNlbGxcIiBjbGFzc05hbWU9XCJwYy1yZWNpcGVzX19udW1cIj57cGN0KHN1Y2Nlc3NSYXRlKHIucnVuQ291bnQsIHIuc3VjY2Vzc0NvdW50KSl9PC9kaXY+XG4gICAgICAgICAgICAgICAgICAgICAgPGRpdiByb2xlPVwiY2VsbFwiPntmbXRBZ28oci5sYXN0UnVuQXQpfTwvZGl2PlxuICAgICAgICAgICAgICAgICAgICAgIDxkaXYgcm9sZT1cImNlbGxcIj5cbiAgICAgICAgICAgICAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT17YHBjLXJlY2lwZXNfX3N0YXR1cyBwYy1yZWNpcGVzX19zdGF0dXMtLSR7c3RhdHVzVG9uZShyLnN0YXR1cyl9YH0+e3Iuc3RhdHVzfTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgICAgIHtyLnByb21vdGVkVG9vbCA/IDxzcGFuIGNsYXNzTmFtZT1cInBjLXJlY2lwZXNfX3Byb21vdGVkXCI+4oaSIHtyLnByb21vdGVkVG9vbH08L3NwYW4+IDogbnVsbH1cbiAgICAgICAgICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgICAgICAgICA8ZGl2IHJvbGU9XCJjZWxsXCI+XG4gICAgICAgICAgICAgICAgICAgICAgICA8VG9vbEJhZGdlcyB0b29scz17ci50b29sc1VzZWR9IC8+XG4gICAgICAgICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgKTtcbiAgICAgICAgICAgICAgICB9KX1cbiAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgKX1cbiAgICAgIDwvc2VjdGlvbj5cblxuICAgICAgPHN0eWxlPntgXG4gICAgICAgIC5wYy1yZWNpcGVzIHsgZGlzcGxheTogZmxleDsgZmxleC1kaXJlY3Rpb246IGNvbHVtbjsgZ2FwOiAxNnB4OyBwYWRkaW5nOiAxNnB4IDE4cHg7IGNvbG9yOiB2YXIoLS1mZywgI2U2ZjJmYik7IH1cbiAgICAgICAgLnBjLXJlY2lwZXMgaDIgeyBtYXJnaW46IDA7IGZvbnQtc2l6ZTogMThweDsgZm9udC13ZWlnaHQ6IDcyMDsgfVxuICAgICAgICAucGMtcmVjaXBlc19faGVhZCB7IGRpc3BsYXk6IGZsZXg7IGFsaWduLWl0ZW1zOiBmbGV4LXN0YXJ0OyBqdXN0aWZ5LWNvbnRlbnQ6IHNwYWNlLWJldHdlZW47IGdhcDogMTZweDsgZmxleC13cmFwOiB3cmFwOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX190aXRsZSB7IGRpc3BsYXk6IGZsZXg7IGdhcDogMTBweDsgYWxpZ24taXRlbXM6IGZsZXgtc3RhcnQ7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3RpdGxlIHAgeyBtYXJnaW46IDNweCAwIDA7IGZvbnQtc2l6ZTogMTJweDsgY29sb3I6IHZhcigtLWZnLW11dGUsICM4YWE2YmQpOyBtYXgtd2lkdGg6IDYwY2g7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3N0YXRzIHsgZGlzcGxheTogZmxleDsgZ2FwOiAxNHB4OyBmb250LXNpemU6IDEycHg7IGNvbG9yOiB2YXIoLS1mZy1kaW0sICNhYWM0ZDgpOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19zdGF0cyBiIHsgY29sb3I6IHZhcigtLWZnLCAjZTZmMmZiKTsgZm9udC1zaXplOiAxNHB4OyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19tdXRlIHsgY29sb3I6IHZhcigtLWZnLW11dGUsICM4YWE2YmQpOyBmb250LXdlaWdodDogNDAwOyBmb250LXNpemU6IDExLjVweDsgfVxuICAgICAgICAucGMtcmVjaXBlc19fZW1wdHkgeyBjb2xvcjogdmFyKC0tZmctbXV0ZSwgIzhhYTZiZCk7IGZvbnQtc2l6ZTogMTIuNXB4OyBwYWRkaW5nOiA4cHggMnB4OyB9XG5cbiAgICAgICAgLnBjLXJlY2lwZXNfX2NhbmRpZGF0ZXMgeyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1ib3JkZXIsIHJnYmEoMTI1LDIxMSwyNTIsMC4xNikpOyBib3JkZXItcmFkaXVzOiAxMHB4OyBwYWRkaW5nOiAxMnB4IDE0cHg7IGJhY2tncm91bmQ6IHJnYmEoMjU1LDI1NSwyNTUsMC4wMTUpOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jYW5kaWRhdGVzIGgzIHsgbWFyZ2luOiAwIDAgOHB4OyBmb250LXNpemU6IDEzcHg7IGZvbnQtd2VpZ2h0OiA2NjA7IGRpc3BsYXk6IGZsZXg7IGFsaWduLWl0ZW1zOiBjZW50ZXI7IGdhcDogNnB4OyBmbGV4LXdyYXA6IHdyYXA7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX2NhbmRsaXN0IHsgbGlzdC1zdHlsZTogbm9uZTsgbWFyZ2luOiAwOyBwYWRkaW5nOiAwOyBkaXNwbGF5OiBmbGV4OyBmbGV4LWRpcmVjdGlvbjogY29sdW1uOyBnYXA6IDhweDsgfVxuICAgICAgICAucGMtcmVjaXBlc19fY2FuZCB7IGRpc3BsYXk6IGZsZXg7IGdhcDogMTRweDsgYWxpZ24taXRlbXM6IGZsZXgtc3RhcnQ7IGp1c3RpZnktY29udGVudDogc3BhY2UtYmV0d2VlbjsgZmxleC13cmFwOiB3cmFwOyBib3JkZXItdG9wOiAxcHggc29saWQgdmFyKC0tYm9yZGVyLCByZ2JhKDEyNSwyMTEsMjUyLDAuMSkpOyBwYWRkaW5nLXRvcDogOHB4OyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jYW5kOmZpcnN0LWNoaWxkIHsgYm9yZGVyLXRvcDogbm9uZTsgcGFkZGluZy10b3A6IDA7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX2NhbmRtYWluIHsgbWluLXdpZHRoOiAyMjBweDsgZmxleDogMTsgfVxuICAgICAgICAucGMtcmVjaXBlc19fY2FuZG1haW4gc3Ryb25nIHsgZm9udC1zaXplOiAxM3B4OyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jYW5kbWFpbiBwIHsgbWFyZ2luOiAycHggMCAwOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jYW5kaWQsIC5wYy1yZWNpcGVzX19yaWQgeyBmb250LWZhbWlseTogdWktbW9ub3NwYWNlLCBTRk1vbm8tUmVndWxhciwgTWVubG8sIG1vbm9zcGFjZTsgZm9udC1zaXplOiAxMC41cHg7IGNvbG9yOiB2YXIoLS1mZy1tdXRlLCAjOGFhNmJkKTsgbWFyZ2luLWxlZnQ6IDhweDsgfVxuICAgICAgICAucGMtcmVjaXBlc19fY2FuZHNpZ25hbHMgeyBkaXNwbGF5OiBmbGV4OyBnYXA6IDEycHg7IG1hcmdpbjogMDsgfVxuICAgICAgICAucGMtcmVjaXBlc19fY2FuZHNpZ25hbHMgZHQgeyBmb250LXNpemU6IDkuNXB4OyB0ZXh0LXRyYW5zZm9ybTogdXBwZXJjYXNlOyBsZXR0ZXItc3BhY2luZzogMDsgY29sb3I6IHZhcigtLWZnLW11dGUsICM4YWE2YmQpOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jYW5kc2lnbmFscyBkZCB7IG1hcmdpbjogMXB4IDAgMDsgZm9udC1zaXplOiAxM3B4OyBmb250LXdlaWdodDogNjQwOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19zY29yZSB7IGNvbG9yOiB2YXIoLS1hY2NlbnQsICM3ZGQzZmMpOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jYW5kdG9vbHMgeyBtYXgtd2lkdGg6IDI4MHB4OyB9XG5cbiAgICAgICAgLnBjLXJlY2lwZXNfX2NsdXN0ZXJzIHsgbWFyZ2luLXRvcDogMTJweDsgfVxuICAgICAgICAucGMtcmVjaXBlc19fY2x1c3Rlcmxpc3QgeyBsaXN0LXN0eWxlOiBub25lOyBtYXJnaW46IDA7IHBhZGRpbmc6IDA7IGRpc3BsYXk6IGZsZXg7IGZsZXgtZGlyZWN0aW9uOiBjb2x1bW47IGdhcDogNnB4OyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jbHVzdGVyIHsgZGlzcGxheTogZmxleDsgZ2FwOiAxMHB4OyBhbGlnbi1pdGVtczogY2VudGVyOyBmbGV4LXdyYXA6IHdyYXA7IGZvbnQtc2l6ZTogMTJweDsgfVxuICAgICAgICAucGMtcmVjaXBlc19fY2x1c3RlcmlkcyB7IGRpc3BsYXk6IGlubGluZS1mbGV4OyBnYXA6IDRweDsgZmxleC13cmFwOiB3cmFwOyB9XG5cbiAgICAgICAgLnBjLXJlY2lwZXNfX2NvbnRyb2xzIHsgZGlzcGxheTogZmxleDsgYWxpZ24taXRlbXM6IGNlbnRlcjsganVzdGlmeS1jb250ZW50OiBzcGFjZS1iZXR3ZWVuOyBnYXA6IDEycHg7IG1hcmdpbi1ib3R0b206IDhweDsgZmxleC13cmFwOiB3cmFwOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19maWx0ZXJzIHsgZGlzcGxheTogaW5saW5lLWZsZXg7IGdhcDogNnB4OyBmbGV4LXdyYXA6IHdyYXA7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX2NoaXAgeyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1ib3JkZXIsIHJnYmEoMTI1LDIxMSwyNTIsMC4xNikpOyBiYWNrZ3JvdW5kOiByZ2JhKDI1NSwyNTUsMjU1LDAuMDIpOyBjb2xvcjogdmFyKC0tZmctZGltLCAjYWFjNGQ4KTsgYm9yZGVyLXJhZGl1czogOTk5cHg7IGZvbnQtc2l6ZTogMTEuNXB4OyBwYWRkaW5nOiAzcHggMTBweDsgY3Vyc29yOiBwb2ludGVyOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19jaGlwLmlzLWFjdGl2ZSB7IGNvbG9yOiAjZjdmZGZmOyBib3JkZXItY29sb3I6IHZhcigtLWFjY2VudCwgIzdkZDNmYyk7IGJhY2tncm91bmQ6IGNvbG9yLW1peChpbiBva2xhYiwgdmFyKC0tYWNjZW50LCAjMzhiZGY4KSwgdHJhbnNwYXJlbnQgOTAlKTsgfVxuICAgICAgICAucGMtcmVjaXBlc19fc29ydCB7IGZvbnQtc2l6ZTogMTEuNXB4OyBjb2xvcjogdmFyKC0tZmctbXV0ZSwgIzhhYTZiZCk7IGRpc3BsYXk6IGlubGluZS1mbGV4OyBhbGlnbi1pdGVtczogY2VudGVyOyBnYXA6IDZweDsgZmxleC13cmFwOiB3cmFwOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19zb3J0YnRuIHsgYm9yZGVyOiAxcHggc29saWQgdmFyKC0tYm9yZGVyLCByZ2JhKDEyNSwyMTEsMjUyLDAuMTYpKTsgYmFja2dyb3VuZDogcmdiYSgyNTUsMjU1LDI1NSwwLjAyKTsgY29sb3I6IHZhcigtLWZnLWRpbSwgI2FhYzRkOCk7IGJvcmRlci1yYWRpdXM6IDk5OXB4OyBmb250LXNpemU6IDExLjVweDsgcGFkZGluZzogM3B4IDlweDsgY3Vyc29yOiBwb2ludGVyOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19zb3J0YnRuLmlzLWFjdGl2ZSB7IGNvbG9yOiAjZjdmZGZmOyBib3JkZXItY29sb3I6IHZhcigtLWFjY2VudCwgIzdkZDNmYyk7IGJhY2tncm91bmQ6IGNvbG9yLW1peChpbiBva2xhYiwgdmFyKC0tYWNjZW50LCAjMzhiZGY4KSwgdHJhbnNwYXJlbnQgOTAlKTsgfVxuXG4gICAgICAgIC5wYy1yZWNpcGVzX190YWJsZXdyYXAgeyBvdmVyZmxvdy14OiBhdXRvOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX190YWJsZSB7IHdpZHRoOiAxMDAlOyBtaW4td2lkdGg6IDc4MHB4OyBmb250LXNpemU6IDEycHg7IH1cbiAgICAgICAgLyogVmlydHVhbGl6ZWQgYm9keTogYSBmaXhlZC1oZWlnaHQgc2Nyb2xsIHZpZXdwb3J0OyByb3dzIGFyZSBhYnNvbHV0ZWx5XG4gICAgICAgICAgIHBvc2l0aW9uZWQgaW5zaWRlIHRoZSBnZXRUb3RhbFNpemUoKSBzcGFjZXIgKHRyYW5zbGF0ZVkgcGVyIHJvdykuICovXG4gICAgICAgIC5wYy1yZWNpcGVzX190YWJsZXNjcm9sbCB7IHBvc2l0aW9uOiByZWxhdGl2ZTsgbWF4LWhlaWdodDogbWluKDcwdmgsIDcyMHB4KTsgb3ZlcmZsb3cteTogYXV0bzsgfVxuICAgICAgICAucGMtcmVjaXBlc19fdnNwYWNlciB7IHBvc2l0aW9uOiByZWxhdGl2ZTsgd2lkdGg6IDEwMCU7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3RyLS12aXJ0dWFsIHsgcG9zaXRpb246IGFic29sdXRlOyB0b3A6IDA7IGxlZnQ6IDA7IHdpZHRoOiAxMDAlOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX190ciB7IGRpc3BsYXk6IGdyaWQ7IGdyaWQtdGVtcGxhdGUtY29sdW1uczogbWlubWF4KDI2MHB4LCAyZnIpIDY0cHggNzJweCA3OHB4IDkwcHggbWlubWF4KDEyMHB4LCAwLjhmcikgbWlubWF4KDE4MHB4LCAxLjFmcik7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3RyLS1oZWFkIHsgYm9yZGVyLWJvdHRvbTogMXB4IHNvbGlkIHZhcigtLWJvcmRlciwgcmdiYSgxMjUsMjExLDI1MiwwLjE2KSk7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3RyLS1oZWFkID4gc3BhbiB7IHRleHQtYWxpZ246IGxlZnQ7IGZvbnQtc2l6ZTogMTBweDsgdGV4dC10cmFuc2Zvcm06IHVwcGVyY2FzZTsgbGV0dGVyLXNwYWNpbmc6IDA7IGNvbG9yOiB2YXIoLS1mZy1tdXRlLCAjOGFhNmJkKTsgcGFkZGluZzogNnB4IDhweDsgZm9udC13ZWlnaHQ6IDY2MDsgfVxuICAgICAgICAucGMtcmVjaXBlc19fdHIgPiBkaXYgeyBwYWRkaW5nOiA4cHg7IGJvcmRlci1ib3R0b206IDFweCBzb2xpZCB2YXIoLS1ib3JkZXIsIHJnYmEoMTI1LDIxMSwyNTIsMC4wOCkpOyBtaW4td2lkdGg6IDA7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX251bSB7IHRleHQtYWxpZ246IHJpZ2h0OyBmb250LXZhcmlhbnQtbnVtZXJpYzogdGFidWxhci1udW1zOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19uYW1lIHsgZGlzcGxheTogZmxleDsgYWxpZ24taXRlbXM6IGJhc2VsaW5lOyBmbGV4LXdyYXA6IHdyYXA7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX25hbWUgc3Ryb25nIHsgZm9udC1zaXplOiAxMi41cHg7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX2Rlc2MgeyBtYXJnaW46IDJweCAwIDA7IGNvbG9yOiB2YXIoLS1mZy1tdXRlLCAjOGFhNmJkKTsgbWF4LXdpZHRoOiA0OGNoOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19hdXRob3IgeyBmb250LXNpemU6IDEwLjVweDsgY29sb3I6IHZhcigtLWZnLW11dGUsICM4YWE2YmQpOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX190b29scyB7IGRpc3BsYXk6IGlubGluZS1mbGV4OyBnYXA6IDRweDsgZmxleC13cmFwOiB3cmFwOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX190b29sYmFkZ2UgeyBmb250LWZhbWlseTogdWktbW9ub3NwYWNlLCBTRk1vbm8tUmVndWxhciwgTWVubG8sIG1vbm9zcGFjZTsgZm9udC1zaXplOiAxMHB4OyBiYWNrZ3JvdW5kOiBjb2xvci1taXgoaW4gb2tsYWIsIHZhcigtLWFjY2VudCwgIzM4YmRmOCksIHRyYW5zcGFyZW50IDkwJSk7IGJvcmRlcjogMXB4IHNvbGlkIGNvbG9yLW1peChpbiBva2xhYiwgdmFyKC0tYWNjZW50LCAjMzhiZGY4KSwgdHJhbnNwYXJlbnQgODIlKTsgYm9yZGVyLXJhZGl1czogNHB4OyBwYWRkaW5nOiAxcHggNXB4OyBjb2xvcjogdmFyKC0tZmctZGltLCAjYWFjNGQ4KTsgfVxuICAgICAgICAucGMtcmVjaXBlc19fc3RhdHVzIHsgZm9udC1zaXplOiAxMC41cHg7IGJvcmRlci1yYWRpdXM6IDRweDsgcGFkZGluZzogMXB4IDdweDsgdGV4dC10cmFuc2Zvcm06IGNhcGl0YWxpemU7IGJvcmRlcjogMXB4IHNvbGlkIHRyYW5zcGFyZW50OyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19zdGF0dXMtLWFjdGl2ZSB7IGNvbG9yOiAjMzRkMzk5OyBib3JkZXItY29sb3I6IHJnYmEoNTIsMjExLDE1MywwLjQpOyBiYWNrZ3JvdW5kOiByZ2JhKDUyLDIxMSwxNTMsMC4wOCk7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3N0YXR1cy0tcHJvbW90ZWQgeyBjb2xvcjogdmFyKC0tYWNjZW50LXN0cm9uZywgdmFyKC0tYWNjZW50KSk7IGJvcmRlci1jb2xvcjogY29sb3ItbWl4KGluIG9rbGFiLCB2YXIoLS1hY2NlbnQsICMzOGJkZjgpLCB0cmFuc3BhcmVudCA2MCUpOyBiYWNrZ3JvdW5kOiBjb2xvci1taXgoaW4gb2tsYWIsIHZhcigtLWFjY2VudCwgIzM4YmRmOCksIHRyYW5zcGFyZW50IDkyJSk7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3N0YXR1cy0tcmV0aXJlZCB7IGNvbG9yOiAjOTRhM2I4OyBib3JkZXItY29sb3I6IHJnYmEoMTQ4LDE2MywxODQsMC4zNSk7IGJhY2tncm91bmQ6IHJnYmEoMTQ4LDE2MywxODQsMC4wNik7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3N0YXR1cy0tbWVyZ2VkIHsgY29sb3I6ICNjMDg0ZmM7IGJvcmRlci1jb2xvcjogcmdiYSgxOTIsMTMyLDI1MiwwLjQpOyBiYWNrZ3JvdW5kOiByZ2JhKDE5MiwxMzIsMjUyLDAuMDgpOyB9XG4gICAgICAgIC5wYy1yZWNpcGVzX19zdGF0dXMtLW90aGVyIHsgY29sb3I6IHZhcigtLWZnLW11dGUsICM4YWE2YmQpOyBib3JkZXItY29sb3I6IHZhcigtLWJvcmRlciwgcmdiYSgxMjUsMjExLDI1MiwwLjE2KSk7IH1cbiAgICAgICAgLnBjLXJlY2lwZXNfX3Byb21vdGVkIHsgZm9udC1zaXplOiAxMC41cHg7IGNvbG9yOiB2YXIoLS1mZy1tdXRlLCAjOGFhNmJkKTsgbWFyZ2luLWxlZnQ6IDZweDsgfVxuICAgICAgYH08L3N0eWxlPlxuICAgIDwvZGl2PlxuICApO1xufVxuIl0sImZpbGUiOiIvc3JjL2NvbXBvbmVudHMvYWRtaW4vUmVjaXBlc0NsaWVudC50c3gifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yLXZpdGUvc3JjL2NvbXBvbmVudHMvYWRtaW4vUmVjaXBlc0NsaWVudC50c3giLCIvc3JjL2NvbXBvbmVudHMvYWRtaW4vUmVjaXBlc0NsaWVudC50c3giLFtdXQ==

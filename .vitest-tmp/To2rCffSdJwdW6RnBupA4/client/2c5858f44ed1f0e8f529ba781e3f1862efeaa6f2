@@ -1,0 +1,90 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["afterEach","describe","expect","it","vi"]});
+__vite_ssr_import_0__.vi.mock("@tanstack/react-router", () => ({
+  Link: ({ to, children }) => /* @__PURE__ */ __vi_import_0__.jsxDEV("a", { href: to, children }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/AdminShell.lexicon.test.tsx",
+    lineNumber: 16,
+    columnNumber: 5
+  }, this),
+  useRouterState: () => "/admin/run"
+}));
+const __vi_import_0__ = await __vite_ssr_dynamic_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/jsx-dev-runtime.js");
+const __vi_import_1__ = await __vite_ssr_dynamic_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/@testing-library/react/dist/index.js");
+const __vi_import_2__ = await __vite_ssr_dynamic_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/flags/src/index.ts");
+const __vi_import_3__ = await __vite_ssr_dynamic_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/flags/src/client.ts");
+const __vi_import_4__ = await __vite_ssr_dynamic_import__("/src/components/admin/AdminShell.tsx");
+
+
+
+
+
+
+function setHive(on) {
+  const payload = {
+    flags: __vi_import_2__.resolveWithDefaults({ [__vi_import_2__.FLAGS.THE_HIVE]: on }),
+    evaluatedAt: 1,
+    source: "override"
+  };
+  __vi_import_1__.act(() => __vi_import_3__.setFlagPayload(payload));
+}
+(0,__vite_ssr_import_0__.afterEach)(() => {
+  __vi_import_1__.cleanup();
+  setHive(false);
+});
+(0,__vite_ssr_import_0__.describe)("AdminShell lexicon (P-006)", () => {
+  (0,__vite_ssr_import_0__.it)('classic: Cupboard tab reads "Cupboard"', () => {
+    setHive(false);
+    __vi_import_1__.render(
+      /* @__PURE__ */ __vi_import_0__.jsxDEV(__vi_import_4__.default, { title: "Admin", children: /* @__PURE__ */ __vi_import_0__.jsxDEV("div", {}, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/AdminShell.lexicon.test.tsx",
+        lineNumber: 42,
+        columnNumber: 9
+      }, this) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/AdminShell.lexicon.test.tsx",
+        lineNumber: 41,
+        columnNumber: 7
+      }, this)
+    );
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.getByText("Cupboard")).toBeTruthy();
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.queryByText("Comb")).toBeNull();
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.getByText("DBOS")).toBeTruthy();
+  });
+  (0,__vite_ssr_import_0__.it)('the-hive: Cupboard tab reads "Comb"', () => {
+    setHive(true);
+    __vi_import_1__.render(
+      /* @__PURE__ */ __vi_import_0__.jsxDEV(__vi_import_4__.default, { title: "Admin", children: /* @__PURE__ */ __vi_import_0__.jsxDEV("div", {}, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/AdminShell.lexicon.test.tsx",
+        lineNumber: 55,
+        columnNumber: 9
+      }, this) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/AdminShell.lexicon.test.tsx",
+        lineNumber: 54,
+        columnNumber: 7
+      }, this)
+    );
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.getByText("Comb")).toBeTruthy();
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.queryByText("Cupboard")).toBeNull();
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.getByText("DBOS")).toBeTruthy();
+  });
+  (0,__vite_ssr_import_0__.it)("flips live when the flag changes", () => {
+    setHive(false);
+    __vi_import_1__.render(
+      /* @__PURE__ */ __vi_import_0__.jsxDEV(__vi_import_4__.default, { title: "Admin", children: /* @__PURE__ */ __vi_import_0__.jsxDEV("div", {}, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/AdminShell.lexicon.test.tsx",
+        lineNumber: 67,
+        columnNumber: 9
+      }, this) }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/admin/AdminShell.lexicon.test.tsx",
+        lineNumber: 66,
+        columnNumber: 7
+      }, this)
+    );
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.getByText("Cupboard")).toBeTruthy();
+    setHive(true);
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.getByText("Comb")).toBeTruthy();
+    (0,__vite_ssr_import_0__.expect)(__vi_import_1__.screen.queryByText("Cupboard")).toBeNull();
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBTUE7QUFPQSx5QkFBRyxLQUFLLDBCQUEwQixPQUFPO0FBQUEsRUFDdkMsTUFBTSxDQUFDLEVBQUUsSUFBSSxTQUFTLE1BQ3BCLHVDQUFDLE9BQUUsTUFBTSxJQUFLLFlBQWQ7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQUF1QjtBQUFBLEVBRXpCLGdCQUFnQixNQUFNO0FBQ3hCLEVBQUU7QUFIRTtBQVJKO0FBRUE7QUFDQTtBQVVBOzs7Ozs7O0FBRUEsU0FBUyxRQUFRLElBQW1CO0FBQ2xDLFFBQU0sVUFBdUI7QUFBQSxJQUMzQixPQUFPLG9DQUFvQixFQUFFLENBQUMsc0JBQU0sUUFBUSxHQUFHLEdBQUcsQ0FBQztBQUFBLElBQ25ELGFBQWE7QUFBQSxJQUNiLFFBQVE7QUFBQSxFQUNWO0FBQ0Esc0JBQUksTUFBTSwrQkFBZSxPQUFPLENBQUM7QUFDbkM7R0FFQSxpQ0FBVSxNQUFNO0FBQ2QsMEJBQVE7QUFDUixVQUFRLEtBQUs7QUFDZixDQUFDO0dBRUQsZ0NBQVMsOEJBQThCLE1BQU07QUFDM0MsK0JBQUcsMENBQTBDLE1BQU07QUFDakQsWUFBUSxLQUFLO0FBQ2I7QUFBQSxNQUNFLHVDQUFDLDJCQUFXLE9BQU0sU0FDaEIsaURBQUMsV0FBRDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBQUssS0FEUDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBRUE7QUFBQSxJQUNGO0FBQ0EscUNBQU8sdUJBQU8sVUFBVSxVQUFVLENBQUMsRUFBRSxXQUFXO0FBQ2hELHFDQUFPLHVCQUFPLFlBQVksTUFBTSxDQUFDLEVBQUUsU0FBUztBQUU1QyxxQ0FBTyx1QkFBTyxVQUFVLE1BQU0sQ0FBQyxFQUFFLFdBQVc7QUFBQSxFQUM5QyxDQUFDO0FBRUQsK0JBQUcsdUNBQXVDLE1BQU07QUFDOUMsWUFBUSxJQUFJO0FBQ1o7QUFBQSxNQUNFLHVDQUFDLDJCQUFXLE9BQU0sU0FDaEIsaURBQUMsV0FBRDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBQUssS0FEUDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBRUE7QUFBQSxJQUNGO0FBQ0EscUNBQU8sdUJBQU8sVUFBVSxNQUFNLENBQUMsRUFBRSxXQUFXO0FBQzVDLHFDQUFPLHVCQUFPLFlBQVksVUFBVSxDQUFDLEVBQUUsU0FBUztBQUNoRCxxQ0FBTyx1QkFBTyxVQUFVLE1BQU0sQ0FBQyxFQUFFLFdBQVc7QUFBQSxFQUM5QyxDQUFDO0FBRUQsK0JBQUcsb0NBQW9DLE1BQU07QUFDM0MsWUFBUSxLQUFLO0FBQ2I7QUFBQSxNQUNFLHVDQUFDLDJCQUFXLE9BQU0sU0FDaEIsaURBQUMsV0FBRDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBQUssS0FEUDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBRUE7QUFBQSxJQUNGO0FBQ0EscUNBQU8sdUJBQU8sVUFBVSxVQUFVLENBQUMsRUFBRSxXQUFXO0FBQ2hELFlBQVEsSUFBSTtBQUNaLHFDQUFPLHVCQUFPLFVBQVUsTUFBTSxDQUFDLEVBQUUsV0FBVztBQUM1QyxxQ0FBTyx1QkFBTyxZQUFZLFVBQVUsQ0FBQyxFQUFFLFNBQVM7QUFBQSxFQUNsRCxDQUFDO0FBQ0gsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiQWRtaW5TaGVsbC5sZXhpY29uLnRlc3QudHN4Il0sInNvdXJjZXNDb250ZW50IjpbIi8vIEB2aXRlc3QtZW52aXJvbm1lbnQganNkb21cbi8vXG4vLyBQLTAwNiDigJQgYSByZWFsIG5hdiBzdXJmYWNlIHJlbmRlcnMgY29ycmVjdGx5IHVuZGVyIEJPVEggYnJhbmQgcGFja3MuXG4vLyBBZG1pblNoZWxsJ3MgQ3VwYm9hcmQgdGFiIG11c3QgcmVhZCBcIkN1cGJvYXJkXCIgd2l0aCB0aGUtaGl2ZSBvZmYgYW5kIFwiQ29tYlwiXG4vLyB3aXRoIGl0IG9uLCBhbmQgZmxpcCBsaXZlLiBUaGUgb3RoZXIgKG5vbi1sZXhpY29uKSB0YWJzIGFyZSB1bmNoYW5nZWQuXG5cbmltcG9ydCB7IGFmdGVyRWFjaCwgZGVzY3JpYmUsIGV4cGVjdCwgaXQsIHZpIH0gZnJvbSAndml0ZXN0JztcbmltcG9ydCB7IGFjdCwgY2xlYW51cCwgcmVuZGVyLCBzY3JlZW4gfSBmcm9tICdAdGVzdGluZy1saWJyYXJ5L3JlYWN0JztcblxuaW1wb3J0IHsgRkxBR1MsIHR5cGUgRmxhZ1BheWxvYWQsIHJlc29sdmVXaXRoRGVmYXVsdHMgfSBmcm9tICdAcGFwZXJjdXNwL2ZsYWdzJztcbmltcG9ydCB7IHNldEZsYWdQYXlsb2FkIH0gZnJvbSAnQHBhcGVyY3VzcC9mbGFncy9jbGllbnQnO1xuXG4vLyBSZW5kZXIgdGhlIFRTUiBwcmltaXRpdmVzIEFkbWluU2hlbGwgbmVlZHMgd2l0aG91dCBhIHJlYWwgcm91dGVyLlxudmkubW9jaygnQHRhbnN0YWNrL3JlYWN0LXJvdXRlcicsICgpID0+ICh7XG4gIExpbms6ICh7IHRvLCBjaGlsZHJlbiB9OiB7IHRvOiBzdHJpbmc7IGNoaWxkcmVuOiBSZWFjdC5SZWFjdE5vZGUgfSkgPT4gKFxuICAgIDxhIGhyZWY9e3RvfT57Y2hpbGRyZW59PC9hPlxuICApLFxuICB1c2VSb3V0ZXJTdGF0ZTogKCkgPT4gJy9hZG1pbi9ydW4nLFxufSkpO1xuXG5pbXBvcnQgQWRtaW5TaGVsbCBmcm9tICcuL0FkbWluU2hlbGwnO1xuXG5mdW5jdGlvbiBzZXRIaXZlKG9uOiBib29sZWFuKTogdm9pZCB7XG4gIGNvbnN0IHBheWxvYWQ6IEZsYWdQYXlsb2FkID0ge1xuICAgIGZsYWdzOiByZXNvbHZlV2l0aERlZmF1bHRzKHsgW0ZMQUdTLlRIRV9ISVZFXTogb24gfSksXG4gICAgZXZhbHVhdGVkQXQ6IDEsXG4gICAgc291cmNlOiAnb3ZlcnJpZGUnLFxuICB9O1xuICBhY3QoKCkgPT4gc2V0RmxhZ1BheWxvYWQocGF5bG9hZCkpO1xufVxuXG5hZnRlckVhY2goKCkgPT4ge1xuICBjbGVhbnVwKCk7XG4gIHNldEhpdmUoZmFsc2UpO1xufSk7XG5cbmRlc2NyaWJlKCdBZG1pblNoZWxsIGxleGljb24gKFAtMDA2KScsICgpID0+IHtcbiAgaXQoJ2NsYXNzaWM6IEN1cGJvYXJkIHRhYiByZWFkcyBcIkN1cGJvYXJkXCInLCAoKSA9PiB7XG4gICAgc2V0SGl2ZShmYWxzZSk7XG4gICAgcmVuZGVyKFxuICAgICAgPEFkbWluU2hlbGwgdGl0bGU9XCJBZG1pblwiPlxuICAgICAgICA8ZGl2IC8+XG4gICAgICA8L0FkbWluU2hlbGw+LFxuICAgICk7XG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJ0N1cGJvYXJkJykpLnRvQmVUcnV0aHkoKTtcbiAgICBleHBlY3Qoc2NyZWVuLnF1ZXJ5QnlUZXh0KCdDb21iJykpLnRvQmVOdWxsKCk7XG4gICAgLy8gQSBub24tbGV4aWNvbiB0YWIgaXMgdW5hZmZlY3RlZCBieSB0aGUgYnJhbmQgcGFjay5cbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnREJPUycpKS50b0JlVHJ1dGh5KCk7XG4gIH0pO1xuXG4gIGl0KCd0aGUtaGl2ZTogQ3VwYm9hcmQgdGFiIHJlYWRzIFwiQ29tYlwiJywgKCkgPT4ge1xuICAgIHNldEhpdmUodHJ1ZSk7XG4gICAgcmVuZGVyKFxuICAgICAgPEFkbWluU2hlbGwgdGl0bGU9XCJBZG1pblwiPlxuICAgICAgICA8ZGl2IC8+XG4gICAgICA8L0FkbWluU2hlbGw+LFxuICAgICk7XG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJ0NvbWInKSkudG9CZVRydXRoeSgpO1xuICAgIGV4cGVjdChzY3JlZW4ucXVlcnlCeVRleHQoJ0N1cGJvYXJkJykpLnRvQmVOdWxsKCk7XG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJ0RCT1MnKSkudG9CZVRydXRoeSgpO1xuICB9KTtcblxuICBpdCgnZmxpcHMgbGl2ZSB3aGVuIHRoZSBmbGFnIGNoYW5nZXMnLCAoKSA9PiB7XG4gICAgc2V0SGl2ZShmYWxzZSk7XG4gICAgcmVuZGVyKFxuICAgICAgPEFkbWluU2hlbGwgdGl0bGU9XCJBZG1pblwiPlxuICAgICAgICA8ZGl2IC8+XG4gICAgICA8L0FkbWluU2hlbGw+LFxuICAgICk7XG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJ0N1cGJvYXJkJykpLnRvQmVUcnV0aHkoKTtcbiAgICBzZXRIaXZlKHRydWUpO1xuICAgIGV4cGVjdChzY3JlZW4uZ2V0QnlUZXh0KCdDb21iJykpLnRvQmVUcnV0aHkoKTtcbiAgICBleHBlY3Qoc2NyZWVuLnF1ZXJ5QnlUZXh0KCdDdXBib2FyZCcpKS50b0JlTnVsbCgpO1xuICB9KTtcbn0pO1xuIl0sImZpbGUiOiIvc3JjL2NvbXBvbmVudHMvYWRtaW4vQWRtaW5TaGVsbC5sZXhpY29uLnRlc3QudHN4In0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yLXZpdGUvc3JjL2NvbXBvbmVudHMvYWRtaW4vQWRtaW5TaGVsbC5sZXhpY29uLnRlc3QudHN4IiwiL3NyYy9jb21wb25lbnRzL2FkbWluL0FkbWluU2hlbGwubGV4aWNvbi50ZXN0LnRzeCIsW11d

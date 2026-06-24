@@ -1,0 +1,37 @@
+__vite_ssr_exportName__("KVRow", () => { try { return KVRow } catch {} });
+__vite_ssr_exportName__("DetailGrid", () => { try { return DetailGrid } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+
+const KVRow = ({ label, value, className = "" }) => {
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: `pclsb-kv-row ${className}`, children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { className: "pclsb-kv-row__label", children: label }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/ui/KVRow.tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { className: "pclsb-kv-row__value", children: value }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/ui/KVRow.tsx",
+      lineNumber: 13,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/ui/KVRow.tsx",
+    lineNumber: 11,
+    columnNumber: 5
+  }, this);
+};
+const DetailGrid = ({ items, className = "" }) => {
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dl", { className: `pclsb-detail-grid ${className}`, children: items.map((item, i) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(KVRow, { label: item.label, value: item.value }, i, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/ui/KVRow.tsx",
+    lineNumber: 27,
+    columnNumber: 9
+  }, this)) }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/ui/KVRow.tsx",
+    lineNumber: 25,
+    columnNumber: 5
+  }, this);
+};
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFXTTs7QUFIQyxNQUFNLFFBQThCLENBQUMsRUFBRSxPQUFPLE9BQU8sWUFBWSxHQUFHLE1BQU07QUFDL0UsU0FDRSxpREFBQyxTQUFJLFdBQVcsZ0JBQWdCLFNBQVMsSUFDdkM7QUFBQSxxREFBQyxRQUFHLFdBQVUsdUJBQXVCLG1CQUFyQztBQUFBO0FBQUE7QUFBQTtBQUFBLFdBQTJDO0FBQUEsSUFDM0MsaURBQUMsUUFBRyxXQUFVLHVCQUF1QixtQkFBckM7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQUEyQztBQUFBLE9BRjdDO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FHQTtBQUVKO0FBT08sTUFBTSxhQUF3QyxDQUFDLEVBQUUsT0FBTyxZQUFZLEdBQUcsTUFBTTtBQUNsRixTQUNFLGlEQUFDLFFBQUcsV0FBVyxxQkFBcUIsU0FBUyxJQUMxQyxnQkFBTSxJQUFJLENBQUMsTUFBTSxNQUNoQixpREFBQyxTQUFjLE9BQU8sS0FBSyxPQUFPLE9BQU8sS0FBSyxTQUFsQyxHQUFaO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FBcUQsQ0FDdEQsS0FISDtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBSUE7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiS1ZSb3cudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCBSZWFjdCBmcm9tICdyZWFjdCc7XG5cbmludGVyZmFjZSBLVlJvd1Byb3BzIHtcbiAgbGFiZWw6IFJlYWN0LlJlYWN0Tm9kZTtcbiAgdmFsdWU6IFJlYWN0LlJlYWN0Tm9kZTtcbiAgY2xhc3NOYW1lPzogc3RyaW5nO1xufVxuXG5leHBvcnQgY29uc3QgS1ZSb3c6IFJlYWN0LkZDPEtWUm93UHJvcHM+ID0gKHsgbGFiZWwsIHZhbHVlLCBjbGFzc05hbWUgPSAnJyB9KSA9PiB7XG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9e2BwY2xzYi1rdi1yb3cgJHtjbGFzc05hbWV9YH0+XG4gICAgICA8ZHQgY2xhc3NOYW1lPVwicGNsc2Ita3Ytcm93X19sYWJlbFwiPntsYWJlbH08L2R0PlxuICAgICAgPGRkIGNsYXNzTmFtZT1cInBjbHNiLWt2LXJvd19fdmFsdWVcIj57dmFsdWV9PC9kZD5cbiAgICA8L2Rpdj5cbiAgKTtcbn07XG5cbmludGVyZmFjZSBEZXRhaWxHcmlkUHJvcHMge1xuICBpdGVtczogQXJyYXk8eyBsYWJlbDogUmVhY3QuUmVhY3ROb2RlOyB2YWx1ZTogUmVhY3QuUmVhY3ROb2RlIH0+O1xuICBjbGFzc05hbWU/OiBzdHJpbmc7XG59XG5cbmV4cG9ydCBjb25zdCBEZXRhaWxHcmlkOiBSZWFjdC5GQzxEZXRhaWxHcmlkUHJvcHM+ID0gKHsgaXRlbXMsIGNsYXNzTmFtZSA9ICcnIH0pID0+IHtcbiAgcmV0dXJuIChcbiAgICA8ZGwgY2xhc3NOYW1lPXtgcGNsc2ItZGV0YWlsLWdyaWQgJHtjbGFzc05hbWV9YH0+XG4gICAgICB7aXRlbXMubWFwKChpdGVtLCBpKSA9PiAoXG4gICAgICAgIDxLVlJvdyBrZXk9e2l9IGxhYmVsPXtpdGVtLmxhYmVsfSB2YWx1ZT17aXRlbS52YWx1ZX0gLz5cbiAgICAgICkpfVxuICAgIDwvZGw+XG4gICk7XG59O1xuIl0sImZpbGUiOiIvc3JjL2NvbXBvbmVudHMvdWkvS1ZSb3cudHN4In0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yLXZpdGUvc3JjL2NvbXBvbmVudHMvdWkvS1ZSb3cudHN4IiwiL3NyYy9jb21wb25lbnRzL3VpL0tWUm93LnRzeCIsW11d

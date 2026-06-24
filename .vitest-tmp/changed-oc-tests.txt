@@ -1,0 +1,17 @@
+packages/operator-core/lib/agent-tools/code/capture-recipe.test.ts
+packages/operator-core/lib/agent-tools/fleet/place_batch-route-by-hive.test.ts
+packages/operator-core/lib/agent-tools/hive/survey-workspace-scope.test.ts
+packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts
+packages/operator-core/lib/dbos/routines-queue-classification.test.ts
+packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts
+packages/operator-core/lib/fleet/operator-spawn.test.ts
+packages/operator-core/lib/fleet/placement-gather.test.ts
+packages/operator-core/lib/harness/bootstrap-papercusp-hive.test.ts
+packages/operator-core/lib/hive/placement-watchdog.test.ts
+packages/operator-core/lib/hive/survey-workspace-scope.test.ts
+packages/operator-core/lib/hive/watchdog.test.ts
+packages/operator-core/lib/inference-gateway/gateway.test.ts
+packages/operator-core/lib/overwatch/control-state-workspace-scope.test.ts
+packages/operator-core/lib/overwatch/watchdog.test.ts
+packages/operator-core/lib/owner-steering.test.ts
+packages/operator-core/lib/sync/hyperbee/directory-swarm.test.ts

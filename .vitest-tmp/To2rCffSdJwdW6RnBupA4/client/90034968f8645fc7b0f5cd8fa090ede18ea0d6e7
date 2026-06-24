@@ -1,0 +1,216 @@
+__vite_ssr_exportName__("default", () => { try { return DeployStatePanel } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/react/jsx-dev-runtime.js", {"importedNames":["Fragment","jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/generic/sync/src/index.ts", {"importedNames":["useSyncQuery"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/components/dev-admin-rail/panel-kit.tsx", {"importedNames":["PanelBar","PanelState","formatRelative"]});
+
+
+
+function behindPill(n) {
+  if (n == null) return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill", children: "—" }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+    lineNumber: 34,
+    columnNumber: 25
+  }, this);
+  if (n === 0) return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill is-good", children: "caught up" }, void 0, false, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+    lineNumber: 35,
+    columnNumber: 23
+  }, this);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill is-warn", children: [
+    n,
+    " behind"
+  ] }, void 0, true, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+    lineNumber: 36,
+    columnNumber: 10
+  }, this);
+}
+function DeployStatePanel({ active }) {
+  const sync = (0,__vite_ssr_import_1__.useSyncQuery)({
+    queryName: "dev.deployState",
+    enabled: active,
+    staleTime: 3e4
+  });
+  const st = sync.data?.[0];
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-panel", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.PanelBar), { label: "Deploy / release gate", fetching: sync.fetching, onRefresh: sync.invalidate }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+      lineNumber: 49,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.PanelState), { loading: sync.loading && !st, error: sync.error, empty: !st, emptyHint: "No deploy state." }, void 0, false, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+      lineNumber: 50,
+      columnNumber: 7
+    }, this),
+    st && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "span",
+          {
+            className: `pcdar-dot ${st.deployedBehindMain === 0 ? "is-up" : "is-absent"}`,
+            "aria-hidden": "true"
+          },
+          void 0,
+          false,
+          {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+            lineNumber: 54,
+            columnNumber: 13
+          },
+          this
+        ),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__main", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__title", children: st.deployedBehindMain === 0 ? `:3070 is current with ${st.integrationBranch}` : `:3070 is ${st.deployedBehindMain ?? "?"} commits behind ${st.integrationBranch}` }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+            lineNumber: 59,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__sub", children: st.deployedBehindMain && st.deployedBehindMain > 0 ? "a missing edit here is NOT-YET-DEPLOYED, not reverted" : "the live host matches main" }, void 0, false, {
+            fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+            lineNumber: 64,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 58,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+        lineNumber: 53,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-kv", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__k", children: "deployed (:3070)" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 73,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__v", title: st.deployed?.sha, children: st.deployed ? st.deployed.shortSha : "—" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 74,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__k", children: "deployed at" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 77,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__v", children: (0,__vite_ssr_import_2__.formatRelative)(st.deployedAtMs) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 78,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__k", children: "deployed commit" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 79,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__v", children: (0,__vite_ssr_import_2__.formatRelative)(st.deployed?.committedAtMs) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 80,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__k", children: [
+          st.releaseRef,
+          " (green pin)"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 82,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__v", title: st.ready?.sha, children: st.ready ? st.ready.shortSha : "— unset" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 83,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__k", children: [
+          st.integrationBranch,
+          " HEAD"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 86,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-kv__v", title: st.mainHead?.sha, children: st.mainHead ? st.mainHead.shortSha : "—" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 87,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+        lineNumber: 72,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__main", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__sub", style: { fontFamily: "inherit" }, children: [
+          "green pin vs ",
+          st.integrationBranch
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 94,
+          columnNumber: 15
+        }, this) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 93,
+          columnNumber: 13
+        }, this),
+        behindPill(st.readyBehindMain)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+        lineNumber: 92,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__main", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-row__sub", style: { fontFamily: "inherit" }, children: [
+          "deployable but undeployed (",
+          st.releaseRef,
+          " ahead of :3070)"
+        ] }, void 0, true, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 102,
+          columnNumber: 15
+        }, this) }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 101,
+          columnNumber: 13
+        }, this),
+        st.deployedBehindReady == null ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill", children: "—" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 107,
+          columnNumber: 15
+        }, this) : st.deployedBehindReady === 0 ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill is-good", children: "none" }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 109,
+          columnNumber: 15
+        }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "pcdar-pill is-warn", children: st.deployedBehindReady }, void 0, false, {
+          fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+          lineNumber: 111,
+          columnNumber: 15
+        }, this)
+      ] }, void 0, true, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+        lineNumber: 100,
+        columnNumber: 11
+      }, this),
+      st.errors.length > 0 && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "pcdar-panel__error", children: st.errors.join(" · ") }, void 0, false, {
+        fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+        lineNumber: 116,
+        columnNumber: 13
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+      lineNumber: 52,
+      columnNumber: 9
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/home/marsh-office/papercupai-workspace/papercup/apps/operator-vite/src/components/dev-admin-rail/panels/DeployStatePanel.tsx",
+    lineNumber: 48,
+    columnNumber: 5
+  }, this);
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQWlDd0I7QUF6QnhCO0FBQ0E7Ozs7QUF1QkEsU0FBUyxXQUFXLEdBQWtCO0FBQ3BDLE1BQUksS0FBSyxLQUFNLFFBQU8saURBQUMsVUFBSyxXQUFVLGNBQWEsaUJBQTdCO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FBOEI7QUFDcEQsTUFBSSxNQUFNLEVBQUcsUUFBTyxpREFBQyxVQUFLLFdBQVUsc0JBQXFCLHlCQUFyQztBQUFBO0FBQUE7QUFBQTtBQUFBLFNBQThDO0FBQ2xFLFNBQU8saURBQUMsVUFBSyxXQUFVLHNCQUFzQjtBQUFBO0FBQUEsSUFBRTtBQUFBLE9BQXhDO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FBK0M7QUFDeEQ7QUFFQSxTQUF3QixpQkFBaUIsRUFBRSxPQUFPLEdBQXdCO0FBQ3hFLFFBQU0sVUFBTyxvQ0FBMEI7QUFBQSxJQUNyQyxXQUFXO0FBQUEsSUFDWCxTQUFTO0FBQUEsSUFDVCxXQUFXO0FBQUEsRUFDYixDQUFDO0FBQ0QsUUFBTSxLQUFLLEtBQUssT0FBTyxDQUFDO0FBRXhCLFNBQ0UsaURBQUMsU0FBSSxXQUFVLGVBQ2I7QUFBQSx3REFBQyxtQ0FBUyxPQUFNLHlCQUF3QixVQUFVLEtBQUssVUFBVSxXQUFXLEtBQUssY0FBakY7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQUE2RjtBQUFBLElBQzdGLG9EQUFDLHFDQUFXLFNBQVMsS0FBSyxXQUFXLENBQUMsSUFBSSxPQUFPLEtBQUssT0FBTyxPQUFPLENBQUMsSUFBSSxXQUFVLHNCQUFuRjtBQUFBO0FBQUE7QUFBQTtBQUFBLFdBQXNHO0FBQUEsSUFDckcsTUFDQyx1RkFDRTtBQUFBLHVEQUFDLFNBQUksV0FBVSxhQUNiO0FBQUE7QUFBQSxVQUFDO0FBQUE7QUFBQSxZQUNDLFdBQVcsYUFBYSxHQUFHLHVCQUF1QixJQUFJLFVBQVUsV0FBVztBQUFBLFlBQzNFLGVBQVk7QUFBQTtBQUFBLFVBRmQ7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLFFBR0E7QUFBQSxRQUNBLGlEQUFDLFNBQUksV0FBVSxtQkFDYjtBQUFBLDJEQUFDLFNBQUksV0FBVSxvQkFDWixhQUFHLHVCQUF1QixJQUN2Qix5QkFBeUIsR0FBRyxpQkFBaUIsS0FDN0MsWUFBWSxHQUFHLHNCQUFzQixHQUFHLG1CQUFtQixHQUFHLGlCQUFpQixNQUhyRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUlBO0FBQUEsVUFDQSxpREFBQyxTQUFJLFdBQVUsa0JBQ1osYUFBRyxzQkFBc0IsR0FBRyxxQkFBcUIsSUFDOUMsMERBQ0EsZ0NBSE47QUFBQTtBQUFBO0FBQUE7QUFBQSxpQkFJQTtBQUFBLGFBVkY7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQVdBO0FBQUEsV0FoQkY7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQWlCQTtBQUFBLE1BRUEsaURBQUMsU0FBSSxXQUFVLFlBQ2I7QUFBQSx5REFBQyxVQUFLLFdBQVUsZUFBYyxnQ0FBOUI7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUE4QztBQUFBLFFBQzlDLGlEQUFDLFVBQUssV0FBVSxlQUFjLE9BQU8sR0FBRyxVQUFVLEtBQy9DLGFBQUcsV0FBVyxHQUFHLFNBQVMsV0FBVyxPQUR4QztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBRUE7QUFBQSxRQUNBLGlEQUFDLFVBQUssV0FBVSxlQUFjLDJCQUE5QjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBQXlDO0FBQUEsUUFDekMsaURBQUMsVUFBSyxXQUFVLGVBQWUsbURBQWUsR0FBRyxZQUFZLEtBQTdEO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBK0Q7QUFBQSxRQUMvRCxpREFBQyxVQUFLLFdBQVUsZUFBYywrQkFBOUI7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUE2QztBQUFBLFFBQzdDLGlEQUFDLFVBQUssV0FBVSxlQUFlLG1EQUFlLEdBQUcsVUFBVSxhQUFhLEtBQXhFO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBMEU7QUFBQSxRQUUxRSxpREFBQyxVQUFLLFdBQVUsZUFBZTtBQUFBLGFBQUc7QUFBQSxVQUFXO0FBQUEsYUFBN0M7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUF5RDtBQUFBLFFBQ3pELGlEQUFDLFVBQUssV0FBVSxlQUFjLE9BQU8sR0FBRyxPQUFPLEtBQzVDLGFBQUcsUUFBUSxHQUFHLE1BQU0sV0FBVyxhQURsQztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBRUE7QUFBQSxRQUNBLGlEQUFDLFVBQUssV0FBVSxlQUFlO0FBQUEsYUFBRztBQUFBLFVBQWtCO0FBQUEsYUFBcEQ7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUF5RDtBQUFBLFFBQ3pELGlEQUFDLFVBQUssV0FBVSxlQUFjLE9BQU8sR0FBRyxVQUFVLEtBQy9DLGFBQUcsV0FBVyxHQUFHLFNBQVMsV0FBVyxPQUR4QztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBRUE7QUFBQSxXQWpCRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBa0JBO0FBQUEsTUFFQSxpREFBQyxTQUFJLFdBQVUsYUFDYjtBQUFBLHlEQUFDLFNBQUksV0FBVSxtQkFDYiwyREFBQyxTQUFJLFdBQVUsa0JBQWlCLE9BQU8sRUFBRSxZQUFZLFVBQVUsR0FBRztBQUFBO0FBQUEsVUFDbEQsR0FBRztBQUFBLGFBRG5CO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFFQSxLQUhGO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFJQTtBQUFBLFFBQ0MsV0FBVyxHQUFHLGVBQWU7QUFBQSxXQU5oQztBQUFBO0FBQUE7QUFBQTtBQUFBLGFBT0E7QUFBQSxNQUNBLGlEQUFDLFNBQUksV0FBVSxhQUNiO0FBQUEseURBQUMsU0FBSSxXQUFVLG1CQUNiLDJEQUFDLFNBQUksV0FBVSxrQkFBaUIsT0FBTyxFQUFFLFlBQVksVUFBVSxHQUFHO0FBQUE7QUFBQSxVQUNwQyxHQUFHO0FBQUEsVUFBVztBQUFBLGFBRDVDO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFFQSxLQUhGO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFJQTtBQUFBLFFBQ0MsR0FBRyx1QkFBdUIsT0FDekIsaURBQUMsVUFBSyxXQUFVLGNBQWEsaUJBQTdCO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBOEIsSUFDNUIsR0FBRyx3QkFBd0IsSUFDN0IsaURBQUMsVUFBSyxXQUFVLHNCQUFxQixvQkFBckM7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUF5QyxJQUV6QyxpREFBQyxVQUFLLFdBQVUsc0JBQXNCLGFBQUcsdUJBQXpDO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBNkQ7QUFBQSxXQVhqRTtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBYUE7QUFBQSxNQUVDLEdBQUcsT0FBTyxTQUFTLEtBQ2xCLGlEQUFDLFNBQUksV0FBVSxzQkFBc0IsYUFBRyxPQUFPLEtBQUssS0FBSyxLQUF6RDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBQTJEO0FBQUEsU0FoRS9EO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FrRUE7QUFBQSxPQXRFSjtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBd0VBO0FBRUoiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIkRlcGxveVN0YXRlUGFuZWwudHN4Il0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogRGVwbG95IC8gcmVsZWFzZS1nYXRlIHN0YXRlIChQLTAwNiwgRC0wMDQpIOKAlCB0aGUgaW4tYXBwIGFudGlkb3RlIHRvIHRoZSAjMTBcbiAqIFwibXkgZWRpdCByZXZlcnRlZFwiIGNvbmZ1c2lvbi4gU2hvd3MgdGhhdCB0aGUgbGl2ZSBgOjMwNzBgIHJ1bnMgZnJvbSBhIHNlcGFyYXRlXG4gKiBncmVlbiByZWxlYXNlIGNoZWNrb3V0LCBOIGNvbW1pdHMgLyBYIGJlaGluZCBgbWFpbmAsIHNvIGEgbWlzc2luZyBlZGl0IHJlYWRzIGFzXG4gKiAqbm90LXlldC1kZXBsb3llZCosIG5vdCAqcmV2ZXJ0ZWQqLiBSRUFELU9OTFk6IG5vIGRlcGxveSBidXR0b24g4oCUIHRyaWdnZXJpbmcgYVxuICogZGVwbG95IHN0YXlzIHRoZSByZWxlYXNlLWdhdGUgYWdlbnQncyBqb2IuIFJlYWRzIHRoZSBgZGV2LmRlcGxveVN0YXRlYCBzeW5jXG4gKiBxdWVyeSAoYSBzbmFwc2hvdCB3cmFwcGVkIGluIGEgMS1lbGVtZW50IGFycmF5IOKGkiBkYXRhWzBdKS5cbiAqL1xuaW1wb3J0IHsgdXNlU3luY1F1ZXJ5IH0gZnJvbSAnQHBhcGVyY3VzcC9zeW5jJztcbmltcG9ydCB7IFBhbmVsQmFyLCBQYW5lbFN0YXRlLCBmb3JtYXRSZWxhdGl2ZSB9IGZyb20gJy4uL3BhbmVsLWtpdCc7XG5cbmludGVyZmFjZSBDb21taXRSZWYge1xuICBzaGE6IHN0cmluZztcbiAgc2hvcnRTaGE6IHN0cmluZztcbiAgY29tbWl0dGVkQXRNczogbnVtYmVyO1xuICBzdWJqZWN0OiBzdHJpbmc7XG59XG5pbnRlcmZhY2UgRGVwbG95U3RhdGUge1xuICBpbnRlZ3JhdGlvbkJyYW5jaDogc3RyaW5nO1xuICByZWxlYXNlUmVmOiBzdHJpbmc7XG4gIHJlbGVhc2VSb290OiBzdHJpbmc7XG4gIG1haW5IZWFkOiBDb21taXRSZWYgfCBudWxsO1xuICByZWFkeTogQ29tbWl0UmVmIHwgbnVsbDtcbiAgZGVwbG95ZWQ6IENvbW1pdFJlZiB8IG51bGw7XG4gIGRlcGxveWVkQXRNczogbnVtYmVyIHwgbnVsbDtcbiAgZGVwbG95ZWRCZWhpbmRNYWluOiBudW1iZXIgfCBudWxsO1xuICByZWFkeUJlaGluZE1haW46IG51bWJlciB8IG51bGw7XG4gIGRlcGxveWVkQmVoaW5kUmVhZHk6IG51bWJlciB8IG51bGw7XG4gIHJlYWR5QXRNYWluSGVhZDogYm9vbGVhbiB8IG51bGw7XG4gIGVycm9yczogc3RyaW5nW107XG59XG5cbmZ1bmN0aW9uIGJlaGluZFBpbGwobjogbnVtYmVyIHwgbnVsbCkge1xuICBpZiAobiA9PSBudWxsKSByZXR1cm4gPHNwYW4gY2xhc3NOYW1lPVwicGNkYXItcGlsbFwiPuKAlDwvc3Bhbj47XG4gIGlmIChuID09PSAwKSByZXR1cm4gPHNwYW4gY2xhc3NOYW1lPVwicGNkYXItcGlsbCBpcy1nb29kXCI+Y2F1Z2h0IHVwPC9zcGFuPjtcbiAgcmV0dXJuIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLXBpbGwgaXMtd2FyblwiPntufSBiZWhpbmQ8L3NwYW4+O1xufVxuXG5leHBvcnQgZGVmYXVsdCBmdW5jdGlvbiBEZXBsb3lTdGF0ZVBhbmVsKHsgYWN0aXZlIH06IHsgYWN0aXZlOiBib29sZWFuIH0pIHtcbiAgY29uc3Qgc3luYyA9IHVzZVN5bmNRdWVyeTxEZXBsb3lTdGF0ZT4oe1xuICAgIHF1ZXJ5TmFtZTogJ2Rldi5kZXBsb3lTdGF0ZScsXG4gICAgZW5hYmxlZDogYWN0aXZlLFxuICAgIHN0YWxlVGltZTogMzBfMDAwLFxuICB9KTtcbiAgY29uc3Qgc3QgPSBzeW5jLmRhdGE/LlswXTtcblxuICByZXR1cm4gKFxuICAgIDxkaXYgY2xhc3NOYW1lPVwicGNkYXItcGFuZWxcIj5cbiAgICAgIDxQYW5lbEJhciBsYWJlbD1cIkRlcGxveSAvIHJlbGVhc2UgZ2F0ZVwiIGZldGNoaW5nPXtzeW5jLmZldGNoaW5nfSBvblJlZnJlc2g9e3N5bmMuaW52YWxpZGF0ZX0gLz5cbiAgICAgIDxQYW5lbFN0YXRlIGxvYWRpbmc9e3N5bmMubG9hZGluZyAmJiAhc3R9IGVycm9yPXtzeW5jLmVycm9yfSBlbXB0eT17IXN0fSBlbXB0eUhpbnQ9XCJObyBkZXBsb3kgc3RhdGUuXCIgLz5cbiAgICAgIHtzdCAmJiAoXG4gICAgICAgIDw+XG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1yb3dcIj5cbiAgICAgICAgICAgIDxzcGFuXG4gICAgICAgICAgICAgIGNsYXNzTmFtZT17YHBjZGFyLWRvdCAke3N0LmRlcGxveWVkQmVoaW5kTWFpbiA9PT0gMCA/ICdpcy11cCcgOiAnaXMtYWJzZW50J31gfVxuICAgICAgICAgICAgICBhcmlhLWhpZGRlbj1cInRydWVcIlxuICAgICAgICAgICAgLz5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGNkYXItcm93X19tYWluXCI+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGNkYXItcm93X190aXRsZVwiPlxuICAgICAgICAgICAgICAgIHtzdC5kZXBsb3llZEJlaGluZE1haW4gPT09IDBcbiAgICAgICAgICAgICAgICAgID8gYDozMDcwIGlzIGN1cnJlbnQgd2l0aCAke3N0LmludGVncmF0aW9uQnJhbmNofWBcbiAgICAgICAgICAgICAgICAgIDogYDozMDcwIGlzICR7c3QuZGVwbG95ZWRCZWhpbmRNYWluID8/ICc/J30gY29tbWl0cyBiZWhpbmQgJHtzdC5pbnRlZ3JhdGlvbkJyYW5jaH1gfVxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1yb3dfX3N1YlwiPlxuICAgICAgICAgICAgICAgIHtzdC5kZXBsb3llZEJlaGluZE1haW4gJiYgc3QuZGVwbG95ZWRCZWhpbmRNYWluID4gMFxuICAgICAgICAgICAgICAgICAgPyAnYSBtaXNzaW5nIGVkaXQgaGVyZSBpcyBOT1QtWUVULURFUExPWUVELCBub3QgcmV2ZXJ0ZWQnXG4gICAgICAgICAgICAgICAgICA6ICd0aGUgbGl2ZSBob3N0IG1hdGNoZXMgbWFpbid9XG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjZGFyLWt2XCI+XG4gICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1rdl9fa1wiPmRlcGxveWVkICg6MzA3MCk8L3NwYW4+XG4gICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1rdl9fdlwiIHRpdGxlPXtzdC5kZXBsb3llZD8uc2hhfT5cbiAgICAgICAgICAgICAge3N0LmRlcGxveWVkID8gc3QuZGVwbG95ZWQuc2hvcnRTaGEgOiAn4oCUJ31cbiAgICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLWt2X19rXCI+ZGVwbG95ZWQgYXQ8L3NwYW4+XG4gICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1rdl9fdlwiPntmb3JtYXRSZWxhdGl2ZShzdC5kZXBsb3llZEF0TXMpfTwvc3Bhbj5cbiAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLWt2X19rXCI+ZGVwbG95ZWQgY29tbWl0PC9zcGFuPlxuICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGNkYXIta3ZfX3ZcIj57Zm9ybWF0UmVsYXRpdmUoc3QuZGVwbG95ZWQ/LmNvbW1pdHRlZEF0TXMpfTwvc3Bhbj5cblxuICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGNkYXIta3ZfX2tcIj57c3QucmVsZWFzZVJlZn0gKGdyZWVuIHBpbik8L3NwYW4+XG4gICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1rdl9fdlwiIHRpdGxlPXtzdC5yZWFkeT8uc2hhfT5cbiAgICAgICAgICAgICAge3N0LnJlYWR5ID8gc3QucmVhZHkuc2hvcnRTaGEgOiAn4oCUIHVuc2V0J31cbiAgICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLWt2X19rXCI+e3N0LmludGVncmF0aW9uQnJhbmNofSBIRUFEPC9zcGFuPlxuICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwicGNkYXIta3ZfX3ZcIiB0aXRsZT17c3QubWFpbkhlYWQ/LnNoYX0+XG4gICAgICAgICAgICAgIHtzdC5tYWluSGVhZCA/IHN0Lm1haW5IZWFkLnNob3J0U2hhIDogJ+KAlCd9XG4gICAgICAgICAgICA8L3NwYW4+XG4gICAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjZGFyLXJvd1wiPlxuICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1yb3dfX21haW5cIj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1yb3dfX3N1YlwiIHN0eWxlPXt7IGZvbnRGYW1pbHk6ICdpbmhlcml0JyB9fT5cbiAgICAgICAgICAgICAgICBncmVlbiBwaW4gdnMge3N0LmludGVncmF0aW9uQnJhbmNofVxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAge2JlaGluZFBpbGwoc3QucmVhZHlCZWhpbmRNYWluKX1cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInBjZGFyLXJvd1wiPlxuICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1yb3dfX21haW5cIj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwY2Rhci1yb3dfX3N1YlwiIHN0eWxlPXt7IGZvbnRGYW1pbHk6ICdpbmhlcml0JyB9fT5cbiAgICAgICAgICAgICAgICBkZXBsb3lhYmxlIGJ1dCB1bmRlcGxveWVkICh7c3QucmVsZWFzZVJlZn0gYWhlYWQgb2YgOjMwNzApXG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICB7c3QuZGVwbG95ZWRCZWhpbmRSZWFkeSA9PSBudWxsID8gKFxuICAgICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1waWxsXCI+4oCUPC9zcGFuPlxuICAgICAgICAgICAgKSA6IHN0LmRlcGxveWVkQmVoaW5kUmVhZHkgPT09IDAgPyAoXG4gICAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cInBjZGFyLXBpbGwgaXMtZ29vZFwiPm5vbmU8L3NwYW4+XG4gICAgICAgICAgICApIDogKFxuICAgICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJwY2Rhci1waWxsIGlzLXdhcm5cIj57c3QuZGVwbG95ZWRCZWhpbmRSZWFkeX08L3NwYW4+XG4gICAgICAgICAgICApfVxuICAgICAgICAgIDwvZGl2PlxuXG4gICAgICAgICAge3N0LmVycm9ycy5sZW5ndGggPiAwICYmIChcbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicGNkYXItcGFuZWxfX2Vycm9yXCI+e3N0LmVycm9ycy5qb2luKCcgwrcgJyl9PC9kaXY+XG4gICAgICAgICAgKX1cbiAgICAgICAgPC8+XG4gICAgICApfVxuICAgIDwvZGl2PlxuICApO1xufVxuIl0sImZpbGUiOiIvc3JjL2NvbXBvbmVudHMvZGV2LWFkbWluLXJhaWwvcGFuZWxzL0RlcGxveVN0YXRlUGFuZWwudHN4In0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9hcHBzL29wZXJhdG9yLXZpdGUvc3JjL2NvbXBvbmVudHMvZGV2LWFkbWluLXJhaWwvcGFuZWxzL0RlcGxveVN0YXRlUGFuZWwudHN4IiwiL3NyYy9jb21wb25lbnRzL2Rldi1hZG1pbi1yYWlsL3BhbmVscy9EZXBsb3lTdGF0ZVBhbmVsLnRzeCIsW11d
