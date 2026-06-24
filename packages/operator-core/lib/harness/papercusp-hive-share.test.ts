@@ -10,6 +10,10 @@ const EXISTING: OwnerHiveIdentity = {
   inviteSecret: 'sec-existing',
 };
 
+// setHiveListing / authorHivePolicy return shapes we don't assert on — cast through unknown.
+const setOk = async (): Promise<never> => ({}) as unknown as never;
+const policyOk = async (): Promise<never> => ({ ok: true }) as unknown as never;
+
 describe('adoptSharedHiveIdentity', () => {
   it('returns null when the flag is off — no gh / network', async () => {
     const resolveGithub = vi.fn();
@@ -39,7 +43,11 @@ describe('adoptSharedHiveIdentity', () => {
   });
 
   it('later device (gist found): adopts the owner key into the keychain BEFORE create', async () => {
-    const storeKey = vi.fn(async () => undefined);
+    let storedValue: Buffer | undefined;
+    const storeKey = async (_id: string, value: Buffer): Promise<undefined> => {
+      storedValue = value;
+      return undefined;
+    };
     const res = await adoptSharedHiveIdentity({
       isEnabled: async () => true,
       resolveGithub: okId,
@@ -47,10 +55,8 @@ describe('adoptSharedHiveIdentity', () => {
       storeKey,
     });
     expect(res?.existing).toEqual(EXISTING);
-    expect(storeKey).toHaveBeenCalledTimes(1);
-    const [, value] = storeKey.mock.calls[0];
-    expect(Buffer.isBuffer(value)).toBe(true);
-    expect((value as Buffer).toString()).toBe('owner-der'); // decoded from base64
+    expect(storedValue && Buffer.isBuffer(storedValue)).toBe(true);
+    expect(storedValue?.toString()).toBe('owner-der'); // decoded from base64
   });
 
   it('never throws on a resolver failure', async () => {
@@ -65,9 +71,6 @@ describe('adoptSharedHiveIdentity', () => {
 });
 
 describe('goSharedHive', () => {
-  const setOk = async () => ({}) as never;
-  const policyOk = async () => ({ ok: true }) as never;
-
   it('no-ops when state is null', async () => {
     const setListing = vi.fn(setOk);
     await goSharedHive(null, { setListing });
@@ -76,60 +79,81 @@ describe('goSharedHive', () => {
 
   it('later device: announces (invite) with the existing secret + allowlist policy, NO publish', async () => {
     const publishIdentity = vi.fn();
-    const setListing = vi.fn(setOk);
-    const authorPolicy = vi.fn(policyOk);
+    let listing: { visibility?: string; inviteSecret?: string } | undefined;
+    let policy: { policy?: { membership?: string; allowlist?: string[] } } | undefined;
     const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: EXISTING };
-
-    await goSharedHive(state, { publishIdentity, setListing, authorPolicy });
-
-    expect(publishIdentity).not.toHaveBeenCalled();
-    expect(setListing.mock.calls[0][0]).toMatchObject({ visibility: 'invite', inviteSecret: 'sec-existing' });
-    expect(authorPolicy.mock.calls[0][0].policy).toEqual({ membership: 'allowlist', allowlist: ['avi'] });
-  });
-
-  it('first device: reads key → publishes gist → announces with the fresh secret + policy', async () => {
-    const publishIdentity = vi.fn(async () => ({ gistId: 'g' }));
-    const setListing = vi.fn(setOk);
-    const authorPolicy = vi.fn(policyOk);
-    const loadKey = vi.fn(async () => ({ kind: 'ok' as const, value: Buffer.from('mykey') }));
-    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: null };
 
     await goSharedHive(state, {
       publishIdentity,
-      setListing,
-      authorPolicy,
-      loadKey,
+      setListing: async (input) => {
+        listing = input;
+        return {} as unknown as never;
+      },
+      authorPolicy: async (input) => {
+        policy = input;
+        return { ok: true } as unknown as never;
+      },
+    });
+
+    expect(publishIdentity).not.toHaveBeenCalled();
+    expect(listing).toMatchObject({ visibility: 'invite', inviteSecret: 'sec-existing' });
+    expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi'] });
+  });
+
+  it('first device: reads key → publishes gist → announces with the fresh secret + policy', async () => {
+    let published: OwnerHiveIdentity | undefined;
+    let listing: { visibility?: string; inviteSecret?: string } | undefined;
+    let policy: { policy?: { allowlist?: string[] } } | undefined;
+    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: null };
+
+    await goSharedHive(state, {
+      publishIdentity: async (_token, identity) => {
+        published = identity;
+        return { gistId: 'g' };
+      },
+      setListing: async (input) => {
+        listing = input;
+        return {} as unknown as never;
+      },
+      authorPolicy: async (input) => {
+        policy = input;
+        return { ok: true } as unknown as never;
+      },
+      loadKey: async () => ({ kind: 'ok' as const, value: Buffer.from('mykey') }),
       randomSecret: () => 'fresh-secret',
       derivePubkey: () => 'derived-pub',
     });
 
-    expect(publishIdentity.mock.calls[0][1]).toMatchObject({
+    expect(published).toMatchObject({
       inviteSecret: 'fresh-secret',
       privateKeyDer: Buffer.from('mykey').toString('base64'),
       pubkeyBase64: 'derived-pub',
     });
-    expect(setListing.mock.calls[0][0]).toMatchObject({ visibility: 'invite', inviteSecret: 'fresh-secret' });
-    expect(authorPolicy.mock.calls[0][0].policy.allowlist).toEqual(['avi']);
+    expect(listing).toMatchObject({ visibility: 'invite', inviteSecret: 'fresh-secret' });
+    expect(policy?.policy?.allowlist).toEqual(['avi']);
   });
 
   it('first device but the keychain read fails → no publish / announce', async () => {
     const publishIdentity = vi.fn();
     const setListing = vi.fn(setOk);
-    const loadKey = vi.fn(async () => ({ kind: 'error' as const }));
     await goSharedHive(
       { githubLogin: 'avi', token: 'tok', existing: null },
-      { publishIdentity, setListing, loadKey },
+      { publishIdentity, setListing, loadKey: async () => ({ kind: 'error' as const }) },
     );
     expect(publishIdentity).not.toHaveBeenCalled();
     expect(setListing).not.toHaveBeenCalled();
   });
 
   it('never throws when announce fails', async () => {
-    const setListing = vi.fn(async () => {
-      throw new Error('announce down');
-    });
     await expect(
-      goSharedHive({ githubLogin: 'avi', token: 'tok', existing: EXISTING }, { setListing }),
+      goSharedHive(
+        { githubLogin: 'avi', token: 'tok', existing: EXISTING },
+        {
+          setListing: async () => {
+            throw new Error('announce down');
+          },
+        },
+      ),
     ).resolves.toBeUndefined();
   });
 });
