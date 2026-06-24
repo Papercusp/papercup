@@ -11,6 +11,8 @@ import {
   runGreenCheckpoint,
   extractFailingTests,
   buildGreenCheckpointEnv,
+  sanitizeForkNodeOptions,
+  GREEN_CHECKPOINT_FORK_HEAP_MB,
   checkpointFailureSignature,
   summarizeSuiteOutput,
   parseFailingFilesByWorkspace,
@@ -302,6 +304,43 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
     expect(preset.VITEST_MAX_FORKS).toBe('2'); // honored
     expect(preset.VITEST_MAX_THREADS).toBe('8'); // still defaulted
     expect(preset.AFFECTED_RETRY_FAILED).toBe('0'); // '0' is a value, not absent — honored
+  });
+
+  it('strips the host 128 GiB --max-old-space-size from NODE_OPTIONS, pins a sane per-fork heap', () => {
+    // The exact bg-host/staging env that held `main` red ~16h: a 128 GiB heap +
+    // --expose-gc inherited straight into the 8 vitest forks.
+    const env = buildGreenCheckpointEnv('b', {
+      NODE_OPTIONS: '--max-old-space-size=131072 --expose-gc',
+    });
+    expect(env.NODE_OPTIONS).toBe(`--expose-gc --max-old-space-size=${GREEN_CHECKPOINT_FORK_HEAP_MB}`);
+    expect(env.NODE_OPTIONS).not.toContain('131072');
+  });
+});
+
+describe('sanitizeForkNodeOptions (the gate must not inherit the host 128 GiB heap)', () => {
+  const HEAP = `--max-old-space-size=${GREEN_CHECKPOINT_FORK_HEAP_MB}`;
+
+  it('replaces an inherited =value heap flag, preserving other tokens', () => {
+    expect(sanitizeForkNodeOptions('--max-old-space-size=131072 --expose-gc')).toBe(`--expose-gc ${HEAP}`);
+  });
+
+  it('drops the space-separated `--flag value` form (both tokens)', () => {
+    expect(sanitizeForkNodeOptions('--max-old-space-size 131072 --enable-source-maps')).toBe(
+      `--enable-source-maps ${HEAP}`,
+    );
+  });
+
+  it('handles the underscore spelling too', () => {
+    expect(sanitizeForkNodeOptions('--max_old_space_size=99999')).toBe(HEAP);
+  });
+
+  it('pins the heap deterministically even with empty/undefined input', () => {
+    expect(sanitizeForkNodeOptions(undefined)).toBe(HEAP);
+    expect(sanitizeForkNodeOptions('')).toBe(HEAP);
+  });
+
+  it('honors a caller-chosen cap', () => {
+    expect(sanitizeForkNodeOptions('--max-old-space-size=131072', 8192)).toBe('--max-old-space-size=8192');
   });
 });
 

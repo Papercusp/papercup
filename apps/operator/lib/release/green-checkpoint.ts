@@ -363,7 +363,7 @@ export const HOST_ENV_STRIP = ['AGENT_MODELS'];
  * each hourly run, every one green on an isolated re-run — pure memory-pressure
  * flake, no deterministic break). 4 GiB is far above any unit file's real working
  * set (they pass at V8's ~2 GiB default in CI/local) yet lets all 8 forks fit in
- * ~32 GiB with headroom and GC normally. Same rule as the PAPERCUSP_*/AGENT_MODELS
+ * ~32 GiB with headroom and GC normally. Same rule as the PAPERCUSP_* + AGENT_MODELS
  * strip below: the host's identity must never define green.
  */
 export const GREEN_CHECKPOINT_FORK_HEAP_MB = 4096;
@@ -417,6 +417,10 @@ export function sanitizeForkNodeOptions(
  *   FLAKES that read as "not green" (a 1-of-8881 load-flake held `main` back 2026-06-06).
  * - `AFFECTED_RETRY_FAILED` defaults to 1 (respecting a pre-set value): re-run a failed
  *   workspace once before calling it red — a real regression fails twice, a flake doesn't.
+ * - `NODE_OPTIONS` is sanitized ({@link sanitizeForkNodeOptions}): the host's
+ *   `--max-old-space-size=131072` (the bg-host's 128 GiB heap) is stripped and pinned to
+ *   {@link GREEN_CHECKPOINT_FORK_HEAP_MB} so the 8 concurrent forks can't each bloat to
+ *   128 GiB and ENOMEM the box — the memory-pressure flake that held `main` ~16h.
  */
 export function buildGreenCheckpointEnv(
   base: string | null,
@@ -426,6 +430,9 @@ export function buildGreenCheckpointEnv(
   for (const k of Object.keys(env)) {
     if (k.startsWith('PAPERCUSP_') || HOST_ENV_STRIP.includes(k)) delete env[k];
   }
+  // The bg-host's 128 GiB `--max-old-space-size` must NOT ride into the test forks
+  // (8 × 128 GiB → no GC → ENOMEM under fleet load). Pin a sane per-fork heap.
+  env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS);
   env.GREEN_CHECKPOINT = '1';
   // AFFECTED_BASE comes ONLY from the `base` argument — never a host-leaked value.
   // The gate runs the suite with AFFECTED_BASE set, so a child runGreen(tree, null)
