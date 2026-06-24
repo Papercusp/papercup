@@ -35,23 +35,51 @@ const TERMINAL_STATES = new Set([
 ]);
 
 /**
- * EI-865 — the set of work-item ids the placement watchdog's circuit breaker has
- * LATCHED `cursed` for this workspace (`hive_placements.status='cursed'`). A cursed
- * item is a doomed placement the breaker has halted; it must NEVER re-enter the
- * placement frontier (by explicit id OR via the harness backlog) — else the Queen
- * re-places it the moment the breaker halt wears off across a wake and failCount
- * climbs unbounded (the 356→460 regression). Workspace-scoped, matching the
- * breaker's own scope. Returns the curse only leaves when a human/Queen clears it.
+ * WI-677 — does a `cursed` placement HARD-BLOCK re-placement? Only a GENUINELY
+ * PATHOLOGY-cursed item does — one the 3-strike breaker tripped on real task
+ * failures (`fail_count >= breakerThreshold`). A `cursed` row with `fail_count`
+ * BELOW the threshold was cursed by the BOUNDED INFRA breaker (host-restart /
+ * operator-dormancy / no-fair-attempt zombie — `infra_loss_count` hit its bound
+ * with zero genuine task failures); deadlocking THAT out of placement is the bug
+ * WI-677 fixes — a host restart cursed 31 genuinely-ready items at `fail_count=0`,
+ * `infra_loss_count=12`, and place_batch then refused them forever (they only
+ * un-curse on completion, which can't happen if they can't be placed). An
+ * infra-curse is re-placeable: re-placing gives a fixed-infra item the chance to
+ * complete (and clear the curse), while the watchdog's own latch still halts its
+ * autonomous recovery-wake storm. Pure; exported for the recurrence-guard unit test.
+ */
+export function isPlacementHardBlocked(failCount: number, breakerThreshold: number): boolean {
+  return failCount >= breakerThreshold;
+}
+
+/**
+ * EI-865 / WI-677 — the set of work-item ids the placement breaker has LATCHED
+ * `cursed` for GENUINE item-pathology (3-strike `fail_count`), for this workspace.
+ * Such an item is a doomed placement; it must NEVER re-enter the placement frontier
+ * (by explicit id OR via the harness backlog) — else the Queen re-places it the
+ * moment the breaker halt wears off across a wake and failCount climbs unbounded
+ * (the 356→460 regression). Workspace-scoped, matching the breaker's own scope.
+ *
+ * WI-677 — this gate is keyed on `fail_count >= breakerThreshold`, NOT the bare
+ * `cursed` status: a fail_count-0 `cursed` row is an INFRA false-curse (host
+ * restart / dormancy / zombie hit the bounded infra breaker with no genuine task
+ * failure) and stays RE-PLACEABLE, so an infra event can't permanently deadlock a
+ * tractable item. The curse leaves the pathology set only when a human/Queen
+ * fixes + re-places it (or it completes).
  */
 export async function loadCursedWorkItemIds(workspaceId: string): Promise<Set<string>> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ work_item_id: string }[]>`
-      SELECT DISTINCT work_item_id
+    const breakerThreshold = placementConfig().breakerThreshold;
+    const rows = await sql<{ work_item_id: string; fail_count: number }[]>`
+      SELECT work_item_id, max(fail_count)::int AS fail_count
         FROM harness_shared.hive_placements
        WHERE workspace_id = ${workspaceId}
-         AND status = 'cursed'`;
-    return new Set(rows.map((r) => r.work_item_id));
+         AND status = 'cursed'
+       GROUP BY work_item_id`;
+    return new Set(
+      rows.filter((r) => isPlacementHardBlocked(r.fail_count, breakerThreshold)).map((r) => r.work_item_id),
+    );
   } catch (e) {
     // Fail-open: a flaky breaker-ledger read must not blank the frontier — the
     // re-fire latch in the watchdog itself is the primary halt; this exclusion is
