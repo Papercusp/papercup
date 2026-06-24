@@ -147,7 +147,7 @@ export { _resetStateChannelForTests } from '@papercusp/tooldef';
 export { tierFor, setCapabilityTierResolver } from '@papercusp/tooldef';
 // Papercusp's capability→tier policy (plan P-012) — the host impl registered
 // as tooldef's tier resolver (see capability-tiers-papercusp.ts).
-export { papercuspTierFor } from './capability-tiers-papercusp';
+export { papercuspTierFor, setCapabilityTierOverride, type CapabilityTierOverride } from './capability-tiers-papercusp';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
 // to extract harness/workspace/role/feature/chunk/run/spawn from the

@@ -110,10 +110,33 @@ const PREFIX_HIGH = ['secrets:', 'http:fetch:', 'data:read:'];
 const PREFIX_MEDIUM = ['events:', 'roles:register:'];
 
 /**
+ * Host-installed SYNC override seam (live-configurability-audit P-010, the `capability_tier:set` dial).
+ * Returns a CapabilityTier to OVERRIDE the baked classification for a capability, or null/undefined to
+ * fall through to the EXACT table + prefixes below. operator-core installs the real resolver (flag-
+ * gated, reading its sync-cached operator_capability_tiers store) at boot; until then the baked table
+ * governs (byte-identical). Consulted FIRST so a deliberate runtime re-tier (e.g. the EI-99/EI-111
+ * mis-tiering class, which were LOWERINGS) takes effect without a deploy — for every consumer that
+ * calls papercuspTierFor/tierFor at RUNTIME (the capability catalog/palette projection + the
+ * decision-ledger posture). NOTE: consumers that read a tool's LOAD-TIME-STAMPED `tier` (the
+ * endpoint-auth-tiers exposure gate, the watchdog per-tool timeout) re-stamp on the next operator boot,
+ * so a tier change for THOSE applies after a restart — documented on the dial, an owner-decision to
+ * widen to live consumer-side re-resolution (plan D-010 cluster).
+ */
+export type CapabilityTierOverride = (capability: string) => CapabilityTier | null | undefined;
+let capabilityTierOverride: CapabilityTierOverride | undefined;
+
+/** Install (or clear, with `undefined`) the host override resolver. Called once by operator-core at boot. */
+export function setCapabilityTierOverride(fn: CapabilityTierOverride | undefined): void {
+  capabilityTierOverride = fn;
+}
+
+/**
  * Papercusp's capability→tier policy. Returns `'medium'` when no deliberate
  * classification is found — see file header.
  */
 export function papercuspTierFor(capability: string): CapabilityTier {
+  const override = capabilityTierOverride?.(capability);
+  if (override) return override;
   if (EXACT[capability]) return EXACT[capability]!;
   for (const p of PREFIX_HIGH) {
     if (capability.startsWith(p)) return 'high';

@@ -17,6 +17,18 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
+// Pin the coord substrate to DEFAULT_COORD_WORKSPACE ('default'). The issue ROWS are
+// per-workspace (issuesScopeWorkspace, pinned to WS via the env above), but the coord
+// metadata (linkIssue's coord_links blocks edge) rides the SHARED 'default' substrate
+// that readDeferralEdges reads (it hard-filters workspace_id = DEFAULT_COORD_WORKSPACE).
+// COORD_PER_WORKSPACE graduated default-ON, so coordScopeWorkspace() would otherwise
+// return activeWorkspaceId() (=WS) and the edge would land off the substrate the refit
+// reads → the realized-deferral count comes back 0. Keep the pure scope helpers real.
+vi.mock('../agent-tools/coordination/log', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, coordScopeWorkspace: () => 'default' };
+});
+
 import { createIssue, linkIssue, setIssueState } from '../issues-engineer';
 import { IMPROVEMENT_TOPIC } from '../harness/improvements/read-items';
 import { defaultDeferralRefitDeps, runDeferralInterestRefit } from './refit';
@@ -27,13 +39,24 @@ const WS = 'ws-deferral-itest';
 
 let db: OrgTestDb;
 
+let savedWsEnv: string | undefined;
 beforeAll(async () => {
+  // Pin the ambient active workspace to WS. createIssue/linkIssue write the issue
+  // row + its coord metadata (coord_links/topics) under the resolved workspace
+  // (issuesScopeWorkspace / coordScopeWorkspace), and the refit + readDeferralEdges
+  // read under WS — with WORKSPACE_COORDINATION + COORD_PER_WORKSPACE default-ON
+  // those resolve to activeWorkspaceId(), so without pinning the env the writes
+  // land under the dev box's ambient workspace ≠ WS and the read sees 0 rows.
+  savedWsEnv = process.env.PAPERCUSP_WORKSPACE_ID;
+  process.env.PAPERCUSP_WORKSPACE_ID = WS;
   db = await createOrgTestDb();
   h.sql = db.adminSql;
 }, 180_000);
 
 afterAll(async () => {
   await db?.cleanup();
+  if (savedWsEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+  else process.env.PAPERCUSP_WORKSPACE_ID = savedWsEnv;
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 

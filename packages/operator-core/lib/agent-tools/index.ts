@@ -534,6 +534,10 @@ import './release/checkpoint-config';
 import './learning/set-scout-budget';
 // live-configurability-audit-2026-06-20 P-018 — runtime per-(tool,role) quota overrides:
 import './quota/set-tool';
+// live-configurability-audit-2026-06-20 P-019 — runtime §G auth/sandbox dials (DARK, owner-authority):
+import './auth/set-full-access-roles';
+import './clamp/set-safe-tools';
+import './exec_sandbox/set-policy';
 // release-pipeline-resilience-2026-06-09 P-015 — the manual deploy lever + gate-unblock diagnosis:
 import './release/deploy';
 

@@ -162,3 +162,11 @@ test('gatewayWholesaleThrottled — false (conservative) when the gateway is UNR
   });
   assert.equal(throttled, false);
 });
+
+test('gatewayWholesaleThrottled — default path (no injected fetchImpl) is a NO-OP under the test runner (gate-safe, never hits the live :8788 gateway)', async () => {
+  // The guard that keeps every no-turn spawn-classification test (durable-spawn / launch-blueprint)
+  // deterministic on a box with a live, possibly-throttled gateway — without it the classifier reads
+  // the real gateway and the test flaps the deploy gate.
+  const throttled = await gatewayWholesaleThrottled();
+  assert.equal(throttled, false);
+});

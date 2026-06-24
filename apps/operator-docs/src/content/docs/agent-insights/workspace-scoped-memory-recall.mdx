@@ -1,0 +1,72 @@
+---
+title: "Workspace-scoped memory recall (the per-owner user-pool bleed fix)"
+description: "Memory recall fans out over opaque SCOPE KEYS (user.id | harness:<slug> | hive:<slug>), not a workspace column — so the per-owner user pool is recalled in every workspace and a hive's `project` learnings bleed across all the owner's work. How migration 398 promotes the scope keys to real GENERATED columns and how the dark-cutover MEMORY_WORKSPACE_SCOPED_RECALL filter scopes the user pool conservatively (owner-tier + legacy NULL kept), plus how to verify-flip it."
+discovered: 2026-06-24
+tags: [memory, recall, workspace-isolation, mem0, scope-keys, flags, data-scoping]
+status: active
+documents:
+  - packages/operator-core/lib/memory/workspace-scope-recall.ts
+  - packages/operator-core/lib/memory/injection.ts
+  - packages/operator-core/lib/agent-tools/memory/search.ts
+  - libs/generic/memory/src/canonical-store.ts
+  - libs/papercusp/libs/db/sql/398-memory-canonical-promote-scope-columns.sql
+plans:
+  - data-scoping-audit-2026-06-22
+---
+
+## The model: recall is scope-key fan-out, not a workspace filter
+
+`memory_canonical` is one row per fact `(id, payload jsonb, …, state)`. There is **no
+workspace column in the recall path** — the store recalls by an opaque **scope key** held in
+`payload->>'user_id'`, which is overloaded: a user uuid (the per-owner pool), `harness:<slug>`,
+or `hive:<slug>`. `CanonicalVectorStore.search/list` post-filter each mem0 filter key against
+`payload->>'<key>'`. The recall callers (`memory/injection.ts`, `agent-tools/memory/search.ts`)
+fan out over `[user.id, harness:<slug>…, hive:<slug>…]` and merge.
+
+The harness/hive pools are correctly scoped. **The `user.id` pool is recalled in EVERY
+workspace** — so an owner's `project`-kind memories surface in all their workspaces (the
+isolation leak). `payload.workspace_id` exists (remember.ts stamps `metadata.workspace_id =
+ctx.principal.workspaceId`) but it was an attribution tag, never the recall axis. (The legacy
+`workspace:`/`shared` SCOPE was deliberately deprecated + drained — do **not** revive it; that
+would change the write-side scope-key model.)
+
+## The fix (data-scoping-audit P-006 / D-004 / D-012)
+
+**Structural — migration 398.** Promote the scope keys to first-class, indexed columns:
+`memory_canonical.user_id` + `workspace_id` as `GENERATED ALWAYS AS (payload->>'…') STORED`.
+This auto-backfills every existing row, stays in lockstep with the payload the store already
+writes (zero code change, behavior-neutral), and makes scope filterable/indexable without a
+jsonb dig. (Same generated-mirror trick normalizes `workspace`→`workspace_id` on the telemetry
+tables in mig 399.)
+
+**Behavioral — `keepUserPoolHitForWorkspace` (workspace-scope-recall.ts).** A CONSERVATIVE,
+NULL-safe post-filter on the **user pool only**, wired into both recall paths (injection.ts
+filters `userResults`; search.ts filters hits where `scope === user.id`). Drop a hit **only**
+when it explicitly carries a *different* `workspace_id` AND is not owner-tier:
+
+- no / empty / non-string `workspace_id` (legacy, pre-stamping — the bulk of rows) → **keep**
+- owner-tier `kind` ∈ {user, feedback, reference} (personal facts follow the owner) → **keep**
+- no active workspace to compare → **keep** (fail-open)
+- otherwise (a `project` hit tagged with another workspace) → **drop**
+
+So flipping it never silently guts recall: only *new* cross-workspace `project` memories are
+scoped out; harness/hive pools are untouched.
+
+## The flag is a dark CUTOVER — verify before flipping
+
+`FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL` (`papercusp-memory-workspace-scoped-recall`) defaults
+**OFF** and is registered `DARK_FLAG_CASE='cutover'`: a reversible kill-switch flipped after an
+**attended live recall-hit-rate verify** (the filter is complete + unit-tested, but recall is
+emergent — confirm hit-rate isn't degraded before defaulting ON). OFF = byte-identical to
+today, so it ships safely without breaking the legacy memory tests. To verify: sample real
+recall queries with the flag ON vs OFF and confirm only cross-workspace `project` hits drop
+(owner-tier + same-ws + legacy-NULL all still surface).
+
+## Related: the wider `workspace_id DEFAULT 'default'` substrate is NOT this
+
+29 coord_*/event_*/consolidated tables still carry `workspace_id text DEFAULT 'default'` with
+live `'default'` data and no fill-trigger (P-007). Dropping those defaults is owner-gated
+coord/presence SUBSTRATE work (writers must thread workspace_id first; the data must migrate off
+`'default'`) — see `data-scoping-audit-2026-06-22` D-013. The `lint:no-workspace-default` guard
+(`scripts/check-workspace-default-sql.mjs`) flags any NEW `workspace_id DEFAULT 'default'` so it
+can't creep back while that attended migration is pending.

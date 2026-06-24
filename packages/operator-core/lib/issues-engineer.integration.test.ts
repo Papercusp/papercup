@@ -75,6 +75,17 @@ vi.mock('./promote-issue', async () => {
     }),
   };
 });
+// Pin the coord substrate to 'default'. This test deliberately PINS the issue ROWS to a
+// non-'default' workspace (PINNED_WS, via PAPERCUSP_WORKSPACE_ID) to exercise the
+// row(issuesScopeWorkspace)↔substrate(coordScopeWorkspace='default') split — fan-out /
+// topic feeds / blocks must resolve ACROSS it. COORD_PER_WORKSPACE graduated default-ON,
+// so coordScopeWorkspace() would return activeWorkspaceId() (=PINNED_WS), collapsing the
+// split and breaking the cross-boundary resolution the test asserts. Restore it to
+// 'default'; the pure scope helpers stay real.
+vi.mock('./agent-tools/coordination/log', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, coordScopeWorkspace: () => 'default' };
+});
 
 // Imported AFTER the mock is registered (vi.mock is hoisted).
 const issues = await import('./issues-engineer');

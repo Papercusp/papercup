@@ -127,6 +127,13 @@ export async function fetchGatewayHeadroom(
 export async function gatewayWholesaleThrottled(
   opts: { port?: number; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<boolean> {
+  // TEST-SAFE: the DEFAULT path fetches the LIVE :8788 gateway — under a vitest runner that makes any
+  // test on the no-turn spawn-classification path (durable-spawn / launch-blueprint) NONDETERMINISTIC
+  // (it reads whatever real gateway happens to be running + throttled on the box). Skip the live probe
+  // under VITEST → false (the conservative infra_loss default), so the classifier never reaches a live
+  // gateway in tests. A test that injects its own `fetchImpl` (observability.test.ts) opts INTO the real
+  // logic, so that path still runs. Production (VITEST unset) is unchanged.
+  if (process.env.VITEST && !opts.fetchImpl) return false;
   const h = await fetchGatewayHeadroom({ timeoutMs: 800, ...opts });
   return h.reachable === true && (h.paused === true || h.rejected === true);
 }
