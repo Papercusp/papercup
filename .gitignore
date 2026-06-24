@@ -2,6 +2,15 @@ node_modules/
 .next/
 .next-prod/
 .next-build-cache/
+
+# Vitest scratch TMPDIR. Agents + the green-checkpoint run vitest with
+# TMPDIR=$PWD/.vitest-tmp (the documented ENOENT workaround when the real TMPDIR
+# is unwritable). Those are throwaway temp + node-compile-cache files — never
+# source. Tracking them churned 8500+ junk files into the shared tree, spawned
+# noise "should not commit" auto-commits, and slowed git-sync (WI-679). Ignore
+# everywhere they land (root, packages/*, apps/*).
+.vitest-tmp/
+**/.vitest-tmp/
 # Stray nested lockfiles (workspace members must ride the root lock) stay
 # ignored, but the ROOT lockfile is the npm-ci source of truth for CI +
 # fresh clones (regenerated + validated 2026-06-11, audit P-024/EI-84) —

@@ -55,6 +55,7 @@ INPUT=$(cat)
 # proceed with no injection (a coord blip must never wedge a tool).
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$CACHE_DIR" <<'PYEOF' || exit 0
 import json, os, re, sys, time, urllib.request, urllib.parse
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, owner, cache_dir = sys.argv[1:6]
 

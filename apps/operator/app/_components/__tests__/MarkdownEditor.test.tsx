@@ -189,3 +189,41 @@ describe('MarkdownPreview — readable frontmatter/code styling', () => {
     expect(styles).toContain('var(--border-strong');
   });
 });
+
+describe('VditorUnavailable fallback — stale-bundle chunk 404', () => {
+  // Simulates the lazy `import('vditor')` rejecting (the bundle was rebuilt
+  // underneath an open page → old chunk 404s). The wrapper must NOT dead-end at
+  // a bare error: it keeps the markdown content (the `value` already in hand)
+  // visible as raw text, plus a Reload affordance to upgrade to the full render.
+  it('renders the raw markdown + a Reload button instead of losing the content', async () => {
+    // The catch path logs `console.error('[MarkdownEditor] vditor failed…')`
+    // by design; swallow it so vitest-fail-on-console doesn't flag the
+    // deliberately-induced failure.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.resetModules();
+    vi.doMock('vditor', () => {
+      throw new Error('preloadError: vditor chunk 404 (bundle rebuilt)');
+    });
+    vi.doMock('vditor/dist/index.css', () => ({}));
+    const mod = await import('../MarkdownEditor');
+    const body = '# Plan body\n\n- step one\n- step two';
+    const { container, getByText } = render(<mod.MarkdownEditor value={body} />);
+
+    await waitFor(() =>
+      expect(container.textContent).toContain('load the markdown renderer'),
+    );
+    // Content is preserved, not discarded.
+    const pre = container.querySelector('pre');
+    expect(pre?.textContent).toContain('# Plan body');
+    expect(pre?.textContent).toContain('- step two');
+    // The "showing raw text" hint + a working Reload button are both present.
+    expect(container.textContent).toContain('showing raw text');
+    expect(getByText('Reload')).toBeTruthy();
+    // The induced failure was logged (and swallowed) exactly as designed.
+    expect(errSpy).toHaveBeenCalled();
+
+    vi.doUnmock('vditor');
+    vi.doUnmock('vditor/dist/index.css');
+    errSpy.mockRestore();
+  });
+});

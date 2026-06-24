@@ -2,6 +2,10 @@
   "name": "@papercupai/papercusp-monorepo",
   "private": true,
   "version": "0.0.1",
+  "engines": {
+    "//": "Pin the runtime to Node 25 (ABI 141 / NODE_MODULE_VERSION 141). The fleet runs linuxbrew node 25; native addons (better-sqlite3) built under any other major (e.g. nvm 22 = ABI 127) fail to load at runtime ('Module did not self-register'). See infra-fail-fast-build-integrity-2026-06-19 P-003 + .nvmrc. Advisory (no engine-strict) — declares the pin for nvm/CI/contributors; the deploy-gate native-addon preflight is the hard ABI enforcer.",
+    "node": ">=25"
+  },
   "workspaces": [
     "apps/*",
     "packages/*",
@@ -125,6 +129,8 @@
     "lint:env-feature-gates:strict": "node scripts/check-env-feature-gates.mjs --strict",
     "lint:scope-defaults": "node scripts/check-scope-defaults.mjs",
     "lint:scope-defaults:strict": "node scripts/check-scope-defaults.mjs --strict",
+    "lint:no-workspace-default": "node scripts/check-workspace-default-sql.mjs",
+    "lint:no-workspace-default:strict": "node scripts/check-workspace-default-sql.mjs --strict",
     "lint:tsc": "node scripts/lint-tsc.mjs",
     "lint:migrations": "node scripts/lint-migrations.mjs",
     "db:next-migration": "node scripts/next-migration.mjs",

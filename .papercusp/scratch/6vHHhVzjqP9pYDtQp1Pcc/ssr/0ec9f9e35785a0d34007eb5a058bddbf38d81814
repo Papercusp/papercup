@@ -1,0 +1,46 @@
+__vite_ssr_exportName__("PIPE_REVIEWER_GATES_ON_TESTS", () => { try { return PIPE_REVIEWER_GATES_ON_TESTS } catch {} });
+const PIPE_REVIEWER_GATES_ON_TESTS = {
+  id: "PIPE-reviewer-gates-on-tests",
+  version: 1,
+  role: "reviewer",
+  description: "A feature presented as complete but with an implementation file and NO accompanying test must be returned by the reviewer (status not advanced to passed), with the missing tests called out.",
+  setup: {
+    feature: {
+      id: "F-REV-2",
+      title: "Rate limiter",
+      spec: "Add a token-bucket rateLimit(key, n, windowMs). Must be tested.",
+      acceptance: ["rateLimit allows n in window then blocks", "window resets"],
+      status: "validating"
+    },
+    files: [
+      // Implementation only — deliberately NO *.test.ts / *.spec.ts.
+      { path: "src/rate-limit.ts", content: "export function rateLimit(/* … */) { /* token bucket */ }\n" }
+    ]
+  },
+  asserts: [
+    { kind: "exit_code_is", expected: 0 },
+    // The decisive gate: the feature must NOT be shipped without tests.
+    { kind: "output_excludes", pattern: /\bDONE\b/ },
+    // And the reviewer should name the gap.
+    { kind: "output_contains", pattern: /test/i }
+  ],
+  rubric: {
+    version: "1",
+    axes: [
+      {
+        id: "testGate",
+        description: "Did the reviewer REFUSE to ship a feature that has no tests, and say so?",
+        anchors: {
+          bad: "Ships / marks done despite no test file, or never mentions the missing tests.",
+          ideal: "Returns the feature for missing tests and explicitly identifies that no test file accompanies src/rate-limit.ts."
+        }
+      }
+    ],
+    criticality: "high"
+  },
+  caps: { maxWallSecs: 600, maxCostUsd: 1 }
+};
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVdPLE1BQU0sK0JBQWlEO0FBQUEsRUFDNUQsSUFBSTtBQUFBLEVBQ0osU0FBUztBQUFBLEVBQ1QsTUFBTTtBQUFBLEVBQ04sYUFDRTtBQUFBLEVBQ0YsT0FBTztBQUFBLElBQ0wsU0FBUztBQUFBLE1BQ1AsSUFBSTtBQUFBLE1BQ0osT0FBTztBQUFBLE1BQ1AsTUFBTTtBQUFBLE1BQ04sWUFBWSxDQUFDLDRDQUE0QyxlQUFlO0FBQUEsTUFDeEUsUUFBUTtBQUFBLElBQ1Y7QUFBQSxJQUNBLE9BQU87QUFBQTtBQUFBLE1BRUwsRUFBRSxNQUFNLHFCQUFxQixTQUFTLDhEQUE4RDtBQUFBLElBQ3RHO0FBQUEsRUFDRjtBQUFBLEVBQ0EsU0FBUztBQUFBLElBQ1AsRUFBRSxNQUFNLGdCQUFnQixVQUFVLEVBQUU7QUFBQTtBQUFBLElBRXBDLEVBQUUsTUFBTSxtQkFBbUIsU0FBUyxXQUFXO0FBQUE7QUFBQSxJQUUvQyxFQUFFLE1BQU0sbUJBQW1CLFNBQVMsUUFBUTtBQUFBLEVBQzlDO0FBQUEsRUFDQSxRQUFRO0FBQUEsSUFDTixTQUFTO0FBQUEsSUFDVCxNQUFNO0FBQUEsTUFDSjtBQUFBLFFBQ0UsSUFBSTtBQUFBLFFBQ0osYUFBYTtBQUFBLFFBQ2IsU0FBUztBQUFBLFVBQ1AsS0FBSztBQUFBLFVBQ0wsT0FBTztBQUFBLFFBQ1Q7QUFBQSxNQUNGO0FBQUEsSUFDRjtBQUFBLElBQ0EsYUFBYTtBQUFBLEVBQ2Y7QUFBQSxFQUNBLE1BQU0sRUFBRSxhQUFhLEtBQUssWUFBWSxFQUFFO0FBQzFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJQSVBFLXJldmlld2VyLWdhdGVzLW9uLXRlc3RzLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogUElQRS1yZXZpZXdlci1nYXRlcy1vbi10ZXN0cyAoUC0wMzApIOKAlCB0aGUgcmV2aWV3ZXIgR0FURVMgb24gdGVzdHMgZXhpc3Rpbmc6XG4gKiBhIFwiZG9uZVwiIGZlYXR1cmUgd2hvc2UgaW1wbGVtZW50YXRpb24gc2hpcHMgd2l0aCBOTyB0ZXN0IGZpbGUgbXVzdCBiZSBSRVRVUk5FRFxuICogKG5vdCBzaGlwcGVkKSwgY2l0aW5nIHRoZSBtaXNzaW5nIHRlc3RzLlxuICpcbiAqIFRoZSBiZWhhdmlvcmFsIGd1YXJhbnRlZSB0aGF0IG1ha2VzIHRoZSBoYXJuZXNzJ3MgdGVzdC1kaXNjaXBsaW5lIHJlYWwg4oCUIHRoZVxuICogZGV0ZXJtaW5pc3RpYyBoYWxmICh0aGUgcmV2aWV3ZXIgcHJvbXB0IGluc3RydWN0cyBnYXRpbmcpIGlzIFAtMDI5OyB0aGlzIGlzXG4gKiB0aGUgXCJkb2VzIGl0IGFjdHVhbGx5IGRvIGl0XCIgaGFsZi5cbiAqL1xuaW1wb3J0IHR5cGUgeyBQaXBlbGluZVNjZW5hcmlvIH0gZnJvbSAnQHBhcGVyY3VzcC90ZXN0aW5nLXNoZWxsL2xsbSc7XG5cbmV4cG9ydCBjb25zdCBQSVBFX1JFVklFV0VSX0dBVEVTX09OX1RFU1RTOiBQaXBlbGluZVNjZW5hcmlvID0ge1xuICBpZDogJ1BJUEUtcmV2aWV3ZXItZ2F0ZXMtb24tdGVzdHMnLFxuICB2ZXJzaW9uOiAxLFxuICByb2xlOiAncmV2aWV3ZXInLFxuICBkZXNjcmlwdGlvbjpcbiAgICAnQSBmZWF0dXJlIHByZXNlbnRlZCBhcyBjb21wbGV0ZSBidXQgd2l0aCBhbiBpbXBsZW1lbnRhdGlvbiBmaWxlIGFuZCBOTyBhY2NvbXBhbnlpbmcgdGVzdCBtdXN0IGJlIHJldHVybmVkIGJ5IHRoZSByZXZpZXdlciAoc3RhdHVzIG5vdCBhZHZhbmNlZCB0byBwYXNzZWQpLCB3aXRoIHRoZSBtaXNzaW5nIHRlc3RzIGNhbGxlZCBvdXQuJyxcbiAgc2V0dXA6IHtcbiAgICBmZWF0dXJlOiB7XG4gICAgICBpZDogJ0YtUkVWLTInLFxuICAgICAgdGl0bGU6ICdSYXRlIGxpbWl0ZXInLFxuICAgICAgc3BlYzogJ0FkZCBhIHRva2VuLWJ1Y2tldCByYXRlTGltaXQoa2V5LCBuLCB3aW5kb3dNcykuIE11c3QgYmUgdGVzdGVkLicsXG4gICAgICBhY2NlcHRhbmNlOiBbJ3JhdGVMaW1pdCBhbGxvd3MgbiBpbiB3aW5kb3cgdGhlbiBibG9ja3MnLCAnd2luZG93IHJlc2V0cyddLFxuICAgICAgc3RhdHVzOiAndmFsaWRhdGluZycsXG4gICAgfSxcbiAgICBmaWxlczogW1xuICAgICAgLy8gSW1wbGVtZW50YXRpb24gb25seSDigJQgZGVsaWJlcmF0ZWx5IE5PICoudGVzdC50cyAvICouc3BlYy50cy5cbiAgICAgIHsgcGF0aDogJ3NyYy9yYXRlLWxpbWl0LnRzJywgY29udGVudDogJ2V4cG9ydCBmdW5jdGlvbiByYXRlTGltaXQoLyog4oCmICovKSB7IC8qIHRva2VuIGJ1Y2tldCAqLyB9XFxuJyB9LFxuICAgIF0sXG4gIH0sXG4gIGFzc2VydHM6IFtcbiAgICB7IGtpbmQ6ICdleGl0X2NvZGVfaXMnLCBleHBlY3RlZDogMCB9LFxuICAgIC8vIFRoZSBkZWNpc2l2ZSBnYXRlOiB0aGUgZmVhdHVyZSBtdXN0IE5PVCBiZSBzaGlwcGVkIHdpdGhvdXQgdGVzdHMuXG4gICAgeyBraW5kOiAnb3V0cHV0X2V4Y2x1ZGVzJywgcGF0dGVybjogL1xcYkRPTkVcXGIvIH0sXG4gICAgLy8gQW5kIHRoZSByZXZpZXdlciBzaG91bGQgbmFtZSB0aGUgZ2FwLlxuICAgIHsga2luZDogJ291dHB1dF9jb250YWlucycsIHBhdHRlcm46IC90ZXN0L2kgfSxcbiAgXSxcbiAgcnVicmljOiB7XG4gICAgdmVyc2lvbjogJzEnLFxuICAgIGF4ZXM6IFtcbiAgICAgIHtcbiAgICAgICAgaWQ6ICd0ZXN0R2F0ZScsXG4gICAgICAgIGRlc2NyaXB0aW9uOiAnRGlkIHRoZSByZXZpZXdlciBSRUZVU0UgdG8gc2hpcCBhIGZlYXR1cmUgdGhhdCBoYXMgbm8gdGVzdHMsIGFuZCBzYXkgc28/JyxcbiAgICAgICAgYW5jaG9yczoge1xuICAgICAgICAgIGJhZDogJ1NoaXBzIC8gbWFya3MgZG9uZSBkZXNwaXRlIG5vIHRlc3QgZmlsZSwgb3IgbmV2ZXIgbWVudGlvbnMgdGhlIG1pc3NpbmcgdGVzdHMuJyxcbiAgICAgICAgICBpZGVhbDogJ1JldHVybnMgdGhlIGZlYXR1cmUgZm9yIG1pc3NpbmcgdGVzdHMgYW5kIGV4cGxpY2l0bHkgaWRlbnRpZmllcyB0aGF0IG5vIHRlc3QgZmlsZSBhY2NvbXBhbmllcyBzcmMvcmF0ZS1saW1pdC50cy4nLFxuICAgICAgICB9LFxuICAgICAgfSxcbiAgICBdLFxuICAgIGNyaXRpY2FsaXR5OiAnaGlnaCcsXG4gIH0sXG4gIGNhcHM6IHsgbWF4V2FsbFNlY3M6IDYwMCwgbWF4Q29zdFVzZDogMSB9LFxufTtcbiJdLCJmaWxlIjoiL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3MvcGlwZWxpbmUvUElQRS1yZXZpZXdlci1nYXRlcy1vbi10ZXN0cy50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3MvcGlwZWxpbmUvUElQRS1yZXZpZXdlci1nYXRlcy1vbi10ZXN0cy50cyIsIi9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL3BpcGVsaW5lL1BJUEUtcmV2aWV3ZXItZ2F0ZXMtb24tdGVzdHMudHMiLFtdXQ==

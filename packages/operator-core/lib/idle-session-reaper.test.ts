@@ -5,6 +5,7 @@ import {
   terminateIdleLiveSessions,
   planZombieReap,
   reapZombieResumeProcs,
+  planDeadAwaitReclaim,
   parseForegroundFromStat,
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
@@ -418,5 +419,45 @@ describe('parseForegroundFromStat (slice 3: foreground/TTY spare — EI-1873 col
   it('malformed/short line → false (NaN guard; never over-spare on garbage)', () => {
     expect(parseForegroundFromStat('12345 (claude) S')).toBe(false);
     expect(parseForegroundFromStat('')).toBe(false);
+  });
+});
+
+describe('planDeadAwaitReclaim (slice 4: reclaim-lane — dangling inbox-wake awaits, P-004)', () => {
+  it('cancels awaits of owners NOT in the live-or-resumable set', () => {
+    const dead = planDeadAwaitReclaim({
+      awaitOwners: ['su-live', 'su-parked', 'su-ghost-1', 'su-ghost-2'],
+      liveOrResumable: new Set(['su-live', 'su-parked']),
+    });
+    expect(dead.sort()).toEqual(['su-ghost-1', 'su-ghost-2']);
+  });
+
+  it('a PARKED-but-resumable owner (open adv_session ⇒ in the live set) keeps its await', () => {
+    // su-parked has no fresh heartbeat but an OPEN adv_session → in liveOrResumable.
+    const dead = planDeadAwaitReclaim({
+      awaitOwners: ['su-parked', 'su-dead'],
+      liveOrResumable: new Set(['su-parked']),
+    });
+    expect(dead).toEqual(['su-dead']); // only the genuinely-dead one
+  });
+
+  it('every owner alive/resumable ⇒ nothing cancelled (no false reclaim)', () => {
+    expect(
+      planDeadAwaitReclaim({
+        awaitOwners: ['a', 'b', 'c'],
+        liveOrResumable: new Set(['a', 'b', 'c']),
+      }),
+    ).toEqual([]);
+  });
+
+  it('dedupes repeated owners and drops empty ids', () => {
+    const dead = planDeadAwaitReclaim({
+      awaitOwners: ['su-ghost', 'su-ghost', '', 'su-ghost'],
+      liveOrResumable: new Set(),
+    });
+    expect(dead).toEqual(['su-ghost']);
+  });
+
+  it('empty await set ⇒ nothing to do', () => {
+    expect(planDeadAwaitReclaim({ awaitOwners: [], liveOrResumable: new Set(['x']) })).toEqual([]);
   });
 });

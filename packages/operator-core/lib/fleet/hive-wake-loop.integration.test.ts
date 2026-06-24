@@ -50,7 +50,8 @@ const SPAWNED_AGENTS_DDL = `
     -- migration 228 (EI-85 leg c): reclaimOrphanedSpawns SELECTs these for
     -- same-host /proc liveness. This fixture hand-rolls the schema, so it must
     -- mirror them or the SELECT fails "column pid does not exist".
-    pid integer, launcher_host text)`;
+    -- migration 339 (EI-2186): the reclaim also SELECTs launcher_boot_id.
+    pid integer, launcher_host text, launcher_boot_id text)`;
 
 const WS = 'default';
 const STALE = { staleMs: 5 * 60_000 };

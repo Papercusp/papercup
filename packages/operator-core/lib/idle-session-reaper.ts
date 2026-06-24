@@ -41,6 +41,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
 import { interruptViaPty, findLiveHost } from './events/await/psu-pty-discovery';
+import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -726,4 +727,172 @@ export async function reapZombieResumeProcs(
     }
   }
   return result;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 4: RECLAIM-LANE — GC the dangling `coord:inbox-wake:<owner>` awaits of
+// DEAD sessions (fleet-dispatch-wake-clarity-2026-06-22 P-004).
+//
+// THE BUG (verified live 2026-06-24, su-92ab4): every idle psu/Queen-launched
+// agent arms a standing `coord:inbox-wake:<self>` await (turn-lifecycle-control
+// always-arm). On a CLEAN session end `cancelInboxWake` cancels it — but a
+// process that DIES (crash / kill / bg-host wedge) never runs that hygiene, so
+// the await ROW persists forever. coord:presence/fetchWakeability reads exactly
+// these rows to derive `wakeable`/`parked`, so a dead session shows as a LIVE
+// dispatch target (woken:0 when a coordinator dispatches to it) — the
+// "misleading zombie pile" P-004 names. Worse, `gatherProtectedSessionOwners`
+// (slice 1's keep/reap gate) counts a standing await as alive, so these dangling
+// rows also PROTECT their ghost adv_sessions from ever being reaped (the
+// "reclaim not firing" report). Measured: 334 inbox-wake awaits, only 19 on a
+// fresh-heartbeat owner and 98 on a still-OPEN (resumable) session → 236 pure
+// garbage on dead owners.
+//
+// THE FIX is the SessionEnd-hygiene the dead process never ran, applied as a
+// sweep: cancel an inbox-wake await whose owner is NOT genuinely live OR
+// resumable. "Live or resumable" = a fresh presence heartbeat, a RUNNING bee, an
+// IN-FLIGHT wake delivery (mid-resume), OR an OPEN adv_session (a parked session
+// the wake-executor can `--resume` — its await is its lifeline, NEVER cancelled).
+// So a parked-but-resumable session keeps its await; only a session that is over
+// (no open adv_session) AND not live loses its dangling await → it flips from a
+// false `parked` to an honest `ended`, and the adv_session reaper stops being
+// protection-polluted by it. Non-destructive (cancels a DB await row, touches no
+// process), so it rides the slice-1 master flag alone (not the destructive gate).
+// ───────────────────────────────────────────────────────────────────────────
+
+/** PURE: the await-owners to cancel — those NOT in the live-or-resumable set.
+ *  Injected sets so the keep/cancel boundary unit-tests without PG. */
+export function planDeadAwaitReclaim(opts: {
+  awaitOwners: string[];
+  liveOrResumable: ReadonlySet<string>;
+}): string[] {
+  return [...new Set(opts.awaitOwners)].filter((o) => o && !opts.liveOrResumable.has(o));
+}
+
+/**
+ * The set of owners that are genuinely LIVE *or* RESUMABLE — so their standing
+ * inbox-wake await must be PRESERVED. Deliberately distinct from
+ * `gatherProtectedSessionOwners`: it ADDS open adv_sessions (resumable parked
+ * sessions) and DROPS the standing-await leg (counting the very rows we are
+ * GC'ing as "alive" would make the sweep a no-op). One read.
+ *   - fresh coord_presence heartbeat (process alive), OR
+ *   - a RUNNING/RESTARTING bee on any alias (spawn_id/session_owner/run_id), OR
+ *   - an OPEN adv_session (ended_at IS NULL — the wake-executor can --resume it), OR
+ *   - an IN-FLIGHT wake delivery (the owner is mid-resume right now).
+ */
+export async function gatherLiveOrResumableOwners(
+  sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
+  opts: { graceMs?: number } = {},
+): Promise<Set<string>> {
+  const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
+  const rows = await sql<Array<{ alias: string }>>`
+    WITH live AS (
+      SELECT owner_id AS alias
+        FROM harness_shared.coord_presence
+       WHERE heartbeat_at IS NOT NULL
+         AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
+      UNION
+      SELECT a.alias
+        FROM harness_shared.spawned_agents n
+        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+       WHERE n.status IN ('running', 'restarting')
+         AND n.heartbeat_at IS NOT NULL
+         AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
+      UNION
+      -- Resumable PARKED sessions: an OPEN adv_session can be --resume'd by the
+      -- wake-executor, so its inbox-wake await is its lifeline — never cancel it.
+      SELECT coord_owner_id AS alias
+        FROM harness_shared.adv_sessions
+       WHERE ended_at IS NULL
+      UNION
+      -- Mid-resume: a wake is being delivered to this owner right now.
+      SELECT subscriber_id AS alias
+        FROM harness_shared.event_wake_deliveries
+       WHERE status IN ('pending', 'parked', 'delivering')
+    )
+    SELECT DISTINCT alias FROM live WHERE alias IS NOT NULL AND alias <> ''`;
+  return new Set(rows.map((r) => r.alias));
+}
+
+export interface AwaitReclaimResult {
+  /** False when the master flag is off (a no-op). */
+  enabled: boolean;
+  /** Distinct owners holding a standing inbox-wake await. */
+  scanned: number;
+  /** Owners judged dead (not live/resumable) → their awaits cancelled. */
+  deadOwners: number;
+  /** Await ROWS cancelled (≥ deadOwners; an owner may hold >1). 0 on dryRun. */
+  cancelled: number;
+  /** A bounded sample of the cancelled owners (for the routine log). */
+  sampleOwners: string[];
+  dryRun: boolean;
+}
+
+/**
+ * Slice 4 sweep: cancel the dangling inbox-wake awaits of dead sessions (P-004).
+ * Gathers the live-or-resumable set + the standing-await owners, plans the dead
+ * subset (PURE), then bulk-cancels their awaits in ONE statement (the cancel
+ * re-checks the await predicate, so a row re-armed between read and write is left
+ * alone). FLAG-GATED on IDLE_SESSION_REAPER (the reaper master, shared with the
+ * other slices) — non-destructive (no process touched), so no second gate.
+ * Best-effort: a PG failure returns a zero result rather than throwing.
+ */
+export async function reclaimDanglingInboxWakeAwaits(
+  opts: { dryRun?: boolean; graceMs?: number } = {},
+): Promise<AwaitReclaimResult> {
+  const dryRun = !!opts.dryRun;
+  const empty: AwaitReclaimResult = {
+    enabled: false,
+    scanned: 0,
+    deadOwners: 0,
+    cancelled: 0,
+    sampleOwners: [],
+    dryRun,
+  };
+  const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
+  if (!enabled) return empty;
+
+  try {
+    const { sql } = getOrgPg();
+    const wakePrefix = `${COORD_INBOX_WAKE_PREFIX}%`;
+    const [awaitRows, liveOrResumable] = await Promise.all([
+      sql<Array<{ subscriber_id: string }>>`
+        SELECT DISTINCT subscriber_id
+          FROM harness_shared.event_awaits
+         WHERE event_key LIKE ${wakePrefix}
+           AND policy = 'wake' AND once = false
+           AND fired_at IS NULL AND cancelled_at IS NULL
+           AND (expires_ts IS NULL OR expires_ts > now())
+           AND subscriber_id IS NOT NULL AND subscriber_id <> ''`,
+      gatherLiveOrResumableOwners(sql, { graceMs: opts.graceMs }),
+    ]);
+    const awaitOwners = awaitRows.map((r) => r.subscriber_id);
+    const dead = planDeadAwaitReclaim({ awaitOwners, liveOrResumable });
+
+    let cancelled = 0;
+    if (!dryRun && dead.length > 0) {
+      // Bulk-cancel every dead owner's standing inbox-wake await in ONE statement.
+      // The WHERE re-checks the await predicate (uncancelled/unfired standing wake
+      // row), so an await re-armed between the read and here is never clobbered.
+      const rows = await sql<Array<{ id: number }>>`
+        UPDATE harness_shared.event_awaits
+           SET cancelled_at = now()
+         WHERE subscriber_id = ANY(${dead}::text[])
+           AND event_key LIKE ${wakePrefix}
+           AND policy = 'wake' AND once = false
+           AND fired_at IS NULL AND cancelled_at IS NULL
+        RETURNING id`;
+      cancelled = rows.length;
+    }
+    return {
+      enabled: true,
+      scanned: awaitOwners.length,
+      deadOwners: dead.length,
+      cancelled,
+      sampleOwners: dead.slice(0, 20),
+      dryRun,
+    };
+  } catch (e) {
+    console.warn('[idle-session-reaper] await-reclaim sweep failed (non-fatal):', (e as Error)?.message ?? e);
+    return { ...empty, enabled: true };
+  }
 }

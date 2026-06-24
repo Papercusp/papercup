@@ -65,6 +65,7 @@ beforeAll(async () => {
             cancel_reason text,
             pid int,
             launcher_host text,
+            launcher_boot_id text,
             heartbeat_at timestamptz NOT NULL DEFAULT now(),
             last_output_at timestamptz
           )`);

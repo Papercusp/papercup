@@ -411,6 +411,11 @@ import './coordination/tools/orient';
 import './slash/dispatch';
 // L3 channels — messages + acks + threads (Phase B core)
 import './coordination/tools/send';
+// COMPOUND coordinator dispatch (fleet-dispatch-wake-clarity P-002 / D-002): assign a
+// lane + deliver the note + WAKE the target + report pickup, in ONE call — composes
+// coord:presence + plan_items:assign + coord:send (deliver-and-wake). Flags an
+// `ended`/not-wakeable target loudly instead of a silent woken:0.
+import './coordination/tools/dispatch';
 // Open a work-item-scoped conversation with an agent — the inbox "Message owner"
 // action (inbox-tiering-and-message-agent-2026-06-05, D-004).
 import './coordination/tools/message-agent';
@@ -520,6 +525,8 @@ import './coordination/session-reaper-config';
 import './hive/control-policy';
 // live-configurability-audit-2026-06-20 P-016 — green-checkpoint / release thresholds:
 import './release/checkpoint-config';
+// live-configurability-audit-2026-06-20 P-022 — runtime Scout workspace spend-ceiling override:
+import './learning/set-scout-budget';
 // release-pipeline-resilience-2026-06-09 P-015 — the manual deploy lever + gate-unblock diagnosis:
 import './release/deploy';
 
@@ -649,6 +656,11 @@ import './fleet/assignments';
 // B-07 / P-001+P-002): ranks task↔bee affinity + fans spawn/warm-inject across
 // the fleet in a single call (the Queen's serial placement loop, collapsed).
 import './fleet/place_batch';
+// fleet:capacity — the Queen's SOURCE-side read of the shared inference-capacity oracle
+// (queen-capacity-aware-dispatch-2026-06-22 P-003): bee-tier dispatchBudget + per-tier caps +
+// pool saturation, so placement is sized to what the pool can sustain (the read that mirrors
+// what place_batch's QUEEN_CAPACITY_DISPATCH clamp DOES).
+import './fleet/capacity';
 // fleet:drain — graceful wind-down signal for bee eviction (local-hive P-051).
 // Distinct from fleet:cancel's hard kill; the bee cooperates to release locks/claims.
 import './fleet/drain';

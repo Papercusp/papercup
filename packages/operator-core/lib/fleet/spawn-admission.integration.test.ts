@@ -29,7 +29,8 @@ const SPAWNED_AGENTS_DDL = `
     heartbeat_at timestamptz NOT NULL DEFAULT now(),
     -- migration 228 (EI-85 leg c): the reclaim sweep SELECTs these; this fixture
     -- hand-rolls the schema so it must mirror them (column does not exist otherwise).
-    pid integer, launcher_host text,
+    -- migration 339 (EI-2186): the boot reconcile + reclaim also SELECT launcher_boot_id.
+    pid integer, launcher_host text, launcher_boot_id text,
     idempotency_key text);
   CREATE UNIQUE INDEX IF NOT EXISTS spawned_agents_idempotency_key_uq
     ON harness_shared.spawned_agents (workspace_id, idempotency_key)

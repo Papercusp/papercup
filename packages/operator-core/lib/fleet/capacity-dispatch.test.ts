@@ -3,10 +3,25 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   computeCapacityHeadroom,
+  capacityFactor,
   resolveCapacityConfig,
   queenCapacityHeadroom,
   DEFAULT_CAPACITY_DISPATCH_CONFIG as CFG,
 } from './capacity-dispatch';
+
+test('capacityFactor — headroom-independent; matches computeCapacityHeadroom.factor', () => {
+  // unreachable ⇒ 1 (fail-safe)
+  assert.equal(capacityFactor({ reachable: false }), 1);
+  // idle ⇒ 1
+  assert.equal(capacityFactor({ reachable: true, utilization: 0.1, queueDepth: 0 }), 1);
+  // paused/rejected ⇒ 0 (no fresh capacity)
+  assert.equal(capacityFactor({ reachable: true, paused: true }), 0);
+  assert.equal(capacityFactor({ reachable: true, rejected: true }), 0);
+  // identical to the factor computeCapacityHeadroom derives, for any raw headroom
+  const sig = { reachable: true, utilization: 0.925, queueDepth: 6 };
+  assert.equal(capacityFactor(sig), computeCapacityHeadroom(5, sig).factor);
+  assert.equal(capacityFactor(sig), computeCapacityHeadroom(999, sig).factor);
+});
 
 test('fail-safe — gateway unreachable ⇒ NO clamp (never strand the fleet on a missing signal)', () => {
   const d = computeCapacityHeadroom(20, { reachable: false });

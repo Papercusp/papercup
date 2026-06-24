@@ -25,34 +25,58 @@ import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
 function VditorUnavailable({
   style,
   className,
+  raw,
 }: {
   style?: React.CSSProperties;
   className?: string;
+  /**
+   * The markdown source the failed renderer would have shown. When present we
+   * render it as readable preformatted text BELOW the notice, so a stale page
+   * (rebuilt-bundle chunk 404) still shows the plan/doc content instead of
+   * dead-ending — the Reload button upgrades to the full rendered view. The
+   * content is already in hand (the `value` prop); the only thing the 404 took
+   * away is the pretty renderer, not the text.
+   */
+  raw?: string;
 }) {
+  const hasRaw = typeof raw === 'string' && raw.trim().length > 0;
   return (
     <div
       className={className}
       style={{
-        display: 'grid',
-        placeItems: 'center',
+        display: 'flex',
+        flexDirection: 'column',
         minHeight: 120,
-        padding: 16,
-        textAlign: 'center',
         fontSize: 13,
         color: 'var(--fg-mute, #7f9bb4)',
         ...style,
       }}
     >
-      <div>
-        <div>Couldn&rsquo;t load the markdown renderer.</div>
-        <div style={{ marginTop: 4, fontSize: 12 }}>
-          The app was likely updated underneath this page.
-        </div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+          padding: hasRaw ? '8px 12px' : 16,
+          textAlign: 'center',
+          borderBottom: hasRaw
+            ? '1px solid var(--border, rgba(125,211,252,0.18))'
+            : undefined,
+        }}
+      >
+        <span>
+          Couldn&rsquo;t load the markdown renderer
+          {hasRaw ? ' — showing raw text. ' : '. '}
+          <span style={{ fontSize: 12 }}>
+            The app was likely updated underneath this page.
+          </span>
+        </span>
         <button
           type="button"
           onClick={() => hardReload()}
           style={{
-            marginTop: 10,
             padding: '4px 14px',
             fontSize: 12,
             fontWeight: 600,
@@ -61,11 +85,33 @@ function VditorUnavailable({
             border: 0,
             borderRadius: 6,
             cursor: 'pointer',
+            flexShrink: 0,
           }}
         >
           Reload
         </button>
       </div>
+      {hasRaw && (
+        <pre
+          style={{
+            flex: 1,
+            minHeight: 0,
+            margin: 0,
+            padding: 16,
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: 'var(--fg, #e6e6e6)',
+            background: '#19232A',
+            fontFamily:
+              'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+          }}
+        >
+          {raw}
+        </pre>
+      )}
     </div>
   );
 }
@@ -246,7 +292,7 @@ export function MarkdownPreview({
   }, [value, outline]);
 
   if (loadError) {
-    return <VditorUnavailable className={className} style={style} />;
+    return <VditorUnavailable className={className} style={style} raw={value} />;
   }
 
   if (outline) {
@@ -466,7 +512,13 @@ export function MarkdownEditor({
   }, [readOnly, ready]);
 
   if (loadError) {
-    return <VditorUnavailable className={className} style={{ height, ...style }} />;
+    return (
+      <VditorUnavailable
+        className={className}
+        style={{ height, ...style }}
+        raw={value}
+      />
+    );
   }
 
   return (

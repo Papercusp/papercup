@@ -1,0 +1,63 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","expect","it"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/sync/hyperbee/perf/mesh-outcome.ts", {"importedNames":["MeshFormationError","meshDidNotFormArtifact","resolveNetemFailure"]});
+
+
+(0,__vite_ssr_import_0__.describe)("MeshFormationError", () => {
+  (0,__vite_ssr_import_0__.it)("is an Error subclass carrying the failed peer index", () => {
+    const e = new __vite_ssr_import_1__.MeshFormationError("proc mesh: reader 1 never admitted the writer", 1);
+    (0,__vite_ssr_import_0__.expect)(e).toBeInstanceOf(Error);
+    (0,__vite_ssr_import_0__.expect)(e).toBeInstanceOf((0,__vite_ssr_import_1__.MeshFormationError));
+    (0,__vite_ssr_import_0__.expect)(e.name).toBe("MeshFormationError");
+    (0,__vite_ssr_import_0__.expect)(e.peerIndex).toBe(1);
+  });
+});
+(0,__vite_ssr_import_0__.describe)("meshDidNotFormArtifact", () => {
+  (0,__vite_ssr_import_0__.it)("records the cell as a did-not-form result with no metrics and a null SLO", () => {
+    const a = (0,__vite_ssr_import_1__.meshDidNotFormArtifact)({
+      scenario: "netem.loss-curve",
+      tier: 2,
+      params: { rttMs: 150, jitterMs: 10, lossPct: 2, peers: 2, mode: "loss-curve" },
+      reason: "proc mesh: reader 1 never admitted the writer"
+    });
+    (0,__vite_ssr_import_0__.expect)(a.scenario).toBe("netem.loss-curve");
+    (0,__vite_ssr_import_0__.expect)(a.tier).toBe(2);
+    (0,__vite_ssr_import_0__.expect)(a.params.meshFormed).toBe(false);
+    (0,__vite_ssr_import_0__.expect)(a.params.lossPct).toBe(2);
+    (0,__vite_ssr_import_0__.expect)(Object.keys(a.metrics)).toHaveLength(0);
+    (0,__vite_ssr_import_0__.expect)(a.sloPassed).toBeNull();
+    (0,__vite_ssr_import_0__.expect)(a.notes.some((n) => n.includes("mesh did not form"))).toBe(true);
+  });
+});
+(0,__vite_ssr_import_0__.describe)("resolveNetemFailure", () => {
+  const ctx = {
+    scenario: "netem.loss-curve",
+    tier: 2,
+    params: { rttMs: 150, jitterMs: 10, lossPct: 2, peers: 2, mode: "loss-curve" }
+  };
+  (0,__vite_ssr_import_0__.it)("folds the EI-116 mesh-formation failure into a recorded artifact (not fatal)", () => {
+    const resolved = (0,__vite_ssr_import_1__.resolveNetemFailure)(
+      new __vite_ssr_import_1__.MeshFormationError("proc mesh: reader 1 never admitted the writer", 1),
+      ctx
+    );
+    (0,__vite_ssr_import_0__.expect)(resolved.kind).toBe("artifact");
+    if (resolved.kind !== "artifact") throw new Error("unreachable");
+    (0,__vite_ssr_import_0__.expect)(resolved.artifact.params.meshFormed).toBe(false);
+    (0,__vite_ssr_import_0__.expect)(resolved.artifact.scenario).toBe("netem.loss-curve");
+  });
+  (0,__vite_ssr_import_0__.it)("keeps any other error fatal, with its message preserved", () => {
+    const resolved = (0,__vite_ssr_import_1__.resolveNetemFailure)(new Error("topology setup blew up"), ctx);
+    (0,__vite_ssr_import_0__.expect)(resolved.kind).toBe("fatal");
+    if (resolved.kind !== "fatal") throw new Error("unreachable");
+    (0,__vite_ssr_import_0__.expect)(resolved.message).toContain("topology setup blew up");
+  });
+  (0,__vite_ssr_import_0__.it)("stringifies a non-Error throw on the fatal path", () => {
+    const resolved = (0,__vite_ssr_import_1__.resolveNetemFailure)("plain string failure", ctx);
+    (0,__vite_ssr_import_0__.expect)(resolved.kind).toBe("fatal");
+    if (resolved.kind !== "fatal") throw new Error("unreachable");
+    (0,__vite_ssr_import_0__.expect)(resolved.message).toBe("plain string failure");
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBTUE7QUFDQTs7O0dBTUEsZ0NBQVMsc0JBQXNCLE1BQU07QUFDbkMsK0JBQUcsdURBQXVELE1BQU07QUFDOUQsVUFBTSxJQUFJLElBQUkseUNBQW1CLGlEQUFpRCxDQUFDO0FBQ25GLHFDQUFPLENBQUMsRUFBRSxlQUFlLEtBQUs7QUFDOUIscUNBQU8sQ0FBQyxFQUFFLGtCQUFlLHlDQUFrQjtBQUMzQyxxQ0FBTyxFQUFFLElBQUksRUFBRSxLQUFLLG9CQUFvQjtBQUN4QyxxQ0FBTyxFQUFFLFNBQVMsRUFBRSxLQUFLLENBQUM7QUFBQSxFQUM1QixDQUFDO0FBQ0gsQ0FBQztHQUVELGdDQUFTLDBCQUEwQixNQUFNO0FBQ3ZDLCtCQUFHLDRFQUE0RSxNQUFNO0FBQ25GLFVBQU0sT0FBSSw4Q0FBdUI7QUFBQSxNQUMvQixVQUFVO0FBQUEsTUFDVixNQUFNO0FBQUEsTUFDTixRQUFRLEVBQUUsT0FBTyxLQUFLLFVBQVUsSUFBSSxTQUFTLEdBQUcsT0FBTyxHQUFHLE1BQU0sYUFBYTtBQUFBLE1BQzdFLFFBQVE7QUFBQSxJQUNWLENBQUM7QUFDRCxxQ0FBTyxFQUFFLFFBQVEsRUFBRSxLQUFLLGtCQUFrQjtBQUMxQyxxQ0FBTyxFQUFFLElBQUksRUFBRSxLQUFLLENBQUM7QUFDckIscUNBQU8sRUFBRSxPQUFPLFVBQVUsRUFBRSxLQUFLLEtBQUs7QUFFdEMscUNBQU8sRUFBRSxPQUFPLE9BQU8sRUFBRSxLQUFLLENBQUM7QUFDL0IscUNBQU8sT0FBTyxLQUFLLEVBQUUsT0FBTyxDQUFDLEVBQUUsYUFBYSxDQUFDO0FBQzdDLHFDQUFPLEVBQUUsU0FBUyxFQUFFLFNBQVM7QUFDN0IscUNBQU8sRUFBRSxNQUFNLEtBQUssQ0FBQyxNQUFNLEVBQUUsU0FBUyxtQkFBbUIsQ0FBQyxDQUFDLEVBQUUsS0FBSyxJQUFJO0FBQUEsRUFDeEUsQ0FBQztBQUNILENBQUM7R0FFRCxnQ0FBUyx1QkFBdUIsTUFBTTtBQUNwQyxRQUFNLE1BQU07QUFBQSxJQUNWLFVBQVU7QUFBQSxJQUNWLE1BQU07QUFBQSxJQUNOLFFBQVEsRUFBRSxPQUFPLEtBQUssVUFBVSxJQUFJLFNBQVMsR0FBRyxPQUFPLEdBQUcsTUFBTSxhQUFhO0FBQUEsRUFDL0U7QUFFQSwrQkFBRyxnRkFBZ0YsTUFBTTtBQUN2RixVQUFNLGNBQVc7QUFBQSxNQUNmLElBQUkseUNBQW1CLGlEQUFpRCxDQUFDO0FBQUEsTUFDekU7QUFBQSxJQUNGO0FBQ0EscUNBQU8sU0FBUyxJQUFJLEVBQUUsS0FBSyxVQUFVO0FBQ3JDLFFBQUksU0FBUyxTQUFTLFdBQVksT0FBTSxJQUFJLE1BQU0sYUFBYTtBQUMvRCxxQ0FBTyxTQUFTLFNBQVMsT0FBTyxVQUFVLEVBQUUsS0FBSyxLQUFLO0FBQ3RELHFDQUFPLFNBQVMsU0FBUyxRQUFRLEVBQUUsS0FBSyxrQkFBa0I7QUFBQSxFQUM1RCxDQUFDO0FBRUQsK0JBQUcsMkRBQTJELE1BQU07QUFDbEUsVUFBTSxjQUFXLDJDQUFvQixJQUFJLE1BQU0sd0JBQXdCLEdBQUcsR0FBRztBQUM3RSxxQ0FBTyxTQUFTLElBQUksRUFBRSxLQUFLLE9BQU87QUFDbEMsUUFBSSxTQUFTLFNBQVMsUUFBUyxPQUFNLElBQUksTUFBTSxhQUFhO0FBQzVELHFDQUFPLFNBQVMsT0FBTyxFQUFFLFVBQVUsd0JBQXdCO0FBQUEsRUFDN0QsQ0FBQztBQUVELCtCQUFHLG1EQUFtRCxNQUFNO0FBQzFELFVBQU0sY0FBVywyQ0FBb0Isd0JBQXdCLEdBQUc7QUFDaEUscUNBQU8sU0FBUyxJQUFJLEVBQUUsS0FBSyxPQUFPO0FBQ2xDLFFBQUksU0FBUyxTQUFTLFFBQVMsT0FBTSxJQUFJLE1BQU0sYUFBYTtBQUM1RCxxQ0FBTyxTQUFTLE9BQU8sRUFBRSxLQUFLLHNCQUFzQjtBQUFBLEVBQ3RELENBQUM7QUFDSCxDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJtZXNoLW91dGNvbWUudGVzdC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIG1lc2gtb3V0Y29tZS50ZXN0LnRzIOKAlCBhIG5ldGVtIG1lc2gtZm9ybWF0aW9uIGZhaWx1cmUgbXVzdCBiZSBSRUNPUkRFRCBhcyBhXG4gKiBkaWQtbm90LWZvcm0gY2VsbCwgbm90IHJhaXNlZCBhcyBhIGZhdGFsIHRoYXQgY3Jhc2hlcyB0aGUgVGllci0yIHN3ZWVwXG4gKiAoRUktMTE2IHJlZ3Jlc3Npb24pLlxuICovXG5cbmltcG9ydCB7IGRlc2NyaWJlLCBleHBlY3QsIGl0IH0gZnJvbSAndml0ZXN0JztcbmltcG9ydCB7XG4gIE1lc2hGb3JtYXRpb25FcnJvcixcbiAgbWVzaERpZE5vdEZvcm1BcnRpZmFjdCxcbiAgcmVzb2x2ZU5ldGVtRmFpbHVyZSxcbn0gZnJvbSAnLi9tZXNoLW91dGNvbWUnO1xuXG5kZXNjcmliZSgnTWVzaEZvcm1hdGlvbkVycm9yJywgKCkgPT4ge1xuICBpdCgnaXMgYW4gRXJyb3Igc3ViY2xhc3MgY2FycnlpbmcgdGhlIGZhaWxlZCBwZWVyIGluZGV4JywgKCkgPT4ge1xuICAgIGNvbnN0IGUgPSBuZXcgTWVzaEZvcm1hdGlvbkVycm9yKCdwcm9jIG1lc2g6IHJlYWRlciAxIG5ldmVyIGFkbWl0dGVkIHRoZSB3cml0ZXInLCAxKTtcbiAgICBleHBlY3QoZSkudG9CZUluc3RhbmNlT2YoRXJyb3IpO1xuICAgIGV4cGVjdChlKS50b0JlSW5zdGFuY2VPZihNZXNoRm9ybWF0aW9uRXJyb3IpO1xuICAgIGV4cGVjdChlLm5hbWUpLnRvQmUoJ01lc2hGb3JtYXRpb25FcnJvcicpO1xuICAgIGV4cGVjdChlLnBlZXJJbmRleCkudG9CZSgxKTtcbiAgfSk7XG59KTtcblxuZGVzY3JpYmUoJ21lc2hEaWROb3RGb3JtQXJ0aWZhY3QnLCAoKSA9PiB7XG4gIGl0KCdyZWNvcmRzIHRoZSBjZWxsIGFzIGEgZGlkLW5vdC1mb3JtIHJlc3VsdCB3aXRoIG5vIG1ldHJpY3MgYW5kIGEgbnVsbCBTTE8nLCAoKSA9PiB7XG4gICAgY29uc3QgYSA9IG1lc2hEaWROb3RGb3JtQXJ0aWZhY3Qoe1xuICAgICAgc2NlbmFyaW86ICduZXRlbS5sb3NzLWN1cnZlJyxcbiAgICAgIHRpZXI6IDIsXG4gICAgICBwYXJhbXM6IHsgcnR0TXM6IDE1MCwgaml0dGVyTXM6IDEwLCBsb3NzUGN0OiAyLCBwZWVyczogMiwgbW9kZTogJ2xvc3MtY3VydmUnIH0sXG4gICAgICByZWFzb246ICdwcm9jIG1lc2g6IHJlYWRlciAxIG5ldmVyIGFkbWl0dGVkIHRoZSB3cml0ZXInLFxuICAgIH0pO1xuICAgIGV4cGVjdChhLnNjZW5hcmlvKS50b0JlKCduZXRlbS5sb3NzLWN1cnZlJyk7XG4gICAgZXhwZWN0KGEudGllcikudG9CZSgyKTtcbiAgICBleHBlY3QoYS5wYXJhbXMubWVzaEZvcm1lZCkudG9CZShmYWxzZSk7XG4gICAgLy8gVGhlIHByb2ZpbGUgaXMgcHJlc2VydmVkIHNvIHRoZSBkaWQtbm90LWZvcm0gY2VsbCBvdmVybGF5cyB0aGUgbG9zcyBjdXJ2ZS5cbiAgICBleHBlY3QoYS5wYXJhbXMubG9zc1BjdCkudG9CZSgyKTtcbiAgICBleHBlY3QoT2JqZWN0LmtleXMoYS5tZXRyaWNzKSkudG9IYXZlTGVuZ3RoKDApO1xuICAgIGV4cGVjdChhLnNsb1Bhc3NlZCkudG9CZU51bGwoKTtcbiAgICBleHBlY3QoYS5ub3Rlcy5zb21lKChuKSA9PiBuLmluY2x1ZGVzKCdtZXNoIGRpZCBub3QgZm9ybScpKSkudG9CZSh0cnVlKTtcbiAgfSk7XG59KTtcblxuZGVzY3JpYmUoJ3Jlc29sdmVOZXRlbUZhaWx1cmUnLCAoKSA9PiB7XG4gIGNvbnN0IGN0eCA9IHtcbiAgICBzY2VuYXJpbzogJ25ldGVtLmxvc3MtY3VydmUnIGFzIGNvbnN0LFxuICAgIHRpZXI6IDIgYXMgY29uc3QsXG4gICAgcGFyYW1zOiB7IHJ0dE1zOiAxNTAsIGppdHRlck1zOiAxMCwgbG9zc1BjdDogMiwgcGVlcnM6IDIsIG1vZGU6ICdsb3NzLWN1cnZlJyB9LFxuICB9O1xuXG4gIGl0KCdmb2xkcyB0aGUgRUktMTE2IG1lc2gtZm9ybWF0aW9uIGZhaWx1cmUgaW50byBhIHJlY29yZGVkIGFydGlmYWN0IChub3QgZmF0YWwpJywgKCkgPT4ge1xuICAgIGNvbnN0IHJlc29sdmVkID0gcmVzb2x2ZU5ldGVtRmFpbHVyZShcbiAgICAgIG5ldyBNZXNoRm9ybWF0aW9uRXJyb3IoJ3Byb2MgbWVzaDogcmVhZGVyIDEgbmV2ZXIgYWRtaXR0ZWQgdGhlIHdyaXRlcicsIDEpLFxuICAgICAgY3R4LFxuICAgICk7XG4gICAgZXhwZWN0KHJlc29sdmVkLmtpbmQpLnRvQmUoJ2FydGlmYWN0Jyk7XG4gICAgaWYgKHJlc29sdmVkLmtpbmQgIT09ICdhcnRpZmFjdCcpIHRocm93IG5ldyBFcnJvcigndW5yZWFjaGFibGUnKTtcbiAgICBleHBlY3QocmVzb2x2ZWQuYXJ0aWZhY3QucGFyYW1zLm1lc2hGb3JtZWQpLnRvQmUoZmFsc2UpO1xuICAgIGV4cGVjdChyZXNvbHZlZC5hcnRpZmFjdC5zY2VuYXJpbykudG9CZSgnbmV0ZW0ubG9zcy1jdXJ2ZScpO1xuICB9KTtcblxuICBpdCgna2VlcHMgYW55IG90aGVyIGVycm9yIGZhdGFsLCB3aXRoIGl0cyBtZXNzYWdlIHByZXNlcnZlZCcsICgpID0+IHtcbiAgICBjb25zdCByZXNvbHZlZCA9IHJlc29sdmVOZXRlbUZhaWx1cmUobmV3IEVycm9yKCd0b3BvbG9neSBzZXR1cCBibGV3IHVwJyksIGN0eCk7XG4gICAgZXhwZWN0KHJlc29sdmVkLmtpbmQpLnRvQmUoJ2ZhdGFsJyk7XG4gICAgaWYgKHJlc29sdmVkLmtpbmQgIT09ICdmYXRhbCcpIHRocm93IG5ldyBFcnJvcigndW5yZWFjaGFibGUnKTtcbiAgICBleHBlY3QocmVzb2x2ZWQubWVzc2FnZSkudG9Db250YWluKCd0b3BvbG9neSBzZXR1cCBibGV3IHVwJyk7XG4gIH0pO1xuXG4gIGl0KCdzdHJpbmdpZmllcyBhIG5vbi1FcnJvciB0aHJvdyBvbiB0aGUgZmF0YWwgcGF0aCcsICgpID0+IHtcbiAgICBjb25zdCByZXNvbHZlZCA9IHJlc29sdmVOZXRlbUZhaWx1cmUoJ3BsYWluIHN0cmluZyBmYWlsdXJlJywgY3R4KTtcbiAgICBleHBlY3QocmVzb2x2ZWQua2luZCkudG9CZSgnZmF0YWwnKTtcbiAgICBpZiAocmVzb2x2ZWQua2luZCAhPT0gJ2ZhdGFsJykgdGhyb3cgbmV3IEVycm9yKCd1bnJlYWNoYWJsZScpO1xuICAgIGV4cGVjdChyZXNvbHZlZC5tZXNzYWdlKS50b0JlKCdwbGFpbiBzdHJpbmcgZmFpbHVyZScpO1xuICB9KTtcbn0pO1xuIl0sImZpbGUiOiIvbGliL3N5bmMvaHlwZXJiZWUvcGVyZi9tZXNoLW91dGNvbWUudGVzdC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9zeW5jL2h5cGVyYmVlL3BlcmYvbWVzaC1vdXRjb21lLnRlc3QudHMiLCIvbGliL3N5bmMvaHlwZXJiZWUvcGVyZi9tZXNoLW91dGNvbWUudGVzdC50cyIsW11d

@@ -63,3 +63,74 @@ export function detectZeroPromotion(plans: readonly PlanPromotionCount[]): ZeroP
       findingClass: 'promotion:zero-conversion' as const,
     }));
 }
+
+/**
+ * The PG read that feeds the pure detector (unified-work-item-ledger P-009). Counts,
+ * per STARTED + non-archived plan in the workspace, its OPEN plan-items (the JSONB
+ * `items` array, status NOT done/dropped) and its work-items (by `source_plan_slug`,
+ * ANY state — a single ever-minted work-item, even since completed, proves promotion
+ * ran, so this is the conservative "promotion never produced placeable work" signal
+ * and not a per-item gap detector). The detector then keeps only plans with open
+ * items + zero work-items.
+ *
+ * Gated by `papercusp-plan-workitem-promotion`: while promotion is dark it produces
+ * nothing by design, so firing would be pure noise → return a 'dark' note and no
+ * signals. Now that the flag is ON, a finding means promotion genuinely broke for
+ * that plan (the recurrence guard for the P-003 silent-zero class).
+ *
+ * One workspace-scoped query, LIMITed — cheap enough for the per-tick watchdog.
+ */
+export async function collectZeroPromotionSignals(
+  workspaceId: string,
+): Promise<{ signals: ZeroPromotionFinding[]; note?: string }> {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const { systemDistinctId } = await import('../../flag-distinct-id');
+  const enabled = await getFlag(FLAGS.PLAN_WORKITEM_PROMOTION, systemDistinctId());
+  if (!enabled) return { signals: [], note: 'dark: papercusp-plan-workitem-promotion OFF' };
+
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    { harness_slug: string; plan_slug: string; open_items: number; work_items: number }[]
+  >`
+    WITH started AS (
+      SELECT harness_slug, plan_slug, items
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId}
+         AND op_status = 'started'
+         AND COALESCE(archived, false) = false
+    ),
+    open_counts AS (
+      SELECT s.harness_slug, s.plan_slug,
+             COUNT(*) FILTER (
+               WHERE COALESCE(it->>'status', 'todo') NOT IN ('done', 'dropped')
+             )::int AS open_items
+        FROM started s
+        LEFT JOIN LATERAL jsonb_array_elements(COALESCE(s.items, '[]'::jsonb)) it ON true
+       GROUP BY s.harness_slug, s.plan_slug
+    ),
+    wi_counts AS (
+      SELECT source_plan_slug AS plan_slug, harness_slug, COUNT(*)::int AS work_items
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND source_plan_slug IS NOT NULL
+       GROUP BY source_plan_slug, harness_slug
+    )
+    SELECT o.harness_slug, o.plan_slug, o.open_items,
+           COALESCE(w.work_items, 0) AS work_items
+      FROM open_counts o
+      LEFT JOIN wi_counts w
+        ON w.plan_slug = o.plan_slug AND w.harness_slug = o.harness_slug
+     WHERE o.open_items > 0
+     ORDER BY o.open_items DESC
+     LIMIT 50
+  `;
+  const counts: PlanPromotionCount[] = rows.map((r) => ({
+    planSlug: r.plan_slug,
+    harnessSlug: r.harness_slug,
+    openItemCount: Number(r.open_items),
+    workItemCount: Number(r.work_items),
+  }));
+  return { signals: detectZeroPromotion(counts) };
+}

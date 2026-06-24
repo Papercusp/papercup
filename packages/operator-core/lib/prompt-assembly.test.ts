@@ -12,6 +12,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promptsDir } from './prompt-assembly.js';
 
 // Mock listAllProjectedTools so tests don't depend on what's registered
 // at module-load time.
@@ -480,5 +484,56 @@ describe('assembleRolePrompt — testing standard (write tests the project way)'
     const end = after.indexOf('\n\n---\n\n');
     const clause = end >= 0 ? after.slice(0, end) : after;
     expect(clause).not.toMatch(/Vitest|Playwright|Cargo|\/admin\/testing/);
+  });
+});
+
+// ── decouple-agent-prompts-from-release-gate-2026-06-20 P-002/P-005 ──────────
+// The chat-surface prompts dir (operator/oracle/sentinel persona+tools) prefers
+// the integration-tree operator prompts (PAPERCUSP_INTEGRATION_ROOT) so a
+// chat-surface prompt edit goes live without a code-release promotion. The
+// existing explicit PAPERCUSP_PROMPTS_DIR override still wins.
+describe('promptsDir — integration-tree prompt root', () => {
+  const saved: Record<string, string | undefined> = {};
+  const tmps: string[] = [];
+  beforeEach(() => {
+    saved.PAPERCUSP_PROMPTS_DIR = process.env.PAPERCUSP_PROMPTS_DIR;
+    saved.PAPERCUSP_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    delete process.env.PAPERCUSP_PROMPTS_DIR;
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    for (const d of tmps.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  function mkIntegRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-integ-prompts-'));
+    mkdirSync(join(root, 'apps/operator/prompts'), { recursive: true });
+    tmps.push(root);
+    return root;
+  }
+
+  it('prefers <PAPERCUSP_INTEGRATION_ROOT>/apps/operator/prompts when it exists', () => {
+    const root = mkIntegRoot();
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    expect(promptsDir()).toBe(join(root, 'apps/operator/prompts'));
+  });
+
+  it('PAPERCUSP_PROMPTS_DIR (explicit) still wins over the integration root', () => {
+    const explicit = mkdtempSync(join(tmpdir(), 'papercusp-explicit-prompts-'));
+    tmps.push(explicit);
+    const root = mkIntegRoot();
+    process.env.PAPERCUSP_PROMPTS_DIR = explicit;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    expect(promptsDir()).toBe(explicit);
+  });
+
+  it('a non-existent integration root falls through to the cwd/anchor heuristics (never strands)', () => {
+    process.env.PAPERCUSP_INTEGRATION_ROOT = join(tmpdir(), 'papercusp-no-such-integ-xyz');
+    // Falls through to the normal resolution; the result must be a real dir.
+    expect(existsSync(promptsDir())).toBe(true);
   });
 });

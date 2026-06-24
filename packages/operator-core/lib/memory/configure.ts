@@ -37,6 +37,7 @@ import {
 } from '@papercusp/memory';
 import { readCredentials } from '../credentials';
 import { loadVoicePrefs } from '../voice-prefs';
+import { embedAdmission, headersToRecord } from './embed-admission';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { buildLearningInstructions } from './learning';
 import {
@@ -187,8 +188,15 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
   return async (text: string): Promise<number[]> => {
     let lastErr: Error | null = null;
     let waitedMs = 0;
+    const adm = embedAdmission();
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let serverHintMs: number | null = null;
+      // MEMORY lane of the shared embed-TPM admission governor
+      // (watchdog-and-exposed-systems-improvement-2026-06-18 P-002). Production recall must
+      // succeed, so this lane PASSES THROUGH on a denial (acquire never returns null here) — it
+      // only PACES against the shared window + feeds it headers/429s so the high-volume bench
+      // path yields to memory rather than starving it. The retry loop below is the 429 backstop.
+      const slot = await adm.acquire(text, 'memory');
       try {
         const r = await fetch('https://api.openai.com/v1/embeddings', {
           method: 'POST',
@@ -199,6 +207,7 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
             dimensions: EMBEDDER_DIM,
           }),
         });
+        adm.recordResponse(headersToRecord(r.headers)); // learn the live limit / pause on remaining=0
         if (r.ok) {
           const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
           return j.data[0].embedding;
@@ -208,13 +217,16 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         // 429 (rate limit) + 5xx are transient → retry; other 4xx (401/400/403)
         // are a config/auth problem → fail fast (no point retrying a bad key).
         if (r.status !== 429 && r.status < 500) throw err;
-        lastErr = err;
         serverHintMs = retryDelayFromHeaders(r.headers);
+        if (r.status === 429) adm.penalize({ retryAfterMs: serverHintMs ?? undefined }); // back the whole bucket off
+        lastErr = err;
       } catch (e) {
         // A non-retryable openai_embed_failed_4xx (thrown above) propagates; a
         // network/fetch error is transient → retry until attempts/budget run out.
         if (e instanceof Error && /^openai_embed_failed_4(?!29)/.test(e.message)) throw e;
         lastErr = e instanceof Error ? e : new Error(String(e));
+      } finally {
+        slot?.release();
       }
       if (attempt >= maxAttempts - 1) break; // out of attempts — surface the failure now
       const waitMs = nextEmbedBackoffMs(attempt, serverHintMs, waitedMs, opts);

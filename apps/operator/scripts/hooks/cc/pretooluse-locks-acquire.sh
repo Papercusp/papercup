@@ -296,9 +296,15 @@ def _is_conn_refused(exc):
 raw_resp = None
 last_exc = None
 RETRY_BACKOFFS = (0.4, 0.8, 1.2)
+# The operator is ALWAYS local (127.0.0.1/localhost); an egress http(s)_proxy in
+# the env must NEVER intercept this call — it 502s the localhost POST, which the
+# loop below would treat as "operator unreachable" and fail OPEN, silently
+# dropping file-lock protection for every concurrent agent (and reds the
+# pretooluse-locks-decision gate test). Bypass all proxies for the operator call.
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 for _attempt in range(len(RETRY_BACKOFFS) + 1):
     try:
-        resp = urllib.request.urlopen(req, timeout=10)
+        resp = _opener.open(req, timeout=10)
         raw_resp = resp.read().decode('utf-8', errors='replace')
         break
     except Exception as e:

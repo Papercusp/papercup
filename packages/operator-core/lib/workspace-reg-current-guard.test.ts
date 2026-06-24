@@ -23,6 +23,11 @@ const ALLOW = new Set([
   'endpoint-route/routes/workspaces/switch.ts', // the switch handler SETS it
   'endpoint-route/routes/workspaces/index.ts', // bootstrap default on create
   'endpoint-route/routes/workspaces/by-id.ts', // workspace management
+  // First-boot dogfood-hive bootstrap (owner decision 2026-06-23): deliberately
+  // SETS registry.current to the home workspace so the freshly-created `papercusp`
+  // hive is visible — the documented counterpart to ensurePapercuspWorkspace's
+  // "never hijack current" rule, a workspace-management writer like switch.ts.
+  'harness/bootstrap-papercusp-hive.ts',
   // resolveActiveWorkspaceId() — the BROWSER-side active-workspace resolver
   // (P-030), the client analogue of activeWorkspaceId(). It reads reg.current
   // only as the new-window-default fallback on a *fetched* registry object

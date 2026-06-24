@@ -19,6 +19,15 @@ const { registerCoordOp, runScoutCycleTick } = vi.hoisted(() => ({
 vi.mock('../../coord-ops/registry.js', () => ({ registerCoordOp }));
 vi.mock('../../scout/run.js', () => ({ runScoutCycleTick }));
 
+// Pin WORKSPACE_COORDINATION OFF so the installSlug assertion exercises the
+// per-hive default (`ctx.harnessSlug ?? 'op'`) this test was written for, rather
+// than the workspace-sentinel collapse the ON default (graduated 2026-06-23) maps
+// it to. Keep the pure workspaceBrainScopeKey real so the threading is still real.
+vi.mock('../../workspace-brain-scope.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isWorkspaceCoordinationOn: () => Promise.resolve(false) };
+});
+
 import { scoutCycleOp, setScoutCycleDeps } from './scout-cycle';
 
 const ctx = (over: Record<string, unknown> = {}) => ({ workspaceId: 'ws-1', harnessSlug: 'h1', log: vi.fn(), ...over });

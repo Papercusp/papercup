@@ -57,6 +57,7 @@ fi
 
 python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" <<'PYEOF' 2>/dev/null || exit 0
 import json, os, sys, textwrap, urllib.request, urllib.parse
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture = sys.argv[1:5]
 HTTP_TIMEOUT = 1.5

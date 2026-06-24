@@ -58,6 +58,23 @@ export interface BriefEscalation {
 }
 
 /**
+ * Live inference-pool capacity digest (queen-capacity-aware-dispatch-2026-06-22 P-002) — the SOURCE-side
+ * read of the shared gateway oracle, so the Queen sizes the batch to what the pool can FEED, not just to her
+ * spawn ceiling. A compact projection of `buildCapacityReport`; the full breakdown is `fleet:capacity`.
+ * Gathered fail-soft (the gateway fetch degrades to omitted, never blocks the brief).
+ */
+export interface BriefCapacity {
+  /** Pool spare-capacity factor in [0,1] (1 = full headroom, 0 = no fresh capacity). */
+  factor: number;
+  /** Bee-tier spare slots right now (dispatchBudget = cap − inFlight − queued); null when the tier layer is off. */
+  dispatchBudget: number | null;
+  utilizationPct: number | null;
+  paused: boolean;
+  /** One-line dispatch advice (place broadly / hold the tail / tier-1 only). */
+  advice: string;
+}
+
+/**
  * The deterministic FLOOR — objective world-state. `frontier`/`frontierBlocked`/
  * `plans` come straight from `surveyHive` (P-005 reuse, don't fork); the rest are
  * the watchdog's already-computed wake signals (bees, inbox, change-feed,
@@ -68,6 +85,8 @@ export interface QueenBriefFloor {
   wokeBy?: string;
   /** Spawn concurrency budget. */
   headroom?: { ceiling: number; running: number; headroom: number };
+  /** Live inference-pool capacity digest (P-002) — size the batch to this, not just the spawn ceiling. */
+  capacity?: BriefCapacity;
   /** Ready-to-place frontier, already ranked (HiveSurvey.frontier). */
   frontier: readonly Ranked<PlacementCandidate>[];
   /** Lanes held back by unsatisfied blocked_by (HiveSurvey.frontierBlocked). */
@@ -222,6 +241,18 @@ export function renderQueenBrief(input: QueenBriefInput): string {
 
   if (f.headroom) {
     out.push(`**Spawn headroom:** ${f.headroom.headroom} free (${f.headroom.running}/${f.headroom.ceiling} running)`);
+  }
+
+  // INFERENCE CAPACITY — the SOURCE-side read of the gateway oracle (P-002). Size the batch to what the
+  // pool can FEED, not just to the spawn ceiling above; `fleet:capacity` drills in. Omitted when not gathered
+  // (gateway off / fetch failed) — fail-soft, never blocks the brief.
+  if (f.capacity) {
+    const c = f.capacity;
+    out.push(
+      `**Inference capacity:** ${c.dispatchBudget != null ? `~${c.dispatchBudget} bee slot(s) free` : 'tier layer off'} · ` +
+        `util ${c.utilizationPct != null ? `${c.utilizationPct}%` : 'n/a'} · factor ${c.factor.toFixed(2)}` +
+        `${c.paused ? ' · ⚠ POOL PAUSED' : ''} — ${c.advice}`,
+    );
   }
 
   // OWNER STEERING — the owner's authoritative directive for this wake

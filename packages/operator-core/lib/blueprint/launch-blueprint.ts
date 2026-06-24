@@ -450,10 +450,20 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
         const tail = body ? ` — ${body.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
         errorMessage = `invoke ${installSlug}/${role} → HTTP ${r.status}${tail}`;
       } else {
-        const outcome = agentProducedTurn(body, `${installSlug}/${role}`);
-        if (!outcome.ran) {
+        const prelim = agentProducedTurn(body, `${installSlug}/${role}`);
+        if (!prelim.ran) {
           status = 'failed';
-          errorMessage = `infra_loss:${outcome.detail}`;
+          // Corroborate with the live gateway state so a CAPACITY-SHED mid-turn death
+          // (the all-accounts 429 storm) is labeled `capacity_shed`, not the phantom
+          // `infra_loss` / "host dead/unstable" that sends debuggers hunting a host bug
+          // (H13/P-006). Same shared rule durable-spawn uses. Best-effort, never throws.
+          const { gatewayWholesaleThrottled } = await import('../inference-gateway/observability');
+          const gatewayThrottled = await gatewayWholesaleThrottled().catch(() => false);
+          const outcome = agentProducedTurn(body, `${installSlug}/${role}`, { gatewayThrottled });
+          errorMessage =
+            outcome.failureClass === 'capacity_shed'
+              ? `capacity_shed:${outcome.detail}`
+              : `infra_loss:${outcome.detail}`;
         }
       }
       if (status === 'failed') {

@@ -1,0 +1,38 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","it","expect"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/gym/circuit-breaker.ts", {"importedNames":["circuitBreakerTripped","overfittingAlarm","proxyAlarm"]});
+
+
+(0,__vite_ssr_import_0__.describe)("circuitBreakerTripped", () => {
+  (0,__vite_ssr_import_0__.it)("trips when the dev-anchor aggregate drifts below baseline − threshold", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.circuitBreakerTripped)(6.4, 7, 0.5)).toBe(true);
+  });
+  (0,__vite_ssr_import_0__.it)("does not trip within the threshold", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.circuitBreakerTripped)(6.6, 7, 0.5)).toBe(false);
+  });
+  (0,__vite_ssr_import_0__.it)("does not trip when above baseline", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.circuitBreakerTripped)(7.2, 7, 0.5)).toBe(false);
+  });
+});
+(0,__vite_ssr_import_0__.describe)("overfittingAlarm", () => {
+  (0,__vite_ssr_import_0__.it)("alarms when the dev-anchor climbs while the monitor stalls", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.overfittingAlarm)(0.5, 0, 0.3)).toBe(true);
+  });
+  (0,__vite_ssr_import_0__.it)("is quiet when both move together", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.overfittingAlarm)(0.5, 0.45, 0.3)).toBe(false);
+  });
+  (0,__vite_ssr_import_0__.it)("is quiet when the dev-anchor is not climbing", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.overfittingAlarm)(0, -0.5, 0.3)).toBe(false);
+  });
+});
+(0,__vite_ssr_import_0__.describe)("proxyAlarm", () => {
+  (0,__vite_ssr_import_0__.it)("alarms when gym score rises but the real-anchor does not move (D-014)", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.proxyAlarm)(0.6, 0.05, 0.3)).toBe(true);
+  });
+  (0,__vite_ssr_import_0__.it)("is quiet when the real-anchor tracks the gym score", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.proxyAlarm)(0.6, 0.5, 0.3)).toBe(false);
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTs7O0dBU0EsZ0NBQVMseUJBQXlCLE1BQU07QUFDdEMsK0JBQUcseUVBQXlFLE1BQU07QUFDaEYsd0NBQU8sNkNBQXNCLEtBQUssR0FBSyxHQUFHLENBQUMsRUFBRSxLQUFLLElBQUk7QUFBQSxFQUN4RCxDQUFDO0FBQ0QsK0JBQUcsc0NBQXNDLE1BQU07QUFDN0Msd0NBQU8sNkNBQXNCLEtBQUssR0FBSyxHQUFHLENBQUMsRUFBRSxLQUFLLEtBQUs7QUFBQSxFQUN6RCxDQUFDO0FBQ0QsK0JBQUcscUNBQXFDLE1BQU07QUFDNUMsd0NBQU8sNkNBQXNCLEtBQUssR0FBSyxHQUFHLENBQUMsRUFBRSxLQUFLLEtBQUs7QUFBQSxFQUN6RCxDQUFDO0FBQ0gsQ0FBQztHQUVELGdDQUFTLG9CQUFvQixNQUFNO0FBQ2pDLCtCQUFHLDhEQUE4RCxNQUFNO0FBQ3JFLHdDQUFPLHdDQUFpQixLQUFLLEdBQUssR0FBRyxDQUFDLEVBQUUsS0FBSyxJQUFJO0FBQUEsRUFDbkQsQ0FBQztBQUNELCtCQUFHLG9DQUFvQyxNQUFNO0FBQzNDLHdDQUFPLHdDQUFpQixLQUFLLE1BQU0sR0FBRyxDQUFDLEVBQUUsS0FBSyxLQUFLO0FBQUEsRUFDckQsQ0FBQztBQUNELCtCQUFHLGdEQUFnRCxNQUFNO0FBQ3ZELHdDQUFPLHdDQUFpQixHQUFLLE1BQU0sR0FBRyxDQUFDLEVBQUUsS0FBSyxLQUFLO0FBQUEsRUFDckQsQ0FBQztBQUNILENBQUM7R0FFRCxnQ0FBUyxjQUFjLE1BQU07QUFDM0IsK0JBQUcseUVBQXlFLE1BQU07QUFDaEYsd0NBQU8sa0NBQVcsS0FBSyxNQUFNLEdBQUcsQ0FBQyxFQUFFLEtBQUssSUFBSTtBQUFBLEVBQzlDLENBQUM7QUFDRCwrQkFBRyxzREFBc0QsTUFBTTtBQUM3RCx3Q0FBTyxrQ0FBVyxLQUFLLEtBQUssR0FBRyxDQUFDLEVBQUUsS0FBSyxLQUFLO0FBQUEsRUFDOUMsQ0FBQztBQUNILENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImNpcmN1aXQtYnJlYWtlci50ZXN0LnRzIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IGRlc2NyaWJlLCBpdCwgZXhwZWN0IH0gZnJvbSAndml0ZXN0JztcbmltcG9ydCB7IGNpcmN1aXRCcmVha2VyVHJpcHBlZCwgb3ZlcmZpdHRpbmdBbGFybSwgcHJveHlBbGFybSB9IGZyb20gJy4uL2NpcmN1aXQtYnJlYWtlcic7XG5cbi8qKlxuICogQ2lyY3VpdC1icmVha2VyICsgYWxhcm1zIChQLTAyMSkg4oCUIHRoZSBsb29wJ3MgcmVhbCBzYWZldHkgbmV0IChELTAwNi9ELTAxMi9ELTAxNCkuXG4gKiBUaGUgYnJlYWtlciB0cmFja3MgdGhlIGRlZGljYXRlZCBoYXJuZXNzJ3MgZGV2LWFuY2hvciBhZ2dyZWdhdGUgdnMgdGhlXG4gKiBiYXNlbGluZS1vZi1yZWNvcmQ7IG9uIGRyaWZ0IGJlbG93IHRocmVzaG9sZCBpdCBhdXRvLXJldmVydHMgdGhlIGhhcm5lc3Mgb3ZlcnJpZGUuXG4gKiBUaGUgbW9uaXRvciBhbGFybSBjYXRjaGVzIG92ZXJmaXR0aW5nLXRvLWFuY2hvcjsgdGhlIHByb3h5IGFsYXJtIGNhdGNoZXMgZ3ltIHNjb3JlXG4gKiByaXNpbmcgd2hpbGUgdGhlIHJlYWwtYW5jaG9yIHN0YXlzIGZsYXQuIFB1cmUgcHJlZGljYXRlcy5cbiAqL1xuZGVzY3JpYmUoJ2NpcmN1aXRCcmVha2VyVHJpcHBlZCcsICgpID0+IHtcbiAgaXQoJ3RyaXBzIHdoZW4gdGhlIGRldi1hbmNob3IgYWdncmVnYXRlIGRyaWZ0cyBiZWxvdyBiYXNlbGluZSDiiJIgdGhyZXNob2xkJywgKCkgPT4ge1xuICAgIGV4cGVjdChjaXJjdWl0QnJlYWtlclRyaXBwZWQoNi40LCA3LjAsIDAuNSkpLnRvQmUodHJ1ZSk7IC8vIDYuNCA8IDcuMCAtIDAuNVxuICB9KTtcbiAgaXQoJ2RvZXMgbm90IHRyaXAgd2l0aGluIHRoZSB0aHJlc2hvbGQnLCAoKSA9PiB7XG4gICAgZXhwZWN0KGNpcmN1aXRCcmVha2VyVHJpcHBlZCg2LjYsIDcuMCwgMC41KSkudG9CZShmYWxzZSk7IC8vIDYuNiA+IDYuNVxuICB9KTtcbiAgaXQoJ2RvZXMgbm90IHRyaXAgd2hlbiBhYm92ZSBiYXNlbGluZScsICgpID0+IHtcbiAgICBleHBlY3QoY2lyY3VpdEJyZWFrZXJUcmlwcGVkKDcuMiwgNy4wLCAwLjUpKS50b0JlKGZhbHNlKTtcbiAgfSk7XG59KTtcblxuZGVzY3JpYmUoJ292ZXJmaXR0aW5nQWxhcm0nLCAoKSA9PiB7XG4gIGl0KCdhbGFybXMgd2hlbiB0aGUgZGV2LWFuY2hvciBjbGltYnMgd2hpbGUgdGhlIG1vbml0b3Igc3RhbGxzJywgKCkgPT4ge1xuICAgIGV4cGVjdChvdmVyZml0dGluZ0FsYXJtKDAuNSwgMC4wLCAwLjMpKS50b0JlKHRydWUpO1xuICB9KTtcbiAgaXQoJ2lzIHF1aWV0IHdoZW4gYm90aCBtb3ZlIHRvZ2V0aGVyJywgKCkgPT4ge1xuICAgIGV4cGVjdChvdmVyZml0dGluZ0FsYXJtKDAuNSwgMC40NSwgMC4zKSkudG9CZShmYWxzZSk7XG4gIH0pO1xuICBpdCgnaXMgcXVpZXQgd2hlbiB0aGUgZGV2LWFuY2hvciBpcyBub3QgY2xpbWJpbmcnLCAoKSA9PiB7XG4gICAgZXhwZWN0KG92ZXJmaXR0aW5nQWxhcm0oMC4wLCAtMC41LCAwLjMpKS50b0JlKGZhbHNlKTtcbiAgfSk7XG59KTtcblxuZGVzY3JpYmUoJ3Byb3h5QWxhcm0nLCAoKSA9PiB7XG4gIGl0KCdhbGFybXMgd2hlbiBneW0gc2NvcmUgcmlzZXMgYnV0IHRoZSByZWFsLWFuY2hvciBkb2VzIG5vdCBtb3ZlIChELTAxNCknLCAoKSA9PiB7XG4gICAgZXhwZWN0KHByb3h5QWxhcm0oMC42LCAwLjA1LCAwLjMpKS50b0JlKHRydWUpO1xuICB9KTtcbiAgaXQoJ2lzIHF1aWV0IHdoZW4gdGhlIHJlYWwtYW5jaG9yIHRyYWNrcyB0aGUgZ3ltIHNjb3JlJywgKCkgPT4ge1xuICAgIGV4cGVjdChwcm94eUFsYXJtKDAuNiwgMC41LCAwLjMpKS50b0JlKGZhbHNlKTtcbiAgfSk7XG59KTtcbiJdLCJmaWxlIjoiL2xpYi9neW0vX190ZXN0c19fL2NpcmN1aXQtYnJlYWtlci50ZXN0LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9neW0vX190ZXN0c19fL2NpcmN1aXQtYnJlYWtlci50ZXN0LnRzIiwiL2xpYi9neW0vX190ZXN0c19fL2NpcmN1aXQtYnJlYWtlci50ZXN0LnRzIixbXV0=

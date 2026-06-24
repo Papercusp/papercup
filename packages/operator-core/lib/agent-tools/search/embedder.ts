@@ -10,6 +10,7 @@
  */
 
 import type { Embedder } from '@papercusp/search';
+import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
@@ -42,18 +43,35 @@ export async function buildQueryEmbedder(): Promise<Embedder | null> {
   }
   if (mode === 'openai' && key) {
     return async (text: string) => {
-      const r = await fetch('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: OPENAI_EMBEDDER_MODEL,
-          input: text,
-          dimensions: EMBEDDER_DIM,
-        }),
-      });
-      if (!r.ok) throw new Error(`openai_embed_${r.status}`);
-      const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
-      return j.data[0].embedding;
+      // BENCH lane of the shared embed-TPM admission governor
+      // (watchdog-and-exposed-systems-improvement-2026-06-18 P-002). This is the high-volume
+      // path that exhausted the org TPM and starved memory. Acquire a governed slot; a SHED
+      // (null) throws — runHybridSearch try/catches the embedder → degrades to BM25 (P-008),
+      // so the search still returns rather than hard-failing. The governor's concurrency + itpm
+      // caps keep aggregate embed rate under the ceiling so prod memory keeps its headroom.
+      const adm = embedAdmission();
+      const slot = await adm.acquire(text, 'bench');
+      if (slot === null) throw new Error('openai_embed_shed'); // admission shed → engine falls to BM25
+      try {
+        const r = await fetch('https://api.openai.com/v1/embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            model: OPENAI_EMBEDDER_MODEL,
+            input: text,
+            dimensions: EMBEDDER_DIM,
+          }),
+        });
+        adm.recordResponse(headersToRecord(r.headers)); // learn the live limit / pause on remaining=0
+        if (!r.ok) {
+          if (r.status === 429) adm.penalize({ retryAfterMs: retryAfterMs(headersToRecord(r.headers)) });
+          throw new Error(`openai_embed_${r.status}`);
+        }
+        const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
+        return j.data[0].embedding;
+      } finally {
+        slot.release();
+      }
     };
   }
   if (mode === 'local') {

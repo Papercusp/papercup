@@ -20,6 +20,7 @@ import {
   findIdleLiveSessions,
   terminateIdleLiveSessions,
   reapZombieResumeProcs,
+  reclaimDanglingInboxWakeAwaits,
 } from '../../idle-session-reaper';
 
 registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
@@ -89,4 +90,21 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
         ? ` [ids: ${r.reapedIds.slice(0, 20).join(',')}${r.reapedIds.length > 20 ? ',…' : ''}]`
         : ''),
   );
+
+  // Slice 4 — RECLAIM-LANE (fleet-dispatch-wake-clarity P-004): GC the dangling
+  // inbox-wake awaits of DEAD sessions so a coordinator's coord:presence /
+  // fetchWakeability stops showing them as `wakeable`/`parked` dispatch targets
+  // (the "misleading zombie pile") and the ghost-reap above stops being
+  // protection-polluted by them. Non-destructive (cancels a DB await row, touches
+  // no process) → rides the single IDLE_SESSION_REAPER master flag.
+  const aw = await reclaimDanglingInboxWakeAwaits({ dryRun });
+  if (aw.enabled) {
+    console.log(
+      `[idle-session-reaper] await-reclaim: scanned ${aw.scanned} inbox-wake await owner(s) → ` +
+        `${aw.deadOwners} dead → ${aw.dryRun ? 'WOULD cancel' : 'cancelled'} ${aw.cancelled} await(s)` +
+        (aw.sampleOwners.length
+          ? ` [owners: ${aw.sampleOwners.slice(0, 10).join(',')}${aw.deadOwners > 10 ? ',…' : ''}]`
+          : ''),
+    );
+  }
 });

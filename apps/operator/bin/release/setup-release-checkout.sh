@@ -240,6 +240,43 @@ if [ -n "$unresolved" ]; then
   exit 1
 fi
 
+# 3d. Native-addon ABI guard (infra-fail-fast-build-integrity-2026-06-19 P-003) -
+# The hardlink-copied node_modules (step 3) carry whatever Node ABI the
+# INTEGRATION tree was built under. If that differs from the RUNTIME Node, the
+# broken binary ships to green: the 2026-06-19 outage was better-sqlite3 built
+# for Node 22 (ABI 127) while the service runs Node 25 (ABI 141) → "Module did
+# not self-register", mem0 never came up, every memory-touching handler hung
+# behind a green health check. The pin (.nvmrc / package.json engines = Node 25)
+# + dropping nvm22 from the unit PATH make a mismatch unlikely; THIS makes the
+# refresh SELF-HEAL it: verify each runtime-critical native addon LOADS under the
+# same `node` the operator boots with, and `npm rebuild` it in place on a
+# mismatch so the release checkout's binary always matches the runtime ABI.
+# Cheap when already correct (load-check only — no rebuild). Non-fatal: the
+# deploy-gate native-addon preflight (lib/native-addon-preflight.ts) is the hard
+# block; this turns that block into auto-recovery. Addon set mirrors the
+# preflight's DEFAULT_REQUIRED_ADDONS (env override PAPERCUSP_PREFLIGHT_ADDONS).
+if command -v node >/dev/null 2>&1; then
+  NODE_ABI="$(node -p 'process.versions.modules' 2>/dev/null || echo '?')"
+  IFS=',' read -ra _addons <<< "${PAPERCUSP_PREFLIGHT_ADDONS:-better-sqlite3}"
+  for addon in "${_addons[@]}"; do
+    addon="${addon//[[:space:]]/}"   # trim whitespace
+    [ -n "$addon" ] || continue
+    [ -d "$RELEASE_ROOT/node_modules/$addon" ] || continue   # not on this runtime path
+    if (cd "$RELEASE_ROOT" && node -e "require('$addon')") >/dev/null 2>&1; then
+      continue   # loads cleanly under the runtime Node — ABI matches, nothing to do
+    fi
+    log "WARN native addon '$addon' will not load under Node ABI $NODE_ABI — rebuilding in the release checkout"
+    if (cd "$RELEASE_ROOT" && npm rebuild "$addon") >/dev/null 2>&1 \
+       && (cd "$RELEASE_ROOT" && node -e "require('$addon')") >/dev/null 2>&1; then
+      log "native addon '$addon' rebuilt OK for Node ABI $NODE_ABI"
+    else
+      log "ERROR native addon '$addon' STILL will not load after rebuild — the deploy-gate addon preflight will block this promotion"
+    fi
+  done
+else
+  log "skip native-addon ABI guard (node not on PATH — pre-build phase)"
+fi
+
 # 4. SPA dist (deploys only) -------------------------------------------------
 # operator-vite/dist is UNTRACKED, so a fresh swap serves whatever dist was
 # last built in this tree — found 25h STALE on 2026-06-06 (the /admin/git tab

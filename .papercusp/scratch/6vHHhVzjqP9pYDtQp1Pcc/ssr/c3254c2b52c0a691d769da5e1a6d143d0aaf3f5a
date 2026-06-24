@@ -1,0 +1,23 @@
+__vite_ssr_exportName__("createVoiceNode", () => { try { return __vite_ssr_import_0__.createVoiceNode } catch {} });
+__vite_ssr_exportName__("mixInt16", () => { try { return __vite_ssr_import_1__.mixInt16 } catch {} });
+__vite_ssr_exportName__("energy", () => { try { return __vite_ssr_import_1__.energy } catch {} });
+__vite_ssr_exportName__("FrameDecoder", () => { try { return __vite_ssr_import_2__.FrameDecoder } catch {} });
+__vite_ssr_exportName__("FRAME_AUDIO", () => { try { return __vite_ssr_import_2__.FRAME_AUDIO } catch {} });
+__vite_ssr_exportName__("FRAME_CTRL", () => { try { return __vite_ssr_import_2__.FRAME_CTRL } catch {} });
+__vite_ssr_exportName__("FRAME_VIDEO", () => { try { return __vite_ssr_import_2__.FRAME_VIDEO } catch {} });
+__vite_ssr_exportName__("MAX_FRAME_BYTES", () => { try { return __vite_ssr_import_2__.MAX_FRAME_BYTES } catch {} });
+__vite_ssr_exportName__("encodeAudio", () => { try { return __vite_ssr_import_2__.encodeAudio } catch {} });
+__vite_ssr_exportName__("encodeCtrl", () => { try { return __vite_ssr_import_2__.encodeCtrl } catch {} });
+__vite_ssr_exportName__("encodeFrame", () => { try { return __vite_ssr_import_2__.encodeFrame } catch {} });
+__vite_ssr_exportName__("encodeVideo", () => { try { return __vite_ssr_import_2__.encodeVideo } catch {} });
+__vite_ssr_exportName__("encodeVideoPayload", () => { try { return __vite_ssr_import_2__.encodeVideoPayload } catch {} });
+__vite_ssr_exportName__("decodeAudio", () => { try { return __vite_ssr_import_2__.decodeAudio } catch {} });
+__vite_ssr_exportName__("decodeCtrl", () => { try { return __vite_ssr_import_2__.decodeCtrl } catch {} });
+__vite_ssr_exportName__("decodeVideo", () => { try { return __vite_ssr_import_2__.decodeVideo } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/generic/p2p-voice/src/voice-node.ts", {"importedNames":["createVoiceNode"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/generic/p2p-voice/src/mixer.ts", {"importedNames":["mixInt16","energy"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/generic/p2p-voice/src/framing.ts", {"importedNames":["FrameDecoder","FRAME_AUDIO","FRAME_CTRL","FRAME_VIDEO","MAX_FRAME_BYTES","encodeAudio","encodeCtrl","encodeFrame","encodeVideo","encodeVideoPayload","decodeAudio","decodeCtrl","decodeVideo"]});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7Ozs7Ozs7Ozs7Ozs7OztBQUFBO0FBWUE7QUFDQSIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiaW5kZXgudHMiXSwic291cmNlc0NvbnRlbnQiOlsiZXhwb3J0IHtcbiAgY3JlYXRlVm9pY2VOb2RlLFxuICB0eXBlIENoYW5uZWxIYW5kbGUsXG4gIHR5cGUgRHVwbGV4TGlrZSxcbiAgdHlwZSBTd2FybURpc2NvdmVyeSxcbiAgdHlwZSBTd2FybUxpa2UsXG4gIHR5cGUgVm9pY2VDb2RlYyxcbiAgdHlwZSBWb2ljZUlkZW50aXR5LFxuICB0eXBlIFZvaWNlTm9kZSxcbiAgdHlwZSBWb2ljZU5vZGVPcHRpb25zLFxuICB0eXBlIFZvaWNlUGVlclN0YXRlLFxufSBmcm9tICcuL3ZvaWNlLW5vZGUnO1xuZXhwb3J0IHsgbWl4SW50MTYsIGVuZXJneSB9IGZyb20gJy4vbWl4ZXInO1xuZXhwb3J0IHtcbiAgRnJhbWVEZWNvZGVyLFxuICBGUkFNRV9BVURJTyxcbiAgRlJBTUVfQ1RSTCxcbiAgRlJBTUVfVklERU8sXG4gIE1BWF9GUkFNRV9CWVRFUyxcbiAgZW5jb2RlQXVkaW8sXG4gIGVuY29kZUN0cmwsXG4gIGVuY29kZUZyYW1lLFxuICBlbmNvZGVWaWRlbyxcbiAgZW5jb2RlVmlkZW9QYXlsb2FkLFxuICBkZWNvZGVBdWRpbyxcbiAgZGVjb2RlQ3RybCxcbiAgZGVjb2RlVmlkZW8sXG4gIHR5cGUgVm9pY2VGcmFtZSxcbiAgdHlwZSBWaWRlb0ZyYW1lTWV0YSxcbn0gZnJvbSAnLi9mcmFtaW5nJztcbiJdLCJmaWxlIjoiL0Bmcy9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9saWJzL2dlbmVyaWMvcDJwLXZvaWNlL3NyYy9pbmRleC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9saWJzL2dlbmVyaWMvcDJwLXZvaWNlL3NyYy9pbmRleC50cyIsIi9AZnMvaG9tZS9tYXJzaC1vZmZpY2UvcGFwZXJjdXBhaS13b3Jrc3BhY2UvcGFwZXJjdXAvbGlicy9nZW5lcmljL3AycC12b2ljZS9zcmMvaW5kZXgudHMiLFtdXQ==

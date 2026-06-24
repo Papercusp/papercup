@@ -136,6 +136,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // One-wake BATCH placement (queen-autonomous-execution B-07): affinity-ranked
   // fan of spawn + warm-inject across the fleet in a single call.
   'mcp__agentmcp__fleet:place_batch',
+  // Live inference-pool capacity for sizing placement (queen-capacity-aware-dispatch P-003):
+  // bee-tier dispatchBudget + per-tier caps + saturation — the read that mirrors place_batch's clamp.
+  'mcp__agentmcp__fleet:capacity',
   'mcp__agentmcp__fleet:tree',
   'mcp__agentmcp__fleet:cancel',
   // The canonical "who's on what" state query (state-not-chat-fleet-state):

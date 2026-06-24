@@ -1,0 +1,57 @@
+__vite_ssr_exportName__("A2_SCOPE_PUSHBACK", () => { try { return A2_SCOPE_PUSHBACK } catch {} });
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/lib/llm-testing/rubrics/architect.ts", {"importedNames":["ARCHITECT_RUBRIC"]});
+
+const A2_SCOPE_PUSHBACK = {
+  id: "architect-A2-scope-pushback",
+  version: 1,
+  target: "architect",
+  description: `A user keeps stacking new asks onto a single feature ("and while you're at it, also..."). Architect should push back on scope creep, separate the asks, and refuse to roll unrelated work into one feature.`,
+  persona: {
+    id: "scope-creeper",
+    description: "Adds new requirements every turn; tests architect's scope discipline.",
+    traits: {
+      verbosity: "verbose",
+      politeness: "polite",
+      clarification: "sometimes",
+      goalClarity: "shifting",
+      interrupts: false,
+      modality: "text",
+      domain: "pm"
+    }
+  },
+  goal: { kind: "state_reached", predicate: "architect proposed a constrained feature OR flagged scope creep" },
+  caps: { maxTurns: 5, maxWallSecs: 120, maxCostUsd: 1.5 },
+  runMatrix: { repeat: 5, variancePolicy: "flag-if-stddev>0.5" },
+  realWorkspace: true,
+  asserts: [
+    // After 3+ user turns of escalating asks, architect must mention
+    // 'separate' / 'split' / 'different feature' / 'out of scope' style
+    // language somewhere in its output. (Soft heuristic; judge's
+    // scopePrecision axis is the authoritative signal.)
+    {
+      kind: "custom",
+      name: "scope-pushback-signal",
+      eval: (run) => {
+        if (run.turns.length < 2) return [];
+        const txt = run.turns.map((t) => t.assistantText).join(" ").toLowerCase();
+        const hasPushback = /(separate (feature|ticket|chunk|piece)|split (this )?up|out of scope|different (ticket|change|feature|pr)|keep this focused|let'?s scope|narrow(er)? scope)/i.test(txt);
+        if (!hasPushback) {
+          return [{
+            assertKind: "custom:scope-pushback-signal",
+            severity: "warn",
+            claim: "Architect did not visibly push back on scope creep across multiple turns.",
+            suggestion: "Architect should call out scope creep explicitly — separate the asks rather than rolling them up."
+          }];
+        };
+        return [];
+      }
+    }
+  ],
+  rubric: __vite_ssr_import_0__.ARCHITECT_RUBRIC
+};
+const __vite_ssr_export_default__ = A2_SCOPE_PUSHBACK;
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFVQTs7QUFHTyxNQUFNLG9CQUE4QjtBQUFBLEVBQ3pDLElBQUk7QUFBQSxFQUNKLFNBQVM7QUFBQSxFQUNULFFBQVE7QUFBQSxFQUNSLGFBQ0U7QUFBQSxFQUNGLFNBQVM7QUFBQSxJQUNQLElBQUk7QUFBQSxJQUNKLGFBQWE7QUFBQSxJQUNiLFFBQVE7QUFBQSxNQUNOLFdBQVc7QUFBQSxNQUNYLFlBQVk7QUFBQSxNQUNaLGVBQWU7QUFBQSxNQUNmLGFBQWE7QUFBQSxNQUNiLFlBQVk7QUFBQSxNQUNaLFVBQVU7QUFBQSxNQUNWLFFBQVE7QUFBQSxJQUNWO0FBQUEsRUFDRjtBQUFBLEVBQ0EsTUFBTSxFQUFFLE1BQU0saUJBQWlCLFdBQVcsa0VBQWtFO0FBQUEsRUFDNUcsTUFBTSxFQUFFLFVBQVUsR0FBRyxhQUFhLEtBQUssWUFBWSxJQUFJO0FBQUEsRUFDdkQsV0FBVyxFQUFFLFFBQVEsR0FBRyxnQkFBZ0IscUJBQXFCO0FBQUEsRUFDN0QsZUFBZTtBQUFBLEVBQ2YsU0FBUztBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsSUFLUDtBQUFBLE1BQ0UsTUFBTTtBQUFBLE1BQ04sTUFBTTtBQUFBLE1BQ04sTUFBTSxDQUFDLFFBQVE7QUFDYixZQUFJLElBQUksTUFBTSxTQUFTLEVBQUcsUUFBTyxDQUFDO0FBQ2xDLGNBQU0sTUFBTSxJQUFJLE1BQU0sSUFBSSxDQUFDLE1BQU0sRUFBRSxhQUFhLEVBQUUsS0FBSyxHQUFHLEVBQUUsWUFBWTtBQUN4RSxjQUFNLGNBQWMsK0pBQStKLEtBQUssR0FBRztBQUMzTCxZQUFJLENBQUMsYUFBYTtBQUNoQixpQkFBTyxDQUFDO0FBQUEsWUFDTixZQUFZO0FBQUEsWUFDWixVQUFVO0FBQUEsWUFDVixPQUFPO0FBQUEsWUFDUCxZQUFZO0FBQUEsVUFDZCxDQUFDO0FBQUEsUUFDSDtBQUNBLGVBQU8sQ0FBQztBQUFBLE1BQ1Y7QUFBQSxJQUNGO0FBQUEsRUFDRjtBQUFBLEVBQ0EsUUFBUTtBQUNWO0FBRUEsb0NBQWUiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIkEyLXNjb3BlLXB1c2hiYWNrLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogQTIg4oCUIHNjb3BlLXB1c2hiYWNrXG4gKlxuICogUGVyc29uYTogc2NvcGUtY3JlZXAgYWRtaW4gd2hvIGtlZXBzIHN0YWNraW5nIG5ldyBhc2tzXG4gKiAgICAgICAgICAoXCJhbHNvIHdoaWxlIHlvdSdyZSBhdCBpdCwgZG8gWCwgYW5kIFksIGFuZCByZXdyaXRlIFpcIikuXG4gKlxuICogQXJjaGl0ZWN0IHNob3VsZCBwdXNoIGJhY2sgb24gc2NvcGUgY3JlZXAg4oCUIGZsYWcgdGhlIGFkZGl0aW9uYWxcbiAqIGl0ZW1zIGFzIHNlcGFyYXRlIHdvcmssIG5vdCByb2xsIHRoZW0gaW50byBvbmUgZmVhdHVyZS5cbiAqL1xuXG5pbXBvcnQgeyBBUkNISVRFQ1RfUlVCUklDIH0gZnJvbSAnLi4vLi4vcnVicmljcy9hcmNoaXRlY3QnO1xuaW1wb3J0IHR5cGUgeyBTY2VuYXJpbyB9IGZyb20gJ0BwYXBlcmN1c3AvdGVzdGluZy1zaGVsbC9sbG0nO1xuXG5leHBvcnQgY29uc3QgQTJfU0NPUEVfUFVTSEJBQ0s6IFNjZW5hcmlvID0ge1xuICBpZDogJ2FyY2hpdGVjdC1BMi1zY29wZS1wdXNoYmFjaycsXG4gIHZlcnNpb246IDEsXG4gIHRhcmdldDogJ2FyY2hpdGVjdCcsXG4gIGRlc2NyaXB0aW9uOlxuICAgICdBIHVzZXIga2VlcHMgc3RhY2tpbmcgbmV3IGFza3Mgb250byBhIHNpbmdsZSBmZWF0dXJlIChcImFuZCB3aGlsZSB5b3VcXCdyZSBhdCBpdCwgYWxzby4uLlwiKS4gQXJjaGl0ZWN0IHNob3VsZCBwdXNoIGJhY2sgb24gc2NvcGUgY3JlZXAsIHNlcGFyYXRlIHRoZSBhc2tzLCBhbmQgcmVmdXNlIHRvIHJvbGwgdW5yZWxhdGVkIHdvcmsgaW50byBvbmUgZmVhdHVyZS4nLFxuICBwZXJzb25hOiB7XG4gICAgaWQ6ICdzY29wZS1jcmVlcGVyJyxcbiAgICBkZXNjcmlwdGlvbjogJ0FkZHMgbmV3IHJlcXVpcmVtZW50cyBldmVyeSB0dXJuOyB0ZXN0cyBhcmNoaXRlY3RcXCdzIHNjb3BlIGRpc2NpcGxpbmUuJyxcbiAgICB0cmFpdHM6IHtcbiAgICAgIHZlcmJvc2l0eTogJ3ZlcmJvc2UnLFxuICAgICAgcG9saXRlbmVzczogJ3BvbGl0ZScsXG4gICAgICBjbGFyaWZpY2F0aW9uOiAnc29tZXRpbWVzJyxcbiAgICAgIGdvYWxDbGFyaXR5OiAnc2hpZnRpbmcnLFxuICAgICAgaW50ZXJydXB0czogZmFsc2UsXG4gICAgICBtb2RhbGl0eTogJ3RleHQnLFxuICAgICAgZG9tYWluOiAncG0nLFxuICAgIH0sXG4gIH0sXG4gIGdvYWw6IHsga2luZDogJ3N0YXRlX3JlYWNoZWQnLCBwcmVkaWNhdGU6ICdhcmNoaXRlY3QgcHJvcG9zZWQgYSBjb25zdHJhaW5lZCBmZWF0dXJlIE9SIGZsYWdnZWQgc2NvcGUgY3JlZXAnIH0sXG4gIGNhcHM6IHsgbWF4VHVybnM6IDUsIG1heFdhbGxTZWNzOiAxMjAsIG1heENvc3RVc2Q6IDEuNSB9LFxuICBydW5NYXRyaXg6IHsgcmVwZWF0OiA1LCB2YXJpYW5jZVBvbGljeTogJ2ZsYWctaWYtc3RkZGV2PjAuNScgfSxcbiAgcmVhbFdvcmtzcGFjZTogdHJ1ZSxcbiAgYXNzZXJ0czogW1xuICAgIC8vIEFmdGVyIDMrIHVzZXIgdHVybnMgb2YgZXNjYWxhdGluZyBhc2tzLCBhcmNoaXRlY3QgbXVzdCBtZW50aW9uXG4gICAgLy8gJ3NlcGFyYXRlJyAvICdzcGxpdCcgLyAnZGlmZmVyZW50IGZlYXR1cmUnIC8gJ291dCBvZiBzY29wZScgc3R5bGVcbiAgICAvLyBsYW5ndWFnZSBzb21ld2hlcmUgaW4gaXRzIG91dHB1dC4gKFNvZnQgaGV1cmlzdGljOyBqdWRnZSdzXG4gICAgLy8gc2NvcGVQcmVjaXNpb24gYXhpcyBpcyB0aGUgYXV0aG9yaXRhdGl2ZSBzaWduYWwuKVxuICAgIHtcbiAgICAgIGtpbmQ6ICdjdXN0b20nLFxuICAgICAgbmFtZTogJ3Njb3BlLXB1c2hiYWNrLXNpZ25hbCcsXG4gICAgICBldmFsOiAocnVuKSA9PiB7XG4gICAgICAgIGlmIChydW4udHVybnMubGVuZ3RoIDwgMikgcmV0dXJuIFtdO1xuICAgICAgICBjb25zdCB0eHQgPSBydW4udHVybnMubWFwKCh0KSA9PiB0LmFzc2lzdGFudFRleHQpLmpvaW4oJyAnKS50b0xvd2VyQ2FzZSgpO1xuICAgICAgICBjb25zdCBoYXNQdXNoYmFjayA9IC8oc2VwYXJhdGUgKGZlYXR1cmV8dGlja2V0fGNodW5rfHBpZWNlKXxzcGxpdCAodGhpcyApP3VwfG91dCBvZiBzY29wZXxkaWZmZXJlbnQgKHRpY2tldHxjaGFuZ2V8ZmVhdHVyZXxwcil8a2VlcCB0aGlzIGZvY3VzZWR8bGV0Jz9zIHNjb3BlfG5hcnJvdyhlcik/IHNjb3BlKS9pLnRlc3QodHh0KTtcbiAgICAgICAgaWYgKCFoYXNQdXNoYmFjaykge1xuICAgICAgICAgIHJldHVybiBbe1xuICAgICAgICAgICAgYXNzZXJ0S2luZDogJ2N1c3RvbTpzY29wZS1wdXNoYmFjay1zaWduYWwnLFxuICAgICAgICAgICAgc2V2ZXJpdHk6ICd3YXJuJyxcbiAgICAgICAgICAgIGNsYWltOiAnQXJjaGl0ZWN0IGRpZCBub3QgdmlzaWJseSBwdXNoIGJhY2sgb24gc2NvcGUgY3JlZXAgYWNyb3NzIG11bHRpcGxlIHR1cm5zLicsXG4gICAgICAgICAgICBzdWdnZXN0aW9uOiAnQXJjaGl0ZWN0IHNob3VsZCBjYWxsIG91dCBzY29wZSBjcmVlcCBleHBsaWNpdGx5IOKAlCBzZXBhcmF0ZSB0aGUgYXNrcyByYXRoZXIgdGhhbiByb2xsaW5nIHRoZW0gdXAuJyxcbiAgICAgICAgICB9XTtcbiAgICAgICAgfVxuICAgICAgICByZXR1cm4gW107XG4gICAgICB9LFxuICAgIH0sXG4gIF0sXG4gIHJ1YnJpYzogQVJDSElURUNUX1JVQlJJQyxcbn07XG5cbmV4cG9ydCBkZWZhdWx0IEEyX1NDT1BFX1BVU0hCQUNLO1xuIl0sImZpbGUiOiIvbGliL2xsbS10ZXN0aW5nL3NjZW5hcmlvcy9hcmNoaXRlY3QvQTItc2NvcGUtcHVzaGJhY2sudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3MvYXJjaGl0ZWN0L0EyLXNjb3BlLXB1c2hiYWNrLnRzIiwiL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3MvYXJjaGl0ZWN0L0EyLXNjb3BlLXB1c2hiYWNrLnRzIixbXV0=

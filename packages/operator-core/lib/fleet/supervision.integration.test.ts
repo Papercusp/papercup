@@ -31,7 +31,7 @@ const SPAWNED_AGENTS_DDL = `
     model_spec text, model_tier text, brief text,
     restart_strategy text NOT NULL DEFAULT 'one_for_one', restart_count int NOT NULL DEFAULT 0,
     restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
-    pid int, launcher_host text, heartbeat_at timestamptz NOT NULL DEFAULT now(), last_output_at timestamptz)`;
+    pid int, launcher_host text, launcher_boot_id text, heartbeat_at timestamptz NOT NULL DEFAULT now(), last_output_at timestamptz)`;
 const PLAN_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
     workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL, item_id text NOT NULL,

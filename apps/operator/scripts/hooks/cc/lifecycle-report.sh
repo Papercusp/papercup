@@ -30,6 +30,7 @@ AGENT="${PAPERCUSP_AGENT:-}"
 report() {
   python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" <<'PYEOF'
 import json, sys, urllib.request, urllib.parse
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, owner, agent = sys.argv[1:6]
 HTTP_TIMEOUT = 3

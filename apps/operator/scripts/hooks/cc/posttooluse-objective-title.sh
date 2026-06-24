@@ -57,6 +57,7 @@ TITLE_TTY="${PAPERCUSP_OBJECTIVE_TTY:-/dev/tty}"
 set_title() {
   python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" <<'PYEOF'
 import json, sys, urllib.request, urllib.parse
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture, title_tty = sys.argv[1:6]
 HTTP_TIMEOUT = 1.5

@@ -1,0 +1,23 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","it","expect"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/voice-engines/openwakeword.ts", {"importedNames":["OPENWAKEWORD_KEYWORDS","startOpenWakeWordDetection"]});
+
+
+(0,__vite_ssr_import_0__.describe)("OPENWAKEWORD_KEYWORDS", () => {
+  (0,__vite_ssr_import_0__.it)("exposes the built-in keyword set, all unique", () => {
+    (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.OPENWAKEWORD_KEYWORDS.length).toBeGreaterThan(0);
+    (0,__vite_ssr_import_0__.expect)(new Set(__vite_ssr_import_1__.OPENWAKEWORD_KEYWORDS).size).toBe(__vite_ssr_import_1__.OPENWAKEWORD_KEYWORDS.length);
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.OPENWAKEWORD_KEYWORDS)).toContain("hey_jarvis");
+  });
+});
+(0,__vite_ssr_import_0__.describe)("startOpenWakeWordDetection", () => {
+  (0,__vite_ssr_import_0__.it)("refuses to start outside a browser audio context", async () => {
+    await (0,__vite_ssr_import_0__.expect)(
+      (0,__vite_ssr_import_1__.startOpenWakeWordDetection)({ keyword: "alexa", onWake: () => {
+      } })
+    ).rejects.toThrow(/not in browser|getUserMedia/);
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTs7O0dBRUEsZ0NBQVMseUJBQXlCLE1BQU07QUFDdEMsK0JBQUcsZ0RBQWdELE1BQU07QUFDdkQscUNBQU8sNENBQXNCLE1BQU0sRUFBRSxnQkFBZ0IsQ0FBQztBQUN0RCxxQ0FBTyxJQUFJLElBQUksMkNBQXFCLEVBQUUsSUFBSSxFQUFFLEtBQUssNENBQXNCLE1BQU07QUFDN0Usd0NBQU8sNENBQXFCLEVBQUUsVUFBVSxZQUFZO0FBQUEsRUFDdEQsQ0FBQztBQUNILENBQUM7R0FFRCxnQ0FBUyw4QkFBOEIsTUFBTTtBQUMzQywrQkFBRyxvREFBb0QsWUFBWTtBQUNqRSxhQUFNO0FBQUEsU0FDSixrREFBMkIsRUFBRSxTQUFTLFNBQVMsUUFBUSxNQUFNO0FBQUEsTUFBQyxFQUFFLENBQUM7QUFBQSxJQUNuRSxFQUFFLFFBQVEsUUFBUSw2QkFBNkI7QUFBQSxFQUNqRCxDQUFDO0FBQ0gsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsib3Blbndha2V3b3JkLnRlc3QudHMiXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgZGVzY3JpYmUsIGl0LCBleHBlY3QgfSBmcm9tICd2aXRlc3QnO1xuaW1wb3J0IHsgT1BFTldBS0VXT1JEX0tFWVdPUkRTLCBzdGFydE9wZW5XYWtlV29yZERldGVjdGlvbiB9IGZyb20gJy4vb3Blbndha2V3b3JkJztcblxuZGVzY3JpYmUoJ09QRU5XQUtFV09SRF9LRVlXT1JEUycsICgpID0+IHtcbiAgaXQoJ2V4cG9zZXMgdGhlIGJ1aWx0LWluIGtleXdvcmQgc2V0LCBhbGwgdW5pcXVlJywgKCkgPT4ge1xuICAgIGV4cGVjdChPUEVOV0FLRVdPUkRfS0VZV09SRFMubGVuZ3RoKS50b0JlR3JlYXRlclRoYW4oMCk7XG4gICAgZXhwZWN0KG5ldyBTZXQoT1BFTldBS0VXT1JEX0tFWVdPUkRTKS5zaXplKS50b0JlKE9QRU5XQUtFV09SRF9LRVlXT1JEUy5sZW5ndGgpO1xuICAgIGV4cGVjdChPUEVOV0FLRVdPUkRfS0VZV09SRFMpLnRvQ29udGFpbignaGV5X2phcnZpcycpO1xuICB9KTtcbn0pO1xuXG5kZXNjcmliZSgnc3RhcnRPcGVuV2FrZVdvcmREZXRlY3Rpb24nLCAoKSA9PiB7XG4gIGl0KCdyZWZ1c2VzIHRvIHN0YXJ0IG91dHNpZGUgYSBicm93c2VyIGF1ZGlvIGNvbnRleHQnLCBhc3luYyAoKSA9PiB7XG4gICAgYXdhaXQgZXhwZWN0KFxuICAgICAgc3RhcnRPcGVuV2FrZVdvcmREZXRlY3Rpb24oeyBrZXl3b3JkOiAnYWxleGEnLCBvbldha2U6ICgpID0+IHt9IH0pLFxuICAgICkucmVqZWN0cy50b1Rocm93KC9ub3QgaW4gYnJvd3NlcnxnZXRVc2VyTWVkaWEvKTtcbiAgfSk7XG59KTtcbiJdLCJmaWxlIjoiL2xpYi92b2ljZS1lbmdpbmVzL29wZW53YWtld29yZC50ZXN0LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi92b2ljZS1lbmdpbmVzL29wZW53YWtld29yZC50ZXN0LnRzIiwiL2xpYi92b2ljZS1lbmdpbmVzL29wZW53YWtld29yZC50ZXN0LnRzIixbXV0=

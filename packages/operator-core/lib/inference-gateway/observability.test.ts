@@ -1,7 +1,7 @@
 /** Tests for the gateway rate-observability read-model (P-014). */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { projectHeadroom, fetchGatewayHeadroom } from './observability';
+import { projectHeadroom, fetchGatewayHeadroom, gatewayWholesaleThrottled } from './observability';
 import type { GatewayStats } from './gateway';
 
 const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
@@ -97,4 +97,40 @@ test('fetchGatewayHeadroom — non-200 from gateway → reachable:false with sta
   });
   assert.equal(h.reachable, false);
   assert.match(h.error ?? '', /503/);
+});
+
+// gatewayWholesaleThrottled — the capacity_shed corroboration (P-006/H13). True only
+// when the gateway is REACHABLE and the bound account is paused OR its window rejected.
+const statsResponse = (stats: GatewayStats) =>
+  async () => new Response(JSON.stringify(stats), { status: 200, headers: { 'content-type': 'application/json' } });
+
+test('gatewayWholesaleThrottled — true when the bound account is PAUSED', async () => {
+  const now = Date.now();
+  const throttled = await gatewayWholesaleThrottled({ fetchImpl: statsResponse(baseStats({ pausedUntil: now + 60_000 })) });
+  assert.equal(throttled, true);
+});
+
+test('gatewayWholesaleThrottled — true when the unified window is REJECTED (hard limit)', async () => {
+  const now = Date.now();
+  const throttled = await gatewayWholesaleThrottled({
+    fetchImpl: statsResponse(baseStats({ unified: { window: '5h', utilization: 1.02, resetAt: now + 60_000, rejected: true } })),
+  });
+  assert.equal(throttled, true);
+});
+
+test('gatewayWholesaleThrottled — false when the gateway is healthy (not paused, not rejected)', async () => {
+  const now = Date.now();
+  const throttled = await gatewayWholesaleThrottled({
+    fetchImpl: statsResponse(baseStats({ unified: { window: '5h', utilization: 0.4, resetAt: now + 60_000, rejected: false } })),
+  });
+  assert.equal(throttled, false);
+});
+
+test('gatewayWholesaleThrottled — false (conservative) when the gateway is UNREACHABLE', async () => {
+  const throttled = await gatewayWholesaleThrottled({
+    fetchImpl: async () => {
+      throw new Error('ECONNREFUSED');
+    },
+  });
+  assert.equal(throttled, false);
 });

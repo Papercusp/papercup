@@ -54,6 +54,7 @@ const SPAWNED_AGENTS_DDL = `
     cancelled_at timestamptz,
     pid int,
     launcher_host text,
+    launcher_boot_id text,
     heartbeat_at timestamptz NOT NULL DEFAULT now(),
     last_output_at timestamptz)`;
 

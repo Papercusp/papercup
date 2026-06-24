@@ -1,0 +1,32 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","expect","it"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/dbos/work-item-deps-store.ts", {"importedNames":["wouldCreateCycle"]});
+
+
+const m = (o) => new Map(Object.entries(o));
+(0,__vite_ssr_import_0__.describe)("wouldCreateCycle (acyclicity guard, P-008)", () => {
+  (0,__vite_ssr_import_0__.it)("allows an edge into an empty graph", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.wouldCreateCycle)(/* @__PURE__ */ new Map(), "A", ["B"])).toBe(false);
+  });
+  (0,__vite_ssr_import_0__.it)("detects a direct 2-cycle (A blocked-by B, B blocked-by A)", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.wouldCreateCycle)(m({ B: ["A"] }), "A", ["B"])).toBe(true);
+  });
+  (0,__vite_ssr_import_0__.it)("detects a transitive cycle (A<-C<-B<-A)", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.wouldCreateCycle)(m({ B: ["A"], C: ["B"] }), "A", ["C"])).toBe(true);
+  });
+  (0,__vite_ssr_import_0__.it)("allows a safe edge that extends a chain", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.wouldCreateCycle)(m({ B: ["A"] }), "C", ["B"])).toBe(false);
+  });
+  (0,__vite_ssr_import_0__.it)("uses REPLACE semantics — clearing a blocked item breaks its prior cycle", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.wouldCreateCycle)(m({ A: ["B"], B: ["A"] }), "A", [])).toBe(false);
+  });
+  (0,__vite_ssr_import_0__.it)("drops a self-edge (no-self-block) rather than reporting a cycle", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.wouldCreateCycle)(/* @__PURE__ */ new Map(), "A", ["A"])).toBe(false);
+  });
+  (0,__vite_ssr_import_0__.it)("detects a cycle introduced among multiple new blockers", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.wouldCreateCycle)(m({ B: ["X"] }), "X", ["A", "B"])).toBe(true);
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTs7O0FBR0EsTUFBTSxJQUFJLENBQUMsTUFBdUQsSUFBSSxJQUFJLE9BQU8sUUFBUSxDQUFDLENBQUM7R0FFM0YsZ0NBQVMsOENBQThDLE1BQU07QUFDM0QsK0JBQUcsc0NBQXNDLE1BQU07QUFDN0Msd0NBQU8sd0NBQWlCLG9CQUFJLElBQUksR0FBRyxLQUFLLENBQUMsR0FBRyxDQUFDLENBQUMsRUFBRSxLQUFLLEtBQUs7QUFBQSxFQUM1RCxDQUFDO0FBRUQsK0JBQUcsNkRBQTZELE1BQU07QUFDcEUsd0NBQU8sd0NBQWlCLEVBQUUsRUFBRSxHQUFHLENBQUMsR0FBRyxFQUFFLENBQUMsR0FBRyxLQUFLLENBQUMsR0FBRyxDQUFDLENBQUMsRUFBRSxLQUFLLElBQUk7QUFBQSxFQUNqRSxDQUFDO0FBRUQsK0JBQUcsMkNBQTJDLE1BQU07QUFDbEQsd0NBQU8sd0NBQWlCLEVBQUUsRUFBRSxHQUFHLENBQUMsR0FBRyxHQUFHLEdBQUcsQ0FBQyxHQUFHLEVBQUUsQ0FBQyxHQUFHLEtBQUssQ0FBQyxHQUFHLENBQUMsQ0FBQyxFQUFFLEtBQUssSUFBSTtBQUFBLEVBQzNFLENBQUM7QUFFRCwrQkFBRywyQ0FBMkMsTUFBTTtBQUNsRCx3Q0FBTyx3Q0FBaUIsRUFBRSxFQUFFLEdBQUcsQ0FBQyxHQUFHLEVBQUUsQ0FBQyxHQUFHLEtBQUssQ0FBQyxHQUFHLENBQUMsQ0FBQyxFQUFFLEtBQUssS0FBSztBQUFBLEVBQ2xFLENBQUM7QUFFRCwrQkFBRywyRUFBMkUsTUFBTTtBQUVsRix3Q0FBTyx3Q0FBaUIsRUFBRSxFQUFFLEdBQUcsQ0FBQyxHQUFHLEdBQUcsR0FBRyxDQUFDLEdBQUcsRUFBRSxDQUFDLEdBQUcsS0FBSyxDQUFDLENBQUMsQ0FBQyxFQUFFLEtBQUssS0FBSztBQUFBLEVBQ3pFLENBQUM7QUFFRCwrQkFBRyxtRUFBbUUsTUFBTTtBQUMxRSx3Q0FBTyx3Q0FBaUIsb0JBQUksSUFBSSxHQUFHLEtBQUssQ0FBQyxHQUFHLENBQUMsQ0FBQyxFQUFFLEtBQUssS0FBSztBQUFBLEVBQzVELENBQUM7QUFFRCwrQkFBRywwREFBMEQsTUFBTTtBQUVqRSx3Q0FBTyx3Q0FBaUIsRUFBRSxFQUFFLEdBQUcsQ0FBQyxHQUFHLEVBQUUsQ0FBQyxHQUFHLEtBQUssQ0FBQyxLQUFLLEdBQUcsQ0FBQyxDQUFDLEVBQUUsS0FBSyxJQUFJO0FBQUEsRUFDdEUsQ0FBQztBQUNILENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIndvcmstaXRlbS1kZXBzLXN0b3JlLnRlc3QudHMiXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgZGVzY3JpYmUsIGV4cGVjdCwgaXQgfSBmcm9tICd2aXRlc3QnO1xuaW1wb3J0IHsgd291bGRDcmVhdGVDeWNsZSB9IGZyb20gJy4vd29yay1pdGVtLWRlcHMtc3RvcmUnO1xuXG4vLyBlZGdlcyBhcmUgYmxvY2tlZCAtPiBbYmxvY2tlcnNdOyBhIGN5Y2xlID0gYSBjaXJjdWxhciBibG9ja2luZyBkZXBlbmRlbmN5IChkZWFkbG9jaykuXG5jb25zdCBtID0gKG86IFJlY29yZDxzdHJpbmcsIHN0cmluZ1tdPik6IE1hcDxzdHJpbmcsIHN0cmluZ1tdPiA9PiBuZXcgTWFwKE9iamVjdC5lbnRyaWVzKG8pKTtcblxuZGVzY3JpYmUoJ3dvdWxkQ3JlYXRlQ3ljbGUgKGFjeWNsaWNpdHkgZ3VhcmQsIFAtMDA4KScsICgpID0+IHtcbiAgaXQoJ2FsbG93cyBhbiBlZGdlIGludG8gYW4gZW1wdHkgZ3JhcGgnLCAoKSA9PiB7XG4gICAgZXhwZWN0KHdvdWxkQ3JlYXRlQ3ljbGUobmV3IE1hcCgpLCAnQScsIFsnQiddKSkudG9CZShmYWxzZSk7XG4gIH0pO1xuXG4gIGl0KCdkZXRlY3RzIGEgZGlyZWN0IDItY3ljbGUgKEEgYmxvY2tlZC1ieSBCLCBCIGJsb2NrZWQtYnkgQSknLCAoKSA9PiB7XG4gICAgZXhwZWN0KHdvdWxkQ3JlYXRlQ3ljbGUobSh7IEI6IFsnQSddIH0pLCAnQScsIFsnQiddKSkudG9CZSh0cnVlKTtcbiAgfSk7XG5cbiAgaXQoJ2RldGVjdHMgYSB0cmFuc2l0aXZlIGN5Y2xlIChBPC1DPC1CPC1BKScsICgpID0+IHtcbiAgICBleHBlY3Qod291bGRDcmVhdGVDeWNsZShtKHsgQjogWydBJ10sIEM6IFsnQiddIH0pLCAnQScsIFsnQyddKSkudG9CZSh0cnVlKTtcbiAgfSk7XG5cbiAgaXQoJ2FsbG93cyBhIHNhZmUgZWRnZSB0aGF0IGV4dGVuZHMgYSBjaGFpbicsICgpID0+IHtcbiAgICBleHBlY3Qod291bGRDcmVhdGVDeWNsZShtKHsgQjogWydBJ10gfSksICdDJywgWydCJ10pKS50b0JlKGZhbHNlKTsgLy8gQTwtQjwtQyBsaW5lYXJcbiAgfSk7XG5cbiAgaXQoJ3VzZXMgUkVQTEFDRSBzZW1hbnRpY3Mg4oCUIGNsZWFyaW5nIGEgYmxvY2tlZCBpdGVtIGJyZWFrcyBpdHMgcHJpb3IgY3ljbGUnLCAoKSA9PiB7XG4gICAgLy8gY3VycmVudCBoYXMgQSBibG9ja2VkLWJ5IEI7IHJlcGxhY2luZyBBJ3MgYmxvY2tlcnMgd2l0aCBbXSByZW1vdmVzIHRoZSBiYWNrLWVkZ2UuXG4gICAgZXhwZWN0KHdvdWxkQ3JlYXRlQ3ljbGUobSh7IEE6IFsnQiddLCBCOiBbJ0EnXSB9KSwgJ0EnLCBbXSkpLnRvQmUoZmFsc2UpO1xuICB9KTtcblxuICBpdCgnZHJvcHMgYSBzZWxmLWVkZ2UgKG5vLXNlbGYtYmxvY2spIHJhdGhlciB0aGFuIHJlcG9ydGluZyBhIGN5Y2xlJywgKCkgPT4ge1xuICAgIGV4cGVjdCh3b3VsZENyZWF0ZUN5Y2xlKG5ldyBNYXAoKSwgJ0EnLCBbJ0EnXSkpLnRvQmUoZmFsc2UpO1xuICB9KTtcblxuICBpdCgnZGV0ZWN0cyBhIGN5Y2xlIGludHJvZHVjZWQgYW1vbmcgbXVsdGlwbGUgbmV3IGJsb2NrZXJzJywgKCkgPT4ge1xuICAgIC8vIFggYmxvY2tlZC1ieSBBLEIgKGZpbmUpOyBidXQgQiBpcyBibG9ja2VkLWJ5IFggYWxyZWFkeSAtPiBYPC1CPC1YXG4gICAgZXhwZWN0KHdvdWxkQ3JlYXRlQ3ljbGUobSh7IEI6IFsnWCddIH0pLCAnWCcsIFsnQScsICdCJ10pKS50b0JlKHRydWUpO1xuICB9KTtcbn0pO1xuIl0sImZpbGUiOiIvbGliL2Rib3Mvd29yay1pdGVtLWRlcHMtc3RvcmUudGVzdC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9kYm9zL3dvcmstaXRlbS1kZXBzLXN0b3JlLnRlc3QudHMiLCIvbGliL2Rib3Mvd29yay1pdGVtLWRlcHMtc3RvcmUudGVzdC50cyIsW11d

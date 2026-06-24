@@ -35,6 +35,16 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...actual, getOrgPg: () => ({ sql: fakeSql }) };
 });
 
+// Pin WORKSPACE_COORDINATION OFF so these unit tests deterministically exercise
+// the per-(workspace, install) keying path (the legacy/read-fallback scope) they
+// were written for — independent of the production flag default, which graduated
+// to ON (2026-06-23). The de-duped workspace-sentinel (ON) path is a separate
+// surface (listStartedWorkspaceOverwatches). Keep the pure scope helpers real.
+vi.mock('../workspace-brain-scope', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isWorkspaceCoordinationOn: () => Promise.resolve(false) };
+});
+
 import {
   clampOverwatchCadenceSec,
   getOverwatchStarted,

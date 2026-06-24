@@ -1,0 +1,42 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/node_modules/vitest/dist/index.js", {"importedNames":["describe","it","expect","vi","beforeEach"]});
+__vite_ssr_import_0__.vi.mock("@papercusp/flags/server", () => ({ getFlag: __vite_ssr_import_0__.vi.fn() }));
+const __vi_import_0__ = await __vite_ssr_dynamic_import__("/lib/agent-tools/learning_packs/_shared.ts");
+const __vi_import_1__ = await __vite_ssr_dynamic_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/flags/src/server.ts");
+
+
+
+const mockedGetFlag = __vite_ssr_import_0__.vi.mocked(__vi_import_1__.getFlag);
+(0,__vite_ssr_import_0__.describe)("learningPacksEnabled", () => {
+  (0,__vite_ssr_import_0__.beforeEach)(() => __vite_ssr_import_0__.vi.clearAllMocks());
+  (0,__vite_ssr_import_0__.it)("returns true when the LEARNING_PACKS flag is on", async () => {
+    mockedGetFlag.mockResolvedValue(true);
+    (0,__vite_ssr_import_0__.expect)(await __vi_import_0__.learningPacksEnabled()).toBe(true);
+  });
+  (0,__vite_ssr_import_0__.it)("returns false when the flag is off", async () => {
+    mockedGetFlag.mockResolvedValue(false);
+    (0,__vite_ssr_import_0__.expect)(await __vi_import_0__.learningPacksEnabled()).toBe(false);
+  });
+  (0,__vite_ssr_import_0__.it)("defaults to true (resilient) when the flag infra throws (default-ON flag)", async () => {
+    mockedGetFlag.mockRejectedValue(new Error("flag store down"));
+    (0,__vite_ssr_import_0__.expect)(await __vi_import_0__.learningPacksEnabled()).toBe(true);
+  });
+});
+(0,__vite_ssr_import_0__.describe)("FLAG_OFF envelope", () => {
+  (0,__vite_ssr_import_0__.it)("is a feature-disabled refusal naming the flag", () => {
+    (0,__vite_ssr_import_0__.expect)(__vi_import_0__.FLAG_OFF.ok).toBe(false);
+    (0,__vite_ssr_import_0__.expect)(__vi_import_0__.FLAG_OFF.reason).toBe("feature-disabled");
+    (0,__vite_ssr_import_0__.expect)(__vi_import_0__.FLAG_OFF.flag).toBe("papercusp-learning-packs");
+    (0,__vite_ssr_import_0__.expect)(__vi_import_0__.FLAG_OFF.hint).toMatch(/papercusp-learning-packs/);
+  });
+});
+(0,__vite_ssr_import_0__.describe)("text() MCP envelope", () => {
+  (0,__vite_ssr_import_0__.it)("wraps a payload as a JSON text content block", () => {
+    (0,__vite_ssr_import_0__.expect)(__vi_import_0__.text({ a: 1, b: "x" })).toEqual({
+      content: [{ type: "text", text: '{"a":1,"b":"x"}' }]
+    });
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFFQSx5QkFBRyxLQUFLLDJCQUEyQixPQUFPLEVBQUUsU0FBUyx5QkFBRyxHQUFHLEVBQUUsRUFBRTtBQUUvRDtBQUNBOzs7O0FBRUEsTUFBTSxnQkFBZ0IseUJBQUcsT0FBTyx1QkFBTztHQUV2QyxnQ0FBUyx3QkFBd0IsTUFBTTtBQUNyQyx1Q0FBVyxNQUFNLHlCQUFHLGNBQWMsQ0FBQztBQUVuQywrQkFBRyxtREFBbUQsWUFBWTtBQUNoRSxrQkFBYyxrQkFBa0IsSUFBSTtBQUNwQyxxQ0FBTyxNQUFNLHFDQUFxQixDQUFDLEVBQUUsS0FBSyxJQUFJO0FBQUEsRUFDaEQsQ0FBQztBQUVELCtCQUFHLHNDQUFzQyxZQUFZO0FBQ25ELGtCQUFjLGtCQUFrQixLQUFLO0FBQ3JDLHFDQUFPLE1BQU0scUNBQXFCLENBQUMsRUFBRSxLQUFLLEtBQUs7QUFBQSxFQUNqRCxDQUFDO0FBRUQsK0JBQUcsNkVBQTZFLFlBQVk7QUFDMUYsa0JBQWMsa0JBQWtCLElBQUksTUFBTSxpQkFBaUIsQ0FBQztBQUM1RCxxQ0FBTyxNQUFNLHFDQUFxQixDQUFDLEVBQUUsS0FBSyxJQUFJO0FBQUEsRUFDaEQsQ0FBQztBQUNILENBQUM7R0FFRCxnQ0FBUyxxQkFBcUIsTUFBTTtBQUNsQywrQkFBRyxpREFBaUQsTUFBTTtBQUN4RCxxQ0FBTyx5QkFBUyxFQUFFLEVBQUUsS0FBSyxLQUFLO0FBQzlCLHFDQUFPLHlCQUFTLE1BQU0sRUFBRSxLQUFLLGtCQUFrQjtBQUMvQyxxQ0FBTyx5QkFBUyxJQUFJLEVBQUUsS0FBSywwQkFBMEI7QUFDckQscUNBQU8seUJBQVMsSUFBSSxFQUFFLFFBQVEsMEJBQTBCO0FBQUEsRUFDMUQsQ0FBQztBQUNILENBQUM7R0FFRCxnQ0FBUyx1QkFBdUIsTUFBTTtBQUNwQywrQkFBRyxnREFBZ0QsTUFBTTtBQUN2RCxxQ0FBTyxxQkFBSyxFQUFFLEdBQUcsR0FBRyxHQUFHLElBQUksQ0FBQyxDQUFDLEVBQUUsUUFBUTtBQUFBLE1BQ3JDLFNBQVMsQ0FBQyxFQUFFLE1BQU0sUUFBUSxNQUFNLGtCQUFrQixDQUFDO0FBQUEsSUFDckQsQ0FBQztBQUFBLEVBQ0gsQ0FBQztBQUNILENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIl9zaGFyZWQudGVzdC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBkZXNjcmliZSwgaXQsIGV4cGVjdCwgdmksIGJlZm9yZUVhY2ggfSBmcm9tICd2aXRlc3QnO1xuXG52aS5tb2NrKCdAcGFwZXJjdXNwL2ZsYWdzL3NlcnZlcicsICgpID0+ICh7IGdldEZsYWc6IHZpLmZuKCkgfSkpO1xuXG5pbXBvcnQgeyBsZWFybmluZ1BhY2tzRW5hYmxlZCwgRkxBR19PRkYsIHRleHQgfSBmcm9tICcuL19zaGFyZWQnO1xuaW1wb3J0IHsgZ2V0RmxhZyB9IGZyb20gJ0BwYXBlcmN1c3AvZmxhZ3Mvc2VydmVyJztcblxuY29uc3QgbW9ja2VkR2V0RmxhZyA9IHZpLm1vY2tlZChnZXRGbGFnKTtcblxuZGVzY3JpYmUoJ2xlYXJuaW5nUGFja3NFbmFibGVkJywgKCkgPT4ge1xuICBiZWZvcmVFYWNoKCgpID0+IHZpLmNsZWFyQWxsTW9ja3MoKSk7XG5cbiAgaXQoJ3JldHVybnMgdHJ1ZSB3aGVuIHRoZSBMRUFSTklOR19QQUNLUyBmbGFnIGlzIG9uJywgYXN5bmMgKCkgPT4ge1xuICAgIG1vY2tlZEdldEZsYWcubW9ja1Jlc29sdmVkVmFsdWUodHJ1ZSk7XG4gICAgZXhwZWN0KGF3YWl0IGxlYXJuaW5nUGFja3NFbmFibGVkKCkpLnRvQmUodHJ1ZSk7XG4gIH0pO1xuXG4gIGl0KCdyZXR1cm5zIGZhbHNlIHdoZW4gdGhlIGZsYWcgaXMgb2ZmJywgYXN5bmMgKCkgPT4ge1xuICAgIG1vY2tlZEdldEZsYWcubW9ja1Jlc29sdmVkVmFsdWUoZmFsc2UpO1xuICAgIGV4cGVjdChhd2FpdCBsZWFybmluZ1BhY2tzRW5hYmxlZCgpKS50b0JlKGZhbHNlKTtcbiAgfSk7XG5cbiAgaXQoJ2RlZmF1bHRzIHRvIHRydWUgKHJlc2lsaWVudCkgd2hlbiB0aGUgZmxhZyBpbmZyYSB0aHJvd3MgKGRlZmF1bHQtT04gZmxhZyknLCBhc3luYyAoKSA9PiB7XG4gICAgbW9ja2VkR2V0RmxhZy5tb2NrUmVqZWN0ZWRWYWx1ZShuZXcgRXJyb3IoJ2ZsYWcgc3RvcmUgZG93bicpKTtcbiAgICBleHBlY3QoYXdhaXQgbGVhcm5pbmdQYWNrc0VuYWJsZWQoKSkudG9CZSh0cnVlKTtcbiAgfSk7XG59KTtcblxuZGVzY3JpYmUoJ0ZMQUdfT0ZGIGVudmVsb3BlJywgKCkgPT4ge1xuICBpdCgnaXMgYSBmZWF0dXJlLWRpc2FibGVkIHJlZnVzYWwgbmFtaW5nIHRoZSBmbGFnJywgKCkgPT4ge1xuICAgIGV4cGVjdChGTEFHX09GRi5vaykudG9CZShmYWxzZSk7XG4gICAgZXhwZWN0KEZMQUdfT0ZGLnJlYXNvbikudG9CZSgnZmVhdHVyZS1kaXNhYmxlZCcpO1xuICAgIGV4cGVjdChGTEFHX09GRi5mbGFnKS50b0JlKCdwYXBlcmN1c3AtbGVhcm5pbmctcGFja3MnKTtcbiAgICBleHBlY3QoRkxBR19PRkYuaGludCkudG9NYXRjaCgvcGFwZXJjdXNwLWxlYXJuaW5nLXBhY2tzLyk7XG4gIH0pO1xufSk7XG5cbmRlc2NyaWJlKCd0ZXh0KCkgTUNQIGVudmVsb3BlJywgKCkgPT4ge1xuICBpdCgnd3JhcHMgYSBwYXlsb2FkIGFzIGEgSlNPTiB0ZXh0IGNvbnRlbnQgYmxvY2snLCAoKSA9PiB7XG4gICAgZXhwZWN0KHRleHQoeyBhOiAxLCBiOiAneCcgfSkpLnRvRXF1YWwoe1xuICAgICAgY29udGVudDogW3sgdHlwZTogJ3RleHQnLCB0ZXh0OiAne1wiYVwiOjEsXCJiXCI6XCJ4XCJ9JyB9XSxcbiAgICB9KTtcbiAgfSk7XG59KTtcbiJdLCJmaWxlIjoiL2xpYi9hZ2VudC10b29scy9sZWFybmluZ19wYWNrcy9fc2hhcmVkLnRlc3QudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9hZ2VudC10b29scy9sZWFybmluZ19wYWNrcy9fc2hhcmVkLnRlc3QudHMiLCIvbGliL2FnZW50LXRvb2xzL2xlYXJuaW5nX3BhY2tzL19zaGFyZWQudGVzdC50cyIsW11d

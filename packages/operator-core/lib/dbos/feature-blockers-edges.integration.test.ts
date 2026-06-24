@@ -115,7 +115,10 @@ describe('EI-1 edge blocking (real PG)', () => {
 // pure blockedBy derivation above is the other half). ──
 async function seedFeature(opts: {
   id: string;
+  /** legacy plan link via metadata->>'source_plan' (pre-promotion features) */
   sourcePlan?: string | null;
+  /** first-class plan link via the source_plan_slug COLUMN (promotion / convert) */
+  sourcePlanSlug?: string | null;
   origin?: string | null;
   auditVerdict?: string | null;
   status?: string;
@@ -124,9 +127,9 @@ async function seedFeature(opts: {
   const metaJson = opts.sourcePlan != null ? JSON.stringify({ source_plan: opts.sourcePlan }) : null;
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (workspace_id, harness_slug, feature_id, status, item_kind, metadata, origin, audit_verdict)
+      (workspace_id, harness_slug, feature_id, status, item_kind, metadata, source_plan_slug, origin, audit_verdict)
     VALUES ('default', 'demo', ${opts.id}, ${opts.status ?? 'todo'}, ${opts.itemKind ?? 'feature'},
-            ${metaJson}::text::jsonb, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
+            ${metaJson}::text::jsonb, ${opts.sourcePlanSlug ?? null}, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
 }
 async function seedPlan(slug: string, opStatus: string): Promise<void> {
   await db.sql`
@@ -172,5 +175,34 @@ describe('readFrontierFeatures — started-plan + auditor gates (real PG)', () =
     await seedFeature({ id: 'F-unstarted', sourcePlan: 'plan-other', origin: 'remote', auditVerdict: 'admit' });
     const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
     expect(frontierIds(frontier)).toEqual(['F-ok']);
+  });
+
+  // ── ledger P-004 regression: plan→work-item promotion writes the first-class
+  // `source_plan_slug` COLUMN, NOT metadata->>'source_plan'. Before the fix the
+  // frontier gated only on the metadata key, so a promoted item (column set, meta
+  // NULL) slipped through the IS-NULL leg as plan-less "always eligible" — wrongly
+  // dispatchable even from a STOPPED plan. These prove the column is gated. ──
+  it('P-004: a promoted feature (source_plan_slug COLUMN) is gated by its plan’s started-state', async () => {
+    await seedPlan('plan-started', 'started');
+    await seedPlan('plan-draft', 'draft');
+    // Promoted items: source_plan_slug column set, metadata->>'source_plan' NULL.
+    await seedFeature({ id: 'F-col-started', sourcePlanSlug: 'plan-started' }); // started → pickable
+    await seedFeature({ id: 'F-col-draft', sourcePlanSlug: 'plan-draft' }); // not started → excluded
+    await seedFeature({ id: 'F-col-ghost', sourcePlanSlug: 'plan-missing' }); // no plan row → excluded
+    await seedFeature({ id: 'F-col-noplan', sourcePlanSlug: null }); // genuinely plan-less → pickable
+    const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
+    expect(frontierIds(frontier)).toEqual(['F-col-noplan', 'F-col-started']);
+  });
+
+  it('P-004: the COLUMN takes precedence and the legacy metadata key still works (COALESCE)', async () => {
+    await seedPlan('plan-started', 'started');
+    // Legacy feature: only metadata->>'source_plan' (pre-promotion) → still gated.
+    await seedFeature({ id: 'F-meta-started', sourcePlan: 'plan-started' });
+    await seedFeature({ id: 'F-meta-unstarted', sourcePlan: 'plan-stopped' });
+    // Column-first precedence: column points at a started plan, stale metadata at an
+    // unstarted one — COALESCE(column, meta) resolves to the started plan → pickable.
+    await seedFeature({ id: 'F-col-wins', sourcePlanSlug: 'plan-started', sourcePlan: 'plan-stopped' });
+    const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
+    expect(frontierIds(frontier)).toEqual(['F-col-wins', 'F-meta-started']);
   });
 });

@@ -28,9 +28,33 @@ import { gatherLiveBees } from '../fleet/placement-gather';
 import { readInbox } from '../agent-tools/coordination/messages';
 import { runWithWorkspace } from '../workspace-als';
 import { getOrgPg } from '@papercusp/db-org';
-import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee, type BriefInboxItem } from './queen-brief';
+import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee, type BriefInboxItem, type BriefCapacity } from './queen-brief';
 import { overwatchAliveForQueen } from '../overwatch/cross-monitor';
 import { getOwnerSteering, isPausedNow, hasActiveThrottle, type OwnerSteering } from '../owner-steering';
+import { fetchGatewayHeadroom } from '../inference-gateway/observability';
+import { buildCapacityReport } from '../fleet/capacity-dispatch';
+import { parsePriorityTierMap } from '@papercusp/papercusp-shared/agent';
+
+/** Live inference-pool capacity → the floor's Capacity panel (queen-capacity-aware-dispatch P-002). The
+ *  SOURCE-side read of the shared gateway oracle (D-007), so the Queen sizes the batch to what the pool can
+ *  FEED. Fail-soft + gated: when the gateway is off / unreachable / the fetch errors, returns undefined and
+ *  the panel is omitted (never blocks the brief, never shows a misleading reading). */
+async function gatherCapacity(): Promise<BriefCapacity | undefined> {
+  try {
+    const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
+    const [gwOn, clampArmed] = await Promise.all([
+      getFlag(FLAGS.INFERENCE_GATEWAY, 'system').catch(() => false),
+      getFlag(FLAGS.QUEEN_CAPACITY_DISPATCH, 'system').catch(() => false),
+    ]);
+    if (!gwOn) return undefined; // no capacity oracle when the gateway is off → omit the panel
+    const hr = await fetchGatewayHeadroom({ timeoutMs: 1200 });
+    if (!hr.reachable) return undefined; // fail-soft: omit rather than render a misleading "unreachable" panel
+    const r = buildCapacityReport(hr, { clampArmed, tierMap: parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP) });
+    return { factor: r.factor, dispatchBudget: r.dispatchBudget, utilizationPct: r.utilizationPct, paused: r.paused, advice: r.advice };
+  } catch {
+    return undefined;
+  }
+}
 
 /** Live hive bees → the floor's bee load + liveness (warm-inject-vs-spawn signal).
  *  gatherLiveBees already excludes non-bees + joins load/liveness; fail-soft. */
@@ -188,7 +212,7 @@ export async function computeQueenWakeBrief(
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive] =
+    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive, capacity] =
       await Promise.all([
         scopeFilter ? surveyHive(workspaceId, installSlug, { scopeFilter }) : surveyHive(workspaceId, installSlug),
         getHiveCarryNote(workspaceId).catch(() => null),
@@ -198,6 +222,7 @@ export async function computeQueenWakeBrief(
         gatherBees(workspaceId),
         gatherInbox(workspaceId, installSlug),
         gatherOverwatchLiveness(workspaceId, installSlug),
+        gatherCapacity(),
       ]);
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {
@@ -208,6 +233,7 @@ export async function computeQueenWakeBrief(
       ...(bees.length > 0 ? { bees } : {}),
       ...(inbox.length > 0 ? { inbox } : {}),
       ...(overwatchAlive !== undefined ? { overwatchAlive } : {}),
+      ...(capacity ? { capacity } : {}),
       ...(ownerSteering ? { ownerSteering } : {}),
     });
     return renderQueenBrief({ floor, carryNote });

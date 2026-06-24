@@ -106,7 +106,12 @@ export type WatchdogSource =
   // (the 06-12 DBOS incident class). Detected OUT-OF-BAND by lib/red-queen/
   // engine-death.ts (P-031 / FB-20) since the watchdog rides the engine it
   // would be watching:
-  | 'routine-engine-death';
+  | 'routine-engine-death'
+  // a STARTED+eligible plan with open plan-items but ZERO work-items — plan→work-item
+  // promotion silently stopped producing placeable work (the recurrence guard for the
+  // unified-work-item-ledger P-003 silent-zero class; detector zero-promotion-detect.ts,
+  // gated by papercusp-plan-workitem-promotion so it is inert while promotion is dark):
+  | 'zero-promotion';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -1860,6 +1865,14 @@ export async function defaultPapercuspCollectors(
       name: 'papercusp-memory-recall-zero-hit',
       collect: () => import('./learning-slo').then((m) => m.memoryZeroHitCollector(opts)),
     },
+    // unified-work-item-ledger P-009: the recurrence guard for the P-003 silent-zero
+    // promotion class — a started+eligible plan with open items but ZERO work-items.
+    // Gated by papercusp-plan-workitem-promotion (reports a 'dark' note while OFF so it
+    // is inert while promotion is dark). SQL-only, one workspace-scoped query.
+    {
+      name: 'papercusp-zero-promotion',
+      collect: () => import('./zero-promotion-detect').then((m) => m.collectZeroPromotionSignals(workspaceId)),
+    },
   ];
 }
 
@@ -1893,6 +1906,9 @@ const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
   'stalled-feature', 'unresolved-escalation', 'escalation-spike', 'orphaned-spawn',
   'failed-spawn', 'stuck-plan', 'smoke-fail', 'fire-circuit-open', 'ship-link-stuck',
   'governor-starvation',
+  // zero-promotion is per-plan/per-harness: a torn-down benchmark instance's
+  // started plan firing is test debris, not an improvement (P-006 dedup class).
+  'zero-promotion',
 ]);
 
 /** A signal is ephemeral-benchmark debris when it is a per-harness source AND any slug it

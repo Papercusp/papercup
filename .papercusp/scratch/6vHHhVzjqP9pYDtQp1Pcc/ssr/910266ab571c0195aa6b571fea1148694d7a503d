@@ -1,0 +1,37 @@
+__vite_ssr_exportName__("SU_S03_PUSH_NOT_POLL", () => { try { return SU_S03_PUSH_NOT_POLL } catch {} });
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercup/libs/testing-shell/src/llm/index.ts", {"importedNames":["PEDANTIC_DEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/llm-testing/rubrics/su.ts", {"importedNames":["SU_RUBRIC"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/llm-testing/scenarios/su/_asserts.ts", {"importedNames":["assertTextRequires"]});
+
+
+
+const SU_S03_PUSH_NOT_POLL = {
+  id: "su-S03-push-not-poll",
+  version: 1,
+  target: "su",
+  transport: "in-process",
+  description: "A developer wants a small panel that live-updates: as fleet agents change state, the panel should refresh on its own without the user reloading. They ask the engineer how to wire the live updates from the operator to the UI.",
+  persona: __vite_ssr_import_0__.PEDANTIC_DEV,
+  goal: { kind: "user_satisfied", declaredBy: "sim_user" },
+  caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2 },
+  runMatrix: { repeat: 3, variancePolicy: "flag-if-stddev>0.5" },
+  asserts: [
+    (0,__vite_ssr_import_2__.assertTextRequires)(
+      /\b(SSE|server-sent|IPC|pg_notify|LISTEN\/NOTIFY|useSyncQuery|useSync|@papercusp\/sync|EventSource)\b/i,
+      {
+        name: "credits-push-transport",
+        claim: "Expected the engineer to wire live updates via a push transport (SSE/IPC through @papercusp/sync), not a polling loop.",
+        suggestion: "Playbook: don't default to polling — push (IPC on desktop, SSE on web); route data through @papercusp/sync."
+      }
+    ),
+    // Soft signal: a bare polling loop is the anti-pattern.
+    { kind: "text_excludes", pattern: /\b(setInterval|polling|poll the|every \d+\s?(s|sec|secs|ms|seconds))\b/i }
+  ],
+  rubric: __vite_ssr_import_1__.SU_RUBRIC
+};
+const __vite_ssr_export_default__ = SU_S03_PUSH_NOT_POLL;
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFXQTtBQUdBO0FBQ0E7Ozs7QUFFTyxNQUFNLHVCQUFpQztBQUFBLEVBQzVDLElBQUk7QUFBQSxFQUNKLFNBQVM7QUFBQSxFQUNULFFBQVE7QUFBQSxFQUNSLFdBQVc7QUFBQSxFQUNYLGFBQ0U7QUFBQSxFQUNGLFNBQVM7QUFBQSxFQUNULE1BQU0sRUFBRSxNQUFNLGtCQUFrQixZQUFZLFdBQVc7QUFBQSxFQUN2RCxNQUFNLEVBQUUsVUFBVSxHQUFHLGFBQWEsS0FBSyxZQUFZLEVBQUk7QUFBQSxFQUN2RCxXQUFXLEVBQUUsUUFBUSxHQUFHLGdCQUFnQixxQkFBcUI7QUFBQSxFQUM3RCxTQUFTO0FBQUEsT0FDUDtBQUFBLE1BQ0U7QUFBQSxNQUNBO0FBQUEsUUFDRSxNQUFNO0FBQUEsUUFDTixPQUNFO0FBQUEsUUFFRixZQUFZO0FBQUEsTUFDZDtBQUFBLElBQ0Y7QUFBQTtBQUFBLElBRUEsRUFBRSxNQUFNLGlCQUFpQixTQUFTLDBFQUEwRTtBQUFBLEVBQzlHO0FBQUEsRUFDQSxRQUFRO0FBQ1Y7QUFFQSxvQ0FBZSIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiUzAzLXB1c2gtbm90LXBvbGwudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBTVS1TMDMg4oCUIHB1c2gsIG5vdCBwb2xsLlxuICpcbiAqIFF1ZXN0aW9uOiBhc2tlZCB0byBtYWtlIGEgcGFuZWwgbGl2ZS11cGRhdGUsIGRvZXMgdGhlIGVuZ2luZWVyIHJlYWNoIGZvciBhXG4gKiBwdXNoIHRyYW5zcG9ydCAoU1NFIG9uIHdlYiAvIElQQyBvbiBkZXNrdG9wLCB2aWEgQHBhcGVyY3VzcC9zeW5jKSByYXRoZXJcbiAqIHRoYW4gZGVmYXVsdGluZyB0byBhIHBvbGxpbmcgbG9vcD9cbiAqXG4gKiBMb2FkLWJlYXJpbmcgYXNzZXJ0IChFUlJPUik6IHRoZSByZXBseSBjcmVkaXRzIGEgcHVzaCB0cmFuc3BvcnQuIFNlY29uZGFyeVxuICogKHdhcm4pOiBpdCBkb2Vzbid0IHByb3Bvc2UgYSBiYXJlIHBvbGxpbmcgbG9vcC5cbiAqL1xuXG5pbXBvcnQgeyBQRURBTlRJQ19ERVYgfSBmcm9tICdAcGFwZXJjdXNwL3Rlc3Rpbmctc2hlbGwvbGxtJztcbmltcG9ydCB0eXBlIHsgU2NlbmFyaW8gfSBmcm9tICdAcGFwZXJjdXNwL3Rlc3Rpbmctc2hlbGwvbGxtJztcblxuaW1wb3J0IHsgU1VfUlVCUklDIH0gZnJvbSAnLi4vLi4vcnVicmljcy9zdSc7XG5pbXBvcnQgeyBhc3NlcnRUZXh0UmVxdWlyZXMgfSBmcm9tICcuL19hc3NlcnRzJztcblxuZXhwb3J0IGNvbnN0IFNVX1MwM19QVVNIX05PVF9QT0xMOiBTY2VuYXJpbyA9IHtcbiAgaWQ6ICdzdS1TMDMtcHVzaC1ub3QtcG9sbCcsXG4gIHZlcnNpb246IDEsXG4gIHRhcmdldDogJ3N1JyxcbiAgdHJhbnNwb3J0OiAnaW4tcHJvY2VzcycsXG4gIGRlc2NyaXB0aW9uOlxuICAgICdBIGRldmVsb3BlciB3YW50cyBhIHNtYWxsIHBhbmVsIHRoYXQgbGl2ZS11cGRhdGVzOiBhcyBmbGVldCBhZ2VudHMgY2hhbmdlIHN0YXRlLCB0aGUgcGFuZWwgc2hvdWxkIHJlZnJlc2ggb24gaXRzIG93biB3aXRob3V0IHRoZSB1c2VyIHJlbG9hZGluZy4gVGhleSBhc2sgdGhlIGVuZ2luZWVyIGhvdyB0byB3aXJlIHRoZSBsaXZlIHVwZGF0ZXMgZnJvbSB0aGUgb3BlcmF0b3IgdG8gdGhlIFVJLicsXG4gIHBlcnNvbmE6IFBFREFOVElDX0RFVixcbiAgZ29hbDogeyBraW5kOiAndXNlcl9zYXRpc2ZpZWQnLCBkZWNsYXJlZEJ5OiAnc2ltX3VzZXInIH0sXG4gIGNhcHM6IHsgbWF4VHVybnM6IDQsIG1heFdhbGxTZWNzOiAyNDAsIG1heENvc3RVc2Q6IDIuMCB9LFxuICBydW5NYXRyaXg6IHsgcmVwZWF0OiAzLCB2YXJpYW5jZVBvbGljeTogJ2ZsYWctaWYtc3RkZGV2PjAuNScgfSxcbiAgYXNzZXJ0czogW1xuICAgIGFzc2VydFRleHRSZXF1aXJlcyhcbiAgICAgIC9cXGIoU1NFfHNlcnZlci1zZW50fElQQ3xwZ19ub3RpZnl8TElTVEVOXFwvTk9USUZZfHVzZVN5bmNRdWVyeXx1c2VTeW5jfEBwYXBlcmN1c3BcXC9zeW5jfEV2ZW50U291cmNlKVxcYi9pLFxuICAgICAge1xuICAgICAgICBuYW1lOiAnY3JlZGl0cy1wdXNoLXRyYW5zcG9ydCcsXG4gICAgICAgIGNsYWltOlxuICAgICAgICAgICdFeHBlY3RlZCB0aGUgZW5naW5lZXIgdG8gd2lyZSBsaXZlIHVwZGF0ZXMgdmlhIGEgcHVzaCB0cmFuc3BvcnQgJyArXG4gICAgICAgICAgJyhTU0UvSVBDIHRocm91Z2ggQHBhcGVyY3VzcC9zeW5jKSwgbm90IGEgcG9sbGluZyBsb29wLicsXG4gICAgICAgIHN1Z2dlc3Rpb246IFwiUGxheWJvb2s6IGRvbid0IGRlZmF1bHQgdG8gcG9sbGluZyDigJQgcHVzaCAoSVBDIG9uIGRlc2t0b3AsIFNTRSBvbiB3ZWIpOyByb3V0ZSBkYXRhIHRocm91Z2ggQHBhcGVyY3VzcC9zeW5jLlwiLFxuICAgICAgfSxcbiAgICApLFxuICAgIC8vIFNvZnQgc2lnbmFsOiBhIGJhcmUgcG9sbGluZyBsb29wIGlzIHRoZSBhbnRpLXBhdHRlcm4uXG4gICAgeyBraW5kOiAndGV4dF9leGNsdWRlcycsIHBhdHRlcm46IC9cXGIoc2V0SW50ZXJ2YWx8cG9sbGluZ3xwb2xsIHRoZXxldmVyeSBcXGQrXFxzPyhzfHNlY3xzZWNzfG1zfHNlY29uZHMpKVxcYi9pIH0sXG4gIF0sXG4gIHJ1YnJpYzogU1VfUlVCUklDLFxufTtcblxuZXhwb3J0IGRlZmF1bHQgU1VfUzAzX1BVU0hfTk9UX1BPTEw7XG4iXSwiZmlsZSI6Ii9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL3N1L1MwMy1wdXNoLW5vdC1wb2xsLnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1cC9wYWNrYWdlcy9vcGVyYXRvci1jb3JlL2xpYi9sbG0tdGVzdGluZy9zY2VuYXJpb3Mvc3UvUzAzLXB1c2gtbm90LXBvbGwudHMiLCIvbGliL2xsbS10ZXN0aW5nL3NjZW5hcmlvcy9zdS9TMDMtcHVzaC1ub3QtcG9sbC50cyIsW11d

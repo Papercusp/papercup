@@ -33,6 +33,15 @@ export interface GatewayHeadroom {
   queueDepth?: number;
   /** Per-priority queue breakdown (queen/interactive vs batch). */
   byPriority?: { priority: number; count: number }[];
+  /** Per-TIER admission breakdown (gateway-priority-tiers-2026-06-22) — present only when the gateway's
+   *  tier layer is on (GATEWAY_PRIORITY_TIERS). The pool-wide `healthyAccounts` capacity denominator, the
+   *  reserved tier-1 floor, and per-tier {cap,inFlight,queued}. Feeds the Queen's `fleet:capacity` /
+   *  capacity-aware dispatch (the SOURCE-side read of the SHARED oracle, D-007). */
+  priorityTiers?: {
+    healthyAccounts: number;
+    tier1Reserve: number;
+    tiers: { tier: number; cap: number | null; inFlight: number; queued: number }[];
+  };
   totalRequests?: number;
   upstream429?: number;
   queued429?: number;
@@ -55,6 +64,7 @@ export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayH
     inFlight: stats.inFlight,
     queueDepth: stats.queueDepth,
     byPriority: stats.admission?.byPriority,
+    priorityTiers: stats.priorityTiers,
     totalRequests: stats.totalRequests,
     upstream429: stats.upstream429,
     queued429: stats.queued429,
@@ -82,6 +92,28 @@ export async function fetchGatewayHeadroom(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Best-effort predicate: is the inference gateway WHOLESALE-throttled right now — the
+ * bound account paused, or its unified window hard-rejected (the all-accounts 429
+ * storm / no-fresh-account state)? Used to tell a CAPACITY-SHED mid-turn spawn death
+ * (a transient capacity event — RETRYABLE) from a real launcher-host loss (terminal):
+ * a spawn whose 1st gateway call succeeded then exits-1 when its 2nd call hits the
+ * all-accounts storm was being mislabeled `infra_loss` / "host dead/unstable", sending
+ * debuggers hunting a phantom host bug (spawn-classification audit P-006/H13;
+ * agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5).
+ *
+ * Never throws (delegates to fetchGatewayHeadroom, which swallows transport errors) and
+ * uses a short timeout so a wedged gateway can't stall the spawn-fire classifier.
+ * Returns false when the gateway is unreachable OR healthy — the conservative answer,
+ * so the caller keeps the legacy `infra_loss` label and never relabels on uncertainty.
+ */
+export async function gatewayWholesaleThrottled(
+  opts: { port?: number; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<boolean> {
+  const h = await fetchGatewayHeadroom({ timeoutMs: 800, ...opts });
+  return h.reachable === true && (h.paused === true || h.rejected === true);
 }
 
 /**

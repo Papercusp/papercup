@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 25
 
       # Walk for any committed .papercusp directory in the repo (e.g.
       # test fixtures) and audit each one. The script exits 0 on clean,

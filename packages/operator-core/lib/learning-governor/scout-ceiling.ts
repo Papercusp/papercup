@@ -37,26 +37,21 @@ import {
   type ScoutWorkspaceCeilingVerdict,
 } from './core';
 import { listLearningLoops } from './store';
+// P-022: the env-only ceiling reader now lives in scout-budget-overrides (alongside the runtime PG
+// override). Re-exported here for back-compat (its original home + the existing test import).
+import {
+  resolveScoutWorkspaceCeilingUsd,
+  resolveScoutWorkspaceCeilingUsdLive,
+} from './scout-budget-overrides';
+export { resolveScoutWorkspaceCeilingUsd } from './scout-budget-overrides';
 
-/**
- * Resolve the workspace ceiling: the env override
- * (`PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD`) when it parses to a finite ≥ 0
- * number, else {@link DEFAULT_SCOUT_WORKSPACE_CEILING_USD}. (0 is an honest cap —
- * "no scout spend allowed workspace-wide.")
- */
-export function resolveScoutWorkspaceCeilingUsd(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD;
-  if (raw === undefined || raw === '') return DEFAULT_SCOUT_WORKSPACE_CEILING_USD;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SCOUT_WORKSPACE_CEILING_USD;
-}
-
-/** Injectable IO seam (tests). Defaults = the real flag + store + pool + env. */
+/** Injectable IO seam (tests). Defaults = the real flag + store + pool + env+override. */
 export interface ScoutCeilingDeps {
   enabled?: () => Promise<boolean>;
   getSql?: () => Promise<Sql>;
   listLoops?: (sql: Sql, q: { workspaceId: string }) => Promise<LearningLoopRegistration[]>;
-  ceilingUsd?: () => number;
+  /** Resolve the workspace ceiling. Async so the runtime PG override (P-022) can be consulted. */
+  ceilingUsd?: () => number | Promise<number>;
   log?: (msg: string) => void;
 }
 
@@ -69,7 +64,8 @@ const defaultDeps: Required<ScoutCeilingDeps> = {
     return getOrgPg().sql;
   },
   listLoops: listLearningLoops,
-  ceilingUsd: () => resolveScoutWorkspaceCeilingUsd(),
+  // P-022: runtime PG override (learning:set-scout-budget) in front of the env, then the default.
+  ceilingUsd: () => resolveScoutWorkspaceCeilingUsdLive(),
   log: (m) => console.log(`[scout-workspace-ceiling] ${m}`),
 };
 
@@ -105,7 +101,7 @@ export async function scoutWorkspaceCeilingGate(
   deps?: ScoutCeilingDeps,
 ): Promise<ScoutWorkspaceCeilingVerdict> {
   const d = resolve(deps);
-  const ceilingUsd = d.ceilingUsd();
+  const ceilingUsd = await d.ceilingUsd();
   try {
     if (!(await d.enabled())) return allowVerdict(ceilingUsd);
     const sql = await d.getSql();
