@@ -712,12 +712,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // into BOTH scopedApply (the real merge path) AND the global registry below.
   const pendingMemberContent = new PendingMembershipContent();
 
+  // WI-559 / FED-1 (fed-b→fed-a "discovers 0"): the OWNER's hive-home harness must resolve the
+  // WI-259 content-guard hiveHomeSlug too. `resolveHiveHomeProjectionSlug` (above) only resolves the
+  // JOINER rebind via `joinerHiveHomeSlug` (the remote_hive view → null for an owner), so an owner's
+  // home harness ran the 6 content projections with hiveHomeSlug=undefined → `decideMemberContentOp`
+  // hit its no-hiveHome 'drop' branch for EVERY cross-member op, so a member's content never
+  // materialized on the owner. This is the admit/apply ASYMMETRY: STEP-1 admission
+  // (`resolveSameHiveMember`) already resolves the home as `hiveHomeProjectionSlug ??
+  // hiveHomeSlugForHarness(ws, slug)`, but STEP-2 apply only used `hiveHomeProjectionSlug`. Resolve
+  // the OWNER's own hive-home here and thread it as the content-guard FALLBACK below. Scoped to the
+  // case where THIS harness IS its own hive home (home === own slug) so joiner / non-hive resolution
+  // stays byte-unchanged: a joiner passes its rebound `hiveHomeProjectionSlug` (≠ null ⇒ the `??`
+  // never reaches this); a non-hive harness resolves null here ⇒ undefined (today's behavior).
+  const ownHiveHomeSlug = await (async (): Promise<string | undefined> => {
+    try {
+      const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+      const home = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
+      return home === opts.harnessSlug ? home : undefined;
+    } catch {
+      return undefined; // fail-open: today's behavior (no cross-member apply) — boot never throws here
+    }
+  })();
+
   const buildScopedApply = (hiveHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       ownLogKeyHex: ownLog.keyHex,
-      hiveHomeSlug,
+      // WI-559/FED-1: fall back to the OWNER's own hive-home when the joiner rebind
+      // (hiveHomeProjectionSlug) is null, so an owner's home harness engages the WI-259
+      // membership guard instead of dropping every cross-member op (no-hiveHome). For a joiner
+      // `hiveHomeSlug` is its rebound home (≠ null) so `?? ownHiveHomeSlug` is a no-op.
+      hiveHomeSlug: hiveHomeSlug ?? ownHiveHomeSlug,
       resolveAuthorDevice,
       pendingMemberContent,
     });
@@ -767,7 +793,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   registerAllHarnessProjections({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
-    hiveHomeSlug: hiveHomeProjectionSlug,
+    // WI-559/FED-1: owner-home fallback (see ownHiveHomeSlug) so the global-registry content
+    // projections also engage the WI-259 membership guard on an owner's home harness.
+    hiveHomeSlug: hiveHomeProjectionSlug ?? ownHiveHomeSlug,
     // Drain hook: feed the queue ONLY when the re-key is active (rekeyDeps non-null) — else
     // the hive_epoch_keys projection's onEpochKeyApplied stays undefined (today's behavior).
     ...(rekeyDeps ? { onEpochKeyApplied: recordEpochDrain } : {}),
@@ -2066,6 +2094,47 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     await joinForBinding(opts.swarmBinding);
   }
 
+  // ── WI-752 / FED-2 JOIN-retry self-heal ──
+  // The join above is one-shot. When it FAILED (swarmHandle stayed null — DHT
+  // not ready, a gh-identity / keychain blip, a transient fault) the harness is
+  // local-only and, pre-WI-752, would stay so until an operator RESTART. Retry
+  // it on a bounded exponential backoff (sequential self-rearming setTimeout,
+  // P-022 pattern) until it joins; back off to the cap on a persistent failure
+  // so it never hammers, and stop the instant it succeeds. `unref()`'d; cleared
+  // in close() (with `stopped` guarding a mid-tick re-arm).
+  const swarmJoinRetryBaseMs = Number.isFinite(opts.swarmJoinRetryMs as number)
+    ? (opts.swarmJoinRetryMs as number)
+    : DEFAULT_SWARM_JOIN_RETRY_MS;
+  let swarmJoinRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let swarmJoinRetryDelay = swarmJoinRetryBaseMs;
+  function armSwarmJoinRetry(): void {
+    if (swarmJoinRetryBaseMs <= 0 || stopped) return;
+    if (swarmHandle !== null || !opts.swarmBinding) return; // already federating / nothing to join
+    swarmJoinRetryTimer = setTimeout(async () => {
+      swarmJoinRetryTimer = null;
+      if (stopped || swarmHandle !== null || !opts.swarmBinding) return;
+      // joinForBinding swallows its own errors (records swarm_join_failed); it
+      // sets swarmHandle on success. A retry that re-keyed in the meantime is
+      // covered by the swarmHandle !== null guard.
+      await joinForBinding(opts.swarmBinding);
+      if (swarmHandle !== null) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[swarm] join RECOVERED via retry harness=${opts.harnessSlug} — federation re-established without a restart`,
+        );
+        return; // joined — stop retrying
+      }
+      swarmJoinRetryDelay = Math.min(swarmJoinRetryDelay * 2, SWARM_JOIN_RETRY_CAP_MS);
+      armSwarmJoinRetry();
+    }, swarmJoinRetryDelay);
+    if (typeof (swarmJoinRetryTimer as { unref?: () => void }).unref === 'function') {
+      (swarmJoinRetryTimer as { unref: () => void }).unref();
+    }
+  }
+  if (opts.swarmBinding && swarmHandle === null) {
+    armSwarmJoinRetry();
+  }
+
   recordBootEvent(opts.workspaceId, opts.harnessSlug, 'boot_ok');
 
   return {
@@ -2245,6 +2314,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // The retry loop is a self-rearming setTimeout chain (P-022);
           // `stopped` (set above) prevents a mid-tick re-arm.
           clearTimeout(pendingRetryTimer);
+        } catch {
+          // no-op
+        }
+      }
+      if (swarmJoinRetryTimer) {
+        try {
+          // WI-752 join-retry — same self-rearming-chain shape; `stopped`
+          // (set above) prevents a mid-tick re-arm.
+          clearTimeout(swarmJoinRetryTimer);
         } catch {
           // no-op
         }

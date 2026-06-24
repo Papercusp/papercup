@@ -131,21 +131,20 @@ describe('buildLoginSpec', () => {
 });
 
 describe('buildGithubLoginSpec', () => {
-  it('spawns `gh auth login` forced to HTTPS + web/device flow (never SSH)', () => {
+  it('chains `gh auth login` (https+web, never SSH) with `gh auth setup-git`', () => {
     const spec = buildGithubLoginSpec('/home/u');
     expect(spec.cwd).toBe('/home/u');
     expect(spec.env).toEqual({});
-    // Force --git-protocol https --web so gh never takes the SSH-key-upload path
-    // (which fails "key is already in use" when a matching key is already on the
-    // account) and the HTTPS dogfood clone authenticates. gh resolves to an
-    // absolute path when installed (the PTY child has no PATH); otherwise it
-    // falls back to `bash -lc '…'`. Accept either form.
-    if (spec.command === 'bash') {
-      expect(spec.args).toEqual(['-lc', 'gh auth login --hostname github.com --git-protocol https --web']);
-    } else {
-      expect(spec.command.endsWith('gh')).toBe(true);
-      expect(spec.args).toEqual(['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web']);
-    }
+    // Always `bash -lc` so the two steps chain in one pty. Forces HTTPS + web/device
+    // flow (never the SSH-key-upload path that errors "key is already in use"), THEN
+    // wires git's credential helper to gh so the private dogfood clone authenticates
+    // (without setup-git the login succeeds but the clone fails auth_required).
+    expect(spec.command).toBe('bash');
+    expect(spec.args[0]).toBe('-lc');
+    const script = spec.args[1];
+    expect(script).toMatch(/auth login --hostname github\.com --git-protocol https --web/);
+    expect(script).toContain('&&');
+    expect(script).toMatch(/auth setup-git --hostname github\.com/);
   });
 });
 

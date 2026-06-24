@@ -53,12 +53,16 @@ describe('signal_origin column (migration 241)', () => {
   });
 
   it('the CHECK constraint rejects a junk origin at the SQL layer', async () => {
+    // Post-mig-374 engineer_issues is a VIEW over work_items; the signal_origin vocabulary
+    // CHECK moved with the data to the base table (mig-403 work_items_signal_origin_chk, over
+    // the payload->'_ei'->>'signal_origin' JSON path). The INSTEAD OF UPDATE trigger writes
+    // 'mystery' into work_items.payload, where the CHECK rejects it.
     await expect(
       db.adminSql`
         UPDATE harness_shared.engineer_issues
            SET signal_origin = 'mystery'
          WHERE issue_id = 'EI-1'`,
-    ).rejects.toThrow(/engineer_issues_signal_origin_chk/);
+    ).rejects.toThrow(/work_items_signal_origin_chk/);
   });
 
   it('the capture core threads origin → column (the watchdog/drill write path)', async () => {

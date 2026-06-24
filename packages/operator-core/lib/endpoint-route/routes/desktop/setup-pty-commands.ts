@@ -139,23 +139,25 @@ export function buildGithubLoginSpec(home: string): SpawnSpec {
       return null;
     }
   })();
-  // Force HTTPS + the web/device flow. The dogfood clone uses an HTTPS remote,
-  // so SSH is never needed — and gh's interactive SSH path tries to generate +
-  // UPLOAD an SSH key, which fails with "key is already in use" when a matching
-  // key is already on the user's account (exit 1). `--git-protocol https` skips
-  // the protocol prompt AND the SSH-key upload entirely; `--web` runs the
-  // browser/device-code flow and `gh` then configures the git credential helper
-  // for HTTPS so the private clone authenticates.
-  const args = ['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web'];
-  if (resolved) {
-    return { command: resolved, args, cwd: home, env: {} };
-  }
-  return {
-    command: 'bash',
-    args: ['-lc', 'gh auth login --hostname github.com --git-protocol https --web'],
-    cwd: home,
-    env: {},
-  };
+  // Force HTTPS + web/device flow, THEN wire git to gh — both in one shell.
+  //  - `--git-protocol https --web`: the dogfood clone uses an HTTPS remote, so SSH
+  //    is never needed; this skips gh's SSH-key-UPLOAD path (which fails "key is
+  //    already in use" when a matching key is already on the account, exit 1) and
+  //    runs the browser/device-code flow.
+  //  - `&& gh auth setup-git`: gh's `--web` login STORES the token but does NOT wire
+  //    git's credential helper to gh, so a later `git clone` of the private dogfood
+  //    repo can't use the token — it fails auth_required and the setup bar stays
+  //    stuck on "Sign in to GitHub to begin the download". setup-git writes
+  //    `credential.https://github.com.helper = !<gh> auth git-credential`, so git
+  //    then authenticates via gh's stored token. (Found live 2026-06-24: login
+  //    succeeded, github status flipped true, but the clone still couldn't auth.)
+  // Always via `bash -lc` so the two steps chain; the absolute gh path is used
+  // because the Tauri pty child inherits no PATH.
+  const gh = resolved ?? 'gh';
+  const script =
+    `"${gh}" auth login --hostname github.com --git-protocol https --web && ` +
+    `"${gh}" auth setup-git --hostname github.com`;
+  return { command: 'bash', args: ['-lc', script], cwd: home, env: {} };
 }
 
 export default defineTool({
