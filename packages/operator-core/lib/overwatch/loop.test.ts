@@ -44,7 +44,7 @@ vi.mock('../operator-api-base', () => ({ operatorApiBase: () => 'http://op' }));
 vi.mock('../autoloop', () => ({ recordFire: (...a: unknown[]) => recordFire(...a) }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 
-import { handleOverwatchLaunch, setOverwatchLaunchFire, type OverwatchLaunchFireInput } from './loop';
+import { handleOverwatchLaunch, setOverwatchLaunchFire, OVERWATCH_INVOKE_TIMEOUT_MS, type OverwatchLaunchFireInput } from './loop';
 import { getSystemAction } from '../harness/routines/system-actions';
 import { isOverwatchWakerWired, requestOverwatchWake, clearOverwatchWake } from './wake-bridge';
 
@@ -186,6 +186,28 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await vi.waitFor(() => {
       expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
     });
+  });
+
+  it('a stuck invoke promise hits the scorecard deadline backstop instead of staying firing forever', async () => {
+    vi.useFakeTimers();
+    try {
+      loopbackFetch.mockReturnValue(new Promise(() => {}));
+
+      await handleOverwatchLaunch(ctx);
+      await vi.advanceTimersByTimeAsync(OVERWATCH_INVOKE_TIMEOUT_MS + 15_001);
+
+      await vi.waitFor(() => {
+        expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
+      });
+      expect(recordFire).toHaveBeenCalledWith(
+        SLUG,
+        'overwatch',
+        expect.stringContaining('no complete scorecard within 180000ms launch deadline'),
+        'error',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

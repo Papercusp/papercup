@@ -71,6 +71,7 @@ const OVERWATCH_LAUNCH_ACTION = OVERWATCH_WAKE_TARGET_ACTION.startsWith('system:
  *  speak. The invoke route's autonomous-loop ceiling is deliberately long for Queen
  *  and bees, but it leaves the monitor silent for far too long under gateway stalls. */
 export const OVERWATCH_INVOKE_TIMEOUT_MS = 180_000;
+const OVERWATCH_SCORECARD_DEADLINE_GRACE_MS = 15_000;
 
 /** Input to the overwatch launch fire — the resolved role + the computed brief. */
 export interface OverwatchLaunchFireInput {
@@ -123,6 +124,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
   // via the highest-precedence channel (PAPERCUSP_SPAWN_MODEL), separate from the
   // workspace default. Absent ⇒ no pin (workspace/CLI default).
   if (spawnModel && spawnModel.trim()) body.spawnModel = spawnModel.trim();
+  const deadline = armScorecardDeadlineBackstop({ workspaceId, installSlug, role });
   // Stamp the attempt, then refresh the pane's "is-it-alive?" heartbeat strip:
   // `recordFire` wrote a fresh `autoloop_state` row that `overwatch.liveness`
   // reads, so the strip's last-run / countdown / ALIVE badge update live over SSE
@@ -153,6 +155,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
           return;
         }
 
+        if (deadline.fired) return;
         return recordFire(installSlug, role, 'ok', 'ok');
       },
       async (e) => {
@@ -164,7 +167,10 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
       },
     )
     .catch(() => {})
-    .finally(invalidateOverwatchLiveness);
+    .finally(() => {
+      deadline.cancel();
+      invalidateOverwatchLiveness();
+    });
 };
 
 function classifyInvokeBodyFailure(text: string): string | null {
@@ -190,19 +196,47 @@ function classifyInvokeBodyFailure(text: string): string | null {
   return parts.join(' — ');
 }
 
-async function runScorecardBackstop(workspaceId: string, installSlug: string, reason: string): Promise<void> {
+function armScorecardDeadlineBackstop(opts: { workspaceId: string; installSlug: string; role: string }): {
+  fired: boolean;
+  cancel: () => void;
+} {
+  const state = { fired: false, cancel: () => clearTimeout(timer) };
+  const timer = setTimeout(() => {
+    void (async () => {
+      const reason = `no complete scorecard within ${OVERWATCH_INVOKE_TIMEOUT_MS}ms launch deadline`;
+      const res = await runScorecardBackstop(opts.workspaceId, opts.installSlug, reason);
+      if (res.outcome === 'synthesized' || res.outcome === 'error') {
+        state.fired = true;
+        await recordFire(opts.installSlug, opts.role, `error: ${reason}; backstop ${res.outcome}`, 'error');
+        invalidateOverwatchLiveness();
+      }
+    })().catch((e) => {
+      state.fired = true;
+      const detail = e instanceof Error ? e.message : String(e);
+      void recordFire(opts.installSlug, opts.role, `error: scorecard deadline backstop threw: ${detail}`, 'error').finally(
+        invalidateOverwatchLiveness,
+      );
+    });
+  }, OVERWATCH_INVOKE_TIMEOUT_MS + OVERWATCH_SCORECARD_DEADLINE_GRACE_MS);
+  return state;
+}
+
+async function runScorecardBackstop(
+  workspaceId: string,
+  installSlug: string,
+  reason: string,
+): Promise<{ outcome: 'synthesized' | 'skipped' | 'error'; reason: string }> {
   try {
     const { overwatchScorecardEndCheck } = await import('./scorecard-backstop');
     const res = await overwatchScorecardEndCheck({ workspaceId, installSlug });
     if (res.outcome === 'error') {
       console.warn(`[overwatch-loop] ${installSlug}: scorecard backstop failed after launch error (${reason}): ${res.reason}`);
     }
+    return res;
   } catch (e) {
-    console.warn(
-      `[overwatch-loop] ${installSlug}: scorecard backstop threw after launch error (${reason}): ${
-        e instanceof Error ? e.message : e
-      }`,
-    );
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[overwatch-loop] ${installSlug}: scorecard backstop threw after launch error (${reason}): ${msg}`);
+    return { outcome: 'error', reason: msg };
   }
 }
 
