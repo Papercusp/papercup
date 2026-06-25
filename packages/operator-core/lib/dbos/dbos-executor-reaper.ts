@@ -44,7 +44,7 @@ export interface ExecutorReaperResult {
   cancelled: number;
   /** Orphaned workflow_queue rows purged. */
   queuePurged: number;
-  /** Routine ids pushed back to due-now after a no-first-step routineFire was reaped. */
+  /** Routine ids pushed back to due-now after a no-first-output routineFire was reaped. */
   requeuedRoutineIds: string[];
   /** The dead executor ids reaped this pass. */
   deadExecutorIds: string[];
@@ -194,7 +194,7 @@ export async function reapDeadExecutorWorkflows(
                  metadata = COALESCE(metadata, '{}'::jsonb)
                    || jsonb_build_object(
                         'last_error',
-                        'DBOS routineFire entered no DBOS step; executor reaper cancelled the stuck fire and requeued the routine',
+                        'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
                         'last_error_at',
                         now()::text,
                         'last_error_source',

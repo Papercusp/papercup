@@ -42,7 +42,7 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(staleSelect.text).toContain('workflow_deadline_epoch_ms');
   });
 
-  it('reaps stale routineFire rows only when no DBOS operation step has started', async () => {
+  it('reaps stale routineFire rows only when no DBOS operation output was recorded', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];
       if (text.includes('SELECT workflow_uuid')) {
