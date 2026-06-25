@@ -39,12 +39,12 @@ const SPAWNED_AGENTS_DDL = `
 const WS = 'default';
 let db: FreshPgDb;
 
-function recordRow(spawnId: string) {
+function recordRow(spawnId: string, role = 'worker') {
   return async (tx: Parameters<Parameters<typeof admitSpawn>[1]['record']>[0]) => {
     await tx`
       INSERT INTO harness_shared.spawned_agents
         (spawn_id, workspace_id, harness_slug, child_role, run_id, status)
-      VALUES (${spawnId}, ${WS}, 'papercup', 'worker', ${'r-' + spawnId}, 'running')`;
+      VALUES (${spawnId}, ${WS}, 'papercup', ${role}, ${'r-' + spawnId}, 'running')`;
   };
 }
 
@@ -98,6 +98,48 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
     expect(admitted).toHaveLength(1);
     expect(overCap).toHaveLength(7);
     expect(await rowCount()).toBe(1); // no ceiling overshoot, ever
+  });
+
+  it('roleCap counts only that role while the global cap still counts every running spawn', async () => {
+    await admitSpawn(db.sql, {
+      workspaceId: WS,
+      spawnId: 's-doc',
+      idempotencyKey: null,
+      cap: 3,
+      roleCap: { role: 'bee', cap: 1 },
+      record: recordRow('s-doc', 'doc-steward'),
+    });
+
+    const bee = await admitSpawn(db.sql, {
+      workspaceId: WS,
+      spawnId: 's-bee',
+      idempotencyKey: null,
+      cap: 3,
+      roleCap: { role: 'bee', cap: 1 },
+      record: recordRow('s-bee', 'bee'),
+    });
+    expect(bee.admission).toEqual({ kind: 'admitted' });
+
+    const secondBee = await admitSpawn(db.sql, {
+      workspaceId: WS,
+      spawnId: 's-bee-2',
+      idempotencyKey: null,
+      cap: 3,
+      roleCap: { role: 'bee', cap: 1 },
+      record: recordRow('s-bee-2', 'bee'),
+    });
+    expect(secondBee.admission).toEqual({ kind: 'over_cap', running: 1, cap: 1, role: 'bee' });
+
+    const docAgainstGlobal = await admitSpawn(db.sql, {
+      workspaceId: WS,
+      spawnId: 's-doc-2',
+      idempotencyKey: null,
+      cap: 2,
+      roleCap: { role: 'bee', cap: 10 },
+      record: recordRow('s-doc-2', 'doc-steward'),
+    });
+    expect(docAgainstGlobal.admission).toEqual({ kind: 'over_cap', running: 2, cap: 2 });
+    expect(await rowCount()).toBe(2);
   });
 
   it('CONCURRENT: two admissions sharing an idempotencyKey yield one row + a duplicate pointing at it (P-017/EI-73)', async () => {

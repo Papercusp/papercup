@@ -85,7 +85,7 @@ export function spawnConcurrencyCeiling(): number {
  * any owner-steering read failure leaves the system ceiling in effect. Resolves the
  * home hive the same way the model-tier session override does (resolveHiveHomeSlug).
  */
-export async function effectiveSpawnCeiling(workspaceId: string): Promise<number> {
+async function ownerMaxBeesCeiling(workspaceId: string): Promise<number | null> {
   const base = spawnConcurrencyCeiling();
   try {
     const [{ getOwnerSteering, effectiveMaxBees }, { resolveHiveHomeSlug }] = await Promise.all([
@@ -93,12 +93,17 @@ export async function effectiveSpawnCeiling(workspaceId: string): Promise<number
       import('../hive/wake'),
     ]);
     const home = resolveHiveHomeSlug();
-    if (!home) return base;
+    if (!home) return null;
     const s = await getOwnerSteering(workspaceId, home);
-    return effectiveMaxBees(s, base);
+    const effective = effectiveMaxBees(s, base);
+    return effective < base ? effective : null;
   } catch {
-    return base;
+    return null;
   }
+}
+
+export async function effectiveSpawnCeiling(workspaceId: string): Promise<number> {
+  return ownerMaxBeesCeiling(workspaceId).then((n) => n ?? spawnConcurrencyCeiling());
 }
 
 /**
@@ -171,9 +176,16 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
   headroom: number;
 }> {
   await reclaimAndAnnounce();
-  const ceiling = await effectiveSpawnCeiling(workspaceId);
-  const running = await countRunning(workspaceId).catch(() => 0);
-  return { ceiling, running, headroom: Math.max(0, ceiling - running) };
+  const systemCeiling = spawnConcurrencyCeiling();
+  const ownerBeeCeiling = await ownerMaxBeesCeiling(workspaceId);
+  const ceiling = ownerBeeCeiling ?? systemCeiling;
+  const [running, runningBees] = await Promise.all([
+    countRunning(workspaceId).catch(() => 0),
+    countRunningByRole(workspaceId, 'bee').catch(() => 0),
+  ]);
+  const globalHeadroom = Math.max(0, systemCeiling - running);
+  const beeHeadroom = ownerBeeCeiling == null ? globalHeadroom : Math.max(0, ownerBeeCeiling - runningBees);
+  return { ceiling, running: runningBees, headroom: Math.min(globalHeadroom, beeHeadroom) };
 }
 
 /**
@@ -410,10 +422,20 @@ async function countRunning(workspaceId: string, db?: Db): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
+async function countRunningByRole(workspaceId: string, role: string, db?: Db): Promise<number> {
+  const sql = db ?? getOrgPg().sql;
+  const rows = await sql<{ n: string }[]>`
+    SELECT count(*)::text AS n FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId}
+       AND child_role = ${role}
+       AND status IN ('running', 'restarting')`;
+  return Number(rows[0]?.n ?? 0);
+}
+
 export type SpawnAdmission =
   | { kind: 'admitted' }
   | { kind: 'duplicate'; spawnId: string }
-  | { kind: 'over_cap'; running: number; cap: number };
+  | { kind: 'over_cap'; running: number; cap: number; role?: string };
 
 /**
  * Atomic spawn admission (audit P-017 + P-039, EI-73): reclaim → idempotency
@@ -438,6 +460,7 @@ export async function admitSpawn(
     spawnId: string;
     idempotencyKey: string | null;
     cap: number;
+    roleCap?: { role: string; cap: number } | null;
     record: (tx: Db) => Promise<void>;
   },
 ): Promise<{ admission: SpawnAdmission; reclaimed: { count: number; workspaces: string[] } }> {
@@ -462,6 +485,13 @@ export async function admitSpawn(
 
     const running = await countRunning(opts.workspaceId, tx);
     if (running >= opts.cap) return { kind: 'over_cap', running, cap: opts.cap };
+
+    if (opts.roleCap) {
+      const roleRunning = await countRunningByRole(opts.workspaceId, opts.roleCap.role, tx);
+      if (roleRunning >= opts.roleCap.cap) {
+        return { kind: 'over_cap', running: roleRunning, cap: opts.roleCap.cap, role: opts.roleCap.role };
+      }
+    }
 
     await opts.record(tx);
     if (opts.idempotencyKey) {
@@ -770,13 +800,16 @@ export async function spawnAgentInHarness(
   // carries the wake key the caller sleeps on.
   let admission: SpawnAdmission;
   let reclaimed: { count: number; workspaces: string[] };
+  const ownerBeeCeiling = role === 'bee' ? await ownerMaxBeesCeiling(input.workspaceId) : null;
   try {
     ({ admission, reclaimed } = await admitSpawn(sql, {
       workspaceId: input.workspaceId,
       spawnId,
       idempotencyKey: idemKey,
-      // Owner max-bees knob clamps the admission cap (queen-steering-panel P-006).
-      cap: await effectiveSpawnCeiling(input.workspaceId),
+      // Always enforce the global safety cap against every spawned role. The owner
+      // max-bees knob is a bee budget, so it is enforced as a second, bee-only cap.
+      cap: spawnConcurrencyCeiling(),
+      roleCap: ownerBeeCeiling == null ? null : { role: 'bee', cap: ownerBeeCeiling },
       record: (tx) =>
         recordSpawn(tx, {
           spawnId,
@@ -831,8 +864,10 @@ export async function spawnAgentInHarness(
   }
   if (admission.kind === 'over_cap') {
     const awaitEvent = spawnSlotEventKey(input.workspaceId);
+    const capLabel = admission.role === 'bee' ? 'owner maxBees' : 'maxSimultaneousAgents';
+    const runningLabel = admission.role === 'bee' ? `${admission.running} bee spawns` : `${admission.running} spawns`;
     const res = await fail(
-      `spawn rejected: ${admission.running} spawns already running (fleet ceiling ${admission.cap} — maxSimultaneousAgents). ` +
+      `spawn rejected: ${runningLabel} already running (fleet ceiling ${admission.cap} — ${capLabel}). ` +
       `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
     );
     return { ...res, awaitEvent };
