@@ -17,6 +17,7 @@ import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { runKnowledgeTier } from '../ask-knowledge-tier';
 import { openConversation } from '../conversations';
+import { hardText, LIMITS } from '../../limits';
 
 export default defineTool({
   name: 'coord:ask',
@@ -34,7 +35,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    question: z.string().min(1).max(2000),
+    question: hardText(LIMITS.ANNOTATION),
     topics: z.array(z.string().min(1)).max(8).optional().describe('Topic slugs to route a miss to (topics:list). Strongly recommended — without them only direct subscribers see the question.'),
     harness: z.string().optional().describe('Scope the question to a harness (restricts knowledge search + tags the conversation harness-scoped).'),
     force_open: z.boolean().optional().describe('Open a peer question even if the knowledge tier returned candidates (use when the inline candidates did not answer you).'),

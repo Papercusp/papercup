@@ -328,6 +328,19 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
     maintenance_work_mem: `${t.maintenanceWorkMemMb}MB`,
     work_mem: `${t.workMemMb}MB`,
     wal_buffers: `${t.walBuffersMb}MB`,
+    // max_slot_wal_keep_size — disk-fill-SPOF defense (WI-347; complements the
+    // WARN-only detector in operator-core storage/replication-slot-alarm.ts).
+    // With PG's default -1 (UNLIMITED), a stuck/abandoned replication slot pins
+    // WAL forever → the data volume silently fills → whole-cluster outage; the
+    // P-009 alarm only warns, it can't cap growth. A bound makes PG auto-
+    // invalidate a runaway slot before the disk fills (breaks one recoverable
+    // replica vs a fatal full disk). Reloadable (SIGHUP — no restart needed).
+    // Fixed, not host-scaled: this is a safety ceiling, not a perf knob.
+    // Papercusp federation is hyperbee/substrate-based — pg_replication_slots is
+    // empty on the live cluster — so this never bites normal operation; it only
+    // ever caps a pathological stuck slot. 32GB ≫ normal WAL churn (max_wal_size
+    // ~1GB) and ≪ the cluster's data volume.
+    max_slot_wal_keep_size: '32GB',
     max_worker_processes: String(t.maxWorkerProcesses),
     max_parallel_workers: String(t.maxParallelWorkers),
     max_parallel_workers_per_gather: String(t.maxParallelWorkersPerGather),

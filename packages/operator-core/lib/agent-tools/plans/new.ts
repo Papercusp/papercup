@@ -14,6 +14,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import * as fs from 'node:fs/promises';
@@ -57,7 +58,7 @@ export const argsSchema = z.object({
     .describe(
       'Topic slug in kebab-case. A -YYYY-MM-DD suffix is appended automatically if not already present (plan filename convention, §3.1).',
     ),
-  title: z.string().min(1).max(200),
+  title: hardText(LIMITS.SHORT_TITLE),
   status: z.enum([...PLAN_STATUSES] as [string, ...string[]]).optional(),
   owner: z.string().email().optional(),
   rationale: z

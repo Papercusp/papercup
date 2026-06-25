@@ -32,6 +32,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
+import { hardText, LIMITS } from '../../limits';
 import { findUnknownFromItems } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug, resolvePlanScope } from '../../plans/source';
@@ -238,7 +239,7 @@ export function buildPromotedRows(
 }
 
 const FEATURE_INPUT = z.object({
-  title: z.string().min(1).max(200),
+  title: hardText(LIMITS.SHORT_TITLE),
   body: z.string().optional(),
   acceptance: z.array(z.string().min(1)).optional(),
   from_items: z

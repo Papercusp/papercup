@@ -32,6 +32,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -94,7 +95,7 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('force'),
-      reason: z.string().min(8).max(1000).describe('Why a force (un-green) deploy is justified — loudly audited.'),
+      reason: hardText(LIMITS.SHORT_TITLE, { min: 8 }).describe('Why a force (un-green) deploy is justified — loudly audited.'),
       acknowledgeRedTests: z
         .array(z.string().min(1))
         .min(1)

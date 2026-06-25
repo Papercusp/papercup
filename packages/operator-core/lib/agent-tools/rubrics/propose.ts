@@ -6,6 +6,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { proposeRubric } from '../../rubrics';
@@ -35,8 +36,8 @@ export default defineTool({
   args: z.object({
     rubricId: z.string().min(1).max(120).describe('slug, e.g. "hive-coordination-health"'),
     characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
-    title: z.string().min(1).max(200),
-    description: z.string().max(8000).optional(),
+    title: hardText(LIMITS.SHORT_TITLE),
+    description: hardText(8000).optional(),
     criteria: z.array(criterion).min(1).describe('the per-characteristic gradeable items'),
     ratingScale: z
       .array(z.string())

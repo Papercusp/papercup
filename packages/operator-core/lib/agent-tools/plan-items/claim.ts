@@ -17,6 +17,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
@@ -41,7 +42,7 @@ const itemSpec = z.object({
   plan: z.string().min(1).describe('plan slug'),
   item: z.string().min(1).describe('plan-item id (P-NNN)'),
   harness: z.string().max(120).optional().describe('per-item harness (else the batch `harness` default)'),
-  intent: z.string().max(400).optional().describe('one line on what you are doing'),
+  intent: hardText(LIMITS.SHORT_TITLE).optional().describe('one line on what you are doing'),
   mode: z.enum(['availability', 'activity']).optional().describe('force the liveness mode'),
   ttl_sec: z.number().int().positive().max(7200).optional().describe('lease TTL seconds'),
 });
@@ -62,7 +63,7 @@ export default defineTool({
     .object({
       plan: z.string().min(1).optional().describe('plan slug (use with `item` / `itemIds`)'),
       item: z.string().min(1).optional().describe('single-claim shorthand: the plan-item id (P-NNN)'),
-      intent: z.string().max(400).optional().describe('one line on what you are doing (the inline item / every id in `itemIds`)'),
+      intent: hardText(LIMITS.SHORT_TITLE).optional().describe('one line on what you are doing (the inline item / every id in `itemIds`)'),
       mode: z.enum(['availability', 'activity']).optional().describe('force the liveness mode (default: resolved from the harness — LOCAL=availability, SHARED=activity); the inline item / itemIds'),
       ttl_sec: z.number().int().positive().max(7200).optional().describe('lease TTL seconds (default 1200 availability / 1800 activity); the inline item / itemIds'),
       itemIds: z.array(z.string().min(1)).min(1).max(200).optional().describe('claim MANY items in `plan` (homogeneous)'),

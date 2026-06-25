@@ -27,6 +27,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { maskFences } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 const PNN = /P-\d{3,}/g;
 
@@ -87,7 +88,7 @@ const itemSpec = z.object({
   itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   blockedBy: BLOCKED_BY.optional().describe('per-item blocked-by list (else the batch `blockedBy`)'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
-  rationale: z.string().max(400).optional().describe('per-item revision rationale (else the batch `rationale`)'),
+  rationale: softText(LIMITS.ANNOTATION).optional().describe('per-item revision rationale (else the batch `rationale`). Auto-truncated to 2000 chars if longer.'),
 });
 
 const argsSchema = z
@@ -108,11 +109,9 @@ const argsSchema = z
       .max(200)
       .optional()
       .describe('set many items at once — each { slug, itemId, blockedBy, harness?, rationale? }'),
-    rationale: z
-      .string()
-      .max(400)
+    rationale: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('Optional — why the blockers changed. Stored on the plan revision (D-009).'),
+      .describe('Optional — why the blockers changed. Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
   })
   .refine(
     (a) =>
@@ -147,7 +146,7 @@ async function setBlockedByOne(it: BlockedByItem, ctx: UnifiedToolContext): Prom
   const rev = planRevisionCapture(
     ctx as PlanRevisionCtx,
     it.slug,
-    it.rationale,
+    clampText(it.rationale, LIMITS.ANNOTATION),
     harnessSlug ? { harnessSlug } : {},
   );
 

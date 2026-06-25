@@ -18,6 +18,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { COORD_ROLES } from '../coordination/roles';
 import { RISK_TIERS, AUTHORITY_LEVELS } from '@papercusp/plan-parser';
 import { DISPOSITIONS } from '../../decision-ledger/disposition';
@@ -59,7 +60,7 @@ export default defineTool({
       .enum(['reversible', 'irreversible', 'unknown'])
       .optional()
       .describe('Reversibility of the action. Omit/"unknown" ⇒ fail-safe irreversible.'),
-    why: z.string().max(1000).optional().describe('Short reason (defaults to the decision reasons).'),
+    why: hardText(LIMITS.SHORT_TITLE).optional().describe('Short reason (defaults to the decision reasons).'),
     itemRef: z.string().max(200).optional().describe('The item considered (work-item / feature / plan-item / idea id).'),
     actionLedgerId: z
       .number()

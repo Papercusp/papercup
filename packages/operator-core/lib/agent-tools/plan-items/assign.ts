@@ -20,6 +20,7 @@ import { resolvePlanScope } from '../plans/source';
 import { bestEffortOwnerUser, agentNameOwner, registerAgentName } from '../../plan-items/agent-names';
 import { assignItem } from '../../plan-items/assignments';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 interface AssignSpecItem {
   plan: string;
@@ -36,7 +37,7 @@ const itemSpec = z.object({
   assignee: z.string().min(1).max(80).describe('the agent-name to assign to'),
   harness: z.string().max(120).optional().describe('per-item harness (else the batch `harness` default)'),
   strategy: z.string().max(200).optional().describe('optional execution-strategy/blueprint hint'),
-  note: z.string().max(2000).optional(),
+  note: softText(LIMITS.ANNOTATION).optional(),
 });
 
 export default defineTool({
@@ -60,7 +61,7 @@ export default defineTool({
       items: z.array(itemSpec).min(1).max(200).optional().describe('assign many plan items at once — each { plan, item, assignee, harness?, strategy?, note? }'),
       harness: z.string().max(120).optional().describe('default harness for the inline item / itemIds / items that omit one (default: papercup)'),
       strategy: z.string().max(200).optional().describe('optional execution-strategy/blueprint hint (the inline item / every id in `itemIds`)'),
-      note: z.string().max(2000).optional().describe('note for the inline item / every id in `itemIds`'),
+      note: softText(LIMITS.ANNOTATION).optional().describe('note for the inline item / every id in `itemIds`. Auto-truncated to 2000 chars if longer.'),
     })
     .refine(
       (a) =>
@@ -123,7 +124,7 @@ export default defineTool({
           assigneeName: it.assignee,
           assignedByUser: ownerUser,
           strategy: it.strategy ?? null,
-          note: it.note ?? null,
+          note: clampText(it.note, LIMITS.ANNOTATION) ?? null,
         });
         return { ok: true, plan: it.plan, item: it.item, assignment };
       },

@@ -61,12 +61,25 @@ export function backendForLlmCall(model: string | undefined, explicitBackend: Ag
   return isCodexModel(model) ? 'codex' : 'anthropic-direct';
 }
 
+/** Map Papercusp's Codex-facing aliases to the bare ids the Codex CLI accepts. */
+export function modelForLlmCall(model: string | undefined, backend: AgentBackend): string | undefined {
+  if (backend !== 'codex') return model;
+  const trimmed = model?.trim();
+  if (!trimmed) return model;
+  const chatgpt = /^chatgpt:(.+)$/i.exec(trimmed);
+  if (chatgpt) return `gpt-${chatgpt[1]}`;
+  const prefix = 'openai-codex/';
+  if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length);
+  return trimmed;
+}
+
 /**
  * One-shot completion via the `anthropic-direct` backend — the operator's
  * concrete implementation of the lib's injected `LlmCallFn` seam.
  */
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   const backend = backendForLlmCall(opts.model);
+  const model = modelForLlmCall(opts.model, backend);
   let finalText = '';
   let inputTokens = 0;
   let outputTokens = 0;
@@ -89,7 +102,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
 
   for await (const ev of runAgentChat({
     backend,
-    model: opts.model,
+    model,
     systemPromptText: opts.system,
     messages: opts.messages,
     promptText,

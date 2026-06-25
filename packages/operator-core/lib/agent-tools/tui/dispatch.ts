@@ -21,6 +21,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { hardText, LIMITS } from '../limits';
 
 const POLL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -41,7 +42,7 @@ export default defineTool({
     /** Target pui instance (its workbench owner key). */
     client_id: z.string().min(1).max(256),
     /** Intent name, e.g. "get_state" or "set_tab". */
-    intent: z.string().min(1).max(128),
+    intent: hardText(LIMITS.SHORT_TITLE),
     /** Args object passed to the intent handler. */
     args: z.record(z.string(), z.unknown()).optional(),
     /** Long-poll budget; default 5000ms, max 60000ms. */

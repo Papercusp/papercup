@@ -13,6 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
 
@@ -36,8 +37,8 @@ export const exportTool = defineTool({
   args: z.object({
     hive: z.string().min(1).max(120),
     packId: z.string().min(1).max(120).describe('Kebab-case pack id (becomes the Comb listing_ref).'),
-    title: z.string().min(1).max(200),
-    description: z.string().min(1).max(280),
+    title: hardText(LIMITS.SHORT_TITLE),
+    description: hardText(LIMITS.ANNOTATION),
     version: z.string().optional().describe('Three-part semver. Default 1.0.0.'),
     targetDir: z.string().min(1).describe("Absolute path of the member repo's working tree to write into."),
     includePackRows: z.boolean().optional(),
@@ -77,8 +78,8 @@ export const publishTool = defineTool({
   crossWorkspace: true,
   args: z.object({
     packId: z.string().min(1).max(120),
-    title: z.string().min(1).max(200),
-    description: z.string().min(1).max(280),
+    title: hardText(LIMITS.SHORT_TITLE),
+    description: hardText(LIMITS.ANNOTATION),
     repoDir: z.string().min(1).describe('Absolute path of the member repo (its origin remote names the GitHub repo).'),
     workspace: z.string().max(120).optional(),
   }),

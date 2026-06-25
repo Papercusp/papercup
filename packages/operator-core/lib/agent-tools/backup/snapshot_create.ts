@@ -14,6 +14,7 @@ import { workspaceBackupFor } from '../../backup';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { dbosBackupActive } from '../../dbos/dbos-flags';
 import { dbosStarted } from '../../dbos/bootstrap';
+import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'backup:snapshot_create',
@@ -32,11 +33,12 @@ export default defineTool({
     reason: z.enum([
       'pre_destructive', 'post_run', 'plugin_install', 'secret_change', 'manual',
     ]).default('pre_destructive'),
-    note: z.string().max(280).optional(),
+    note: softText(LIMITS.ANNOTATION).optional(),
   }),
   async handler(args) {
     const ws = activeWorkspaceId();
-    const context = args.note ? { note: args.note } : undefined;
+    const note = clampText(args.note, LIMITS.ANNOTATION);
+    const context = note ? { note } : undefined;
     // A/B (dbos-flows P-011): when the backup flag is opted-in AND DBOS actually
     // launched, run the snapshot as a durable workflow (crash-resume via the
     // StepRunner seam); otherwise call snapshot() directly. `getResult` is

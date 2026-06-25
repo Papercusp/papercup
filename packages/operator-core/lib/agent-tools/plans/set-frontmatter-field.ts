@@ -30,6 +30,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { setFrontmatterScalar } from './transfer-owner';
+import { softText, clampText, LIMITS } from '../limits';
 
 /** Keys with a dedicated setter / lifecycle management — not settable here. Each
  *  maps to the tool that owns it, surfaced in the rejection so the caller is
@@ -96,7 +97,7 @@ const argsSchema = z.object({
     .max(2000)
     .nullable()
     .describe('Value to set; null or empty string clears the key. Whitespace is collapsed so it stays a single frontmatter line.'),
-  rationale: z.string().max(400).optional().describe('Why — stored on the plan revision.'),
+  rationale: softText(LIMITS.ANNOTATION).optional().describe('Why — stored on the plan revision. Auto-truncated to 2000 chars if longer.'),
 });
 
 type SetFieldValue =
@@ -143,7 +144,7 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const next = normalizeFieldValue(args.value);
-    const rationale = args.rationale ?? (next ? `set ${key} → ${next}` : `clear ${key}`);
+    const rationale = clampText(args.rationale, LIMITS.ANNOTATION) ?? (next ? `set ${key} → ${next}` : `clear ${key}`);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,

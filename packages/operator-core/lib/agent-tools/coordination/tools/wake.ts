@@ -28,6 +28,7 @@ import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
+import { softText, clampText, LIMITS } from '../../limits';
 
 export default defineTool({
   name: 'coord:wake',
@@ -46,11 +47,9 @@ export default defineTool({
       .string()
       .min(1)
       .describe('The target agent — its ownerId or the short handle from [coord+N]/coord:presence. Single-target only (never "*").'),
-    note: z
-      .string()
-      .max(2000)
+    note: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('Optional one-line reason the target sees on waking (e.g. "your lane is ready — pick it up"). Omit for a bare wake.'),
+      .describe('Optional one-line reason the target sees on waking (e.g. "your lane is ready — pick it up"). Omit for a bare wake. Auto-truncated to 2000 chars if longer.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -102,7 +101,7 @@ export default defineTool({
 
     // Fire the target's inbox-wake key (reuse the shipped fan — no second pump).
     const fan = await wakeRecipients([to], {
-      summary: args.note ?? 'coord:wake — re-orient and continue your lane',
+      summary: clampText(args.note, LIMITS.ANNOTATION) ?? 'coord:wake — re-orient and continue your lane',
       source: identity.ownerId,
       workspaceId,
     });

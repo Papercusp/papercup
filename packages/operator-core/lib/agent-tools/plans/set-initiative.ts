@@ -25,6 +25,7 @@ import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { setFrontmatterScalar } from './transfer-owner';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 /** Collapse whitespace/newlines so the value can never break out of its single
  *  frontmatter line; trim. Empty → null (clears the field). Exported for tests. */
@@ -50,11 +51,9 @@ const argsSchema = z.object({
     .max(200)
     .nullable()
     .describe('Initiative grouping label. null or empty string clears it. Plans sharing a label group together in the list facet.'),
-  rationale: z
-    .string()
-    .max(400)
+  rationale: softText(LIMITS.ANNOTATION)
     .optional()
-    .describe('Why — stored on the plan revision.'),
+    .describe('Why — stored on the plan revision. Auto-truncated to 2000 chars if longer.'),
 }).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
   message: 'pass `slug` or `slugs`',
 });
@@ -89,7 +88,7 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const next = normalizeInitiative(args.initiative);
     const rationale =
-      args.rationale ?? (next ? `set initiative → ${next}` : 'clear initiative');
+      clampText(args.rationale, LIMITS.ANNOTATION) ?? (next ? `set initiative → ${next}` : 'clear initiative');
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,

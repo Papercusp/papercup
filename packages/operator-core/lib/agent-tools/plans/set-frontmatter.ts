@@ -26,6 +26,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
@@ -39,10 +40,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1).describe('Plan slug (filename stem). Written into the frontmatter.'),
-  title: z
-    .string()
-    .min(1)
-    .max(200)
+  title: hardText(LIMITS.SHORT_TITLE)
     .refine((s) => s.trim().length > 0, 'title cannot be blank')
     .describe('Human-readable plan title.'),
   status: z

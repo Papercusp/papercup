@@ -21,6 +21,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { superviseCrash } from '../../fleet/supervision';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'fleet:supervise',
@@ -39,7 +40,7 @@ export default defineTool({
     .object({
       spawn_id: z.string().min(1).optional().describe('a single crashed spawn id (n=1 shorthand for spawn_ids:[id])'),
       spawn_ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('crashed spawn ids to report (1–100)'),
-      reason: z.string().max(500).optional().describe('What the crash was (exit code, error) — batch-level.'),
+      reason: softText(LIMITS.ANNOTATION).optional().describe('What the crash was (exit code, error) — batch-level. Auto-truncated to 2000 chars if longer.'),
       max_restarts: z.number().int().min(1).max(50).optional(),
       window_sec: z.number().int().min(1).max(86_400).optional(),
       workspace: z.string().max(120).optional(),
@@ -59,7 +60,7 @@ export default defineTool({
           workspaceId,
           spawnId: spawn_id,
           actor,
-          reason: args.reason,
+          reason: clampText(args.reason, LIMITS.ANNOTATION),
           maxRestarts: args.max_restarts,
           windowSec: args.window_sec,
         });

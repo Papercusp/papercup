@@ -29,6 +29,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -89,11 +90,8 @@ export default defineTool({
       .max(120)
       .optional()
       .describe("kind:'learning-pack' — kebab-case pack id (becomes the Comb listing_ref)."),
-    title: z.string().min(1).max(200).optional().describe("kind:'learning-pack' — pack title."),
-    description: z
-      .string()
-      .min(1)
-      .max(280)
+    title: hardText(LIMITS.SHORT_TITLE).optional().describe("kind:'learning-pack' — pack title."),
+    description: hardText(LIMITS.ANNOTATION)
       .optional()
       .describe("kind:'learning-pack' — short pack description."),
     version: z.string().optional().describe("kind:'learning-pack' — three-part semver (default 1.0.0)."),
@@ -109,8 +107,8 @@ export default defineTool({
       .max(200)
       .optional()
       .describe("kind:'pr' — the local feature branch in the self-hive checkout that holds the change's commits."),
-    prTitle: z.string().min(1).max(200).optional().describe("kind:'pr' — the PR title."),
-    prBody: z.string().min(1).max(8000).optional().describe("kind:'pr' — the PR body."),
+    prTitle: hardText(LIMITS.SHORT_TITLE).optional().describe("kind:'pr' — the PR title."),
+    prBody: hardText(8000).optional().describe("kind:'pr' — the PR body."),
 
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),

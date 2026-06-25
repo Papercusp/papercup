@@ -29,7 +29,7 @@ export default defineTool({
     slug: z
       .string()
       .regex(/^[a-z0-9][a-z0-9_-]{0,40}$/, 'slug: lowercase letters/digits/_/- , ≤41 chars, e.g. "federation"'),
-    title: z.string().max(80).optional(),
+    title: hardText(LIMITS.SHORT_TITLE).optional(),
     description: hardText(LIMITS.ANNOTATION),
   }),
   async handler(args, ctx) {

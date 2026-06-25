@@ -17,6 +17,7 @@ import { loadHivePubkey } from '../../identity/hive-keypair';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { approvePendingJoin, denyPendingJoin } from '../../hive-membership-admission';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -25,7 +26,7 @@ const text = (payload: Record<string, unknown>) => ({
 const Decision = z.object({
   githubUserId: z.number().int().positive().describe("The pending joiner's numeric GitHub user id (from hive:membership_pending)."),
   decision: z.enum(['approve', 'deny']).describe('approve = trust-admit; deny = reject (never admitted).'),
-  reason: z.string().max(2000).optional().describe('Optional note (e.g. a deny reason), federated back to the joiner.'),
+  reason: softText(LIMITS.ANNOTATION).optional().describe('Optional note (e.g. a deny reason), federated back to the joiner. Auto-truncated to 2000 chars if longer.'),
 });
 
 export default defineTool({
@@ -47,7 +48,7 @@ export default defineTool({
       hive: z.string().min(1).max(120).describe("The Hive's home harness slug (batch-level — one Hive per call)."),
       githubUserId: z.number().int().positive().optional().describe('n=1: a single pending joiner id (pair with decision).'),
       decision: z.enum(['approve', 'deny']).optional().describe('n=1: the decision for the single githubUserId.'),
-      reason: z.string().max(2000).optional().describe('n=1: optional note for the single decision.'),
+      reason: softText(LIMITS.ANNOTATION).optional().describe('n=1: optional note for the single decision. Auto-truncated to 2000 chars if longer.'),
       items: z.array(Decision).min(1).max(100).optional().describe('decisions to apply (1–100), each { githubUserId, decision, reason? }'),
       workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     })
@@ -78,7 +79,7 @@ export default defineTool({
         const result =
           decision === 'approve'
             ? await approvePendingJoin({ workspaceId, hiveHomeSlug: args.hive, githubUserId, decidedByGithubUserId: decidedBy })
-            : await denyPendingJoin({ workspaceId, hiveHomeSlug: args.hive, githubUserId, decidedByGithubUserId: decidedBy, reason: reason ?? null });
+            : await denyPendingJoin({ workspaceId, hiveHomeSlug: args.hive, githubUserId, decidedByGithubUserId: decidedBy, reason: clampText(reason, LIMITS.ANNOTATION) ?? null });
         // approvePendingJoin/denyPendingJoin return their own { ok, … }; surface it
         // verbatim, keyed by githubUserId.
         return { ...result, ok: (result as { ok?: boolean }).ok !== false, githubUserId };

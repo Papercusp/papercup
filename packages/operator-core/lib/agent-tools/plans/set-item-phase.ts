@@ -29,6 +29,7 @@ import { parsePlan, maskFences } from './parser';
 import { appendItemToBody } from './add-item';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 const PHASE = z
   .string()
@@ -93,7 +94,7 @@ const itemSpec = z.object({
   itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   phase: PHASE.optional().describe('per-item target phase (else the batch `phase`)'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
-  rationale: z.string().max(400).optional().describe('per-item revision rationale (else the batch `rationale`)'),
+  rationale: softText(LIMITS.ANNOTATION).optional().describe('per-item revision rationale (else the batch `rationale`). Auto-truncated to 2000 chars if longer.'),
 });
 
 const argsSchema = z
@@ -114,11 +115,9 @@ const argsSchema = z
       .max(200)
       .optional()
       .describe('move many items at once — each { slug, itemId, phase, harness?, rationale? }'),
-    rationale: z
-      .string()
-      .max(400)
+    rationale: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('Optional — why the item moved phase. Stored on the plan revision (D-009).'),
+      .describe('Optional — why the item moved phase. Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
   })
   .refine(
     (a) =>
@@ -148,7 +147,7 @@ async function setPhaseOne(it: PhaseItem, ctx: UnifiedToolContext): Promise<Bulk
   const rev = planRevisionCapture(
     ctx as PlanRevisionCtx,
     it.slug,
-    it.rationale,
+    clampText(it.rationale, LIMITS.ANNOTATION),
     harnessSlug ? { harnessSlug } : {},
   );
 

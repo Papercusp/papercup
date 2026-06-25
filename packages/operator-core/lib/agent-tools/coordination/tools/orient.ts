@@ -31,6 +31,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
+import { hardText, LIMITS } from '../../limits';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. */
@@ -236,9 +237,7 @@ export default defineTool({
     claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'todo')."),
     claimableLimit: z.number().int().positive().max(100).optional().describe('Max claimable items (default 20).'),
     inboxLimit: z.number().int().positive().max(50).optional().describe('Max recent inbox entries (default 10).'),
-    intent: z
-      .string()
-      .max(2000)
+    intent: hardText(LIMITS.ANNOTATION)
       .optional()
       .describe('Your one-line intent for this turn — DECLARED to peers (coord:declare-intent) AND used as the memory:search recall query. The bootstrap-in-one-call lever.'),
     memoryQuery: z.string().max(500).optional().describe('Explicit memory:search query (overrides `intent` for recall).'),

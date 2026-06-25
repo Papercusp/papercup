@@ -15,6 +15,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireGranular, validatePath } from './su-lock-store';
+import { hardText, LIMITS } from '../limits';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
@@ -37,7 +38,7 @@ export default defineTool({
   args: z.object({
     path: z.string().max(4096).describe('Repo-relative node: a file, a directory/subtree, or "" for the harness root.'),
     mode: z.enum(['IS', 'IX', 'S', 'SIX', 'X']),
-    intent: z.string().max(200).optional(),
+    intent: hardText(LIMITS.SHORT_TITLE).optional(),
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
   }),
   async handler(args, ctx) {

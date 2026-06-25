@@ -27,6 +27,7 @@ import { withPlanLock, type TemplateDataPatch } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { validateTemplateData } from './template-registry';
+import { softText, clampText, LIMITS } from '../limits';
 
 export type SetTemplateDataValue =
   | { ok: true; slug: string; template: string }
@@ -74,7 +75,7 @@ const argsSchema = z.object({
     .describe(
       'The structured template instance data (jsonb) to write. Validated against the plan\'s template TYPE\'s registry zod schema before persisting — an unknown type or a schema violation is rejected fail-loud.',
     ),
-  rationale: z.string().max(400).optional().describe('Why — stored on the plan revision.'),
+  rationale: softText(LIMITS.ANNOTATION).optional().describe('Why — stored on the plan revision. Auto-truncated to 2000 chars if longer.'),
 });
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
@@ -104,7 +105,7 @@ export default defineTool({
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,
-      args.rationale ?? 'set template_data',
+      clampText(args.rationale, LIMITS.ANNOTATION) ?? 'set template_data',
       harnessSlug ? { harnessSlug } : {},
     );
 

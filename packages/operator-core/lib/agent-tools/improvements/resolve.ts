@@ -11,6 +11,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveImprovement } from '../../harness/improvements/resolve-core';
@@ -31,7 +32,7 @@ export default defineTool({
   args: z.object({
     id: z.string().min(1).max(40).describe('the improvement work-unit id (EI-n / WI-n)'),
     outcome: z.enum(['fixed', 'could-not-fix', 'needs-human']),
-    summary: z.string().min(10).max(4000).describe('what happened — for fixed: what changed + how it was verified; for the others: why'),
+    summary: hardText(4000, { min: 10 }).describe('what happened — for fixed: what changed + how it was verified; for the others: why'),
     testsRun: z.string().max(1000).optional().describe('the test command(s) run + result — REQUIRED for outcome fixed'),
     commit: z.string().max(120).optional().describe('commit/branch the fix landed on (it still rides the release gate)'),
     confidence: z

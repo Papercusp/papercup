@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -40,10 +41,7 @@ export default defineTool({
     kind: z
       .enum([...AMENDMENT_KINDS] as [string, ...string[]])
       .describe('the structural decision kind: split | drop | reapproach | expand | note'),
-    rationale: z
-      .string()
-      .min(1)
-      .max(2000)
+    rationale: hardText(LIMITS.ANNOTATION)
       .describe('why — the non-re-derivable decision (recorded durably; this is the resumable truth)'),
     harness: z.string().max(80).optional(),
   }),

@@ -13,6 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { openConversation, postReply } from '../conversations';
+import { hardText, LIMITS } from '../../limits';
 
 export default defineTool({
   name: 'conversations:post',
@@ -31,8 +32,8 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     conversation_id: z.string().optional().describe('Append to this conversation. Omit to start a new discussion.'),
-    body: z.string().min(1).max(8000),
-    title: z.string().max(120).optional().describe('Short headline (new discussion only).'),
+    body: hardText(8000),
+    title: hardText(LIMITS.SHORT_TITLE).optional().describe('Short headline (new discussion only).'),
     topics: z.array(z.string().min(1)).max(8).optional().describe('Topic slugs to route a new discussion (new discussion only).'),
     harness: z.string().optional().describe('Scope a new discussion to a harness (new discussion only).'),
   }),

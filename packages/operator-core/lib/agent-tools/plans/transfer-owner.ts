@@ -25,6 +25,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 /**
  * Set/replace/remove ONE scalar frontmatter line, preserving every other key.
@@ -71,11 +72,9 @@ const argsSchema = z
       .optional()
       .describe('New primary owner email. Omit to keep the current owner and only edit co_owners.'),
     coOwners: emailList.optional(),
-    rationale: z
-      .string()
-      .max(400)
+    rationale: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('Why the handoff — stored on the plan revision (the durable transfer record).'),
+      .describe('Why the handoff — stored on the plan revision (the durable transfer record). Auto-truncated to 2000 chars if longer.'),
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
     message: 'provide `slug` or `slugs`',
@@ -108,7 +107,7 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const rationale =
-      args.rationale ??
+      clampText(args.rationale, LIMITS.ANNOTATION) ??
       (args.to ? `transfer owner → ${args.to}` : 'update co-owners');
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(

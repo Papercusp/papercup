@@ -17,11 +17,12 @@ import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { answerQuestion } from '../conversations';
 import { runBulk, bulkContent } from '../../_bulk';
+import { hardText } from '../../limits';
 
 const itemSpec = z.object({
   id: z.string().min(1).describe('conversation id (alias: conversation_id)'),
   conversation_id: z.string().min(1).optional().describe('alias for id'),
-  body: z.string().min(1).max(8000).describe('the answer text for THIS conversation'),
+  body: hardText(8000).describe('the answer text for THIS conversation'),
   mentions: z.array(z.string().min(1)).optional().describe('owner ids to @-mention (reaches mention-mode subscribers).'),
 });
 
@@ -44,7 +45,7 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single-answer shorthand: the conversation id'),
       conversation_id: z.string().min(1).optional().describe('alias for id (single form)'),
-      body: z.string().min(1).max(8000).optional().describe('the answer text applied to the inline id / every id in `ids`'),
+      body: hardText(8000).optional().describe('the answer text applied to the inline id / every id in `ids`'),
       mentions: z.array(z.string().min(1)).optional().describe('owner ids to @-mention; applies to the inline id / every id in `ids`'),
       ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('answer MANY conversations with the same `body` (homogeneous)'),
       items: z.array(itemSpec).min(1).max(200).optional().describe('answer many conversations at once — each { id, body, mentions? }'),

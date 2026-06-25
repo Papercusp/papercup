@@ -25,6 +25,7 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { subscribeTopic } from '../coordination/topics';
+import { softText, clampText, LIMITS } from '../limits';
 
 const DEFAULT_TIMEOUT_SEC = 4 * 60 * 60; // 4h (one-shot wake default)
 const MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d
@@ -96,7 +97,7 @@ export default defineTool({
       .enum(['full', 'digest', 'mention'])
       .optional()
       .describe('wake:false only — inject delivery tiering: full (default), digest (high-churn), mention (the quiet floor).'),
-    note: z.string().max(300).optional().describe('Why you are watching — echoed into the wake turn (wake:true).'),
+    note: softText(LIMITS.ANNOTATION).optional().describe('Why you are watching — echoed into the wake turn (wake:true). Auto-truncated to 2000 chars if longer.'),
     plan_run_id: z
       .number()
       .int()
@@ -143,7 +144,7 @@ export default defineTool({
       subscriberId: identity.ownerId,
       eventKey: args.pattern,
       policy: 'wake',
-      note: args.note ?? null,
+      note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
       wakeHandle: handle,
       timeoutBehavior: args.on_timeout ?? 'wake',
       timeoutSec: args.timeout_sec ?? (once ? DEFAULT_TIMEOUT_SEC : null),

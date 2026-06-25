@@ -27,6 +27,7 @@ import {
   type GradeRoutedIdeaInput,
   type GradeRoutedIdeaResult,
 } from '../../scout/routed-ledger';
+import { softText, clampText, LIMITS } from '../limits';
 
 /** Grader attribution vocabulary (C-1 / D-004) — the seam's input type is the pin. */
 export type GradedBy = GradeRoutedIdeaInput['gradedBy'];
@@ -76,7 +77,7 @@ export const gradeIdeaArgs = z
     /** 1–5 integer (D-001): 5 = clear win, 3 = neutral, 1 = clear loss. */
     grade: z.number().int().min(1).max(5),
     /** Free-text critique shown to next cycles' ideators (C-4). Omitting it on a regrade clears the stored feedback. */
-    feedback: z.string().max(2000).optional(),
+    feedback: softText(LIMITS.ANNOTATION).optional(),
   })
   .refine((a) => (a.ideaId == null) !== (a.routedRef == null), {
     message: 'Pass exactly one of ideaId or routedRef.',
@@ -164,6 +165,7 @@ export async function runGradeIdea(
   deps: GradeIdeaDeps = defaultDeps,
 ): Promise<GradeIdeaOutcome> {
   const gradedBy = deriveGradedBy(ctx);
+  const feedback = clampText(args.feedback, LIMITS.ANNOTATION);
 
   const ideaId = args.ideaId ?? (await deps.resolveIdeaIdFromRef(args.routedRef as string));
   if (ideaId == null) {
@@ -173,7 +175,7 @@ export async function runGradeIdea(
   const result = await deps.gradeRoutedIdea({
     ideaId,
     grade: args.grade,
-    ...(args.feedback !== undefined ? { feedback: args.feedback } : {}),
+    ...(feedback !== undefined ? { feedback } : {}),
     gradedBy,
   });
 
@@ -193,7 +195,7 @@ export async function runGradeIdea(
         title: null,
         routedAt: null,
         humanGrade: args.grade,
-        humanFeedback: args.feedback ?? null,
+        humanFeedback: feedback ?? null,
         gradedBy,
         gradedAt: new Date().toISOString(),
       };

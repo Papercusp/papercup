@@ -6,6 +6,7 @@ import {
   voiceAgentBrainEnabled,
   voiceAgentSpeaking,
 } from '../../voice-node/agent-brain';
+import { hardText } from '../limits';
 
 export default defineTool({
   name: 'voice:agent',
@@ -28,7 +29,7 @@ export default defineTool({
     z.object({ op: z.literal('disable') }),
     z.object({ op: z.literal('brain'), on: z.boolean() }),
     z.object({ op: z.literal('status') }),
-    z.object({ op: z.literal('say'), text: z.string().min(1).max(4000) }),
+    z.object({ op: z.literal('say'), text: hardText(4000) }),
   ]),
   async handler(args) {
     if (args.op === 'say') {

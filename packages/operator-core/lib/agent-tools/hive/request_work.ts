@@ -14,6 +14,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText } from '../limits';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { sendCrossHiveAsk } from '../../cross-hive-ask-send';
@@ -40,7 +41,7 @@ export default defineTool({
     hive: z.string().min(1).max(120).describe("THIS Hive's home slug — the requesting Hive (signer + boundary are scoped to it)."),
     peerHivePubkey: z.string().min(1).max(400).describe('The peer Hive\'s pubkey (from discovery:hives) to address the work-request to.'),
     subject: z.string().min(1).max(200).describe('A short title for the requested work.'),
-    body: z.string().min(1).max(8000).describe('What is being requested (becomes the peer work_item\'s summary).'),
+    body: hardText(8000).describe('What is being requested (becomes the peer work_item\'s summary).'),
     workspace: z.string().max(120).optional(),
     askedBy: z.string().max(200).optional().describe('Your coord ownerId (su-…). When supplied, the C-4 reply event fires with `to:[askedBy]` so you are woken on the answer rather than polling.'),
   }),

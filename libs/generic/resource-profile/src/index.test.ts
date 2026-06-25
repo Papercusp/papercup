@@ -398,6 +398,24 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     expect(s.effective_cache_size).toBe('196608MB');
     expect(s.work_mem).toBe('64MB');
     expect(s.max_parallel_workers_per_gather).toBe('8');
+    // WI-347 — the WAL-disk-fill-SPOF defense bound ships in the GUC map (so it
+    // reaches BOTH the native conf.d drop-in and the embedded-pg -c flags). A
+    // fixed safety ceiling: complements storage/replication-slot-alarm.ts, which
+    // only WARNS when a stuck slot pins WAL under the PG default of -1 (unbounded).
+    expect(s.max_slot_wal_keep_size).toBe('32GB');
+  });
+
+  it('the WAL-keep cap is a fixed safety ceiling regardless of host size', () => {
+    // Defense-in-depth, not host-tuned: a tiny embedded host and a big server box
+    // both get the same bound (it only ever caps a pathological stuck slot).
+    const big = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+    );
+    const small = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 2, embeddedPg: true, totalMemBytes: 4 * GIB })),
+    );
+    expect(big.max_slot_wal_keep_size).toBe('32GB');
+    expect(small.max_slot_wal_keep_size).toBe('32GB');
   });
 });
 

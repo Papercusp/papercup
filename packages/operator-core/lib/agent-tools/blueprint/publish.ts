@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { parse as parseYaml } from 'yaml';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -50,8 +51,8 @@ export default defineTool({
       .describe(
         'The blueprint id to list — its dir is <repoDir>/.papercusp/blueprints/<blueprintId>/, and it becomes the Comb listing_ref.',
       ),
-    title: z.string().min(1).max(200),
-    description: z.string().min(1).max(280),
+    title: hardText(LIMITS.SHORT_TITLE),
+    description: hardText(LIMITS.ANNOTATION),
     repoDir: z
       .string()
       .min(1)

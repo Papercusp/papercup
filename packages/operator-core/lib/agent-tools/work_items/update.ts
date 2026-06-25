@@ -16,14 +16,15 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { updateWorkItem } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 
 const FIELDS = {
-  title: z.string().min(1).max(200).optional(),
-  body: z.string().max(8000).optional(),
+  title: hardText(LIMITS.SHORT_TITLE).optional(),
+  body: hardText(8000).optional(),
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
   kind: z
     .enum(['bug', 'change'])

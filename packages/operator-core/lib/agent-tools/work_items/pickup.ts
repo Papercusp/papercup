@@ -21,6 +21,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { hardText, LIMITS } from '../limits';
 import { COORD_ROLES } from '../coordination/roles';
 import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 
@@ -129,7 +130,7 @@ export default defineTool({
     harness: z.string().max(80).optional().describe('Harness the item lives in (feature-id disambiguation).'),
     detail: z.boolean().optional().describe('Include topics/comments/links in the returned item (default true).'),
     assignee: z.string().max(120).optional().describe('Claim for this owner instead of you.'),
-    intent: z.string().max(400).optional().describe('If set, also declare this one-line intent after claiming.'),
+    intent: hardText(LIMITS.SHORT_TITLE).optional().describe('If set, also declare this one-line intent after claiming.'),
     plan: z.string().max(200).optional().describe('Plan slug for the declared lane (with `items`).'),
     items: z
       .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))

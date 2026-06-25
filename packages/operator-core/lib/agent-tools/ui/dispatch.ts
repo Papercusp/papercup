@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { uiCrossWorkspaceBlock } from './_workspace-guard';
+import { hardText, LIMITS } from '../limits';
 
 const POLL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -45,7 +46,7 @@ export default defineTool({
     /** Target tab. Defaults to ctx.uiClientId. */
     client_id: z.string().optional(),
     /** Intent name, e.g. "set_url" or a feature-registered name. */
-    intent: z.string().min(1).max(128),
+    intent: hardText(LIMITS.SHORT_TITLE),
     /** Args object passed to the intent handler. */
     args: z.record(z.string(), z.unknown()).optional(),
     /** Long-poll budget; default 5000ms, max 60000ms. */

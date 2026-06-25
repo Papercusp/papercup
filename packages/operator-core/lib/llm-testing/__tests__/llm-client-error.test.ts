@@ -21,6 +21,23 @@ vi.mock('../../agent-chat-stream', async (importOriginal) => {
   };
 });
 
+describe('llmCall backend selection', () => {
+  it('routes OpenAI-family model ids to Codex unless an explicit backend override is set', async () => {
+    const { backendForLlmCall, modelForLlmCall } = await import('../llm-client');
+
+    expect(backendForLlmCall('chatgpt:5.5')).toBe('codex');
+    expect(backendForLlmCall('gpt-5.5')).toBe('codex');
+    expect(backendForLlmCall('openai-codex/gpt-5.5')).toBe('codex');
+    expect(backendForLlmCall('claude-sonnet-4-6')).toBe('anthropic-direct');
+    expect(backendForLlmCall('chatgpt:5.5', 'anthropic-direct')).toBe('anthropic-direct');
+
+    expect(modelForLlmCall('chatgpt:5.5', 'codex')).toBe('gpt-5.5');
+    expect(modelForLlmCall('openai-codex/gpt-5.5', 'codex')).toBe('gpt-5.5');
+    expect(modelForLlmCall('gpt-5.5', 'codex')).toBe('gpt-5.5');
+    expect(modelForLlmCall('chatgpt:5.5', 'anthropic-direct')).toBe('chatgpt:5.5');
+  });
+});
+
 describe('llmCall subprocess error surfacing', () => {
   it('folds the stderr tail into the thrown LlmCallError message (un-governed path)', async () => {
     events.length = 0;

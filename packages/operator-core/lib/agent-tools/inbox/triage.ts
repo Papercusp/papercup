@@ -32,6 +32,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { type TriageAction, triageActionToState } from '../../attention/types';
 import { upsertTriage } from '../../attention/triage-store';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 const TriageItem = z
   .object({
@@ -40,7 +41,7 @@ const TriageItem = z
     action: z.enum(['confirm', 'escalate', 'downgrade', 'resolve']),
     /** What the operator did + why — the audit note (and the operator's own
      *  learning signal). Required when downgrading/resolving. */
-    note: z.string().max(2000).optional(),
+    note: softText(LIMITS.ANNOTATION).optional(),
   })
   .refine((d) => !(d.action === 'downgrade' || d.action === 'resolve') || !!d.note?.trim(), {
     message: 'note (the why) is required when downgrading or resolving',
@@ -63,7 +64,7 @@ export default defineTool({
     .object({
       itemId: z.string().min(1).optional().describe('a single attention item id (n=1 shorthand; pair with action)'),
       action: z.enum(['confirm', 'escalate', 'downgrade', 'resolve']).optional().describe('the triage action for the single `itemId` (n=1 shorthand)'),
-      note: z.string().max(2000).optional().describe('the why for the single item (required on downgrade/resolve)'),
+      note: softText(LIMITS.ANNOTATION).optional().describe('the why for the single item (required on downgrade/resolve). Auto-truncated to 2000 chars if longer.'),
       items: z.array(TriageItem).min(1).max(100).optional().describe('triage actions to apply (1–100), each { itemId, action, note? }'),
     })
     .refine((a) => Boolean(a.items?.length) || (Boolean(a.itemId) && Boolean(a.action)), {
@@ -89,7 +90,7 @@ export default defineTool({
         await upsertTriage({
           itemId,
           action,
-          note: note?.trim() ?? null,
+          note: clampText(note, LIMITS.ANNOTATION)?.trim() ?? null,
           triagedBy: identity.ownerId,
         });
         const triageState = triageActionToState(action);

@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'events:emit',
@@ -31,7 +32,7 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     event: z.string().min(1).max(200).describe('Exact event key to fire.'),
-    summary: z.string().max(500).optional().describe('One human line — rides the wake turn / notify summary.'),
+    summary: softText(LIMITS.ANNOTATION).optional().describe('One human line — rides the wake turn / notify summary. Auto-truncated to 2000 chars if longer.'),
     payload: z.unknown().optional().describe('Structured data carried on the wake (truncated at 400 chars in the turn text).'),
     to: z
       .array(z.string().min(1))
@@ -43,7 +44,7 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const result = await emitAwaitedEvent({
       key: args.event,
-      summary: args.summary,
+      summary: clampText(args.summary, LIMITS.ANNOTATION),
       payload: args.payload,
       to: args.to,
       source: identity.ownerId,

@@ -18,6 +18,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan, maskFences } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { hardText, softText, clampText, LIMITS } from '../limits';
 
 /**
  * Replace a decision's body. Locates the `### D-NNN` head line against the
@@ -63,18 +64,12 @@ const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1).describe('Plan slug (filename stem).'),
   decisionId: z.string().regex(/^D-\d{3,}$/, 'D-NNN form required'),
-  body: z
-    .string()
-    .min(1)
-    .max(5000)
-    .describe(
-      "The decision's new body (replaces the prior body). The `### D-NNN — title` head and the `Date:` line are preserved; everything else is replaced. To keep a `Related:` line, include it in the new body.",
-    ),
-  rationale: z
-    .string()
-    .max(400)
+  body: hardText(5000).describe(
+    "The decision's new body (replaces the prior body). The `### D-NNN — title` head and the `Date:` line are preserved; everything else is replaced. To keep a `Related:` line, include it in the new body.",
+  ),
+  rationale: softText(LIMITS.ANNOTATION)
     .optional()
-    .describe('Optional — why the decision body changed (a correction, an added caveat). Stored on the plan revision (D-009).'),
+    .describe('Optional — why the decision body changed (a correction, an added caveat). Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
 });
 
 type SetDecisionBodyValue =
@@ -107,7 +102,7 @@ export default defineTool({
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,
-      args.rationale,
+      clampText(args.rationale, LIMITS.ANNOTATION),
       harnessSlug ? { harnessSlug } : {},
     );
 

@@ -17,6 +17,7 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { broadcastResourceDrainStart } from './resource-broadcast';
+import { hardText, LIMITS } from '../limits';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 
@@ -52,7 +53,7 @@ export default defineTool({
   args: z.object({
     resource: z.string().min(1).max(200),
     mode: z.enum(['shared', 'exclusive']),
-    reason: z.string().max(200).optional(),
+    reason: hardText(LIMITS.ANNOTATION).optional(),
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
     wait: z
       .object({ max_drain_sec: z.number().int().nonnegative().max(MAX_WAIT_SEC) })

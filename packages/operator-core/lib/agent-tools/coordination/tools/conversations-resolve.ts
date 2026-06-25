@@ -19,11 +19,12 @@ import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { resolveConversation } from '../conversations';
 import { runBulk, bulkContent } from '../../_bulk';
+import { hardText } from '../../limits';
 
 const itemSpec = z.object({
   id: z.string().min(1).describe('conversation id (alias: conversation_id)'),
   conversation_id: z.string().min(1).optional().describe('alias for id'),
-  accepted_answer: z.string().min(1).max(8000).optional().describe('The accepted answer text (synthesized). Provide this OR accepted_post_id.'),
+  accepted_answer: hardText(8000).optional().describe('The accepted answer text (synthesized). Provide this OR accepted_post_id.'),
   accepted_post_id: z.number().int().positive().optional().describe('The coord_thread_posts id of the post to accept as the answer.'),
   capture: z.enum(['mem0', 'none']).optional().describe('Where to write the answer back (D-004). mem0 (default) makes the next coord:ask find it; none skips capture.'),
 });
@@ -47,7 +48,7 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single-resolve shorthand: the conversation id'),
       conversation_id: z.string().min(1).optional().describe('alias for id (single form)'),
-      accepted_answer: z.string().min(1).max(8000).optional().describe('The accepted answer text (synthesized). Provide this OR accepted_post_id (single form).'),
+      accepted_answer: hardText(8000).optional().describe('The accepted answer text (synthesized). Provide this OR accepted_post_id (single form).'),
       accepted_post_id: z.number().int().positive().optional().describe('The coord_thread_posts id of the post to accept as the answer (single form).'),
       capture: z.enum(['mem0', 'none']).optional().describe('Where to write the answer back (D-004). mem0 (default) makes the next coord:ask find it; none skips capture (single form).'),
       items: z.array(itemSpec).min(1).max(200).optional().describe('resolve many conversations at once — each { id, accepted_answer | accepted_post_id, capture? }'),

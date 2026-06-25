@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
+import { hardText } from '../../limits';
 
 export interface DispatchArgs {
   to: string;
@@ -242,7 +243,7 @@ export default defineTool({
       .max(40)
       .optional()
       .describe('Plan-item ids (P-NNN) to push-assign to `to` as its durable lane. Omit for a pure directed wake.'),
-    body: z.string().max(8000).optional().describe('Optional longer body for the inbox note.'),
+    body: hardText(8000).optional().describe('Optional longer body for the inbox note.'),
     harness: z.string().max(120).optional().describe('Harness scope for the lane assignment (default: the plan\'s harness).'),
   }),
   async handler(args, ctx) {
