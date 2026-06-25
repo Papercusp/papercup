@@ -17,6 +17,7 @@ export interface GymLlmCall {
     responseFormat?: 'text' | 'json';
     thinkingBudgetTokens?: number;
     maxTokens?: number;
+    priority?: string;
   }): Promise<{ text: string; json?: unknown; costUsd: number; inputTokens: number; outputTokens: number }>;
 }
 

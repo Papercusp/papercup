@@ -23,6 +23,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('../../autoloop');
+  vi.doUnmock('../../workspace-brain-scope');
+  vi.doUnmock('../../workspace-registry');
   vi.doUnmock('@papercusp/db-org');
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../wiki-backlinks');
@@ -128,12 +130,48 @@ describe('autoloop:control', () => {
   it('reset-errors zeroes the consecutive_errors counters (P-009 circuit reset)', async () => {
     const resetFireErrors = vi.fn(async () => 2);
     vi.doMock('../../autoloop', () => ({ resetFireErrors }));
+    vi.doMock('../../workspace-brain-scope', () => ({
+      isWorkspaceCoordinationOn: vi.fn(async () => false),
+      workspaceBrainReadKeys: (_workspaceId: string, perHiveSlug: string) => [perHiveSlug],
+    }));
     mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/control');
     const result = await tool.handler({ op: 'reset-errors', harness: 'sheets' }, MAKE_CTX({ role: 'operator' }));
     expect(resetFireErrors).toHaveBeenCalledWith('sheets', undefined);
     const payload = parsePayload(result as never);
     expect(payload).toEqual({ ok: true, op: 'reset-errors', harness: 'sheets', rowsReset: 2 });
+  });
+
+  it('reset-errors also clears workspace-brain sentinel scope when coordination is on', async () => {
+    const resetFireErrors = vi
+      .fn()
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(2);
+    vi.doMock('../../autoloop', () => ({ resetFireErrors }));
+    vi.doMock('../../workspace-brain-scope', () => ({
+      isWorkspaceCoordinationOn: vi.fn(async () => true),
+      workspaceBrainReadKeys: (workspaceId: string, perHiveSlug: string, on: boolean) =>
+        on ? [workspaceId, perHiveSlug] : [perHiveSlug],
+    }));
+    mockDbOrgSql([]);
+    const { default: tool } = await import('../autoloop/control');
+    const result = await tool.handler(
+      { op: 'reset-errors', harness: '@singleton', role: 'scout-cycle' },
+      MAKE_CTX({ role: 'operator', workspaceId: 'papercusp-workspace' }),
+    );
+    expect(resetFireErrors).toHaveBeenNthCalledWith(1, 'papercusp-workspace', 'scout-cycle');
+    expect(resetFireErrors).toHaveBeenNthCalledWith(2, '@singleton', 'scout-cycle');
+    const payload = parsePayload(result as never);
+    expect(payload).toEqual({
+      ok: true,
+      op: 'reset-errors',
+      harness: '@singleton',
+      rowsReset: 3,
+      scopes: [
+        { harness: 'papercusp-workspace', rowsReset: 1 },
+        { harness: '@singleton', rowsReset: 2 },
+      ],
+    });
   });
 
   it('exposes operator-only role gate + the harness-slug precondition (D-006)', async () => {

@@ -461,6 +461,8 @@ export interface GatewayModelCfg {
   /** Pin this arm's calls to a specific pool account (cache-affinity + contention isolation from concurrent
    *  benches). Sent as the `x-papercusp-account` header the gateway routes on. Env override: PAPERCUSP_METR_ACCOUNT. */
   accountId?: string;
+  /** Gateway admission label. Defaults to `benchmark` so METR load stays in the bounded benchmark/gym lane. */
+  priority?: string;
   /** Retries on a transient 429/529/overload/pace/hang from the shared gateway. Default 8 (rides out pace cycles). */
   maxRetries?: number;
   /** Base backoff (ms) for transient retries when no `retry after` hint is present (exponential, capped). Default 3000. */
@@ -534,13 +536,17 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
   const baseURL = cfg.baseUrl ?? metrGatewayBaseUrl();
   const apiKey = cfg.apiKey ?? process.env.ANTHROPIC_API_KEY ?? 'sk-papercusp-gateway';
   const accountId = cfg.accountId ?? process.env.PAPERCUSP_METR_ACCOUNT;
-  const defaultHeaders = accountId ? { [GATEWAY_ACCOUNT_HEADER]: accountId } : undefined;
+  const priority = cfg.priority ?? 'benchmark';
+  const defaultHeaders = {
+    ...(accountId ? { [GATEWAY_ACCOUNT_HEADER]: accountId } : {}),
+    ...(priority ? { [PRIORITY_HEADER]: priority } : {}),
+  };
   const timeout = cfg.requestTimeoutMs ?? 90_000;
   let clientP: Promise<{ messages: { create(body: Record<string, unknown>): Promise<AnthropicMessageResponse> } }> | null = null;
   const client = async () => {
     if (!clientP) {
       clientP = (async () => {
-        const opts = { apiKey, baseURL, timeout, maxRetries: 0, ...(defaultHeaders ? { defaultHeaders } : {}) };
+        const opts = { apiKey, baseURL, timeout, maxRetries: 0, defaultHeaders };
         if (cfg.anthropicCtor) return new cfg.anthropicCtor(opts);
         const mod = (await import('@anthropic-ai/sdk')) as unknown as { default: new (o: Record<string, unknown>) => { messages: { create(b: Record<string, unknown>): Promise<AnthropicMessageResponse> } } };
         return new mod.default(opts);

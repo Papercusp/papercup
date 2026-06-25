@@ -279,8 +279,11 @@ export async function runOneAutoloopCycle(
     log('operator ready (DBOS launched)');
 
     // 4. LLM calls — imported lazily so fake mode never loads the llm-client graph.
-    const judge: JudgeLlmCall = FAKE ? fakeJudge : (await import('../llm-testing/llm-client')).llmCall;
-    const proposer: GymLlmCall = FAKE ? fakeProposer : ((await import('../llm-testing/llm-client')).llmCall as unknown as GymLlmCall);
+    const rawGymLlm = FAKE ? null : await import('../llm-testing/llm-client');
+    const judge: JudgeLlmCall = FAKE ? fakeJudge : (opts) => rawGymLlm!.llmCall({ ...opts, priority: 'gym' });
+    const proposer: GymLlmCall = FAKE
+      ? fakeProposer
+      : ((opts) => rawGymLlm!.llmCall({ ...opts, priority: 'gym' }) as unknown as GymLlmCall);
 
     // 5. Ports + loop deps.
     const tokenPath = join(homedir(), '.papercusp', 'superuser-token');

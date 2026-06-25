@@ -14,6 +14,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resetFireErrors } from '../../autoloop';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { isWorkspaceCoordinationOn, workspaceBrainReadKeys } from '../../workspace-brain-scope';
 
 /** The blueprint-schedule routine-name prefix `materializeBlueprintTriggers` seeds. */
 const BP_SCHEDULE_PREFIX = 'bp-schedule-';
@@ -55,10 +57,28 @@ export default defineTool({
     const { sql } = getOrgPg();
 
     if (args.op === 'reset-errors') {
-      const n = await resetFireErrors(slug, args.role);
+      const workspaceId =
+        typeof ctx.workspaceId === 'string' && ctx.workspaceId.trim()
+          ? ctx.workspaceId.trim()
+          : activeWorkspaceId();
+      const scopes = workspaceBrainReadKeys(workspaceId, slug, await isWorkspaceCoordinationOn());
+      const results = [];
+      for (const scope of scopes) {
+        results.push({ harness: scope, rowsReset: await resetFireErrors(scope, args.role) });
+      }
+      const n = results.reduce((sum, r) => sum + r.rowsReset, 0);
       return {
         content: [
-          { type: 'text', text: JSON.stringify({ ok: true, op: 'reset-errors', harness: slug, rowsReset: n }) },
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              op: 'reset-errors',
+              harness: slug,
+              rowsReset: n,
+              ...(results.length > 1 ? { scopes: results } : {}),
+            }),
+          },
         ],
       };
     }
