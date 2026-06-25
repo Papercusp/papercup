@@ -1267,6 +1267,29 @@ export interface OpenPlacementSummary {
   items: Array<{ workItemId: string; status: string; failCount: number; harness: string | null }>;
 }
 
+type OpenPlacementCountRow = { status: string; count: number | string };
+type OpenPlacementItemRow = { work_item_id: string; status: string; fail_count: number; harness_slug: string | null };
+
+export function buildOpenPlacementSummary(
+  countRows: OpenPlacementCountRow[],
+  itemRows: OpenPlacementItemRow[],
+): OpenPlacementSummary {
+  const summary: OpenPlacementSummary = { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] };
+  for (const r of countRows) {
+    const count = Number(r.count) || 0;
+    if (r.status === 'recovering') summary.recovering = count;
+    else if (r.status === 'cursed') summary.cursed = count;
+    else if (r.status === 'stranded') summary.stranded = count;
+    else if (r.status === 'working') summary.workingTracked = count;
+  }
+  for (const r of itemRows) {
+    if (r.status !== 'working') {
+      summary.items.push({ workItemId: r.work_item_id, status: r.status, failCount: r.fail_count, harness: r.harness_slug });
+    }
+  }
+  return summary;
+}
+
 export async function summarizeOpenPlacements(
   workspaceId: string,
   installSlug: string,
@@ -1275,24 +1298,20 @@ export async function summarizeOpenPlacements(
   const empty: OpenPlacementSummary = { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] };
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ work_item_id: string; status: string; fail_count: number; harness_slug: string | null }[]>`
+    const countRows = await sql<OpenPlacementCountRow[]>`
+      SELECT status, count(*)::int AS count
+        FROM harness_shared.hive_placements
+       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
+         AND status IN ('recovering', 'cursed', 'stranded', 'working')
+       GROUP BY status`;
+    const rows = await sql<OpenPlacementItemRow[]>`
       SELECT work_item_id, status, fail_count, harness_slug
         FROM harness_shared.hive_placements
        WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
          AND status IN ('recovering', 'cursed', 'stranded', 'working')
        ORDER BY (status = 'cursed') DESC, (status = 'stranded') DESC, (status = 'recovering') DESC, updated_at DESC
        LIMIT ${limit}`;
-    const summary = { ...empty, items: [] as OpenPlacementSummary['items'] };
-    for (const r of rows) {
-      if (r.status === 'recovering') summary.recovering++;
-      else if (r.status === 'cursed') summary.cursed++;
-      else if (r.status === 'stranded') summary.stranded++;
-      else if (r.status === 'working') summary.workingTracked++;
-      if (r.status !== 'working') {
-        summary.items.push({ workItemId: r.work_item_id, status: r.status, failCount: r.fail_count, harness: r.harness_slug });
-      }
-    }
-    return summary;
+    return buildOpenPlacementSummary(countRows, rows);
   } catch {
     return empty;
   }
