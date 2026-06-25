@@ -63,7 +63,16 @@ vi.mock('../../events/pipeline-events', () => ({
 }));
 vi.mock('@papercusp/flags/server', async (orig) => {
   const actual = await orig<typeof import('@papercusp/flags/server')>();
-  return { ...actual, getFlag: vi.fn(async () => false) };
+  // ENDPOINT_AUTH_TIERS gates the loopback guard in route-stack's authStep
+  // (`if (await endpointAuthTiersEnabled())`), and the D-009 tests below assert
+  // that guard fires (403 from a non-loopback Host). It defaults ON in
+  // production (types.ts) and fails CLOSED on error, so it must read ON here —
+  // a blanket `() => false` silently disables the guard under test and wedges
+  // the green gate. Keep every OTHER flag OFF (the prior default).
+  return {
+    ...actual,
+    getFlag: vi.fn(async (flag: string) => flag === 'papercusp-endpoint-auth-tiers'),
+  };
 });
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
