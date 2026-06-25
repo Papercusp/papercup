@@ -66,6 +66,13 @@ export interface DogfoodBootstrapProgress {
    */
   networkError: boolean;
   /**
+   * The error is "git isn't available on this machine" — on a fresh macOS the
+   * `/usr/bin/git` Command-Line-Tools stub fails non-interactively (the desktop
+   * doesn't vendor git on macOS). This is NOT transient: auto-retry is pointless;
+   * the user must install git first. The UI shows an actionable install hint.
+   */
+  gitMissing: boolean;
+  /**
    * READY — the flow is finished and the app may proceed. There is a
    * `submodules` row whose status is `done` OR `skipped`, AND no row errored.
    * (Fresh clone → clone done + submodules done; local checkout → clone done +
@@ -108,6 +115,8 @@ export function reduceBootstrapRows(rows: BootstrapProgressRow[]): DogfoodBootst
   // with clone-github.ts `network_timeout` classification.
   const NETWORK_DETAIL = /network_timeout|timed out|could not resolve|failed to connect|unreachable|connection reset/i;
   const networkError = errorRows.some((r) => !!r.detail && NETWORK_DETAIL.test(r.detail));
+  // Keep in sync with clone-github.ts `git_missing` code.
+  const gitMissing = errorRows.some((r) => r.detail === 'git_missing');
   const ready =
     !hasError && !!submodules && (submodules.status === 'done' || submodules.status === 'skipped');
   const inProgress = hasRows && !hasError && !ready;
@@ -126,6 +135,7 @@ export function reduceBootstrapRows(rows: BootstrapProgressRow[]): DogfoodBootst
     hasRows,
     hasError,
     networkError,
+    gitMissing,
     ready,
     inProgress,
     ...(driver

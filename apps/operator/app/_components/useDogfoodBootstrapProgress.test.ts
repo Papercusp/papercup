@@ -89,6 +89,14 @@ describe('reduceBootstrapRows', () => {
     const p = reduceBootstrapRows([row('submodules', 'error')]);
     expect(p.hasError).toBe(true);
     expect(p.networkError).toBe(false);
+    expect(p.gitMissing).toBe(false);
+  });
+
+  it('a git_missing clone error → hasError AND gitMissing (NOT networkError)', () => {
+    const p = reduceBootstrapRows([row('clone', 'error', { detail: 'git_missing' })]);
+    expect(p.hasError).toBe(true);
+    expect(p.gitMissing).toBe(true);
+    expect(p.networkError).toBe(false);
   });
 
   it('submodules done but a clone error present → NOT ready (error wins)', () => {

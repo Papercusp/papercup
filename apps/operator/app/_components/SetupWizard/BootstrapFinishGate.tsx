@@ -122,8 +122,10 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
   // How many automatic retries we've fired for the current error episode.
   const [autoAttempts, setAutoAttempts] = useState(0);
   const autoExhausted = autoAttempts >= MAX_AUTO_RETRIES;
-  // Still self-healing: an error is showing but we haven't given up yet.
-  const autoRetrying = p.hasError && !autoExhausted;
+  // Still self-healing: an error is showing but we haven't given up yet. A
+  // git-missing error is a USER-ACTION error (install git), not transient — never
+  // auto-retry it; surface the install hint + a manual Retry immediately.
+  const autoRetrying = p.hasError && !autoExhausted && !p.gitMissing;
 
   useEffect(() => {
     if (p.ready && !advancedRef.current) {
@@ -146,7 +148,7 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
   // ever seeing a scary "failed" or having to click Retry. Bounded by
   // MAX_AUTO_RETRIES; a manual Retry resets the counter.
   useEffect(() => {
-    if (!p.hasError || retrying || autoExhausted) return;
+    if (!p.hasError || retrying || autoExhausted || p.gitMissing) return;
     const delay = AUTO_BACKOFF_MS[Math.min(autoAttempts, AUTO_BACKOFF_MS.length - 1)];
     const t = setTimeout(() => {
       setAutoAttempts((a) => a + 1);
@@ -178,26 +180,30 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
             {!p.hasError ? 'Almost there' : autoRetrying ? 'Reconnecting…' : 'Setup needs attention'}
           </p>
           <h2 className="pc-step__lead">
-            {p.hasError
-              ? autoRetrying
-                ? p.networkError
-                  ? 'Couldn’t reach GitHub — retrying…'
-                  : 'Setup hit a snag — retrying…'
-                : p.networkError
-                  ? 'Couldn’t reach GitHub'
-                  : 'Workspace download failed'
-              : pct != null
+            {!p.hasError
+              ? pct != null
                 ? `Finishing setup — Papercusp workspace is still downloading (${pct}%)`
-                : 'Finishing setup — Papercusp workspace is still downloading'}
+                : 'Finishing setup — Papercusp workspace is still downloading'
+              : p.gitMissing
+                ? 'Git isn’t available on this machine'
+                : autoRetrying
+                  ? p.networkError
+                    ? 'Couldn’t reach GitHub — retrying…'
+                    : 'Setup hit a snag — retrying…'
+                  : p.networkError
+                    ? 'Couldn’t reach GitHub'
+                    : 'Workspace download failed'}
           </h2>
           <p className="pc-step__lead">
-            {p.hasError
-              ? autoRetrying
-                ? `Retrying automatically (attempt ${autoAttempts + 1} of ${MAX_AUTO_RETRIES})…`
-                : p.networkError
-                  ? "We couldn’t reach GitHub after several tries. This is a network/connectivity problem — not your GitHub sign-in, which is fine. Check your connection, then retry."
-                  : "We couldn’t finish cloning the Papercusp workspace. Retry below — it picks up where it left off."
-              : 'The Papercusp workspace is being fetched in the background. We’ll take you into the app the moment it’s ready.'}
+            {!p.hasError
+              ? 'The Papercusp workspace is being fetched in the background. We’ll take you into the app the moment it’s ready.'
+              : p.gitMissing
+                ? 'Papercusp needs git to download the workspace. On macOS, install it with “xcode-select --install” (or “brew install git”); on Linux use your package manager. Then Retry.'
+                : autoRetrying
+                  ? `Retrying automatically (attempt ${autoAttempts + 1} of ${MAX_AUTO_RETRIES})…`
+                  : p.networkError
+                    ? "We couldn’t reach GitHub after several tries. This is a network/connectivity problem — not your GitHub sign-in, which is fine. Check your connection, then retry."
+                    : "We couldn’t finish cloning the Papercusp workspace. Retry below — it picks up where it left off."}
           </p>
         </div>
 
@@ -227,9 +233,9 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
 
         <div className="pc-step__actions" style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'center' }}>
           {/* While auto-retrying we self-heal silently — the manual Retry only
-              appears once automatic attempts are exhausted (or there are no rows
-              at all). EI-3548. */}
-          {((p.hasError && autoExhausted) || !p.hasRows) && (
+              appears once automatic attempts are exhausted, immediately for a
+              user-action error (git missing), or when there are no rows at all. */}
+          {((p.hasError && (autoExhausted || p.gitMissing)) || !p.hasRows) && (
             <button
               type="button"
               className="pc-btn pc-btn--primary"

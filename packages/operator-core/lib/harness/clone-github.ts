@@ -191,6 +191,34 @@ const GIT_NETWORK_HINTS = [
   /SSL_ERROR_SYSCALL/i,
 ];
 
+// git is effectively UNAVAILABLE even though a `git` file exists on PATH: on a
+// fresh macOS, `/usr/bin/git` is a Command-Line-Tools STUB that, when invoked
+// non-interactively, prints one of these and exits non-zero (it would otherwise
+// pop a GUI "install developer tools" dialog). The build does NOT vendor git on
+// macOS (build-desktop-sidecar.sh assumes "macOS ships git by default" — false
+// for a CLT-less machine), so this is a real fresh-Mac setup blocker. Treat it
+// as git_missing with an actionable install hint, not a cryptic "unknown".
+const GIT_UNAVAILABLE_HINTS = [
+  /xcode-select: note: no developer tools/i,
+  /no developer tools were found/i,
+  /invalid active developer path/i,
+  /missing xcrun/i,
+  /Command Line Tools/i,
+];
+
+/** Is this stderr the macOS CLT-stub "git isn't really installed" signal? */
+export function isGitUnavailable(stderr: string): boolean {
+  return GIT_UNAVAILABLE_HINTS.some((re) => re.test(stderr));
+}
+
+/** Actionable "git missing" message, platform-aware (macOS → xcode-select). */
+export function gitMissingMessage(platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'darwin') {
+    return 'git is not available. On macOS, install it with `xcode-select --install` (or `brew install git`), then Retry.';
+  }
+  return 'git is not installed or not on PATH.';
+}
+
 export function classifyGitError(stderr: string): CloneError['code'] {
   for (const re of GIT_NETWORK_HINTS) if (re.test(stderr)) return 'network_timeout';
   for (const re of GIT_AUTH_HINTS) if (re.test(stderr)) return 'auth_required';
@@ -361,8 +389,12 @@ export async function cloneGithubRepo(
   // Clean up half-cloned dest so caller can retry.
   try { await rm(dest, { recursive: true, force: true }); } catch { /* best-effort */ }
 
-  if (outcome.gitMissing || /command not found|ENOENT/.test(outcome.message)) {
-    return { code: 'git_missing', message: 'git is not installed or not on PATH' };
+  if (
+    outcome.gitMissing ||
+    /command not found|ENOENT/.test(outcome.message) ||
+    isGitUnavailable(outcome.message)
+  ) {
+    return { code: 'git_missing', message: gitMissingMessage() };
   }
   return {
     code: classifyGitError(outcome.message),

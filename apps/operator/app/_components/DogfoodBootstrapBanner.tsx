@@ -41,6 +41,9 @@ export function DogfoodBootstrapBanner() {
   // so phrase this as a recoverable network blip — never a terminal "failed" that
   // implies re-authenticating GitHub (which can't fix a network timeout).
   const isNetworkError = isError && p.networkError;
+  // git not available (macOS CLT-stub / not installed) — a user-action error;
+  // point at setup rather than implying a retry will fix it.
+  const isGitMissing = isError && p.gitMissing;
   // The bootstrap parks the clone at 0% `running` with a "Sign in to GitHub…"
   // detail when auth isn't ready yet (bootstrap-papercusp-hive AWAITING_GH_SIGNIN_DETAIL).
   // Surface that prompt as the headline (and keep the 0% bar visible) instead of
@@ -97,7 +100,9 @@ export function DogfoodBootstrapBanner() {
         />
       )}
       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {isNetworkError ? (
+        {isGitMissing ? (
+          <>Git isn’t installed — finish setup for the fix.</>
+        ) : isNetworkError ? (
           <>Couldn’t reach GitHub (network) — retrying…</>
         ) : isError ? (
           <>Setting up Papercusp workspace failed — finish setup to retry.</>

@@ -21,13 +21,16 @@ vi.mock('../useDogfoodBootstrapProgress', () => ({
 
 import { BootstrapFinishGate } from './BootstrapFinishGate';
 
-function errorEpisode(networkError: boolean): DogfoodBootstrapProgress {
+function errorEpisode(
+  kind: 'network' | 'unknown' | 'git_missing',
+): DogfoodBootstrapProgress {
   return {
     rows: [],
-    clone: { step: 'clone', status: 'error', ts: 1, detail: networkError ? 'network_timeout' : 'unknown' },
+    clone: { step: 'clone', status: 'error', ts: 1, detail: kind === 'network' ? 'network_timeout' : kind },
     hasRows: true,
     hasError: true,
-    networkError,
+    networkError: kind === 'network',
+    gitMissing: kind === 'git_missing',
     ready: false,
     inProgress: false,
   };
@@ -44,7 +47,7 @@ afterEach(() => {
 
 describe('BootstrapFinishGate auto-retry (EI-3548)', () => {
   it('auto-retries a network error with backoff and shows no manual Retry until exhausted', async () => {
-    progress = errorEpisode(true);
+    progress = errorEpisode('network');
     render(<BootstrapFinishGate onReady={() => {}} onCancel={() => {}} />);
 
     // While auto-retrying: a "retrying" message, network-aware, and NO manual button.
@@ -71,7 +74,7 @@ describe('BootstrapFinishGate auto-retry (EI-3548)', () => {
   });
 
   it('auto-retries a non-network error too, then falls back to the generic failure', async () => {
-    progress = errorEpisode(false);
+    progress = errorEpisode('unknown');
     render(<BootstrapFinishGate onReady={() => {}} onCancel={() => {}} />);
 
     expect(screen.getByText(/snag — retrying/i)).toBeTruthy();
@@ -83,5 +86,18 @@ describe('BootstrapFinishGate auto-retry (EI-3548)', () => {
     expect(startSpy).toHaveBeenCalledTimes(3);
     expect(screen.getByText(/Workspace download failed/i)).toBeTruthy();
     expect(screen.getByTestId('bootstrap-gate-retry')).toBeTruthy();
+  });
+
+  it('does NOT auto-retry a git-missing error — shows the install hint + Retry immediately', async () => {
+    progress = errorEpisode('git_missing');
+    render(<BootstrapFinishGate onReady={() => {}} onCancel={() => {}} />);
+
+    // Actionable, non-transient: the install instruction and a manual Retry are
+    // shown right away, and NO automatic retry fires (it can't fix a missing binary).
+    expect(screen.getByText(/Git isn’t available/i)).toBeTruthy();
+    expect(screen.getByText(/xcode-select --install/i)).toBeTruthy();
+    expect(screen.getByTestId('bootstrap-gate-retry')).toBeTruthy();
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    expect(startSpy).not.toHaveBeenCalled();
   });
 });

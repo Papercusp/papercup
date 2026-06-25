@@ -14,6 +14,8 @@ import {
   runGitClone,
   parseGitProgressLine,
   classifyGitError,
+  isGitUnavailable,
+  gitMissingMessage,
 } from './clone-github';
 
 const execFileP = promisify(execFile);
@@ -178,6 +180,28 @@ describe('classifyGitError (EI-3548 — network vs auth vs not-found)', () => {
     expect(classifyGitError('ERROR: Repository not found.')).toBe('not_found');
     expect(classifyGitError('remote: Repository ... does not exist\nfatal: 404')).toBe('not_found');
     expect(classifyGitError('fatal: some unrecognized failure')).toBe('unknown');
+  });
+});
+
+describe('git unavailability (macOS CLT-stub — fresh-Mac setup blocker)', () => {
+  it.each([
+    "xcode-select: note: no developer tools were found at '/Library/Developer/CommandLineTools', requesting install",
+    'xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: ...',
+    'Please install the Command Line Tools',
+  ])('detects the CLT-stub "git not really installed" stderr: %s', (stderr) => {
+    expect(isGitUnavailable(stderr)).toBe(true);
+  });
+
+  it('does NOT flag a normal git error as unavailable', () => {
+    expect(isGitUnavailable('fatal: Authentication failed')).toBe(false);
+    expect(isGitUnavailable('fatal: repository not found')).toBe(false);
+  });
+
+  it('gives an actionable, platform-aware install message', () => {
+    expect(gitMissingMessage('darwin')).toMatch(/xcode-select --install/);
+    expect(gitMissingMessage('darwin')).toMatch(/brew install git/);
+    expect(gitMissingMessage('linux')).toMatch(/not installed/i);
+    expect(gitMissingMessage('linux')).not.toMatch(/xcode-select/);
   });
 });
 

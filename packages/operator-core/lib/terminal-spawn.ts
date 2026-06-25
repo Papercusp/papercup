@@ -13,8 +13,8 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { standardToolDirs } from './tool-path';
 
 /**
  * Terminal emulators tried in order, each with the args that run a command in
@@ -32,13 +32,14 @@ export const LINUX_TERMINALS: ReadonlyArray<readonly [string, readonly string[]]
 
 /**
  * Is `bin` an executable reachable on PATH (plus the usual install dirs)?
- * Note: probes PATH + /usr/bin + /usr/local/bin + ~/.local/bin — NOT
- * ~/.cargo/bin. Callers that resolve a cargo-installed binary (pui, zellij)
- * must check `~/.cargo/bin` explicitly (see launch-pui.ts).
+ * Probes PATH + the canonical {@link standardToolDirs} (incl. /opt/homebrew/bin
+ * for Apple-Silicon Homebrew, /usr/local/bin, ~/.local/bin) — NOT ~/.cargo/bin.
+ * Callers that resolve a cargo-installed binary (pui, zellij) must check
+ * `~/.cargo/bin` explicitly (see launch-pui.ts).
  */
 export function isOnPath(bin: string): boolean {
   const paths = (process.env.PATH ?? '').split(':');
-  paths.push('/usr/bin', '/usr/local/bin', join(homedir(), '.local', 'bin'));
+  paths.push(...standardToolDirs());
   return paths.some((p) => p && existsSync(join(p, bin)));
 }
 

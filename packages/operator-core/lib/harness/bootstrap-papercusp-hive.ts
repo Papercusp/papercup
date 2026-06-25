@@ -428,6 +428,12 @@ export async function bootstrapPapercuspHive(
         record('clone', 'running', { percent: 0, detail: AWAITING_GH_SIGNIN_DETAIL });
         return { state: 'skipped', slug: null, reason: 'clone auth_required: awaiting GitHub sign-in' };
       } else {
+        // Log the REAL failure (code + git's message) — the progress row only
+        // carries the short code, so without this the operator log had no record
+        // of WHY a fresh-machine clone failed (cost a full live debugging round
+        // on the owner's Mac VM, 2026-06-25). `git_missing` on macOS is the
+        // CLT-stub case (no bundled git); its message carries the install hint.
+        console.warn(`[papercusp-hive] clone failed: ${res.code} — ${res.message}`);
         record('clone', 'error', { detail: res.code });
         return { state: 'skipped', slug: null, reason: `clone ${res.code}: ${res.message}`.slice(0, 200) };
       }

@@ -41,6 +41,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
 const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
