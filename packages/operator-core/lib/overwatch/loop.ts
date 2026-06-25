@@ -40,31 +40,36 @@
  * The fire is injectable (`setOverwatchLaunchFire`) so unit tests capture the
  * dispatch without a real HTTP call (the codebase's `setBlueprintRunFire` pattern).
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { loopbackFetch } from '../loopback-fetch';
-import { operatorApiBase } from '../operator-api-base';
-import { recordFire } from '../autoloop';
-import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
+import { getOrgPg } from "@papercusp/db-org";
+import { loopbackFetch } from "../loopback-fetch";
+import { operatorApiBase } from "../operator-api-base";
+import { recordFire } from "../autoloop";
+import {
+  registerSystemAction,
+  type SystemActionCtx,
+} from "../harness/routines/system-actions";
 import {
   OVERWATCH_ROLE,
   OVERWATCH_BLUEPRINT_ID,
   OVERWATCH_WAKE_TARGET_ACTION,
   declareOverwatchTimeWake,
   clearOverwatchTimeWake,
-} from './liveness';
-import { getOverwatchStarted } from './control-state';
-import { overwatchEnabled } from './watchdog';
-import { computeOverwatchBrief } from './compute-brief';
-import { renderOverwatchBrief } from './brief-types';
-import { registerOverwatchWaker } from './wake-bridge';
-import { agentProducedTurn } from '../fleet/invoke-outcome';
+} from "./liveness";
+import { getOverwatchStarted } from "./control-state";
+import { overwatchEnabled } from "./watchdog";
+import { computeOverwatchBrief } from "./compute-brief";
+import { renderOverwatchBrief } from "./brief-types";
+import { registerOverwatchWaker } from "./wake-bridge";
+import { agentProducedTurn } from "../fleet/invoke-outcome";
 
 const operatorBase = operatorApiBase;
 
 /** The registry key for the launch action — derived from the contract constant
  *  (liveness.ts) so a rename of the action follows automatically. */
-const OVERWATCH_LAUNCH_ACTION = OVERWATCH_WAKE_TARGET_ACTION.startsWith('system:')
-  ? OVERWATCH_WAKE_TARGET_ACTION.slice('system:'.length)
+const OVERWATCH_LAUNCH_ACTION = OVERWATCH_WAKE_TARGET_ACTION.startsWith(
+  "system:",
+)
+  ? OVERWATCH_WAKE_TARGET_ACTION.slice("system:".length)
   : OVERWATCH_WAKE_TARGET_ACTION;
 
 /** Overwatch is a monitor, not a worker lane: a turn that cannot emit its scorecard
@@ -91,7 +96,9 @@ export interface OverwatchLaunchFireInput {
   spawnModel?: string | null;
 }
 
-export type OverwatchLaunchFireFn = (input: OverwatchLaunchFireInput) => void | Promise<void>;
+export type OverwatchLaunchFireFn = (
+  input: OverwatchLaunchFireInput,
+) => void | Promise<void>;
 
 let _fire: OverwatchLaunchFireFn | null = null;
 /** Override the launch fire (tests). Pass `null` to restore the default invoke fire. */
@@ -106,7 +113,14 @@ export function setOverwatchLaunchFire(fn: OverwatchLaunchFireFn | null): void {
  * durable step on the whole agent lifetime — the next declared wake re-fires).
  * Mirrors blueprint-run-action.ts's `defaultFire`.
  */
-const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId, role, kickoff, brief, spawnModel }) => {
+const defaultOverwatchFire: OverwatchLaunchFireFn = ({
+  installSlug,
+  workspaceId,
+  role,
+  kickoff,
+  brief,
+  spawnModel,
+}) => {
   const ws = encodeURIComponent(workspaceId);
   // `bpkind=overwatch` tells the invoke route to record a TRACKED, resumable
   // session (label `overwatch · <slug>/<role>`, matching overwatchMidTurn) AND to
@@ -125,45 +139,56 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
   // via the highest-precedence channel (PAPERCUSP_SPAWN_MODEL), separate from the
   // workspace default. Absent ⇒ no pin (workspace/CLI default).
   if (spawnModel && spawnModel.trim()) body.spawnModel = spawnModel.trim();
-  const deadline = armScorecardDeadlineBackstop({ workspaceId, installSlug, role });
+  const deadline = armScorecardDeadlineBackstop({
+    workspaceId,
+    installSlug,
+    role,
+  });
   // Stamp the attempt, then refresh the pane's "is-it-alive?" heartbeat strip:
   // `recordFire` wrote a fresh `autoloop_state` row that `overwatch.liveness`
   // reads, so the strip's last-run / countdown / ALIVE badge update live over SSE
   // the moment a wake fires. Name-only (the consumer subscribes with no args).
-  void recordFire(installSlug, role, 'firing', 'attempt').catch(() => {}).finally(invalidateOverwatchLiveness);
+  void recordFire(installSlug, role, "firing", "attempt")
+    .catch(() => {})
+    .finally(invalidateOverwatchLiveness);
   void loopbackFetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   })
     .then(
       async (r) => {
         const detail = await r
           .text()
-          .then((t) => t.replace(/\s+/g, ' ').slice(0, 320))
-          .catch(() => '');
+          .then((t) => t.replace(/\s+/g, " ").slice(0, 320))
+          .catch(() => "");
         if (!r.ok) {
-          const message = `error: HTTP ${r.status}${detail ? ` — ${detail.slice(0, 160)}` : ''}`;
-          await recordFire(installSlug, role, message, 'error');
+          const message = `error: HTTP ${r.status}${detail ? ` — ${detail.slice(0, 160)}` : ""}`;
+          await recordFire(installSlug, role, message, "error");
           await runScorecardBackstop(workspaceId, installSlug, message);
           return;
         }
 
-        const invokeError = classifyInvokeBodyFailure(detail, `${installSlug}/${role}`);
+        const invokeError = classifyInvokeBodyFailure(
+          detail,
+          `${installSlug}/${role}`,
+        );
         if (invokeError) {
-          await recordFire(installSlug, role, invokeError, 'error');
+          await recordFire(installSlug, role, invokeError, "error");
           await runScorecardBackstop(workspaceId, installSlug, invokeError);
           return;
         }
 
         if (deadline.fired) return;
-        return recordFire(installSlug, role, 'ok', 'ok');
+        return recordFire(installSlug, role, "ok", "ok");
       },
       async (e) => {
         const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
-        console.warn(`[overwatch-loop] launch fire failed (${installSlug}/${role}): ${detail}`);
+        console.warn(
+          `[overwatch-loop] launch fire failed (${installSlug}/${role}): ${detail}`,
+        );
         const message = `error: ${detail}`;
-        await recordFire(installSlug, role, message, 'error');
+        await recordFire(installSlug, role, message, "error");
         await runScorecardBackstop(workspaceId, installSlug, message);
       },
     )
@@ -176,7 +201,8 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
 
 function classifyInvokeBodyFailure(text: string, label: string): string | null {
   const outcome = agentProducedTurn(text, label);
-  if (!outcome.ran) return `error: invoke produced no Overwatch turn — ${outcome.detail.trim()}`;
+  if (!outcome.ran)
+    return `error: invoke produced no Overwatch turn — ${outcome.detail.trim()}`;
 
   if (!text.trim()) return null;
   let parsed: unknown;
@@ -185,22 +211,33 @@ function classifyInvokeBodyFailure(text: string, label: string): string | null {
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== 'object' || (parsed as { ok?: unknown }).ok !== false) return null;
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    (parsed as { ok?: unknown }).ok !== false
+  )
+    return null;
   const obj = parsed as {
     error?: unknown;
     exitCode?: unknown;
     timedOut?: unknown;
     durationMs?: unknown;
   };
-  const parts = ['error: invoke returned ok:false'];
-  if (typeof obj.error === 'string' && obj.error.trim()) parts.push(obj.error.trim().slice(0, 180));
-  if (typeof obj.exitCode === 'number') parts.push(`exitCode=${obj.exitCode}`);
-  if (obj.timedOut === true) parts.push('timedOut=true');
-  if (typeof obj.durationMs === 'number') parts.push(`durationMs=${obj.durationMs}`);
-  return parts.join(' — ');
+  const parts = ["error: invoke returned ok:false"];
+  if (typeof obj.error === "string" && obj.error.trim())
+    parts.push(obj.error.trim().slice(0, 180));
+  if (typeof obj.exitCode === "number") parts.push(`exitCode=${obj.exitCode}`);
+  if (obj.timedOut === true) parts.push("timedOut=true");
+  if (typeof obj.durationMs === "number")
+    parts.push(`durationMs=${obj.durationMs}`);
+  return parts.join(" — ");
 }
 
-function armScorecardDeadlineBackstop(opts: { workspaceId: string; installSlug: string; role: string }): {
+function armScorecardDeadlineBackstop(opts: {
+  workspaceId: string;
+  installSlug: string;
+  role: string;
+}): {
   fired: boolean;
   cancel: () => void;
 } {
@@ -208,18 +245,30 @@ function armScorecardDeadlineBackstop(opts: { workspaceId: string; installSlug: 
   const timer = setTimeout(() => {
     void (async () => {
       const reason = `no complete scorecard within ${OVERWATCH_INVOKE_TIMEOUT_MS}ms launch deadline`;
-      const res = await runScorecardBackstop(opts.workspaceId, opts.installSlug, reason);
-      if (res.outcome === 'synthesized' || res.outcome === 'error') {
+      const res = await runScorecardBackstop(
+        opts.workspaceId,
+        opts.installSlug,
+        reason,
+      );
+      if (res.outcome === "synthesized" || res.outcome === "error") {
         state.fired = true;
-        await recordFire(opts.installSlug, opts.role, `error: ${reason}; backstop ${res.outcome}`, 'error');
+        await recordFire(
+          opts.installSlug,
+          opts.role,
+          `error: ${reason}; backstop ${res.outcome}`,
+          "error",
+        );
         invalidateOverwatchLiveness();
       }
     })().catch((e) => {
       state.fired = true;
       const detail = e instanceof Error ? e.message : String(e);
-      void recordFire(opts.installSlug, opts.role, `error: scorecard deadline backstop threw: ${detail}`, 'error').finally(
-        invalidateOverwatchLiveness,
-      );
+      void recordFire(
+        opts.installSlug,
+        opts.role,
+        `error: scorecard deadline backstop threw: ${detail}`,
+        "error",
+      ).finally(invalidateOverwatchLiveness);
     });
   }, OVERWATCH_INVOKE_TIMEOUT_MS + OVERWATCH_SCORECARD_DEADLINE_GRACE_MS);
   return state;
@@ -229,18 +278,22 @@ async function runScorecardBackstop(
   workspaceId: string,
   installSlug: string,
   reason: string,
-): Promise<{ outcome: 'synthesized' | 'skipped' | 'error'; reason: string }> {
+): Promise<{ outcome: "synthesized" | "skipped" | "error"; reason: string }> {
   try {
-    const { overwatchScorecardEndCheck } = await import('./scorecard-backstop');
+    const { overwatchScorecardEndCheck } = await import("./scorecard-backstop");
     const res = await overwatchScorecardEndCheck({ workspaceId, installSlug });
-    if (res.outcome === 'error') {
-      console.warn(`[overwatch-loop] ${installSlug}: scorecard backstop failed after launch error (${reason}): ${res.reason}`);
+    if (res.outcome === "error") {
+      console.warn(
+        `[overwatch-loop] ${installSlug}: scorecard backstop failed after launch error (${reason}): ${res.reason}`,
+      );
     }
     return res;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.warn(`[overwatch-loop] ${installSlug}: scorecard backstop threw after launch error (${reason}): ${msg}`);
-    return { outcome: 'error', reason: msg };
+    console.warn(
+      `[overwatch-loop] ${installSlug}: scorecard backstop threw after launch error (${reason}): ${msg}`,
+    );
+    return { outcome: "error", reason: msg };
   }
 }
 
@@ -249,8 +302,10 @@ async function runScorecardBackstop(
  *  at boot, before the SSE bus is necessarily wired) + fully fail-soft — a notify
  *  miss never affects the launch. */
 function invalidateOverwatchLiveness(): void {
-  void import('../sync-sse')
-    .then(({ notifySyncInvalidate }) => notifySyncInvalidate('overwatch.liveness', {}))
+  void import("../sync-sse")
+    .then(({ notifySyncInvalidate }) =>
+      notifySyncInvalidate("overwatch.liveness", {}),
+    )
     .catch(() => {});
 }
 
@@ -261,23 +316,30 @@ function invalidateOverwatchLiveness(): void {
  * would double-launch the overwatch on retry; every failure mode degrades to "no
  * launch this tick" (the watchdog re-arms a fallback if the channel goes quiet).
  */
-export async function handleOverwatchLaunch(ctx: SystemActionCtx): Promise<void> {
+export async function handleOverwatchLaunch(
+  ctx: SystemActionCtx,
+): Promise<void> {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
   try {
     // Defense-in-depth (the spawn chokepoint also rejects role=overwatch while the
     // flag is off): skip cheaply when the role is dark or the loop is paused so we
     // never compute a brief / fire a launch that the chokepoint would reject anyway.
     if (!(await overwatchEnabled())) {
-      console.log(`[overwatch-loop] ${installSlug}: launch skipped — overwatch flag off`);
+      console.log(
+        `[overwatch-loop] ${installSlug}: launch skipped — overwatch flag off`,
+      );
       return;
     }
     if (!(await getOverwatchStarted(workspaceId, installSlug))) {
-      console.log(`[overwatch-loop] ${installSlug}: launch skipped — overwatch not started`);
+      console.log(
+        `[overwatch-loop] ${installSlug}: launch skipped — overwatch not started`,
+      );
       return;
     }
 
     const kickoff =
-      typeof payloadTemplate?.kickoff === 'string' && payloadTemplate.kickoff.trim()
+      typeof payloadTemplate?.kickoff === "string" &&
+      payloadTemplate.kickoff.trim()
         ? payloadTemplate.kickoff.trim()
         : `Scheduled overwatch wake for '${installSlug}'. Survey system health (the brief) and act on the anomalies.`;
 
@@ -287,7 +349,9 @@ export async function handleOverwatchLaunch(ctx: SystemActionCtx): Promise<void>
     // overwatch to gather the panels itself (overwatch.md's degraded fallback).
     let brief: string | null = null;
     try {
-      const computed = await computeOverwatchBrief(workspaceId, installSlug, { wokeBy: kickoff });
+      const computed = await computeOverwatchBrief(workspaceId, installSlug, {
+        wokeBy: kickoff,
+      });
       brief = renderOverwatchBrief(computed);
     } catch (e) {
       console.warn(
@@ -301,18 +365,31 @@ export async function handleOverwatchLaunch(ctx: SystemActionCtx): Promise<void>
     // agent-config default. Fail-soft → no override (workspace default).
     let spawnModel: string | null = null;
     try {
-      const { getOwnerSteering } = await import('../owner-steering');
-      spawnModel = (await getOwnerSteering(workspaceId, installSlug)).modelOverrides?.overwatch ?? null;
+      const { getOwnerSteering } = await import("../owner-steering");
+      spawnModel =
+        (await getOwnerSteering(workspaceId, installSlug)).modelOverrides
+          ?.overwatch ?? null;
     } catch {
       /* fail-soft — launch at the default model */
     }
 
     const fire = _fire ?? defaultOverwatchFire;
-    await fire({ installSlug, workspaceId, role: OVERWATCH_ROLE, kickoff, brief, spawnModel });
-    console.log(`[overwatch-loop] ${installSlug}: fired overwatch launch (brief ${brief ? 'attached' : 'absent'})`);
+    await fire({
+      installSlug,
+      workspaceId,
+      role: OVERWATCH_ROLE,
+      kickoff,
+      brief,
+      spawnModel,
+    });
+    console.log(
+      `[overwatch-loop] ${installSlug}: fired overwatch launch (brief ${brief ? "attached" : "absent"})`,
+    );
   } catch (e) {
     // The whole handler is fail-soft (the durable-step contract): never throw.
-    console.warn(`[overwatch-loop] ${installSlug}: launch handler failed: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[overwatch-loop] ${installSlug}: launch handler failed: ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -338,9 +415,9 @@ registerOverwatchWaker({
       kickoff: reason,
     });
   },
-  async clearWake({ harness }) {
+  async clearWake({ harness, workspaceId }) {
     const { sql } = getOrgPg();
-    await clearOverwatchTimeWake(sql, harness);
+    await clearOverwatchTimeWake(sql, harness, { workspaceId });
     return { cleared: true };
   },
 });
