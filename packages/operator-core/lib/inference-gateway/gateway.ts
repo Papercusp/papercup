@@ -1319,6 +1319,55 @@ export function createInferenceGateway(deps: GatewayDeps) {
     res.end(JSON.stringify(body));
   }
 
+  function codexModelsResponse() {
+    const supportedReasoningLevels = [
+      { effort: 'low', description: 'Fast responses with lighter reasoning' },
+      { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
+      { effort: 'high', description: 'Greater reasoning depth for complex problems' },
+      { effort: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
+    ];
+    const model = (slug: string, displayName: string, description: string, priority: number) => ({
+      slug,
+      display_name: displayName,
+      description,
+      default_reasoning_level: 'medium',
+      supported_reasoning_levels: supportedReasoningLevels,
+      shell_type: 'shell_command',
+      visibility: 'list',
+      supported_in_api: true,
+      priority,
+      additional_speed_tiers: [],
+      service_tiers: [],
+      availability_nux: { message: '' },
+      upgrade: null,
+      base_instructions: '',
+      model_messages: { instructions_template: '' },
+      supports_reasoning_summaries: true,
+      default_reasoning_summary: 'none',
+      support_verbosity: true,
+      default_verbosity: 'low',
+      apply_patch_tool_type: 'freeform',
+      web_search_tool_type: 'text_and_image',
+      truncation_policy: { mode: 'tokens', limit: 10_000 },
+      supports_parallel_tool_calls: true,
+      supports_image_detail_original: true,
+      context_window: 272_000,
+      max_context_window: 272_000,
+      comp_hash: 'papercusp-gateway',
+      effective_context_window_percent: 95,
+      experimental_supported_tools: [],
+      input_modalities: ['text', 'image'],
+      supports_search_tool: true,
+      use_responses_lite: false,
+    });
+    return {
+      models: [
+        model('gpt-5.5', 'GPT-5.5', 'Frontier model for complex coding, research, and real-world work.', 9),
+        model('gpt-5', 'GPT-5', 'General-purpose coding and reasoning model.', 8),
+      ],
+    };
+  }
+
   async function proxy(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
     const bodyBuf = await readBody(req);
     let model = 'claude-opus-4';
@@ -2336,6 +2385,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     } catch (e) {
       req.resume();
       sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable' }, gateway: true });
+      return;
+    }
+    if (req.method === 'GET' && url.startsWith('/v1/models')) {
+      req.resume();
+      totalRequests++;
+      codexRequests++;
+      sendJson(res, 200, codexModelsResponse(), { [ROUTED_ACCOUNT_HEADER]: active.accountId });
       return;
     }
     // BOUNDED body read (2026-06-22 audit F1): a Codex bee that stalls mid-upload must not hold this admission
