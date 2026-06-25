@@ -97,6 +97,49 @@ export interface DurableSpawnFireInput {
   };
 }
 
+function parseInvokeTarget(input: DurableSpawnFireInput): { role: string; harnessSlug: string; workspaceId: string } | null {
+  try {
+    const u = new URL(input.url);
+    const role = (u.searchParams.get('role') ?? '').trim();
+    const workspaceId = (input.spawnRecord?.workspaceId ?? u.searchParams.get('ws') ?? '').trim();
+    const m = u.pathname.match(/\/api\/harness\/([^/]+)\/invoke$/);
+    const harnessSlug = m?.[1] ? decodeURIComponent(m[1]) : '';
+    if (!role || !workspaceId || !harnessSlug) return null;
+    return { role, workspaceId, harnessSlug };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Promise<Record<string, unknown>> {
+  const existing = input.body.spawnModel;
+  if (typeof existing === 'string' && existing.trim()) return input.body;
+
+  const target = parseInvokeTarget(input);
+  if (!target || (target.role !== 'queen' && target.role !== 'overwatch')) return input.body;
+
+  try {
+    const { getOwnerSteering } = await import('../owner-steering');
+    const steering = await getOwnerSteering(target.workspaceId, target.harnessSlug);
+    let spawnModel: string | null | undefined = null;
+    if (target.role === 'overwatch') {
+      spawnModel = steering.modelOverrides?.overwatch;
+    } else {
+      const [{ readAgentConfig }, { effectiveTierConfig, resolveRoleOwnModelSpec }] = await Promise.all([
+        import('../agent-config'),
+        import('../fleet/model-tiers'),
+      ]);
+      const cfg = await readAgentConfig().catch(() => null);
+      spawnModel = resolveRoleOwnModelSpec('queen', effectiveTierConfig(cfg, steering));
+    }
+    return typeof spawnModel === 'string' && spawnModel.trim()
+      ? { ...input.body, spawnModel: spawnModel.trim() }
+      : input.body;
+  } catch {
+    return input.body;
+  }
+}
+
 export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promise<void> {
   const rec = input.spawnRecord;
   // Stable so a step retry / recovery replay updates the SAME row, not a new one.
@@ -152,10 +195,11 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   try {
     fireResult = await DBOS.runStep(
       async () => {
+        const fireBody = await refreshControlPlaneSpawnModel(input);
         const r = await loopbackFetch(input.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(input.body),
+          body: JSON.stringify(fireBody),
         }, { launch: true });
         if (r.ok) {
           // D-007/D-010 fail-loud: the fire holds the connection for the agent's run, so r.ok

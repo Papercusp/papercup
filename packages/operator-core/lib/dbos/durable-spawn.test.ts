@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   loopbackFetch: vi.fn(async (): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
+  ownerSteering: { value: null as null | Record<string, unknown> },
+  agentConfig: { value: null as null | Record<string, unknown> },
   state: { dbosOn: true },
   // P-006: deterministic gateway-throttle corroboration (a real probe would reach the live :8788
   // gateway and make these tests flake). false ⇒ a no-turn death classifies infra_loss (legacy);
@@ -42,6 +44,19 @@ vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn })
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('../owner-steering', () => ({
+  getOwnerSteering: vi.fn(async () => h.ownerSteering.value ?? {
+    directive: null,
+    eligiblePlans: [],
+    eligibleHives: [],
+    pauseNewWork: false,
+    pausedUntil: null,
+    modelTiers: null,
+    tierCeilings: null,
+    modelOverrides: null,
+  }),
+}));
+vi.mock('../agent-config', () => ({ readAgentConfig: vi.fn(async () => h.agentConfig.value) }));
 // P-006: the gateway-throttle probe is mocked so the capacity_shed vs infra_loss classification is
 // deterministic (the real gatewayWholesaleThrottled would fetch the live :8788 gateway → flaky).
 vi.mock('../inference-gateway/observability', () => ({
@@ -63,6 +78,8 @@ beforeEach(() => {
   h.startWorkflow.mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
   h.recordSpawn.mockClear();
   h.finishSpawn.mockClear();
+  h.ownerSteering.value = null;
+  h.agentConfig.value = null;
   h.loopbackFetch.mockReset();
   h.loopbackFetch.mockImplementation(async () => ({ ok: true, status: 200 }));
   h.gatewayThrottled.value = false; // default: gateway healthy ⇒ a no-turn death is infra_loss
@@ -175,6 +192,51 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
     const call = h.loopbackFetch.mock.calls[0] as unknown[];
     expect(call[2]).toEqual({ launch: true });
+  });
+
+  it('refreshes a stale Queen durable body from current owner steering before every /invoke POST', async () => {
+    h.ownerSteering.value = {
+      modelTiers: [
+        { name: 'quick', spec: 'haiku' },
+        { name: 'standard', spec: 'sonnet' },
+        { name: 'queen-codex', spec: 'gpt-5.5', backend: 'codex' },
+      ],
+      tierCeilings: { queen: 'queen-codex' },
+      modelOverrides: null,
+    };
+    await durableSpawnFireImpl({
+      url: 'http://x/api/harness/papercusp/invoke?role=queen&ws=papercusp-workspace',
+      body: { kickoff: 'old persisted body' },
+      idempotencyKey: 'q-stale',
+      label: 'papercusp/queen',
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+    });
+    const req = h.loopbackFetch.mock.calls[0]![1] as unknown as { body: string };
+    expect(JSON.parse(req.body).spawnModel).toBe('gpt-5.5');
+  });
+
+  it('refreshes a stale Overwatch durable body from current modelOverrides before every /invoke POST', async () => {
+    h.ownerSteering.value = { modelOverrides: { overwatch: 'gpt-5.5:high' } };
+    await durableSpawnFireImpl({
+      url: 'http://x/api/harness/papercusp/invoke?role=overwatch&ws=papercusp-workspace',
+      body: { kickoff: 'old persisted body' },
+      idempotencyKey: 'ow-stale',
+      label: 'papercusp/overwatch',
+    });
+    const req = h.loopbackFetch.mock.calls[0]![1] as unknown as { body: string };
+    expect(JSON.parse(req.body).spawnModel).toBe('gpt-5.5:high');
+  });
+
+  it('does not override an explicit caller-provided spawnModel in a durable body', async () => {
+    h.ownerSteering.value = { modelOverrides: { overwatch: 'gpt-5.5:high' } };
+    await durableSpawnFireImpl({
+      url: 'http://x/api/harness/papercusp/invoke?role=overwatch&ws=papercusp-workspace',
+      body: { kickoff: 'explicit pin', spawnModel: 'sonnet' },
+      idempotencyKey: 'ow-explicit',
+      label: 'papercusp/overwatch',
+    });
+    const req = h.loopbackFetch.mock.calls[0]![1] as unknown as { body: string };
+    expect(JSON.parse(req.body).spawnModel).toBe('sonnet');
   });
 
   it('does NOT record when spawnRecord is omitted (hive launches own their rows)', async () => {
