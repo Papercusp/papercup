@@ -192,6 +192,7 @@ type TopicAnnounceState = {
 };
 
 const announceTopicStateByMuxer = new WeakMap<object, Map<string, TopicAnnounceState>>();
+const announcePairedMuxers = new WeakSet<object>();
 
 /** Get-or-create the per-topic announce-state map for a muxer. */
 function announceTopicStatesFor(mux: object): Map<string, TopicAnnounceState> {
@@ -324,25 +325,20 @@ export function openAnnounceChannel(
     // (A send-only harness with no ourAnnounce falls back to a positional key.)
     const entryKey = opts.ourAnnounce?.log_core_key ?? `__reader-${state.entries.size}`;
     state.entries.set(entryKey, opts);
-    // LAZY-ACCEPT pair-notifier, ONCE per (muxer, topic). Registered with
-    // id = topic so protomux dispatches a remote announce-open for THIS topic to
-    // THIS notifier (_requestSession keys _notify by toKey(protocol, id), with a
-    // null-id fallback). On a SHARED swarm the two ends attach to an existing
-    // socket at different times (the socket may predate both, opened by the
-    // hive-directory gossip). The earlier end's channel-open reaches the later
-    // end before any matching channel exists, and protomux REJECTS it —
-    // permanently, opens are never re-sent — so the earlier end could never
-    // pair. The notifier accepts a pending open by creating our channel
-    // SYNCHRONOUSLY (the directory-gossip late-join lesson — see
-    // directory-swarm.ts).
-    if (!state.paired) {
-      state.paired = true;
+    // LAZY-ACCEPT pair-notifier, ONCE per muxer. Register at protocol scope and
+    // dispatch by the incoming topic id, matching directory-swarm.ts. Live
+    // Protomux delivers late remote opens to the protocol-level pair notifier;
+    // registering pair({ protocol, id: topic }) leaves the pending open
+    // unaccepted, so the channel never reaches onopen and announces never send.
+    if (!announcePairedMuxers.has(mux)) {
+      announcePairedMuxers.add(mux);
       try {
-        mux.pair({ protocol: ANNOUNCE_PROTOCOL, id: topic }, () => {
-          const cur = states.get(topicHex);
+        mux.pair({ protocol: ANNOUNCE_PROTOCOL }, (id: Buffer | null) => {
+          if (!id) return;
+          const cur = states.get(id.toString('hex'));
           if (cur) {
             try {
-              createAnnounceChannel(mux, topic, cur);
+              createAnnounceChannel(mux, id, cur);
             } catch {
               // best-effort — a failed lazy accept degrades to the old reject
             }

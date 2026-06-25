@@ -53,11 +53,12 @@ interface FakeChannel {
   open(): void;
 }
 
-function makeFakeMux() {
+function makeFakeMux(fakeOpts: { firstCreateReturnsNull?: boolean } = {}) {
   const toKey = (protocol: string, id?: Buffer | null): string =>
     protocol + '##' + (id ? Buffer.from(id).toString('hex') : '');
   const channels = new Map<string, FakeChannel>();
   const pairs = new Map<string, (id: Buffer | null) => void>();
+  const createAttempts = new Map<string, number>();
   const sent: { key: string; value: SignedAnnounce }[] = [];
   const mux = {
     isProtomux: true as const,
@@ -67,6 +68,9 @@ function makeFakeMux() {
       onopen?: () => void;
     }): FakeChannel | null {
       const key = toKey(opts.protocol, opts.id ?? null);
+      const attempts = createAttempts.get(key) ?? 0;
+      createAttempts.set(key, attempts + 1);
+      if (fakeOpts.firstCreateReturnsNull && attempts === 0) return null;
       const existing = channels.get(key);
       if (existing && existing.opened) return null; // protomux `unique` default
       const ch: FakeChannel = {
@@ -93,6 +97,9 @@ function makeFakeMux() {
     _sent: sent,
     _channels: channels,
     _pairs: pairs,
+    _notifyProtocolOpen(id: Buffer): void {
+      pairs.get(toKey(ANNOUNCE_PROTOCOL, null))?.(id);
+    },
     _key: toKey,
   };
   return mux;
@@ -146,8 +153,7 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
 
     expect(h1).toEqual(['inbound-for-hive1']);
     expect(h2).toEqual(['inbound-for-hive2']);
-    expect(mux._pairs.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
-    expect(mux._pairs.has(mux._key(ANNOUNCE_PROTOCOL, t2))).toBe(true);
+    expect(mux._pairs.has(mux._key(ANNOUNCE_PROTOCOL, null))).toBe(true);
   });
 
   it('the SAME harness re-registered on one topic is de-duped (one channel, one announce)', () => {
@@ -187,5 +193,18 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
     const ch = mux._channels.get(mux._key(ANNOUNCE_PROTOCOL, t1));
     ch?.onmessage?.(announce('remote-member'));
     expect(memberInbound).toEqual(['remote-member']);
+  });
+
+  it('lazy-accepts a late remote open through the protocol-level pair notifier', () => {
+    const mux = makeFakeMux({ firstCreateReturnsNull: true });
+    const socket = { userData: mux };
+
+    openAnnounceChannel(socket, t1, { ourAnnounce: announce('late-accepted-log') });
+    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual([]);
+
+    mux._notifyProtocolOpen(t1);
+
+    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['late-accepted-log']);
+    expect(mux._channels.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
   });
 });

@@ -15,6 +15,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { resolveLocalAnnounceIdentity } from './local-announce-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const LOG_CORE_KEY = 'a'.repeat(64);
 
@@ -153,5 +156,69 @@ describe('resolveLocalAnnounceIdentity', () => {
         loadKeypair: stubKeypair(),
       }),
     ).rejects.toThrow(/gh not authenticated/);
+  });
+
+  it('falls back to the last-good cached identity when GitHub user resolution is transiently unavailable', async () => {
+    const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+
+    await resolveLocalAnnounceIdentity({
+      logCoreKeyHex: LOG_CORE_KEY,
+      cachePath,
+      resolveGithubUser: stubUser(4242, 'alice'),
+      buildKeychainId: (uid: number) => `${uid}:m`,
+      loadKeypair: stubKeypair(),
+      resolveAttestationGistId: async () => 'gist-cached',
+    });
+
+    const identity = await resolveLocalAnnounceIdentity({
+      logCoreKeyHex: LOG_CORE_KEY,
+      cachePath,
+      resolveGithubUser: vi.fn(async () => {
+        throw new Error('GitHub timeout');
+      }),
+      loadKeypair: vi.fn(async (keychainId: string) => ({
+        keychainId,
+        pubkeyBase64: 'PUBKEY==',
+      })),
+    });
+
+    expect(identity).toMatchObject({
+      keychainId: '4242:m',
+      devicePubkeyBase64: 'PUBKEY==',
+      githubUserId: 4242,
+      githubLogin: 'alice',
+      attestationGistId: 'gist-cached',
+    });
+  });
+
+  it('rejects a cached identity when the keychain pubkey no longer matches the cached pubkey', async () => {
+    const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        version: 1,
+        savedAt: Date.now(),
+        keychainId: '4242:m',
+        devicePubkeyBase64: 'OLDPUB==',
+        githubUserId: 4242,
+        githubLogin: 'alice',
+        attestationGistId: 'gist-cached',
+      }),
+      'utf8',
+    );
+
+    await expect(
+      resolveLocalAnnounceIdentity({
+        logCoreKeyHex: LOG_CORE_KEY,
+        cachePath,
+        resolveGithubUser: vi.fn(async () => {
+          throw new Error('GitHub timeout');
+        }),
+        loadKeypair: vi.fn(async (keychainId: string) => ({
+          keychainId,
+          pubkeyBase64: 'NEWPUB==',
+        })),
+      }),
+    ).rejects.toThrow(/GitHub timeout/);
   });
 });

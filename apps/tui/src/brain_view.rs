@@ -19,10 +19,6 @@ use crate::models::ChatMessage;
 use crate::models::RosterEntry;
 use crate::theme::Theme;
 use crate::transcript::{locate_session_transcript, tail_transcript};
-use crossterm::{
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -256,17 +252,10 @@ fn select_newest_with_transcript(
 /// placeholder when the agent isn't running — it NEVER blanks or crashes.
 /// Loops until the pane is closed.
 pub async fn run(scope: Scope) -> anyhow::Result<()> {
-    enable_raw_mode()?;
-    let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    let out = stdout();
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run_tui(&mut terminal, scope).await;
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    let _ = terminal.show_cursor();
-    result
+    run_tui(&mut terminal, scope).await
 }
 
 async fn run_tui(

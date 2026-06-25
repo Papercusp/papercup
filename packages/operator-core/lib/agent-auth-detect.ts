@@ -73,13 +73,14 @@ export function anyAgentSignedIn(): boolean {
 
 function resolveGhBinary(): string | null {
   const candidates = [
+    process.argv[1] ? join(dirname(process.argv[1]), 'bin', 'gh') : '',
     join(dirname(process.execPath), 'gh'),
     join(process.cwd(), 'bin', 'gh'),
     join(process.cwd(), '..', 'bin', 'gh'),
     '/opt/homebrew/bin/gh',
     '/usr/local/bin/gh',
   ];
-  for (const p of candidates) if (existsSync(p)) return p;
+  for (const p of candidates) if (p && existsSync(p)) return p;
   const which = spawnSync('which', ['gh'], { encoding: 'utf8', timeout: 3000 });
   if (which.status === 0 && which.stdout.trim()) return which.stdout.trim();
   return null;

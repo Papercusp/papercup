@@ -29,7 +29,7 @@ vi.mock('@papercusp/db-org', () => ({
     }) as Promise<T>,
 }));
 
-const { listScorecards, scorecardTrend } = await import('./scorecards');
+const { builtInCriterionKeysForRubric, listScorecards, scorecardTrend } = await import('./scorecards');
 const { createIssue } = await import('./issues-engineer');
 const { proposeRubric } = await import('./rubrics');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
@@ -168,6 +168,12 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(rows[0].rubricResolved).toBe(false);
     expect(rows[0].missingKeys).toEqual([]); // can't compute — but rubricResolved=false flags it
     expect(rows[0].nKeys).toBe(1);
+  });
+
+  it('has a built-in completeness fallback only for the owner-mandated hive coordination rubric', () => {
+    expect(builtInCriterionKeysForRubric('hive-coordination-health')).toHaveLength(14);
+    expect(builtInCriterionKeysForRubric('hive-coordination-health')).toContain('scheduler-usage');
+    expect(builtInCriterionKeysForRubric('no-such-rubric')).toBeNull();
   });
 
   it('respects the limit (newest-first)', async () => {

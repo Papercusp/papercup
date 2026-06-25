@@ -33,6 +33,9 @@ import { loadOrGenerateDeviceKeypair, ensureAttestationGist } from '../../identi
 import { getAuthenticatedGithubUser } from '../../identity/resolve-local-github-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { getGhAuthToken } from '../../identity/gh-token';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 export interface LocalAnnounceIdentity {
   keychainId: string;
@@ -81,6 +84,96 @@ export interface ResolveLocalAnnounceIdentityOpts {
    * tests (and for any path that already holds the gist id).
    */
   resolveAttestationGistId?: (args: ResolveAttestationGistArgs) => Promise<string>;
+  /**
+   * Persisted last-good identity cache. Production defaults to
+   * `~/.papercusp/local-announce-identity.json`; tests with injected deps
+   * default to disabled unless they pass a path explicitly.
+   */
+  cachePath?: string | false;
+}
+
+interface CachedLocalAnnounceIdentity extends LocalAnnounceIdentity {
+  version: 1;
+  savedAt: number;
+}
+
+function defaultCachePath(): string {
+  return process.env.PAPERCUSP_ANNOUNCE_IDENTITY_CACHE ||
+    join(homedir(), '.papercusp', 'local-announce-identity.json');
+}
+
+function cachePathFor(opts: ResolveLocalAnnounceIdentityOpts): string | false {
+  if (opts.cachePath !== undefined) return opts.cachePath;
+  // Injected dependency tests should stay hermetic by default.
+  if (
+    opts.resolveGithubUser ||
+    opts.loadKeypair ||
+    opts.buildKeychainId ||
+    opts.resolveAttestationGistId
+  ) {
+    return false;
+  }
+  return defaultCachePath();
+}
+
+function isCachedIdentity(value: unknown): value is CachedLocalAnnounceIdentity {
+  const v = value as Partial<CachedLocalAnnounceIdentity> | null;
+  return Boolean(
+    v &&
+      v.version === 1 &&
+      typeof v.keychainId === 'string' &&
+      v.keychainId &&
+      typeof v.devicePubkeyBase64 === 'string' &&
+      v.devicePubkeyBase64 &&
+      typeof v.githubUserId === 'number' &&
+      Number.isFinite(v.githubUserId) &&
+      typeof v.githubLogin === 'string' &&
+      v.githubLogin &&
+      typeof v.attestationGistId === 'string' &&
+      v.attestationGistId,
+  );
+}
+
+async function readCachedIdentity(path: string | false): Promise<CachedLocalAnnounceIdentity | null> {
+  if (!path) return null;
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
+    return isCachedIdentity(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedIdentity(
+  path: string | false,
+  identity: LocalAnnounceIdentity,
+): Promise<void> {
+  if (!path) return;
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    const body: CachedLocalAnnounceIdentity = { version: 1, savedAt: Date.now(), ...identity };
+    await writeFile(path, JSON.stringify(body, null, 2), 'utf8');
+  } catch {
+    // Cache is a resilience aid; never fail identity resolution because it could
+    // not be written.
+  }
+}
+
+async function identityFromCache(
+  path: string | false,
+  loadKeypair: (keychainId: string) => Promise<{ keychainId: string; pubkeyBase64: string }>,
+): Promise<LocalAnnounceIdentity | null> {
+  const cached = await readCachedIdentity(path);
+  if (!cached) return null;
+  const keypair = await loadKeypair(cached.keychainId).catch(() => null);
+  if (!keypair || keypair.pubkeyBase64 !== cached.devicePubkeyBase64) return null;
+  return {
+    keychainId: cached.keychainId,
+    devicePubkeyBase64: cached.devicePubkeyBase64,
+    githubUserId: cached.githubUserId,
+    githubLogin: cached.githubLogin,
+    attestationGistId: cached.attestationGistId,
+  };
 }
 
 async function defaultResolveGithubUser(): Promise<{ id: number; login: string }> {
@@ -121,27 +214,51 @@ export async function resolveLocalAnnounceIdentity(
   const loadKeypair = opts.loadKeypair ?? loadOrGenerateDeviceKeypair;
   const resolveUser = opts.resolveGithubUser ?? defaultResolveGithubUser;
   const buildKeychainId = opts.buildKeychainId ?? resolveDeviceKeychainId;
+  const cachePath = cachePathFor(opts);
 
   // Resolve the gh user FIRST — the canonical device keychain id is keyed by
   // the user's id (`<github_user_id>:<machine-fingerprint>`), the SAME id the
   // join path signs the contributor file under. An explicit `keychainId`
   // override wins (tests / multi-identity dev).
-  const user = await resolveUser();
+  let user: { id: number; login: string };
+  try {
+    user = await resolveUser();
+  } catch (e) {
+    const cached = await identityFromCache(cachePath, loadKeypair);
+    if (cached) return cached;
+    throw e;
+  }
   const keychainId = opts.keychainId ?? buildKeychainId(user.id);
   const keypair = await loadKeypair(keychainId);
   const resolveGist = opts.resolveAttestationGistId ?? defaultResolveAttestationGistId;
-  const attestationGistId = await resolveGist({
-    keychainId,
-    pubkeyBase64: keypair.pubkeyBase64,
-    githubUserId: user.id,
-    githubLogin: user.login,
-  });
+  let attestationGistId: string;
+  try {
+    attestationGistId = await resolveGist({
+      keychainId,
+      pubkeyBase64: keypair.pubkeyBase64,
+      githubUserId: user.id,
+      githubLogin: user.login,
+    });
+  } catch (e) {
+    const cached = await identityFromCache(cachePath, loadKeypair);
+    if (
+      cached &&
+      cached.keychainId === keychainId &&
+      cached.devicePubkeyBase64 === keypair.pubkeyBase64 &&
+      cached.githubUserId === user.id
+    ) {
+      return cached;
+    }
+    throw e;
+  }
 
-  return {
+  const identity = {
     keychainId,
     devicePubkeyBase64: keypair.pubkeyBase64,
     githubUserId: user.id,
     githubLogin: user.login,
     attestationGistId,
   };
+  await writeCachedIdentity(cachePath, identity);
+  return identity;
 }

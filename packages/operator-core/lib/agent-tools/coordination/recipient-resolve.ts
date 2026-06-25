@@ -14,6 +14,7 @@
  */
 
 import { listPresence } from './presence';
+import { listRecordedLiveSessions } from '../../adv-sessions';
 
 /** Wildcards + audience selectors that bypass concrete-recipient validation —
  *  sendMessage expands these itself (`*`/`human` broadcast; `@plan:`/`@role:`/
@@ -66,6 +67,23 @@ export function resolveRecipientsAgainst(
   return { resolved, unknown, ambiguous };
 }
 
+async function readKnownOwnerIds(workspaceId?: string | null): Promise<string[]> {
+  const [presenceRes, recordedRes] = await Promise.allSettled([
+    listPresence({ workspaceId }),
+    listRecordedLiveSessions({ workspaceId }),
+  ]);
+  const ids = new Set<string>();
+  if (presenceRes.status === 'fulfilled') {
+    for (const p of presenceRes.value) ids.add(p.ownerId);
+  }
+  if (recordedRes.status === 'fulfilled') {
+    for (const s of recordedRes.value) {
+      if (s.coordOwnerId) ids.add(s.coordOwnerId);
+    }
+  }
+  return [...ids];
+}
+
 /** Host-bound wrapper: resolve `to` against the live presence roster (all known
  *  agents in the workspace, live + idle). Local-roster scoped — a cross-instance
  *  federated recipient is not in the local roster, so callers that support
@@ -77,7 +95,7 @@ export async function resolveRecipients(
 ): Promise<RecipientResolution> {
   let knownOwnerIds: string[];
   try {
-    knownOwnerIds = (await listPresence({ workspaceId })).map((p) => p.ownerId);
+    knownOwnerIds = await readKnownOwnerIds(workspaceId);
   } catch {
     knownOwnerIds = []; // roster unavailable → fail open below
   }
@@ -120,11 +138,7 @@ export async function resolveBestEffortAgainstRoster(
 ): Promise<string[]> {
   if (!to.some((id) => !isSelectorOrWildcard(id))) return [...to];
   try {
-    const presence = await listPresence({ workspaceId });
-    return resolveBestEffort(
-      to,
-      presence.map((p) => p.ownerId),
-    );
+    return resolveBestEffort(to, await readKnownOwnerIds(workspaceId));
   } catch {
     return [...to];
   }

@@ -31,66 +31,33 @@ function remoteIpFrom(req: Request): string {
   );
 }
 
-/**
- * SSE: live stream of one agent run's "thinking" — text deltas, tool
- * uses, tool results, and the terminal `result` event.
- *
- * Powers the hover popover on Now-running agent pills. On connect,
- * backfills the parsed timeline so the popover paints immediately,
- * then appends new events from the run-chunk bus. Closes when the
- * agent emits its `result` event or the client disconnects.
- */
-const agentRunStream = defineTool({
-  method: 'GET',
-  path: '/harness/:slug/agents/:runId/stream',
-  auth: 'public',
-  sampleRate: 0,
-  async handler(req, ctx) {
-    const url = new URL(req.url);
-    const project = await resolvePhasedProject(
-      ctx.params.slug as string,
-      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
-    );
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const runId = (ctx.params.runId as string).replace(/[^A-Za-z0-9_.-]/g, '');
-    const logDir = join(harnessDir(project), 'logs');
-    const jsonlPath = join(logDir, `${runId}.jsonl`);
+export type AgentTimelineEntry = {
+  kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result';
+  text?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolId?: string;
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  durationMs?: number;
+};
 
-    const remoteIP = remoteIpFrom(req);
-    const streamKey = `agent|${remoteIP}|${project.slug}|${runId}`;
-    if (!activeStreams.has(streamKey) && activeStreams.size >= HARNESS_STREAM_TOTAL_CAP) {
-      return Response.json(
-        { error: 'too many active streams', cap: HARNESS_STREAM_TOTAL_CAP },
-        { status: 503 },
-      );
+export function createAgentTimelineParser() {
+  let pendingText = '';
+  let pendingThinking = '';
+  const flushText = (out: AgentTimelineEntry[]) => {
+    if (pendingText) { out.push({ kind: 'text', text: pendingText }); pendingText = ''; }
+  };
+  const flushThinking = (out: AgentTimelineEntry[]) => {
+    if (pendingThinking) {
+      out.push({ kind: 'status', text: `[thinking] ${pendingThinking}` });
+      pendingThinking = '';
     }
-    const previous = activeStreams.get(streamKey);
-    if (previous) previous.abort();
-
-    type TimelineEntry = {
-      kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result';
-      text?: string;
-      toolName?: string;
-      toolInput?: unknown;
-      toolId?: string;
-      costUsd?: number;
-      inputTokens?: number;
-      outputTokens?: number;
-      durationMs?: number;
-    };
-    let pendingText = '';
-    let pendingThinking = '';
-    const flushText = (out: TimelineEntry[]) => {
-      if (pendingText) { out.push({ kind: 'text', text: pendingText }); pendingText = ''; }
-    };
-    const flushThinking = (out: TimelineEntry[]) => {
-      if (pendingThinking) {
-        out.push({ kind: 'status', text: `[thinking] ${pendingThinking}` });
-        pendingThinking = '';
-      }
-    };
-    const parseLine = (raw: string): TimelineEntry[] => {
-      const out: TimelineEntry[] = [];
+  };
+  return {
+    parseLine(raw: string): AgentTimelineEntry[] {
+      const out: AgentTimelineEntry[] = [];
       let obj: any;
       try { obj = JSON.parse(raw); } catch { return out; }
       const type = obj.type;
@@ -177,7 +144,108 @@ const agentRunStream = defineTool({
         flushThinking(out);
       }
       return out;
-    };
+    },
+    flush(): AgentTimelineEntry[] {
+      const out: AgentTimelineEntry[] = [];
+      flushText(out);
+      flushThinking(out);
+      return out;
+    },
+  };
+}
+
+export function parseAgentTimelineChunks(chunks: Iterable<string>): { entries: AgentTimelineEntry[]; done: boolean } {
+  const parser = createAgentTimelineParser();
+  const entries: AgentTimelineEntry[] = [];
+  let lineBuf = '';
+  let done = false;
+  for (const chunk of chunks) {
+    lineBuf += chunk;
+    let nl: number;
+    while ((nl = lineBuf.indexOf('\n')) !== -1) {
+      const line = lineBuf.slice(0, nl).trim();
+      lineBuf = lineBuf.slice(nl + 1);
+      if (!line) continue;
+      for (const e of parser.parseLine(line)) {
+        entries.push(e);
+        if (e.kind === 'result') done = true;
+      }
+    }
+  }
+  const tail = lineBuf.trim();
+  if (tail) {
+    for (const e of parser.parseLine(tail)) {
+      entries.push(e);
+      if (e.kind === 'result') done = true;
+    }
+  }
+  for (const e of parser.flush()) {
+    entries.push(e);
+    if (e.kind === 'result') done = true;
+  }
+  return { entries, done };
+}
+
+async function readRunChunkBackfill(harnessSlug: string, runId: string): Promise<{ chunks: string[]; lastSeq: number } | null> {
+  try {
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+    const rows = await sql<{ seq: number; chunk_data: string }[]>`
+      SELECT seq, chunk_data
+        FROM (
+          SELECT seq, chunk_data
+            FROM harness_shared.harness_run_chunks
+           WHERE harness_slug = ${harnessSlug}
+             AND run_id = ${runId}
+           ORDER BY seq DESC
+           LIMIT 500
+        ) AS recent
+       ORDER BY seq ASC
+    `;
+    return rows.length > 0
+      ? { chunks: rows.map((r) => r.chunk_data), lastSeq: rows[rows.length - 1].seq }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SSE: live stream of one agent run's "thinking" — text deltas, tool
+ * uses, tool results, and the terminal `result` event.
+ *
+ * Powers the hover popover on Now-running agent pills. On connect,
+ * backfills the parsed timeline so the popover paints immediately,
+ * then appends new events from the run-chunk bus. Closes when the
+ * agent emits its `result` event or the client disconnects.
+ */
+const agentRunStream = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/agents/:runId/stream',
+  auth: 'public',
+  sampleRate: 0,
+  async handler(req, ctx) {
+    const url = new URL(req.url);
+    const project = await resolvePhasedProject(
+      ctx.params.slug as string,
+      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
+    );
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const runId = (ctx.params.runId as string).replace(/[^A-Za-z0-9_.-]/g, '');
+    const logDir = join(harnessDir(project), 'logs');
+    const jsonlPath = join(logDir, `${runId}.jsonl`);
+
+    const remoteIP = remoteIpFrom(req);
+    const streamKey = `agent|${remoteIP}|${project.slug}|${runId}`;
+    if (!activeStreams.has(streamKey) && activeStreams.size >= HARNESS_STREAM_TOTAL_CAP) {
+      return Response.json(
+        { error: 'too many active streams', cap: HARNESS_STREAM_TOTAL_CAP },
+        { status: 503 },
+      );
+    }
+    const previous = activeStreams.get(streamKey);
+    if (previous) previous.abort();
+
+    const parser = createAgentTimelineParser();
 
     return sseResponse({
       signal: req.signal,
@@ -204,7 +272,7 @@ const agentRunStream = defineTool({
             const line = lineBuf.slice(0, nl).trim();
             lineBuf = lineBuf.slice(nl + 1);
             if (!line) continue;
-            const entries = parseLine(line);
+            const entries = parser.parseLine(line);
             for (const e of entries) {
               sink.event('event', e);
               if (e.kind === 'result') {
@@ -218,6 +286,8 @@ const agentRunStream = defineTool({
         };
 
         let backfillRaw: string | null = null;
+        let backfillChunks: string[] | null = null;
+        let backfillChunkLastSeq = -1;
         try {
           const { sql } = (await import('@papercusp/db-org')).getOrgPg();
           const rows = await sql<{ jsonl_body: string }[]>`
@@ -230,6 +300,13 @@ const agentRunStream = defineTool({
           }
         } catch { /* fall through to disk */ }
         if (backfillRaw === null) {
+          const chunkBackfill = await readRunChunkBackfill(project.slug, runId);
+          if (chunkBackfill) {
+            backfillChunks = chunkBackfill.chunks;
+            backfillChunkLastSeq = chunkBackfill.lastSeq;
+          }
+        }
+        if (backfillRaw === null) {
           try {
             const stat = statSync(jsonlPath);
             if (stat.size > 0) {
@@ -238,18 +315,23 @@ const agentRunStream = defineTool({
           } catch { /* no file yet either */ }
         }
 
-        if (backfillRaw && backfillRaw.length > 0) {
-          const backfill: TimelineEntry[] = [];
+        if (backfillChunks && backfillChunks.length > 0) {
+          const parsed = parseAgentTimelineChunks(backfillChunks);
+          done = parsed.done;
+          const capped = parsed.entries.length > 200 ? parsed.entries.slice(-200) : parsed.entries;
+          sink.event('backfill', capped);
+          if (done) { sink.event('done', {}); sink.close(); return; }
+        } else if (backfillRaw && backfillRaw.length > 0) {
+          const backfill: AgentTimelineEntry[] = [];
           for (const rawLine of backfillRaw.split('\n')) {
             const line = rawLine.trim();
             if (!line) continue;
-            for (const e of parseLine(line)) {
+            for (const e of parser.parseLine(line)) {
               backfill.push(e);
               if (e.kind === 'result') done = true;
             }
           }
-          if (pendingText) { backfill.push({ kind: 'text', text: pendingText }); pendingText = ''; }
-          if (pendingThinking) { backfill.push({ kind: 'status', text: `[thinking] ${pendingThinking}` }); pendingThinking = ''; }
+          backfill.push(...parser.flush());
           const capped = backfill.length > 200 ? backfill.slice(-200) : backfill;
           sink.event('backfill', capped);
           if (done) { sink.event('done', {}); sink.close(); return; }
@@ -261,9 +343,11 @@ const agentRunStream = defineTool({
         const channelKey = `${project.slug}:${runId}`;
         const busSub = busSubscribe(channelKey, (env) => {
           if (sink.closed) return;
+          if (env.seq <= backfillChunkLastSeq) return;
           emitChunk(env.data);
         });
         for (const env of busSub.recent) {
+          if (env.seq <= backfillChunkLastSeq) continue;
           emitChunk(env.data);
           if (sink.closed) break;
         }

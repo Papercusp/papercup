@@ -1,6 +1,6 @@
 ---
-title: operator-core `lint:tsc` is a COUNT gate — vitest-green ≠ tsc-clean
-description: npm run lint:tsc gates packages/operator-core on a TOTAL tsc-error count vs .tsc-baseline.json and hard-blocks green-checkpoint when it rises. vitest (esbuild) does NOT typecheck, so a vitest-green test edit can add tsc errors that tip the count over baseline. Run lint:tsc after operator-core edits — not just test:affected.
+title: operator-core `lint:tsc` is a COUNT gate — vitest-green != tsc-clean
+description: npm run lint:tsc gates packages/operator-core on a TOTAL tsc-error count vs .tsc-baseline.json, hard-fails TS1xxx syntax errors, and hard-blocks green-checkpoint when it rises. vitest (esbuild) does NOT typecheck, so a vitest-green test edit can add tsc errors that tip the count over baseline. Run lint:tsc after operator-core edits — not just test:affected.
 discovered: 2026-06-13
 tags: [typescript, tooling, verification, vitest]
 status: active
@@ -14,14 +14,19 @@ documents:
 
 `npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs
 `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the
-**total error count** against `packages/operator-core/.tsc-baseline.json`
-(a single number — ~455 as of 2026-06-13). The gate:
+**total parsed error count** against
+`packages/operator-core/.tsc-baseline.json` (a single number: `262` as of
+2026-06-25). The gate:
 
 - **count > baseline ⇒ HARD FAIL** — and it runs in green-checkpoint, so a
   single net-new error **blocks the whole fleet's deploy**, not just yours.
 - **count < baseline ⇒ auto-ratchet down** — improvements lock the baseline
-  lower; it can never silently regress. Raising the baseline is a deliberate
-  human edit, never automatic.
+  lower, with or without `--update`; it can never silently regress. `--update`
+  only lowers or no-ops when the count already equals the baseline. Raising the
+  baseline is a deliberate human edit, never automatic.
+- **any TS1xxx parse error ⇒ HARD FAIL** — syntax-broken files fail regardless
+  of the total count because `tsc` under-reports the errors behind a parse
+  failure.
 - It is **position-independent**: only the count matters. Adding lines above a
   pre-existing baselined error doesn't "create" it, but any *net-new* error
   (yours, or one a refactor newly exposes) tips the total over.
@@ -62,6 +67,8 @@ npm run lint:tsc        # the authoritative gate — count vs baseline
 - If it prints `> baseline`, your touched files added tsc errors — fix them.
   **Do not** raise the baseline to absorb your own new errors (the script only
   ratchets *down*; raising is a reviewed human act with a justification).
+- If it reports TS1xxx syntax-broken files, fix those files first. The count is
+  intentionally ignored for this verdict.
 - To see *which* of your files contribute, grep the tsc output:
   `npx tsc -p packages/operator-core/tsconfig.json --noEmit 2>&1 | grep '<your-file>'`
   — a clean file is **zero** lines there.

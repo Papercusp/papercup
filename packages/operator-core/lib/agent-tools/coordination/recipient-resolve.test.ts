@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('./presence', () => ({ listPresence: vi.fn() }));
+vi.mock('../../adv-sessions', () => ({ listRecordedLiveSessions: vi.fn() }));
 import {
   isSelectorOrWildcard,
   resolveBestEffort,
@@ -8,9 +9,13 @@ import {
   resolveBestEffortAgainstRoster,
 } from './recipient-resolve';
 import { listPresence } from './presence';
+import { listRecordedLiveSessions } from '../../adv-sessions';
 
 const mockedList = vi.mocked(listPresence);
+const mockedRecorded = vi.mocked(listRecordedLiveSessions);
 const roster = (ids: string[]) => ids.map((ownerId) => ({ ownerId })) as Awaited<ReturnType<typeof listPresence>>;
+const recorded = (ids: string[]) =>
+  ids.map((coordOwnerId) => ({ coordOwnerId })) as Awaited<ReturnType<typeof listRecordedLiveSessions>>;
 
 // Two `su-` agents (distinct uuids) + a `pus-` agent — the prefix `su-df00939e`
 // uniquely picks the first; the prefix `su-` is ambiguous across both.
@@ -119,7 +124,11 @@ describe('resolveBestEffort (the silent shared-layer twin)', () => {
 
 // ── Host wrappers (depth pass, su-7f3e0376) — the fail-open / fail-soft semantics ──
 describe('resolveRecipients (host wrapper — fail-open against the live roster)', () => {
-  beforeEach(() => mockedList.mockReset());
+  beforeEach(() => {
+    mockedList.mockReset();
+    mockedRecorded.mockReset();
+    mockedRecorded.mockResolvedValue([]);
+  });
 
   it('resolves against the live roster when present', async () => {
     mockedList.mockResolvedValue(roster(KNOWN));
@@ -134,10 +143,25 @@ describe('resolveRecipients (host wrapper — fail-open against the live roster)
     const r = await resolveRecipients(['su-zzz99999', 'whoever']);
     expect(r).toEqual({ resolved: ['su-zzz99999', 'whoever'], unknown: [], ambiguous: [] });
   });
+
+  it('accepts recorded-live session owners that have not self-registered presence yet', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    mockedRecorded.mockResolvedValue(recorded(['s-1782352639138-43ed80c0']));
+    const r = await resolveRecipients(['s-1782352639138']);
+    expect(r).toEqual({
+      resolved: ['s-1782352639138-43ed80c0'],
+      unknown: [],
+      ambiguous: [],
+    });
+  });
 });
 
 describe('resolveBestEffortAgainstRoster (host wrapper — broadcast short-circuit + fail-soft)', () => {
-  beforeEach(() => mockedList.mockReset());
+  beforeEach(() => {
+    mockedList.mockReset();
+    mockedRecorded.mockReset();
+    mockedRecorded.mockResolvedValue([]);
+  });
 
   it('SKIPS the roster read entirely when every entry is a selector/wildcard (broadcasts pay nothing)', async () => {
     const out = await resolveBestEffortAgainstRoster(['*', 'human', '@plan:x']);
@@ -149,6 +173,14 @@ describe('resolveBestEffortAgainstRoster (host wrapper — broadcast short-circu
     mockedList.mockResolvedValue(roster(KNOWN));
     expect(await resolveBestEffortAgainstRoster(['su-df00939e'])).toEqual([
       'su-df00939e-1f16-410d-ac0d-ef1aebd41d96',
+    ]);
+  });
+
+  it('resolves against live recorded sessions when raw presence has not registered the owner yet', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    mockedRecorded.mockResolvedValue(recorded(['s-1782352639138-43ed80c0']));
+    expect(await resolveBestEffortAgainstRoster(['s-1782352639138'])).toEqual([
+      's-1782352639138-43ed80c0',
     ]);
   });
 });

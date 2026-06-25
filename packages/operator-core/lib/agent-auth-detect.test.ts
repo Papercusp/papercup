@@ -86,6 +86,24 @@ describe('githubSignedIn', () => {
     expect(githubSignedIn()).toBe(false);
   });
 
+  it('uses the gh binary bundled next to the packaged serve.mjs entrypoint', () => {
+    const originalArgv1 = process.argv[1];
+    process.argv[1] = '/Applications/Papercusp.app/Contents/Resources/sidecar/serve.mjs';
+    const bundledGh = '/Applications/Papercusp.app/Contents/Resources/sidecar/bin/gh';
+    try {
+      onlyExist('/home/u/.config/gh/hosts.yml', bundledGh);
+      spawnSync.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === bundledGh && args[0] === 'auth' && args[1] === 'status') {
+          return { status: 1, stdout: '', stderr: 'token is invalid' };
+        }
+        return { status: 1, stdout: '', stderr: '' };
+      });
+      expect(githubSignedIn()).toBe(false);
+    } finally {
+      process.argv[1] = originalArgv1;
+    }
+  });
+
   it('true when gh auth is valid and setup-git wired the credential helper', () => {
     onlyExist('/home/u/.config/gh/hosts.yml', '/usr/local/bin/gh');
     spawnSync.mockImplementation((cmd: string, args: string[]) => {

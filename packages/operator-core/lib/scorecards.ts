@@ -28,6 +28,34 @@ import {
 import { issuesScopeWorkspace } from './issues-engineer';
 import { getRubric } from './rubrics';
 
+/** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
+export const HIVE_COORDINATION_HEALTH_RUBRIC = 'hive-coordination-health';
+
+/** The canonical 14 keys for hive-coordination-health. This is a fallback for
+ * read-side completeness only: if the rubric-template store is temporarily
+ * unreachable/unresolvable, the monitor-of-monitor must not mark a 14-key
+ * owner-mandated scorecard partial. Unknown rubrics still stay unresolved. */
+export const HIVE_COORDINATION_HEALTH_KEYS = [
+  'end-to-end-flow',
+  'ideation-quality',
+  'queen-workitem-selection',
+  'queen-plan-selection',
+  'parallel-distribution',
+  'bee-execution',
+  'bee-observation-quality',
+  'overwatch-observation-quality',
+  'watchdog-determinism',
+  'coordination-comms',
+  'chatter-economy',
+  'coordination-utilization',
+  'tool-utilization',
+  'scheduler-usage',
+] as const;
+
+export function builtInCriterionKeysForRubric(rubricRef: string): string[] | null {
+  return rubricRef === HIVE_COORDINATION_HEALTH_RUBRIC ? [...HIVE_COORDINATION_HEALTH_KEYS] : null;
+}
+
 /** One scorecard row — a rubric-graded observation projected for monitoring. */
 export interface ScorecardRow {
   /** The engineer_issue id (EI-/WI-…) — the drill-back key. */
@@ -135,7 +163,10 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
 
     if (!rubricCriteriaKeys.has(observation.rubricRef)) {
       const rubric = await getRubric(observation.rubricRef);
-      rubricCriteriaKeys.set(observation.rubricRef, rubric ? rubric.criteria.map((c) => c.key) : null);
+      rubricCriteriaKeys.set(
+        observation.rubricRef,
+        rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
+      );
     }
     const criteriaKeys = rubricCriteriaKeys.get(observation.rubricRef) ?? null;
     const rubricResolved = criteriaKeys !== null;
