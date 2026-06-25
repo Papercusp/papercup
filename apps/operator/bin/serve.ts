@@ -415,19 +415,22 @@ async function main(): Promise<void> {
     process.env.PAPERCUSP_SERVE_UI = '0';
   }
 
-  // Windows/WSL boundary: the desktop used to forward the WINDOWS PATH via
-  // WSLENV `PATH/l`, which REPLACED the distro PATH here — /usr/bin et al
-  // vanished and every distro-binary spawn (kopia, locale, git) died ENOENT
-  // (found live 2026-06-11, P-010a @ windows-desktop-release-readiness).
-  // The launcher now sends only the bundled bin dir (PAPERCUSP_SIDECAR_BIN,
-  // WSLENV /p-translated); compose the real PATH ourselves: bundled bin
-  // first, then the session PATH, with the standard system dirs guaranteed.
-  if (process.platform !== 'win32' && process.env.PAPERCUSP_SIDECAR_BIN) {
-    const systemDirs = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-    const merged = [process.env.PAPERCUSP_SIDECAR_BIN, process.env.PATH ?? '', systemDirs]
-      .flatMap((p) => p.split(':'))
-      .filter(Boolean);
-    process.env.PATH = [...new Set(merged)].join(':');
+  // Guarantee the user's CLI tools (git, gh credential-helper, kopia, …) are on
+  // PATH for everything this operator spawns. TWO failure modes this fixes:
+  //  - Windows/WSL: the launcher forwards only the bundled bin dir
+  //    (PAPERCUSP_SIDECAR_BIN); /usr/bin et al must be re-added or distro-binary
+  //    spawns die ENOENT (found 2026-06-11, windows-desktop-release-readiness).
+  //  - macOS: a packaged app's launchd PATH is minimal (/usr/bin:/bin:…) and
+  //    OMITS /opt/homebrew/bin (Apple-Silicon Homebrew) — so the dogfood
+  //    `git clone` couldn't find gh/git → "workspace setup failed" (found
+  //    2026-06-25 via an owner Mac-VM setup failure). ensureToolPathEnv()
+  //    sources the ONE canonical dir list (tool-path.ts) incl. /opt/homebrew,
+  //    so detection (preflight/agent-auth-detect) and execution never drift.
+  // Runs on darwin even without PAPERCUSP_SIDECAR_BIN (a GUI-launched sidecar
+  // still has the minimal launchd PATH); on Linux we keep prior behavior (only
+  // recompose when the launcher trimmed PATH via PAPERCUSP_SIDECAR_BIN).
+  if (process.platform !== 'win32' && (process.env.PAPERCUSP_SIDECAR_BIN || process.platform === 'darwin')) {
+    ensureToolPathEnv();
   }
 
   const port = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
