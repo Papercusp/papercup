@@ -74,6 +74,7 @@ it here.
 | Package | What it is | Source |
 |---|---|---|
 | `@papercusp/bloom-grid` | Bloom-filter-backed grid data layer: a versioned row store, a server-side bloom-query handler, and client React hooks (useBloomQuery / useInfiniteBloomQuery) for incremental sync of large cold catalogs. Part of the Papercusp grid stack. | `libs/generic/papergrid/bloom-grid` · [Papercusp/papergrid](https://github.com/Papercusp/papergrid.git) |
+| `@papercusp/dock-workbench` | Host-agnostic dockview workbench shell: panel registry, logical layout schema, adapters, pluggable persistence, and React DockWorkspace. | [Papercusp/dock-workbench](https://github.com/Papercusp/dock-workbench.git) |
 | `@papercusp/git-graph` | React components for rendering a git commit graph (commit list, commit detail, diff tooltips). Brand-value-free; styling injected by consumers via git-graph.css. | [Papercusp/git-graph](https://github.com/Papercusp/git-graph.git) |
 | `@papercusp/grid-core` | Domain-agnostic datagrid primitives: GridTable, DataGridShell, grid-config, grid-theme, use-hover-expand. | `libs/generic/papergrid/grid-core` · [Papercusp/papergrid](https://github.com/Papercusp/papergrid.git) |
 | `@papercusp/ui-primitives` | Shared headless React UI primitives — ANSI/terminal output, markdown (GFM), JSON tree viewer, and virtualized lists — used across Papercusp surfaces. Brand-value-free; styling is injected by consumers. | [Papercusp/ui-primitives](https://github.com/Papercusp/ui-primitives.git) |

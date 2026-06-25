@@ -73,12 +73,39 @@ const NUMBER_ROW_STYLE: CSSProperties = {
   gap: 6,
 };
 
+/**
+ * Above this many options the enum editor grows an in-list search box so a
+ * long fixed-set property (plans, assignees, sources…) stays usable — you get
+ * BOTH a type-to-narrow search AND the selectable checklist, not one or the
+ * other. Short enums (kind, state, severity) stay clean with just the list.
+ */
+const ENUM_SEARCH_THRESHOLD = 8;
+
 const ENUM_LIST_STYLE: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 4,
   maxHeight: 220,
   overflowY: 'auto',
+};
+
+const ENUM_SEARCH_INPUT_STYLE: CSSProperties = {
+  width: '100%',
+  padding: '4px 7px',
+  fontSize: 12,
+  fontFamily: 'inherit',
+  color: 'var(--fg, #e7f7ff)',
+  background: 'var(--bg-2, rgba(255,255,255,0.045))',
+  border: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
+  borderRadius: 6,
+};
+
+const ENUM_TOOLBAR_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  fontSize: 10.5,
+  color: 'var(--fg-mute, #7f9bb4)',
 };
 
 const ENUM_OPTION_STYLE: CSSProperties = {

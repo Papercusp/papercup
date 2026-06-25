@@ -62,6 +62,7 @@ const BORROWABLE = [
   ['libs/generic/p2p-voice',                      'Audio & media'],
   ['libs/generic/audio-dsp',                      'Audio & media'],
   ['libs/generic/ui-primitives',                  'UI components'],
+  ['libs/generic/dock-workbench',                 'UI components'],
   ['libs/generic/git-graph',                      'UI components'],
   ['libs/generic/papergrid/grid-core',            'UI components'],
   ['libs/generic/papergrid/bloom-grid',           'UI components'],

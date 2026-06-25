@@ -82,3 +82,6 @@
 [submodule "papercusp-desktop"]
 	path = papercusp-desktop
 	url = https://github.com/Papercusp/papercusp-desktop.git
+[submodule "libs/generic/dock-workbench"]
+	path = libs/generic/dock-workbench
+	url = https://github.com/Papercusp/dock-workbench.git

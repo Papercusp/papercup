@@ -87,6 +87,31 @@ function fmtAgo(ts: number | string): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
+export type SelectionKind = 'feature' | 'issue' | 'workItem' | 'agent';
+
+/**
+ * Resolve which detail view a `?sel` id maps to. F-* → feature, I-* → issue
+ * (legacy surface), agent:* → a working agent (the Agents panel stamps this
+ * namespace on — agent ids have no stable prefix of their own). EVERYTHING
+ * ELSE → unified work item.
+ *
+ * The WorkItemsPanel grid serves rows across every work-item KIND, and their
+ * ids carry kind-specific prefixes (WI-, EI-, BA-, …) — NOT just `WI-`.
+ * Matching only `WI-` here left every other prefix (notably the EI-*
+ * issue-family items) resolving to no kind, so the detail pane showed "No item
+ * found" for them. Falling through to `workItem` resolves them against the same
+ * `workItems.byHarness` query the grid reads; a genuinely-unknown id still
+ * lands on the "No item found" empty state (the row simply won't be in the
+ * query). Exported for unit testing.
+ */
+export function resolveSelectionKind(selectedId: string | null | undefined): SelectionKind | null {
+  if (!selectedId) return null;
+  if (selectedId.startsWith('F-')) return 'feature';
+  if (selectedId.startsWith('I-')) return 'issue';
+  if (selectedId.startsWith('agent:')) return 'agent';
+  return 'workItem';
+}
+
 /**
  * Detail panel — renders the currently-selected feature or issue.
  *
@@ -153,18 +178,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }, [setUrlSel]);
   const onBack = !pinnedId && selHistory.length > 0 ? goBack : undefined;
 
-  // Resolve the selected item. F-* → feature, I-* → issue (legacy surface),
-  // WI-* → unified work item (the WorkItemsPanel grid sets these), agent:* →
-  // a working agent (the Agents panel's namespaced selection — agent ids have
-  // no stable prefix of their own, so the panel stamps one on).
-  const kind: 'feature' | 'issue' | 'workItem' | 'agent' | null = useMemo(() => {
-    if (!selectedId) return null;
-    if (selectedId.startsWith('F-')) return 'feature';
-    if (selectedId.startsWith('I-')) return 'issue';
-    if (selectedId.startsWith('WI-')) return 'workItem';
-    if (selectedId.startsWith('agent:')) return 'agent';
-    return null;
-  }, [selectedId]);
+  const kind = useMemo(() => resolveSelectionKind(selectedId), [selectedId]);
 
   const feature = useMemo(
     () => (kind === 'feature' ? (features ?? []).find((f) => f.id === selectedId) ?? null : null),

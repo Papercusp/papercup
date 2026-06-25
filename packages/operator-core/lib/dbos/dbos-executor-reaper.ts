@@ -28,6 +28,10 @@ import type { Sql } from 'postgres';
 
 /** A DBOS executor with no `workflow_status` activity in this window is considered dead. */
 const DEFAULT_LIVENESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
+/** A routinesTick should finish quickly; if it is still non-terminal after this,
+ *  it is wedging the scheduler itself. Keep this below bghost-watchdog's 100s
+ *  freeze threshold so the reaper can fix the row before the host restart loop. */
+const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
 /** How often the recurring sweep runs. */
 const DEFAULT_REAP_INTERVAL_MS = 2 * 60 * 1000; // 2 min
 
@@ -38,6 +42,8 @@ export interface ExecutorReaperResult {
   queuePurged: number;
   /** The dead executor ids reaped this pass. */
   deadExecutorIds: string[];
+  /** Stale live-row workflow ids reaped even when executor_id is reused. */
+  staleWorkflowIds: string[];
 }
 
 /**
@@ -48,10 +54,15 @@ export interface ExecutorReaperResult {
 export async function reapDeadExecutorWorkflows(
   sql: Sql,
   livenessThresholdMs: number = DEFAULT_LIVENESS_THRESHOLD_MS,
+  staleSchedulerMs: number = DEFAULT_STALE_SCHEDULER_MS,
 ): Promise<ExecutorReaperResult> {
-  const empty: ExecutorReaperResult = { cancelled: 0, queuePurged: 0, deadExecutorIds: [] };
+  const empty: ExecutorReaperResult = { cancelled: 0, queuePurged: 0, deadExecutorIds: [], staleWorkflowIds: [] };
   try {
-    const deadAt = Date.now() - livenessThresholdMs;
+    const now = Date.now();
+    const deadAt = now - livenessThresholdMs;
+    const staleSchedulerAt = now - staleSchedulerMs;
+    let cancelled = 0;
+    let queuePurged = 0;
 
     // Dead executors: stale (no workflow_status update in the window) AND still
     // holding at least one non-terminal workflow worth reaping.
@@ -61,31 +72,66 @@ export async function reapDeadExecutorWorkflows(
        GROUP BY executor_id
       HAVING max(updated_at) < ${deadAt}
          AND count(*) FILTER (WHERE status IN ('PENDING', 'ENQUEUED')) > 0`;
-    if (dead.length === 0) return empty;
     const deadIds = dead.map((r) => r.executor_id);
 
-    // NULL the deduplication_id FIRST (the unique index keys on it regardless of
-    // status) and CANCEL the stuck workflows.
-    const cancelRes = await sql`
-      UPDATE dbos.workflow_status
-         SET deduplication_id = NULL, status = 'CANCELLED'
-       WHERE executor_id = ANY(${deadIds})
-         AND status IN ('PENDING', 'ENQUEUED')`;
-
-    // Purge the matching uncompleted queue rows (they can also pin a dedup). Secondary
-    // to the status cancel above — never let it fail the reap.
-    let queuePurged = 0;
-    try {
-      const qRes = await sql`
-        DELETE FROM dbos.workflow_queue
+    if (deadIds.length > 0) {
+      // NULL the deduplication_id FIRST (the unique index keys on it regardless of
+      // status) and CANCEL the stuck workflows.
+      const cancelRes = await sql`
+        UPDATE dbos.workflow_status
+           SET deduplication_id = NULL, status = 'CANCELLED'
          WHERE executor_id = ANY(${deadIds})
-           AND completed_at_epoch_ms IS NULL`;
-      queuePurged = qRes.count;
-    } catch {
-      /* queue purge is best-effort */
+           AND status IN ('PENDING', 'ENQUEUED')`;
+      cancelled += cancelRes.count;
+
+      // Purge the matching uncompleted queue rows (they can also pin a dedup). Secondary
+      // to the status cancel above — never let it fail the reap.
+      try {
+        const qRes = await sql`
+          DELETE FROM dbos.workflow_queue
+           WHERE executor_id = ANY(${deadIds})
+             AND completed_at_epoch_ms IS NULL`;
+        queuePurged += qRes.count;
+      } catch {
+        /* queue purge is best-effort */
+      }
     }
 
-    return { cancelled: cancelRes.count, queuePurged, deadExecutorIds: deadIds };
+    // Executor ids are intentionally stable in systemd (`DBOS__VMID=bg-host-3270`),
+    // so a process restart can leave old PENDING rows under the SAME executor_id.
+    // The dead-executor grouping above then sees fresh activity from the new process
+    // and cannot reap the old rows. Reap only bounded-safe stale rows:
+    //   - a non-terminal routinesTick older than the scheduler silence window, and
+    //   - any non-terminal workflow past its explicit DBOS deadline.
+    const stale = await sql<{ workflow_uuid: string }[]>`
+      SELECT workflow_uuid
+        FROM dbos.workflow_status
+       WHERE status IN ('PENDING', 'ENQUEUED')
+         AND (
+           (name = 'routinesTick' AND updated_at < ${staleSchedulerAt})
+           OR (workflow_deadline_epoch_ms IS NOT NULL AND workflow_deadline_epoch_ms < ${now})
+         )`;
+    const staleIds = stale.map((r) => r.workflow_uuid);
+    if (staleIds.length > 0) {
+      const staleCancel = await sql`
+        UPDATE dbos.workflow_status
+           SET deduplication_id = NULL, status = 'CANCELLED'
+         WHERE workflow_uuid = ANY(${staleIds})
+           AND status IN ('PENDING', 'ENQUEUED')`;
+      cancelled += staleCancel.count;
+      try {
+        const qRes = await sql`
+          DELETE FROM dbos.workflow_queue
+           WHERE workflow_uuid = ANY(${staleIds})
+             AND completed_at_epoch_ms IS NULL`;
+        queuePurged += qRes.count;
+      } catch {
+        /* queue purge is best-effort */
+      }
+    }
+
+    if (cancelled === 0 && queuePurged === 0) return empty;
+    return { cancelled, queuePurged, deadExecutorIds: deadIds, staleWorkflowIds: staleIds };
   } catch (e) {
     console.warn(
       `[dbos-executor-reaper] reap pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
@@ -104,16 +150,16 @@ let reaperTimer: ReturnType<typeof setInterval> | null = null;
  */
 export function startExecutorReaper(
   sql: Sql,
-  opts: { intervalMs?: number; livenessThresholdMs?: number } = {},
+  opts: { intervalMs?: number; livenessThresholdMs?: number; staleSchedulerMs?: number } = {},
 ): void {
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_REAP_INTERVAL_MS;
 
   const run = (): void => {
-    void reapDeadExecutorWorkflows(sql, opts.livenessThresholdMs).then((r) => {
+    void reapDeadExecutorWorkflows(sql, opts.livenessThresholdMs, opts.staleSchedulerMs).then((r) => {
       if (r.cancelled > 0 || r.queuePurged > 0) {
         console.warn(
-          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s) on dead executor(s): ${r.deadExecutorIds.join(', ')}`,
+          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}`,
         );
       }
     });
