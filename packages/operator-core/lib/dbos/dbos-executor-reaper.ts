@@ -116,18 +116,18 @@ export async function reapDeadExecutorWorkflows(
     //
     // The no-first-step routineFire class pins the per-routine dedup key without
     // giving the system action a chance to run or record its own timeout/error
-    // tick. Use started_at_epoch_ms, not updated_at: DBOS recovery can refresh
-    // updated_at on a row it still has not actually entered, and that heartbeat
-    // must not keep a no-op dedup pin alive. A legitimate long routineFire should
-    // have at least one operation row (`system:<action>`, `loop:wake`, or
-    // `spawn:<role>`) shortly after start, so this selector stays narrower than
-    // "cancel all old routineFire".
+    // tick. Use created_at, not started_at_epoch_ms or updated_at: DBOS recovery
+    // can refresh BOTH timestamps on a row it still has not actually entered,
+    // and that heartbeat must not keep a no-op dedup pin alive. A legitimate
+    // long routineFire should have at least one operation row (`system:<action>`,
+    // `loop:wake`, or `spawn:<role>`) shortly after creation, so this selector
+    // stays narrower than "cancel all old routineFire".
     const stale = await sql<{ workflow_uuid: string; requeue_routine_id: string | null }[]>`
       SELECT workflow_uuid,
              CASE
                WHEN name = 'routineFire'
                 AND deduplication_id LIKE 'routine:%'
-                AND COALESCE(started_at_epoch_ms, created_at) < ${staleSchedulerAt}
+                AND created_at < ${staleSchedulerAt}
                 AND NOT EXISTS (
                   SELECT 1
                     FROM dbos.operation_outputs op
@@ -139,10 +139,23 @@ export async function reapDeadExecutorWorkflows(
         FROM dbos.workflow_status
        WHERE status IN ('PENDING', 'ENQUEUED')
          AND (
-           (name = 'routinesTick' AND updated_at < ${staleSchedulerAt})
+           (
+             name = 'routinesTick'
+             AND (
+               updated_at < ${staleSchedulerAt}
+               OR (
+                 created_at < ${staleSchedulerAt}
+                 AND NOT EXISTS (
+                   SELECT 1
+                     FROM dbos.operation_outputs op
+                    WHERE op.workflow_uuid = dbos.workflow_status.workflow_uuid
+                 )
+               )
+             )
+           )
            OR (
              name = 'routineFire'
-             AND COALESCE(started_at_epoch_ms, created_at) < ${staleSchedulerAt}
+             AND created_at < ${staleSchedulerAt}
              AND NOT EXISTS (
                SELECT 1
                  FROM dbos.operation_outputs op

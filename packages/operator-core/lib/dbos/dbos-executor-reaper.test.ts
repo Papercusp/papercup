@@ -36,7 +36,7 @@ describe('reapDeadExecutorWorkflows', () => {
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
     expect(staleSelect.text).toContain("name = 'routinesTick'");
     expect(staleSelect.text).toContain("name = 'routineFire'");
-    expect(staleSelect.text).toContain('COALESCE(started_at_epoch_ms, created_at)');
+    expect(staleSelect.text).toContain('created_at <');
     expect(staleSelect.text).toContain('NOT EXISTS');
     expect(staleSelect.text).toContain('dbos.operation_outputs');
     expect(staleSelect.text).toContain('workflow_deadline_epoch_ms');
@@ -63,11 +63,41 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(staleSelect.text).toContain("name = 'routineFire'");
     expect(staleSelect.text).toContain("deduplication_id LIKE 'routine:%'");
     expect(staleSelect.text).toContain('substring(deduplication_id from 9)');
+    expect(staleSelect.text).toContain('created_at <');
     expect(staleSelect.text).toContain('op.workflow_uuid = dbos.workflow_status.workflow_uuid');
     const requeueUpdate = calls.find((c) => c.text.includes('UPDATE harness_shared.routines'))!;
     expect(requeueUpdate.text).toContain('next_fire_at = LEAST');
     expect(requeueUpdate.text).toContain('dbos-executor-reaper');
     expect(requeueUpdate.values).toContainEqual(['rt_scout']);
+  });
+
+  it('uses immutable created_at for no-step workflow staleness because DBOS recovery refreshes started_at', async () => {
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) {
+        return [
+          { workflow_uuid: 'sched-.routinesTick-recovered-no-step', requeue_routine_id: null },
+          { workflow_uuid: 'sched-.routineFire-recovered-no-step', requeue_routine_id: 'rt_recovered' },
+        ];
+      }
+      if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 2 };
+      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
+      if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000);
+
+    expect(res.staleWorkflowIds).toEqual([
+      'sched-.routinesTick-recovered-no-step',
+      'sched-.routineFire-recovered-no-step',
+    ]);
+    expect(res.requeuedRoutineIds).toEqual(['rt_recovered']);
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    expect(staleSelect.text).toContain("name = 'routinesTick'");
+    expect(staleSelect.text).toContain("name = 'routineFire'");
+    expect(staleSelect.text).toContain('created_at <');
+    expect(staleSelect.text).not.toContain('COALESCE(started_at_epoch_ms, created_at)');
   });
 
   it('deduplicates requeued routines from multiple no-step routineFire rows', async () => {

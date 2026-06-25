@@ -73,9 +73,10 @@ effect table (frozen).
 The same user-visible symptom can happen on a live executor: DBOS creates a
 `routineFire` workflow row, assigns `started_at_epoch_ms`, and pins
 `deduplication_id='routine:<id>'`, but the workflow never records its first
-`dbos.operation_outputs` step. A later recovery pass may refresh `updated_at`,
-so an `updated_at`-based stale check keeps the dead fire alive even though no
-routine code has entered.
+`dbos.operation_outputs` step. A later recovery pass may refresh both
+`updated_at` and `started_at_epoch_ms`, so those clocks can make the dead fire
+look newly active even though no routine code has entered. Use immutable
+`created_at` for the no-first-step stale check.
 
 Diagnosis:
 
@@ -91,9 +92,12 @@ select ws.workflow_uuid, ws.status, ws.deduplication_id,
    );
 ```
 
-Structural fix: `dbos-executor-reaper` now treats a `routineFire` older than the
-scheduler silence window with zero operation rows as stale, NULLs its dedup,
-sets it `CANCELLED`, and pushes the owning `harness_shared.routines.next_fire_at`
-back to `now()`. The requeue is intentionally limited to the no-first-step class;
-routine bodies that did enter a DBOS step still rely on their explicit workflow
-deadline/backoff rather than being retried immediately.
+Structural fix: `dbos-executor-reaper` now treats a `routineFire` whose
+`created_at` is older than the scheduler silence window with zero operation rows
+as stale, NULLs its dedup, sets it `CANCELLED`, and pushes the owning
+`harness_shared.routines.next_fire_at` back to `now()`. It also cancels
+no-first-step `routinesTick` rows by `created_at`, because a stuck scheduler tick
+is the upstream version of the same failure. The requeue is intentionally limited
+to the no-first-step `routineFire` class; routine bodies that did enter a DBOS
+step still rely on their explicit workflow deadline/backoff rather than being
+retried immediately.
