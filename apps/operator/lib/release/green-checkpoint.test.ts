@@ -340,17 +340,19 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
   it('defaults the vitest cap + retry but never clobbers a pre-set value', () => {
     const defaulted = buildGreenCheckpointEnv('b', {});
     // WI-806: the fork cap was lowered 8→4 (GREEN_CHECKPOINT_MAX_FORKS) so the forks
-    // can't collectively OOM-kill a worker under fleet load (the worker-pool crash).
+    // can't collectively OOM-kill a worker under fleet load (the worker-pool crash);
+    // 2026-06-25 lowered again 4→2 after 4 STILL OOM-/timeout-flaked the gate red for
+    // 1h+ on the chronically-swapping box (forced a manual force-deploy).
     expect(defaulted.VITEST_MAX_FORKS).toBe(String(GREEN_CHECKPOINT_MAX_FORKS));
     expect(defaulted.VITEST_MAX_THREADS).toBe(String(GREEN_CHECKPOINT_MAX_FORKS));
-    expect(GREEN_CHECKPOINT_MAX_FORKS).toBe(4);
+    expect(GREEN_CHECKPOINT_MAX_FORKS).toBe(2);
     expect(defaulted.AFFECTED_RETRY_FAILED).toBe('1');
     // 2026-06-22: heavy `await import()` unit tests take 74-97s under the gate's
     // 8-fork transform contention; the gate raises the unit timeout to 180s (dev
     // keeps the 60s libs/test-config default) — see buildGreenCheckpointEnv.
     expect(defaulted.VITEST_UNIT_TIMEOUT_MS).toBe('180000');
-    const preset = buildGreenCheckpointEnv('b', { VITEST_MAX_FORKS: '2', AFFECTED_RETRY_FAILED: '0' });
-    expect(preset.VITEST_MAX_FORKS).toBe('2'); // honored
+    const preset = buildGreenCheckpointEnv('b', { VITEST_MAX_FORKS: '6', AFFECTED_RETRY_FAILED: '0' });
+    expect(preset.VITEST_MAX_FORKS).toBe('6'); // honored (distinct from the default to prove precedence)
     expect(preset.VITEST_MAX_THREADS).toBe(String(GREEN_CHECKPOINT_MAX_FORKS)); // still defaulted
     expect(preset.AFFECTED_RETRY_FAILED).toBe('0'); // '0' is a value, not absent — honored
   });

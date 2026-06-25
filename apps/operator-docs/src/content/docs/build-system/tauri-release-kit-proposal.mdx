@@ -7,13 +7,17 @@ plans:
   - tauri-release-kit-shared-build-2026-06-25
 ---
 
-:::note[Status: proposal / plan-first]
-This is a **design proposal**, not shipped behaviour. No code has been extracted
-yet. It exists for owner review before any refactor, per the
-`tauri-release-kit-shared-build-2026-06-25` plan. The in-flight
-Mac + Windows **public-release drive** (`windows-public-release-readiness-2026-06-25`)
-is actively changing the very scripts this would extract — see
-[Risks & timing](#risks--timing).
+:::note[Status: shipped in-tree; cross-repo wiring owner-gated]
+The kit **exists and is green**: `libs/generic/tauri-release-kit` (pure core +
+SSH-frame + VM driver + `runRelease` orchestrator + node ports), 56 vitest tests,
+in BORROWABLE.md, wired into `test:affected`. papercusp has an **additive**
+kit-driven path (`papercusp-desktop/bin/release.ts` + `release.config.ts`) that
+runs alongside `bin/release-local.sh` — nothing in the in-flight release scripts
+was touched. Two steps remain **owner-gated** (plan items P-010, P-011):
+(1) a live full-build Linux artifact diff + making `release-local.sh` a thin
+wrapper; (2) promoting the kit to a shared-submodule repo so oddsmith can vendor
+it (oddsmith consumes `@papercusp/*` as submodules — see D-007). Tracked in the
+`tauri-release-kit-shared-build-2026-06-25` plan.
 :::
 
 ## The ask
@@ -132,14 +136,19 @@ wires in its esbuild. The kit never knows the difference.
 
 ## Migration order
 
-1. **Resolve canonicity (blocker).** Three desktop trees exist:
-   - `papercup/papercusp-desktop/` — **submodule, v0.0.2, canonical** (has the
-     VM build scripts). Extract from here.
-   - `papercupai-workspace/papercusp-desktop/` — standalone, v0.0.1, **stale**.
-   - `papercup/libs/papercusp/apps/desktop/` — vestigial, no build scripts.
+1. **Canonicity (resolved — P-002).** Three desktop trees exist:
+   - `papercup/papercusp-desktop/` — **submodule, v0.0.2, CANONICAL** (has the
+     release + VM build scripts). The kit's papercusp adoption targets this.
+   - `papercupai-workspace/papercusp-desktop/` — standalone, v0.0.1, **stale**;
+     it lives *outside* the papercup repo, so it can't be retired from here —
+     flagged for owner cleanup.
+   - `papercup/libs/papercusp/apps/desktop/` — a v0.0.1 second app, but
+     `branding.md` references it as a deliberate "secondary in-repo desktop app"
+     (icon-pack mirror), so it is **not** auto-deleted — whether to retire it is
+     an owner judgment call, not a safe autonomous removal.
 
-   Confirm/retire the stale + vestigial trees first, or the extraction bakes in
-   drift.
+   Net: canonical is recorded; no destructive deletes were made (both non-canonical
+   trees are either out-of-repo or referenced).
 2. **Extract the kit** behind the seam; **papercusp adopts it first** — its
    `bin/release-local.sh` becomes a thin wrapper over the kit. Prove byte-identical
    (or intentionally-improved) artifacts.

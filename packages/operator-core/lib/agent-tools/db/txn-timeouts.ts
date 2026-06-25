@@ -45,15 +45,18 @@ export default defineTool({
     z.object({ op: z.literal('get') }),
     z.object({
       op: z.literal('set'),
-      lockTimeoutMs: z.number().int().min(1000).max(120_000).optional(),
-      statementTimeoutMs: z.number().int().min(1000).max(600_000).optional(),
+      // z.coerce so a numeric arg that arrives JSON-stringified ("30000") from an MCP
+      // client with a stale/loosely-typed schema still validates (proven real for the
+      // WI-832 field during a rolling deploy when the advertised schema lagged the handler).
+      lockTimeoutMs: z.coerce.number().int().min(1000).max(120_000).optional(),
+      statementTimeoutMs: z.coerce.number().int().min(1000).max(600_000).optional(),
       // WI-832: default statement_timeout (ms) for NEW org POOL connections — bounds the
       // whole interactive admin-pool write class at the source. 0 = OFF (unset GUC = the
       // admin pool stays deliberately unbounded). OWNER-GATED to a non-zero value live:
       // migrations share this pool and opt out per-txn (SET LOCAL statement_timeout=0); a
       // too-small value would kill long migrations. Distinct from statementTimeoutMs (the
       // per-workspace inWorkspaceTxn cap).
-      adminPoolStatementTimeoutMs: z.number().int().min(0).max(600_000).optional(),
+      adminPoolStatementTimeoutMs: z.coerce.number().int().min(0).max(600_000).optional(),
       dryRun: z.boolean().optional(),
     }),
     z.object({ op: z.literal('reset'), dryRun: z.boolean().optional() }),

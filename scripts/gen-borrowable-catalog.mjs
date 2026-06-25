@@ -67,6 +67,7 @@ const BORROWABLE = [
   ['libs/generic/git-graph',                      'UI components'],
   ['libs/generic/papergrid/grid-core',            'UI components'],
   ['libs/generic/papergrid/bloom-grid',           'UI components'],
+  ['libs/generic/tauri-release-kit',              'Build & release'],
   ['libs/testing-shell',                          'Testing & QA'],
   ['libs/test-config',                            'Testing & QA'],
 ];
@@ -84,7 +85,7 @@ const SEAMED = [
   ['libs/host-platform',      'The host-boundary interface — the ~10% that is genuinely host-specific (fs, PG-DSN resolution).'],
 ];
 
-const CATEGORY_ORDER = ['Pure utilities & infra', 'Search & retrieval', 'IPC, transport & sync', 'UI components', 'Testing & QA'];
+const CATEGORY_ORDER = ['Pure utilities & infra', 'Search & retrieval', 'IPC, transport & sync', 'UI components', 'Build & release', 'Testing & QA'];
 
 function parseGitmodules() {
   const map = {};

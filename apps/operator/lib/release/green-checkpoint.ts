@@ -593,13 +593,22 @@ export const GREEN_CHECKPOINT_FORK_HEAP_MB = 4096;
  * The old default was 8 forks × {@link GREEN_CHECKPOINT_FORK_HEAP_MB} (4 GiB) = ~32 GiB of
  * nominal headroom the forks would happily bloat into; under concurrent fleet load that
  * tipped over the box's real free memory and OOM-killed a fork. Halving the concurrency to
- * 4 keeps the worst-case fork footprint at ~16 GiB — well within the box's free memory even
- * with the live fleet running — at a modest wall-clock cost (the gate is hourly, not
- * latency-critical). The gate already raised VITEST_UNIT_TIMEOUT_MS to 180s, so fewer
- * parallel forks won't time-out the heavy `await import()` files. Configurable via
+ * 4 kept the worst-case fork footprint at ~16 GiB — at a modest wall-clock cost (the gate is
+ * hourly, not latency-critical). The gate already raised VITEST_UNIT_TIMEOUT_MS to 180s, so
+ * fewer parallel forks won't time-out the heavy `await import()` files.
+ *
+ * UPDATE 2026-06-25: 4 forks (~16 GiB) STILL OOM-/timeout-flaked the gate red on a DIFFERENT
+ * random file each run (conversations-core, watchdog, cross_harness, …) for 1h+ — the box was
+ * chronically memory-pressured (≈124 GiB into swap from the 32-worker :3070 operator + live
+ * fleet, plus a peer's concurrent 23k-test run) — wedging every FF and forcing a manual
+ * force-deploy. Lowered again to 2 (~8 GiB worst-case) for durable margin on the
+ * chronically-swapping box; the gate is hourly + acquireCheckpointRunLock serializes fires, so
+ * the slower run can't overlap-OOM. NOTE: fewer forks is a MITIGATION — the deeper root is the
+ * box's memory BASELINE (the operator cluster size); if 2 still flakes, the durable fix is
+ * operator-cluster reduction or a memory-aware gate-defer, not fewer forks. Configurable via
  * VITEST_MAX_FORKS/THREADS (a pre-set value always wins).
  */
-export const GREEN_CHECKPOINT_MAX_FORKS = 4;
+export const GREEN_CHECKPOINT_MAX_FORKS = 2;
 
 /**
  * Strip any inherited `--max-old-space-size` (both `=value` and space-separated
