@@ -83,6 +83,14 @@ describe('scoutCycleOp.run', () => {
     expect(arg1).toBe(fakeDeps);
   });
 
+  it('declares and threads cycleTimeoutMs through the routine payload', async () => {
+    setScoutCycleDeps(fakeDeps as never);
+    runScoutCycleTick.mockResolvedValue({ fired: false, reason: 'cycle-error', error: 'timeout' });
+    const payload = { cycleTimeoutMs: 2500 };
+    await scoutCycleOp.run(payload, ctx() as never);
+    expect(runScoutCycleTick.mock.calls[0][0]).toMatchObject({ payloadTemplate: payload });
+  });
+
   it('logs fired + reason via ctx.log', async () => {
     setScoutCycleDeps(fakeDeps as never);
     runScoutCycleTick.mockResolvedValue({ fired: true, reason: 'idle', cycleId: 'c', routedCount: 1 });

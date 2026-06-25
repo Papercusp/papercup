@@ -63,6 +63,7 @@ export type ScoutCycleRunner = (ctx: {
 export interface ScoutCycleActionConfig {
   cadence?: ScoutCadenceOptions;
   budget?: ScoutBudget;
+  cycleTimeoutMs?: number;
 }
 
 /** The normalized routine ctx the orchestration needs (action + op both supply it). */
@@ -115,7 +116,15 @@ export function parseScoutCycleConfig(payload: Record<string, unknown> | null): 
   if (!payload || typeof payload !== 'object') return {};
   const cadence = isObj(payload.cadence) ? (payload.cadence as ScoutCadenceOptions) : undefined;
   const budget = isObj(payload.budget) ? (payload.budget as ScoutBudget) : undefined;
-  return { ...(cadence ? { cadence } : {}), ...(budget ? { budget } : {}) };
+  const cycleTimeoutMs =
+    typeof payload.cycleTimeoutMs === 'number' && Number.isFinite(payload.cycleTimeoutMs) && payload.cycleTimeoutMs > 0
+      ? payload.cycleTimeoutMs
+      : undefined;
+  return {
+    ...(cadence ? { cadence } : {}),
+    ...(budget ? { budget } : {}),
+    ...(cycleTimeoutMs != null ? { cycleTimeoutMs } : {}),
+  };
 }
 
 export interface ScoutCycleDeps {
@@ -221,6 +230,7 @@ export async function runScoutCycleTick(
   const result = await runScoutTick(tickDeps, {
     ...(cfg.cadence ? { cadence: cfg.cadence } : {}),
     ...(cfg.budget ? { budget: cfg.budget } : {}),
+    ...(cfg.cycleTimeoutMs != null ? { cycleTimeoutMs: cfg.cycleTimeoutMs } : {}),
   });
 
   // FB-01 (self-learning-frontier P-003): mirror scout's per-cycle cap onto the

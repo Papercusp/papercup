@@ -36,11 +36,12 @@ describe('parseScoutCycleConfig', () => {
   });
 
   it('extracts the cadence + budget objects, dropping unknown / bad-shape keys', () => {
-    expect(parseScoutCycleConfig({ cadence: { x: 1 }, budget: { maxCostUsd: 2 }, junk: 5 } as never)).toEqual({
+    expect(parseScoutCycleConfig({ cadence: { x: 1 }, budget: { maxCostUsd: 2 }, cycleTimeoutMs: 1500, junk: 5 } as never)).toEqual({
       cadence: { x: 1 },
       budget: { maxCostUsd: 2 },
+      cycleTimeoutMs: 1500,
     });
-    expect(parseScoutCycleConfig({ cadence: 'bad', budget: 7 } as never)).toEqual({}); // non-object → dropped
+    expect(parseScoutCycleConfig({ cadence: 'bad', budget: 7, cycleTimeoutMs: 0 } as never)).toEqual({}); // bad shapes → dropped
   });
 });
 
@@ -99,6 +100,14 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     expect(res).toMatchObject({ fired: true, costUsd: 2.25 });
     expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
     expect(recordGovernor.mock.calls[0][0]).toMatchObject({ fired: { costUsd: 2.25, cycleId: 'cyc-9' } });
+  });
+
+  it('passes a configured cycle timeout through to runScoutTick', async () => {
+    await runScoutCycleTick(
+      { ...baseInput, payloadTemplate: { cycleTimeoutMs: 2500 } },
+      mkDeps(),
+    );
+    expect(sched.runScoutTick.mock.calls[0][1]).toMatchObject({ cycleTimeoutMs: 2500 });
   });
 
   it('mirrors a NO-OP (un-fired) tick as fired:null', async () => {
