@@ -39,8 +39,19 @@ function tempStoragePath(prefix: string): string {
   return dir;
 }
 
+function tempWorkspace(prefix: string): { workspaceRoot: string; storagePath: string } {
+  const workspaceRoot = tempStoragePath(prefix);
+  return {
+    workspaceRoot,
+    storagePath: join(workspaceRoot, '.papercusp', SLUG, 'hyperbee'),
+  };
+}
+
 function makeHost(): SubstrateSidecarHost {
-  const host = createSubstrateSidecarHost();
+  const host = createSubstrateSidecarHost({
+    wireOutbox: async () => {},
+    wirePresence: async () => {},
+  });
   cleanups.push(() => host.closeAll());
   return host;
 }
@@ -63,11 +74,11 @@ function localOp(over: Partial<LocalWriteOp> = {}): LocalWriteOp {
 describe('substrate sidecar host — store relocation (P-001)', () => {
   it('bootHarness opens the store + own-log and returns a 64-hex own-log key', async () => {
     const host = makeHost();
-    const storagePath = tempStoragePath('reloc-boot-');
+    const { workspaceRoot } = tempWorkspace('reloc-boot-');
     const r = (await host.methods['substrate:bootHarness']({
       workspaceId: WS,
       harnessSlug: SLUG,
-      storagePath,
+      workspaceRoot,
     })) as { storeId: string; ownLogKey: string; ownLogLength: number };
 
     expect(r.storeId).toMatch(/^store-\d+$/);
@@ -78,11 +89,11 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
 
   it('bootHarness is idempotent per (workspace, harness) — same storeId', async () => {
     const host = makeHost();
-    const storagePath = tempStoragePath('reloc-idem-');
-    const a = (await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, storagePath })) as {
+    const { workspaceRoot } = tempWorkspace('reloc-idem-');
+    const a = (await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, workspaceRoot })) as {
       storeId: string;
     };
-    const b = (await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, storagePath })) as {
+    const b = (await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, workspaceRoot })) as {
       storeId: string;
     };
     expect(b.storeId).toBe(a.storeId);
@@ -91,11 +102,11 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
 
   it('appendOp HLC-stamps + persists into the relocated own-log (verified by reopening from disk)', async () => {
     const host = makeHost();
-    const storagePath = tempStoragePath('reloc-append-');
+    const { workspaceRoot, storagePath } = tempWorkspace('reloc-append-');
     const boot = (await host.methods['substrate:bootHarness']({
       workspaceId: WS,
       harnessSlug: SLUG,
-      storagePath,
+      workspaceRoot,
     })) as { storeId: string; ownLogKey: string };
 
     const r1 = (await host.methods['substrate:appendOp']({
@@ -139,11 +150,11 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
 
   it('appendOp { raw } appends a fully-formed PeerLogOp verbatim (no HLC stamp)', async () => {
     const host = makeHost();
-    const storagePath = tempStoragePath('reloc-raw-');
+    const { workspaceRoot, storagePath } = tempWorkspace('reloc-raw-');
     const boot = (await host.methods['substrate:bootHarness']({
       workspaceId: WS,
       harnessSlug: SLUG,
-      storagePath,
+      workspaceRoot,
     })) as { storeId: string };
 
     const rawOp: PeerLogOp = {
@@ -182,8 +193,8 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
 
   it('closeStore removes the store', async () => {
     const host = makeHost();
-    const storagePath = tempStoragePath('reloc-close-');
-    const boot = (await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, storagePath })) as {
+    const { workspaceRoot } = tempWorkspace('reloc-close-');
+    const boot = (await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, workspaceRoot })) as {
       storeId: string;
     };
     expect(host.storeCount()).toBe(1);

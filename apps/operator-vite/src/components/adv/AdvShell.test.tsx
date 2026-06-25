@@ -497,6 +497,11 @@ describe('buildHarnessSelectOptions — hive-home folding (the repo-less `-hive`
     expect(tree).toEqual([{ value: 'solo', label: 'solo' }]);
   });
 
+  it('shows a repo-less operations hive that is not suffix plumbing, e.g. oddsmith-ops', () => {
+    const tree = treeOf(buildHarnessSelectOptions([lite('oddsmith-ops', { harness_kind: 'hive' })], null, 'Hives', 'WS'));
+    expect(tree).toEqual([{ value: 'oddsmith-ops', label: 'oddsmith-ops' }]);
+  });
+
   it('folds a `-hive` home by SUFFIX even when harness_kind is absent (projects-lite robustness)', () => {
     // projects-lite doesn't always carry harness_kind; the `-hive` suffix alone
     // must still fold the home (members never end in -hive). Guards the case

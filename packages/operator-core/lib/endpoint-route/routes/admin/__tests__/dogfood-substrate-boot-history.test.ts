@@ -111,9 +111,20 @@ describe('query-string → ListBootHistoryOpts mapping', () => {
 
   it('filters kinds against the allow-list, dropping unknown kinds', async () => {
     await route[0].handler(reqWith('kinds=boot_fail,close,bogus,peer_connected'), ctx());
-    // peer_connected is NOT in the route's VALID_KINDS local list, so it is
-    // dropped along with the bogus value.
-    expect(lastOpts().kinds).toEqual(['boot_fail', 'close']);
+    expect(lastOpts().kinds).toEqual(['boot_fail', 'close', 'peer_connected']);
+  });
+
+  it('allows admission and rekey diagnostic kinds', async () => {
+    await route[0].handler(
+      reqWith('kinds=announce_admitted,announce_pending,rekey_grant_skipped,rekey_boundary_skipped'),
+      ctx(),
+    );
+    expect(lastOpts().kinds).toEqual([
+      'announce_admitted',
+      'announce_pending',
+      'rekey_grant_skipped',
+      'rekey_boundary_skipped',
+    ]);
   });
 
   it('kinds absent → undefined (no kind filter)', async () => {

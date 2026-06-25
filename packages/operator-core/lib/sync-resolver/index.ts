@@ -560,11 +560,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // operator process live-update open lists (EI-206). Workspace scoping
   // rides the request's x-papercusp-workspace ALS, same as the route.
   'harnessProjects.lite': {
-    resolve: async () => {
+    argsSchema: z.object({ includeHiveHomes: z.boolean().optional() }).optional(),
+    resolve: async (args) => {
       const { buildProjectsLitePayload } = await import('../harness/projects-lite');
       // Bypass the 1s TTL cache: an invalidation-triggered refetch must not
       // serve a payload built just BEFORE the write it's reacting to.
-      const payload = await buildProjectsLitePayload({ bypassCache: true });
+      const payload = await buildProjectsLitePayload({
+        bypassCache: true,
+        includeHiveHomes: (args as { includeHiveHomes?: boolean } | undefined)?.includeHiveHomes === true,
+      });
       return payload.projects as unknown[];
     },
   },

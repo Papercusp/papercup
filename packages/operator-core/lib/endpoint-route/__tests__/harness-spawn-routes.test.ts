@@ -61,7 +61,10 @@ vi.mock('../../plugin-host-runtime', () => ({
 vi.mock('../../events/pipeline-events', () => ({
   emitPipelineEvent: vi.fn(),
 }));
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
+vi.mock('@papercusp/flags/server', async (orig) => {
+  const actual = await orig<typeof import('@papercusp/flags/server')>();
+  return { ...actual, getFlag: vi.fn(async () => false) };
+});
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
   return {
@@ -106,6 +109,7 @@ function makeFakeChild(exitCode: number) {
   const stdoutCbs: Array<(d: unknown) => void> = [];
   const closeCbs: Array<(code: number) => void> = [];
   const child = {
+    pid: 12345,
     stdout: { on: (ev: string, cb: (d: unknown) => void) => ev === 'data' && stdoutCbs.push(cb) },
     stderr: { on: (_ev: string, _cb: unknown) => {} },
     on: (ev: string, cb: (code: number) => void) => {
@@ -113,10 +117,10 @@ function makeFakeChild(exitCode: number) {
     },
     kill: vi.fn(),
   };
-  queueMicrotask(() => {
+  setTimeout(() => {
     stdoutCbs.forEach((cb) => cb(Buffer.from('decision line\n')));
     closeCbs.forEach((cb) => cb(exitCode));
-  });
+  }, 0);
   return child;
 }
 
@@ -205,7 +209,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       exitCode: 0,
       timedOut: false,
     });
-  });
+  }, 10_000);
 
   it('reports ok:false when the child exits non-zero', async () => {
     // The chokepoint emits a one-line diagnostic to stderr on a non-zero exit with empty

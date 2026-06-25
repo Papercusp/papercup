@@ -14,11 +14,13 @@ const H = vi.hoisted(() => {
   const state: {
     booted: Array<{ workspaceId: string; harnessSlug: string }>;
     progress: Array<{ workspaceId: string; harnessSlug: string }>;
+    drainByKey: Map<string, { undrainedCount: number; oldestUndrainedAgeMs: number | null }>;
     verdict: { verdict: string; reasons: string[] };
     summary: unknown;
   } = {
     booted: [],
     progress: [],
+    drainByKey: new Map(),
     verdict: { verdict: 'healthy', reasons: [] },
     summary: { worstVerdict: 'healthy' },
   };
@@ -26,6 +28,7 @@ const H = vi.hoisted(() => {
     state,
     listBootedHandles: () => state.booted,
     listBootstrapProgress: () => state.progress,
+    loadSubstrateDrainStats: vi.fn(async () => state.drainByKey),
     loadClaimAttemptStats: vi.fn(async () => ({ total: 0, won: 0, lost: 0 })),
     assessHarnessSubstrateHealth: vi.fn(() => state.verdict),
     summariseWorkspaceSubstrate: vi.fn(() => state.summary),
@@ -34,6 +37,7 @@ const H = vi.hoisted(() => {
 
 vi.mock('../../../../sync/hyperbee/boot-all', () => ({ listBootedHandles: H.listBootedHandles }));
 vi.mock('../../../../sync/hyperbee/bootstrap-progress', () => ({ listBootstrapProgress: H.listBootstrapProgress }));
+vi.mock('../../../../sync/hyperbee/load-drain-stats', () => ({ loadSubstrateDrainStats: H.loadSubstrateDrainStats }));
 vi.mock('../../../../orchestrator/load-claim-attempts', () => ({ loadClaimAttemptStats: H.loadClaimAttemptStats }));
 vi.mock('../../../../sync/hyperbee/health', () => ({ assessHarnessSubstrateHealth: H.assessHarnessSubstrateHealth }));
 vi.mock('../../../../sync/hyperbee/summary', () => ({ summariseWorkspaceSubstrate: H.summariseWorkspaceSubstrate }));
@@ -53,7 +57,9 @@ const req = () => new Request('http://localhost/api/admin/dogfood-substrate-heal
 beforeEach(() => {
   H.state.booted = [];
   H.state.progress = [];
+  H.state.drainByKey = new Map();
   H.state.verdict = { verdict: 'healthy', reasons: [] };
+  H.loadSubstrateDrainStats.mockClear();
   H.loadClaimAttemptStats.mockClear();
   H.assessHarnessSubstrateHealth.mockClear();
 });
@@ -91,5 +97,19 @@ describe('GET /admin/dogfood-substrate-health handler', () => {
     ]);
     // claim stats loaded once per booted handle
     expect(H.loadClaimAttemptStats).toHaveBeenCalledTimes(2);
+  });
+
+  it('feeds substrate outbox drain stats into health assessment', async () => {
+    H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'papercup' }];
+    H.state.drainByKey = new Map([
+      ['ws1::papercup', { undrainedCount: 2, oldestUndrainedAgeMs: 90_000 }],
+    ]);
+    await route[0].handler(req(), ctx());
+    expect(H.loadSubstrateDrainStats).toHaveBeenCalledTimes(1);
+    expect(H.assessHarnessSubstrateHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        drainStats: { undrainedCount: 2, oldestUndrainedAgeMs: 90_000 },
+      }),
+    );
   });
 });

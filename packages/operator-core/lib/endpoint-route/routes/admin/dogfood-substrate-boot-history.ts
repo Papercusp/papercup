@@ -28,6 +28,20 @@ const VALID_KINDS: ReadonlyArray<BootHistoryKind> = [
   'boot_ok',
   'boot_fail',
   'close',
+  'peer_connected',
+  'swarm_join_failed',
+  'peer_rejected',
+  'peer_rate_limited',
+  'peer_capped',
+  'peer_revoked',
+  'announce_admitted',
+  'announce_pending',
+  'announce_rejected',
+  'announce_error',
+  'merge_error',
+  'rekey_grant_failed',
+  'rekey_grant_skipped',
+  'rekey_boundary_skipped',
 ];
 
 const get = defineTool({

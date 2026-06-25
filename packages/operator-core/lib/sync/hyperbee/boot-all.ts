@@ -38,6 +38,7 @@ import { join } from 'node:path';
 import {
   bootHarnessSubstrate,
   type BootedHarnessHandle,
+  type BootHarnessOpts,
 } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
@@ -277,6 +278,10 @@ export interface BootAllOpts {
    * inject a synchronous fake.
    */
   resolveSwarmBinding?: SwarmBindingResolver;
+  /** Override per-harness boot (sidecar cutover + tests). Default: in-process bootHarnessSubstrate. */
+  bootHarness?: (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>;
+  /** Remote handles are wired in their owning process; skip main-process send-side loops. */
+  skipSendSideWiring?: boolean;
 }
 
 /**
@@ -385,6 +390,10 @@ export async function bootSingleHarness(
     /** Test seam — override the send-side wiring fns (default: getOrgPg + the
      *  real wireOutboxForHarness / wirePresenceAnnounceForHarness). */
     wireSendSide?: SendSideWiringDeps;
+    /** Override the boot factory. Default: in-process bootHarnessSubstrate. */
+    bootHarness?: (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>;
+    /** Remote handles are wired in their owning process; skip main-process send-side loops. */
+    skipSendSideWiring?: boolean;
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
@@ -394,7 +403,7 @@ export async function bootSingleHarness(
     // boot may have cached the handle but failed to wire the drain (which would
     // otherwise stay broken until restart, since this path short-circuits). No-op
     // once both steps are wired.
-    await ensureSendSideWired(cached, opts.wireSendSide);
+    if (!opts.skipSendSideWiring) await ensureSendSideWired(cached, opts.wireSendSide);
     return {
       workspaceId,
       harnessSlug,
@@ -422,10 +431,11 @@ export async function bootSingleHarness(
   const workspaceRoot = opts.workspaceRoot ?? workspaceRootForId(workspaceId);
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
+  const bootHarness = opts.bootHarness ?? bootHarnessSubstrate;
   const bootPromise = (async () => {
     const swarmBinding = (await resolver(workspaceId, harnessSlug)) ?? null;
     return await Promise.race([
-      bootHarnessSubstrate({
+      bootHarness({
         workspaceRoot,
         workspaceId,
         harnessSlug,
@@ -457,7 +467,7 @@ export async function bootSingleHarness(
     // next boot pass rather than leaving this cached handle drainless forever
     // (EI-521). The drain/presence stoppers register close-hooks on the handle,
     // so closeBootedHarness/closeAllBootedHarnesses tear them down automatically.
-    await ensureSendSideWired(handle, opts.wireSendSide);
+    if (!opts.skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
     return {
@@ -501,6 +511,8 @@ export async function bootAllHarnessesForActiveWorkspace(
         bootSingleHarness(wsId, slug, {
           timeoutMs: opts.perHarnessTimeoutMs,
           resolveSwarmBinding: opts.resolveSwarmBinding,
+          bootHarness: opts.bootHarness,
+          skipSendSideWiring: opts.skipSendSideWiring,
         }),
       );
     }

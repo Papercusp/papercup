@@ -14,6 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { listBootedHandles } from '../../../sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '../../../sync/hyperbee/bootstrap-progress';
+import { loadSubstrateDrainStats } from '../../../sync/hyperbee/load-drain-stats';
 import { loadClaimAttemptStats } from '../../../orchestrator/load-claim-attempts';
 import {
   assessHarnessSubstrateHealth,
@@ -53,6 +54,7 @@ const get = defineTool({
     ): Promise<T[]> => {
       return (await sql.unsafe(query, paramsArr as never)) as unknown as T[];
     };
+    const drainByKey = await loadSubstrateDrainStats({ runQuery });
 
     const rows: HarnessHealthRow[] = await Promise.all(
       booted.map(async (h) => {
@@ -62,11 +64,16 @@ const get = defineTool({
           runQuery,
         });
         const bp = progressByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
+        const drainStats = drainByKey.get(`${h.workspaceId}::${h.harnessSlug}`) ?? {
+          undrainedCount: 0,
+          oldestUndrainedAgeMs: null,
+        };
         const { verdict, reasons } = assessHarnessSubstrateHealth({
           flagEnabled,
           handlePresent: true,
           claimStats: stats,
           bootstrapProgress: bp ?? null,
+          drainStats,
         });
         return {
           workspaceId: h.workspaceId,

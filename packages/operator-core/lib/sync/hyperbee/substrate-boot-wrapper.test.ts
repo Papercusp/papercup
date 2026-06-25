@@ -3,9 +3,8 @@
  * (P-008 / WI-596). Proves: OFF ⇒ the reaper never starts (byte-identical eager
  * boot); ON ⇒ tracking is enabled + the reaper starts exactly once (idempotent).
  *
- * The SUBSTRATE_SIDECAR path is intentionally not exercised here — it stays dark
- * (P-009 dropped; in-process→sidecar relocation unfinished), so the default
- * (flag OFF) is the only live path.
+ * Also proves the dark SUBSTRATE_SIDECAR path now boots via remote handles when
+ * enabled, while preserving the in-process fallback on startup failure.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,18 +22,50 @@ vi.mock('@papercusp/flags/server', () => ({
 vi.mock('./flag-distinct-id', () => ({ systemDistinctId: () => 'system' }));
 
 const enableTracking = vi.fn();
-const bootAll = vi.fn(async () => ({
-  attempted: 0,
-  booted: 0,
-  alreadyBooted: 0,
-  failed: 0,
-  results: [],
-}));
+const bootAll = vi.fn(async (opts?: { bootHarness?: (o: any) => Promise<any>; skipSendSideWiring?: boolean }) => {
+  if (opts?.bootHarness) {
+    await opts.bootHarness({
+      workspaceRoot: '/tmp/ws',
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      swarmBinding: null,
+    });
+  }
+  return {
+    attempted: opts?.bootHarness ? 1 : 0,
+    booted: opts?.bootHarness ? 1 : 0,
+    alreadyBooted: 0,
+    failed: 0,
+    results: opts?.bootHarness ? [{ workspaceId: 'ws', harnessSlug: 'h', state: 'booted' as const }] : [],
+  };
+});
 vi.mock('./boot-all', () => ({
-  bootAllHarnessesForActiveWorkspace: () => bootAll(),
+  bootAllHarnessesForActiveWorkspace: (opts?: unknown) => bootAll(opts),
   enableSubstrateEvictionTracking: () => enableTracking(),
   gatherBootedHarnessFacts: () => [],
   evictBootedHarnessEngine: async () => false,
+}));
+
+const spawnSidecar = vi.fn(async () => {});
+const registerShutdown = vi.fn();
+vi.mock('./substrate-sidecar-spawn', () => ({
+  spawnSubstrateSidecar: () => spawnSidecar(),
+  registerSidecarShutdownHooks: () => registerShutdown(),
+}));
+
+const ipcCalls: Array<{ method: string; params?: unknown }> = [];
+const ipcClient = {
+  async call<T>(method: string, params?: unknown): Promise<T> {
+    ipcCalls.push({ method, params });
+    if (method === 'sidecar:healthz') return { status: 'ready' } as T;
+    if (method === 'substrate:bootHarness') {
+      return { storeId: 'store-1', ownLogKey: 'a'.repeat(64), ownLogLength: 0 } as T;
+    }
+    return undefined as T;
+  },
+};
+vi.mock('./substrate-ipc-client', () => ({
+  getSubstrateIpcClient: () => ipcClient,
 }));
 
 const startReaper = vi.fn(() => ({ stop: vi.fn(), tickOnce: vi.fn(async () => []) }));
@@ -53,6 +84,9 @@ beforeEach(() => {
   h.sidecarOn = false;
   enableTracking.mockClear();
   bootAll.mockClear();
+  spawnSidecar.mockClear();
+  registerShutdown.mockClear();
+  ipcCalls.length = 0;
   startReaper.mockClear();
   stopSubstrateEvictionReaper(); // reset the module singleton between tests
 });
@@ -101,5 +135,24 @@ describe('bootSubstrateWithFallback', () => {
     expect(r.usedSidecar).toBe(false);
     expect(r.evictionReaperStarted).toBe(true);
     expect(startReaper).toHaveBeenCalledOnce();
+  });
+
+  it('sidecar ON: spawns sidecar and boots harnesses through remote handle factory', async () => {
+    h.sidecarOn = true;
+    const r = await bootSubstrateWithFallback();
+    expect(spawnSidecar).toHaveBeenCalledOnce();
+    expect(registerShutdown).toHaveBeenCalledOnce();
+    expect(bootAll).toHaveBeenCalledWith(expect.objectContaining({ skipSendSideWiring: true }));
+    expect(ipcCalls.map((c) => c.method)).toEqual(['sidecar:healthz', 'substrate:bootHarness']);
+    expect(r.usedSidecar).toBe(true);
+    expect(r.booted).toBe(1);
+  });
+
+  it('sidecar startup failure falls back to in-process boot', async () => {
+    h.sidecarOn = true;
+    spawnSidecar.mockRejectedValueOnce(new Error('spawn failed'));
+    const r = await bootSubstrateWithFallback();
+    expect(r.usedSidecar).toBe(false);
+    expect(bootAll).toHaveBeenCalledWith(undefined);
   });
 });

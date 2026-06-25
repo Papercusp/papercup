@@ -73,7 +73,7 @@ export default function HarnessesWorkspace() {
   // groupByHive (the same module the server grouping used, P-021).
   const projectsQuery = useSyncQuery<AdvProjectEntry>({
     queryName: 'harnessProjects.lite',
-    args: {},
+    args: { includeHiveHomes: true },
   });
   const projects = projectsQuery.data ?? [];
   const projectsError = projectsQuery.error ? projectsQuery.error.message : null;

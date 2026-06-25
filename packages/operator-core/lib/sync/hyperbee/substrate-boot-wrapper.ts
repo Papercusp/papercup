@@ -10,25 +10,10 @@
  *    boot is byte-identical to eager all-harness boot.
  *
  *  - SUBSTRATE_SIDECAR (P-009/WI-604): Option B "replication-offload". The
- *    substrate engine + EVERY `handle.append()` caller (feature-queue /
- *    distributed-claim / work-item-lease / lock-events / presence) + the merge
- *    loop stay IN-PROCESS (zero producer churn). When ON, the swarm connection
- *    handler (boot.ts `joinForBinding` → joinHarnessSwarm `offloadReplication`)
- *    hands each accepted peer SOCKET to the sidecar for `corestore.replicate()`
- *    — offloading the merkle-verify CPU + replication RSS (the EI-79 win) off the
- *    main event loop. The 3-phase handoff (openStore → prepareSocketHandoff →
- *    send(socket)+attachSocket) lives in substrate-replication-offload.ts. OFF
- *    (the default) ⇒ the offload seam is never wired; replication is byte-identical
- *    in-process.
- *
- *    STILL DARK (KNOWN LIMITATION): corestore 7.x holds a PROCESS-LEVEL RocksDB
- *    lock per storage path, so the sidecar cannot open the harness store while the
- *    main process's in-process engine also holds it (the offload's openStore throws
- *    "File descriptor could not be locked", the handoff fails gracefully, the
- *    socket is dropped). Reconciling store ownership (relocate the merge/own-log
- *    into the sidecar, or serve merge reads over IPC) is the remaining sub-task —
- *    see agent-insights/lazy-substrate-boot-and-sidecar.mdx. The wiring + a
- *    same-box two-sidecar convergence proof exist + are tested; the flag stays OFF.
+ *    sidecar owns the full per-harness substrate engine (Corestore + own-log +
+ *    merge/projection loop + swarm/admission + outbox/presence send-side). The
+ *    main process caches `RemoteBootedHarnessHandle` proxies and routes append /
+ *    control calls over IPC. OFF (the default) remains byte-identical in-process.
  */
 
 import { getFlag } from '@papercusp/flags/server';
@@ -38,6 +23,7 @@ import {
   registerSidecarShutdownHooks,
 } from './substrate-sidecar-spawn';
 import { getSubstrateIpcClient } from './substrate-ipc-client';
+import { RemoteBootedHarnessHandle } from './remote-booted-harness';
 import {
   bootAllHarnessesForActiveWorkspace,
   enableSubstrateEvictionTracking,
@@ -48,6 +34,7 @@ import {
   startSubstrateEvictionReaper,
   type SubstrateEvictionReaper,
 } from './substrate-eviction-reaper';
+import type { BootHarnessOpts } from './boot';
 
 export interface BootSubstrateOpts {
   perHarnessTimeoutMs?: number;
@@ -153,21 +140,36 @@ export async function bootSubstrateWithFallback(
   }
 
   try {
-    // Flag ON (dark): spawn the sidecar + verify it, then — because the in-process
-    // → sidecar relocation is unfinished (P-009) — STILL boot in-process. The
-    // sidecar runs but is not yet on the boot path; see the file header.
-    console.log('[substrate-boot] SUBSTRATE_SIDECAR on: spawning sidecar for process isolation');
+    console.log('[substrate-boot] SUBSTRATE_SIDECAR on: spawning sidecar for relocated substrate boot');
     await spawnSubstrateSidecar();
     registerSidecarShutdownHooks();
     const client = getSubstrateIpcClient();
-    try {
-      await client.call('sidecar:healthz');
-      console.log('[substrate-boot] sidecar ready, but boot relocation is unfinished — using in-process boot');
-    } catch (err) {
-      console.warn('[substrate-boot] healthz check failed, falling back to in-process:', err);
-    }
-    const result = await bootAllHarnessesForActiveWorkspace(opts);
-    return finish(result, false);
+    await client.call('sidecar:healthz');
+    const result = await bootAllHarnessesForActiveWorkspace({
+      ...opts,
+      skipSendSideWiring: true,
+      bootHarness: async (bootOpts: BootHarnessOpts) => {
+        const booted = await client.call<{
+          storeId: string;
+          ownLogKey: string;
+          ownLogLength?: number;
+        }>('substrate:bootHarness', {
+          workspaceRoot: bootOpts.workspaceRoot,
+          workspaceId: bootOpts.workspaceId,
+          harnessSlug: bootOpts.harnessSlug,
+          swarmBinding: bootOpts.swarmBinding ?? null,
+        });
+        return new RemoteBootedHarnessHandle({
+          workspaceId: bootOpts.workspaceId,
+          harnessSlug: bootOpts.harnessSlug,
+          storeId: booted.storeId,
+          ownLogKey: booted.ownLogKey,
+          ownLogLength: booted.ownLogLength,
+          client,
+        });
+      },
+    });
+    return finish(result, true);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn('[substrate-boot] sidecar spawn failed, falling back to in-process:', msg);

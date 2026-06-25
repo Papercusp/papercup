@@ -39,7 +39,15 @@ import Corestore from 'corestore';
 import type { HlcClock } from '@papercusp/locks-core';
 import { openOwnLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { stampOpHlc } from './hlc-stamp';
-import type { LocalWriteOp } from './boot';
+import {
+  bootHarnessSubstrate,
+  type BootedHarnessHandle,
+  type BootHarnessOpts,
+  type LocalWriteOp,
+} from './boot';
+import type { SwarmBinding } from './derive-swarm-topic';
+import { wireOutboxForHarness } from './wire-outbox';
+import { wirePresenceAnnounceForHarness } from './wire-presence';
 
 /**
  * Minimal Hypercore surface used by the observability methods. corestore's
@@ -62,6 +70,7 @@ interface StoreRecord {
   harnessSlug: string;
   storagePath: string;
   store: Corestore | null;
+  booted: BootedHarnessHandle | null;
   /** The peer's OWN writable log. Opened by `bootHarness` (and lazily by
    *  `appendOp`); null until then. The append seam writes here. */
   ownLog: OwnLog | null;
@@ -104,6 +113,12 @@ export interface SubstrateSidecarHostDeps {
   /** Override the process HLC clock used by the append seam (tests want a
    *  deterministic clock). Default: the sidecar's process-global HLC. */
   hlcClock?: HlcClock;
+  /** Override full substrate boot (tests). Default: bootHarnessSubstrate. */
+  bootHarnessImpl?: (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>;
+  /** Override outbox wiring for the relocated boot. Default: real PG + outbox drain. */
+  wireOutbox?: (handle: BootedHarnessHandle) => Promise<void>;
+  /** Override presence wiring for the relocated boot. Default: wirePresenceAnnounceForHarness. */
+  wirePresence?: (handle: BootedHarnessHandle) => Promise<void>;
 }
 
 export type RpcHandler = (params: unknown) => unknown | Promise<unknown>;
@@ -155,7 +170,7 @@ interface BootHarnessRequest {
   harnessSlug: string;
   workspaceRoot?: string;
   storagePath?: string;
-  swarmBinding?: { kind: string; value: string };
+  swarmBinding?: SwarmBinding | null;
 }
 
 /**
@@ -167,6 +182,9 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
   const createStore = deps.createStore ?? ((storagePath: string) => new Corestore(storagePath));
   const openOwnLogImpl = deps.openOwnLogImpl ?? openOwnLog;
   const hlcClock = deps.hlcClock;
+  const bootHarnessImpl = deps.bootHarnessImpl ?? bootHarnessSubstrate;
+  const wireOutbox = deps.wireOutbox ?? defaultWireOutbox;
+  const wirePresence = deps.wirePresence ?? wirePresenceAnnounceForHarness;
 
   const storeMap = new Map<string, StoreRecord>();
   const handoffs = new Map<string, HandoffEntry>();
@@ -202,6 +220,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       harnessSlug: p.harnessSlug,
       storagePath,
       store,
+      booted: null,
       ownLog: null,
       connections: new Set(),
     });
@@ -210,6 +229,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
 
   /** Open the own-log on a record if not already open. Returns it. */
   async function ensureOwnLog(rec: StoreRecord): Promise<OwnLog> {
+    if (rec.booted) return rec.booted.ownLog;
     if (rec.ownLog) return rec.ownLog;
     if (!rec.store) throw new RpcMethodError(-32000, 'Store is closed');
     rec.ownLog = await openOwnLogImpl(rec.store);
@@ -235,6 +255,13 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
   async function handleCloseStore(params: unknown): Promise<unknown> {
     const p = params as { storeId: string };
     const rec = storeMap.get(p.storeId);
+    if (rec?.booted) {
+      try {
+        await rec.booted.close();
+      } catch {
+        // best-effort: a booted handle that already closed shouldn't fail the RPC
+      }
+    }
     if (rec?.store) {
       try {
         await rec.store.close();
@@ -248,12 +275,14 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
 
   function handleGetStoreStatus(params: unknown): unknown {
     const rec = requireRecord((params as { storeId: string }).storeId);
+    const handle = rec.booted;
     return {
-      isOpen: !!rec.store,
-      ownLogLength: rec.ownLog?.length ?? 0,
-      ownLogKey: rec.ownLog?.keyHex ?? null,
-      admittedPeerCount: rec.connections.size,
+      isOpen: !!(handle ?? rec.store),
+      ownLogLength: handle?.ownLog.length ?? rec.ownLog?.length ?? 0,
+      ownLogKey: handle?.ownLog.keyHex ?? rec.ownLog?.keyHex ?? null,
+      admittedPeerCount: handle?.admitted.size ?? rec.connections.size,
       lastMergeAt: null,
+      swarmJoined: !!handle?.swarm,
     };
   }
 
@@ -262,16 +291,52 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
    *  presence identity). Swarm join + merge loop are P-002/P-003. */
   async function handleBootHarness(params: unknown): Promise<unknown> {
     const p = params as BootHarnessRequest;
-    const open = await ensureStore(p);
-    const rec = requireRecord(open.storeId);
-    const ownLog = await ensureOwnLog(rec);
+    if (!p.workspaceId || !p.harnessSlug) {
+      throw new RpcMethodError(-32602, 'Missing workspaceId or harnessSlug');
+    }
+    const existing = findExisting(p.workspaceId, p.harnessSlug);
+    if (existing) {
+      const rec = requireRecord(existing);
+      if (rec.booted) {
+        return {
+          storeId: existing,
+          ownLogKey: rec.booted.ownLog.keyHex,
+          ownLogLength: rec.booted.ownLog.length,
+          swarmTopicHex: null,
+          mergeLoopStarted: true,
+          admittedPeerCount: rec.booted.admitted.size,
+        };
+      }
+    }
+
+    const storagePath = resolveStoragePath(p);
+    const handle = await bootHarnessImpl({
+      workspaceRoot: p.workspaceRoot || process.cwd(),
+      workspaceId: p.workspaceId,
+      harnessSlug: p.harnessSlug,
+      swarmBinding: p.swarmBinding ?? null,
+      storagePath,
+      hlcClock,
+    } as BootHarnessOpts & { storagePath?: string });
+    await ensureRelocatedSendSideWired(handle);
+
+    const storeId = existing ?? `store-${nextStoreId++}`;
+    storeMap.set(storeId, {
+      workspaceId: p.workspaceId,
+      harnessSlug: p.harnessSlug,
+      storagePath,
+      store: null,
+      booted: handle,
+      ownLog: handle.ownLog,
+      connections: new Set(),
+    });
     return {
-      storeId: open.storeId,
-      ownLogKey: ownLog.keyHex,
-      ownLogLength: ownLog.length,
-      // Set once P-002/P-003 land; the proxy treats null as "not yet hosted".
+      storeId,
+      ownLogKey: handle.ownLog.keyHex,
+      ownLogLength: handle.ownLog.length,
       swarmTopicHex: null,
-      mergeLoopStarted: false,
+      mergeLoopStarted: true,
+      admittedPeerCount: handle.admitted.size,
     };
   }
 
@@ -286,6 +351,14 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       throw new RpcMethodError(-32602, 'appendOp requires { storeId, op }');
     }
     const rec = requireRecord(p.storeId);
+    if (rec.booted) {
+      if (p.raw) {
+        await rec.booted.ownLog.append(p.op as PeerLogOp);
+        return { ok: true, ownLogLength: rec.booted.ownLog.length, hlc: (p.op as PeerLogOp).hlc ?? null };
+      }
+      await rec.booted.append(p.op as LocalWriteOp);
+      return { ok: true, ownLogLength: rec.booted.ownLog.length, hlc: (p.op as LocalWriteOp).hlc ?? null };
+    }
     const ownLog = await ensureOwnLog(rec);
 
     if (p.raw) {
@@ -321,30 +394,75 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     return { ok: true, ownLogLength: ownLog.length, hlc: stamped.hlc };
   }
 
-  // ── merge / admission / swarm — P-002/P-003 stubs (stable proxy surface) ────
+  async function ensureRelocatedSendSideWired(handle: BootedHarnessHandle): Promise<void> {
+    try {
+      await wireOutbox(handle);
+    } catch (e) {
+      console.error(
+        `[substrate-sidecar-host] outbox wiring failed for ${handle.workspaceId}::${handle.harnessSlug}:`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+    try {
+      await wirePresence(handle);
+    } catch (e) {
+      console.error(
+        `[substrate-sidecar-host] presence wiring failed for ${handle.workspaceId}::${handle.harnessSlug}:`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
 
-  function handleOnAnnounce(params: unknown): unknown {
-    const p = params as { announce: { logKey: string } };
-    // Admission decision relocates with the swarm (P-003). Until then admit so
-    // the offload convergence proof keeps replicating.
-    return { decision: 'admit', remoteLogKey: p.announce.logKey };
+  async function defaultWireOutbox(handle: BootedHarnessHandle): Promise<void> {
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+    await wireOutboxForHarness(handle, sql);
   }
-  function handleTriggerMergeNow(_params: unknown): unknown {
-    return { mergedOps: 0, durationMs: 0 };
+
+  async function handleOnAnnounce(params: unknown): Promise<unknown> {
+    const p = params as { storeId: string; announce: unknown };
+    const rec = requireRecord(p.storeId);
+    if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
+    return rec.booted.onAnnounce(p.announce as never);
   }
-  function handleGetMergeStatus(_params: unknown): unknown {
-    return { lastMergeAt: null, lastMergeDurationMs: 0, totalOpsProcessed: 0, admittedPeerCount: 0, nextMergeIn: 1000 };
+  async function handleTriggerMergeNow(params: unknown): Promise<unknown> {
+    const p = params as { storeId: string };
+    const rec = requireRecord(p.storeId);
+    if (!rec.booted) return { mergedOps: 0, durationMs: 0 };
+    const started = Date.now();
+    const mergedOps = await rec.booted.mergeNow();
+    return { mergedOps, durationMs: Date.now() - started };
   }
-  function handleGetAdmittedLogs(_params: unknown): unknown {
-    return { logs: [] };
+  function handleGetMergeStatus(params: unknown): unknown {
+    const p = params as { storeId: string };
+    const rec = requireRecord(p.storeId);
+    return {
+      lastMergeAt: null,
+      lastMergeDurationMs: 0,
+      totalOpsProcessed: null,
+      admittedPeerCount: rec.booted?.admitted.size ?? 0,
+      nextMergeIn: 1000,
+    };
   }
-  function handleRevoke(_params: unknown): unknown {
-    // Revocation relocates with admission (P-003). No-op until then.
-    return { ok: true, revoked: false };
+  function handleGetAdmittedLogs(params: unknown): unknown {
+    const p = params as { storeId: string };
+    const rec = requireRecord(p.storeId);
+    return {
+      logs: [...(rec.booted?.admitted.keys() ?? [])],
+    };
   }
-  function handleRekey(_params: unknown): unknown {
-    // Re-key relocates with the swarm (P-003). No-op until then.
-    return { ok: true, rekeyed: false };
+  async function handleRevoke(params: unknown): Promise<unknown> {
+    const p = params as { storeId: string; devicePubkey: string };
+    const rec = requireRecord(p.storeId);
+    if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
+    await rec.booted.revoke(p.devicePubkey);
+    return { ok: true, revoked: true };
+  }
+  async function handleRekey(params: unknown): Promise<unknown> {
+    const p = params as { storeId: string; binding: SwarmBinding };
+    const rec = requireRecord(p.storeId);
+    if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
+    await rec.booted.rekey(p.binding);
+    return { ok: true, rekeyed: true };
   }
 
   // ── socket handoff (Option B replication-offload, preserved) ────────────────
@@ -484,6 +602,13 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
 
   async function closeAll(): Promise<void> {
     for (const [, rec] of storeMap) {
+      if (rec.booted) {
+        try {
+          await rec.booted.close();
+        } catch {
+          // best-effort
+        }
+      }
       if (rec.store) {
         try {
           await rec.store.close();
