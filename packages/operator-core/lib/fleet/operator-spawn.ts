@@ -35,7 +35,7 @@ import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { ensureStallWakerLoop } from '../inference-gateway/stall-waker-loop';
 import { evaluateOpusBudgetForSpawn } from '../deployment/account-pool-store';
 import { classifyRoleCriticality, type WorkCriticality } from '../opus-budget-governor';
-import { resolveSpawnBackendModel } from '../harness-invoke-once';
+import { inferBackendFromModelSpec, resolveSpawnBackendModel } from '../harness-invoke-once';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { desktopEnvForHive } from '../agent-tools/computer/desktop-lease';
 import { recordSpawn, finishSpawn } from './spawn-tree';
@@ -708,6 +708,10 @@ export async function spawnAgentInHarness(
     } catch (e) {
       console.warn(`[operator-spawn] opus-budget pacing skipped (fail-soft): ${(e as Error).message}`);
     }
+  }
+  const inferredBackend = inferBackendFromModelSpec(spawnModelSpec ?? undefined);
+  if (inferredBackend) {
+    spawnModelBackend = inferredBackend;
   }
 
   // Harness resolution. Explicit slug wins; with no slug, a single-harness

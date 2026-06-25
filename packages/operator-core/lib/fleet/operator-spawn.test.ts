@@ -355,6 +355,29 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
 });
 
 describe('spawnAgentInHarness — backend-aware gateway account routing', () => {
+  it('forces Codex backend for a chatgpt:* per-spawn model even when the host command is Claude', async () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    try {
+      const res = await spawnAgentInHarness({
+        workspaceId: 'ws-1',
+        harness: 'demo',
+        role: 'bee',
+        modelSpec: 'chatgpt:5.5',
+      });
+      expect(res.ok).toBe(true);
+      const [, , , env, opts] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+      expect(env.PAPERCUSP_SPAWN_MODEL).toBe('chatgpt:5.5');
+      expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
+      expect((opts as { forceSessionId?: string } | undefined)?.forceSessionId).toBeUndefined();
+      expect(resolveSpawnGatewayEnv).toHaveBeenCalledWith(expect.objectContaining({
+        backend: 'codex',
+        ownerId: res.spawnId,
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('passes the resolved Codex backend to the shared gateway env helper and carries only the returned Codex account id', async () => {
     vi.stubEnv('AGENT_CMD', 'codex exec');
     vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
