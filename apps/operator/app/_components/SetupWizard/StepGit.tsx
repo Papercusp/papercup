@@ -222,7 +222,7 @@ export function StepGit() {
       <div className="pc-divider" />
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <h3 className="pc-consent__heading" style={{ margin: 0 }}>GitHub (optional)</h3>
+        <h3 className="pc-consent__heading" style={{ margin: 0 }}>GitHub</h3>
         {ghSignedIn && (
           <span
             className="pc-provider-card__badge"
@@ -234,9 +234,9 @@ export function StepGit() {
         )}
       </div>
       <p className="pc-step__hint">
-        Pushing to private repos + opening PRs needs a GitHub auth. The simplest path is the
-        GitHub CLI — <code>gh auth login</code> stores a token in your system keychain that{' '}
-        <code>git</code> picks up automatically.
+        The bundled Papercusp workspace is private, so setup needs GitHub auth before it can
+        download. The simplest path is the GitHub CLI — <code>gh auth login</code> stores a token
+        in your system keychain that <code>git</code> picks up automatically.
       </p>
       <div className="pc-step__actions">
         <Tooltip label={GITHUB_AUTH_ALPHA_DISABLED

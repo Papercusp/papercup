@@ -125,6 +125,7 @@ describe('StepGit (SetupWizard git-identity step)', () => {
     // stays disabled and the CLI-not-detected hint shows the install path.
     expect(ghBtn.disabled).toBe(true);
     expect(screen.getByText(/GitHub CLI not detected/i)).toBeTruthy();
+    expect(screen.getByText(/bundled Papercusp workspace is private/i)).toBeTruthy();
     // The old alpha-gate hint is gone now that GitHub auth is re-enabled (dogfood
     // clone-on-first-boot needs the sign-in), so it must NOT render.
     expect(screen.queryByText(/disabled while Papercusp is in alpha/i)).toBeNull();

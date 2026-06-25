@@ -170,6 +170,12 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(fin.status).toBe('done');
   });
 
+  it('fires /invoke through the long-running launch loopback dispatcher', async () => {
+    await durableSpawnFireImpl(IMPL);
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+    expect(h.loopbackFetch.mock.calls[0][2]).toEqual({ launch: true });
+  });
+
   it('does NOT record when spawnRecord is omitted (hive launches own their rows)', async () => {
     await durableSpawnFireImpl(IMPL);
     expect(h.recordSpawn).not.toHaveBeenCalled();

@@ -27,6 +27,9 @@ function spyDeps(over: Partial<BootstrapPapercuspHiveDeps> = {}) {
     setHomeWorkspace: vi.fn(),
     initSubmodules: vi.fn(),
     recordProgress: vi.fn(),
+    adoptShare: vi.fn(async () => null),
+    goShare: vi.fn(async () => undefined),
+    shareExisting: vi.fn(async () => undefined),
     ...over,
   };
   return deps as unknown as BootstrapPapercuspHiveDeps & typeof deps;
@@ -40,6 +43,7 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(deps.clone).not.toHaveBeenCalled();
     expect(deps.ensureHive).not.toHaveBeenCalled();
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    expect(deps.shareExisting).toHaveBeenCalledOnce();
   });
 
   it('uses a LOCAL checkout in place — never clones (dev box)', async () => {
@@ -49,6 +53,8 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(deps.ensureHive).toHaveBeenCalledWith({ pathOverride: '/home/dev/papercup' });
     expect(deps.initSubmodules).not.toHaveBeenCalled(); // not a fresh clone
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    expect(deps.adoptShare).toHaveBeenCalledOnce();
+    expect(deps.goShare).toHaveBeenCalledWith(null);
     expect(res.state).toBe('newly-created');
   });
 

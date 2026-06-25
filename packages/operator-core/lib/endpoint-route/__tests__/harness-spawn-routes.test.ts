@@ -325,8 +325,8 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
 // route's 90s default applied to a full Queen duty cycle. Hive launches now
 // default to the route ceiling; explicit timeoutMs still wins for both kinds.
 describe('invoke helpers (__test)', () => {
-  it('resolveInvokeTimeoutMs: 90s default for plain launches, ceiling default for hive', () => {
-    expect(spawnTest.resolveInvokeTimeoutMs(undefined, false)).toBe(90_000);
+  it('resolveInvokeTimeoutMs: 15min default for plain launches, ceiling default for hive', () => {
+    expect(spawnTest.resolveInvokeTimeoutMs(undefined, false)).toBe(900_000);
     expect(spawnTest.resolveInvokeTimeoutMs(undefined, true)).toBe(2_700_000);
   });
   it('resolveInvokeTimeoutMs: explicit timeoutMs wins, clamped to [5s, 2700s]', () => {

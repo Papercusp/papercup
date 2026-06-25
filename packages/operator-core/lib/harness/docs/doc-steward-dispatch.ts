@@ -26,6 +26,22 @@ export interface DriftedDoc {
   workItems?: string[];
 }
 
+const DOC_STEWARD_ACTIVE_WINDOW_MIN = 50;
+
+async function activeDocStewardExists(workspaceId: string, harnessSlug: string): Promise<boolean> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const rows = await getOrgPg().sql<{ n: string }[]>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND child_role = 'doc-steward'
+       AND status IN ('running', 'restarting')
+       AND started_at > now() - make_interval(mins => ${DOC_STEWARD_ACTIVE_WINDOW_MIN})
+  `;
+  return Number(rows[0]?.n ?? 0) > 0;
+}
+
 /**
  * Dispatch the doc-steward for a batch of newly-drifted docs. DETERMINISTIC trigger; best-effort
  * — a dispatch failure must NEVER wedge the sweep / git-sync. Fires the `docs:drift` launch
@@ -41,6 +57,7 @@ export async function dispatchDocStewardForDrift(
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
     if (!(await getFlag(FLAGS.DOC_STEWARD, harnessSlug))) return false;
+    if (await activeDocStewardExists(workspaceId, harnessSlug)) return false;
     const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
     await fireLaunchBlueprintForEvent('docs:drift', {
       installSlug: harnessSlug,

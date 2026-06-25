@@ -111,7 +111,7 @@ export interface BootstrapPapercuspHiveDeps {
     status: BootstrapProgressStatus,
     extra?: { percent?: number; detail?: string },
   ) => void;
-  /** Solution C (DOGFOOD_PAPERCUSP_HIVE_SHARE, default-off/dark): adopt the owner's
+  /** Solution C (DOGFOOD_PAPERCUSP_HIVE_SHARE, default-on/reversible): adopt the owner's
    *  SHARED hive identity from their per-owner gist BEFORE the hive is created.
    *  Default: adoptSharedHiveIdentity (returns null — sharing skipped — when the
    *  flag is off / gh unauth). */

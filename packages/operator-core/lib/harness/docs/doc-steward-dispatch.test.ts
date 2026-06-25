@@ -5,11 +5,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // module either way.
 const mockGetFlag = vi.fn();
 const mockFire = vi.fn();
+const mockSql = vi.fn();
 vi.mock('@papercusp/flags/server', () => ({ getFlag: (...a: unknown[]) => mockGetFlag(...a) }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { DOC_STEWARD: 'papercusp-doc-steward' } }));
 vi.mock('../../blueprint/launch-blueprint', () => ({
   fireLaunchBlueprintForEvent: (...a: unknown[]) => mockFire(...a),
 }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: mockSql }) }));
 
 import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
 
@@ -23,6 +25,8 @@ describe('dispatchDocStewardForDrift (doc-steward P-008)', () => {
   beforeEach(() => {
     mockGetFlag.mockReset();
     mockFire.mockReset();
+    mockSql.mockReset();
+    mockSql.mockResolvedValue([{ n: '0' }]);
   });
 
   it('fires the `docs:drift` launch with the deduped drift batch when the flag is ON', async () => {
@@ -47,6 +51,16 @@ describe('dispatchDocStewardForDrift (doc-steward P-008)', () => {
     // the human kickoff names the docs
     expect(input.kickoff as string).toContain('agent-insights/a.mdx');
     expect(input.kickoff as string).toContain('b.mdx');
+  });
+
+  it('does NOT fire while an active doc-steward is already running for the harness', async () => {
+    mockGetFlag.mockResolvedValue(true);
+    mockSql.mockResolvedValue([{ n: '1' }]);
+
+    const dispatched = await dispatchDocStewardForDrift('h', 'ws-1', docs);
+
+    expect(dispatched).toBe(false);
+    expect(mockFire).not.toHaveBeenCalled();
   });
 
   it('does NOT fire when the flag is OFF', async () => {

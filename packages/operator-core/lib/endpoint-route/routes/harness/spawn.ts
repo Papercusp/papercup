@@ -165,11 +165,14 @@ async function dispatchActionsBlockFromOutput(
  * duty cycle — survey → place → record — or an overwatch wake — survey → nudge →
  * declare-wake) is not a short single-role call, so the old 90s default SIGTERM'd
  * every Queen wake ~mid-survey (local-hive P-071 smoke, 2026-06-10: two consecutive
- * wakes exited 143 at ~91s with the kickoff unread). Loop launches default to the
- * route's ceiling (2700s); an explicit `body.timeoutMs` still wins for both kinds.
+ * wakes exited 143 at ~91s with the kickoff unread). Plain launch-blueprint roles
+ * (doc-steward / worker / release-fixer) also run a full LLM turn and can legitimately
+ * queue behind the inference gateway before first output, so their default is no
+ * longer the old 90s CLI smoke timeout. Loop launches still default to the route's
+ * ceiling (2700s); an explicit `body.timeoutMs` wins for both kinds.
  */
 function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isLoopLaunch: boolean): number {
-  const fallback = isLoopLaunch ? 2_700_000 : 90_000;
+  const fallback = isLoopLaunch ? 2_700_000 : 900_000;
   return Math.max(5_000, Math.min(2_700_000, Number(bodyTimeoutMs ?? fallback)));
 }
 

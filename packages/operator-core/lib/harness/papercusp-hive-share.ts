@@ -1,7 +1,7 @@
 /**
  * papercusp-hive-share — Solution C orchestration: announce the dogfood `papercusp`
  * hive as a SHARED P2P hive under a PER-OWNER identity, gated by
- * DOGFOOD_PAPERCUSP_HIVE_SHARE (default OFF / dark).
+ * DOGFOOD_PAPERCUSP_HIVE_SHARE (default ON, still reversible by flag).
  *
  * Two hook points around the hive create in bootstrap-papercusp-hive:
  *
