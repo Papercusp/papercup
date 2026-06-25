@@ -198,6 +198,43 @@ export async function loadHiveMemberDevicePubkeys(
 }
 
 /**
+ * WI-787 / WI-780 — resolve the OWNER device pubkey the SIGNED, gh-verified hive-announce
+ * binds to a `hive_pubkey`, for the owner-log BOOTSTRAP admit on a fresh joiner whose
+ * `hive_members` roster is still empty (boot.ts `resolveSameHiveMember`; the bootstrap
+ * deadlock — the roster that would admit the owner lives inside the owner's un-merged log).
+ *
+ * SOURCE = the P2P hive-directory offline cache (`hive_directory_cache`, migration 182).
+ * The directory ONLY records a descriptor after it passes `verifyHiveAnnounce` (Ed25519 sig
+ * + the `owner_device_pubkey ↔ hive_pubkey` binding), so the `(hivePubkey → ownerDevicePubkey)`
+ * entry read here is CRYPTOGRAPHICALLY VERIFIED — never a self-asserted/unverified value. This
+ * is the SAME signed binding the bootstrap admit intends to trust; matching is on the base64
+ * `hive_pubkey`. Fail-closed: returns null when there is no verified descriptor for that hive
+ * in this workspace (→ no bootstrap, the safe default). Never throws.
+ */
+export async function loadHiveOwnerDevicePubkey(
+  workspaceId: string,
+  hivePubkeyBase64: string,
+): Promise<string | null> {
+  if (!hivePubkeyBase64) return null;
+  try {
+    const { readOperatorState } = await import('./operator-state-pg');
+    const row = await readOperatorState<{
+      hives?: Array<{ hivePubkey?: string; ownerDevicePubkey?: string }>;
+    }>('hive_directory_cache', workspaceId).catch(() => null);
+    for (const h of row?.hives ?? []) {
+      if (h && h.hivePubkey === hivePubkeyBase64) {
+        return typeof h.ownerDevicePubkey === 'string' && h.ownerDevicePubkey.length > 0
+          ? h.ownerDevicePubkey
+          : null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Upsert a Hive member row (admission). On conflict the mutable fields are
  * updated; device_attestations / revoked_pubkeys are REPLACED with the supplied
  * arrays when provided (the caller owns the merge — mirrors single-writer

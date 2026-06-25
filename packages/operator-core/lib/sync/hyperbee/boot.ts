@@ -375,6 +375,19 @@ export interface BootHarnessOpts {
     githubUserId: number,
   ) => Promise<string[]>;
   /**
+   * Test seam (WI-787 / WI-780) — resolve the OWNER device pubkey the SIGNED, gh-verified
+   * hive-announce binds to a joined `hive_pubkey` (`owner_device_pubkey`, captured at join
+   * from the verified directory descriptor and persisted on `harness_shared.hives`).
+   * Production leaves this undefined and the real `loadHiveOwnerDevicePubkey(workspaceId,
+   * hivePubkey)` (reads `hives.owner_device_pubkey` from PG, fail-closed to null) is used.
+   * Used ONLY to BOOTSTRAP-admit the owner's OWN log on a fresh joiner whose `hive_members`
+   * is still empty — the WI-780 bootstrap deadlock (the roster that would admit the owner
+   * lives inside the owner's un-merged log). Admits ONLY the one bound device; never widens
+   * admission to any other device, so the WI-259 membership guard stays intact. `workspaceId`
+   * is closed over by boot; the loader receives `(hivePubkey)`.
+   */
+  ownerDeviceForHiveOverride?: (hivePubkey: string) => Promise<string | null>;
+  /**
    * Slow re-verify interval (ms). At this cadence, every admitted peer's
    * channel-2 binding is re-checked via `verifyBinding`. A conclusive `'fail'`
    * drops the peer from the admitted set (but does NOT add it to the published
@@ -1593,6 +1606,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     });
 
+  // WI-787 / WI-780 — owner-log BOOTSTRAP seam: resolve the OWNER device pubkey the SIGNED,
+  // gh-verified hive-announce binds to a joined `hive_pubkey` (`owner_device_pubkey`,
+  // captured at join from the verified directory descriptor and persisted on
+  // `harness_shared.hives`). Used ONLY by the owner-bootstrap admit in resolveSameHiveMember.
+  // Fail-closed to null (no bootstrap) on any error — never throws into the swarm handler.
+  const ownerDeviceForHive: (hivePubkey: string) => Promise<string | null> =
+    opts.ownerDeviceForHiveOverride ??
+    (async (hivePubkey) => {
+      const { loadHiveOwnerDevicePubkey } = await import('../../hive-membership-store');
+      return loadHiveOwnerDevicePubkey(opts.workspaceId, hivePubkey).catch(() => null);
+    });
+
   /**
    * Admit (or reject) an inbound signed announce. Verifies the sig, runs the
    * D-004 + D-002 decision, and on admit opens + admits the peer's remote log
@@ -1632,6 +1657,29 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       hiveHomeProjectionSlug ??
       (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return null;
+    // WI-787 / WI-780 — owner-log BOOTSTRAP admission (the keystone). A fresh joiner's
+    // hive_members is EMPTY, so the OWNER's own announce 'miss'es below and buffers
+    // forever — yet the roster that would admit the owner lives INSIDE the owner's
+    // still-un-merged log (bootstrap deadlock). Break it by trusting the ONE device the
+    // SIGNED, gh-verified hive-announce binds to THIS joined hive: its owner_device_pubkey.
+    // Admit ONLY that exact device, gated on the frame's joined hive
+    // (swarmBinding.hive_pubkey) — never on github_user_id alone and never any OTHER device
+    // (that would hole the WI-259 membership guard). The IDENTITY decider (sig + channel-2
+    // binding) has already passed for this frame upstream, so the device is gh-attested too.
+    const joinedHivePubkey =
+      opts.swarmBinding?.kind === 'hive' ? opts.swarmBinding.hive_pubkey : null;
+    if (joinedHivePubkey) {
+      const ownerDevice = await ownerDeviceForHive(joinedHivePubkey).catch(() => null);
+      if (ownerDevice && frame.device_pubkey === ownerDevice) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_admitted',
+          `owner_bootstrap hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
+        );
+        return admitPeer(frame);
+      }
+    }
     const memberDevices = await loadHiveMembers(myHiveHome, frame.github_user_id);
     const decision = classifySameHiveMember({
       originSlug,

@@ -20,6 +20,7 @@
  * only, to keep the chrome non-interactive and out of the way).
  */
 
+import { useState } from 'react';
 import {
   useDogfoodBootstrapProgress,
   bootstrapStepLabel,
@@ -27,11 +28,17 @@ import {
 
 export function DogfoodBootstrapBanner() {
   const p = useDogfoodBootstrapProgress();
+  // Session-dismiss (WI-791, public-release): the dogfood clone is best-effort /
+  // non-fatal, and a PUBLIC user can't access the private submodules at all — so a
+  // terminal-error bar must be DISMISSIBLE, never an app-wide nag the user can't
+  // clear. (Progress auto-hides on its own when the flow goes ready.)
+  const [dismissed, setDismissed] = useState(false);
 
   // Show only while genuinely in progress, or on a hard error. Ready / no rows →
   // hidden (auto-hide). This keeps the chrome clear once the workspace lands.
   if (!p.hasRows) return null;
   if (!p.inProgress && !p.hasError) return null;
+  if (dismissed) return null;
 
   const label = bootstrapStepLabel(p.activeStep);
   const pct = p.activePercent;
@@ -101,11 +108,11 @@ export function DogfoodBootstrapBanner() {
       )}
       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {isGitMissing ? (
-          <>Git isn’t installed — finish setup for the fix.</>
+          <>Papercusp’s built-in workspace needs git — optional; the app works without it.</>
         ) : isNetworkError ? (
-          <>Couldn’t reach GitHub (network) — retrying…</>
+          <>Couldn’t reach GitHub for the built-in workspace (network) — retrying…</>
         ) : isError ? (
-          <>Setting up Papercusp workspace failed — finish setup to retry.</>
+          <>Papercusp’s built-in workspace didn’t finish downloading — the app works fine without it.</>
         ) : awaitingAuth ? (
           <>Setting up Papercusp workspace — <strong>{detail}</strong></>
         ) : (
@@ -143,6 +150,27 @@ export function DogfoodBootstrapBanner() {
           />
         </span>
       )}
+      {/* Dismiss (WI-791): always available so the bar is never an unclearable
+          nag — essential on a terminal error a public user can't resolve. */}
+      <button
+        type="button"
+        data-testid="dogfood-bootstrap-dismiss"
+        aria-label="Dismiss"
+        onClick={() => setDismissed(true)}
+        style={{
+          marginLeft: 'auto',
+          background: 'transparent',
+          border: 'none',
+          color: 'inherit',
+          opacity: 0.7,
+          cursor: 'pointer',
+          fontSize: 15,
+          lineHeight: 1,
+          padding: '0 2px',
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 }

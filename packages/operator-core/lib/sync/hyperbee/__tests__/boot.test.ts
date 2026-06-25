@@ -427,44 +427,140 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     expect(handle.admitted.has(frame.log_core_key)).toBe(true);
   });
 
-  it.fails(
-    'DESIRED: a gh-attested hive owner/member bootstrap announce admits before the empty roster can deadlock WI-780',
-    async () => {
-      const ownerUserId = 9601;
-      const joiner = makeAnnounceIdentityOverride('joiner-desired', 9602, 'kc-wi789-joiner-desired');
+  // WI-787 — the FIX. The owner-log bootstrap admit (boot.ts resolveSameHiveMember) trusts
+  // the ONE device the signed, gh-verified hive-announce binds to the joined hive_pubkey
+  // (`ownerDeviceForHiveOverride`; prod reads the verified hive_directory_cache binding), so
+  // the owner's own log is admitted BEFORE the empty roster can deadlock — breaking WI-780.
+  it('FIX: a gh-attested owner bootstrap announce admits on an empty roster via the signed owner-device binding (WI-787/WI-780)', async () => {
+    const ownerUserId = 9601;
+    const joiner = makeAnnounceIdentityOverride('joiner-desired', 9602, 'kc-wi789-joiner-desired');
+    let ownerDevice = '';
+    const ownerDeviceForHive = vi.fn(async (_hivePubkey: string) => ownerDevice || null);
 
-      const handle = await bootHarnessSubstrate({
-        workspaceRoot: tmpWorkspaceRoot(),
-        workspaceId: WORKSPACE_ID,
-        harnessSlug: JOINER_MEMBER_SLUG,
-        swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
-        swarmOverride: makeFakeSwarm(),
-        swarmRefreshMs: 0,
-        swarmJoinRetryMs: 0,
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        loadRevokedOverride: async () => new Set(),
-        verifyBindingOverride: async () => 'verified',
-        loadHiveMembersOverride: async () => [],
-        joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
-        announceIdentityOverride: joiner.override,
-      });
-      cleanups.push(() => handle.close());
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+      loadHiveMembersOverride: async () => [], // roster still empty — the WI-780 condition
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
 
-      const frame = await validAnnounce({
-        github_user_id: ownerUserId,
-        github_login: 'owner-desired',
-        attestation_gist_id: 'gist-owner-desired',
-        harness_slug: OWNER_MEMBER_SLUG,
-        log_core_key: 'f3'.repeat(32),
-      });
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner-desired',
+      attestation_gist_id: 'gist-owner-desired',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'f3'.repeat(32),
+    });
+    ownerDevice = frame.device_pubkey; // the signed owner_device_pubkey for this hive
 
-      const decision = await handle.onAnnounce(frame);
+    const decision = await handle.onAnnounce(frame);
 
-      expect(decision).toEqual({ admit: true });
-      expect(handle.admitted.has(frame.log_core_key)).toBe(true);
-    },
-  );
+    // Admitted via the owner-device binding, gated on THIS joined hive's pubkey.
+    expect(ownerDeviceForHive).toHaveBeenCalledWith(HIVE_PUBKEY);
+    expect(decision).toEqual({ admit: true });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(true);
+  });
+
+  // ADVERSARIAL 1 — the bootstrap admit is scoped to the EXACT bound device. A DIFFERENT
+  // device (even one carrying the owner's github_user_id) must NOT ride the owner binding in;
+  // with an empty roster it buffers (pending). Guards the WI-259 membership boundary against
+  // admitting on github_user_id alone.
+  it('ADVERSARIAL: a non-owner device with the owner github_user_id does NOT bootstrap-admit (still pending)', async () => {
+    const ownerUserId = 9701;
+    const joiner = makeAnnounceIdentityOverride('joiner-adv1', 9702, 'kc-wi789-joiner-adv1');
+    // The binding resolves the REAL owner device — a fixed value unrelated to the spoofer's frame.
+    const boundOwnerDevice = Buffer.alloc(32, 0x5a).toString('base64');
+    const ownerDeviceForHive = vi.fn(async () => boundOwnerDevice);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+      loadHiveMembersOverride: async () => [], // empty roster
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId, // claims the owner's gh id …
+      github_login: 'owner-spoof',
+      attestation_gist_id: 'gist-owner-spoof',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'f4'.repeat(32),
+    });
+    // … but frame.device_pubkey !== boundOwnerDevice (different keypair), so the exact-device
+    // gate refuses the bootstrap and the empty roster leaves it pending.
+    expect(frame.device_pubkey).not.toBe(boundOwnerDevice);
+
+    const decision = await handle.onAnnounce(frame);
+
+    expect(decision).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+  });
+
+  // ADVERSARIAL 2 — fail-closed when there is NO verified owner-device binding for the hive
+  // (e.g. no verified directory descriptor cached). Even the real owner device must buffer,
+  // never admit on an unverified/absent binding.
+  it('ADVERSARIAL: no verified owner-device binding ⇒ even the owner device buffers (fail-closed)', async () => {
+    const ownerUserId = 9801;
+    const joiner = makeAnnounceIdentityOverride('joiner-adv2', 9802, 'kc-wi789-joiner-adv2');
+    const ownerDeviceForHive = vi.fn(async () => null); // no verified descriptor for this hive
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner-noband',
+      attestation_gist_id: 'gist-owner-noband',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'f5'.repeat(32),
+    });
+
+    const decision = await handle.onAnnounce(frame);
+
+    expect(ownerDeviceForHive).toHaveBeenCalled();
+    expect(decision).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+  });
 });
 
 describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end (D-004, Fix 1)', () => {
