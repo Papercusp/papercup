@@ -543,6 +543,78 @@ Two aggravating factors on the same path:
 * A pure **core** (deps-injected, no `getOrgPg`) that needs a bounded write → add a `threadTxn`-style seam to its deps and bind `boundedOrgTxn` + a tx-bound store in the binding layer (see `conversations-core.ts` ↔ `conversations.ts`). Don’t import `getOrgPg` into the core — it breaks the integration-test-without-prod-singletons split.
 * The known per-tool offenders are now closed (`work_items:comment`, `conversations:post` / `conversations:answer`). The whole interactive-write class still shares this gap, though: a connection-level **default** `statement_timeout` with a migration-runner opt-out (`SET LOCAL statement_timeout=0`) would fix every `getOrgPg()`-based mutating tool at the source. That touches the deploy/migration path, so it’s a separate, reviewed change — if you add a new interactive admin-pool write before it lands, wrap it in `boundedOrgTxn` yourself.
 
+# A proxied tool going BULK blanks its admin-UI consumers — unwrap results[0]
+
+> When a defineTool the /admin route proxies is migrated to the _bulk { ok, results, counts } envelope, the route's generic unwrap() forwards the envelope verbatim and any single-object UI consumer (e.g. the Plans editor reading data.raw/prose) gets undefined → renders BLANK with no error. Fix: unwrap results[0] in the route; if a payload-diet also dropped a field the UI round-trips (raw), restore it behind an opt-in flag that's also in the SWR cache key.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Select a plan in the Plans admin tab and the **detail body renders BLANK** — the header (title/tabs) shows, but the markdown pane has zero height, zero children, zero text. No error toast, no spinner, no “Couldn’t load the markdown renderer” fallback. It looks like “selection works but the content vanished.”
+
+The give-away in a live DOM probe: `.pc-md-preview` exists but `h:16, childCount:0, textLen:0`, and the value React handed `<MarkdownPreview>` is the empty string — while the plan’s body (30 KB+) is sitting un-read one level down in the server response.
+
+## Root cause — a proxied tool quietly became BULK, and the route still passthrough-unwraps
+
+[Section titled “Root cause — a proxied tool quietly became BULK, and the route still passthrough-unwraps”](#root-cause--a-proxied-tool-quietly-became-bulk-and-the-route-still-passthrough-unwraps)
+
+Two independent server changes compounded:
+
+1. **`plans:get` was migrated to the bulk envelope.** Per [bulk-tool-contract-2026-06-22](/internal/docs/agent-insights/bulk-tool-contract-2026-06-22), it now runs through `runBulk` → `bulkContent` and returns `{ ok, results: [plan], counts }` — **even for a single slug**. The plan object moved from the top level into `results[0]`.
+
+2. **The admin route proxy didn’t unwrap it.** The [admin-route-tool-proxy](/internal/docs/agent-insights/admin-route-tool-proxy) shape ends in a generic `unwrap(result)` that just extracts the tool’s `content[].text` and `JSON.parse`s it — a **verbatim passthrough**. So `/api/admin/plans/get` started returning the whole `{ ok, results, counts }` envelope to the browser.
+
+The UI consumer is single-plan: `usePlan` → `fetchPlan` (`plans-api.ts`) types the response as one `PlanGetResult`, and `PlanDetail` reads `data.raw ?? data.prose` straight off it. Against the envelope, `data.raw`/`data.prose` are both `undefined` → `MarkdownPreview` gets `''` → blank. The header still shows because its title falls back to the slug, which masks the break.
+
+The route's generic unwrap() is a trap for bulk tools
+
+`unwrap()` is shape-agnostic: it hands the client whatever the tool returned. The day a proxied tool adopts the keyed-array envelope, **every single-object UI consumer silently starts receiving `{ ok, results, counts }`** and reading `undefined` off it. There’s no type error (the route is `unknown`-bodied) and no runtime throw (the UI just renders empty). Audit consumers when you bulk-ify a proxied verb.
+
+## Second gotcha — the payload diet dropped a field the UI round-trips
+
+[Section titled “Second gotcha — the payload diet dropped a field the UI round-trips”](#second-gotcha--the-payload-diet-dropped-a-field-the-ui-round-trips)
+
+`plans:get` full mode also **dropped `raw`** (P-008 token-diet: `raw` duplicated `prose` + structured frontmatter, doubling agent tool-output; “exact raw bytes live behind plans:export”). But the Plans **Edit** mode round-trips the *whole document* through `plans:set-content`, whose compare-and-swap hashes the exact raw bytes — and `set-content` guards `would_orphan_frontmatter`. Reconstructing `raw` from `prose` + structured frontmatter would **not byte-match** the CAS hash, so prose-only is not a substitute. Read needs `prose`; edit needs `raw`.
+
+## The fix (both server-side, in operator-core)
+
+[Section titled “The fix (both server-side, in operator-core)”](#the-fix-both-server-side-in-operator-core)
+
+1. **Route: unwrap `results[0]` for the `get` verb.** A dedicated `unwrapBulkGet` (not the generic `unwrap`) pulls the single plan out of the envelope, maps an empty `results` to a clean `{ error: { code: 'not_found' } }`, and passes a bare `{ error }` (trust/validation failure — never the bulk shape) straight through. This restores the route’s documented contract: *present clean single-object shapes to client code.*
+
+   routes/admin/plans.ts
+
+   ```ts
+   if (verb === 'get') body.includeRaw = true;          // ← opt into raw for the UI
+   const result = await handleHttpToolRequest({ /* … */ }, HOST_EXTRAS);
+   return verb === 'get' ? unwrapBulkGet(result) : unwrap(result);
+   ```
+
+2. **Tool: opt-in `includeRaw` (default OFF).** Agents keep the slim payload; the admin route sets `includeRaw: true` so full mode re-attaches `raw: parsed.raw`. The UI’s existing `data.raw ?? data.prose` then renders read and round-trips edit.
+
+3. **Put the opt-in flag in the SWR cache key.** `plans:get` is `cachedRead`-backed keyed on `{ slug, harness, mode, heading }`. `includeRaw` is **output-determining**, so it MUST join the key — otherwise a slim agent-cached entry (no `raw`) is served to a UI caller that asked for raw, and the editor breaks *intermittently* on cache state. (Mirror of: any new response-shaping arg belongs in the cache key.)
+
+## The generalizable checklist
+
+[Section titled “The generalizable checklist”](#the-generalizable-checklist)
+
+When you migrate a `defineTool` that an `/admin` route proxies to the bulk `{ ok, results, counts }` envelope:
+
+* **Grep the route’s read verbs for single-object UI consumers.** Anything that reads `data.<field>` off the response (not `data.results[*].<field>`) needs an `unwrap-results[0]` step at the route, or it renders empty.
+* **Don’t rely on the generic `unwrap()`** for a now-bulk verb — it’s a passthrough.
+* **If a payload diet drops a field**, check whether any consumer *round-trips the whole record* (write-back / CAS). Those need the dropped field restored behind an opt-in flag — and reconstruct-from-parts is not equivalent if a hash/CAS is involved.
+* **Any response-shaping flag goes in the read tool’s cache key.**
+
+## Pointers
+
+[Section titled “Pointers”](#pointers)
+
+* Route fix + `unwrapBulkGet`: `packages/operator-core/lib/endpoint-route/routes/admin/plans.ts` (unit-tested in `plans.unwrap.test.ts`).
+* `includeRaw` + cache key: `packages/operator-core/lib/agent-tools/plans/get.ts`.
+* UI consumer: `apps/operator/app/admin/plans/PlanDetail.tsx` (`data.raw ?? data.prose`), `plans-api.ts` (`fetchPlan`, mode:‘full’).
+* Related: [bulk-tool-contract-2026-06-22](/internal/docs/agent-insights/bulk-tool-contract-2026-06-22), [admin-route-tool-proxy](/internal/docs/agent-insights/admin-route-tool-proxy), [caching-an-expensive-tool-read](/internal/docs/agent-insights/caching-an-expensive-tool-read).
+
 # Calling defineTool tools from an in-process /admin route
 
 > defineTool projections register POST-only and require identity via readIdentity(ctx). An admin route proxying them needs a synthesized POST + ?superuser=1 + ?client= + validateSuperuser, not a passthrough.
@@ -11283,6 +11355,28 @@ The same seam measures **compound-WRAPPER** adoption, not just `code:run`. The w
 
 **Finding (haiku, N=1 — directional):** with `coord:orient` in the catalog the engineer **reached for it at Turn 0** (the `reaches-for-orient` assert passed); the `no-orient` arm fanned coord:presence + coord:inbox + plans:search and took **6 turns / $0.042 vs the bundle’s 4 turns / $0.036** — the same turns/cost reduction availability buys `code:run`. Both arms flopped the *helpfulness* judge (haiku’s capability ceiling — it orients, then stalls on empty payloads), so the CLEAN task-completion win is model-gated: **re-run on sonnet** (drop the `LLM_TEST_*_MODEL` overrides) for the definitive adoption + turns/cost deltas — same caveat as the code:run A/B above.
 
+## Bulk-arg adoption (bulk-endpoint-standardization P-007)
+
+[Section titled “Bulk-arg adoption (bulk-endpoint-standardization P-007)”](#bulk-arg-adoption-bulk-endpoint-standardization-p-007)
+
+The same seam measures the **bulk-arg** path — a simpler “collapse N calls into one” optimization that doesn’t require a script runtime. Many multi-arity tools now accept `{ ids:[…] }` in addition to `{ id }` (every repeated-call read is dual-arity). When the engineer needs the same detail for every item in a collection, does it fire ONE `work_items:get { ids:[…] }` instead of `work_items:get { id }` once per item?
+
+* **Scenarios:** `su-S21-bulk-read-not-hand-loop` (reach for `{ ids:[…] }` on a 6-item collection; load-bearing assert: at most ONE `work_items:get` call total) + its guard `su-S22-bulk-not-for-single` (single known id → `{ id }` directly, no collection machinery — the over-application guard).
+* **Arms:** same variant seam (excludeTools / promptOverlay / variantId) as the code:run A/B.
+* **Key difference from code:run:** no script needed — the bulk call IS the tool call. The adoption bar is lower (no language-model capability ceiling on scripting), but the model must still recognize the pattern and prefer the single bulk call over issuing separate per-id calls.
+
+## Newer test dimensions (S23–S27) — correctness and behavioral compliance
+
+[Section titled “Newer test dimensions (S23–S27) — correctness and behavioral compliance”](#newer-test-dimensions-s23s27--correctness-and-behavioral-compliance)
+
+Scenarios beyond S22 cover **different axes** from adoption — correctness of a specific protocol and behavioral compliance with shared-base policies. They use the same `SU_RUBRIC` + assert infrastructure but are NOT A/B arms in the adoption sense.
+
+* **S23–S25 (delta-merge, agent-tool-delta-protocol P-007):** Correctness of applying a semantic delta response — does the agent merge the incoming delta against the base snapshot it still holds in context (S23: happy path when base is present; S24: fallback when base was compacted; S25: correctly ignores a wrong-merge attempt)?
+* **S26 (take-charge-dont-wait):** Behavioral compliance with the `CONCURRENCY_FIRST_NOTE` “never wait for a calm window; a non-resource block is a BUG to fix” policy in `prompt-build.ts`. The presence test (`prompt-build.test.ts`) asserts the note is IN the prompt; S26 asserts the agent actually BEHAVES on it (force-deploys rather than ending a turn asking “want me to verify once it propagates?”).
+* **S27 (woke-to-dispatch-claims):** Behavioral compliance with the `PEER_WAKE_NOTE` in `prompt-build.ts` (added 2026-06-24, step 3j of `buildPromptParts`). The note teaches: a parked agent does nothing until re-invoked; when woken by a directed dispatch, CLAIM + WORK the lane that turn — never read-and-repark. S27 asserts this: the engineer claims the dispatched items in the same turn it was woken rather than acknowledging and re-parking (`coord:await-inbox` / ending without claiming).
+
+The presence test for both S26/S27 policies is `prompt-build.test.ts` (every role’s compiled prompt CONTAINS the note); S26/S27 are the behavioral complements — proving the in-prompt policy changes actual agent decisions, not just prompt content.
+
 ## Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)
 
 [Section titled “Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)”](#production-telemetry--the-live-waste--adoption-metrics-2026-06-25-baseline)
@@ -19058,6 +19152,63 @@ Deliberate, consistent with `papercusp-trust-model-2026-05-31` + the **no-collab
 * **Un-revoke / re-instate** — YAGNI; revocation is append-only.
 * **Multi-device per login** — see `phase1b-federation-limitations`.
 
+# The substrate-sidecar relocation silently fell back to in-process in every packaged build
+
+> papercusp-substrate-sidecar ON still ran hyperbee in-process off any bundle — a CWD-relative socket EACCES'd and the spawn used `npx tsx` a bundle can't run. Fix — absolute socket + re-exec the bundled serve.mjs in sidecar mode.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+With `papercusp-substrate-sidecar` flipped ON, the operator logged
+
+```plaintext
+[substrate-boot] SUBSTRATE_SIDECAR on: spawning sidecar for relocated substrate boot
+[substrate-boot] sidecar spawn failed, falling back to in-process: EACCES: permission denied, mkdir '.papercusp'
+```
+
+and ran the whole hyperbee substrate (corestore + merge + projections + swarm) **in-process** — exactly the event-loop saturation the relocation exists to remove. The flag was ON; the feature did nothing. The single-box unit suite was green the whole time. (Caught only by the P-006 live 2-machine rig verify, on a hand-deployed current-staging `serve.mjs`.)
+
+## Why the tests missed it
+
+[Section titled “Why the tests missed it”](#why-the-tests-missed-it)
+
+`substrate-boot-wrapper.test.ts` **mocks** `./substrate-sidecar-spawn`, and the host tests use writable temp dirs. So the one thing that was broken — the *real* `spawnSubstrateSidecar` running from a packaged, root-owned CWD — was never exercised. “47 green” covered everything except the failure. The flag’s `DARK_FLAG_CASE: 'incomplete'` tag was, in hindsight, exactly right: the packaged spawn path was never finished.
+
+## Root cause (two bugs, the first masked the second)
+
+[Section titled “Root cause (two bugs, the first masked the second)”](#root-cause-two-bugs-the-first-masked-the-second)
+
+1. **CWD-relative socket.** The spawner, the entrypoint, and the IPC client all defaulted the Unix socket to `.papercusp/substrate.sock` — relative to `process.cwd()`. In a packaged deploy the operator’s CWD is the **root-owned install dir** (`/usr/lib/Papercusp/sidecar`), so the `tester` user’s `mkdir '.papercusp'` is `EACCES`. The spawn threw and `bootSubstrateWithFallback` swallowed it into the in-process fallback.
+
+2. **`npx tsx <.ts>` from a bundle.** Even past the mkdir, the spawn ran `npx tsx apps/operator/bin/substrate-sidecar.ts`. The packaged operator ships a single esbuild bundle, `serve.mjs` — there is no `tsx` and no `.ts` on disk. So the relocation could only ever spawn from a **dev tree** (where the bg-host RSS win was measured); it was dead in the product.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+* **`substrate-socket-path.ts`** (new): `resolveSubstrateSocketPath()` — honours `PAPERCUSP_SUBSTRATE_IPC_SOCKET`, else an **absolute** `os.tmpdir()` path keyed by the main operator pid (two operators on one box never collide). Never CWD-relative. The spawner pins the resolved path into `process.env` once so the parent IPC client and the spawned child agree.
+* **Bundled spawn.** esbuild bundles every module into `serve.mjs`, so `import.meta.url` in the spawner *is* `serve.mjs` in a packaged build. The spawner now re-execs **that artifact** under `process.execPath` with `PAPERCUSP_SUBSTRATE_SIDECAR_MODE=1`; `serve.ts` diverts to `runSubstrateSidecarServer()` before any operator boot. Dev (TS source) still uses `npx tsx`.
+* **`substrate-sidecar-server.ts`** (new): the JSON-RPC server extracted out of the bin into operator-core, with **no top-level side effects** — so `serve.ts` can import it without an auto-running bin guard firing (in the bundle a bin’s `import.meta.url === argv[1]` guard would resolve TRUE on every boot and start a stray sidecar). `apps/operator/bin/substrate-sidecar.ts` is now a thin dev shim.
+
+## Verifying it actually engaged
+
+[Section titled “Verifying it actually engaged”](#verifying-it-actually-engaged)
+
+On a host running the fixed `serve.mjs` with the flag ON, the boot log must show **no** “falling back to in-process”, and a real sidecar child must exist:
+
+```plaintext
+fed.sh <a|b> ssh 'grep -i "spawning sidecar\|falling back\|PAPERCUSP_SUBSTRATE_READY" ~/*.boot.out'
+fed.sh <a|b> ssh 'ps -eo pid,ppid,cmd | grep -i SUBSTRATE_SIDECAR_MODE | grep -v grep'
+fed.sh <a|b> api GET /api/admin/dogfood-substrate-boot-history
+```
+
+## Lesson
+
+[Section titled “Lesson”](#lesson)
+
+A flag being ON is not the feature being on. When a code path only runs in a **packaged** deploy (different CWD, no dev toolchain, a single bundle), a mocked unit test proves nothing about it — verify on the real artifact before flipping the default. Anything that resolves a path/socket/binary relative to `cwd` or assumes `tsx`/source-on-disk is a packaging bug waiting for production.
+
 # Substrate federation self-heals without an operator restart (the two re-peer loops)
 
 > The per-harness substrate swarm (joinHarnessSwarm) used to join its DHT topic ONCE and never re-announce/re-lookup, so a dropped peer or aged-out announce left federation DEAD until an operator RESTART (fed-a↔fed-b sat dead ~7h; WI-559/WI-752/FED-2). Two self-heal loops fix the whole class with no restart: (1) a two-speed discovery.refresh() loop in joinHarnessSwarm (fast post-join/post-peer-loss window + slow keepalive), mirroring the hive-directory gossip; (2) a bounded-backoff JOIN-retry in boot.ts for when the boot-time join itself failed (DHT/identity/gh-auth/keychain blip → local-only). Found + fixed 2026-06-24.
@@ -20288,6 +20439,65 @@ dev:pg_query  → SELECT source, max(ts) FROM harness_shared.agent_usage_samples
 ```
 
 A *fresh* `max(ts)` on `source='interactive'` (it was minutes-old at this re-measure) proves the ingest is current — so a small weekly `interactive` total is a real low, not a stuck watermark.
+
+# Tool-arg string limits: shared tiers + truncate-don't-reject (why softText can't be a zod transform)
+
+> ~1,000+ agent tool calls in 14 days FAILED purely on too-long STRING args, then blind-retried the same over-length value. The durable fix is a shared limits.ts (named char tiers + hardText/softText/clampText). The non-obvious trap: a truncating zod .transform() in tool args CRASHES the whole MCP catalog's schema-gen, so softText advertises a plain string and truncation is applied HANDLER-side via clampText.
+
+## The waste this fixes
+
+[Section titled “The waste this fixes”](#the-waste-this-fixes)
+
+A telemetry audit (`harness_shared.tool_invocations`, 14d) found **\~1,000+ agent tool calls FAILED purely on too-long STRING args** — `invalid_args: <field>: Too big: expected string to have <=N`. Top offenders: `fleet:place_batch.brief` (412), `plans:set-status.note` (132), `improvements:capture.title` (111), `events:await.note` (58), `loop:arm.goal` (46). Every failure is a **wasted round-trip plus a blind retry** — agents re-send a *trimmed* value rather than fixing the real problem (an owner watched a session arm `loop:arm` **4×**, re-trimming its goal each time, to fit ≤500). A failed tool call costs far more than a longer payload.
+
+## The shared layer — `agent-tools/limits.ts`
+
+[Section titled “The shared layer — agent-tools/limits.ts”](#the-shared-layer--agent-toolslimitsts)
+
+* **Named char tiers** so a cap is a tier, not an ad-hoc literal (a “title” was 180 here / 200 / 280 elsewhere): `IDENT=200`, `SHORT_TITLE=1000`, `ANNOTATION=2000`, `BRIEF=16000`, `CONTENT=16000`, `BODY=32000`. They only ever **raise**; never lower a field below its current cap.
+* **`hardText(max, {min?})`** → `z.string().min(min ?? 1).max(max)` — REJECTS over-cap. Use ONLY where an over-length value is genuinely invalid downstream (an id/key, one plan-item line, a stored body with a real bound). A reject is now *recoverable in one retry* (see the invalid\_args message below).
+* **`softText(max, {min?})`** → a NON-rejecting `z.string()` (+ optional `min`) whose value the handler clamps with **`clampText(value, max)`**. Use for advisory/echoed free-text the tool only echoes — goals, notes, briefs, summaries. Bouncing those on length is pure friction.
+
+## The trap: `softText` is NOT a zod `.transform()`
+
+[Section titled “The trap: softText is NOT a zod .transform()”](#the-trap-softtext-is-not-a-zod-transform)
+
+The obvious implementation of “truncate instead of reject” is a zod transform (`z.string().transform(s => s.slice(0, max))`). **It silently breaks the entire MCP tool catalog.**
+
+`z.toJSONSchema(def.args)` runs — **with no try/catch** — in two hot paths:
+
+1. at `defineTool` registration (`libs/generic/tooldef/src/define-tool.ts`), and
+2. in the HTTP MCP `tools/list` handler (`_mcp-handler.ts`).
+
+A zod `.transform()` is **unrepresentable in JSON Schema**, so `z.toJSONSchema` throws — and because it’s un-guarded, schema-gen crashes for the **whole catalog**, not just the offending tool. So:
+
+> **`softText` keeps the advertised arg a plain string; truncation happens HANDLER-side via `clampText(args.field, max)`.** Each soft field is `softText(max)` in the schema **and** `clampText(args.field, max)` in the handler. (Forget the handler call and you get accept-but-don’t- truncate — safe, but not clamped.)
+
+Truncation is **silent** (no per-call result warning) — acceptable because these values are non-load-bearing; the `.describe()` says “auto-truncated to N chars if longer.”
+
+## The other half: make a hard reject recoverable
+
+[Section titled “The other half: make a hard reject recoverable”](#the-other-half-make-a-hard-reject-recoverable)
+
+For `hardText` fields, `packages/agent-mcp/src/server.ts` formats a string `too_big` issue with the over-by amount and the target, instead of the bare zod text:
+
+```plaintext
+goal: too long — 412 chars over the 500-char limit; trim to 500.
+```
+
+So an agent that *does* hit a hard cap trims to the right length **once** instead of guessing (the loop:arm-×4 pattern).
+
+## Recurrence guard
+
+[Section titled “Recurrence guard”](#recurrence-guard)
+
+`packages/operator-core/lib/agent-tools/limits.test.ts` asserts tiers are ascending, `softText` accepts an over-length value **without error** and stays JSON-Schema-representable (no `maxLength` → no transform), `hardText` rejects + advertises `maxLength`, and `clampText` truncates/passes-through.
+
+## Rule of thumb
+
+[Section titled “Rule of thumb”](#rule-of-thumb)
+
+Advisory **echoed** free-text (the tool just stores/echoes it) → `softText` + `clampText`, never reject. A field with a **real downstream constraint** → `hardText` (now recoverable). New tool string args should reference a tier, not a fresh literal.
 
 # Tool result freshness: the delta base-presence contract
 
