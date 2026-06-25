@@ -49,6 +49,12 @@ const operatorBase = operatorApiBase;
 export const BUILTIN_LAUNCH_BLUEPRINTS = ['deploy', 'scan', 'implement', 'merge-resolution', 'doc-steward', 'release-fix', 'content-fix', 'audit', 'coding', 'bee', 'sentinel'] as const;
 export type LaunchBlueprintId = (typeof BUILTIN_LAUNCH_BLUEPRINTS)[number];
 
+/** A Queen turn is a supervisor/control-loop turn, not an unbounded worker lane.
+ * If the caller does not provide a tighter route timeout, stamp a bounded default
+ * so durable-spawn gets a DBOS workflow deadline and the reaper can clear a wedged
+ * model route instead of letting one hung Queen block the autonomous loop. */
+export const QUEEN_INVOKE_TIMEOUT_MS = 300_000;
+
 /**
  * The blueprint-resolver seam — default loads the built-in by id. The operator can
  * override (a PG-cache / Cupboard-installed / forked launch blueprint) the same way
@@ -263,6 +269,17 @@ export function setLaunchBlueprintFire(fn: LaunchFireFn | null): void {
   _fire = fn;
 }
 
+function isCodexLaunchModelSpec(spec: unknown): boolean {
+  if (typeof spec !== 'string') return false;
+  const id = spec.trim().toLowerCase();
+  return id.startsWith('openai-codex/') || id.startsWith('chatgpt:') || /^gpt-\d/.test(id);
+}
+
+function withDefaultLaunchTimeout(input: FireLaunchInput, role: string): FireLaunchInput {
+  if (typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0) return input;
+  return role === 'queen' ? { ...input, timeoutMs: QUEEN_INVOKE_TIMEOUT_MS } : input;
+}
+
 /**
  * Build the /invoke POST body for a role launch — shared by the fire-and-forget
  * `defaultFire` and the build-without-firing `buildLaunchSpawnRequest` (EI-403-A),
@@ -303,6 +320,7 @@ export async function buildLaunchSpawnRequest(
   idempotencyKey: string,
 ): Promise<DurableSpawnFireInput> {
   const target = await resolveLaunchTarget(blueprintId, input);
+  const effectiveInput = withDefaultLaunchTimeout(input, target.role);
   // EI-403 round-2: the durable path otherwise records NO spawned_agents row, so the
   // implement worker ran invisibly (round 1's fire-and-forget fallback DID record it,
   // via the WI-108 fix below). Opt INTO recordSpawn so the durably-fired worker shows
@@ -311,7 +329,7 @@ export async function buildLaunchSpawnRequest(
   const dispatch = (input.bodyExtra?.improvementDispatch ?? undefined) as { itemId?: string } | undefined;
   return {
     url: target.url,
-    body: buildInvokeBody(target.blueprintId, input),
+    body: buildInvokeBody(target.blueprintId, effectiveInput),
     idempotencyKey,
     label: `${input.installSlug}/${target.role}`,
     spawnRecord: {
@@ -458,13 +476,13 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
       // here (loopbackFetch doesn't throw on it), so treat that as failed too.
       let status: 'done' | 'failed' = 'done';
       let errorMessage: string | undefined;
-      const body = r && typeof r.text === 'function' ? await r.text().catch(() => '') : '';
+      const responseText = r && typeof r.text === 'function' ? await r.text().catch(() => '') : '';
       if (r && r.ok === false) {
         status = 'failed';
-        const tail = body ? ` — ${body.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
+        const tail = responseText ? ` — ${responseText.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
         errorMessage = `invoke ${installSlug}/${role} → HTTP ${r.status}${tail}`;
       } else {
-        const prelim = agentProducedTurn(body, `${installSlug}/${role}`);
+        const prelim = agentProducedTurn(responseText, `${installSlug}/${role}`);
         if (!prelim.ran) {
           status = 'failed';
           // Corroborate with the live gateway state so a CAPACITY-SHED mid-turn death
@@ -472,8 +490,10 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
           // `infra_loss` / "host dead/unstable" that sends debuggers hunting a host bug
           // (H13/P-006). Same shared rule durable-spawn uses. Best-effort, never throws.
           const { gatewayWholesaleThrottled } = await import('../inference-gateway/observability');
-          const gatewayThrottled = await gatewayWholesaleThrottled().catch(() => false);
-          const outcome = agentProducedTurn(body, `${installSlug}/${role}`, { gatewayThrottled });
+          const gatewayThrottled = isCodexLaunchModelSpec(body.spawnModel)
+            ? false
+            : await gatewayWholesaleThrottled().catch(() => false);
+          const outcome = agentProducedTurn(responseText, `${installSlug}/${role}`, { gatewayThrottled });
           errorMessage =
             outcome.failureClass === 'capacity_shed'
               ? `capacity_shed:${outcome.detail}`
@@ -531,6 +551,7 @@ export async function fireLaunchBlueprint(
     assertNotNestedHive(bp, true);
   }
   const target = await resolveLaunchTarget(blueprintId, input);
+  input = withDefaultLaunchTimeout(input, target.role);
 
   // queen-brief-cache-assembly B-03/B-04 (D-004): precompute the Queen's wake
   // brief (ranked hive:survey floor + her carry-note) and thread it through the
