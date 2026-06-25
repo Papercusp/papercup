@@ -215,6 +215,26 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
   });
 
+  it('HTTP 200 + empty invoke body is a no-turn error for Overwatch, not ok', async () => {
+    loopbackFetch.mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(''),
+    });
+
+    await handleOverwatchLaunch(ctx);
+
+    await vi.waitFor(() => {
+      expect(recordFire).toHaveBeenCalledWith(
+        SLUG,
+        'overwatch',
+        expect.stringContaining('empty invoke response body'),
+        'error',
+      );
+    });
+    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
+    expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
+  });
+
   it('HTTP 200 + ok:true but empty agentOutput is a no-turn error, not ok', async () => {
     loopbackFetch.mockResolvedValue({
       ok: true,

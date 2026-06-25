@@ -185,10 +185,10 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
   })
     .then(
       async (r) => {
-        const detail = await r
+        const responseBody = await r
           .text()
-          .then((t) => t.replace(/\s+/g, " ").slice(0, 320))
           .catch(() => "");
+        const detail = responseBody.replace(/\s+/g, " ").slice(0, 320);
         if (!r.ok) {
           const message = `error: HTTP ${r.status}${detail ? ` — ${detail.slice(0, 160)}` : ""}`;
           await recordFire(installSlug, role, message, "error");
@@ -197,7 +197,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
         }
 
         const invokeError = classifyInvokeBodyFailure(
-          detail,
+          responseBody,
           `${installSlug}/${role}`,
         );
         if (invokeError) {
@@ -227,11 +227,14 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
 };
 
 function classifyInvokeBodyFailure(text: string, label: string): string | null {
+  if (!text.trim()) {
+    return `error: invoke produced no Overwatch turn — ${label} returned an empty invoke response body; Overwatch is a monitor, so empty/uncertain launch results fail closed and run the scorecard backstop`;
+  }
+
   const outcome = agentProducedTurn(text, label);
   if (!outcome.ran)
     return `error: invoke produced no Overwatch turn — ${outcome.detail.trim()}`;
 
-  if (!text.trim()) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
