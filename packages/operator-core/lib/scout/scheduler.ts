@@ -33,6 +33,7 @@ import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
+import type { ScoutCyclePhase } from './cycle';
 
 /** The provenance the scheduler persists per routed idea (subset of RecordRoutedIdeaInput). */
 export interface ScoutRoutedRecord {
@@ -104,6 +105,7 @@ export interface ScoutTickDeps {
     cycleId: string;
     queenFeedback?: QueenFeedbackItem[];
     signal?: AbortSignal;
+    onPhase?: (phase: ScoutCyclePhase) => void;
   }) => Promise<ScoutCycleLike>;
   /** Persist routed-idea provenance for the cycle (P-013 ledger). */
   persistRouted: (records: ScoutRoutedRecord[], cycleId: string) => Promise<void>;
@@ -263,6 +265,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
 
   const budget = resolveScoutBudget(opts.budget);
   const cycleId = (deps.newCycleId ?? ((n) => `scout-${n}`))(state.nowMs);
+  let activePhase: ScoutCyclePhase | undefined;
   await deps.recordFire?.('attempt');
   try {
     const cycle = await withScoutCycleTimeout(
@@ -271,8 +274,12 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         cycleId,
         ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
         signal,
+        onPhase: (phase) => {
+          activePhase = phase;
+        },
       }),
       opts.cycleTimeoutMs ?? scoutCycleTimeoutMs(),
+      () => activePhase,
     );
     const provenance = cycle.provenance ?? [];
     if (provenance.length > 0) await deps.persistRouted(provenance, cycleId);
@@ -312,7 +319,15 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   } catch (e) {
     await deps.recordFire?.('error');
     const error = e instanceof Error ? e.message : String(e);
-    await note({ status: 'error', detail: { cycleId, error } });
+    const timeoutDetail =
+      e instanceof ScoutCycleTimeoutError
+        ? {
+            timeoutMs: e.timeoutMs,
+            elapsedMs: e.elapsedMs,
+            phase: e.phase ?? 'unknown',
+          }
+        : {};
+    await note({ status: 'error', detail: { cycleId, error, ...timeoutDetail } });
     return { fired: false, reason: 'cycle-error', cycleId, error };
   }
 }
@@ -324,9 +339,25 @@ function scoutCycleTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SCOUT_CYCLE_TIMEOUT_MS;
 }
 
-async function withScoutCycleTimeout<T>(run: (signal?: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+class ScoutCycleTimeoutError extends Error {
+  constructor(
+    readonly timeoutMs: number,
+    readonly elapsedMs: number,
+    readonly phase?: ScoutCyclePhase,
+  ) {
+    super(`Scout cycle timed out after ${timeoutMs}ms during phase ${phase ?? 'unknown'}`);
+    this.name = 'ScoutCycleTimeoutError';
+  }
+}
+
+async function withScoutCycleTimeout<T>(
+  run: (signal?: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  phase: () => ScoutCyclePhase | undefined = () => undefined,
+): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return run();
   const ctrl = new AbortController();
+  const startedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
@@ -334,7 +365,7 @@ async function withScoutCycleTimeout<T>(run: (signal?: AbortSignal) => Promise<T
       new Promise<T>((_, reject) => {
         timer = setTimeout(() => {
           ctrl.abort();
-          reject(new Error(`Scout cycle timed out after ${timeoutMs}ms`));
+          reject(new ScoutCycleTimeoutError(timeoutMs, Date.now() - startedAt, phase()));
         }, timeoutMs);
         if (typeof timer.unref === 'function') timer.unref();
       }),

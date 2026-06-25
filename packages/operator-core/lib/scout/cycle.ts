@@ -68,6 +68,10 @@ export type ScoutStep = 'ideate' | 'critique' | 'recombine';
 
 /** The full cycle phases surfaced to the scheduler for timeout diagnostics. */
 export type ScoutCyclePhase =
+  | 'runner-bootstrap'
+  | 'gateway-env'
+  | 'llm-client-import'
+  | 'resolve-archive'
   | 'read-corpus'
   | 'ideate'
   | 'read-novelty-corpus'

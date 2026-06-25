@@ -83,7 +83,8 @@ async function resolveArchive(scope: { workspaceId: string; harnessSlug: string 
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback, signal }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback, signal, onPhase }) => {
+  onPhase?.('runner-bootstrap');
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
   // never pass the spawn chokepoint that patches `ANTHROPIC_BASE_URL` onto bee subprocesses —
@@ -97,6 +98,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // the fleet. Flag-OFF → unchanged direct egress; a pre-set override is respected.
   const { FLAGS } = await import('@papercusp/flags');
   const { getFlag } = await import('@papercusp/flags/server');
+  onPhase?.('gateway-env');
   if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
     const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
     for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
@@ -104,6 +106,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     }
   }
 
+  onPhase?.('llm-client-import');
   const { llmCall: rawLlmCall } = await import('../llm-testing/llm-client');
   const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
 
@@ -163,6 +166,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // per draft so she re-reviews (D-001 step 3). Returns a cycle-shaped result the
   // scheduler ledgers + acks (the scheduler only acks on a non-throwing return).
   if (queenFeedback && queenFeedback.length > 0) {
+    onPhase?.('ideate');
     const result = await runScoutRevisionCycle(queenFeedback, {
       llmCall,
       planWorkspaceId: DEFAULT_WORKSPACE_ID,
@@ -177,6 +181,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     return result;
   }
 
+  onPhase?.('resolve-archive');
   const archive = await resolveArchive({ workspaceId, harnessSlug });
   const deps = buildScoutCycleDeps({
     harnessSlug,
@@ -205,6 +210,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     archive,
     limits: { maxCostUsd: budget.maxCostUsd, maxIdeators: budget.maxIdeators },
     cycleId,
+    ...(onPhase ? { onPhase } : {}),
     // P-009: per-blueprint Scout tuning (lenses/novelty/buckets/routing). Undefined ⇒
     // buildScoutCycleDeps falls back to DEFAULT_SCOUT_CONFIG (behavior-neutral).
     ...(scoutConfig ? { scoutConfig } : {}),

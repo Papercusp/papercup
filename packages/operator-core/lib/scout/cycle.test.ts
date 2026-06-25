@@ -76,6 +76,7 @@ function makeDeps(opts: {
   routed?: (proposals: Proposal[]) => RoutingDecision[];
   costUsd?: number;
   limits?: ScoutCycleDeps['limits'];
+  onPhase?: ScoutCycleDeps['onPhase'];
 } = {}): {
   deps: ScoutCycleDeps;
   seen: { maxIdeators?: number; critiqueCorpus?: CorpusEntry[]; recombineInput?: ScoredIdea[] };
@@ -109,7 +110,7 @@ function makeDeps(opts: {
       opts.routed ? opts.routed(proposals) : proposals.map((p) => decisionFor(p, 'plan')),
   };
 
-  return { deps: { ...ports, llmCall: fake.call, limits: opts.limits }, seen };
+  return { deps: { ...ports, llmCall: fake.call, limits: opts.limits, ...(opts.onPhase ? { onPhase: opts.onPhase } : {}) }, seen };
 }
 
 /* ── happy path ───────────────────────────────────────────────────────── */
@@ -136,6 +137,13 @@ describe('runScoutCycle — full pass', () => {
     // ideate + critique + recombine each call once; route spends no LLM.
     expect(r.calls.map((c) => c.step)).toEqual(['ideate', 'critique', 'recombine']);
     expect(r.costUsd).toBeCloseTo(0.06, 5);
+  });
+
+  it('reports the active phase before each awaited cycle step', async () => {
+    const phases: string[] = [];
+    const { deps } = makeDeps({ onPhase: (phase) => phases.push(phase) });
+    await runScoutCycle(deps);
+    expect(phases).toEqual(['read-corpus', 'ideate', 'read-novelty-corpus', 'critique', 'recombine', 'route']);
   });
 
   it('feeds the novelty corpus to the critique step and the budget cap to ideate', async () => {
