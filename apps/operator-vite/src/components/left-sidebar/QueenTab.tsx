@@ -219,7 +219,6 @@ export default function QueenTab({ active }: { active: boolean }) {
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
   const navigate = useNavigate();
 
-  const [saving, setSaving] = useState(false);
   // Optimistic overlay over the server steering row (owner bug 2026-06-16). The
   // REF is the synchronous source of truth for back-to-back toggles (React state
   // lags a render, so two clicks in one tick would otherwise both read stale); the
@@ -305,7 +304,6 @@ export default function QueenTab({ active }: { active: boolean }) {
       return;
     }
     inflightRef.current += 1;
-    setSaving(true);
     setErr(null);
     chainRef.current = chainRef.current
       .then(() => runSetSteering({ hive: home, ...patch }))
@@ -313,7 +311,6 @@ export default function QueenTab({ active }: { active: boolean }) {
       .finally(() => {
         inflightRef.current -= 1;
         if (inflightRef.current === 0) {
-          setSaving(false);
           void steeringQ.invalidate?.();
         }
       });
@@ -428,6 +425,10 @@ export default function QueenTab({ active }: { active: boolean }) {
     });
     enqueue({ clear: true });
   };
+  // Steering writes are optimistic and serialized through enqueue(); keeping the
+  // controls enabled lets the owner continue tuning the Queen immediately while
+  // the network write drains in the background.
+  const controlsBusy = false;
 
   // Nested-picker handlers (P-002): compute the next (eligibleHives, eligiblePlans)
   // via the pure toggles from the LIVE selection (the overlay ref, so back-to-back
@@ -468,7 +469,7 @@ export default function QueenTab({ active }: { active: boolean }) {
           </Tooltip>
         )}
         <span className="pc-queen__spacer" />
-        <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={saving} aria-label="Clear all steering back to default">
+        <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={controlsBusy} aria-label="Clear all steering back to default">
           <RotateCcw size={11} aria-hidden /> reset
         </button>
       </header>
@@ -511,7 +512,7 @@ export default function QueenTab({ active }: { active: boolean }) {
           type="button"
           className={`pc-queen__btn pc-queen__btn--block${view.pauseNewWork ? ' pc-queen__btn--stop' : ' pc-queen__btn--go'}`}
           onClick={togglePause}
-          disabled={saving}
+          disabled={controlsBusy}
         >
           {view.pauseNewWork ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
           {view.pauseNewWork ? 'Resume new work' : 'Pause indefinitely'}
@@ -522,9 +523,9 @@ export default function QueenTab({ active }: { active: boolean }) {
             <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" />
             <span className="pc-queen__presetlabel">min</span>
           </label>
-          <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={saving}>apply</button>
+          <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={controlsBusy}>apply</button>
           {view.pausedUntil != null && (
-            <button type="button" className="pc-queen__chip" onClick={clearPause} disabled={saving}>clear</button>
+            <button type="button" className="pc-queen__chip" onClick={clearPause} disabled={controlsBusy}>clear</button>
           )}
         </div>
         <span className="pc-queen__hint">drives existing placements to terminal, starts nothing new</span>
@@ -534,12 +535,12 @@ export default function QueenTab({ active }: { active: boolean }) {
       <DirectiveEditor
         key={home}
         initial={view.directive ?? ''}
-        busy={saving}
+        busy={controlsBusy}
         onSave={onSaveDirective}
       />
 
       {/* 3 — Model tiers (session override, D-006 / #4) */}
-      <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={saving} />
+      <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={controlsBusy} />
 
       {/* 4+5 — Steering scope. The nested hive→plan picker (P-002) makes the
           illegal "eligible plan under an excluded hive" state unrepresentable;
@@ -548,7 +549,7 @@ export default function QueenTab({ active }: { active: boolean }) {
         <HiveSteeringTree
           tree={steeringTree}
           illegalCount={illegalCount}
-          busy={saving}
+          busy={controlsBusy}
           loading={hiveOptions.length === 0 || (plansQ.loading && !plansQ.data)}
           onToggleHive={treeToggleHive}
           onTogglePlan={treeTogglePlan}
@@ -564,8 +565,8 @@ export default function QueenTab({ active }: { active: boolean }) {
               <span className="pc-queen__section-title">Eligible hives</span>
               <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
               <span className="pc-queen__spacer" />
-              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={saving || hiveOptions.length === 0} aria-label="Select every hive">all</button>
-              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={saving || !hiveRestricted} aria-label="Clear the hive scope">none</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={controlsBusy || hiveOptions.length === 0} aria-label="Select every hive">all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={controlsBusy || !hiveRestricted} aria-label="Clear the hive scope">none</button>
             </div>
             <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
               {hiveRestricted
@@ -598,8 +599,8 @@ export default function QueenTab({ active }: { active: boolean }) {
               <span className="pc-queen__section-title">Eligible plans</span>
               <span className="pc-queen__count">{planRestricted ? `${view.eligiblePlans.length} selected` : 'no restriction'}</span>
               <span className="pc-queen__spacer" />
-              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={saving || planRows.length === 0} aria-label="Select every plan shown">all</button>
-              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={saving || !planRestricted} aria-label="Clear the plan restriction">none</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={controlsBusy || planRows.length === 0} aria-label="Select every plan shown">all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={controlsBusy || !planRestricted} aria-label="Clear the plan restriction">none</button>
             </div>
             <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
               {planRestricted
@@ -639,7 +640,7 @@ export default function QueenTab({ active }: { active: boolean }) {
         idleActivities={view.idleActivities ?? null}
         autoScaleOut={view.autoScaleOut ?? null}
         defaults={view.throttleDefaults ?? null}
-        busy={saving}
+        busy={controlsBusy}
         onSetCadenceFloor={setCadenceFloor}
         onSetMaxBees={setMaxBees}
         onSetBeeTierCap={setBeeTierCap}
@@ -653,7 +654,7 @@ export default function QueenTab({ active }: { active: boolean }) {
       <AutonomySurfacing
         decomposition={view.decomposition ?? null}
         breakerThreshold={view.throttleDefaults?.breakerThreshold ?? null}
-        busy={saving}
+        busy={controlsBusy}
         onSetDecomposition={setDecomposition}
         onManageAutonomy={onManageAutonomy}
       />

@@ -168,4 +168,23 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     const last = JSON.parse((runTool().slice(-1)[0][1] as { body: string }).body);
     expect(last.args.eligiblePlans).toEqual(['plan-a', 'plan-b']);
   });
+
+  it('keeps the model-tier editor responsive while the steering save is in flight', async () => {
+    H.fetchMock = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal('fetch', H.fetchMock);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
+
+    const std = await screen.findByLabelText('std model spec') as HTMLInputElement;
+    fireEvent.change(std, { target: { value: 'opus:xhigh' } });
+    fireEvent.blur(std);
+
+    await waitFor(() => expect(wroteRunTool()).toBe(true));
+    const { args } = setSteeringBody();
+    expect(args.modelTiers).toEqual([
+      { name: 'fast', spec: 'haiku' },
+      { name: 'std', spec: 'opus:xhigh' },
+    ]);
+    expect((screen.getByLabelText('std model spec') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByText('session override')).toBeTruthy();
+  });
 });

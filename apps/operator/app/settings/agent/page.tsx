@@ -314,7 +314,10 @@ export default function AgentSettingsPage() {
       lastSavedRef.current = body;
     },
     {
-      ms: 600,
+      // Text inputs are DraftInput commit-on-blur, and every other control is a
+      // discrete choice. Once page state changes, it is already a committed edit;
+      // persist it immediately so tier/ceiling menus do not lag behind the UI.
+      ms: 0,
       onError: (err) => toast.error(`auto-save failed: ${(err as Error).message}`),
     },
   );

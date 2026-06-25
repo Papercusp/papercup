@@ -15,6 +15,9 @@ import { useEffect, useRef, useState, useCallback } from 'react';
  *
  * - First-render save is suppressed by default (skipFirst), so hydration from
  *   the server doesn't fire an immediate POST.
+ * - Pass `ms: 0` when the caller already gates typing into committed edits
+ *   (DraftInput/DraftNumberInput, selects, toggles). The save starts
+ *   immediately instead of waiting for a debounce timer.
  * - Calling flush() forces an immediate save (e.g. before a Test button runs).
  * - A PENDING save is FLUSHED (fire-and-forget) on unmount and on `pagehide`,
  *   never dropped — navigating away or reloading right after an edit must not
@@ -91,12 +94,18 @@ export function useDebouncedSave<T>(
     }
     isFirstRef.current = false;
 
-    if (timerRef.current) clearTimeout(timerRef.current);
     pendingRef.current = true;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (ms <= 0) {
+      pendingRef.current = false;
+      timerRef.current = null;
+      void doSaveRef.current();
+      return;
+    }
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
       pendingRef.current = false;
-      void doSave();
+      void doSaveRef.current();
     }, ms);
 
     return () => {
@@ -111,7 +120,7 @@ export function useDebouncedSave<T>(
     // the debounce restarts when the user keeps typing but doesn't reset on
     // every render that creates a new persist closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(value), ms, skipFirst, doSave]);
+  }, [JSON.stringify(value), ms, skipFirst]);
 
   // Flush (never drop) a pending edit when the component unmounts or the
   // page unloads — losing a save the UI already promised is data loss.

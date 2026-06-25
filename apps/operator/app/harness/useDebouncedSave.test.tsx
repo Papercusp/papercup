@@ -63,6 +63,18 @@ describe('useDebouncedSave', () => {
     expect(persist).toHaveBeenLastCalledWith(4);
   });
 
+  it('saves immediately when ms is zero for committed settings controls', async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = renderHook(
+      ({ v }) => useDebouncedSave(v, persist, { ms: 0 }),
+      { initialProps: { v: 'a' } },
+    );
+    rerender({ v: 'b' });
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith('b');
+  });
+
   it('flush() persists immediately, cancelling the pending debounce', async () => {
     const persist = vi.fn().mockResolvedValue(undefined);
     const { result, rerender } = renderHook(
