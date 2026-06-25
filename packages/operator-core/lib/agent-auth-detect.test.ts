@@ -4,6 +4,7 @@
  * tests assert the path-matching logic, not the host's real credential files.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dirname, join } from 'node:path';
 
 const existsSync = vi.fn();
 const spawnSync = vi.fn();
@@ -73,6 +74,18 @@ describe('codexSignedIn', () => {
 });
 
 describe('githubSignedIn', () => {
+  it('uses the gh binary bundled next to the packaged sidecar node executable', () => {
+    const bundledGh = join(dirname(process.execPath), 'gh');
+    onlyExist('/home/u/.config/gh/hosts.yml', bundledGh);
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === bundledGh && args[0] === 'auth' && args[1] === 'status') {
+        return { status: 1, stdout: '', stderr: 'token is invalid' };
+      }
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    expect(githubSignedIn()).toBe(false);
+  });
+
   it('true when gh auth is valid and setup-git wired the credential helper', () => {
     onlyExist('/home/u/.config/gh/hosts.yml', '/usr/local/bin/gh');
     spawnSync.mockImplementation((cmd: string, args: string[]) => {

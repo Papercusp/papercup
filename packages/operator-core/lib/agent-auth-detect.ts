@@ -9,7 +9,7 @@
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 function anyExists(paths: readonly string[]): boolean {
   return paths.some((p) => existsSync(p));
@@ -73,6 +73,7 @@ export function anyAgentSignedIn(): boolean {
 
 function resolveGhBinary(): string | null {
   const candidates = [
+    join(dirname(process.execPath), 'gh'),
     join(process.cwd(), 'bin', 'gh'),
     join(process.cwd(), '..', 'bin', 'gh'),
     '/opt/homebrew/bin/gh',
