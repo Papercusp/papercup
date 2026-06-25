@@ -93,11 +93,14 @@ select ws.workflow_uuid, ws.status, ws.deduplication_id,
 ```
 
 Structural fix: `dbos-executor-reaper` now treats a `routineFire` whose
-`created_at` is older than the scheduler silence window with zero operation rows
+`created_at` is older than a longer first-output window with zero operation rows
 as stale, NULLs its dedup, sets it `CANCELLED`, and pushes the owning
-`harness_shared.routines.next_fire_at` back to `now()`. It also cancels
+`harness_shared.routines.next_fire_at` back to `now()`. That window is deliberately
+longer than the scheduler-tick window because `operation_outputs` is a checkpoint
+table: a legitimate long first step has no row until it completes or records its
+own timeout/error. Scout's cycle timeout is the live proof. It also cancels
 no-first-step `routinesTick` rows by `created_at`, because a stuck scheduler tick
 is the upstream version of the same failure. The requeue is intentionally limited
-to the no-first-step `routineFire` class; routine bodies that did enter a DBOS
-step still rely on their explicit workflow deadline/backoff rather than being
-retried immediately.
+to the no-first-output `routineFire` safety-valve class; routine bodies that did
+checkpoint a DBOS step still rely on their explicit workflow deadline/backoff
+rather than being retried immediately.

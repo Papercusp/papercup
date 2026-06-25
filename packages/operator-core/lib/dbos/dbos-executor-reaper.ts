@@ -32,6 +32,10 @@ const DEFAULT_LIVENESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
  *  it is wedging the scheduler itself. Keep this below bghost-watchdog's 100s
  *  freeze threshold so the reaper can fix the row before the host restart loop. */
 const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
+/** A routineFire may be inside its first DBOS step; operation_outputs is written
+ *  when that step checkpoints, not when it starts. Keep this above Scout's
+ *  default 120s cycle wall so long first steps can record their own error/tick. */
+const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 5 * 60 * 1000;
 /** How often the recurring sweep runs. */
 const DEFAULT_REAP_INTERVAL_MS = 2 * 60 * 1000; // 2 min
 
@@ -57,6 +61,7 @@ export async function reapDeadExecutorWorkflows(
   sql: Sql,
   livenessThresholdMs: number = DEFAULT_LIVENESS_THRESHOLD_MS,
   staleSchedulerMs: number = DEFAULT_STALE_SCHEDULER_MS,
+  staleRoutineFireNoOutputMs: number = DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS,
 ): Promise<ExecutorReaperResult> {
   const empty: ExecutorReaperResult = {
     cancelled: 0,
@@ -69,6 +74,7 @@ export async function reapDeadExecutorWorkflows(
     const now = Date.now();
     const deadAt = now - livenessThresholdMs;
     const staleSchedulerAt = now - staleSchedulerMs;
+    const staleRoutineFireNoOutputAt = now - staleRoutineFireNoOutputMs;
     let cancelled = 0;
     let queuePurged = 0;
 
@@ -110,24 +116,23 @@ export async function reapDeadExecutorWorkflows(
     // The dead-executor grouping above then sees fresh activity from the new process
     // and cannot reap the old rows. Reap only bounded-safe stale rows:
     //   - a non-terminal routinesTick older than the scheduler silence window, and
-    //   - a started routineFire whose start time is older than that window and
-    //     that NEVER entered its first DBOS step (no operation_outputs row), and
+    //   - a routineFire whose creation time is older than the longer first-output
+    //     window and that has not checkpointed any DBOS step output, and
     //   - any non-terminal workflow past its explicit DBOS deadline.
     //
-    // The no-first-step routineFire class pins the per-routine dedup key without
-    // giving the system action a chance to run or record its own timeout/error
-    // tick. Use created_at, not started_at_epoch_ms or updated_at: DBOS recovery
-    // can refresh BOTH timestamps on a row it still has not actually entered,
-    // and that heartbeat must not keep a no-op dedup pin alive. A legitimate
-    // long routineFire should have at least one operation row (`system:<action>`,
-    // `loop:wake`, or `spawn:<role>`) shortly after creation, so this selector
-    // stays narrower than "cancel all old routineFire".
+    // operation_outputs is a checkpoint/output table, not a live "step entered"
+    // table. A legitimate long first step (Scout's budgeted cycle is the proven
+    // case) has no row until it completes or records its own timeout/error. So
+    // routineFire uses a LONGER first-output window than the scheduler tick. Use
+    // created_at, not started_at_epoch_ms or updated_at: DBOS recovery can refresh
+    // BOTH timestamps on a row it still has not checkpointed, and that heartbeat
+    // must not keep a wedged dedup pin alive indefinitely.
     const stale = await sql<{ workflow_uuid: string; requeue_routine_id: string | null }[]>`
       SELECT workflow_uuid,
              CASE
                WHEN name = 'routineFire'
                 AND deduplication_id LIKE 'routine:%'
-                AND created_at < ${staleSchedulerAt}
+                AND created_at < ${staleRoutineFireNoOutputAt}
                 AND NOT EXISTS (
                   SELECT 1
                     FROM dbos.operation_outputs op
@@ -155,7 +160,7 @@ export async function reapDeadExecutorWorkflows(
            )
            OR (
              name = 'routineFire'
-             AND created_at < ${staleSchedulerAt}
+             AND created_at < ${staleRoutineFireNoOutputAt}
              AND NOT EXISTS (
                SELECT 1
                  FROM dbos.operation_outputs op
@@ -227,13 +232,23 @@ let reaperTimer: ReturnType<typeof setInterval> | null = null;
  */
 export function startExecutorReaper(
   sql: Sql,
-  opts: { intervalMs?: number; livenessThresholdMs?: number; staleSchedulerMs?: number } = {},
+  opts: {
+    intervalMs?: number;
+    livenessThresholdMs?: number;
+    staleSchedulerMs?: number;
+    staleRoutineFireNoOutputMs?: number;
+  } = {},
 ): void {
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_REAP_INTERVAL_MS;
 
   const run = (): void => {
-    void reapDeadExecutorWorkflows(sql, opts.livenessThresholdMs, opts.staleSchedulerMs).then((r) => {
+    void reapDeadExecutorWorkflows(
+      sql,
+      opts.livenessThresholdMs,
+      opts.staleSchedulerMs,
+      opts.staleRoutineFireNoOutputMs,
+    ).then((r) => {
       if (r.cancelled > 0 || r.queuePurged > 0) {
         console.warn(
           `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,

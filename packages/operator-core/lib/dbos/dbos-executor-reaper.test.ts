@@ -24,7 +24,7 @@ describe('reapDeadExecutorWorkflows', () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000);
+    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 300_000);
 
     expect(res).toEqual({
       cancelled: 1,
@@ -54,7 +54,7 @@ describe('reapDeadExecutorWorkflows', () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000);
+    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 300_000);
 
     expect(res.cancelled).toBe(1);
     expect(res.staleWorkflowIds).toEqual(['sched-.routineFire-no-step']);
@@ -71,7 +71,7 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(requeueUpdate.values).toContainEqual(['rt_scout']);
   });
 
-  it('uses immutable created_at for no-step workflow staleness because DBOS recovery refreshes started_at', async () => {
+  it('uses immutable created_at for no-output workflow staleness because DBOS recovery refreshes started_at', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];
       if (text.includes('SELECT workflow_uuid')) {
@@ -86,7 +86,7 @@ describe('reapDeadExecutorWorkflows', () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000);
+    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 300_000);
 
     expect(res.staleWorkflowIds).toEqual([
       'sched-.routinesTick-recovered-no-step',
@@ -100,7 +100,23 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(staleSelect.text).not.toContain('COALESCE(started_at_epoch_ms, created_at)');
   });
 
-  it('deduplicates requeued routines from multiple no-step routineFire rows', async () => {
+  it('uses a longer no-output window for routineFire so active first steps can finish', async () => {
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) return [];
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 300_000);
+
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
+    const staleRoutineFireNoOutputAt = numericValues[0]!;
+    const staleSchedulerAt = numericValues[1]!;
+    expect(staleRoutineFireNoOutputAt).toBeLessThan(staleSchedulerAt);
+  });
+
+  it('deduplicates requeued routines from multiple no-output routineFire rows', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];
       if (text.includes('SELECT workflow_uuid')) {
@@ -116,7 +132,7 @@ describe('reapDeadExecutorWorkflows', () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000);
+    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 300_000);
 
     expect(res.cancelled).toBe(3);
     expect(res.requeuedRoutineIds).toEqual(['rt_scout']);
