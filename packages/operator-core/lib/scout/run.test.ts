@@ -14,7 +14,7 @@ const sched = vi.hoisted(() => ({
 }));
 vi.mock('./scheduler', () => sched);
 
-import { runScoutCycleTick, parseScoutCycleConfig, type ScoutCycleDeps } from './run';
+import { runScoutCycleTick, parseScoutCycleConfig, productionDepsBuilder, type ScoutCycleDeps } from './run';
 
 const baseInput = { workspaceId: 'ws', installSlug: 'h', payloadTemplate: null };
 const runCycle = vi.fn();
@@ -62,6 +62,27 @@ describe('parseScoutCycleConfig', () => {
       budget: { maxCostUsd: 3 },
       cycleTimeoutMs: sched.DEFAULT_SCOUT_CYCLE_TIMEOUT_MS,
     });
+  });
+});
+
+describe('productionDepsBuilder', () => {
+  it('unwraps blueprint-run nested payloads before resolving the scout model block', async () => {
+    productionDepsBuilder(
+      {
+        workspaceId: 'ws',
+        installSlug: 'h',
+        payloadTemplate: {
+          blueprintId: 'scout',
+          payload: { scout: { models: { ideator: 'chatgpt:5.5' } } },
+        },
+      },
+      runCycle,
+    );
+
+    const built = sched.buildScoutTickDeps.mock.calls[0][0];
+    await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1 }, cycleId: 'cyc-1' });
+
+    expect(runCycle.mock.calls[0][0].scoutConfig.models.ideator).toBe('chatgpt:5.5');
   });
 });
 

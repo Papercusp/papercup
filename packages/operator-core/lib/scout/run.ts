@@ -108,7 +108,7 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
 
 /** Pull the `scout` tuning block out of a routine/blueprint-step payload_template (if any). */
 function scoutBlockOf(payload: Record<string, unknown> | null): unknown {
-  return payload && typeof payload === 'object' ? payload.scout : undefined;
+  return payload && typeof payload === 'object' ? normalizeScoutPayload(payload).scout : undefined;
 }
 
 /**
