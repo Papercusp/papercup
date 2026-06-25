@@ -17,4 +17,7 @@ export * from './registry.js';
 export * from './gh.js';
 export * from './tauri-build.js';
 export * from './release.js';
+export * from './ssh-frame.js';
 export * from './drivers/linux.js';
+export * from './drivers/vm.js';
+export * from './node-ports.js';

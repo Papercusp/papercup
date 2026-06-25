@@ -23,6 +23,7 @@ vi.mock('./operator-state-pg', () => ({
 import {
   TXN_TIMEOUTS_DEFAULTS,
   txnTimeoutsConfig,
+  adminPoolStatementTimeoutMs,
   refreshTxnTimeoutsConfig,
   setTxnTimeoutsOverride,
   readTxnTimeoutsOverride,
@@ -70,6 +71,43 @@ describe('txn-timeouts-config — D-010 flag-gated sync cache', () => {
     await setTxnTimeoutsOverride({ lockTimeoutMs: 15000, statementTimeoutMs: 30000 });
     await resetTxnTimeoutsOverride();
     expect(txnTimeoutsConfig()).toEqual(TXN_TIMEOUTS_DEFAULTS);
+    expect(await readTxnTimeoutsOverride()).toEqual({});
+  });
+});
+
+describe('adminPoolStatementTimeoutMs — WI-832 org-pool default (rides the same store/flag)', () => {
+  it('defaults to 0 (OFF — no statement_timeout GUC ⇒ today’s unbounded admin pool)', () => {
+    expect(adminPoolStatementTimeoutMs()).toBe(0);
+  });
+
+  it('ON ⇒ returns the configured override', async () => {
+    await setTxnTimeoutsOverride({ adminPoolStatementTimeoutMs: 15000 });
+    expect(adminPoolStatementTimeoutMs()).toBe(15000);
+  });
+
+  it('kill-switch OFF ⇒ 0 even with a stored override (fail-safe to unbounded)', async () => {
+    await setTxnTimeoutsOverride({ adminPoolStatementTimeoutMs: 15000 });
+    h.flagOn = false;
+    await refreshTxnTimeoutsConfig();
+    expect(adminPoolStatementTimeoutMs()).toBe(0);
+  });
+
+  it('a non-positive override is clamped to 0 (no accidental sub-floor cap)', async () => {
+    await setTxnTimeoutsOverride({ adminPoolStatementTimeoutMs: 0 });
+    expect(adminPoolStatementTimeoutMs()).toBe(0);
+  });
+
+  it('is a SEPARATE concern — it never pollutes the per-workspace txnTimeoutsConfig() shape', async () => {
+    await setTxnTimeoutsOverride({ adminPoolStatementTimeoutMs: 15000 });
+    // The locks host destructures {lockTimeoutMs, statementTimeoutMs}; the admin key must not leak in.
+    expect(txnTimeoutsConfig()).toEqual(TXN_TIMEOUTS_DEFAULTS);
+    expect(Object.keys(txnTimeoutsConfig()).sort()).toEqual(['lockTimeoutMs', 'statementTimeoutMs']);
+  });
+
+  it('reset clears the admin-pool override too', async () => {
+    await setTxnTimeoutsOverride({ adminPoolStatementTimeoutMs: 15000 });
+    await resetTxnTimeoutsOverride();
+    expect(adminPoolStatementTimeoutMs()).toBe(0);
     expect(await readTxnTimeoutsOverride()).toEqual({});
   });
 });

@@ -1318,9 +1318,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // -2026-06-13 D-008: a fresh joiner converged with contiguousLength=0 vs the
   // from-start reader's full 4602 over real NAT/WAN/holepunch). P-008 gate cleared.
   [FLAGS.SUBSTRATE_LOG_SNAPSHOT]: true,
-  // DEFAULT OFF — P-009 substrate sidecar staged on :3170 FIRST, never :3070 until
-  // integration-verified (two-peer-swarm federation test + event-loop latency test).
-  [FLAGS.SUBSTRATE_SIDECAR]: false,
+  // DEFAULT ON (2026-06-25) — P-009 substrate sidecar verified on the packaged
+  // 2-machine fed-a/fed-b rig: the relocated engine spawns + hosts the substrate
+  // (no in-process fallback) on both peers. The packaged-build non-engagement bug
+  // (CWD-relative socket + npx-tsx-in-bundle) is fixed in substrate-sidecar-spawn.ts.
+  [FLAGS.SUBSTRATE_SIDECAR]: true,
   // DEFAULT OFF — P-011 idle-session reaper ends adv_session rows; off until proven on the fleet.
   [FLAGS.IDLE_SESSION_REAPER]: true,
   // DEFAULT OFF — P-011 / WI-152 (D-007) terminate half: Ctrl-C + SIGKILL of a LIVE-but-idle
@@ -1452,10 +1454,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // work, so it ships enabled. The @singleton routine row is materialized by the
   // seed CLI post-deploy (singletonActive:true → seeds ACTIVE).
   [FLAGS.MEMORY_PRECISION_BENCH]: true,
-  // OFF (dark CUTOVER) — workspace-scoped memory recall is a reversible kill-switch the
-  // owner flips after an attended live recall-hit-rate verify (data-scoping-audit P-006 /
-  // D-012). Conservative + NULL-safe, but a shared-recall behavior change.
-  [FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL]: false,
+  // DEFAULT ON (owner-directed flip 2026-06-25): workspace-scoped memory recall — the
+  // reversible cutover kill-switch (data-scoping-audit P-006 / D-012). The owner attended
+  // the flip directly (the live recall-hit-rate A/B is the watch, not a pre-gate); the
+  // filter is conservative + NULL-safe + unit-tested. OFF reverts to global recall (the
+  // kill-switch) if hit-rate regresses. Graduated out of KNOWN_DARK_FLAGS per the rule.
+  [FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the Red
   // Queen plants synthetic frictions and files origin=drill captures (new
   // capture volume, even though the drill lane never reaches organic

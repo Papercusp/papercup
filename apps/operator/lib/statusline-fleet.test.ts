@@ -14,12 +14,12 @@ const SCRIPT = resolve(__dirname, '../scripts/hooks/cc/statusline-fleet.sh');
 const dir = mkdtempSync(join(tmpdir(), 'statusline-fixture-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function render(glance: unknown, extraEnv: Record<string, string> = {}): string {
+function render(glance: unknown, extraEnv: Record<string, string> = {}, input = '{}'): string {
   const fixture = join(dir, `${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(fixture, JSON.stringify(glance));
   return execFileSync('bash', [SCRIPT], {
     encoding: 'utf8',
-    input: '{}',
+    input,
     env: {
       ...process.env,
       PAPERCUSP_STATUSLINE_FIXTURE: fixture,
@@ -297,5 +297,44 @@ describe('statusline-fleet render (fixture mode)', () => {
 
   it('garbage fixture prints nothing and exits 0', () => {
     expect(render([1, 2, 3])).toBe('');
+  });
+
+  const quietGlance = {
+    ok: true,
+    wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+    bees: { running: 0 },
+    governor: { anyPaused: false, paused: [] },
+    activity: [],
+    tips: [],
+    self: { objective: null },
+  };
+
+  it('renders the 🧠 <model>·<effort> chip from the piped session JSON (model.display_name + effort)', () => {
+    const out = render(quietGlance, {}, JSON.stringify({
+      model: { display_name: 'Opus 4.8 (1M context)', id: 'claude-opus-4-8' },
+      effort: 'xhigh',
+    }));
+    // family + the [1m] 1M-context marker + the reasoning-effort setting — the model+settings the human asked to see.
+    expect(out).toContain('🧠 opus[1m]·xhigh');
+  });
+
+  it('compacts a non-1M model with no [1m] marker (sonnet·medium)', () => {
+    const out = render(quietGlance, {}, JSON.stringify({
+      model: { display_name: 'Sonnet 4.5', id: 'claude-sonnet-4-5' },
+      effort: 'medium',
+    }));
+    expect(out).toContain('🧠 sonnet·medium');
+    expect(out).not.toContain('[1m]');
+  });
+
+  it('model present but effort absent → chip shows the model alone (no trailing separator)', () => {
+    const out = render(quietGlance, {}, JSON.stringify({ model: { display_name: 'Opus 4.8 (1M context)' } }));
+    expect(out).toContain('🧠 opus[1m]');
+    expect(out).not.toContain('opus[1m]·');
+  });
+
+  it('no session-JSON model (fixture/no-stdin shape) → no 🧠 chip, render unchanged', () => {
+    // Settings are gated off in fixture mode, so a dev's ~/.claude/settings.json can't leak in here.
+    expect(render(quietGlance)).not.toContain('🧠');
   });
 });

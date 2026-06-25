@@ -23,11 +23,9 @@ import { ALL_FLAG_KEYS, FLAGS, FLAG_DEFAULTS, type FlagKey } from './types';
  * flips to default-ON.
  */
 const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
-  // cutover — workspace-scoped memory recall (data-scoping-audit P-006 / D-012): a reversible
-  // kill-switch flipped after an attended live recall-hit-rate verify (the conservative
-  // NULL-safe filter is complete + unit-tested, but a shared-recall behavior change wants the
-  // live A/B before defaulting ON).
-  FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL,
+  // (MEMORY_WORKSPACE_SCOPED_RECALL graduated to default-ON 2026-06-25, owner-directed flip —
+  // the reversible cutover kill-switch; owner attended the flip directly (live recall-hit-rate
+  // is the watch, OFF reverts to global recall). Removed from KNOWN_DARK_FLAGS per the rule.)
   // (CAPABILITY_GRANT_TOOL + WORKITEM_REDUNDANCY + CAPABILITY_ENVELOPE_OVERRIDES graduated to
   // default-ON 2026-06-22 — owner ratified the owner-authority flips in-session.)
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
@@ -140,12 +138,9 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // Hetzner proof landed green (fresh joiner converged with contiguousLength=0
   // vs the from-start reader's full 4602 over real NAT/WAN/holepunch), clearing
   // the P-008 gate. No longer dark.)
-  // substrate-process-isolation-2026-06-15 P-009: dedicated sidecar for corestores/
-  // Hyperswarm natives, freeing main operator from GC pauses + per-harness RSS.
-  // DARK: staged on :3170 FIRST, never :3070 until integration-verified (two-peer-
-  // swarm federation test + event-loop latency regression test). Phase 1: skeleton +
-  // basic methods. Phase 2: socket handoff + integration tests.
-  FLAGS.SUBSTRATE_SIDECAR,
+  // (SUBSTRATE_SIDECAR graduated to default-ON 2026-06-25 — removed from KNOWN_DARK_FLAGS
+  // after the packaged 2-machine fed-a/fed-b verify proved the relocated engine engages on
+  // both peers; the packaged-build non-engagement bug is fixed in substrate-sidecar-spawn.ts.)
   // (WORKER_CHUNK_LOOP_BLUEPRINT graduated to default-ON 2026-06-23, owner-directed
   // flags-default-on sweep / WI-606: behavior-neutral because routing requires a SECOND
   // per-harness `workerChunkLoop` gate (default false) — the master flag no longer dark.)
@@ -353,8 +348,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
  */
 type DarkCase = 'incomplete' | 'owner-authority' | 'cutover' | 'parked';
 const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase>([
-  // cutover — reversible kill-switch, owner flips after an attended live verify
-  [FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL, 'cutover'],
   // parked — deliberately out of V1 scope
   [FLAGS.CLOUDFLARE_PUBLISH, 'parked'],
   [FLAGS.HARNESS_PHASES, 'parked'],
@@ -362,7 +355,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.TESTING, 'parked'],
   // incomplete — not fully working / unverified on a path that matters
   // (HIVE_REKEY graduated default-ON 2026-06-25 — removed from KNOWN_DARK_FLAGS, GATE-3 owner ratification)
-  [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
+  // (SUBSTRATE_SIDECAR graduated default-ON 2026-06-25 — packaged 2-machine fed-a/fed-b verify; removed here)
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.OPEN_SIGNUP, 'owner-authority'],

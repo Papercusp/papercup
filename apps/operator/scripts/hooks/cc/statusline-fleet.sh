@@ -55,11 +55,12 @@ else
   TOKEN=""
 fi
 
-python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" <<'PYEOF' 2>/dev/null || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" "$INPUT" <<'PYEOF' 2>/dev/null || exit 0
 import json, os, sys, textwrap, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture = sys.argv[1:5]
+stdin_raw = sys.argv[5] if len(sys.argv) > 5 else ''  # Claude's piped session JSON (model / cwd / …); '' in fixture/test mode
 HTTP_TIMEOUT = 1.5
 ACTIVITY_WINDOW = 12  # rows for the peer-glance scan
 GATEWAY_URL = os.environ.get('PAPERCUSP_GATEWAY_URL', 'http://127.0.0.1:8788')
@@ -206,9 +207,83 @@ def loop_part(g):
     return f'⟳ {fmt_interval(lp.get("intervalSec"))} loop'
 
 
-def term_title(g):
-    """The OSC terminal-title string — LEADS with the loop chip (the surfaced signal), then the
-    session shorthand id + a clipped objective. '' when there's nothing meaningful (skip the write)."""
+def _session_json(raw):
+    """Parse Claude Code's piped session JSON (model / cwd / session_id / …). {} on any trouble — fail-open."""
+    if not raw:
+        return {}
+    try:
+        v = json.loads(raw)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _user_settings():
+    """~/.claude/settings.json — the persisted `model` + `effortLevel` (what /effort writes). {} fail-open.
+    Read ONLY in a real session (the caller gates it off in fixture/test mode) so a dev's settings never
+    leak into the deterministic render tests."""
+    try:
+        with open(os.path.join(os.path.expanduser('~'), '.claude', 'settings.json')) as f:
+            v = json.load(f)
+            return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _compact_model(*names):
+    """A short model label from any candidate string (live model.display_name/id, settings `model`):
+    the family word (opus/sonnet/haiku) + a `[1m]` marker for a 1M-context variant (e.g.
+    'Opus 4.8 (1M context)' / 'opus[1m]' → 'opus[1m]'). '' when nothing usable."""
+    onem = False
+    fam = ''
+    for n in names:
+        s = str(n or '').lower()
+        if not s:
+            continue
+        if '1m' in s:
+            onem = True
+        if not fam:
+            for f in ('opus', 'sonnet', 'haiku'):
+                if f in s:
+                    fam = f
+                    break
+    if not fam:
+        for n in names:
+            s = str(n or '').strip()
+            if s:
+                fam = s.split()[0].split('-')[0].lower()
+                break
+    return (fam + ('[1m]' if onem else '')) if fam else ''
+
+
+def model_bits(sj, settings):
+    """(label, effort): the compact model label + reasoning-effort setting the human asked to see.
+    Model from the live session JSON (model.display_name/id) with settings `model` as fallback; effort
+    from settings `effortLevel` (the /effort default) or a session-JSON `effort` if present. Either may
+    be '' (unknown) — fail-open."""
+    m = sj.get('model') if isinstance(sj.get('model'), dict) else {}
+    label = _compact_model(m.get('display_name'), m.get('id'), settings.get('model'))
+    effort = str(settings.get('effortLevel') or sj.get('effort') or '').strip()
+    return label, effort
+
+
+def model_chip(label, effort):
+    """Statusline-body chip — '🧠 opus[1m]·xhigh'. None when neither bit is known (fixture/test with no
+    stdin), so the existing render + tests stay untouched (additive + fail-open)."""
+    body = '·'.join(x for x in (label, effort) if x)
+    return ('🧠 ' + body) if body else None
+
+
+def model_title(label, effort):
+    """Plain (emoji-free) OS-title segment — 'opus[1m]/xhigh'. '' when neither is known."""
+    return '/'.join(x for x in (label, effort) if x)
+
+
+def term_title(g, model_tag=''):
+    """The OSC terminal-title string — LEADS with the loop chip (the surfaced autonomy signal: present ⇒
+    a loop is armed, absent ⇒ none), then the model·effort tag (so the titlebar always shows which model
+    + settings this terminal is on), the session shorthand id, and a clipped objective. '' when there's
+    nothing meaningful (skip the write)."""
     me_id = self_short(me)
     bits = []
     lp = (g.get('self') or {}).get('loop') if isinstance(g, dict) else None
@@ -218,6 +293,8 @@ def term_title(g):
         if lp.get('reachable') is False:
             tag += '!'
         bits.append(tag)
+    if model_tag:
+        bits.append(model_tag)
     if me_id:
         bits.append(me_id)
     obj = (g.get('self') or {}).get('objective') if isinstance(g, dict) else None
@@ -273,6 +350,16 @@ try:
 except Exception:
     glance = None
 
+# 🧠 <model>·<effort> chip — the model + settings the human asked to see (e.g. opus[1m]·xhigh). Settings
+# are read ONLY in a real session (gated off in fixture/test mode) so a dev's ~/.claude/settings.json
+# can't leak into the deterministic render tests; the model still comes from the piped session JSON
+# there. ADDITIVE + FAIL-OPEN: both bits unknown ⇒ no chip.
+_settings = _user_settings() if not fixture else {}
+_sj = _session_json(stdin_raw)
+_mlabel, _meffort = model_bits(_sj, _settings)
+mchip = model_chip(_mlabel, _meffort)
+mtitle = model_title(_mlabel, _meffort)
+
 if not isinstance(glance, dict) or 'wake' not in glance:
     # Operator predates coord:glance (pre-deploy window) → legacy single line.
     # In fixture mode an activity-shaped payload (no 'wake' key) exercises THIS
@@ -293,11 +380,14 @@ if not isinstance(glance, dict) or 'wake' not in glance:
     # whenever the field IS present, with no special-casing.
     obj = objective_part(glance)
     parts = ([obj] if obj else []) + lead()
+    if mchip:
+        parts.append(mchip)
     parts.append(f'{n} peer{"" if n == 1 else "s"}' if n else 'solo')
     if peer is not None:
         p = peer_part(peer)
         if p:
             parts.append(p)
+    set_title(term_title(glance if isinstance(glance, dict) else {}, mtitle))
     emit([' · '.join(parts)], cols)
     sys.exit(0)
 
@@ -317,6 +407,9 @@ parts = ([obj] if obj else []) + lead()
 lpchip = loop_part(glance)
 if lpchip:
     parts.append(lpchip)
+# 🧠 <model>·<effort> — the model + settings (e.g. opus[1m]·xhigh) this terminal is running on.
+if mchip:
+    parts.append(mchip)
 mode = wake.get('default')
 staged = wake.get('stagedTotal') or 0
 if mode in ('auto', 'manual'):
@@ -351,6 +444,6 @@ if tips:
         lines.append('⋯ run /mcp__papercusp-su__tool:coord:glance for detail')
 # Mirror the loop/objective state into the OS terminal title (written straight to /dev/tty so it
 # bypasses Claude's stdout capture). Refreshed every statusline tick, so it tracks loop arm/end.
-set_title(term_title(glance))
+set_title(term_title(glance, mtitle))
 emit(lines, cols)
 PYEOF

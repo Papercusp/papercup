@@ -94,3 +94,12 @@
 [submodule "libs/generic/debounce-coalesce"]
 	path = libs/generic/debounce-coalesce
 	url = https://github.com/Papercusp/debounce-coalesce.git
+[submodule "libs/generic/cache"]
+	path = libs/generic/cache
+	url = https://github.com/Papercusp/cache.git
+[submodule "libs/generic/failure-detector"]
+	path = libs/generic/failure-detector
+	url = https://github.com/Papercusp/failure-detector.git
+[submodule "libs/generic/rules"]
+	path = libs/generic/rules
+	url = https://github.com/Papercusp/rules.git
