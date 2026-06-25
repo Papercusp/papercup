@@ -40,7 +40,7 @@ import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { queueConcurrency } from './queue-concurrency';
 import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
-import { agentProducedTurn } from '../fleet/invoke-outcome';
+import { agentProducedTurn, type SpawnFailureClass } from '../fleet/invoke-outcome';
 
 /**
  * HTTP statuses where retrying the IDENTICAL replayed request can never succeed,
@@ -125,6 +125,59 @@ function parseInvokeTarget(input: DurableSpawnFireInput): { role: string; harnes
   }
 }
 
+function parseInvokeResultBody(bodyText: string): {
+  ok?: unknown;
+  rawStdoutTail?: unknown;
+} | null {
+  if (!bodyText) return null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    return parsed && typeof parsed === 'object' ? parsed as { ok?: unknown; rawStdoutTail?: unknown } : null;
+  } catch {
+    return null;
+  }
+}
+
+function runIdFromWrapperTail(rawStdoutTail: unknown): string | null {
+  if (typeof rawStdoutTail !== 'string') return null;
+  const m =
+    rawStdoutTail.match(/\/([0-9]{10,}-[A-Za-z0-9_-]+)\.(?:out|jsonl|err)\b/) ??
+    rawStdoutTail.match(/\brun(?:Id)?[=:]\s*["']?([0-9]{10,}-[A-Za-z0-9_-]+)/i);
+  return m?.[1] ?? null;
+}
+
+async function enrichInvokeBodyWithPgRunOutput(bodyText: string, input: DurableSpawnFireInput): Promise<string> {
+  const parsed = parseInvokeResultBody(bodyText);
+  if (!parsed || typeof parsed.ok !== 'boolean') return bodyText;
+  const runId = runIdFromWrapperTail(parsed.rawStdoutTail);
+  if (!runId) return bodyText;
+  const target = parseInvokeTarget(input);
+  if (!target) return bodyText;
+
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const sql = getOrgPg().sql;
+    if (typeof sql !== 'function') return bodyText;
+    const rows = await sql<Array<{ diagnostic: string | null }>>`
+      SELECT left(concat_ws(E'\n', jsonl_body, err_body, out_body), 4000) AS diagnostic
+      FROM harness_shared.harness_run_output
+      WHERE workspace_id = ${target.workspaceId}
+        AND harness_slug = ${target.harnessSlug}
+        AND run_id = ${runId}
+      LIMIT 1
+    `;
+    const diagnostic = rows?.[0]?.diagnostic?.trim();
+    if (!diagnostic) return bodyText;
+    const rawTail = typeof parsed.rawStdoutTail === 'string' ? parsed.rawStdoutTail : '';
+    return JSON.stringify({
+      ...parsed,
+      rawStdoutTail: `${rawTail}\n[pgRunOutput:${runId}]\n${diagnostic}`,
+    });
+  } catch {
+    return bodyText;
+  }
+}
+
 async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Promise<Record<string, unknown>> {
   const existing = input.body.spawnModel;
   if (typeof existing === 'string' && existing.trim()) return input.body;
@@ -204,7 +257,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   let fireResult:
     | { ok: true }
     | { ok: false; permanentStatus: number; detail: string }
-    | { ok: false; infraLoss: true; detail: string }
+    | { ok: false; failureClass: SpawnFailureClass; detail: string }
     | null = null;
   try {
     fireResult = await DBOS.runStep(
@@ -230,7 +283,8 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           // (fleet/invoke-outcome) so this path and launch-blueprint classify a
           // no-turn death identically — a 429'd/dead-launcher spawn is `failed`
           // (infra_loss), never silently `done` (docs-audit 2026-06-23 #1).
-          const bodyText = typeof r.text === 'function' ? await r.text().catch(() => '') : '';
+          const rawBodyText = typeof r.text === 'function' ? await r.text().catch(() => '') : '';
+          const bodyText = await enrichInvokeBodyWithPgRunOutput(rawBodyText, input);
           const prelim = agentProducedTurn(bodyText, input.label ?? '');
           if (prelim.ran) return { ok: true } as const;
           // No turn. Corroborate with the LIVE gateway state to tell a CAPACITY-SHED

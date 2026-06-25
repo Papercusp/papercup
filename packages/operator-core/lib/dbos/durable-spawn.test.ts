@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   ownerSteering: { value: null as null | Record<string, unknown> },
   agentConfig: { value: null as null | Record<string, unknown> },
+  pgRunOutputRows: { value: [] as Array<{ diagnostic: string | null }> },
+  sql: vi.fn(async () => [] as Array<{ diagnostic: string | null }>),
   state: { dbosOn: true },
   // P-006: deterministic gateway-throttle corroboration (a real probe would reach the live :8788
   // gateway and make these tests flake). false ⇒ a no-turn death classifies infra_loss (legacy);
@@ -43,7 +45,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn }));
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../owner-steering', () => ({
   getOwnerSteering: vi.fn(async () => h.ownerSteering.value ?? {
     directive: null,
@@ -87,6 +89,9 @@ beforeEach(() => {
   h.finishSpawn.mockClear();
   h.ownerSteering.value = null;
   h.agentConfig.value = null;
+  h.pgRunOutputRows.value = [];
+  h.sql.mockReset();
+  h.sql.mockImplementation(async () => h.pgRunOutputRows.value);
   h.loopbackFetch.mockReset();
   h.loopbackFetch.mockImplementation(async () => ({ ok: true, status: 200 }));
   h.gatewayThrottled.value = false; // default: gateway healthy ⇒ a no-turn death is infra_loss
@@ -361,6 +366,37 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     const fin = h.finishSpawn.mock.calls[0][1];
     expect(fin.status).toBe('failed');
     expect(String(fin.errorMessage)).toContain('auth_error');
+    expect(String(fin.errorMessage)).not.toContain('infra_loss:');
+  });
+
+  it('uses PG-canonical run output to classify wrapper-only Codex usage-limit failures', async () => {
+    h.pgRunOutputRows.value = [{
+      diagnostic:
+        '{"type":"error","message":"You have hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 7:54 AM."}',
+    }];
+    h.loopbackFetch.mockResolvedValue(okBody({
+      ok: false,
+      exitCode: 1,
+      agentOutput: '',
+      timedOut: false,
+      stderr: '',
+      rawStdoutTail:
+        '[2026-06-25T09:29:56.452Z] invoke queen rc=1 (stdout: /home/marsh-office/papercupai-workspace/papercup/.papercusp/logs/1782379790-queen.out)',
+    }));
+    await expect(
+      durableSpawnFireImpl({
+        ...IMPL,
+        url: 'http://x/api/harness/papercusp/invoke?role=queen',
+        body: { kickoff: 'go', spawnModel: 'chatgpt:5.5' },
+        spawnRecord: { workspaceId: 'papercusp-workspace', childRole: 'queen' },
+        label: 'papercusp/queen',
+      }),
+    ).resolves.toBeUndefined();
+    const fin = h.finishSpawn.mock.calls[0][1];
+    expect(h.sql).toHaveBeenCalled();
+    expect(fin.status).toBe('failed');
+    expect(String(fin.errorMessage)).toContain('usage_limit');
+    expect(String(fin.errorMessage)).toContain('pgRunOutput:1782379790-queen');
     expect(String(fin.errorMessage)).not.toContain('infra_loss:');
   });
 
