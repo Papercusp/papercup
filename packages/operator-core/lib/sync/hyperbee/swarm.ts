@@ -194,6 +194,12 @@ type TopicAnnounceState = {
 const announceTopicStateByMuxer = new WeakMap<object, Map<string, TopicAnnounceState>>();
 const announcePairedMuxers = new WeakSet<object>();
 
+function announceDebug(message: string): void {
+  if (process.env.PAPERCUSP_ANNOUNCE_DEBUG !== '1') return;
+  // eslint-disable-next-line no-console
+  console.info(`[announce-debug] ${message}`);
+}
+
 /** Get-or-create the per-topic announce-state map for a muxer. */
 function announceTopicStatesFor(mux: object): Map<string, TopicAnnounceState> {
   let m = announceTopicStateByMuxer.get(mux);
@@ -228,6 +234,7 @@ function flushTopicAnnounces(state: TopicAnnounceState): void {
         .then((fresh) => {
           try {
             msg.send(fresh);
+            announceDebug(`sent fresh log=${fresh.log_core_key.slice(0, 12)}...`);
           } catch {
             // best-effort — replication still proceeds
           }
@@ -242,6 +249,7 @@ function flushTopicAnnounces(state: TopicAnnounceState): void {
     state.sentKeys.add(ann.log_core_key);
     try {
       msg.send(ann);
+      announceDebug(`sent static log=${ann.log_core_key.slice(0, 12)}...`);
     } catch {
       // best-effort — replication still proceeds
     }
@@ -268,13 +276,23 @@ function createAnnounceChannel(
     id: channelId,
     onopen: () => {
       state.opened = true;
+      announceDebug(
+        `open topic=${channelId.toString('hex').slice(0, 16)} entries=${state.entries.size}`,
+      );
       flushTopicAnnounces(state); // send ALL local logs' announces on this topic
     },
   });
-  if (!channel) return; // already open on this muxer for this topic — nothing to do
+  if (!channel) {
+    announceDebug(`create-null topic=${channelId.toString('hex').slice(0, 16)}`);
+    return; // already open on this muxer for this topic — nothing to do
+  }
+  announceDebug(`create topic=${channelId.toString('hex').slice(0, 16)} entries=${state.entries.size}`);
   const message = channel.addMessage<SignedAnnounce>({
     encoding: c.json,
     onmessage: (frame: SignedAnnounce) => {
+      announceDebug(
+        `recv topic=${channelId.toString('hex').slice(0, 16)} log=${frame.log_core_key.slice(0, 12)}...`,
+      );
       // A-003 (a′): deliver an inbound announce to EVERY local harness that
       // admits on this topic (send-only harnesses register no onAnnounce).
       for (const entry of state.entries.values()) {

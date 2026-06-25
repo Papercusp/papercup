@@ -197,6 +197,17 @@ describe('isAvailable / isSustainedlyLimited', () => {
     expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + DRAIN_UTIL_STALE_MS + MIN)).toBe(false);
   });
 
+  it('stale weekly-full utilization remains sustained until the weekly reset', () => {
+    const p = recordAccountWindow(
+      poolOf('a'),
+      'a',
+      { utilization: 0.05, utilization7d: 1.0, windowResetAt7d: T0 + 7 * 24 * 60 * MIN },
+      T0,
+    );
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + DRAIN_UTIL_STALE_MS + MIN)).toBe(true);
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + 8 * 24 * 60 * MIN)).toBe(false);
+  });
+
   it('threshold penalties within the window is sustained; below it is not', () => {
     let p = poolOf('a');
     p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + MIN });
@@ -278,6 +289,18 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
     p = recordAccountWindow(p, 'a', { utilization: 0.05, utilization7d: 1.0 }, T0);
     p = recordAccountWindow(p, 'b', { utilization: 0.10, utilization7d: 0.99 }, T0);
     expect(selectAccountForSpawn(p, T0, { rng: () => 0 }).accountId).toBeUndefined();
+  });
+
+  it('does not re-admit a stale weekly-full account before its weekly reset', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountWindow(
+      p,
+      'a',
+      { utilization: 0.05, utilization7d: 1.0, windowResetAt7d: T0 + 7 * 24 * 60 * MIN },
+      T0,
+    );
+    p = recordAccountWindow(p, 'b', { utilization: 0.30, utilization7d: 0.40 }, T0);
+    expect(selectAccountForSpawn(p, T0 + DRAIN_UTIL_STALE_MS + MIN, { rng: () => 0 }).accountId).toBe('b');
   });
 
   it('returns undefined for an empty pool', () => {

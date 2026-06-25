@@ -146,6 +146,43 @@ test('gatewayWholesaleThrottled — true when the unified window is REJECTED (ha
   assert.equal(throttled, true);
 });
 
+test('gatewayWholesaleThrottled — false when headline window is rejected but priority tiers can still admit', async () => {
+  const now = Date.now();
+  const throttled = await gatewayWholesaleThrottled({
+    fetchImpl: statsResponse(
+      baseStats({
+        unified: { window: '5h', utilization: 1.02, resetAt: now + 60_000, rejected: true },
+        priorityTiers: {
+          healthyAccounts: 1,
+          tier1Reserve: 1,
+          tiers: [
+            { tier: 1, cap: 24, inFlight: 1, queued: 0 },
+            { tier: 3, cap: 19, inFlight: 0, queued: 0 },
+          ],
+        },
+      }),
+    ),
+  });
+  assert.equal(throttled, false);
+});
+
+test('gatewayWholesaleThrottled — true when priority tiers report no healthy account capacity', async () => {
+  const now = Date.now();
+  const throttled = await gatewayWholesaleThrottled({
+    fetchImpl: statsResponse(
+      baseStats({
+        unified: { window: '5h', utilization: 1.02, resetAt: now + 60_000, rejected: true },
+        priorityTiers: {
+          healthyAccounts: 0,
+          tier1Reserve: 1,
+          tiers: [{ tier: 3, cap: 19, inFlight: 19, queued: 0 }],
+        },
+      }),
+    ),
+  });
+  assert.equal(throttled, true);
+});
+
 test('gatewayWholesaleThrottled — false when the gateway is healthy (not paused, not rejected)', async () => {
   const now = Date.now();
   const throttled = await gatewayWholesaleThrottled({

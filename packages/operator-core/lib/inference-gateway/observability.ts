@@ -135,7 +135,14 @@ export async function gatewayWholesaleThrottled(
   // logic, so that path still runs. Production (VITEST unset) is unchanged.
   if (process.env.VITEST && !opts.fetchImpl) return false;
   const h = await fetchGatewayHeadroom({ timeoutMs: 800, ...opts });
-  return h.reachable === true && (h.paused === true || h.rejected === true);
+  if (h.reachable !== true) return false;
+  if (h.priorityTiers) {
+    const serviceable =
+      h.priorityTiers.healthyAccounts > 0 &&
+      h.priorityTiers.tiers.some((t) => t.cap === null || t.cap > t.inFlight + t.queued);
+    if (serviceable) return false;
+  }
+  return h.paused === true || h.rejected === true;
 }
 
 /**

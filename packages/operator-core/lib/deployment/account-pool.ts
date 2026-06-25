@@ -399,8 +399,7 @@ export function isSustainedlyLimited(
   policy: ScalePolicy = DEFAULT_SCALE_POLICY,
 ): boolean {
   const r = account.rate;
-  const utilFresh = r.utilizationAt !== undefined && now - r.utilizationAt <= DRAIN_UTIL_STALE_MS;
-  if (utilFresh && effectiveDrainUtil(account, now) >= EXHAUSTED_UTIL) return true;
+  if (effectiveDrainUtil(account, now) >= EXHAUSTED_UTIL) return true;
   const inWindow = r.windowStartedAt > 0 && now - r.windowStartedAt < policy.windowMs;
   return inWindow && r.penaltyCount >= policy.sustainedPenaltyThreshold;
 }
@@ -503,7 +502,11 @@ export function drainUtil(a: ClaudeAccount, now: number): number {
 export function drainUtil7d(a: ClaudeAccount, now: number): number {
   const r = a.rate;
   if (r.utilization7d === undefined) return 0;
-  if (r.utilizationAt !== undefined && now - r.utilizationAt > DRAIN_UTIL_STALE_MS) return 0;
+  if (r.utilizationAt !== undefined && now - r.utilizationAt > DRAIN_UTIL_STALE_MS) {
+    const weeklyResetPending = r.windowResetAt7d !== undefined && r.windowResetAt7d > now;
+    if (weeklyResetPending && r.utilization7d >= DRAIN_FULL_UTIL) return r.utilization7d;
+    return 0;
+  }
   return r.utilization7d;
 }
 
