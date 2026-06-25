@@ -200,6 +200,26 @@ function announceDebug(message: string): void {
   console.info(`[announce-debug] ${message}`);
 }
 
+const announceMuxDebugIds = new WeakMap<object, number>();
+let nextAnnounceMuxDebugId = 1;
+
+function announceMuxDebugId(mux: object): number {
+  let id = announceMuxDebugIds.get(mux);
+  if (!id) {
+    id = nextAnnounceMuxDebugId++;
+    announceMuxDebugIds.set(mux, id);
+  }
+  return id;
+}
+
+function announceDebugCtor(value: unknown): string {
+  return (
+    (value as { constructor?: { name?: unknown } } | null | undefined)?.constructor?.name as
+      | string
+      | undefined
+  ) ?? typeof value;
+}
+
 /** Get-or-create the per-topic announce-state map for a muxer. */
 function announceTopicStatesFor(mux: object): Map<string, TopicAnnounceState> {
   let m = announceTopicStateByMuxer.get(mux);
@@ -268,6 +288,7 @@ function createAnnounceChannel(
   channelId: Buffer,
   state: TopicAnnounceState,
 ): void {
+  const muxId = announceMuxDebugId(mux as object);
   const channel = mux.createChannel({
     protocol: ANNOUNCE_PROTOCOL,
     // Discriminate the announce channel PER TOPIC by the hive topic (A-002).
@@ -281,12 +302,17 @@ function createAnnounceChannel(
       );
       flushTopicAnnounces(state); // send ALL local logs' announces on this topic
     },
+    onclose: () => {
+      announceDebug(`close mux=${muxId} topic=${channelId.toString('hex').slice(0, 16)}`);
+    },
   });
   if (!channel) {
-    announceDebug(`create-null topic=${channelId.toString('hex').slice(0, 16)}`);
+    announceDebug(`create-null mux=${muxId} topic=${channelId.toString('hex').slice(0, 16)}`);
     return; // already open on this muxer for this topic — nothing to do
   }
-  announceDebug(`create topic=${channelId.toString('hex').slice(0, 16)} entries=${state.entries.size}`);
+  announceDebug(
+    `create mux=${muxId} topic=${channelId.toString('hex').slice(0, 16)} entries=${state.entries.size}`,
+  );
   const message = channel.addMessage<SignedAnnounce>({
     encoding: c.json,
     onmessage: (frame: SignedAnnounce) => {
@@ -308,6 +334,7 @@ function createAnnounceChannel(
   });
   state.message = message;
   channel.open();
+  announceDebug(`open-request mux=${muxId} topic=${channelId.toString('hex').slice(0, 16)}`);
 }
 
 /** Open the `papercusp/announce` channel on the shared muxer for one peer
@@ -327,9 +354,19 @@ export function openAnnounceChannel(
     // live peers connect but never exchange announce/admission frames.
     const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
       userData?: unknown;
+      isProtomux?: unknown;
     };
+    const beforeUserData = muxStream.userData;
     const mux = Protomux.from(muxStream);
+    const muxId = announceMuxDebugId(mux as object);
     if (!muxStream.userData) muxStream.userData = mux;
+    announceDebug(
+      `mux mux=${muxId} topic=${topic
+        .toString('hex')
+        .slice(0, 16)} stream=${announceDebugCtor(muxStream)} streamIsMux=${muxStream.isProtomux === true} userData=${announceDebugCtor(
+        beforeUserData,
+      )} userDataIsMux=${(beforeUserData as { isProtomux?: unknown } | null | undefined)?.isProtomux === true}`,
+    );
     // Per-topic state, keyed by topicHex (A-002). A-003 (a′): MULTIPLE local
     // harnesses can share one topic — accumulate each (keyed by its own log
     // core) so the single topic channel carries every local log's announce.
@@ -354,8 +391,16 @@ export function openAnnounceChannel(
       announcePairedMuxers.add(mux);
       try {
         mux.pair({ protocol: ANNOUNCE_PROTOCOL }, (id: Buffer | null) => {
-          if (!id) return;
+          if (!id) {
+            announceDebug(`pair mux=${muxId} topic=<null>`);
+            return;
+          }
           const cur = states.get(id.toString('hex'));
+          announceDebug(
+            `pair mux=${muxId} topic=${id.toString('hex').slice(0, 16)} hasState=${Boolean(
+              cur,
+            )} entries=${cur?.entries.size ?? 0}`,
+          );
           if (cur) {
             try {
               createAnnounceChannel(mux, id, cur);

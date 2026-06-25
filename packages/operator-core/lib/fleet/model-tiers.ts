@@ -148,11 +148,6 @@ export function specModelClass(spec: string): 'opus' | 'sonnet' | 'haiku' | 'oth
   return 'other';
 }
 
-function isClaudeFrontDoorResolution(r: TierResolution): boolean {
-  if (r.backend && r.backend !== 'claude-code') return false;
-  return specModelClass(r.spec) !== 'other';
-}
-
 export interface OpusDowngrade {
   /** True only when an OPUS spec was actually pulled back to a non-opus (sonnet) spec. */
   downgraded: boolean;
@@ -239,11 +234,10 @@ export function roleHomeTier(role: string): string | undefined {
  * resolves the role's own model so an owner who raises the 👑-tab menu/ceiling
  * actually moves the autonomous role's model.
  *
- * This own-model override is currently threaded into the tracked autonomous
- * role launcher as a Claude-front-door `spawnModel`, without a backend switch.
- * Do not pass cross-provider specs through that path: a menu row such as
- * `gpt-5.5:high` must fall back to the committed role default instead of
- * crashing a Queen/Overwatch Claude launch.
+ * This own-model override is threaded into the tracked autonomous role launcher
+ * as `spawnModel`. The invoke route resolves the backend from that model spec,
+ * so cross-provider tiers such as `gpt-5.5:high` can move the role onto Codex
+ * instead of being applied to the Claude CLI.
  *
  * The role runs at its CEILING tier when one is set (a decider has no self-picker,
  * so its ceiling IS its target — run as strong as the owner allows), else its HOME
@@ -261,7 +255,6 @@ export function resolveRoleOwnModelSpec(
   if (!tier) return null;
   const r = resolveTierSpec({ tier, role, tiers: eff.tiers, tierCeilings: eff.tierCeilings });
   if (!r.ok) return null;
-  if (!isClaudeFrontDoorResolution(r)) return null;
   return r.spec && r.spec !== roleModelDefault(role) ? r.spec : null;
 }
 
