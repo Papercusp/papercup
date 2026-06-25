@@ -7,8 +7,8 @@
  * Why this module exists (substrate-sidecar-store-relocation-2026-06-23, P-001):
  * Corestore 7.x holds a PROCESS-LEVEL file lock per storage path, so the harness
  * store can live in EXACTLY ONE process. The relocation moves the store — and
- * therefore the own-log + (later phases) the merge loop + projections + swarm +
- * outbox-drain — into the sidecar; the main process routes every
+ * therefore the own-log + merge loop + projections + swarm/admission +
+ * outbox/presence send-side — into the sidecar; the main process routes every
  * `handle.append()` over IPC and reads PG-only. This host owns the relocated
  * stores and serves:
  *
@@ -21,9 +21,10 @@
  *     `boot.ts` `handle.append`. `getStoreStatus.ownLogLength` reports the real
  *     own-log length.
  *
- * The merge loop, PG projections, swarm join, and outbox-drain relocation are
- * P-002/P-003 — their methods are present as faithful (documented) stubs so the
- * RemoteBootedHarnessHandle proxy has a stable surface to grow into.
+ * P-002/P-003 relocate the merge loop, PG projections, swarm join/admission,
+ * and outbox/presence send-side into this host by booting the real substrate
+ * handle here and delegating the remote-control RPCs (`mergeNow`, `onAnnounce`,
+ * `revoke`, `rekey`) to it.
  *
  * Everything here is reached ONLY when the OFF-by-default `papercusp-substrate-
  * sidecar` flag is ON; the OFF path never spawns the sidecar.
@@ -286,9 +287,8 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     };
   }
 
-  /** Full-store boot: open the store + own-log and return the own-log key the
-   *  main-side proxy needs immediately (outbox-drain clobber attribution +
-   *  presence identity). Swarm join + merge loop are P-002/P-003. */
+  /** Full-store boot: open the store + own-log + merge/admission/swarm engine
+   *  and return the own-log key the main-side proxy needs immediately. */
   async function handleBootHarness(params: unknown): Promise<unknown> {
     const p = params as BootHarnessRequest;
     if (!p.workspaceId || !p.harnessSlug) {
@@ -357,7 +357,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
         return { ok: true, ownLogLength: rec.booted.ownLog.length, hlc: (p.op as PeerLogOp).hlc ?? null };
       }
       await rec.booted.append(p.op as LocalWriteOp);
-      return { ok: true, ownLogLength: rec.booted.ownLog.length, hlc: (p.op as LocalWriteOp).hlc ?? null };
+      return { ok: true, ownLogLength: rec.booted.ownLog.length, hlc: null };
     }
     const ownLog = await ensureOwnLog(rec);
 

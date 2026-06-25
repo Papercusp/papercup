@@ -46,7 +46,7 @@ function WorkbenchPage() {
   // old one-shot /api/harness/projects/lite fetch (data-sync-push P-010).
   const { data: projectsData } = useSyncQuery<ProjectLite>({
     queryName: 'harnessProjects.lite',
-    args: {},
+    args: { includeHiveHomes: true },
     staleTime: 60_000,
   });
   const projects = projectsData ?? [];

@@ -33,6 +33,7 @@ import { registerHostPlatform } from '@papercusp/host-platform';
 import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
 import { validateHomeHarnessResolution, homeHarnessValidationFatal } from '@papercusp/operator-core/lib/startup/validate-home-harness';
+import { applyToProcessEnv, readAgentConfig } from '@papercusp/operator-core/lib/agent-config';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -42,6 +43,17 @@ export function runBootstrap(): void {
   const g = globalThis as GuardedGlobal;
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
+
+  // Autonomous launchers (Queen/Overwatch/fleet) resolve backend + model from
+  // process.env. The settings page persists those knobs in PG, so hydrate them
+  // on boot before background wake machinery starts.
+  void (async () => {
+    try {
+      applyToProcessEnv(await readAgentConfig());
+    } catch (e) {
+      console.warn('[agent-config] boot env hydration failed:', (e as Error)?.message ?? e);
+    }
+  })();
 
   // [A2 infra-fail-fast-build-integrity-2026-06-19] Boot native-addon self-check.
   // Test-loads the required native addons (better-sqlite3 / mem0's store) under

@@ -380,7 +380,7 @@ export function OracleDock() {
   // state the picker previously modeled with `pickerHarnesses === null`.
   const pickerHarnessesQuery = useSyncQuery<{ slug: string; harness_kind?: string | null }>({
     queryName: 'harnessProjects.lite',
-    args: {},
+    args: { includeHiveHomes: true },
     staleTime: 60_000,
   });
   const pickerHarnesses = useMemo<{ slug: string; harness_kind?: string }[] | null>(() => {

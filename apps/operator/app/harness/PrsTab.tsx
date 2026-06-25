@@ -261,7 +261,7 @@ export function PrsTab({
   // same shared groupByHive the server grouping uses (P-021).
   const liteQuery = useSyncQuery<HiveGroupProject>({
     queryName: 'harnessProjects.lite',
-    args: {},
+    args: { includeHiveHomes: true },
   });
   const hiveAvailable = useMemo(() => {
     const rows = liteQuery.data ?? [];

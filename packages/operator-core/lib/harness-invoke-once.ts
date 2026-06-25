@@ -146,13 +146,23 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
     model = trimmed.slice(0, lastColon);
     effort = trimmed.slice(lastColon + 1);
   }
-  // Strip any existing `--model`/`--effort`, then append the role's.
+  const bin = baseCmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  const isCodex = /(?:^|\/)codex$/.test(bin);
+  const codexEffort = effort === 'max' ? 'xhigh' : effort;
+  // Strip any existing model/effort flags, then append the role's. Codex does
+  // not have a `--effort` flag; its reasoning effort is a config override.
   let cmd = baseCmd
     .replace(/\s--model(?:=|\s+)\S+/g, '')
+    .replace(/\s-m\s+\S+/g, '')
     .replace(/\s--effort(?:=|\s+)\S+/g, '')
+    .replace(/\s-c\s+model_reasoning_effort=(?:"[^"]*"|'[^']*'|\S+)/g, '')
     .trimEnd();
   cmd = `${cmd} --model ${model}`;
-  if (effort) cmd = `${cmd} --effort ${effort}`;
+  if (effort) {
+    cmd = isCodex
+      ? `${cmd} -c model_reasoning_effort="${codexEffort}"`
+      : `${cmd} --effort ${effort}`;
+  }
   return cmd;
 }
 

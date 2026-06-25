@@ -40,7 +40,7 @@ const bootAll = vi.fn(async (opts?: { bootHarness?: (o: any) => Promise<any>; sk
   };
 });
 vi.mock('./boot-all', () => ({
-  bootAllHarnessesForActiveWorkspace: (opts?: unknown) => bootAll(opts),
+  bootAllHarnessesForActiveWorkspace: (opts?: unknown) => bootAll(opts as Parameters<typeof bootAll>[0]),
   enableSubstrateEvictionTracking: () => enableTracking(),
   gatherBootedHarnessFacts: () => [],
   evictBootedHarnessEngine: async () => false,
@@ -151,8 +151,17 @@ describe('bootSubstrateWithFallback', () => {
   it('sidecar startup failure falls back to in-process boot', async () => {
     h.sidecarOn = true;
     spawnSidecar.mockRejectedValueOnce(new Error('spawn failed'));
-    const r = await bootSubstrateWithFallback();
-    expect(r.usedSidecar).toBe(false);
-    expect(bootAll).toHaveBeenCalledWith(undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await bootSubstrateWithFallback();
+      expect(r.usedSidecar).toBe(false);
+      expect(bootAll).toHaveBeenCalledWith(undefined);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('sidecar spawn failed'),
+        'spawn failed',
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

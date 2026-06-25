@@ -210,7 +210,12 @@ function countLabel(count: number, noun: string): string {
 
 export default function QueenTab({ active }: { active: boolean }) {
   const steeringQ = useSyncQuery<HiveSteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000 });
-  const projectsQ = useSyncQuery<LiteProject>({ queryName: 'harnessProjects.lite', args: {}, staleTime: 60_000, enabled: active });
+  const projectsQ = useSyncQuery<LiteProject>({
+    queryName: 'harnessProjects.lite',
+    args: { includeHiveHomes: true },
+    staleTime: 60_000,
+    enabled: active,
+  });
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
   const navigate = useNavigate();
 
@@ -705,4 +710,3 @@ function DirectiveEditor({ initial, onSave, busy }: { initial: string; onSave: (
     </section>
   );
 }
-

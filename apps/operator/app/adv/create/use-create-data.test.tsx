@@ -33,9 +33,11 @@ import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 // `registryRows` fixture (the resolver returns the ProjectsLiteEntry array
 // directly — the same rows the old REST endpoint put under `d.projects`).
 let registryRows: Array<{ slug: string; parent_slug?: string | null }> | undefined;
+let registryQueryArgs: unknown;
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) => {
+  useSyncQuery: ({ queryName, args }: { queryName: string; args?: unknown }) => {
     if (queryName === 'harnessProjects.lite') {
+      registryQueryArgs = args;
       return { data: registryRows, error: null, loading: false, invalidate: vi.fn() };
     }
     return { data: undefined, error: null, loading: false, invalidate: vi.fn() };
@@ -120,6 +122,7 @@ function stubRegistry(projects: Array<{ slug: string; parent_slug?: string | nul
 
 beforeEach(() => {
   stubRegistry([]);
+  registryQueryArgs = undefined;
   hookFixtures.planList = { data: undefined, loading: false, error: null };
   hookFixtures.needsHuman = { items: [] };
   hookFixtures.actionable = { items: [] };
@@ -140,6 +143,11 @@ const wrap = (searchParams: string) => ({ wrapper: withNuqsTestingAdapter({ sear
 // ── useCreateScope ──────────────────────────────────────────────────────────
 
 describe('useCreateScope', () => {
+  it('requests hive homes from the live registry so standalone hives appear in Create', () => {
+    renderHook(() => useCreateScope(), wrap('?slug=oddsmith-ops&scope=self'));
+    expect(registryQueryArgs).toEqual({ includeHiveHomes: true });
+  });
+
   it('?h user filter wins over everything', async () => {
     stubRegistry([{ slug: 'a' }, { slug: 'b' }]);
     const { result } = renderHook(() => useCreateScope(), wrap('?h=picked&slug=active&scope=all'));

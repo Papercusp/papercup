@@ -110,7 +110,7 @@ export default function ScheduledCalendarTab() {
   // P-010) instead of the old one-shot fetch.
   const { data: projectsData } = useSyncQuery<{ slug: string }>({
     queryName: 'harnessProjects.lite',
-    args: {},
+    args: { includeHiveHomes: true },
     enabled: pickerOpen,
     staleTime: 60_000,
   });

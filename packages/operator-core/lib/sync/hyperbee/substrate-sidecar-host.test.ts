@@ -12,14 +12,15 @@
  * Resource hygiene: every temp dir + the host store are torn down in afterEach.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSubstrateSidecarHost, type SubstrateSidecarHost } from './substrate-sidecar-host';
 import { openOwnLog, type PeerLogOp } from './peer-log';
-import type { LocalWriteOp } from './boot';
+import type { BootedHarnessHandle, BootHarnessOpts, LocalWriteOp } from './boot';
+import { makeFakeBootedHandle } from './__tests__/fake-booted-handle';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -121,9 +122,9 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     expect(r1.ok).toBe(true);
     expect(r1.ownLogLength).toBe(1);
     expect(r2.ownLogLength).toBe(2);
-    // The SEND seam stamped an HLC on each write.
-    expect(typeof r1.hlc).toBe('string');
-    expect(r1.hlc).toBeTruthy();
+    // The real boot handle stamps HLC internally; the RPC response does not
+    // expose that private stamp, so persistence below is the assertion.
+    expect(r1.hlc).toBeNull();
 
     const status = (await host.methods['substrate:getStoreStatus']({ storeId: boot.storeId })) as {
       ownLogLength: number;
@@ -201,5 +202,45 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     const r = (await host.methods['substrate:closeStore']({ storeId: boot.storeId })) as { ok: boolean };
     expect(r.ok).toBe(true);
     expect(host.storeCount()).toBe(0);
+  });
+
+  it('delegates merge/admission/revoke/rekey RPCs to the relocated booted handle', async () => {
+    const fake = makeFakeBootedHandle({ workspaceId: WS, harnessSlug: SLUG, keyHex: 'ab'.repeat(32) }).handle;
+    fake.mergeNow = vi.fn(async () => 7);
+    fake.onAnnounce = vi.fn(async () => ({ admit: true, reason: 'verified' }) as never);
+    fake.revoke = vi.fn(async () => {});
+    fake.rekey = vi.fn(async () => {});
+    const bootHarnessImpl = vi.fn(async () => fake);
+    const host = createSubstrateSidecarHost({
+      bootHarnessImpl: bootHarnessImpl as (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>,
+      wireOutbox: async () => {},
+      wirePresence: async () => {},
+    });
+    cleanups.push(() => host.closeAll());
+
+    const boot = (await host.methods['substrate:bootHarness']({
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      workspaceRoot: tempWorkspace('reloc-delegate-').workspaceRoot,
+    })) as { storeId: string; admittedPeerCount: number };
+
+    expect(boot.admittedPeerCount).toBe(1);
+    const merge = (await host.methods['substrate:triggerMergeNow']({ storeId: boot.storeId })) as { mergedOps: number };
+    expect(merge.mergedOps).toBe(7);
+    expect(fake.mergeNow).toHaveBeenCalledOnce();
+
+    const announce = { log_core_key: 'peer-key' };
+    await host.methods['substrate:onAnnounce']({ storeId: boot.storeId, announce });
+    expect(fake.onAnnounce).toHaveBeenCalledWith(announce);
+
+    const logs = (await host.methods['substrate:getAdmittedLogs']({ storeId: boot.storeId })) as { logs: string[] };
+    expect(logs.logs).toEqual(['ab'.repeat(32)]);
+
+    await host.methods['substrate:revoke']({ storeId: boot.storeId, devicePubkey: 'devpub' });
+    expect(fake.revoke).toHaveBeenCalledWith('devpub');
+
+    const binding = { kind: 'gh', github_repository_id: 123 };
+    await host.methods['substrate:rekey']({ storeId: boot.storeId, binding });
+    expect(fake.rekey).toHaveBeenCalledWith(binding);
   });
 });

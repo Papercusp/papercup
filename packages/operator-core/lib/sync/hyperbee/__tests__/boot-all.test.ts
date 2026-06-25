@@ -231,6 +231,55 @@ describe('boot-all — substrate orchestrator', () => {
     }
   });
 
+  it('sidecar cutover: bootSingleHarness caches the injected remote handle and skips main-process send-side wiring', async () => {
+    const handle = fakeHandle('ws-sidecar-cutover', 'h-sidecar');
+    const bootHarness = vi.fn(async () => handle);
+    const wireOutbox = vi.fn(async () => {});
+    const wirePresence = vi.fn(async () => {});
+
+    const result = await bootSingleHarness('ws-sidecar-cutover', 'h-sidecar', {
+      workspaceRoot: '/tmp/papercusp-sidecar-cutover',
+      resolveSwarmBinding: async () => ({ kind: 'gh', github_repository_id: 12 }),
+      bootHarness,
+      skipSendSideWiring: true,
+      wireSendSide: { wireOutbox, wirePresence },
+    });
+
+    expect(result.state).toBe('booted');
+    expect(getBootedHarness('ws-sidecar-cutover', 'h-sidecar')).toBe(handle);
+    expect(bootHarness).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceRoot: '/tmp/papercusp-sidecar-cutover',
+        workspaceId: 'ws-sidecar-cutover',
+        harnessSlug: 'h-sidecar',
+        swarmBinding: { kind: 'gh', github_repository_id: 12 },
+      }),
+    );
+    expect(wireOutbox).not.toHaveBeenCalled();
+    expect(wirePresence).not.toHaveBeenCalled();
+  });
+
+  it('sidecar cutover: bootAll forwards the injected boot factory and send-side skip to each harness', async () => {
+    const booted: string[] = [];
+    const bootHarness = vi.fn(async (opts) => {
+      booted.push(`${opts.workspaceId}::${opts.harnessSlug}`);
+      return fakeHandle(opts.workspaceId, opts.harnessSlug);
+    });
+
+    const result = await bootAllHarnessesForActiveWorkspace({
+      workspaceIds: ['ws-remote'],
+      discoverHarnessSlugs: async () => ['h1', 'h2'],
+      resolveSwarmBinding: async () => null,
+      bootHarness,
+      skipSendSideWiring: true,
+    });
+
+    expect(result).toMatchObject({ attempted: 2, booted: 2, failed: 0 });
+    expect(booted.sort()).toEqual(['ws-remote::h1', 'ws-remote::h2']);
+    expect(getBootedHarness('ws-remote', 'h1')).not.toBeNull();
+    expect(getBootedHarness('ws-remote', 'h2')).not.toBeNull();
+  });
+
   it('listBootedHandles returns empty when no handles', () => {
     expect(listBootedHandles()).toEqual([]);
   });
