@@ -195,6 +195,36 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
   });
 
+  it('serves Codex /v1/models discovery without waiting behind a saturated admission queue', async () => {
+    let releaseHeld!: () => void;
+    let markHeld!: () => void;
+    const held = new Promise<void>((resolve) => {
+      markHeld = resolve;
+    });
+    await bootCodex(
+      (_req, res) => {
+        markHeld();
+        releaseHeld = () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ id: 'resp_held', ok: true }));
+        };
+      },
+      [codexAcct('cdx-1'), codexAcct('cdx-2')],
+      { concurrency: 1, maxQueueWaitMs: 5_000 },
+    );
+
+    const holding = postResponses({ model: 'gpt-x', input: 'hold the only admission slot' });
+    await held;
+    const startedAt = Date.now();
+    const res = await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: 'cdx-2' } });
+
+    expect(res.status).toBe(200);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
+    releaseHeld();
+    expect((await holding).status).toBe(200);
+  });
+
   it('counts the request on the codex stats bucket', async () => {
     await bootCodex(ok);
     await postResponses({ model: 'gpt-x', input: 'hi' });
