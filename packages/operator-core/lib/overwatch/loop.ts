@@ -66,6 +66,12 @@ const OVERWATCH_LAUNCH_ACTION = OVERWATCH_WAKE_TARGET_ACTION.startsWith('system:
   ? OVERWATCH_WAKE_TARGET_ACTION.slice('system:'.length)
   : OVERWATCH_WAKE_TARGET_ACTION;
 
+/** Overwatch is a monitor, not a worker lane: a turn that cannot emit its scorecard
+ *  within a few minutes must fail closed so the deterministic scorecard backstop can
+ *  speak. The invoke route's autonomous-loop ceiling is deliberately long for Queen
+ *  and bees, but it leaves the monitor silent for far too long under gateway stalls. */
+export const OVERWATCH_INVOKE_TIMEOUT_MS = 180_000;
+
 /** Input to the overwatch launch fire — the resolved role + the computed brief. */
 export interface OverwatchLaunchFireInput {
   installSlug: string;
@@ -106,6 +112,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
   const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}&bpkind=overwatch`;
   const body: Record<string, unknown> = {
     kickoff,
+    timeoutMs: OVERWATCH_INVOKE_TIMEOUT_MS,
     // `BLUEPRINT_ID=coding` scopes the role's prompt resolution to
     // `blueprints/coding/prompts/overwatch.md` (the canonical persona, B-05/D-010),
     // falling back to the global stub if absent (D-007).
