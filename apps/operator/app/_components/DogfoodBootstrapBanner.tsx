@@ -37,6 +37,10 @@ export function DogfoodBootstrapBanner() {
   const pct = p.activePercent;
   const detail = p.activeDetail;
   const isError = p.hasError;
+  // A transient GitHub-connect timeout (EI-3548): the finish gate is auto-retrying,
+  // so phrase this as a recoverable network blip — never a terminal "failed" that
+  // implies re-authenticating GitHub (which can't fix a network timeout).
+  const isNetworkError = isError && p.networkError;
   // The bootstrap parks the clone at 0% `running` with a "Sign in to GitHub…"
   // detail when auth isn't ready yet (bootstrap-papercusp-hive AWAITING_GH_SIGNIN_DETAIL).
   // Surface that prompt as the headline (and keep the 0% bar visible) instead of
@@ -93,7 +97,9 @@ export function DogfoodBootstrapBanner() {
         />
       )}
       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {isError ? (
+        {isNetworkError ? (
+          <>Couldn’t reach GitHub (network) — retrying…</>
+        ) : isError ? (
           <>Setting up Papercusp workspace failed — finish setup to retry.</>
         ) : awaitingAuth ? (
           <>Setting up Papercusp workspace — <strong>{detail}</strong></>

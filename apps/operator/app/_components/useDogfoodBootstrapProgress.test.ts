@@ -70,6 +70,27 @@ describe('reduceBootstrapRows', () => {
     expect(p.inProgress).toBe(false);
   });
 
+  it('a clone network_timeout error → hasError AND networkError (EI-3548)', () => {
+    const p = reduceBootstrapRows([
+      row('clone', 'running', { percent: 0 }),
+      row('clone', 'error', { detail: 'network_timeout' }, 2),
+    ]);
+    expect(p.hasError).toBe(true);
+    expect(p.networkError).toBe(true);
+  });
+
+  it('an auth_required error → hasError but NOT networkError', () => {
+    const p = reduceBootstrapRows([row('clone', 'error', { detail: 'auth_required' })]);
+    expect(p.hasError).toBe(true);
+    expect(p.networkError).toBe(false);
+  });
+
+  it('a detail-less error → hasError but NOT networkError (no false positive)', () => {
+    const p = reduceBootstrapRows([row('submodules', 'error')]);
+    expect(p.hasError).toBe(true);
+    expect(p.networkError).toBe(false);
+  });
+
   it('submodules done but a clone error present → NOT ready (error wins)', () => {
     const p = reduceBootstrapRows([
       row('clone', 'error', {}, 1),

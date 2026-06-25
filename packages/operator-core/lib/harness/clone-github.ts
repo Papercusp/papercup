@@ -148,6 +148,7 @@ export interface CloneError {
     | 'dest_exists'
     | 'auth_required'
     | 'not_found'
+    | 'network_timeout'
     | 'git_missing'
     | 'unknown';
   /** Human-readable message, trimmed to 500 chars. */
@@ -166,8 +167,32 @@ const GIT_NOT_FOUND_HINTS = [
   /does not exist/i,
   /404/,
 ];
+// Connection-level failures: the host was unreachable / the transfer stalled.
+// These are TRANSIENT (a flaky uplink, an upstream peering blip, GitHub edge
+// congestion) and — crucially — distinct from `auth_required`: re-running
+// `gh auth login` cannot fix a packet-level timeout. A connection failure is
+// mutually exclusive with auth (a `403`/"Authentication failed" only arrives
+// AFTER a successful connect), so this check is safe to run first.
+//
+// EI-3548: surfaced because a transient api.github.com connect-timeout window
+// rendered the setup wizard's generic "workspace setup failed" and led the
+// owner to (uselessly) re-auth GitHub. The UI keys off this code to message a
+// network error + auto-retry instead of implying a credential problem.
+const GIT_NETWORK_HINTS = [
+  /Connection timed out/i,
+  /Failed to connect to/i,
+  /Couldn't connect to server/i,
+  /Could not resolve host/i,            // DNS hiccup — also a transient network fault
+  /Network is unreachable/i,
+  /Connection reset by peer/i,
+  /Operation timed out/i,
+  /\btimed out\b/i,                     // our own "git clone timed out after Ns" hard-timeout
+  /gnutls_handshake\(\) failed/i,
+  /SSL_ERROR_SYSCALL/i,
+];
 
-function classifyGitError(stderr: string): CloneError['code'] {
+export function classifyGitError(stderr: string): CloneError['code'] {
+  for (const re of GIT_NETWORK_HINTS) if (re.test(stderr)) return 'network_timeout';
   for (const re of GIT_AUTH_HINTS) if (re.test(stderr)) return 'auth_required';
   for (const re of GIT_NOT_FOUND_HINTS) if (re.test(stderr)) return 'not_found';
   return 'unknown';

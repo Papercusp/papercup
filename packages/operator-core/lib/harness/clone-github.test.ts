@@ -13,6 +13,7 @@ import {
   readCloneDefaultBranch,
   runGitClone,
   parseGitProgressLine,
+  classifyGitError,
 } from './clone-github';
 
 const execFileP = promisify(execFile);
@@ -152,6 +153,31 @@ describe('parseGithubUrl', () => {
       const maxRepo = 'a'.repeat(100);
       expect(parseGithubUrl(`https://github.com/owner/${maxRepo}`)?.repo).toBe(maxRepo);
     });
+  });
+});
+
+describe('classifyGitError (EI-3548 — network vs auth vs not-found)', () => {
+  it.each([
+    'fatal: unable to access ... Failed to connect to github.com port 443: Connection timed out',
+    "fatal: unable to access ...: Couldn't connect to server",
+    'ssh: connect to host github.com port 22: Network is unreachable',
+    'fatal: unable to access ...: Could not resolve host: github.com',
+    'git clone timed out after 3600s',
+    'Operation timed out after 30001 milliseconds',
+  ])('classifies a connection failure as network_timeout: %s', (stderr) => {
+    expect(classifyGitError(stderr)).toBe('network_timeout');
+  });
+
+  it('still classifies a real auth failure as auth_required (NOT network)', () => {
+    expect(classifyGitError('fatal: Authentication failed for https://github.com/...')).toBe('auth_required');
+    expect(classifyGitError('remote: Permission to x denied\nfatal: 403 ...')).toBe('auth_required');
+    expect(classifyGitError('git@github.com: Permission denied (publickey).')).toBe('auth_required');
+  });
+
+  it('classifies a missing repo as not_found, and anything else as unknown', () => {
+    expect(classifyGitError('ERROR: Repository not found.')).toBe('not_found');
+    expect(classifyGitError('remote: Repository ... does not exist\nfatal: 404')).toBe('not_found');
+    expect(classifyGitError('fatal: some unrecognized failure')).toBe('unknown');
   });
 });
 

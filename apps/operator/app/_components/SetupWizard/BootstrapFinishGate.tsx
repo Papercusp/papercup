@@ -105,6 +105,11 @@ export interface BootstrapFinishGateProps {
   onCancel: () => void;
 }
 
+/** Bounded auto-retry of a transient bootstrap error before any terminal
+ *  "failed" is shown (EI-3548). Backoff per attempt index (2s, 4s, 8s). */
+const MAX_AUTO_RETRIES = 3;
+const AUTO_BACKOFF_MS = [2000, 4000, 8000] as const;
+
 export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGateProps) {
   const p = useDogfoodBootstrapProgress();
   const [retrying, setRetrying] = useState(false);
@@ -114,6 +119,11 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
   const triggeredRef = useRef(false);
   // Auto-advance latch — onReady must fire exactly once.
   const advancedRef = useRef(false);
+  // How many automatic retries we've fired for the current error episode.
+  const [autoAttempts, setAutoAttempts] = useState(0);
+  const autoExhausted = autoAttempts >= MAX_AUTO_RETRIES;
+  // Still self-healing: an error is showing but we haven't given up yet.
+  const autoRetrying = p.hasError && !autoExhausted;
 
   useEffect(() => {
     if (p.ready && !advancedRef.current) {
@@ -131,9 +141,24 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
     }
   }, [p.hasRows, p.ready]);
 
+  // EI-3548: auto-retry a transient error with backoff before surfacing a
+  // terminal failure — a brief GitHub-connect blip self-heals without the user
+  // ever seeing a scary "failed" or having to click Retry. Bounded by
+  // MAX_AUTO_RETRIES; a manual Retry resets the counter.
+  useEffect(() => {
+    if (!p.hasError || retrying || autoExhausted) return;
+    const delay = AUTO_BACKOFF_MS[Math.min(autoAttempts, AUTO_BACKOFF_MS.length - 1)];
+    const t = setTimeout(() => {
+      setAutoAttempts((a) => a + 1);
+      void startDogfoodBootstrap();
+    }, delay);
+    return () => clearTimeout(t);
+  }, [p.hasError, retrying, autoExhausted, autoAttempts]);
+
   const retry = async () => {
     setRetrying(true);
     triggeredRef.current = true;
+    setAutoAttempts(0); // manual retry → re-arm auto-retry for a fresh episode
     try {
       await startDogfoodBootstrap();
     } finally {
@@ -149,17 +174,29 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
       <div className="pc-step pc-step--recap pc-setup-recap-card" data-testid="bootstrap-finish-gate">
         <style>{`@keyframes pc-dogfood-gate-spin { to { transform: rotate(360deg); } }`}</style>
         <div className="pc-setup-recap-copy">
-          <p className="pc-setup-recap-kicker">{p.hasError ? 'Setup needs attention' : 'Almost there'}</p>
+          <p className="pc-setup-recap-kicker">
+            {!p.hasError ? 'Almost there' : autoRetrying ? 'Reconnecting…' : 'Setup needs attention'}
+          </p>
           <h2 className="pc-step__lead">
             {p.hasError
-              ? 'Workspace download failed'
+              ? autoRetrying
+                ? p.networkError
+                  ? 'Couldn’t reach GitHub — retrying…'
+                  : 'Setup hit a snag — retrying…'
+                : p.networkError
+                  ? 'Couldn’t reach GitHub'
+                  : 'Workspace download failed'
               : pct != null
                 ? `Finishing setup — Papercusp workspace is still downloading (${pct}%)`
                 : 'Finishing setup — Papercusp workspace is still downloading'}
           </h2>
           <p className="pc-step__lead">
             {p.hasError
-              ? "We couldn't finish cloning the Papercusp workspace. Retry below — it picks up where it left off."
+              ? autoRetrying
+                ? `Retrying automatically (attempt ${autoAttempts + 1} of ${MAX_AUTO_RETRIES})…`
+                : p.networkError
+                  ? "We couldn’t reach GitHub after several tries. This is a network/connectivity problem — not your GitHub sign-in, which is fine. Check your connection, then retry."
+                  : "We couldn’t finish cloning the Papercusp workspace. Retry below — it picks up where it left off."
               : 'The Papercusp workspace is being fetched in the background. We’ll take you into the app the moment it’s ready.'}
           </p>
         </div>
@@ -189,7 +226,10 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
         )}
 
         <div className="pc-step__actions" style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'center' }}>
-          {(p.hasError || !p.hasRows) && (
+          {/* While auto-retrying we self-heal silently — the manual Retry only
+              appears once automatic attempts are exhausted (or there are no rows
+              at all). EI-3548. */}
+          {((p.hasError && autoExhausted) || !p.hasRows) && (
             <button
               type="button"
               className="pc-btn pc-btn--primary"

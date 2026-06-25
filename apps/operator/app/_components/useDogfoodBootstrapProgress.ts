@@ -57,6 +57,15 @@ export interface DogfoodBootstrapProgress {
   /** Any row reported `status: 'error'`. */
   hasError: boolean;
   /**
+   * The error (if any) is a TRANSIENT network fault — a connect timeout / DNS /
+   * unreachable host reaching GitHub — rather than a credential or
+   * repo-not-found problem (EI-3548). The UI keys off this to message "couldn't
+   * reach GitHub — retrying" and AUTO-retry, instead of a terminal "failed" that
+   * (uselessly) implies re-authenticating GitHub. Derived from the error row's
+   * `detail` (the clone path records `detail: 'network_timeout'`).
+   */
+  networkError: boolean;
+  /**
    * READY — the flow is finished and the app may proceed. There is a
    * `submodules` row whose status is `done` OR `skipped`, AND no row errored.
    * (Fresh clone → clone done + submodules done; local checkout → clone done +
@@ -92,7 +101,13 @@ export function reduceBootstrapRows(rows: BootstrapProgressRow[]): DogfoodBootst
   }
 
   const hasRows = rows.length > 0;
-  const hasError = rows.some((r) => r.status === 'error');
+  const errorRows = rows.filter((r) => r.status === 'error');
+  const hasError = errorRows.length > 0;
+  // A transient network fault (clone records `detail: 'network_timeout'`; also
+  // match the broader connect/DNS/unreachable wording defensively). Keep in sync
+  // with clone-github.ts `network_timeout` classification.
+  const NETWORK_DETAIL = /network_timeout|timed out|could not resolve|failed to connect|unreachable|connection reset/i;
+  const networkError = errorRows.some((r) => !!r.detail && NETWORK_DETAIL.test(r.detail));
   const ready =
     !hasError && !!submodules && (submodules.status === 'done' || submodules.status === 'skipped');
   const inProgress = hasRows && !hasError && !ready;
@@ -110,6 +125,7 @@ export function reduceBootstrapRows(rows: BootstrapProgressRow[]): DogfoodBootst
     ...(submodules ? { submodules } : {}),
     hasRows,
     hasError,
+    networkError,
     ready,
     inProgress,
     ...(driver

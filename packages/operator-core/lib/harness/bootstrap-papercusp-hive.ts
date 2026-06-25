@@ -256,6 +256,19 @@ function defaultSubmodulesNeedUpdate(repoPath: string): Promise<boolean> {
   });
 }
 
+/** Run a best-effort Solution-C share step, swallowing any error (EI-3548).
+ *  These steps call the GitHub API (gist publish/read + announce); a transient
+ *  api.github.com timeout there must never reject the bootstrap and turn an
+ *  otherwise-complete workspace setup into a hard "failed". Warn and proceed —
+ *  the next operator boot re-runs the share idempotently. */
+async function bestEffortShare(label: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.warn(`[papercusp-hive] ${label} failed (non-fatal): ${(e as Error)?.message ?? e}`);
+  }
+}
+
 /** Process single-flight for the dogfood bootstrap (see startBootstrapPapercuspHive). */
 let bootstrapInFlight: Promise<BootstrapPapercuspHiveResult> | null = null;
 
@@ -350,7 +363,10 @@ export async function bootstrapPapercuspHive(
         record('submodules', 'done');
       }
       // Solution C: share an already-present hive (flag enabled after create / re-boot).
-      await shareExisting();
+      // BEST-EFFORT (EI-3548): this calls the GitHub API (per-owner gist publish +
+      // announce). A transient api.github.com timeout here must NOT fail an
+      // otherwise-complete workspace setup — warn and proceed; the next boot re-shares.
+      await bestEffortShare('shareExisting', shareExisting);
       return { state: 'already-present', slug: PAPERCUSP_HIVE_SLUG, path: existing.path };
     }
   } catch {
@@ -427,7 +443,17 @@ export async function bootstrapPapercuspHive(
   //     under the OWNER's identity (one federation topic across their devices)
   //     rather than a fresh per-device one. No-op when the flag is off / gh unauth /
   //     no gist yet (then this device is the creator and publishes it in step 4b).
-  const sharedState = await adoptShare();
+  // BEST-EFFORT (EI-3548): adopting the owner's shared identity hits the GitHub
+  // API (per-owner gist read). A transient timeout here must degrade to "this
+  // device is the creator" (null), never reject the whole bootstrap.
+  let sharedState: SharedHiveState | null = null;
+  try {
+    sharedState = await adoptShare();
+  } catch (e) {
+    console.warn(
+      `[papercusp-hive] adoptShare failed (non-fatal; creating per-device): ${(e as Error)?.message ?? e}`,
+    );
+  }
 
   // 3. Create the single `papercusp` hive linked to the repo in place.
   const hiveRes = await ensureHive({ pathOverride: root });
@@ -443,7 +469,9 @@ export async function bootstrapPapercuspHive(
   //     (first device only), announce on the invite topic (go-live on the
   //     federation topic), and set the owner-only allowlist policy. No-op when
   //     sharedState is null (sharing skipped this boot).
-  await goShare(sharedState);
+  // BEST-EFFORT (EI-3548): a GitHub-API timeout publishing the gist / announcing
+  // must not fail a setup whose hive + workspace already landed — warn, proceed.
+  await bestEffortShare('goShare', () => goShare(sharedState));
 
   // 5. Submodules. A fresh clone fills them in the BACKGROUND (non-blocking) and
   //    records the terminal `submodules` step when done — that (plus the hive
