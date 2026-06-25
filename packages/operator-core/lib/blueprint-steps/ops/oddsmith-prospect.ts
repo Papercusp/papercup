@@ -38,11 +38,17 @@
 import { z } from 'zod';
 import type { CoordOp, CoordOpCtx } from '../../coord-ops/types.js';
 import { registerCoordOp } from '../../coord-ops/registry.js';
+import {
+  BET_ANALYSIS_KIND,
+  BET_ANALYSIS_WORK_ITEM_KIND,
+  parseProspectSweepArgs,
+  type ParsedProspectOptions,
+} from '@oddsmith/prospect-contract';
 
-/** The domain kind the analyst pipeline consumes (mirrors `@oddsmith/prospector`). */
-export const BET_ANALYSIS_KIND = 'bet-analysis';
-/** The generic live work_items kind that carries a bet-analysis job. */
-export const BET_ANALYSIS_WORK_ITEM_KIND = 'task';
+// The op-name / bet-analysis kinds + blueprint-arg coercion now live in the pure
+// `@oddsmith/prospect-contract` submodule — the SINGLE SOURCE OF TRUTH shared with
+// `@oddsmith/prospector` (was hand-duplicated here). Re-exported for this module's consumers.
+export { BET_ANALYSIS_KIND, BET_ANALYSIS_WORK_ITEM_KIND, parseProspectSweepArgs, type ParsedProspectOptions };
 
 /**
  * Raw args as the blueprint spine delivers them (post-interpolation). An unfilled
@@ -95,14 +101,6 @@ export interface ProspectCandidate {
   reasons: string[];
 }
 
-/** The parsed, coerced sweep knobs handed to the bridge. */
-export interface ParsedProspectOptions {
-  limit?: number;
-  minLiquidity?: number;
-  maxEnqueue?: number;
-  preferNiche?: boolean;
-}
-
 /**
  * The result of one engine sweep, MINUS the enqueue (the op does the enqueue into
  * papercusp `work_items`). The bridge runs `@oddsmith/prospector`'s `prospectSweep`
@@ -151,51 +149,6 @@ export interface OddsmithProspectDeps {
   bridge: OddsmithProspectBridge;
   listAlreadyQueued: ListAlreadyQueued;
   enqueue: EnqueueProspectCandidate;
-}
-
-/**
- * Coerce one raw arg → a finite, non-negative number, or `undefined` for anything
- * that should mean "unset" (empty string, an un-substituted `{{…}}` template,
- * null/undefined, NaN, < 0). Mirrors `@oddsmith/prospector`'s `coerceNumber`.
- */
-function coerceNumber(v: unknown): number | undefined {
-  if (v == null) return undefined;
-  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? v : undefined;
-  if (typeof v === 'string') {
-    const s = v.trim();
-    if (s === '' || s.includes('{{')) return undefined;
-    const n = Number(s);
-    return Number.isFinite(n) && n >= 0 ? n : undefined;
-  }
-  return undefined;
-}
-
-/** Coerce a boolean arg (bool or `"true"`/`"false"`/`"yes"`/…), `undefined` for unset. */
-function coerceBoolean(v: unknown): boolean | undefined {
-  if (v == null) return undefined;
-  if (typeof v === 'boolean') return v;
-  if (typeof v === 'string') {
-    const s = v.trim().toLowerCase();
-    if (s === '' || s.includes('{{')) return undefined;
-    if (s === 'true' || s === '1' || s === 'yes') return true;
-    if (s === 'false' || s === '0' || s === 'no') return false;
-  }
-  return undefined;
-}
-
-/** Coerce blueprint-interpolated args → the engine's sweep options (mirror of the contract). */
-export function parseProspectArgs(raw: ProspectArgs | null | undefined): ParsedProspectOptions {
-  const r = (raw ?? {}) as Record<string, unknown>;
-  const options: ParsedProspectOptions = {};
-  const limit = coerceNumber(r.limit);
-  if (limit != null) options.limit = limit;
-  const minLiquidity = coerceNumber(r.minLiquidity);
-  if (minLiquidity != null) options.minLiquidity = minLiquidity;
-  const maxEnqueue = coerceNumber(r.maxEnqueue);
-  if (maxEnqueue != null) options.maxEnqueue = maxEnqueue;
-  const preferNiche = coerceBoolean(r.preferNiche);
-  if (preferNiche != null) options.preferNiche = preferNiche;
-  return options;
 }
 
 /** `${venue}:${ticker}` — the cross-tick dedup key (mirror of `candidateKey`). */
@@ -323,7 +276,7 @@ export const oddsmithProspectOp: CoordOp<ProspectArgs, ProspectResult> = {
     const harnessSlug = ctx.harnessSlug ?? 'oddsmith-ops';
     const deps = resolveDeps();
     const bridgeCtx = { workspaceId, harnessSlug };
-    const options = parseProspectArgs(a);
+    const options = parseProspectSweepArgs(a);
 
     // Cross-tick dedup keys from the papercusp bet-analysis backlog.
     const alreadyQueued = await deps.listAlreadyQueued(bridgeCtx);

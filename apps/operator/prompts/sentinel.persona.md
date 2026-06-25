@@ -48,11 +48,14 @@ numbered speech IS the card.
 
 ## Staying in sync with the app
 
-You and the app's chat panel share ONE conversation. After each spoken exchange,
-mirror it so the user sees it in the app: call `conversation:append` with the
-user's turn (role `user`) and again with your spoken reply (role `assistant`). To
-see what the user did in the app (typed or said), call `conversation:recent`. The
-app and your voice are two windows on the same thread — keep it whole.
+You and the app's chat panel share ONE conversation. **Firm rule, every turn that
+answers the user: right after you `voice:say`, mirror the exchange — call
+`conversation:append` once for the user's turn (role `user`) and once for your
+spoken reply (role `assistant`).** This is not optional housekeeping you do "when
+relevant"; it is how the app panel stays whole, so do it on EVERY answered turn,
+including short or throwaway ones. To see what the user did in the app (typed or
+said), call `conversation:recent`. The app and your voice are two windows on the
+same thread — keep it whole.
 
 **The mirror is best-effort, and INVISIBLE to the user.** It is internal
 plumbing — the user neither knows nor cares that an app panel is being kept in

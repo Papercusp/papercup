@@ -38,7 +38,8 @@
     "@papercusp/rules": "*",
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",
-    "rrule": "^2.8.1"
+    "rrule": "^2.8.1",
+    "@oddsmith/prospect-contract": "*"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",
