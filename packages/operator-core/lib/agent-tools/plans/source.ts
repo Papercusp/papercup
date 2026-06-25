@@ -30,6 +30,7 @@ import { resolveProject, resolveWorkspaceForHarnessSlug } from '../../harness-co
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
+import { hiveHomeSlugForHarness } from '../../hive-federation';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -340,12 +341,12 @@ export async function fill_workspace_id_from_projects(
 }
 
 /**
- * Resolve a `PlanSourceOpts` to the concrete (workspaceId, harnessSlug) PG key.
- * No harness / the SU wildcard `'*'` / `'all'` / the papercup slug → the
- * papercup primary harness in PAPERCUSP_WORKSPACE_ID (WI-148 part-B flip, in
- * lockstep with migration 295 — see `fill_workspace_id_from_projects`). A concrete other slug
- * → that harness, whose workspace is resolved from the projects source of truth;
- * an unresolvable slug THROWS (no silent cross-workspace default — WI-148).
+ * Resolve a `PlanSourceOpts` to the concrete (workspaceId, hive home slug) PG key.
+ * Plans are Hive-scoped: a member harness passed by a caller collapses to its
+ * home Hive slug before touching `harness_shared.harness_plans`. No harness / the
+ * SU wildcard `'*'` / `'all'` / the operator-home slug → the Papercusp home Hive
+ * in PAPERCUSP_WORKSPACE_ID. A concrete slug not belonging to a Hive THROWS, so
+ * future plan rows cannot be written at member/standalone harness grain.
  */
 export async function resolvePlanScope(
   opts: PlanSourceOpts & {
@@ -363,17 +364,20 @@ export async function resolvePlanScope(
       harnessSlug: operatorHomeHarnessSlug(),
     };
   }
-  // A concrete non-papercup slug. An explicit workspaceId pins the scope.
-  if (opts.workspaceId) return { workspaceId: opts.workspaceId, harnessSlug: raw! };
+  // A concrete non-papercup slug. An explicit workspaceId pins the workspace,
+  // but the plan key still collapses member → Hive home below.
+  const workspaceIdFromArg = opts.workspaceId;
   // Otherwise resolve the workspace: first the projects projection, then (when it
   // has no row — the common case for a hive/generic harness) the AUTHORITATIVE
   // harness registry. FAIL LOUD only when NEITHER resolves, instead of silently
   // defaulting to 'default' (which wrote a named harness's plans into the wrong
   // workspace — the WI-148 bug).
-  const workspaceId = await fill_workspace_id_from_projects(raw, {
-    ...(opts.lookup ? { lookup: opts.lookup } : {}),
-    ...(opts.registryFallback ? { registryFallback: opts.registryFallback } : {}),
-  });
+  const workspaceId =
+    workspaceIdFromArg ??
+    (await fill_workspace_id_from_projects(raw, {
+      ...(opts.lookup ? { lookup: opts.lookup } : {}),
+      ...(opts.registryFallback ? { registryFallback: opts.registryFallback } : {}),
+    }));
   if (workspaceId === null) {
     throw new Error(
       `resolvePlanScope: harness '${raw}' is not registered in the harness registry ` +
@@ -382,7 +386,15 @@ export async function resolvePlanScope(
         `workspaceId. (Refusing to silently default to '${DEFAULT_WORKSPACE_ID}' — WI-148.)`,
     );
   }
-  return { workspaceId, harnessSlug: raw! };
+  const hiveHome = await hiveHomeSlugForHarness(workspaceId, raw!);
+  if (!hiveHome) {
+    throw new Error(
+      `resolvePlanScope: plans are Hive-scoped, but '${raw}' is not a Hive home and ` +
+        `does not belong to one in workspace '${workspaceId}'. Add it to a Hive or pass ` +
+        `the Hive home slug explicitly; refusing to create/read a non-Hive-scoped plan.`,
+    );
+  }
+  return { workspaceId, harnessSlug: hiveHome };
 }
 
 /** Synthetic stable locator for a plan (the old `.md` path) — display + lock key. */

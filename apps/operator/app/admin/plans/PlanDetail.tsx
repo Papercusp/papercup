@@ -53,6 +53,8 @@ import { AuthorBadge } from '../../_components/AuthorBadge';
 
 interface Props {
   slug: string;
+  /** Resolved hive/home harness that owns this plan row. */
+  harnessSlug?: string | null;
   onClose: () => void;
   /** Show the "← All plans" back button (default true). The Create dock
    *  embeds PlanDetail with an always-visible plan-list sidebar as the
@@ -71,8 +73,8 @@ interface Props {
   onPlanStatusChange?: (status?: PlanStatus) => void;
 }
 
-export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChange, startStatus, onStartStatusChange, onPlanStatusChange }: Props) {
-  const { data, loading, error, refresh, setData } = usePlan(slug);
+export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true, onDirtyChange, startStatus, onStartStatusChange, onPlanStatusChange }: Props) {
+  const { data, loading, error, refresh, setData } = usePlan(slug, { harnessSlug });
   const archived = data?.archived ?? false;
   const { data: lock } = usePlanLock(data ? slug : null, archived);
   const [writeTick, setWriteTick] = useState(0);
@@ -282,7 +284,8 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
         expectedVersion: data.version,
         expectedHash: data.contentHash,
         rationale: rationale.trim() || undefined,
-      });
+        ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+      } as Parameters<typeof setPlanContent>[0] & { harness?: string; harness_slug?: string });
       const stale = staleConflictOf(res);
       if (stale) {
         setConflict(stale.currentContent);
@@ -347,6 +350,7 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
       {!data.legacy ? (
         <PlanActions
           slug={data.slug}
+          harnessSlug={harnessSlug ?? data.harness ?? null}
           items={data.items}
           decisions={data.decisions}
           currentNow={data.now ?? null}

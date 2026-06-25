@@ -40,7 +40,7 @@ const getOwnerSteering = vi.fn(async (_ws?: string, _slug?: string) => ({
 }));
 vi.mock('../owner-steering', () => ({ getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...(a as [string, string])) }));
 const readAgentConfig = vi.fn(async () => ({ models: {}, tiers: [] as unknown[], tierCeilings: {} as Record<string, string> }));
-vi.mock('../agent-config', () => ({ readAgentConfig: (...a: unknown[]) => readAgentConfig(...a) }));
+vi.mock('../agent-config', () => ({ readAgentConfig: () => readAgentConfig() }));
 
 // WI-269 (durable-spawn workspace-pin): resolveLaunchTarget must resolve a `*`
 // workspace to a concrete one and never bake `ws=*` into the /invoke URL (a persisted

@@ -418,12 +418,12 @@ function PlanRow({
       setBusy(true);
       try {
         if (plan.startStatus === 'started') {
-          await pausePlan(plan.slug);
+          await pausePlan(plan.slug, plan.harness);
         } else {
           // plans:start emits the demand event that wakes the Queen
           // (start-hive-wake-orchestration D-001) — no harness launch kick
           // needed (the legacy /harness/:slug/launch run-loop is retired).
-          await startPlan(plan.slug);
+          await startPlan(plan.slug, plan.harness);
         }
         onStartToggle?.();
       } finally {

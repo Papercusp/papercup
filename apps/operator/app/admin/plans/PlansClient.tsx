@@ -836,6 +836,7 @@ export default function PlansClient() {
           <PlanDetail
             key={slug}
             slug={slug}
+            harnessSlug={harnessByPlan.get(slug) ?? null}
             onClose={() => void navSlug(null)}
             onDirtyChange={(d) => {
               dirtyRef.current = d;

@@ -238,6 +238,7 @@ export default defineTool({
               const sections = splitSections(parsed.prose);
               const legacyBase = {
                 slug: parsed.slug,
+                harness: row.harnessSlug,
                 archived,
                 legacy: true as const,
                 contentHash: hashPlanContent(parsed.raw),
@@ -373,6 +374,7 @@ export default defineTool({
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               slug: parsed.frontmatter.slug ?? parsed.slug,
+              harness: row.harnessSlug,
               archived,
               legacy: false as const,
               frontmatter: parsed.frontmatter,

@@ -188,6 +188,26 @@ function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
   return sp;
 }
 
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function normalizePlanScopeArg(body: Record<string, unknown>): string | undefined {
+  const harness = firstString(
+    body.harness,
+    body.harnessSlug,
+    body.harness_slug,
+    body.hive,
+    body.hiveSlug,
+    body.hive_slug,
+  );
+  if (harness) body.harness = harness;
+  return harness;
+}
+
 async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> {
   const verb = ctx.params.verb;
   if (!READ_VERBS.has(verb)) {
@@ -198,6 +218,7 @@ async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> 
   }
   const url = new URL(req.url);
   const body = bodyFromSearchParams(url.searchParams) as Record<string, unknown>;
+  normalizePlanScopeArg(body);
   // /adv shows the ACTIVE workspace's plans. For the cross-plan `list` verb,
   // default to the workspace-wide listing (every plan in the active workspace,
   // any harness) instead of the harness:'all' wildcard — that wildcard resolves
@@ -244,6 +265,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       { status: 400 },
     );
   }
+  const normalizedHarness = normalizePlanScopeArg(body);
   // Same /adv default as dispatchRead: operator-scope writes target Papercusp's
   // own plans, so default the harness gate to 'all' (→ papercup) unless given.
   if (body.harness == null) body.harness = 'all';
@@ -287,9 +309,8 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
         // harness cwd; it doesn't set the harness_slug body field.
         const url = new URL(req.url);
         const harnessSlug =
-          (typeof body.harness_slug === 'string' && body.harness_slug) ||
-          url.searchParams.get('harness') ||
-          undefined;
+          normalizedHarness ||
+          firstString(body.harness_slug, body.harnessSlug, url.searchParams.get('harness'));
         if (harnessSlug) {
           void notifySyncInvalidate('plansDrafts.bySlug', { harnessSlug }).catch(() => {});
         }
@@ -300,12 +321,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
         // shape from harness_slug because plan-block-handler accepts
         // camelCase) to invalidate ProposalsPanel's subscription so the
         // new card appears immediately instead of waiting for refresh.
-        const harnessSlug =
-          typeof body.harnessSlug === 'string'
-            ? body.harnessSlug
-            : typeof body.harness_slug === 'string'
-              ? body.harness_slug
-              : undefined;
+        const harnessSlug = normalizedHarness || firstString(body.harnessSlug, body.harness_slug);
         if (harnessSlug) {
           void notifySyncInvalidate('plansDrafts.bySlug', { harnessSlug }).catch(() => {});
         }
@@ -318,7 +334,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       if (verb === 'promote') {
         // Promote creates features — invalidate featuresConsolidated so the
         // plan detail status badges and harness feature list update live.
-        const harnessSlug = typeof body.harness_slug === 'string' ? body.harness_slug : undefined;
+        const harnessSlug = normalizedHarness || firstString(body.harness_slug, body.harnessSlug);
         if (harnessSlug) {
           void notifySyncInvalidate('featuresConsolidated.bySlug', { harnessSlug }).catch(() => {});
           void notifySyncInvalidate('featuresConsolidated.byPlanSlug', { planSlug: slug }).catch(() => {});
