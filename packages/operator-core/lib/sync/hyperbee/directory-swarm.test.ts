@@ -210,6 +210,26 @@ describe('createDirectoryGossip', () => {
     expect(mux.channels[1].sent).toHaveLength(0);
   });
 
+  it('uses the Hypercore noiseStream muxer when a Hyperswarm socket wraps one', () => {
+    const f = fakeSwarm();
+    const g = createDirectoryGossip({
+      swarm: f.swarm,
+      onAnnounce: () => {},
+      getOwnAnnounces: () => [],
+      refreshMs: 0,
+    });
+    g.joinTopic(TOPIC);
+
+    const noiseStream: { userData?: FakeMux } = {};
+    const socket: { userData?: FakeMux; noiseStream: typeof noiseStream } = { noiseStream };
+    f.handler?.(socket);
+
+    expect(socket.userData).toBeUndefined();
+    expect(noiseStream.userData).toBeTruthy();
+    expect(noiseStream.userData!.channels).toHaveLength(1);
+    expect(noiseStream.userData!.channels[0].id?.toString('hex')).toBe(HEX);
+  });
+
   it('pipes inbound frames to onAnnounce', () => {
     const f = fakeSwarm();
     const seen: string[] = [];

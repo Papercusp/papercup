@@ -17,9 +17,9 @@
  * same-`(protocol, id)` channels on one muxer collide (Protomux `unique`
  * returns null for the second). Instead:
  *
- *   - One `connection` handler tracks live sockets; ONE muxer per socket
- *     (`Protomux.from` + the `socket.userData` convention, so corestore
- *     replication and the cross-hive channel share it in either attach order).
+   *   - One `connection` handler tracks live sockets; ONE muxer per Noise stream
+   *     (`Protomux.from` + the `noiseStream.userData` convention, so corestore
+   *     replication and the cross-hive channel share it in either attach order).
  *   - One channel PER TOPIC per socket, keyed `{ protocol, id: topic }` —
  *     Protomux pairing IS the scoping: a channel only opens once BOTH ends
  *     joined that topic (derived the same id), so an invite hive's announce is
@@ -138,12 +138,18 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
    * is also the scoping: an un-joined topic's open stays rejected).
    */
   const ensureMux = (socket: unknown): Protomux => {
-    const mux = Protomux.from(socket);
+    // Corestore/Hypercore attaches its shared Protomux to the NoiseSecretStream
+    // (`socket.noiseStream`), while Hyperswarm hands consumers the outer wrapper.
+    // Use the same stream as corestore so directory gossip and substrate announce
+    // channels cannot split onto different muxers over one peer connection.
+    const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
+      userData?: unknown;
+    };
+    const mux = Protomux.from(muxStream);
     // The ecosystem convention (hypercore createProtocolStream does the same):
     // pin the muxer on the stream so every other protocol on this connection
     // (corestore replication, cross-hive) reuses it instead of double-muxing.
-    const s = socket as { userData?: unknown };
-    if (!s.userData) s.userData = mux;
+    if (!muxStream.userData) muxStream.userData = mux;
     if (!pairedMuxers.has(mux)) {
       pairedMuxers.add(mux);
       try {
