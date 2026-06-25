@@ -10,6 +10,7 @@ import {
   bundleTokenStorage,
   makeCredentialResolver,
   makeBearerCredentialResolver,
+  credentialRefSupportsOpenAiBearer,
   type ClaudeCredentialBundle,
 } from './credential-store';
 import {
@@ -107,6 +108,22 @@ test('makeBearerCredentialResolver — file: rejects Codex ChatGPT auth.json for
   const r = makeBearerCredentialResolver(`file:${path}`);
   assert.equal(r.kind, 'file');
   await assert.rejects(r.current(), /ChatGPT auth\.json.*OpenAI API bearer/);
+  assert.equal(await credentialRefSupportsOpenAiBearer(`file:${path}`), false);
+});
+
+test('makeBearerCredentialResolver — file: prefers OPENAI_API_KEY when present in a Codex auth-shaped JSON file', async () => {
+  const path = join(dir, 'codex-auth-with-api-key.json');
+  await fs.writeFile(path, JSON.stringify({
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: { value: 'sk-openai-from-json' },
+    tokens: {
+      access_token: 'chatgpt-access-token',
+      refresh_token: 'chatgpt-refresh-token',
+    },
+  }));
+  const r = makeBearerCredentialResolver(`file:${path}`);
+  assert.equal(await r.current(), 'sk-openai-from-json');
+  assert.equal(await credentialRefSupportsOpenAiBearer(`file:${path}`), true);
 });
 
 test('makeBearerCredentialResolver — file: extracts bearer JSON tokens.access_token when it is not a ChatGPT auth bundle', async () => {

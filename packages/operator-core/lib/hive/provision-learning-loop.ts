@@ -1,7 +1,6 @@
 /**
- * provisionHiveLearningLoop — lay down a per-HIVE learning loop, keyed to the
- * hive's OWN install_slug, at hive:create (per-hive-learning-loops-2026-06-14
- * P-020; D-003 + D-008).
+ * provisionHiveLearningLoop — lay down the hive's learning-loop records at
+ * hive:create (per-hive-learning-loops-2026-06-14 P-020; D-003 + D-008).
  *
  * The Hive (kind:'hive') is the tenant of ONE learning loop (D-008). This
  * provisions its two execution surfaces, both SHIPPED INERT so a fresh hive is
@@ -12,30 +11,30 @@
  *       governor rule), so the row exists for the gym UI to surface + arm but
  *       never fires. ARMING = the owner enabling the row + setting a budget via
  *       the gym control plane.
- *   (b) an INACTIVE scout routine (`scout-cycle`, target system:scout-cycle)
- *       under the hive's OWN install_slug — NOT @singleton, which is reserved
- *       for the workspace-singleton frontier loops (D-008). active:false ⇒ the
- *       routines engine never ticks it; its per-hive cycle budget lives in
- *       payload_template.budget.maxCostUsd (parseScoutCycleConfig reads it). Its
- *       cron is DETERMINISTICALLY STAGGERED per hive (P-050:
- *       {@link staggeredHiveScoutCron}) so N armed hives never burst together.
- *       ARMING = the owner flipping it active via the routines admin AFTER the
- *       cost-control prerequisites (D-005 / Phase 5) are in place.
+ *   (b) an INACTIVE scout routine (`scout-cycle`, target system:scout-cycle).
+ *       With WORKSPACE_COORDINATION off, it is the legacy per-hive routine.
+ *       With WORKSPACE_COORDINATION on, it is keyed to the workspace sentinel so
+ *       there is ONE Scout brain per workspace (matching scout:cycle's runtime
+ *       sentinel) while hives keep their own bee execution / repo / membership.
+ *       active:false ⇒ the routines engine never ticks it until armed. Its
+ *       cycle budget lives in payload_template.budget.maxCostUsd
+ *       (parseScoutCycleConfig reads it).
  *
  * Mirrors learning-packs/seed.ts (seedPackIntoHive): pure-ish, injectable Sql,
  * returns an `undo` that joins the create's rollback stack so a LATER create
  * step failure removes the rows we laid down — and a summary the result reports.
  *
- * Keyed on the hive's OWN slug throughout — there is NO `?? operatorHomeHarnessSlug()` env
- * default here (P-022 retires those env-slug seed scripts for gym/scout). The
- * matching teardown at hive:dissolve (delete both rows + the governor
- * registrants) is P-021.
+ * The gym row remains keyed on the hive's OWN slug; the Scout routine uses the
+ * workspace-brain scope helper so it follows the shared Queen/Scout/Overwatch
+ * re-key. There is NO `?? operatorHomeHarnessSlug()` env default here (P-022
+ * retires those env-slug seed scripts for gym/scout). The matching teardown at
+ * hive:dissolve (delete the per-hive rows + the governor registrants) is P-021.
  */
 import type { Sql } from 'postgres';
 import { setAutoloop } from '../gym/control-plane';
 import { gymLoopId, scoutLoopId } from '../learning-governor/core';
 import { deleteLearningLoop } from '../learning-governor/store';
-import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { isWorkspaceCoordinationOn, workspaceBrainScopeKey } from '../workspace-brain-scope';
 
 /** The scout routine name a per-hive loop fires from (under the hive install_slug). */
 export const HIVE_SCOUT_ROUTINE_NAME = 'scout-cycle';
@@ -144,11 +143,15 @@ export function hiveScoutRoutineId(hiveSlug: string): string {
   return `rt_${hiveSlug}_${HIVE_SCOUT_ROUTINE_NAME}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
 }
 
+async function scoutRoutineScope(workspaceId: string, hiveSlug: string): Promise<string> {
+  return workspaceBrainScopeKey(workspaceId, hiveSlug, await isWorkspaceCoordinationOn());
+}
+
 /**
- * Provision the per-hive loop. Both writes are dark/inactive; the returned undo
- * removes exactly the rows we created (the gym row only ever exists for a fresh
- * hive, so undo deletes it outright — a fresh hive has no prior owner state to
- * preserve).
+ * Provision the learning-loop records. Both writes are dark/inactive; the
+ * returned undo removes the rows we created. When the Scout routine already
+ * existed under the workspace sentinel, rollback preserves it for the rest of
+ * the workspace.
  */
 export async function provisionHiveLearningLoop(
   input: ProvisionHiveLearningLoopInput,
@@ -156,11 +159,17 @@ export async function provisionHiveLearningLoop(
   const { sql, workspaceId, hiveSlug } = input;
   const now = input.now ?? Date.now();
   const maxCostUsd = input.scoutMaxCostUsd ?? DEFAULT_HIVE_SCOUT_MAX_COST_USD;
-  // P-050: a DETERMINISTIC per-hive cron offset (a stable hash of the hive slug),
-  // so N hives' scout heartbeats scatter across the 30-min window instead of all
-  // firing on one boundary (which would burst ~13N concurrent LLM calls).
-  const cron = input.scoutCron ?? staggeredHiveScoutCron(hiveSlug);
-  const routineId = hiveScoutRoutineId(hiveSlug);
+  const scoutScope = await scoutRoutineScope(workspaceId, hiveSlug);
+  // P-050 legacy: OFF uses a deterministic per-hive cron offset. ON uses the
+  // same deterministic function against the workspace sentinel, yielding one
+  // stable workspace Scout routine instead of N per-hive routines.
+  const cron = input.scoutCron ?? staggeredHiveScoutCron(scoutScope);
+  const routineId = hiveScoutRoutineId(scoutScope);
+  const existingScoutRows = await sql<Array<{ id: string }>>`
+    SELECT id FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId} AND install_slug = ${scoutScope} AND name = ${HIVE_SCOUT_ROUTINE_NAME}
+     LIMIT 1`;
+  const scoutRoutineExisted = existingScoutRows.length > 0;
 
   // (a) DARK gym autoloop row — enabled:false + budget:null. setAutoloop upserts;
   //     for a fresh hive this is a pure INSERT, so the undo can delete the row.
@@ -173,7 +182,8 @@ export async function provisionHiveLearningLoop(
   });
   const gymAutoloop = true;
 
-  // (b) INACTIVE scout routine under the hive's OWN install_slug (NOT @singleton).
+  // (b) INACTIVE scout routine under the effective Scout scope (legacy hive slug,
+  //     or workspace sentinel when WORKSPACE_COORDINATION is ON).
   //     payload_template.budget.maxCostUsd is the per-hive per-cycle cap
   //     (parseScoutCycleConfig reads it). active:false ⇒ never ticks until armed.
   const payloadTemplate = JSON.stringify({ budget: { maxCostUsd } });
@@ -181,7 +191,7 @@ export async function provisionHiveLearningLoop(
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        payload_template, concurrency, catchup, active, next_fire_at)
-    VALUES (${routineId}, ${hiveSlug}, ${workspaceId}, ${HIVE_SCOUT_ROUTINE_NAME}, 'cron',
+    VALUES (${routineId}, ${scoutScope}, ${workspaceId}, ${HIVE_SCOUT_ROUTINE_NAME}, 'cron',
             ${JSON.stringify({ cron })}::text::jsonb, ${SCOUT_CYCLE_TARGET_ROLE},
             ${payloadTemplate}::text::jsonb, 'skip', 'skip-old', false, now())
     ON CONFLICT (install_slug, name) DO UPDATE SET
@@ -204,7 +214,8 @@ export async function provisionHiveLearningLoop(
     try {
       await sql`
         DELETE FROM harness_shared.routines
-         WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveSlug} AND name = ${HIVE_SCOUT_ROUTINE_NAME}`;
+         WHERE workspace_id = ${workspaceId} AND install_slug = ${scoutScope} AND name = ${HIVE_SCOUT_ROUTINE_NAME}
+           AND ${!scoutRoutineExisted}`;
     } catch {
       /* ignore */
     }

@@ -28,21 +28,26 @@
  * (and the `papercusp-overwatch` flag flips — B-10/D-009), the whole channel is
  * flag-gated dark, so a re-armed wake never fires a half-wired launch.
  */
-import type { Sql } from 'postgres';
-import { clampToFloor } from '@papercusp/debounce-coalesce';
-import { upsertRoutine, setRoutineActive, deleteRoutine } from '@papercusp/db-org';
-import { computeNextFireAt } from '../harness/routines/cron';
+import type { Sql } from "postgres";
+import { clampToFloor } from "@papercusp/debounce-coalesce";
+import { upsertRoutine, deleteRoutine } from "@papercusp/db-org";
+import { computeNextFireAt } from "../harness/routines/cron";
+import {
+  isWorkspaceCoordinationOn,
+  workspaceBrainScopeKey,
+  workspaceBrainReadKeys,
+} from "../workspace-brain-scope";
 
 /** The overwatch role id (C-2, B-01). */
-export const OVERWATCH_ROLE = 'overwatch';
+export const OVERWATCH_ROLE = "overwatch";
 
 /** The hive blueprint overwatch monitors (D-005 per-hive scope; v1 = one hive). */
-export const OVERWATCH_BLUEPRINT_ID = 'coding';
+export const OVERWATCH_BLUEPRINT_ID = "coding";
 
 /** The one-shot wake routine's name (per-harness unique with install_slug).
  *  Deliberately distinct from `hive-wake` so the two wake channels never
  *  collide (the architecture's hard requirement). */
-export const OVERWATCH_WAKE_ROUTINE_NAME = 'overwatch-wake';
+export const OVERWATCH_WAKE_ROUTINE_NAME = "overwatch-wake";
 
 /**
  * The system-action the `overwatch-wake` routine fires when due — the CONTRACT
@@ -52,7 +57,7 @@ export const OVERWATCH_WAKE_ROUTINE_NAME = 'overwatch-wake';
  * role). If B-04 prefers a different action name, change it HERE (one constant)
  * and the watchdog re-arm follows.
  */
-export const OVERWATCH_WAKE_TARGET_ACTION = 'system:overwatch-launch';
+export const OVERWATCH_WAKE_TARGET_ACTION = "system:overwatch-launch";
 
 /** The self-wake floor in seconds — env-tunable, hard min 5s (mirrors the hive). */
 export function overwatchWakeFloorSec(): number {
@@ -62,7 +67,10 @@ export function overwatchWakeFloorSec(): number {
 
 /** Clamp a requested wake time to ≥ now + the floor (delegates to the shared
  *  debounce-coalesce core, like the hive's `clampWakeAt`). */
-export function clampOverwatchWakeAt(requested: Date, now: Date = new Date()): { at: Date; clamped: boolean } {
+export function clampOverwatchWakeAt(
+  requested: Date,
+  now: Date = new Date(),
+): { at: Date; clamped: boolean } {
   const { at, clamped } = clampToFloor({
     requestedAt: requested.getTime(),
     minSleepMs: overwatchWakeFloorSec() * 1_000,
@@ -80,9 +88,24 @@ export function clampOverwatchWakeAt(requested: Date, now: Date = new Date()): {
  */
 export async function declareOverwatchTimeWake(
   sql: Sql,
-  opts: { workspaceId: string; installSlug: string; at: Date; kickoff?: string; now?: Date },
+  opts: {
+    workspaceId: string;
+    installSlug: string;
+    at: Date;
+    kickoff?: string;
+    now?: Date;
+  },
 ): Promise<{ at: Date; clamped: boolean }> {
   const { at, clamped } = clampOverwatchWakeAt(opts.at, opts.now);
+  // K1 workspace-brain re-key (workspace-scoped-coordination P-004 / D-006):
+  // when WORKSPACE_COORDINATION is ON, the one workspace Overwatch owns ONE
+  // overwatch-wake routine, keyed under the workspace sentinel (install_slug =
+  // workspaceId). OFF keeps the legacy per-hive row byte-identical.
+  const scopeSlug = workspaceBrainScopeKey(
+    opts.workspaceId,
+    opts.installSlug,
+    await isWorkspaceCoordinationOn(),
+  );
   // EI-1472: the overwatch wake is a SINGLETON keyed by (install_slug, name) — the
   // global routines_install_slug_name_key enforces ONE row per install regardless of
   // workspace. When the per-workspace conflict (workspace-data-isolation-leaks F-E1) is
@@ -94,16 +117,16 @@ export async function declareOverwatchTimeWake(
   // (harmless under the legacy (install_slug, name) conflict, which updates regardless).
   const existing = await sql<Array<{ workspace_id: string }>>`
     SELECT workspace_id FROM harness_shared.routines
-     WHERE install_slug = ${opts.installSlug} AND name = ${OVERWATCH_WAKE_ROUTINE_NAME}
+     WHERE install_slug = ${scopeSlug} AND name = ${OVERWATCH_WAKE_ROUTINE_NAME}
      LIMIT 1
   `;
   await upsertRoutine(
     sql,
     {
       workspaceId: existing[0]?.workspace_id ?? opts.workspaceId,
-      installSlug: opts.installSlug,
+      installSlug: scopeSlug,
       name: OVERWATCH_WAKE_ROUTINE_NAME,
-      triggerKind: 'cron',
+      triggerKind: "cron",
       triggerConfig: {}, // no cron expr ⇒ one-shot
       targetRole: OVERWATCH_WAKE_TARGET_ACTION,
       payloadTemplate: {
@@ -113,8 +136,8 @@ export async function declareOverwatchTimeWake(
           opts.kickoff ??
           `Self-declared overwatch wake (declared ${new Date().toISOString()}). Survey system health and act on the anomalies.`,
       },
-      concurrency: 'skip',
-      catchup: 'skip-old',
+      concurrency: "skip",
+      catchup: "skip-old",
       active: true,
       nextFireAt: at,
     },
@@ -125,9 +148,24 @@ export async function declareOverwatchTimeWake(
 
 /** Clear overwatch's time wake (deactivate the one-shot routine).
  *  EI-1477: DELETE the row (not just deactivate) to avoid duplicate-key conflicts
- *  under concurrency when a stale/orphaned row would collide with a new UPSERT. */
-export async function clearOverwatchTimeWake(sql: Sql, installSlug: string): Promise<void> {
-  await deleteRoutine(sql, installSlug, OVERWATCH_WAKE_ROUTINE_NAME);
+ *  under concurrency when a stale/orphaned row would collide with a new UPSERT.
+ *
+ *  K1 (workspace-scoped-coordination P-004): when WORKSPACE_COORDINATION is ON and
+ *  a `workspaceId` is supplied, the wake routine lives under the workspace
+ *  sentinel — clear BOTH the sentinel row and the legacy per-hive row (hygiene; a
+ *  pause must leave nothing armed). OFF, or no workspaceId, clears the per-hive
+ *  row only. */
+export async function clearOverwatchTimeWake(
+  sql: Sql,
+  installSlug: string,
+  opts: { workspaceId?: string } = {},
+): Promise<void> {
+  const on = opts.workspaceId ? await isWorkspaceCoordinationOn() : false;
+  const slugs = on
+    ? workspaceBrainReadKeys(opts.workspaceId!, installSlug, true)
+    : [installSlug];
+  for (const slug of slugs)
+    await deleteRoutine(sql, slug, OVERWATCH_WAKE_ROUTINE_NAME);
 }
 
 /** timestamptz arrives as Date or ISO string depending on the pool's type
@@ -143,20 +181,37 @@ function toDateOrNull(v: Date | string | null): Date | null {
 export async function getOverwatchTimeWake(
   sql: Sql,
   installSlug: string,
-): Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null> {
-  const rows = await sql<
-    Array<{ active: boolean; next_fire_at: Date | string | null; last_fired_at: Date | string | null }>
-  >`
-    SELECT active, next_fire_at, last_fired_at
-      FROM harness_shared.routines
-     WHERE install_slug = ${installSlug} AND name = ${OVERWATCH_WAKE_ROUTINE_NAME}
-  `;
-  if (rows.length === 0) return null;
-  return {
-    active: rows[0].active,
-    nextFireAt: toDateOrNull(rows[0].next_fire_at),
-    lastFiredAt: toDateOrNull(rows[0].last_fired_at),
-  };
+  opts: { workspaceId?: string } = {},
+): Promise<{
+  active: boolean;
+  nextFireAt: Date | null;
+  lastFiredAt: Date | null;
+} | null> {
+  const on = opts.workspaceId ? await isWorkspaceCoordinationOn() : false;
+  const slugs = on
+    ? workspaceBrainReadKeys(opts.workspaceId!, installSlug, true)
+    : [installSlug];
+  for (const slug of slugs) {
+    const rows = await sql<
+      Array<{
+        active: boolean;
+        next_fire_at: Date | string | null;
+        last_fired_at: Date | string | null;
+      }>
+    >`
+      SELECT active, next_fire_at, last_fired_at
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND name = ${OVERWATCH_WAKE_ROUTINE_NAME}
+    `;
+    if (rows.length > 0) {
+      return {
+        active: rows[0].active,
+        nextFireAt: toDateOrNull(rows[0].next_fire_at),
+        lastFiredAt: toDateOrNull(rows[0].last_fired_at),
+      };
+    }
+  }
+  return null;
 }
 
 /** The pure liveness read for overwatch (mirrors `HiveLiveness`). */
@@ -178,10 +233,12 @@ export interface OverwatchLiveness {
 export async function overwatchLivenessCheck(
   sql: Sql,
   installSlug: string,
-  opts: { now?: number } = {},
+  opts: { now?: number; workspaceId?: string } = {},
 ): Promise<OverwatchLiveness> {
   const now = opts.now ?? Date.now();
-  const time = await getOverwatchTimeWake(sql, installSlug);
+  const time = await getOverwatchTimeWake(sql, installSlug, {
+    workspaceId: opts.workspaceId,
+  });
   const armed = Boolean(time?.active && time.nextFireAt);
   const lastFired = time?.lastFiredAt?.getTime() ?? 0;
   return {

@@ -22,27 +22,27 @@
  * only the pure `OverwatchBrief` / `OverwatchControlState` types from
  * `./brief-types`.
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { activeWorkspaceId } from '../workspace-registry';
-import { resolveHiveHomeSlug } from '../hive/wake';
-import { lastSystemHealth, runSystemHealthTick } from '../system-health';
-import { mapSystemHealthToBrief, withAnomalies } from './compute-brief';
+import { getOrgPg } from "@papercusp/db-org";
+import { FLAGS } from "@papercusp/flags";
+import { getFlag } from "@papercusp/flags/server";
+import { activeWorkspaceId } from "../workspace-registry";
+import { resolveHiveHomeSlug } from "../hive/wake";
+import { lastSystemHealth, runSystemHealthTick } from "../system-health";
+import { mapSystemHealthToBrief, withAnomalies } from "./compute-brief";
 import {
   emptyOverwatchBrief,
   type OverwatchBrief,
   type OverwatchControlState,
   type OverwatchLiveness,
   type OverwatchRun,
-} from './brief-types';
+} from "./brief-types";
 import {
   getOverwatchStarted,
   getOverwatchCadenceSec,
   listStartedOverwatches,
   DEFAULT_OVERWATCH_CADENCE_SEC,
-} from './control-state';
-import { overwatchLivenessCheck, OVERWATCH_ROLE } from './liveness';
+} from "./control-state";
+import { overwatchLivenessCheck, OVERWATCH_ROLE } from "./liveness";
 
 /** Reuse the shared SystemHealth cache when it is at most this fresh (matches the
  *  Health tab's read floor); past it, warm the cache with one tick. */
@@ -79,18 +79,29 @@ export async function getOverwatchSnapshot(opts?: {
     void runSystemHealthTick(ws).catch(() => {});
   }
 
-  const hiveSlug = opts?.hiveSlug ?? health?.panels.queen.data?.hiveSlug ?? resolveHiveHomeSlug() ?? ws;
+  const hiveSlug =
+    opts?.hiveSlug ??
+    health?.panels.queen.data?.hiveSlug ??
+    resolveHiveHomeSlug() ??
+    ws;
   if (!health) return emptyOverwatchBrief(hiveSlug);
   return withAnomalies(mapSystemHealthToBrief(health, hiveSlug));
 }
 
 /** Resolve the hive the overwatch supervises (v1 single-hive, D-005): an explicit
  *  slug → the env home slug → the first started overwatch (this workspace first). */
-async function resolveOverwatchInstallSlug(ws: string, explicit?: string): Promise<string | null> {
+async function resolveOverwatchInstallSlug(
+  ws: string,
+  explicit?: string,
+): Promise<string | null> {
   const direct = explicit ?? resolveHiveHomeSlug();
   if (direct) return direct;
   const started = await listStartedOverwatches().catch(() => []);
-  return started.find((s) => s.workspaceId === ws)?.installSlug ?? started[0]?.installSlug ?? null;
+  return (
+    started.find((s) => s.workspaceId === ws)?.installSlug ??
+    started[0]?.installSlug ??
+    null
+  );
 }
 
 /**
@@ -105,7 +116,9 @@ export async function getOverwatchControlState(opts?: {
 }): Promise<OverwatchControlState> {
   const ws = opts?.workspaceId ?? activeWorkspaceId();
   const installSlug = await resolveOverwatchInstallSlug(ws, opts?.hiveSlug);
-  const flagEnabled = await getFlag(FLAGS.OVERWATCH, `overwatch:${ws}`).catch(() => false);
+  const flagEnabled = await getFlag(FLAGS.OVERWATCH, `overwatch:${ws}`).catch(
+    () => false,
+  );
 
   if (!installSlug) {
     return {
@@ -123,8 +136,10 @@ export async function getOverwatchControlState(opts?: {
   const { sql } = getOrgPg();
   const [started, cadenceSec, liveness] = await Promise.all([
     getOverwatchStarted(ws, installSlug).catch(() => false),
-    getOverwatchCadenceSec(ws, installSlug).catch(() => DEFAULT_OVERWATCH_CADENCE_SEC),
-    overwatchLivenessCheck(sql, installSlug).catch(() => ({
+    getOverwatchCadenceSec(ws, installSlug).catch(
+      () => DEFAULT_OVERWATCH_CADENCE_SEC,
+    ),
+    overwatchLivenessCheck(sql, installSlug, { workspaceId: ws }).catch(() => ({
       armed: false,
       nextFireAt: null,
       lastFiredAt: null,
@@ -139,7 +154,9 @@ export async function getOverwatchControlState(opts?: {
     flagEnabled,
     armed: liveness.armed,
     nextWakeAt: liveness.nextFireAt ? liveness.nextFireAt.toISOString() : null,
-    lastWakeAt: liveness.lastFiredAt ? liveness.lastFiredAt.toISOString() : null,
+    lastWakeAt: liveness.lastFiredAt
+      ? liveness.lastFiredAt.toISOString()
+      : null,
     staleForMs: liveness.staleForMs,
   };
 }
@@ -160,7 +177,7 @@ interface OverwatchFireRow {
  *  `error: …` on a failed launch; `firing` / `ok` / `no-session-now` are not errors). */
 function statusIsOk(status: string | null): boolean {
   if (!status) return false;
-  return !status.startsWith('error');
+  return !status.startsWith("error");
 }
 
 /**
@@ -193,7 +210,13 @@ export function deriveOverwatchLiveness(input: {
 
   const recentRuns: OverwatchRun[] =
     fire.lastFiredAt && lastMs != null
-      ? [{ firedAt: fire.lastFiredAt.toISOString(), status: fire.lastStatus ?? 'unknown', ok: statusIsOk(fire.lastStatus) }]
+      ? [
+          {
+            firedAt: fire.lastFiredAt.toISOString(),
+            status: fire.lastStatus ?? "unknown",
+            ok: statusIsOk(fire.lastStatus),
+          },
+        ]
       : [];
 
   return {
@@ -215,20 +238,38 @@ export function deriveOverwatchLiveness(input: {
 
 /** Read the overwatch fire row from `autoloop_state` (role='overwatch') for the
  *  given (workspace, install). Fail-soft to an empty/never-fired row. */
-async function readOverwatchFireRow(ws: string, installSlug: string): Promise<OverwatchFireRow> {
+async function readOverwatchFireRow(
+  ws: string,
+  installSlug: string,
+): Promise<OverwatchFireRow> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ last_fired_at: Date | string | null; last_status: string | null; consecutive_errors: number | string | null }>>`
+    const rows = await sql<
+      Array<{
+        last_fired_at: Date | string | null;
+        last_status: string | null;
+        consecutive_errors: number | string | null;
+      }>
+    >`
       SELECT last_fired_at, last_status, consecutive_errors
         FROM harness_shared.autoloop_state
        WHERE workspace_id = ${ws} AND harness_slug = ${installSlug} AND role = ${OVERWATCH_ROLE}
        LIMIT 1
     `;
-    if (rows.length === 0) return { lastFiredAt: null, lastStatus: null, consecutiveErrors: 0 };
+    if (rows.length === 0)
+      return { lastFiredAt: null, lastStatus: null, consecutiveErrors: 0 };
     const r = rows[0];
-    const lastFiredAt = r.last_fired_at == null ? null : r.last_fired_at instanceof Date ? r.last_fired_at : new Date(r.last_fired_at);
+    const lastFiredAt =
+      r.last_fired_at == null
+        ? null
+        : r.last_fired_at instanceof Date
+          ? r.last_fired_at
+          : new Date(r.last_fired_at);
     return {
-      lastFiredAt: lastFiredAt && !Number.isNaN(lastFiredAt.getTime()) ? lastFiredAt : null,
+      lastFiredAt:
+        lastFiredAt && !Number.isNaN(lastFiredAt.getTime())
+          ? lastFiredAt
+          : null,
       lastStatus: r.last_status ?? null,
       consecutiveErrors: Number(r.consecutive_errors ?? 0),
     };
@@ -253,7 +294,9 @@ export async function getOverwatchLiveness(opts?: {
 }): Promise<OverwatchLiveness> {
   const ws = opts?.workspaceId ?? activeWorkspaceId();
   const installSlug = await resolveOverwatchInstallSlug(ws, opts?.hiveSlug);
-  const flagEnabled = await getFlag(FLAGS.OVERWATCH, `overwatch:${ws}`).catch(() => false);
+  const flagEnabled = await getFlag(FLAGS.OVERWATCH, `overwatch:${ws}`).catch(
+    () => false,
+  );
 
   if (!installSlug) {
     return deriveOverwatchLiveness({
@@ -268,7 +311,9 @@ export async function getOverwatchLiveness(opts?: {
 
   const [started, cadenceSec, fire] = await Promise.all([
     getOverwatchStarted(ws, installSlug).catch(() => false),
-    getOverwatchCadenceSec(ws, installSlug).catch(() => DEFAULT_OVERWATCH_CADENCE_SEC),
+    getOverwatchCadenceSec(ws, installSlug).catch(
+      () => DEFAULT_OVERWATCH_CADENCE_SEC,
+    ),
     readOverwatchFireRow(ws, installSlug),
   ]);
 

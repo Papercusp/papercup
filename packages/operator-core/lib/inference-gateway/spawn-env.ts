@@ -121,7 +121,19 @@ export async function resolveSpawnGatewayEnv(opts: {
     accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
   }
   if (provider === 'codex') {
-    return accountId ? { PAPERCUSP_ACCOUNT_ID: accountId } : {};
+    if (!accountId) return {};
+    try {
+      const [{ loadAccountPool }, { credentialRefSupportsOpenAiBearer }] = await Promise.all([
+        import('../deployment/account-pool-store'),
+        import('./credential-store'),
+      ]);
+      const pool = await loadAccountPool(opts.workspaceId);
+      const acct = pool.accounts.find((a) => a.id === accountId && a.provider === 'codex');
+      if (!acct || !(await credentialRefSupportsOpenAiBearer(acct.credentialRef))) return {};
+    } catch {
+      return {};
+    }
+    return { PAPERCUSP_ACCOUNT_ID: accountId };
   }
   // Priority-TIER header (gateway-priority-tiers-2026-06-22): stamp the role only when the tier flag is ON,
   // so flag-OFF emits NO new header (the bee's request stream stays byte-identical to today). The gateway

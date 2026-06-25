@@ -32,11 +32,11 @@
  *   - DARK = expected AND no wake armed AND last activity older than the dark
  *     threshold — the genuine "stalled past its own backstop" case D-004 targets.
  */
-import { getFlag } from '@papercusp/flags/server';
-import { FLAGS } from '@papercusp/flags';
-import { getOrgPg } from '@papercusp/db-org';
-import { overwatchLivenessCheck } from './liveness';
-import { getOverwatchStarted } from './control-state';
+import { getFlag } from "@papercusp/flags/server";
+import { FLAGS } from "@papercusp/flags";
+import { getOrgPg } from "@papercusp/db-org";
+import { overwatchLivenessCheck } from "./liveness";
+import { getOverwatchStarted } from "./control-state";
 
 /** The cross-monitor "dark" threshold in seconds — env-tunable, hard min 60s.
  *  Generous by design: the liveness watchdog re-arms a stalled overwatch well
@@ -49,7 +49,11 @@ export function crossMonitorDarkSec(): number {
 
 /** The conservative dark predicate. `expected` = the role is supposed to be
  *  running right now. */
-function isDark(expected: boolean, live: { armed: boolean; staleForMs: number | null }, darkMs: number): boolean {
+function isDark(
+  expected: boolean,
+  live: { armed: boolean; staleForMs: number | null },
+  darkMs: number,
+): boolean {
   if (!expected) return false; // not running ⇒ nothing to be dark
   if (live.armed) return false; // a wake is scheduled ⇒ alive
   if (live.staleForMs === null) return false; // never woken yet ⇒ starting, not dead
@@ -58,9 +62,12 @@ function isDark(expected: boolean, live: { armed: boolean; staleForMs: number | 
 
 /** Is overwatch expected to be running right now? Only when its flag is ON
  *  (B-10/D-009) AND its control bit is started (B-07's `overwatch:start`). */
-async function overwatchExpected(workspaceId: string, installSlug: string): Promise<boolean> {
+async function overwatchExpected(
+  workspaceId: string,
+  installSlug: string,
+): Promise<boolean> {
   try {
-    if (!(await getFlag(FLAGS.OVERWATCH, 'system'))) return false;
+    if (!(await getFlag(FLAGS.OVERWATCH, "system"))) return false;
     return await getOverwatchStarted(workspaceId, installSlug);
   } catch {
     return false; // unknown ⇒ not-expected ⇒ vacuously alive (never false-dark)
@@ -82,7 +89,10 @@ export async function isOverwatchAlive(
   try {
     if (!(await overwatchExpected(workspaceId, installSlug))) return null;
     const { sql } = getOrgPg();
-    const live = await overwatchLivenessCheck(sql, installSlug, { now: opts.now });
+    const live = await overwatchLivenessCheck(sql, installSlug, {
+      now: opts.now,
+      workspaceId,
+    });
     return !isDark(true, live, opts.darkMs ?? crossMonitorDarkSec() * 1_000);
   } catch {
     return null;

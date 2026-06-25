@@ -7,7 +7,7 @@
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const h = vi.hoisted(() => ({ getFlag: vi.fn(), selectSpawnAccount: vi.fn() }));
+const h = vi.hoisted(() => ({ getFlag: vi.fn(), selectSpawnAccount: vi.fn(), loadAccountPool: vi.fn(), supportsBearer: vi.fn() }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: h.getFlag }));
 vi.mock('@papercusp/flags', () => ({
   FLAGS: {
@@ -16,13 +16,18 @@ vi.mock('@papercusp/flags', () => ({
     GATEWAY_PRIORITY_TIERS: 'gateway-priority-tiers',
   },
 }));
-vi.mock('../deployment/account-pool-store', () => ({ selectSpawnAccount: h.selectSpawnAccount }));
+vi.mock('../deployment/account-pool-store', () => ({ selectSpawnAccount: h.selectSpawnAccount, loadAccountPool: h.loadAccountPool }));
+vi.mock('./credential-store', () => ({ credentialRefSupportsOpenAiBearer: h.supportsBearer }));
 
 import { resolveSpawnGatewayEnv } from './spawn-env';
 
 beforeEach(() => {
   h.getFlag.mockReset();
   h.selectSpawnAccount.mockReset();
+  h.loadAccountPool.mockReset();
+  h.supportsBearer.mockReset();
+  h.loadAccountPool.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'token:/codex' }] });
+  h.supportsBearer.mockResolvedValue(true);
   delete process.env.PAPERCUSP_GATEWAY_PORT;
 });
 
@@ -76,6 +81,18 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
 
     expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
     expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'codex');
+    expect(h.supportsBearer).toHaveBeenCalledWith('token:/codex');
+  });
+
+  test('Codex backend + ChatGPT-auth-only account → no gateway pin; native Codex auth handles it', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.selectSpawnAccount.mockResolvedValue('codex-main');
+    h.loadAccountPool.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'file:/codex-auth.json' }] });
+    h.supportsBearer.mockResolvedValue(false);
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'codex' });
+
+    expect(env).toEqual({});
+    expect(h.supportsBearer).toHaveBeenCalledWith('file:/codex-auth.json');
   });
 
   test('OMP backend → unsupported provider account routing; no gateway env and no account selection', async () => {

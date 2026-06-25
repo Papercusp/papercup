@@ -3,11 +3,22 @@
  * a fake template-tag Sql records the writes. Pins the two load-bearing claims:
  *   (1) a DARK gym row (enabled:false, budget:null) keyed to the hive's OWN slug;
  *   (2) an INACTIVE scout routine under the hive's install_slug (NOT @singleton)
- *       carrying a per-hive payload_template budget;
+ *       carrying a payload_template budget (legacy per-hive when the flag is
+ *       off, workspace-sentinel when WORKSPACE_COORDINATION is on);
  * and that the returned `undo` removes exactly both rows.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
+
+const h = vi.hoisted(() => ({
+  isWorkspaceCoordinationOn: vi.fn(async () => false),
+}));
+
+vi.mock('../workspace-brain-scope', async (importActual) => {
+  const actual = await importActual<typeof import('../workspace-brain-scope')>();
+  return { ...actual, isWorkspaceCoordinationOn: h.isWorkspaceCoordinationOn };
+});
+
 import {
   provisionHiveLearningLoop,
   teardownHiveLearningLoop,
@@ -24,10 +35,17 @@ function makeFakeSql(): { sql: Sql; calls: Array<{ text: string; values: unknown
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
     calls.push({ text: strings.join('?').replace(/\s+/g, ' ').trim(), values });
+    if (strings.join(' ').includes('SELECT id FROM harness_shared.routines')) {
+      return Promise.resolve([] as unknown[]);
+    }
     return Promise.resolve([] as unknown[]);
   };
   return { sql: tag as unknown as Sql, calls };
 }
+
+beforeEach(() => {
+  h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
+});
 
 describe('hiveScoutRoutineId', () => {
   it('sanitizes the install_slug into a routines id', () => {
@@ -97,7 +115,7 @@ describe('provisionHiveLearningLoop', () => {
     const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
     expect(routineInsert).toBeTruthy();
     expect(routineInsert!.values).toContain('rt_alpha_scout_cycle');
-    expect(routineInsert!.values).toContain('alpha'); // install_slug = the hive's OWN slug, NOT @singleton
+    expect(routineInsert!.values).toContain('alpha'); // flag OFF: install_slug = the hive's OWN slug
     expect(routineInsert!.values).not.toContain('@singleton');
     expect(routineInsert!.values).toContain(HIVE_SCOUT_ROUTINE_NAME);
     expect(routineInsert!.values).toContain(SCOUT_CYCLE_TARGET_ROLE);
@@ -128,6 +146,25 @@ describe('provisionHiveLearningLoop', () => {
     expect(acme).not.toBe(beta); // distinct boundaries ⇒ no shared-boundary burst
     // ...and idempotent: re-provisioning the same hive lays down the SAME cron.
     expect(await cronFor('hive-acme')).toBe(acme);
+  });
+
+  it('flag ON writes ONE workspace-sentinel Scout routine instead of a per-hive routine', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    const { sql, calls } = makeFakeSql();
+    const res = await provisionHiveLearningLoop({
+      sql,
+      workspaceId: 'workspace-a',
+      hiveSlug: 'hive-a',
+    });
+
+    expect(res.scoutRoutineId).toBe('rt_workspace_a_scout_cycle');
+    const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
+    expect(routineInsert).toBeTruthy();
+    expect(routineInsert!.values).toContain('rt_workspace_a_scout_cycle');
+    expect(routineInsert!.values).toContain('workspace-a');
+    expect(routineInsert!.values).not.toContain('hive-a');
+    const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
+    expect(JSON.parse(cron)).toEqual({ cron: staggeredHiveScoutCron('workspace-a') });
   });
 
   it('honors a per-hive budget + cron override', async () => {

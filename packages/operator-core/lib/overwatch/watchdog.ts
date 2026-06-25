@@ -28,11 +28,14 @@
  * `harness_shared.hive_watchdog_fires` table with an `overwatch-*` source (no
  * new migration; `source` has no CHECK constraint).
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { getFlag } from '@papercusp/flags/server';
-import { FLAGS } from '@papercusp/flags';
-import { getOverwatchStarted, listStartedWorkspaceOverwatches } from './control-state';
-import { declareOverwatchTimeWake, overwatchLivenessCheck } from './liveness';
+import { getOrgPg } from "@papercusp/db-org";
+import { getFlag } from "@papercusp/flags/server";
+import { FLAGS } from "@papercusp/flags";
+import {
+  getOverwatchStarted,
+  listStartedWorkspaceOverwatches,
+} from "./control-state";
+import { declareOverwatchTimeWake, overwatchLivenessCheck } from "./liveness";
 
 // ── tunables (env-overridable, mirroring the hive watchdog) ───────────────────
 
@@ -53,7 +56,7 @@ export function overwatchWatchdogStaleSec(): number {
 /** Is the overwatch role activated (B-10/D-009 — the load-bearing gate)? */
 export async function overwatchEnabled(): Promise<boolean> {
   try {
-    return await getFlag(FLAGS.OVERWATCH, 'system');
+    return await getFlag(FLAGS.OVERWATCH, "system");
   } catch {
     return false; // unknown ⇒ treat as off (the role ships dark)
   }
@@ -72,7 +75,9 @@ export async function overwatchEnabled(): Promise<boolean> {
  * `listStartedWorkspaceLoops`). OFF (the dark default) ⇒ the raw per-(ws,install)
  * set, BYTE-IDENTICAL to today.
  */
-export async function listGuardedOverwatches(): Promise<Array<{ workspaceId: string; installSlug: string }>> {
+export async function listGuardedOverwatches(): Promise<
+  Array<{ workspaceId: string; installSlug: string }>
+> {
   if (!(await overwatchEnabled())) return [];
   try {
     return await listStartedWorkspaceOverwatches();
@@ -81,13 +86,13 @@ export async function listGuardedOverwatches(): Promise<Array<{ workspaceId: str
   }
 }
 
-export type OverwatchWatchdogSource = 'turn-end' | 'boot' | 'tick';
+export type OverwatchWatchdogSource = "turn-end" | "boot" | "tick";
 
 export interface OverwatchFallbackArmResult {
   /** 'armed' = a fallback wake declared; 'skipped' = nothing to do (flag off /
    *  hive paused / already armed); 'error' = the arm itself failed (recorded,
    *  never thrown). */
-  outcome: 'armed' | 'skipped' | 'error';
+  outcome: "armed" | "skipped" | "error";
   at?: string;
   reason: string;
 }
@@ -105,12 +110,14 @@ async function recordOverwatchFire(opts: {
       INSERT INTO harness_shared.hive_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (
-        ${opts.workspaceId}, ${opts.installSlug}, ${'overwatch-' + opts.source}, ${opts.reason},
-        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${'{}'}::jsonb
+        ${opts.workspaceId}, ${opts.installSlug}, ${"overwatch-" + opts.source}, ${opts.reason},
+        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${"{}"}::jsonb
       )`;
   } catch (e) {
     // Observability must never break the arm.
-    console.warn(`[overwatch-watchdog] fire record failed: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[overwatch-watchdog] fire record failed: ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -127,7 +134,7 @@ export async function recentOverwatchWatchdogFires(
     const rows = await sql`
       SELECT count(*)::int AS n FROM harness_shared.hive_watchdog_fires
       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
-        AND source LIKE ${'overwatch-%'}
+        AND source LIKE ${"overwatch-%"}
         AND fired_at > now() - make_interval(hours => ${windowHours})`;
     return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
   } catch {
@@ -144,7 +151,7 @@ export async function overwatchMidTurn(installSlug: string): Promise<boolean> {
     const { sql } = getOrgPg();
     const rows = await sql`
       SELECT 1 FROM harness_shared.adv_sessions
-      WHERE label LIKE ${'overwatch · ' + installSlug + '/%'} AND ended_at IS NULL
+      WHERE label LIKE ${"overwatch · " + installSlug + "/%"} AND ended_at IS NULL
       LIMIT 1`;
     return rows.length > 0;
   } catch {
@@ -167,21 +174,26 @@ export async function armFallbackOverwatchWake(opts: {
   const { workspaceId, installSlug, source } = opts;
   try {
     if (!(await overwatchEnabled())) {
-      return { outcome: 'skipped', reason: 'overwatch flag off' };
+      return { outcome: "skipped", reason: "overwatch flag off" };
     }
     if (!(await getOverwatchStarted(workspaceId, installSlug))) {
-      return { outcome: 'skipped', reason: 'overwatch not started' };
+      return { outcome: "skipped", reason: "overwatch not started" };
     }
     const { sql } = getOrgPg();
-    const live = await overwatchLivenessCheck(sql, installSlug, { now: opts.now });
+    const live = await overwatchLivenessCheck(sql, installSlug, {
+      now: opts.now,
+      workspaceId,
+    });
     if (live.armed) {
-      return { outcome: 'skipped', reason: 'a wake is already armed' };
+      return { outcome: "skipped", reason: "a wake is already armed" };
     }
     const kickoff =
       `Overwatch watchdog wake (${source}): ${opts.reason} — your previous turn ended without declaring a wake. ` +
       `Survey system health (the brief), act on the anomalies, and ALWAYS declare your next wake before ending a turn. ` +
       `Frequent watchdog wakes are a prompt bug to fix.`;
-    const at = new Date((opts.now ?? Date.now()) + overwatchWatchdogSleepSec() * 1_000);
+    const at = new Date(
+      (opts.now ?? Date.now()) + overwatchWatchdogSleepSec() * 1_000,
+    );
     const armed = await declareOverwatchTimeWake(sql, {
       workspaceId,
       installSlug,
@@ -189,12 +201,24 @@ export async function armFallbackOverwatchWake(opts: {
       kickoff,
       ...(opts.now ? { now: new Date(opts.now) } : {}),
     });
-    await recordOverwatchFire({ workspaceId, installSlug, source, reason: opts.reason, wakeAt: armed.at });
-    return { outcome: 'armed', at: armed.at.toISOString(), reason: opts.reason };
+    await recordOverwatchFire({
+      workspaceId,
+      installSlug,
+      source,
+      reason: opts.reason,
+      wakeAt: armed.at,
+    });
+    return {
+      outcome: "armed",
+      at: armed.at.toISOString(),
+      reason: opts.reason,
+    };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.warn(`[overwatch-watchdog] fallback arm failed (${installSlug}, ${source}): ${msg}`);
-    return { outcome: 'error', reason: msg };
+    console.warn(
+      `[overwatch-watchdog] fallback arm failed (${installSlug}, ${source}): ${msg}`,
+    );
+    return { outcome: "error", reason: msg };
   }
 }
 
@@ -212,8 +236,8 @@ export async function overwatchTurnEndCheck(opts: {
 }): Promise<OverwatchFallbackArmResult> {
   return armFallbackOverwatchWake({
     ...opts,
-    source: 'turn-end',
-    reason: 'overwatch turn finished with no next wake armed',
+    source: "turn-end",
+    reason: "overwatch turn finished with no next wake armed",
   });
 }
 
@@ -222,7 +246,9 @@ export async function overwatchTurnEndCheck(opts: {
  * mid-turn. For every GUARDED overwatch with no wake armed, arm the fallback.
  * Fail-soft; never blocks boot.
  */
-export async function overwatchBootCheck(): Promise<OverwatchFallbackArmResult[]> {
+export async function overwatchBootCheck(): Promise<
+  OverwatchFallbackArmResult[]
+> {
   const results: OverwatchFallbackArmResult[] = [];
   try {
     for (const { workspaceId, installSlug } of await listGuardedOverwatches()) {
@@ -230,13 +256,15 @@ export async function overwatchBootCheck(): Promise<OverwatchFallbackArmResult[]
         await armFallbackOverwatchWake({
           workspaceId,
           installSlug,
-          source: 'boot',
-          reason: 'host booted; guarded overwatch had no wake armed',
+          source: "boot",
+          reason: "host booted; guarded overwatch had no wake armed",
         }),
       );
     }
   } catch (e) {
-    console.warn(`[overwatch-watchdog] boot check failed: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[overwatch-watchdog] boot check failed: ${e instanceof Error ? e.message : e}`,
+    );
   }
   return results;
 }
@@ -247,7 +275,9 @@ export async function overwatchBootCheck(): Promise<OverwatchFallbackArmResult[]
  * stale (quiet ≥ staleSec, or never woken at all). Every condition is a cheap
  * query; the wake it MAY arm is the exception path.
  */
-export async function overwatchWatchdogSweep(opts: { now?: number } = {}): Promise<OverwatchFallbackArmResult[]> {
+export async function overwatchWatchdogSweep(
+  opts: { now?: number } = {},
+): Promise<OverwatchFallbackArmResult[]> {
   const results: OverwatchFallbackArmResult[] = [];
   try {
     const guarded = await listGuardedOverwatches();
@@ -255,26 +285,35 @@ export async function overwatchWatchdogSweep(opts: { now?: number } = {}): Promi
     const { sql } = getOrgPg();
     const now = opts.now ?? Date.now();
     for (const { workspaceId, installSlug } of guarded) {
-      const live = await overwatchLivenessCheck(sql, installSlug, { now });
+      const live = await overwatchLivenessCheck(sql, installSlug, {
+        now,
+        workspaceId,
+      });
       if (live.armed) continue;
       // Stale gate: a just-finished turn belongs to the turn-end seam; a fresh
       // boot to the boot seam. The sweep only catches the long-quiet case —
       // EXCEPT an overwatch that has never woken (staleForMs null), which would
       // otherwise never trip the threshold.
-      if (live.staleForMs !== null && live.staleForMs < overwatchWatchdogStaleSec() * 1_000) continue;
+      if (
+        live.staleForMs !== null &&
+        live.staleForMs < overwatchWatchdogStaleSec() * 1_000
+      )
+        continue;
       if (await overwatchMidTurn(installSlug)) continue;
       results.push(
         await armFallbackOverwatchWake({
           workspaceId,
           installSlug,
-          source: 'tick',
-          reason: 'guarded overwatch quiet with no wake armed',
+          source: "tick",
+          reason: "guarded overwatch quiet with no wake armed",
           now,
         }),
       );
     }
   } catch (e) {
-    console.warn(`[overwatch-watchdog] sweep failed: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[overwatch-watchdog] sweep failed: ${e instanceof Error ? e.message : e}`,
+    );
   }
   return results;
 }

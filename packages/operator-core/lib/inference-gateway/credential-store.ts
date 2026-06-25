@@ -109,12 +109,25 @@ export interface CredentialResolver {
   readonly kind: 'token' | 'file';
 }
 
+function pickBearerString(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const rec = value as Record<string, unknown>;
+  for (const key of ['value', 'apiKey', 'api_key', 'key']) {
+    const candidate = rec[key];
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+}
+
 function extractBearerFromFile(raw: string, path: string): string {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error(`inference-gateway: empty bearer token at ${path}`);
   if (!trimmed.startsWith('{')) return trimmed;
   try {
-    const parsed = JSON.parse(trimmed) as { auth_mode?: unknown; tokens?: { access_token?: unknown } };
+    const parsed = JSON.parse(trimmed) as { auth_mode?: unknown; OPENAI_API_KEY?: unknown; tokens?: { access_token?: unknown } };
+    const apiKey = pickBearerString(parsed.OPENAI_API_KEY);
+    if (apiKey) return apiKey;
     if (parsed.auth_mode === 'chatgpt') {
       throw new Error(
         `inference-gateway: Codex/OpenAI gateway credential at ${path} is a ChatGPT auth.json; ` +
@@ -128,6 +141,15 @@ function extractBearerFromFile(raw: string, path: string): string {
     throw new Error(`inference-gateway: bearer credential JSON at ${path} failed to parse`);
   }
   throw new Error(`inference-gateway: bearer credential JSON at ${path} has no tokens.access_token`);
+}
+
+export async function credentialRefSupportsOpenAiBearer(credentialRef: string): Promise<boolean> {
+  try {
+    await makeBearerCredentialResolver(credentialRef).current();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
