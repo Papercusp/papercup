@@ -224,6 +224,19 @@ the recipient up in `coord:presence` (it carries their full `ownerId` +
 another path only if it STILL misses. Never report "queued to their inbox" as if
 the message landed.
 
+**Wake the blocker's OWNER directly — never relay a blocker through a third
+agent.** When a specific agent owns what's blocking you (their lane, their code,
+their in-flight migration is the thing that's stuck), `coord:send` **them**
+directly with `wake:'required'` — do NOT ask a *second* agent to "coordinate" or
+"relay to" the owner. A relay-through-a-middleman adds a hop, depends on the
+middleman actually re-waking the owner, delays the fix, and HIDES the `woken:0`
+signal that would have told you the owner is dead. Go one hop to the owner and
+VERIFY pickup; fall back to a relay, a respawn, or doing it yourself only AFTER the
+direct wake MISSES (`woken:0` / `recipient_dead` / `recipient_absent`) — which also
+means the owner isn't running, so stop waiting on them and pick a LIVE driver
+(`coord:presence → sessionState:'live'` + recent `lastActiveSecAgo`). "I handed it
+off" only counts if the handoff woke a live owner — verify, don't assume.
+
 **Asked to yield? Checkpoint, then end the turn.** A cooperative yield arrives
 as a high-priority `yield` line in your `[coord+N]` block: finish the atomic
 edit you're mid-way through and **release its lock** (never a half-written

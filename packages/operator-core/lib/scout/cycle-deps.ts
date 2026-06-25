@@ -59,6 +59,8 @@ export interface BuildScoutCycleDepsOptions {
   limits?: ScoutCycleLimits;
   /** Opaque cycle id (provenance grouping). */
   cycleId?: string;
+  /** Best-effort phase reporter used by scheduler timeout diagnostics. */
+  onPhase?: ScoutCycleDeps['onPhase'];
   /** Override the state-of-Hive digest readers (tests). Default: prod `buildStateOfHiveReaders()`. */
   stateOfHiveReaders?: StateOfHiveReaders;
   /** Options forwarded to `synthesizeStateOfHive` (e.g. `nowMs`/`perCategory`). */
@@ -179,6 +181,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     llmCall: opts.llmCall,
     limits: opts.limits,
     cycleId: opts.cycleId,
+    ...(opts.onPhase ? { onPhase: opts.onPhase } : {}),
     readCorpus: async () => {
       const digest = await synthesizeStateOfHive(readers, opts.digestOptions);
       // Scout `rubric` rail (plan-templates-and-rubric-v2 P-009, SCOUT_RUBRIC_RAIL,
