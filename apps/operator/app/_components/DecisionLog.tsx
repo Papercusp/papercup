@@ -79,9 +79,9 @@ export interface DecisionLogProps {
   externalDetail?: boolean;
 }
 
-/** POST the revert to the dedicated loopback route (mirrors GraduationPrompts'
- *  ratify): autonomy:tripwire_revert REQUIRES args so it's palette-excluded — the
- *  feed writes through /api/agent-mcp/autonomy-tripwire-revert instead. */
+/** POST the revert to the dedicated loopback route: autonomy:tripwire_revert
+ *  REQUIRES args so it's palette-excluded — the feed writes through
+ *  /api/agent-mcp/autonomy-tripwire-revert instead. */
 async function revertDecision(tripwireId: string, reason: string): Promise<void> {
   const r = await fetch('/api/agent-mcp/autonomy-tripwire-revert', {
     method: 'POST',

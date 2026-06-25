@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   // The fake operator_settings KV: key → 'true' | 'false' | '<int>'.
   kv: new Map<string, string>(),
   upserts: [] as Array<{ key: string; value: string }>,
+  bulkUpdates: [] as Array<{ prefix: string; excludedKey: string; value: string }>,
 }));
 
 // A fake tagged-template SQL that reads/writes h.kv by statement text + bound key.
@@ -35,6 +36,15 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
     const [key, value] = values as [string, string];
     h.kv.set(key, value);
     h.upserts.push({ key, value });
+    return Promise.resolve([]);
+  }
+  if (/UPDATE harness_shared\.operator_settings/i.test(text)) {
+    const [value, , , likePattern, excludedKey] = values as [string, string, number, string, string];
+    const prefix = likePattern.endsWith('%') ? likePattern.slice(0, -1) : likePattern;
+    for (const key of h.kv.keys()) {
+      if (key.startsWith(prefix) && key !== excludedKey) h.kv.set(key, value);
+    }
+    h.bulkUpdates.push({ prefix, excludedKey, value });
     return Promise.resolve([]);
   }
   if (/SELECT value FROM harness_shared\.operator_settings WHERE key = /i.test(text)) {
@@ -79,6 +89,7 @@ const HIVE = 'papercusp';
 beforeEach(() => {
   h.kv.clear();
   h.upserts.length = 0;
+  h.bulkUpdates.length = 0;
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
   delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
 });
@@ -90,10 +101,35 @@ describe('setOverwatchStarted — K1 workspace-sentinel write key (P-004)', () =
     expect(h.upserts).toEqual([{ key: `overwatch_started:${WS}:${HIVE}`, value: 'true' }]);
   });
 
-  it('flag ON → writes the workspace-sentinel row (install dimension = workspaceId)', async () => {
+  it('flag ON → writes the workspace-sentinel row and converges the legacy fallback row', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
     await setOverwatchStarted(WS, HIVE, true);
-    expect(h.upserts).toEqual([{ key: `overwatch_started:${WS}:${WS}`, value: 'true' }]);
+    expect(h.upserts).toEqual([
+      { key: `overwatch_started:${WS}:${WS}`, value: 'true' },
+      { key: `overwatch_started:${WS}:${HIVE}`, value: 'true' },
+    ]);
+  });
+
+  it('flag ON + pause → clears stale legacy true rows so the watchdog cannot split-brain', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    h.kv.set(`overwatch_started:${WS}:old-hive-a`, 'true');
+    h.kv.set(`overwatch_started:${WS}:old-hive-b`, 'true');
+    h.kv.set(`overwatch_started:other-ws:old-hive`, 'true');
+
+    await setOverwatchStarted(WS, HIVE, false);
+
+    expect(h.kv.get(`overwatch_started:${WS}:${WS}`)).toBe('false');
+    expect(h.kv.get(`overwatch_started:${WS}:${HIVE}`)).toBe('false');
+    expect(h.kv.get(`overwatch_started:${WS}:old-hive-a`)).toBe('false');
+    expect(h.kv.get(`overwatch_started:${WS}:old-hive-b`)).toBe('false');
+    expect(h.kv.get(`overwatch_started:other-ws:old-hive`)).toBe('true');
+    expect(h.bulkUpdates).toEqual([
+      {
+        prefix: `overwatch_started:${WS}:`,
+        excludedKey: `overwatch_started:${WS}:${WS}`,
+        value: 'false',
+      },
+    ]);
   });
 });
 

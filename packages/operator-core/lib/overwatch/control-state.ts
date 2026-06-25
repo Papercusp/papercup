@@ -27,7 +27,10 @@
  * one workspace Overwatch has a single control state spanning all the workspace's
  * hives. Every read ships a READ-FALLBACK to the legacy per-hive row
  * (`workspaceBrainReadKeys`) so the live single-hive workspace stays
- * zero-regression pre-backfill. Flag OFF (the dark default) ⇒ the legacy
+ * zero-regression pre-backfill. Writes keep the sentinel and legacy rows
+ * converged while the flag is ON; otherwise a stale legacy `true` can make the
+ * watchdog think there is work to guard while the sentinel `false` makes the
+ * actual re-arm path skip. Flag OFF (the dark default) ⇒ the legacy
  * per-(ws,install) keying, BYTE-IDENTICAL to today.
  */
 import { getOrgPg } from '@papercusp/db-org';
@@ -79,6 +82,20 @@ async function writeSetting(key: string, value: string, description: string): Pr
   `;
 }
 
+async function writeExistingStartedRowsForWorkspace(
+  workspaceId: string,
+  value: string,
+  description: string,
+): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.operator_settings
+    SET value = ${value}, description = ${description}, updated_at = ${Date.now()}
+    WHERE key LIKE ${STARTED_PREFIX + workspaceId + ':%'}
+      AND key <> ${startedKey(workspaceId, workspaceId)}
+  `;
+}
+
 /** Whether the overwatch is started (default false — born paused/idle, like the hive).
  *  K1: ON ⇒ read the workspace-sentinel row first, then fall back to the legacy
  *  per-hive row (zero regression pre-backfill). OFF ⇒ the per-hive row only,
@@ -92,19 +109,26 @@ export async function getOverwatchStarted(workspaceId: string, installSlug: stri
   return false;
 }
 
-/** K1: ON ⇒ write the workspace-sentinel row (the install dimension collapses);
- *  OFF ⇒ the per-hive row, byte-identical to today. */
+/** K1: ON ⇒ write the workspace-sentinel row (the install dimension collapses)
+ *  and converge the legacy fallback rows. OFF ⇒ the per-hive row,
+ *  byte-identical to today. */
 export async function setOverwatchStarted(
   workspaceId: string,
   installSlug: string,
   started: boolean,
 ): Promise<void> {
-  const scope = workspaceBrainScopeKey(workspaceId, installSlug, await isWorkspaceCoordinationOn());
-  await writeSetting(
-    startedKey(workspaceId, scope),
-    started ? 'true' : 'false',
-    'Start/Pause Overwatch state (overwatch-role B-07). true = the overwatch supervisor loop should be running; the loop (B-04) + liveness watchdog (B-09) hold the wake-armed invariant only while true.',
-  );
+  const on = await isWorkspaceCoordinationOn();
+  const scope = workspaceBrainScopeKey(workspaceId, installSlug, on);
+  const value = started ? 'true' : 'false';
+  const description =
+    'Start/Pause Overwatch state (overwatch-role B-07). true = the overwatch supervisor loop should be running; the loop (B-04) + liveness watchdog (B-09) hold the wake-armed invariant only while true.';
+  await writeSetting(startedKey(workspaceId, scope), value, description);
+  if (on && installSlug !== scope) {
+    await writeSetting(startedKey(workspaceId, installSlug), value, description);
+  }
+  if (on && !started) {
+    await writeExistingStartedRowsForWorkspace(workspaceId, value, description);
+  }
 }
 
 /** The configured wake cadence (seconds), clamped; the default when unset/invalid.

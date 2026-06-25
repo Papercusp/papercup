@@ -14,8 +14,6 @@
  * is now live — <RecentAutoDecisions/> renders the decision ledger's disposition
  * layer via the `decision.ledger` sync query (queen-autonomy B-13 / P-113);
  * per-row one-click undo lights up once B-16's tripwire records a revert handle.
- * Inline graduation-eligible prompts (P-032) still need the graduation engine
- * (B-16) and stay a labelled placeholder until that lands.
  */
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
@@ -26,7 +24,6 @@ import { FLAGS } from '@papercusp/flags';
 import { Checkbox } from '../../harness/Checkbox';
 import { CeilingSlider, CEILING_LEVELS, CEILING_SHORT_LABEL, type Ceiling } from './CeilingSlider';
 import RecentAutoDecisions from './RecentAutoDecisions';
-import GraduationPrompts from './GraduationPrompts';
 
 /* ── Wire type — mirrors AutonomyPolicyView (operator-core/lib/autonomy/policy-view.ts),
  *    kept local per the client wire-type decoupling convention. ── */
@@ -483,10 +480,6 @@ export default function AutonomySettingsPage() {
           lights up once B-16's tripwire records a revert handle. */}
       <RecentAutoDecisions />
 
-      {/* P-032 inline graduation-eligible prompts — the owner ratifies an earned
-          promotion (autonomy.graduation → autonomy-policy-set graduatedLevel, B-16/P-082).
-          Owner-authority only; never an auto allowlist edit. */}
-      <GraduationPrompts />
     </div>
   );
 }

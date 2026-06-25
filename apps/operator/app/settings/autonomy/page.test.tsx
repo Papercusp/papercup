@@ -18,7 +18,7 @@ vi.mock('@papercusp/sync', () => ({
   // (decision.ledger, B-13/P-113) gets its own empty result so it renders its
   // empty state rather than mis-rendering policy rows as decision rows.
   useSyncQuery: (opts?: { queryName?: string }) =>
-    opts?.queryName === 'decision.ledger' || opts?.queryName === 'autonomy.graduation'
+    opts?.queryName === 'decision.ledger'
       ? { data: [], loading: false, error: null, fetching: false, invalidate: vi.fn() }
       : { ...syncResult, fetching: false, invalidate: vi.fn() },
   useSyncMutate: () => mutateMock,
@@ -180,13 +180,11 @@ describe('AutonomySettingsPage', () => {
     expect(screen.getByText('Release & deploy')).toBeTruthy();
   });
 
-  it('renders the live recent-auto-decisions feed (P-031) + the graduation surface (P-032)', () => {
+  it('renders the live recent-auto-decisions feed (P-031)', () => {
     render(<AutonomySettingsPage />);
     // P-031 feed (RecentAutoDecisions via decision.ledger) — empty mock → empty state.
     expect(screen.getByRole('heading', { name: /Recent auto-decisions/i })).toBeTruthy();
     expect(screen.getByText(/No decisions logged yet/i)).toBeTruthy();
-    // P-032 graduation surface (GraduationPrompts via autonomy.graduation) — empty mock → empty state.
-    expect(screen.getByRole('heading', { name: 'Graduation' })).toBeTruthy();
-    expect(screen.getByText(/No categories are graduation-eligible yet/i)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Graduation' })).toBeNull();
   });
 });

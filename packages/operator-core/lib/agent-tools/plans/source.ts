@@ -28,7 +28,7 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { resolveProject, resolveWorkspaceForHarnessSlug } from '../../harness-core';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { hiveHomeSlugForHarness } from '../../hive-federation';
 
@@ -242,7 +242,8 @@ function rowFromDb(r: PlanDbRow): PlanRow {
  * `resolvePlanScope` so the "this is the operator home" predicate is defined once.
  */
 function isOperatorHomeScope(raw: string | undefined): boolean {
-  return !raw || raw === '*' || raw === 'all' || raw === operatorHomeHarnessSlug();
+  const canonical = raw ? canonicalHarnessSlug(raw) : raw;
+  return !canonical || canonical === '*' || canonical === 'all' || canonical === operatorHomeHarnessSlug();
 }
 
 /** Injectable seam for the projects-table lookup — overridden in unit tests
@@ -354,7 +355,10 @@ export async function resolvePlanScope(
     registryFallback?: RegistryWorkspaceResolver;
   } = {},
 ): Promise<{ workspaceId: string; harnessSlug: string }> {
-  const raw = opts.harnessSlug?.trim();
+  const rawInput = opts.harnessSlug?.trim();
+  const raw = rawInput && rawInput !== '*' && rawInput !== 'all'
+    ? canonicalHarnessSlug(rawInput)
+    : rawInput;
   if (isOperatorHomeScope(raw)) {
     // Operator-home / wildcard branch — WI-148 part-B (owner GO 2026-06-16): honor an
     // explicit workspaceId, else PAPERCUSP_WORKSPACE_ID (flipped from
