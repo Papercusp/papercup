@@ -172,6 +172,9 @@ function snapshotRowToEnvelope(
     ts: row.ts,
     schema_version: row.schema_version,
     ...(row.hlc ? { hlc: row.hlc } : {}),
+    // WI-808: carry the rekey epoch from a snapshot row so the decrypt-gate can
+    // resolve the key (mirrors toEnvelope; absent on plaintext / tombstone rows).
+    ...(row.epoch != null ? { epoch: row.epoch } : {}),
     writerPubkey: authorPubkey,
     sourceLogKeyHex,
   };
@@ -189,6 +192,12 @@ function toEnvelope(op: PeerLogOp, sourceLogKeyHex: string): OpEnvelope {
     // Before this, the envelope dropped `hlc`, so even an op that DID carry one
     // (e.g. a peer on a newer build) fell back to wall-clock `ts` at merge time.
     ...(op.hlc ? { hlc: op.hlc } : {}),
+    // WI-808: carry the epoch stamp onto the OpEnvelope the apply-side decrypt-gate
+    // reads. Before this, the merge dropped `epoch` (exactly as it once dropped
+    // `hlc`), so an encrypted content op arrived at the gate with `epoch == null` →
+    // treated as plaintext → ciphertext passed to scopedApply → silent drop on the
+    // joiner (zero decrypt-gate trace). Absent on plaintext ops (today's path).
+    ...(op.epoch != null ? { epoch: op.epoch } : {}),
     writerPubkey: op.author_pubkey,
     sourceLogKeyHex,
   };

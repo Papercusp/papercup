@@ -1986,7 +1986,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           sigValid,
         };
         const decision = (await admitsAsKnownHiveMember(entry.frame, sigValid))
-          ? { admit: true }
+          ? ({ admit: true } as const)
           : await admit(input);
         if (decision.admit) {
           // A-003 + WI-559: identity is re-verified (admit() above re-checked revocation); now
@@ -2291,6 +2291,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // STAGE-5: thread the real device pubkey. Until then attribute to
         // the write's clobber pubkey (or empty), which the merge tolerates.
         author_pubkey: stamped.writerPubkey ?? '',
+        // WI-808: carry the epoch stamp onto the WIRE op. The outbox drain's
+        // EpochEncryptCapability sets `op.epoch` (+ encrypts `value`) for selected
+        // hive-content ops; without this the stamp was dropped here, so the
+        // receiver's decrypt-gate saw `epoch == null` and silently dropped every
+        // encrypted content op. Absent on plaintext ops (json omits undefined).
+        epoch: stamped.epoch,
       });
     },
     admitted,

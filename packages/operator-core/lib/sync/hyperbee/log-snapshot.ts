@@ -37,6 +37,14 @@ export interface SnapshotRow {
   table: string;
   hbKey: string;
   value: unknown;
+  /**
+   * WI-808: the hive-rekey epoch the row's encrypted `value` was sealed under,
+   * preserved verbatim so a snapshot-seeded joiner can still decrypt it. Without
+   * it, an encrypted content op compacted into a snapshot would reconstitute with
+   * `epoch == null` → the decrypt-gate treats the ciphertext as plaintext → silent
+   * drop (the same class as the live-merge bug). Absent on plaintext rows.
+   */
+  epoch?: number;
   ts: number;
   schema_version: number;
   /** The winning op's HLC (P-010), preserved verbatim. */
@@ -120,6 +128,9 @@ export function buildSnapshotRows(
         ts: op.ts,
         schema_version: op.schema_version,
         ...(op.hlc ? { hlc: op.hlc } : {}),
+        // WI-808: preserve the rekey epoch so a snapshot-seeded joiner can decrypt
+        // an encrypted content row (a `del` tombstone is never encrypted → omitted).
+        ...(op.epoch != null ? { epoch: op.epoch } : {}),
       });
     } else if (op.type === 'del') {
       // EI-1688: reconstitute the delete as a tombstone (carry the del's ts/hlc),

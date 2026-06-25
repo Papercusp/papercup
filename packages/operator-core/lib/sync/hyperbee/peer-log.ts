@@ -65,6 +65,20 @@ export interface PeerLogOp {
    * Round-trips through `valueEncoding:'json'` like every other field.
    */
   hlc?: string;
+  /**
+   * Hive epoch RE-KEY stamp (WI-808 fix; shared-hive-rekey-2026-06-19). The epoch
+   * the op's encrypted `value` payload was sealed under — set by the outbox drain's
+   * `EpochEncryptCapability` for selected hive-content ops, read on the receive side
+   * by the apply-side decrypt-gate to resolve the wrapped epoch key + AAD.
+   *
+   * MUST be carried on the WIRE: `OpEnvelope.epoch` existed, but this `PeerLogOp`
+   * (the single-writer log's on-disk op) never carried it, so the send append +
+   * receive `toEnvelope` dropped it → the gate saw `epoch == null` → it treated the
+   * ciphertext as plaintext and the content op silently dropped on every joiner
+   * (zero decrypt-gate trace). Optional + additive: round-trips through
+   * `valueEncoding:'json'` like `hlc`; absent on plaintext ops (today's path).
+   */
+  epoch?: number;
 }
 
 // Compile-time guard that catches field-REMOVAL drift only: if a field named
@@ -73,7 +87,7 @@ export interface PeerLogOp {
 // a `PeerLogOp` (with its required versions) still satisfies the `Pick`. Purely
 // structural; no runtime cost. Keeps the per-peer-log op aligned with the
 // projection-layer `OpEnvelope` (op-envelope-types.ts).
-type _PeerLogOpSharesEnvelope = Pick<OpEnvelope, 'table' | 'hbKey' | 'value' | 'ts' | 'schema_version'>;
+type _PeerLogOpSharesEnvelope = Pick<OpEnvelope, 'table' | 'hbKey' | 'value' | 'ts' | 'schema_version' | 'epoch'>;
 const _opEnvelopeCompat: (op: PeerLogOp) => _PeerLogOpSharesEnvelope = (op) => op;
 void _opEnvelopeCompat;
 

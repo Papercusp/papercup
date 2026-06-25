@@ -15,6 +15,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { OpEnvelope } from './op-envelope-types';
 import { mergeAdmittedLogs, type AdmittedLog } from './read-merge';
+import { buildSnapshotRows, SNAPSHOT_TABLE_TAG } from './log-snapshot';
+import type { PeerLogOp } from './peer-log';
 
 // Typed apply sink so `mock.calls[0][0]` resolves to the OpEnvelope argument
 // (a bare `vi.fn(async () => true)` infers a zero-arg tuple → TS2493 on indexing).
@@ -35,6 +37,45 @@ describe('mergeAdmittedLogs', () => {
     expect(applied).toBe(1);
     expect(apply).toHaveBeenCalledTimes(1);
     expect(apply.mock.calls[0][0]).toMatchObject({ value:{status:'done'}, ts:200, writerPubkey:'B' });
+  });
+
+  // WI-808 (REGRESSION GUARD): the hive-rekey `epoch` stamp MUST survive the
+  // PeerLogOp→OpEnvelope merge so the apply-side decrypt-gate can resolve the key.
+  // Before the fix `toEnvelope` dropped `epoch` (like `hlc` pre-P-010), so an
+  // encrypted content op reached the gate with `epoch == null` → it was treated as
+  // plaintext → the `{__rekey}` ciphertext hit scopedApply → SILENT DROP on every
+  // joiner (zero decrypt-gate trace). This is the federation-blocking content bug.
+  it('WI-808: carries `epoch` through the merge to applyImpl (encrypted content op)', async () => {
+    const apply = applyMock();
+    const logs = [ fakeLog('a'.repeat(64), [
+      { type:'put', table:'harness_features_consolidated', hbKey:'F-1', value:{ __rekey:'YWJj' }, ts:100, schema_version:1, author_pubkey:'A', epoch:7 },
+    ])];
+    await mergeAdmittedLogs(logs, { applyImpl: apply });
+    expect(apply.mock.calls[0][0].epoch).toBe(7); // was undefined before the fix
+  });
+
+  it('WI-808: a plaintext op (no epoch) still carries no `epoch` (byte-identical path)', async () => {
+    const apply = applyMock();
+    const logs = [ fakeLog('a'.repeat(64), [
+      { type:'put', table:'contributors', hbKey:'C-1', value:{}, ts:1, schema_version:1, author_pubkey:'A' },
+    ])];
+    await mergeAdmittedLogs(logs, { applyImpl: apply });
+    expect(apply.mock.calls[0][0].epoch).toBeUndefined();
+  });
+
+  it('WI-808: `epoch` survives compaction — buildSnapshotRows → snapshot merge carries it', async () => {
+    const apply = applyMock();
+    const ops: PeerLogOp[] = [
+      { type:'put', table:'harness_features_consolidated', hbKey:'F-9', value:{ __rekey:'eHl6' }, ts:5, schema_version:1, author_pubkey:'A', epoch:3 },
+    ];
+    const rows = buildSnapshotRows(ops);
+    expect(rows[0].epoch).toBe(3); // build seam preserves it
+    const snapshotOp = {
+      type:'put', table:SNAPSHOT_TABLE_TAG, hbKey:'__snap__',
+      value:{ coversUpTo: 1, rows }, ts:5, schema_version:1, author_pubkey:'A',
+    };
+    await mergeAdmittedLogs([ fakeLog('a'.repeat(64), [snapshotOp]) ], { applyImpl: apply });
+    expect(apply.mock.calls[0][0].epoch).toBe(3); // snapshotRowToEnvelope preserves it
   });
 
   it('del beats put on a ts tie', async () => {
