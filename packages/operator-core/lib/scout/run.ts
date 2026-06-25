@@ -58,6 +58,7 @@ export type ScoutCycleRunner = (ctx: {
    *  feedback for `scout:<hive>`; the runner then targets a REVISION of those draft
    *  plans (register-scout-action.ts) instead of fresh ideation. */
   queenFeedback?: QueenFeedbackItem[];
+  signal?: AbortSignal;
 }) => Promise<ScoutCycleLike>;
 
 export interface ScoutCycleActionConfig {
@@ -89,7 +90,7 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
   return buildScoutTickDeps({
     harnessSlug: input.installSlug,
     workspaceId: input.workspaceId,
-    runCycle: ({ budget, cycleId, queenFeedback }) =>
+    runCycle: ({ budget, cycleId, queenFeedback, signal }) =>
       runCycle({
         harnessSlug: input.installSlug,
         workspaceId: input.workspaceId,
@@ -97,6 +98,7 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
         cycleId,
         scoutConfig,
         ...(queenFeedback ? { queenFeedback } : {}),
+        ...(signal ? { signal } : {}),
       }),
     readIdleRatio: () => readHiveIdleRatio({ workspaceId: input.workspaceId }),
     readFrictionSignals: () => readFrictionSignalCount({ harnessSlug: input.installSlug }),
