@@ -88,3 +88,6 @@
 [submodule "libs/generic/control-mutation"]
 	path = libs/generic/control-mutation
 	url = https://github.com/Papercusp/control-mutation.git
+[submodule "libs/generic/prospect-contract"]
+	path = libs/generic/prospect-contract
+	url = https://github.com/Papercusp/prospect-contract.git
