@@ -66,6 +66,7 @@ const MOCKED_MODULES = [
   '../../agent-chat-stream',
   '../../agent-tools/oracle/prompts',
   '../../agent-tools',
+  '../../agent-tools/index',
   '../../workspace-registry',
   '../../auth',
   '@papercusp/flags/server',
@@ -94,6 +95,7 @@ async function oracleChatHandler(
     writeOracleConfig: vi.fn(async () => {}),
   }));
   vi.doMock('../../agent-tools', () => ({}));
+  vi.doMock('../../agent-tools/index', () => ({}));
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
   vi.doMock('../../auth', () => ({ getSessionUserOrDefault: vi.fn(async () => ({ id: 'user-1' })) }));
   vi.doMock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => opts.flagOn !== false) }));

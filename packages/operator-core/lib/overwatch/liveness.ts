@@ -132,6 +132,11 @@ export async function declareOverwatchTimeWake(
       payloadTemplate: {
         blueprintId: OVERWATCH_BLUEPRINT_ID,
         role: OVERWATCH_ROLE,
+        // K1 workspace-brain scope stores the routine row under the workspace
+        // sentinel, but the launch route is still harness-scoped. Preserve the
+        // real hive home so the system action never tries to invoke
+        // /api/harness/<workspace-id>/invoke.
+        hiveSlug: opts.installSlug,
         kickoff:
           opts.kickoff ??
           `Self-declared overwatch wake (declared ${new Date().toISOString()}). Survey system health and act on the anomalies.`,

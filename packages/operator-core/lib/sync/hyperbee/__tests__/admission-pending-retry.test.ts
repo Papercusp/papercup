@@ -74,6 +74,27 @@ async function pollUntil<T>(
 }
 
 describe('boot pending-retry loop (D-006)', () => {
+  function capturePendingRetryTimer(): {
+    setTimeout: typeof setTimeout;
+    clearTimeout: typeof clearTimeout;
+    run: () => Promise<void>;
+  } {
+    let cb: (() => void | Promise<void>) | null = null;
+    return {
+      setTimeout: ((fn: () => void | Promise<void>) => {
+        cb = fn;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimeout: (() => {
+        cb = null;
+      }) as typeof clearTimeout,
+      run: async () => {
+        if (!cb) throw new Error('pending-retry timer was not armed');
+        await cb();
+      },
+    };
+  }
+
   it(
     "a 'pending' peer is NOT admitted on first announce, IS admitted after retry flips to 'verified'",
     async () => {
@@ -266,8 +287,9 @@ describe('boot pending-retry loop (D-006)', () => {
       // run via the microtask queue. We advance past the raceWithTimeout(5000)
       // inside mergeNow to let the merge complete even without a network peer.
 
-      vi.useFakeTimers();
+      vi.useFakeTimers({ toFake: ['Date'] });
       try {
+        const retryTimer = capturePendingRetryTimer();
         let callCount = 0;
         const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
           callCount++;
@@ -280,6 +302,8 @@ describe('boot pending-retry loop (D-006)', () => {
           harnessSlug: 'pend-stale2',
           mergePollMs: 0,
           pendingRetryMs: 50,
+          pendingRetrySetTimeout: retryTimer.setTimeout,
+          pendingRetryClearTimeout: retryTimer.clearTimeout,
           loadRevokedOverride: async () => new Set(), // fake-timer safety: avoids real PG loader
           verifyBindingOverride,
         });
@@ -297,7 +321,8 @@ describe('boot pending-retry loop (D-006)', () => {
         // Then advance past pendingRetryMs (50ms) to fire the retry tick.
         // Also advance past DEFAULT_GET_TIMEOUT_MS (5000ms) to let raceWithTimeout
         // inside mergeNow complete so admitPeer can finish.
-        await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 50 + 6000);
+        vi.setSystemTime(Date.now() + 6 * 60 * 1000 + 50);
+        await retryTimer.run();
 
         // With the fix: verifyAnnounce(entry.frame, { nowMs: entry.since=T }) → pass
         // → binding 'verified' → admitPeer → admitted.set(logCoreKey, ...).
@@ -328,7 +353,12 @@ describe('boot pending-retry loop (D-006)', () => {
     async () => {
       // Always returns 'pending' — the peer would never flip, but revocation
       // should remove it from the pending set before any retry admits it.
-      const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => 'pending';
+      const retryTimer = capturePendingRetryTimer();
+      let callCount = 0;
+      const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
+        callCount++;
+        return callCount === 1 ? 'pending' : 'verified';
+      };
 
       const handle = await bootHarnessSubstrate({
         workspaceRoot: tmpDir('mb-pend-revoke-'),
@@ -336,6 +366,8 @@ describe('boot pending-retry loop (D-006)', () => {
         harnessSlug: 'pend-3',
         mergePollMs: 0,
         pendingRetryMs: 50,
+        pendingRetrySetTimeout: retryTimer.setTimeout,
+        pendingRetryClearTimeout: retryTimer.clearTimeout,
         loadRevokedOverride: async () => new Set(), // avoid real PG in tests
         verifyBindingOverride,
       });
@@ -358,9 +390,9 @@ describe('boot pending-retry loop (D-006)', () => {
       // Revoke the peer. This should drop it from the pending set.
       await handle.revoke(rawPub);
 
-      // Wait longer than the retry interval — the peer should NOT be admitted
-      // even though verifyBinding would return 'pending' (not 'verified').
-      await new Promise((r) => setTimeout(r, 300));
+      // Drive the retry tick directly. If revoke() failed to drop the pending
+      // peer, the second binding check would return verified and admit it.
+      await retryTimer.run();
 
       // Not admitted after revocation + retry window.
       expect(handle.admitted.has(logCoreKey)).toBe(false);

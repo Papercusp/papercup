@@ -33,6 +33,10 @@ const ALLOW = new Set([
   // only as the new-window-default fallback on a *fetched* registry object
   // (a param), never the server process-global readRegistry().
   'browser-workspace.ts',
+  // First-boot canonical-hive join bootstrap: deliberately makes the joined
+  // Papercusp workspace visible as home after a successful join, matching the
+  // workspace-management bootstrap writers above.
+  'harness/papercusp-hive-join.ts',
 ]);
 
 // Match the conventional ways code reads the active workspace off the registry.

@@ -1,0 +1,72 @@
+---
+title: "Codex chatgpt aliases and Hive wake routing"
+description: "The Hive loop has three easy-to-confuse routing seams: chatgpt:* is a Papercusp-facing model alias but Codex CLI wants gpt-*; ChatGPT OAuth auth.json is not an OpenAI-compatible gateway bearer; and Queen nudges/wakes must use stable role-slot and single-flight routing instead of fresh session owner ids."
+discovered: 2026-06-25
+tags: [codex, chatgpt, hive, queen, overwatch, routing, wake, scorecard]
+status: active
+documents:
+  - packages/operator-core/lib/harness-invoke-once.ts
+  - libs/papercusp/packages/orchestrator/src/env.ts
+  - libs/papercusp/packages/orchestrator/src/invoke.ts
+  - packages/operator-core/lib/inference-gateway/spawn-env.ts
+  - packages/operator-core/lib/inference-gateway/credential-store.ts
+  - packages/operator-core/lib/inference-gateway/gateway.ts
+  - packages/operator-core/lib/hive/queen-brief-launch.ts
+  - packages/operator-core/lib/hive/wake.ts
+  - packages/operator-core/lib/agent-tools/hive/wake.ts
+  - packages/operator-core/lib/overwatch/brief-types.ts
+  - libs/papercusp/packages/harness/blueprints/coding/prompts/overwatch.md
+---
+
+## Failure pattern
+
+When the owner steers Queen/bee/Overwatch/Scout to `chatgpt:5.5`, do not pass that
+literal value to Codex CLI. It is the Papercusp user-facing alias; native Codex wants
+`gpt-5.5`. The alias has to be normalized at every boundary:
+
+- `buildInvokeOnce` / `applyRoleModel` for per-role and per-spawn command assembly.
+- `orchestrator invoke` when an existing Codex command already contains `--model chatgpt:*`.
+- `normalizeModelForBackend(..., 'codex')` for model values resolved inside the child.
+
+If a spawned agent prints `There's an issue with the selected model (chatgpt:5.5)`, it
+means one of those boundaries leaked the alias through.
+
+## Gateway routing trap
+
+A Codex account credential backed only by ChatGPT OAuth `auth.json` is usable by native
+Codex, but it is not an OpenAI-compatible bearer for the gateway's `/v1/responses`
+proxy. If the credential store reports `auth_mode: 'chatgpt'` and no real
+`OPENAI_API_KEY`, Codex spawns should not receive a gateway provider config for that
+credential; let native Codex use its own `auth.json`.
+
+Also keep `/v1/models` out of the shared admission queue. Codex probes model metadata
+before a turn; queueing that local synthetic response behind long-running responses can
+make the agent appear hung before it even starts.
+
+## Queen nudge routing
+
+Do not tell Overwatch to `coord:send` a concrete Queen `coordOwner`. Queen sessions are
+fresh per wake, so the owner id can expire between brief computation and send. The stable
+route is:
+
+```json
+{ "to": ["@role:queen"], "wake": "optimistic" }
+```
+
+`@role:queen` parks the message. `computeQueenWakeBrief` drains that role slot into the
+Queen's next wake brief, alongside her normal coord inbox.
+
+## Queen wake single-flight
+
+`hive:wake` must claim `lastWakeAt` before launching the Queen. Recording it after
+`fireLaunchBlueprint` leaves a race: manual, event, watchdog, and Overwatch nudges can all
+read the old state and launch overlapping Queens. A second race appears after the 60s wake
+floor expires while the prior Queen is still running. The tool now:
+
+- skips when a recent Queen adv-session is still open (`wake-inflight`);
+- atomically records `lastWakeAt` under the `hive_wake` row lock before launch;
+- lets later triggers coalesce instead of creating duplicate Queen sessions.
+
+Scorecard clue: Overwatch reports healthy determinism for `@role:queen` acceptance, but
+degraded parallel distribution or scheduler usage if the Queen is alive and still not
+placing enough work.

@@ -260,6 +260,13 @@ export interface BootHarnessOpts {
    */
   pendingRetryMs?: number;
   /**
+   * Test seam for the pending-retry timer. Production uses global setTimeout /
+   * clearTimeout. Tests can capture the callback and invoke one retry tick
+   * directly, avoiding wall-clock sleeps around real corestore I/O.
+   */
+  pendingRetrySetTimeout?: typeof setTimeout;
+  pendingRetryClearTimeout?: typeof clearTimeout;
+  /**
    * WI-752 / FED-2 substrate-swarm self-heal cadence (ms), forwarded to
    * `joinHarnessSwarm`. Production leaves these undefined → the proven defaults
    * (`DEFAULT_SUBSTRATE_REFRESH_MS` / `_FAST_WINDOW_MS` / `_SLOW_REFRESH_MS`) so
@@ -1869,6 +1876,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const pendingRetryMs = Number.isFinite(opts.pendingRetryMs as number)
     ? (opts.pendingRetryMs as number)
     : DEFAULT_PENDING_RETRY_MS;
+  const pendingRetrySetTimeout = opts.pendingRetrySetTimeout ?? setTimeout;
+  const pendingRetryClearTimeout = opts.pendingRetryClearTimeout ?? clearTimeout;
   let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
   async function retryPendingOnce(): Promise<void> {
     if (stopped || pendingPeers.size === 0) return;
@@ -1962,7 +1971,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
   function armPendingRetry(): void {
     if (pendingRetryMs <= 0 || stopped) return;
-    const timer = setTimeout(async () => {
+    const timer = pendingRetrySetTimeout(async () => {
       try {
         await retryPendingOnce();
       } catch {
@@ -2362,7 +2371,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         try {
           // The retry loop is a self-rearming setTimeout chain (P-022);
           // `stopped` (set above) prevents a mid-tick re-arm.
-          clearTimeout(pendingRetryTimer);
+          pendingRetryClearTimeout(pendingRetryTimer);
         } catch {
           // no-op
         }
