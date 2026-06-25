@@ -61,6 +61,7 @@ import { computeOverwatchBrief } from "./compute-brief";
 import { renderOverwatchBrief } from "./brief-types";
 import { registerOverwatchWaker } from "./wake-bridge";
 import { agentProducedTurn } from "../fleet/invoke-outcome";
+import { resolveHiveHomeSlug } from "../hive/wake";
 
 const operatorBase = operatorApiBase;
 
@@ -104,6 +105,32 @@ let _fire: OverwatchLaunchFireFn | null = null;
 /** Override the launch fire (tests). Pass `null` to restore the default invoke fire. */
 export function setOverwatchLaunchFire(fn: OverwatchLaunchFireFn | null): void {
   _fire = fn;
+}
+
+function stringPayloadField(
+  payload: Record<string, unknown> | null | undefined,
+  key: string,
+): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Workspace-scoped Overwatch stores the one-shot routine under the workspace
+ * sentinel (installSlug === workspaceId), but every agent-facing operation still
+ * targets the concrete hive harness. New wake rows carry `hiveSlug`; old sentinel
+ * rows fall back to the configured hive home so they recover after deploy.
+ */
+function resolveOverwatchLaunchInstallSlug(ctx: SystemActionCtx): string {
+  return (
+    stringPayloadField(ctx.payloadTemplate, "hiveSlug") ??
+    stringPayloadField(ctx.payloadTemplate, "installSlug") ??
+    stringPayloadField(ctx.payloadTemplate, "harness") ??
+    (ctx.installSlug === ctx.workspaceId
+      ? resolveHiveHomeSlug(null, null)
+      : null) ??
+    ctx.installSlug
+  );
 }
 
 /**
@@ -319,7 +346,8 @@ function invalidateOverwatchLiveness(): void {
 export async function handleOverwatchLaunch(
   ctx: SystemActionCtx,
 ): Promise<void> {
-  const { installSlug, workspaceId, payloadTemplate } = ctx;
+  const { workspaceId, payloadTemplate } = ctx;
+  const installSlug = resolveOverwatchLaunchInstallSlug(ctx);
   try {
     // Defense-in-depth (the spawn chokepoint also rejects role=overwatch while the
     // flag is off): skip cheaply when the role is dark or the loop is paused so we

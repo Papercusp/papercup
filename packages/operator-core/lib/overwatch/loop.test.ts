@@ -43,6 +43,7 @@ const recordFire = vi.fn();
 vi.mock('../operator-api-base', () => ({ operatorApiBase: () => 'http://op' }));
 vi.mock('../autoloop', () => ({ recordFire: (...a: unknown[]) => recordFire(...a) }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: () => 'papercup-hive' }));
 
 import { handleOverwatchLaunch, setOverwatchLaunchFire, OVERWATCH_INVOKE_TIMEOUT_MS, type OverwatchLaunchFireInput } from './loop';
 import { getSystemAction } from '../harness/routines/system-actions';
@@ -105,6 +106,35 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
     expect(captured!.workspaceId).toBe(WS);
   });
 
+  it('workspace-sentinel routine rows launch against the payload hive slug, not the workspace id', async () => {
+    let captured: OverwatchLaunchFireInput | null = null;
+    setOverwatchLaunchFire((input) => {
+      captured = input;
+    });
+    await handleOverwatchLaunch({
+      ...ctx,
+      installSlug: WS,
+      payloadTemplate: { kickoff: 'workspace wake', hiveSlug: SLUG },
+    });
+    expect(getOverwatchStarted).toHaveBeenCalledWith(WS, SLUG);
+    expect(computeOverwatchBrief).toHaveBeenCalledWith(WS, SLUG, { wokeBy: 'workspace wake' });
+    expect(captured!.installSlug).toBe(SLUG);
+  });
+
+  it('old workspace-sentinel rows without hiveSlug fall back to the configured hive home', async () => {
+    let captured: OverwatchLaunchFireInput | null = null;
+    setOverwatchLaunchFire((input) => {
+      captured = input;
+    });
+    await handleOverwatchLaunch({
+      ...ctx,
+      installSlug: WS,
+      payloadTemplate: { kickoff: 'old workspace wake' },
+    });
+    expect(computeOverwatchBrief).toHaveBeenCalledWith(WS, SLUG, { wokeBy: 'old workspace wake' });
+    expect(captured!.installSlug).toBe(SLUG);
+  });
+
   it('a default kickoff is supplied when the payload has none', async () => {
     let captured: OverwatchLaunchFireInput | null = null;
     setOverwatchLaunchFire((input) => {
@@ -146,6 +176,16 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     expect(body.timeoutMs).toBe(180_000);
     expect(body.extra).toEqual(['BLUEPRINT_ID=coding']); // persona resolves at blueprints/coding/prompts/overwatch.md
     expect(body.overwatchBrief).toBe('RENDERED-BRIEF');
+  });
+
+  it('default fire for a workspace-scoped wake posts to the concrete hive invoke route', async () => {
+    await handleOverwatchLaunch({
+      ...ctx,
+      installSlug: WS,
+      payloadTemplate: { kickoff: 'workspace wake', hiveSlug: SLUG },
+    });
+    const [url] = loopbackFetch.mock.calls[0] as [string, unknown];
+    expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=overwatch&ws=ws-1&bpkind=overwatch');
   });
 
   it('omits overwatchBrief from the body when the brief degraded to null', async () => {
