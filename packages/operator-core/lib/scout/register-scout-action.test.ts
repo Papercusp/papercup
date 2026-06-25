@@ -4,8 +4,13 @@
  * refactor can't silently un-activate the autonomous loop), and that the no-op
  * archive + setScoutArchive seam behave (the P-012 hand-off point).
  */
-import { describe, it, expect } from 'vitest';
-import { noopArchive, setScoutArchiveBuilder, productionScoutRunner } from './register-scout-action';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { noopArchive, resolveArchive, setScoutArchiveBuilder, productionScoutRunner } from './register-scout-action';
+
+afterEach(() => {
+  delete process.env.PAPERCUSP_SCOUT_ARCHIVE_RESOLVE_TIMEOUT_MS;
+  setScoutArchiveBuilder(async () => noopArchive);
+});
 
 describe('register-scout-action (Scout production runner provider)', () => {
   it('exports productionScoutRunner — the scout:cycle blueprint op’s production cycle deps (P-130)', () => {
@@ -28,5 +33,30 @@ describe('register-scout-action (Scout production runner provider)', () => {
 
   it('exposes setScoutArchiveBuilder so the archive can be overridden (tests / alternate store)', () => {
     expect(setScoutArchiveBuilder).toBeTypeOf('function');
+  });
+
+  it('falls back to noopArchive when archive resolution throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setScoutArchiveBuilder(async () => {
+      throw new Error('archive down');
+    });
+
+    const archive = await resolveArchive({ workspaceId: 'ws', harnessSlug: 'h' });
+
+    expect(archive).toBe(noopArchive);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('archive unavailable'), 'archive down');
+    warn.mockRestore();
+  });
+
+  it('falls back to noopArchive when archive resolution hangs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.PAPERCUSP_SCOUT_ARCHIVE_RESOLVE_TIMEOUT_MS = '5';
+    setScoutArchiveBuilder(() => new Promise(() => undefined));
+
+    const archive = await resolveArchive({ workspaceId: 'ws', harnessSlug: 'h' });
+
+    expect(archive).toBe(noopArchive);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('archive unavailable'), 'archive resolve timed out after 5ms');
+    warn.mockRestore();
   });
 });

@@ -58,6 +58,7 @@ export const noopArchive: ScoutArchivePort = {
 export type ScoutArchiveBuilder = (scope: { workspaceId: string; harnessSlug: string }) => Promise<ArchivePort>;
 
 const defaultArchiveBuilder: ScoutArchiveBuilder = (scope) => buildScoutArchivePort(scope);
+const DEFAULT_ARCHIVE_RESOLVE_TIMEOUT_MS = 10_000;
 
 let activeArchiveBuilder: ScoutArchiveBuilder = defaultArchiveBuilder;
 
@@ -67,13 +68,33 @@ export function setScoutArchiveBuilder(builder: ScoutArchiveBuilder): void {
 }
 
 /** Build the cycle's archive, degrading to the no-op if the real one is unavailable. */
-async function resolveArchive(scope: { workspaceId: string; harnessSlug: string }): Promise<ArchivePort> {
+export async function resolveArchive(scope: { workspaceId: string; harnessSlug: string }): Promise<ArchivePort> {
   try {
-    return await activeArchiveBuilder(scope);
+    return await withArchiveResolveTimeout(activeArchiveBuilder(scope), scoutArchiveResolveTimeoutMs());
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[register-scout-action] archive unavailable — gym rail no-ops this cycle:', err instanceof Error ? err.message : err);
     return noopArchive;
+  }
+}
+
+function scoutArchiveResolveTimeoutMs(): number {
+  const raw = Number(process.env.PAPERCUSP_SCOUT_ARCHIVE_RESOLVE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_ARCHIVE_RESOLVE_TIMEOUT_MS;
+}
+
+async function withArchiveResolveTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`archive resolve timed out after ${timeoutMs}ms`)), timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -183,6 +204,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
 
   onPhase?.('resolve-archive');
   const archive = await resolveArchive({ workspaceId, harnessSlug });
+  onPhase?.('build-cycle-deps');
   const deps = buildScoutCycleDeps({
     harnessSlug,
     llmCall,
@@ -216,6 +238,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     ...(scoutConfig ? { scoutConfig } : {}),
   });
   try {
+    onPhase?.('run-cycle');
     return await runScoutCycle(deps);
   } finally {
     // Persist scout seeds (P-012) even if the cycle threw mid-route.

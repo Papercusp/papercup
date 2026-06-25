@@ -72,6 +72,8 @@ export type ScoutCyclePhase =
   | 'gateway-env'
   | 'llm-client-import'
   | 'resolve-archive'
+  | 'build-cycle-deps'
+  | 'run-cycle'
   | 'read-corpus'
   | 'ideate'
   | 'read-novelty-corpus'
