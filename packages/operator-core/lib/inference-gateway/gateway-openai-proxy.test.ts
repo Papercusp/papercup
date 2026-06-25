@@ -183,6 +183,20 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
   });
 
+  it('routes Codex /v1/models discovery to the OpenAI-compatible upstream when account-pinned', async () => {
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ models: [{ id: 'gpt-x' }] }));
+    });
+    const res = await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: 'cdx-2' } });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { models?: Array<{ id: string }> }).models?.[0]?.id).toBe('gpt-x');
+    expect(openaiUpstream!.last.method).toBe('GET');
+    expect(openaiUpstream!.last.url).toBe('/v1/models');
+    expect(openaiUpstream!.last.headers['authorization']).toBe('Bearer cdx-2-tok');
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
+  });
+
   it('counts the request on the codex stats bucket', async () => {
     await bootCodex(ok);
     await postResponses({ model: 'gpt-x', input: 'hi' });

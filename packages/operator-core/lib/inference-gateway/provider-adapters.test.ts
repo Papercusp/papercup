@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayPath, type GatewayProviderId } from './provider-adapters';
+import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayPath, providerForGatewayRequest, type GatewayProviderId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './gateway';
 
 const account = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-token` });
@@ -40,6 +40,19 @@ describe('gateway provider adapters', () => {
     expect(providerForGatewayPath('/v1/responses?stream=false', adapters).id).toBe('codex');
     expect(providerForGatewayPath('/v1/messages', adapters).id).toBe('claude');
     expect(providerForGatewayPath('/v1/count_tokens', adapters).id).toBe('claude');
+  });
+
+  it('routes /v1/models to Codex only when the request is pinned to a Codex account', () => {
+    const adapters = makeGatewayProviderAdapters({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+
+    expect(providerForGatewayRequest('/v1/models', { 'x-papercusp-account': 'codex-a' }, adapters)).toBe(adapters.codex);
+    expect(providerForGatewayRequest('/v1/models?limit=1', { 'x-papercusp-account': 'claude-a' }, adapters)).toBe(adapters.claude);
+    expect(providerForGatewayRequest('/v1/models', {}, adapters)).toBe(adapters.claude);
   });
 
   it('keeps Codex present but unavailable when no Codex account pool is configured', () => {

@@ -27,6 +27,10 @@ export interface GatewayProviderStatus {
   unavailableMessage: string | null;
 }
 
+type GatewayRequestHeaders = Record<string, string | string[] | undefined>;
+
+const ACCOUNT_HEADER = 'x-papercusp-account';
+
 export function makeGatewayProviderAdapters(opts: {
   claudePool: AccountPool;
   codexPool?: AccountPool | null;
@@ -63,6 +67,31 @@ export function makeGatewayProviderAdapters(opts: {
 
 export function providerForGatewayPath(path: string, adapters: GatewayProviderAdapters): GatewayProviderAdapter {
   return path.startsWith('/v1/responses') ? adapters.codex : adapters.claude;
+}
+
+function headerValue(headers: GatewayRequestHeaders, name: string): string | null {
+  const raw = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(raw)) return raw[0]?.trim() || null;
+  return raw?.trim() || null;
+}
+
+export function providerForGatewayRequest(
+  path: string,
+  headers: GatewayRequestHeaders,
+  adapters: GatewayProviderAdapters,
+): GatewayProviderAdapter {
+  const pathProvider = providerForGatewayPath(path, adapters);
+  if (pathProvider.id === 'codex') return pathProvider;
+
+  // Codex's OpenAI-compatible provider probes `/v1/models` before a turn. The
+  // shared gateway also supports Anthropic `/v1/models`, so route by the pinned
+  // account when one is present instead of globally stealing the path.
+  if (path.startsWith('/v1/models')) {
+    const pinnedAccount = headerValue(headers, ACCOUNT_HEADER);
+    if (pinnedAccount && adapters.codex.pool?.select(pinnedAccount)) return adapters.codex;
+  }
+
+  return pathProvider;
 }
 
 export function gatewayProviderStatuses(adapters: GatewayProviderAdapters): GatewayProviderStatus[] {
