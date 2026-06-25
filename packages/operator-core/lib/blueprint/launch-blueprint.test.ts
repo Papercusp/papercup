@@ -11,6 +11,7 @@ import {
   setLaunchBlueprintFire,
   setLaunchBlueprintResolver,
   buildLaunchSpawnRequest,
+  QUEEN_INVOKE_TIMEOUT_MS,
   type LaunchFireFn,
 } from './launch-blueprint';
 
@@ -157,6 +158,12 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       parentRole: 'operator', // parentless system launch
       itemId: 'EI-9',
     });
+  });
+
+  it('buildLaunchSpawnRequest stamps a bounded timeout on Queen durable requests by default', async () => {
+    const req = await buildLaunchSpawnRequest('coding', { ...opts, kickoff: 'wake' }, 'launch:queen');
+    expect(req.url).toContain('role=queen');
+    expect(req.body.timeoutMs).toBe(QUEEN_INVOKE_TIMEOUT_MS);
   });
 
   it('the event map binds each event-triggered launch blueprint by its trigger key', () => {
@@ -309,6 +316,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect(target.role).toBe('queen'); // hive decider since P-071 (2026-06-10)
     expect(fired).toHaveLength(1);
     expect(fired[0]).toMatchObject({ blueprintId: 'coding', role: 'queen' });
+    expect(fired[0].timeoutMs).toBe(QUEEN_INVOKE_TIMEOUT_MS);
     // queen-brief-cache-assembly B-03: the Queen's precomputed wake brief is threaded
     // into the fire body (bodyExtra.queenBrief), computed with the kickoff as wokeBy.
     expect(computeQueenWakeBrief).toHaveBeenCalledWith('ws_test', 'papercup', { wokeBy: 'wake' });
