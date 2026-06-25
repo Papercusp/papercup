@@ -28,10 +28,11 @@ import { SCOUT_FEEDBACK_LOOP_GUIDANCE } from './feedback-loop-prompt';
 import type { ScoutLlmCall } from './types';
 import type { ScoutCycleLike } from './scheduler';
 import type { QueenFeedbackItem } from './scheduler';
+import { DEFAULT_SCOUT_REVISION_MODEL } from './models';
 
 /** Default model for the revision rewrite — the synthesis-tier model the recombine
  *  step uses (cheaper than the opus ideators; revision is synthesis, not divergence). */
-export const DEFAULT_REVISION_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_REVISION_MODEL = DEFAULT_SCOUT_REVISION_MODEL;
 
 /**
  * What happened to one draft this revision tick.

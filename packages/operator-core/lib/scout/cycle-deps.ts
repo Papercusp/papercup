@@ -235,6 +235,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
         ...(primingBlocks.length ? { priming: primingBlocks.join('\n\n') } : {}),
         // P-010: per-blueprint ideator mission framing (default ⇒ byte-identical).
         mission: scoutConfig.framing.ideatorMission,
+        model: scoutConfig.models.ideator,
       });
       // P-002 (transport-death observability): if EVERY ideator errored AND zero ideas
       // resulted, this is a TOTAL transport failure (gateway wedge / token 401 — $0 spent),
@@ -260,11 +261,11 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
           novelty: scoutConfig.novelty,
           bucket: scoutConfig.buckets,
           // P-010: per-blueprint critic mission framing (default ⇒ byte-identical).
-          critic: { mission: scoutConfig.framing.criticMission },
+          critic: { mission: scoutConfig.framing.criticMission, model: scoutConfig.models.critic },
         })
       ).critiques,
     recombine: async (scored, ctx) =>
-      (await recombineProposals(scored, { llmCall: ctx.llmCall })).proposals,
+      (await recombineProposals(scored, { llmCall: ctx.llmCall }, { model: scoutConfig.models.recombine })).proposals,
     // The whole-system override realizes the P-005 split: a testable WHOLE-SYSTEM proposal
     // (genome's interacting wholes) routes to the InstanceSubject; a component idea stays on
     // the gym (HarnessSubject). plan/improvement/unhinted ideas are untouched.
@@ -290,7 +291,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
             result.decisions,
             proposals,
             opts.experimentDispatch ?? buildExperimentDispatchPort(),
-            (p) => generateExperimentRequest(p, opts.llmCall),
+            (p) => generateExperimentRequest(p, opts.llmCall, { model: scoutConfig.models.experiment }),
           );
         }
       } catch (err) {

@@ -22,9 +22,10 @@ import {
   DISTANT_DOMAINS,
   type DistantDomain,
 } from './lenses';
+import { DEFAULT_SCOUT_IDEATOR_MODEL } from './models';
 
 /** The default ideator model — a strong model matters for the creative leap. */
-export const SCOUT_IDEATOR_MODEL = 'claude-opus-4-8';
+export const SCOUT_IDEATOR_MODEL = DEFAULT_SCOUT_IDEATOR_MODEL;
 
 /** One planned ideator: a lens, its within-lens index (drives domain rotation), and a global index. */
 export interface IdeatorSlot {

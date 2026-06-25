@@ -16,8 +16,9 @@ import type { Proposal, ScoutLlmCall } from './types';
 import { parseLlmJson } from './llm-json';
 import { proposalToExperimentRequest } from './experiment-rail';
 import type { RunExperimentInput } from '../experiment/run-core';
+import { DEFAULT_SCOUT_EXPERIMENT_MODEL } from './models';
 
-export const DEFAULT_EXPERIMENT_GEN_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_EXPERIMENT_GEN_MODEL = DEFAULT_SCOUT_EXPERIMENT_MODEL;
 const OVERLAY_CAP = 4000;
 
 interface ParsedGen {

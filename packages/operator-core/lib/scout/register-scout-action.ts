@@ -167,6 +167,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
       llmCall,
       planWorkspaceId: DEFAULT_WORKSPACE_ID,
       harnessSlug,
+      ...(scoutConfig ? { model: scoutConfig.models.revision } : {}),
     });
     try {
       await notifyQueenRevised(queenNotifyPorts, result.revisions);

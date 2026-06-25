@@ -27,13 +27,14 @@ import {
   type BucketOptions,
 } from './critique-core';
 import { parseLlmJson } from './llm-json';
+import { DEFAULT_SCOUT_CRITIC_MODEL } from './models';
 
 /**
  * Default critic model — cheap on purpose (the plan: "a handful of ideators +
  * critics per cycle"). Overridable via CriticContext.model; the search-first
  * novelty (the load-bearing dedup) is free + deterministic regardless.
  */
-export const DEFAULT_CRITIC_MODEL = 'claude-haiku-4-5';
+export const DEFAULT_CRITIC_MODEL = DEFAULT_SCOUT_CRITIC_MODEL;
 
 /**
  * The default critic MISSION framing (P-010 scout prompt-overlay seam,

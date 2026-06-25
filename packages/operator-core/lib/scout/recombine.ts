@@ -17,10 +17,11 @@
 import type { ScoredIdea, Proposal, ScoutExperiment, ScoutLlmCall } from './types';
 import { titleSimilarity } from '../harness/improvements/digest';
 import { parseLlmJson } from './llm-json';
+import { DEFAULT_SCOUT_RECOMBINE_MODEL } from './models';
 
 /** Default recombine model — a touch stronger than the critic (it writes the
  *  proposal narrative + experiment). Overridable via RecombineOptions.model. */
-export const DEFAULT_RECOMBINE_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_RECOMBINE_MODEL = DEFAULT_SCOUT_RECOMBINE_MODEL;
 
 /** A group of 1-2 surviving ideas to debate/merge into one proposal. */
 export interface RecombinationGroup {

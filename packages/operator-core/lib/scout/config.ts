@@ -29,6 +29,7 @@ import {
 import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
 import { DEFAULT_IDEATOR_MISSION } from './lenses';
 import { DEFAULT_CRITIC_MISSION } from './critics';
+import { DEFAULT_SCOUT_MODELS, type ScoutModelConfig } from './models';
 import type { RoutedRail } from './outcome-feedback';
 
 /** The routing knobs a blueprint can tune (router.ts ClassifyOptions + the markers). */
@@ -78,6 +79,11 @@ export interface ScoutConfig {
   routing: ScoutRoutingConfig;
   /** Per-step prompt framing (P-010) — the ideator + critic mission strings. */
   framing: ScoutFramingConfig;
+  /**
+   * Per-step model ids. Defaults are behavior-neutral, but the live autonomous loop
+   * can move Scout off an unhealthy provider/model lane without a deploy.
+   */
+  models: ScoutModelConfig;
 }
 
 /**
@@ -103,6 +109,7 @@ export const DEFAULT_SCOUT_CONFIG: ScoutConfig = {
     wholeSystemMarkers: WHOLE_SYSTEM_MARKERS,
   },
   framing: DEFAULT_SCOUT_FRAMING,
+  models: DEFAULT_SCOUT_MODELS,
 };
 
 /** A partial override a blueprint supplies — every field optional; missing → default. */
@@ -112,6 +119,7 @@ export interface ScoutConfigOverride {
   buckets?: Partial<BucketOptions>;
   routing?: Partial<ScoutRoutingConfig>;
   framing?: Partial<ScoutFramingConfig>;
+  models?: Partial<ScoutModelConfig>;
 }
 
 /** Copy only the DEFINED own keys of `src` onto a shallow clone of `base`. */
@@ -149,6 +157,7 @@ export function resolveScoutConfig(override?: ScoutConfigOverride | null): Scout
       criticMission:
         nonBlank(override.framing?.criticMission) ?? DEFAULT_SCOUT_CONFIG.framing.criticMission,
     },
+    models: mergeDefined<ScoutModelConfig>(DEFAULT_SCOUT_CONFIG.models, override.models),
   };
 }
 
@@ -225,6 +234,22 @@ export function parseScoutConfigBlock(raw: unknown): ScoutConfigOverride {
       framing.criticMission = f.criticMission;
     }
     if (Object.keys(framing).length > 0) out.framing = framing;
+  }
+
+  if (r.models && typeof r.models === 'object' && !Array.isArray(r.models)) {
+    const m = r.models as Record<string, unknown>;
+    const models: Partial<ScoutModelConfig> = {};
+    const ideator = nonBlank(m.ideator);
+    const critic = nonBlank(m.critic);
+    const recombine = nonBlank(m.recombine);
+    const revision = nonBlank(m.revision);
+    const experiment = nonBlank(m.experiment);
+    if (ideator) models.ideator = ideator;
+    if (critic) models.critic = critic;
+    if (recombine) models.recombine = recombine;
+    if (revision) models.revision = revision;
+    if (experiment) models.experiment = experiment;
+    if (Object.keys(models).length > 0) out.models = models;
   }
 
   return out;

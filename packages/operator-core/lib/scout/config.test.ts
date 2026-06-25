@@ -16,6 +16,7 @@ import { DEFAULT_BUCKET_OPTIONS, DEFAULT_CORPUS_NOVELTY_OPTIONS } from './critiq
 import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
 import { DEFAULT_IDEATOR_MISSION } from './lenses';
 import { DEFAULT_CRITIC_MISSION } from './critics';
+import { DEFAULT_SCOUT_MODELS } from './models';
 
 describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', () => {
   it('is built FROM the engine defaults (byte-identical, no copy that can drift)', () => {
@@ -24,6 +25,7 @@ describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', 
     expect(DEFAULT_SCOUT_CONFIG.buckets).toBe(DEFAULT_BUCKET_OPTIONS);
     expect(DEFAULT_SCOUT_CONFIG.routing.defaultRail).toBe(DEFAULT_ROUTING_RAIL);
     expect(DEFAULT_SCOUT_CONFIG.routing.wholeSystemMarkers).toBe(WHOLE_SYSTEM_MARKERS);
+    expect(DEFAULT_SCOUT_CONFIG.models).toBe(DEFAULT_SCOUT_MODELS);
     // P-010 framing: bound to the prompt builders' exported missions (no copy that can drift).
     expect(DEFAULT_SCOUT_CONFIG.framing).toBe(DEFAULT_SCOUT_FRAMING);
     expect(DEFAULT_SCOUT_FRAMING.ideatorMission).toBe(DEFAULT_IDEATOR_MISSION);
@@ -38,6 +40,7 @@ describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', 
     expect(DEFAULT_SCOUT_CONFIG.novelty.matchFloor).toBe(0.5);
     expect(DEFAULT_SCOUT_CONFIG.novelty.decidedPenalty).toBe(0.15);
     expect(DEFAULT_SCOUT_CONFIG.routing.defaultRail).toBe('improvement');
+    expect(DEFAULT_SCOUT_CONFIG.models.ideator).toBe('claude-opus-4-8');
   });
 });
 
@@ -54,6 +57,13 @@ describe('resolveScoutConfig', () => {
     expect(cfg.buckets.noveltyFloor).toBe(DEFAULT_BUCKET_OPTIONS.noveltyFloor);
     expect(cfg.buckets.maxMoonshots).toBe(DEFAULT_BUCKET_OPTIONS.maxMoonshots);
     expect(cfg.lenses).toEqual(CREATIVE_LENSES);
+  });
+
+  it('merges per-field — tune one model, the rest stay default', () => {
+    const cfg = resolveScoutConfig({ models: { ideator: 'chatgpt:5.5' } });
+    expect(cfg.models.ideator).toBe('chatgpt:5.5');
+    expect(cfg.models.critic).toBe(DEFAULT_SCOUT_MODELS.critic);
+    expect(cfg.models.recombine).toBe(DEFAULT_SCOUT_MODELS.recombine);
   });
 
   it('overrides lenses + routing markers', () => {
@@ -98,6 +108,7 @@ describe('parseScoutConfigBlock — defensive', () => {
       novelty: { matchFloor: 0.6, decidedPenalty: 0.2, decidedStates: ['dropped'] },
       buckets: { noveltyFloor: 0.4, maxMoonshots: 3 },
       routing: { defaultRail: 'plan', wholeSystemMarkers: ['Genome', 'WAKE'] },
+      models: { ideator: 'chatgpt:5.5', critic: 'chatgpt:5.5', recombine: 'chatgpt:5.5' },
     });
     expect(override.lenses).toEqual(['analogical', 'first-principles']);
     expect(override.novelty).toEqual({ matchFloor: 0.6, decidedPenalty: 0.2, decidedStates: ['dropped'] });
@@ -105,6 +116,7 @@ describe('parseScoutConfigBlock — defensive', () => {
     expect(override.routing?.defaultRail).toBe('plan');
     // markers are lowercased for the case-insensitive isWholeSystemProposal match
     expect(override.routing?.wholeSystemMarkers).toEqual(['genome', 'wake']);
+    expect(override.models).toEqual({ ideator: 'chatgpt:5.5', critic: 'chatgpt:5.5', recombine: 'chatgpt:5.5' });
   });
 
   it('drops unknown lenses and invalid rails', () => {
@@ -121,6 +133,13 @@ describe('parseScoutConfigBlock — defensive', () => {
       buckets: { noveltyFloor: 'high', maxMoonshots: 3, feasibilityFloor: NaN },
     });
     expect(override.buckets).toEqual({ maxMoonshots: 3 });
+  });
+
+  it('drops blank / non-string model overrides', () => {
+    const override = parseScoutConfigBlock({
+      models: { ideator: 'chatgpt:5.5', critic: '', recombine: 42, revision: '   ' },
+    });
+    expect(override.models).toEqual({ ideator: 'chatgpt:5.5' });
   });
 
   it('round-trips parse → resolve to a usable config', () => {

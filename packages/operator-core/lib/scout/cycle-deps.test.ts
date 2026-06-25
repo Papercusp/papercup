@@ -246,6 +246,69 @@ describe('buildScoutCycleDeps — P-010 per-blueprint scout framing', () => {
   });
 });
 
+describe('buildScoutCycleDeps — per-blueprint model overrides', () => {
+  const DIGEST: CorpusDigest = {
+    recurringFriction: [{ summary: 'lock contention on shared tree', ref: 'wi:F-1' }],
+    timeTokenSinks: [],
+    chronicDeferrals: [],
+    capabilityGaps: [],
+    headline: 'busy week',
+  };
+  const HERMETIC = {
+    archive: { listElites: () => [], seed: () => ({ admitted: false, nicheKey: '' }) } as ArchivePort,
+    graderFeedbackReader: async () => [] as GradedIdeaView[],
+  };
+  const MODEL = 'chatgpt:5.5';
+
+  it('threads models into ideate, critique, and recombine LLM calls', async () => {
+    const { deps } = build({
+      ...HERMETIC,
+      scoutConfig: resolveScoutConfig({
+        models: { ideator: MODEL, critic: MODEL, recombine: MODEL },
+      }),
+    });
+    const models: string[] = [];
+    const llmCall: ScoutLlmCall = async (opts) => {
+      models.push(opts.model);
+      const system = opts.system ?? '';
+      if (system.includes('NOVELTY critic')) {
+        return { text: '', json: { conceptualNovelty: 0.9, feasibility: 0.9, rationale: 'ok' }, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+      }
+      if (system.includes('Scout proposer')) {
+        return {
+          text: '',
+          json: {
+            framing: 'F',
+            mechanism: 'M',
+            whyNew: 'N',
+            bet: 'B',
+            experiment: { hypothesis: 'H', method: 'M', falsifiableSignal: 'S' },
+            route: 'plan',
+          },
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        };
+      }
+      return {
+        text: '',
+        json: { ideas: [{ title: 'T', body: 'B', mechanism: 'M', addressesPatternRefs: ['wi:F-1'] }] },
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+    };
+
+    const ideas = await deps.ideate(DIGEST, { llmCall, maxIdeators: 1 });
+    await deps.critique(ideas, { llmCall, corpus: [] });
+    await deps.recombine([
+      { idea: ideas[0], novelty: 0.9, feasibility: 0.9, noveltyMatches: [], verdict: 'keep', notes: 'ok' },
+    ], { llmCall });
+
+    expect(models).toEqual([MODEL, MODEL, MODEL]);
+  });
+});
+
 describe('buildScoutCycleDeps — transport-death observability (P-002)', () => {
   const DIGEST: CorpusDigest = {
     recurringFriction: [{ summary: 'lock contention on shared tree', ref: 'wi:F-1' }],
