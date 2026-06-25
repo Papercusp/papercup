@@ -576,15 +576,23 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, id
   if (role === 'worker') {
     const flagEnabled = await getFlag(FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT, `harness:${harnessSlug}`);
     if (flagEnabled) {
+      const ws = workspaceId ?? activeWorkspaceId();
       const cfg = await readEffectiveHarnessConfig(
         harnessSlug,
-        workspaceId ?? activeWorkspaceId(),
+        ws,
         project.path,
+      );
+      const cohortPercent = configGet<number | string>(
+        cfg,
+        'workerChunkLoopCohortPercent',
+        configGet<number | string>(cfg, 'workerModeCohortPercent', 100),
       );
       useWorkerOp = useWorkerChunkLoopOp({
         role,
         flagEnabled,
         harnessOptIn: configGet<boolean>(cfg, 'workerChunkLoop', false) === true,
+        cohortPercent,
+        cohortKey: `${ws}:${harnessSlug}:${featureId}`,
       });
     }
   }
@@ -630,8 +638,38 @@ export function useWorkerChunkLoopOp(input: {
   role: string;
   flagEnabled: boolean;
   harnessOptIn: boolean;
+  cohortPercent?: number | string | null;
+  cohortKey?: string | null;
 }): boolean {
-  return input.role === 'worker' && input.flagEnabled && input.harnessOptIn;
+  if (input.role !== 'worker' || !input.flagEnabled || !input.harnessOptIn) return false;
+  const percent = workerChunkLoopCohortPercent(input.cohortPercent);
+  if (percent <= 0) return false;
+  if (percent >= 100) return true;
+  return workerChunkLoopCohortBucket(input.cohortKey ?? '') < percent;
+}
+
+/**
+ * Clamp rollout config into a percentage. Omitted preserves the legacy
+ * workerChunkLoop:true behavior: an opted-in harness routes 100% of worker turns.
+ */
+export function workerChunkLoopCohortPercent(raw: number | string | null | undefined): number {
+  if (raw == null || raw === '') return 100;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.floor(n)));
+}
+
+/**
+ * Stable 0..99 bucket for feature-level cohorting. FNV-1a keeps this dependency-free
+ * and deterministic across processes/retries.
+ */
+export function workerChunkLoopCohortBucket(key: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) % 100;
 }
 
 /**

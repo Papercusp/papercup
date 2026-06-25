@@ -9,6 +9,8 @@ import {
   governorMaxWaitMs,
   leaseHeartbeatFailOpen,
   useWorkerChunkLoopOp,
+  workerChunkLoopCohortBucket,
+  workerChunkLoopCohortPercent,
 } from './orchestrator-runner';
 
 describe('useWorkerChunkLoopOp — route the coding worker to the operator-hosted op (Brief 15, P-010/D-006)', () => {
@@ -28,6 +30,57 @@ describe('useWorkerChunkLoopOp — route the coding worker to the operator-hoste
     for (const role of ['validator', 'architect', 'scoper', 'director', 'reviewer']) {
       expect(useWorkerChunkLoopOp({ role, flagEnabled: true, harnessOptIn: true })).toBe(false);
     }
+  });
+
+  test('defaults an opted-in harness to 100% so legacy dark-launch config keeps routing', () => {
+    expect(
+      useWorkerChunkLoopOp({
+        role: 'worker',
+        flagEnabled: true,
+        harnessOptIn: true,
+        cohortKey: 'ws:harness:F-1',
+      }),
+    ).toBe(true);
+  });
+
+  test('uses a stable feature cohort bucket for percentage ramping', () => {
+    const key = 'papercusp-workspace:bench-harness:F-123';
+    const bucket = workerChunkLoopCohortBucket(key);
+
+    expect(bucket).toBeGreaterThanOrEqual(0);
+    expect(bucket).toBeLessThan(100);
+    expect(workerChunkLoopCohortBucket(key)).toBe(bucket);
+    expect(
+      useWorkerChunkLoopOp({
+        role: 'worker',
+        flagEnabled: true,
+        harnessOptIn: true,
+        cohortPercent: bucket,
+        cohortKey: key,
+      }),
+    ).toBe(false);
+    expect(
+      useWorkerChunkLoopOp({
+        role: 'worker',
+        flagEnabled: true,
+        harnessOptIn: true,
+        cohortPercent: bucket + 1,
+        cohortKey: key,
+      }),
+    ).toBe(true);
+  });
+
+  test('clamps invalid cohort percentages and honors explicit 0/100 ramp endpoints', () => {
+    expect(workerChunkLoopCohortPercent(undefined)).toBe(100);
+    expect(workerChunkLoopCohortPercent('25')).toBe(25);
+    expect(workerChunkLoopCohortPercent(50.9)).toBe(50);
+    expect(workerChunkLoopCohortPercent(-5)).toBe(0);
+    expect(workerChunkLoopCohortPercent('nope')).toBe(0);
+    expect(workerChunkLoopCohortPercent(150)).toBe(100);
+
+    const base = { role: 'worker', flagEnabled: true, harnessOptIn: true, cohortKey: 'k' };
+    expect(useWorkerChunkLoopOp({ ...base, cohortPercent: 0 })).toBe(false);
+    expect(useWorkerChunkLoopOp({ ...base, cohortPercent: 100 })).toBe(true);
   });
 });
 
