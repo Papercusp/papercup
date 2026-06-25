@@ -85,3 +85,6 @@
 [submodule "libs/generic/dock-workbench"]
 	path = libs/generic/dock-workbench
 	url = https://github.com/Papercusp/dock-workbench.git
+[submodule "libs/generic/control-mutation"]
+	path = libs/generic/control-mutation
+	url = https://github.com/Papercusp/control-mutation.git

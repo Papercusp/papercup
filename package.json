@@ -51,6 +51,7 @@
     "libs/generic/pubsub-substrate",
     "libs/generic/plugin-loader",
     "libs/generic/embedded-pg-discovery",
+    "libs/generic/control-mutation",
     "libs/generic/linkable-edges",
     "libs/generic/plan-parser",
     "libs/generic/rate-limit",
