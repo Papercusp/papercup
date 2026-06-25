@@ -204,3 +204,69 @@ $0.036** — the same turns/cost reduction availability buys `code:run`. Both ar
 *helpfulness* judge (haiku's capability ceiling — it orients, then stalls on empty payloads), so the
 CLEAN task-completion win is model-gated: **re-run on sonnet** (drop the `LLM_TEST_*_MODEL` overrides)
 for the definitive adoption + turns/cost deltas — same caveat as the code:run A/B above.
+
+## Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)
+
+The A/B above measures adoption inside the llm-testing harness. To track the SAME levers on the
+**live fleet** — and to confirm plan `agent-tooling-token-efficiency-2026-06-25` actually moved them —
+query `harness_shared.tool_invocations` directly (`dev:pg_query`). Three metrics; re-run weekly and
+compare to this baseline.
+
+**⚠ Denominator: measure agent traffic on the `mcp` transport ONLY.** The raw call total is dominated
+by **UI HTTP polling** — `plans:list` + `plans:attention` alone ran **~25 calls/sec** (45,943 in a
+30-min sample, each a distinct `run_id`) over the `http` transport, which is *not* agent LLM tokens.
+Agent-authored work is the `mcp` transport (~13k calls/6h). Every adoption ratio below filters
+`transport='mcp'`, or it is meaningless (raw code:run share looks like 0.0004% only because of the
+polling-inflated denominator; against `mcp` the honest figure is ~0.006% — still ~zero, but measure it right).
+
+### 1. String-limit failure rate — did the validation-limit work land?
+```sql
+-- too-long-string validation failures by tool, last 14d (baseline: ~1,000+; top fleet:place_batch.brief=412)
+SELECT tool_name, count(*) AS errs, max(invoked_at) AS last_seen,
+       (array_agg(error_message ORDER BY invoked_at DESC))[1] AS sample
+FROM harness_shared.tool_invocations
+WHERE status <> 'ok' AND invoked_at > now() - interval '14 days'
+  AND (error_message ILIKE '%must contain at most%' OR error_message ILIKE '%Too big%'
+       OR error_message ILIKE '%expected string to have <=%' OR error_code ILIKE '%too_big%')
+GROUP BY tool_name ORDER BY errs DESC;
+```
+Target after the fix: advisory-field tools (loop:arm.goal, coord notes, fleet briefs, …) drop to ~0
+(they now *truncate* instead of reject); the rest fall sharply (caps raised 4–8×).
+
+### 2. code:run adoption share (mcp transport)
+```sql
+-- baseline 2026-06-25: code:run 9 / 3d, code:tools 1 — ~0.006% of mcp agent calls
+WITH mcp AS (SELECT * FROM harness_shared.tool_invocations
+             WHERE transport='mcp' AND invoked_at > now() - interval '3 days')
+SELECT (SELECT count(*) FROM mcp WHERE tool_name='code:run')   AS coderun,
+       (SELECT count(*) FROM mcp WHERE tool_name='code:tools') AS codetools,
+       (SELECT count(*) FROM mcp)                              AS mcp_total,
+       round(100.0*(SELECT count(*) FROM mcp WHERE tool_name='code:run')
+             /NULLIF((SELECT count(*) FROM mcp),0),4)          AS coderun_pct;
+```
+
+### 3. Redundant-bootstrap rate — orient duplication (the bigger leak)
+The win is agents NOT re-calling what `coord:orient` already returned. Baseline: orient co-fires with
+`coord:plan-events`/`memory:search`/`coord:inbox`/`coord:declare-intent` at ~1.0 confidence (lift
+450–660 in `dev:tool_cooccurrence`). The precise per-spawn form:
+```sql
+-- of spawns that called coord:orient, how many ALSO re-called a call orient already subsumed?
+WITH s AS (
+  SELECT spawn_id,
+         bool_or(tool_name='coord:orient') AS oriented,
+         bool_or(tool_name IN ('coord:plan-events','memory:search','coord:inbox','coord:declare-intent')) AS redundant
+  FROM harness_shared.tool_invocations
+  WHERE transport='mcp' AND invoked_at > now() - interval '24 hours' AND spawn_id IS NOT NULL
+  GROUP BY spawn_id)
+SELECT count(*) FILTER (WHERE oriented) AS oriented_spawns,
+       count(*) FILTER (WHERE oriented AND redundant) AS also_redundant,
+       round(100.0*count(*) FILTER (WHERE oriented AND redundant)
+             /NULLIF(count(*) FILTER (WHERE oriented),0),1) AS pct_redundant
+FROM s;
+```
+Target after the orient-dedup guidance (orient.ts + the MCP instructions) + the soft re-call nudge:
+`pct_redundant` trends down from ~100%. (`dev:tool_cooccurrence { hours, orderBy:'confidence' }` is
+the quick read; this query is the precise one.)
+
+Wire all three into a weekly check (a scorecard row or a `dev:` rollup) so a regression — a new tool
+shipping a tight cap, or adoption sliding back — surfaces without a manual audit.

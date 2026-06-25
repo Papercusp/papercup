@@ -290,16 +290,20 @@ async fn run_chat_dock() -> Result<()> {
         Err(_) => lexicon::Lexicon::default(),
     };
     let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
-    // PER-WINDOW dock (owner decision 2026-06-17): each desktop window runs its OWN
-    // PID-keyed dock session, sized to that window — no zellij multi-client black
-    // bars, and full interactive TUI for the reactive interactive panes
-    // (`session_panes.rs` muxes a LOCAL workbench pane per window; sharing ONE
-    // zellij session across windows would share their INPUT). The queen/overwatch
-    // panes are read-only views of the SHARED BACKEND roster, so every window shows
-    // identical live queen data WITHOUT sharing the zellij session — the "same queen
-    // everywhere" comes from the roster, not a shared session. EI-186: reap stale
-    // leftovers (the desktop relaunches this dock constantly — each relaunch used to
-    // leak a detached server) and kill our own when zellij returns.
+    // SINGLE dock (owner decision 2026-06-25, supersedes per-window-dock 2026-06-17):
+    // exactly ONE chat dock exists at a time. Each launch is still its own PID-keyed
+    // session (`session_name("dock")`, sized to its window, full interactive TUI), but
+    // `reap_stale` now also KILLS every OTHER live `pui-dock-*` on launch — so opening
+    // a second desktop window supersedes the first window's dock instead of running a
+    // parallel one. WHY: the Sentinel voice-in path keys off a single global
+    // `~/.papercusp/sentinel-pane` registration; with several live docks the
+    // last-writer-wins, sending voice to a background window's pane. One dock removes
+    // that race. (Trade-off vs 2026-06-17: a second window no longer keeps its own
+    // dock — acceptable per the single-dock decision.) The queen/overwatch panes stay
+    // read-only views of the SHARED BACKEND roster, so dock content is identical
+    // regardless of which window owns it. EI-186: reap also clears stale leftovers (the
+    // desktop relaunches this dock constantly — each relaunch used to leak a detached
+    // server) and kills our own when zellij returns.
     let session = layout::session_name("dock");
     reap::reap_stale(&session);
     let argv = layout::launch_argv(&path.to_string_lossy(), &session);
