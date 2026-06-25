@@ -375,6 +375,31 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
     expect(replicateArgs).toEqual([socket]);
     expect(socket.destroy).not.toHaveBeenCalled();
   });
+
+  it('counts a shared-swarm physical socket once even when multiple harness handlers attach', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const first = fakeStore();
+    const second = fakeStore();
+    const guard = {
+      firewall: () => false,
+      isBannedKey: () => false,
+      isBannedIp: () => false,
+      banKey: () => {},
+      banIp: () => {},
+      recordConnection: vi.fn(async () => ({ allow: true })),
+    };
+    await joinHarnessSwarm({ store: first.store, topic: topic32(), swarm, guard });
+    await joinHarnessSwarm({ store: second.store, topic: Buffer.alloc(32, 2), swarm, guard });
+
+    const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: '203.0.113.44' } };
+    emit('connection', socket, { publicKey: Buffer.from('44'.repeat(32), 'hex') });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(first.replicateArgs).toEqual([socket]);
+    expect(second.replicateArgs).toEqual([socket]);
+    expect(guard.recordConnection).toHaveBeenCalledTimes(1);
+    expect(socket.destroy).not.toHaveBeenCalled();
+  });
 });
 
 describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {

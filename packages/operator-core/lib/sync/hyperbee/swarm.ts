@@ -193,6 +193,7 @@ type TopicAnnounceState = {
 
 const announceTopicStateByMuxer = new WeakMap<object, Map<string, TopicAnnounceState>>();
 const announcePairedMuxers = new WeakSet<object>();
+const guardCountedSockets = new WeakSet<object>();
 
 function announceDebug(message: string): void {
   if (process.env.PAPERCUSP_ANNOUNCE_DEBUG !== '1') return;
@@ -578,15 +579,19 @@ export async function joinHarnessSwarm(
     // key + IP (future connects are firewall-/handler-rejected) and we drop this
     // tripping connection. Fire-and-forget: the in-memory limiter is a microtask,
     // and we don't block replication of legitimate peers on it.
-    void guard
-      .recordConnection(remotePublicKeyHex, remoteIp)
-      .then((v) => {
-        if (v.allow) return;
-        destroySocket(socket);
-        const cb = v.reason === 'rate_limited' ? opts.onPeerRateLimited : opts.onPeerRejected;
-        fireSafely(cb, remotePublicKeyHex, remoteIp);
-      })
-      .catch(() => {});
+    const socketObj = typeof socket === 'object' && socket !== null ? (socket as object) : null;
+    if (!socketObj || !guardCountedSockets.has(socketObj)) {
+      if (socketObj) guardCountedSockets.add(socketObj);
+      void guard
+        .recordConnection(remotePublicKeyHex, remoteIp)
+        .then((v) => {
+          if (v.allow) return;
+          destroySocket(socket);
+          const cb = v.reason === 'rate_limited' ? opts.onPeerRateLimited : opts.onPeerRejected;
+          fireSafely(cb, remotePublicKeyHex, remoteIp);
+        })
+        .catch(() => {});
+    }
 
     try {
       // SUBSTRATE_SIDECAR Option B (WI-604): offer the raw socket to the sidecar
