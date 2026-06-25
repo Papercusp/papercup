@@ -24,6 +24,7 @@ import {
 import { newMsgId } from '@papercusp/coordination/core';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { coordLog } from './log';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { captureResolvedAnswer } from './answer-capture';
 import { PgConversationStore, reparentThread } from './conversations-store';
 import { createIssue } from '../../issues-engineer';
@@ -88,6 +89,12 @@ const storeOpts = {
 const deps: ConversationDeps = {
   conversations: new PgConversationStore(storeOpts),
   threads: new PgThreadStore(storeOpts),
+  // The post/answer durable write runs through ONE bounded, atomic admin-pool txn
+  // (pg-bounded-txn): a tx-bound PgThreadStore reuses the exact tested store SQL,
+  // so get-or-create-thread + add-post commit together and a DB stall fails fast +
+  // typed instead of hanging the MCP call (the admin pool has no default
+  // statement_timeout). Mirrors issues-engineer.commentIssue / work-items.commentWorkItem.
+  threadTxn: (fn) => boundedOrgTxn((tx) => fn(new PgThreadStore({ ...storeOpts, getSql: () => tx }))),
   tags: new PgTaggableStore(storeOpts),
   subs: new PgEntitySubscriptionStore(storeOpts),
   topics: new PgTopicStore(storeOpts),

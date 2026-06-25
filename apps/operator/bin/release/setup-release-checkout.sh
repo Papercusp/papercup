@@ -180,18 +180,48 @@ need_node_modules() {
   esac
 }
 
+# ATOMIC refresh of ONE node_modules dir (infra-fail-fast — the 2026-06-25 all-pages
+# connection-refused outage). The integration source is hardlink-copied into a SIBLING
+# temp dir FIRST, then swapped into place with two fast renames — so the LIVE operator
+# always sees a COMPLETE node_modules and never the minute-long half-populated window an
+# in-place `rm -rf "$dest"; cp -al "$src" "$dest"` opens.
+#
+# The window WAS the outage: a deploy `rm -rf`'d the live root node_modules and slowly
+# re-`cp -al`'d it (~a minute, 100k+ files) while :3070 was still serving from it. The
+# 32 cluster workers respawned mid-copy, hit MODULE_NOT_FOUND (@modelcontextprotocol/sdk,
+# @papercusp/plugin-loader), exhausted the 160-respawn budget → 0 workers → connection
+# refused on every page until the copy finished. Two renames shrink the exposure from
+# ~a minute to the microseconds between two rename(2) syscalls — effectively zero, and a
+# respawn would have to land in exactly that gap to see anything missing.
+#
+# Sibling temp ("$dest.deploy-tmp.$$") sits at the SAME depth as "$dest", so the workspace
+# packages' RELATIVE symlinks (../../packages/X) resolve to the RELEASE tree identically
+# in the temp and final locations (cp -al preserves symlinks; the isolation invariant in
+# the header note holds). `set -e` aborts on a failed cp BEFORE any swap, so a partial
+# copy can never replace the live tree (fail-safe — same abort semantics as before).
+sync_one_node_modules() {
+  local src="$1" dest="$2"
+  local tmp="${dest}.deploy-tmp.$$" old="${dest}.deploy-old.$$"
+  rm -rf "$tmp" "$old"                 # defensive: clear this run's leftovers (crash-safety)
+  mkdir -p "$(dirname "$dest")"
+  cp -al "$src" "$tmp"                 # slow; "$dest" stays untouched + complete throughout
+  if [ -e "$dest" ]; then
+    mv "$dest" "$old"                  # instant rename
+    mv "$tmp" "$dest"                  # instant rename — ONLY these two bracket the swap
+    rm -rf "$old"                      # cleanup; the new tree is already live
+  else
+    mv "$tmp" "$dest"                  # first-time create: a single rename
+  fi
+}
+
 if need_node_modules; then
-  log "hardlink-copying node_modules from integration tree (this can take a minute)"
+  log "hardlink-copying node_modules from integration tree (atomic swap; this can take a minute)"
   # Enumerate every package-local node_modules in the integration tree (prune so
   # we get the dir itself, not the ones nested inside it — those ride along in the
-  # parent's cp -al).
+  # parent's cp -al). Each is refreshed via an atomic sibling-temp swap (above).
   while IFS= read -r nm; do
     rel="${nm#"$INTEGRATION_ROOT"/}"
-    dest="$RELEASE_ROOT/$rel"
-    # Stale copy → drop and re-hardlink (cheap; hardlinks share data).
-    [ -e "$dest" ] && rm -rf "$dest"
-    mkdir -p "$(dirname "$dest")"
-    cp -al "$nm" "$dest"
+    sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
   done < <(find "$INTEGRATION_ROOT" -name node_modules -type d -prune -print)
   # Record WHICH dep state was just copied: package-lock.json is gitignored, so
   # the checkout above never updates the release tree's copy — without this the

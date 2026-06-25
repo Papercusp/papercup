@@ -84,6 +84,25 @@ export type CaptureFn = (input: {
 export interface ConversationDeps {
   conversations: ConversationStoreLike;
   threads: ThreadableStore;
+  /**
+   * Run a unit of thread writes inside ONE bounded, atomic admin-pool transaction,
+   * handing `fn` a transaction-bound ThreadableStore (pg-bounded-txn). The
+   * post/answer append (appendPost) routes its get-or-create-thread + add-post
+   * through this so the durable write is:
+   *   - ATOMIC  — the coord_thread_posts INSERT and the coord_threads post_count
+   *               bump commit together, so a stall can't half-write and a
+   *               post-stall retry can't duplicate the post; and
+   *   - BOUNDED — a SET LOCAL statement_timeout makes a wedged query fail fast +
+   *               typed (OrgTxnTimeoutError) instead of hanging the MCP call
+   *               indefinitely (the harness_admin pool carries NO default
+   *               statement_timeout — migrations share it).
+   * Prod wraps boundedOrgTxn + a tx-bound PgThreadStore, mirroring
+   * issues-engineer.commentIssue / work-items.commentWorkItem; the integration
+   * tests bind the same boundedOrgTxn over their throwaway-PG client so the real
+   * atomic path is exercised. (WI-766 — closes the unbounded admin-pool write
+   * class for conversations:post / conversations:answer.)
+   */
+  threadTxn: <T>(fn: (threads: ThreadableStore) => Promise<T>) => Promise<T>;
   tags: TaggableStore;
   subs: SubscribableStore;
   topics: TopicStore;
@@ -235,12 +254,24 @@ async function appendPost(
   if (conv.state === 'closed') return { error: 'closed' };
   const now = deps.nowIso();
 
-  const existing = await deps.threads.getThreadByParent(convRef(conversationId));
-  const thread_id =
-    existing?.thread_id ??
-    (await deps.threads.getOrCreateThread(convRef(conversationId), { thread_id: `thr-${conversationId}`, created_by: identity.ownerId, created_ts: now, harness_slug: conv.harness_slug ?? undefined })).thread_id;
-
-  const post = await deps.threads.addPost({ thread_id, author_id: identity.ownerId, body, created_ts: now });
+  // The durable write — get-or-create the conversation's thread, then append the
+  // post — runs in ONE bounded, atomic admin-pool txn (threadTxn → boundedOrgTxn).
+  // ATOMIC: the post row + the coord_threads post_count bump commit together, so a
+  // stall can't half-write and a post-stall retry can't duplicate. BOUNDED: a
+  // wedged query fails fast + typed instead of hanging the MCP call indefinitely
+  // (the admin pool has no default statement_timeout). getOrCreateThread already
+  // resolves by PARENT first, so it returns the existing thread when present (no
+  // need for a separate getThreadByParent round-trip). Mirrors
+  // issues-engineer.commentIssue / work-items.commentWorkItem (WI-766).
+  const post = await deps.threadTxn(async (threads) => {
+    const thread = await threads.getOrCreateThread(convRef(conversationId), {
+      thread_id: `thr-${conversationId}`,
+      created_by: identity.ownerId,
+      created_ts: now,
+      harness_slug: conv.harness_slug ?? undefined,
+    });
+    return threads.addPost({ thread_id: thread.thread_id, author_id: identity.ownerId, body, created_ts: now });
+  });
   await deps.conversations.touch(conversationId, now);
   // Contributing → auto-join (so the rest of the thread reaches the poster), then fan out excluding them.
   await selfSubscribe(deps, conversationId, identity.ownerId, now);

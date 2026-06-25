@@ -30,6 +30,7 @@ import {
   PgTopicStore,
 } from '@papercusp/coordination/capabilities';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { ensureConversationsTable, PgConversationStore, reparentThread } from './conversations-store';
 import type { InjectSink } from './fanout-delivery';
 import type { AgentIdentity } from './identity';
@@ -81,6 +82,8 @@ function freshDeps(): ConversationDeps {
   return {
     conversations: new PgConversationStore(opts),
     threads: new PgThreadStore(opts),
+    // Exercise the REAL bounded+atomic write path against the throwaway PG client.
+    threadTxn: (fn) => boundedOrgTxn((tx) => fn(new PgThreadStore({ ...opts, getSql: () => tx })), { client: sql }),
     tags: new PgTaggableStore(opts),
     subs: new PgEntitySubscriptionStore(opts),
     topics: new PgTopicStore(opts),

@@ -29,6 +29,7 @@ import {
   PgTopicStore,
 } from '@papercusp/coordination/capabilities';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { ensureConversationsTable, PgConversationStore, reparentThread } from './conversations-store';
 import type { InjectSink } from './fanout-delivery';
 import type { AgentIdentity } from './identity';
@@ -38,6 +39,7 @@ import {
   joinConversationCore,
   listConversationsWithTopicsCore,
   openConversationCore,
+  postReplyCore,
   promoteConversationCore,
   resolveConversationCore,
   type CaptureFn,
@@ -85,6 +87,8 @@ function freshDeps(): ConversationDeps {
   return {
     conversations: new PgConversationStore(opts),
     threads: new PgThreadStore(opts),
+    // Exercise the REAL bounded+atomic write path against the throwaway PG client.
+    threadTxn: (fn) => boundedOrgTxn((tx) => fn(new PgThreadStore({ ...opts, getSql: () => tx })), { client: sql }),
     tags: new PgTaggableStore(opts),
     subs: new PgEntitySubscriptionStore(opts),
     topics: new PgTopicStore(opts),
@@ -170,6 +174,32 @@ describe('conversation lifecycle (real PG)', () => {
     // The answerer is now auto-joined.
     const subs = await deps.subs.listTargetSubscribers('object', `conversation:${opened.conversation.id}`);
     expect(subs.map((s) => s.subscriber_id).sort()).toEqual(['agA', 'agB']);
+  });
+
+  it('append runs in ONE bounded txn: each post + its thread post_count commit atomically (WI-766)', async () => {
+    const opened = await openConversationCore(deps, ident('agA'), { kind: 'discussion', body: 'thread atomicity?', topics: ['t'] });
+    const thread = await deps.threads.getThreadByParent({ kind: 'conversation', ref: opened.conversation.id });
+    expect(thread).not.toBeNull();
+    const threadId = thread!.thread_id;
+
+    // Two replies + one answer through the bounded-txn append seam.
+    for (const body of ['reply one', 'reply two']) {
+      const r = await postReplyCore(deps, ident('agB'), { conversation_id: opened.conversation.id, body });
+      if ('error' in r) throw new Error(r.error);
+    }
+    const a = await answerQuestionCore(deps, ident('agC'), { conversation_id: opened.conversation.id, body: 'the answer' });
+    if ('error' in a) throw new Error(a.error);
+
+    // The coord_threads.post_count bump and the coord_thread_posts INSERT commit
+    // TOGETHER (boundedOrgTxn) — so the cached count never drifts from the real
+    // row count, even after several appends. A non-atomic write could half-land
+    // (insert without the bump, or vice-versa) and skew these apart.
+    const posts = await deps.threads.listPosts(threadId);
+    expect(posts).toHaveLength(3);
+    const [{ post_count }] = await sql<{ post_count: number }[]>`
+      SELECT post_count FROM harness_shared.coord_threads
+       WHERE workspace_id = ${WS} AND thread_id = ${threadId}`;
+    expect(Number(post_count)).toBe(3);
   });
 
   it('resolve → state flips, answer + capture recorded, answer-capture invoked, subscribers notified', async () => {

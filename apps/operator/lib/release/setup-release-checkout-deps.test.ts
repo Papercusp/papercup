@@ -22,7 +22,18 @@
  * controlled temp trees — the same isolation pattern as verify-release-paths.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  symlinkSync,
+  lstatSync,
+  readlinkSync,
+  readdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -145,5 +156,84 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
 
   it('mode=force always copies, even when the dep state is identical', () => {
     expect(needsCopy(int, rel, 'force')).toBe(true);
+  });
+});
+
+/**
+ * sync_one_node_modules() — the ATOMIC node_modules refresh (2026-06-25 all-pages
+ * connection-refused outage). The old in-place `rm -rf "$dest"; cp -al` left the LIVE
+ * operator looking at a deleted/half-populated node_modules for the ~minute the root
+ * copy took → 32 cluster workers respawned mid-copy, crash-looped on MODULE_NOT_FOUND,
+ * and refused every page. The function builds into a sibling temp then swaps with two
+ * fast renames, so the live tree is only ever COMPLETE (the swap window is the µs
+ * between two rename(2) calls). These pin the functional contract: correct content,
+ * wholesale replacement, relative-symlink preservation (the workspace isolation
+ * invariant), and temp cleanup.
+ */
+describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modules swap', () => {
+  function syncOne(src: string, dest: string): number {
+    const wrapper = [
+      'set -euo pipefail',
+      'source <(sed -n "/^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
+      'sync_one_node_modules "$SRC" "$DEST"',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: { ...process.env, SETUP_SCRIPT: SCRIPT_PATH, SRC: src, DEST: dest },
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) throw new Error(`sync_one_node_modules failed (${r.status}): ${r.stderr || r.stdout}`);
+    return r.status ?? -1;
+  }
+
+  let work: string;
+  beforeEach(() => {
+    work = mkdtempSync(join(tmpdir(), 'nm-swap-'));
+  });
+  afterEach(() => {
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  it('first-time (no dest): creates dest as a hardlink copy of src', () => {
+    const src = join(work, 'src');
+    mkdirSync(join(src, 'pkg'), { recursive: true });
+    writeFileSync(join(src, 'pkg/index.js'), 'OK');
+    const dest = join(work, 'dest');
+    syncOne(src, dest);
+    expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('OK');
+  });
+
+  it('existing dest: swaps to the NEW content wholesale (stale entries gone, dest never absent)', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'marker.txt'), 'NEW');
+    const dest = join(work, 'dest');
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, 'marker.txt'), 'OLD');
+    writeFileSync(join(dest, 'stale.txt'), 'STALE'); // not in src → must be gone after swap
+    syncOne(src, dest);
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('NEW');
+    expect(existsSync(join(dest, 'stale.txt'))).toBe(false);
+  });
+
+  it('preserves relative workspace symlinks verbatim (../../packages/X isolation invariant)', () => {
+    const src = join(work, 'src');
+    mkdirSync(join(src, '@papercusp'), { recursive: true });
+    symlinkSync('../../packages/flags', join(src, '@papercusp/flags')); // relative; dangling is fine
+    const dest = join(work, 'dest');
+    syncOne(src, dest);
+    expect(lstatSync(join(dest, '@papercusp/flags')).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(dest, '@papercusp/flags'))).toBe('../../packages/flags');
+  });
+
+  it('leaves no .deploy-tmp / .deploy-old sibling dirs behind after a swap', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'a'), '1');
+    const dest = join(work, 'dest');
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, 'a'), '0');
+    syncOne(src, dest);
+    const leftovers = readdirSync(work).filter((n) => n.includes('deploy-tmp') || n.includes('deploy-old'));
+    expect(leftovers).toEqual([]);
   });
 });
