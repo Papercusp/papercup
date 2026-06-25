@@ -180,6 +180,56 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(events).not.toContain('submodules:running');
   });
 
+  it('records clone:error with detail network_timeout + releases (skipped) on a transient connect timeout (EI-3548)', async () => {
+    const rows: Array<{ step: string; status: string; extra?: { detail?: string } }> = [];
+    const deps = spyDeps({
+      clone: vi.fn(async () => ({ code: 'network_timeout' as const, message: 'Connection timed out' })),
+      recordProgress: vi.fn((step, status, extra) => rows.push({ step, status, extra })),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    // Skipped state → startBootstrap releases the single-flight latch so a retry re-runs.
+    expect(res.state).toBe('skipped');
+    expect(res.reason).toMatch(/network_timeout/);
+    // The error row carries the network_timeout detail the UI keys off to auto-retry.
+    const err = rows.find((r) => r.step === 'clone' && r.status === 'error');
+    expect(err?.extra?.detail).toBe('network_timeout');
+    expect(rows.some((r) => r.step === 'submodules')).toBe(false);
+  });
+
+  it('EI-3548: a throwing best-effort share (already-present path) does NOT fail setup', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = spyDeps({
+      loadRegistry: vi.fn(async () => ({ projects: [{ slug: PAPERCUSP_HIVE_SLUG, path: '/clones/papercusp' }] })),
+      shareExisting: vi.fn(async () => {
+        throw new Error('Connect Timeout Error (api.github.com:443)');
+      }),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('already-present');
+    expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/shareExisting failed \(non-fatal\)/));
+    warn.mockRestore();
+  });
+
+  it('EI-3548: a throwing adoptShare/goShare (create path) does NOT fail the clone+create', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = spyDeps({
+      adoptShare: vi.fn(async () => {
+        throw new Error('Connect Timeout Error (api.github.com:443)');
+      }),
+      goShare: vi.fn(async () => {
+        throw new Error('Connect Timeout Error (api.github.com:443)');
+      }),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('cloned-and-created');
+    expect(deps.ensureHive).toHaveBeenCalledOnce();
+    expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/adoptShare failed/));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/goShare failed \(non-fatal\)/));
+    warn.mockRestore();
+  });
+
   it('parks clone at 0% running (NOT error) with the sign-in prompt on auth_required', async () => {
     const rows: Array<{ step: string; status: string; extra?: { percent?: number; detail?: string } }> = [];
     const deps = spyDeps({

@@ -1661,11 +1661,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // is incomplete (M2 unbuilt) + infra-heavy (Docker/GB image pulls); ships dark
   // until the P-009 pilot proves it. Owner flips ON after — pending flip surfaced.
   [FLAGS.EXTERNAL_BENCH]: false,
-  // DEFAULT OFF (dark) — shared-hive-rekey-2026-06-19: the hive epoch re-key master gate.
-  // OFF ⇒ resolveHiveEpochCrypto returns the notImplemented stub (no content encryption),
-  // behavior-identical to today. Owner flips ON only after the P-008 live cut-off witness.
-  // KNOWN_DARK_FLAGS.
-  [FLAGS.HIVE_REKEY]: false,
+  // DEFAULT ON — GRADUATED 2026-06-25 (owner ratification, shared-hive-public-release-2026-06-22
+  // GATE-3). shared-hive-rekey-2026-06-19: the hive epoch re-key master gate. ON ⇒
+  // resolveHiveEpochCrypto returns the real createHiveEpochCrypto (XChaCha20-Poly1305 AEAD,
+  // per-epoch key, K-CUT wrapped to remaining members only); encrypt-on-write + decrypt-on-read
+  // are live. Code-complete + unit-proven (read-cut-witness + crypto-impl + op-gate + boundary,
+  // 32/32). RESIDUAL: the live cross-MACHINE K-CUT-on-content witness (WI-560) is still in flight
+  // on the fed-a/fed-b rig; the owner ratified graduation ahead of it (security-cutover authority).
+  [FLAGS.HIVE_REKEY]: true,
   // DEFAULT OFF (dark) — loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5): the
   // engine-managed-loop master gate. OFF ⇒ loop:arm refuses with loops_disabled (the
   // feature is inert — no loop rows exist; loop:end/loop:status are ungated). The loop

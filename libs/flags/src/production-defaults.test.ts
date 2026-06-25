@@ -72,18 +72,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // watchdog-and-exposed-systems-improvement-2026-06-18 P-009: the watchdog auto-close sweep.
   // OFF = escalate-only (today's behavior, byte-identical) — auto-closing real improvement
   // items autonomously is unsafe until the owner reviews the guards. Safe to ship dark.
-  // shared-hive-rekey-2026-06-19 (C-001 read-plane revocation, S0-for-release): the hive
-  // epoch RE-KEY master gate. CODE-COMPLETE + UNIT-TESTED but DARK as an ATTENDED-CUTOVER gate
-  // (flipping it begins encrypting LIVE federated content — a bug would break federation, so it
-  // needs a live 2-machine K-CUT-on-content witness + owner ratification first, NOT more code).
-  // Verified wired end-to-end (su-34db4 2026-06-23, ~60 re-key unit tests green): boot-deps builds
-  // the real createHiveEpochCrypto + EpochKeyProvider + epochEncrypt; wire-outbox injects epochEncrypt
-  // into the live drain; outbox-drain encrypts-on-write (shouldEncryptOpForRekey, fail-closed
-  // exclude-set); boot decryptGate/rekeyOn decrypts-on-read; advanceEpochOnHiveBoundary wraps the new
-  // epoch key to REMAINING members only (K-CUT — removed device excluded + cannot unwrap). OFF ⇒
-  // resolveHiveEpochCrypto returns the notImplemented stub (plaintext, byte-identical to today). Owner
-  // flips ON only after the live cut-off witness (WI-560) passes.
-  FLAGS.HIVE_REKEY,
+  // (HIVE_REKEY graduated to default-ON 2026-06-25 — shared-hive-public-release-2026-06-22 GATE-3,
+  // owner ratification. The hive epoch re-key is code-complete + unit-proven (read-cut-witness +
+  // crypto-impl + op-gate + boundary, 32/32) and wired end-to-end. The owner ratified the
+  // security-cutover ahead of the live cross-machine K-CUT witness (WI-560, in flight on the
+  // fed-a/fed-b rig). Finished + owner-ratified work ships ON, not dark — removed from the allowlist
+  // per the rule.)
   // (INBOX_DURABLE_ESCALATIONS graduated to default-ON 2026-06-23, WI-594 — inbox-cards-
   // unification Phase D is IMPLEMENTED + wired end-to-end + live-verified (plan D-009 round-trip;
   // ran ON in papercusp-workspace via a stored runtime override). Finished work ships ON, not
@@ -367,7 +361,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.DESIGN, 'parked'],
   [FLAGS.TESTING, 'parked'],
   // incomplete — not fully working / unverified on a path that matters
-  [FLAGS.HIVE_REKEY, 'incomplete'],
+  // (HIVE_REKEY graduated default-ON 2026-06-25 — removed from KNOWN_DARK_FLAGS, GATE-3 owner ratification)
   [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
   [FLAGS.EXTERNAL_BENCH, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
