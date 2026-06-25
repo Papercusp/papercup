@@ -14,6 +14,7 @@ const gatherCompletions = vi.fn(async (..._a: unknown[]) => [] as Array<Record<s
 const gatherLiveBees = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const resolveQueenOwner = vi.fn(async (..._a: unknown[]) => 's-queen-1' as string | null);
 const readInbox = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
+const drainSlotMessages = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 vi.mock('./survey', () => ({ surveyHive: (...a: unknown[]) => surveyHive(...a) }));
 vi.mock('./wake', () => ({ getHiveCarryNote: (...a: unknown[]) => getHiveCarryNote(...a) }));
 vi.mock('./placement-watchdog', () => ({
@@ -26,6 +27,7 @@ vi.mock('../curation/change-feed', () => ({ gatherCompletions: (...a: unknown[])
 vi.mock('../curation/change-feed-deps', () => ({ buildChangeFeedReaders: () => ({}) }));
 vi.mock('../fleet/placement-gather', () => ({ gatherLiveBees: (...a: unknown[]) => gatherLiveBees(...a) }));
 vi.mock('../agent-tools/coordination/messages', () => ({ readInbox: (...a: unknown[]) => readInbox(...a) }));
+vi.mock('../agent-tools/coordination/slot-parked-store', () => ({ drainSlotMessages: (...a: unknown[]) => drainSlotMessages(...a) }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 // The capacity gather (P-002) hits the live gateway /stats — mock it so the brief tests are HERMETIC
@@ -219,6 +221,33 @@ test('computeQueenWakeBrief — coord:inbox recent digest flows into the floor (
   const outErr = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(outErr, 'the brief survives a failed inbox read');
   assert.doesNotMatch(outErr!, /### Inbox — recent/);
+});
+
+test('computeQueenWakeBrief — drains stable @role:queen parked nudges into the inbox floor', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getHiveCarryNote.mockResolvedValue(null);
+  resolveQueenOwner.mockResolvedValue('s-queen-1');
+  readInbox.mockResolvedValue([
+    { kind: 'message', from: 'bee-alpha', summary: 'older direct inbox', ts: '2026-06-14T00:00:01Z', msg_id: 'm1' },
+  ]);
+  drainSlotMessages.mockResolvedValue([
+    {
+      kind: 'message',
+      from: 'overwatch',
+      summary: 'Queen placement drift: re-open stranded item',
+      ts: '2026-06-14T00:00:02Z',
+      msg_id: 'm2',
+    },
+  ]);
+
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.match(out!, /Queen placement drift: re-open stranded item/);
+  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.slot?.kind, 'role');
+  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.slot?.ref, 'queen');
+  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.harnessSlug, 'papercup');
+  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.toOwner, 's-queen-1');
+  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.workspaceId, 'ws-1');
 });
 
 test('computeQueenWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {

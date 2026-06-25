@@ -92,7 +92,7 @@ describe('overwatch:declare-wake', () => {
     const out = await call(overwatchDeclareWake as never, { harness: 'my-hive', mode: 'none' });
     expect(out.ok).toBe(true);
     expect(out.mode).toBe('none');
-    expect(clearOverwatchTimeWake).toHaveBeenCalledWith(expect.anything(), 'my-hive');
+    expect(clearOverwatchTimeWake).toHaveBeenCalledWith(expect.anything(), 'my-hive', { workspaceId: 'ws-1' });
     expect(declareOverwatchTimeWake).not.toHaveBeenCalled();
   });
 

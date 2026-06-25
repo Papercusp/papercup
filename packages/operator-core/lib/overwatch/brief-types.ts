@@ -44,9 +44,9 @@ export interface OverwatchQueenHealth {
   workingTracked: number;
   /** Her next scheduled wake (ISO-8601), or null if none is declared. */
   nextFireAt: string | null;
-  /** The Queen's resolvable coord owner id — `coord:send` a nudge here and it lands
-   *  in her next wake brief's inbox (she folds `readInbox(resolveQueenOwner)` into
-   *  every wake). null = no recent Queen session to address → escalate instead. */
+  /** Latest Queen coord owner id, for diagnostics and continuity only. Queen
+   *  nudges must use the stable `@role:queen` slot because concrete Queen owner
+   *  ids are fresh-per-wake and can expire before Overwatch sends. */
   coordOwner: string | null;
   /** Most-recent CONSECUTIVE Queen wakes that ran 0 LLM tokens (the LLM never executed —
    *  infra/rate-limit loss). Feeds the queen-placement-stalled detector. */
@@ -435,12 +435,16 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
     `- last woke ${q.lastWakeAt ?? 'unknown'}${q.stalled ? ' [STALLED]' : ''} · cadence ${q.cadenceOk ? 'ok' : 'OFF'} · ` +
       `driving ${q.workingTracked} placement(s) · next ${q.nextFireAt ?? 'unscheduled'}`,
   );
-  // The address for a Queen nudge: coord:send here lands in her next wake brief's
-  // inbox (she reads it every wake). null ⇒ no recent Queen session → escalate.
+  // Queen nudges use the stable role slot. A concrete coordOwner is diagnostic
+  // only: Queen sessions are fresh-per-wake and direct owner sends can race the
+  // session ending before Overwatch sends.
+  out.push(
+    `- nudge the Queen via \`coord:send { to: ['@role:queen'], wake: 'optimistic', summary, body }\` (role-slot drains into her next wake brief)`,
+  );
   out.push(
     q.coordOwner
-      ? `- nudge the Queen via \`coord:send { to: ['${q.coordOwner}'], wake: 'optimistic', summary, body }\` (lands in her next wake brief)`
-      : `- nudge channel: no resolvable Queen coord owner right now — ESCALATE Queen-targeted drift instead of nudging`,
+      ? `- latest Queen session owner (diagnostic only): ${q.coordOwner}`
+      : `- latest Queen session owner: unknown (role-slot nudge still parks for the next Queen wake)`,
   );
 
   const b = brief.bees;

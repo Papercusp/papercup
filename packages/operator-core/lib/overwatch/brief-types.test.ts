@@ -65,8 +65,9 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
 
   // Health panels — one line each, every field surfaced.
   assert.match(out, /### Queen\n- last woke 2026-06-15T01:00:00Z \[STALLED\] · cadence OFF · driving 3 placement\(s\) · next unscheduled/);
-  // The Queen-nudge address: coord:send to her resolved coordOwner (lands in her wake brief).
-  assert.match(out, /nudge the Queen via `coord:send \{ to: \['s-queen-1781000000-abc'\]/);
+  // The Queen-nudge address is the stable role slot; the session owner is diagnostic only.
+  assert.match(out, /nudge the Queen via `coord:send \{ to: \['@role:queen'\], wake: 'optimistic'/);
+  assert.match(out, /latest Queen session owner \(diagnostic only\): s-queen-1781000000-abc/);
 
   // The pre-folded Inbox section (coord messages addressed to the overwatch).
   assert.match(out, /### Inbox — coord messages for you/);
@@ -98,8 +99,8 @@ test('renderOverwatchBrief — empty anomalies render an explicit healthy signal
   assert.match(out, /_no anomalies — system healthy\._/);
   // The panels still render with the neutral defaults.
   assert.match(out, /- last woke unknown · cadence ok · driving 0 placement\(s\) · next unscheduled/);
-  // No resolvable Queen coord owner (null default) ⇒ the render tells the overwatch to ESCALATE, not nudge.
-  assert.match(out, /no resolvable Queen coord owner right now — ESCALATE/);
+  // No resolvable Queen coord owner (null default) still has a stable role-slot route.
+  assert.match(out, /role-slot nudge still parks for the next Queen wake/);
   assert.match(out, /- queen alive · overwatch alive/);
   assert.match(out, /by role: none/);
   assert.match(out, /paused buckets: none/);

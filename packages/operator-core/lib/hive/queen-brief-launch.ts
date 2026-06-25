@@ -26,8 +26,10 @@ import { gatherCompletions } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { gatherLiveBees } from '../fleet/placement-gather';
 import { readInbox } from '../agent-tools/coordination/messages';
+import { drainSlotMessages } from '../agent-tools/coordination/slot-parked-store';
 import { runWithWorkspace } from '../workspace-als';
 import { getOrgPg } from '@papercusp/db-org';
+import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee, type BriefInboxItem, type BriefCapacity } from './queen-brief';
 import { overwatchAliveForQueen } from '../overwatch/cross-monitor';
 import { getOwnerSteering, isPausedNow, hasActiveThrottle, type OwnerSteering } from '../owner-steering';
@@ -98,16 +100,15 @@ async function gatherRecentChanges(limit = 10): Promise<string[]> {
 
 /**
  * The Queen's coord inbox → the floor's recent-messages digest (D-020, the last
- * every-wake read folded in). Resolve her DURABLE owner id (stable across her
- * fresh-per-wake spawns — `resolveQueenOwner`) and read the items addressed to
- * it. Because she is fresh-per-wake + stateless, this read-only digest is
- * EQUIVALENT to the `coord:inbox` call she'd otherwise make (both are stateless
- * "recent addressed items", no per-wake unread tracking) — it just saves the
- * round-trip; there is no delta/watermark to consume. `readInbox` already
- * excludes her own outbox + the `notify` firehose; we additionally drop ambient
- * rows (service-health / governor) to mirror `coord:inbox`'s default. Newest-
- * first, capped to keep the tail small. Fail-soft like the other gathers: any
- * error (or no resolvable owner) degrades to no-inbox, never kills the brief.
+ * every-wake read folded in). Resolve her latest owner id and read the items
+ * addressed to it. We also drain `@role:queen` parked nudges into that same
+ * digest: Queen sessions are fresh-per-wake, so targeting a concrete owner id is
+ * race-prone; role-slot parking is the stable channel and this wake is the drain
+ * trigger. `readInbox` already excludes her own outbox + the `notify` firehose;
+ * we additionally drop ambient rows (service-health / governor) to mirror
+ * `coord:inbox`'s default. Newest-first, capped to keep the tail small. Fail-soft
+ * like the other gathers: any error (or no resolvable owner) degrades to no-inbox,
+ * never kills the brief.
  *
  * Read inside the Queen's workspace ALS so `coordLog` resolves the right event
  * log (the inbox is workspace-keyed; resolveQueenOwner is explicitly scoped).
@@ -117,7 +118,15 @@ async function gatherInbox(workspaceId: string, installSlug: string, limit = 10)
     const { sql } = getOrgPg();
     const queenOwner = await resolveQueenOwner(sql, workspaceId, installSlug);
     if (!queenOwner) return [];
-    const all = await runWithWorkspace(workspaceId, () => readInbox(queenOwner, {}));
+    const inboxRows = await runWithWorkspace(workspaceId, () => readInbox(queenOwner, {})).catch(() => [] as CoordEnvelope[]);
+    const slotRows = await drainSlotMessages(sql, {
+      slot: { kind: 'role', ref: 'queen' },
+      harnessSlug: installSlug,
+      toOwner: queenOwner,
+      nowMs: Date.now(),
+      workspaceId,
+    }).catch(() => [] as CoordEnvelope[]);
+    const all = [...inboxRows, ...slotRows].sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
     return all
       .filter((e) => !e.category) // drop ambient (service-health / governor) like coord:inbox default
       .slice(-limit)
