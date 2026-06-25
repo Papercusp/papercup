@@ -37,6 +37,7 @@ import {
   isPlatformImprovementLoop,
   platformImprovementLoopsEnabled,
   SINGLETON_TRIGGER_HOST_SLUG,
+  singletonRoutinePayloadDefaults,
   type MaterializedRoutine,
 } from './materialize-triggers';
 
@@ -281,13 +282,16 @@ export async function cutoverActiveLearningSingleton(
     return { blueprintId: entry.blueprintId, found: true, legacyActive: true, cutOver: false, singletonName };
   }
 
+  const payloadDefaults = JSON.stringify(singletonRoutinePayloadDefaults(entry.blueprintId));
+
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO harness_shared.routines
         (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template,
          concurrency, catchup, active, last_fired_at, next_fire_at, workspace_id, metadata, created_at, updated_at)
       SELECT ${singletonId}, ${SINGLETON_TRIGGER_HOST_SLUG}, ${singletonName}, trigger_kind, trigger_config,
-             target_role, payload_template, concurrency, catchup, active, last_fired_at, next_fire_at,
+             target_role, ${payloadDefaults}::text::jsonb || COALESCE(payload_template, '{}'::jsonb),
+             concurrency, catchup, active, last_fired_at, next_fire_at,
              workspace_id, metadata, now(), now()
         FROM harness_shared.routines
        WHERE install_slug='papercup' AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}

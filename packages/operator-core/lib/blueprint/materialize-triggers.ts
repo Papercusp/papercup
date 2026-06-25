@@ -133,6 +133,15 @@ export interface TriggerRoutineSpec {
   singletonActive: boolean;
 }
 
+export const SCOUT_SINGLETON_CYCLE_TIMEOUT_MS = 120_000;
+
+export function singletonRoutinePayloadDefaults(blueprintId: string): Record<string, unknown> {
+  if (blueprintId === 'scout') {
+    return { cycleTimeoutMs: SCOUT_SINGLETON_CYCLE_TIMEOUT_MS };
+  }
+  return {};
+}
+
 export interface MaterializedRoutine extends TriggerRoutineSpec {
   /** The routines.id primary key (`rt_<slug>_<name>`, sanitized). */
   id: string;
@@ -192,7 +201,7 @@ async function upsertSingletonRoutine(
   const id = `rt_${installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
   const nextFireAt = computeNextFireAt(input.cron, new Date());
   const triggerConfig = JSON.stringify({ cron: input.cron });
-  const payload = JSON.stringify({ blueprintId: input.blueprintId });
+  const payload = JSON.stringify({ blueprintId: input.blueprintId, ...singletonRoutinePayloadDefaults(input.blueprintId) });
   const rows = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role,

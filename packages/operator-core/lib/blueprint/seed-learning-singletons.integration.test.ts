@@ -20,15 +20,22 @@ import { getTestPg } from '@papercusp/test-config';
 
 const WS = 'ws-seed';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, declaresSingleton: true, platformOn: true, isPlatform: false }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  declaresSingleton: true,
+  platformOn: true,
+  isPlatform: false,
+  singletonName: 'graduation-singleton',
+}));
 vi.mock('@papercusp/orchestrator/blueprint', () => ({
   loadBuiltinBlueprint: () => ({ blueprint: { triggers: { schedule: h.declaresSingleton ? [{ singleton: true }] : [{}] } } }),
 }));
 vi.mock('./materialize-triggers', () => ({
   materializeBlueprintTriggers: async () => [{ hostSlug: '@singleton', name: 'graduation-singleton', singleton: true }],
-  triggerRoutineSpecs: () => [{ name: 'graduation-singleton', singleton: true }],
+  triggerRoutineSpecs: () => [{ name: h.singletonName, singleton: true }],
   isPlatformImprovementLoop: () => h.isPlatform,
   platformImprovementLoopsEnabled: async () => h.platformOn,
+  singletonRoutinePayloadDefaults: (blueprintId: string) => (blueprintId === 'scout' ? { cycleTimeoutMs: 120_000 } : {}),
   SINGLETON_TRIGGER_HOST_SLUG: '@singleton',
 }));
 vi.mock('@papercusp/db-org', async () => {
@@ -40,6 +47,7 @@ vi.mock('@papercusp/flags', () => ({ FLAGS: { PLATFORM_IMPROVEMENT_LOOPS: 'platf
 const { cutoverActiveLearningSingleton, materializeLearningSingletons } = await import('./seed-learning-singletons');
 
 const ENTRY = { blueprintId: 'graduation', legacyRoutine: 'graduation-scan' };
+const SCOUT_ENTRY = { blueprintId: 'scout', legacyRoutine: 'scout-cycle' };
 let rootSql: postgres.Sql;
 
 beforeAll(async () => {
@@ -90,16 +98,17 @@ beforeEach(async () => {
   h.declaresSingleton = true;
   h.platformOn = true;
   h.isPlatform = false;
+  h.singletonName = 'graduation-singleton';
 });
 
-async function insertLegacy(active: boolean, over: Record<string, unknown> = {}) {
+async function insertLegacy(active: boolean, over: Record<string, unknown> = {}, entry = ENTRY) {
   await rootSql`
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template,
        concurrency, catchup, active, last_fired_at, next_fire_at, workspace_id, metadata)
-    VALUES ('rt_papercup_graduation-scan', 'papercup', 'graduation-scan', 'schedule',
+    VALUES (${`rt_papercup_${entry.legacyRoutine}`}, 'papercup', ${entry.legacyRoutine}, 'schedule',
             ${rootSql.json((over.trigger_config as object) ?? { cron: '0 0 * * *' })}, 'worker',
-            ${rootSql.json((over.payload_template as object) ?? { blueprintId: 'graduation', k: 'v' })},
+            ${rootSql.json((over.payload_template as object) ?? { blueprintId: entry.blueprintId, k: 'v' })},
             'queue', 'skip-old', ${active},
             ${(over.last_fired_at as string) ?? '2026-01-01T00:00:00Z'},
             ${(over.next_fire_at as string) ?? '2026-02-01T00:00:00Z'},
@@ -143,6 +152,21 @@ describe('cutoverActiveLearningSingleton (PG, atomic copy)', () => {
     expect(s.payload_template).toEqual({ blueprintId: 'graduation', special: 'PAYLOAD' }); // payload byte-copied
     expect(s.next_fire_at.toISOString()).toBe('2026-03-03T03:03:03.000Z'); // timing preserved → no firing gap
     expect(s.workspace_id).toBe(WS);
+  });
+
+  it('adds the Scout singleton cycle timeout default when cutting over an old active scout row', async () => {
+    h.singletonName = 'bp-singleton-scout-0';
+    await insertLegacy(true, { payload_template: { blueprintId: 'scout', budget: { maxCostUsd: 0.5 } } }, SCOUT_ENTRY);
+    const r = await cutoverActiveLearningSingleton(rootSql, WS, SCOUT_ENTRY, { execute: true });
+    expect(r).toMatchObject({ found: true, legacyActive: true, cutOver: true, singletonName: 'bp-singleton-scout-0' });
+
+    const [s] = await rootSql<{ payload_template: Record<string, unknown> }[]>`
+      SELECT payload_template FROM harness_shared.routines WHERE install_slug='@singleton'`;
+    expect(s.payload_template).toEqual({
+      blueprintId: 'scout',
+      budget: { maxCostUsd: 0.5 },
+      cycleTimeoutMs: 120_000,
+    });
   });
 });
 

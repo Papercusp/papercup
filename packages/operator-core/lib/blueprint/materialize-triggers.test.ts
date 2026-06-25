@@ -3,6 +3,8 @@ import {
   triggerRoutineSpecs,
   DEFAULT_SCHEDULE_ACTION,
   SINGLETON_TRIGGER_HOST_SLUG,
+  SCOUT_SINGLETON_CYCLE_TIMEOUT_MS,
+  singletonRoutinePayloadDefaults,
 } from './materialize-triggers';
 
 describe('triggerRoutineSpecs (P-021 / D-018)', () => {
@@ -104,5 +106,18 @@ describe('triggerRoutineSpecs — workspace-singleton triggers (D-018)', () => {
   it('the reserved host-slug is disjoint from real harness slugs (leading @)', () => {
     expect(SINGLETON_TRIGGER_HOST_SLUG).toBe('@singleton');
     expect(SINGLETON_TRIGGER_HOST_SLUG.startsWith('@')).toBe(true);
+  });
+});
+
+describe('singletonRoutinePayloadDefaults', () => {
+  it('bounds Scout singleton cycles so a routine row cannot fall back to the 20 minute default', () => {
+    expect(singletonRoutinePayloadDefaults('scout')).toEqual({
+      cycleTimeoutMs: SCOUT_SINGLETON_CYCLE_TIMEOUT_MS,
+    });
+    expect(SCOUT_SINGLETON_CYCLE_TIMEOUT_MS).toBe(120_000);
+  });
+
+  it('does not add timeout payload to unrelated singleton blueprints', () => {
+    expect(singletonRoutinePayloadDefaults('regret')).toEqual({});
   });
 });
