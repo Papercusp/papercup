@@ -169,6 +169,7 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
   });
 
   it('records clone:error and skips the submodule phase on a real clone failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const events: string[] = [];
     const deps = spyDeps({
       clone: vi.fn(async () => ({ code: 'not_found' as const, message: 'nope' })),
@@ -178,15 +179,20 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(res.state).toBe('skipped');
     expect(events).toContain('clone:error');
     expect(events).not.toContain('submodules:running');
+    // The real failure (code + message) is logged for diagnosis (EI / Mac-VM debugging).
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/clone failed: not_found/));
+    warn.mockRestore();
   });
 
   it('records clone:error with detail network_timeout + releases (skipped) on a transient connect timeout (EI-3548)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const rows: Array<{ step: string; status: string; extra?: { detail?: string } }> = [];
     const deps = spyDeps({
       clone: vi.fn(async () => ({ code: 'network_timeout' as const, message: 'Connection timed out' })),
       recordProgress: vi.fn((step, status, extra) => rows.push({ step, status, extra })),
     });
     const res = await bootstrapPapercuspHive(deps);
+    warn.mockRestore();
     // Skipped state → startBootstrap releases the single-flight latch so a retry re-runs.
     expect(res.state).toBe('skipped');
     expect(res.reason).toMatch(/network_timeout/);
