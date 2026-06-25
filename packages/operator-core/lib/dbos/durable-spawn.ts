@@ -156,7 +156,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(input.body),
-        });
+        }, { launch: true });
         if (r.ok) {
           // D-007/D-010 fail-loud: the fire holds the connection for the agent's run, so r.ok
           // ≈ "the run finished" — but HTTP 200 does NOT mean the agent actually RAN. On an
