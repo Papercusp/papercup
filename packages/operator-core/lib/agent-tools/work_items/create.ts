@@ -34,7 +34,7 @@ import { runBulk, bulkContent } from '../_bulk';
 /** One per-item create spec — the same per-item shape as the single-call fields. */
 const itemSpec = z.object({
   kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]),
-  title: z.string().min(1).max(200),
+  title: z.string().min(1).max(1000),
   summary: z.string().max(8000).optional().describe('body / summary text'),
   harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
   hive: hiveArg,
@@ -89,7 +89,7 @@ export default defineTool({
     .object({
       // ── single-create shorthand (n=1) ──
       kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
-      title: z.string().min(1).max(200).optional(),
+      title: z.string().min(1).max(1000).optional(),
       summary: z.string().max(8000).optional().describe('body / summary text'),
       harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
       hive: hiveArg,

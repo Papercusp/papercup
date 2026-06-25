@@ -70,6 +70,14 @@ export function useModelOverride(role: string, enabled = true): ModelOverrideSta
 
   const setOverride = useCallback(
     (spec: string | null) => {
+      // The home hive comes from the (async) harnessProjects.lite query. A click
+      // before it resolves would send hive:'' — which `hive:set-steering` rejects
+      // ("no Hive ''"). Guard like the Queen tab (which bails with an error on
+      // empty home) so a too-fast click is a clear retry, not a confusing failure.
+      if (!home) {
+        setError('Home hive still loading — try again in a moment.');
+        return;
+      }
       setBusy(true);
       setError(null);
       // Merge so a peer role's override (e.g. overwatch when writing sentinel) survives.

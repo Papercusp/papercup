@@ -27,6 +27,13 @@ A fresh routine fire with no fresh `scout_ticks` row is not healthy Scout activi
 it as stale and inspect DBOS `routineFire` dedup/queue state, gateway/account health, and
 the Scout cycle logs.
 
+The 2026-06-25 live failure was a DBOS no-first-output fire: `routineFire` pinned
+`routine:<scout-id>` and advanced `routines.last_fired_at`, but there were zero
+`dbos.operation_outputs` rows and no Scout tick. The reaper now cancels that
+specific no-output class and requeues the routine immediately, but Scout health
+must still come from `scout_ticks`; otherwise the monitor can miss the next
+variant of the same scheduler/effect split.
+
 Scout also has to bound the cycle body itself. Once the scheduler wins the fire slot, a
 hung LLM/gateway call must record `status:error` in `scout_ticks` and release the DBOS
 dedup before the outer two-hour `routineFire` deadline. The scheduler timeout is the
@@ -38,3 +45,5 @@ class guard for that.
 gated tick rows. `packages/operator-core/lib/scout/scheduler.test.ts` verifies a timed-out
 cycle records an error tick. `packages/operator-core/lib/blueprint/learning-loop-health.test.ts`
 verifies Scout is marked stale when routine fires are fresh but `scout_ticks` activity is stale.
+`packages/operator-core/lib/dbos/dbos-executor-reaper.test.ts` verifies no-first-output
+routine fires are cancelled and the owning routine is requeued.

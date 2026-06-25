@@ -62,3 +62,40 @@ effect table (frozen).
 * Prevention (open, EI-396 residual): per-host `DBOS__APPVERSION`/`DBOS__VMID`
   discipline for ad-hoc/repro hosts so they never join the live hosts'
   queues (the staging unit already isolates itself this way).
+
+## Update: no-first-output routineFire rows (2026-06-25)
+
+The same user-visible symptom can happen on a live executor: DBOS creates a
+`routineFire` workflow row, assigns `started_at_epoch_ms`, and pins
+`deduplication_id='routine:<id>'`, but the workflow never records its first
+`dbos.operation_outputs` checkpoint. A later recovery pass may refresh both
+`updated_at` and `started_at_epoch_ms`, so those clocks can make the dead fire
+look newly active even though the routine has not produced any durable DBOS
+operation output. Use immutable `created_at` for the no-first-output stale check.
+
+Diagnosis:
+
+```sql
+select ws.workflow_uuid, ws.status, ws.deduplication_id,
+       to_timestamp(ws.started_at_epoch_ms/1000.0) as started_at
+  from dbos.workflow_status ws
+ where ws.name='routineFire'
+   and ws.status in ('PENDING','ENQUEUED')
+   and not exists (
+     select 1 from dbos.operation_outputs op
+      where op.workflow_uuid = ws.workflow_uuid
+   );
+```
+
+Structural fix: `dbos-executor-reaper` now treats a `routineFire` whose
+`created_at` is older than a longer first-output window with zero operation rows
+as stale, NULLs its dedup, sets it `CANCELLED`, and pushes the owning
+`harness_shared.routines.next_fire_at` back to `now()`. That window is deliberately
+longer than the scheduler-tick window because `operation_outputs` is a checkpoint
+table: a legitimate long first step has no row until it completes or records its
+own timeout/error. Scout's cycle timeout is the live proof. It also cancels
+no-first-output `routinesTick` rows by `created_at`, because a stuck scheduler tick
+is the upstream version of the same failure. The requeue is intentionally limited
+to the no-first-output `routineFire` safety-valve class; routine bodies that did
+checkpoint a DBOS step still rely on their explicit workflow deadline/backoff
+rather than being retried immediately.

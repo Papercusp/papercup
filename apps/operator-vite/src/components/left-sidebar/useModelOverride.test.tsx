@@ -87,6 +87,15 @@ describe('useModelOverride', () => {
     expect(lastBody().args.modelOverrides).toEqual({ sentinel: 'opus:high', overwatch: 'sonnet' });
   });
 
+  it('does NOT write while the home hive is still loading (no hive: "" request)', () => {
+    // projectsQ + steering both empty ⇒ resolveHomeHive ⇒ '' ⇒ guard bails.
+    syncData['hive.steering'] = [];
+    syncData['harnessProjects.lite'] = [];
+    const { getByText } = render(<Harness role="overwatch" write="sonnet" />);
+    fireEvent.click(getByText('go'));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('clearing the last override sends modelOverrides: null', () => {
     syncData['hive.steering'] = [{ slug: 'home', modelOverrides: { sentinel: 'opus:high' } }];
     syncData['harnessProjects.lite'] = [{ slug: 'home', harness_kind: 'hive' }];

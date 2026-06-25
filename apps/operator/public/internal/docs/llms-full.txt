@@ -16401,6 +16401,28 @@ A PENDING row whose `executor_id` no longer exists is the wedge. Cross-check `ha
 
 * Prevention (open, EI-396 residual): per-host `DBOS__APPVERSION`/`DBOS__VMID` discipline for ad-hoc/repro hosts so they never join the live hosts’ queues (the staging unit already isolates itself this way).
 
+## Update: no-first-output routineFire rows (2026-06-25)
+
+[Section titled “Update: no-first-output routineFire rows (2026-06-25)”](#update-no-first-output-routinefire-rows-2026-06-25)
+
+The same user-visible symptom can happen on a live executor: DBOS creates a `routineFire` workflow row, assigns `started_at_epoch_ms`, and pins `deduplication_id='routine:<id>'`, but the workflow never records its first `dbos.operation_outputs` checkpoint. A later recovery pass may refresh both `updated_at` and `started_at_epoch_ms`, so those clocks can make the dead fire look newly active even though the routine has not produced any durable DBOS operation output. Use immutable `created_at` for the no-first-output stale check.
+
+Diagnosis:
+
+```sql
+select ws.workflow_uuid, ws.status, ws.deduplication_id,
+       to_timestamp(ws.started_at_epoch_ms/1000.0) as started_at
+  from dbos.workflow_status ws
+ where ws.name='routineFire'
+   and ws.status in ('PENDING','ENQUEUED')
+   and not exists (
+     select 1 from dbos.operation_outputs op
+      where op.workflow_uuid = ws.workflow_uuid
+   );
+```
+
+Structural fix: `dbos-executor-reaper` now treats a `routineFire` whose `created_at` is older than a longer first-output window with zero operation rows as stale, NULLs its dedup, sets it `CANCELLED`, and pushes the owning `harness_shared.routines.next_fire_at` back to `now()`. That window is deliberately longer than the scheduler-tick window because `operation_outputs` is a checkpoint table: a legitimate long first step has no row until it completes or records its own timeout/error. Scout’s cycle timeout is the live proof. It also cancels no-first-output `routinesTick` rows by `created_at`, because a stuck scheduler tick is the upstream version of the same failure. The requeue is intentionally limited to the no-first-output `routineFire` safety-valve class; routine bodies that did checkpoint a DBOS step still rely on their explicit workflow deadline/backoff rather than being retried immediately.
+
 # Routines are claimed by WHICHEVER host's tick wins — green and staging race on one table
 
 > Green (:3070, release tree) and staging (:3170, main) both run routinesTick against one harness_shared.routines table, so which CODE VERSION handles a fire is a lottery — new-code-only payloads fail intermittently until the release deploy.
@@ -16661,13 +16683,15 @@ For Scout, read `harness_shared.scout_ticks` as the activity proof:
 
 A fresh routine fire with no fresh `scout_ticks` row is not healthy Scout activity. Treat it as stale and inspect DBOS `routineFire` dedup/queue state, gateway/account health, and the Scout cycle logs.
 
+The 2026-06-25 live failure was a DBOS no-first-output fire: `routineFire` pinned `routine:<scout-id>` and advanced `routines.last_fired_at`, but there were zero `dbos.operation_outputs` rows and no Scout tick. The reaper now cancels that specific no-output class and requeues the routine immediately, but Scout health must still come from `scout_ticks`; otherwise the monitor can miss the next variant of the same scheduler/effect split.
+
 Scout also has to bound the cycle body itself. Once the scheduler wins the fire slot, a hung LLM/gateway call must record `status:error` in `scout_ticks` and release the DBOS dedup before the outer two-hour `routineFire` deadline. The scheduler timeout is the class guard for that.
 
 ## Regression Guard
 
 [Section titled “Regression Guard”](#regression-guard)
 
-`packages/operator-core/lib/scout/run.test.ts` verifies pre-scheduler Scout gates record gated tick rows. `packages/operator-core/lib/scout/scheduler.test.ts` verifies a timed-out cycle records an error tick. `packages/operator-core/lib/blueprint/learning-loop-health.test.ts` verifies Scout is marked stale when routine fires are fresh but `scout_ticks` activity is stale.
+`packages/operator-core/lib/scout/run.test.ts` verifies pre-scheduler Scout gates record gated tick rows. `packages/operator-core/lib/scout/scheduler.test.ts` verifies a timed-out cycle records an error tick. `packages/operator-core/lib/blueprint/learning-loop-health.test.ts` verifies Scout is marked stale when routine fires are fresh but `scout_ticks` activity is stale. `packages/operator-core/lib/dbos/dbos-executor-reaper.test.ts` verifies no-first-output routine fires are cancelled and the owning routine is requeued.
 
 # The Sentinel — the always-on voice of the hive
 
@@ -17003,6 +17027,131 @@ Token catalog: `/internal/docs/design/tokens`. Decision matrix row for the kanba
 * `tauri-agent-tools screenshot` platform-detects **Wayland from your shell env** and demands `sway`/`grim` even when your target instance is on an X11 Xvfb. Force it: `env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 DISPLAY=:NN tauri-agent-tools screenshot …` — and pass `--title Papercusp`.
 * Even then the window matcher can pick a 10×10 helper window (or a zombie window from a killed instance — `xdotool windowkill` the leftovers). Fallback that always works: bridge-`eval` a red `el.style.outline='3px solid red'` on the element, `import -window <id>`, crop to the outline.
 * The debug shell embeds VTE terminal panes beside the webview (the webview gets only part of the window). `PAPERCUSP_DEV_WRAPPER=0` does **not** remove the terminal panes; the control-bar pane switcher (PUI / DEV / …) picks which webview is visible.
+
+# Shared-hive federation — the live-diagnosis toolkit + the two admission paths
+
+> When a fresh joiner rosters a hive but receives no content, the cause is almost always upstream of the apply-guard: an ADMISSION decision, not a merge bug. This is the toolkit to read a live fed-a/fed-b rig (fed.sh: ports/sql/api/mcp/ssh self-discovering ports) and the model to interpret it — the SIGNED-announce identity decider (revoked → bad_sig → verifyBinding → admit/pending/binding_invalid) feeding the TWO same-hive SCOPE paths (owner-log bootstrap-admit vs member-set admission+buffer), the registry-gated substrate boot that decides which hives a node even swarms, the boot-history event log (dogfood-substrate-boot-history), and what binding_invalid actually means (gist-less owner → conclusive reject, NOT retried).
+
+## When to read this
+
+[Section titled “When to read this”](#when-to-read-this)
+
+You are staring at a live two-machine shared-hive rig (fed-a = owner, fed-b = joiner). Membership/roster federates (fed-b sees the owner in its roster, epoch keys decrypt), **but content does not cross** — features/plans/issues written on one member never materialize on the other, “discovers 0”. You are about to suspect the merge loop or the apply-guard.
+
+**Stop. The merge/apply guard is almost never the live cause.** It is unit-green and re-proven over real testcontainer-PG + real swarm (`feature-content-federation.integration.test.ts`). On a live rig the failure is upstream: the peer’s log was never **admitted**, or the node never **swarmed** the hive at all. This doc gives you (1) the toolkit to read the live state, and (2) the admission model you need to interpret what you read. It is the synthesis the public-release diagnosis (`shared-hive-public-release-2026-06-22`, D-005…D-010) converged on after every mechanical apply hypothesis was refuted.
+
+> Sibling docs, each a different slice — read them too: [`shared-hive-live-federation-witnessing`](/internal/docs/agent-insights/shared-hive-live-federation-witnessing) (the green-rig/red-binary trap + smoke gotchas), [`federation-rig-restart-runbook`](/internal/docs/agent-insights/federation-rig-restart-runbook) (recovering a wedged rig / missing gh-auth), [`owner-side-cross-member-content-apply-gap`](/internal/docs/agent-insights/owner-side-cross-member-content-apply-gap) (the one genuine apply-guard asymmetry), [`hive-approval-membership-gate-wiring`](/internal/docs/agent-insights/hive-approval-membership-gate-wiring) (the owner-admission approval seam).
+
+## The toolkit — `fed.sh`
+
+[Section titled “The toolkit — fed.sh”](#the-toolkit--fedsh)
+
+`papercusp-desktop/scripts/linux-test-vm/fed.sh` is the versioned, reliable way to drive either VM. Its whole reason to exist: the packaged app picks a **fresh dynamic operator + PG port on every boot**, old listeners linger, and the app log’s “latest `[serve] listening on`” line is unreliable (EI-3409 / WI-559 burned hours on exactly this). So `fed.sh` **self-discovers** the live ports on every call by SSHing in and probing — operator = the loopback port answering `GET /api/desktop/preflight` 2xx (other listeners 404 it; dead ones refuse); PG = the port that accepts a `harness_admin` psql to `papercusp`. Discovered ports are cached per-VM under `~/.papercusp/fed-rig-ports.<vm>` for `FED_PORT_TTL` (default 600s) and auto-rediscovered when a target port stops answering. It survives app/VM restarts with **no edits**.
+
+| Subcommand                                      | What it does                                                                                 |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `fed.sh <a\|b> ports`                           | Show the discovered `operator=` / `pg=` ports (pass `1` to force a probe).                   |
+| `fed.sh <a\|b> rediscover`                      | Clear the port cache and re-probe. Run this FIRST after any restart.                         |
+| `fed.sh <a\|b> sql "<SQL>"`                     | `psql` against the VM’s embedded PG as `harness_admin` / `papercusp`.                        |
+| `fed.sh <a\|b> api <METHOD> <path> [json-body]` | Superuser HTTP route (Bearer from the operator’s actual `$HOME/.papercusp/superuser-token`). |
+| `fed.sh <a\|b> mcp <tool> [json-args]`          | Superuser MCP tool over `/api/mcp?superuser=1` (returns just the `data:` SSE payload).       |
+| `fed.sh <a\|b> ssh <cmd…>`                      | Raw SSH into the VM (e.g. `ssh 'tail papercusp-app.log'`).                                   |
+
+Two footguns the script already handles, but you must know:
+
+* **`$HOME` is workspace-scoped on a VM whose operator runs workspace-scoped** (`HOME=/home/tester/.papercusp-workspaces/default`, D-007). The superuser token and `gh` auth live under the operator’s *actual* HOME, not `/home/tester`. `fed.sh` derives the token from `/proc/$(pgrep -f serve.mjs)/environ`; if `hive:membership_decide` returns `no_owner_identity`, the operator’s HOME is missing `~/.config/gh` — symlink it.
+* **EI-3409 superuser-MCP workspace mismatch.** Superuser MCP resolves `ctx.workspaceId='*'` while HTTP routes/queue use `'default'`, so a hive created via `mcp` lands in the wrong workspace and routes then return `not_owner_swarm`. For a workspace-scoped WRITE tool, set `FED_MCP_WS=default` so `fed.sh` injects `workspace:"default"` (OPT-IN — blanket injection breaks READ tools that reject an unknown `workspace` key).
+
+## The two-path admission model — the thing you are actually debugging
+
+[Section titled “The two-path admission model — the thing you are actually debugging”](#the-two-path-admission-model--the-thing-you-are-actually-debugging)
+
+Content reaches a peer only if that peer **admits the source log**. Admission is two layers; read them top-to-bottom because the second only runs after the first passes.
+
+### Layer 1 — the SIGNED-announce identity decider (`read-admission.ts`)
+
+[Section titled “Layer 1 — the SIGNED-announce identity decider (read-admission.ts)”](#layer-1--the-signed-announce-identity-decider-read-admissionts)
+
+Every inbound announce runs `decideAdmission` with fixed precedence:
+
+```plaintext
+revoked → bad_sig → verifyBinding → admit / pending / binding_invalid
+```
+
+`verifyBinding` is 3-state (D-006):
+
+* **`verified`** → channel-2 attestation valid (the announce’s `attestation_gist_id` is a GitHub gist owned by `github_user_id` containing `device_pubkey`) → **admit**.
+* **`pending`** → OUR transient failure (GitHub unreachable / gist-propagation lag) → `reason:'pending'`, **RETRYABLE** within the grace window.
+* **`fail`** → **`binding_invalid`** — a CONCLUSIVE attestation failure (gist gone, owner/pubkey mismatch, bad sig on the binding). **Not retried.**
+
+This is the layer the public-release live witness is stuck on. A **gist-less owner placeholder** (a hive created without a real GitHub gist, e.g. on a gh-degraded VM) fails `verifyBinding` → `binding_invalid` → the owner’s own log is conclusively rejected, so nothing it authored can ever be admitted. WI-797 is the structural gap here: `owner_bootstrap` (Layer 2 below) sits *after* this gist gate, so it cannot rescue a gist-less owner in the fresh-join window. **`binding_invalid` in the boot-history means “fix the identity/gist, not the merge.”** Distinguish it sharply from `pending` (transient, will retry) and `revoked` (read-cut, must stay rejected).
+
+### Layer 2 — the same-hive SCOPE widening (`boot.ts` `resolveSameHiveMember`)
+
+[Section titled “Layer 2 — the same-hive SCOPE widening (boot.ts resolveSameHiveMember)”](#layer-2--the-same-hive-scope-widening-bootts-resolvesamehivemember)
+
+Layer 1 admits a peer on *slug* identity. Layer 2 only *widens* scope to cross-member content within the same hive — it **never bypasses** revocation or the read-cut (Layer 1 re-checks `revoked` on every retry tick). Inside `resolveSameHiveMember` there are **two distinct admit paths** — this is “the two-path model”:
+
+**Path A — owner-log BOOTSTRAP admit (WI-787 / WI-780, the keystone).** A fresh joiner’s `hive_members` is **empty**, so the owner’s own announce would `miss` the member-set check below and buffer forever — yet the roster that *would* admit the owner lives **inside the owner’s still-un-merged log**. That is a bootstrap deadlock. It is broken by trusting exactly ONE device: the `owner_device_pubkey` the SIGNED, gh-verified hive-announce binds to **this joined hive**. The binding is read via `loadHiveOwnerDevicePubkey(workspaceId, hivePubkey)` — and crucially needs **no new migration**: it reads the verified `(hivePubkey → ownerDevicePubkey)` binding the P2P hive-directory offline cache already persists (`hive_directory_cache`, migration 182), which only records descriptors that passed `verifyHiveAnnounce` (D-010). Admission is gated on `opts.swarmBinding.hive_pubkey` (the JOINED hive) and matches the **exact** owner device only — never on `github_user_id` alone, never any other device (that would hole the WI-259 membership guard). Emits boot event `announce_admitted owner_bootstrap`.
+
+**Path B — member-set admission (`classifySameHiveMember`).** For every other peer: admit iff `frame.device_pubkey ∈ loadHiveMembers(hiveHome, github_user_id)` (the hive’s current member device pubkeys). On `admit` → `announce_admitted same_hive_member`. On **`miss`** (a plausible same-hive cross-member whose `hive_members` row has not federated to us yet — the asymmetric A→B stall) the frame is **BUFFERED** for retry, **not** conclusively dropped: a 5s loop re-runs Layer-1 `admit()` + this check each tick, admitting the instant membership federates in, or dropping after the 30-min grace.
+
+> The merge loop iterates **only `admitted.values()`** (`boot.ts`), and `admitted`
+>
+> * `admittedIdentities` are populated together from the same announce frame — so for any op that actually merged, the source identity is present. That is why a live “0 rows” is virtually never the apply-guard’s `!sourceLogDevicePubkey` drop branch; it is one of the admission outcomes above (binding\_invalid / buffered-miss / never-swarmed), or the genuine owner-home apply asymmetry documented separately in `owner-side-cross-member-content-apply-gap`.
+
+## Registry-gated substrate boot — does the node even swarm this hive?
+
+[Section titled “Registry-gated substrate boot — does the node even swarm this hive?”](#registry-gated-substrate-boot--does-the-node-even-swarm-this-hive)
+
+Before admission can happen at all, the node has to **boot the substrate and join the hive’s swarm topic** for that harness. This is **registry-gated**: `host-bootstrap.ts` boots substrate only for harnesses returned by `loadHarnessRegistry(workspaceId)`, and `hive-federation.ts` resolves the swarm binding from that same registry. **A node swarms only hives it has a local registry entry for — NOT ones it merely rosters.**
+
+This is a real and easily-missed live cause: a joiner can show the hive in its *roster/directory* yet never have a registry project for it, so it never joins that hive’s topic, never receives the owner’s announce, and admission never even gets a chance to run. When `fed.sh b api GET /api/discovery/hives` shows the hive but content is 0, check the registry (and the swarm-join log) before touching admission. (See also [`hive-scoped-federation`](/internal/docs/agent-insights/hive-scoped-federation) and [`lazy-substrate-boot-and-sidecar`](/internal/docs/agent-insights/lazy-substrate-boot-and-sidecar) for which harnesses boot substrate and which stay inert.)
+
+## Reading the live state — boot-history is your admission ledger
+
+[Section titled “Reading the live state — boot-history is your admission ledger”](#reading-the-live-state--boot-history-is-your-admission-ledger)
+
+The admission decisions above all `recordBootEvent` into an in-process ring buffer, surfaced read-only at:
+
+```plaintext
+GET /api/admin/dogfood-substrate-boot-history?harness_slug=<slug>&kinds=<csv>&limit=<n>
+```
+
+Auth is **verified/trusted admin** (gated per D3; it used to be public). Response: `{ entries: BootHistoryEntry[], depth }`, each entry `{ ts, workspaceId, harnessSlug, kind, message }`. Read it through the toolkit:
+
+```bash
+fed.sh b api GET '/api/admin/dogfood-substrate-boot-history?harness_slug=<hive-home>&kinds=announce_rejected,announce_pending,announce_admitted&limit=50'
+```
+
+The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
+
+* `announce_admitted` — admission succeeded. The `message` says **which path**: `owner_bootstrap …` (Path A), `same_hive_member origin=… hive=…` (Path B).
+* `announce_rejected` — Layer-1 conclusive reject. Look at the reason — **`binding_invalid`** (gist/identity, fix that — see WI-797), `revoked` (read-cut, correct), `bad_sig`.
+* `announce_pending` — Layer-1 transient (`pending`) OR a Layer-2 membership `miss` buffered for retry. Will self-resolve if the cause clears; otherwise it ages out at 30 min.
+* `swarm_join_failed` / `peer_connected` / `peer_rejected` / `peer_rate_limited` / `peer_capped` / `peer_revoked` — the **transport** layer. No `peer_connected` for the hive topic at all ⇒ a swarm/registry/gh-auth problem, **upstream of admission** — go back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is the #1 silent-local-only cause after a VM reset).
+* `merge_error`, `rekey_grant_*`, `rekey_boundary_skipped` — apply/re-key layer.
+
+## The diagnostic ladder (use this order)
+
+[Section titled “The diagnostic ladder (use this order)”](#the-diagnostic-ladder-use-this-order)
+
+1. **`fed.sh <a|b> rediscover && fed.sh <a|b> ports`** — confirm you’re hitting the LIVE operator/PG (stale ports masquerade as “broken federation”).
+2. **Transport** — boot-history `peer_connected` for the hive topic on both VMs? No ⇒ registry-gated-boot / swarm / gh-auth. Not admission.
+3. **Layer 1 (identity)** — `announce_rejected reason=binding_invalid` ⇒ gist/identity (gist-less owner = WI-797); `pending` ⇒ wait/retry; `revoked` ⇒ working as intended.
+4. **Layer 2 (scope)** — `announce_pending` membership-miss buffered ⇒ the roster hasn’t federated yet (is the owner-bootstrap Path A admitting the owner’s log? look for `announce_admitted owner_bootstrap`). Empty `hive_members` on a fresh joiner is EXPECTED until Path A merges the owner log.
+5. **Apply** — only now suspect the guard, and only the documented owner-home asymmetry (`owner-side-cross-member-content-apply-gap`). Verify with the live PG via `fed.sh sql`, remembering `fed_ts` is the LWW key (`testing-federation-set-fed-ts`), not `ts`.
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+* A live “rosters but no content” is an **admission** or **swarm-registry** problem, not a merge bug — the merge/guard is integration-green.
+* `fed.sh` (self-discovering ports) is the access tool: `ports`/`rediscover`/`sql`/`api`/`mcp`/`ssh`.
+* Admission = **identity decider** (`revoked→bad_sig→verifyBinding→admit/pending/binding_invalid`) feeding **two same-hive scope paths**: **owner-log bootstrap-admit** (trusts the one directory-cache-bound owner device to break the empty-member-set deadlock) and **member-set admission** (device ∈ `hive_members`, else buffer-and-retry).
+* **`binding_invalid` = conclusive identity/gist failure, never retried** — a gist-less owner is the current live wall (WI-797), and owner-bootstrap can’t rescue it because it sits after the gist gate.
+* Substrate boot + swarm join are **registry-gated**: a node swarms only registry hives, not merely-rostered ones.
+* `dogfood-substrate-boot-history` (verified-admin) is the admission ledger; read its `kind`/`message` to place the failure on the ladder before touching code.
 
 # Shared-hive join/leave lifecycle — what self-heals, what to call, what ages out
 
@@ -21658,6 +21807,80 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 [Section titled “Why this is the shape it is”](#why-this-is-the-shape-it-is)
 
 D-001..D-010 on `windows-desktop-release-readiness-2026-06-11` carry the full rationale (build-on-VM, bundle-the-rootfs, NSIS-only, unsigned alpha, ext4 PG, payload trims, navigate-after-discovery, statics-pre-operator, breakaway restart).
+
+# How to drive a Windows desktop first-run GUI smoke headlessly on VM :2223
+
+> The Windows 11 QEMU dev VM (:2223 ssh, :5931 SPICE) can be driven for a full first-run GUI smoke WITHOUT a human at the SPICE viewer. Observe the screen with QEMU monitor `screendump`; run PowerShell over SSH via base64 `-EncodedCommand` (dodges cmd/$ quoting hell); launch the GUI on the visible console session and INJECT mouse clicks with an interactive scheduled task (SSH lands in a non-visible session, so Start-Process there shows no window). Includes the clean-reset recipe and the elevated-launch=no-window gotcha.
+
+The Windows 11 dev VM (`~/windows-vm/`, QEMU; **ssh `-p 2223 user@127.0.0.1`** key `~/.ssh/papercup-vm-win`, **SPICE `:5931`**, HMP monitor at `~/windows-vm/qemu-monitor.sock`) is normally driven by a human at a `spicy` viewer. You do **not** need one — a full first-run GUI smoke is drivable headlessly. This is how WI-800 (the 0.0.2 alpha first-run smoke) was done.
+
+SSH lands in a NON-visible session
+
+OpenSSH on this VM authenticates into a session that is **not** the interactive console (session 1). A GUI launched with `Start-Process` from your SSH PowerShell renders on an invisible window station — `screendump` shows nothing and `MainWindowHandle` is 0. To put a window on the SPICE console (or to inject input there) you must run **in session 1**, which you reach with an **interactive scheduled task** (`schtasks /it`). This is the single biggest gotcha.
+
+## The four primitives
+
+[Section titled “The four primitives”](#the-four-primitives)
+
+1. **PowerShell over SSH without quoting hell** — `cmd` mangles `$`. Encode the script UTF-16LE→base64 and run `powershell -EncodedCommand`:
+
+   ```bash
+   B64="$(printf '%s' "$SCRIPT" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
+   ssh -i ~/.ssh/papercup-vm-win -o IdentitiesOnly=yes -p 2223 user@127.0.0.1 \
+     "powershell -NoProfile -EncodedCommand $B64"
+   ```
+
+   `-o IdentitiesOnly=yes` is required — a loaded ssh-agent with >5 keys trips “Too many authentication failures” before the `-i` key is tried.
+
+2. **Observe the screen** — QEMU monitor `screendump` writes the framebuffer to PPM; convert with `pnmtopng`:
+
+   ```bash
+   printf 'screendump /tmp/s.ppm\n' | socat - UNIX-CONNECT:~/windows-vm/qemu-monitor.sock
+   pnmtopng /tmp/s.ppm > /tmp/s.png   # ~200 bytes ⇒ black/asleep; wake with `sendkey shift`
+   ```
+
+   Crop with ImageMagick (`convert s.png -crop WxH+X+Y +repage out.png`) to read button labels and derive pixel coordinates (the framebuffer is 1280×800).
+
+3. **Launch the GUI on the visible console (session 1)** — an interactive task:
+
+   ```plaintext
+   schtasks /create /tn t /tr "<exe-or-wrapper>" /sc once /st 00:00 /it /rl LIMITED /f
+   schtasks /run /tn t
+   ```
+
+   Use `/rl LIMITED` (non-elevated = the real double-click path). Wrap the exe in a `.cmd` that `set RUST_LOG=info,papercusp=debug` and redirects stdout to a file to capture the Tauri/sidecar boot log (read it back with a FileShare.ReadWrite open — the running app keeps the handle).
+
+4. **Inject mouse clicks into session 1** — a tiny `SetCursorPos` + `mouse_event(0x2/0x4)` PS script, run via an interactive task at the pixel coords you read from the screenshot. (QEMU HMP `mouse_move` is relative and unreliable with `usb-tablet`; `sendkey` works for keyboard but Win32 cursor injection in-session is the robust way to click.)
+
+## Clean-reset recipe (for a genuine *first*-run)
+
+[Section titled “Clean-reset recipe (for a genuine first-run)”](#clean-reset-recipe-for-a-genuine-first-run)
+
+```powershell
+Get-Process papercusp-desktop | Stop-Process -Force
+& "$env:LOCALAPPDATA\Papercusp\uninstall.exe" /S            # NSIS (per-user)
+Start-Process msiexec -ArgumentList '/X{GUID}','/quiet' -Wait # any old MSI install
+wsl --unregister papercup-runtime                            # force re-import next boot
+Remove-Item "$env:LOCALAPPDATA\com.papercusp.desktop","$env:LOCALAPPDATA\Papercusp" -Recurse -Force
+```
+
+## What a healthy first-run looks like
+
+[Section titled “What a healthy first-run looks like”](#what-a-healthy-first-run-looks-like)
+
+* `wsl -l -v` shows `papercup-runtime` re-import → **Running**.
+* Inside the distro: `postgres -D /home/papercup/.papercusp/embedded-pg-data` and `node … serve.mjs --ensure` running; the PG port forwards to Windows `127.0.0.1`.
+* Tauri stdout: `[serve] listening on http://127.0.0.1:<port> (UI ON)`, `/api/health` → 200, `DBOS launched`.
+* The dogfood clone **defers gracefully** with no GitHub auth: `[papercusp-hive] not created this boot: clone auth_required: awaiting GitHub sign-in` (never a crash/trap). The `DogfoodBootstrapBanner` is dismissible.
+
+## Gotchas
+
+[Section titled “Gotchas”](#gotchas)
+
+* **Elevated launch ⇒ no window.** `schtasks /rl HIGHEST` (elevated) boots the backend fine but the Tauri webview window never appears (`MainWindowHandle` stays 0). Use `/rl LIMITED`. Users double-click non-elevated, so this is a test artifact, not a public bug — but it will waste an hour if you don’t know it.
+* **First-run self-restart.** After the WSL import the app relaunches itself (the PID changes) to spawn the sidecar through the freshly-set-up `wsl.exe` — expected (see `main.rs` / `wsl_setup.rs`).
+* **Spaces-in-username** is testable without switching console users: create a `First Last` account, grant `SeBatchLogonRight` (secedit), then install + launch the app via a task `/ru "First Last"`. The startup log proves all Windows-side paths resolve with the space (`shared sidecar home: C:\Users\First Last`, `\\?\C:\Users\First Last\…`). The operator boot under the spaces profile needs interactive onboarding (a fresh user has no distro), so it’s a partial test.
+* **SmartScreen is NOT exercised by an scp’d installer** — it has no Mark-of-the-Web. Testing the “unknown publisher” wall needs a real browser download (and is moot once the installer is Authenticode-signed).
 
 # worker:chunk-loop dark-launch — the metrics surface + ramp gate, and how to run it
 

@@ -29,7 +29,7 @@ export default defineTool({
       .string()
       .regex(/^[a-z0-9][a-z0-9_-]{0,40}$/, 'slug: lowercase letters/digits/_/- , ≤41 chars, e.g. "federation"'),
     title: z.string().max(80).optional(),
-    description: z.string().min(1).max(280),
+    description: z.string().min(1).max(2000),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
