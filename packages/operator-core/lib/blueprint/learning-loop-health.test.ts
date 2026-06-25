@@ -33,6 +33,7 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     expect(cal.status).toBe('firing');
     expect(cal.active).toBe(true);
     expect(cal.daysSinceFire).toBe(0);
+    expect(cal.activityLastAt).toBeNull();
   });
 
   it('an active loop that has not fired within the stale window is "stale" (a wedge)', () => {
@@ -42,6 +43,78 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     });
     expect(cal.status).toBe('stale');
     expect(cal.daysSinceFire).toBe(5);
+  });
+
+  it('marks Scout stale when its routine fired but scout_ticks activity is stale', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: daysAgo(0) })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 1,
+        activityByBlueprintId: {
+          scout: { lastActivityAt: daysAgo(2), source: 'scout_ticks' },
+        },
+      },
+    );
+
+    expect(scout.status).toBe('stale');
+    expect(scout.daysSinceFire).toBe(0);
+    expect(scout.daysSinceActivity).toBe(2);
+    expect(scout.activitySource).toBe('scout_ticks');
+  });
+
+  it('marks Scout stale when routine fire is fresh but newer than scout_ticks by the grace window', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: new Date(NOW).toISOString() })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 1,
+        activityByBlueprintId: {
+          scout: { lastActivityAt: new Date(NOW - 20 * 60_000).toISOString(), source: 'scout_ticks' },
+        },
+        activityLagGraceMs: 5 * 60_000,
+      },
+    );
+
+    expect(scout.status).toBe('stale');
+    expect(scout.daysSinceFire).toBe(0);
+    expect(scout.daysSinceActivity).toBe(0);
+  });
+
+  it('keeps Scout firing when routine fire and scout_ticks activity are within the grace window', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: new Date(NOW).toISOString() })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 1,
+        activityByBlueprintId: {
+          scout: { lastActivityAt: new Date(NOW - 2 * 60_000).toISOString(), source: 'scout_ticks' },
+        },
+        activityLagGraceMs: 5 * 60_000,
+      },
+    );
+
+    expect(scout.status).toBe('firing');
+  });
+
+  it('keeps Scout firing when its scout_ticks activity is fresh', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: daysAgo(0) })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 1,
+        activityByBlueprintId: {
+          scout: { lastActivityAt: daysAgo(0), source: 'scout_ticks' },
+        },
+      },
+    );
+
+    expect(scout.status).toBe('firing');
+    expect(scout.daysSinceActivity).toBe(0);
   });
 
   it('an active loop NEVER fired but with its first fire still ahead is "pending" (just armed, not a wedge)', () => {

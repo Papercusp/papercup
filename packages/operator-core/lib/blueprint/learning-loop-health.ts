@@ -30,6 +30,7 @@ export const ALWAYS_ON_LEARNING_LOOPS = new Set<string>(['change-ledger', 'scout
 export const DEFAULT_LOOP_STALE_AFTER_DAYS = 3;
 
 const DAY_MS = 86_400_000;
+const DEFAULT_ACTIVITY_LAG_GRACE_MS = 5 * 60_000;
 
 /** A routine row, narrowed to what the classifier reads. */
 export interface LearningRoutineRow {
@@ -69,6 +70,10 @@ export interface LearningLoopHealth {
   active: boolean;
   lastFiredAt: string | null;
   daysSinceFire: number | null;
+  /** Optional domain-level activity ledger timestamp (for loops with a better ledger than routines). */
+  activityLastAt: string | null;
+  daysSinceActivity: number | null;
+  activitySource: string | null;
   status: LearningLoopStatus;
 }
 
@@ -92,6 +97,18 @@ export function computeLearningLoopHealth(
     staleAfterDays?: number;
     singletonHostSlug?: string;
     alwaysOn?: ReadonlySet<string>;
+    /**
+     * Per-blueprint domain activity. Use this only when a loop has a first-class
+     * activity ledger that proves its body actually ran. Example: Scout has
+     * scout_ticks; routine.last_fired_at can move when DBOS claimed the cron row
+     * but the held dedup prevented the Scout body from recording a tick.
+     */
+    activityByBlueprintId?: Record<string, { lastActivityAt: string | null; source: string }>;
+    /**
+     * If routine.last_fired_at is newer than domain activity by more than this,
+     * the scheduler claimed a fire that the loop body did not prove. Default 5m.
+     */
+    activityLagGraceMs?: number;
     /** Operator-home harness slug the legacy (per-home) learning row lives under. Default
      *  'papercusp' (post papercup→papercusp migration, 2026-06-20); the live tool passes the
      *  resolved home (operatorHomeHarnessSlug). */
@@ -112,6 +129,10 @@ export function computeLearningLoopHealth(
     const lastFiredAt = row?.lastFiredAt ?? null;
     const firedMs = lastFiredAt ? Date.parse(lastFiredAt) : NaN;
     const daysSinceFire = Number.isNaN(firedMs) ? null : Math.floor((opts.nowMs - firedMs) / DAY_MS);
+    const activity = opts.activityByBlueprintId?.[loop.blueprintId] ?? null;
+    const activityLastAt = activity?.lastActivityAt ?? null;
+    const activityMs = activityLastAt ? Date.parse(activityLastAt) : NaN;
+    const daysSinceActivity = Number.isNaN(activityMs) ? null : Math.floor((opts.nowMs - activityMs) / DAY_MS);
 
     let status: LearningLoopStatus;
     if (!row) status = 'absent';
@@ -125,6 +146,13 @@ export function computeLearningLoopHealth(
     } else if (opts.nowMs - firedMs > staleMs) status = 'stale';
     else status = 'firing';
 
+    if (active && activity) {
+      if (Number.isNaN(activityMs) || opts.nowMs - activityMs > staleMs) status = 'stale';
+      else if (!Number.isNaN(firedMs) && firedMs - activityMs > (opts.activityLagGraceMs ?? DEFAULT_ACTIVITY_LAG_GRACE_MS)) {
+        status = 'stale';
+      }
+    }
+
     return {
       blueprintId: loop.blueprintId,
       alwaysOn,
@@ -134,6 +162,9 @@ export function computeLearningLoopHealth(
       active,
       lastFiredAt,
       daysSinceFire,
+      activityLastAt,
+      daysSinceActivity,
+      activitySource: activity?.source ?? null,
       status,
     };
   });

@@ -32,6 +32,7 @@ import {
   runScoutTick,
   type ScoutCycleLike,
   type ScoutTickDeps,
+  type ScoutTickRecord,
   type ScoutTickResult,
   type QueenFeedbackItem,
 } from './scheduler';
@@ -157,6 +158,14 @@ export async function runScoutCycleTick(
   deps: ScoutCycleDeps,
 ): Promise<ScoutTickResult> {
   const cfg = parseScoutCycleConfig(input.payloadTemplate);
+  const tickDeps = (deps.buildDeps ?? productionDepsBuilder)(input, deps.runCycle);
+  const note = async (rec: ScoutTickRecord): Promise<void> => {
+    try {
+      await tickDeps.recordTick?.(rec);
+    } catch {
+      /* best-effort — observability never fails the tick */
+    }
+  };
 
   // P-019 (I3): the cross-node SINGLE-RUNNER gate — consulted FIRST, before any
   // cadence/budget/ceiling work. Scout's single-flight (autoloop.claimFire) is a
@@ -170,6 +179,7 @@ export async function runScoutCycleTick(
   if (deps.hiveRunnerGate) {
     const gate = await deps.hiveRunnerGate({ workspaceId: input.workspaceId, installSlug: input.installSlug });
     if (!gate.run) {
+      await note({ status: 'gated', gate: 'not-hive-runner', detail: { reason: gate.reason ?? 'not-hive-runner' } });
       return { fired: false, reason: 'not-hive-runner' };
     }
   }
@@ -194,11 +204,19 @@ export async function runScoutCycleTick(
           fired: null,
         });
       }
+      await note({
+        status: 'gated',
+        gate: 'workspace-ceiling',
+        detail: {
+          reason: 'workspace-ceiling',
+          totalScoutSpentUsd: ceiling.totalScoutSpentUsd,
+          ceilingUsd: ceiling.ceilingUsd,
+          scoutLoopCount: ceiling.scoutLoopCount,
+        },
+      });
       return { fired: false, reason: 'workspace-ceiling' };
     }
   }
-
-  const tickDeps = (deps.buildDeps ?? productionDepsBuilder)(input, deps.runCycle);
 
   const result = await runScoutTick(tickDeps, {
     ...(cfg.cadence ? { cadence: cfg.cadence } : {}),

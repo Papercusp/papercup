@@ -145,6 +145,12 @@ export interface ScoutTickDeps {
 export interface ScoutTickOptions {
   cadence?: ScoutCadenceOptions;
   budget?: ScoutBudget;
+  /**
+   * Hard wall-clock bound for the budgeted Scout cycle body. The DBOS routineFire
+   * deadline is much longer than Scout's cadence; a hung LLM/gateway call must
+   * record an error tick and release the routine dedup before that outer deadline.
+   */
+  cycleTimeoutMs?: number;
 }
 
 export interface ScoutTickResult {
@@ -258,11 +264,14 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   const cycleId = (deps.newCycleId ?? ((n) => `scout-${n}`))(state.nowMs);
   await deps.recordFire?.('attempt');
   try {
-    const cycle = await deps.runCycle({
-      budget,
-      cycleId,
-      ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
-    });
+    const cycle = await withScoutCycleTimeout(
+      deps.runCycle({
+        budget,
+        cycleId,
+        ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
+      }),
+      opts.cycleTimeoutMs ?? scoutCycleTimeoutMs(),
+    );
     const provenance = cycle.provenance ?? [];
     if (provenance.length > 0) await deps.persistRouted(provenance, cycleId);
     await deps.refreshOutcomes?.();
@@ -303,6 +312,29 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     const error = e instanceof Error ? e.message : String(e);
     await note({ status: 'error', detail: { cycleId, error } });
     return { fired: false, reason: 'cycle-error', cycleId, error };
+  }
+}
+
+export const DEFAULT_SCOUT_CYCLE_TIMEOUT_MS = 20 * 60_000;
+
+function scoutCycleTimeoutMs(): number {
+  const raw = Number(process.env.PAPERCUSP_SCOUT_CYCLE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SCOUT_CYCLE_TIMEOUT_MS;
+}
+
+async function withScoutCycleTimeout<T>(p: Promise<T>, timeoutMs: number): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return p;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Scout cycle timed out after ${timeoutMs}ms`)), timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

@@ -14,7 +14,8 @@ import { runScoutCycleTick, parseScoutCycleConfig, type ScoutCycleDeps } from '.
 
 const baseInput = { workspaceId: 'ws', installSlug: 'h', payloadTemplate: null };
 const runCycle = vi.fn();
-const buildDeps = vi.fn(() => ({})); // fake tick deps — the mocked runScoutTick ignores them
+const recordTick = vi.fn();
+const buildDeps = vi.fn(() => ({ recordTick })); // fake tick deps — the mocked runScoutTick ignores them
 
 function mkDeps(over: Record<string, unknown> = {}): ScoutCycleDeps {
   return { runCycle, buildDeps, ...over } as unknown as ScoutCycleDeps;
@@ -24,6 +25,7 @@ beforeEach(() => {
   sched.runScoutTick.mockReset().mockResolvedValue({ fired: true, costUsd: 1.5, cycleId: 'c1' });
   runCycle.mockReset();
   buildDeps.mockClear();
+  recordTick.mockReset();
 });
 
 describe('parseScoutCycleConfig', () => {
@@ -43,19 +45,46 @@ describe('parseScoutCycleConfig', () => {
 });
 
 describe('runScoutCycleTick — gates + governor mirror', () => {
-  it('hiveRunnerGate refusal short-circuits as not-hive-runner (no tick, no governor)', async () => {
+  it('hiveRunnerGate refusal short-circuits as not-hive-runner and records a gated tick', async () => {
     const recordGovernor = vi.fn();
     const res = await runScoutCycleTick(baseInput, mkDeps({ recordGovernor, hiveRunnerGate: async () => ({ run: false, reason: 'standby' }) }));
     expect(res).toEqual({ fired: false, reason: 'not-hive-runner' });
     expect(sched.runScoutTick).not.toHaveBeenCalled();
     expect(recordGovernor).not.toHaveBeenCalled();
+    expect(recordTick).toHaveBeenCalledWith({
+      status: 'gated',
+      gate: 'not-hive-runner',
+      detail: { reason: 'standby' },
+    });
   });
 
-  it('workspaceCeilingGate refusal returns workspace-ceiling AND still mirrors the per-cycle cap (fired:null)', async () => {
+  it('workspaceCeilingGate refusal records a gated tick and mirrors the per-cycle cap (fired:null)', async () => {
     const recordGovernor = vi.fn();
-    const res = await runScoutCycleTick(baseInput, mkDeps({ recordGovernor, workspaceCeilingGate: async () => ({ allow: false }) }));
+    const res = await runScoutCycleTick(
+      baseInput,
+      mkDeps({
+        recordGovernor,
+        workspaceCeilingGate: async () => ({
+          allow: false,
+          totalScoutSpentUsd: 9,
+          ceilingUsd: 8,
+          remainingUsd: 0,
+          scoutLoopCount: 3,
+        }),
+      }),
+    );
     expect(res).toEqual({ fired: false, reason: 'workspace-ceiling' });
     expect(sched.runScoutTick).not.toHaveBeenCalled();
+    expect(recordTick).toHaveBeenCalledWith({
+      status: 'gated',
+      gate: 'workspace-ceiling',
+      detail: {
+        reason: 'workspace-ceiling',
+        totalScoutSpentUsd: 9,
+        ceilingUsd: 8,
+        scoutLoopCount: 3,
+      },
+    });
     expect(recordGovernor).toHaveBeenCalledTimes(1);
     expect(recordGovernor.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws', harnessSlug: 'h', fired: null });
   });

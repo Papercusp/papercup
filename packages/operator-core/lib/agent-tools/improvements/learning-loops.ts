@@ -89,10 +89,21 @@ export default defineTool({
       lastFiredAt: r.last_fired_at == null ? null : new Date(r.last_fired_at).toISOString(),
       nextFireAt: r.next_fire_at == null ? null : new Date(r.next_fire_at).toISOString(),
     }));
+    const scoutTicks = (await sql<{ last_tick_at: Date | string | null }[]>`
+      SELECT max(tick_at) AS last_tick_at
+        FROM harness_shared.scout_ticks
+       WHERE workspace_id = ${workspaceId}`) as { last_tick_at: Date | string | null }[];
+    const lastScoutTickAt = scoutTicks[0]?.last_tick_at ?? null;
 
     const loops = computeLearningLoopHealth(LEARNING_SINGLETONS, routines, {
       nowMs: Date.now(),
       staleAfterDays: args.staleAfterDays,
+      activityByBlueprintId: {
+        scout: {
+          lastActivityAt: lastScoutTickAt == null ? null : new Date(lastScoutTickAt).toISOString(),
+          source: 'scout_ticks',
+        },
+      },
     });
     const summary = summarizeLearningLoopHealth(loops);
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, workspaceId, summary, loops }) }] };

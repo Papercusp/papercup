@@ -55,6 +55,12 @@ import './ops/memory-precision-bench.js';
 // by the op, so registering it here stays light). DARK behind the DEFAULT-OFF
 // papercusp-worker-chunk-loop-blueprint flag (the coding HOT PATH staged-rollout gate, D-003).
 import './ops/worker-chunk-loop.js';
+// oddsmith-on-papercusp (audit 2026-06-25): the oddsmith market-prospector cadence as a
+// CoordOp — the PRODUCER that feeds the bet-analysis backlog the oddsmith-ops hive drains.
+// Owns the papercusp-side plumbing (dedup vs work_items, enqueue, durable step); the live
+// market read (Kalshi/Polymarket connectors, which can't be imported from @oddsmith here) is
+// an injected bridge seam wired by the oddsmith install. Seeded INACTIVE (singletonActive:false).
+import './ops/oddsmith-prospect.js';
 // NOTE: the impartial benchmark suite (impartial-benchmark-suite-2026-06-15, P-019) is NOT
 // a deterministic step-op. `external-bench` is a decider-edges `coding`-spine blueprint
 // (the full-spine generation arm) SPUN as a throwaway harness by the `instantiateBenchHarness`

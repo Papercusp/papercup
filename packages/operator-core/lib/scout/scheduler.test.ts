@@ -189,6 +189,18 @@ describe('runScoutTick — tick observability (P-034)', () => {
     expect(calls.ticks[0].detail).toMatchObject({ cycleId: 'cyc-1', error: 'llm exploded' });
   });
 
+  it('records an error tick and releases the fire as error when the cycle times out', async () => {
+    const { deps, calls } = makeDeps({ runCycle: () => new Promise(() => undefined) });
+    const r = await runScoutTick(deps, { cycleTimeoutMs: 5 });
+    expect(r.fired).toBe(false);
+    expect(r.reason).toBe('cycle-error');
+    expect(r.error).toContain('Scout cycle timed out after 5ms');
+    expect(calls.fire).toEqual(['attempt', 'error']);
+    expect(calls.ticks).toHaveLength(1);
+    expect(calls.ticks[0].status).toBe('error');
+    expect(calls.ticks[0].detail).toMatchObject({ cycleId: 'cyc-1', error: 'Scout cycle timed out after 5ms' });
+  });
+
   it('is best-effort: a throwing recorder never fails the tick (gated and ran paths)', async () => {
     const boom = vi.fn(async () => { throw new Error('pg down'); });
     const ran = await runScoutTick(makeDeps({ recordTick: boom }).deps);

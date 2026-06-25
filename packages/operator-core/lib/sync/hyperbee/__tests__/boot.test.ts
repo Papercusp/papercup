@@ -561,6 +561,117 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     expect(decision).toEqual({ admit: false, reason: 'pending' });
     expect(handle.admitted.has(frame.log_core_key)).toBe(false);
   });
+
+  // ADVERSARIAL 3 (WI-788 A2) — cross-hive binding attack: a frame arriving on hive Y's
+  // substrate must NOT be admitted using hive X's owner-device binding. The lookup key is
+  // opts.swarmBinding.hive_pubkey (server-local config, NOT attacker-controlled — a
+  // SignedAnnounce carries no hive_pubkey), so a frame from hive X's owner resolves
+  // ownerDeviceForHive(Y) → null → no bootstrap → pending (empty roster). Locks the scoping
+  // invariant against a future refactor that might thread a frame-supplied hive_pubkey in.
+  it('ADVERSARIAL: owner device of hive X cannot bootstrap-admit onto a substrate joined to hive Y', async () => {
+    const ownerUserId = 9901;
+    const joiner = makeAnnounceIdentityOverride('joiner-adv3', 9902, 'kc-wi789-joiner-adv3');
+
+    const HIVE_PUBKEY_X = Buffer.alloc(32, 0x0a).toString('base64'); // the attacker's hive
+    const HIVE_PUBKEY_Y = Buffer.alloc(32, 0x0b).toString('base64'); // THIS substrate's hive
+
+    let ownerDeviceOfHiveX = '';
+    // The cache has a binding ONLY for hive X; hive Y has none.
+    const ownerDeviceForHive = vi.fn(async (hivePubkey: string) =>
+      hivePubkey === HIVE_PUBKEY_X ? ownerDeviceOfHiveX || null : null,
+    );
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY_Y }, // joined to hive Y
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+      loadHiveMembersOverride: async () => [], // empty roster on hive Y
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner-hivex',
+      attestation_gist_id: 'gist-owner-hivex',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'f6'.repeat(32),
+    });
+    ownerDeviceOfHiveX = frame.device_pubkey; // this device legitimately owns hive X
+
+    const decision = await handle.onAnnounce(frame);
+
+    // The lookup is keyed on the SERVER-LOCAL joined hive (Y), never the frame.
+    expect(ownerDeviceForHive).toHaveBeenCalledWith(HIVE_PUBKEY_Y);
+    // No binding for Y ⇒ no bootstrap; empty roster ⇒ pending, never admitted.
+    expect(decision).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+  });
+
+  // ADVERSARIAL 4 (WI-788 A2) — revoked owner device: even when the owner-device binding
+  // MATCHES, a revoked device is refused before resolveSameHiveMember (and thus the
+  // bootstrap pre-check) is ever reached. The admission decider checks `revoked` first
+  // (precedence: revoked → bad_sig → binding), so onAnnounce short-circuits with
+  // reason:'revoked' and ownerDeviceForHive is never consulted.
+  it('ADVERSARIAL: a revoked owner device is refused before the bootstrap pre-check fires', async () => {
+    const ownerUserId = 9910;
+    const joiner = makeAnnounceIdentityOverride('joiner-adv4', 9911, 'kc-wi789-joiner-adv4');
+
+    // Generate the owner keypair up front so it can be in the revoked set at boot.
+    const { publicKey: ownerPub, privateKey: ownerPriv } = generateKeyPairSync('ed25519');
+    const ownerDevicePubkey = rawPubkeyBase64(ownerPub);
+
+    // The binding WOULD match — but the device is revoked, so admission must still fail.
+    const ownerDeviceForHive = vi.fn(async () => ownerDevicePubkey);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set([ownerDevicePubkey]), // revoked at boot
+      verifyBindingOverride: async () => 'verified',
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await buildAnnounce(
+      {
+        device_pubkey: ownerDevicePubkey,
+        github_user_id: ownerUserId,
+        github_login: 'owner-revoked',
+        attestation_gist_id: 'gist-owner-revoked',
+        log_core_key: 'f7'.repeat(32),
+        harness_slug: OWNER_MEMBER_SLUG,
+      },
+      async (bytes) => nodeSign(null, bytes, ownerPriv),
+    );
+
+    const decision = await handle.onAnnounce(frame);
+
+    // Revocation wins, before the bootstrap pre-check can ever run.
+    expect(decision).toEqual({ admit: false, reason: 'revoked' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+    expect(ownerDeviceForHive).not.toHaveBeenCalled();
+  });
 });
 
 describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end (D-004, Fix 1)', () => {
