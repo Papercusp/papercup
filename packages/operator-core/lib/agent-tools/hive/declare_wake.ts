@@ -34,6 +34,7 @@ import {
   listNonTerminalPlacements,
 } from '../../hive/wake-frontier-guard';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
+import { softText, clampText, LIMITS } from '../limits';
 
 const subscriptionSchema = z.object({
   on: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).describe(
@@ -43,7 +44,7 @@ const subscriptionSchema = z.object({
     .record(z.string(), z.unknown())
     .optional()
     .describe('Optional declarative condition (a @papercusp/rules DataCondition over {args,result,ctx}).'),
-  note: z.string().max(300).optional().describe('Why you subscribed — shown in hive:status.'),
+  note: softText(LIMITS.ANNOTATION).optional().describe('Why you subscribed — shown in hive:status. Auto-truncated to 2000 chars if longer.'),
 });
 
 export default defineTool({
@@ -66,7 +67,7 @@ export default defineTool({
       events: z.array(subscriptionSchema).max(20).optional().describe('Event-wake subscriptions (replaces the current set; omit to clear).'),
       mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual hive:wake."),
       harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
-      kickoff: z.string().max(2000).optional().describe('Kickoff text the woken operator reads (why this wake exists).'),
+      kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff text the woken operator reads (why this wake exists). Auto-truncated to 2000 chars if longer.'),
       remember: z
         .string()
         .optional()
@@ -135,7 +136,7 @@ export default defineTool({
     let time: { at: string; clamped: boolean } | null = null;
     if (wantsTime) {
       const requested = args.at != null ? new Date(args.at) : new Date(Date.now() + (args.inSeconds as number) * 1_000);
-      const r = await declareHiveTimeWake(sql, { workspaceId, installSlug, at: requested, kickoff: args.kickoff });
+      const r = await declareHiveTimeWake(sql, { workspaceId, installSlug, at: requested, kickoff: clampText(args.kickoff, LIMITS.ANNOTATION) });
       time = { at: r.at.toISOString(), clamped: r.clamped };
     } else {
       // K1 (workspace-scoped-coordination P-003): thread the workspace so a clear
@@ -146,7 +147,7 @@ export default defineTool({
     const subs: HiveEventSubscription[] = (args.events ?? []).map((s) => ({
       on: s.on,
       when: s.when as DataCondition | undefined,
-      note: s.note,
+      note: clampText(s.note, LIMITS.ANNOTATION),
     }));
     const eventRules = await setHiveEventSubscriptions(workspaceId, subs);
 

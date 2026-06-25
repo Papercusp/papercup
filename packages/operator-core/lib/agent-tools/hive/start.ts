@@ -25,6 +25,7 @@ import { setHiveStarted } from '../../hive/started';
 import { armDefaultHiveWakeSubscriptions } from '../../hive/wake-defaults';
 import { setDefaultWakeMode } from '../coordination/wake-mode';
 import { requestUrgentHiveWake } from '../../hive/urgent-wake';
+import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'hive:start',
@@ -47,7 +48,7 @@ export default defineTool({
       .optional()
       .describe('Hive home-harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
-    kickoff: z.string().max(2000).optional().describe('Kickoff context for the immediate wake.'),
+    kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the immediate wake. Auto-truncated to 2000 chars if longer.'),
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
@@ -73,7 +74,7 @@ export default defineTool({
     const subs = await armDefaultHiveWakeSubscriptions(workspaceId, { mode: 'ensure' });
     await setDefaultWakeMode('auto');
     const wake = await requestUrgentHiveWake({
-      reason: args.kickoff ?? 'Start Hive — the user started the colony; survey and get the fleet moving',
+      reason: clampText(args.kickoff, LIMITS.ANNOTATION) ?? 'Start Hive — the user started the colony; survey and get the fleet moving',
       harness: installSlug,
       workspaceId,
     });

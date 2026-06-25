@@ -13,6 +13,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { getHivePolicy } from '../../hive-policy-store';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { fileReport } from '../../hive-reports-store';
+import { softText, clampText, LIMITS } from '../limits';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -40,7 +41,7 @@ export default defineTool({
       .min(1)
       .max(200)
       .describe("The content ref (feature/work-item id) or the reported member's numeric github id."),
-    reason: z.string().max(2000).optional().describe('Why — the reporter\'s free-text reason.'),
+    reason: softText(LIMITS.ANNOTATION).optional().describe('Why — the reporter\'s free-text reason. Auto-truncated to 2000 chars if longer.'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
@@ -65,7 +66,7 @@ export default defineTool({
       reporterGithubUsername: identity.githubLogin,
       targetKind: args.targetKind,
       targetRef: args.targetRef,
-      reportReason: args.reason ?? null,
+      reportReason: clampText(args.reason, LIMITS.ANNOTATION) ?? null,
     });
     return text({ ok: true, report });
   },

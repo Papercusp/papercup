@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { toList, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'trust:add',
@@ -46,7 +47,7 @@ export default defineTool({
         .max(100)
         .optional()
         .describe('GitHub numeric user ids to trust (1–100).'),
-      note: z.string().max(200).optional().describe('Optional human note, e.g. "alice@acme — co-maintainer". Diagnostic only; batch-level.'),
+      note: softText(LIMITS.ANNOTATION).optional().describe('Optional human note, e.g. "alice@acme — co-maintainer". Diagnostic only; batch-level. Auto-truncated to 2000 chars if longer.'),
     })
     .refine((a) => Boolean(a.githubUserId) || (a.githubUserIds?.length ?? 0) > 0, {
       message: 'pass `githubUserId` (one) or `githubUserIds` (many)',
@@ -64,7 +65,7 @@ export default defineTool({
       async (githubUserId) => {
         const trusted = await addTrustedUser(ws, {
           githubUserId,
-          note: args.note ?? null,
+          note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
           actor,
           nowMs: Date.now(),
         });

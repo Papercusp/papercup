@@ -31,6 +31,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import type { LivenessMode } from '../../plan-items/claims';
+import { hardText, softText, clampText, LIMITS } from '../limits';
 
 /** The flattened success payload the emits rules read off the event. */
 interface ConvertEventData {
@@ -74,9 +75,9 @@ const itemSpec = z.object({
   item: z.string().min(1).describe('plan-item id (P-NNN)'),
   harness: z.string().max(120).optional().describe('per-item harness (else the batch `harness` default)'),
   kind: KIND.optional().describe("work_item kind to mint (default 'task')"),
-  title: z.string().max(200).optional().describe('override the work-item title'),
-  brief: z.string().max(2000).optional().describe("per-lane situational overlay persisted on the work-item's payload.brief"),
-  intent: z.string().max(400).optional().describe('one line on what you are doing'),
+  title: hardText(LIMITS.SHORT_TITLE).optional().describe('override the work-item title'),
+  brief: softText(LIMITS.ANNOTATION).optional().describe("per-lane situational overlay persisted on the work-item's payload.brief. Auto-truncated to 2000 chars if longer."),
+  intent: hardText(LIMITS.SHORT_TITLE).optional().describe('one line on what you are doing'),
   mode: z.enum(['availability', 'activity']).optional().describe('force the lease liveness mode'),
   ttl_sec: z.number().int().positive().max(7200).optional().describe('lease TTL seconds'),
 });
@@ -150,15 +151,13 @@ export default defineTool({
       kind: KIND.optional().describe(
         "work_item kind to mint (default 'task' — the generic execution record; pick feature/bug/… when the item warrants a pipeline-shaped unit); the inline item / every id in `itemIds`",
       ),
-      title: z.string().max(200).optional().describe('override the work-item title (default: the plan-item text); the inline item / itemIds'),
-      brief: z
-        .string()
-        .max(2000)
+      title: hardText(LIMITS.SHORT_TITLE).optional().describe('override the work-item title (default: the plan-item text); the inline item / itemIds'),
+      brief: softText(LIMITS.ANNOTATION)
         .optional()
         .describe(
-          "per-lane situational overlay persisted on the work-item's payload.brief — the context the placed bee is MISSING, not a restatement of the item (queen-wave-dispatch P-021; carried from a `## Promote` lane's brief: field); the inline item / itemIds",
+          "per-lane situational overlay persisted on the work-item's payload.brief — the context the placed bee is MISSING, not a restatement of the item (queen-wave-dispatch P-021; carried from a `## Promote` lane's brief: field); the inline item / itemIds. Auto-truncated to 2000 chars if longer.",
         ),
-      intent: z.string().max(400).optional().describe('one line on what you are doing (the inline item / itemIds)'),
+      intent: hardText(LIMITS.SHORT_TITLE).optional().describe('one line on what you are doing (the inline item / itemIds)'),
       mode: z
         .enum(['availability', 'activity'])
         .optional()
@@ -229,7 +228,7 @@ export default defineTool({
           itemId: it.item,
           kind: it.kind as WorkItemKind | undefined,
           title: it.title,
-          brief: it.brief,
+          brief: clampText(it.brief, LIMITS.ANNOTATION),
           compileBriefIfMissing,
           owner: id.ownerId,
           ownerLabel: id.ownerLabel,

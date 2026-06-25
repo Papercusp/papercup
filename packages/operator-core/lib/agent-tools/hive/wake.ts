@@ -17,6 +17,7 @@ import {
   resolveHiveHomeSlug,
 } from '../../hive/wake';
 import { getOrgPg } from '@papercusp/db-org';
+import { softText, clampText, LIMITS } from '../limits';
 
 async function hasRecentOpenQueenWake(workspaceId: string, installSlug: string, maxAgeMs = 10 * 60_000): Promise<boolean> {
   try {
@@ -51,7 +52,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    reason: z.string().max(2000).optional().describe('Why this wake fired — becomes the kickoff context.'),
+    reason: softText(LIMITS.ANNOTATION).optional().describe('Why this wake fired — becomes the kickoff context. Auto-truncated to 2000 chars if longer.'),
     source: z.enum(['user', 'event', 'manual']).optional().describe("Provenance label (event-wake rules pass 'event')."),
     harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     force: z.boolean().optional().describe('Bypass the wake-floor debounce.'),
@@ -100,7 +101,7 @@ export default defineTool({
       };
     }
 
-    const kickoff = `Wake (${args.source ?? 'manual'}): ${args.reason ?? 'no reason given'}. You are the operator in charge; survey the fleet and figure out what to do.`;
+    const kickoff = `Wake (${args.source ?? 'manual'}): ${clampText(args.reason, LIMITS.ANNOTATION) ?? 'no reason given'}. You are the operator in charge; survey the fleet and figure out what to do.`;
     const target = await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug, workspaceId, kickoff });
     return {
       content: [

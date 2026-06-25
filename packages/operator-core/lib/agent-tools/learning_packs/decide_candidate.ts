@@ -21,15 +21,16 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
 import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
 import { runBulk, bulkContent } from '../_bulk';
+import { hardText, softText, clampText, LIMITS } from '../limits';
 
 const ACTION = z.enum(['adopt', 'dismiss']);
 
 const itemSpec = z.object({
   id: z.string().min(1).max(80).describe('Candidate id (from learning_packs:candidates).'),
   action: ACTION,
-  note: z.string().max(2000).optional().describe('Decision note recorded on the candidate.'),
-  title: z.string().min(1).max(300).optional().describe('Owner-edited title (adopt only).'),
-  text: z.string().min(1).max(8000).optional().describe('Owner-edited lesson body (adopt only).'),
+  note: softText(LIMITS.ANNOTATION).optional().describe('Decision note recorded on the candidate. Auto-truncated to 2000 chars if longer.'),
+  title: hardText(LIMITS.SHORT_TITLE).optional().describe('Owner-edited title (adopt only).'),
+  text: hardText(8000).optional().describe('Owner-edited lesson body (adopt only).'),
 });
 
 type DecideItem = z.infer<typeof itemSpec>;
@@ -55,9 +56,9 @@ export default defineTool({
     .object({
       id: z.string().min(1).max(80).optional().describe('single-decide shorthand: the candidate id'),
       action: ACTION.optional().describe('applies to the inline id / every id in `ids`'),
-      note: z.string().max(2000).optional().describe('decision note for the inline id / every id in `ids`'),
-      title: z.string().min(1).max(300).optional().describe('Owner-edited title for the inline id (adopt only).'),
-      text: z.string().min(1).max(8000).optional().describe('Owner-edited lesson body for the inline id (adopt only).'),
+      note: softText(LIMITS.ANNOTATION).optional().describe('decision note for the inline id / every id in `ids`. Auto-truncated to 2000 chars if longer.'),
+      title: hardText(LIMITS.SHORT_TITLE).optional().describe('Owner-edited title for the inline id (adopt only).'),
+      text: hardText(8000).optional().describe('Owner-edited lesson body for the inline id (adopt only).'),
       ids: z.array(z.string().min(1).max(80)).min(1).max(100).optional().describe('decide MANY candidates with the same `action` (homogeneous)'),
       items: z.array(itemSpec).min(1).max(100).optional().describe('decide many candidates at once — each { id, action, note?, title?, text? }'),
       workspace: z.string().max(120).optional(),
@@ -87,7 +88,7 @@ export default defineTool({
           id: it.id,
           action: it.action,
           by,
-          ...(it.note ? { note: it.note } : {}),
+          ...(it.note ? { note: clampText(it.note, LIMITS.ANNOTATION) } : {}),
           ...(it.title ? { title: it.title } : {}),
           ...(it.text ? { text: it.text } : {}),
           workspaceId,

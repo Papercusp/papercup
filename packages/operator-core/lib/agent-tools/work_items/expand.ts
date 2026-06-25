@@ -13,6 +13,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getWorkItem, createWorkItem, commentWorkItem } from '../../work-items';
 import { planExpansion, renderExpansion } from './plan-expansion';
+import { hardText, LIMITS } from '../limits';
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
@@ -38,10 +39,10 @@ export default defineTool({
     children: z
       .array(
         z.object({
-          title: z.string().min(1).max(200),
-          summary: z.string().max(2000).optional(),
+          title: hardText(LIMITS.SHORT_TITLE),
+          summary: hardText(LIMITS.ANNOTATION).optional(),
           files: z.array(z.string()).max(50).optional().describe('declared file touch-set (feeds P-002 exclusion)'),
-          brief: z.string().max(2000).optional(),
+          brief: hardText(LIMITS.ANNOTATION).optional(),
         }),
       )
       .min(1)

@@ -16,6 +16,7 @@ import { DeploymentConfigSchema } from '../../deployment/config-schema';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { createHiveHarness } from './_create';
 import { resolveHive } from './_resolve';
+import { softText, clampText, LIMITS } from '../limits';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -54,7 +55,7 @@ export default defineTool({
       .max(86_400)
       .optional()
       .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with hive:wake / hive:declare-wake.'),
-    kickoff: z.string().max(2000).optional().describe('Kickoff context for the first wake.'),
+    kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the first wake. Auto-truncated to 2000 chars if longer.'),
     blueprintId: z
       .string()
       .max(120)
@@ -110,7 +111,7 @@ export default defineTool({
       parentDir: args.parentDir,
       deployment: args.deployment,
       wakeInSeconds: args.wakeInSeconds,
-      kickoff: args.kickoff,
+      kickoff: clampText(args.kickoff, LIMITS.ANNOTATION),
       blueprintId: args.blueprintId ?? undefined,
       // 'none' ⇒ null (seed nothing); omit ⇒ undefined (default pack).
       learningPack: args.learningPack === 'none' ? null : args.learningPack ?? undefined,

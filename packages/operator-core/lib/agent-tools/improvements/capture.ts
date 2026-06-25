@@ -44,7 +44,7 @@ export default defineTool({
   args: z.object({
     title: hardText(LIMITS.SHORT_TITLE).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
     kind: z.enum(['bug', 'change', 'feature']).optional().describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.'),
-    body: z.string().max(16000).optional().describe('repro / context / the correct-state, especially for a bug'),
+    body: hardText(LIMITS.CONTENT).optional().describe('repro / context / the correct-state, especially for a bug'),
     severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
     subTopic: z.string().min(1).max(40).optional().describe('optional sub-area topic, e.g. coord-dx, db-tooling'),
     scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),

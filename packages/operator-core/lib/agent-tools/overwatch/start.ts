@@ -27,6 +27,7 @@ import {
   DEFAULT_OVERWATCH_CADENCE_SEC,
 } from '../../overwatch/control-state';
 import { requestOverwatchWake } from '../../overwatch/wake-bridge';
+import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'overwatch:start',
@@ -55,7 +56,7 @@ export default defineTool({
       .int()
       .optional()
       .describe('Wake cadence in seconds (clamped to [60, 3600]; default 600 = 10 min — a short-term control loop).'),
-    kickoff: z.string().max(2000).optional().describe('Kickoff context for the immediate wake.'),
+    kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the immediate wake. Auto-truncated to 2000 chars if longer.'),
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
@@ -89,7 +90,7 @@ export default defineTool({
     const wake = flagEnabled
       ? await requestOverwatchWake({
           reason:
-            args.kickoff ??
+            clampText(args.kickoff, LIMITS.ANNOTATION) ??
             'Start Overwatch — the owner started the supervisor; survey system health and nudge any drift back',
           harness: installSlug,
           workspaceId,

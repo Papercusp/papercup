@@ -16,6 +16,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { HIVE_VISIBILITIES } from '../../sync/hyperbee/hive-announce';
 import type { HiveDirectoryMeta } from '../../hive-publish';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { hardText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'discovery:set_hive',
@@ -31,8 +32,8 @@ export default defineTool({
   args: z
     .object({
       hiveId: z.string().min(1).max(120),
-      title: z.string().min(1).max(200),
-      description: z.string().max(2000).default(''),
+      title: hardText(LIMITS.SHORT_TITLE),
+      description: hardText(LIMITS.ANNOTATION, { min: 0 }).default(''),
       visibility: z.enum(HIVE_VISIBILITIES as unknown as [string, ...string[]]).default('public'),
       /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
       memberTopics: z.array(z.string().min(1)).max(64).optional(),

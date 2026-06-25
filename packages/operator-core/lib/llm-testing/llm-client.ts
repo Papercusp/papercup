@@ -50,6 +50,7 @@ function providerForBackend(backend: AgentBackend): TurnProvider {
  * a lighter model via LLM_TEST_SIM_MODEL / LLM_TEST_JUDGE_MODEL).
  */
 const TEST_BACKEND = process.env.LLM_TEST_BACKEND as AgentBackend | undefined;
+const CODEX_GATEWAY_AUTH = 'papercusp-gateway';
 
 function isCodexModel(model: string | undefined): boolean {
   const m = model?.trim().toLowerCase() ?? '';
@@ -71,6 +72,98 @@ export function modelForLlmCall(model: string | undefined, backend: AgentBackend
   const prefix = 'openai-codex/';
   if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length);
   return trimmed;
+}
+
+function codexGatewayUrl(): string {
+  const port = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  const p = Number.isFinite(port) && port > 0 ? port : 8788;
+  return `http://127.0.0.1:${p}/v1/responses`;
+}
+
+function extractResponsesText(value: unknown): string {
+  if (!value || typeof value !== 'object') return '';
+  const root = value as { output_text?: unknown; output?: unknown; content?: unknown };
+  if (typeof root.output_text === 'string') return root.output_text;
+  const parts: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (typeof node !== 'object') return;
+    const obj = node as { type?: unknown; text?: unknown; content?: unknown; output_text?: unknown };
+    if (typeof obj.output_text === 'string') parts.push(obj.output_text);
+    if ((obj.type === 'output_text' || obj.type === 'text') && typeof obj.text === 'string') parts.push(obj.text);
+    if (obj.content !== undefined) visit(obj.content);
+  };
+  visit(root.output);
+  visit(root.content);
+  return parts.join('\n');
+}
+
+function codexCostUsd(model: string | undefined, inputTokens: number, outputTokens: number): number {
+  const m = model?.trim().toLowerCase();
+  const price =
+    m === 'gpt-5.5'
+      ? { in: 2.5, out: 20 }
+      : m === 'gpt-5'
+        ? { in: 1.25, out: 10 }
+        : { in: 0, out: 0 };
+  return (inputTokens * price.in + outputTokens * price.out) / 1_000_000;
+}
+
+async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefined, promptText: string): Promise<LlmCallResult> {
+  const input =
+    opts.responseFormat === 'json' && !/\bjson\b/i.test(`${opts.system ?? ''}\n${promptText}`)
+      ? `${promptText}\n\nRespond with valid json.`
+      : promptText;
+  const body: Record<string, unknown> = {
+    model: model ?? 'gpt-5.5',
+    input,
+    stream: false,
+  };
+  if (opts.system?.trim()) body.instructions = opts.system;
+  if (opts.maxTokens !== undefined) body.max_output_tokens = opts.maxTokens;
+  if (opts.temperature !== undefined) body.temperature = opts.temperature;
+  if (opts.responseFormat === 'json') body.text = { format: { type: 'json_object' } };
+
+  const res = await fetch(codexGatewayUrl(), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${CODEX_GATEWAY_AUTH}`,
+      'content-type': 'application/json',
+      'x-papercusp-priority': opts.priority ?? 'scout',
+    },
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  });
+  const text = await res.text();
+  let raw: unknown = null;
+  try {
+    raw = text ? JSON.parse(text) : null;
+  } catch {
+    raw = text;
+  }
+  if (!res.ok) {
+    const message =
+      raw && typeof raw === 'object'
+        ? ((raw as { error?: { message?: string } }).error?.message ?? text)
+        : text;
+    throw new LlmCallError(classifyHttpError({ status: res.status, message }, providerForBackend('codex')));
+  }
+
+  const finalText = extractResponsesText(raw);
+  const usage =
+    raw && typeof raw === 'object'
+      ? (raw as { usage?: { input_tokens?: number; output_tokens?: number } }).usage
+      : undefined;
+  const inputTokens = usage?.input_tokens ?? 0;
+  const outputTokens = usage?.output_tokens ?? 0;
+  const costUsd = codexCostUsd(model, inputTokens, outputTokens);
+  const json = opts.responseFormat === 'json' ? tryParseJson(finalText) : undefined;
+
+  return { text: finalText, json, inputTokens, outputTokens, costUsd, raw };
 }
 
 /**
@@ -99,6 +192,10 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       : opts.messages
           .map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
           .join('\n\n');
+
+  if (backend === 'codex' && TEST_BACKEND === undefined) {
+    return llmCallViaCodexGateway(opts, model, promptText);
+  }
 
   for await (const ev of runAgentChat({
     backend,

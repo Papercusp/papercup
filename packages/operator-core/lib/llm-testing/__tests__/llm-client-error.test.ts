@@ -36,6 +36,51 @@ describe('llmCall backend selection', () => {
     expect(modelForLlmCall('gpt-5.5', 'codex')).toBe('gpt-5.5');
     expect(modelForLlmCall('chatgpt:5.5', 'anthropic-direct')).toBe('chatgpt:5.5');
   });
+
+  it('uses the local Codex gateway for OpenAI-family stateless calls', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe('gpt-5.5');
+      expect(body.input).toBe('give json');
+      expect(body.instructions).toBe('system');
+      expect(body.text).toEqual({ format: { type: 'json_object' } });
+      return new Response(
+        JSON.stringify({
+          output_text: '{"ok":true}',
+          usage: { input_tokens: 10, output_tokens: 4 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { llmCall } = await import('../llm-client');
+
+    const res = await llmCall({
+      system: 'system',
+      messages: [{ role: 'user', content: 'give json' }],
+      model: 'chatgpt:5.5',
+      maxTokens: 8,
+      responseFormat: 'json',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8788/v1/responses',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          authorization: 'Bearer papercusp-gateway',
+          'x-papercusp-priority': 'scout',
+        }),
+      }),
+    );
+    expect(res.text).toBe('{"ok":true}');
+    expect(res.json).toEqual({ ok: true });
+    expect(res.inputTokens).toBe(10);
+    expect(res.outputTokens).toBe(4);
+    expect(res.costUsd).toBeGreaterThan(0);
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('llmCall subprocess error surfacing', () => {

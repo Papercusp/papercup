@@ -36,7 +36,7 @@ import { hardText, LIMITS } from '../limits';
 const itemSpec = z.object({
   kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]),
   title: hardText(LIMITS.SHORT_TITLE),
-  summary: z.string().max(8000).optional().describe('body / summary text'),
+  summary: hardText(8000).optional().describe('body / summary text'),
   harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
   hive: hiveArg,
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
@@ -91,7 +91,7 @@ export default defineTool({
       // ── single-create shorthand (n=1) ──
       kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
-      summary: z.string().max(8000).optional().describe('body / summary text'),
+      summary: hardText(8000).optional().describe('body / summary text'),
       harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
       hive: hiveArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),

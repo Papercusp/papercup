@@ -33,6 +33,7 @@ import {
   overwatchWakeFloorSec,
 } from "../../overwatch/liveness";
 import { getOverwatchCadenceSec } from "../../overwatch/control-state";
+import { softText, clampText, LIMITS } from "../limits";
 
 export default defineTool({
   name: "overwatch:declare-wake",
@@ -77,11 +78,9 @@ export default defineTool({
         .describe(
           "Hive home-harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).",
         ),
-      kickoff: z
-        .string()
-        .max(16000)
+      kickoff: softText(LIMITS.BRIEF)
         .optional()
-        .describe("Kickoff text future-you reads (why this wake exists)."),
+        .describe("Kickoff text future-you reads (why this wake exists). Auto-truncated to 16000 chars if longer."),
     })
     .refine((a) => !(a.at != null && a.inSeconds != null), {
       message: "pass either at or inSeconds, not both",
@@ -149,7 +148,7 @@ export default defineTool({
       workspaceId,
       installSlug,
       at: requested,
-      kickoff: args.kickoff,
+      kickoff: clampText(args.kickoff, LIMITS.BRIEF),
     });
     return {
       content: [
