@@ -538,6 +538,7 @@ const invoke = defineTool({
       stderr: r.stderr,
       exitCode: r.exitCode,
       timedOut,
+      rawStdoutTail: r.rawStdoutTail,
       actions: actionsResult,
     });
   },

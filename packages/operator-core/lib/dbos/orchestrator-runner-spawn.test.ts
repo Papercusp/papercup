@@ -68,6 +68,15 @@ describe('spawnInvokeOnce', () => {
     expect(r.output).toBe('DONE'); // the timestamp line is filtered out
   });
 
+  it('preserves a bounded raw stdout tail for diagnostics even when output is filtered', async () => {
+    H.cmd = node('process.stdout.write("[2026-06-02T10:00:00.000Z] booting\\nAPI Error: invalid_api_key\\n");process.exit(1)');
+    const r = await spawnInvokeOnce(process.cwd(), 'queen', [], {});
+    expect(r.exitCode).toBe(1);
+    expect(r.output).toBe('API Error: invalid_api_key');
+    expect(r.rawStdoutTail).toContain('[2026-06-02T10:00:00.000Z] booting');
+    expect(r.rawStdoutTail).toContain('invalid_api_key');
+  });
+
   // EI-286 leg (b): a child spawned by a port-aware host (PAPERCUSP_HONO_PORT
   // set, e.g. staging :3170) must get its SPAWNER's MCP base — the child
   // inherits process.env, where .env.local pins PAPERCUSP_OPERATOR_URL to the

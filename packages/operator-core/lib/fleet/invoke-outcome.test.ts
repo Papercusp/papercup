@@ -15,6 +15,24 @@ describe('agentProducedTurn — the shared no-turn rule (docs-audit #1)', () => 
     expect(r.detail).toContain('h/queen');
   });
 
+  it('includes bounded raw stdout tail when a no-turn child left CLI diagnostics', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '',
+        agentOutput: '',
+        rawStdoutTail: '[2026-06-25T07:31:00.000Z] booting\nAPI Error: invalid_api_key',
+      }),
+      'h/queen',
+    );
+    expect(r.ran).toBe(false);
+    expect(r.failureClass).toBe('infra_loss');
+    expect(r.detail).toContain('rawStdoutTail=');
+    expect(r.detail).toContain('invalid_api_key');
+  });
+
   it('ran=false when ok:true but output is EMPTY (0-token wake) — the silent-swallow case', () => {
     const r = agentProducedTurn(JSON.stringify({ ok: true, agentOutput: '   ' }), 'h/doc-steward');
     expect(r.ran).toBe(false);

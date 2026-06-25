@@ -47,6 +47,20 @@ export interface InvokeOutcome {
   failureClass?: SpawnFailureClass;
 }
 
+const RAW_STDOUT_DETAIL_LIMIT = 1000;
+
+function rawStdoutDetail(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const compact = trimmed.replace(/\s+/g, ' ');
+  const tail =
+    compact.length > RAW_STDOUT_DETAIL_LIMIT
+      ? `${compact.slice(-RAW_STDOUT_DETAIL_LIMIT)} [rawStdoutTail truncated: ${compact.length} chars]`
+      : compact;
+  return `; rawStdoutTail=${JSON.stringify(tail)}`;
+}
+
 /**
  * Judge an /invoke response body. `label` (e.g. `<slug>/<role>`) is woven into the
  * detail so the persisted failure names which spawn died.
@@ -71,6 +85,7 @@ export function agentProducedTurn(
     stderr?: unknown;
     exitCode?: unknown;
     timedOut?: unknown;
+    rawStdoutTail?: unknown;
   };
   try {
     b = JSON.parse(bodyText);
@@ -109,6 +124,8 @@ export function agentProducedTurn(
     failureClass: 'infra_loss',
     detail: ` ${label} returned HTTP 200 but the agent produced no turn (ok=${String(b.ok)}, exitCode=${String(
       b.exitCode,
-    )}, timedOut=${String(b.timedOut)}, outLen=${out.trim().length}) — agent died before emitting a turn: a dead/restarting launcher host OR (more often) an upstream gateway stall/429 storm killing the agent MID-TURN (the transcript shows a normal run that stops on its 2nd call) — see agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5; recorded failed, not done`,
+    )}, timedOut=${String(b.timedOut)}, outLen=${out.trim().length}${rawStdoutDetail(
+      b.rawStdoutTail,
+    )}) — agent died before emitting a turn: a dead/restarting launcher host OR (more often) an upstream gateway stall/429 storm killing the agent MID-TURN (the transcript shows a normal run that stops on its 2nd call) — see agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5; recorded failed, not done`,
   };
 }
