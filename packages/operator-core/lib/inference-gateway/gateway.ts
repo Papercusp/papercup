@@ -44,7 +44,7 @@ import { withOAuthBeta } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
-import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayPath } from './provider-adapters';
+import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
@@ -2581,11 +2581,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // present). Passed to queue.run as `opts.tier`; it is IGNORED by the queue when the tier layer is off,
     // so this is a safe no-op under flag-OFF.
     const tier = tierMap ? tierOf(priLabel, tierMap) : undefined;
-    // Route the OpenAI-compatible Codex path (/v1/responses) to the Codex pool; EVERYTHING ELSE — /v1/messages
-    // AND any other /v1/* — goes to the Claude proxy (the gateway's primary). Defaulting UNKNOWN paths to Claude
-    // (not Codex) avoids a confusing "no Codex pool" 503 for a legitimate non-/v1/messages Claude request (e.g.
-    // a future /v1/… endpoint), and matches the only codex path the integration uses (2026-06-22 audit).
-    const handler = providerForGatewayPath(url, providerAdapters).id === 'codex' ? proxyOpenAi : proxy;
+    // Route OpenAI-compatible Codex traffic to the Codex pool. `/v1/responses`
+    // is unambiguously Codex; `/v1/models` is shared, so the request-aware
+    // router uses a Codex account pin to keep Codex model discovery off the
+    // Anthropic proxy while preserving Claude model probes.
+    const handler = providerForGatewayRequest(url, req.headers, providerAdapters).id === 'codex' ? proxyOpenAi : proxy;
     queue.run(pri, () => handler(req, res, url), tier !== undefined ? { tier } : undefined).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
