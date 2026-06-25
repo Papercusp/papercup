@@ -103,3 +103,6 @@
 [submodule "libs/generic/rules"]
 	path = libs/generic/rules
 	url = https://github.com/Papercusp/rules.git
+[submodule "libs/generic/tauri-release-kit"]
+	path = libs/generic/tauri-release-kit
+	url = https://github.com/Papercusp/tauri-release-kit.git

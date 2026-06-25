@@ -20,6 +20,7 @@ vi.mock('../device-harnesses', () => ({
 
 import {
   handleBlueprintRun,
+  programPayloadFromTemplate,
   setBlueprintResolver,
   setBlueprintRunFire,
   setOrphanRoutineSeams,
@@ -62,6 +63,24 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     // routinesTick's routineFireImpl dispatches a `system:blueprint-run` routine to.
     expect(getSystemAction('blueprint-run')).toBe(handleBlueprintRun);
     expect(listSystemActions()).toContain('blueprint-run');
+  });
+
+  it('normalizes program-mode routine payloads from top-level defaults plus nested payload', () => {
+    expect(
+      programPayloadFromTemplate({
+        blueprintId: 'scout',
+        cycleTimeoutMs: 120_000,
+        budget: { maxCostUsd: 1 },
+        payload: {
+          budget: { maxCostUsd: 3 },
+          cadence: { minIntervalSec: 60 },
+        },
+      }),
+    ).toEqual({
+      cycleTimeoutMs: 120_000,
+      budget: { maxCostUsd: 3 },
+      cadence: { minIntervalSec: 60 },
+    });
   });
 
   it("mode='run' (default) fires the blueprint's declared decider", async () => {

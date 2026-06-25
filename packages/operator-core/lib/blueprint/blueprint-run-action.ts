@@ -309,6 +309,23 @@ async function runScheduledProgram(
   }
 }
 
+export function programPayloadFromTemplate(payloadTemplate: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!payloadTemplate || typeof payloadTemplate !== 'object') return null;
+  const {
+    blueprintId: _blueprintId,
+    mode: _mode,
+    kickoff: _kickoff,
+    timeoutMs: _timeoutMs,
+    workItem: _workItem,
+    payload,
+    ...topLevel
+  } = payloadTemplate;
+  const nested = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
+  return { ...topLevel, ...nested };
+}
+
 /** The registered `system:blueprint-run` handler. */
 export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | SystemActionResult> {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
@@ -355,7 +372,7 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
       await runScheduledProgram(launchBp, {
         installSlug,
         workspaceId,
-        payload: (payloadTemplate?.payload as Record<string, unknown> | undefined) ?? null,
+        payload: programPayloadFromTemplate(payloadTemplate),
       });
       return;
     }
@@ -407,7 +424,7 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
     await runScheduledProgram(bp, {
       installSlug,
       workspaceId,
-      payload: (payloadTemplate?.payload as Record<string, unknown> | undefined) ?? null,
+      payload: programPayloadFromTemplate(payloadTemplate),
     });
     return;
   }
