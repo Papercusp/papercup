@@ -1,12 +1,12 @@
 /**
- * SentinelTab — the Sentinel-as-Herald settings panel, docked in the Colony left
- * sidebar (sentinel-as-herald-2026-06-21). Mirrors the OverwatchTab / QueenTab
+ * SentinelTab — the Sentinel settings panel, docked in the Colony left
+ * sidebar. Mirrors the OverwatchTab / QueenTab
  * idiom: a header + vertical sections, `{ active }`-gated, rendered only while the
  * tab is open. Flag-gated by SENTINEL at the sidebar (LeftSidebar hides the tab
  * when the role is dark).
  *
- * The Sentinel speaks for the system as a HERALD — so this tab surfaces its
- * voice/persona prefs as QUICK LIVE OVERRIDES over the workspace defaults. Each
+ * The Sentinel speaks for the system, so this tab surfaces its voice/persona
+ * prefs as QUICK LIVE OVERRIDES over the workspace defaults. Each
  * setting renders through the shared <OverridableSetting> primitive: an
  * override/default badge + a reset ↺ that clears the per-user override, shown only
  * while the setting is overridden (isOverridden(workspaceDefault, userOverride)).
@@ -25,7 +25,7 @@
  *  - Voice on/off (speakSuggestions — the master "speak out loud" toggle).
  *  - Proactive nudges (proactiveTicksEnabled).
  *  - Speak status/cadence (speakCadenceStatus).
- *  - Do-not-disturb / pause (silenceVoice — when on, hushes the herald).
+ *  - Do-not-disturb / pause (silenceVoice — when on, hushes the Sentinel).
  */
 import { useCallback, useEffect, useState } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
@@ -37,7 +37,7 @@ import { isOverridden } from '../override/isOverridden';
 import ModelOverride from './ModelOverride';
 import { useModelOverride } from './useModelOverride';
 
-/** The voice/persona pref keys the Sentinel herald surfaces as live overrides.
+/** The voice/persona pref keys the Sentinel surfaces as live overrides.
  *  Each MUST exist in the VoicePrefs schema (voice-prefs.ts) so the workspace
  *  fallback resolves; the bool ones must be in VOICE_USER_OVERRIDE_KEYS so the
  *  per-user PATCH actually overrides. `audienceMode` is the segmented control. */
@@ -169,7 +169,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
   const voiceOn = eff('speakSuggestions', FALLBACK_WORKSPACE.speakSuggestions) === true;
   const nudges = eff('proactiveTicksEnabled', FALLBACK_WORKSPACE.proactiveTicksEnabled) === true;
   const cadence = eff('speakCadenceStatus', FALLBACK_WORKSPACE.speakCadenceStatus) === true;
-  // "Pause the herald" (silenceVoice) moved to the Active/Passive/Off toggle in
+  // "Pause Sentinel" (silenceVoice) moved to the Active/Passive/Off toggle in
   // the voice bar (owner 2026-06-22) — its Off state drives silenceVoice now.
 
   const busy = (key: string) => busyKey === key;
@@ -185,7 +185,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
           <Megaphone size={14} aria-hidden />
           <span className="pc-queen__identity">
             <span className="pc-queen__title">Sentinel</span>
-            <span className="pc-queen__subtitle">Herald voice &amp; persona</span>
+            <span className="pc-queen__subtitle">Voice &amp; persona</span>
           </span>
           <span className="pc-queen__spacer" />
         </header>
@@ -209,7 +209,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
         />
 
         {!loaded ? (
-          <div className="pc-queen__placeholder">Loading the herald’s settings…</div>
+          <div className="pc-queen__placeholder">Loading Sentinel settings…</div>
         ) : (
           <>
             {/* Audience mode — engineer ↔ user-friendly. Segmented toggle. */}
@@ -239,7 +239,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
                 </div>
               </OverridableSetting>
               <span className="pc-queen__hint">
-                How the herald addresses you — terse &amp; technical, or plain-English &amp; outcome-first.
+                How the Sentinel addresses you — terse &amp; technical, or plain-English &amp; outcome-first.
               </span>
             </section>
 
@@ -274,7 +274,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
               />
             </section>
 
-            {/* "Do not disturb / Pause the herald" moved to the Active/Passive/Off
+            {/* "Do not disturb / Pause Sentinel" moved to the Active/Passive/Off
                 toggle in the voice bar (owner 2026-06-22): the toggle's Off state
                 now drives silenceVoice. Removed from here to avoid two controls. */}
 

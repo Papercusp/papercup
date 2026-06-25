@@ -1,7 +1,7 @@
 /**
- * sentinel:converse — the Sentinel-as-Herald brain alias.
+ * sentinel:converse — the Sentinel brain alias.
  *
- * The sentinel watcher is re-homed onto the always-on, voice-first **Herald**:
+ * The sentinel watcher is re-homed onto the always-on, voice-first **Sentinel**:
  * the SAME converse brain as `operator:converse`, only loaded with the sentinel
  * persona set (sentinel.persona[.<mode>-mode].md / .converse.md / .tools.md under
  * apps/operator/prompts/). Rather than fork the ~500-line converse handler, this
@@ -38,7 +38,7 @@ export default defineTool({
   expose: { ipc: true },
   profile: 'engineer',
   description:
-    'Sentinel/Herald brain conversation turn. The operator:converse brain loaded with the always-on, voice-first Herald persona (role=sentinel). Same lifecycle (prompt build, budget gate, LLM stream, spend, mem0); only the persona differs.',
+    'Sentinel brain conversation turn. The operator:converse brain loaded with the always-on, voice-first Sentinel persona (role=sentinel). Same lifecycle (prompt build, budget gate, LLM stream, spend, mem0); only the persona differs.',
   capability: 'operator:converse',
   requirePrincipal: false,
   agentRoles: ['operator', 'sentinel'],

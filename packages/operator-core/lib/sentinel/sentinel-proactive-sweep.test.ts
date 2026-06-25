@@ -1,6 +1,5 @@
 /**
- * Unit tests for the server-side Sentinel proactive sweep engine
- * (sentinel-as-herald-2026-06-21 Phase 5, P-022).
+ * Unit tests for the server-side Sentinel proactive sweep engine.
  *
  * The engine is pure + fully dependency-injected, so these tests pass FAKE deps
  * directly — no module mocks. They pin the load-bearing safety contract:
@@ -38,7 +37,7 @@ const QUIET: SentinelFleetStatus = {
   headline: null,
 };
 
-/** All gates pass; the herald speaks "all good" and a live session exists. */
+/** All gates pass; Sentinel speaks "all good" and a live session exists. */
 function makeDeps(over: Partial<SentinelSweepDeps> = {}): {
   deps: SentinelSweepDeps;
   spies: {
@@ -143,7 +142,7 @@ describe('runSentinelProactiveSweep — GATED ON fires exactly one throttled utt
     expect(spies.speakIntoSession).toHaveBeenCalledTimes(2);
   });
 
-  it('herald chose silence (empty <say>) ⇒ no fire AND the throttle is NOT consumed', async () => {
+  it('Sentinel chose silence (empty <say>) ⇒ no fire AND the throttle is NOT consumed', async () => {
     let t = 1_000_000;
     const { deps, spies } = makeDeps({ now: () => t, runSentinelScan: vi.fn(async () => null) });
     const silent = await runSentinelProactiveSweep(LIVE, deps);

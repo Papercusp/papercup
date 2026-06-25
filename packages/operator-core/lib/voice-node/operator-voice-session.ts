@@ -45,7 +45,7 @@ export interface ElSessionConfig {
   dynamicVariables: unknown;
   /**
    * Which human-facing brain/persona the host runs behind `ask_operator`
-   * (sentinel-herald P-011). Resolved from the `humanFacingRole` voice pref.
+   * Resolved from the `humanFacingRole` voice pref.
    * Optional + defaults to 'operator' so the existing live path is unchanged.
    */
   humanFacingRole?: 'operator' | 'sentinel';
@@ -99,7 +99,7 @@ export class OperatorVoiceSession {
   private opConversationId: string | null = null;
   private elConversationId: string | null = null;
   // Which human-facing brain/persona the voice host runs: 'operator' (default) or
-  // 'sentinel' (the Herald). Set from the `humanFacingRole` voice pref via the
+  // 'sentinel'. Set from the `humanFacingRole` voice pref via the
   // resolved ElSessionConfig at start (P-011); defaults to 'operator' so the
   // existing live voice path is byte-for-byte unchanged when the pref is unset.
   private brainRole = 'operator';
@@ -201,7 +201,7 @@ export class OperatorVoiceSession {
 
   /**
    * The live state the server-side Sentinel proactive sweep needs to decide
-   * whether it may fire (sentinel-as-herald-2026-06-21 Phase 5, P-019). The host
+   * whether it may fire. The host
    * reads this each sweep tick:
    *   - sessionLive    : status !== 'off' (a live EL voice session exists).
    *   - ownsVoiceLease : this host has an ELECTED player (playerId != null) — the

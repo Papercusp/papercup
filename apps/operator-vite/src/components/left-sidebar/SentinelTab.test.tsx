@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * SentinelTab.test (left sidebar) — the Sentinel-as-Herald settings panel
- * (sentinel-as-herald-2026-06-21). Mirrors OverwatchTab.test's idiom but for the
+ * SentinelTab.test (left sidebar) — the Sentinel settings panel. Mirrors
+ * OverwatchTab.test's idiom but for the
  * two-layer voice-prefs wiring SentinelTab loads on open:
  *   - workspace DEFAULT ← GET /api/agent-mcp/operator-voice-prefs?layer=workspace
  *   - per-user OVERRIDE ← GET /api/user/preferences → { payload }
@@ -86,7 +86,7 @@ describe('SentinelTab rendering', () => {
     expect(screen.getAllByText('Voice').length).toBeGreaterThan(0);
     expect(screen.getByText('Proactive nudges')).toBeTruthy();
     expect(screen.getByText('Speak status / cadence')).toBeTruthy();
-    // "Pause the herald" (silenceVoice) + "Do not disturb" moved to the voice-bar
+    // "Pause Sentinel" (silenceVoice) + "Do not disturb" moved to the voice-bar
     // Active/Passive/Off toggle (owner 2026-06-22) — they're no longer rows here.
   });
 

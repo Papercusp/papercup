@@ -139,7 +139,7 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
     );
     // The novice overlay leads every persona's mode file; the sentinel novice
     // overlay carries the "suggest and hand off; you don't do the building" line
-    // that distinguishes the Herald from the operator's novice overlay.
+    // that distinguishes Sentinel from the operator's novice overlay.
     expect(systemPromptText).toContain('# Audience mode: Novice');
     expect(systemPromptText).toMatch(/suggest and hand off/i);
   });

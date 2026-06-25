@@ -1,6 +1,6 @@
 /**
  * sentinel-proactive-sweep — the SERVER-SIDE proactive "decide to speak" engine
- * for the Sentinel Herald (sentinel-as-herald-2026-06-21 Phase 5, P-018..P-022).
+ * for the Sentinel.
  *
  * The browser-provider active-mode proactive ticks
  * (apps/operator/app/_components/OperatorConversationProvider.tsx) let the brain
@@ -16,8 +16,8 @@
  * sweep FIRES only when ALL of these hold (mirrors the browser-provider gates +
  * adds the server-side ones):
  *   1. FLAGS.SENTINEL_PROACTIVE is ON          (the master switch — DEFAULT OFF)
- *   2. humanFacingRole === 'sentinel'          (the Herald persona is live)
- *   3. NOT do-not-disturb (silenceVoice)       (DND — the user muted the herald)
+ *   2. humanFacingRole === 'sentinel'          (the Sentinel persona is live)
+ *   3. NOT do-not-disturb (silenceVoice)       (DND — the user muted the Sentinel)
  *   4. NOT operator-paused                     (the global pause sentinel)
  *   5. proactiveTicksEnabled                   (the active-mode auto-fire master)
  *   6. NOT over the daily budget               (the converse-gate precondition)
@@ -32,7 +32,7 @@
  */
 
 /** The minimum spacing between two proactive utterances. Generous by design —
- *  a herald that narrates every tick is worse than one that waits (mirrors the
+ *  a Sentinel that narrates every tick is worse than one that waits (mirrors the
  *  browser provider's EL cool-off). Env-tunable, hard min 60s. */
 export function sentinelSweepThrottleMs(): number {
   const n = Number(process.env.PAPERCUSP_SENTINEL_SWEEP_THROTTLE_MS ?? 5 * 60 * 1000);
@@ -79,7 +79,7 @@ export interface SentinelSweepDeps {
   gatherFleetStatus(): Promise<SentinelFleetStatus>;
   /** Run a role:'sentinel' converse turn with trigger 'sentinel_scan' over the
    *  FLEET-STATUS context. Returns the clean spoken `<say>` body (or empty/null
-   *  when the herald chose silence). */
+   *  when the Sentinel chose silence). */
   runSentinelScan(context: string): Promise<string | null>;
   /** TTS `text` → push it out-of-band into the live voice session via
    *  broadcastOpVoice → OPV_RESPONSE_AUDIO. Returns true on a successful push. */
@@ -109,7 +109,7 @@ export type SentinelSweepGate =
 /** The outcome of one sweep tick. */
 export type SentinelSweepResult =
   | { fired: false; gate: SentinelSweepGate }
-  /** Herald chose silence — gates passed, the scan ran, nothing salient to say. */
+  /** Sentinel chose silence — gates passed, the scan ran, nothing salient to say. */
   | { fired: false; gate: 'silent' }
   /** Spoke an utterance into the live voice session (voice-ON path). */
   | { fired: true; via: 'voice'; text: string }
@@ -141,7 +141,7 @@ export async function runSentinelProactiveSweep(
 ): Promise<SentinelSweepResult> {
   // (1) master switch — DEFAULT OFF ⇒ this is the only work most ticks do.
   if (!(await deps.flagEnabled())) return { fired: false, gate: 'flag-off' };
-  // (2) persona — only the Sentinel Herald proactively speaks.
+  // (2) persona — only the Sentinel proactively speaks.
   if (state.humanFacingRole !== 'sentinel') return { fired: false, gate: 'not-sentinel' };
   // (7) single-owner — only the elected lease holder runs the sweep so it never
   //     double-fires alongside a browser provider / a second host. Checked early
@@ -158,11 +158,11 @@ export async function runSentinelProactiveSweep(
     return { fired: false, gate: 'throttled' };
   }
 
-  // Gather FLEET-STATUS (P-020) and let the herald decide whether to speak.
+  // Gather FLEET-STATUS (P-020) and let the Sentinel decide whether to speak.
   const status = await deps.gatherFleetStatus();
 
   if (state.sessionLive) {
-    // Voice-ON path: run the scan, speak the reply if the herald chose to.
+    // Voice-ON path: run the scan, speak the reply if the Sentinel chose to.
     const say = (await deps.runSentinelScan(status.context))?.trim();
     if (!say) return { fired: false, gate: 'silent' };
     const spoke = await deps.speakIntoSession(say);

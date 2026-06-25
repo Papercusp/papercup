@@ -34,11 +34,11 @@ export interface ConverseInput {
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
-  /** Which persona the converse brain assumes — the re-home seam (Sentinel-as-
-   *  Herald). Defaults to 'operator' (fully backward-compatible). 'sentinel' loads
-   *  the Herald persona set (sentinel.persona[.<mode>-mode].md / .converse.md /
+  /** Which persona the converse brain assumes — the Sentinel re-home seam.
+   *  Defaults to 'operator' (fully backward-compatible). 'sentinel' loads
+   *  the Sentinel persona set (sentinel.persona[.<mode>-mode].md / .converse.md /
    *  .tools.md) instead, so the SAME brain becomes the always-on voice-first
-   *  Herald. Constrained to PROMPT_ROLES (the roles with a persona set under
+   *  Sentinel. Constrained to PROMPT_ROLES (the roles with a persona set under
    *  apps/operator/prompts/); an unknown role would throw in loadRolePersona. */
   role?: Role;
   /** Who the operator is talking to. Controls the persona overlay injected
@@ -115,9 +115,9 @@ export async function buildOperatorPrompt(
   const trigger = input.trigger ?? 'user_message';
   const mayAskActive = !!input.mayAskActive;
   const audienceMode = input.audienceMode ?? 'engineer';
-  // The persona the brain assumes — the Sentinel-as-Herald re-home seam. Defaults
+  // The persona the brain assumes — the Sentinel re-home seam. Defaults
   // to 'operator' (byte-identical to the pre-seam behavior); 'sentinel' loads the
-  // Herald persona set instead. The catalog/playbook stay role-keyed too so each
+  // Sentinel persona set instead. The catalog/playbook stay role-keyed too so each
   // persona gets its own tools.md.
   const role: Role = input.role ?? 'operator';
 
@@ -198,13 +198,13 @@ export async function buildOperatorPrompt(
     workspaceId: activeWorkspaceId(),
     harnessSlugs,
     queryContext: lastUserContext(messages, 3),
-    // The Herald's recall heading mirrors the operator one but names its own role
+    // The Sentinel's recall heading mirrors the operator one but names its own role
     // so an injected fact reads as the Sentinel's memory, not "Operator memory".
     ...(role === 'sentinel' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
   });
   if (memBlock) systemSections.push(memBlock);
 
-  // SENTINEL read-context (Sentinel-as-Herald P-007). The Herald watches the WHOLE
+  // SENTINEL read-context. The Sentinel watches the WHOLE
   // system, so it walks in already understanding the live state — escalations,
   // anomalies, progress, "what's worth surfacing" — built from the READY-MADE
   // digests (curation:feed salience ranking, the Overwatch anomaly brief, the
@@ -332,12 +332,12 @@ NEVER say "Hi, what can I help with" or any generic greeting — always anchor o
 
 NOTE: chat_ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
 
-    sentinel_scan: `Trigger: sentinel_scan — a PROACTIVE Sentinel sweep. NO human spoke; the server-side voice-host woke you on a timer to decide whether anything in the live system is worth heralding RIGHT NOW. This is the always-on Herald's "decide to speak" moment.
+    sentinel_scan: `Trigger: sentinel_scan — a PROACTIVE Sentinel sweep. NO human spoke; the server-side voice-host woke you on a timer to decide whether anything in the live system is worth surfacing RIGHT NOW. This is the Sentinel's "decide to speak" moment.
 
 You are looking at the FLEET-STATUS context above (anomalies / live signals / standing patterns / fleet progress). Decide, with a HIGH bar, whether ONE thing genuinely deserves a spoken interruption:
 
-  - If something is salient (a fresh blocker, a critical anomaly, a decision waiting on the human), emit ONE brief \`<say>\` heralding the SINGLE most important item — calm, one fact, offer to go deeper ("…want the details?"). Voice constraints apply (≤220 chars, one <say>, plain language, grounded in the context — never invent).
-  - If nothing rises to the bar, stay SILENT: emit NO \`<say>\` at all (an empty / tag-only turn). Silence is the correct and common outcome — a confused herald that narrates noise is worse than one that waits.
+  - If something is salient (a fresh blocker, a critical anomaly, a decision waiting on the human), emit ONE brief \`<say>\` surfacing the SINGLE most important item — calm, one fact, offer to go deeper ("…want the details?"). Voice constraints apply (≤220 chars, one <say>, plain language, grounded in the context — never invent).
+  - If nothing rises to the bar, stay SILENT: emit NO \`<say>\` at all (an empty / tag-only turn). Silence is the correct and common outcome — a confused Sentinel that narrates noise is worse than one that waits.
 
 Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT ask a question or open a card unless a genuine decision is waiting on the human. Surface FLEET status, never the old operator workspace-suggestions flow.`,
   };

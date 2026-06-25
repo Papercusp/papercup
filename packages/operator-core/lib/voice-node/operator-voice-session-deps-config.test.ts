@@ -1,5 +1,5 @@
 /**
- * resolveConfig persona repoint (sentinel-herald P-011). The voice host's prod
+ * resolveConfig persona repoint. The voice host's prod
  * dep set resolves a `humanFacingRole` from the `humanFacingRole` voice pref and
  * threads it into the ElSessionConfig — the host then sets `brainRole` from it.
  * The EL agent id / signed-URL minting is UNCHANGED; only the persona switches.

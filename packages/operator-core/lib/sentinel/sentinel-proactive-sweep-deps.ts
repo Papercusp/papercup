@@ -1,11 +1,10 @@
 /**
- * Production dependencies for the Sentinel proactive sweep
- * (sentinel-as-herald-2026-06-21 Phase 5, P-019..P-021). The I/O boundary that
- * binds the pure sweep engine (sentinel-proactive-sweep.ts) to the real operator
- * infrastructure:
+ * Production dependencies for the Sentinel proactive sweep. The I/O boundary
+ * that binds the pure sweep engine (sentinel-proactive-sweep.ts) to the real
+ * operator infrastructure:
  *
  *   flagEnabled          → getFlag(FLAGS.SENTINEL_PROACTIVE) (DEFAULT OFF)
- *   isSilenced           → voice prefs `silenceVoice` (the Herald DND lever)
+ *   isSilenced           → voice prefs `silenceVoice` (the Sentinel DND lever)
  *   isPaused             → the global operator pause sentinel
  *   proactiveTicksEnabled→ voice prefs `proactiveTicksEnabled`
  *   overBudget           → checkBudget() (the converse-gate precondition)
@@ -63,7 +62,7 @@ export async function gatherFleetStatus(workspaceId: string, hiveSlug: string): 
 /**
  * Run a role:'sentinel' converse turn over the FLEET-STATUS context with trigger
  * 'sentinel_scan' (P-019). Returns the clean spoken `<say>` body, or null when the
- * herald chose silence (empty/no <say>). Mirrors the verified in-process brain path
+ * Sentinel chose silence (empty/no <say>). Mirrors the verified in-process brain path
  * the voice host's `askOperator` uses (dispatchProjectedToolStream).
  */
 export async function runSentinelScan(context: string): Promise<string | null> {
@@ -71,7 +70,7 @@ export async function runSentinelScan(context: string): Promise<string | null> {
   if (!tool) throw new Error('sentinel:converse tool not registered');
 
   const conversationId = (await getOrCreateActiveConversation().catch(() => null))?.id ?? undefined;
-  // The FLEET-STATUS is the herald's situational context; the trigger tells the
+  // The FLEET-STATUS is the Sentinel's situational context; the trigger tells the
   // prompt to decide-to-speak over it (surface ONE thing or stay silent).
   const messages = [{ role: 'system' as const, content: context }];
 

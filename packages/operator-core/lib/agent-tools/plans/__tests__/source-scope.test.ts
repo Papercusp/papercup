@@ -20,7 +20,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const hiveMocks = vi.hoisted(() => ({
-  hiveHomeSlugForHarness: vi.fn(async (_workspaceId: string, harnessSlug: string) => harnessSlug),
+  hiveHomeSlugForHarness: vi.fn<(_workspaceId: string, harnessSlug: string) => Promise<string | null>>(
+    async (_workspaceId, harnessSlug) => harnessSlug,
+  ),
 }));
 
 vi.mock('../../../hive-federation', () => ({
@@ -128,11 +130,11 @@ describe('resolvePlanScope — concrete slug, workspace from the projects table'
 
   it('canonicalizes a member harness to its hive-home slug before using the plan key', async () => {
     hiveMocks.hiveHomeSlugForHarness.mockImplementation(async (_workspaceId, harnessSlug) =>
-      harnessSlug === 'oddsmith' ? 'oddsmith-ops' : harnessSlug,
+      harnessSlug === 'oddsmith' ? 'oddsmith-hive' : harnessSlug,
     );
     const { lookup } = lookupReturning('papercusp-workspace');
     const r = await resolvePlanScope({ harnessSlug: 'oddsmith', lookup });
-    expect(r).toEqual({ workspaceId: 'papercusp-workspace', harnessSlug: 'oddsmith-ops' });
+    expect(r).toEqual({ workspaceId: 'papercusp-workspace', harnessSlug: 'oddsmith-hive' });
   });
 });
 

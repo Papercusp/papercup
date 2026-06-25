@@ -66,9 +66,9 @@ describe('OperatorActiveToggle', () => {
     expect(btn.getAttribute('aria-label')).toMatch(/Click to turn off/i);
   });
 
-  it('clicking while passive turns the herald OFF (3-state cycle)', () => {
+  it('clicking while passive turns Sentinel OFF (3-state cycle)', () => {
     // New cycle (owner 2026-06-22): Active → Passive → Off → Active. Clicking
-    // while Passive mutes the herald (silenceVoice via the voice-prefs PATCH),
+    // while Passive mutes Sentinel (silenceVoice via the voice-prefs PATCH),
     // surfaced optimistically as the "Off" label — it no longer flips to active.
     h.mode = 'passive';
     render(<OperatorActiveToggle />);

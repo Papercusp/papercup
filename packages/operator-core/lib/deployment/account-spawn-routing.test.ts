@@ -85,10 +85,23 @@ describe('selectSpawnAccount — deterministic, Queen-independent egress-account
     const now = Date.now();
     let p = poolOf('a', 'b');
     // 'a' is the oldest-added (would win on recency), but it is paused → the spread prefers the
-    // available account 'b' (a budget-healthy-but-paused account is only used when none are available).
+    // account that can serve immediately.
     p = recordAccountPenalty(p, 'a', now, { pausedUntil: now + 60 * 60_000 });
     h.pool = p;
     expect(await selectSpawnAccount('ws', undefined)).toBe('b');
+  });
+
+  it('does not pin a paused account when every pool account is currently paused', async () => {
+    const now = Date.now();
+    let p = poolOf('a', 'b');
+    p = recordAccountPenalty(p, 'a', now, { pausedUntil: now + 60_000 });
+    p = recordAccountPenalty(p, 'b', now, { pausedUntil: now + 120_000 });
+    h.pool = p;
+
+    // No account header is safer than a known-paused header: the gateway's
+    // unpinned active/failover path can pace/rotate, while a hard pin returns a
+    // terminal 429 to the spawned CLI and kills the autonomous turn.
+    expect(await selectSpawnAccount('ws', undefined)).toBeUndefined();
   });
 
   it('SPREADS concurrent fresh bees across budgeted accounts instead of piling on one (anti-thundering-herd)', async () => {

@@ -137,9 +137,9 @@ export function setOperatorMode(next: OperatorMode): void {
   } catch { /* ignore */ }
 }
 
-/** Read the effective `silenceVoice` (herald muted) + write the per-user
+/** Read the effective `silenceVoice` (Sentinel muted) + write the per-user
  *  override. Drives the toggle's "Off" state — the same flag the old
- *  "Pause the herald" control set (sentinel-tui-shared-backend §9, 2026-06-22). */
+ *  "Pause Sentinel" control set (sentinel-tui-shared-backend §9, 2026-06-22). */
 function useOperatorSilenced(): [boolean, (v: boolean) => void] {
   const [silenced, setSilencedLocal] = useState(false);
   useEffect(() => {
@@ -177,8 +177,8 @@ export function OperatorActiveToggle() {
   const t = useLexicon();
   const persona = t('operator');
   // OFF is the 3rd toggle state (owner 2026-06-22): replaces the separate
-  // "Pause the herald" control and drives the same `silenceVoice` flag, so the
-  // herald is muted exactly as Pause did. OFF outranks active/passive display.
+  // "Pause Sentinel" control and drives the same `silenceVoice` flag, so the
+  // Sentinel is muted exactly as Pause did. OFF outranks active/passive display.
   const off = silenced;
   const active = !off && mode === 'active';
   const sleepingMs = sleepUntil > 0 ? sleepUntil - Date.now() : 0;
@@ -190,7 +190,7 @@ export function OperatorActiveToggle() {
   // Click cycles Active → Passive → Off → Active (sleeping/quiet wake as before).
   const onClick = useCallback(() => {
     if (off) {
-      // Off → Active: un-mute the herald and re-engage.
+      // Off → Active: un-mute the Sentinel and re-engage.
       setSilenced(false);
       setMode('active');
       return;
@@ -209,7 +209,7 @@ export function OperatorActiveToggle() {
       setMode('passive');
       return;
     }
-    // Passive → Off: mute the herald (silenceVoice).
+    // Passive → Off: mute the Sentinel (silenceVoice).
     setSilenced(true);
   }, [off, active, sleeping, quiet, setMode, setSilenced]);
 
@@ -237,7 +237,7 @@ export function OperatorActiveToggle() {
           ? `${persona} interaction mode: active. Click to set passive.`
           : `${persona} interaction mode: passive. Click to turn off.`;
   const title = off
-    ? `${persona} is off — the herald is muted (replaces "Pause the herald"). Click to turn it back on.`
+    ? `${persona} is off — Sentinel voice is muted. Click to turn it back on.`
     : sleeping
       ? `${persona} went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
       : quiet

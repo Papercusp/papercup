@@ -412,9 +412,10 @@ export interface SelectOpts {
   availableOnly?: boolean;
   /** Prefer accounts with no bindings yet (spread Swarms across distinct accounts). */
   preferUnbound?: boolean;
-  /** Candidate-eligibility predicate applied when `availableOnly` (default `isAvailable`). The spawn
-   *  path passes `isSpawnEligible` so a budget-healthy account carrying a stale predictive pause is
-   *  still a routable candidate instead of being stranded out of rotation. */
+  /** Candidate-eligibility predicate applied when `availableOnly` (default `isAvailable`). Non-CLI
+   *  callers may pass `isSpawnEligible` when they can tolerate gateway pacing on a stale predictive
+   *  pause. Spawned CLI agents deliberately keep the stricter default: a paused hard pin can terminate
+   *  the turn before the agent emits required artifacts. */
   eligible?: (a: ClaudeAccount, now: number) => boolean;
   /** SPREAD a concurrent burst across candidates weighted by remaining headroom (anti-thundering-herd)
    *  instead of deterministically returning the single best — so the fleet fans out rather than piling
@@ -664,7 +665,7 @@ export interface SpawnSelection {
  *      auto-pinned to is PREFERRED in the drain spread (warm system/tools prefix cache) but is NO LONGER
  *      a hard funnel: a busy hive's CONCURRENT bees fan out across budgeted peers instead of every bee
  *      piling on the one pinned account and RPM-storming it. A full/paused pin contributes no hint.
- *   4. DRAIN — SPREAD across spawn-eligible accounts weighted by headroom (+ the affinity bonus). When
+ *   4. DRAIN — SPREAD across AVAILABLE accounts weighted by headroom (+ the affinity bonus). When
  *      the harness has NO pin yet, the chosen account is surfaced via `newlyPinned` to ESTABLISH the
  *      hive's cache anchor; an existing pin is kept stable (not re-thrashed per spilled bee).
  * Pure — the soft-pin WRITE-BACK is the caller's (keeps this exhaustively unit-testable).
@@ -687,17 +688,14 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
     const softPinned = softPinnedAccount(pool, harness);
     if (softPinned && !accountFull(softPinned, now)) affinityId = softPinned.id;
   }
-  // 4. Budget-drain across the whole pool — SPREAD across budget-healthy accounts (weighted by headroom,
-  //    with the affinity bonus for the hive's pinned account), widened to spawn-ELIGIBLE accounts so a
-  //    budgeted account carrying a stale predictive pause isn't stranded out of selection.
-  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, eligible: isSpawnEligible, affinityId });
-  if (!drained) {
-    // 4b. Nothing is spawn-eligible (the pool is genuinely exhausted). Rather than return undefined and
-    //     herd EVERY bee onto the single shared frame-default credential (which then 429s them all), pin
-    //     to the pool account that recovers SOONEST — a real pool account the gateway can pace/rotate.
-    const soonest = [...pool.accounts].sort((x, y) => (x.rate.pausedUntil ?? 0) - (y.rate.pausedUntil ?? 0))[0];
-    return soonest ? { accountId: soonest.id, pinSource: 'drain' } : {};
-  }
+  // 4. Budget-drain across the whole pool — SPREAD across accounts that are
+  //    available RIGHT NOW. Do not pin a paused account into a spawned CLI turn:
+  //    the gateway honors the pin and returns a terminal 429 instead of rotating,
+  //    so autonomous roles can die before emitting their required artifacts. When
+  //    no account is safely pinnable, return no header and let the gateway's
+  //    unpinned active/failover path handle the request.
+  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, affinityId });
+  if (!drained) return {};
   return {
     accountId: drained.id,
     pinSource: drained.id === affinityId ? 'soft-pin' : 'drain',

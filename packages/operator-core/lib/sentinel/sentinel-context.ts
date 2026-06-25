@@ -1,12 +1,12 @@
 /**
- * sentinel-context — the Sentinel/Herald's "understands the full system" live
- * read-context (Sentinel-as-Herald P-007).
+ * sentinel-context — the Sentinel's "understands the full system" live
+ * read-context.
  *
  * The Sentinel brain is the SAME converse brain as the operator, loaded with the
- * Herald persona (role='sentinel'). Where the operator reacts turn-by-turn to the
+ * Sentinel persona (role='sentinel'). Where the operator reacts turn-by-turn to the
  * user, the Sentinel must walk in already KNOWING the live state of the whole
  * system — escalations, anomalies, progress, and "what's worth surfacing" — so it
- * can herald (file + nudge), never re-derive from raw coord.
+ * can surface, file, and nudge, never re-derive from raw coord.
  *
  * This module follows the queen-brief.ts pattern EXACTLY (P-005 reuse):
  *   - a PURE, deterministic renderer (`renderSentinelContext`) over already-shaped
@@ -21,7 +21,7 @@
  *
  * It is a SENTINEL slice of the queen-brief: escalations + anomalies + progress +
  * "what's worth surfacing", NOT placement rank (the Queen owns placement; the
- * Herald owns surfacing). Bounded by per-section caps so it stays a compact block
+ * Sentinel owns surfacing). Bounded by per-section caps so it stays a compact block
  * (token caps — D-007 of the converse-prompt budget discipline).
  */
 
@@ -33,7 +33,7 @@ import type { Anomaly, AnomalySeverity, AnomalyActionType } from '../overwatch/b
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /** One salience-ranked live signal — the curation:feed projection (a FeedRow
- *  slice: only the fields the Herald surfaces). */
+ *  slice: only the fields the Sentinel surfaces). */
 export interface SentinelSignal {
   /** The signal kind — escalation / blocker / decision / completion / progress. */
   kind: string;
@@ -75,7 +75,7 @@ export interface SentinelBee {
   alive: boolean;
 }
 
-/** The system-status snapshot the Herald walks in with. Every field optional /
+/** The system-status snapshot the Sentinel walks in with. Every field optional /
  *  empty-tolerant — a degraded gather still renders a coherent (smaller) block. */
 export interface SentinelContextInput {
   /** The hive/workspace this context covers (for the heading). */
@@ -151,7 +151,7 @@ function renderAnomalyLine(a: Anomaly): string {
 /**
  * Render the Sentinel's live system-status context as a deterministic markdown
  * block. Injected into the sentinel converse prompt's SYSTEM sections (only when
- * role==='sentinel') so the Herald walks in already understanding the full system.
+ * role==='sentinel') so the Sentinel walks in already understanding the full system.
  *
  * Sections, in surfacing priority: anomalies (the actionable drift) → live signals
  * (escalations/blockers/decisions/completions, salience-ranked) → standing
@@ -168,7 +168,7 @@ export function renderSentinelContext(input: SentinelContextInput): string {
   out.push(
     'This is the deterministic snapshot of the running system, built from the ready-made ' +
       'digests (the salience-ranked signal feed, the Overwatch anomaly brief, the state-of-hive ' +
-      'corpus digest, and the live fleet). It is your STANDING awareness as the Herald: act on ' +
+      'corpus digest, and the live fleet). It is your STANDING awareness as the Sentinel: act on ' +
       'it by SURFACING what matters to the user, FILING an observation/escalation, or NUDGING a ' +
       'running agent — never by re-placing work (that is the Queen). Drill into anything this ' +
       'digest omits with a tool (curation:feed, curation:state-of-hive, fleet:assignments) only ' +
@@ -235,7 +235,7 @@ export function renderSentinelContext(input: SentinelContextInput): string {
  * (listFleetAssignments({ workspaceId })) carry no hive filter, and the anomalies
  * leg runs computeSystemHealth(workspaceId) (workspace-scoped, hiveSlug used only
  * for addressing). See plan workspace-scoped-coordination-2026-06-20 D-008. So the
- * Herald (whose persona is "you watch the whole system") should present its
+ * Sentinel (whose persona is "you watch the whole system") should present its
  * summary as WORKSPACE-scoped (all hives) rather than mislabeled with one
  * arbitrary harness. OFF → the primary hive slug, byte-identical to today.
  *

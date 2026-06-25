@@ -48,11 +48,10 @@ const QueenTab = lazy(() => import('./QueenTab'));
 // 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
 // Health tab owns the panels). Flag-gated (OVERWATCH); hidden when the role is dark.
 const OverwatchTab = lazy(() => import('./OverwatchTab'));
-// 📣 Sentinel (the Herald) — the always-on, voice-first human-facing companion's
+// 📣 Sentinel — the always-on, voice-first human-facing companion's
 // quick live-override settings (audience mode, voice, proactive nudges, DND). The
 // sidebar is the quick live-override surface; full workspace settings hold the
-// defaults. Flag-gated (SENTINEL); hidden until the role is live
-// (sentinel-herald-2026-06-21).
+// defaults. Flag-gated (SENTINEL); hidden until the role is live.
 const SentinelTab = lazy(() => import('./SentinelTab'));
 
 // `tip` is the hover tooltip (owner ask 2026-06-23) — a one-line "what is this
@@ -120,7 +119,7 @@ export default function LeftSidebar() {
   // 'overwatch' (deep-link / ui:dispatch), so snap a stale ?lst=overwatch back
   // to Queen when the flag is off (mirrors AdvShell's health/overwatch guard).
   const overwatchOn = useFlag(FLAGS.OVERWATCH);
-  // Sentinel (the Herald) is flag-gated too (SENTINEL, default OFF until the role
+  // Sentinel is flag-gated too (SENTINEL, default OFF until the role
   // is live) — same hide-tab + stale-?lst snap-back treatment as overwatch.
   const sentinelOn = useFlag(FLAGS.SENTINEL);
   const visibleTabs = TABS.filter(

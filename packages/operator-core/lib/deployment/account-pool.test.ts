@@ -232,28 +232,29 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
     expect(selectAccountForSpawn(poolOf('a', 'b'), T0, { rng: () => 0 }).accountId).toBe('a');
   });
 
-  it('keeps a budget-healthy but transiently-paused account spawn-eligible (D-003 stranding fix)', () => {
-    // A single 429 carries a far-future pause even though the account still has budget; selection must
-    // NOT strand it out of rotation (else the fleet funnels onto the few "available" accounts). With
-    // both accounts paused-but-healthy, the bee still routes to a real pool account rather than undefined.
+  it('does not hard-pin a budget-healthy but currently paused account into a spawned CLI turn', () => {
+    // A single 429 can carry a far-future pause even though the account still has budget, but a spawned
+    // CLI turn with a hard account pin dies immediately on the gateway's pinned-account 429. Spawn
+    // selection therefore returns no header when every account is paused; the unpinned gateway path can
+    // pace/fail over without killing the autonomous turn on a known-bad pin.
     let p = poolOf('a', 'b');
     p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 10 * MIN });
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
     const pick = selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'a', harness: 'h', rng: () => 0 }).accountId;
-    expect(pick).toBeDefined();
-    expect(['a', 'b']).toContain(pick);
+    expect(pick).toBeUndefined();
   });
 
-  it('falls back to the soonest-recovering account when every account is genuinely exhausted', () => {
-    // 3 penalties in-window = sustainedly limited (truly out of budget) → not spawn-eligible. Rather than
-    // herd every bee onto the shared frame-default credential, pin to the account recovering soonest.
+  it('does not hard-pin the soonest-recovering account when every account is genuinely exhausted', () => {
+    // 3 penalties in-window = sustainedly limited (truly out of budget) → not spawn-eligible. A hard pin
+    // to the soonest paused account still returns a terminal 429 to the spawned CLI, so emit no account
+    // header and let the gateway own pacing/failover.
     let p = poolOf('a', 'b');
     for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'a', T0 + i, { pausedUntil: T0 + 20 * MIN });
     for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'b', T0 + i, { pausedUntil: T0 + 10 * MIN });
-    expect(selectAccountForSpawn(p, T0 + MIN, { rng: () => 0 }).accountId).toBe('b');
+    expect(selectAccountForSpawn(p, T0 + MIN, { rng: () => 0 }).accountId).toBeUndefined();
   });
 
-  it('returns undefined only for an empty pool', () => {
+  it('returns undefined for an empty pool', () => {
     expect(selectAccountForSpawn(emptyPool(), T0).accountId).toBeUndefined();
   });
 

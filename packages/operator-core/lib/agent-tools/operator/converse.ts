@@ -76,8 +76,7 @@ export const ArgsSchema = z.object({
       z.literal('user_says_ready'),
       z.literal('user_welcomed'),
       z.literal('continue'),
-      // sentinel-as-herald-2026-06-21 Phase 5 (P-018): a PROACTIVE Sentinel sweep
-      // turn — the server-side voice-host "decide to speak" tick fires this so a
+      // PROACTIVE Sentinel sweep turn — the server-side voice-host "decide to speak" tick fires this so a
       // proactive sentinel turn is distinguishable from a user-driven one (the
       // prompt surfaces FLEET-STATUS instead of a reply to the human). Gated:
       // only the server-side sweep (FLAGS.SENTINEL_PROACTIVE, default OFF) emits it.
@@ -88,9 +87,9 @@ export const ArgsSchema = z.object({
   mayAskActive: z.boolean().optional(),
   modality: z.union([z.literal('voice'), z.literal('text')]).optional(),
   audienceMode: z.union([z.literal('engineer'), z.literal('novice')]).optional(),
-  /** Which persona the brain assumes — the Sentinel-as-Herald re-home seam.
+  /** Which persona the brain assumes — the Sentinel re-home seam.
    *  Defaults to 'operator' (fully backward-compatible). 'sentinel' loads the
-   *  always-on, voice-first Herald persona set (same brain, different persona).
+   *  always-on, voice-first Sentinel persona set (same brain, different persona).
    *  Constrained to the persona roles that ship a prompt set under
    *  apps/operator/prompts/ (PROMPT_ROLES); an unknown value would throw in the
    *  persona loader, so the schema pins it to the known set. */
@@ -166,8 +165,8 @@ export default defineTool({
     'Operator brain conversation turn. Self-contained: builds the prompt (role+memory+history+trigger), gates on budget, runs the LLM with agentmcp tools, records spend, post-turn mem0.add, dispatches <spawn> tags. Streams deltas + tool_calls.',
   capability: 'operator:converse',
   requirePrincipal: false,
-  // Sentinel-as-Herald: the sentinel is re-homed onto the always-on voice-first
-  // Herald, which IS this converse brain loaded with role='sentinel' (the
+  // Sentinel: the sentinel is re-homed onto the always-on voice-first
+  // persona, which IS this converse brain loaded with role='sentinel' (the
   // operator-converse route resolves `${role}:converse` and the prompt builder
   // loads the sentinel persona set). So the sentinel role must be allowlisted
   // here too — paired with its operator:converse capability grant
@@ -215,8 +214,8 @@ export default defineTool({
         surface: input.surface,
         uiClientId: input.uiClientId,
         conversationId: input.conversationId,
-        // Sentinel-as-Herald re-home seam: 'operator' (default) is unchanged;
-        // 'sentinel' loads the Herald persona set.
+        // Sentinel re-home seam: 'operator' (default) is unchanged;
+        // 'sentinel' loads the Sentinel persona set.
         role: input.role,
       } satisfies OperatorConverseInput,
       sessionUser,
@@ -502,7 +501,7 @@ export default defineTool({
     // failures as failed nursery rows instead of dropping them.
     try {
       const parsed = parseOperatorTurn(assembled);
-      // Sentinel-as-Herald handoff (sentinel-herald P-014/P-015/P-016): the
+      // Sentinel handoff: the
       // SENTINEL never places work itself — instead of `<spawn>` it emits
       // `<handoff_to_queen>`, which we dispatch THROUGH the file-and-nudge seam
       // (tier-gate → file high-priority user-requested work_item → nudge the Queen
@@ -530,7 +529,7 @@ export default defineTool({
       }
       // The OPERATOR spawns directly; the SENTINEL never does (its envelope denies
       // fleet:spawn). Guard the spawn dispatch on NOT-sentinel so a stray `<spawn>`
-      // from the Herald persona is a no-op rather than a placement.
+      // from the Sentinel persona is a no-op rather than a placement.
       if (!isSentinel && parsed.spawns.length > 0) {
         const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
         for (const sp of parsed.spawns) {

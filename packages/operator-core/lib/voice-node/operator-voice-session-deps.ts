@@ -80,7 +80,7 @@ async function resolveConfig(): ReturnType<OperatorVoiceSessionDeps['resolveConf
 
     const agentLanguage = prefs.agentLanguage?.trim() ?? '';
     const overrides = agentLanguage ? { agent: { language: agentLanguage } } : null;
-    // Persona repoint (sentinel-herald P-011): the EL agent / signed-URL is
+    // Persona repoint: the EL agent / signed-URL is
     // UNCHANGED — only the brain behind `ask_operator` switches. Default
     // 'operator' leaves the live path byte-for-byte unchanged.
     const humanFacingRole = prefs.humanFacingRole === 'sentinel' ? 'sentinel' : 'operator';
@@ -139,7 +139,7 @@ async function askOperator(
   role: string = 'operator',
 ): Promise<string> {
   // role selects the human-facing persona/brain: 'operator' (default, backward-compatible)
-  // or 'sentinel' (the Herald). The `${role}:converse` tool alias loads the matching persona.
+  // or 'sentinel'. The `${role}:converse` tool alias loads the matching persona.
   const tool = lookupByMcpName(`${role}:converse`);
   if (!tool) throw new Error(`${role}:converse tool not registered`);
 

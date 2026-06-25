@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  hiveHomeSlugForHarness: vi.fn(async (_workspaceId: string, harnessSlug: string) => harnessSlug),
+  hiveHomeSlugForHarness: vi.fn<(_workspaceId: string, harnessSlug: string) => Promise<string | null>>(
+    async (_workspaceId, harnessSlug) => harnessSlug,
+  ),
 }));
 
 vi.mock('../../../hive-federation', () => ({
