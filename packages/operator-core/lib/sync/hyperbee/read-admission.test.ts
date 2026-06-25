@@ -17,7 +17,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { makeAdmissionDecider, announceSlugInScope, type AdmissionInput } from './read-admission';
+import {
+  makeAdmissionDecider,
+  announceSlugInScope,
+  trustedHiveMemberDeviceAdmission,
+  type AdmissionInput,
+} from './read-admission';
 
 /** Build an AdmissionInput with defaults; override per test. */
 function mkInput(over: Partial<AdmissionInput> = {}): AdmissionInput {
@@ -151,5 +156,45 @@ describe('announceSlugInScope (A-003 a′)', () => {
     // A null rebindHomeSlug must never accidentally match a null/absent compare — an
     // origin that is a real string but ≠ own slug, with no rebind, is rejected.
     expect(announceSlugInScope('member-b', 'member-a', null)).toBe(false);
+  });
+});
+
+describe('trustedHiveMemberDeviceAdmission', () => {
+  it('admits a signed announce for a pubkey already registered under this hive member', () => {
+    expect(
+      trustedHiveMemberDeviceAdmission({
+        devicePubkey: 'pk-known',
+        sigValid: true,
+        memberDevices: ['pk-other', 'pk-known'],
+      }),
+    ).toBe(true);
+  });
+
+  it('does not bypass signature validity or revocation', () => {
+    expect(
+      trustedHiveMemberDeviceAdmission({
+        devicePubkey: 'pk-known',
+        sigValid: false,
+        memberDevices: ['pk-known'],
+      }),
+    ).toBe(false);
+    expect(
+      trustedHiveMemberDeviceAdmission({
+        devicePubkey: 'pk-known',
+        sigValid: true,
+        memberDevices: ['pk-known'],
+        revoked: new Set(['pk-known']),
+      }),
+    ).toBe(false);
+  });
+
+  it('does not admit an unregistered device for the claimed member', () => {
+    expect(
+      trustedHiveMemberDeviceAdmission({
+        devicePubkey: 'pk-missing',
+        sigValid: true,
+        memberDevices: ['pk-known'],
+      }),
+    ).toBe(false);
   });
 });

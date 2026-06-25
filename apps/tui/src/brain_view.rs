@@ -315,17 +315,17 @@ fn header_line(state: &BrainViewState) -> Line<'static> {
     let kind = state.scope.kind();
     let mut spans = vec![
         Span::styled(
-            format!(" {} {}", kind.glyph(), state.scope.short_label()),
+            format!("{} {}", kind.glyph(), state.scope.short_label()),
             Theme::title().fg(kind.color()).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" · live transcript", Theme::dim()),
-        Span::styled(" · read-only", Theme::warn()),
+        Span::styled(" · live", Theme::dim()),
+        Span::styled(" · ro", Theme::warn()),
         Span::raw(" · "),
         Span::styled(state.status.label(), state.status.style()),
     ];
     if !state.messages.is_empty() {
         spans.push(Span::styled(
-            format!(" · {} turns", state.messages.len()),
+            format!(" · {}t", state.messages.len()),
             Theme::dim(),
         ));
     }
@@ -345,9 +345,8 @@ fn footer_line(state: &BrainViewState) -> Line<'static> {
         String::new()
     };
     Line::from(vec![
-        Span::styled(format!(" {pulse} auto-follow"), Theme::dim()),
-        Span::styled(" · shared session mirror", Theme::dim()),
-        Span::styled(" · no input is sent from this pane", Theme::dim()),
+        Span::styled(format!("{pulse} mirror"), Theme::dim()),
+        Span::styled(" · read-only", Theme::dim()),
         Span::styled(retained, Theme::dim()),
     ])
 }
@@ -384,23 +383,19 @@ fn transcript_lines(state: &BrainViewState) -> Vec<Line<'static>> {
         if content.is_empty() {
             continue;
         }
-        let mut content_lines = content.lines();
+        let mut content_lines = content.lines().filter_map(compact_content_line);
         if let Some(first) = content_lines.next() {
             lines.push(Line::from(vec![
-                Span::styled(format!(" {:>5} ", label), style),
-                Span::raw(first.to_string()),
+                Span::styled(format!("{label} "), style),
+                Span::raw(first),
             ]));
         }
         for line in content_lines {
             lines.push(Line::from(vec![
-                Span::styled("       │ ", Theme::dim()),
-                Span::raw(line.to_string()),
+                Span::styled("  ", Theme::dim()),
+                Span::raw(line),
             ]));
         }
-        lines.push(Line::default());
-    }
-    if lines.last().map(|l| l.spans.is_empty()).unwrap_or(false) {
-        lines.pop();
     }
     lines
 }
@@ -408,14 +403,23 @@ fn transcript_lines(state: &BrainViewState) -> Vec<Line<'static>> {
 fn role_style(scope: Scope, role: &str) -> (&'static str, Style) {
     match role.to_ascii_lowercase().as_str() {
         "assistant" => (
-            "agent",
+            "a",
             Theme::title()
                 .fg(scope.kind().color())
                 .add_modifier(Modifier::BOLD),
         ),
-        "user" => ("user", Theme::info()),
-        "system" => ("sys", Theme::warn()),
-        _ => ("turn", Theme::dim()),
+        "user" => ("u", Theme::info()),
+        "system" => ("s", Theme::warn()),
+        _ => ("•", Theme::dim()),
+    }
+}
+
+fn compact_content_line(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        None
+    } else {
+        Some(line.to_string())
     }
 }
 
@@ -561,6 +565,37 @@ mod tests {
         assert!(text.contains("attached abcdef12"), "{text}");
         assert!(text.contains("place the next item"), "{text}");
         assert!(text.contains("Placed WI-123"), "{text}");
-        assert!(text.contains("shared session mirror"), "{text}");
+        assert!(text.contains("mirror"), "{text}");
+        assert!(text.contains("read-only"), "{text}");
+    }
+
+    #[test]
+    fn transcript_rows_are_dense_without_wide_gutters_or_blank_turn_gaps() {
+        let mut state = BrainViewState::new(Scope::Overwatch);
+        state.status = AttachState::Attached {
+            short: "5054eed3".into(),
+        };
+        state.push_messages(vec![
+            ChatMessage {
+                role: "system".into(),
+                content: "alpha\n\n  beta".into(),
+                tools: Vec::new(),
+                streaming: false,
+            },
+            ChatMessage::assistant("gamma\n  delta"),
+        ]);
+
+        let lines = transcript_lines(&state);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(rendered, vec!["s alpha", "  beta", "a gamma", "  delta"]);
     }
 }
