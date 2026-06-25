@@ -24,6 +24,7 @@ import { schemaVersionEvents, type SchemaVersionAlert, CURRENT_SCHEMA_VERSION } 
 import { _resetCacheForTests } from '../corestore';
 import { openOwnLog } from '../peer-log';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
+import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory } from '../boot-history';
 
@@ -44,6 +45,40 @@ async function validAnnounce(over: Partial<SignedAnnounce> = {}): Promise<Signed
     ...over,
   };
   return buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
+}
+
+function rawPubkeyBase64(publicKey: ReturnType<typeof generateKeyPairSync>['publicKey']): string {
+  return (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
+    .subarray(-32)
+    .toString('base64');
+}
+
+function makeFakeSwarm(): HyperswarmLike {
+  return {
+    join: () => ({ flushed: async () => {}, refresh: () => {} }),
+    leave: () => {},
+    on: () => {},
+    off: () => {},
+    connections: [],
+  };
+}
+
+function makeAnnounceIdentityOverride(githubLogin: string, githubUserId: number, keychainId: string) {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const devicePubkey = rawPubkeyBase64(publicKey);
+  return {
+    devicePubkey,
+    userId: githubUserId,
+    override: {
+      resolveOpts: {
+        keychainId,
+        resolveGithubUser: async () => ({ id: githubUserId, login: githubLogin }),
+        loadKeypair: async (id: string) => ({ keychainId: id, pubkeyBase64: devicePubkey }),
+        resolveAttestationGistId: async () => `gist-${githubLogin}`,
+      },
+      sign: async (_keychainId: string, bytes: Buffer) => nodeSign(null, bytes, privateKey),
+    },
+  };
 }
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -290,6 +325,146 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
     expect(second).toBe(first); // same handle, not re-opened
     expect(handle.admitted.size).toBe(2); // own + the one peer
   });
+});
+
+describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-wi789-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  const WORKSPACE_ID = 'ws-wi789';
+  const JOINER_MEMBER_SLUG = 'joined-owner-repo';
+  const OWNER_MEMBER_SLUG = 'owner-repo';
+  const HIVE_HOME_SLUG = 'owner-repo-home';
+  const HIVE_PUBKEY = Buffer.alloc(32, 7).toString('base64');
+
+  it('repro: gh-attested out-of-scope owner/member announce buffers when the joiner roster is empty', async () => {
+    const ownerUserId = 9401;
+    const joiner = makeAnnounceIdentityOverride('joiner', 9402, 'kc-wi789-joiner');
+    const verifyBinding = vi.fn(async () => 'verified' as const);
+    const loadHiveMembers = vi.fn(async () => [] as string[]);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: verifyBinding,
+      loadHiveMembersOverride: loadHiveMembers,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner',
+      attestation_gist_id: 'gist-owner',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'f1'.repeat(32),
+    });
+
+    const decision = await handle.onAnnounce(frame);
+
+    expect(verifyBinding).toHaveBeenCalledWith(
+      frame.device_pubkey,
+      'owner',
+      ownerUserId,
+      'gist-owner',
+    );
+    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG, ownerUserId);
+    expect(decision).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+  });
+
+  it('control: the same production path admits once the owner/member device is in hive_members', async () => {
+    const ownerUserId = 9501;
+    const joiner = makeAnnounceIdentityOverride('joiner-control', 9502, 'kc-wi789-joiner-control');
+    let ownerDevicePubkey = '';
+    const loadHiveMembers = vi.fn(async (_hiveHome: string, _githubUserId: number) =>
+      ownerDevicePubkey ? [ownerDevicePubkey] : [],
+    );
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: loadHiveMembers,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner-control',
+      attestation_gist_id: 'gist-owner-control',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'f2'.repeat(32),
+    });
+    ownerDevicePubkey = frame.device_pubkey;
+
+    const decision = await handle.onAnnounce(frame);
+
+    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG, ownerUserId);
+    expect(decision).toEqual({ admit: true });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(true);
+  });
+
+  it.fails(
+    'DESIRED: a gh-attested hive owner/member bootstrap announce admits before the empty roster can deadlock WI-780',
+    async () => {
+      const ownerUserId = 9601;
+      const joiner = makeAnnounceIdentityOverride('joiner-desired', 9602, 'kc-wi789-joiner-desired');
+
+      const handle = await bootHarnessSubstrate({
+        workspaceRoot: tmpWorkspaceRoot(),
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: JOINER_MEMBER_SLUG,
+        swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+        swarmOverride: makeFakeSwarm(),
+        swarmRefreshMs: 0,
+        swarmJoinRetryMs: 0,
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        verifyBindingOverride: async () => 'verified',
+        loadHiveMembersOverride: async () => [],
+        joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+        announceIdentityOverride: joiner.override,
+      });
+      cleanups.push(() => handle.close());
+
+      const frame = await validAnnounce({
+        github_user_id: ownerUserId,
+        github_login: 'owner-desired',
+        attestation_gist_id: 'gist-owner-desired',
+        harness_slug: OWNER_MEMBER_SLUG,
+        log_core_key: 'f3'.repeat(32),
+      });
+
+      const decision = await handle.onAnnounce(frame);
+
+      expect(decision).toEqual({ admit: true });
+      expect(handle.admitted.has(frame.log_core_key)).toBe(true);
+    },
+  );
 });
 
 describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end (D-004, Fix 1)', () => {

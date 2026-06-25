@@ -102,7 +102,7 @@ describe('BootstrapFinishGate auto-retry (EI-3548)', () => {
   });
 });
 
-describe('BootstrapFinishGate never-trap escape (WI-783, public-release)', () => {
+describe('BootstrapFinishGate never-trap escape (WI-791, public-release)', () => {
   it('always offers "Continue into Papercusp", and it enters the app via onReady', async () => {
     // A persistent (git-missing) terminal error must NOT strand the user — the
     // dogfood clone is best-effort/non-fatal, so the escape is always present and

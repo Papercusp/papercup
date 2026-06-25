@@ -16,7 +16,7 @@
  * trigger lands any rows) `hasRows` is false; rather than hard-block forever we
  * surface a soft "still preparing…" with the Retry, so the user is never trapped.
  *
- * NEVER-TRAP contract (public-release, WI-783): the dogfood clone is, by the
+ * NEVER-TRAP contract (public-release, WI-791): the dogfood clone is, by the
  * DOGFOOD_PAPERCUSP_HIVE flag's own design, "best-effort + non-fatal — it can
  * never break a fresh launch." A PUBLIC user can't even access the private
  * `papercup-db` / `papercup-shared` submodules (org-only), and a fresh Mac may
@@ -146,7 +146,7 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
     }
   }, [p.ready, onReady]);
 
-  // NEVER-TRAP escape (WI-783): enter the app now; the dogfood clone keeps
+  // NEVER-TRAP escape (WI-791): enter the app now; the dogfood clone keeps
   // retrying in the background under DogfoodBootstrapBanner. Guarded by the same
   // single-fire latch as the auto-advance so onReady runs at most once.
   const proceedAnyway = () => {
@@ -253,7 +253,7 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
         )}
 
         <div className="pc-step__actions" style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'center' }}>
-          {/* NEVER-TRAP escape (WI-783): on a terminal error this is the PRIMARY
+          {/* NEVER-TRAP escape (WI-791): on a terminal error this is the PRIMARY
               way out (the clone can't or won't finish — e.g. a public user with
               no access to the private submodules, or a Mac with no git); while
               still downloading it's a quiet secondary so a long clone never
