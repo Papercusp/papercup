@@ -57,6 +57,7 @@ import { overwatchEnabled } from './watchdog';
 import { computeOverwatchBrief } from './compute-brief';
 import { renderOverwatchBrief } from './brief-types';
 import { registerOverwatchWaker } from './wake-bridge';
+import { agentProducedTurn } from '../fleet/invoke-outcome';
 
 const operatorBase = operatorApiBase;
 
@@ -148,7 +149,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
           return;
         }
 
-        const invokeError = classifyInvokeBodyFailure(detail);
+        const invokeError = classifyInvokeBodyFailure(detail, `${installSlug}/${role}`);
         if (invokeError) {
           await recordFire(installSlug, role, invokeError, 'error');
           await runScorecardBackstop(workspaceId, installSlug, invokeError);
@@ -173,7 +174,10 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
     });
 };
 
-function classifyInvokeBodyFailure(text: string): string | null {
+function classifyInvokeBodyFailure(text: string, label: string): string | null {
+  const outcome = agentProducedTurn(text, label);
+  if (!outcome.ran) return `error: invoke produced no Overwatch turn — ${outcome.detail.trim()}`;
+
   if (!text.trim()) return null;
   let parsed: unknown;
   try {

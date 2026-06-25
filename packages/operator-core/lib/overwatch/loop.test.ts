@@ -155,7 +155,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     expect(body.overwatchBrief).toBeUndefined();
   });
 
-  it('HTTP 200 + invoke ok:false records an error and runs the scorecard backstop', async () => {
+  it('HTTP 200 + invoke ok:false records a no-turn error and runs the scorecard backstop', async () => {
     loopbackFetch.mockResolvedValue({
       ok: true,
       text: () => Promise.resolve(JSON.stringify({ ok: false, error: 'agent timed out', exitCode: 143, timedOut: true })),
@@ -167,7 +167,27 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
         'overwatch',
-        expect.stringContaining('invoke returned ok:false'),
+        expect.stringContaining('invoke produced no Overwatch turn'),
+        'error',
+      );
+    });
+    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
+    expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
+  });
+
+  it('HTTP 200 + ok:true but empty agentOutput is a no-turn error, not ok', async () => {
+    loopbackFetch.mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ ok: true, agentOutput: '   ', exitCode: 0, timedOut: false })),
+    });
+
+    await handleOverwatchLaunch(ctx);
+
+    await vi.waitFor(() => {
+      expect(recordFire).toHaveBeenCalledWith(
+        SLUG,
+        'overwatch',
+        expect.stringContaining('produced no Overwatch turn'),
         'error',
       );
     });
