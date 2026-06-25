@@ -47,6 +47,27 @@ export function applyBackendSwap(baseCmd: string, backend?: string): string {
   return DEFAULT_BACKEND_CMDS[target];
 }
 
+function specModelId(spec?: string): string {
+  const trimmed = (spec ?? '').trim();
+  if (!trimmed) return '';
+  const lastColon = trimmed.lastIndexOf(':');
+  if (lastColon <= 0) return trimmed;
+  const suffix = trimmed.slice(lastColon + 1);
+  return EFFORT_LEVELS.has(suffix) ? trimmed.slice(0, lastColon) : trimmed;
+}
+
+/** Infer a subprocess backend from an explicit per-spawn model spec when the
+    spec is unambiguously provider-specific. Keep this intentionally narrow:
+    only Codex-shaped specs force a backend swap; Claude/OMP aliases continue to
+    inherit the configured command unless the caller supplied
+    PAPERCUSP_SPAWN_BACKEND. */
+export function inferBackendFromModelSpec(spec?: string): AgentBackend | undefined {
+  const id = specModelId(spec).toLowerCase();
+  if (!id) return undefined;
+  if (id.startsWith('openai-codex/') || /^gpt-\d/.test(id)) return 'codex';
+  return undefined;
+}
+
 /**
  * Infer the `{ backend, model }` the spawned CLI will actually use for `role` — from the
  * resolved per-role agent command (`AGENT_CMD`/`CLAUDE` + the `AGENT_MODELS` override). Used
@@ -63,7 +84,7 @@ export function resolveSpawnBackendModel(
   overrideSpec?: string,
   overrideBackend?: string,
 ): { backend: TurnBackend; model: string } {
-  const effectiveBackend = overrideBackend || roleBackendOverride(role);
+  const effectiveBackend = overrideBackend || inferBackendFromModelSpec(overrideSpec) || roleBackendOverride(role);
   const base = applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', effectiveBackend);
   const cmd = applyRoleModel(base, role, overrideSpec);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
@@ -227,7 +248,10 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // inherited AGENT_BACKEND below: the child's resolveAgentBackend prefers the
   // explicit env over binary inference, so a swapped command with a stale
   // AGENT_BACKEND would mis-resolve every backend-keyed flag.
-  const spawnBackend = spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND || roleBackendOverride(spec.role);
+  const spawnBackend =
+    spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND ||
+    inferBackendFromModelSpec(spec.extraEnv?.PAPERCUSP_SPAWN_MODEL) ||
+    roleBackendOverride(spec.role);
   const roleAgentCmd = applyRoleModel(
     applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spawnBackend),
     spec.role,

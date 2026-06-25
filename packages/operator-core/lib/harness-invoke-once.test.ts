@@ -17,7 +17,16 @@ vi.mock('./embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin/resolved',
 }));
 
-import { appendForcedSessionId, applyBackendSwap, applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, roleBackendOverride, type InvokeOnceSpec } from './harness-invoke-once';
+import {
+  appendForcedSessionId,
+  applyBackendSwap,
+  applyRoleModel,
+  buildInvokeOnce,
+  inferBackendFromModelSpec,
+  resolveSpawnBackendModel,
+  roleBackendOverride,
+  type InvokeOnceSpec,
+} from './harness-invoke-once';
 
 // Fixture role is deliberately one with NO committed ROLE_MODEL_DEFAULTS entry
 // (P-012 gave worker/validator/documenter/bee/scanner/judge committed tiers,
@@ -312,10 +321,28 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:xhigh');
   });
 
+  it('a Codex-shaped per-spawn model swaps the backend before appending the model', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const env = buildInvokeOnce(spec({ role: 'overwatch', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'gpt-5.5:high' } }));
+    expect(env.env.AGENT_CMD).toBe('codex exec --model gpt-5.5 -c model_reasoning_effort="high"');
+    expect(env.env.CLAUDE).toBe('codex exec --model gpt-5.5 -c model_reasoning_effort="high"');
+    expect(env.env.AGENT_BACKEND).toBe('codex');
+    expect(env.env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
+    expect(env.env.PAPERCUSP_SPAWN_MODEL).toBe('gpt-5.5:high');
+  });
+
   it('resolveSpawnBackendModel keys the governor bucket to the override model', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(resolveSpawnBackendModel('bee', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus' });
+  });
+
+  it('resolveSpawnBackendModel infers Codex for Codex-shaped per-spawn models', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(inferBackendFromModelSpec('gpt-5.5:xhigh')).toBe('codex');
+    expect(resolveSpawnBackendModel('overwatch', 'gpt-5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
   });
 });
 
