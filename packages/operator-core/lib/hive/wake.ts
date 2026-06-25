@@ -388,6 +388,50 @@ export function withinWakeFloor(state: HiveWakeState, now: number = Date.now(), 
   });
 }
 
+export interface HiveWakeAdmission {
+  fired: boolean;
+  skipped?: 'wake-floor';
+  floorSec: number;
+  nextAllowedAt?: string;
+}
+
+export function decideHiveWakeAdmission(
+  state: HiveWakeState,
+  opts: { now: number; floorSec: number; force?: boolean },
+): HiveWakeAdmission {
+  if (!opts.force && withinWakeFloor(state, opts.now, opts.floorSec)) {
+    return {
+      fired: false,
+      skipped: 'wake-floor',
+      floorSec: opts.floorSec,
+      nextAllowedAt: new Date((state.lastWakeAt ?? 0) + opts.floorSec * 1_000).toISOString(),
+    };
+  }
+  return { fired: true, floorSec: opts.floorSec };
+}
+
+/** Atomically claim the right to launch a Queen wake by recording `lastWakeAt`
+ * before the expensive launch. The old fire path recorded after launch, leaving
+ * a check-then-act window where event/manual/watchdog wakes could all see the
+ * same stale state and launch overlapping Queens. */
+export async function claimHiveWakeFire(
+  workspaceId: string,
+  opts: { floorSec: number; force?: boolean; now?: number },
+): Promise<HiveWakeAdmission> {
+  const now = opts.now ?? Date.now();
+  let admission: HiveWakeAdmission = { fired: false, floorSec: opts.floorSec };
+  await updateOperatorState<HiveWakeState>(
+    'hive_wake',
+    EMPTY_STATE,
+    (cur) => {
+      admission = decideHiveWakeAdmission(cur, { now, floorSec: opts.floorSec, force: opts.force });
+      return admission.fired ? { ...cur, lastWakeAt: now } : cur;
+    },
+    workspaceId,
+  );
+  return admission;
+}
+
 /** Record a hive launch fire (the debounce input for the next one). */
 export async function recordHiveWake(workspaceId?: string): Promise<void> {
   await updateOperatorState<HiveWakeState>(

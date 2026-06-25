@@ -12,12 +12,30 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import {
   HIVE_BLUEPRINT_ID,
+  claimHiveWakeFire,
   effectiveHiveWakeFloorSec,
-  readHiveWakeState,
-  recordHiveWake,
   resolveHiveHomeSlug,
-  withinWakeFloor,
 } from '../../hive/wake';
+import { getOrgPg } from '@papercusp/db-org';
+
+async function hasRecentOpenQueenWake(workspaceId: string, installSlug: string, maxAgeMs = 10 * 60_000): Promise<boolean> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+          FROM harness_shared.adv_sessions
+         WHERE workspace_id = ${workspaceId}
+           AND label LIKE ${'hive · ' + installSlug + '/%'}
+           AND ended_at IS NULL
+           AND started_at > now() - (${Math.max(1, Math.floor(maxAgeMs))}::text || ' milliseconds')::interval
+      ) AS "exists"
+    `;
+    return rows[0]?.exists === true;
+  } catch {
+    return false;
+  }
+}
 
 export default defineTool({
   name: 'hive:wake',
@@ -59,14 +77,24 @@ export default defineTool({
     // Owner cadence-floor (queen-steering-panel P-006): the event-burst debounce
     // honours the owner's raised wake-cadence floor (MAX of system + owner knob).
     const floorSec = await effectiveHiveWakeFloorSec(workspaceId, installSlug);
-    const state = await readHiveWakeState(workspaceId);
-    if (!args.force && withinWakeFloor(state, Date.now(), floorSec)) {
-      const nextAllowedAt = new Date((state.lastWakeAt ?? 0) + floorSec * 1_000).toISOString();
+    if (await hasRecentOpenQueenWake(workspaceId, installSlug)) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ ok: true, fired: false, skipped: 'wake-floor', floorSec, nextAllowedAt }),
+            text: JSON.stringify({ ok: true, fired: false, skipped: 'wake-inflight' }),
+          },
+        ],
+      };
+    }
+
+    const admission = await claimHiveWakeFire(workspaceId, { floorSec, force: args.force });
+    if (!admission.fired) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: true, ...admission }),
           },
         ],
       };
@@ -74,7 +102,6 @@ export default defineTool({
 
     const kickoff = `Wake (${args.source ?? 'manual'}): ${args.reason ?? 'no reason given'}. You are the operator in charge; survey the fleet and figure out what to do.`;
     const target = await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug, workspaceId, kickoff });
-    await recordHiveWake(workspaceId);
     return {
       content: [
         {

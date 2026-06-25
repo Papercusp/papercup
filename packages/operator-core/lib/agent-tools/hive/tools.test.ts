@@ -27,6 +27,7 @@ const setHiveCarryNote = vi.fn(async (_ws: string, note: string | null | undefin
 });
 const readHiveWakeState = vi.fn<() => Promise<Record<string, unknown>>>();
 const recordHiveWake = vi.fn(async () => {});
+const claimHiveWakeFire = vi.fn(async () => ({ fired: true, floorSec: 60 }));
 const getHiveTimeWake =
   vi.fn<() => Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null>>();
 const fireLaunchBlueprint = vi.fn(async () => ({ role: 'operator', kind: 'role' as const }));
@@ -43,6 +44,7 @@ vi.mock('../../hive/wake', async (importOriginal) => {
     setHiveCarryNote: (...a: unknown[]) => setHiveCarryNote(...(a as [string, string | null | undefined])),
     readHiveWakeState: (...a: unknown[]) => readHiveWakeState(...(a as [])),
     recordHiveWake: (...a: unknown[]) => recordHiveWake(...(a as [])),
+    claimHiveWakeFire: (...a: unknown[]) => claimHiveWakeFire(...(a as [string, { floorSec: number; force?: boolean }])),
     getHiveTimeWake: (...a: unknown[]) => getHiveTimeWake(...(a as [])),
   };
 });
@@ -284,10 +286,11 @@ describe('hive:wake', () => {
     expect(fireLaunchBlueprint).not.toHaveBeenCalled();
   });
 
-  it('outside the floor → fires the hive launch + records the wake', async () => {
-    readHiveWakeState.mockResolvedValue({ subscriptions: [] }); // no prior wake
+  it('outside the floor → claims the fire + launches the hive', async () => {
+    claimHiveWakeFire.mockResolvedValue({ fired: true, floorSec: 60 });
     const res = parse(await tool.handler({ reason: 'prod fire', source: 'user', harness: 'papercup' }, ctx()));
     expect(res).toMatchObject({ ok: true, fired: true, role: 'operator', harness: 'papercup' });
+    expect(claimHiveWakeFire).toHaveBeenCalledWith('ws-test', { floorSec: 60, force: undefined });
     expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
     const [bp, input] = fireLaunchBlueprint.mock.calls[0] as unknown as [
       string,
@@ -297,11 +300,16 @@ describe('hive:wake', () => {
     expect(input.installSlug).toBe('papercup');
     expect(input.workspaceId).toBe('ws-test');
     expect(input.kickoff).toContain('prod fire');
-    expect(recordHiveWake).toHaveBeenCalledTimes(1);
+    expect(recordHiveWake).not.toHaveBeenCalled();
   });
 
   it('within the floor (no force) → skipped:wake-floor, no launch', async () => {
-    readHiveWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: Date.now() - 10_000 });
+    claimHiveWakeFire.mockResolvedValue({
+      fired: false,
+      skipped: 'wake-floor',
+      floorSec: 60,
+      nextAllowedAt: '2026-06-05T12:01:00.000Z',
+    });
     const res = parse(await tool.handler({ reason: 'too soon', harness: 'papercup' }, ctx()));
     expect(res).toMatchObject({ ok: true, fired: false, skipped: 'wake-floor', floorSec: 60 });
     expect(typeof res.nextAllowedAt).toBe('string');
@@ -310,9 +318,10 @@ describe('hive:wake', () => {
   });
 
   it('within the floor + force:true → bypasses the debounce and fires', async () => {
-    readHiveWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: Date.now() - 10_000 });
+    claimHiveWakeFire.mockResolvedValue({ fired: true, floorSec: 60 });
     const res = parse(await tool.handler({ reason: 'urgent', force: true, harness: 'papercup' }, ctx()));
     expect(res.fired).toBe(true);
+    expect(claimHiveWakeFire).toHaveBeenCalledWith('ws-test', { floorSec: 60, force: true });
     expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
   });
 });

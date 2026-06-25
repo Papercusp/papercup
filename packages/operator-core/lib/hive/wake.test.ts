@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   clampWakeAt,
+  decideHiveWakeAdmission,
   getHiveTimeWake,
   hiveWakeFloorSec,
   resolveHiveHomeSlug,
@@ -98,6 +99,29 @@ describe('withinWakeFloor (the fire-side debounce)', () => {
     expect(withinWakeFloor({ subscriptions: [], lastWakeAt: now - 90_000 }, now, 420)).toBe(true);
     // Past even the owner floor ⇒ fires.
     expect(withinWakeFloor({ subscriptions: [], lastWakeAt: now - 421_000 }, now, 420)).toBe(false);
+  });
+});
+
+describe('decideHiveWakeAdmission', () => {
+  it('records a fire before launch and makes the next concurrent trigger skip', () => {
+    const now = Date.parse('2026-06-05T12:00:00Z');
+    const first = decideHiveWakeAdmission({ subscriptions: [] }, { now, floorSec: 60 });
+    expect(first).toEqual({ fired: true, floorSec: 60 });
+
+    const second = decideHiveWakeAdmission(
+      { subscriptions: [], lastWakeAt: now },
+      { now: now + 500, floorSec: 60 },
+    );
+    expect(second.fired).toBe(false);
+    expect(second.skipped).toBe('wake-floor');
+    expect(second.nextAllowedAt).toBe('2026-06-05T12:01:00.000Z');
+  });
+
+  it('force bypasses the wake floor but not the separate in-flight Queen guard', () => {
+    const now = Date.parse('2026-06-05T12:00:00Z');
+    expect(
+      decideHiveWakeAdmission({ subscriptions: [], lastWakeAt: now - 1_000 }, { now, floorSec: 60, force: true }),
+    ).toEqual({ fired: true, floorSec: 60 });
   });
 });
 
