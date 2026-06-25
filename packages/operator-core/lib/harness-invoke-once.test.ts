@@ -203,8 +203,14 @@ describe('applyRoleModel — per-role model override', () => {
   });
 
   it('maps <model>:<effort> to Codex config instead of unsupported --effort', () => {
-    vi.stubEnv('AGENT_MODELS', JSON.stringify({ overwatch: 'gpt-5.5:high', worker: 'gpt-5.5:max' }));
+    vi.stubEnv(
+      'AGENT_MODELS',
+      JSON.stringify({ overwatch: 'gpt-5.5:high', scout: 'chatgpt:5.5:high', worker: 'gpt-5.5:max' }),
+    );
     expect(applyRoleModel('codex exec --model gpt-5.4 -c model_reasoning_effort="low"', 'overwatch')).toBe(
+      'codex exec --model gpt-5.5 -c model_reasoning_effort="high"',
+    );
+    expect(applyRoleModel('codex exec --model gpt-5.4', 'scout')).toBe(
       'codex exec --model gpt-5.5 -c model_reasoning_effort="high"',
     );
     expect(applyRoleModel('codex exec -m gpt-5.4', 'worker')).toBe(
@@ -324,12 +330,12 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
   it('a Codex-shaped per-spawn model swaps the backend before appending the model', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const env = buildInvokeOnce(spec({ role: 'overwatch', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'gpt-5.5:high' } }));
+    const env = buildInvokeOnce(spec({ role: 'overwatch', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'chatgpt:5.5:high' } }));
     expect(env.env.AGENT_CMD).toBe('codex exec --model gpt-5.5 -c model_reasoning_effort="high"');
     expect(env.env.CLAUDE).toBe('codex exec --model gpt-5.5 -c model_reasoning_effort="high"');
     expect(env.env.AGENT_BACKEND).toBe('codex');
     expect(env.env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
-    expect(env.env.PAPERCUSP_SPAWN_MODEL).toBe('gpt-5.5:high');
+    expect(env.env.PAPERCUSP_SPAWN_MODEL).toBe('chatgpt:5.5:high');
   });
 
   it('resolveSpawnBackendModel keys the governor bucket to the override model', () => {
@@ -344,6 +350,7 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     expect(inferBackendFromModelSpec('gpt-5.5:xhigh')).toBe('codex');
     expect(inferBackendFromModelSpec('chatgpt:5.5')).toBe('codex');
     expect(resolveSpawnBackendModel('overwatch', 'gpt-5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+    expect(resolveSpawnBackendModel('overwatch', 'chatgpt:5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
   });
 });
 

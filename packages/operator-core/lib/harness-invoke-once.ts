@@ -68,6 +68,13 @@ export function inferBackendFromModelSpec(spec?: string): AgentBackend | undefin
   return undefined;
 }
 
+/** Map Papercusp's user-facing Codex aliases to the ids Codex CLI knows. */
+export function normalizeCodexCliModel(model: string): string {
+  const trimmed = model.trim();
+  const chatgpt = /^chatgpt:(.+)$/i.exec(trimmed);
+  return chatgpt ? `gpt-${chatgpt[1]}` : trimmed;
+}
+
 /**
  * Infer the `{ backend, model }` the spawned CLI will actually use for `role` — from the
  * resolved per-role agent command (`AGENT_CMD`/`CLAUDE` + the `AGENT_MODELS` override). Used
@@ -178,7 +185,8 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
     .replace(/\s--effort(?:=|\s+)\S+/g, '')
     .replace(/\s-c\s+model_reasoning_effort=(?:"[^"]*"|'[^']*'|\S+)/g, '')
     .trimEnd();
-  cmd = `${cmd} --model ${model}`;
+  const cliModel = isCodex ? normalizeCodexCliModel(model) : model;
+  cmd = `${cmd} --model ${cliModel}`;
   if (effort) {
     cmd = isCodex
       ? `${cmd} -c model_reasoning_effort="${codexEffort}"`
