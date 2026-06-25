@@ -1725,6 +1725,29 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       hiveHomeProjectionSlug ??
       (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return false;
+    // WI-797 — owner-log BOOTSTRAP at the IDENTITY stage (the keystone's missing half).
+    // A fresh joiner's hive_members is EMPTY, so the OWNER's own announce fails the
+    // gist-binding gate (`admit()` → 'binding_invalid' whenever the owner's live
+    // attestation gist is unresolvable in the fresh-join window) and is CONCLUSIVELY
+    // rejected in `onAnnounce` BEFORE `resolveSameHiveMember`'s owner-bootstrap (which
+    // only runs AFTER a positive identity decision) can ever rescue it — the bootstrap
+    // deadlock the A1 keystone (WI-787) was supposed to break but couldn't, because it
+    // sat downstream of the gate. Hoist the SAME owner-bootstrap admit to the identity
+    // stage: admit the ONE directory-verified owner device of the JOINED hive here,
+    // bypassing the gist gate. Identical cryptographic guarantee as the
+    // `resolveSameHiveMember` copy — the `(hive_pubkey → owner_device_pubkey)` binding
+    // read by `ownerDeviceForHive` comes from the offline hive-directory cache, which
+    // only records descriptors that passed `verifyHiveAnnounce` (Ed25519 sig + the
+    // owner_device↔hive_pubkey binding). Strictly scoped: ONLY when the frame's joined
+    // hive is `swarmBinding.hive_pubkey` AND `frame.device_pubkey` is that exact bound
+    // owner device. `sigValid` is already checked above; never widens to github_user_id
+    // alone or any other device (that would hole the WI-259 membership guard).
+    const joinedHivePubkey =
+      opts.swarmBinding?.kind === 'hive' ? opts.swarmBinding.hive_pubkey : null;
+    if (joinedHivePubkey) {
+      const ownerDevice = await ownerDeviceForHive(joinedHivePubkey).catch(() => null);
+      if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
+    }
     const memberDevices = await loadHiveMembers(myHiveHome, frame.github_user_id);
     return trustedHiveMemberDeviceAdmission({
       devicePubkey: frame.device_pubkey,

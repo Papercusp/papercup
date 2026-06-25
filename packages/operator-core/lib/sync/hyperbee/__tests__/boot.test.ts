@@ -473,6 +473,198 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     expect(handle.admitted.has(frame.log_core_key)).toBe(true);
   });
 
+  // WI-797 — the SECOND half of the keystone (the FIX above only worked when the gist gate
+  // PASSED). The owner-bootstrap used to run only AFTER the identity decider's gist gate, so
+  // when the owner's OWN announce fails that gate (verifyBinding → 'fail' / binding_invalid —
+  // the routine fresh-join window where the owner's live attestation gist is not yet resolvable)
+  // the frame was CONCLUSIVELY rejected before the bootstrap could rescue it, and content never
+  // crossed (witnessed live on the fed-a/fed-b rig: every owner HOME announce → binding_invalid).
+  // The fix hoists the owner-device bootstrap into the IDENTITY stage (admitsAsKnownHiveMember),
+  // so it admits BEFORE — and independently of — the gist gate.
+  it('FIX (WI-797): owner bootstrap admits even when the gist gate REJECTS (binding_invalid), via the signed owner-device binding', async () => {
+    const ownerUserId = 9611;
+    const joiner = makeAnnounceIdentityOverride('joiner-797', 9612, 'kc-wi797-joiner');
+    let ownerDevice = '';
+    const ownerDeviceForHive = vi.fn(async (_hivePubkey: string) => ownerDevice || null);
+    // The gist gate CONCLUSIVELY fails (gist unresolvable in the fresh-join window) — pre-fix
+    // this rejected the owner's own log before the bootstrap could run.
+    const verifyBinding = vi.fn(async () => 'fail' as const);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: verifyBinding,
+      loadHiveMembersOverride: async () => [], // empty roster — the WI-780/797 condition
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner-797',
+      attestation_gist_id: 'gist-owner-797',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'a7'.repeat(32),
+    });
+    ownerDevice = frame.device_pubkey; // the signed owner_device_pubkey bound to this hive
+
+    const decision = await handle.onAnnounce(frame);
+
+    // Admitted at the IDENTITY stage via the owner-device binding — the failing gist gate is
+    // bypassed for the bound owner device. Pre-fix this returned { admit:false, binding_invalid }.
+    expect(ownerDeviceForHive).toHaveBeenCalledWith(HIVE_PUBKEY);
+    expect(decision).toEqual({ admit: true });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(true);
+  });
+
+  // ADVERSARIAL (WI-797) — the gist-gate bypass is strictly scoped to the bound owner device.
+  // A NON-owner device whose gist gate ALSO fails must still be conclusively rejected
+  // (binding_invalid), never admitted — the hoist must not widen the gate to any failing frame.
+  it('ADVERSARIAL (WI-797): a non-owner device whose gist gate fails stays rejected binding_invalid', async () => {
+    const ownerUserId = 9711;
+    const joiner = makeAnnounceIdentityOverride('joiner-797-adv', 9712, 'kc-wi797-joiner-adv');
+    const boundOwnerDevice = Buffer.alloc(32, 0x4b).toString('base64');
+    const ownerDeviceForHive = vi.fn(async () => boundOwnerDevice);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId, // claims the owner's gh id …
+      github_login: 'spoof-797',
+      attestation_gist_id: 'gist-spoof-797',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'b7'.repeat(32),
+    });
+    // … but is NOT the bound owner device, so the bypass refuses it and the failing gist
+    // gate's conclusive verdict stands.
+    expect(frame.device_pubkey).not.toBe(boundOwnerDevice);
+
+    const decision = await handle.onAnnounce(frame);
+
+    expect(decision).toEqual({ admit: false, reason: 'binding_invalid' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+  });
+
+  // ADVERSARIAL (WI-797) — the owner-device bypass is gated on a kind:'hive' swarmBinding.
+  // A topic-kind binding (a bare /api/harness/join-link that never resolved the hive pubkey —
+  // exactly the dead-member mis-binding seen on the live rig) carries no hive_pubkey, so the
+  // bypass never fires: even the real owner device + a failing gist gate stays rejected.
+  it('ADVERSARIAL (WI-797): a topic-kind binding never triggers the owner bypass (kind:hive required)', async () => {
+    const ownerUserId = 9721;
+    const joiner = makeAnnounceIdentityOverride('joiner-797-topic', 9722, 'kc-wi797-joiner-topic');
+    let ownerDevice = '';
+    const ownerDeviceForHive = vi.fn(async () => ownerDevice || null);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: 'a'.repeat(64) }, // NOT a hive binding
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner-797-topic',
+      attestation_gist_id: 'gist-797-topic',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'c7'.repeat(32),
+    });
+    ownerDevice = frame.device_pubkey; // would match — but the binding is not kind:'hive'
+
+    const decision = await handle.onAnnounce(frame);
+
+    // kind:'topic' ⇒ no joined hive_pubkey ⇒ bypass never fires ⇒ not admitted.
+    expect(decision.admit).toBe(false);
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+  });
+
+  // ADVERSARIAL (WI-797) — a FORGED owner announce (bad sig) is refused at the sig check that
+  // PRECEDES the bypass (admitsAsKnownHiveMember line 1: `if (!sigValid …) return false`). A
+  // forger cannot produce a valid signature for the owner's pubkey without its private key, so
+  // even a frame claiming the exact owner device never bootstraps; ownerDeviceForHive is never
+  // consulted.
+  it('ADVERSARIAL (WI-797): a forged (bad-sig) owner announce is refused bad_sig, bypass never reached', async () => {
+    const ownerUserId = 9731;
+    const joiner = makeAnnounceIdentityOverride('joiner-797-forge', 9732, 'kc-wi797-joiner-forge');
+    let ownerDevice = '';
+    const ownerDeviceForHive = vi.fn(async () => ownerDevice || null);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: ownerUserId,
+      github_login: 'owner-797-forge',
+      attestation_gist_id: 'gist-797-forge',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'd7'.repeat(32),
+    });
+    ownerDevice = frame.device_pubkey; // the real owner device …
+    const forged: SignedAnnounce = { ...frame, sig: Buffer.from('tampered').toString('base64') };
+
+    const decision = await handle.onAnnounce(forged);
+
+    // … but the signature is forged ⇒ refused before the bypass; ownerDeviceForHive untouched.
+    expect(decision).toMatchObject({ admit: false, reason: 'bad_sig' });
+    expect(ownerDeviceForHive).not.toHaveBeenCalled();
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+  });
+
   // ADVERSARIAL 1 — the bootstrap admit is scoped to the EXACT bound device. A DIFFERENT
   // device (even one carrying the owner's github_user_id) must NOT ride the owner binding in;
   // with an empty roster it buffers (pending). Guards the WI-259 membership boundary against
