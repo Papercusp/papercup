@@ -145,25 +145,22 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     expect(JSON.stringify(r)).not.toContain('sk-ant-oat01-TESTtoken');
   });
 
-  it('completeCliLink registers a completed Codex auth.json as a codex file credential', async () => {
+  it('completeCliLink refuses to register Codex ChatGPT auth.json as a gateway bearer', async () => {
     h.state.mode = 'codex';
     const s = await startCliLink({ accountId: 'codex-acme', label: 'Codex Acme', provider: 'codex' });
     expect(s.ok).toBe(true);
     if (!s.ok) return;
     const r = await completeCliLink({ linkId: s.linkId }, { notify: () => {} });
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(h.writeFile).toHaveBeenCalledWith(
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toMatch(/ChatGPT auth\.json/);
+    expect(r.error).toMatch(/OpenAI API bearer/);
+    expect(h.writeFile).not.toHaveBeenCalledWith(
       '/tmp/test/deploy-credentials/codex-acme.codex-auth.json',
-      expect.stringContaining('codex-access-token'),
-      expect.objectContaining({ mode: 0o600 }),
+      expect.any(String),
+      expect.anything(),
     );
-    const regInput = h.registerAccount.mock.calls[0]?.[1] as { id: string; provider?: string; credentialRef: string };
-    expect(regInput).toMatchObject({
-      id: 'codex-acme',
-      provider: 'codex',
-      credentialRef: 'file:/tmp/test/deploy-credentials/codex-acme.codex-auth.json',
-    });
+    expect(h.registerAccount).not.toHaveBeenCalled();
     expect(JSON.stringify(r)).not.toContain('codex-access-token');
   });
 

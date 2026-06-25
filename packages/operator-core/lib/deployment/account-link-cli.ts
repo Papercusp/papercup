@@ -228,22 +228,11 @@ function providerLabel(provider: AccountProvider): string {
   return provider === 'codex' ? 'Codex' : 'Claude';
 }
 
-function extractCodexAccessToken(raw: string): string | null {
-  try {
-    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown } };
-    return typeof parsed?.tokens?.access_token === 'string' && parsed.tokens.access_token.trim()
-      ? parsed.tokens.access_token.trim()
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 async function completeCodexCliLink(
   linkId: string,
   l: PendingCliLink,
-  input: CompleteCliLinkInput,
-  deps: CompleteCliLinkDeps,
+  _input: CompleteCliLinkInput,
+  _deps: CompleteCliLinkDeps,
 ): Promise<CompleteCliLinkResult> {
   const sourceAuthPath = `${l.configDir}/auth.json`;
   let raw: string;
@@ -252,27 +241,14 @@ async function completeCodexCliLink(
   } catch {
     return { ok: false, error: 'Codex login is not complete yet — enter the device code in the browser, then complete the link' };
   }
-  const accessToken = extractCodexAccessToken(raw);
-  if (!accessToken) {
-    cleanup(linkId);
-    return { ok: false, error: 'Codex auth.json did not contain tokens.access_token — restart the add-account flow' };
-  }
-
-  try {
-    const credPath = papercuspPath('deploy-credentials', `${l.accountId}.codex-auth.json`);
-    await mkdir(dirname(credPath), { recursive: true });
-    await writeFile(credPath, raw, { mode: 0o600 });
-    await chmod(credPath, 0o600);
-    const credentialRef = `file:${credPath}`;
-    await updateAccountPool((p) => registerAccount(p, { id: l.accountId, provider: 'codex', credentialRef, label: l.label }, Date.now()), input.workspace);
-    const account = (await accountStatus(input.workspace)).find((a) => a.id === l.accountId) ?? null;
-    cleanup(linkId);
-    (deps.notify ?? defaultNotify)();
-    return { ok: true, account };
-  } catch (e) {
-    cleanup(linkId);
-    return { ok: false, error: `register failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
-  }
+  cleanup(linkId);
+  void raw; // The file proves login completed, but ChatGPT auth is not a gateway bearer.
+  return {
+    ok: false,
+    error:
+      'Codex device login creates a ChatGPT auth.json, which cannot be used by the OpenAI-compatible inference gateway. ' +
+      "Register a real OpenAI API bearer instead: accounts:register { provider:'codex', credentialRef:'env:OPENAI_API_KEY' } or token:<path>.",
+  };
 }
 
 /** Feed the pasted code into the held CLI when needed, capture the credential, write + register it. */
