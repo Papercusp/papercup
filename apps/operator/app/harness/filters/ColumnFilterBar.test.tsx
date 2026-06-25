@@ -35,7 +35,9 @@ vi.mock('../Checkbox', () => ({
   Checkbox: () => <input type="checkbox" readOnly />,
 }));
 
-import { ColumnFilterBar, headerText } from './ColumnFilterBar';
+import { ColumnFilterBar, FilterEditor, headerText } from './ColumnFilterBar';
+import { fireEvent } from '@testing-library/react';
+import type { ColumnFilterValue, EnumOption } from '@papercusp/grid-core';
 
 afterEach(() => {
   cleanup();
@@ -143,5 +145,71 @@ describe('<ColumnFilterBar />', () => {
       />,
     );
     expect(screen.queryByTestId('add-filter-select')).toBeNull();
+  });
+});
+
+// The enum-editor enhancement: a fixed-set column (e.g. plans) renders a
+// SELECTABLE checklist, and once the option set is long it also grows an
+// in-list search so the list stays usable.
+describe('FilterEditor — enum checklist + search', () => {
+  type PRow = { plan: string };
+  const planCol: FilterableColumn<PRow> = {
+    key: 'plan',
+    header: 'Plan',
+    filter: { type: 'enum', accessor: (r) => r.plan },
+  };
+
+  function enumController(options: EnumOption[], opts: { selected?: string[]; setValue?: (k: string, v: ColumnFilterValue) => void } = {}) {
+    return {
+      filterableColumns: [planCol],
+      valueFor: () => (opts.selected ?? undefined) as ColumnFilterValue | undefined,
+      setValue: opts.setValue ?? (() => {}),
+      remove: () => {},
+      optionsFor: () => options,
+    };
+  }
+
+  const opt = (value: string, count = 1): EnumOption => ({ value, count });
+
+  it('renders a selectable checklist of options (with counts) and no search for a short set', () => {
+    const options = [opt('alpha', 3), opt('beta', 1)];
+    render(<FilterEditor col={planCol} controller={enumController(options)} onClose={() => {}} />);
+    expect(screen.getByText('alpha')).toBeTruthy();
+    expect(screen.getByText('beta')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy(); // live count
+    expect(screen.getAllByRole('checkbox').length).toBe(2);
+    // Short list → no search box.
+    expect(screen.queryByLabelText(/search plan options/i)).toBeNull();
+  });
+
+  it('grows a search box once the option set is long, and narrows the visible options as you type', () => {
+    const options = Array.from({ length: 10 }, (_, i) => opt(`plan-${i}`));
+    render(<FilterEditor col={planCol} controller={enumController(options)} onClose={() => {}} />);
+    const search = screen.getByLabelText(/search plan options/i);
+    expect(search).toBeTruthy();
+    expect(screen.getAllByRole('checkbox').length).toBe(10);
+    fireEvent.change(search, { target: { value: 'plan-1' } });
+    // Only 'plan-1' matches (substring) — the rest are hidden.
+    expect(screen.getByText('plan-1')).toBeTruthy();
+    expect(screen.queryByText('plan-2')).toBeNull();
+    expect(screen.getAllByRole('checkbox').length).toBe(1);
+  });
+
+  it('shows "No matches" when the search excludes every option', () => {
+    const options = Array.from({ length: 10 }, (_, i) => opt(`plan-${i}`));
+    render(<FilterEditor col={planCol} controller={enumController(options)} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/search plan options/i), { target: { value: 'zzz' } });
+    expect(screen.getByText('No matches')).toBeTruthy();
+  });
+
+  it('offers a Clear-selection shortcut that empties the selection', () => {
+    const setValue = vi.fn();
+    const options = Array.from({ length: 10 }, (_, i) => opt(`plan-${i}`));
+    render(
+      <FilterEditor col={planCol} controller={enumController(options, { selected: ['plan-2', 'plan-5'], setValue })} onClose={() => {}} />,
+    );
+    expect(screen.getByText('2 selected')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /clear selection/i }));
+    expect(setValue).toHaveBeenCalledWith('plan', []);
   });
 });

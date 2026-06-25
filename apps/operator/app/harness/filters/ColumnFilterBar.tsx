@@ -146,7 +146,7 @@ function asBool(v: ColumnFilterValue | undefined): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined;
 }
 
-function FilterEditor<TRow>({
+export function FilterEditor<TRow>({
   col,
   controller,
   onClose,
@@ -157,6 +157,10 @@ function FilterEditor<TRow>({
    *  value is already saved live via setValue, so this just dismisses the box. */
   onClose: () => void;
 }) {
+  // Local, render-only search text for the enum checklist (long fixed-set
+  // columns). Declared unconditionally (hooks-first); the editor is remounted
+  // per column via `key`, so this resets when you switch columns.
+  const [enumQuery, setEnumQuery] = useState('');
   const spec = col.filter;
   if (!spec) return null;
   const value = controller.valueFor(col.key);
@@ -199,26 +203,66 @@ function FilterEditor<TRow>({
         : selected.filter((s) => s !== optValue);
       controller.setValue(col.key, next);
     };
+
+    // Long lists grow a search box (type-to-narrow over label/value). The
+    // checklist below it still shows the full SELECTABLE set — search only
+    // narrows what's visible, never what's selectable.
+    const showSearch = options.length > ENUM_SEARCH_THRESHOLD;
+    const q = enumQuery.trim().toLowerCase();
+    const visible = q
+      ? options.filter((o) => (o.label ?? o.value).toLowerCase().includes(q))
+      : options;
+    const colLabel = headerText(col as FilterableColumn<unknown>);
+
     return (
-      <div style={ENUM_LIST_STYLE}>
-        {options.length === 0 ? (
-          <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>No values</span>
-        ) : (
-          options.map((opt) => {
-            const on = selected.includes(opt.value);
-            return (
-              <label key={opt.value} style={ENUM_OPTION_STYLE}>
-                <Checkbox
-                  checked={on}
-                  onChange={(c) => toggle(opt.value, c)}
-                  ariaLabel={opt.label ?? opt.value}
-                />
-                <span>{opt.label ?? opt.value}</span>
-                <span style={ENUM_COUNT_STYLE}>{opt.count}</span>
-              </label>
-            );
-          })
-        )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {showSearch ? (
+          <input
+            type="text"
+            className="pc-advpanel__input"
+            autoFocus
+            value={enumQuery}
+            onChange={(e) => setEnumQuery(e.target.value)}
+            placeholder={`Search ${colLabel}…`}
+            aria-label={`Search ${colLabel} options`}
+            style={ENUM_SEARCH_INPUT_STYLE}
+          />
+        ) : null}
+        {showSearch && selected.length > 0 ? (
+          <div style={ENUM_TOOLBAR_STYLE}>
+            <span>{selected.length} selected</span>
+            <button
+              type="button"
+              className="pc-advpanel__chip"
+              style={{ marginLeft: 'auto', fontSize: 10.5 }}
+              onClick={() => controller.setValue(col.key, [])}
+            >
+              Clear selection
+            </button>
+          </div>
+        ) : null}
+        <div style={ENUM_LIST_STYLE}>
+          {options.length === 0 ? (
+            <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>No values</span>
+          ) : visible.length === 0 ? (
+            <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>No matches</span>
+          ) : (
+            visible.map((opt) => {
+              const on = selected.includes(opt.value);
+              return (
+                <label key={opt.value} style={ENUM_OPTION_STYLE}>
+                  <Checkbox
+                    checked={on}
+                    onChange={(c) => toggle(opt.value, c)}
+                    ariaLabel={opt.label ?? opt.value}
+                  />
+                  <span>{opt.label ?? opt.value}</span>
+                  <span style={ENUM_COUNT_STYLE}>{opt.count}</span>
+                </label>
+              );
+            })
+          )}
+        </div>
       </div>
     );
   }
@@ -400,7 +444,7 @@ export function ColumnFilterBar<TRow>({
                 <X size={12} />
               </button>
             </div>
-            <FilterEditor col={editingCol} controller={controller} onClose={() => setEditingKey(null)} />
+            <FilterEditor key={editingCol.key} col={editingCol} controller={controller} onClose={() => setEditingKey(null)} />
           </>
         ) : null}
       </Popover>
