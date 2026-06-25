@@ -265,6 +265,8 @@ export interface PlanDecision {
 
 export interface PlanGetResult {
   slug: string;
+  /** Resolved hive/home harness that owns this plan row. */
+  harness?: string | null;
   archived: boolean;
   legacy: boolean;
   frontmatter?: Record<string, unknown>;
@@ -374,7 +376,17 @@ export function fetchPlanList(params?: {
   return getJson<{ plans: PlanListRow[] }>('list', params, signal);
 }
 
-export function fetchPlan(slug: string, signal?: AbortSignal) {
+function isAbortSignalLike(value: unknown): value is AbortSignal {
+  return !!value && typeof value === 'object' && 'aborted' in value;
+}
+
+export function fetchPlan(
+  slug: string,
+  harnessSlugOrSignal?: string | null | AbortSignal,
+  signal?: AbortSignal,
+) {
+  const harnessSlug = typeof harnessSlugOrSignal === 'string' ? harnessSlugOrSignal : null;
+  const actualSignal = isAbortSignalLike(harnessSlugOrSignal) ? harnessSlugOrSignal : signal;
   // mode:'full' is REQUIRED here. `plans:get` defaults to mode:'sections',
   // which returns frontmatter + items + a section INDEX but NOT the prose/raw
   // markdown body (the default protects agent payloads from a 90KB blob —
@@ -383,7 +395,11 @@ export function fetchPlan(slug: string, signal?: AbortSignal) {
   // `data.raw`/`data.prose` to render/round-trip the whole plan, so without
   // mode:'full' the editor renders BLANK. These are user-driven, one-plan-at-
   // a-time fetches, so the full body is the right payload.
-  return getJson<PlanGetResult>('get', { slug, mode: 'full' }, signal);
+  return getJson<PlanGetResult>(
+    'get',
+    { slug, mode: 'full', ...(harnessSlug ? { harness: harnessSlug } : {}) },
+    actualSignal,
+  );
 }
 
 export function fetchPlanItems(params?: {
@@ -831,15 +847,16 @@ export function usePlanViewerEmail(): string | null {
  */
 export function usePlan(
   slug: string | null,
-  opts?: { live?: boolean },
+  opts?: { live?: boolean; harnessSlug?: string | null },
 ): AsyncResult<PlanGetResult | null> {
   const live = opts?.live ?? false;
+  const harnessSlug = opts?.harnessSlug ?? null;
 
   // Live read-only path (PlanItemPreview). Hooks must run unconditionally, so
   // both hooks are always called; `enabled` gates which one actually fetches.
   const liveArgs = useMemo<Record<string, unknown>>(
-    () => (slug ? { slug, mode: 'full' } : {}),
-    [slug],
+    () => (slug ? { slug, mode: 'full', ...(harnessSlug ? { harness: harnessSlug } : {}) } : {}),
+    [slug, harnessSlug],
   );
   const liveQuery = useSyncQuery<PlanGetResult>({
     queryName: 'plans.get',
@@ -850,8 +867,8 @@ export function usePlan(
   // Guarded one-shot path (PlanDetail editor). Skip the fetch entirely when
   // the live path is in force so we don't double-request the same plan.
   const oneShot = useAsyncJson<PlanGetResult | null>(
-    (signal) => (!live && slug ? fetchPlan(slug, signal) : Promise.resolve(null)),
-    [slug, live],
+    (signal) => (!live && slug ? fetchPlan(slug, harnessSlug, signal) : Promise.resolve(null)),
+    [slug, live, harnessSlug],
   );
 
   if (live) {
@@ -1198,7 +1215,7 @@ export async function rejectDraftPlan(
   slug: string,
   harnessSlug?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const plan = await fetchPlan(slug);
+  const plan = await fetchPlan(slug, harnessSlug);
   if ('error' in plan && plan.error) return { ok: false, error: plan.error };
   const raw = plan.raw;
   if (!raw) return { ok: false, error: 'no_content' };
@@ -1214,8 +1231,8 @@ export async function rejectDraftPlan(
     expectedVersion: plan.version,
     expectedHash: plan.contentHash,
     content: updated,
-    ...(harnessSlug && { harness_slug: harnessSlug }),
-  } as SetContentArgs & { harness_slug?: string });
+    ...(harnessSlug && { harness: harnessSlug, harness_slug: harnessSlug }),
+  } as SetContentArgs & { harness?: string; harness_slug?: string });
   if ('ok' in res && res.ok) return { ok: true };
   return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
 }
@@ -1266,14 +1283,17 @@ export function demotePlanToDraft(slug: string, harnessSlug?: string) {
   return setPlanStatusVerb(slug, 'draft', { harnessSlug });
 }
 
-export function startPlan(slug: string) {
-  return postJson<{ slug: string; harnessSlug: string; status: string }>('start', { slug });
+export function startPlan(slug: string, harnessSlug?: string | null) {
+  return postJson<{ slug: string; harnessSlug: string; status: string }>('start', {
+    slug,
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
 }
 
-export function pausePlan(slug: string) {
+export function pausePlan(slug: string, harnessSlug?: string | null) {
   return postJson<{ slug: string; harnessSlug: string; status?: string; notStarted?: boolean }>(
     'pause',
-    { slug },
+    { slug, ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}) },
   );
 }
 

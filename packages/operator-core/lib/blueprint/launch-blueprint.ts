@@ -240,7 +240,7 @@ export interface FireLaunchInput {
  * idempotency key (the durable workflow id) when the launch went durable.
  */
 export interface LaunchSpawnInfo {
-  /** spawned_agents.spawn_id (fallback path only — the DBOS path has no spawn row). */
+  /** spawned_agents.spawn_id when the fire path records one. Durable fires use `durable-spawn:<runId>`. */
   spawnId: string | null;
   /** The durable correlation id for this fire (see above). */
   runId: string | null;
@@ -339,9 +339,23 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
     try {
       const { durableSpawnFire } = await import('../dbos/durable-spawn');
       const idempotencyKey = `launch:${installSlug}:${blueprintId}:${role}:${Date.now()}`;
-      if (await durableSpawnFire({ url, body, idempotencyKey, label: `${installSlug}/${role}` })) {
+      const dispatch = (bodyExtra?.improvementDispatch ?? undefined) as { itemId?: string } | undefined;
+      if (await durableSpawnFire({
+        url,
+        body,
+        idempotencyKey,
+        label: `${installSlug}/${role}`,
+        spawnRecord: {
+          workspaceId,
+          harnessSlug: installSlug,
+          childRole: role,
+          parentRole: parent?.role ?? 'operator',
+          parentSpawnId: parent?.spawnId ?? null,
+          itemId: dispatch?.itemId ?? null,
+        },
+      })) {
         // The workflow id IS the durable correlation for this fire.
-        return { spawnId: null, runId: idempotencyKey, durable: true };
+        return { spawnId: `durable-spawn:${idempotencyKey}`, runId: idempotencyKey, durable: true };
       }
     } catch (e) {
       console.warn(

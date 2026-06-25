@@ -54,6 +54,8 @@ import {
 
 interface Props {
   slug: string;
+  /** Resolved hive/home harness that owns this plan row. */
+  harnessSlug?: string | null;
   /** Existing items — used to pre-populate phase choices and ref typeahead. */
   items: PlanItem[] | undefined;
   decisions: PlanDecision[] | undefined;
@@ -88,6 +90,7 @@ type Dialog = null | 'set-now' | 'add-decision' | 'add-item' | 'promote' | 'reje
 
 export default function PlanActions({
   slug,
+  harnessSlug,
   items,
   decisions,
   currentNow,
@@ -125,7 +128,7 @@ export default function PlanActions({
     setApprovePending(true);
     onOptimisticStatus?.('ready');
     try {
-      const r = await approvePlan(slug);
+      const r = await approvePlan(slug, harnessSlug ?? undefined);
       if (r.ok) {
         toast.success('Plan approved — ready to start.');
       } else {
@@ -147,7 +150,7 @@ export default function PlanActions({
     setDemotePending(true);
     onOptimisticStatus?.('draft');
     try {
-      const r = await demotePlanToDraft(slug);
+      const r = await demotePlanToDraft(slug, harnessSlug ?? undefined);
       if (r.ok) {
         toast.success('Plan demoted to draft.');
       } else {
@@ -168,11 +171,11 @@ export default function PlanActions({
     setStartPending(true);
     try {
       if (isStarted) {
-        await pausePlan(slug);
+        await pausePlan(slug, harnessSlug);
         toast.success(`Plan paused — orchestrator will finish in-flight work then stop.`);
         onStartStatusChange?.('paused');
       } else {
-        await startPlan(slug);
+        await startPlan(slug, harnessSlug);
         toast.success(`Plan started — orchestrator will pick up features from this plan.`);
         onStartStatusChange?.('started');
       }
@@ -375,6 +378,7 @@ export default function PlanActions({
         open={open === 'reject'}
         onClose={() => setOpen(null)}
         slug={slug}
+        harnessSlug={harnessSlug}
         planTitle={planTitle ?? null}
         onSuccess={() => {
           setOpen(null);
@@ -382,7 +386,7 @@ export default function PlanActions({
           // superseding the frontmatter alone leaves the 'started' row,
           // and the orchestrator gates on that row, not the status.
           if (isStarted) {
-            pausePlan(slug).catch(() => {});
+            pausePlan(slug, harnessSlug).catch(() => {});
             onStartStatusChange?.('paused');
           }
           toast.success(`Rejected "${planTitle ?? slug}".`, { duration: 4000 });
@@ -964,12 +968,14 @@ function RejectDialog({
   open,
   onClose,
   slug,
+  harnessSlug,
   planTitle,
   onSuccess,
 }: {
   open: boolean;
   onClose: () => void;
   slug: string;
+  harnessSlug?: string | null;
   planTitle: string | null;
   onSuccess: () => void;
 }) {
@@ -983,7 +989,7 @@ function RejectDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const r = await rejectDraftPlan(slug);
+      const r = await rejectDraftPlan(slug, harnessSlug ?? undefined);
       if (!r.ok) {
         setError(r.error ?? 'reject failed');
       } else {
