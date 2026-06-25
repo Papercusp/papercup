@@ -17,7 +17,7 @@ vi.mock('./embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin/resolved',
 }));
 
-import { appendForcedSessionId, applyBackendSwap, applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, type InvokeOnceSpec } from './harness-invoke-once';
+import { appendForcedSessionId, applyBackendSwap, applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, roleBackendOverride, type InvokeOnceSpec } from './harness-invoke-once';
 
 // Fixture role is deliberately one with NO committed ROLE_MODEL_DEFAULTS entry
 // (P-012 gave worker/validator/documenter/bee/scanner/judge committed tiers,
@@ -342,6 +342,21 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const env = buildInvokeOnce(spec({ role: 'merge-resolver' })).env;
     expect(env.AGENT_BACKEND).toBe('claude-code');
+  });
+
+  it('role backend overrides swap the command when no per-spawn backend is set', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
+    vi.stubEnv('AGENT_BACKEND', 'claude-code');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ queen: 'codex', 'release-manager': 'omp' }));
+
+    expect(roleBackendOverride('queen')).toBe('codex');
+    const env = buildInvokeOnce(spec({ role: 'queen' })).env;
+    expect(env.AGENT_CMD).toBe('codex exec --model sonnet');
+    expect(env.CLAUDE).toBe('codex exec --model sonnet');
+    expect(env.AGENT_BACKEND).toBe('codex');
+    expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
+    expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'omp', model: 'opus' });
   });
 
   it('resolveSpawnBackendModel follows the backend override for the governor bucket + session-id decision', () => {

@@ -11,6 +11,7 @@ import {
   VNC_TICKET_TTL_MS,
   _setFrameVncDepsForTests,
   _resetFrameVncForTests,
+  type VncBridgeWs,
 } from './frame-vnc';
 
 const FRAME: Frame = {
@@ -40,14 +41,14 @@ function fakeChild() {
 }
 
 function fakeWs() {
-  const ws = new EventEmitter() as EventEmitter & {
+  const ws = new EventEmitter() as EventEmitter & VncBridgeWs & {
     sent: Uint8Array[];
     send: (d: Uint8Array) => void;
-    close: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn> & VncBridgeWs['close'];
   };
   ws.sent = [];
   ws.send = (d) => ws.sent.push(d);
-  ws.close = vi.fn();
+  ws.close = vi.fn() as ReturnType<typeof vi.fn> & VncBridgeWs['close'];
   return ws;
 }
 

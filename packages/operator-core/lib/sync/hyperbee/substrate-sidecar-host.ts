@@ -29,6 +29,8 @@
  * sidecar` flag is ON; the OFF path never spawns the sidecar.
  */
 
+/// <reference path="./holepunch.d.ts" />
+
 import { mkdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';

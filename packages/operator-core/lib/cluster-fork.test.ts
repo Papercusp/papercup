@@ -36,8 +36,17 @@ class MockCluster implements ClusterLike {
     this.workers.push(w);
     return w;
   }
-  on(_e: 'exit', cb: (w: ClusterWorkerLike, code: number, signal: string | null) => void): void {
-    this.exitCbs.push(cb);
+  on(event: 'exit', cb: (w: ClusterWorkerLike, code: number, signal: string | null) => void): void;
+  on(event: 'message', cb: (w: ClusterWorkerLike, message: unknown) => void): void;
+  on(
+    event: 'exit' | 'message',
+    cb:
+      | ((w: ClusterWorkerLike, code: number, signal: string | null) => void)
+      | ((w: ClusterWorkerLike, message: unknown) => void),
+  ): void {
+    if (event === 'exit') {
+      this.exitCbs.push(cb as (w: ClusterWorkerLike, code: number, signal: string | null) => void);
+    }
   }
   emitExit(w: ClusterWorkerLike, code = 1, signal: string | null = null): void {
     for (const cb of this.exitCbs) cb(w, code, signal);

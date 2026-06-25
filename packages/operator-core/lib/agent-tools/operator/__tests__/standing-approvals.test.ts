@@ -26,7 +26,7 @@ afterEach(() => {
   vi.doUnmock('../../../operator-preferences');
 });
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
+function parsePayload(result: { content: [{ text: string }, ...Array<{ text: string }>] }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
 }
 
@@ -65,7 +65,7 @@ describe('operator:standing_approvals_list', () => {
 
 describe('operator:standing_approvals_decide', () => {
   it('approve appends a [STANDING-APPROVE] entry to preferences', async () => {
-    const appendPreferenceEntry = vi.fn(async () => undefined);
+    const appendPreferenceEntry = vi.fn(async (_entry: string) => undefined);
     const refreshCandidates = vi.fn(async () => []);
     vi.doMock('../../../operator-preferences', () => ({ appendPreferenceEntry }));
     vi.doMock('../../../operator-standing-candidates', () => ({

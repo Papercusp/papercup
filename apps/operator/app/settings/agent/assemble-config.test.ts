@@ -32,6 +32,7 @@ function input(partial: Partial<AssembleInput> = {}): AssembleInput {
     backend: 'omp',
     cmd: '',
     modelsJson: '',
+    roleBackends: {},
     surfaceBackends: { ...emptySurfaceBackends },
     surfaceModels: { ...emptySurfaceModels },
     tierRows: DEFAULT_MODEL_TIERS.map(tierToRow),
@@ -97,6 +98,13 @@ describe('assembleAgentConfig — happy path', () => {
     const res = assembleAgentConfig(input({ tierCeilings: { bee: 'deep' } }));
     expect(res.persistable.tiers).toEqual([]);
     expect(res.persistable.tierCeilings).toEqual({ bee: 'deep' });
+  });
+
+  it('persists per-role backend overrides and drops inherit choices', () => {
+    const res = assembleAgentConfig(input({
+      roleBackends: { queen: 'codex', overwatch: 'inherit', 'release-manager': 'omp' },
+    }));
+    expect(res.persistable.roleBackends).toEqual({ queen: 'codex', 'release-manager': 'omp' });
   });
 
   it('skips fully blank tier rows (a just-added row) without flagging', () => {

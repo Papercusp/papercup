@@ -61,6 +61,7 @@ vi.mock('../../plugin-host-runtime', () => ({
 vi.mock('../../events/pipeline-events', () => ({
   emitPipelineEvent: vi.fn(),
 }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
   return {
@@ -186,7 +187,7 @@ describe('POST /harness/:slug/launch (P-031)', () => {
 describe('POST /harness/:slug/invoke (P-031)', () => {
   it('routes through the spawnInvokeOnce chokepoint → spawn() with buildInvokeOnce argv + returns the captured output', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
     expect(spawnMock).toHaveBeenCalledTimes(1);
     // The route now funnels through spawnInvokeOnce → runChild (unify-agent-spawn-chokepoint
     // P-008), which spawns the buildInvokeOnce argv `detached: true` (its own process group,
@@ -288,16 +289,25 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(arg?.extraEnv).toMatchObject({ QUEEN_BRIEF: 'timer' });
   });
 
-  it('fails closed when a tracked hive launch resolves to a backend without forced native session ids', async () => {
+  it('tracks Codex hive launches through durable CODEX_HOME instead of forced native session ids', async () => {
     resolveSpawnBackendModel.mockReturnValue({ backend: 'codex', model: 'gpt-5' });
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen&bpkind=hive', post({}));
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body).toMatchObject({ ok: false });
-    expect(body.error).toMatch(/forced-native-session-id|codex/i);
-    expect(recordAdvSession).not.toHaveBeenCalled();
-    expect(spawnMock).not.toHaveBeenCalled();
-    expect(buildInvokeOnce).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(recordAdvSession).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'codex',
+      role: 'queen',
+      cwd: '/proj',
+      label: 'hive · papercup/queen',
+      sessionId: null,
+      coordOwnerId: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
+    }));
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({
+      PAPERCUSP_CODEX_SESSION_KEY: '77',
+      PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
+    });
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('PAPERCUSP_NATIVE_SESSION_ID');
+    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0);
   });
 
   it('tracks hive launches when the resolved backend supports forced native session ids', async () => {

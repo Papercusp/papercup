@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useDebouncedSave } from '../../harness/useDebouncedSave';
-import { DraftInput, DraftTextarea, FormField } from '@/lib/forms';
+import { DraftInput, FormField } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
 import {
@@ -40,7 +40,6 @@ import {
 import {
   assembleAgentConfig,
   modelSpecError,
-  modelsJsonError,
   tierToRow,
   type GlobalBackend,
   type LastValidSections,
@@ -58,6 +57,7 @@ interface AgentConfig {
   backend: GlobalBackend;
   cmd: string;
   models: Record<string, string>;
+  roleBackends?: Partial<Record<string, AgentBackend>>;
   backends?: Partial<Record<SurfaceKey, AgentBackend>>;
   surfaceModels?: Partial<Record<SurfaceKey, string>>;
   tiers?: ModelTier[];
@@ -119,11 +119,68 @@ interface TestResult {
   error: string | null;
 }
 
-const ROLE_HINTS = ['operator', 'orchestrator', 'scoper', 'worker', 'validator', 'reviewer', 'debugger', 'curator', 'documenter', 'architect', 'planner'];
+const ROLE_ROUTING_ROWS = [
+  {
+    label: 'Queen',
+    role: 'queen',
+    description: 'Places work, prioritizes the fleet, and decides which agents to launch next.',
+  },
+  {
+    label: 'Overwatch',
+    role: 'overwatch',
+    description: 'Supervises live system health, nudges running agents, and records observations.',
+  },
+  {
+    label: 'scout',
+    role: 'scanner',
+    description: 'Runs negative-space scans for missing work, latent issues, and improvement opportunities.',
+  },
+  {
+    label: 'doc-steward',
+    role: 'doc-steward',
+    description: 'Repairs drifted docs after code changes so documentation matches the current implementation.',
+  },
+  {
+    label: 'merge-resolution',
+    role: 'merge-resolver',
+    description: 'Resolves git-sync merge conflicts, commits the clean resolution, and leaves push to git-sync.',
+  },
+  {
+    label: 'content-fix',
+    role: 'content-fixer',
+    description: 'Fixes quarantined files that fail content guards, such as broken MDX or smart quotes in code.',
+  },
+  {
+    label: 'release-fix',
+    role: 'release-fixer',
+    description: 'Diagnoses red green-checkpoint gates, reproduces failures, and fixes regressions or proven flakes.',
+  },
+  {
+    label: 'deploy',
+    role: 'release-manager',
+    description: 'Reviews deploy plans, makes the go/no-go call, runs deploy mechanics, and verifies rollback health.',
+  },
+] as const;
 
-/** Roles offered a tier-ceiling row — the spawn-heavy fleet roles where the
-    queen's per-task tier pick applies (others can be added via the JSON). */
-const CEILING_ROLES = ['bee', 'worker', 'validator', 'scoper', 'reviewer', 'scanner', 'judge'];
+const ROLE_ROUTING_ROLES = ROLE_ROUTING_ROWS.map((row) => row.role);
+
+function filteredRoleModels(models: Record<string, string> | undefined): Record<string, string> {
+  const allowed = new Set<string>(ROLE_ROUTING_ROLES);
+  return Object.fromEntries(
+    Object.entries(models ?? {}).filter(([role, model]) => allowed.has(role) && typeof model === 'string' && model.trim()),
+  );
+}
+
+function roleModelsJson(models: Record<string, string>): string {
+  const entries = ROLE_ROUTING_ROWS
+    .map((row) => [row.role, models[row.role]?.trim()] as const)
+    .filter(([, model]) => model);
+  return entries.length > 0 ? JSON.stringify(Object.fromEntries(entries), null, 2) : '';
+}
+
+function initialRoleBackends(): Record<string, SurfaceChoice> {
+  return Object.fromEntries(ROLE_ROUTING_ROWS.map((row) => [row.role, 'inherit'])) as Record<string, SurfaceChoice>;
+}
 
 export default function AgentSettingsPage() {
   const t = useLexicon();
@@ -133,7 +190,8 @@ export default function AgentSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [backend, setBackend] = useState<GlobalBackend>('omp');
   const [cmd, setCmd] = useState('');
-  const [modelsJson, setModelsJson] = useState('');
+  const [roleModels, setRoleModels] = useState<Record<string, string>>({});
+  const [roleBackends, setRoleBackends] = useState<Record<string, SurfaceChoice>>(initialRoleBackends);
   // Per-surface backend overrides. 'inherit' means "omit from the map" (use
   // the global backend above). Mid-edit draft, so plain useState rather than
   // nuqs — it's wiped on reload from the fetched config like the other fields.
@@ -177,20 +235,27 @@ export default function AgentSettingsPage() {
       setSnapshot(d);
       setBackend(d.config.backend);
       setCmd(d.config.cmd);
+      const nextRoleModels = filteredRoleModels(d.config.models);
       lastValidRef.current = {
-        models: d.config.models ?? {},
-        surfaceModels: d.config.surfaceModels ?? {},
+        models: nextRoleModels,
+        surfaceModels: {},
         tiers: d.config.tiers ?? [],
         tierCeilings: d.config.tierCeilings ?? {},
       };
-      setModelsJson(Object.keys(d.config.models).length > 0 ? JSON.stringify(d.config.models, null, 2) : '');
-      const fetched = d.config.backends ?? {};
+      setRoleModels(nextRoleModels);
+      const fetchedRoleBackends = d.config.roleBackends ?? {};
+      setRoleBackends({
+        ...initialRoleBackends(),
+        ...Object.fromEntries(
+          ROLE_ROUTING_ROWS
+            .map((row) => [row.role, fetchedRoleBackends[row.role] ?? 'inherit'] as const),
+        ),
+      });
       setSurfaceBackends(
-        Object.fromEntries(SURFACE_KEYS.map((k) => [k, fetched[k] ?? 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
+        Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
       );
-      const fetchedModels = d.config.surfaceModels ?? {};
       setSurfaceModels(
-        Object.fromEntries(SURFACE_KEYS.map((k) => [k, fetchedModels[k] ?? ''])) as Record<SurfaceKey, string>,
+        Object.fromEntries(SURFACE_KEYS.map((k) => [k, ''])) as Record<SurfaceKey, string>,
       );
       const fetchedTiers = d.config.tiers ?? [];
       setTiersCustomized(fetchedTiers.length > 0);
@@ -209,11 +274,13 @@ export default function AgentSettingsPage() {
   // All inputs here are COMMITTED values (DraftInput gates keystrokes behind
   // blur + validation). Cross-field problems hold their section at the last
   // saved value — flagged inline, never silently dropped.
+  const modelsJson = useMemo(() => roleModelsJson(roleModels), [roleModels]);
   const { persistable, problems } = useMemo(() => {
     const result = assembleAgentConfig({
       backend,
       cmd,
       modelsJson,
+      roleBackends,
       surfaceBackends,
       surfaceModels,
       tierRows,
@@ -222,7 +289,7 @@ export default function AgentSettingsPage() {
     });
     lastValidRef.current = result.lastValid;
     return result;
-  }, [backend, cmd, modelsJson, surfaceBackends, surfaceModels, tierRows, tierCeilings]);
+  }, [backend, cmd, modelsJson, roleBackends, surfaceBackends, surfaceModels, tierRows, tierCeilings]);
 
   const hydrated = !loading && snapshot != null;
   const { saving, lastSavedAt } = useDebouncedSave(
@@ -464,21 +531,6 @@ export default function AgentSettingsPage() {
         </FormField>
 
         <FormField
-          label="Per-role model overrides (JSON)"
-          description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Use the explicit provider/model form (e.g. "anthropic/claude-opus-4-7"). "operator" sets the chat brain — its default is pinned to Anthropic because the large converse prompt is unreliable on some providers; override at your own risk. Per-${t('pot', { lower: true })} .papercusp/config.json values still win.`}
-        >
-          <DraftTextarea
-            rows={6}
-            placeholder='{\n  "worker": "haiku",\n  "reviewer": "opus"\n}'
-            className="pc-input"
-            style={{ fontFamily: 'monospace', fontSize: 12 }}
-            value={modelsJson}
-            onCommit={setModelsJson}
-            validate={modelsJsonError}
-          />
-        </FormField>
-
-        <FormField
           label="Model tiers (weakest → strongest)"
           description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the queen — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. Leave as-is to track the built-in menu."
         >
@@ -613,16 +665,79 @@ export default function AgentSettingsPage() {
         </FormField>
 
         <FormField
-          label="Per-role tier ceilings"
-          description="The strongest tier a per-task pick may run that role at — the budget envelope. Empty = the strongest tier is allowed. The floor is not configured: it derives from the role's default model above."
+          label="Role backend, model, and tier ceiling"
+          description="One row per operational AI role. Backend chooses the CLI for that role, model pins its default model, and tier ceiling caps the strongest tier the Queen may choose for that role. Empty model and no ceiling inherit the built-in default."
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {CEILING_ROLES.map((role) => (
-              <div key={role} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-                <code style={{ minWidth: 110 }}>{role}</code>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '150px minmax(220px, 1fr) 150px 170px 150px',
+                gap: 8,
+                alignItems: 'center',
+                fontSize: 11,
+                color: 'var(--fg-mute)',
+              }}
+            >
+              <span>Role</span>
+              <span>Description</span>
+              <span>Backend</span>
+              <span>Model</span>
+              <span>Tier ceiling</span>
+            </div>
+            {ROLE_ROUTING_ROWS.map((row) => (
+              <div
+                key={row.role}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '150px minmax(220px, 1fr) 150px 170px 150px',
+                  gap: 8,
+                  alignItems: 'flex-start',
+                  fontSize: 13,
+                }}
+              >
+                <div>
+                  <code>{row.label}</code>
+                  {row.label !== row.role && (
+                    <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
+                      role: <code>{row.role}</code>
+                    </div>
+                  )}
+                </div>
+                <div style={{ color: 'var(--fg-mute)', lineHeight: 1.35 }}>{row.description}</div>
                 <Select
-                  value={tierCeilings[role] ?? 'none'}
-                  ariaLabel={`Tier ceiling for ${role}`}
+                  value={roleBackends[row.role] ?? 'inherit'}
+                  ariaLabel={`Backend for ${row.label}`}
+                  triggerStyle={{ fontSize: 13 }}
+                  options={BACKEND_CHOICE_OPTIONS}
+                  onChange={(v) =>
+                    setRoleBackends((prev) => ({
+                      ...prev,
+                      [row.role]: v as SurfaceChoice,
+                    }))
+                  }
+                />
+                <DraftInput
+                  className="pc-input"
+                  wrapperStyle={{ width: 170 }}
+                  style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
+                  placeholder="model (optional)"
+                  aria-label={`Model for ${row.label}`}
+                  value={roleModels[row.role] ?? ''}
+                  validate={modelSpecError}
+                  onCommit={(m) =>
+                    setRoleModels((prev) => {
+                      const next = { ...prev };
+                      const value = m.trim();
+                      if (value) next[row.role] = value;
+                      else delete next[row.role];
+                      return next;
+                    })
+                  }
+                />
+                <Select
+                  value={tierCeilings[row.role] ?? 'none'}
+                  ariaLabel={`Tier ceiling for ${row.label}`}
                   triggerStyle={{ fontSize: 13 }}
                   options={[
                     { value: 'none', label: 'No ceiling' },
@@ -631,53 +746,10 @@ export default function AgentSettingsPage() {
                   onChange={(v) =>
                     setTierCeilings((prev) => {
                       const next = { ...prev };
-                      if (v && v !== 'none') next[role] = v;
-                      else delete next[role];
+                      if (v && v !== 'none') next[row.role] = v;
+                      else delete next[row.role];
                       return next;
                     })
-                  }
-                />
-              </div>
-            ))}
-          </div>
-        </FormField>
-
-        <FormField
-          label="Per-surface backend + model"
-          description="Override which CLI runs each in-app brain, and optionally pin a model for that surface. 'Inherit global' uses the backend above; an empty model uses the backend default."
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {SURFACE_KEYS.map((surface) => (
-              <div
-                key={surface}
-                style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}
-              >
-                <code style={{ minWidth: 110, paddingTop: 4 }}>{surface}</code>
-                <Select
-                  value={surfaceBackends[surface]}
-                  ariaLabel={`Backend for ${surface}`}
-                  triggerStyle={{ fontSize: 13 }}
-                  options={BACKEND_CHOICE_OPTIONS}
-                  onChange={(v) =>
-                    setSurfaceBackends((prev) => ({
-                      ...prev,
-                      [surface]: v as SurfaceChoice,
-                    }))
-                  }
-                />
-                <DraftInput
-                  className="pc-input"
-                  wrapperStyle={{ width: 160 }}
-                  style={{ fontSize: 13, padding: '2px 6px' }}
-                  placeholder="model (optional)"
-                  aria-label={`Model for ${surface}`}
-                  value={surfaceModels[surface]}
-                  validate={modelSpecError}
-                  onCommit={(m) =>
-                    setSurfaceModels((prev) => ({
-                      ...prev,
-                      [surface]: m,
-                    }))
                   }
                 />
               </div>

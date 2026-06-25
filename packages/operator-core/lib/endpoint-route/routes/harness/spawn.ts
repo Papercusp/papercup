@@ -269,14 +269,16 @@ const invoke = defineTool({
     // adv_sessions coordOwnerId AND the child's PAPERCUSP_SPAWN_ID (→ the
     // signed MCP URL's `client=` param, the Queen's coord identity). A bee's
     // coord:send {wake:true} addressed to that id finds this row and
-    // wake-executor resumes `claude --resume <nativeSessionId>`.
+    // wake-executor resumes it. Claude resumes by native session id; Codex has
+    // no forced native id, so it resumes through the durable CODEX_HOME keyed by
+    // the adv_sessions row id (nativeSessionHandleForAdvSession).
     let nativeSessionId: string | null = null;
     let hiveSpawnId: string | null = null;
     let advSessionRowId: number | null = null;
     if (isHiveLaunch || isOverwatchLaunch) {
       const trackedInteractiveBackend = interactiveBackendFromSpawnBackend(routeBackend);
       const trackedGuard = backendFeatureGuard(trackedInteractiveBackend, 'forced-native-session-id');
-      if (!trackedGuard.supported) {
+      if (!trackedGuard.supported && trackedInteractiveBackend !== 'codex') {
         return Response.json({
           ok: false,
           error:
@@ -284,7 +286,7 @@ const invoke = defineTool({
             `but ${trackedInteractiveBackend} does not support forced-native-session-id: ${trackedGuard.reason}`,
         }, { status: 400 });
       }
-      nativeSessionId = randomUUID();
+      nativeSessionId = trackedGuard.supported ? randomUUID() : null;
       hiveSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
       // overwatch-role-2026-06-15 B-04: the overwatch is a tracked/resumable loop
       // like the Queen, but on its OWN label prefix — `overwatch · <slug>/<role>`,
@@ -292,7 +294,7 @@ const invoke = defineTool({
       advSessionRowId = await recordAdvSession({
         sessionId: nativeSessionId,
         coordOwnerId: hiveSpawnId,
-        agent: 'claude',
+        agent: trackedInteractiveBackend === 'codex' ? 'codex' : 'claude',
         role,
         cwd: project.path,
         mode: 'console',
@@ -359,9 +361,10 @@ const invoke = defineTool({
     // keeps route registration side-effect-free; the cost is a one-time async import.
     const { spawnInvokeOnce } = await import('../../../dbos/orchestrator-runner');
     const env: Record<string, string> = suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {};
-    if (nativeSessionId && hiveSpawnId) {
-      env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
+    if (hiveSpawnId) {
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
+      if (nativeSessionId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
+      if (!nativeSessionId && advSessionRowId != null) env.PAPERCUSP_CODEX_SESSION_KEY = String(advSessionRowId);
     }
     // queen-brief-cache-assembly B-03 (P-006): the Queen's precomputed wake brief
     // (ranked survey floor + carry-note), assembled by fireLaunchBlueprint when it

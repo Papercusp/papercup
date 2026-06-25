@@ -251,10 +251,10 @@ fn select_newest_with_transcript(
 }
 
 /// Run the read-only transcript pane: connect, resolve the autonomous session
-/// uuid, locate its transcript file, and stream new turns to stdout (zellij
-/// renders the scrolling pane). Re-resolves periodically so it follows a
-/// recycled brain, and shows a clear placeholder when the agent isn't running —
-/// it NEVER blanks or crashes. Loops until the pane is closed.
+/// uuid, locate its transcript file, and render new turns into a compact TUI.
+/// Re-resolves periodically so it follows a recycled brain, and shows a clear
+/// placeholder when the agent isn't running — it NEVER blanks or crashes.
+/// Loops until the pane is closed.
 pub async fn run(scope: Scope) -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();

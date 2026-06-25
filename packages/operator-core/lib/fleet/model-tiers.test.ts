@@ -228,6 +228,18 @@ describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-ste
     expect(resolveRoleOwnModelSpec('queen', eff)).toBe('opus:xhigh');
   });
 
+  it('ignores cross-provider own-model menu specs that cannot run through the Claude front door', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high' }] };
+    expect(resolveRoleOwnModelSpec('queen', eff)).toBeNull();
+  });
+
+  it('ignores role-own tier rows that require a non-Claude backend switch', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high', backend: 'codex' as const }] };
+    expect(resolveRoleOwnModelSpec('queen', eff)).toBeNull();
+  });
+
   it('a queen CEILING is her TARGET (a decider has no self-picker) — ceiling=max → opus:xhigh', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'max' } })).toBe('opus:xhigh');

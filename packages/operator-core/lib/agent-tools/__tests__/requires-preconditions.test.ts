@@ -37,7 +37,7 @@ afterEach(() => {
 
 /** Run one tool through the projected dispatcher with and without a slug. */
 async function expectSlugPrecondition(opts: {
-  importTool: () => Promise<{ default: { requires?: Array<{ id?: string }> } }>;
+  importTool: () => Promise<{ default: { requires?: ReadonlyArray<{ id?: string }> } }>;
   mcpName: string;
   args: Record<string, unknown>;
 }): Promise<void> {

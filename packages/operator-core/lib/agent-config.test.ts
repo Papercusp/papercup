@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseTiers, parseTierCeilings, type AgentConfig } from './agent-config';
+import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseRoleBackends, parseTiers, parseTierCeilings, type AgentConfig } from './agent-config';
 
 // Mock the PG-backed operator-state read so readAgentConfig exercises the
 // no-row fallback without touching a database.
@@ -80,6 +80,20 @@ describe('parseBackends (drift guard for the SurfaceKey set)', () => {
 
   it("drops 'auto' / unknown backends + unknown surfaces", () => {
     expect(parseBackends({ operator: 'auto', nope: 'omp', scanner: 'gemini' })).toEqual({});
+  });
+});
+
+describe('parseRoleBackends', () => {
+  it('keeps non-empty role keys mapped to concrete subprocess backends', () => {
+    expect(parseRoleBackends({ queen: 'codex', 'release-manager': 'omp', overwatch: 'claude-code' })).toEqual({
+      queen: 'codex',
+      'release-manager': 'omp',
+      overwatch: 'claude-code',
+    });
+  });
+
+  it("drops empty role keys plus 'auto' / unknown backends", () => {
+    expect(parseRoleBackends({ queen: 'auto', '': 'omp', nope: 'gemini' })).toEqual({});
   });
 });
 
