@@ -103,6 +103,7 @@ export interface ScoutTickDeps {
     budget: Required<ScoutBudget>;
     cycleId: string;
     queenFeedback?: QueenFeedbackItem[];
+    signal?: AbortSignal;
   }) => Promise<ScoutCycleLike>;
   /** Persist routed-idea provenance for the cycle (P-013 ledger). */
   persistRouted: (records: ScoutRoutedRecord[], cycleId: string) => Promise<void>;
@@ -265,10 +266,11 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   await deps.recordFire?.('attempt');
   try {
     const cycle = await withScoutCycleTimeout(
-      deps.runCycle({
+      (signal) => deps.runCycle({
         budget,
         cycleId,
         ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
+        signal,
       }),
       opts.cycleTimeoutMs ?? scoutCycleTimeoutMs(),
     );
@@ -322,14 +324,18 @@ function scoutCycleTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SCOUT_CYCLE_TIMEOUT_MS;
 }
 
-async function withScoutCycleTimeout<T>(p: Promise<T>, timeoutMs: number): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return p;
+async function withScoutCycleTimeout<T>(run: (signal?: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return run();
+  const ctrl = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
-      p,
+      run(ctrl.signal),
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Scout cycle timed out after ${timeoutMs}ms`)), timeoutMs);
+        timer = setTimeout(() => {
+          ctrl.abort();
+          reject(new Error(`Scout cycle timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
         if (typeof timer.unref === 'function') timer.unref();
       }),
     ]);

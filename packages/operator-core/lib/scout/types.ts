@@ -155,6 +155,8 @@ export interface ScoutLlmCall {
     responseFormat?: 'text' | 'json';
     thinkingBudgetTokens?: number;
     maxTokens?: number;
+    /** Abort the host transport when the Scout cycle wall-clock timeout fires. */
+    signal?: AbortSignal;
   }): Promise<{
     text: string;
     json?: unknown;

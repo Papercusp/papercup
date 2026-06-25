@@ -83,7 +83,7 @@ async function resolveArchive(scope: { workspaceId: string; harnessSlug: string 
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback, signal }) => {
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
   // never pass the spawn chokepoint that patches `ANTHROPIC_BASE_URL` onto bee subprocesses —
@@ -116,7 +116,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // ideators arrived UNTIERED → the lowest `default` band (tier 4), which the AIMD
   // shrink sheds FIRST under fleet load → all 8 bailed every fire ("rate-limit pause
   // exceeds maxWait"), 0 ideas for 12 days while bees (tier 3) crowded the pool.
-  const llmCall: typeof rawLlmCall = (o) => rawLlmCall({ ...o, priority: 'scout' });
+  const llmCall: typeof rawLlmCall = (o) => rawLlmCall({ ...o, ...(signal ? { signal } : {}), priority: 'scout' });
 
   // ── Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20) ──────────
   // Scout's coord identity (P-003) + the two Scout→Queen ping ports (queen-notify).

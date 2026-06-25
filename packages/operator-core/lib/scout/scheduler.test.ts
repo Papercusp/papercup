@@ -189,12 +189,19 @@ describe('runScoutTick — tick observability (P-034)', () => {
     expect(calls.ticks[0].detail).toMatchObject({ cycleId: 'cyc-1', error: 'llm exploded' });
   });
 
-  it('records an error tick and releases the fire as error when the cycle times out', async () => {
-    const { deps, calls } = makeDeps({ runCycle: () => new Promise(() => undefined) });
+  it('records an error tick, aborts the cycle, and releases the fire as error when the cycle times out', async () => {
+    let cycleSignal: AbortSignal | undefined;
+    const { deps, calls } = makeDeps({
+      runCycle: ({ signal }) => {
+        cycleSignal = signal;
+        return new Promise(() => undefined);
+      },
+    });
     const r = await runScoutTick(deps, { cycleTimeoutMs: 5 });
     expect(r.fired).toBe(false);
     expect(r.reason).toBe('cycle-error');
     expect(r.error).toContain('Scout cycle timed out after 5ms');
+    expect(cycleSignal?.aborted).toBe(true);
     expect(calls.fire).toEqual(['attempt', 'error']);
     expect(calls.ticks).toHaveLength(1);
     expect(calls.ticks[0].status).toBe('error');

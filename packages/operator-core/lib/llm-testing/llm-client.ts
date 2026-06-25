@@ -86,6 +86,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
     thinkingBudgetTokens: opts.thinkingBudgetTokens,
+    signal: opts.signal,
     // Inference-gateway admission-tier label (gateway-priority-tiers): attached as
     // the `x-papercusp-priority` header on the in-process anthropic-direct call so
     // the pacing gateway tiers this caller (e.g. 'scout' → tier 1) instead of the
