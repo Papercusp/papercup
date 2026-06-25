@@ -49,7 +49,14 @@ Two program shapes, discriminated by the gate (no schema field):
    `payload_template: { blueprintId: '<loop>' }`. Keep the governor-loop registration.
    `system:blueprint-run` detects program-mode (`isProgramSpine`) and runs the
    program **inline as its durable step** via `runProgramCore` + `inlineRunOp`
-   (behavior-neutral: the bespoke loops also ran inline in their step).
+   (behavior-neutral: the bespoke loops also ran inline in their step). The program
+   payload is extracted via `programPayloadFromTemplate(payloadTemplate)`: it strips
+   the blueprint-run control keys (`blueprintId`, `mode`, `kickoff`, `timeoutMs`,
+   `workItem`) and merges the remaining top-level keys with the nested `payload`
+   sub-object. This means op args can be passed directly at the top level of
+   `payload_template` alongside `blueprintId` — e.g.
+   `{ blueprintId: 'negative-space', minMisses: 20 }` passes `payload.minMisses = 20`
+   to the program without nesting under a `payload` key.
 
 5. **Hybrid loops** (det → agent → det, e.g. regret / transfer / prompt-ablation /
    iq-battery): the agent leg stays **INTERNAL to the op** (Option A), NOT an
@@ -115,6 +122,18 @@ Two program shapes, discriminated by the gate (no schema field):
   ACTIVE (`skipped:'legacy-active'`) instead of minting a dark duplicate; an active loop needs
   the owner-watched ATOMIC active cutover (copy active+payload+timing → `@singleton`, delete
   `papercup`, one transaction), not the dark CLI.
+- **Class-C singleton triggers are P-070 deployment-mode gated — absent on a
+  `PLATFORM_IMPROVEMENT_LOOPS`-off install.** `materializeBlueprintTriggers` (in
+  `materialize-triggers.ts`) gates Class-C platform-improvement singletons behind the
+  `PLATFORM_IMPROVEMENT_LOOPS` feature flag. When the flag is OFF (a public release before
+  the user opts into platform mode), calling `harness:create` does NOT write the `@singleton`
+  row for any Class-C loop (negative-space, regret, transfer, etc.) — so there is no row to
+  `UPDATE SET active=true` later. **`scout` is the per-hive Class-B exception**
+  (`NON_PLATFORM_SINGLETON_IDS = {'scout'}`, predicate `isPlatformImprovementLoop`): its
+  singleton row is ALWAYS materialized regardless of the flag. In dev/self-host the flag
+  defaults ON, so rows are written normally. In a platform-mode-off environment a Class-C
+  loop's `@singleton` row must be materialized explicitly (e.g. via `seed-learning-singletons.ts`
+  or by enabling the flag first).
 - **worker-chunk-loop → operator-hosted op (P-142/D-017, Option A) is NOT a thin op-wrap —
   it needs a NEW operator-side worker-spawn primitive.** `runChunkLoopCore` is cleanly
   extracted (stage a) and takes injected `ChunkLoopDeps`, so an op CALLING it is easy. The
@@ -163,7 +182,7 @@ Two program shapes, discriminated by the gate (no schema field):
 
 - Schema/validator: `libs/papercusp/packages/orchestrator/src/blueprint/validate.ts` (gate optional)
 - Runner: `packages/operator-core/lib/coord-ops/program-runner.ts` (gateless → done)
-- Scheduled fire: `packages/operator-core/lib/blueprint/blueprint-run-action.ts` (`runScheduledProgram`)
+- Scheduled fire: `packages/operator-core/lib/blueprint/blueprint-run-action.ts` (`runScheduledProgram`, `programPayloadFromTemplate`)
 - Op family: `packages/operator-core/lib/blueprint-steps/`
 - Shared orchestration: `packages/operator-core/lib/negative-space/mine.ts`
 - Blueprint: `libs/papercusp/packages/harness/blueprints/negative-space/blueprint.yaml`
