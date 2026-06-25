@@ -95,7 +95,7 @@ test('makeCredentialResolver — token: returns the raw setup-token, cached (no 
   assert.equal(await r.current(), 'sk-ant-oat-CHANGED');
 });
 
-test('makeBearerCredentialResolver — file: extracts Codex auth.json tokens.access_token', async () => {
+test('makeBearerCredentialResolver — file: rejects Codex ChatGPT auth.json for gateway bearer use', async () => {
   const path = join(dir, 'codex-auth.json');
   await fs.writeFile(path, JSON.stringify({
     auth_mode: 'chatgpt',
@@ -106,9 +106,17 @@ test('makeBearerCredentialResolver — file: extracts Codex auth.json tokens.acc
   }));
   const r = makeBearerCredentialResolver(`file:${path}`);
   assert.equal(r.kind, 'file');
-  assert.equal(await r.current(), 'codex-access-token');
+  await assert.rejects(r.current(), /ChatGPT auth\.json.*OpenAI API bearer/);
+});
+
+test('makeBearerCredentialResolver — file: extracts bearer JSON tokens.access_token when it is not a ChatGPT auth bundle', async () => {
+  const path = join(dir, 'bearer-json.json');
+  await fs.writeFile(path, JSON.stringify({ tokens: { access_token: 'bearer-access-token' } }));
+  const r = makeBearerCredentialResolver(`file:${path}`);
+  assert.equal(r.kind, 'file');
+  assert.equal(await r.current(), 'bearer-access-token');
   await fs.writeFile(path, JSON.stringify({ tokens: { access_token: 'changed' } }));
-  assert.equal(await r.current(), 'codex-access-token', 'serves cached token until invalidated');
+  assert.equal(await r.current(), 'bearer-access-token', 'serves cached token until invalidated');
   r.invalidate();
   assert.equal(await r.current(), 'changed');
 });

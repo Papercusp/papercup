@@ -114,10 +114,17 @@ function extractBearerFromFile(raw: string, path: string): string {
   if (!trimmed) throw new Error(`inference-gateway: empty bearer token at ${path}`);
   if (!trimmed.startsWith('{')) return trimmed;
   try {
-    const parsed = JSON.parse(trimmed) as { tokens?: { access_token?: unknown } };
+    const parsed = JSON.parse(trimmed) as { auth_mode?: unknown; tokens?: { access_token?: unknown } };
+    if (parsed.auth_mode === 'chatgpt') {
+      throw new Error(
+        `inference-gateway: Codex/OpenAI gateway credential at ${path} is a ChatGPT auth.json; ` +
+          'register an OpenAI API bearer via token:<path> or env:NAME instead',
+      );
+    }
     const token = parsed?.tokens?.access_token;
     if (typeof token === 'string' && token.trim()) return token.trim();
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('ChatGPT auth.json')) throw e;
     throw new Error(`inference-gateway: bearer credential JSON at ${path} failed to parse`);
   }
   throw new Error(`inference-gateway: bearer credential JSON at ${path} has no tokens.access_token`);
