@@ -19,6 +19,7 @@ import {
   decideFlakeAbsorption,
   attemptFlakeAbsorption,
   ISOLATION_MAX_FILES,
+  acquireCheckpointRunLock,
   type CheckpointDeps,
   type FailingFile,
   type IsolationResult,
@@ -85,6 +86,45 @@ beforeEach(async () => {
   await git(repo, ['config', 'commit.gpgsign', 'false']);
 });
 afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+describe('acquireCheckpointRunLock', () => {
+  it('blocks a second live checkpoint process from mutating the same checkpoint tree', () => {
+    const lockDir = join(repo, '.checkpoint-logs', '.green-checkpoint-run.lock');
+    const first = acquireCheckpointRunLock(lockDir, {
+      pid: 123,
+      isPidAlive: (pid) => pid === 123,
+    });
+    const second = acquireCheckpointRunLock(lockDir, {
+      pid: 456,
+      isPidAlive: (pid) => pid === 123,
+    });
+    expect(first.acquired).toBe(true);
+    expect(second).toMatchObject({ acquired: false, owner: { pid: 123 } });
+    first.release();
+    const third = acquireCheckpointRunLock(lockDir, {
+      pid: 456,
+      isPidAlive: () => false,
+    });
+    expect(third.acquired).toBe(true);
+    third.release();
+  });
+
+  it('clears a stale checkpoint lock whose owner pid is no longer alive', () => {
+    const lockDir = join(repo, '.checkpoint-logs', '.green-checkpoint-run.lock');
+    const stale = acquireCheckpointRunLock(lockDir, {
+      pid: 123,
+      isPidAlive: () => true,
+    });
+    expect(stale.acquired).toBe(true);
+    const next = acquireCheckpointRunLock(lockDir, {
+      pid: 456,
+      isPidAlive: () => false,
+    });
+    expect(next.acquired).toBe(true);
+    stale.release();
+    next.release();
+  });
+});
 
 describe('runGreenCheckpoint', () => {
   it('advances ready when the candidate is green', async () => {

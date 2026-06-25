@@ -21,7 +21,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, readFileSync, rmSync } from 'node:fs';
 import * as path from 'node:path';
 import {
   revParse,
@@ -117,6 +118,67 @@ export interface CheckpointResult {
    *  gate is GREEN despite the initial red. Surfaced so the P-009 ledger can tally a
    *  chronically-flaky file and the owner can quarantine it accountably. */
   flakeSuspects?: string[];
+}
+
+export interface CheckpointRunLock {
+  acquired: boolean;
+  lockDir: string;
+  owner?: { pid?: number; startedAt?: string; detail?: string };
+  release(): void;
+}
+
+function defaultPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function acquireCheckpointRunLock(
+  lockDir: string,
+  opts: { pid?: number; isPidAlive?: (pid: number) => boolean } = {},
+): CheckpointRunLock {
+  const pid = opts.pid ?? process.pid;
+  const isPidAlive = opts.isPidAlive ?? defaultPidAlive;
+  const token = randomUUID();
+  mkdirSync(path.dirname(lockDir), { recursive: true });
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(lockDir);
+      writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid, startedAt: new Date().toISOString(), token }));
+      return {
+        acquired: true,
+        lockDir,
+        release: () => {
+          try {
+            const raw = readFileSync(path.join(lockDir, 'owner.json'), 'utf8');
+            const owner = JSON.parse(raw) as { token?: string };
+            if (owner.token === token) rmSync(lockDir, { recursive: true, force: true });
+          } catch {
+            // If the owner file vanished, the lock was already gone.
+          }
+        },
+      };
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw e;
+      let owner: { pid?: number; startedAt?: string; detail?: string } = {};
+      try {
+        owner = JSON.parse(readFileSync(path.join(lockDir, 'owner.json'), 'utf8')) as typeof owner;
+      } catch {
+        owner = { detail: 'owner metadata unreadable' };
+      }
+      if (typeof owner.pid === 'number' && isPidAlive(owner.pid)) {
+        return { acquired: false, lockDir, owner, release: () => {} };
+      }
+      rmSync(lockDir, { recursive: true, force: true });
+    }
+  }
+
+  return { acquired: false, lockDir, owner: { detail: 'could not acquire after stale lock cleanup' }, release: () => {} };
 }
 
 /** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
@@ -1112,25 +1174,60 @@ if (require.main === module) {
     const i = process.argv.indexOf(f);
     return i >= 0 ? process.argv[i + 1] : undefined;
   };
-  runGreenCheckpoint(cfg, realCheckpointDeps(cfg), {
-    candidate: arg('--candidate'),
-    noPush: process.argv.includes('--no-push'),
-  })
-    .then((r) => {
-      // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
-      // single marker line. CRITICAL for cross-version compat: the routine that invokes
-      // this CLI runs from the integration tree, so a DEPLOYED (older) green-checkpoint
-      // handler — which still brace-slices stdout `slice(indexOf('{'), lastIndexOf('}'))`
-      // — runs THIS newer CLI. Two JSON objects on stdout (pretty + marker) made that
-      // slice span both + the marker text → invalid JSON → recorded 'error' (and wedged
-      // the pipeline). One object on stdout keeps the old brace-slice AND the new marker
-      // parse both working.
-      console.error(JSON.stringify(r, null, 2));
-      console.log(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(r)}`);
-      process.exit(0);
+  const emitResult = (r: CheckpointResult): void => {
+    // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
+    // single marker line. CRITICAL for cross-version compat: the routine that invokes
+    // this CLI runs from the integration tree, so a DEPLOYED (older) green-checkpoint
+    // handler — which still brace-slices stdout `slice(indexOf('{'), lastIndexOf('}'))`
+    // — runs THIS newer CLI. Two JSON objects on stdout (pretty + marker) made that
+    // slice span both + the marker text → invalid JSON → recorded 'error' (and wedged
+    // the pipeline). One object on stdout keeps the old brace-slice AND the new marker
+    // parse both working.
+    console.error(JSON.stringify(r, null, 2));
+    console.log(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(r)}`);
+  };
+
+  const candidateArg = arg('--candidate');
+  const lock = acquireCheckpointRunLock(path.join(cfg.checkpointLogDir, '.green-checkpoint-run.lock'));
+  if (!lock.acquired) {
+    Promise.all([
+      revParse(cfg.integrationRoot, candidateArg ?? cfg.integrationBranch).catch(() => candidateArg ?? cfg.integrationBranch),
+      refExists(cfg.integrationRoot, cfg.releaseRef)
+        .then((ok) => (ok ? revParse(cfg.integrationRoot, cfg.releaseRef) : null))
+        .catch(() => null),
+    ])
+      .then(([candidate, from]) => {
+        emitResult({
+          advanced: false,
+          candidate,
+          from,
+          green: null,
+          reason: 'up-to-date',
+          summary: `green-checkpoint skipped: another checkpoint process is already running${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ''}`,
+        });
+        process.exit(0);
+      })
+      .catch((e) => {
+        console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
+        process.exit(1);
+      });
+  } else {
+    const releaseAndExit = (code: number): never => {
+      lock.release();
+      process.exit(code);
+    };
+    runGreenCheckpoint(cfg, realCheckpointDeps(cfg), {
+      candidate: candidateArg,
+      noPush: process.argv.includes('--no-push'),
     })
-    .catch((e) => {
-      console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
-      process.exit(1);
-    });
+      .then((r) => {
+        emitResult(r);
+        releaseAndExit(0);
+      })
+      .catch((e) => {
+        lock.release();
+        console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
+        process.exit(1);
+      });
+  }
 }
