@@ -69,9 +69,12 @@ describe('gradeIdeaArgs validation', () => {
     }
   });
 
-  it('rejects empty ideaId and over-long feedback (>2000 chars)', () => {
+  it('rejects empty ideaId; accepts any-length feedback (softText — clamped in the handler, EI-3693)', () => {
     expect(gradeIdeaArgs.safeParse({ ideaId: '', grade: 3 }).success).toBe(false);
-    expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(2001) }).success).toBe(false);
+    // feedback is now softText(LIMITS.ANNOTATION): the SCHEMA never bounces on length —
+    // an over-long value parses fine and runGradeIdea truncates it to 2000 (clampText),
+    // rather than rejecting the whole tool call at arg-parse.
+    expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(2001) }).success).toBe(true);
     expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(2000) }).success).toBe(true);
   });
 });
@@ -109,6 +112,13 @@ describe('runGradeIdea', () => {
     await runGradeIdea({ ideaId: 'idea-1', grade: 3 }, undefined, deps);
     const input = vi.mocked(deps.gradeRoutedIdea).mock.calls[0][0];
     expect('feedback' in input).toBe(false);
+  });
+
+  it('clamps over-long feedback to 2000 chars before the C-2 write (softText handler clamp, EI-3693)', async () => {
+    const deps = fakeDeps();
+    await runGradeIdea({ ideaId: 'idea-1', grade: 3, feedback: 'x'.repeat(2500) }, undefined, deps);
+    const input = vi.mocked(deps.gradeRoutedIdea).mock.calls[0][0] as { feedback?: string };
+    expect(input.feedback).toHaveLength(2000);
   });
 
   it('resolves routedRef → ideaId before the write (D-007)', async () => {

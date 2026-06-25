@@ -2483,6 +2483,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       headers['accept-encoding'] = 'identity';
 
       const ac = new AbortController();
+      const abortForDownstreamClose = () => ac.abort(new Error('openai downstream closed'));
+      req.once('aborted', abortForDownstreamClose);
+      res.once('close', abortForDownstreamClose);
+      const detachDownstreamAbort = () => {
+        req.off('aborted', abortForDownstreamClose);
+        res.off('close', abortForDownstreamClose);
+      };
       // armStall(ms): abort THIS attempt's upstream call if it makes no progress for ms — first as the headers
       // TTFB (short for streams), then re-armed per body chunk below as the body-idle deadline.
       const armStall = (ms: number) => {
@@ -2500,6 +2507,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         up = await doFetch(`${adapter.upstreamBase}${url}`, init as RequestInit);
         armStall(upstreamBodyIdleTimeoutMs); // headers arrived → switch to the per-chunk body-idle deadline
       } catch (e) {
+        detachDownstreamAbort();
         clearStall();
         codexUpstreamErrors++;
         active.invalidateToken?.();
@@ -2524,6 +2532,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (canRetry) {
           const reset = parseRateReset(headersToObject(up.headers));
           if (rotateCodex(reset.resetAt ?? Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) {
+            detachDownstreamAbort();
             clearStall();
             try { await up.body?.cancel(); } catch { /* drain the throttle body before retrying */ }
             continue;
@@ -2540,6 +2549,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       res.writeHead(up.status, outHeaders);
       if (!up.body) {
+        detachDownstreamAbort();
         clearStall();
         res.end();
         return;
@@ -2569,6 +2579,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (ac.signal.aborted) onAbort();
         else ac.signal.addEventListener('abort', onAbort, { once: true });
       });
+      detachDownstreamAbort();
       clearStall();
       return;
     }

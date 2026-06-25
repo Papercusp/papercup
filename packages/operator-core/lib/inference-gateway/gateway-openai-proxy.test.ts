@@ -405,4 +405,38 @@ describe('proxyOpenAi — stream-stall guards (parity with the Claude proxy)', (
     // body-idle (200ms) must fire FAR before the 3000ms downstream-idle backstop.
     expect(settled).toBeLessThan(1500);
   });
+
+  it('aborts the upstream OpenAI request when the downstream client disconnects before headers', async () => {
+    let upstreamAborted = false;
+    await bootCodex(
+      () => {
+        /* fetchImpl below replaces the real upstream */
+      },
+      solo(),
+      {
+        fetchImpl: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+          await new Promise((_resolve, reject) => {
+            const signal = init?.signal as AbortSignal | undefined;
+            signal?.addEventListener('abort', () => {
+              upstreamAborted = true;
+              reject(new Error('upstream aborted'));
+            }, { once: true });
+          });
+          throw new Error('unreachable');
+        }) as typeof fetch,
+        upstreamHeadersTimeoutMs: 5000,
+      },
+    );
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 50);
+    const clientReq = ask('/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-x', input: 'hi' }),
+      signal: ac.signal,
+    }).catch((e) => e);
+    await clientReq;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(upstreamAborted).toBe(true);
+  });
 });

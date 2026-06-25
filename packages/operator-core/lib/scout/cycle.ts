@@ -66,6 +66,15 @@ export interface ScoutCycleLimits {
 /** The LLM-spending steps (also the `ScoutCallRecord.step` tags). Routing spends no LLM. */
 export type ScoutStep = 'ideate' | 'critique' | 'recombine';
 
+/** The full cycle phases surfaced to the scheduler for timeout diagnostics. */
+export type ScoutCyclePhase =
+  | 'read-corpus'
+  | 'ideate'
+  | 'read-novelty-corpus'
+  | 'critique'
+  | 'recombine'
+  | 'route';
+
 /**
  * A recorded LLM invocation — the single place the no-human-prompt invariant
  * (D-010) and cost accounting read from. The cycle wraps the injected
@@ -112,6 +121,8 @@ export interface ScoutCycleDeps extends ScoutCyclePorts {
   limits?: ScoutCycleLimits;
   /** Opaque cycle id for provenance/audit (su-80be9 stamps the ledger with it). */
   cycleId?: string;
+  /** Best-effort phase reporter used by the scheduler's timeout/error diagnostics. */
+  onPhase?: (phase: ScoutCyclePhase) => void;
 }
 
 /** Why the cycle stopped — `completed` is the full pass; the rest are early exits. */
@@ -226,6 +237,9 @@ export function deriveProvenance(
 export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleResult> {
   const calls: ScoutCallRecord[] = [];
   let currentStep: ScoutStep = 'ideate';
+  const markPhase = (phase: ScoutCyclePhase): void => {
+    deps.onPhase?.(phase);
+  };
 
   // Wrap the injected call so every step's LLM use is recorded once (cost +
   // the no-human-prompt invariant), tagged with the step that issued it.
@@ -274,6 +288,7 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
 
   // 1. Corpus synthesis (P-003) — the grounded substrate. No LLM cost attributed
   //    to the cycle (the digest reader owns its own budget upstream).
+  markPhase('read-corpus');
   const digest = await deps.readCorpus();
 
   // EI-305: a zero cap means NO spend — halt before the first costed step.
@@ -290,6 +305,7 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   }
 
   // 2. Divergent generation (P-004).
+  markPhase('ideate');
   currentStep = 'ideate';
   const ideas = await deps.ideate(digest, {
     llmCall: recordingLlm,
@@ -299,8 +315,10 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   if (overBudget()) return finish('budget-exhausted', { digest, ideas });
 
   // 3. Adversarial critics (P-005) — search-first novelty vs the corpus + feasibility.
+  markPhase('read-novelty-corpus');
   currentStep = 'critique';
   const corpus = await deps.readNoveltyCorpus();
+  markPhase('critique');
   const scored = await deps.critique(ideas, { llmCall: recordingLlm, corpus });
   const survivors = selectSurvivors(scored);
   if (survivors.length === 0) return finish('no-survivors', { digest, ideas, scored, survivors });
@@ -309,6 +327,7 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   // 4. Debate + recombine survivors → proposals (P-006). The port re-filters
   //    verdict≠reject internally (su-d1170's recombineProposals), so passing all
   //    `scored` is safe + matches its published wiring.
+  markPhase('recombine');
   currentStep = 'recombine';
   const proposals = await deps.recombine(scored, { llmCall: recordingLlm });
   if (proposals.length === 0) {
@@ -317,6 +336,7 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
 
   // 5. Route + dispatch each proposal once (P-007); expand to per-idea lens
   //    provenance (P-013) over our ideas (the cycle holds the idea→lens map).
+  markPhase('route');
   const routed = await deps.route(proposals);
   const provenance = deriveProvenance(routed, ideas, deps.cycleId);
 
