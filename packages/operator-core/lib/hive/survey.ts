@@ -66,6 +66,8 @@ export interface HiveMembership {
   scope: 'members' | 'workspace';
 }
 
+type RegistryProjectForHiveSurvey = { slug: string; hive_slug?: string; harness_kind?: string };
+
 /**
  * Resolve a Hive's member harnesses from the registry. The home slug plus every
  * project whose `hive_slug` points at it. When no member is wired, `surveySlugs`
@@ -75,7 +77,7 @@ export interface HiveMembership {
 export async function resolveHiveMembership(
   workspaceId: string,
   hiveHomeSlug: string,
-  loadRegistry: (ws: string) => Promise<{ projects: { slug: string; hive_slug?: string }[] }> = loadHarnessRegistry,
+  loadRegistry: (ws: string) => Promise<{ projects: RegistryProjectForHiveSurvey[] }> = loadHarnessRegistry,
 ): Promise<HiveMembership> {
   const reg = await loadRegistry(workspaceId);
   const members = reg.projects
@@ -472,7 +474,7 @@ export interface HiveSurvey {
 }
 
 export interface SurveyDeps {
-  loadRegistry: (ws: string) => Promise<{ projects: { slug: string; hive_slug?: string }[] }>;
+  loadRegistry: (ws: string) => Promise<{ projects: RegistryProjectForHiveSurvey[] }>;
   listPlanRows: (harnessSlug: string) => Promise<PlanIndexRow[]>;
   fetchFrontier: (surveySlugs: readonly string[], limit: number) => Promise<FrontierRow[]>;
   /** Resolve one harness's blocking graph for the readiness filter (W-01/P-010). */
@@ -517,15 +519,19 @@ export async function surveyHive(
   const sf = opts.scopeFilter; // scope/pause filter (C-2) — used by both the plan loop + the frontier filter
   const membership = await resolveHiveMembership(workspaceId, hiveHomeSlug, deps.loadRegistry);
 
-  // Which harnesses to read plans from: the survey slugs, or every project +
-  // home when membership isn't wired (mirrors the frontier's workspace-wide
-  // fallback so neither view can regress to the home-only blind spot).
+  // Which harnesses to read plans from: the survey slugs, or hive HOME slugs
+  // when membership isn't wired. The frontier fallback is workspace-wide, but
+  // plans are Hive-scoped; ordinary project slugs make resolvePlanScope reject
+  // and caused a live Queen wake to spend its floor gather on hundreds of
+  // repeated "not a Hive home" warnings. So the plan side falls back only to
+  // real kind:'hive' homes (plus this home for legacy registries), while the
+  // frontier keeps the workspace-wide blind-spot guard.
   let planSlugs: string[];
   if (membership.surveySlugs.length > 0) {
     planSlugs = membership.surveySlugs;
   } else {
     const reg = await deps.loadRegistry(workspaceId);
-    planSlugs = Array.from(new Set([hiveHomeSlug, ...reg.projects.map((p) => p.slug)]));
+    planSlugs = Array.from(new Set([hiveHomeSlug, ...reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug)]));
   }
 
   const [planRowsPerHarness, frontierRows] = await Promise.all([

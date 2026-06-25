@@ -392,6 +392,23 @@ describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
     expect(ch.sent).toEqual([ourAnnounce]);
   });
 
+  it('uses the Hypercore noiseStream muxer when a Hyperswarm socket wraps one', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store, replicateArgs } = fakeStore();
+    const ourAnnounce = announceFixture({ log_core_key: 'ab'.repeat(32) });
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, ourAnnounce, onAnnounce: vi.fn() });
+
+    const noiseStream = { __muxId: 'inner-noise', pipe: vi.fn(), destroy: vi.fn() };
+    const socket = { __muxId: 'outer-socket', noiseStream, pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+
+    expect(replicateArgs).toEqual([socket]);
+    expect(fakeChannels.get(socket)).toBeUndefined();
+    const ch = fakeChannels.get(noiseStream)!;
+    expect(ch.opened).toBe(true);
+    expect(ch.sent).toEqual([ourAnnounce]);
+  });
+
   it('sends ourAnnounce from the channel onopen — NOT before the channel pairs (Fix 5)', async () => {
     const { swarm, emit } = fakeSwarm();
     const { store } = fakeStore();

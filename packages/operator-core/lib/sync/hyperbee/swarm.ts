@@ -303,13 +303,15 @@ export function openAnnounceChannel(
 ): void {
   if (!opts.onAnnounce && !opts.ourAnnounce) return;
   try {
-    // Protomux.from REUSES socket.userData when corestore.replicate(socket)
-    // already attached it, so the announce shares the replication muxer. Pin
-    // the muxer on the stream when unset (the hypercore convention) so every
-    // later protocol on this socket reuses it instead of double-muxing.
-    const mux = Protomux.from(socket);
-    const s = socket as { userData?: unknown };
-    if (!s.userData) s.userData = mux;
+    // Corestore/Hypercore attaches Protomux to the NoiseSecretStream, not always
+    // the outer Hyperswarm socket. Use `socket.noiseStream` when present so the
+    // announce channel shares the same muxer as Hypercore replication; otherwise
+    // live peers connect but never exchange announce/admission frames.
+    const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
+      userData?: unknown;
+    };
+    const mux = Protomux.from(muxStream);
+    if (!muxStream.userData) muxStream.userData = mux;
     // Per-topic state, keyed by topicHex (A-002). A-003 (a′): MULTIPLE local
     // harnesses can share one topic — accumulate each (keyed by its own log
     // core) so the single topic channel carries every local log's announce.

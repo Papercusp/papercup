@@ -188,10 +188,20 @@ describe('surveyHive (P-012 regression)', () => {
 
   it('runs a workspace-wide survey (frontier scope []) when membership is not wired', async () => {
     let frontierScope: readonly string[] | null = null;
+    const planSlugs: string[] = [];
     const survey = await surveyHive('default', 'papercup-hive', {
       deps: depsFor({
-        loadRegistry: async () => ({ projects: [{ slug: 'papercup-hive' }, { slug: 'papercup' }] }),
-        listPlanRows: async () => [],
+        loadRegistry: async () => ({
+          projects: [
+            { slug: 'papercup-hive', harness_kind: 'hive' },
+            { slug: 'other-hive', harness_kind: 'hive' },
+            { slug: 'ordinary-project' },
+          ],
+        }),
+        listPlanRows: async (slug) => {
+          planSlugs.push(slug);
+          return [];
+        },
         fetchFrontier: async (surveySlugs) => {
           frontierScope = surveySlugs;
           return [];
@@ -199,6 +209,7 @@ describe('surveyHive (P-012 regression)', () => {
       }),
     });
     expect(frontierScope).toEqual([]); // [] ⇒ workspace-wide, never home-only
+    expect(planSlugs.sort()).toEqual(['other-hive', 'papercup-hive']);
     expect(survey.scope).toBe('workspace');
   });
 
