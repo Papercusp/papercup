@@ -50,12 +50,13 @@ export interface ExecPort {
   run(cmd: string, args: string[], opts?: ExecOptions): Promise<ExecResult>;
 }
 
-/** Filesystem access. `glob` returns absolute paths. */
+/** Filesystem access. Dep-free — no glob; drivers list known bundle dirs. */
 export interface FsPort {
   readText(path: string): Promise<string>;
   writeText(path: string, data: string): Promise<void>;
   exists(path: string): Promise<boolean>;
-  glob(pattern: string): Promise<string[]>;
+  /** Basenames of entries in `dir`; resolves to [] if the dir is missing. */
+  readDir(dir: string): Promise<string[]>;
 }
 
 export interface LogPort {
@@ -67,6 +68,10 @@ export interface ReleasePorts {
   exec: ExecPort;
   fs: FsPort;
   log: LogPort;
+  /** Read an environment variable (e.g. the signing-key password). */
+  env(name: string): string | undefined;
+  /** Current time as an ISO string — injected so releases are testable. */
+  now(): string;
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────

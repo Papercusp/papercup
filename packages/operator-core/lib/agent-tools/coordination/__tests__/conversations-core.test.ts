@@ -202,6 +202,7 @@ beforeEach(() => {
   deps = {
     conversations: store,
     threads,
+    threadTxn: async (fn) => fn(threads),
     tags,
     subs,
     topics,

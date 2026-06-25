@@ -59,12 +59,50 @@ interface SessionState {
   counts: Map<string, number>;
   /** tools already nudged this session (one-shot guard) */
   nudged: Set<string>;
+  /** ms timestamp of the last SUCCESSFUL coord:orient this session (orient-dedup, P-009). */
+  lastOrientAt?: number;
+  /** subsumed tools already orient-dedup-nudged this session (one-shot guard, P-009). */
+  orientDedupNudged: Set<string>;
 }
 
 const sessions = new Map<string, SessionState>();
 
+/** Get (or lazily create, with insertion-order eviction) the per-session tracking state. The ONE
+ *  shared map both nudges read/write, so orient timing and per-tool counts live together. */
+function getOrCreateSession(sessionKey: string): SessionState {
+  let st = sessions.get(sessionKey);
+  if (!st) {
+    if (sessions.size >= MAX_TRACKED_SESSIONS) {
+      const oldest = sessions.keys().next().value;
+      if (oldest !== undefined) sessions.delete(oldest);
+    }
+    st = { counts: new Map(), nudged: new Set(), orientDedupNudged: new Set() };
+    sessions.set(sessionKey, st);
+  }
+  return st;
+}
+
 function normalize(toolName: string): string {
   return toolName.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** `wake-queue` / `set_status` → `wakeQueue` / `setStatus` (the code:run facade's JS-identifier keys). */
+function camelVerb(verb: string): string {
+  return verb.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase());
+}
+
+/** Render the `tools.…` facade call for `toolName(a)` used in the ready-to-paste skeleton. Prefers the
+ *  typed `tools.ns.verb(a)` form; falls back to the always-valid `tools.call('ns:verb', a)` escape
+ *  hatch when the name doesn't cleanly split into JS identifiers. */
+function facadeCall(toolName: string): string {
+  const ci = toolName.indexOf(':');
+  if (ci > 0) {
+    const ns = toolName.slice(0, ci);
+    const verb = camelVerb(toolName.slice(ci + 1));
+    const ident = /^[A-Za-z_$][\w$]*$/;
+    if (ident.test(ns) && ident.test(verb)) return `tools.${ns}.${verb}(a)`;
+  }
+  return `tools.call(${JSON.stringify(toolName)}, a)`;
 }
 
 export interface BatchNudgeInput {
@@ -87,30 +125,97 @@ export function maybeBatchNudge(input: BatchNudgeInput): string | null {
   if (!canCodeRun || !sessionKey || !toolName) return null;
   if (EXCLUDED_NORMALIZED.has(normalize(toolName))) return null;
 
-  let st = sessions.get(sessionKey);
-  if (!st) {
-    if (sessions.size >= MAX_TRACKED_SESSIONS) {
-      const oldest = sessions.keys().next().value;
-      if (oldest !== undefined) sessions.delete(oldest);
-    }
-    st = { counts: new Map(), nudged: new Set() };
-    sessions.set(sessionKey, st);
-  }
+  const st = getOrCreateSession(sessionKey);
 
   const n = (st.counts.get(toolName) ?? 0) + 1;
   st.counts.set(toolName, n);
 
   if (n >= BATCH_NUDGE_THRESHOLD && !st.nudged.has(toolName)) {
     st.nudged.add(toolName);
+    // P-006 (agent-tooling-token-efficiency): the hint carries a READY-TO-PASTE code:run skeleton
+    // targeting the EXACT repeated tool, so acting on it is a fill-in-the-blank, not a from-scratch
+    // authoring task. The skeleton loops the repeated call over a caller-supplied `inputs` list.
+    const skeleton =
+      'code:run { script: `\n' +
+      `  const inputs = [/* the args for each ${toolName} call */];\n` +
+      '  const out = [];\n' +
+      `  for (const a of inputs) out.push(await ${facadeCall(toolName)});\n` +
+      '  return out;\n' +
+      '` }';
     return (
       `you've called "${toolName}" ${n}× this session. If these are independent or ` +
-      `mechanically-chained calls, fold them into ONE code:run (a script threads one call's result ` +
-      `into the next, and bulk args like ids:[…] batch a homogeneous set) — or reuse a recipe ` +
-      `(recipes:search { query }) — to skip the per-call round-trips. Keep a call separate ONLY when ` +
-      `you must read its result and DECIDE before the next (a script can't pause for you to think).`
+      `mechanically-chained calls, fold them into ONE code:run — ready-to-paste skeleton ` +
+      `(fill \`inputs\` with the per-call args):\n${skeleton}\n` +
+      `Only the script's return re-enters context, so return what you'll need next. Or reuse a recipe ` +
+      `(recipes:search { query }). Keep a call separate ONLY when you must read its result and DECIDE ` +
+      `before the next (a script can't pause for you to think).`
     );
   }
   return null;
+}
+
+/** A subsumed re-fetch within this window after a successful coord:orient → the soft dedup nudge.
+ *  Conservative (2 min) so a genuine LATER re-check in a long spawn is never nudged. */
+export const ORIENT_DEDUP_WINDOW_MS = 120_000;
+
+/** Normalized name → the human label for the slice of orient's payload this tool re-fetches. orient
+ *  returns plan-events + inbox + a mem0 recall (for `intent`) AND declares intent in one round-trip,
+ *  so calling any of these RIGHT AFTER a successful orient is a duplicate of what it already handed
+ *  back. Keyed by `normalize()` so both the verb form and the MCP form match. */
+const ORIENT_SUBSUMED_NORMALIZED: ReadonlyMap<string, string> = new Map<string, string>([
+  ['coordplanevents', 'the recent plan-events delta'],
+  ['coordinbox', 'your unread inbox summary'],
+  ['memorysearch', 'a mem0 recall for your intent'],
+  ['coorddeclareintent', 'your declared intent'],
+]);
+
+const ORIENT_NORMALIZED = 'coordorient';
+
+export interface OrientDedupInput {
+  /** Stable per-session key — the handler's replayOwnerKey (uiClientId ?? spawnId). */
+  sessionKey: string;
+  /** The tool just SUCCESSFULLY called (MCP or verb form). */
+  toolName: string;
+  /** Injectable clock for tests; defaults to Date.now(). */
+  now?: number;
+}
+
+/**
+ * P-009 (agent-tooling-token-efficiency): a SOFT, one-shot nudge — never a block — when an agent
+ * calls coord:plan-events / coord:inbox / memory:search / coord:declare-intent SHORTLY AFTER a
+ * successful coord:orient in the same spawn, since orient's single round-trip already returned (and,
+ * for intent, already declared) exactly that. Points the agent back at orient's payload. Conservative
+ * by construction: recorded only on a successful orient, fires once per (session, subsumed-tool), and
+ * only inside ORIENT_DEDUP_WINDOW_MS of the orient — a genuine later re-check is left alone. Shares
+ * the SAME per-session map as the batch nudge. Role-agnostic (every agent role uses orient). Never
+ * throws. Returns null when there's nothing to say.
+ */
+export function maybeOrientDedupNudge(input: OrientDedupInput): string | null {
+  const { sessionKey, toolName } = input;
+  if (!sessionKey || !toolName) return null;
+  const now = input.now ?? Date.now();
+  const norm = normalize(toolName);
+
+  // Record the orient itself (and never nudge it). This is the only side effect on the common path.
+  if (norm === ORIENT_NORMALIZED) {
+    getOrCreateSession(sessionKey).lastOrientAt = now;
+    return null;
+  }
+
+  const label = ORIENT_SUBSUMED_NORMALIZED.get(norm);
+  if (!label) return null; // not a tool orient subsumes — nothing to dedup
+
+  const st = sessions.get(sessionKey);
+  if (!st || st.lastOrientAt === undefined) return null; // no orient this session ⇒ a fresh fetch
+  if (now - st.lastOrientAt > ORIENT_DEDUP_WINDOW_MS) return null; // too late ⇒ a deliberate re-check
+  if (st.orientDedupNudged.has(norm)) return null; // one-shot per (session, tool)
+  st.orientDedupNudged.add(norm);
+
+  return (
+    `coord:orient already returned ${label} this turn — reuse orient's result instead of re-fetching. ` +
+    `Call "${toolName}" again only for a detail orient deliberately bounds (e.g. full bodies, or a ` +
+    `different query/scope).`
+  );
 }
 
 /** Test-only: clear the in-process session tracking between cases. */

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   oddsmithProspectOp,
-  parseProspectArgs,
+  parseProspectSweepArgs as parseProspectArgs,
   candidateKey,
   setOddsmithProspectDeps,
   type OddsmithProspectBridge,

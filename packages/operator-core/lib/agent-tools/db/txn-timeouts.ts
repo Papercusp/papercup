@@ -31,7 +31,7 @@ export default defineTool({
   name: 'db:txn-timeouts',
   profile: 'engineer',
   description:
-    "Read/set/reset the per-workspace transaction timeouts (lockTimeoutMs / statementTimeoutMs) applied by inWorkspaceTxn, merged over the baked 5s/5s defaults. Mid-incident, raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish — no deploy. Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical 5s/5s. set/reset audited + one-call-revertible.",
+    "Read/set/reset runtime PG timeouts. (1) per-workspace inWorkspaceTxn lockTimeoutMs / statementTimeoutMs over the baked 5s/5s defaults — mid-incident raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish. (2) adminPoolStatementTimeoutMs (WI-832) — a DEFAULT statement_timeout for NEW org pool connections that bounds the whole interactive admin-pool write class at the source; 0 = OFF (today's behavior). Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical (5s/5s + no pool default). set/reset audited + one-call-revertible.",
   capability: 'operator:write',
   guidance: {
     when: 'State-mutating tools are failing with workspace_contended (PG lock_timeout 55P03 / statement_timeout 57014) under same-workspace contention, and you need to widen the window for the incident — raise lockTimeoutMs and/or statementTimeoutMs. get to inspect the effective timeouts + override.',
@@ -47,6 +47,13 @@ export default defineTool({
       op: z.literal('set'),
       lockTimeoutMs: z.number().int().min(1000).max(120_000).optional(),
       statementTimeoutMs: z.number().int().min(1000).max(600_000).optional(),
+      // WI-832: default statement_timeout (ms) for NEW org POOL connections — bounds the
+      // whole interactive admin-pool write class at the source. 0 = OFF (unset GUC = the
+      // admin pool stays deliberately unbounded). OWNER-GATED to a non-zero value live:
+      // migrations share this pool and opt out per-txn (SET LOCAL statement_timeout=0); a
+      // too-small value would kill long migrations. Distinct from statementTimeoutMs (the
+      // per-workspace inWorkspaceTxn cap).
+      adminPoolStatementTimeoutMs: z.number().int().min(0).max(600_000).optional(),
       dryRun: z.boolean().optional(),
     }),
     z.object({ op: z.literal('reset'), dryRun: z.boolean().optional() }),
@@ -65,10 +72,11 @@ export default defineTool({
         ? {
             ...(args.lockTimeoutMs !== undefined ? { lockTimeoutMs: args.lockTimeoutMs } : {}),
             ...(args.statementTimeoutMs !== undefined ? { statementTimeoutMs: args.statementTimeoutMs } : {}),
+            ...(args.adminPoolStatementTimeoutMs !== undefined ? { adminPoolStatementTimeoutMs: args.adminPoolStatementTimeoutMs } : {}),
           }
         : {};
     if (args.op === 'set' && Object.keys(patch).length === 0) {
-      throw new Error('set requires at least one of lockTimeoutMs / statementTimeoutMs (or use op:reset)');
+      throw new Error('set requires at least one of lockTimeoutMs / statementTimeoutMs / adminPoolStatementTimeoutMs (or use op:reset)');
     }
 
     const outcome = await runControlMutation<TxnTimeoutsOverride>(

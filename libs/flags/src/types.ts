@@ -1046,6 +1046,12 @@ export const FLAGS = {
   // (hits the decision point, which beats prose for adoption). Additive (only adds a [batch-hint]
   // line, one-shot per session+tool, code:run-capable callers only); DEFAULT ON; OFF ⇒ no hint.
   CODE_RUN_BATCH_NUDGE: "papercusp-code-run-batch-nudge",
+  // agent-tooling-token-efficiency P-009 (2026-06-25): the SOFT orient-dedup nudge — when an agent
+  // calls coord:plan-events / coord:inbox / memory:search / coord:declare-intent shortly after a
+  // successful coord:orient (which already returned + declared exactly those), attach a one-shot
+  // [nudge] line pointing it back at orient's payload. Never blocks; additive (only adds a line),
+  // one-shot per session+subsumed-tool, time-windowed; DEFAULT ON; OFF ⇒ no nudge.
+  ORIENT_DEDUP_NUDGE: "papercusp-orient-dedup-nudge",
   // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items
   // (bug|change|task) self-pickable by the scheduler claim path. Today the
   // decentralized claim (claimNextWorkItem / getNextWorkItem) is feature-family-only —
@@ -1757,6 +1763,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // + reversible (adds a one-shot [batch-hint] line to a result for a code:run-capable caller); OFF
   // ⇒ no hint, byte-identical to before.
   [FLAGS.CODE_RUN_BATCH_NUDGE]: true,
+  // DEFAULT ON (agent-tooling-token-efficiency P-009 2026-06-25): the soft orient-dedup nudge.
+  // Additive + reversible (adds a one-shot [nudge] line when a subsumed fetch follows a successful
+  // orient); OFF ⇒ no nudge, byte-identical to before.
+  [FLAGS.ORIENT_DEDUP_NUDGE]: true,
   // FLIPPED ON 2026-06-23 (owner-directed, psu-in-desktop-builds): psu is verified
   // shipping in real mac + windows builds (mac: psu.mjs in the installed .app
   // sidecar; windows: vm-smoke-windows.sh 9/9 incl the psu shim check). The

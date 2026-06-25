@@ -4,6 +4,8 @@ import {
   listAllProjectedTools,
   runToolOrchestration,
   roleScopedToolNames,
+  generateToolFacadeTypes,
+  listFacadeNamespaces,
   SU_ROLES,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -29,24 +31,28 @@ import type { SimilarRecipe } from '../../code-recipes-search';
 export default defineTool({
   name: 'code:run',
   description:
-    'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in one ' +
-    'call; returns ONLY the script\'s returned summary. Collapses many tool round-trips into one. ' +
-    'Use dryRun:true to preview write-effect mutations without executing them.',
+    'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE ' +
+    'call and get back ONLY the script\'s returned summary — collapsing N tool round-trips (each ' +
+    'one re-reads your whole context) into one. WRITE THE SCRIPT DIRECTLY: no discovery pre-call ' +
+    'is required — if you reference a tool name wrong, the result hands you the exact typed ' +
+    'signatures inline to fix. Use dryRun:true to preview write-effect mutations before committing.',
   guidance: {
     when:
-      'A task needs MANY tool calls with control flow — loop/branch/filter over results (e.g. ' +
-      'list N items then act per item, fan-out reads, retry-until). Orchestrate them in ONE ' +
-      'code:run and return a compact summary instead of paying a round-trip per call. Call ' +
-      'code:tools first to fetch the exact typed tools.ns.verb(args) signatures for the ' +
-      'namespaces you will use (fewer arg-shape errors). Pass title+description so the run is ' +
-      'saved as a reusable RECIPE other agents in your hive can find + reuse (every successful ' +
-      'run is captured; title+description make it discoverable instead of an auto-derived label).',
+      'A task needs MANY tool calls with control flow — loop/branch/filter over results (list N ' +
+      'items then act per item, fan-out reads, retry-until). Orchestrate them in ONE code:run and ' +
+      'return a compact summary instead of paying a round-trip per call. Just write the script ' +
+      'against tools.ns.verb(args) — you do NOT need a code:tools pre-call: a wrong name comes back ' +
+      'with the typed signatures inline to fix (code:tools is there only if you want to pre-check ' +
+      'shapes). Pass title+description so the run is saved as a reusable RECIPE other agents in your ' +
+      'hive can find + reuse (every successful run is captured; the title+description make it ' +
+      'discoverable instead of an auto-derived label).',
     notWhen:
       'A single tool call, or a step that needs YOUR judgment mid-flow (read a result, then ' +
       'decide) — call tools directly. Preview mutations with dryRun before a committing run.',
     chaining:
-      'code:tools { namespaces } → write the script against the typed signatures → ' +
-      'code:run { dryRun:true } → inspect plannedMutations → code:run { dryRun:false }',
+      'write the script → code:run { dryRun:true } → inspect plannedMutations → code:run. ' +
+      '(Optional pre-check: code:tools { namespaces } for typed signatures — NOT required, a bad ' +
+      'name returns them inline.)',
   },
   // Role-gated tools gate on agentRoles (not capability); capability sets tier + write-effect.
   // code:run is as powerful as the shell capability — it can call any of the agent's write tools.
@@ -124,11 +130,74 @@ export default defineTool({
       similarRecipes = await maybeCaptureRecipe(args, ctx, all, allowed);
     }
 
+    // P-007 (agent-tooling-token-efficiency): cut the discovery ritual. The old flow demanded a
+    // code:tools {} → code:tools { namespaces } pre-call before you could safely author a script.
+    // Instead, on a parse-check failure (the script referenced a tool not in your facade — a typo'd
+    // verb or wrong namespace) hand back the typed signatures for the namespaces it touched IN THIS
+    // SAME RESULT, so you fix the name + re-run rather than paying a separate code:tools round-trip.
+    // dryRun safety is untouched: write-effect mutations still require the dryRun preview as before.
+    const facadeHelp =
+      !result.ok && result.unknownRefs?.length
+        ? buildFacadeHelp(result.unknownRefs, all, allowed)
+        : undefined;
+
     const payload =
-      similarRecipes.length > 0 ? { ...result, similarRecipes } : result;
+      similarRecipes.length > 0 || facadeHelp
+        ? {
+            ...result,
+            ...(similarRecipes.length > 0 ? { similarRecipes } : {}),
+            ...(facadeHelp ? { facadeHelp } : {}),
+          }
+        : result;
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });
+
+/**
+ * P-007: turn a parse-check failure into a self-service fix. From the unknown `ns.verb` (or
+ * `ns:verb`) refs the script used, render the typed `tools.ns.verb(args)` signatures for the
+ * namespaces that DO exist in the caller's facade (fix a verb/arg typo), and — only when a referenced
+ * namespace doesn't exist at all — also return the cheap namespace index so the agent can pick the
+ * right one. Same scoping/generators as code:tools, so the agent never needs to call code:tools first.
+ */
+function buildFacadeHelp(
+  unknownRefs: readonly string[],
+  all: ReturnType<typeof listAllProjectedTools>,
+  allowed: ReadonlySet<string>,
+): { note: string; signatures?: string; namespaces?: ReturnType<typeof listFacadeNamespaces> } {
+  const index = listFacadeNamespaces(all, allowed);
+  const known = new Set(index.map((e) => e.ns));
+
+  const referencedNs = new Set<string>();
+  for (const ref of unknownRefs) {
+    const ci = ref.indexOf(':');
+    const di = ref.indexOf('.');
+    const sep = ci >= 0 ? ci : di; // tools.call('ns:verb') → colon; tools.ns.verb → dot
+    referencedNs.add(sep > 0 ? ref.slice(0, sep) : ref);
+  }
+
+  const present = [...referencedNs].filter((ns) => known.has(ns));
+  const missing = [...referencedNs].filter((ns) => !known.has(ns));
+  const signatures = present.length
+    ? generateToolFacadeTypes(all, { allowed, namespaces: present })
+    : undefined;
+
+  const note =
+    'code:run accepts a script directly — no code:tools pre-call required. These refs were not in ' +
+    'your allowed facade; fix the tools.ns.verb name/args and re-run. ' +
+    (signatures ? 'Typed signatures for the namespaces you referenced are in `signatures`. ' : '') +
+    (missing.length
+      ? `Unknown namespace(s): ${missing.join(', ')} — pick the right one from \`namespaces\`.`
+      : '');
+
+  return {
+    note,
+    ...(signatures ? { signatures } : {}),
+    // Only spill the full namespace index when a referenced namespace doesn't exist (so the agent can
+    // find the right one); otherwise the verb list already in `signatures` is enough.
+    ...(missing.length ? { namespaces: index } : {}),
+  };
+}
 
 /**
  * Resolve the capture deps (PG handle, embedder, hive resolver) + the acting

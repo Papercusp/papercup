@@ -18,10 +18,18 @@
  * no-op.
  */
 import { configureLocks } from '@papercusp/locks';
+import { setAdminPoolStatementTimeoutProvider } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
-import { txnTimeoutsConfig } from '../../txn-timeouts-config';
+import { adminPoolStatementTimeoutMs, txnTimeoutsConfig } from '../../txn-timeouts-config';
 
 configureLocks({
   getAdminBaseUrl: () => getHarnessAdminUrl(),
   getTxnTimeouts: () => txnTimeoutsConfig(),
 });
+
+// WI-832: inject the admin-pool default statement_timeout into the low-level db connection
+// factory (the layering-safe seam — connection.ts can't read operator-core config directly).
+// Default config ⇒ adminPoolStatementTimeoutMs() returns 0 ⇒ no GUC ⇒ today's exact behavior.
+// This module is imported early + universally (every locks shim pulls it in for side effects),
+// so the provider is registered before the first org pool is constructed.
+setAdminPoolStatementTimeoutProvider(adminPoolStatementTimeoutMs);

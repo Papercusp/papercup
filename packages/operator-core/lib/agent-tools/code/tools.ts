@@ -27,18 +27,20 @@ import {
 export default defineTool({
   name: 'code:tools',
   description:
-    'On-demand typed signatures for code:run. No args → the namespace index (cheap). ' +
+    'OPTIONAL pre-check of typed signatures for code:run — not required before a run (code:run ' +
+    'returns the signatures inline if you name a tool wrong). No args → the namespace index (cheap). ' +
     '{ namespaces } / { names } → full TS `tools.ns.verb(args)` signatures for just those, scoped ' +
     'to your allowed set. Read the signatures, then write a code:run script.',
   guidance: {
     when:
-      'Before writing a code:run script, to fetch the exact typed signatures for the namespaces ' +
-      'you will use instead of guessing arg shapes. Start with no args to list namespaces, then ' +
-      'request the one or two you need.',
+      'OPTIONAL — only when you want to pre-check exact arg shapes before authoring a code:run ' +
+      'script (you do NOT have to: code:run hands you the typed signatures inline if a name is ' +
+      'wrong). Start with no args to list namespaces, then request the one or two you need.',
     notWhen:
-      'A single direct tool call (no script), or you already know the signatures. This is a ' +
-      'lookup — it executes nothing.',
-    chaining: 'code:tools {} → pick namespaces → code:tools { namespaces } → code:run { script }',
+      'A single direct tool call (no script), or you already know the signatures, or you would ' +
+      'rather just write the code:run script and let a bad name return signatures inline. This is ' +
+      'a lookup — it executes nothing.',
+    chaining: 'OPTIONAL: code:tools {} → pick namespaces → code:tools { namespaces } → code:run { script }',
   },
   // Read-only signature rendering over the tool catalog — same capability as agent_tools:list (its
   // code-mode sibling). The `:read` suffix infers effect:'read' (never dry-run-gated); agentRoles

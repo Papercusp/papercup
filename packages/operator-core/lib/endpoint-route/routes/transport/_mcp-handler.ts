@@ -68,7 +68,7 @@ import {
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
-import { maybeBatchNudge, CODE_RUN_CAPABLE_ROLES } from '../../../code-run-batch-nudge';
+import { maybeBatchNudge, maybeOrientDedupNudge, CODE_RUN_CAPABLE_ROLES } from '../../../code-run-batch-nudge';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
@@ -883,9 +883,13 @@ seen this run), bootstrap in ONE call:
   (+ lane + load), the claimable backlog, your unread inbox summary,
   the recent plan-events delta, AND a mem0 recall for \`intent\` — and
   it DECLARES \`intent\` to peers so they see what you're working on.
-  This replaces the old four-call ritual (memory:search + coord:inbox +
-  coord:plan-events + coord:declare-intent); reach for those individually
-  only for detail orient deliberately bounds.
+  After a SUCCESSFUL orient, do NOT separately call \`coord:plan-events\`,
+  \`memory:search\`, \`coord:inbox\`, or \`coord:declare-intent\` — orient's
+  result ALREADY contains them (plan-events delta + inbox summary + a mem0
+  recall) and ALREADY declared your intent; re-calling them just re-pays the
+  round-trip orient collapsed. Reach for one individually only for a detail
+  orient deliberately bounds (full inbox bodies, or a mem0 query OTHER than
+  your intent).
 
   - **Claim your lane.** When the work is plan items, pass them:
     \`coord:orient { intent, planSlug, planItems: ['P-001', …] }\` CLAIMS

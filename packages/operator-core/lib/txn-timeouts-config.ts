@@ -42,8 +42,18 @@ export const TXN_TIMEOUTS_DEFAULTS: TxnTimeoutsConfig = {
   statementTimeoutMs: 5000,
 };
 
-/** A partial override of the defaults (only the keys the operator set). */
-export type TxnTimeoutsOverride = Partial<TxnTimeoutsConfig>;
+/** A partial override of the defaults (only the keys the operator set).
+ *  WI-832 adds `adminPoolStatementTimeoutMs` — a SEPARATE concern that rides the same
+ *  store/flag/cache: the default statement_timeout (ms) for NEW org POOL connections
+ *  (bounds the whole interactive admin-pool write class at the source). It is NOT part of
+ *  TxnTimeoutsConfig — that type is the per-WORKSPACE inWorkspaceTxn wrapper's pair, whose
+ *  return shape the locks host destructures and must stay {lockTimeoutMs, statementTimeoutMs}. */
+export type TxnTimeoutsOverride = Partial<TxnTimeoutsConfig> & {
+  /** Default statement_timeout (ms) for new org pool connections. 0 / unset ⇒ no GUC
+   *  (admin pool stays deliberately unbounded — today's exact behavior). Distinct from
+   *  statementTimeoutMs, which bounds the per-workspace advisory-lock txn wrapper. */
+  adminPoolStatementTimeoutMs?: number;
+};
 
 // ── D-010 sync cache ────────────────────────────────────────────────────────
 let cachedEnabled = false;
@@ -56,6 +66,19 @@ export function txnTimeoutsConfig(): TxnTimeoutsConfig {
     lockTimeoutMs: cachedOverride.lockTimeoutMs ?? TXN_TIMEOUTS_DEFAULTS.lockTimeoutMs,
     statementTimeoutMs: cachedOverride.statementTimeoutMs ?? TXN_TIMEOUTS_DEFAULTS.statementTimeoutMs,
   };
+}
+
+/**
+ * WI-832: the configured default statement_timeout (ms) for NEW org pool connections —
+ * injected into the low-level db connection factory via setAdminPoolStatementTimeoutProvider
+ * (the layering-safe seam; connection.ts can't read this config directly). 0 ⇒ unset (the
+ * admin pool stays unbounded — today's behavior). SYNC, zero-await, same kill-switch + cache
+ * as txnTimeoutsConfig(). The migration runner opts out per-txn (SET LOCAL statement_timeout=0).
+ */
+export function adminPoolStatementTimeoutMs(): number {
+  if (!cachedEnabled) return 0;
+  const v = Math.trunc(cachedOverride.adminPoolStatementTimeoutMs ?? 0);
+  return v > 0 ? v : 0;
 }
 
 export async function refreshTxnTimeoutsConfig(): Promise<void> {
@@ -96,6 +119,7 @@ export async function setTxnTimeoutsOverride(patch: TxnTimeoutsOverride): Promis
   const next: TxnTimeoutsOverride = { ...cur };
   if (patch.lockTimeoutMs !== undefined) next.lockTimeoutMs = patch.lockTimeoutMs;
   if (patch.statementTimeoutMs !== undefined) next.statementTimeoutMs = patch.statementTimeoutMs;
+  if (patch.adminPoolStatementTimeoutMs !== undefined) next.adminPoolStatementTimeoutMs = patch.adminPoolStatementTimeoutMs;
   return persist(next);
 }
 
@@ -119,6 +143,10 @@ registerOverrideConcern({
       if (o[key] !== undefined) {
         entries.push({ key, effective: o[key], default: TXN_TIMEOUTS_DEFAULTS[key], layer: 'pg-settings' });
       }
+    }
+    // WI-832: admin-pool default statement_timeout (default 0 = unset; not in the per-workspace defaults).
+    if (o.adminPoolStatementTimeoutMs !== undefined) {
+      entries.push({ key: 'adminPoolStatementTimeoutMs', effective: o.adminPoolStatementTimeoutMs, default: 0, layer: 'pg-settings' });
     }
     return entries;
   },
