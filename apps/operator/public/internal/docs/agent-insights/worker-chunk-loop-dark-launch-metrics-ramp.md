@@ -1,7 +1,7 @@
 # worker:chunk-loop dark-launch — the metrics surface + ramp gate, and how to run it
 URL: /internal/docs/agent-insights/worker-chunk-loop-dark-launch-metrics-ramp
 
-The operator-hosted worker:chunk-loop op routes a coding worker through the operator process instead of the subprocess invoke-once path. Routing is a TWO-gate guard in orchestrator-runner.ts useWorkerChunkLoopOp: the papercusp-worker-chunk-loop-blueprint flag (default-ON) AND a per-harness workerChunkLoop config knob (default false, set on ZERO harnesses → every coding worker still runs the subprocess path). To dark-launch you set workerChunkLoop:true on ONE non-critical CODING harness (NOT papercup/papercusp) via its instance config (Blueprint Settings → POST /api/harness/:slug/spec; the key lands in configOverrides and configGet reads it), then dispatch a real feature. Outcomes are now recorded per-run (migration 397, harness_shared.worker_chunk_loop_outcomes) at the single runWorkerChunkLoop convergence point, labelled by execution path (op vs subprocess). Read them with dev:worker_chunk_loop_metrics (completion-rate + outcome distribution by path + op−subprocess delta); pass rampStep to get the deterministic advance/hold/rollback recommendation (decideRampAdvance). The actual %-advance and the dark-launch RUN are owner-attended.
+The operator-hosted worker:chunk-loop op routes a coding worker through the operator process instead of the subprocess invoke-once path. Routing is a gated cohort in orchestrator-runner.ts useWorkerChunkLoopOp: the papercusp-worker-chunk-loop-blueprint flag (default-ON), a per-harness workerChunkLoop config knob (default false), and optional workerChunkLoopCohortPercent / workerModeCohortPercent 0..100 feature-stable hashing for the 25→50→100 ramp. To dark-launch you set workerChunkLoop:true plus the current cohort percent on ONE non-critical CODING harness (NOT papercup/papercusp) via its instance config (Blueprint Settings → POST /api/harness/:slug/spec; the keys land in configOverrides and configGet reads them), then dispatch real features. Outcomes are now recorded per-run (migration 397, harness_shared.worker_chunk_loop_outcomes) at the single runWorkerChunkLoop convergence point, labelled by execution path (op vs subprocess). Read them with dev:worker_chunk_loop_metrics (completion-rate + outcome distribution by path + op−subprocess delta); pass rampStep to get the deterministic advance/hold/rollback recommendation (decideRampAdvance). The actual %-advance and the dark-launch RUN are owner-attended.
 
 ## What this is
 
@@ -10,28 +10,33 @@ process** (a near-port of `runWorkerChunkLoop`) instead of spawning the `invoke-
 subprocess. The value is finer crash-recovery + one execution model on the **coding hot
 path** — so it ships behind a staged dark → ramp → retire rollout, never a blind cutover.
 
-## Routing — the two-gate guard
+## Routing — the cohort gate
 
-`orchestrator-runner.ts` `useWorkerChunkLoopOp({ role, flagEnabled, harnessOptIn })` returns
-true only when **all three** hold:
+`orchestrator-runner.ts` `useWorkerChunkLoopOp({ role, flagEnabled, harnessOptIn,
+cohortPercent, cohortKey })` returns true only when **all four** hold:
 
 * `role === 'worker'`
 * `flagEnabled` — `papercusp-worker-chunk-loop-blueprint` (default-**ON**)
 * `harnessOptIn` — `configGet(cfg, 'workerChunkLoop', false) === true`, from
   `readEffectiveHarnessConfig` (blueprint knobs ⊕ the workspace-PG instance config)
+* `cohortKey`'s stable feature bucket is inside `workerChunkLoopCohortPercent`
+  (or legacy alias `workerModeCohortPercent`). Omitted percent preserves the old
+  `workerChunkLoop:true` behavior: 100%.
 
 The knob is set on **zero** harnesses, so every coding worker still runs the subprocess
-path. Flipping the flag alone changes nothing — the knob is the real gate.
+path. Flipping the flag alone changes nothing — the per-harness knob + cohort percent
+are the real gate.
 
 ## Dark-launch a harness (owner-attended)
 
 1. Pick **one non-critical CODING harness** — NOT `papercup`/`papercusp`. (As of
    2026-06-24 no live non-critical coding harness exists; stand one up first.)
-2. Set `workerChunkLoop: true` in its **instance config** — Blueprint Settings panel →
-   `POST /api/harness/:slug/spec`. The key is not a declared blueprint param, but
+2. Set `workerChunkLoop: true` and `workerChunkLoopCohortPercent: 25` in its
+   **instance config** — Blueprint Settings panel → `POST /api/harness/:slug/spec`.
+   The keys are not declared blueprint params, but
    `splitConfigJson` routes any non-typed key into `configOverrides` and
    `instanceEntryToConfig` spreads it back, so `configGet` reads it. Reversible: set it
-   back to `false`.
+   back to `false` or `0`.
 3. Ensure the Brief-15 wiring is **deployed** to the operator running that harness
    (`:3170` staging, or the green pipeline to `:3070` — the metrics tool + table land via
    the normal deploy).
@@ -66,6 +71,9 @@ Pass `rampStep` (0|25|50|100) and the tool adds a `rampRecommendation` from the 
   D-005 risk) shows up as the op path failing to PLAN, which raw completion-rate can mask.
 
 The recommendation is advisory — the actual cohort %-advance is the owner's call per step.
+To advance, update `workerChunkLoopCohortPercent` one step at a time: 25 → 50 → 100.
+The feature bucket is keyed by workspace + harness + feature id, so retries for the same
+feature stay on the same execution path while the cohort grows monotonically.
 
 ## Gotcha — migration renumber drift
 

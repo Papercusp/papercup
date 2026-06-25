@@ -59,11 +59,13 @@ escape.)
 If you must validate a *path* rather than a single segment, validate the
 **raw** string for `..` segments first, and only then canonicalize — which
 is exactly what `path-normalize.ts` does correctly (`validatePath` runs on
-the raw path, `canonicalizePath` after). The canonical source is now
-`libs/papercusp/packages/locks/src/path-normalize.ts`, re-exported through
-`packages/operator-core/lib/agent-tools/locks/path-normalize.ts`. The
-`withPlanLock` bug was feeding it a path that an earlier `path.join` had
-already canonicalized.
+the raw path, `canonicalizePath` after). The canonical implementation is the
+`@papercusp/locks` package source at
+`libs/papercusp/packages/locks/src/path-normalize.ts`; the operator-layer
+`packages/operator-core/lib/agent-tools/locks/path-normalize.ts` file is a
+pure re-export shim so path-validation consumers do not pull in embedded-PG
+discovery. The `withPlanLock` bug was feeding it a path that an earlier
+`path.join` had already canonicalized.
 
 > **Update (2026-06-08):** the specific `withPlanLock` instance has since
 > been fixed. It is now PG-canonical (`plans-pg-canonical-migration-2026-06-03`):
@@ -73,6 +75,12 @@ already canonicalized.
 > — exactly the `/`-rejecting charset whitelist this page recommends. The
 > general rule below still stands; the code block above is preserved as the
 > case study that motivated it.
+>
+> **Update (2026-06-25):** `resolvePlanScope` now also collapses concrete
+> non-operator harness slugs to their Hive home before reading
+> `harness_shared.harness_plans`. That changes the plan storage key, not the
+> traversal defense: `getPlanRow` still rejects invalid slugs with
+> `VALID_PLAN_SLUG` before the slug is used as a PG key or synthetic locator.
 
 ## Checklist when you see a traversal guard
 

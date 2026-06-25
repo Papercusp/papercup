@@ -2384,6 +2384,8 @@ The kernel limit being hit is `fs.inotify.max_user_watches` (a per-**user** tota
 
 Three layers, in order of correctness:
 
+**Current behavior (2026-06-25):** `apps/operator/bin/host-bootstrap.ts` now starts both `ensureHarnessFsWatcher()` and `startClaudeCredentialSync()` only when `cluster.isPrimary` is true. `apps/operator/bin/host-benign-errors.ts` also classifies inotify watcher `ENOSPC` as benign via `isBenignFileWatcherError`, while leaving disk-full `ENOSPC` fatal.
+
 1. **Run the watchers on ONE process — gate on `cluster.isPrimary`** (the real fix). In `host-bootstrap.ts` both watchers are wrapped in `if (cluster.isPrimary) { … }`. `cluster.isPrimary` is `true` on the cluster primary **and** on a non-clustered single-process host (`:3170`, desktop), `false` only on a forked request worker — so the watcher keeps working everywhere it did before, but stops multiplying across cluster workers (33 procs × 62k → 1 × 62k). Safe because request workers read the mirrored rows via `@papercusp/sync` / the converged on-disk creds; they never needed their own watcher.
 
 2. **Make watcher-ENOSPC a benign host error** (robustness). `host-benign-errors.ts` `isBenignFileWatcherError()` classifies inotify watch-ENOSPC as log-and-keep-serving instead of fatal. Scoped to `syscall === 'watch'` / the “number of file watchers” message so a genuine **disk-full** ENOSPC (`syscall` write/open, “no space left on device”) still fails fast. A missing file watcher must only degrade a background convenience, never down the multi-tenant host.
@@ -2489,6 +2491,93 @@ Basis: `harness_shared.agent_usage_samples`, last 24h, cache-inclusive tokens (`
 The win is largest exactly where contexts are biggest: **bees average 19.4 turns/run at \~93k tokens/turn**, and many of those turns are scriptable loops. Because 82.6% of the cost is cache-read of the re-loaded context, removing whole round-trips — not shrinking each one — is the lever.
 
 > Caveats: the saving is per multi-step flow, not a fleet-wide multiplier (single-call turns are unaffected). The `tool_name` / `session_id` attribution columns (B-TOK-2) aren’t backfilled yet, so per-tool round-trip counts come from the flow shape, not from joined telemetry — refine the N figures once attribution is flowing. Numbers are from a 24h window and will drift.
+
+# Codex chatgpt aliases and Hive wake routing
+
+> The Hive loop has three easy-to-confuse routing seams: chatgpt:* is a Papercusp-facing model alias but Codex CLI wants gpt-*; ChatGPT OAuth auth.json is not an OpenAI-compatible gateway bearer; and Queen nudges/wakes must use stable role-slot and single-flight routing instead of fresh session owner ids.
+
+## Failure pattern
+
+[Section titled “Failure pattern”](#failure-pattern)
+
+When the owner steers Queen/bee/Overwatch/Scout to `chatgpt:5.5`, do not pass that literal value to Codex CLI. It is the Papercusp user-facing alias; native Codex wants `gpt-5.5`. The alias has to be normalized at every boundary:
+
+* `buildInvokeOnce` / `applyRoleModel` for per-role and per-spawn command assembly.
+* `orchestrator invoke` when an existing Codex command already contains `--model chatgpt:*`.
+* `normalizeModelForBackend(..., 'codex')` for model values resolved inside the child.
+
+If a spawned agent prints `There's an issue with the selected model (chatgpt:5.5)`, it means one of those boundaries leaked the alias through.
+
+When `operator-spawn` resolves a final `spawnModelSpec`, infer the backend from that final spec and override stale pins from an older role/default. A `chatgpt:*` final spec with `PAPERCUSP_SPAWN_BACKEND=claude-code` is a routing bug even when the argv model normalizes later.
+
+## Gateway routing trap
+
+[Section titled “Gateway routing trap”](#gateway-routing-trap)
+
+A Codex account credential backed only by ChatGPT OAuth `auth.json` is usable by native Codex, but it is not an OpenAI-compatible bearer for the gateway’s `/v1/responses` proxy. If the credential store reports `auth_mode: 'chatgpt'` and no real `OPENAI_API_KEY`, Codex spawns should not receive a gateway provider config for that credential; let native Codex use its own `auth.json`.
+
+Also keep `/v1/models` out of the shared admission queue. Codex probes model metadata before a turn; queueing that local synthetic response behind long-running responses can make the agent appear hung before it even starts.
+
+When the Codex gateway is used, the per-spawn `CODEX_HOME/config.toml` must include all three headers:
+
+* `x-papercusp-account` to pin the OpenAI-compatible bearer account.
+* `x-papercusp-owner` to preserve per-owner attribution.
+* `x-papercusp-priority` to keep Queen/Overwatch/bee traffic out of the low-priority default tier.
+
+Missing `x-papercusp-priority` is a real liveness bug: a Queen can connect to the gateway and then time out behind low-priority work, which looks like a zero-output launcher loss.
+
+Do not register a random `.apikey` as a Codex account just because it is present on disk. Shape-check the credential first: OpenAI-compatible gateway accounts need an OpenAI bearer, not an Anthropic `sk-ant-*` key and not ChatGPT `auth.json`. If a bad bearer gets registered, remove it, clear session overrides, and `gateway:reload` immediately.
+
+## No-turn failure classes
+
+[Section titled “No-turn failure classes”](#no-turn-failure-classes)
+
+The parent durable-spawn row is the detector Overwatch and Queen usually see first. For Codex no-turn deaths, the important classes are:
+
+* `usage_limit` — native ChatGPT/Codex reported account quota, for example “You’ve hit your usage limit.” This is an account routing/capacity problem, not a stale work-item or launcher-host problem.
+* `auth_error` — the OpenAI-compatible gateway returned 401/invalid API key. This means the account credential or gateway account pool is wrong.
+* `infra_loss` — use only when the child produced no turn and no credential/quota diagnostic is present.
+
+If Overwatch sees `usage_limit` or `auth_error`, the durable idea should be account-pool repair or alternate healthy Codex account routing. It should not propose stale-claim reaping, wake retries, or host restarts as the primary fix.
+
+PG is canonical for run transcripts. A run log line like `stdout: .papercusp/logs/...` can be stale/misleading for orchestrator-managed runs; inspect `harness_shared.harness_run_output.jsonl_body` for the actual Codex error.
+
+## Work-item claim guardrail
+
+[Section titled “Work-item claim guardrail”](#work-item-claim-guardrail)
+
+`su-loopback` is a transport identity, not a real bee. `work_items:claim` must reject implicit claims that resolve to `su-loopback`; otherwise Queen/Scout can see a claimed item with no wakeable owner and misdiagnose it as a placement failure. Explicit claims to a real assignee remain valid.
+
+When debugging a stale-claim/wake inconsistency, check both:
+
+* `fleet:assignments` / coord presence for a wakeable owner.
+* `harness_shared.work_items.taken_by` for transport identities such as `su-loopback`.
+
+The durable fix is to prevent the bogus claim at claim time and let the stale-claim reaper clear old rows in canonical `harness_shared.work_items`.
+
+## Queen nudge routing
+
+[Section titled “Queen nudge routing”](#queen-nudge-routing)
+
+Do not tell Overwatch to `coord:send` a concrete Queen `coordOwner`. Queen sessions are fresh per wake, so the owner id can expire between brief computation and send. The stable route is:
+
+```json
+{ "to": ["@role:queen"], "wake": "optimistic" }
+```
+
+`@role:queen` parks the message. `computeQueenWakeBrief` drains that role slot into the Queen’s next wake brief, alongside her normal coord inbox.
+
+## Queen wake single-flight
+
+[Section titled “Queen wake single-flight”](#queen-wake-single-flight)
+
+`hive:wake` must claim `lastWakeAt` before launching the Queen. Recording it after `fireLaunchBlueprint` leaves a race: manual, event, watchdog, and Overwatch nudges can all read the old state and launch overlapping Queens. A second race appears after the 60s wake floor expires while the prior Queen is still running. The tool now:
+
+* skips when a recent Queen adv-session is still open (`wake-inflight`);
+* atomically records `lastWakeAt` under the `hive_wake` row lock before launch;
+* lets later triggers coalesce instead of creating duplicate Queen sessions.
+
+Scorecard clue: Overwatch reports healthy determinism for `@role:queen` acceptance, but degraded parallel distribution or scheduler usage if the Queen is alive and still not placing enough work.
 
 # coding-hive `bee` (self-pulls a claim-spec) vs coding-factory `scoper` (gets a FEATURE_ID pushed) — don't conflate them
 
@@ -3024,6 +3113,8 @@ Mid-turn delivery closes that: after **each tool call**, the agent’s own tool 
 
 The shell hook **gates on `PAPERCUSP_SID`** (psu sessions only) + the su-token, so a plain `claude`/`codex` on the box no-ops. `owner == PAPERCUSP_SID`, which is the same id baked into the agent’s MCP `&client=`, so the hook reads the *right* inbox/watermark.
 
+Current hook shape (2026-06-25): the shell hook is a dumb pipe. It calls `coord:inbox` with `since_ts`, advances the local cursor to the server’s `summary.newest_ts`, and injects the server-rendered `injection` block verbatim. Formatting, capping, and the `[coord+N]` layout live on the server side rather than being duplicated in `posttooluse-coord-inbox.sh`.
+
 ## The cursor / dedup protocol
 
 [Section titled “The cursor / dedup protocol”](#the-cursor--dedup-protocol)
@@ -3051,7 +3142,7 @@ The injection is a **tail append** — it lands *after* the latest tool result, 
 
 * **No MCP `tools/list_changed`** is emitted, so a tool-surface change (add/remove a verb) leaves *running* agent sessions with a **stale cached catalog** until they relaunch. New sessions are correct.
 * **Codex coord hook is SU-only** (pipeline-role sessions coordinate via `messages:send`/`inbox`, not the SU coord bus) and activates server-side on the next operator restart (the `:3070` host has no hot-reload).
-* **Codex managed-PTY turn injection needs a longer submit settle than Claude, plus a redundant submit.** The injected text can land in Codex’s compose box while the submit CR is still treated as paste/input, leaving the message visible but unsubmitted until a human presses Enter. `psu-pty-host.mjs` therefore derives the CR plan from `PAPERCUSP_AGENT`: Claude/OMP keep the single 150 ms CR path; Codex uses the longer `PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS` path (default 500 ms), then a second delayed CR (`PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS`, default 300 ms). Do not collapse this back to one global delay without a live Codex coord-injection check.
+* **Codex managed-PTY turn injection needs a longer submit settle than Claude, plus a redundant submit.** The injected text can land in Codex’s compose box while the submit CR is still treated as paste/input, leaving the message visible but unsubmitted until a human presses Enter. `psu-pty-host.mjs` therefore derives the CR plan from `PAPERCUSP_AGENT`: Claude/OMP keep the single 150 ms CR path; Codex uses the longer `PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS` path (default 500 ms), then a second delayed CR (`PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS`, default 300 ms). The code path is `controlWritesForAgent(decoded, env.PAPERCUSP_AGENT, env)`: raw interrupt bytes still write once immediately, while turn injections write text first and submit CR(s) as later ordered steps. Do not collapse this back to one global delay without a live Codex coord-injection check.
 * **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a real OMP turn to observe.
 
 # Integration-testing coord modules with module-level PG handles
@@ -7019,9 +7110,9 @@ To list a *specific* workspace’s harnesses (the `?workspace=` query param on `
 
 Corollary: server-side edits to `harness/testing.ts` need a host restart (`systemctl --user restart papercup-dev-api.service`) — the `:3070` host has no hot-reload — and frontend edits to `HarnessTestsView` ship via the operator-vite watch-build + a desktop reload.
 
-# The 5-rule harness-tree classifier
+# The 4-kind harness-tree classifier + qualified-slug rule
 
-> When walking a git repo's nested .git entries, classify each as submodule / worktree / standalone / plain-dir. Used by the harness-creation flow to decide what becomes a sub-harness.
+> When walking a git repo's nested .git entries, classify each as submodule / worktree / standalone / plain-dir, and derive qualified slugs for submodules. Used by the harness-creation flow to decide what becomes a sub-harness.
 
 ## What
 
@@ -7029,13 +7120,13 @@ Corollary: server-side edits to `harness/testing.ts` need a host restart (`syste
 
 When you point the harness-creation flow at an existing git repo (Entries 1, 2, or 3 of the §3 create-harness wizard), it walks the directory looking for nested `.git` entries and decides whether each one becomes a sub-harness, a separate root harness, or part of the parent. The classifier lives at `packages/operator-core/lib/harness/classify-tree.ts` (papercusp-dogfood-v5 P-007).
 
-There are **five outcomes**, ordered by precedence:
+There are **four classified kinds**, plus a fifth rule that derives the sub-harness slug for submodules:
 
 1. **Submodule** — `.git` is a *file* whose contents point into the parent repo’s `.git/modules/<name>/`. → Becomes a **sub-harness**.
 2. **Worktree** — `.git` is a *file* whose contents point into the same repo’s `.git/worktrees/<name>/`. → **NOT a new harness** (it’s an additional checkout of the same repo, which is what phases already are).
 3. **Standalone** — `.git` is a *directory* with its own `HEAD` etc. → Becomes a **separate root harness**, not a sub-harness.
-4. **Plain dir** (no `.git`) — just part of the parent repo. → No harness, no recursion needed.
-5. **Tree root** — the entry point of the walk; gets its own harness with the unified queue. Sub-harnesses share that queue (`parent_slug` link) tagged by component path.
+4. **Plain dir** (no `.git`) — just part of the parent repo. → No harness.
+5. **Qualified slug** — a submodule’s slug is path-qualified as `<parentSlug>/<relPath>` (for example `papercup/libs/papercusp`). This is a field on the `submodule` result, not a separate classified kind.
 
 ## Why distinguishing matters
 
@@ -7060,28 +7151,28 @@ The classifier reads the first line of `<dir>/.git` and pattern-matches:
 .git contents start with
   "gitdir: <abs>/.git/modules/" → submodule (rule 1)
   "gitdir: <abs>/.git/worktrees/" → worktree (rule 2)
-  anything else              → standalone (rule 3, fallback)
+  malformed / unknown target → plain (rule 4, conservative fallback)
 ```
 
-For directories without `.git`, the walker descends into them *unless* it hits a `.git` directory in a child — at which point the classifier fires and a single decision is made for that subtree.
+For directories without `.git`, the walker descends into them. It also descends into submodules by default (`recurseIntoSubmodules: true`) so sub-sub-harnesses can be discovered; callers that only want direct children pass `recurseIntoSubmodules: false`. Worktrees and standalone repos are never recursed into.
 
 ## Real-world layout (papercup itself)
 
 [Section titled “Real-world layout (papercup itself)”](#real-world-layout-papercup-itself)
 
-papercup has (after the 2026-05-31 borrowable-submodule regroup under `libs/generic/` + the `test-config`/`testing-shell` promotions):
+papercup has (after the 2026-05-31 borrowable-submodule regroup under `libs/generic/`, the `test-config`/`testing-shell` promotions, snapshot-system retirement, and `zero-harness` de-materialization):
 
 * 1 tree root: the papercup repo at `/home/marsh-office/papercupai-workspace/papercup`
-* 7 direct-child submodules under `libs/`: `agent-chat`, `papercusp-db`, `papercusp-shared`, `papercusp`, `test-config`, `testing-shell`, `zero-harness` (the formerly-direct `git-graph`/`papergrid`/`sync`/`ui-primitives` submodules now live under `libs/generic/`)
-* 7 plain dirs under `libs/`: `flags`, `generic`, `holepunch-spike`, `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth` (`generic/` itself is plain at depth 0 — it holds the regrouped borrowable submodules below it)
+* 6 direct-child submodules under `libs/`: `agent-chat`, `papercusp-db`, `papercusp-shared`, `papercusp`, `test-config`, `testing-shell` (the formerly-direct `git-graph`/`papergrid`/`sync`/`ui-primitives` submodules now live under `libs/generic/`; `zero-harness` is retired and not materialized)
+* 6 plain dirs under `libs/`: `flags`, `generic`, `holepunch-spike`, `host-platform`, `marketplace-public-ui`, `papercusp-publish-auth` (`generic/` itself is plain at depth 0 — it holds the regrouped borrowable submodules below it)
 * Many worktrees in siblings of the papercup repo (`papercup-backup`, `papercup-design-migration`, etc.) — those are detected if a future walk starts above papercup, but the classifier never confuses them for new harnesses.
 
-Total direct `libs/` count: 14 dirs (7 submodules + 7 plain), exactly what the test asserts against:
+Total direct `libs/` count: 12 dirs (6 submodules + 6 plain), exactly what the test asserts against:
 
 packages/operator-core/lib/harness/classify-tree.test.ts
 
 ```ts
-it('matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regrouped under libs/generic/)', ...)
+it('matches the libs/ layout: 6 submodules + 6 plain (borrowable submodules regrouped under libs/generic/)', ...)
 ```
 
 ## When you touch this code
@@ -7089,7 +7180,7 @@ it('matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regr
 [Section titled “When you touch this code”](#when-you-touch-this-code)
 
 * **Adding a 6th rule** (e.g. `git-annex` repos, fossil repos)? Add to the precedence list and update the test count. The classifier is a pure function over (path, fs) → outcome; tests are cheap.
-* **Changing the walker boundary**? The current default stops recursion at the first nested `.git` entry. If you change that, you’ll start materializing harnesses for every git repo at every depth (probably not what you want for nested monorepos).
+* **Changing the walker boundary**? The current default stops recursion at worktrees and standalone repos, but recurses into submodules unless `recurseIntoSubmodules: false`. If you change that, you’ll change whether nested submodules become visible to harness creation.
 * **Changing the slug derivation**? Sub-harness slugs are path-qualified relative to the tree root (e.g. `papercup/libs/sync`). Changing this collides with existing harness registry entries.
 
 ## Related
@@ -9818,7 +9909,7 @@ A real cutover means the sidecar must HOST the full `bootHarnessSubstrate` (core
 
 # Live 2-machine K-CUT re-key witness — the working recipe + the federation gaps (WI-560)
 
-> How to run the live fed-a/fed-b K0→K1→K-revoke→K-CUT re-key cut-off witness on the linux-test-vm rig, what actually works, and the two real blockers that keep the JOINER (fed-b) from receiving the federated epoch keys: (1) live announce→admit needs a gh-ATTESTED device announce, absent on the gh-unauthed VMs — so admit fed-b via the owner approval path (seed the pending-join + hive:membership_decide); (2) the hive_epoch_keys projection rides the repo-LESS hive HOME log, and a joiner only peers a HOME its operator booted at STARTUP — a view-join after startup never boots the home substrate (repo-bound MEMBERS federate fine without gh; repo-less HOMES need gh-auth announce). Owner-side K-CUT is fully verifiable on fed-a regardless. Discovered 2026-06-24 running WI-560.
+> How to run the live fed-a/fed-b K0→K1→K-revoke→K-CUT re-key cut-off witness on the linux-test-vm rig, what actually works, and the remaining live blocker for JOINER-side epoch-key receipt: live announce→admit still needs a gh-ATTESTED device announce, absent on the gh-unauthed VMs — so admit fed-b via the owner approval path (seed the pending-join + hive:membership_decide). Current joinHiveAsView now records the owner's hive pubkey and re-keys joined member substrates in place, so post-startup view joins no longer require a joiner restart just to move member substrates onto the hive topic. Owner-side K-CUT is fully verifiable on fed-a regardless. Discovered 2026-06-24 running WI-560; refreshed 2026-06-25 after EI-681 join-hive fixes.
 
 The C-001 read-plane re-key flip (`papercusp-hive-rekey`) is owner-gated on a **live 2-machine K-CUT witness** (WI-560; see [hive-rekey-flip-readiness](/internal/docs/agent-insights/hive-rekey-flip-readiness)). This page is what running it on the `scripts/linux-test-vm` rig actually taught: the re-key **mechanism** is green end-to-end at the authoritative OWNER layer, and the only thing standing between that and the joiner-side confirmation is **federation transport**, not the re-key code.
 
@@ -9871,17 +9962,29 @@ fed.sh a mcp hive:membership_decide '{"hive":"<hive-home>","githubUserId":<id>,"
 
 The grant/cut path is 100% production code; only the *discovery* of the device is shortcut (the gh-attestation concern is orthogonal to the re-key mechanism). The real fix for live admission is restoring gh auth on the VMs (WI-757).
 
-## Gap 2 — delivering to the joiner: repo-LESS homes don’t federate without gh + a boot
+## Current behavior (2026-06-25) — join-hive now re-keys members in place
 
-[Section titled “Gap 2 — delivering to the joiner: repo-LESS homes don’t federate without gh + a boot”](#gap-2--delivering-to-the-joiner-repo-less-homes-dont-federate-without-gh--a-boot)
+[Section titled “Current behavior (2026-06-25) — join-hive now re-keys members in place”](#current-behavior-2026-06-25--join-hive-now-re-keys-members-in-place)
 
-This is the one that blocks the joiner-side confirmation:
+The original WI-560 witness found that a view-join performed after operator startup left joined member substrates on their per-repo `gh:<repo_id>` topics while the owner served the hive on the hive-pubkey topic. That part is now fixed in `packages/operator-core/lib/harness/join-hive.ts`:
+
+* `joinHiveAsView` accepts or resolves the owner’s `hivePubkey` from discovery.
+* It writes a remote hive identity with `upsertRemoteHiveIdentity`, using a non-signing `remote:<hiveId>` keychain id so the joiner can resolve the same hive topic without pretending to own the hive.
+* After stamping `hive_slug` on the joined members, it calls `rekeyHarness(workspaceId, memberSlug)` for each successful join. That re-resolves the substrate binding in place onto the owner’s hive-pubkey topic; a joiner operator restart is no longer required solely to move post-startup joins onto the hive topic.
+
+The remaining live-rig blocker is therefore narrower: the owner still has to announce the hive/home identity on the shared topic, and the gh-unauthed VMs still cannot produce the attested live announce path. Use the owner approval path below for membership grant/cut testing until VM gh auth is restored.
+
+## Gap 2 — historical note: repo-LESS homes did not federate without gh + a boot
+
+[Section titled “Gap 2 — historical note: repo-LESS homes did not federate without gh + a boot”](#gap-2--historical-note-repo-less-homes-did-not-federate-without-gh--a-boot)
+
+This was the second blocker observed on 2026-06-24 before EI-681 landed:
 
 * **Repo-bound MEMBER harnesses federate fine without gh auth** — they rendezvous on the public repo topic (`shared_repo_binding_cache.harness_topic`). On the rig fed-b actively peers hello-world / fixawitness / spoon-knife members + a freshly-joined member clone.
 * **The repo-LESS hive HOME needs the gh-auth-bound announce** (`local-announce-identity` → `resolveLocalAnnounceIdentity` throws when gh-unauthed ⇒ `boot.ts` keeps it local-only; see [substrate-swarm-self-heal-no-restart](/internal/docs/agent-insights/substrate-swarm-self-heal-no-restart)
   * the [restart runbook §6](/internal/docs/agent-insights/federation-rig-restart-runbook)).
 * **`hive_epoch_keys` (and `hive_members`) federate over the HOME log** (the A-003 hive-home seam), NOT the member topic. So even when the joiner peers the member, the epoch keys never arrive.
-* **A joiner only peers a HOME its operator booted at STARTUP.** `joinHiveAsView` clones the member harnesses but does NOT boot the home substrate; the home boots on the operator’s startup sweep. A hive view-joined AFTER startup is never peered until the next restart (the WI-559 self-heal join-retry only retries a boot that was *attempted* and failed).
+* **A joiner only peered a HOME its operator booted at STARTUP.** Before EI-681, `joinHiveAsView` cloned the member harnesses but did not materialize the remote hive identity or re-key member substrates after stamping `hive_slug`, so a hive view-joined after startup stayed on member repo topics until a restart.
 
 ### To complete the live joiner-side receipt
 
@@ -9889,7 +9992,7 @@ This is the one that blocks the joiner-side confirmation:
 
 1. Restore gh auth on the OWNER VM with its **correct historical identity** (host `gh auth token` piped over ssh — runbook §6; reversible, no restart) so the home announces.
 2. Re-publish the hive (a go-private K1 WITHDRAWS it — re-`discovery:set_hive public` after).
-3. **Restart the JOINER’s operator** so it boots the post-startup-joined hive’s home substrate (this changes the joiner’s dynamic port — coordinate; other rig agents depend on it).
+3. Re-run the join/discovery path with the current driver. `joinHiveAsView` now records the remote hive identity and calls `rekeyHarness` for joined members in place; only restart the joiner if you need to recover from an already-wedged old run or to pick up a new deploy.
 
 Then the joiner replicates the owner’s home log and ends up holding epoch 0..K-1 (the keys it legitimately had) but **never the post-ban epoch** — the live K-CUT, and (with content encryption on) the AEAD content read-cut.
 
@@ -10169,7 +10272,7 @@ It self-healed: once the `:3070` deploy restarted it onto the flip (`9c78a5512`,
 
 [Section titled “The compounding gap — the deploy gate can’t see it”](#the-compounding-gap--the-deploy-gate-cant-see-it)
 
-The post-deploy gate does **not** prove the consumer path works: `health-probe.ts` probes `/api/health` + `POST /api/mcp initialize`; `verify-release-paths.ts` checks runtime file reads resolve under the release root. **Neither does a papercup plan read.** So a deploy that lands a half-state (move-without-flip *or* flip-without-move) **passes the gate and does not auto-rollback**. The migration header’s “papercup-read health-check → rollback” was aspirational, not implemented.
+The post-deploy gate does **not** prove the consumer path works: `health-probe.ts` probes `/api/health` + `POST /api/mcp initialize` (now with the strict MCP `Accept: application/json, text/event-stream` header); `verify-release-paths.ts` checks runtime file reads resolve under the release root, with a special prompt-decoupling policy when a prompt-root override is active. **Neither does a papercup plan read.** So a deploy that lands a half-state (move-without-flip *or* flip-without-move) **passes the gate and does not auto-rollback**. The migration header’s “papercup-read health-check → rollback” was aspirational, not implemented.
 
 ## The submodule-gitlink trap — it bit twice
 
@@ -10188,7 +10291,7 @@ The migration that mattered (295) lives **inside the `libs/papercusp` submodule*
 
 * **A lockstep migration+code-flip is only atomic if every operator that shares the DB flips its code in the same beat.** If staging and release share a DB, expect the migration to leak to the shared DB the moment *either* boots the new tree. Plan for it: prefer a **backward-compatible migration** (old resolver still returns rows post-migration — dual-write/dual-read, a compatibility view, or a transition where both workspace ids resolve) over a hard cutover; or deploy the flip to **all** shared-DB operators together; or sequence so the flip lands first.
 * **On a move-without-flip half-state, do NOT restore the DB** — the data is correctly moved; un-moving it re-creates the original empty-frontier bug. The fix is forward: land the code flip. (Inverse of the flip-without-move case, where reverting the code *is* the safe recovery.)
-* **Verify the consumer read yourself; don’t trust “health passed”.** The gate’s green is `/api/health` + MCP-init, not a domain read. Prove the flip with a read that can only succeed post-cutover — e.g. `plans:get` on a plan that now lives *only* in the new workspace (old resolver would 404 it). `plans:*` are PG-resolver-backed (`harness_plans` via `resolvePlanScope`; the FS path is retired), so they exercise the live resolver.
+* **Verify the consumer read yourself; don’t trust “health passed”.** The gate’s green is `/api/health` + MCP-init, not a domain read. Prove the flip with a read that can only succeed post-cutover — e.g. `plans:get` on a plan that now lives *only* in the new workspace (old resolver would 404 it). `plans:*` are PG-resolver-backed (`harness_plans` via `resolvePlanScope`; the FS path is retired), and current `resolvePlanScope` maps the operator-home scope to `PAPERCUSP_WORKSPACE_ID` and concrete member harnesses to their Hive home, so a real `plans:get` exercises the live resolver and Hive-scoped plan key.
 * **Worth fixing:** add a real papercup-plan-read probe to the deploy health gate so a half-state triggers the existing rollback path. Filed via `improvements:capture`.
 
 Related: \[\[boot-wire-drain-ordering]]; plans `release-gate-ready-branch-2026-06-04`, `staging-branch-pipeline-2026-06-06`.
@@ -10469,6 +10572,126 @@ Once the GUI is unlocked, the productive way to drive + verify the running deskt
 
 * VM inventory, ports, disk discipline: [build-system/vms](/internal/docs/build-system/vms)
 * `diskutil apfs resizeContainer disk1s2 0` fails with “must be different size” after a host-side qcow2 grow until you first run `sudo diskutil repairDisk disk1` (the GPT still carries the old size). That sequence took the VM from 7 GiB free to 60 GiB on 2026-06-11.
+
+# macOS packaged app has a minimal PATH and no bundled git — the dogfood clone fails on a fresh Mac
+
+> A packaged macOS GUI app is launched by launchd with a MINIMAL PATH (/usr/bin:/bin:/usr/sbin:/sbin) — it does NOT inherit the shell PATH, so Apple-Silicon Homebrew's /opt/homebrew/bin is absent. Worse, the desktop does NOT vendor git on macOS (build-desktop-sidecar.sh assumes macOS ships git — false: a CLT-less Mac has only the /usr/bin/git STUB that fails non-interactively). So the first-boot dogfood `git clone` fails with a bare 'workspace setup failed'. Fix: serve.ts now adds /opt/homebrew/bin (tool-path.ts) + the wizard surfaces an actionable 'xcode-select --install' hint.
+
+Two macOS-specific facts conspire to make the first-boot dogfood `git clone` (and thus the whole setup wizard) fail on a **fresh** Mac — with a useless generic “Setting up Papercusp workspace failed”.
+
+## 1. A packaged GUI app gets a MINIMAL PATH
+
+[Section titled “1. A packaged GUI app gets a MINIMAL PATH”](#1-a-packaged-gui-app-gets-a-minimal-path)
+
+launchd starts a `.app` with `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — it does **not** inherit your shell’s PATH. So **`/opt/homebrew/bin`** (Apple-Silicon Homebrew’s prefix, where `gh`/`git`/`kopia` live for most users) is absent. The Rust side (`main.rs`) already prepends the bundled `sidecar/bin` (node, gh, …), but the old PATH lists in `serve.ts` / `terminal-spawn.ts` listed only `/usr/local/bin` (Intel Homebrew) — never `/opt/homebrew/bin`. Meanwhile the DETECTION sites (`preflight.ts`, `agent-auth-detect.ts`) *did* probe `/opt/homebrew/bin` — so the app reported “gh installed” while execution couldn’t run it. Fixed by routing every PATH through `tool-path.ts` (`standardToolDirs` / `ensureToolPathEnv`), which includes both Homebrew prefixes.
+
+## 2. macOS does NOT ship a working git by default
+
+[Section titled “2. macOS does NOT ship a working git by default”](#2-macos-does-not-ship-a-working-git-by-default)
+
+`build-desktop-sidecar.sh` vendors `git` only on Windows (MinGit), assuming “macOS/Linux ship git by default”. **False for macOS:** a Mac without Xcode Command Line Tools has only the `/usr/bin/git` **stub**, which on non-interactive invocation prints `xcode-select: note: no developer tools were found …` and exits non-zero (it would otherwise pop a GUI install dialog). The sidecar bundles `gh`/`node`/`omp`/`pg_*` but **not** `git`.
+
+Immediate unblock (no rebuild needed)
+
+On a fresh Mac the existing build’s clone works once git is present: run `xcode-select --install` (or `brew install git`) in the VM, then retry setup. `gh` is bundled and `gh auth setup-git` is already wired, so the credential helper resolves — only `git` itself was missing.
+
+## What ships now (mitigations)
+
+[Section titled “What ships now (mitigations)”](#what-ships-now-mitigations)
+
+* `serve.ts` → `ensureToolPathEnv()` puts `/opt/homebrew/bin` on the sidecar PATH (runs on darwin even without `PAPERCUSP_SIDECAR_BIN`), so a Homebrew git/gh is found.
+* `clone-github.ts` `isGitUnavailable()` detects the CLT-stub stderr → `git_missing` with an actionable message (`xcode-select --install` / `brew install git`).
+* The wizard (`BootstrapFinishGate` / `DogfoodBootstrapBanner`) shows the install hint and does **not** auto-retry a git-missing error (it’s a user-action error, not transient — distinct from the network-timeout auto-retry path).
+* `bootstrap-papercusp-hive.ts` now logs the real clone failure (code + git stderr) — the diagnostic that was missing cost a full live debugging round.
+
+## The robust fix (deferred — needs a Mac build box)
+
+[Section titled “The robust fix (deferred — needs a Mac build box)”](#the-robust-fix-deferred--needs-a-mac-build-box)
+
+Vendor a relocatable git for macOS in the sidecar (mirror the Windows MinGit approach) so a truly fresh Mac works zero-friction — tracked as **EI-3620**. macOS has no official portable git; evaluate a relocatable Homebrew bottle (with `install_name_tool` rpath fixups), a static build, or auto-triggering `xcode-select --install`. Must be per-arch (arm64 + x64), signed/notarized. Same class of risk: verify the bundled embedded-Postgres / `pg_*` binary arch matches the app arch on a real Mac build.
+
+# macOS code signing + notarization — the turnkey public-release runbook
+
+> For a PUBLIC macOS release the .app MUST be Apple-signed (Developer ID Application) + notarized + stapled, or Gatekeeper refuses it on every fresh Mac ('Apple cannot check it for malicious software'). The build pipeline (mac-vm-build.sh → tauri build) already signs+notarizes automatically WHEN the Apple credentials are present in env — so this is gated only on the OWNER supplying: an Apple Developer Program membership, a Developer ID Application cert imported on build VM :2222, and notarytool creds (APPLE_ID + app-specific password + APPLE_TEAM_ID, or an App Store Connect API key). Entitlements (entitlements.plist) are already wired for the embedded-Node JIT under the hardened runtime.
+
+The one **owner-action** blocker between the current build and a confident **public** macOS release. Everything else (the never-trap setup gate, the `.gitmodules` fix, the build pipeline) is done in code; this needs Apple credentials an agent cannot obtain.
+
+Why it's mandatory for PUBLIC release
+
+The alpha bundle is unsigned/un-notarized (plan `mac-desktop-release-readiness-2026-06-11` D-002 — first launch needed right-click → Open or `xattr -dr com.apple.quarantine`). That is fine for a handful of insiders but **not** for the public: Gatekeeper blocks an unsigned, un-notarized app downloaded from the internet with *“Papercusp can’t be opened because Apple cannot check it for malicious software,”* and most users delete it rather than dig through System Settings → Privacy & Security to override.
+
+## The good news: the pipeline already does it — when creds are present
+
+[Section titled “The good news: the pipeline already does it — when creds are present”](#the-good-news-the-pipeline-already-does-it--when-creds-are-present)
+
+`tauri build` (invoked by `bin/mac-vm-build.sh`) **automatically** code-signs every bundled executable and notarizes + staples the `.app`/`.dmg` **iff** the Apple env vars below are set. Tauri v2 signs sidecars and frameworks too, so the embedded `node` / `gh` / `pg_*` / `zellij` binaries are covered. No script change is required — the gate is purely the credentials.
+
+`entitlements.plist` is already created and referenced from `tauri.conf.json > bundle > macOS > entitlements`. It is **required**: under the hardened runtime (which notarization forces on) the embedded Node V8 JIT is killed without `com.apple.security.cs.allow-jit` + `allow-unsigned-executable-memory`, and the mixed sidecar binaries need `disable-library-validation`. (The entitlements file is inert for an unsigned build, so it is safe in the tree today.)
+
+## What the OWNER must provide (one-time)
+
+[Section titled “What the OWNER must provide (one-time)”](#what-the-owner-must-provide-one-time)
+
+1. **Apple Developer Program membership** (\~$99/yr) for the Papercusp Apple account — required to issue a *Developer ID Application* certificate (the cert type for apps distributed **outside** the App Store).
+
+2. A **`Developer ID Application: <Name> (<TEAMID>)` certificate**, created at developer.apple.com → Certificates, exported from Keychain Access as a password-protected `.p12`.
+
+3. A **notarytool credential**, either:
+
+   * an **app-specific password** for the Apple ID (appleid.apple.com → Sign-In & Security → App-Specific Passwords), **or**
+   * an **App Store Connect API key** (`.p8` + Key ID + Issuer ID) — preferred for automation (doesn’t expire with the Apple ID password).
+
+## One-time install on build VM :2222
+
+[Section titled “One-time install on build VM :2222”](#one-time-install-on-build-vm-2222)
+
+```sh
+# On the Mac build VM (ssh -p 2222 aviweiss@127.0.0.1):
+security import DeveloperID.p12 -k ~/Library/Keychains/login.keychain-db \
+  -P '<p12-password>' -T /usr/bin/codesign
+security find-identity -v -p codesigning   # copy the "Developer ID Application: …" line
+```
+
+## Per-build env (set before bin/mac-vm-build.sh)
+
+[Section titled “Per-build env (set before bin/mac-vm-build.sh)”](#per-build-env-set-before-binmac-vm-buildsh)
+
+`mac-vm-build.sh` already inherits the SSH env, so export these in the remote shell (or add them to the `release-local.sh` WITH\_MAC leg):
+
+```sh
+export APPLE_SIGNING_IDENTITY="Developer ID Application: <Name> (<TEAMID>)"
+# Notarytool — Apple ID path:
+export APPLE_ID="<apple-account-email>"
+export APPLE_PASSWORD="<app-specific-password>"   # NOT the account password
+export APPLE_TEAM_ID="<TEAMID>"
+# …or App Store Connect API-key path instead of the three above:
+#   export APPLE_API_KEY="<KEYID>"; export APPLE_API_ISSUER="<ISSUERID>"
+#   export APPLE_API_KEY_PATH="$HOME/AuthKey_<KEYID>.p8"
+```
+
+(If the cert is provided only as a base64 `.p12`, set `APPLE_CERTIFICATE` + `APPLE_CERTIFICATE_PASSWORD` instead of pre-importing — Tauri infers the identity. `APPLE_SIGNING_IDENTITY` overrides `tauri.conf > bundle > macOS > signingIdentity`.)
+
+## Verify the result
+
+[Section titled “Verify the result”](#verify-the-result)
+
+```sh
+APP=src-tauri/target/universal-apple-darwin/release/bundle/macos/Papercusp.app
+codesign --verify --deep --strict --verbose=2 "$APP"
+codesign -dvv "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier'   # Developer ID, your TEAMID
+spctl --assess --type execute --verbose "$APP"                   # → "accepted, source=Notarized Developer ID"
+xcrun stapler validate "$APP"                                    # → "The validate action worked!"
+```
+
+A truly fresh Mac (no quarantine override, never seen the cert) should then open the downloaded `.dmg` → app with **no** Gatekeeper warning.
+
+## Caveats specific to this app
+
+[Section titled “Caveats specific to this app”](#caveats-specific-to-this-app)
+
+* **Sidecar arch / Rosetta (D-006).** The sidecar is x86\_64-only; on Apple Silicon it runs under Rosetta 2 (one-time `softwareupdate --install-rosetta`). Signing/notarization still succeed, but say so in the public release notes, or ship a universal sidecar to drop the requirement (plan `mac-public-release-readiness-2026-06-25` P-007).
+* **Notarization is slow** (Apple-side, minutes) and runs in the same `tauri build`. Budget for it in the release window.
+* **Updater payloads** stay minisign-signed (separate from Apple signing) — that already works.
 
 # Maintained work-item readiness — a local sidecar, NOT a column (work_items federates)
 
@@ -12092,18 +12315,19 @@ During the coord FS→PG cutover, a real `coord:send` kept writing `coord/messag
 
 See also the user-level memory note `verify-server-pid-before-measuring` and the engineer playbook’s CLAUDE.md pointer.
 
-# operator-core `lint:tsc` is a COUNT gate — vitest-green ≠ tsc-clean
+# operator-core `lint:tsc` is a COUNT gate — vitest-green != tsc-clean
 
-> npm run lint:tsc gates packages/operator-core on a TOTAL tsc-error count vs .tsc-baseline.json and hard-blocks green-checkpoint when it rises. vitest (esbuild) does NOT typecheck, so a vitest-green test edit can add tsc errors that tip the count over baseline. Run lint:tsc after operator-core edits — not just test:affected.
+> npm run lint:tsc gates packages/operator-core on a TOTAL tsc-error count vs .tsc-baseline.json, hard-fails TS1xxx syntax errors, and hard-blocks green-checkpoint when it rises. vitest (esbuild) does NOT typecheck, so a vitest-green test edit can add tsc errors that tip the count over baseline. Run lint:tsc after operator-core edits — not just test:affected.
 
 ## What
 
 [Section titled “What”](#what)
 
-`npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the **total error count** against `packages/operator-core/.tsc-baseline.json` (a single number — \~455 as of 2026-06-13). The gate:
+`npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the **total parsed error count** against `packages/operator-core/.tsc-baseline.json` (a single number: `262` as of 2026-06-25). The gate:
 
 * **count > baseline ⇒ HARD FAIL** — and it runs in green-checkpoint, so a single net-new error **blocks the whole fleet’s deploy**, not just yours.
-* **count < baseline ⇒ auto-ratchet down** — improvements lock the baseline lower; it can never silently regress. Raising the baseline is a deliberate human edit, never automatic.
+* **count < baseline ⇒ auto-ratchet down** — improvements lock the baseline lower, with or without `--update`; it can never silently regress. `--update` only lowers or no-ops when the count already equals the baseline. Raising the baseline is a deliberate human edit, never automatic.
+* **any TS1xxx parse error ⇒ HARD FAIL** — syntax-broken files fail regardless of the total count because `tsc` under-reports the errors behind a parse failure.
 * It is **position-independent**: only the count matters. Adding lines above a pre-existing baselined error doesn’t “create” it, but any *net-new* error (yours, or one a refactor newly exposes) tips the total over.
 
 This is a different mechanism from the apps/operator “scope to touched files” baseline (\[\[tsc-baseline-vs-next-build]]) — there the move is per-file; here it’s a hard count gate on one package.
@@ -12129,6 +12353,7 @@ npm run lint:tsc        # the authoritative gate — count vs baseline
 ```
 
 * If it prints `> baseline`, your touched files added tsc errors — fix them. **Do not** raise the baseline to absorb your own new errors (the script only ratchets *down*; raising is a reviewed human act with a justification).
+* If it reports TS1xxx syntax-broken files, fix those files first. The count is intentionally ignored for this verdict.
 * To see *which* of your files contribute, grep the tsc output: `npx tsc -p packages/operator-core/tsconfig.json --noEmit 2>&1 | grep '<your-file>'` — a clean file is **zero** lines there.
 * `test:affected` (vitest) is necessary but **not sufficient** — it proves behavior, not types. Run both.
 
@@ -12657,6 +12882,39 @@ Resolution order reads **left → right; the LAST present layer wins.**
 
 A new override that skips either contract reintroduces exactly the sprawl this backbone exists to kill: an override invisible to the audit surface, or yet another inconsistent badge/reset the user has to learn. If a mechanism genuinely doesn’t fit (no baked default, accumulated state, foreign store — see budget / backup above), say so explicitly in this table rather than silently omitting it.
 
+# Overwatch empty invoke bodies must trigger the scorecard backstop
+
+> The shared no-turn classifier treats an unreadable/empty invoke body as uncertain for generic roles, but Overwatch must fail closed because every wake owes a scorecard. An empty HTTP 200 body is a launch failure for Overwatch, not a successful monitor turn.
+
+## Failure pattern
+
+[Section titled “Failure pattern”](#failure-pattern)
+
+An Overwatch wake can reach the invoke route, return HTTP 200, and still produce an empty response body. For generic fleet roles, `agentProducedTurn('')` intentionally preserves legacy behavior and assumes the result is uncertain rather than failed. Do not reuse that generic uncertainty rule as the final Overwatch decision.
+
+Overwatch is a monitor. Every wake must either emit a complete `hive-coordination-health` scorecard or run `overwatchScorecardEndCheck` to synthesize the deterministic floor. An empty invoke body proves the parent cannot verify that the monitor turn happened, so the Overwatch launch path must record a no-turn error and run the scorecard backstop.
+
+## Correct fix point
+
+[Section titled “Correct fix point”](#correct-fix-point)
+
+Keep the generic classifier conservative in `packages/operator-core/lib/fleet/invoke-outcome.ts`. Apply the fail-closed rule in `packages/operator-core/lib/overwatch/loop.ts`, where the role-specific invariant is known:
+
+* HTTP failures run the backstop.
+* HTTP 200 with `{ ok:false }` runs the backstop.
+* HTTP 200 with `{ ok:true }` but empty `agentOutput` or `stdout` runs the backstop.
+* HTTP 200 with an empty body runs the backstop.
+
+Classify from the full response body, then separately bound the string used in log/fire messages. Parsing a clipped body can turn a real invoke result into an “unparseable” result.
+
+## Regression guard
+
+[Section titled “Regression guard”](#regression-guard)
+
+The guard lives in `packages/operator-core/lib/overwatch/loop.test.ts`: `HTTP 200 + empty invoke body is a no-turn error for Overwatch, not ok`.
+
+If this fails, the autonomous loop can go silent in the exact place the Overwatch is supposed to create the scorecard Scout reads.
+
 # Overwatch (and Queen/hive) flag ON ≠ running — the 'started' control-bit is a separate, persisted switch
 
 > Owner flips the papercusp-overwatch flag ON, but overwatch never runs: the routine fires yet produces zero runs. The flag is only the GATE; overwatch:start sets a SEPARATE persisted control-bit (operator_settings KV) that the launch handler also requires. Flag-on without start = gated-open-but-not-armed = a silent no-op. How to spot it, why dev:sessions hides it, and the durable fix.
@@ -12739,6 +12997,14 @@ STEP 2 was unit-green and worked for a **JOINER** receiving the owner’s conten
 The tell: STEP-1 admission (`resolveSameHiveMember` in boot.ts) ALREADY resolves the owner’s home — it uses `hiveHomeProjectionSlug ?? hiveHomeSlugForHarness(ws, slug)` (and `hiveHomeSlugForHarness` returns the own slug for an owner via `getHiveBySlug`). So the owner **admitted** the member’s log but then **dropped** its content. STEP-1 resolved the home; STEP-2 didn’t. Same harness, two different hive-home resolutions — that gap is the bug.
 
 This is why the plan’s A→B-centric diagnosis (D-013→D-016) “eliminated hiveHomeSlug resolution”: for the A→B direction the receiver is a joiner, whose hiveHomeSlug IS set. The owner-receiving (B→A) direction has the distinct undefined.
+
+## Current behavior (2026-06-25)
+
+[Section titled “Current behavior (2026-06-25)”](#current-behavior-2026-06-25)
+
+The owner fallback is now part of `bootHarnessSubstrate`: when `bindingResolvesHiveHomeProjection(opts.swarmBinding)` is true, boot resolves `hiveHomeSlugForHarness(workspaceId, harnessSlug)` and keeps it only when `home === harnessSlug`. Both the scoped apply path (`buildHarnessProjectionApply`) and the global projection registration pass `hiveHomeSlug: hiveHomeProjectionSlug ?? ownHiveHomeSlug`, so an owner’s home harness engages the membership-aware content guard while a joiner keeps its remote-home rebind.
+
+The current wiring also keeps the two apply paths aligned: `boot.ts` passes the same fallback into `buildHarnessProjectionApply` and `registerAllHarnessProjections`, and both share the boot-scoped `PendingMembershipContent` buffer. That means guarded content can defer until the corresponding `hive_members` row arrives on either path. The fallback stays behind the `bindingResolvesHiveHomeProjection` gate, so ordinary private/local/gh harness boots still avoid the owner-home lookup.
 
 ## Fix
 
@@ -13102,9 +13368,11 @@ if (!VALID_SLUG.test(slug)) throw new Error(`invalid slug: ${slug}`);
 
 A `..` segment cannot traverse without a `/` — so rejecting `/` on the raw segment is enough, and it’s robust against the `path.join` normalization that defeats a `..`-substring check. (`..` alone, with no slash, just yields a weird filename like `...md` inside the intended dir — not an escape.)
 
-If you must validate a *path* rather than a single segment, validate the **raw** string for `..` segments first, and only then canonicalize — which is exactly what `path-normalize.ts` does correctly (`validatePath` runs on the raw path, `canonicalizePath` after). The canonical source is now `libs/papercusp/packages/locks/src/path-normalize.ts`, re-exported through `packages/operator-core/lib/agent-tools/locks/path-normalize.ts`. The `withPlanLock` bug was feeding it a path that an earlier `path.join` had already canonicalized.
+If you must validate a *path* rather than a single segment, validate the **raw** string for `..` segments first, and only then canonicalize — which is exactly what `path-normalize.ts` does correctly (`validatePath` runs on the raw path, `canonicalizePath` after). The canonical implementation is the `@papercusp/locks` package source at `libs/papercusp/packages/locks/src/path-normalize.ts`; the operator-layer `packages/operator-core/lib/agent-tools/locks/path-normalize.ts` file is a pure re-export shim so path-validation consumers do not pull in embedded-PG discovery. The `withPlanLock` bug was feeding it a path that an earlier `path.join` had already canonicalized.
 
 > **Update (2026-06-08):** the specific `withPlanLock` instance has since been fixed. It is now PG-canonical (`plans-pg-canonical-migration-2026-06-03`): the lock key is a PG advisory lock on `workspace:harness:slug`, no longer a joined `.md` path, and the slug is validated up front against `VALID_PLAN_SLUG = /^[A-Za-z0-9._-]+$/` (`packages/operator-core/lib/agent-tools/plans/source.ts`) — exactly the `/`-rejecting charset whitelist this page recommends. The general rule below still stands; the code block above is preserved as the case study that motivated it.
+>
+> **Update (2026-06-25):** `resolvePlanScope` now also collapses concrete non-operator harness slugs to their Hive home before reading `harness_shared.harness_plans`. That changes the plan storage key, not the traversal defense: `getPlanRow` still rejects invalid slugs with `VALID_PLAN_SLUG` before the slug is used as a PG key or synthetic locator.
 
 ## Checklist when you see a traversal guard
 
@@ -16369,6 +16637,38 @@ The papercup Learning tab’s Scout view sat empty after the scout-cycle routine
 * The Learning tab Scout view reads `harness_shared.scout_routed_ideas` + the newest `scout_ticks` row (`learning-scout-read.ts`); ledger writes push `notifySyncInvalidate('learning.scout')` since 2026-06-11.
 * The scout-cycle routine self-gates on idle/friction; for a forced bring-up cycle set the routine’s `payload_template.cadence` to `{ idleThreshold: 0, minIntervalSec: 0 }` (restore `0.5`/`3600` after) — `seed-scout-routine.ts --active` reseeds the defaults.
 
+# Scout routine fires are not Scout activity
+
+> The scheduler row can advance before the Scout body records a tick. Use scout_ticks, not routines.last_fired_at alone, when deciding whether Scout is actually alive.
+
+## Failure Pattern
+
+[Section titled “Failure Pattern”](#failure-pattern)
+
+`harness_shared.routines.last_fired_at` means the routine scheduler claimed the cron row. It does not prove the Scout body ran. DBOS can hold a `routine:<id>` dedup key while a `routineFire` workflow is pending or delayed, so later cron fires collapse after the claim has already advanced the routine row.
+
+When that happens, `improvements:learning_loops` can say Scout is `firing` even though `harness_shared.scout_ticks` is stale and no scorecard-driven idea pickup is happening. That is a detector failure: the health surface trusted scheduler activity instead of the loop’s own domain ledger.
+
+## Correct Signal
+
+[Section titled “Correct Signal”](#correct-signal)
+
+For Scout, read `harness_shared.scout_ticks` as the activity proof:
+
+* A `ran` row means a budgeted Scout cycle completed.
+* A `gated` row means the Scout body ran and withheld itself for a named reason.
+* An `error` row means the Scout body ran and recorded the failure.
+
+A fresh routine fire with no fresh `scout_ticks` row is not healthy Scout activity. Treat it as stale and inspect DBOS `routineFire` dedup/queue state, gateway/account health, and the Scout cycle logs.
+
+Scout also has to bound the cycle body itself. Once the scheduler wins the fire slot, a hung LLM/gateway call must record `status:error` in `scout_ticks` and release the DBOS dedup before the outer two-hour `routineFire` deadline. The scheduler timeout is the class guard for that.
+
+## Regression Guard
+
+[Section titled “Regression Guard”](#regression-guard)
+
+`packages/operator-core/lib/scout/run.test.ts` verifies pre-scheduler Scout gates record gated tick rows. `packages/operator-core/lib/scout/scheduler.test.ts` verifies a timed-out cycle records an error tick. `packages/operator-core/lib/blueprint/learning-loop-health.test.ts` verifies Scout is marked stale when routine fires are fresh but `scout_ticks` activity is stale.
+
 # The Sentinel — the always-on voice of the hive
 
 > One role that watches the fleet AND narrates it: always-on, voice-first, short replies, status + suggestions (never deep planning). How to enable it (the SENTINEL flag + the humanFacingRole='sentinel' voice pref repoints the live converse brain), the read-context sources it walks in with (curation:state-of-hive / curation:feed / Overwatch compute-brief / fleet:assignments — never waits on the Queen), the handoff-to-Queen flow (<handoff_to_queen> → high-priority work_item + nudge, tier-gated, hindsight landing report), the live-override settings tab, and the in-progress server-side proactive path (P-018-022).
@@ -16583,6 +16883,95 @@ await m.reapZombieResumeProcs({ dryRun: false, deps: { isFlagOn: async () => tru
 * Empty-output rc=0 spawns right after any agent-config write → check `GET /api/agent-config` → `envOverrides` against what `.env.local` sets, before debugging your feature.
 * When mirroring stored config into `process.env`, never `delete` on empty — snapshot the boot env once and restore it. A settings page’s “no value” is an *absence of override*, not an instruction to strip the host’s config.
 * This matters double on auto-save settings pages (the /settings/agent page is per-field auto-save now): the mirror runs on every debounced save.
+
+# Setup-wizard "workspace setup failed" is usually a transient api.github.com connect-timeout, not auth
+
+> A valid gh token does NOT mean api.github.com is reachable: git-over-github.com (the credential helper) can succeed while direct API calls to api.github.com time out, because GitHub's edge IPs (140.82.0.0/16) can be intermittently unreachable from a given network while github.com git endpoints work. The dogfood bootstrap records clone/submodule/identity failures as a terminal 'failed', which inside the GitHub-centric setup wizard misleads users into (uselessly) re-authing. EI-3548 added a network_timeout classification + auto-retry so a transient blip self-heals.
+
+When the setup wizard reports **“Setting up Papercusp workspace failed”** (or the finish-gate “Workspace download failed”) right after a GitHub sign-in/reauth, the cause is almost never credentials. It is a **transient inability to reach `api.github.com`**.
+
+## The non-obvious part: a valid `gh` token ≠ a reachable GitHub API
+
+[Section titled “The non-obvious part: a valid gh token ≠ a reachable GitHub API”](#the-non-obvious-part-a-valid-gh-token--a-reachable-github-api)
+
+These three facts can all be true at once, and were on 2026-06-24:
+
+* `gh auth token` returns instantly and `gh api user` resolves to the right login → **auth is fine.**
+* `git ls-remote https://github.com/<owner>/<repo>` works → **git-over-HTTPS via the credential helper is fine** (it happened to resolve to a reachable edge IP).
+* `curl https://api.github.com/` / node `fetch` / `gh api user` **time out** → **the GitHub API is unreachable** (DNS handed back an edge IP whose path is currently dropping packets).
+
+GitHub serves `github.com` and `api.github.com` from the same anycast range (`140.82.0.0/16`). When a network path to a *subset* of those IPs is lossy, any given operation succeeds or times out depending on which IP DNS returns — so it looks intermittent and IP-specific, not like “GitHub is down” (it isn’t — `curl --resolve api.github.com:443:<reachable-ip>` returns 200).
+
+Fast triage
+
+`curl -4 -m8 https://api.github.com/` hanging while `curl -4 -m8 --resolve api.github.com:443:140.82.121.6 https://api.github.com/` returns 200 ⇒ partial edge reachability, not GitHub/auth. Reauth will NOT help. Check `journalctl --user` for `Connect Timeout Error (api.github.com:443, timeout: 10000ms)` — if it spans many harnesses/workspaces, it’s a shared network condition.
+
+## Why it surfaced as a scary terminal “failed”
+
+[Section titled “Why it surfaced as a scary terminal “failed””](#why-it-surfaced-as-a-scary-terminal-failed)
+
+The dogfood bootstrap (`bootstrap-papercusp-hive.ts`) records `clone` / `submodules` `status:'error'` on **any** git/github failure, and the wizard surfaces that as a terminal failure. Inside a GitHub-centric wizard, a generic “failed” reads as “your GitHub sign-in didn’t take” — so users re-auth, which cannot fix a packet-level timeout.
+
+## The fix (EI-3548) — classify + auto-retry
+
+[Section titled “The fix (EI-3548) — classify + auto-retry”](#the-fix-ei-3548--classify--auto-retry)
+
+* `clone-github.ts` classifies connection failures as **`network_timeout`** (checked before auth, since a connect failure is mutually exclusive with a `403`/“Authentication failed” that only arrives after a successful connect).
+* `useDogfoodBootstrapProgress` exposes **`networkError`**; the finish gate **auto-retries with backoff (2s/4s/8s, bounded)** before showing any terminal failure, with network-aware copy (“Couldn’t reach GitHub — retrying… / not your GitHub sign-in”). The banner mirrors this.
+* The best-effort Solution-C share substeps (`adoptShare`/`goShare`/ `shareExisting`, all of which hit the GitHub API) are wrapped so a transient timeout **warns** instead of failing an otherwise-complete workspace setup.
+
+Deferred: a shared GitHub-API client with retry + circuit-breaker for the OTHER `api.github.com` callers (`swarm-join`, `revalidate-repo-coords`, `hive-directory`) so one bad window doesn’t 10s-hang fleet-wide.
+
+# "Setup failed" on a fresh clone — a renamed `.gitmodules` URL pointed at a non-existent repo
+
+> THE root cause of the owner's recurring 'Setting up Papercusp workspace failed': the papercup→papercusp identity rename overreached into .gitmodules and rewrote two submodule URLs (libs/papercusp-db, libs/papercusp-shared) to Papercusp/papercusp-db.git / papercusp-shared.git — repos that were NEVER renamed on GitHub (404). Every FRESH dogfood clone then failed submodule init; the dev box was immune (its .git/config kept the correct papercup-* URLs). Fix: restore the URLs to papercup-db.git/papercup-shared.git + a gitmodules-invariants test that fails CI if a submodule URL goes stale again.
+
+The deterministic root cause of the owner’s repeated “Setting up Papercusp workspace failed” — **not** GitHub, **not** the network, **not** git/PATH/auth (those were red herrings / secondary robustness gaps chased first).
+
+## What broke
+
+[Section titled “What broke”](#what-broke)
+
+The papercup→papercusp identity migration (owner-directed 2026-06-20) ran a blanket `papercup`→`papercusp` rename that **overreached into `.gitmodules`** and rewrote two submodule URLs:
+
+| path                    | URL after the bad rename (404)   | real repo                       |
+| ----------------------- | -------------------------------- | ------------------------------- |
+| `libs/papercusp-db`     | `Papercusp/papercusp-db.git`     | `Papercusp/papercup-db.git`     |
+| `libs/papercusp-shared` | `Papercusp/papercusp-shared.git` | `Papercusp/papercup-shared.git` |
+
+The submodule **paths** were correctly renamed on disk, but the GitHub **repos** were never renamed — they still answer only at their `papercup-*` names. So the rewritten URLs 404.
+
+These are **load-bearing source** submodules (34+ active imports of `@papercusp/db-org` `getOrgPg` and `@papercusp/papercusp-shared`), not retired — so `git submodule update --init` fails, the dogfood bootstrap reports an error row, and the wizard shows a bare “setup failed”.
+
+## Why only fresh clones — and why it was so hard to see
+
+[Section titled “Why only fresh clones — and why it was so hard to see”](#why-only-fresh-clones--and-why-it-was-so-hard-to-see)
+
+The dev box (and any checkout that existed *before* the bad edit) was **immune**: its `.git/config` / `.git/modules/<path>/config` already cached the correct `papercup-*` URLs, and `git submodule update` reads those, not `.gitmodules`, once a submodule is initialized. Only a **fresh `git clone`** (exactly the dogfood first-boot path on the owner’s Mac/Mac-VM) reads `.gitmodules` to seed the remotes — so the breakage was invisible to every developer and reproduced only on a brand-new machine. `git submodule sync` is what copies `.gitmodules` URLs into `.git/config`; running it on a stale checkout is also how you’d *propagate* the bug.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+1. Restore the two URLs in `.gitmodules` to `papercup-db.git` / `papercup-shared.git` (git-sync pushes it → every future fresh clone works).
+2. On an already-broken clone: edit its `.gitmodules`, `git submodule sync libs/papercusp-db libs/papercusp-shared`, then re-run the bootstrap (the operator’s `POST /api/desktop/bootstrap-hive/start`, which runs in the GUI process that holds the keychain creds — an SSH shell can’t reach the GUI-bound osxkeychain).
+
+Verified end-to-end on the owner's Mac VM
+
+After the URL fix + `git submodule sync`, triggering the operator’s own bootstrap drove `uninitialized` submodules 2 → 0 in \~10s; `git submodule status` then showed `libs/papercusp-db (heads/main)` and `libs/papercusp-shared` checked out cleanly.
+
+## Recurrence guards (a detector failure too)
+
+[Section titled “Recurrence guards (a detector failure too)”](#recurrence-guards-a-detector-failure-too)
+
+* **`gitmodules-invariants.test.ts`** parses the committed `.gitmodules` and fails the build if any submodule URL matches the known-dead `papercusp-db` / `papercusp-shared` names, if the two load-bearing submodules don’t point at their real `papercup-*` repos, or if any URL is not an `https` `github.com/Papercusp/*.git` URL. A blanket rename can’t silently re-break it.
+* **`bootstrap-papercusp-hive.ts`** now logs *which* submodule failed and the git stderr tail on a non-zero exit (`fatal:` / `Repository not found` / …) instead of a bare `exited 128` — the missing diagnostic that cost a full live debugging round.
+
+## Lesson
+
+[Section titled “Lesson”](#lesson)
+
+A repo-wide identity rename must **exclude remote URLs** (`.gitmodules`, `.git/config` remotes, `package.json` repository fields, CI clone URLs) unless the remote was *actually* renamed on the host. Renaming a local path ≠ renaming the upstream repo. When a “setup failed” reproduces only on a fresh machine, suspect a clone-time-only input (`.gitmodules`, lockfile registries, bundled tool paths) before blaming the network.
 
 # shadcn-registry components must be ported to token CSS — there is no Tailwind in the operator build
 
@@ -21107,6 +21496,111 @@ Note
 
 A key-shape change orphans existing EIs from their dedup match. Do the EI-key backfill/cleanup **after** the code deploys — a pre-deploy backfill races the still-live old watchdog (bare keys) and causes the very re-file churn it’s meant to avoid.
 
+# Windows Authenticode code signing — the turnkey public-release runbook
+
+> For a PUBLIC Windows release the NSIS installer + bundled .exe MUST be Authenticode-signed, or Windows SmartScreen/Defender flags it ('Windows protected your PC — unknown publisher') on every fresh machine and most users abandon at that screen. The build pipeline (build-windows-on-vm.sh → tauri build --bundles nsis) signs automatically WHEN an Authenticode cert is present in env/store — so this is gated only on the OWNER supplying a code-signing certificate: an OV cert (a .pfx + password, importable) or — strongly preferred — an EV cert (hardware token / cloud HSM) which grants INSTANT SmartScreen trust. An agent cannot obtain either. Mirrors the macOS Developer ID runbook.
+
+The one **owner-action** blocker between the current Windows build and a confident **public** release — the exact parallel of the macOS Developer ID blocker ([macos-signing-notarization-runbook](/internal/docs/agent-insights/macos-signing-notarization-runbook)). Everything else (the never-trap setup gate WI-791, the dismissible dogfood banner, the build pipeline) is done in code; this needs an Authenticode certificate an agent cannot obtain.
+
+Why it's mandatory for PUBLIC release
+
+The alpha installer is **unsigned** (plan `windows-desktop-release-readiness-2026-06-11` D-004 — accepted-as-known for a handful of insiders). For the public it is not acceptable: an unsigned NSIS installer downloaded from the internet triggers **SmartScreen** — a full-screen *“Windows protected your PC … unknown publisher”* with only a buried *More info → Run anyway* escape — plus Defender SmartScreen friction. A large fraction of users click *Don’t run* / delete rather than dig for the override. (Plan `windows-public-release-readiness-2026-06-25` **D-001** retires the alpha deferral.)
+
+## OV vs EV — pick before buying (it changes the SmartScreen experience)
+
+[Section titled “OV vs EV — pick before buying (it changes the SmartScreen experience)”](#ov-vs-ev--pick-before-buying-it-changes-the-smartscreen-experience)
+
+|                | OV (Organization Validation)                                                                              | EV (Extended Validation)                                                                                           |
+| -------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| SmartScreen    | reputation builds **slowly** — early downloaders still see the warning until enough clean installs accrue | **instant** trust — no warning from the first download                                                             |
+| Key storage    | a `.pfx`/`.p12` file you can import (exportable)                                                          | **hardware token (FIPS 140-2) or cloud HSM** — key is non-exportable (CA requirement since June 2023)              |
+| Cost / vetting | cheaper, lighter org vetting                                                                              | pricier, stricter org vetting                                                                                      |
+| Automation     | sign with the `.pfx` directly (or import → thumbprint)                                                    | sign via the token’s CSP or a cloud-HSM signer (e.g. `azuresigntool` against Azure Key Vault / DigiCert KeyLocker) |
+
+**Recommendation: EV** if the budget allows — it removes the SmartScreen wall entirely on day one, which is the whole point of signing for a public launch. OV still works and is far better than unsigned, but warn the first wave of users the warning may appear until reputation builds.
+
+## The good news: the pipeline signs automatically — when a cert is present
+
+[Section titled “The good news: the pipeline signs automatically — when a cert is present”](#the-good-news-the-pipeline-signs-automatically--when-a-cert-is-present)
+
+`bin/build-windows-on-vm.sh` runs `tauri build --bundles nsis` inside the Windows VM. Tauri signs the bundled `.exe` **and** the NSIS `*-setup.exe` via `signtool` **iff** the build is told which cert to use. The script wires this so that **no script edit is needed at release time** — the gate is purely the credentials in env (mirrors the macOS `APPLE_SIGNING_IDENTITY` gate). With no cert env set, it builds **unsigned**, exactly as today.
+
+Updater signature ≠ Authenticode
+
+The existing `TAURI_SIGNING_PRIVATE_KEY` / `tauri signer sign` step produces the **updater** `.sig` (minisign — proves an update came from us). That is unrelated to **Authenticode** (proves the publisher to Windows/SmartScreen). Both are needed for a public release; this runbook is about the Authenticode half.
+
+## What the OWNER must provide (one-time)
+
+[Section titled “What the OWNER must provide (one-time)”](#what-the-owner-must-provide-one-time)
+
+**OV path** — a code-signing `.pfx`/`.p12` (from DigiCert, Sectigo, SSL.com, …)
+
+* its password. That’s it.
+
+**EV path** — an EV code-signing cert provisioned on a **hardware token** or a **cloud HSM**. Cloud-HSM is the automatable option:
+
+* **Azure Key Vault + `azuresigntool`**: the vault URL, a cert name, and a service-principal (tenant/client id + secret), **or**
+* **DigiCert KeyLocker / SSL.com eSigner**: the vendor’s signing-tool creds.
+
+A physical USB token can’t be used by a headless VM build — choose cloud-HSM (or EV via a vendor cloud-signing service) for automation.
+
+## Per-build env (set before `bin/build-windows-on-vm.sh`)
+
+[Section titled “Per-build env (set before bin/build-windows-on-vm.sh)”](#per-build-env-set-before-binbuild-windows-on-vmsh)
+
+The script reads these host-side and threads the signing config into the in-VM build. Set **one** of the two paths:
+
+```sh
+# ── OV path: a PFX + password (importable) ───────────────────────────────────
+export WINDOWS_CERT_PFX_BASE64="$(base64 -w0 codesign.pfx)"   # the .pfx, base64
+export WINDOWS_CERT_PASSWORD='<pfx-password>'
+# optional (sensible defaults shown):
+export WINDOWS_SIGN_TIMESTAMP_URL='http://timestamp.digicert.com'   # RFC3161 timestamp
+export WINDOWS_SIGN_DIGEST='sha256'
+
+
+# ── EV / already-in-store path: sign by thumbprint (cert already in the VM's
+#    CurrentUser\My store — e.g. installed by the token CSP / cloud-HSM connector)
+export WINDOWS_CERTIFICATE_THUMBPRINT='<40-hex-sha1-thumbprint>'
+export WINDOWS_SIGN_TIMESTAMP_URL='http://timestamp.digicert.com'
+```
+
+What the build does with them (no manual steps in the VM):
+
+* **OV/PFX**: decodes the PFX in the VM, `Import-PfxCertificate` into `Cert:\CurrentUser\My`, reads back its thumbprint.
+* Patches the in-VM `src-tauri/tauri.windows.conf.json` → `bundle.windows.{certificateThumbprint, timestampUrl, digestAlgorithm}` so `tauri build` signs every produced binary + the installer.
+* **Timestamping** is always set when signing — a timestamped signature stays valid after the cert expires.
+
+EV non-exportable keys need a signCommand, not a thumbprint
+
+For some cloud-HSM/EV setups the key can’t be reached by plain `signtool` thumbprint signing. In that case use Tauri’s `bundle.windows.signCommand` (a custom command template, `%1` = file) pointed at `azuresigntool sign … %1` (or the vendor tool). Set `WINDOWS_SIGN_COMMAND='azuresigntool sign -kvu <vault> -kvc <cert> -kvt <tenant> -kvi <client> -kvs <secret> -tr http://timestamp.digicert.com -td sha256 %1'` and the build injects it as `signCommand` instead of a thumbprint. (Verify the exact `azuresigntool`/`AzureSignTool` invocation against your vault.)
+
+## Verify the result (in the VM, or on any Windows box)
+
+[Section titled “Verify the result (in the VM, or on any Windows box)”](#verify-the-result-in-the-vm-or-on-any-windows-box)
+
+```powershell
+# Authenticode present + chains to a trusted CA, and is timestamped:
+signtool verify /pa /v "Papercusp_<ver>_x64-setup.exe"
+Get-AuthenticodeSignature "Papercusp_<ver>_x64-setup.exe" | Format-List
+#   Status         : Valid
+#   SignerCertificate / TimeStamperCertificate populated
+```
+
+A truly fresh Windows machine downloading the signed installer should then:
+
+* **EV**: launch with **no** SmartScreen warning.
+* **OV**: show no warning once reputation builds; until then, *More info → Run anyway* (document this for the first wave).
+
+## Caveats specific to this app
+
+[Section titled “Caveats specific to this app”](#caveats-specific-to-this-app)
+
+* **NSIS 2 GiB datablock cap.** The Windows payload is trimmed (`code-server`, `bin/omp` excluded — see `build-windows-on-vm.sh`) so the installer stays under the makensis \~2 GiB datablock limit; signing doesn’t change that, but keep an eye on payload growth.
+* **Sign the inner `.exe` too, not just the installer.** Tauri’s `certificateThumbprint`/`signCommand` config signs the app `.exe` and the NSIS `*-setup.exe`; confirm both are signed (`signtool verify` each) — an unsigned inner binary still triggers Defender on first run.
+* **Don’t run `release-local.sh` (tag/push/GitHub-release) from an agent** — the outward publish is owner-authority. This runbook covers building a *signed installer*; distribution is a separate owner step.
+* **Updater `.sig` stays minisign-signed** (host-side, separate from Authenticode) — that already works.
+
 # Windows-VM desktop testing — the working recipe and its sharp edges
 
 > How to build, install, launch, observe and tear down the Windows desktop app in the local QEMU Windows 11 VM — schtasks launch, bk.log observation, wsl --exec (never `wsl --`), UNC discovery, and the WSL signal boundary.
@@ -21167,7 +21661,7 @@ D-001..D-010 on `windows-desktop-release-readiness-2026-06-11` carry the full ra
 
 # worker:chunk-loop dark-launch — the metrics surface + ramp gate, and how to run it
 
-> The operator-hosted worker:chunk-loop op routes a coding worker through the operator process instead of the subprocess invoke-once path. Routing is a TWO-gate guard in orchestrator-runner.ts useWorkerChunkLoopOp: the papercusp-worker-chunk-loop-blueprint flag (default-ON) AND a per-harness workerChunkLoop config knob (default false, set on ZERO harnesses → every coding worker still runs the subprocess path). To dark-launch you set workerChunkLoop:true on ONE non-critical CODING harness (NOT papercup/papercusp) via its instance config (Blueprint Settings → POST /api/harness/:slug/spec; the key lands in configOverrides and configGet reads it), then dispatch a real feature. Outcomes are now recorded per-run (migration 397, harness_shared.worker_chunk_loop_outcomes) at the single runWorkerChunkLoop convergence point, labelled by execution path (op vs subprocess). Read them with dev:worker_chunk_loop_metrics (completion-rate + outcome distribution by path + op−subprocess delta); pass rampStep to get the deterministic advance/hold/rollback recommendation (decideRampAdvance). The actual %-advance and the dark-launch RUN are owner-attended.
+> The operator-hosted worker:chunk-loop op routes a coding worker through the operator process instead of the subprocess invoke-once path. Routing is a gated cohort in orchestrator-runner.ts useWorkerChunkLoopOp: the papercusp-worker-chunk-loop-blueprint flag (default-ON), a per-harness workerChunkLoop config knob (default false), and optional workerChunkLoopCohortPercent / workerModeCohortPercent 0..100 feature-stable hashing for the 25→50→100 ramp. To dark-launch you set workerChunkLoop:true plus the current cohort percent on ONE non-critical CODING harness (NOT papercup/papercusp) via its instance config (Blueprint Settings → POST /api/harness/:slug/spec; the keys land in configOverrides and configGet reads them), then dispatch real features. Outcomes are now recorded per-run (migration 397, harness_shared.worker_chunk_loop_outcomes) at the single runWorkerChunkLoop convergence point, labelled by execution path (op vs subprocess). Read them with dev:worker_chunk_loop_metrics (completion-rate + outcome distribution by path + op−subprocess delta); pass rampStep to get the deterministic advance/hold/rollback recommendation (decideRampAdvance). The actual %-advance and the dark-launch RUN are owner-attended.
 
 ## What this is
 
@@ -21175,24 +21669,25 @@ D-001..D-010 on `windows-desktop-release-readiness-2026-06-11` carry the full ra
 
 The `worker:chunk-loop` op runs the coding worker’s chunk loop **inside the operator process** (a near-port of `runWorkerChunkLoop`) instead of spawning the `invoke-once` subprocess. The value is finer crash-recovery + one execution model on the **coding hot path** — so it ships behind a staged dark → ramp → retire rollout, never a blind cutover.
 
-## Routing — the two-gate guard
+## Routing — the cohort gate
 
-[Section titled “Routing — the two-gate guard”](#routing--the-two-gate-guard)
+[Section titled “Routing — the cohort gate”](#routing--the-cohort-gate)
 
-`orchestrator-runner.ts` `useWorkerChunkLoopOp({ role, flagEnabled, harnessOptIn })` returns true only when **all three** hold:
+`orchestrator-runner.ts` `useWorkerChunkLoopOp({ role, flagEnabled, harnessOptIn, cohortPercent, cohortKey })` returns true only when **all four** hold:
 
 * `role === 'worker'`
 * `flagEnabled` — `papercusp-worker-chunk-loop-blueprint` (default-**ON**)
 * `harnessOptIn` — `configGet(cfg, 'workerChunkLoop', false) === true`, from `readEffectiveHarnessConfig` (blueprint knobs ⊕ the workspace-PG instance config)
+* `cohortKey`’s stable feature bucket is inside `workerChunkLoopCohortPercent` (or legacy alias `workerModeCohortPercent`). Omitted percent preserves the old `workerChunkLoop:true` behavior: 100%.
 
-The knob is set on **zero** harnesses, so every coding worker still runs the subprocess path. Flipping the flag alone changes nothing — the knob is the real gate.
+The knob is set on **zero** harnesses, so every coding worker still runs the subprocess path. Flipping the flag alone changes nothing — the per-harness knob + cohort percent are the real gate.
 
 ## Dark-launch a harness (owner-attended)
 
 [Section titled “Dark-launch a harness (owner-attended)”](#dark-launch-a-harness-owner-attended)
 
 1. Pick **one non-critical CODING harness** — NOT `papercup`/`papercusp`. (As of 2026-06-24 no live non-critical coding harness exists; stand one up first.)
-2. Set `workerChunkLoop: true` in its **instance config** — Blueprint Settings panel → `POST /api/harness/:slug/spec`. The key is not a declared blueprint param, but `splitConfigJson` routes any non-typed key into `configOverrides` and `instanceEntryToConfig` spreads it back, so `configGet` reads it. Reversible: set it back to `false`.
+2. Set `workerChunkLoop: true` and `workerChunkLoopCohortPercent: 25` in its **instance config** — Blueprint Settings panel → `POST /api/harness/:slug/spec`. The keys are not declared blueprint params, but `splitConfigJson` routes any non-typed key into `configOverrides` and `instanceEntryToConfig` spreads it back, so `configGet` reads it. Reversible: set it back to `false` or `0`.
 3. Ensure the Brief-15 wiring is **deployed** to the operator running that harness (`:3170` staging, or the green pipeline to `:3070` — the metrics tool + table land via the normal deploy).
 4. Dispatch one real coding feature → the op path fires → an outcome row lands.
 
@@ -21214,7 +21709,7 @@ Pass `rampStep` (0|25|50|100) and the tool adds a `rampRecommendation` from the 
 * **hold** — not enough op samples, or op below parity but not regressed.
 * **rollback** — op completion-rate is `regressionThreshold` (0.05) below subprocess, OR the op `planning_failed` rate exceeds subprocess by `maxPlanningFailedRateDelta` (0.05). The planning\_failed guard is deliberate: a mis-built operator-side `InvokeContext` (the D-005 risk) shows up as the op path failing to PLAN, which raw completion-rate can mask.
 
-The recommendation is advisory — the actual cohort %-advance is the owner’s call per step.
+The recommendation is advisory — the actual cohort %-advance is the owner’s call per step. To advance, update `workerChunkLoopCohortPercent` one step at a time: 25 → 50 → 100. The feature bucket is keyed by workspace + harness + feature id, so retries for the same feature stay on the same execution path while the cohort grows monotonically.
 
 ## Gotcha — migration renumber drift
 
@@ -38745,17 +39240,17 @@ This is the **as-built** maintainer reference for the inbound side of the contri
 
 [Section titled “Components”](#components)
 
-| Stage                                         | Module                                                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| --------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Poll daemon**                               | `pr-host/poll-daemon.ts` (`system:pr-poll`, seeded by `pr-poll-routine.ts`)             | The spine. Per harness with the reviewer role enabled, lists open PRs, diffs against a `last_seen` `{updated_at, head_sha}` snapshot on the routine metadata, and drives the per-PR flow. 60s cadence + exponential backoff (`retry-policy-types.ts`) on host errors; crash-safe (one durable step, idempotent). Registered via `registerSystemAction('pr-poll', …)` like git-sync.                                                                                                                                                                                                                                                                                                                                                                                                           |
-| **WI↔PR producer**                            | `harness/feature-pr-producer.ts`                                                        | `upsertFeaturePrOnOpen` / `markFeaturePrState` link a feature ↔ its PR ↔ state, recording the human operator’s `author_github_user_id` (per-operator identity), `COALESCE`’d on conflict so a later poll can’t wipe the operator attribution. The daemon also best-effort upserts a row, but writes only state/url (no author id), so a subsequent daemon poll can’t overwrite the at-open attribution.                                                                                                                                                                                                                                                                                                                                                                                       |
-| **Agent reviewer**                            | `pr-host/agent-reviewer.ts` + `pr-review-report-types.ts`                               | `runPrReviewTask` reviews the PR diff and emits a safety-guarded report. `assembleReport` forces the recommendation no more permissive than the facts: a suspected secret → `reject`, failing checks / empty diff → `request_changes` (the LLM can never talk these down). Default model `claude-sonnet-4-6` (override per-deploy with `PAPERCUSP_PR_REVIEW_MODEL`), run `anthropic-direct` at temperature `0` with a 90s abort timeout and a 1500-token output budget. The model sees a diff bounded to 60k chars (`DEFAULT_MAX_DIFF_CHARS`), but the deterministic secret/test/file scans still run over the **full** diff — so the safety floors hold even when the prompt is truncated (`diff_truncated` flags only the prompt budget, not the scans). Stored in `pr_review_reports`.     |
-| **Decision gate**                             | `pr-host/auto-review-decision-types.ts` (`decideAutoReview`)                            | Pure gate: role-enabled → `auto_review` → PR open → not draft → not self-authored → author trusted → not already-approved / changes-requested → then (`auto_merge` ∧ checks-green ∧ mergeable) ⇒ `approve_and_merge`, else `approve`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Report + revocation gates** (in the daemon) | `poll-daemon.ts`, `contribution-admission.ts`                                           | A **revoked** contributor’s PR is refused before any auto-approve/merge action and before the report gate (`isPrAuthorRevoked`, S0). Note the loop order: the agent review itself is still *triggered* for a revoked author (`triggerReviewer` → `decideAutoReview` gate → `isAuthorRevoked` → report gate → approve/merge) — the review is harmless (it never posts or merges), so a revoked PR may have a report but never an auto-action. Then for a non-revoked author: report **absent** ⇒ *defer* (await the review; the PR is excluded from `last_seen` so the next poll re-checks) — never auto-approve before the agent reviews; report **non-approve** ⇒ veto; **approve** ⇒ proceed. The read is head\_sha-aware (a report for an older diff reads as absent ⇒ defer + re-review). |
-| **Approve / merge**                           | `pr-host/auto-approve.ts`, `auto-merge.ts`                                              | Idempotent; both write `auto_review_audit`. Merge is `squash` by default, pinned with `expected_head_sha`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **Completion stamp**                          | `harness/completion-ref-writer.ts`                                                      | On merge, `resolveMergedPrFeatureId` → `stampCompletionRefOnMerge`: feature `status='shipped'` + `completion_ref`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **Report GUI + modes**                        | `apps/operator/app/harness/PrsTab.tsx` / `PrRow.tsx` + the `pr-reviewer-settings` route | Renders the agent report (recommendation chip, rationale, risks, observed checks) + the linked WI. **Manual** mode: a human reads the report and clicks Approve / Approve+merge. **Auto** mode: a claimed-owner-gated toggle. ON flips **three** settings — `pr_reviewer_role_enabled` (the master kill-switch that gates the whole auto path) **and** `auto_review` **and** `auto_merge`; OFF clears only `auto_review`/`auto_merge` and leaves the role enabled. The daemon then auto-applies. (The single owner-facing `autoModeOn` state is `role-enabled ∧ auto_review ∧ auto_merge`; granular per-lever control stays in the settings modal.) Auto-status is shown honestly (why a PR is / isn’t auto-mergeable — never a false “merged”).                                              |
-| **Fork GC + dogfood witness**                 | `harness/fork-gc.ts`, `pr-host/dogfood-roundtrip.ts`                                    | GC keeps a fork on merge, collects only abandoned operator-owned forks (dry-run by default). `verifyDogfoodRoundTrip` asserts the loop round-tripped (prTracked ∧ merged ∧ shipped ∧ linked).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Stage                                         | Module                                                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Poll daemon**                               | `pr-host/poll-daemon.ts` (`system:pr-poll`, seeded by `pr-poll-routine.ts`)             | The spine. Per harness with the reviewer role enabled, lists open PRs, diffs against a `last_seen` `{updated_at, head_sha}` snapshot on the routine metadata, and drives the per-PR flow. 60s cadence + exponential backoff (`retry-policy-types.ts`) on host errors; crash-safe (one durable step, idempotent). Registered via `registerSystemAction('pr-poll', …)` like git-sync.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **WI↔PR producer**                            | `harness/feature-pr-producer.ts`                                                        | `upsertFeaturePrOnOpen` / `markFeaturePrState` link a feature ↔ its PR ↔ state, recording the human operator’s `author_github_user_id` (per-operator identity), `COALESCE`’d on conflict so a later poll can’t wipe the operator attribution. The daemon also best-effort upserts a row, but writes only state/url (no author id), so a subsequent daemon poll can’t overwrite the at-open attribution.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Agent reviewer**                            | `pr-host/agent-reviewer.ts` + `pr-review-report-types.ts`                               | `runPrReviewTask` reviews the PR diff and emits a safety-guarded report. `assembleReport` forces the recommendation no more permissive than the facts: a suspected secret → `reject`, failing checks / empty diff → `request_changes` (the LLM can never talk these down). Default model `claude-sonnet-4-6` (override per-deploy with `PAPERCUSP_PR_REVIEW_MODEL`), run `anthropic-direct` at temperature `0` with a 90s abort timeout and a 1500-token output budget. The model sees a diff bounded to 60k chars (`DEFAULT_MAX_DIFF_CHARS`), but the deterministic secret/test/file scans still run over the **full** diff — so the safety floors hold even when the prompt is truncated (`diff_truncated` flags only the prompt budget, not the scans). Stored in `pr_review_reports`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Decision gate**                             | `pr-host/auto-review-decision-types.ts` (`decideAutoReview`)                            | Pure gate: role-enabled → `auto_review` → PR open → not draft → not self-authored → author trusted → not already-approved / changes-requested → then (`auto_merge` ∧ checks-green ∧ mergeable) ⇒ `approve_and_merge`, else `approve`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Report + revocation gates** (in the daemon) | `poll-daemon.ts`, `contribution-admission.ts`                                           | A **revoked** contributor’s PR is refused before any auto-approve/merge action and before the report gate (`isPrAuthorRevoked`, S0). Note the loop order: the agent review itself is still *triggered* for a revoked author (`triggerReviewer` → `decideAutoReview` gate → `isAuthorRevoked` → report gate → approve/merge) — the review is harmless (it never posts or merges), so a revoked PR may have a report but never an auto-action. Then for a non-revoked author: report **absent** ⇒ *defer* (await the review; the PR is excluded from `last_seen` so the next poll re-checks) — never auto-approve before the agent reviews; report **non-approve** ⇒ veto; **approve** ⇒ proceed. The read is head\_sha-aware (a report for an older diff reads as absent ⇒ defer + re-review).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Approve / merge**                           | `pr-host/auto-approve.ts`, `auto-merge.ts`                                              | Idempotent; both write `auto_review_audit`. Merge is `squash` by default, pinned with `expected_head_sha`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Completion stamp**                          | `harness/completion-ref-writer.ts`                                                      | On merge, `resolveMergedPrFeatureId` → `stampCompletionRefOnMerge`: feature `status='shipped'` + `completion_ref`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Report GUI + modes**                        | `apps/operator/app/harness/PrsTab.tsx` / `PrRow.tsx` + the `pr-reviewer-settings` route | Renders the agent report (recommendation chip, rationale, risks, observed checks) + the linked WI. **Manual** mode: a human reads the report and clicks Approve / Approve+merge. **Auto** mode: a claimed-owner-gated toggle. ON flips **three** settings — `pr_reviewer_role_enabled` (the master kill-switch that gates the whole auto path) **and** `auto_review` **and** `auto_merge`; OFF clears only `auto_review`/`auto_merge` and leaves the role enabled. The daemon then auto-applies. (The single owner-facing `autoModeOn` state is `role-enabled ∧ auto_review ∧ auto_merge`; granular per-lever control stays in the settings modal.) UI state that an agent/human may drive is URL-backed via nuqs: `prs_filter`, `prs_scope`, `prs_settings`, `prs_selected`, and `prs_report`. When the viewed harness belongs to a hive, `PrsTab` uses the audited `harnessProjects.lite` sync query plus `groupByHive` to expose a harness-vs-whole-hive scope; hive-scope rows route Approve / Approve+merge to the owning `member_slug`. Auto-status is shown only for open PRs on the viewed harness, because hive-scope rows from other members do not carry that member’s auto-mode settings and merged/closed rows should not render misleading “blocked: not open” noise. |
+| **Fork GC + dogfood witness**                 | `harness/fork-gc.ts`, `pr-host/dogfood-roundtrip.ts`                                    | GC keeps a fork on merge, collects only abandoned operator-owned forks (dry-run by default). `verifyDogfoodRoundTrip` asserts the loop round-tripped (prTracked ∧ merged ∧ shipped ∧ linked).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ## S0 safety invariants
 
@@ -45277,6 +45772,8 @@ This page records the security model for **shared harnesses** (the peer-to-peer,
 
 **Build-state update (2026-06-13).** The substrate trust layer is now substantially built: **per-log admission** (signed announce + GitHub-anchored `verifyBinding` attestation), **revocation** (`revoked_pubkeys` projection drop-list, gated on a live GitHub repo-admin check), and **identity attestation** (`verifyAttestation`) are all wired. Crucially, a confirmation audit (P-017, plan `shared-hive-hardening-2026-06-13`) verified that the model’s load-bearing invariant — **every decision-bearing fact re-derives from GitHub at the point of action** — holds across all current call sites. See [The advisory-vs-trusted boundary](#the-advisory-vs-trusted-boundary) for the verified call-site table. Per-op signing (Phase 2 below) remains a defense-in-depth future enhancement, not a shipped gate — the shipped model is **per-log** admission, so an admitted peer’s ops are trusted wholesale (the accepted equivocation tradeoff), which is why the GitHub re-derivation invariant is what actually carries the safety.
 
+**Build-state update (2026-06-25).** Read admission is intentionally **not** a repo-collaborator permission gate. The pure decider in `sync/hyperbee/read-admission.ts` admits a log only after announce signature verification, GitHub-gist attestation verification, and the `revoked_pubkeys` veto. Boot adds two Hive-specific scope wideners: an already-known Hive member can be admitted from the local `hive_members` projection via `trustedHiveMemberDeviceAdmission`, and a same-Hive cross-member announce whose membership has not federated yet is buffered as `pending` and retried within the boot grace window. GitHub collaborator/admin permission remains the authority for repo binding, revocation actions, push/PR/merge, and shipped verification; it is not the swarm read-admission allow-list.
+
 ## What a shared harness is
 
 [Section titled “What a shared harness is”](#what-a-shared-harness-is)
@@ -45329,7 +45826,7 @@ A three-pass survey of production P2P / local-first / decentralized systems. The
 | **Sigstore / SLSA / in-toto**       | short-lived **OIDC** identity (Fulcio)                                    | keyless sig + **Rekor transparency log**; in-toto/DSSE                                                      | no revocation (short-lived certs); compromise caught by **monitoring**                     | **Partial — provenance pattern**: a signature proves *authenticated-at-a-time*, **not** authorization or “good.” Confirms “shipped” must be **GitHub-derived** |
 | **AT Proto `did:plc`**              | hybrid: self-cert keys + a directory                                      | signed repo commits                                                                                         | **rotation-key priority list + 72h recovery window**                                       | **Partial — recovery lesson**: for us, GitHub *is* the recovery anchor                                                                                         |
 | **Nostr NIP-05**                    | pubkey ↔ `name@domain` via a `.well-known` file                           | per-event Schnorr sig                                                                                       | —                                                                                          | **Partial** — a GitHub-hosted well-known file is a lighter binding variant                                                                                     |
-| **Secure Scuttlebutt**              | per-identity signed append-only feed (≈ Hypercore)                        | every message signed                                                                                        | **invite + follow-graph** bounds replication & Sybils                                      | **Partial — admission analog**: the GitHub collaborator graph is our follow-graph                                                                              |
+| **Secure Scuttlebutt**              | per-identity signed append-only feed (≈ Hypercore)                        | every message signed                                                                                        | **invite + follow-graph** bounds replication & Sybils                                      | **Partial — admission analog**: Hive membership + revocation bounds shared-hive replication; GitHub permission is reserved for decision-bearing actions        |
 
 ### The decisive constraints
 
@@ -45378,11 +45875,11 @@ For the recommended model (advisory peer state re-derived from GitHub) we **do n
 1. **Authority of record = GitHub.** Every *decision-bearing* fact (did it merge, who has write access, real PR status, who is a contributor) is **re-derived from GitHub at the point of action** — never trusted from a peer.
 2. **Peer-synced rows = advisory cache** (fast/offline UI), explicitly untrusted.
 3. **Per-op Ed25519 signing + verify-on-receipt** in the Autobase `apply`/projection path — *defense-in-depth / UX integrity*, not the authority of record. **Sign sequence + freshness, not just content** (Radicle’s 2026 replay-CVE lesson).
-4. **GitHub-anchored writer admission** — `addWriter` gated on the two-channel binding (blind-pairing handshake, GitHub proof in `userData`) + `revoked_pubkeys` as an advisory projection-time drop-list.
+4. **GitHub-anchored log admission** — signed announce + GitHub gist attestation verifies the device identity; `revoked_pubkeys` denies known-bad devices. Hive scope is then narrowed/widened by signed `harness_slug`, local `hive_members`, and pending retry for membership propagation. This is not a collaborator permission gate.
 5. **Identity binding = a Keybase-style signed link** — the GitHub-hosted device-signed proof is the cross-check that lets any peer detect a rewritten identity; revocation is a *signed* statement, not just a side list.
 6. **Device-key rotation/recovery is GitHub-rooted** — losing a device means re-running the two-channel binding from the new device; the old key goes on `revoked_pubkeys`. GitHub (the account) plays `did:plc`’s “higher-authority key” recovery role.
 7. **“Shipped”/provenance = GitHub-derived** — read merge state from GitHub; optionally record it as a signed in-toto-style attestation. Do **not** build a Rekor-style transparency log — GitHub already is the authority and stores attestations. (This also means the `completion_ref` “shipped” signal should be GitHub-derived, not a self-reported peer receipt.)
-8. **Sybil/admission = the GitHub collaborator graph** as the allow-list (the SSB follow-graph analog) + the `firewall(remotePublicKey)` hook.
+8. **Sybil/admission = verified GitHub identity plus Hive membership/revocation.** The swarm topic is public, so unauthenticated devices are filtered by signed announce + gist attestation; shared-Hive cross-member scope is filtered by `hive_members`; and `revoked_pubkeys` is the hard local blocklist. The GitHub collaborator graph is still consulted at decision points that need repo authority, but it is not the read-admission allow-list.
 9. **Do not** adopt MLS or build a Byzantine-CRDT ACL.
 
 ### The advisory-vs-trusted boundary
@@ -45413,7 +45910,7 @@ The shipped substrate uses **per-log** admission: a peer is admitted on a verifi
 | `harness/binding-service.ts` · `supersedeBinding`                                                    | supersede a binding (needs admin)                  | local cache + **live** `getRepoPermission`              | **Yes** — live permission check, admin required                                                                                                                                                                                                                                                                                                              |
 | `harness/binding-service.ts` · claimant re-verify sweep                                              | demote a claimant who lost write access            | cached claimants                                        | **Yes** — per-claimant live permission check                                                                                                                                                                                                                                                                                                                 |
 | `sync/hyperbee/revoke-contributor.ts`                                                                | revoke a contributor’s device key                  | `contributors` row                                      | **Yes** — `repos.get → permissions.admin` gate before any write                                                                                                                                                                                                                                                                                              |
-| `sync/hyperbee/read-admission.ts` (+ `boot.ts`)                                                      | admit a peer’s log to the substrate                | signed announce                                         | **Yes** — announce-sig verify + `verifyBinding` (GitHub-hosted attestation); `revoked_pubkeys` veto                                                                                                                                                                                                                                                          |
+| `sync/hyperbee/read-admission.ts` (+ `boot.ts`)                                                      | admit a peer’s log to the substrate                | signed announce + local Hive membership projection      | **Yes** — announce-sig verify + `verifyBinding` (GitHub-hosted attestation); `revoked_pubkeys` veto; same-Hive scope uses `hive_members` / pending retry, not repo collaborator permission                                                                                                                                                                   |
 | `harness/fork-pr-on-feature-pass.ts`                                                                 | fork-PR vs direct-push mode on feature pass        | local pipeline pass event                               | **Yes** — **live** `getPermission` (fork iff `read`/`none`)                                                                                                                                                                                                                                                                                                  |
 | `pr-host/auto-merge.ts` · `tryAutoMerge` → `host.merge`                                              | merge a PR                                         | `Pr` object from **GitHub** poll (`PrHost`/`github.ts`) | **Yes** — PR state read live from GitHub; merge enforced by GitHub write-access + branch protection                                                                                                                                                                                                                                                          |
 | `pr-host/auto-approve.ts` · `tryAutoApprove`                                                         | post an approving review                           | **local** `trusted_authors` + GitHub PR author          | **N/A** — trust list is local config (not federated); approval still doesn’t bypass GitHub’s merge authority                                                                                                                                                                                                                                                 |
@@ -45441,9 +45938,9 @@ Two revocation mechanisms are wired beyond the `revoked_pubkeys` admission drop-
 Under this model we **deliberately accept**:
 
 1. **Public, discoverable topic** — swarm spam/DoS is *mitigated* (firewall + admission), not prevented.
-2. **Advisory rows can be transiently forged** in local UI until per-op signing ships — and even after, an admitted-then-malicious writer can inject signed-but-false advisory rows (equivocation). Mitigation: nothing decision-bearing acts on it without GitHub re-derivation.
+2. **Advisory rows can be injected by an admitted identity** — read admission proves identity and Hive membership, not truth. An admitted-then-malicious writer can still inject signed-but-false advisory rows (equivocation). Mitigation: nothing decision-bearing acts on it without GitHub re-derivation.
 3. **No true removal / no post-compromise security** in the append-only log — revocation is best-effort projection filtering; the data persists and replicates.
-4. **Sybil resistance is delegated to GitHub** — identity = GitHub account; only as strong as the two-channel binding + GitHub’s account-creation friction.
+4. **Sybil resistance is mostly delegated to GitHub identity plus Hive membership** — identity = GitHub account, bounded by the gist attestation and GitHub’s account-creation friction; cross-member shared-Hive writes also require a current `hive_members` device row or they remain pending/dropped.
 5. **Per-op signatures don’t defeat a signed equivocator** (Kleppmann) — accepted because state is advisory and GitHub-re-derived; we explicitly do not build a BFT-CRDT ACL.
 6. **Identity binding inherits GitHub account integrity** — a compromised GitHub account is a compromised identity (the same trust root as the merge authority, so not a new exposure).
 7. **Local API stays loopback-trusted** — a single-user-desktop model, not a shared machine.

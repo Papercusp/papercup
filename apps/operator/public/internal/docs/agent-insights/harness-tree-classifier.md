@@ -1,7 +1,7 @@
-# The 5-rule harness-tree classifier
+# The 4-kind harness-tree classifier + qualified-slug rule
 URL: /internal/docs/agent-insights/harness-tree-classifier
 
-When walking a git repo's nested .git entries, classify each as submodule / worktree / standalone / plain-dir. Used by the harness-creation flow to decide what becomes a sub-harness.
+When walking a git repo's nested .git entries, classify each as submodule / worktree / standalone / plain-dir, and derive qualified slugs for submodules. Used by the harness-creation flow to decide what becomes a sub-harness.
 
 ## What
 
@@ -13,7 +13,8 @@ parent. The classifier lives at
 `packages/operator-core/lib/harness/classify-tree.ts` (papercusp-dogfood-v5
 P-007).
 
-There are **five outcomes**, ordered by precedence:
+There are **four classified kinds**, plus a fifth rule that derives the
+sub-harness slug for submodules:
 
 1. **Submodule** — `.git` is a *file* whose contents point into the
    parent repo's `.git/modules/<name>/`. → Becomes a **sub-harness**.
@@ -24,10 +25,10 @@ There are **five outcomes**, ordered by precedence:
 3. **Standalone** — `.git` is a *directory* with its own `HEAD` etc.
    → Becomes a **separate root harness**, not a sub-harness.
 4. **Plain dir** (no `.git`) — just part of the parent repo. → No
-   harness, no recursion needed.
-5. **Tree root** — the entry point of the walk; gets its own
-   harness with the unified queue. Sub-harnesses share that queue
-   (`parent_slug` link) tagged by component path.
+   harness.
+5. **Qualified slug** — a submodule's slug is path-qualified as
+   `<parentSlug>/<relPath>` (for example `papercup/libs/papercusp`).
+   This is a field on the `submodule` result, not a separate classified kind.
 
 ## Why distinguishing matters
 
@@ -58,29 +59,32 @@ The classifier reads the first line of `<dir>/.git` and pattern-matches:
 .git contents start with
   "gitdir: <abs>/.git/modules/" → submodule (rule 1)
   "gitdir: <abs>/.git/worktrees/" → worktree (rule 2)
-  anything else              → standalone (rule 3, fallback)
+  malformed / unknown target → plain (rule 4, conservative fallback)
 ```
 
-For directories without `.git`, the walker descends into them
-*unless* it hits a `.git` directory in a child — at which point the
-classifier fires and a single decision is made for that subtree.
+For directories without `.git`, the walker descends into them. It also descends
+into submodules by default (`recurseIntoSubmodules: true`) so sub-sub-harnesses
+can be discovered; callers that only want direct children pass
+`recurseIntoSubmodules: false`. Worktrees and standalone repos are never
+recursed into.
 
 ## Real-world layout (papercup itself)
 
 papercup has (after the 2026-05-31 borrowable-submodule regroup under
-`libs/generic/` + the `test-config`/`testing-shell` promotions):
+`libs/generic/`, the `test-config`/`testing-shell` promotions, snapshot-system
+retirement, and `zero-harness` de-materialization):
 
 * 1 tree root: the papercup repo at `/home/marsh-office/papercupai-workspace/papercup`
-* 7 direct-child submodules under `libs/`: `agent-chat`, `papercusp-db`, `papercusp-shared`, `papercusp`, `test-config`, `testing-shell`, `zero-harness` (the formerly-direct `git-graph`/`papergrid`/`sync`/`ui-primitives` submodules now live under `libs/generic/`)
-* 7 plain dirs under `libs/`: `flags`, `generic`, `holepunch-spike`, `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth` (`generic/` itself is plain at depth 0 — it holds the regrouped borrowable submodules below it)
+* 6 direct-child submodules under `libs/`: `agent-chat`, `papercusp-db`, `papercusp-shared`, `papercusp`, `test-config`, `testing-shell` (the formerly-direct `git-graph`/`papergrid`/`sync`/`ui-primitives` submodules now live under `libs/generic/`; `zero-harness` is retired and not materialized)
+* 6 plain dirs under `libs/`: `flags`, `generic`, `holepunch-spike`, `host-platform`, `marketplace-public-ui`, `papercusp-publish-auth` (`generic/` itself is plain at depth 0 — it holds the regrouped borrowable submodules below it)
 * Many worktrees in siblings of the papercup repo (`papercup-backup`, `papercup-design-migration`, etc.) — those are detected if a future walk starts above papercup, but the classifier never confuses them for new harnesses.
 
-Total direct `libs/` count: 14 dirs (7 submodules + 7 plain), exactly what the
+Total direct `libs/` count: 12 dirs (6 submodules + 6 plain), exactly what the
 test asserts against:
 
 ```ts
 // packages/operator-core/lib/harness/classify-tree.test.ts
-it('matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regrouped under libs/generic/)', ...)
+it('matches the libs/ layout: 6 submodules + 6 plain (borrowable submodules regrouped under libs/generic/)', ...)
 ```
 
 ## When you touch this code
@@ -89,9 +93,9 @@ it('matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regr
   Add to the precedence list and update the test count. The classifier
   is a pure function over (path, fs) → outcome; tests are cheap.
 * **Changing the walker boundary**? The current default stops
-  recursion at the first nested `.git` entry. If you change that,
-  you'll start materializing harnesses for every git repo at every
-  depth (probably not what you want for nested monorepos).
+  recursion at worktrees and standalone repos, but recurses into
+  submodules unless `recurseIntoSubmodules: false`. If you change that,
+  you'll change whether nested submodules become visible to harness creation.
 * **Changing the slug derivation**? Sub-harness slugs are
   path-qualified relative to the tree root (e.g. `papercup/libs/sync`).
   Changing this collides with existing harness registry entries.

@@ -46,6 +46,12 @@ VS Code) shares the budget — the cluster just tips an already-busy box over.
 
 Three layers, in order of correctness:
 
+**Current behavior (2026-06-25):** `apps/operator/bin/host-bootstrap.ts` now
+starts both `ensureHarnessFsWatcher()` and `startClaudeCredentialSync()` only
+when `cluster.isPrimary` is true. `apps/operator/bin/host-benign-errors.ts`
+also classifies inotify watcher `ENOSPC` as benign via `isBenignFileWatcherError`,
+while leaving disk-full `ENOSPC` fatal.
+
 1. **Run the watchers on ONE process — gate on `cluster.isPrimary`** (the real fix).
    In `host-bootstrap.ts` both watchers are wrapped in `if (cluster.isPrimary) { … }`.
    `cluster.isPrimary` is `true` on the cluster primary **and** on a non-clustered

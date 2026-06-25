@@ -43,6 +43,24 @@ This is why the plan's A→B-centric diagnosis (D-013→D-016) "eliminated hiveH
 resolution": for the A→B direction the receiver is a joiner, whose hiveHomeSlug IS
 set. The owner-receiving (B→A) direction has the distinct undefined.
 
+## Current behavior (2026-06-25)
+
+The owner fallback is now part of `bootHarnessSubstrate`: when
+`bindingResolvesHiveHomeProjection(opts.swarmBinding)` is true, boot resolves
+`hiveHomeSlugForHarness(workspaceId, harnessSlug)` and keeps it only when
+`home === harnessSlug`. Both the scoped apply path (`buildHarnessProjectionApply`)
+and the global projection registration pass `hiveHomeSlug:
+hiveHomeProjectionSlug ?? ownHiveHomeSlug`, so an owner's home harness engages
+the membership-aware content guard while a joiner keeps its remote-home rebind.
+
+The current wiring also keeps the two apply paths aligned: `boot.ts` passes the
+same fallback into `buildHarnessProjectionApply` and
+`registerAllHarnessProjections`, and both share the boot-scoped
+`PendingMembershipContent` buffer. That means guarded content can defer until
+the corresponding `hive_members` row arrives on either path. The fallback stays
+behind the `bindingResolvesHiveHomeProjection` gate, so ordinary private/local/gh
+harness boots still avoid the owner-home lookup.
+
 ## Fix
 
 Resolve the OWNER's own hive-home for the content-guard `hiveHomeSlug` too — the same

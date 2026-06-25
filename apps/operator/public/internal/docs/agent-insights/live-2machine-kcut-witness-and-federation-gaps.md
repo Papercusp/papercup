@@ -1,7 +1,7 @@
 # Live 2-machine K-CUT re-key witness — the working recipe + the federation gaps (WI-560)
 URL: /internal/docs/agent-insights/live-2machine-kcut-witness-and-federation-gaps
 
-How to run the live fed-a/fed-b K0→K1→K-revoke→K-CUT re-key cut-off witness on the linux-test-vm rig, what actually works, and the two real blockers that keep the JOINER (fed-b) from receiving the federated epoch keys: (1) live announce→admit needs a gh-ATTESTED device announce, absent on the gh-unauthed VMs — so admit fed-b via the owner approval path (seed the pending-join + hive:membership_decide); (2) the hive_epoch_keys projection rides the repo-LESS hive HOME log, and a joiner only peers a HOME its operator booted at STARTUP — a view-join after startup never boots the home substrate (repo-bound MEMBERS federate fine without gh; repo-less HOMES need gh-auth announce). Owner-side K-CUT is fully verifiable on fed-a regardless. Discovered 2026-06-24 running WI-560.
+How to run the live fed-a/fed-b K0→K1→K-revoke→K-CUT re-key cut-off witness on the linux-test-vm rig, what actually works, and the remaining live blocker for JOINER-side epoch-key receipt: live announce→admit still needs a gh-ATTESTED device announce, absent on the gh-unauthed VMs — so admit fed-b via the owner approval path (seed the pending-join + hive:membership_decide). Current joinHiveAsView now records the owner's hive pubkey and re-keys joined member substrates in place, so post-startup view joins no longer require a joiner restart just to move member substrates onto the hive topic. Owner-side K-CUT is fully verifiable on fed-a regardless. Discovered 2026-06-24 running WI-560; refreshed 2026-06-25 after EI-681 join-hive fixes.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -75,9 +75,31 @@ The grant/cut path is 100% production code; only the *discovery* of the device i
 (the gh-attestation concern is orthogonal to the re-key mechanism). The real fix for live
 admission is restoring gh auth on the VMs (WI-757).
 
-## Gap 2 — delivering to the joiner: repo-LESS homes don't federate without gh + a boot
+## Current behavior (2026-06-25) — join-hive now re-keys members in place
 
-This is the one that blocks the joiner-side confirmation:
+The original WI-560 witness found that a view-join performed after operator startup
+left joined member substrates on their per-repo `gh:<repo_id>` topics while the owner
+served the hive on the hive-pubkey topic. That part is now fixed in
+`packages/operator-core/lib/harness/join-hive.ts`:
+
+* `joinHiveAsView` accepts or resolves the owner's `hivePubkey` from discovery.
+* It writes a remote hive identity with `upsertRemoteHiveIdentity`, using a
+  non-signing `remote:<hiveId>` keychain id so the joiner can resolve the same
+  hive topic without pretending to own the hive.
+* After stamping `hive_slug` on the joined members, it calls
+  `rekeyHarness(workspaceId, memberSlug)` for each successful join. That re-resolves
+  the substrate binding in place onto the owner's hive-pubkey topic; a joiner
+  operator restart is no longer required solely to move post-startup joins onto
+  the hive topic.
+
+The remaining live-rig blocker is therefore narrower: the owner still has to
+announce the hive/home identity on the shared topic, and the gh-unauthed VMs still
+cannot produce the attested live announce path. Use the owner approval path below
+for membership grant/cut testing until VM gh auth is restored.
+
+## Gap 2 — historical note: repo-LESS homes did not federate without gh + a boot
+
+This was the second blocker observed on 2026-06-24 before EI-681 landed:
 
 * **Repo-bound MEMBER harnesses federate fine without gh auth** — they rendezvous on the
   public repo topic (`shared_repo_binding_cache.harness_topic`). On the rig fed-b actively
@@ -89,10 +111,10 @@ This is the one that blocks the joiner-side confirmation:
 * **`hive_epoch_keys` (and `hive_members`) federate over the HOME log** (the A-003
   hive-home seam), NOT the member topic. So even when the joiner peers the member, the
   epoch keys never arrive.
-* **A joiner only peers a HOME its operator booted at STARTUP.** `joinHiveAsView` clones the
-  member harnesses but does NOT boot the home substrate; the home boots on the operator's
-  startup sweep. A hive view-joined AFTER startup is never peered until the next restart
-  (the WI-559 self-heal join-retry only retries a boot that was *attempted* and failed).
+* **A joiner only peered a HOME its operator booted at STARTUP.** Before EI-681,
+  `joinHiveAsView` cloned the member harnesses but did not materialize the remote
+  hive identity or re-key member substrates after stamping `hive_slug`, so a hive
+  view-joined after startup stayed on member repo topics until a restart.
 
 ### To complete the live joiner-side receipt
 
@@ -100,9 +122,10 @@ This is the one that blocks the joiner-side confirmation:
    `gh auth token` piped over ssh — runbook §6; reversible, no restart) so the home
    announces.
 2. Re-publish the hive (a go-private K1 WITHDRAWS it — re-`discovery:set_hive public` after).
-3. **Restart the JOINER's operator** so it boots the post-startup-joined hive's home
-   substrate (this changes the joiner's dynamic port — coordinate; other rig agents depend
-   on it).
+3. Re-run the join/discovery path with the current driver. `joinHiveAsView` now
+   records the remote hive identity and calls `rekeyHarness` for joined members in
+   place; only restart the joiner if you need to recover from an already-wedged old
+   run or to pick up a new deploy.
 
 Then the joiner replicates the owner's home log and ends up holding epoch 0..K-1 (the keys
 it legitimately had) but **never the post-ban epoch** — the live K-CUT, and (with content

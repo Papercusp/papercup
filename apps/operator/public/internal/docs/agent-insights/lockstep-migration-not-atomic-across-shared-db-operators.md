@@ -36,9 +36,11 @@ hours — but on a busier surface it would have been a live incident.
 ## The compounding gap — the deploy gate can't see it
 
 The post-deploy gate does **not** prove the consumer path works:
-`health-probe.ts` probes `/api/health` + `POST /api/mcp initialize`;
+`health-probe.ts` probes `/api/health` + `POST /api/mcp initialize` (now with
+the strict MCP `Accept: application/json, text/event-stream` header);
 `verify-release-paths.ts` checks runtime file reads resolve under the release
-root. **Neither does a papercup plan read.** So a deploy that lands a half-state
+root, with a special prompt-decoupling policy when a prompt-root override is
+active. **Neither does a papercup plan read.** So a deploy that lands a half-state
 (move-without-flip *or* flip-without-move) **passes the gate and does not
 auto-rollback**. The migration header's "papercup-read health-check → rollback"
 was aspirational, not implemented.
@@ -96,7 +98,9 @@ plan, risk-tier, and rollback gate all see submodule migrations. Tracked in
   read that can only succeed post-cutover — e.g. `plans:get` on a plan that now
   lives *only* in the new workspace (old resolver would 404 it). `plans:*` are
   PG-resolver-backed (`harness_plans` via `resolvePlanScope`; the FS path is
-  retired), so they exercise the live resolver.
+  retired), and current `resolvePlanScope` maps the operator-home scope to
+  `PAPERCUSP_WORKSPACE_ID` and concrete member harnesses to their Hive home, so
+  a real `plans:get` exercises the live resolver and Hive-scoped plan key.
 * **Worth fixing:** add a real papercup-plan-read probe to the deploy health gate
   so a half-state triggers the existing rollback path. Filed via
   `improvements:capture`.
