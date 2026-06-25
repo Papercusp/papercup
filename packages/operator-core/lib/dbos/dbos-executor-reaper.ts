@@ -33,9 +33,11 @@ const DEFAULT_LIVENESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
  *  freeze threshold so the reaper can fix the row before the host restart loop. */
 const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
 /** A routineFire may be inside its first DBOS step; operation_outputs is written
- *  when that step checkpoints, not when it starts. Keep this above Scout's
- *  default 120s cycle wall so long first steps can record their own error/tick. */
-const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 5 * 60 * 1000;
+ *  when that step checkpoints, not when it starts. Scout's blueprint step is the
+ *  proven long-first-step path: its scheduler default is 20 minutes, and it owns
+ *  recording its own error tick on timeout. Keep this reaper window above that
+ *  timeout so a healthy long Scout cycle is not cancelled before it can report. */
+const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 25 * 60 * 1000;
 /** How often the recurring sweep runs. */
 const DEFAULT_REAP_INTERVAL_MS = 2 * 60 * 1000; // 2 min
 

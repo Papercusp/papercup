@@ -107,13 +107,12 @@ describe('reapDeadExecutorWorkflows', () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 300_000);
+    await reapDeadExecutorWorkflows(sql);
 
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
     const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
-    const staleRoutineFireNoOutputAt = numericValues[0]!;
-    const staleSchedulerAt = numericValues[1]!;
-    expect(staleRoutineFireNoOutputAt).toBeLessThan(staleSchedulerAt);
+    const thresholdSpan = Math.max(...numericValues) - Math.min(...numericValues);
+    expect(thresholdSpan).toBeGreaterThanOrEqual(20 * 60 * 1000);
   });
 
   it('deduplicates requeued routines from multiple no-output routineFire rows', async () => {
