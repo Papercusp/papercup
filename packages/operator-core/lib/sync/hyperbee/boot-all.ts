@@ -335,8 +335,8 @@ export function getBootedHarness(
 
 /**
  * Default swarm-binding resolver. Precedence:
- *   1. shared-hive-federation P-004 — if the harness is the home of a SHARED
- *      (directory-published) Hive, federate over the Hive PUBKEY topic
+ *   1. shared-hive-federation P-004 — if the harness is a Hive HOME, or a
+ *      member of a shared/joined Hive, federate over the Hive PUBKEY topic
  *      (`resolveHiveSwarmBinding` → `{ kind: 'hive', hive_pubkey }`). This is the
  *      federation re-key: the Hive id, not the harness slug, is the topic key.
  *   2. else read `.papercusp/shared.json` (PG-canonical via `resolveHarnessPaths`)
@@ -349,9 +349,10 @@ export async function defaultResolveSwarmBinding(
   harnessSlug: string,
 ): Promise<SwarmBinding | null> {
   try {
-    // (1) A SHARED Hive's harness federates over the Hive pubkey topic, replacing
-    // the per-harness gh/local topic (D-001/D-003). A non-hive or local-only
-    // harness returns null here and falls through to the gh-binding path unchanged.
+    // (1) A Hive-home harness (plus shared/joined member harnesses) federates over
+    // the Hive pubkey topic, replacing the per-harness gh/local topic (D-001/D-003).
+    // A non-hive or local-only member harness returns null here and falls through
+    // to the gh-binding path unchanged.
     const { resolveHiveSwarmBinding } = await import('../../hive-federation');
     const hiveBinding = await resolveHiveSwarmBinding(workspaceId, harnessSlug);
     if (hiveBinding) return hiveBinding;

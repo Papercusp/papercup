@@ -61,6 +61,34 @@ test('paused pool ⇒ factor 0 + "place only tier-1" advice', () => {
   assert.match(r.advice, /SATURATED/);
 });
 
+test('rejected bound account with healthy tiered bee capacity ⇒ broad placement advice', () => {
+  const r = buildCapacityReport(
+    tieredHr({
+      utilization: 1,
+      utilizationPct: 100,
+      rejected: true,
+      queueDepth: 0,
+      priorityTiers: {
+        healthyAccounts: 2,
+        tier1Reserve: 1,
+        tiers: [
+          { tier: 1, cap: 24, inFlight: 0, queued: 0 },
+          { tier: 2, cap: 20, inFlight: 0, queued: 0 },
+          { tier: 3, cap: 19, inFlight: 0, queued: 0 },
+          { tier: 4, cap: 1, inFlight: 0, queued: 0 },
+        ],
+      },
+    }),
+    { clampArmed: true, headroom: 13 },
+  );
+  assert.equal(r.rejected, true);
+  assert.equal(r.dispatchBudget, 19);
+  assert.equal(r.factor, 1);
+  assert.equal(r.recommendedHeadroom, 13);
+  assert.equal(r.throttled, false);
+  assert.match(r.advice, /abundant/);
+});
+
 test('tier layer OFF (no priorityTiers) ⇒ dispatchBudget null, still reports saturation', () => {
   const r = buildCapacityReport({ reachable: true, utilization: 0.1, queueDepth: 0, inFlight: 1 }, { clampArmed: false });
   assert.equal(r.tierLayer, false);

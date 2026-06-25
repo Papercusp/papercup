@@ -94,6 +94,7 @@
     "@papercusp/coordination": "file:../../packages/coordination",
     "@papercusp/db-org": "file:../../libs/papercusp/libs/db",
     "@papercusp/desktop-ipc": "file:../../libs/generic/desktop-ipc",
+    "@papercusp/dock-workbench": "file:../../libs/generic/dock-workbench",
     "@papercusp/docs-engine": "file:../../packages/docs-engine",
     "@papercusp/embedded-pg-discovery": "file:../../libs/generic/embedded-pg-discovery",
     "@papercusp/file-claim": "file:../../libs/papercusp/packages/file-claim",

@@ -98,6 +98,24 @@ test('rejected (hard budget reject) ⇒ throttle to the floor', () => {
   assert.equal(d.headroom, CFG.minHeadroom);
 });
 
+test('tiered spare bee capacity overrides a rejected bound account window', () => {
+  // The live failure: /stats.unified was for one exhausted bound account
+  // (rejected=true, util=100%, reset in days) while priorityTiers still reported
+  // healthy accounts and many spare bee-tier slots. Queen dispatch must trust the
+  // pool-level tier oracle, not throttle the whole hive to the floor.
+  const d = computeCapacityHeadroom(13, {
+    reachable: true,
+    utilization: 1,
+    rejected: true,
+    queueDepth: 0,
+    healthyAccounts: 2,
+    dispatchBudget: 19,
+  });
+  assert.equal(d.factor, 1);
+  assert.equal(d.headroom, 13);
+  assert.equal(d.throttled, false);
+});
+
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {
   const d = computeCapacityHeadroom(0, { reachable: true, paused: true });
   assert.equal(d.headroom, 0, 'no raw headroom → no spawns; the floor lets work flow, it does not invent slots');

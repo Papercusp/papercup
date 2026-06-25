@@ -4,11 +4,12 @@
  * (hive-store), the share-gate read (hive-directory-meta), and the membership
  * read (harness-registry) are mocked.
  *
- * Asserts the federation gate + membership resolution: a Hive HOME or a MEMBER
- * harness (hive_slug → home) federates over the Hive pubkey topic ONLY when the
- * Hive is directory-published (public/invite). A non-hive, an un-backfilled Hive,
- * a local-only / private Hive, or a member of one returns null (the caller falls
- * back to the gh/local binding → unchanged behavior).
+ * Asserts the federation gate + membership resolution: a Hive HOME federates over
+ * its Hive pubkey topic so owner-authored Hive-state rows drain; a MEMBER harness
+ * (hive_slug → home) federates over that topic only when the Hive is shared
+ * (public/invite) or is a joined remote_hive view. A non-hive, an un-backfilled
+ * Hive, or a member of a private owned Hive returns null (the caller falls back
+ * to the gh/local binding → unchanged behavior).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -57,14 +58,14 @@ describe('resolveHiveSwarmBinding — Hive home', () => {
     expect(await resolve('a-harness')).toBeNull();
   });
 
-  it('null for a Hive with no directory meta (local-only)', async () => {
+  it('federates the Hive HOME with no directory meta so owner Hive-state rows drain', async () => {
     hives.set('myhive', { homeSlug: 'myhive', pubkeyBase64: PUBKEY });
-    expect(await resolve('myhive')).toBeNull();
+    expect(await resolve('myhive')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
   });
 
-  it('null for a private Hive (never announces on the DHT)', async () => {
+  it('federates the private Hive HOME so hive_settings/hive_members reach joiners', async () => {
     publishHive('myhive', 'private');
-    expect(await resolve('myhive')).toBeNull();
+    expect(await resolve('myhive')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
   });
 
   it('federates a PUBLIC Hive home over its pubkey topic', async () => {
@@ -119,16 +120,17 @@ describe('resolveHiveSwarmBinding — JOINED (remote) Hive (EI-681)', () => {
     expect(await resolve('remotehive')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
   });
 
-  it('an UN-PUBLISHED OWNED hive (identity, no meta, NOT remote) still → null', async () => {
-    // Same "no meta" shape as a joined hive, but NOT remote_hive → it is a local
-    // owned hive that never published → must stay local (the local-only guard).
+  it('an UN-PUBLISHED OWNED hive home federates, but its member harness stays local-only', async () => {
+    // Same "no meta" shape as a joined hive, but NOT remote_hive → the owner HOME
+    // joins the Hive topic to drain Hive-state rows; its ordinary member harness
+    // still stays local unless the Hive is published/shared.
     hives.set('ownedhive', { homeSlug: 'ownedhive', pubkeyBase64: PUBKEY });
     projects = [
       { slug: 'ownedhive' }, // no remote_hive flag
       { slug: 'member-x', hive_slug: 'ownedhive' },
     ];
     expect(await resolve('member-x')).toBeNull();
-    expect(await resolve('ownedhive')).toBeNull();
+    expect(await resolve('ownedhive')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
   });
 });
 

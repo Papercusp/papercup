@@ -32,6 +32,10 @@ export interface CapacitySignal {
   /** Requests waiting for an admission slot right now (the backlog). */
   queueDepth?: number;
   inFlight?: number;
+  /** Pool-wide healthy accounts from the gateway tier oracle. */
+  healthyAccounts?: number | null;
+  /** Spare slots in the bee tier: cap - inFlight - queued. */
+  dispatchBudget?: number | null;
 }
 
 export interface CapacityDispatchConfig {
@@ -66,6 +70,10 @@ export interface CapacityDecision {
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
+function hasTieredBeeCapacity(signal: CapacitySignal): boolean {
+  return (signal.healthyAccounts ?? 0) > 0 && (signal.dispatchBudget ?? 0) > 0;
+}
+
 /**
  * PURE + HEADROOM-INDEPENDENT: the pool's spare-capacity FACTOR in [0,1] (1 = full headroom, 0 = no fresh
  * capacity). `factor = min(budgetLeg, queueLeg)`, forced to 0 when the pool is paused/rejected. This is the
@@ -78,7 +86,13 @@ export function capacityFactor(
   config: CapacityDispatchConfig = DEFAULT_CAPACITY_DISPATCH_CONFIG,
 ): number {
   if (!signal.reachable) return 1;
-  const util = signal.utilization ?? 0;
+  const tieredSpareCapacity = hasTieredBeeCapacity(signal);
+  const accountWindowBlocked = signal.paused === true || signal.rejected === true;
+  const rejectedBoundAccountButPoolHasCapacity = signal.rejected === true && signal.paused !== true && tieredSpareCapacity;
+  // With priority tiers, `/stats.unified` describes the currently-bound account,
+  // not necessarily the pool. If that account is exhausted while the tier oracle
+  // still reports healthy accounts and bee-tier spare slots, pool capacity exists.
+  const util = rejectedBoundAccountButPoolHasCapacity ? 0 : (signal.utilization ?? 0);
   const queueDepth = Math.max(0, signal.queueDepth ?? 0);
   // Budget leg: 1 up to utilizationHigh, then linearly to 0 as util → 1.0 (at cap).
   const span = Math.max(1e-6, 1 - config.utilizationHigh);
@@ -86,7 +100,7 @@ export function capacityFactor(
   // Queue leg: 1 at an empty queue, → 0 as queueDepth → queueSoftCap.
   const queueLeg = clamp01(1 - queueDepth / Math.max(1, config.queueSoftCap));
   let factor = Math.min(budgetLeg, queueLeg);
-  if (signal.paused || signal.rejected) factor = 0; // no fresh capacity at all → throttle to the floor
+  if (accountWindowBlocked && !rejectedBoundAccountButPoolHasCapacity) factor = 0; // no fresh capacity at all → throttle to the floor
   return factor;
 }
 
@@ -173,6 +187,9 @@ export async function queenCapacityHeadroom(
     if (!gwOn) return noClamp('inference gateway off → no capacity oracle, no clamp (fail-safe)');
     const { fetchGatewayHeadroom } = await import('../inference-gateway/observability');
     const gw = await fetchGatewayHeadroom({ timeoutMs: opts.timeoutMs ?? 1200 });
+    const beeTier = tierOf('bee', DEFAULT_GATEWAY_PRIORITY_MAP);
+    const beeRow = gw.priorityTiers?.tiers.find((t) => t.tier === beeTier) ?? null;
+    const dispatchBudget = beeRow && beeRow.cap != null ? Math.max(0, beeRow.cap - beeRow.inFlight - beeRow.queued) : null;
     signal = {
       reachable: gw.reachable,
       utilization: gw.utilization,
@@ -180,6 +197,8 @@ export async function queenCapacityHeadroom(
       rejected: gw.rejected,
       queueDepth: gw.queueDepth,
       inFlight: gw.inFlight,
+      healthyAccounts: gw.priorityTiers?.healthyAccounts ?? null,
+      dispatchBudget,
     };
   }
   return computeCapacityHeadroom(beeHeadroom, signal, config);
@@ -257,11 +276,16 @@ export function buildCapacityReport(
     };
   }
 
-  const factor = capacityFactor(signal, config);
   const pt = hr.priorityTiers;
   const capByTier = pt?.tiers ?? null;
   const beeRow = pt?.tiers.find((t) => t.tier === beeTier) ?? null;
   const dispatchBudget = beeRow && beeRow.cap != null ? Math.max(0, beeRow.cap - beeRow.inFlight - beeRow.queued) : null;
+  signal.healthyAccounts = pt?.healthyAccounts ?? null;
+  signal.dispatchBudget = dispatchBudget;
+  const factor = capacityFactor(signal, config);
+  const tieredSpareCapacity = hasTieredBeeCapacity(signal);
+  const rejectedBoundAccountButPoolHasCapacity = hr.rejected && !hr.paused && tieredSpareCapacity;
+  const poolBlocked = (hr.paused || hr.rejected) && !rejectedBoundAccountButPoolHasCapacity;
 
   let recommendedHeadroom: number | null = null;
   let throttled: boolean | null = null;
@@ -271,7 +295,7 @@ export function buildCapacityReport(
     throttled = decision.throttled;
   }
 
-  const advice = hr.paused || hr.rejected
+  const advice = poolBlocked
     ? 'pool SATURATED (paused/rejected) → place ONLY top-ranked tier-1 work; hold bee batch until it recovers'
     : factor <= 0.25
       ? `scarce (factor ${factor.toFixed(2)}) → place the top-ranked items only, hold the rest${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`

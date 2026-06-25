@@ -13,7 +13,10 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { resolveLocalAnnounceIdentity } from './local-announce-identity';
+import {
+  resolveLocalAnnounceIdentity,
+  resolveLocalAnnounceIdentityFromHiveMembers,
+} from './local-announce-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -220,5 +223,65 @@ describe('resolveLocalAnnounceIdentity', () => {
         })),
       }),
     ).rejects.toThrow(/GitHub timeout/);
+  });
+});
+
+describe('resolveLocalAnnounceIdentityFromHiveMembers', () => {
+  it('resolves a local announce identity from an existing matching hive_members device', async () => {
+    const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
+      members: [
+        {
+          githubUserId: 4242,
+          githubUsername: 'alice',
+          deviceAttestations: [
+            { device_pubkey: 'OTHER==', gist_id: 'other-gist' },
+            { device_pubkey: 'PUBKEY==', gist_id: 'gist-local' },
+          ],
+        },
+      ],
+      buildKeychainId: (uid) => `${uid}:m`,
+      loadExistingKeypair: async (keychainId) => ({ keychainId, pubkeyBase64: 'PUBKEY==' }),
+    });
+
+    expect(identity).toEqual({
+      keychainId: '4242:m',
+      devicePubkeyBase64: 'PUBKEY==',
+      githubUserId: 4242,
+      githubLogin: 'alice',
+      attestationGistId: 'gist-local',
+    });
+  });
+
+  it('does not resolve when the matching device pubkey is revoked', async () => {
+    const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
+      members: [
+        {
+          githubUserId: 4242,
+          githubUsername: 'alice',
+          revokedPubkeys: ['PUBKEY=='],
+          deviceAttestations: [{ device_pubkey: 'PUBKEY==', gist_id: 'gist-local' }],
+        },
+      ],
+      buildKeychainId: (uid) => `${uid}:m`,
+      loadExistingKeypair: async (keychainId) => ({ keychainId, pubkeyBase64: 'PUBKEY==' }),
+    });
+
+    expect(identity).toBeNull();
+  });
+
+  it('does not generate or accept a nonmatching local keypair', async () => {
+    const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
+      members: [
+        {
+          githubUserId: 4242,
+          githubUsername: 'alice',
+          deviceAttestations: [{ device_pubkey: 'PUBKEY==', gist_id: 'gist-local' }],
+        },
+      ],
+      buildKeychainId: (uid) => `${uid}:m`,
+      loadExistingKeypair: async (keychainId) => ({ keychainId, pubkeyBase64: 'DIFFERENT==' }),
+    });
+
+    expect(identity).toBeNull();
   });
 });

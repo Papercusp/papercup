@@ -39,6 +39,18 @@ call-site table. Per-op signing (Phase 2 below) remains a defense-in-depth futur
 enhancement, not a shipped gate — the shipped model is **per-log** admission, so an
 admitted peer's ops are trusted wholesale (the accepted equivocation tradeoff), which is
 why the GitHub re-derivation invariant is what actually carries the safety.
+
+**Build-state update (2026-06-25).** Read admission is intentionally **not** a
+repo-collaborator permission gate. The pure decider in
+`sync/hyperbee/read-admission.ts` admits a log only after announce signature
+verification, GitHub-gist attestation verification, and the `revoked_pubkeys`
+veto. Boot adds two Hive-specific scope wideners: an already-known Hive member
+can be admitted from the local `hive_members` projection via
+`trustedHiveMemberDeviceAdmission`, and a same-Hive cross-member announce whose
+membership has not federated yet is buffered as `pending` and retried within the
+boot grace window. GitHub collaborator/admin permission remains the authority
+for repo binding, revocation actions, push/PR/merge, and shipped verification;
+it is not the swarm read-admission allow-list.
 </Aside>
 
 ## What a shared harness is
@@ -123,7 +135,7 @@ that true deletion is impossible in an append-only log.**
 | **Sigstore / SLSA / in-toto** | short-lived **OIDC** identity (Fulcio) | keyless sig + **Rekor transparency log**; in-toto/DSSE | no revocation (short-lived certs); compromise caught by **monitoring** | **Partial — provenance pattern**: a signature proves *authenticated-at-a-time*, **not** authorization or "good." Confirms "shipped" must be **GitHub-derived** |
 | **AT Proto `did:plc`** | hybrid: self-cert keys + a directory | signed repo commits | **rotation-key priority list + 72h recovery window** | **Partial — recovery lesson**: for us, GitHub *is* the recovery anchor |
 | **Nostr NIP-05** | pubkey ↔ `name@domain` via a `.well-known` file | per-event Schnorr sig | — | **Partial** — a GitHub-hosted well-known file is a lighter binding variant |
-| **Secure Scuttlebutt** | per-identity signed append-only feed (≈ Hypercore) | every message signed | **invite + follow-graph** bounds replication & Sybils | **Partial — admission analog**: the GitHub collaborator graph is our follow-graph |
+| **Secure Scuttlebutt** | per-identity signed append-only feed (≈ Hypercore) | every message signed | **invite + follow-graph** bounds replication & Sybils | **Partial — admission analog**: Hive membership + revocation bounds shared-hive replication; GitHub permission is reserved for decision-bearing actions |
 
 ### The decisive constraints
 
@@ -197,9 +209,11 @@ is a deferred upgrade **only if** a concrete requirement emerges for state that 
 3. **Per-op Ed25519 signing + verify-on-receipt** in the Autobase `apply`/projection path —
    *defense-in-depth / UX integrity*, not the authority of record. **Sign sequence +
    freshness, not just content** (Radicle's 2026 replay-CVE lesson).
-4. **GitHub-anchored writer admission** — `addWriter` gated on the two-channel binding
-   (blind-pairing handshake, GitHub proof in `userData`) + `revoked_pubkeys` as an advisory
-   projection-time drop-list.
+4. **GitHub-anchored log admission** — signed announce + GitHub gist attestation
+   verifies the device identity; `revoked_pubkeys` denies known-bad devices. Hive
+   scope is then narrowed/widened by signed `harness_slug`, local `hive_members`,
+   and pending retry for membership propagation. This is not a collaborator
+   permission gate.
 5. **Identity binding = a Keybase-style signed link** — the GitHub-hosted device-signed
    proof is the cross-check that lets any peer detect a rewritten identity; revocation is a
    *signed* statement, not just a side list.
@@ -211,8 +225,12 @@ is a deferred upgrade **only if** a concrete requirement emerges for state that 
    transparency log — GitHub already is the authority and stores attestations. (This also
    means the `completion_ref` "shipped" signal should be GitHub-derived, not a self-reported
    peer receipt.)
-8. **Sybil/admission = the GitHub collaborator graph** as the allow-list (the SSB
-   follow-graph analog) + the `firewall(remotePublicKey)` hook.
+8. **Sybil/admission = verified GitHub identity plus Hive membership/revocation.**
+   The swarm topic is public, so unauthenticated devices are filtered by signed
+   announce + gist attestation; shared-Hive cross-member scope is filtered by
+   `hive_members`; and `revoked_pubkeys` is the hard local blocklist. The GitHub
+   collaborator graph is still consulted at decision points that need repo
+   authority, but it is not the read-admission allow-list.
 9. **Do not** adopt MLS or build a Byzantine-CRDT ACL.
 
 ### The advisory-vs-trusted boundary
@@ -252,7 +270,7 @@ object from a live GitHub poll, not from a federated row.)
 | `harness/binding-service.ts` · `supersedeBinding` | supersede a binding (needs admin) | local cache + **live** `getRepoPermission` | **Yes** — live permission check, admin required |
 | `harness/binding-service.ts` · claimant re-verify sweep | demote a claimant who lost write access | cached claimants | **Yes** — per-claimant live permission check |
 | `sync/hyperbee/revoke-contributor.ts` | revoke a contributor's device key | `contributors` row | **Yes** — `repos.get → permissions.admin` gate before any write |
-| `sync/hyperbee/read-admission.ts` (+ `boot.ts`) | admit a peer's log to the substrate | signed announce | **Yes** — announce-sig verify + `verifyBinding` (GitHub-hosted attestation); `revoked_pubkeys` veto |
+| `sync/hyperbee/read-admission.ts` (+ `boot.ts`) | admit a peer's log to the substrate | signed announce + local Hive membership projection | **Yes** — announce-sig verify + `verifyBinding` (GitHub-hosted attestation); `revoked_pubkeys` veto; same-Hive scope uses `hive_members` / pending retry, not repo collaborator permission |
 | `harness/fork-pr-on-feature-pass.ts` | fork-PR vs direct-push mode on feature pass | local pipeline pass event | **Yes** — **live** `getPermission` (fork iff `read`/`none`) |
 | `pr-host/auto-merge.ts` · `tryAutoMerge` → `host.merge` | merge a PR | `Pr` object from **GitHub** poll (`PrHost`/`github.ts`) | **Yes** — PR state read live from GitHub; merge enforced by GitHub write-access + branch protection |
 | `pr-host/auto-approve.ts` · `tryAutoApprove` | post an approving review | **local** `trusted_authors` + GitHub PR author | **N/A** — trust list is local config (not federated); approval still doesn't bypass GitHub's merge authority |
@@ -300,14 +318,16 @@ Under this model we **deliberately accept**:
 
 1. **Public, discoverable topic** — swarm spam/DoS is *mitigated* (firewall + admission),
    not prevented.
-2. **Advisory rows can be transiently forged** in local UI until per-op signing ships — and
-   even after, an admitted-then-malicious writer can inject signed-but-false advisory rows
-   (equivocation). Mitigation: nothing decision-bearing acts on it without GitHub
-   re-derivation.
+2. **Advisory rows can be injected by an admitted identity** — read admission proves
+   identity and Hive membership, not truth. An admitted-then-malicious writer can
+   still inject signed-but-false advisory rows (equivocation). Mitigation:
+   nothing decision-bearing acts on it without GitHub re-derivation.
 3. **No true removal / no post-compromise security** in the append-only log — revocation is
    best-effort projection filtering; the data persists and replicates.
-4. **Sybil resistance is delegated to GitHub** — identity = GitHub account; only as strong
-   as the two-channel binding + GitHub's account-creation friction.
+4. **Sybil resistance is mostly delegated to GitHub identity plus Hive membership** —
+   identity = GitHub account, bounded by the gist attestation and GitHub's
+   account-creation friction; cross-member shared-Hive writes also require a
+   current `hive_members` device row or they remain pending/dropped.
 5. **Per-op signatures don't defeat a signed equivocator** (Kleppmann) — accepted because
    state is advisory and GitHub-re-derived; we explicitly do not build a BFT-CRDT ACL.
 6. **Identity binding inherits GitHub account integrity** — a compromised GitHub account is

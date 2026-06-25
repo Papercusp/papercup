@@ -9,14 +9,11 @@
  * (D-003): the transport/peer-log/projection machinery is unchanged; only the
  * topic a Hive's harness joins moves from the harness slug/repo to the Hive id.
  *
- * GATE — only a SHARED Hive federates. "Shared" = the owner published the Hive to
- * the directory as `public`/`invite` (the existing owner-driven share-intent
- * signal, p2p-hive-directory). A `private`/un-published Hive stays local-only and
- * NEVER announces on the public DHT — so re-keying is a zero-risk, dormant-path
- * change for today's local-only hives (no privacy regression). [Decision: the
- * federation gate reuses directory visibility rather than minting a separate
- * `federate` flag; the axes can be split later if a Hive ever wants to be
- * directory-private but substrate-shared.]
+ * GATE — a Hive HOME federates on its Hive-pubkey topic so owner-authored Hive
+ * state (`hive_settings`, `hive_members`, epoch/key material) drains from the
+ * owner's outbox and reaches joiners. A non-home member harness still federates
+ * only when its Hive is directory-published (public/invite) or is a joined
+ * remote_hive view; private owned members stay local-only.
  *
  * SCOPE — today a Hive == its `kind:'hive'` home harness, so this resolves the
  * home harness onto the Hive topic. Member-harness federation (a Hive's other
@@ -29,13 +26,14 @@ import { getOwnedHiveMeta } from './hive-directory-meta';
 import { loadHarnessRegistry } from './harness-registry';
 
 /**
- * The Hive federation `SwarmBinding` for `harnessSlug` if it belongs to a SHARED
- * Hive, else `null` (the caller falls back to the gh/local binding). Resolves the
- * harness's home Hive — itself if it is a `kind:'hive'` home, else its declared
- * `hive_slug` (a member harness) — then federates over that Hive's pubkey topic
- * iff the Hive is owner-published (public/invite). Both the home and every member
- * of a shared Hive join the SAME Hive topic; `harness_slug` stays the within-Hive
- * component scope (D-003: change only the topic key — no peer-log restructure).
+ * The Hive federation `SwarmBinding` for `harnessSlug` if it belongs to a Hive
+ * that should join the Hive topic, else `null` (the caller falls back to the
+ * gh/local binding). Resolves the harness's home Hive — itself if it is a
+ * `kind:'hive'` home, else its declared `hive_slug` (a member harness). The home
+ * always joins its own Hive topic so its Hive-grained rows can drain; member
+ * harnesses join the same topic only when the Hive is shared or a joined remote
+ * view. `harness_slug` stays the within-Hive component scope (D-003: change only
+ * the topic key — no peer-log restructure).
  *
  * Pure resolution: PG reads for the Hive identity + a registry read for membership
  * and the share gate; no side effects, no swarm join.
@@ -54,7 +52,16 @@ export async function resolveHiveSwarmBinding(
     return null; // Hive identity not resolvable (e.g. un-backfilled)
   }
 
-  // Gate. A JOINED (remote) Hive view federates over the Hive-pubkey topic —
+  // The owner/HOME harness must boot on the Hive topic even before a public
+  // listing exists: it owns Hive-grained rows (hive_settings/hive_members), and
+  // those rows are captured under `harness_slug = hive_home_slug`. If the home
+  // stays local-only, its send-side drain never appends those rows to the shared
+  // Hive log, so joiners never receive settings/membership/epoch state.
+  if (harnessSlug === hiveHomeSlug) {
+    return { kind: 'hive', hive_pubkey: hive.pubkeyBase64 };
+  }
+
+  // Member gate. A JOINED (remote) Hive view federates over the Hive-pubkey topic —
   // that is the whole reason the joiner joined it, and it MUST match the OWNER's
   // re-key so both peers sit on the SAME topic. Before EI-681 the joiner had no
   // `hives` identity row + no owned meta, so it fell through to the gh:<repo_id>
