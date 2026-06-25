@@ -15,6 +15,18 @@
  * Robust to the empty/degraded case: outside a SyncProvider (or before the
  * trigger lands any rows) `hasRows` is false; rather than hard-block forever we
  * surface a soft "still preparing…" with the Retry, so the user is never trapped.
+ *
+ * NEVER-TRAP contract (public-release, WI-783): the dogfood clone is, by the
+ * DOGFOOD_PAPERCUSP_HIVE flag's own design, "best-effort + non-fatal — it can
+ * never break a fresh launch." A PUBLIC user can't even access the private
+ * `papercup-db` / `papercup-shared` submodules (org-only), and a fresh Mac may
+ * have no git — so a persistent clone error MUST NOT strand the user at the
+ * finish screen. This gate therefore ALWAYS offers a "Continue into Papercusp"
+ * escape that enters the app (via onReady); the clone keeps retrying in the
+ * background under the non-blocking DogfoodBootstrapBanner. On a terminal error
+ * (auto-retries exhausted / git missing / access denied) that escape becomes the
+ * PRIMARY action; while still downloading it's a quiet secondary so a 5GB clone
+ * never forces the user to wait before using the app.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -134,6 +146,15 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
     }
   }, [p.ready, onReady]);
 
+  // NEVER-TRAP escape (WI-783): enter the app now; the dogfood clone keeps
+  // retrying in the background under DogfoodBootstrapBanner. Guarded by the same
+  // single-fire latch as the auto-advance so onReady runs at most once.
+  const proceedAnyway = () => {
+    if (advancedRef.current) return;
+    advancedRef.current = true;
+    onReady();
+  };
+
   useEffect(() => {
     // No rows yet and we haven't kicked it → kick the clone so rows start to flow.
     // (If rows already exist the boot/StepGit trigger has it covered.)
@@ -196,14 +217,14 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
           </h2>
           <p className="pc-step__lead">
             {!p.hasError
-              ? 'The Papercusp workspace is being fetched in the background. We’ll take you into the app the moment it’s ready.'
+              ? 'The Papercusp workspace is being fetched in the background — you don’t have to wait. Continue into the app any time; we’ll finish preparing it for you.'
               : p.gitMissing
-                ? 'Papercusp needs git to download the workspace. On macOS, install it with “xcode-select --install” (or “brew install git”); on Linux use your package manager. Then Retry.'
+                ? 'This step uses git to download Papercusp’s own built-in workspace — it’s optional, so you can continue into the app now. (To enable it later, install git: macOS “xcode-select --install” or “brew install git”; Linux via your package manager.)'
                 : autoRetrying
                   ? `Retrying automatically (attempt ${autoAttempts + 1} of ${MAX_AUTO_RETRIES})…`
                   : p.networkError
-                    ? "We couldn’t reach GitHub after several tries. This is a network/connectivity problem — not your GitHub sign-in, which is fine. Check your connection, then retry."
-                    : "We couldn’t finish cloning the Papercusp workspace. Retry below — it picks up where it left off."}
+                    ? "We couldn’t reach GitHub for Papercusp’s built-in workspace — a network issue, not your GitHub sign-in, which is fine. You can continue into the app now; we’ll keep retrying in the background. Or Retry."
+                    : "We couldn’t finish downloading Papercusp’s built-in workspace. You can continue into the app now — we’ll keep retrying in the background — or Retry, which picks up where it left off."}
           </p>
         </div>
 
@@ -232,23 +253,45 @@ export function BootstrapFinishGate({ onReady, onCancel }: BootstrapFinishGatePr
         )}
 
         <div className="pc-step__actions" style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'center' }}>
-          {/* While auto-retrying we self-heal silently — the manual Retry only
-              appears once automatic attempts are exhausted, immediately for a
-              user-action error (git missing), or when there are no rows at all. */}
-          {((p.hasError && (autoExhausted || p.gitMissing)) || !p.hasRows) && (
-            <button
-              type="button"
-              className="pc-btn pc-btn--primary"
-              data-testid="bootstrap-gate-retry"
-              onClick={() => void retry()}
-              disabled={retrying}
-            >
-              {retrying ? 'Retrying…' : 'Retry'}
-            </button>
-          )}
-          <button type="button" className="pc-btn" onClick={onCancel}>
-            Back to setup
-          </button>
+          {/* NEVER-TRAP escape (WI-783): on a terminal error this is the PRIMARY
+              way out (the clone can't or won't finish — e.g. a public user with
+              no access to the private submodules, or a Mac with no git); while
+              still downloading it's a quiet secondary so a long clone never
+              forces the user to wait. onReady enters the app; the clone keeps
+              retrying under the non-blocking banner. */}
+          {(() => {
+            const terminalError = p.hasError && (autoExhausted || p.gitMissing);
+            const continuePrimary = terminalError;
+            return (
+              <>
+                <button
+                  type="button"
+                  className={`pc-btn ${continuePrimary ? 'pc-btn--primary' : ''}`}
+                  data-testid="bootstrap-gate-continue"
+                  onClick={proceedAnyway}
+                >
+                  Continue into Papercusp
+                </button>
+                {/* While auto-retrying we self-heal silently — the manual Retry
+                    only appears once automatic attempts are exhausted, immediately
+                    for a user-action error (git missing), or with no rows at all. */}
+                {(terminalError || !p.hasRows) && (
+                  <button
+                    type="button"
+                    className="pc-btn"
+                    data-testid="bootstrap-gate-retry"
+                    onClick={() => void retry()}
+                    disabled={retrying}
+                  >
+                    {retrying ? 'Retrying…' : 'Retry'}
+                  </button>
+                )}
+                <button type="button" className="pc-btn" onClick={onCancel}>
+                  Back to setup
+                </button>
+              </>
+            );
+          })()}
         </div>
       </div>
     </div>

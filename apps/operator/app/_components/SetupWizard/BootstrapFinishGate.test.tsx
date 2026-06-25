@@ -101,3 +101,57 @@ describe('BootstrapFinishGate auto-retry (EI-3548)', () => {
     expect(startSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('BootstrapFinishGate never-trap escape (WI-783, public-release)', () => {
+  it('always offers "Continue into Papercusp", and it enters the app via onReady', async () => {
+    // A persistent (git-missing) terminal error must NOT strand the user — the
+    // dogfood clone is best-effort/non-fatal, so the escape is always present and
+    // wired to onReady (which the parent SetupWizard uses to enter the app).
+    progress = errorEpisode('git_missing');
+    const onReady = vi.fn();
+    render(<BootstrapFinishGate onReady={onReady} onCancel={() => {}} />);
+
+    const cont = screen.getByTestId('bootstrap-gate-continue');
+    expect(cont).toBeTruthy();
+    // On a terminal error it's the PRIMARY action.
+    expect(cont.className).toMatch(/pc-btn--primary/);
+
+    await act(async () => { cont.click(); });
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes the escape even while still downloading (no error) so a long clone never blocks entry', async () => {
+    progress = {
+      rows: [],
+      clone: { step: 'clone', status: 'running', ts: 1, percent: 12 },
+      hasRows: true,
+      hasError: false,
+      networkError: false,
+      gitMissing: false,
+      ready: false,
+      inProgress: true,
+    };
+    const onReady = vi.fn();
+    render(<BootstrapFinishGate onReady={onReady} onCancel={() => {}} />);
+
+    const cont = screen.getByTestId('bootstrap-gate-continue');
+    expect(cont).toBeTruthy();
+    // While downloading (no error) it's a quiet SECONDARY, not primary.
+    expect(cont.className).not.toMatch(/pc-btn--primary/);
+
+    await act(async () => { cont.click(); });
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires onReady at most once across the auto-advance latch and a manual continue', async () => {
+    progress = errorEpisode('git_missing');
+    const onReady = vi.fn();
+    const { rerender } = render(<BootstrapFinishGate onReady={onReady} onCancel={() => {}} />);
+    await act(async () => { screen.getByTestId('bootstrap-gate-continue').click(); });
+    expect(onReady).toHaveBeenCalledTimes(1);
+    // A subsequent real "ready" must not double-fire onReady.
+    progress = { ...progress, hasError: false, gitMissing: false, ready: true };
+    await act(async () => { rerender(<BootstrapFinishGate onReady={onReady} onCancel={() => {}} />); });
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+});
