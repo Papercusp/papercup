@@ -22,6 +22,7 @@ import { maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { softText, clampText } from '../limits';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -37,14 +38,8 @@ const argsSchema = z.object({
     .describe(
       'One paragraph (≤2000 chars) describing where the plan currently stands. Keep it tight — the Now block is a cold-resume anchor, NOT a log. If it would exceed 2000 chars, trim to essentials and put the long-form detail in the plan body via plans:set-content / set-content-chunk (or on items/decisions); do not pad the Now block.',
     ),
-  next: z
-    .string()
-    .min(1)
-    .max(
-      8000,
-      'next must be ≤8000 chars — it is ONE next concrete action, not a plan. Trim it; multi-step detail belongs in plan items or the body.',
-    )
-    .describe('One sentence (≤8000 chars) — the single next concrete action and who should do it.'),
+  next: softText(8000, { min: 1 })
+    .describe('One sentence (≤8000 chars) — the single next concrete action and who should do it. Auto-truncated to 8000 chars if longer; multi-step detail belongs in plan items or the body.'),
   rationale: z
     .string()
     .optional()
@@ -113,6 +108,8 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
+    // softText `next` (P-002): never bounced on length — clamp to cap here.
+    const next = clampText(args.next, 8000);
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,
@@ -135,7 +132,7 @@ export default defineTool({
             if (current === null) {
               return { newBody: null, value: { ok: false, code: 'not_found' } };
             }
-            const replaced = replaceNowBlock(current, args.state, args.next);
+            const replaced = replaceNowBlock(current, args.state, next);
             const final = bumpUpdatedDate(replaced);
             return { newBody: final, value: { ok: true } };
           },
@@ -162,7 +159,7 @@ export default defineTool({
         await emitPlanEventForCaller(ctx, {
           planSlug: slug,
           event: 'now_updated',
-          after: args.next,
+          after: next,
           detail: args.state.slice(0, 200),
         });
 

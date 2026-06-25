@@ -194,3 +194,115 @@ $0.036** — the same turns/cost reduction availability buys `code:run`. Both ar
 *helpfulness* judge (haiku's capability ceiling — it orients, then stalls on empty payloads), so the
 CLEAN task-completion win is model-gated: **re-run on sonnet** (drop the `LLM_TEST_*_MODEL` overrides)
 for the definitive adoption + turns/cost deltas — same caveat as the code:run A/B above.
+
+## Bulk-arg adoption (bulk-endpoint-standardization P-007)
+
+The same seam measures the **bulk-arg** path — a simpler "collapse N calls into one" optimization
+that doesn't require a script runtime. Many multi-arity tools now accept `{ ids:[…] }` in addition
+to `{ id }` (every repeated-call read is dual-arity). When the engineer needs the same detail for
+every item in a collection, does it fire ONE `work_items:get { ids:[…] }` instead of `work_items:get { id }` once per item?
+
+* **Scenarios:** `su-S21-bulk-read-not-hand-loop` (reach for `{ ids:[…] }` on a 6-item collection;
+  load-bearing assert: at most ONE `work_items:get` call total) + its guard `su-S22-bulk-not-for-single`
+  (single known id → `{ id }` directly, no collection machinery — the over-application guard).
+* **Arms:** same variant seam (excludeTools / promptOverlay / variantId) as the code:run A/B.
+* **Key difference from code:run:** no script needed — the bulk call IS the tool call. The adoption bar
+  is lower (no language-model capability ceiling on scripting), but the model must still recognize the
+  pattern and prefer the single bulk call over issuing separate per-id calls.
+
+## Newer test dimensions (S23–S27) — correctness and behavioral compliance
+
+Scenarios beyond S22 cover **different axes** from adoption — correctness of a specific protocol and
+behavioral compliance with shared-base policies. They use the same `SU_RUBRIC` + assert infrastructure
+but are NOT A/B arms in the adoption sense.
+
+* **S23–S25 (delta-merge, agent-tool-delta-protocol P-007):** Correctness of applying a semantic
+  delta response — does the agent merge the incoming delta against the base snapshot it still holds in
+  context (S23: happy path when base is present; S24: fallback when base was compacted; S25: correctly
+  ignores a wrong-merge attempt)?
+* **S26 (take-charge-dont-wait):** Behavioral compliance with the `CONCURRENCY_FIRST_NOTE` "never wait
+  for a calm window; a non-resource block is a BUG to fix" policy in `prompt-build.ts`. The presence
+  test (`prompt-build.test.ts`) asserts the note is IN the prompt; S26 asserts the agent actually
+  BEHAVES on it (force-deploys rather than ending a turn asking "want me to verify once it propagates?").
+* **S27 (woke-to-dispatch-claims):** Behavioral compliance with the `PEER_WAKE_NOTE` in
+  `prompt-build.ts` (added 2026-06-24, step 3j of `buildPromptParts`). The note teaches: a parked
+  agent does nothing until re-invoked; when woken by a directed dispatch, CLAIM + WORK the lane that
+  turn — never read-and-repark. S27 asserts this: the engineer claims the dispatched items in the same
+  turn it was woken rather than acknowledging and re-parking (`coord:await-inbox` / ending without
+  claiming).
+
+The presence test for both S26/S27 policies is `prompt-build.test.ts` (every role's compiled prompt
+CONTAINS the note); S26/S27 are the behavioral complements — proving the in-prompt policy changes
+actual agent decisions, not just prompt content.
+
+## Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)
+
+The A/B above measures adoption inside the llm-testing harness. To track the SAME levers on the
+**live fleet** — and to confirm plan `agent-tooling-token-efficiency-2026-06-25` actually moved them —
+query `harness_shared.tool_invocations` directly (`dev:pg_query`). Three metrics; re-run weekly and
+compare to this baseline.
+
+**⚠ Denominator: measure agent traffic on the `mcp` transport ONLY.** The raw call total is dominated
+by **UI HTTP polling** — `plans:list` + `plans:attention` alone ran **\~25 calls/sec** (45,943 in a
+30-min sample, each a distinct `run_id`) over the `http` transport, which is *not* agent LLM tokens.
+Agent-authored work is the `mcp` transport (\~13k calls/6h). Every adoption ratio below filters
+`transport='mcp'`, or it is meaningless (raw code:run share looks like 0.0004% only because of the
+polling-inflated denominator; against `mcp` the honest figure is \~0.006% — still \~zero, but measure it right).
+
+### 1. String-limit failure rate — did the validation-limit work land?
+
+```sql
+-- too-long-string validation failures by tool, last 14d (baseline: ~1,000+; top fleet:place_batch.brief=412)
+SELECT tool_name, count(*) AS errs, max(invoked_at) AS last_seen,
+       (array_agg(error_message ORDER BY invoked_at DESC))[1] AS sample
+FROM harness_shared.tool_invocations
+WHERE status <> 'ok' AND invoked_at > now() - interval '14 days'
+  AND (error_message ILIKE '%must contain at most%' OR error_message ILIKE '%Too big%'
+       OR error_message ILIKE '%expected string to have <=%' OR error_code ILIKE '%too_big%')
+GROUP BY tool_name ORDER BY errs DESC;
+```
+
+Target after the fix: advisory-field tools (loop:arm.goal, coord notes, fleet briefs, …) drop to \~0
+(they now *truncate* instead of reject); the rest fall sharply (caps raised 4–8×).
+
+### 2. code:run adoption share (mcp transport)
+
+```sql
+-- baseline 2026-06-25: code:run 9 / 3d, code:tools 1 — ~0.006% of mcp agent calls
+WITH mcp AS (SELECT * FROM harness_shared.tool_invocations
+             WHERE transport='mcp' AND invoked_at > now() - interval '3 days')
+SELECT (SELECT count(*) FROM mcp WHERE tool_name='code:run')   AS coderun,
+       (SELECT count(*) FROM mcp WHERE tool_name='code:tools') AS codetools,
+       (SELECT count(*) FROM mcp)                              AS mcp_total,
+       round(100.0*(SELECT count(*) FROM mcp WHERE tool_name='code:run')
+             /NULLIF((SELECT count(*) FROM mcp),0),4)          AS coderun_pct;
+```
+
+### 3. Redundant-bootstrap rate — orient duplication (the bigger leak)
+
+The win is agents NOT re-calling what `coord:orient` already returned. Baseline: orient co-fires with
+`coord:plan-events`/`memory:search`/`coord:inbox`/`coord:declare-intent` at \~1.0 confidence (lift
+450–660 in `dev:tool_cooccurrence`). The precise per-spawn form:
+
+```sql
+-- of spawns that called coord:orient, how many ALSO re-called a call orient already subsumed?
+WITH s AS (
+  SELECT spawn_id,
+         bool_or(tool_name='coord:orient') AS oriented,
+         bool_or(tool_name IN ('coord:plan-events','memory:search','coord:inbox','coord:declare-intent')) AS redundant
+  FROM harness_shared.tool_invocations
+  WHERE transport='mcp' AND invoked_at > now() - interval '24 hours' AND spawn_id IS NOT NULL
+  GROUP BY spawn_id)
+SELECT count(*) FILTER (WHERE oriented) AS oriented_spawns,
+       count(*) FILTER (WHERE oriented AND redundant) AS also_redundant,
+       round(100.0*count(*) FILTER (WHERE oriented AND redundant)
+             /NULLIF(count(*) FILTER (WHERE oriented),0),1) AS pct_redundant
+FROM s;
+```
+
+Target after the orient-dedup guidance (orient.ts + the MCP instructions) + the soft re-call nudge:
+`pct_redundant` trends down from \~100%. (`dev:tool_cooccurrence { hours, orderBy:'confidence' }` is
+the quick read; this query is the precise one.)
+
+Wire all three into a weekly check (a scorecard row or a `dev:` rollup) so a regression — a new tool
+shipping a tight cap, or adoption sliding back — surfaces without a manual audit.

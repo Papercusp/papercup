@@ -21,6 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { armInboxWake } from '../../../events/await/inbox-wake-arm';
+import { softText, clampText, LIMITS } from '../../limits';
 
 export default defineTool({
   name: 'coord:await-inbox',
@@ -37,11 +38,9 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    note: z
-      .string()
-      .max(2000)
+    note: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('Why you are idle / what you are waiting for — echoed into the wake turn.'),
+      .describe('Why you are idle / what you are waiting for — echoed into the wake turn. Auto-truncated to 2000 chars if longer.'),
     min_sleep_sec: z
       .number()
       .int()
@@ -65,7 +64,7 @@ export default defineTool({
     // it is no longer what makes you wakeable (D-005).
     const { awaitId, eventKey, handleNote } = await armInboxWake({
       ownerId: identity.ownerId,
-      note: args.note ?? 'idle — awaiting work/direction (deliver-and-wake)',
+      note: clampText(args.note, LIMITS.ANNOTATION) ?? 'idle — awaiting work/direction (deliver-and-wake)',
       minSleepSec: args.min_sleep_sec,
       planRunId: args.plan_run_id,
       workspaceId: identity.workspaceId ?? undefined,

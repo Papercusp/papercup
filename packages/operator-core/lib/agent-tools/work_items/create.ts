@@ -30,11 +30,12 @@ import { WORK_ITEM_KINDS } from '../../work-items';
 import { hiveArg } from '../_hive-scope';
 import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
 import { runBulk, bulkContent } from '../_bulk';
+import { hardText, LIMITS } from '../limits';
 
 /** One per-item create spec — the same per-item shape as the single-call fields. */
 const itemSpec = z.object({
   kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]),
-  title: z.string().min(1).max(1000),
+  title: hardText(LIMITS.SHORT_TITLE),
   summary: z.string().max(8000).optional().describe('body / summary text'),
   harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
   hive: hiveArg,
@@ -89,7 +90,7 @@ export default defineTool({
     .object({
       // ── single-create shorthand (n=1) ──
       kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
-      title: z.string().min(1).max(1000).optional(),
+      title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: z.string().max(8000).optional().describe('body / summary text'),
       harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
       hive: hiveArg,

@@ -34,6 +34,7 @@ import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { hiveHomeSlugForHarness } from '../../hive-federation';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
+import { softText, clampText, LIMITS } from '../limits';
 
 interface PlacementResult {
   task: string;
@@ -114,7 +115,7 @@ export default defineTool({
       .optional()
       .describe('Pull the OPEN unassigned backlog from this member harness (priority order) when `tasks` is not given. Also the spawn target for fresh bees.'),
     max: z.number().int().min(1).max(64).optional().describe('Hard cap on total placements this batch (default 32 / frontier size).'),
-    brief: z.string().max(16000).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the bees are MISSING, not a restatement of the work-item.'),
+    brief: softText(LIMITS.BRIEF).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the bees are MISSING, not a restatement of the work-item. Auto-truncated to 16000 chars if longer.'),
     tier: z.string().max(40).optional().describe('Model tier for fresh spawns (quick/standard/deep/max — see your tier menu). Omit for the bee role default.'),
     inject_load_threshold: z.number().int().min(1).max(20).optional().describe('A bee whose projected load reaches this is no longer a warm-inject target (default 3).'),
     min_inject_affinity: z.number().min(0).max(100).optional().describe('Minimum affinity score to warm-inject vs fresh-spawn (default 1 ≈ one fully-fired low-tier signal).'),
@@ -211,7 +212,7 @@ export default defineTool({
       });
     }
 
-    const exec = await executeBatch({ plan, headroom, brief: args.brief ?? null, tier: args.tier ?? null, actor, role: (ctx as { role?: string }).role ?? 'operator', workspaceId });
+    const exec = await executeBatch({ plan, headroom, brief: clampText(args.brief, LIMITS.BRIEF) ?? null, tier: args.tier ?? null, actor, role: (ctx as { role?: string }).role ?? 'operator', workspaceId });
     // EI-590: surface a no-op-placement warning when fresh spawns can't actually
     // start (global wake-mode 'manual' → boot-wakes stage). Best-effort: a read
     // failure degrades to no warning, never blocks the placement result.

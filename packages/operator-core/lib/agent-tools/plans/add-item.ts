@@ -30,6 +30,7 @@ import { parsePlan, maskFences, IMPORTANCE_LEVELS, type Importance } from './par
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { hardText } from '../limits';
 
 const PHASE = z
   .string()
@@ -53,7 +54,7 @@ const BLOCKED_BY = z
 const itemSpec = z.object({
   slug: z.string().min(1).optional().describe('per-item plan slug (else the batch `slug`)'),
   phase: PHASE.optional().describe('per-item phase (else the batch `phase`)'),
-  text: z.string().min(1).max(4000),
+  text: hardText(4000),
   blockedBy: BLOCKED_BY.optional(),
   importance: IMPORTANCE.optional().describe('per-item importance (else the batch `importance`)'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
@@ -67,7 +68,7 @@ export const argsSchema = z
     slug: z.string().min(1).optional(),
     harness: harnessArg,
     phase: PHASE.optional(),
-    text: z.string().min(1).max(4000).optional(),
+    text: hardText(4000).optional(),
     blockedBy: BLOCKED_BY.optional(),
     importance: IMPORTANCE.optional(),
     items: z

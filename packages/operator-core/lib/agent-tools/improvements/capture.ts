@@ -20,6 +20,7 @@ import { notifyAgents } from '../coordination/notify-agents';
 import { issueRef, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { hardText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'improvements:capture',
@@ -41,7 +42,7 @@ export default defineTool({
   // this list, so the tool never appeared in its projected surface).
   agentRoles: [...COORD_ROLES, 'scanner'],
   args: z.object({
-    title: z.string().min(1).max(1000).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
+    title: hardText(LIMITS.SHORT_TITLE).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
     kind: z.enum(['bug', 'change', 'feature']).optional().describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.'),
     body: z.string().max(16000).optional().describe('repro / context / the correct-state, especially for a bug'),
     severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),

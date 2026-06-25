@@ -22,6 +22,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { cancelSubtree } from '../../fleet/nursery';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+import { softText, clampText } from '../limits';
 
 export default defineTool({
   name: 'fleet:cancel',
@@ -40,7 +41,7 @@ export default defineTool({
     .object({
       spawn_id: z.string().min(1).optional().describe('Root of one subtree to cancel (this node + all descendants; n=1 shorthand for spawn_ids:[id]).'),
       spawn_ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('Roots of the subtrees to cancel (1–100).'),
-      reason: z.string().max(4000).optional().describe('Why — surfaced in the coord cancellation notice + audit (batch-level).'),
+      reason: softText(4000).optional().describe('Why — surfaced in the coord cancellation notice + audit (batch-level). Auto-truncated to 4000 chars if longer.'),
       workspace: z.string().max(120).optional(),
     })
     .refine((a) => Boolean(a.spawn_id) || (a.spawn_ids?.length ?? 0) > 0, {
@@ -68,7 +69,7 @@ export default defineTool({
         const res = await cancelSubtree(sql, {
           workspaceId,
           rootSpawnId: spawn_id,
-          reason: args.reason ?? 'fleet:cancel',
+          reason: clampText(args.reason, 4000) ?? 'fleet:cancel',
           actor,
         });
         let processes_aborted = 0;

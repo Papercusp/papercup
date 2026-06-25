@@ -213,3 +213,4 @@
 [2026-06-25T04:27:56-04:00] queen EI-3597: placement truth can diverge across fleet_capacity/place_batch/spawn/scheduler_running/presence; when batch says no headroom but capacity says slots free, record the mismatch and arm spawn-slot retry rather than evicting from inconsistent liveness.
 [2026-06-25T12:25:10Z] bee WI-378: scripts/mcp-call.mjs work_items:complete expects {id, completion:{summary,status?,tests:string}}; a bare completion string or tests array is rejected, while work_items:claim needs explicit assign_to when helper identity falls back to su-loopback.
 [2026-06-25T00:00:00Z] doc-steward -: harness_docs:verify requires --harness papercusp (not papercup) even when the doc lives in the papercup repo; papercusp owns the docs namespace.
+[2026-06-25T00:00:00Z] doc-steward -: harness_docs:verify requires --harness papercusp (framework harness slug), not the project harness slug (papercup) — "unknown_harness" means wrong slug, not a missing param

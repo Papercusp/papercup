@@ -42,6 +42,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
+import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
 const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
@@ -409,6 +410,14 @@ async function ensurePostgres(): Promise<PgHandle | null> {
 }
 
 async function main(): Promise<void> {
+  // PACKAGED substrate-sidecar (P-006): the spawner re-execs THIS bundled
+  // serve.mjs with PAPERCUSP_SUBSTRATE_SIDECAR_MODE=1 instead of `npx tsx`-ing a
+  // .ts the bundle doesn't contain. Divert to the sidecar JSON-RPC server BEFORE
+  // any embedded-PG / operator boot; the net server keeps the process alive.
+  if (process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1') {
+    runSubstrateSidecarServer();
+    return;
+  }
   const args = new Set(process.argv.slice(2));
   const ensure = args.has('--ensure');
   // Headless by default; --ui (or a pre-set PAPERCUSP_SERVE_UI) keeps the SPA.

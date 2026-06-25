@@ -17,6 +17,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { resolveSubstrateSocketPath, SUBSTRATE_SOCKET_ENV } from './substrate-socket-path';
 
 // EI-1612 (infra round-3/4): this package is ESM (type:module), where `__dirname`
 // is undefined. The previous `path.join(__dirname, …)` threw "__dirname is not
@@ -51,22 +52,45 @@ export async function spawnSubstrateSidecar(socketPath?: string): Promise<void> 
     '../../../../../apps/operator/bin/substrate-sidecar.ts',
   );
 
-  // Ensure socket directory exists
-  const socketDir = socketPath ? path.dirname(socketPath) : '.papercusp';
+  // Resolve the IPC socket ONCE and pin it in process.env so the parent IPC
+  // client (getSubstrateIpcClient) and the spawned child resolve the SAME
+  // absolute path. NEVER CWD-relative: a relative `.papercusp` mkdir is EACCES
+  // from a packaged root-owned CWD (e.g. /usr/lib/Papercusp/sidecar) → the spawn
+  // failed and silently fell back to in-process, so the relocation only ever ran
+  // off a dev tree (P-006 live 2-machine rig finding, 2026-06-25).
+  const resolvedSocket = socketPath ?? resolveSubstrateSocketPath();
+  process.env[SUBSTRATE_SOCKET_ENV] = resolvedSocket;
+  const socketDir = path.dirname(resolvedSocket);
   if (!fs.existsSync(socketDir)) {
     fs.mkdirSync(socketDir, { recursive: true });
   }
 
+  // Spawn target. esbuild bundles EVERY module into the single serve.mjs, so in a
+  // PACKAGED build import.meta.url here IS serve.mjs — re-exec that artifact under
+  // the bundled node with PAPERCUSP_SUBSTRATE_SIDECAR_MODE=1 (serve.ts diverts to
+  // runSubstrateSidecarServer). In DEV (tsx, real source tree) run the .ts entry
+  // via tsx. The old unconditional `npx tsx <.ts>` could not work off a bundle
+  // (no tsx, no .ts on disk) — the other half of the P-006 finding.
+  const selfPath = fileURLToPath(import.meta.url);
+  const isBundled = !selfPath.endsWith('.ts') && !selfPath.endsWith('.tsx');
+
   return new Promise<void>((resolve, reject) => {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
-      PAPERCUSP_SUBSTRATE_IPC_SOCKET: socketPath || path.join('.papercusp', 'substrate.sock'),
+      [SUBSTRATE_SOCKET_ENV]: resolvedSocket,
     };
 
-    // Spawn with tsx for .ts files or node for .js
-    const isTs = sidecarScript.endsWith('.ts');
-    const cmd = isTs ? 'npx' : 'node';
-    const args = isTs ? ['tsx', sidecarScript] : [sidecarScript];
+    let cmd: string;
+    let args: string[];
+    if (isBundled) {
+      cmd = process.execPath; // the bundled node (e.g. ./bin/node)
+      args = [selfPath]; // re-exec serve.mjs itself in sidecar mode
+      env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE = '1';
+    } else {
+      const isTs = sidecarScript.endsWith('.ts');
+      cmd = isTs ? 'npx' : process.execPath;
+      args = isTs ? ['tsx', sidecarScript] : [sidecarScript];
+    }
 
     // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel —
     // the out-of-band Duplex *handle* transport the Option B socket-handoff

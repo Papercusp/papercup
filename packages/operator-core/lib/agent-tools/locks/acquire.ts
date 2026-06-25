@@ -58,6 +58,7 @@ import {
 } from '../../authority/file-lock-authority-ops';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
+import { hardText, LIMITS } from '../limits';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
  *  SLEEPING waiter's ticket stays grant-eligible. Much longer than the 300s
@@ -97,7 +98,7 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     paths: z.array(z.string().min(1)).min(1).max(50),
-    intent: z.string().min(1).max(1000),
+    intent: hardText(LIMITS.SHORT_TITLE),
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
     wait: z
       .object({

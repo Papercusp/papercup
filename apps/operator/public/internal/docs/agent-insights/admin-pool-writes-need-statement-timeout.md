@@ -69,6 +69,16 @@ runs *after* the durable write commits and is wrapped in a wall-clock `withDeadl
 best-effort contract holds for slowness, not just errors. Migrations keep calling
 `getOrgPg()` directly and stay unbounded.
 
+`conversations:post` / `conversations:answer` carried the **same class** and are now closed
+the same way (WI-766). Because `appendPost` lives in a **pure core** (`conversations-core.ts`)
+over injected deps — not a binding-layer function like `commentIssue` — the tx-bound store is
+threaded through a `threadTxn` seam on `ConversationDeps`: prod binds
+`threadTxn: (fn) => boundedOrgTxn((tx) => fn(new PgThreadStore({ ...storeOpts, getSql: () => tx })))`,
+and the PG integration tests bind the *same* `boundedOrgTxn` over their throwaway client so the
+real atomic path is asserted (`post_count` never drifts from the row count). The seam pattern is
+the reusable way to bound a pure-core write without coupling the core to `getOrgPg` /
+`PgThreadStore`.
+
 ## When you hit this again
 
 * A `getOrgPg()`-based **mutating** tool that can hang → route its durable write through
@@ -76,7 +86,13 @@ best-effort contract holds for slowness, not just errors. Migrations keep callin
 * Don't try to fix a DB hang with an `AbortController` / `Promise.race` alone — add the
   `SET LOCAL statement_timeout`. The JS race is only a secondary guard for best-effort,
   fire-and-forget work (like a fan-out).
-* The whole interactive-write class shares this gap; a connection-level default
-  `statement_timeout` with a migration-runner opt-out would fix it at the source, but
-  touches the deploy/migration path — that's a separate, reviewed change (tracked as
-  WI-766, which also covers `conversations:post`).
+* A pure **core** (deps-injected, no `getOrgPg`) that needs a bounded write → add a
+  `threadTxn`-style seam to its deps and bind `boundedOrgTxn` + a tx-bound store in the
+  binding layer (see `conversations-core.ts` ↔ `conversations.ts`). Don't import `getOrgPg`
+  into the core — it breaks the integration-test-without-prod-singletons split.
+* The known per-tool offenders are now closed (`work_items:comment`, `conversations:post` /
+  `conversations:answer`). The whole interactive-write class still shares this gap, though: a
+  connection-level **default** `statement_timeout` with a migration-runner opt-out
+  (`SET LOCAL statement_timeout=0`) would fix every `getOrgPg()`-based mutating tool at the
+  source. That touches the deploy/migration path, so it's a separate, reviewed change — if you
+  add a new interactive admin-pool write before it lands, wrap it in `boundedOrgTxn` yourself.

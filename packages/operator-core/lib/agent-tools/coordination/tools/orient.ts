@@ -198,8 +198,11 @@ export default defineTool({
     "the claimable backlog, your inbox summary, and the recent plan-events delta — plus, " +
     "when you pass `intent`, a memory recall for it AND a coord:declare-intent so peers see " +
     "you. Collapses the mandated bootstrap (memory:search + coord:inbox + coord:plan-events " +
-    "+ coord:declare-intent, with assignments + claimable) into ONE round-trip. coord:glance " +
-    'is the fleet-health read.',
+    "+ coord:declare-intent, with assignments + claimable) into ONE round-trip. A successful " +
+    "orient ALREADY returned ALL of these THIS turn — do NOT then separately call " +
+    "coord:plan-events / memory:search / coord:inbox / coord:declare-intent; orient REPLACES " +
+    "them (reach for one only for detail orient deliberately bounds). coord:glance is the " +
+    'fleet-health read.',
   guidance: {
     when:
       'At the START of a turn / on waking. Pass `intent` (your one-line task) to get, in ' +
@@ -209,7 +212,10 @@ export default defineTool({
     notWhen:
       'Fleet-wide wake/health state for a status surface (coord:glance); full message bodies ' +
       'or history (coord:inbox); the whole presence roster (coord:presence). Do NOT pass a ' +
-      'throwaway `intent` just to fire the declare — declare a real lane.',
+      'throwaway `intent` just to fire the declare — declare a real lane. And do NOT, after a ' +
+      'successful orient, separately call coord:plan-events / memory:search / coord:inbox / ' +
+      'coord:declare-intent — orient ALREADY returned (and declared) them this turn; calling ' +
+      'them again is a wasted round-trip.',
     chaining:
       'Bundles: fleet:assignments + work_items:list + coord:inbox + coord:plan-events ' +
       '[+ memory:search + coord:declare-intent when `intent` is set] — prefer this at wake ' +

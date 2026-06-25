@@ -7,8 +7,8 @@
  */
 
 import * as net from 'node:net';
-import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { resolveSubstrateSocketPath } from './substrate-socket-path';
 
 export interface SubstrateRpcError {
   code: number;
@@ -38,7 +38,9 @@ export class SubstrateIpcClient {
   private connectReject: ((error: Error) => void) | null = null;
 
   constructor(socketPath?: string) {
-    this.socketPath = socketPath || path.join('.papercusp', 'substrate.sock');
+    // Absolute, env-pinned path (the spawner sets PAPERCUSP_SUBSTRATE_IPC_SOCKET
+    // before forking, so client + child agree). Never CWD-relative — see P-006.
+    this.socketPath = socketPath || resolveSubstrateSocketPath();
   }
 
   /**

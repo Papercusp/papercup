@@ -24,11 +24,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { runBulk, bulkContent } from '../_bulk';
+import { hardText, LIMITS } from '../limits';
 
 /** The per-memory patch fields, shared by the inline single, the homogeneous
  *  `ids` default, and each heterogeneous `items[]` entry. */
 const PATCH_FIELDS = {
-  content: z.string().min(1).max(16000).optional().describe('replacement fact body (a CONTENT edit)'),
+  content: hardText(LIMITS.CONTENT).optional().describe('replacement fact body (a CONTENT edit)'),
   kind: z
     .enum(['user', 'feedback', 'project', 'reference'])
     .optional()

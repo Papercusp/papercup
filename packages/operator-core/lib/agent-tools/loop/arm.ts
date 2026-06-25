@@ -36,6 +36,7 @@ import {
   probeWakeReachability,
   type WakeReachabilityVerdict,
 } from '../../events/await/wake-reachability';
+import { softText, clampText } from '../limits';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
@@ -63,22 +64,17 @@ export default defineTool({
       .describe(
         'Seconds AFTER each turn settles before the next wake (≥60). The true period is interval + up-to-30s (the turn-settle is observed on the 30s reconcile tick), so sub-minute is not supported.',
       ),
-    goal: z
-      .string()
-      .min(1)
-      .max(4000)
-      .describe('One line: what this loop is working toward — echoed into every wake.'),
+    goal: softText(4000, { min: 1 })
+      .describe('One line: what this loop is working toward — echoed into every wake. Auto-truncated to 4000 chars if longer.'),
     harness: z
       .string()
       .max(120)
       .optional()
       .describe('Harness the loop is scoped to / namespaced under (default: your session harness).'),
-    wakePrompt: z
-      .string()
-      .max(4000)
+    wakePrompt: softText(4000)
       .optional()
       .describe(
-        'Advanced: a custom per-wake instruction, replacing the default "create + self-assign your work_items, work them, set_state" template. Most loops should omit this.',
+        'Advanced: a custom per-wake instruction, replacing the default "create + self-assign your work_items, work them, set_state" template. Most loops should omit this. Auto-truncated to 4000 chars if longer.',
       ),
     costCapCents: z
       .number()
@@ -145,9 +141,12 @@ export default defineTool({
       };
     }
 
+    // softText fields (P-002): never bounced on length — clamp to cap here.
+    const goal = clampText(args.goal, 4000);
+    const wakePrompt = clampText(args.wakePrompt, 4000);
     const kickoff =
-      args.wakePrompt ??
-      buildLoopWakePrompt({ ownerId, intervalSec: args.intervalSec, harness, goal: args.goal });
+      wakePrompt ??
+      buildLoopWakePrompt({ ownerId, intervalSec: args.intervalSec, harness, goal });
 
     const loop = await materializeLoop({
       workspaceId,
@@ -205,10 +204,10 @@ export default defineTool({
               ownerLabel: identity.ownerLabel,
               harness,
               intervalSec: args.intervalSec,
-              goal: args.goal,
+              goal,
               costCapCents: args.costCapCents ?? null,
               firstFireAt: loop.nextFireAt ? loop.nextFireAt.toISOString() : null,
-              customWakePrompt: args.wakePrompt != null,
+              customWakePrompt: wakePrompt != null,
             },
             reachability: reachabilityOut,
             note,

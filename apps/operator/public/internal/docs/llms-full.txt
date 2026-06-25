@@ -532,13 +532,16 @@ Two aggravating factors on the same path:
 
 `commentIssue` and the feature comment path now run get-or-create-thread + add-post inside `boundedOrgTxn` via a **tx-bound `PgThreadStore`** (`new PgThreadStore({ ...coordOpts, getSql: () => tx })`) — reusing the exact tested store SQL, atomic and bounded. The fan-out runs *after* the durable write commits and is wrapped in a wall-clock `withDeadline` so the best-effort contract holds for slowness, not just errors. Migrations keep calling `getOrgPg()` directly and stay unbounded.
 
+`conversations:post` / `conversations:answer` carried the **same class** and are now closed the same way (WI-766). Because `appendPost` lives in a **pure core** (`conversations-core.ts`) over injected deps — not a binding-layer function like `commentIssue` — the tx-bound store is threaded through a `threadTxn` seam on `ConversationDeps`: prod binds `threadTxn: (fn) => boundedOrgTxn((tx) => fn(new PgThreadStore({ ...storeOpts, getSql: () => tx })))`, and the PG integration tests bind the *same* `boundedOrgTxn` over their throwaway client so the real atomic path is asserted (`post_count` never drifts from the row count). The seam pattern is the reusable way to bound a pure-core write without coupling the core to `getOrgPg` / `PgThreadStore`.
+
 ## When you hit this again
 
 [Section titled “When you hit this again”](#when-you-hit-this-again)
 
 * A `getOrgPg()`-based **mutating** tool that can hang → route its durable write through `boundedOrgTxn` (don’t reach for `getOrgPg().sql` raw on an interactive write path).
 * Don’t try to fix a DB hang with an `AbortController` / `Promise.race` alone — add the `SET LOCAL statement_timeout`. The JS race is only a secondary guard for best-effort, fire-and-forget work (like a fan-out).
-* The whole interactive-write class shares this gap; a connection-level default `statement_timeout` with a migration-runner opt-out would fix it at the source, but touches the deploy/migration path — that’s a separate, reviewed change (tracked as WI-766, which also covers `conversations:post`).
+* A pure **core** (deps-injected, no `getOrgPg`) that needs a bounded write → add a `threadTxn`-style seam to its deps and bind `boundedOrgTxn` + a tx-bound store in the binding layer (see `conversations-core.ts` ↔ `conversations.ts`). Don’t import `getOrgPg` into the core — it breaks the integration-test-without-prod-singletons split.
+* The known per-tool offenders are now closed (`work_items:comment`, `conversations:post` / `conversations:answer`). The whole interactive-write class still shares this gap, though: a connection-level **default** `statement_timeout` with a migration-runner opt-out (`SET LOCAL statement_timeout=0`) would fix every `getOrgPg()`-based mutating tool at the source. That touches the deploy/migration path, so it’s a separate, reviewed change — if you add a new interactive admin-pool write before it lands, wrap it in `boundedOrgTxn` yourself.
 
 # Calling defineTool tools from an in-process /admin route
 
@@ -11280,6 +11283,72 @@ The same seam measures **compound-WRAPPER** adoption, not just `code:run`. The w
 
 **Finding (haiku, N=1 — directional):** with `coord:orient` in the catalog the engineer **reached for it at Turn 0** (the `reaches-for-orient` assert passed); the `no-orient` arm fanned coord:presence + coord:inbox + plans:search and took **6 turns / $0.042 vs the bundle’s 4 turns / $0.036** — the same turns/cost reduction availability buys `code:run`. Both arms flopped the *helpfulness* judge (haiku’s capability ceiling — it orients, then stalls on empty payloads), so the CLEAN task-completion win is model-gated: **re-run on sonnet** (drop the `LLM_TEST_*_MODEL` overrides) for the definitive adoption + turns/cost deltas — same caveat as the code:run A/B above.
 
+## Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)
+
+[Section titled “Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)”](#production-telemetry--the-live-waste--adoption-metrics-2026-06-25-baseline)
+
+The A/B above measures adoption inside the llm-testing harness. To track the SAME levers on the **live fleet** — and to confirm plan `agent-tooling-token-efficiency-2026-06-25` actually moved them — query `harness_shared.tool_invocations` directly (`dev:pg_query`). Three metrics; re-run weekly and compare to this baseline.
+
+**⚠ Denominator: measure agent traffic on the `mcp` transport ONLY.** The raw call total is dominated by **UI HTTP polling** — `plans:list` + `plans:attention` alone ran **\~25 calls/sec** (45,943 in a 30-min sample, each a distinct `run_id`) over the `http` transport, which is *not* agent LLM tokens. Agent-authored work is the `mcp` transport (\~13k calls/6h). Every adoption ratio below filters `transport='mcp'`, or it is meaningless (raw code:run share looks like 0.0004% only because of the polling-inflated denominator; against `mcp` the honest figure is \~0.006% — still \~zero, but measure it right).
+
+### 1. String-limit failure rate — did the validation-limit work land?
+
+[Section titled “1. String-limit failure rate — did the validation-limit work land?”](#1-string-limit-failure-rate--did-the-validation-limit-work-land)
+
+```sql
+-- too-long-string validation failures by tool, last 14d (baseline: ~1,000+; top fleet:place_batch.brief=412)
+SELECT tool_name, count(*) AS errs, max(invoked_at) AS last_seen,
+       (array_agg(error_message ORDER BY invoked_at DESC))[1] AS sample
+FROM harness_shared.tool_invocations
+WHERE status <> 'ok' AND invoked_at > now() - interval '14 days'
+  AND (error_message ILIKE '%must contain at most%' OR error_message ILIKE '%Too big%'
+       OR error_message ILIKE '%expected string to have <=%' OR error_code ILIKE '%too_big%')
+GROUP BY tool_name ORDER BY errs DESC;
+```
+
+Target after the fix: advisory-field tools (loop:arm.goal, coord notes, fleet briefs, …) drop to \~0 (they now *truncate* instead of reject); the rest fall sharply (caps raised 4–8×).
+
+### 2. code:run adoption share (mcp transport)
+
+[Section titled “2. code:run adoption share (mcp transport)”](#2-coderun-adoption-share-mcp-transport)
+
+```sql
+-- baseline 2026-06-25: code:run 9 / 3d, code:tools 1 — ~0.006% of mcp agent calls
+WITH mcp AS (SELECT * FROM harness_shared.tool_invocations
+             WHERE transport='mcp' AND invoked_at > now() - interval '3 days')
+SELECT (SELECT count(*) FROM mcp WHERE tool_name='code:run')   AS coderun,
+       (SELECT count(*) FROM mcp WHERE tool_name='code:tools') AS codetools,
+       (SELECT count(*) FROM mcp)                              AS mcp_total,
+       round(100.0*(SELECT count(*) FROM mcp WHERE tool_name='code:run')
+             /NULLIF((SELECT count(*) FROM mcp),0),4)          AS coderun_pct;
+```
+
+### 3. Redundant-bootstrap rate — orient duplication (the bigger leak)
+
+[Section titled “3. Redundant-bootstrap rate — orient duplication (the bigger leak)”](#3-redundant-bootstrap-rate--orient-duplication-the-bigger-leak)
+
+The win is agents NOT re-calling what `coord:orient` already returned. Baseline: orient co-fires with `coord:plan-events`/`memory:search`/`coord:inbox`/`coord:declare-intent` at \~1.0 confidence (lift 450–660 in `dev:tool_cooccurrence`). The precise per-spawn form:
+
+```sql
+-- of spawns that called coord:orient, how many ALSO re-called a call orient already subsumed?
+WITH s AS (
+  SELECT spawn_id,
+         bool_or(tool_name='coord:orient') AS oriented,
+         bool_or(tool_name IN ('coord:plan-events','memory:search','coord:inbox','coord:declare-intent')) AS redundant
+  FROM harness_shared.tool_invocations
+  WHERE transport='mcp' AND invoked_at > now() - interval '24 hours' AND spawn_id IS NOT NULL
+  GROUP BY spawn_id)
+SELECT count(*) FILTER (WHERE oriented) AS oriented_spawns,
+       count(*) FILTER (WHERE oriented AND redundant) AS also_redundant,
+       round(100.0*count(*) FILTER (WHERE oriented AND redundant)
+             /NULLIF(count(*) FILTER (WHERE oriented),0),1) AS pct_redundant
+FROM s;
+```
+
+Target after the orient-dedup guidance (orient.ts + the MCP instructions) + the soft re-call nudge: `pct_redundant` trends down from \~100%. (`dev:tool_cooccurrence { hours, orderBy:'confidence' }` is the quick read; this query is the precise one.)
+
+Wire all three into a weekly check (a scorecard row or a `dev:` rollup) so a regression — a new tool shipping a tight cap, or adoption sliding back — surfaces without a manual audit.
+
 # mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores
 
 > 84% of memory_canonical was mem0 entity-linking junk ("ticks with", "s interactive session") surfacing in memory:search — mem0 separates its entity store ONLY by a *_entities collectionName suffix, and our patched CanonicalVectorStore ignored collectionName, so both stores shared one pool. Fix at the store, not the read seam.
@@ -13381,6 +13450,67 @@ If you must validate a *path* rather than a single segment, validate the **raw**
 1. Does the guard run on the **raw caller input**, or on something a `join`/`resolve`/`normalize` already touched?
 2. If the input is a single component (slug/id/name): is there a `/`-rejecting whitelist? That’s the cheap, sound check.
 3. Read and write paths for the same resource: do they validate at the **same** layer with the **same** rule? Divergence is where this hides.
+
+# A new OpEnvelope field silently drops on the wire unless PeerLogOp carries it — the hive-content epoch-drop
+
+> Encrypted shared-hive content (work_items/features) silently dropped on every joiner with ZERO decrypt-gate trace. Root cause: OpEnvelope.epoch existed but the on-wire PeerLogOp never carried an `epoch` field, so the rekey stamp was dropped at the send-append, the receive toEnvelope, AND the snapshot path → the op reached the gate with epoch==null → ciphertext treated as plaintext → dropped. The PeerLogOp compat `Pick` only guards field REMOVAL, so TS never flagged it. Same class as the pre-P-010 hlc-drop.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+On the live 2-machine fed rig (owner fed-a → joiner fed-b), a shared hive’s **roster + epoch keys federated** owner→joiner (origin=remote) but its **content** (`harness_features_consolidated` / `engineer_issues`, written under the hive-home harness) **never materialized on the joiner**. Confirmed a DROP, not lag: an op created *after* the joiner held the epoch key also never landed, and the key was correctly wrapped for the joiner’s device. The decrypt-gate emitted **zero** `epoch_defer` / `epoch_decrypt_fail` / `epoch_applied` events — the content ops never reached `applyImpl` at all.
+
+The unit + integration suites were **green** throughout, because they federate **plaintext** content (the `papercusp-hive-rekey` flag is off in tests, so no encryption ⇒ no `epoch` stamp ⇒ no drop). The bug only manifests with the flag ON.
+
+## Root cause — a new `OpEnvelope` field that never reached the wire
+
+[Section titled “Root cause — a new OpEnvelope field that never reached the wire”](#root-cause--a-new-openvelope-field-that-never-reached-the-wire)
+
+The read-plane re-key (shared-hive-rekey-2026-06-19) added `epoch?: number` to `OpEnvelope` (op-envelope-types.ts): the outbox drain encrypts a selected content op’s `value` and stamps `op.epoch`; the apply-side decrypt-gate (`hive-epoch-op-gate.ts`) reads `op.epoch` to resolve the wrapped key + AAD.
+
+But the **on-wire op** is `PeerLogOp` (peer-log.ts) — a *separate* interface that is what actually gets appended to and read from each single-writer hypercore log. `PeerLogOp` was **never given an `epoch` field**. So the stamp was dropped at every seam that maps between the two shapes:
+
+1. **SEND** — `boot.ts` `handle.append` rebuilds the appended op **field-by-field** (`type/table/hbKey/value/ts/schema_version/hlc/author_pubkey`) — no `epoch`.
+2. **RECEIVE** — `read-merge.ts` `toEnvelope(PeerLogOp) → OpEnvelope` threads `hlc` + `writerPubkey` but not `epoch`.
+3. **SNAPSHOT** (the compaction twin) — `log-snapshot.ts` `buildSnapshotRows` + `read-merge.ts` `snapshotRowToEnvelope` likewise omitted `epoch`.
+
+Net: every encrypted content op arrived at the decrypt-gate with `epoch == null`. The gate’s **first line** is `if (op.epoch == null) return inner(op)` — “plaintext / control-plane, pass straight through”. So the `{__rekey: <base64 ciphertext>}` value was handed to `scopedApply` as if it were a normal row, the projection could not write a ciphertext blob as a feature/issue, and the op was **silently dropped** — no gate trace, because the gate never treated it as encrypted.
+
+Why TS never caught it: `peer-log.ts` has a compat guard `type _PeerLogOpSharesEnvelope = Pick<OpEnvelope, 'table'|'hbKey'|'value'|'ts'|'schema_version'>` that only fails to compile if a *named* field is **removed** from `OpEnvelope`. A **newly added** optional field (`epoch`) is invisible to it — both shapes still satisfy the `Pick`. This is the identical failure mode as the pre-P-010 `hlc` drop (the comment in `toEnvelope` even documents that earlier instance).
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Add `epoch?: number` to `PeerLogOp` (it round-trips through `valueEncoding:'json'` like `hlc`) and thread it through **all** the OpEnvelope↔PeerLogOp seams:
+
+* `peer-log.ts` — `epoch?: number` on `PeerLogOp` + add `'epoch'` to the compat `Pick`.
+* `boot.ts` `handle.append` — `epoch: stamped.epoch` in the `ownLog.append({...})`.
+* `read-merge.ts` `toEnvelope` — `...(op.epoch != null ? { epoch: op.epoch } : {})`.
+* `log-snapshot.ts` `buildSnapshotRows` (put rows) + `read-merge.ts` `snapshotRowToEnvelope` — same conditional carry (a `del` tombstone is never encrypted, so it needs none).
+
+Regression guards live in `read-merge.test.ts` (WI-808): an epoch-stamped op carries `epoch` through the merge to `applyImpl`; a plaintext op stays epoch-less; and `epoch` survives `buildSnapshotRows → snapshot merge`.
+
+### WI-808 observability — the `epoch_gate_seen` entry trace (2026-06-25)
+
+[Section titled “WI-808 observability — the epoch\_gate\_seen entry trace (2026-06-25)”](#wi-808-observability--the-epoch_gate_seen-entry-trace-2026-06-25)
+
+A second WI-808 fix landed after the seam-threading above: a new `epoch_gate_seen` trace event fires at the very TOP of the decrypt gate — before the `epoch == null` passthrough — for ANY op that **looks encrypted** (either `op.epoch != null` OR `isRekeyValue(op.value)` i.e. value has the `{__rekey: <base64>}` envelope). Wired via `EpochDecryptGateDeps.onTrace` → `recordBootEvent` in `hive-epoch-boot-deps.ts`.
+
+**Why:** the verdict-only traces (`epoch_defer` / `epoch_decrypt_fail` / `epoch_applied`) left a diagnostic gap: if a content op never reached the gate at all — dropped upstream in merge / admission / routing — none of those traces fired, and it was indistinguishable from the original wire-drop bug (the symptom in the `## Symptom` section above). Now:
+
+* `epoch_gate_seen` **fires** → the op REACHED the gate; the detail line carries `epoch=N` (or `epoch=NULL`) and `rekeyVal=true/false` to confirm whether the stamp survived.
+* `epoch_gate_seen` **never fires** for a content op → the op was dropped **upstream** of the gate (merge / admission / routing), not by the gate itself.
+* `epoch_gate_seen` with `epoch=NULL` + `rekeyVal=true` → the wire-drop bug is back: the epoch stamp was lost at a seam (smoking gun for the original regression).
+
+Tests added in `hive-epoch-op-gate.test.ts`: verifies `epoch_gate_seen` fires for an epoch-stamped op AND for a ciphertext value with `epoch==null` (the regression case).
+
+## The general lesson
+
+[Section titled “The general lesson”](#the-general-lesson)
+
+`OpEnvelope` (projection layer) and `PeerLogOp` (wire/log layer) are **two shapes**. When you add a field to `OpEnvelope` that must survive federation, you MUST also: (1) add it to `PeerLogOp`, (2) write it in `boot.ts` `handle.append`, (3) read it in `read-merge.ts` `toEnvelope`, and (4) handle the snapshot path (`buildSnapshotRows` + `snapshotRowToEnvelope`). The compat `Pick` will NOT remind you — it only guards removal. A missing field doesn’t error; it silently vanishes on the wire, and (for a gate-routing field like `epoch`) turns into a silent content drop that no trace explains. When debugging “federated X never arrives but leaves no trace”, check whether a routing field is present on the *received* op before assuming the apply/gate logic is wrong. Also look for `epoch_gate_seen` in boot-history: if it fires, the op reached the gate and the gate’s own traces tell the rest of the story; if it never fires, the drop is upstream (merge / admission / routing), and the gate is not the culprit.
 
 # Per-handle GC leaks forever for DORMANT scopes — pair it with a single-writer global sweep
 
@@ -16010,6 +16140,67 @@ With registration fixed, the same probe failed differently: `render_error: The "
 
 Fixed in: host-architecture-2026-05-20-v2 P-001..P-003 (D-002 has the full phase-by-phase re-baseline).
 
+# Deploys crash-loop :3070 on MODULE_NOT_FOUND — an in-place node_modules rebuild under the live operator
+
+> ':3070 connection refused on all pages' in recurring ~1–35 min windows: a deploy's setup-release-checkout.sh refreshed node_modules with `rm -rf $dest; cp -al` IN PLACE while the live operator kept serving from it, so for the ~minute the root copy took the tree was deleted/half-populated → the 32 cluster workers respawned mid-copy, hit MODULE_NOT_FOUND (@modelcontextprotocol/sdk, @papercusp/plugin-loader), exhausted the 160-respawn budget → 0 workers → connection refused, until the copy finished and it self-recovered. Root fix: atomic sibling-temp swap (two renames) so the live tree is only ever complete. Defense-in-depth: a boot-integrity preflight (fail fast + named) and a cluster boot-failure backstop (halt the respawn storm) so an inconsistent tree degrades to a fast, loud, self-correcting fail instead of an hour-long all-pages outage.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+`:3070` (the operator that serves every page over SSE/sync) goes **“connection refused on all pages”** in recurring windows — the client shows **“Operator connection lost”** then reconnects (“Welcome back, User”), sometimes seconds apart, for anywhere from \~1 to \~35 minutes, then self-recovers. The operator journal during a window:
+
+```plaintext
+[hono-host] fatal unhandledRejection — exiting: Error: Cannot find module
+  '.../papercup-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js'  code: 'MODULE_NOT_FOUND'
+[cluster] worker N exited (code=1 signal=null); respawn budget exhausted (160) — NOT respawning
+[cluster] SIGTERM — draining 32 worker(s) + exiting primary
+```
+
+`NRestarts=0` at the systemd level can hide it — the storm is the **cluster primary respawning workers**, not systemd restarting the service.
+
+## The mechanism (root cause)
+
+[Section titled “The mechanism (root cause)”](#the-mechanism-root-cause)
+
+`:3070` runs the `papercup-release` checkout. A deploy shells `setup-release-checkout.sh`, whose step 3 historically refreshed node\_modules **in place**:
+
+```sh
+[ -e "$dest" ] && rm -rf "$dest"      # deletes the LIVE root node_modules
+cp -al "$nm" "$dest"                  # then slowly (~a minute, 100k+ files) re-hardlinks it
+```
+
+This tree “never `npm install`s” — it **hardlink-copies** node\_modules from the integration tree. For the whole \~minute the root `cp -al` runs, the live operator’s node\_modules is **deleted or half-populated**. Any worker that (re)boots in that window — a `lag-self-restart`, a crash respawn, a deploy restart racing the copy — `require()`s a module that isn’t there yet → `MODULE_NOT_FOUND` → it exits → the primary respawns it → it crashes again → **the 160-respawn budget (workers×5 = 32×5) burns out → 0 live workers → connection refused on every page**. When the copy finishes the next restart boots clean and it self-recovers — which is why it looks transient and recurs on (dep-changing) deploys.
+
+`PAPERCUSP_CLUSTER=32` maximizes the blast radius: one inconsistent tree crash-loops all 32 workers at once.
+
+## The fix — three layers
+
+[Section titled “The fix — three layers”](#the-fix--three-layers)
+
+**1. Atomic node\_modules swap (root cause removal)** — `setup-release-checkout.sh` `sync_one_node_modules()`. Hardlink-copy into a **sibling** temp (`$dest.deploy-tmp.$$`, same depth so the workspace packages’ relative `../../packages/X` symlinks resolve identically), then swap with **two fast renames** (`mv dest old; mv tmp dest; rm old`). The live tree is only ever **complete**; the exposure shrinks from \~a minute to the microseconds between two `rename(2)`s. `set -e` aborts a failed `cp` *before* any swap, so a partial copy can never replace the live tree.
+
+**2. Boot-integrity preflight (fail fast + named)** — `boot-integrity-preflight.ts`, run as the **first import** of `hono-host.ts` via `boot-integrity-first.ts` (so it evaluates before the heavy import graph). It `require.resolve`s a manifest of load-bearing modules; on a broken/partial tree it logs one **named** diagnostic and exits `78` (distinct, `EX_CONFIG`) instead of a deep `MODULE_NOT_FOUND` stack. The module is **dependency-free** (only `node:module`) so it can’t be a victim of the inconsistency it checks. Manifest entries are **resolve-verified against a healthy tree** — naïve `@modelcontextprotocol/sdk` and `mem0ai/package.json` FAIL even when installed (exports-map quirks), so the manifest uses the forms that actually resolve.
+
+**3. Cluster boot-failure backstop (no respawn storm)** — `cluster-fork.ts`, opt-in via `onUnbootable`. A worker that exits within `bootGraceMs` (10s) of fork never came up; if a **whole generation** fails that way and **none was ever healthy**, the build is unbootable → halt the respawn storm and call `onUnbootable` (→ exit the primary clean/fast/distinct so the supervisor/deploy rolls back) instead of burning all 160 respawns. A worker that crashes **after** surpassing the grace window is a normal runtime crash and still respawns — `onUnbootable` never fires once any worker has been healthy.
+
+Layer 1 prevents the window; layers 2–3 turn any *remaining* inconsistency (a botched rollback, a non-manifest module) into a fast, loud, self-correcting fail instead of an hour-long all-pages outage.
+
+## Diagnosing / recovering a live incident
+
+[Section titled “Diagnosing / recovering a live incident”](#diagnosing--recovering-a-live-incident)
+
+* `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3070/api/health` → `000`/connection-refused = down; the journal grep above confirms the MODULE\_NOT\_FOUND crash-loop.
+* It usually **self-recovers** once the in-place copy finishes; if wedged, the documented recovery is `systemctl --user stop papercup-dev-api.service` then re-run the deploy (`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute --no-drain`) or `npm ci` in `papercup-release` to complete node\_modules.
+* Confirm `papercup-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js` and `@papercusp/plugin-loader` resolve (`cd papercup-release && node -e "require.resolve('@papercusp/plugin-loader')"`).
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `cluster-workers-exhaust-inotify-watches.mdx` — a *different* 32-worker crash-loop (per-process inotify exhaustion); already fixed by gating watchers on `cluster.isPrimary`.
+* `deploy-pipeline-is-async-self-healing.mdx` — why `:3070` serves green `main`, not your staging edit.
+
 # Replay-consumer loops must not re-ledger battery spend
 
 > runGovernedReplay already ledgers every battery dollar on frontier:replay-harness — a consumer loop (regret/transfer/ablation) that also records the returned totalCostUsd on its own governor loop double-counts it on the one visible spend number.
@@ -16779,6 +16970,37 @@ Guidance for the Sentinel converse / voice path:
 
 Plan: `sentinel-herald-2026-06-21`.
 
+# Sentinel voice-in keys off a single global dock registration — so there must be ONE dock
+
+> ~/.papercusp/sentinel-pane is a single global file every psu-sentinel launch overwrites; with several live pui-dock sessions the last writer wins and voice goes to a background window. reap.rs now enforces one chat dock at a time.
+
+## The race
+
+[Section titled “The race”](#the-race)
+
+Voice-in writes an STT utterance to the Sentinel pane via `~/.papercusp/sentinel-pane` — a **single global file** holding `<zellij-session> <pane-id>`, written by the `psu-sentinel` wrapper at every dock launch. The endpoint (`routes/operator/sentinel-input.ts`) reads it and runs `zellij -s <session> action write-chars --pane-id <id>`.
+
+But the desktop can have **several live `pui-dock-*` sessions** at once — multiple desktop windows/workspaces (`:3170`, `:3270`, …), plus `tauri dev` recompile-relaunches and crashed instances that never ran their clean-exit teardown (`main.rs` `ExitRequested`→`child.kill()` only fires on a graceful exit). Every one of those docks’ `psu-sentinel` **overwrites the same global file**, so the *last* dock to launch owns voice-in — even if it’s a background or orphaned window. The user talks to the dock they SEE; voice lands in a different pane; nothing happens.
+
+`reap.rs` did not help: it only kills sessions whose **owner pid is dead**, and these orphans’ `pui chat` owners stay **alive**.
+
+## The fix — one chat dock at a time (owner decision 2026-06-25)
+
+[Section titled “The fix — one chat dock at a time (owner decision 2026-06-25)”](#the-fix--one-chat-dock-at-a-time-owner-decision-2026-06-25)
+
+`reap::plan` now takes the session being launched (`own`) and, **when launching a dock**, also `KillAndDelete`s every *other* live `pui-dock-*` session — not just dead-owner ones. So exactly one chat dock exists, the global registration is unambiguous, and voice-in always targets it. Scope guards:
+
+* Only a **dock** launch enforces this (`session_kind(own) == "dock"`); a `wb` (workbench) or `reap` pass keeps the old dead-owner-only behaviour.
+* `pui-wb-*` and foreign (non-`pui-`) sessions are never touched.
+
+This **supersedes the per-window-dock decision of 2026-06-17**: a second desktop window now supersedes the first window’s dock instead of running a parallel one. That’s the accepted trade-off for unambiguous voice routing. Takes effect on the next dock launch after `cargo install --path apps/tui` (the desktop relaunches the dock frequently, so it converges on its own).
+
+## If voice-in still misses after this
+
+[Section titled “If voice-in still misses after this”](#if-voice-in-still-misses-after-this)
+
+Check the live invariant: `zellij list-sessions | grep pui-dock` should show **one** session, and `cat ~/.papercusp/sentinel-pane` should name it. More than one live `pui-dock-*` means a dock launched with a stale `pui` binary (reinstall) or a foreign session is mis-prefixed.
+
 # The Sentinel's voice-out (voice:say) crosses processes — its buffer MUST be shared (PG), not in-memory
 
 > The dock Sentinel's voice:say runs inside the agent-mcp process its role-scoped MCP connects to (an mcp-proxy on :9071 → the green operator :3070), while the webview drains GET /api/operator/sentinel-output on a DIFFERENT operator process. A process-local in-memory FIFO therefore never bridges push→poll — the user speaks, gets a correct TUI answer, and HEARS NOTHING. The buffer must be a shared store (PG table harness_shared.sentinel_says). When debugging "voice-out is silent", check the buffer on ALL operator hosts, not just the one the webview talks to.
@@ -17149,7 +17371,9 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 * A live “rosters but no content” is an **admission** or **swarm-registry** problem, not a merge bug — the merge/guard is integration-green.
 * `fed.sh` (self-discovering ports) is the access tool: `ports`/`rediscover`/`sql`/`api`/`mcp`/`ssh`.
 * Admission = **identity decider** (`revoked→bad_sig→verifyBinding→admit/pending/binding_invalid`) feeding **two same-hive scope paths**: **owner-log bootstrap-admit** (trusts the one directory-cache-bound owner device to break the empty-member-set deadlock) and **member-set admission** (device ∈ `hive_members`, else buffer-and-retry).
-* **`binding_invalid` = conclusive identity/gist failure, never retried** — a gist-less owner is the current live wall (WI-797), and owner-bootstrap can’t rescue it because it sits after the gist gate.
+* **`binding_invalid` = conclusive identity/gist failure, never retried** — a gist-less / fresh-join-window owner used to be the live wall (WI-797): owner-bootstrap sat AFTER the gist gate, so the owner’s own announce was rejected before the bootstrap could rescue it. **FIXED 2026-06-25** (su-ed33c735, A2 su-5394073c): the owner-device bootstrap is now hoisted into `admitsAsKnownHiveMember` (the IDENTITY stage, BEFORE the gist gate) — `boot.ts` \~1727. Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap` fires and roster+epoch federate owner→joiner `origin=remote`. See WI-797 / plan `shared-hive-public-release-2026-06-22` D-011.
+* **GOTCHA — a stale `kind=topic` harness on the same hive topic INTERCEPTS the owner announce.** A bare `/api/harness/join-link` (vs `/api/discovery/join-hive`) binds the member as `swarmBinding.kind=topic` (no `hive_pubkey`). If that junk harness boots FIRST on the topic it owns the connection’s announce channel and rejects the owner frame `binding_invalid`, and the proper `kind=hive` handlers never see it (no per-frame A-003 trace for them). Symptom: only the topic-harness logs the rejection; `is-even`/`<hive>` show `boot_ok`+`peer_connected` but no admission event. Fix: remove the junk harness (registry `jsonb` filter + clone dir) and relaunch — the owner-bootstrap then fires.
+* **The new finish line is the CONTENT layer, not admission.** With WI-797 fixed, the owner log merges and control rows (`hive-members`, `hive-epoch-keys` — plaintext per `hive-epoch-content-ops.ts`) apply, but **encrypted content ops** (features/work-items/ plans/issues) can still drop on apply even with the epoch key wrapped for the joiner’s device — the GATE-2 content-apply layer (`owner-side-cross-member-content-apply-gap`, D-003, WI-367 content-before-key ordering-drop + the `drainQueuedEpochContent` replay). Isolate lag-vs-drop with a fresh op; if a NEW op also never lands, it’s a drop, not lag.
 * Substrate boot + swarm join are **registry-gated**: a node swarms only registry hives, not merely-rostered ones.
 * `dogfood-substrate-boot-history` (verified-admin) is the admission ledger; read its `kind`/`message` to place the failure on the ladder before touching code.
 
@@ -20862,6 +21086,53 @@ Then the owner does a **hard reload** (Ctrl-R) in the Tauri window — the deskt
 [Section titled “Why “I see 0 changes” specifically”](#why-i-see-0-changes-specifically)
 
 The user’s URL also carried a lingering `?plan=…` alongside `?view=queue`. The *old* served code honored `?plan=` and rendered a full-width `PlanDetail` — so they weren’t even looking at the Queue. (The redesign’s nav-fix gates the full editor on `view==='plans'`, but that fix was in the un-served bundle.) When a UI change “does nothing,” check **what the served bundle actually contains** and **what URL state the user is in** before doubting the diff. Related: \[\[queue-waiting-on-you-derive-dont-store]].
+
+# A UI write to hive:set-steering MUST pass hive:<home> — it defaults to '*' and silently rejects
+
+> Any SPA caller of hive:set-steering (sidebar model overrides, Queen tab, throttles) must resolve the home hive and pass it; the tool's default hive '*' is not a real Hive, so setHiveSetting throws and the write is lost. Unit tests miss it because they pass hive explicitly.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+`hive:set-steering` (and its store `owner-steering.ts`) is **per-hive**: `setOwnerSteering(workspaceId, installSlug, patch)` → `setHiveSetting`, which **throws** when `installSlug` is not a real Hive:
+
+```plaintext
+setHiveSetting: no Hive '*' in workspace 'papercusp-workspace' — settings belong to a Hive
+```
+
+The tool resolves its hive from `resolveHiveHomeSlug(args.hive, ctx.harnessSlug)`. A browser `fetch('/api/agent-mcp/run-tool', …)` carries **no** `ctx.harnessSlug`, so when the SPA omits `hive` it defaults to **`'*'`** and the write is rejected. The HTTP call returns `200 { ok:true }` at the transport layer but the tool body is `{ ok:false, error:"… no Hive '*' …" }`, so the failure is easy to miss.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+**Every SPA caller of `hive:set-steering` must resolve the workspace’s HOME hive and pass it as `hive`.** The proven helper is `resolveHomeHive(projects, rows)` (exported from `QueenTab.tsx`): first `harnessProjects.lite` row with `harness_kind === 'hive'`, else the first `hive.steering` row. Query both:
+
+```ts
+const steeringQ = useSyncQuery({ queryName: 'hive.steering', args: {} });
+const projectsQ = useSyncQuery({ queryName: 'harnessProjects.lite', args: { includeHiveHomes: true } });
+const home = resolveHomeHive(projectsQ.data ?? [], steeringQ.data ?? []);
+// …
+runSetSteering({ hive: home, /* …patch */ });
+```
+
+Two corollaries:
+
+1. **`hive.steering` returns MULTIPLE rows** (one per hive). Read the home row with `rows.find(r => r.slug === home)`, **not** `rows[0]` — `[0]` is whatever hive sorted first, not necessarily the home.
+2. **Guard the load race.** `home` is `''` until `harnessProjects.lite` resolves; a click in that window sends `hive:''` (same rejection). Bail with a retry message when `!home` (QueenTab does this; `useModelOverride` does too).
+
+## Why unit tests didn’t catch it
+
+[Section titled “Why unit tests didn’t catch it”](#why-unit-tests-didnt-catch-it)
+
+The 99 store/tool unit tests all pass `hive` explicitly (they call `setOwnerSteering(ws, 'somehive', …)` directly), so they never exercise the default-`'*'` path. This bug was found only by driving the real Tauri webview (`tauri-agent-tools eval` → instrument `window.fetch` → read the captured body). The regression guard now lives in `useModelOverride.test.tsx` (“writes hive:set-steering WITH hive: `<home>`”) — assert the **request body** carries `args.hive`, not just that a fetch happened.
+
+## Verifying a SPA steering write live
+
+[Section titled “Verifying a SPA steering write live”](#verifying-a-spa-steering-write-live)
+
+The integration tree’s fresh dist is served on **:3270** (not :3170, which runs the separate `papercup-staging` checkout and lags until staging-sync). Reload a :3270 Tauri webview, instrument `window.fetch` to capture `run-tool` bodies, drive the control via the native `HTMLSelectElement` value setter + `dispatchEvent(new Event('change',{bubbles:true}))`, then read back with `hive:get-steering { hive }`. For the Sentinel override also confirm `~/.papercusp/sentinel-model` materializes (the `materializeSentinelModelFile` projection the dock wrapper reads).
 
 # Unbounded LLM/IO on a tool's response path drops the MCP transport
 
@@ -27739,6 +28010,133 @@ The bundles are gigabytes of compiled JS, minified output, native binaries, post
 * **Telemetry from other sources** (Tauri’s auto-update, OS crash reporters). These are separate trust decisions documented elsewhere.
 
 If you need to validate behavioral guarantees, see [verification](/internal/docs/build-system/verification) — that page covers the live-run smoke test (`curl /api/flags/bootstrap`, `ss -tnp | grep flags.papercuspai`) that catches behavioral leaks.
+
+# Proposal — shared desktop build kit (@papercusp/tauri-release-kit)
+
+> Abstracting the Linux/Mac/Windows Tauri build+release pipeline into a shared library usable by both papercusp and oddsmith. Design, seam contract, migration.
+
+Status: proposal / plan-first
+
+This is a **design proposal**, not shipped behaviour. No code has been extracted yet. It exists for owner review before any refactor, per the `tauri-release-kit-shared-build-2026-06-25` plan. The in-flight Mac + Windows **public-release drive** (`windows-public-release-readiness-2026-06-25`) is actively changing the very scripts this would extract — see [Risks & timing](#risks--timing).
+
+## The ask
+
+[Section titled “The ask”](#the-ask)
+
+Can the cross-platform (Linux / macOS / Windows) desktop build + release pipeline be abstracted into a generalized shared library that **both papercusp and oddsmith** use?
+
+**Short answer: yes — the release *orchestration* generalizes cleanly; the *sidecar build* does not and must stay a per-app injected seam.** That split is the whole design.
+
+## What the pipeline does today
+
+[Section titled “What the pipeline does today”](#what-the-pipeline-does-today)
+
+The canonical tree is the **`papercup/papercusp-desktop/` git submodule** (v0.0.2). It builds three platform families, all driven from `bin/`:
+
+| Layer                                                     | Driver                                                                | Where it runs                                                                     |
+| --------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Linux `.deb` / `.AppImage` / `.rpm` (x86\_64, opt. arm64) | `bin/release-local.sh` → `tauri build`                                | dev host, locally                                                                 |
+| macOS universal `.dmg`                                    | `bin/mac-vm-build.sh` → `tauri build --target universal-apple-darwin` | macOS VM over SSH (`:2222`)                                                       |
+| Windows `.msi` + NSIS `.exe`                              | `bin/build-windows-on-vm.sh` → `win-build.ps1`                        | Windows VM over SSH (`:2223`); WSL2 runtime distro from `scripts/build-rootfs.sh` |
+
+`bin/release-local.sh` is the spine. Its steps:
+
+1. **Version bump** across `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`.
+2. **Build the sidecar** (`bin/build-desktop-sidecar.sh`, \~1,070 lines).
+3. **`tauri build`** per target — Tauri does native bundling + minisign signing in one shot, keyed by `TAURI_SIGNING_PRIVATE_KEY_PATH`.
+4. **Generate `latest.json`** (the auto-updater manifest) — maps `{platform → {url, signature}}` against the GitHub release download URL.
+5. **Commit + tag + push** (`desktop-vX.Y.Z[-channel]`).
+6. **`gh release create/upload`** (idempotent, `--prerelease` for alpha/beta).
+
+## The core insight: two layers, only one generalizes
+
+[Section titled “The core insight: two layers, only one generalizes”](#the-core-insight-two-layers-only-one-generalizes)
+
+The pipeline is **release orchestration** wrapped around a **sidecar build**, and they generalize very differently:
+
+* **Release orchestration is domain-free.** Version bump, the `tauri build` target matrix, signing, `latest.json` generation, `gh release` upload, and the Mac/Windows **VM SSH orchestration** know nothing about what the app *is*. This is the shareable half.
+* **The sidecar build is wildly app-specific.** Papercusp’s `build-desktop-sidecar.sh` is **\~1,070 lines** bundling the operator UI + harness + orchestrator + MCP server + node-pty + embedded-postgres + pgvector
+  * external binaries (omp, gh, MinGit, node) + a WSL rootfs tarball. Oddsmith’s `apps/desktop/scripts/build-sidecar.mjs` is **\~42 lines** of esbuild over one `serve.ts`. There is nothing to share here — it must be an **injected step**.
+
+So the library owns the *dance*; each app supplies a `buildSidecar()` plugin and a config object.
+
+### Generic vs injected boundary
+
+[Section titled “Generic vs injected boundary”](#generic-vs-injected-boundary)
+
+| Concern                          | Generic (in the kit)                        | Injected per-app (seam)                       |
+| -------------------------------- | ------------------------------------------- | --------------------------------------------- |
+| Version bump                     | ✅ field-path-driven updater                 | which files/fields                            |
+| `tauri build` matrix             | ✅ Linux x64/arm64, Win cross, Mac universal | which targets enabled                         |
+| Signing                          | ✅ already an env-var seam                   | key path / passphrase                         |
+| `latest.json` / updater manifest | ✅ generator                                 | GH download base URL                          |
+| `gh release` create/upload       | ✅ idempotent driver                         | owner/repo, tag pattern, channel→prerelease   |
+| Mac/Windows **VM orchestration** | ✅ SSH/SCP/rsync boilerplate                 | VM host/port/user/key, build dir              |
+| WSL rootfs builder               | ✅ Docker bootstrap algorithm                | pkg list, output path                         |
+| **Sidecar build**                | ❌ stays per-app                             | the whole `buildSidecar()` impl               |
+| App metadata                     | ❌                                           | name, id, bundle targets, category, publisher |
+
+## Where it would live, and how it’s consumed
+
+[Section titled “Where it would live, and how it’s consumed”](#where-it-would-live-and-how-its-consumed)
+
+Oddsmith already consumes papercusp **as published npm packages** (`@papercusp/sse`, `@papercusp/sync`, `@papercusp/ui-primitives`, `@papercusp/embedded-pg-discovery`, …) via workspace `*` deps — **not** a submodule. So the kit should follow the **same existing pattern**, not invent a new one:
+
+> **`@papercusp/tauri-release-kit`** under `libs/generic/`, published as an npm package exposing (a) a typed `TauriReleaseConfig` + programmatic API and (b) a thin `bin/` CLI. Each app gets a small `release.config.ts` + a `bin/release` wrapper. This matches the `libs/generic/*` + `configure*()` seam convention catalogued in `BORROWABLE.md`.
+
+A git-submodule of the whole desktop tree was considered and rejected: oddsmith deliberately does not submodule papercusp, and the desktop *shells* legitimately differ (oddsmith builds its own SPA + a tiny sidecar; papercusp serves operator-vite + the heavy sidecar). Sharing the **kit** (logic), not the **shell** (the Tauri app), is the right grain.
+
+### Seam contract (sketch — illustrative, not final)
+
+[Section titled “Seam contract (sketch — illustrative, not final)”](#seam-contract-sketch--illustrative-not-final)
+
+```ts
+export interface TauriReleaseConfig {
+  appName: string;              // "Papercusp"
+  appId: string;                // "com.papercusp.desktop"
+  repo: { owner: string; name: string };
+  tagPattern: (v: string, ch: Channel) => string;   // desktop-vX.Y.Z[-ch]
+  versionFiles: VersionField[]; // [{file, kind: 'json'|'toml', path}]
+  targets: Partial<Record<Target, TargetOpts>>;      // linux-x64, ...
+  signing: { keyPath: string; passwordEnv?: string };
+  latestJsonUrl: (a: { tag: string; name: string }) => string;
+  vm?: { mac?: VmSsh; windows?: VmSsh };             // host/port/user/key/dir
+  buildSidecar: (ctx: SidecarCtx) => Promise<void>;  // ← the injected seam
+}
+```
+
+`buildSidecar` is the firewall: papercusp wires in its 1,070-line bash; oddsmith wires in its esbuild. The kit never knows the difference.
+
+## Migration order
+
+[Section titled “Migration order”](#migration-order)
+
+1. **Resolve canonicity (blocker).** Three desktop trees exist:
+
+   * `papercup/papercusp-desktop/` — **submodule, v0.0.2, canonical** (has the VM build scripts). Extract from here.
+   * `papercupai-workspace/papercusp-desktop/` — standalone, v0.0.1, **stale**.
+   * `papercup/libs/papercusp/apps/desktop/` — vestigial, no build scripts.
+
+   Confirm/retire the stale + vestigial trees first, or the extraction bakes in drift.
+
+2. **Extract the kit** behind the seam; **papercusp adopts it first** — its `bin/release-local.sh` becomes a thin wrapper over the kit. Prove byte-identical (or intentionally-improved) artifacts.
+
+3. **Oddsmith adopts second** — add `release.config.ts` + `buildSidecar` (its esbuild) + a `bin/release`, giving oddsmith the Linux/Mac/Windows release flow it currently lacks entirely.
+
+## Risks & timing
+
+[Section titled “Risks & timing”](#risks--timing)
+
+* ⚠ **The release scripts are being actively stabilized right now.** The `windows-public-release-readiness-2026-06-25` drive (and the Mac drive) are editing `build-windows-on-vm.sh`, Authenticode signing, and the WSL rootfs as of this writing. Refactoring mid-cut risks destabilizing a live public release. Safest sequencing: extract **after** that release lands, **or** scope a first pass to the **stable Linux x86\_64 core only** (the part not in flux) and prove it on both apps before touching the VM paths.
+* The sidecar seam must be drawn carefully — papercusp’s bundling pulls \~1GB of external binaries with platform-specific exclusions (omp/code-server dropped on Windows for NSIS size limits); these stay entirely on papercusp’s side of the seam.
+
+## Open questions (for owner)
+
+[Section titled “Open questions (for owner)”](#open-questions-for-owner)
+
+1. Go now, or after the public-release drive stabilizes?
+2. Full kit (incl. VM orchestration) vs Linux-core-first slice?
+3. `libs/generic/` npm package (recommended) vs a standalone `Papercusp/tauri-release-kit` repo?
 
 # Verifying a build
 

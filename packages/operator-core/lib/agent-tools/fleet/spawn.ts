@@ -14,6 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
   name: 'fleet:spawn',
@@ -52,8 +53,8 @@ export default defineTool({
       ),
     feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
     chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
-    brief: z.string().max(16000).optional()
-      .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060.'),
+    brief: softText(LIMITS.BRIEF).optional()
+      .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060. Auto-truncated to 16000 chars if longer.'),
     tier: z.string().max(40).optional()
       .describe('Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user\'s per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role\'s standing default. An unknown name fails loud listing the valid menu.'),
     model: z.string().max(80).optional()
@@ -111,7 +112,7 @@ export default defineTool({
       role: args.role,
       featureId: args.feature ?? null,
       chunkId: args.chunk ?? null,
-      brief: args.brief ?? null,
+      brief: clampText(args.brief, LIMITS.BRIEF) ?? null,
       // The queen's model lever is tier NAMES only (propose/dispose split) —
       // a raw model spec from role=queen is ignored in favor of her tier.
       tier,

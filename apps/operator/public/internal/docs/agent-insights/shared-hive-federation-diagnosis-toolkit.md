@@ -212,9 +212,29 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
   feeding **two same-hive scope paths**: **owner-log bootstrap-admit** (trusts the one
   directory-cache-bound owner device to break the empty-member-set deadlock) and
   **member-set admission** (device ∈ `hive_members`, else buffer-and-retry).
-* **`binding_invalid` = conclusive identity/gist failure, never retried** — a gist-less
-  owner is the current live wall (WI-797), and owner-bootstrap can't rescue it because it
-  sits after the gist gate.
+* **`binding_invalid` = conclusive identity/gist failure, never retried** — a gist-less /
+  fresh-join-window owner used to be the live wall (WI-797): owner-bootstrap sat AFTER the
+  gist gate, so the owner's own announce was rejected before the bootstrap could rescue it.
+  **FIXED 2026-06-25** (su-ed33c735, A2 su-5394073c): the owner-device bootstrap is now
+  hoisted into `admitsAsKnownHiveMember` (the IDENTITY stage, BEFORE the gist gate) —
+  `boot.ts` \~1727. Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap`
+  fires and roster+epoch federate owner→joiner `origin=remote`. See WI-797 / plan
+  `shared-hive-public-release-2026-06-22` D-011.
+* **GOTCHA — a stale `kind=topic` harness on the same hive topic INTERCEPTS the owner
+  announce.** A bare `/api/harness/join-link` (vs `/api/discovery/join-hive`) binds the
+  member as `swarmBinding.kind=topic` (no `hive_pubkey`). If that junk harness boots FIRST
+  on the topic it owns the connection's announce channel and rejects the owner frame
+  `binding_invalid`, and the proper `kind=hive` handlers never see it (no per-frame A-003
+  trace for them). Symptom: only the topic-harness logs the rejection; `is-even`/`<hive>`
+  show `boot_ok`+`peer_connected` but no admission event. Fix: remove the junk harness
+  (registry `jsonb` filter + clone dir) and relaunch — the owner-bootstrap then fires.
+* **The new finish line is the CONTENT layer, not admission.** With WI-797 fixed, the owner
+  log merges and control rows (`hive-members`, `hive-epoch-keys` — plaintext per
+  `hive-epoch-content-ops.ts`) apply, but **encrypted content ops** (features/work-items/
+  plans/issues) can still drop on apply even with the epoch key wrapped for the joiner's
+  device — the GATE-2 content-apply layer (`owner-side-cross-member-content-apply-gap`,
+  D-003, WI-367 content-before-key ordering-drop + the `drainQueuedEpochContent` replay).
+  Isolate lag-vs-drop with a fresh op; if a NEW op also never lands, it's a drop, not lag.
 * Substrate boot + swarm join are **registry-gated**: a node swarms only registry hives,
   not merely-rostered ones.
 * `dogfood-substrate-boot-history` (verified-admin) is the admission ledger; read its

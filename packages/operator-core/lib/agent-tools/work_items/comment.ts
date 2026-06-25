@@ -15,10 +15,11 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { commentWorkItem } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
+import { hardText, LIMITS } from '../limits';
 
 const itemSpec = z.object({
   id: z.string().min(1),
-  body: z.string().min(1).max(32000),
+  body: hardText(LIMITS.BODY),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
 });
 
@@ -38,7 +39,7 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-comment shorthand: the work-item id (use with `body`)'),
-      body: z.string().min(1).max(32000).optional().describe('single-comment shorthand: the comment text (use with `id`)'),
+      body: hardText(LIMITS.BODY).optional().describe('single-comment shorthand: the comment text (use with `id`)'),
       items: z.array(itemSpec).min(1).max(100).optional().describe('comment on many work-items at once — each { id, body, harness? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })

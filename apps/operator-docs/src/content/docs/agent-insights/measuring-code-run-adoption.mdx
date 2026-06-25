@@ -205,6 +205,47 @@ $0.036** — the same turns/cost reduction availability buys `code:run`. Both ar
 CLEAN task-completion win is model-gated: **re-run on sonnet** (drop the `LLM_TEST_*_MODEL` overrides)
 for the definitive adoption + turns/cost deltas — same caveat as the code:run A/B above.
 
+## Bulk-arg adoption (bulk-endpoint-standardization P-007)
+
+The same seam measures the **bulk-arg** path — a simpler "collapse N calls into one" optimization
+that doesn't require a script runtime. Many multi-arity tools now accept `{ ids:[…] }` in addition
+to `{ id }` (every repeated-call read is dual-arity). When the engineer needs the same detail for
+every item in a collection, does it fire ONE `work_items:get { ids:[…] }` instead of `work_items:get
+{ id }` once per item?
+
+- **Scenarios:** `su-S21-bulk-read-not-hand-loop` (reach for `{ ids:[…] }` on a 6-item collection;
+  load-bearing assert: at most ONE `work_items:get` call total) + its guard `su-S22-bulk-not-for-single`
+  (single known id → `{ id }` directly, no collection machinery — the over-application guard).
+- **Arms:** same variant seam (excludeTools / promptOverlay / variantId) as the code:run A/B.
+- **Key difference from code:run:** no script needed — the bulk call IS the tool call. The adoption bar
+  is lower (no language-model capability ceiling on scripting), but the model must still recognize the
+  pattern and prefer the single bulk call over issuing separate per-id calls.
+
+## Newer test dimensions (S23–S27) — correctness and behavioral compliance
+
+Scenarios beyond S22 cover **different axes** from adoption — correctness of a specific protocol and
+behavioral compliance with shared-base policies. They use the same `SU_RUBRIC` + assert infrastructure
+but are NOT A/B arms in the adoption sense.
+
+- **S23–S25 (delta-merge, agent-tool-delta-protocol P-007):** Correctness of applying a semantic
+  delta response — does the agent merge the incoming delta against the base snapshot it still holds in
+  context (S23: happy path when base is present; S24: fallback when base was compacted; S25: correctly
+  ignores a wrong-merge attempt)?
+- **S26 (take-charge-dont-wait):** Behavioral compliance with the `CONCURRENCY_FIRST_NOTE` "never wait
+  for a calm window; a non-resource block is a BUG to fix" policy in `prompt-build.ts`. The presence
+  test (`prompt-build.test.ts`) asserts the note is IN the prompt; S26 asserts the agent actually
+  BEHAVES on it (force-deploys rather than ending a turn asking "want me to verify once it propagates?").
+- **S27 (woke-to-dispatch-claims):** Behavioral compliance with the `PEER_WAKE_NOTE` in
+  `prompt-build.ts` (added 2026-06-24, step 3j of `buildPromptParts`). The note teaches: a parked
+  agent does nothing until re-invoked; when woken by a directed dispatch, CLAIM + WORK the lane that
+  turn — never read-and-repark. S27 asserts this: the engineer claims the dispatched items in the same
+  turn it was woken rather than acknowledging and re-parking (`coord:await-inbox` / ending without
+  claiming).
+
+The presence test for both S26/S27 policies is `prompt-build.test.ts` (every role's compiled prompt
+CONTAINS the note); S26/S27 are the behavioral complements — proving the in-prompt policy changes
+actual agent decisions, not just prompt content.
+
 ## Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)
 
 The A/B above measures adoption inside the llm-testing harness. To track the SAME levers on the

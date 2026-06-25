@@ -12,6 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { createTopic } from '../topics';
+import { hardText, LIMITS } from '../../limits';
 
 export default defineTool({
   name: 'topics:create',
@@ -29,7 +30,7 @@ export default defineTool({
       .string()
       .regex(/^[a-z0-9][a-z0-9_-]{0,40}$/, 'slug: lowercase letters/digits/_/- , ≤41 chars, e.g. "federation"'),
     title: z.string().max(80).optional(),
-    description: z.string().min(1).max(2000),
+    description: hardText(LIMITS.ANNOTATION),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);

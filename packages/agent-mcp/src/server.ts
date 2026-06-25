@@ -34,7 +34,6 @@ import {
   lookup,
   lookupByMcpName,
   standardValidate,
-  formatIssues,
   serializeToolResponse,
   formatOptsFromCtx,
 } from '@papercusp/tooldef';
@@ -70,6 +69,61 @@ export interface DispatchResult {
 }
 
 /**
+ * One Standard-Schema validation issue. `message` + `path` are the only fields
+ * the StandardSchemaV1.Issue type declares, but a Zod `too_big` issue ALSO carries
+ * `{ code, origin, maximum }` at runtime — read them defensively (all optional).
+ */
+interface ValidationIssue {
+  readonly message: string;
+  readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>;
+  readonly code?: string;
+  readonly origin?: string;
+  readonly maximum?: number;
+}
+
+/** Walk a dotted path into the raw input to recover the offending value. */
+function valueAtPath(input: unknown, segs: PropertyKey[]): unknown {
+  let cur: unknown = input;
+  for (const seg of segs) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<PropertyKey, unknown>)[seg];
+  }
+  return cur;
+}
+
+/**
+ * Render validation issues into one agent-facing `path: message; …` string —
+ * but for a string `too_big` issue, tell the agent HOW FAR over the cap it is and
+ * the exact target length (agent-tooling-token-efficiency-2026-06-25 P-003). Derived
+ * from the issue's `maximum` + the actual input length at that path, e.g.
+ * `goal: too long — 412 chars over the 500-char limit; trim to 500.` so the agent
+ * trims deterministically in ONE retry instead of blind-retrying the same value. A
+ * telemetry audit traced ~1,000+ tool calls/14d failing purely on too-long args.
+ * Generic over any field; non-too_big issues keep their original `path: message`.
+ */
+function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input: unknown): string {
+  return issues
+    .map((issue) => {
+      const segs = (issue.path ?? []).map((seg) =>
+        typeof seg === 'object' && seg !== null ? (seg as { key: PropertyKey }).key : (seg as PropertyKey),
+      );
+      const path = segs.map((s) => String(s)).join('.');
+      if (issue.code === 'too_big' && issue.origin === 'string' && typeof issue.maximum === 'number') {
+        const max = issue.maximum;
+        const actual = valueAtPath(input, segs);
+        const over = typeof actual === 'string' ? actual.length - max : null;
+        const detail =
+          over !== null && over > 0
+            ? `too long — ${over} chars over the ${max}-char limit; trim to ${max}.`
+            : `too long — over the ${max}-char limit; trim to ${max}.`;
+        return path ? `${path}: ${detail}` : detail;
+      }
+      return path ? `${path}: ${issue.message}` : issue.message;
+    })
+    .join('; ');
+}
+
+/**
  * Run a tool by name with bearer-derived principal. The single entry
  * point used by both the MCP transport handler and in-process callers
  * (Operator/Oracle).
@@ -97,7 +151,7 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
   if (!parsed.ok) {
     return {
       ok: false,
-      error: { code: 'invalid_args', message: formatIssues(parsed.issues) },
+      error: { code: 'invalid_args', message: formatInvalidArgs(parsed.issues, opts.args) },
     };
   }
 

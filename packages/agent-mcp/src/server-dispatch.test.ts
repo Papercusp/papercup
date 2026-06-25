@@ -106,7 +106,30 @@ describe('dispatch — control flow', () => {
     const res = await dispatch({ toolName: 'test:echo', args: { x: 'no' }, bearer: 'b' });
     expect(res.ok).toBe(false);
     expect(res.error?.code).toBe('invalid_args');
+    expect(res.error?.message).toBe('bad');
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('too_big string → message states how far over + the trim target (P-003)', async () => {
+    // A Zod too_big issue carries { code, origin, maximum } at runtime; dispatch
+    // pairs `maximum` with the actual input length so the agent trims in one retry
+    // instead of blind-retrying the same over-length value.
+    vi.mocked(standardValidate).mockResolvedValue({
+      ok: false,
+      issues: [
+        {
+          message: 'Too big: expected string to have <=500 characters',
+          code: 'too_big',
+          origin: 'string',
+          maximum: 500,
+          path: ['goal'],
+        },
+      ],
+    } as never);
+    const res = await dispatch({ toolName: 'test:echo', args: { goal: 'x'.repeat(912) }, bearer: 'b' });
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe('invalid_args');
+    expect(res.error?.message).toBe('goal: too long — 412 chars over the 500-char limit; trim to 500.');
   });
 
   it('handler throw → handler_error carrying the message', async () => {

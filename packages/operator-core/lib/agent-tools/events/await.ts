@@ -15,6 +15,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
+import { hardText, softText, clampText, LIMITS } from '../limits';
 
 const DEFAULT_TIMEOUT_SEC = 4 * 60 * 60; // 4h
 const MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d
@@ -34,16 +35,11 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
-    event: z
-      .string()
-      .min(1)
-      .max(200)
+    event: hardText(LIMITS.IDENT)
       .describe('Exact event key to wait on (string match — no globs).'),
-    note: z
-      .string()
-      .max(2000)
+    note: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('Why you are waiting — echoed into the wake turn so resumed-you has the thread.'),
+      .describe('Why you are waiting — echoed into the wake turn so resumed-you has the thread. Auto-truncated to 2000 chars if longer.'),
     timeout_sec: z
       .number()
       .int()
@@ -77,7 +73,7 @@ export default defineTool({
       subscriberId: identity.ownerId,
       eventKey: args.event,
       policy: 'wake',
-      note: args.note ?? null,
+      note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
       wakeHandle: handle,
       timeoutBehavior: args.on_timeout ?? 'wake',
       timeoutSec: args.timeout_sec ?? DEFAULT_TIMEOUT_SEC,

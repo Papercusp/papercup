@@ -17,6 +17,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { openEscalation } from '../escalations';
 import { COORD_ROLES } from '../roles';
+import { softText, clampText, LIMITS } from '../../limits';
 
 const SEVERITY = ['blocker', 'question', 'advisory'] as const;
 
@@ -58,7 +59,9 @@ export default defineTool({
   ],
   args: z.object({
     severity: z.enum(SEVERITY),
-    summary: z.string().min(1).max(2000),
+    summary: softText(LIMITS.ANNOTATION, { min: 1 }).describe(
+      'One-line summary of the escalation — auto-truncated to 2000 chars if longer.',
+    ),
     body: z.string().optional(),
     plan_slug: z.string().optional(),
     options: z
@@ -76,7 +79,7 @@ export default defineTool({
       typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
     const rec = await openEscalation(identity, {
       severity: args.severity,
-      summary: args.summary,
+      summary: clampText(args.summary, LIMITS.ANNOTATION),
       body: args.body,
       plan_slug: args.plan_slug,
       options: args.options,

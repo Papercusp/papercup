@@ -27,6 +27,7 @@ import { readPlanBySlug } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitDecisionAdded } from '../../harness/usage-emitters';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { hardText, LIMITS } from '../limits';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -41,8 +42,8 @@ const AFFECTS = z
 
 const itemSpec = z.object({
   slug: z.string().min(1),
-  title: z.string().min(1).max(1000),
-  body: z.string().min(1).max(5000),
+  title: hardText(LIMITS.SHORT_TITLE),
+  body: hardText(5000),
   refs: REFS.optional(),
   affects: AFFECTS.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
@@ -53,8 +54,8 @@ const argsSchema = z
   .object({
     slug: z.string().min(1).optional(),
     harness: harnessArg,
-    title: z.string().min(1).max(1000).optional(),
-    body: z.string().min(1).max(5000).optional(),
+    title: hardText(LIMITS.SHORT_TITLE).optional(),
+    body: hardText(5000).optional(),
     refs: REFS.optional(),
     affects: AFFECTS.optional(),
     items: z

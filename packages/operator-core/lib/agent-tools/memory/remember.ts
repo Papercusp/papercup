@@ -26,6 +26,7 @@ import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-chec
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { getSessionUserOrDefault } from '../../auth';
+import { hardText, LIMITS } from '../limits';
 
 // The store holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
 // The `ephemeral` kind was retired — ephemeral state belongs in coord (delta-
@@ -113,7 +114,7 @@ export default defineTool({
   // enforced); the all-roles lists + quotas formerly here were dead inputs
   // (memory-taxonomy-and-debt-followups P-004).
   args: z.object({
-    content: z.string().min(1).max(16000),
+    content: hardText(LIMITS.CONTENT),
     kind: z.enum(KINDS),
     harness_slug: z.string().optional()
       .describe('Scope to a specific harness (project). Anyone with access to that harness will see this memory in their recall. Omit for a personal (per-user) fact.'),

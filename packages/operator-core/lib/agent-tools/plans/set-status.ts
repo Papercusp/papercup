@@ -37,16 +37,15 @@ import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { softText } from '../limits';
 
 const SU_BEE_ROLES = [...SU_ROLES, 'bee'] as const;
 
 const STATUS = z.enum([...ITEM_STATUSES] as [string, ...string[]]);
 
-const NOTE = z
-  .string()
-  .max(8000)
+const NOTE = softText(8000)
   .describe(
-    'Optional SHORT comment appended inline to the item line. Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), not rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
+    'Optional SHORT comment appended inline to the item line. Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
   );
 
 const itemSpec = z.object({
