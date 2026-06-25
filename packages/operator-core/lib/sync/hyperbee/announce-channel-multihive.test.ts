@@ -207,4 +207,25 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
     expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['late-accepted-log']);
     expect(mux._channels.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
   });
+
+  it('waits for the Noise stream opened promise before opening the announce channel', async () => {
+    const mux = makeFakeMux();
+    let resolveOpened!: () => void;
+    const socket = {
+      userData: mux,
+      opened: new Promise<void>((resolve) => {
+        resolveOpened = resolve;
+      }),
+    };
+
+    openAnnounceChannel(socket, t1, { ourAnnounce: announce('after-open') });
+    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual([]);
+    expect(mux._channels.size).toBe(0);
+
+    resolveOpened();
+    await Promise.resolve();
+
+    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['after-open']);
+    expect(mux._channels.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
+  });
 });

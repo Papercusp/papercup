@@ -413,13 +413,24 @@ export function openAnnounceChannel(
         // pair() unsupported on this muxer build — connect-time channels still pair
       }
     }
-    // Create the topic channel once (the FIRST harness); a later harness's
-    // createChannel returns null (channel exists) — its entry is already in
-    // `state`, so it rides the same channel. If the channel has already opened,
-    // flush this late-joining harness's announce now (the onopen flush already
-    // fired and won't re-run for it).
-    createAnnounceChannel(mux, topic, state);
-    if (state.opened) flushTopicAnnounces(state);
+    // Create the topic channel once the underlying Noise stream is open. This
+    // mirrors corestore's own `noiseStream.opened.then(uncork)` timing: opening
+    // our app channel before the transport is ready can leave the local open
+    // frame corked forever on packaged shared-swarm sockets, so the peer never
+    // sees it and `onopen` never fires.
+    const createWhenReady = () => {
+      createAnnounceChannel(mux, topic, state);
+      // If the channel had already opened, flush this late-joining harness's
+      // announce now (the onopen flush already fired and won't re-run for it).
+      if (state.opened) flushTopicAnnounces(state);
+    };
+    const opened = (muxStream as { opened?: Promise<unknown> } | null | undefined)?.opened;
+    if (opened && typeof opened.then === 'function') {
+      announceDebug(`defer-open mux=${muxId} topic=${topic.toString('hex').slice(0, 16)}`);
+      void opened.then(createWhenReady, createWhenReady);
+    } else {
+      createWhenReady();
+    }
   } catch {
     // Announce channel is best-effort; replication still proceeds.
   }
