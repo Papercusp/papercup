@@ -36,8 +36,12 @@ vi.mock('./liveness', () => ({
 const loopbackFetch = vi.fn();
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: (...a: unknown[]) => loopbackFetch(...a) }));
 
+const overwatchScorecardEndCheck = vi.fn();
+vi.mock('./scorecard-backstop', () => ({ overwatchScorecardEndCheck: (...a: unknown[]) => overwatchScorecardEndCheck(...a) }));
+
+const recordFire = vi.fn();
 vi.mock('../operator-api-base', () => ({ operatorApiBase: () => 'http://op' }));
-vi.mock('../autoloop', () => ({ recordFire: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../autoloop', () => ({ recordFire: (...a: unknown[]) => recordFire(...a) }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 
 import { handleOverwatchLaunch, setOverwatchLaunchFire, type OverwatchLaunchFireInput } from './loop';
@@ -60,6 +64,8 @@ beforeEach(() => {
   computeOverwatchBrief.mockResolvedValue({ hiveSlug: SLUG, anomalies: [] });
   renderOverwatchBrief.mockReturnValue('RENDERED-BRIEF');
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
+  recordFire.mockResolvedValue(undefined);
+  overwatchScorecardEndCheck.mockResolvedValue({ outcome: 'synthesized', reason: 'test backstop' });
   loopbackFetch.mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
 });
 
@@ -146,6 +152,39 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await handleOverwatchLaunch(ctx);
     const body = JSON.parse((loopbackFetch.mock.calls[0] as [string, { body: string }])[1].body);
     expect(body.overwatchBrief).toBeUndefined();
+  });
+
+  it('HTTP 200 + invoke ok:false records an error and runs the scorecard backstop', async () => {
+    loopbackFetch.mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ ok: false, error: 'agent timed out', exitCode: 143, timedOut: true })),
+    });
+
+    await handleOverwatchLaunch(ctx);
+
+    await vi.waitFor(() => {
+      expect(recordFire).toHaveBeenCalledWith(
+        SLUG,
+        'overwatch',
+        expect.stringContaining('invoke returned ok:false'),
+        'error',
+      );
+    });
+    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
+    expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
+  });
+
+  it('transport failure records an error and runs the scorecard backstop', async () => {
+    loopbackFetch.mockRejectedValue(new Error('connection refused'));
+
+    await handleOverwatchLaunch(ctx);
+
+    await vi.waitFor(() => {
+      expect(recordFire).toHaveBeenCalledWith(SLUG, 'overwatch', expect.stringContaining('connection refused'), 'error');
+    });
+    await vi.waitFor(() => {
+      expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
+    });
   });
 });
 

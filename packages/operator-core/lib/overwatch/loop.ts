@@ -128,22 +128,76 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
   })
     .then(
       async (r) => {
-        if (r.ok) return recordFire(installSlug, role, 'ok', 'ok');
         const detail = await r
           .text()
-          .then((t) => t.replace(/\s+/g, ' ').slice(0, 160))
+          .then((t) => t.replace(/\s+/g, ' ').slice(0, 320))
           .catch(() => '');
-        return recordFire(installSlug, role, `error: HTTP ${r.status}${detail ? ` — ${detail}` : ''}`, 'error');
+        if (!r.ok) {
+          const message = `error: HTTP ${r.status}${detail ? ` — ${detail.slice(0, 160)}` : ''}`;
+          await recordFire(installSlug, role, message, 'error');
+          await runScorecardBackstop(workspaceId, installSlug, message);
+          return;
+        }
+
+        const invokeError = classifyInvokeBodyFailure(detail);
+        if (invokeError) {
+          await recordFire(installSlug, role, invokeError, 'error');
+          await runScorecardBackstop(workspaceId, installSlug, invokeError);
+          return;
+        }
+
+        return recordFire(installSlug, role, 'ok', 'ok');
       },
-      (e) => {
+      async (e) => {
         const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
         console.warn(`[overwatch-loop] launch fire failed (${installSlug}/${role}): ${detail}`);
-        return recordFire(installSlug, role, `error: ${detail}`, 'error');
+        const message = `error: ${detail}`;
+        await recordFire(installSlug, role, message, 'error');
+        await runScorecardBackstop(workspaceId, installSlug, message);
       },
     )
     .catch(() => {})
     .finally(invalidateOverwatchLiveness);
 };
+
+function classifyInvokeBodyFailure(text: string): string | null {
+  if (!text.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || (parsed as { ok?: unknown }).ok !== false) return null;
+  const obj = parsed as {
+    error?: unknown;
+    exitCode?: unknown;
+    timedOut?: unknown;
+    durationMs?: unknown;
+  };
+  const parts = ['error: invoke returned ok:false'];
+  if (typeof obj.error === 'string' && obj.error.trim()) parts.push(obj.error.trim().slice(0, 180));
+  if (typeof obj.exitCode === 'number') parts.push(`exitCode=${obj.exitCode}`);
+  if (obj.timedOut === true) parts.push('timedOut=true');
+  if (typeof obj.durationMs === 'number') parts.push(`durationMs=${obj.durationMs}`);
+  return parts.join(' — ');
+}
+
+async function runScorecardBackstop(workspaceId: string, installSlug: string, reason: string): Promise<void> {
+  try {
+    const { overwatchScorecardEndCheck } = await import('./scorecard-backstop');
+    const res = await overwatchScorecardEndCheck({ workspaceId, installSlug });
+    if (res.outcome === 'error') {
+      console.warn(`[overwatch-loop] ${installSlug}: scorecard backstop failed after launch error (${reason}): ${res.reason}`);
+    }
+  } catch (e) {
+    console.warn(
+      `[overwatch-loop] ${installSlug}: scorecard backstop threw after launch error (${reason}): ${
+        e instanceof Error ? e.message : e
+      }`,
+    );
+  }
+}
 
 /** Refresh the `overwatch.liveness` sync subscribers (the "is-it-alive?" strip)
  *  after a fire stamps `autoloop_state`. Lazy import (the loop module is imported
