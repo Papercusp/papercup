@@ -214,3 +214,4 @@
 [2026-06-25T12:25:10Z] bee WI-378: scripts/mcp-call.mjs work_items:complete expects {id, completion:{summary,status?,tests:string}}; a bare completion string or tests array is rejected, while work_items:claim needs explicit assign_to when helper identity falls back to su-loopback.
 [2026-06-25T00:00:00Z] doc-steward -: harness_docs:verify requires --harness papercusp (not papercup) even when the doc lives in the papercup repo; papercusp owns the docs namespace.
 [2026-06-25T00:00:00Z] doc-steward -: harness_docs:verify requires --harness papercusp (framework harness slug), not the project harness slug (papercup) — "unknown_harness" means wrong slug, not a missing param
+[2026-06-25T20:12:00Z] doc-steward -: harness_docs:verify requires --harness papercusp (not papercup); harness slug is 'papercusp' in the registry even though repo/project slug is 'papercup'. Use mcp-call.mjs with --harness papercusp for doc verification calls.

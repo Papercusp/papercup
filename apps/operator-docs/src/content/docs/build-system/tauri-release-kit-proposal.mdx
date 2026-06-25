@@ -5,11 +5,15 @@ sidebar:
   order: 8
 plans:
   - tauri-release-kit-shared-build-2026-06-25
+documents:
+  - papercusp-desktop/bin/release.ts
+  - papercusp-desktop/bin/release.config.ts
+  - libs/generic/tauri-release-kit/src/types.ts
 ---
 
 :::note[Status: shipped in-tree; cross-repo wiring owner-gated]
 The kit **exists and is green**: `libs/generic/tauri-release-kit` (pure core +
-SSH-frame + VM driver + `runRelease` orchestrator + node ports), 56 vitest tests,
+SSH-frame + VM driver + `runRelease` orchestrator + node ports), 58 vitest tests,
 in BORROWABLE.md, wired into `test:affected`. papercusp has an **additive**
 kit-driven path (`papercusp-desktop/bin/release.ts` + `release.config.ts`) that
 runs alongside `bin/release-local.sh` — nothing in the in-flight release scripts
@@ -114,20 +118,26 @@ differ (oddsmith builds its own SPA + a tiny sidecar; papercusp serves
 operator-vite + the heavy sidecar). Sharing the **kit** (logic), not the
 **shell** (the Tauri app), is the right grain.
 
-### Seam contract (sketch — illustrative, not final)
+### Seam contract (shipped — `libs/generic/tauri-release-kit/src/types.ts`)
+
+The shipped `TauriReleaseConfig` (authoritative source: `types.ts`):
 
 ```ts
 export interface TauriReleaseConfig {
   appName: string;              // "Papercusp"
   appId: string;                // "com.papercusp.desktop"
+  root: string;                 // desktop app root (where src-tauri/ lives)
   repo: { owner: string; name: string };
-  tagPattern: (v: string, ch: Channel) => string;   // desktop-vX.Y.Z[-ch]
-  versionFiles: VersionField[]; // [{file, kind: 'json'|'toml', path}]
-  targets: Partial<Record<Target, TargetOpts>>;      // linux-x64, ...
-  signing: { keyPath: string; passwordEnv?: string };
+  version: string;              // e.g. "0.2.1"
+  channel: Channel;             // 'alpha' | 'beta' | 'stable'
+  versionFiles: VersionFile[];  // [{path, kind: 'json'|'cargo-toml'}]
+  targets: TargetKey[];         // flat array: ['linux-x86_64', 'macos-universal', …]
+  signing: SigningConfig;       // { keyPath, passwordEnv? }
+  buildSidecar: BuildSidecar;   // ← the injected seam: (ctx: SidecarContext) => Promise<void>
   latestJsonUrl: (a: { tag: string; name: string }) => string;
-  vm?: { mac?: VmSsh; windows?: VmSsh };             // host/port/user/key/dir
-  buildSidecar: (ctx: SidecarCtx) => Promise<void>;  // ← the injected seam
+  tagFor?: (version: string, channel: Channel) => string;   // override default tag scheme
+  classifyArtifact?: (path: string) => PlatformKey | null;  // override artifact→platform mapping
+  vm?: Partial<Record<TargetKey, VmConfig>>;  // per-target SSH frame (Mac/Windows)
 }
 ```
 
