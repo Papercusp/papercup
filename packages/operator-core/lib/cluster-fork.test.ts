@@ -109,6 +109,76 @@ describe('startCluster (P3-2)', () => {
   });
 });
 
+describe('startCluster boot-failure backstop (2026-06-25 inconsistent-release incident)', () => {
+  it('a generation failing to boot (none ever healthy) → onUnbootable, respawn storm halts', () => {
+    const cl = new MockCluster(true);
+    let fakeNow = 0;
+    const onUnbootable = vi.fn();
+    startCluster({
+      workers: 3,
+      onWorker: () => {},
+      cluster: cl,
+      maxRespawns: 15, // a 32-worker-style budget the storm would otherwise burn through
+      bootGraceMs: 10_000,
+      now: () => fakeNow,
+      onUnbootable,
+      log: () => {},
+    });
+    expect(cl.forks).toBe(3);
+    cl.emitExit(cl.workers[0]); // boot-failure 1/3 (uptime 0) → still respawns
+    cl.emitExit(cl.workers[1]); // boot-failure 2/3 → still respawns
+    expect(cl.forks).toBe(5);
+    expect(onUnbootable).not.toHaveBeenCalled();
+    cl.emitExit(cl.workers[2]); // boot-failure 3/3 → UNBOOTABLE: stop, signal the caller
+    expect(onUnbootable).toHaveBeenCalledOnce();
+    expect(onUnbootable).toHaveBeenCalledWith({
+      consecutiveBootFailures: 3,
+      lastCode: 1,
+      lastSignal: null,
+    });
+    const forksAtGiveUp = cl.forks;
+    cl.emitExit(cl.workers[3]); // already unbootable → ignored, no further forking
+    expect(cl.forks).toBe(forksAtGiveUp);
+    expect(cl.forks).toBeLessThan(15); // nowhere near the full respawn-budget storm
+  });
+
+  it('a worker that booted healthy then crashed is respawned — onUnbootable never fires after a healthy boot', () => {
+    const cl = new MockCluster(true);
+    let fakeNow = 0;
+    const onUnbootable = vi.fn();
+    startCluster({
+      workers: 2,
+      onWorker: () => {},
+      cluster: cl,
+      bootGraceMs: 10_000,
+      now: () => fakeNow,
+      onUnbootable,
+      log: () => {},
+    });
+    expect(cl.forks).toBe(2);
+    fakeNow = 20_000; // both workers have been up well past the grace window
+    cl.emitExit(cl.workers[0]); // runtime crash after healthy uptime → normal respawn
+    expect(cl.forks).toBe(3);
+    expect(onUnbootable).not.toHaveBeenCalled();
+    // Once the build is PROVEN bootable, even an instant exit is just a runtime crash → respawn.
+    cl.emitExit(cl.workers[2]); // w3 forked at t=20000, exits at t=20000 (uptime 0) but sawHealthy
+    expect(cl.forks).toBe(4);
+    expect(onUnbootable).not.toHaveBeenCalled();
+  });
+
+  it('inert without onUnbootable: instant boot-failures use the legacy respawn budget (opt-in)', () => {
+    const cl = new MockCluster(true);
+    startCluster({ workers: 2, onWorker: () => {}, cluster: cl, maxRespawns: 3, bootGraceMs: 10_000, log: () => {} });
+    expect(cl.forks).toBe(2);
+    cl.emitExit(cl.workers[0]); // respawn 1/3 — no early short-circuit despite uptime 0
+    cl.emitExit(cl.workers[1]); // respawn 2/3
+    cl.emitExit(cl.workers[2]); // respawn 3/3
+    expect(cl.forks).toBe(5);
+    cl.emitExit(cl.workers[3]); // budget exhausted → no respawn
+    expect(cl.forks).toBe(5);
+  });
+});
+
 describe('resolveClusterWorkers (P3-2 gate)', () => {
   const REC = 8; // resource-profile.httpWorkers recommendation
 

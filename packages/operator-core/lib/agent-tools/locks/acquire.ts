@@ -97,7 +97,7 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     paths: z.array(z.string().min(1)).min(1).max(50),
-    intent: z.string().min(1).max(200),
+    intent: z.string().min(1).max(1000),
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
     wait: z
       .object({

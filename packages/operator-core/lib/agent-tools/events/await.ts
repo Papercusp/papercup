@@ -41,7 +41,7 @@ export default defineTool({
       .describe('Exact event key to wait on (string match — no globs).'),
     note: z
       .string()
-      .max(300)
+      .max(2000)
       .optional()
       .describe('Why you are waiting — echoed into the wake turn so resumed-you has the thread.'),
     timeout_sec: z

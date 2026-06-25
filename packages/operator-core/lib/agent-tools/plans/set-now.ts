@@ -41,10 +41,10 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .max(
-      800,
-      'next must be ≤800 chars — it is ONE next concrete action, not a plan. Trim it; multi-step detail belongs in plan items or the body.',
+      8000,
+      'next must be ≤8000 chars — it is ONE next concrete action, not a plan. Trim it; multi-step detail belongs in plan items or the body.',
     )
-    .describe('One sentence (≤800 chars) — the single next concrete action and who should do it.'),
+    .describe('One sentence (≤8000 chars) — the single next concrete action and who should do it.'),
   rationale: z
     .string()
     .optional()

@@ -79,7 +79,7 @@ export default defineTool({
         ),
       kickoff: z
         .string()
-        .max(2000)
+        .max(16000)
         .optional()
         .describe("Kickoff text future-you reads (why this wake exists)."),
     })

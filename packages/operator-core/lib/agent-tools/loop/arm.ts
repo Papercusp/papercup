@@ -66,7 +66,7 @@ export default defineTool({
     goal: z
       .string()
       .min(1)
-      .max(500)
+      .max(4000)
       .describe('One line: what this loop is working toward — echoed into every wake.'),
     harness: z
       .string()

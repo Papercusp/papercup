@@ -40,7 +40,7 @@ export default defineTool({
     .object({
       spawn_id: z.string().min(1).optional().describe('Root of one subtree to cancel (this node + all descendants; n=1 shorthand for spawn_ids:[id]).'),
       spawn_ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('Roots of the subtrees to cancel (1–100).'),
-      reason: z.string().max(500).optional().describe('Why — surfaced in the coord cancellation notice + audit (batch-level).'),
+      reason: z.string().max(4000).optional().describe('Why — surfaced in the coord cancellation notice + audit (batch-level).'),
       workspace: z.string().max(120).optional(),
     })
     .refine((a) => Boolean(a.spawn_id) || (a.spawn_ids?.length ?? 0) > 0, {

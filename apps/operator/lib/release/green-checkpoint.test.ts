@@ -20,9 +20,15 @@ import {
   attemptFlakeAbsorption,
   ISOLATION_MAX_FILES,
   acquireCheckpointRunLock,
+  isWorkerPoolCrash,
+  parseCrashedWorkspaces,
+  attemptWorkerCrashAbsorption,
+  WORKER_CRASH_MAX_WORKSPACES,
+  GREEN_CHECKPOINT_MAX_FORKS,
   type CheckpointDeps,
   type FailingFile,
   type IsolationResult,
+  type WorkspaceRerunResult,
 } from './green-checkpoint';
 import { git, revParse, advanceReady } from './git-ops';
 import { releaseConfig } from './release-config';
@@ -333,8 +339,11 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
 
   it('defaults the vitest cap + retry but never clobbers a pre-set value', () => {
     const defaulted = buildGreenCheckpointEnv('b', {});
-    expect(defaulted.VITEST_MAX_FORKS).toBe('8');
-    expect(defaulted.VITEST_MAX_THREADS).toBe('8');
+    // WI-806: the fork cap was lowered 8→4 (GREEN_CHECKPOINT_MAX_FORKS) so the forks
+    // can't collectively OOM-kill a worker under fleet load (the worker-pool crash).
+    expect(defaulted.VITEST_MAX_FORKS).toBe(String(GREEN_CHECKPOINT_MAX_FORKS));
+    expect(defaulted.VITEST_MAX_THREADS).toBe(String(GREEN_CHECKPOINT_MAX_FORKS));
+    expect(GREEN_CHECKPOINT_MAX_FORKS).toBe(4);
     expect(defaulted.AFFECTED_RETRY_FAILED).toBe('1');
     // 2026-06-22: heavy `await import()` unit tests take 74-97s under the gate's
     // 8-fork transform contention; the gate raises the unit timeout to 180s (dev
@@ -342,7 +351,7 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
     expect(defaulted.VITEST_UNIT_TIMEOUT_MS).toBe('180000');
     const preset = buildGreenCheckpointEnv('b', { VITEST_MAX_FORKS: '2', AFFECTED_RETRY_FAILED: '0' });
     expect(preset.VITEST_MAX_FORKS).toBe('2'); // honored
-    expect(preset.VITEST_MAX_THREADS).toBe('8'); // still defaulted
+    expect(preset.VITEST_MAX_THREADS).toBe(String(GREEN_CHECKPOINT_MAX_FORKS)); // still defaulted
     expect(preset.AFFECTED_RETRY_FAILED).toBe('0'); // '0' is a value, not absent — honored
   });
 
@@ -586,6 +595,144 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
     const out = await attemptFlakeAbsorption(lines.join('\n'), isolationRun);
     expect(out.absorbedToGreen).toBe(false);
     expect(called).toBe(false); // a broad red is never load-flake absorption
+  });
+});
+
+// worker-pool-crash-absorption-2026-06-25 (WI-806): the SAFE worker-pool-crash absorber.
+// The incident: @papercusp/operator-core's `vitest run --passWithNoTests` CRASHED a worker
+// fork (ENOMEM/OOM-kill under the shared box's fleet load) — `[vitest-pool]: Worker forks
+// emitted error` / `Worker exited unexpectedly` — with NO per-file `FAIL` rows. The
+// existing per-file isolation absorber parsed ZERO files and fell through to a hard RED
+// that wedged the release pipeline 5× in a row. These cover the pure classify + parse +
+// orchestration without real vitest. The exact crash signature from the real checkpoint log:
+const WORKER_CRASH_OUTPUT = [
+  '>>> @papercusp/operator-core :: npm run test',
+  'Error: [vitest-pool]: Worker forks emitted error.',
+  '    ❯ EventEmitter.<anonymous> ../../node_modules/vitest/dist/chunks/cli-api.js:3446:22',
+  'Caused by: Error: Worker exited unexpectedly',
+  '    ❯ ChildProcess.emitUnexpectedExit ../../node_modules/vitest/dist/chunks/cli-api.js:3012:33',
+  '',
+  'npm error Lifecycle script `test` failed with error:',
+  'npm error code 1',
+  'npm error workspace @papercusp/operator-core@0.1.0',
+  'npm error location /home/x/papercup-checkpoint/packages/operator-core',
+  'npm error command sh -c vitest run --passWithNoTests',
+  '',
+  '1 non-quarantined task(s) failed.',
+].join('\n');
+
+describe('isWorkerPoolCrash + parseCrashedWorkspaces (WI-806)', () => {
+  it('classifies the real worker-pool crash output as a pool crash', () => {
+    expect(isWorkerPoolCrash(WORKER_CRASH_OUTPUT)).toBe(true);
+    expect(isWorkerPoolCrash('Worker terminated')).toBe(true);
+  });
+
+  it('is NOT a pool crash for an ordinary test failure', () => {
+    expect(isWorkerPoolCrash(' FAIL  lib/x.test.ts > case\nAssertionError: expected 1 to be 2')).toBe(false);
+  });
+
+  it('harvests the crashed workspace from the `npm error workspace` footer (strips @version)', () => {
+    expect(parseCrashedWorkspaces(WORKER_CRASH_OUTPUT)).toEqual(['@papercusp/operator-core']);
+  });
+
+  it('falls back to the `>>>` section header when no npm-error-workspace footer is present', () => {
+    const out = '>>> @papercusp/agent-mcp :: npm run test\nError: [vitest-pool]: Worker forks emitted error.';
+    expect(parseCrashedWorkspaces(out)).toEqual(['@papercusp/agent-mcp']);
+  });
+
+  it('returns [] when no workspace is localizable', () => {
+    expect(parseCrashedWorkspaces('Worker exited unexpectedly')).toEqual([]);
+  });
+});
+
+describe('attemptWorkerCrashAbsorption (WI-806 — absorb-or-retry the no-signature crash)', () => {
+  it('(a) crash + zero parseable files + passing re-run ⇒ green + flakeSuspect', async () => {
+    const ran: string[] = [];
+    const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => {
+      ran.push(workspace);
+      return { workspace, passed: true }; // passes cleanly at reduced concurrency
+    };
+    const out = await attemptWorkerCrashAbsorption(WORKER_CRASH_OUTPUT, workspaceRerun);
+    expect(out.absorbedToGreen).toBe(true);
+    expect(out.flakeSuspects).toEqual(['@papercusp/operator-core (worker-pool crash)']);
+    expect(ran).toEqual(['@papercusp/operator-core']); // it actually re-ran the crashed ws
+  });
+
+  it('(b) crash + re-run STILL crashes ⇒ red (never blanket-green a crash)', async () => {
+    const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => ({
+      workspace,
+      passed: false,
+      crashedAgain: true,
+    });
+    const out = await attemptWorkerCrashAbsorption(WORKER_CRASH_OUTPUT, workspaceRerun);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(out.flakeSuspects).toEqual([]);
+  });
+
+  it('(b2) crash + re-run reveals a REAL per-file failure ⇒ red', async () => {
+    const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => ({
+      workspace,
+      passed: false,
+      realFailure: true,
+    });
+    expect((await attemptWorkerCrashAbsorption(WORKER_CRASH_OUTPUT, workspaceRerun)).absorbedToGreen).toBe(false);
+  });
+
+  it('(b3) a THROWING re-run defaults to red (uncertainty never flips to green)', async () => {
+    const workspaceRerun = async (): Promise<WorkspaceRerunResult> => {
+      throw new Error('vitest spawn failed');
+    };
+    expect((await attemptWorkerCrashAbsorption(WORKER_CRASH_OUTPUT, workspaceRerun)).absorbedToGreen).toBe(false);
+  });
+
+  it('(c) a REAL per-file failure is NEVER mistaken for a worker-crash flake (no re-run)', async () => {
+    // Ordinary red WITH parseable per-file failures — not a pool crash. Even if it also
+    // contained a pool marker, the parseable per-file failures route it to the isolation
+    // absorber, never this workspace re-run.
+    let called = false;
+    const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => {
+      called = true;
+      return { workspace, passed: true };
+    };
+    const out = await attemptWorkerCrashAbsorption(INCIDENT_OUTPUT, workspaceRerun);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(called).toBe(false); // a genuine test failure is never re-run as a crash flake
+  });
+
+  it('(c2) a pool crash that STILL named per-file failures defers to the isolation absorber (no workspace re-run)', async () => {
+    const withFiles = WORKER_CRASH_OUTPUT + '\n FAIL  lib/real.test.ts > a case';
+    let called = false;
+    const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => {
+      called = true;
+      return { workspace, passed: true };
+    };
+    expect((await attemptWorkerCrashAbsorption(withFiles, workspaceRerun)).absorbedToGreen).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('a BROAD multi-workspace crash (> WORKER_CRASH_MAX_WORKSPACES) is a real regression — never absorbed', async () => {
+    const lines = ['Error: [vitest-pool]: Worker forks emitted error.'];
+    for (let i = 0; i <= WORKER_CRASH_MAX_WORKSPACES; i++) lines.push(`npm error workspace @p/ws${i}@1.0.0`);
+    let called = false;
+    const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => {
+      called = true;
+      return { workspace, passed: true };
+    };
+    const out = await attemptWorkerCrashAbsorption(lines.join('\n'), workspaceRerun);
+    expect(out.absorbedToGreen).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('one of two crashed workspaces still failing ⇒ red (all must pass to absorb)', async () => {
+    const out2 = WORKER_CRASH_OUTPUT.replace(
+      'npm error workspace @papercusp/operator-core@0.1.0',
+      'npm error workspace @papercusp/operator-core@0.1.0\nnpm error workspace @papercusp/agent-mcp@0.1.0',
+    );
+    const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => ({
+      workspace,
+      passed: workspace === '@papercusp/operator-core', // agent-mcp still fails
+    });
+    expect((await attemptWorkerCrashAbsorption(out2, workspaceRerun)).absorbedToGreen).toBe(false);
   });
 });
 

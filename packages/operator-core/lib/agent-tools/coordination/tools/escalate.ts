@@ -58,7 +58,7 @@ export default defineTool({
   ],
   args: z.object({
     severity: z.enum(SEVERITY),
-    summary: z.string().min(1).max(280),
+    summary: z.string().min(1).max(2000),
     body: z.string().optional(),
     plan_slug: z.string().optional(),
     options: z

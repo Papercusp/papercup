@@ -114,7 +114,7 @@ export default defineTool({
       .optional()
       .describe('Pull the OPEN unassigned backlog from this member harness (priority order) when `tasks` is not given. Also the spawn target for fresh bees.'),
     max: z.number().int().min(1).max(64).optional().describe('Hard cap on total placements this batch (default 32 / frontier size).'),
-    brief: z.string().max(2000).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the bees are MISSING, not a restatement of the work-item.'),
+    brief: z.string().max(16000).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the bees are MISSING, not a restatement of the work-item.'),
     tier: z.string().max(40).optional().describe('Model tier for fresh spawns (quick/standard/deep/max — see your tier menu). Omit for the bee role default.'),
     inject_load_threshold: z.number().int().min(1).max(20).optional().describe('A bee whose projected load reaches this is no longer a warm-inject target (default 3).'),
     min_inject_affinity: z.number().min(0).max(100).optional().describe('Minimum affinity score to warm-inject vs fresh-spawn (default 1 ≈ one fully-fired low-tier signal).'),

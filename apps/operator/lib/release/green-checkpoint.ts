@@ -45,6 +45,14 @@ export interface CheckpointDeps {
    *  wiring is unit-testable without running real vitest; realCheckpointDeps shells it
    *  through the CheckpointExec seam. */
   isolationRun?(input: { workspace: string; file: string }): Promise<IsolationResult>;
+  /** worker-pool-crash-absorption-2026-06-25 (WI-806): re-run ONE whole workspace's
+   *  suite at REDUCED concurrency (a single fork) after the gate run crashed a vitest
+   *  worker fork (OOM/ENOMEM under fleet load) and emitted NO per-file `FAIL` lines —
+   *  so parseFailingFilesByWorkspace found zero files to re-run in isolation. The
+   *  per-file isolation path can't fire (no signature); this re-runs the affected
+   *  WORKSPACE once to decide load-crash-flake vs real break. Optional + injected so
+   *  realCheckpointDeps's wiring is unit-testable without running real vitest. */
+  workspaceRerun?(input: { workspace: string }): Promise<WorkspaceRerunResult>;
   /** Run the "green" suite in `treeDir` against `base`; resolve green=true on pass.
    *  `failingTests` is a STABLE signature of what failed (test files / workspaces),
    *  extracted from the FULL output — used to dedup the release-fixer dispatch by the
@@ -406,6 +414,151 @@ export async function attemptFlakeAbsorption(
   }
 }
 
+/**
+ * worker-pool-crash-absorption-2026-06-25 (WI-806): the substrings that mark a vitest
+ * WORKER-POOL crash — a fork dying under memory/load pressure (ENOMEM / OOM-kill /
+ * SIGKILL'd child), NOT a test assertion. Vitest reports it as an `Unhandled Error`
+ * with NO per-file `FAIL <file>` row, so parseFailingFilesByWorkspace finds zero files
+ * to re-run in isolation and the gate falls straight through to a hard RED. We detect it
+ * by these stable pool-error markers so the no-signature crash gets ABSORB-OR-RETRY'd
+ * instead of silently wedging the release pipeline (the 5×-consecutive-red incident).
+ */
+export const WORKER_POOL_CRASH_MARKERS = [
+  '[vitest-pool]',
+  'Worker forks emitted error',
+  'Worker exited unexpectedly',
+  'Worker terminated',
+] as const;
+
+/** worker-pool-crash-absorption-2026-06-25 (WI-806): does the suite output look like a
+ *  vitest worker-POOL crash (a fork OOM/terminate under load) rather than a test failure?
+ *  Pure substring match against {@link WORKER_POOL_CRASH_MARKERS}. */
+export function isWorkerPoolCrash(output: string): boolean {
+  return WORKER_POOL_CRASH_MARKERS.some((m) => output.includes(m));
+}
+
+/**
+ * worker-pool-crash-absorption-2026-06-25 (WI-806): the WORKSPACE(S) whose suite crashed,
+ * extracted from a worker-pool-crash output that carries NO per-file `FAIL` rows. A vitest
+ * worker-fork crash names its workspace in npm's error footer:
+ *   `npm error workspace @papercusp/operator-core@0.1.0`
+ *   `npm error path …/packages/operator-core`
+ * and (under the affected runner) in the `>>> <ws> :: npm run …` section header above it.
+ * We harvest the explicit `npm error workspace <name>` lines first (most precise), then
+ * fall back to the `>>>` section headers. Pure + total: no match ⇒ `[]`, never throws.
+ */
+export function parseCrashedWorkspaces(output: string): string[] {
+  const seen = new Set<string>();
+  // `npm error workspace @papercusp/operator-core@0.1.0` → strip the trailing @version.
+  for (const m of output.matchAll(/^\s*npm error workspace\s+(\S+)/gm)) {
+    seen.add(m[1].replace(/@[^@/]*$/, ''));
+  }
+  if (seen.size === 0) {
+    // Fall back to the affected-runner section headers (`>>> <ws> :: npm run <script>`).
+    for (const m of output.matchAll(/^\s*>>>\s+(\S+)\s+::\s+npm run\b/gm)) seen.add(m[1]);
+  }
+  return [...seen].sort();
+}
+
+/** worker-pool-crash-absorption-2026-06-25 (WI-806): result of re-running ONE crashed
+ *  workspace's suite at reduced concurrency. */
+export interface WorkspaceRerunResult {
+  workspace: string;
+  /** true ⇒ the workspace's suite PASSED cleanly on the reduced-concurrency re-run. */
+  passed: boolean;
+  /** true ⇒ the re-run STILL crashed the pool (another worker-pool error) — undecided,
+   *  treated as a real failure (fail-safe; never a false green). */
+  crashedAgain?: boolean;
+  /** true ⇒ the re-run failed with a real per-file/assertion failure (a genuine red). */
+  realFailure?: boolean;
+}
+
+/** worker-pool-crash-absorption-2026-06-25 (WI-806): the outcome of the whole
+ *  worker-crash absorption attempt — what runGreen needs to (maybe) flip the verdict. */
+export interface WorkerCrashAbsorptionOutcome {
+  /** true ⇒ the crash was pure load/infra; every crashed workspace re-ran GREEN. */
+  absorbedToGreen: boolean;
+  /** workspaces proven load-crash flaky (crashed under gate load, passed on the re-run) —
+   *  surfaced as flake suspects so the absorption is auditable, never silent. */
+  flakeSuspects: string[];
+  /** human-readable note for the log / broadcast. */
+  note: string;
+}
+
+/**
+ * worker-pool-crash-absorption-2026-06-25 (WI-806): orchestrate the worker-pool-crash
+ * absorb-or-retry — the SAFE fix for the gap where a vitest fork OOMs under fleet load,
+ * emits NO `FAIL <file>` lines, parseFailingFilesByWorkspace yields ZERO files, and the
+ * gate falls through to a hard RED that wedges the release pipeline (the 5×-consecutive-
+ * red incident). PURE of vitest/exec: the re-runner is injected (`workspaceRerun`).
+ *
+ * Fires ONLY when the suite output IS a worker-pool crash AND there are ZERO parseable
+ * per-file failures (the per-file isolation path already handles a crash that still
+ * named its files). Then re-runs each crashed WORKSPACE once at reduced concurrency:
+ *   - every workspace re-runs GREEN ⇒ absorb (green + flakeSuspects).
+ *   - any workspace crashes AGAIN, fails for real, or its re-run errors ⇒ stay RED.
+ * Bounded by {@link WORKER_CRASH_MAX_WORKSPACES} (a broad multi-workspace crash is a real
+ * regression, not box-weather). Wrapped so ANY unexpected throw defaults to the ORIGINAL
+ * (red) verdict — uncertainty NEVER manufactures a false green.
+ */
+export async function attemptWorkerCrashAbsorption(
+  fullOutput: string,
+  workspaceRerun: (input: { workspace: string }) => Promise<WorkspaceRerunResult>,
+  log: (s: string) => void = () => {},
+): Promise<WorkerCrashAbsorptionOutcome> {
+  const keep = (note: string): WorkerCrashAbsorptionOutcome => ({ absorbedToGreen: false, flakeSuspects: [], note });
+  try {
+    if (!isWorkerPoolCrash(fullOutput)) {
+      return keep('worker-crash: output is not a vitest worker-pool crash — not a load-crash flake');
+    }
+    // The per-file isolation absorber already handles a crash that STILL named failing
+    // files; this path is ONLY for the no-signature crash (zero parseable per-file fails).
+    if (parseFailingFilesByWorkspace(fullOutput).length > 0) {
+      return keep('worker-crash: per-file failures were parseable — handled by the isolation absorber, not the workspace re-run');
+    }
+    const workspaces = parseCrashedWorkspaces(fullOutput);
+    if (workspaces.length === 0) {
+      return keep('worker-crash: pool crash but no crashed workspace localizable — gate stays red');
+    }
+    if (workspaces.length > WORKER_CRASH_MAX_WORKSPACES) {
+      return keep(
+        `worker-crash: ${workspaces.length} crashed workspaces (> ${WORKER_CRASH_MAX_WORKSPACES}) — a broad crash is a real regression, not box-weather; gate stays red`,
+      );
+    }
+    log(
+      `worker-crash: vitest pool crash with NO per-file failures — re-running ${workspaces.length} crashed workspace(s) at reduced concurrency: ${workspaces.join(', ')}`,
+    );
+    const flakeSuspects: string[] = [];
+    for (const workspace of workspaces) {
+      let r: WorkspaceRerunResult;
+      try {
+        r = await workspaceRerun({ workspace });
+      } catch (e) {
+        // A re-run that ITSELF errored cannot prove the crash was a flake → stay red.
+        return keep(
+          `worker-crash: re-run of ${workspace} errored (${e instanceof Error ? e.message : e}) — treated as still-failing, gate stays red`,
+        );
+      }
+      if (!r.passed) {
+        const why = r.crashedAgain ? 'crashed AGAIN' : r.realFailure ? 'real failure' : 'did not pass';
+        return keep(`worker-crash: re-run of ${workspace} ${why} — real break (or persistent infra fault), gate stays red`);
+      }
+      flakeSuspects.push(`${workspace} (worker-pool crash)`);
+    }
+    const note = `worker-crash: ALL ${workspaces.length} crashed workspace(s) PASSED on a reduced-concurrency re-run — absorbed as load/infra flake(s): ${workspaces.join(', ')}`;
+    log(note);
+    return { absorbedToGreen: true, flakeSuspects, note };
+  } catch (e) {
+    return keep(`worker-crash: absorption attempt errored (${e instanceof Error ? e.message : e}) — defaulting to the original (red) verdict`);
+  }
+}
+
+/** worker-pool-crash-absorption-2026-06-25 (WI-806): the most workspaces the worker-crash
+ *  re-run will ever absorb. A crash spanning many workspaces is a real regression (or a
+ *  box-wide fault that a re-run won't fix), not the single-workspace box-weather flake this
+ *  absorbs — and re-running many full workspace suites would blow the gate's wall-clock. */
+export const WORKER_CRASH_MAX_WORKSPACES = 2;
+
 /** Host-set, test-affecting NON-`PAPERCUSP_` env vars the gate must strip (P-008).
  *  `AGENT_MODELS` (the operator's per-role model map, e.g. `{"worker":"opus"}` in
  *  .env.local) leaked into the gate and broke `@papercusp/orchestrator` invoke.test
@@ -429,6 +582,24 @@ export const HOST_ENV_STRIP = ['AGENT_MODELS'];
  * strip below: the host's identity must never define green.
  */
 export const GREEN_CHECKPOINT_FORK_HEAP_MB = 4096;
+
+/**
+ * worker-pool-crash-absorption-2026-06-25 (WI-806): the default vitest fork concurrency
+ * the gate runs at. ROOT-CAUSE prevention for the 5×-consecutive-red incident where
+ * `@papercusp/operator-core`'s suite CRASHED a worker fork (ENOMEM / OOM-kill under the
+ * shared box's live-fleet load) — `[vitest-pool]: Worker forks emitted error`, with NO
+ * per-file `FAIL` lines for the absorber to re-run.
+ *
+ * The old default was 8 forks × {@link GREEN_CHECKPOINT_FORK_HEAP_MB} (4 GiB) = ~32 GiB of
+ * nominal headroom the forks would happily bloat into; under concurrent fleet load that
+ * tipped over the box's real free memory and OOM-killed a fork. Halving the concurrency to
+ * 4 keeps the worst-case fork footprint at ~16 GiB — well within the box's free memory even
+ * with the live fleet running — at a modest wall-clock cost (the gate is hourly, not
+ * latency-critical). The gate already raised VITEST_UNIT_TIMEOUT_MS to 180s, so fewer
+ * parallel forks won't time-out the heavy `await import()` files. Configurable via
+ * VITEST_MAX_FORKS/THREADS (a pre-set value always wins).
+ */
+export const GREEN_CHECKPOINT_MAX_FORKS = 4;
 
 /**
  * Strip any inherited `--max-old-space-size` (both `=value` and space-separated
@@ -474,9 +645,11 @@ export function sanitizeForkNodeOptions(
  * - `AFFECTED_BASE=<base>` (when given) so test:affected runs exactly the candidate's delta;
  *   any host-leaked AFFECTED_BASE is dropped — the `base` arg is the ONLY source, so a
  *   base-null full run is never silently narrowed by an inherited value.
- * - `VITEST_MAX_FORKS/THREADS` default to 8 (respecting a pre-set value): the checkpoint
- *   shares the box with the live fleet; uncapped workers under that load produce timeout
- *   FLAKES that read as "not green" (a 1-of-8881 load-flake held `main` back 2026-06-06).
+ * - `VITEST_MAX_FORKS/THREADS` default to {@link GREEN_CHECKPOINT_MAX_FORKS} (respecting a
+ *   pre-set value): the checkpoint shares the box with the live fleet; uncapped/too-high
+ *   worker concurrency under that load produces timeout FLAKES (a 1-of-8881 load-flake held
+ *   `main` back 2026-06-06) AND OOM-killed worker forks (WI-806: 8 × 4 GiB bloated past the
+ *   box's free memory and crashed the pool, wedging the gate 5× in a row).
  * - `AFFECTED_RETRY_FAILED` defaults to 1 (respecting a pre-set value): re-run a failed
  *   workspace once before calling it red — a real regression fails twice, a flake doesn't.
  * - `NODE_OPTIONS` is sanitized ({@link sanitizeForkNodeOptions}): the host's
@@ -503,8 +676,11 @@ export function buildGreenCheckpointEnv(
   // to prevent (held `main` red on the candidate-base sha, 2026-06-14).
   delete env.AFFECTED_BASE;
   if (base) env.AFFECTED_BASE = base;
-  env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? '8';
-  env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? '8';
+  // WI-806: cap fork concurrency to a MEMORY-SAFE default (4, not the old 8) so the
+  // forks can't collectively bloat past the box's free memory and OOM-kill a worker
+  // under live-fleet load — the worker-pool crash that wedged the gate 5× in a row.
+  env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
+  env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
   env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
   // VITEST_UNIT_TIMEOUT_MS=180000 (respecting a pre-set value): the gate runs
   // operator-core's heaviest `await import()` unit tests (create-*, hive/guard,
@@ -799,7 +975,7 @@ export async function runGreenCheckpoint(
   }
   deps.log(`✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${candidate.slice(0, 8)} (green)`);
   const flakeNote = flakeSuspects?.length
-    ? `\n\n⚠️ Load-flake absorbed: ${flakeSuspects.join(', ')} failed under the gate's 8-fork load but PASSED in an isolated re-run. Consider quarantining if it recurs.`
+    ? `\n\n⚠️ Load-flake absorbed: ${flakeSuspects.join(', ')} failed under the gate's concurrent load (a per-file flake, or a worker-pool OOM crash) but PASSED on a reduced-concurrency re-run. Consider quarantining / investigating memory if it recurs.`
     : '';
   await deps
     .broadcast(
@@ -852,6 +1028,13 @@ export type CheckpointExec = (
  *  records that file errored → it counts as still-failing (never a false green). */
 export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
 
+/** worker-pool-crash-absorption-2026-06-25 (WI-806): hard cap for ONE crashed-workspace
+ *  re-run at single concurrency. A whole workspace suite (vs one file) needs more room
+ *  than the per-file isolation run, but must still bound a genuine hang. On timeout the
+ *  exec REJECTS → attemptWorkerCrashAbsorption treats it as still-failing (never a false
+ *  green). */
+export const WORKSPACE_RERUN_TIMEOUT_MS = 15 * 60_000;
+
 export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = runCmd): CheckpointDeps {
   const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
@@ -879,8 +1062,33 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       return { workspace, file, passed: false, errored: true };
     }
   };
+  // WI-806: re-run ONE crashed WORKSPACE's whole suite at REDUCED concurrency (a single
+  // fork) after a vitest worker-pool crash (OOM/terminate under fleet load) that emitted
+  // NO per-file `FAIL` lines. Same committed-defaults env + checkpoint tree as the gate
+  // run, but VITEST_MAX_FORKS/THREADS forced to 1 so the load contention that crashed the
+  // pool is gone. We classify the re-run: code 0 ⇒ passed (load-crash flake); a fresh
+  // worker-pool crash ⇒ crashedAgain (undecided ⇒ stay red); any other non-zero ⇒
+  // realFailure. A bounded timeout caps a genuine hang; on timeout/spawn-error this throws,
+  // and attemptWorkerCrashAbsorption treats a throwing re-run as still-failing (never a
+  // false green).
+  const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => {
+    const env = buildGreenCheckpointEnv(null);
+    env.VITEST_MAX_FORKS = '1';
+    env.VITEST_MAX_THREADS = '1';
+    const r = await exec('npm', ['run', 'test', '--workspace', workspace], {
+      cwd: cfg.checkpointRoot,
+      env,
+      allowNonZero: true,
+      timeoutMs: WORKSPACE_RERUN_TIMEOUT_MS,
+    });
+    if (r.code === 0) return { workspace, passed: true };
+    const out = r.stdout + r.stderr;
+    if (isWorkerPoolCrash(out)) return { workspace, passed: false, crashedAgain: true };
+    return { workspace, passed: false, realFailure: true };
+  };
   return {
     isolationRun,
+    workspaceRerun,
     async setupTree(ref) {
       const script = path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
       // `force` (not `auto`) for the CHECKPOINT tree: the `auto` lockfile/entry-set
@@ -967,6 +1175,19 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
         if (outcome.absorbedToGreen) {
           green = true;
           flakeSuspects = outcome.flakeSuspects;
+        } else if (isWorkerPoolCrash(fullOutput) && parseFailingFilesByWorkspace(fullOutput).length === 0) {
+          // WI-806: a vitest WORKER-POOL crash (a fork OOM/terminate under fleet load) emits
+          // NO per-file `FAIL` lines, so the per-file isolation absorber above found zero
+          // files and couldn't decide — it falls straight through to a hard RED that wedges
+          // the whole release pipeline (the 5×-consecutive-red incident). ABSORB-OR-RETRY:
+          // re-run the crashed WORKSPACE(S) once at reduced concurrency. Only a genuine
+          // PASSING re-run flips to green (surfaced as a flake suspect); a re-crash or any
+          // real failure stays red. Fail-safe — proof required, never a blanket green.
+          const crash = await attemptWorkerCrashAbsorption(fullOutput, workspaceRerun, log);
+          if (crash.absorbedToGreen) {
+            green = true;
+            flakeSuspects = crash.flakeSuspects;
+          }
         }
       }
 

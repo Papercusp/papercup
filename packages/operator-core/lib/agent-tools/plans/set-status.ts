@@ -44,7 +44,7 @@ const STATUS = z.enum([...ITEM_STATUSES] as [string, ...string[]]);
 
 const NOTE = z
   .string()
-  .max(4000)
+  .max(8000)
   .describe(
     'Optional SHORT comment appended inline to the item line. Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), not rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
   );

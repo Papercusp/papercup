@@ -41,9 +41,9 @@ export default defineTool({
   // this list, so the tool never appeared in its projected surface).
   agentRoles: [...COORD_ROLES, 'scanner'],
   args: z.object({
-    title: z.string().min(1).max(180).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
+    title: z.string().min(1).max(1000).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
     kind: z.enum(['bug', 'change', 'feature']).optional().describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.'),
-    body: z.string().max(8000).optional().describe('repro / context / the correct-state, especially for a bug'),
+    body: z.string().max(16000).optional().describe('repro / context / the correct-state, especially for a bug'),
     severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
     subTopic: z.string().min(1).max(40).optional().describe('optional sub-area topic, e.g. coord-dx, db-tooling'),
     scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),

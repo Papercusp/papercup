@@ -113,7 +113,7 @@ export default defineTool({
   // enforced); the all-roles lists + quotas formerly here were dead inputs
   // (memory-taxonomy-and-debt-followups P-004).
   args: z.object({
-    content: z.string().min(1).max(2000),
+    content: z.string().min(1).max(16000),
     kind: z.enum(KINDS),
     harness_slug: z.string().optional()
       .describe('Scope to a specific harness (project). Anyone with access to that harness will see this memory in their recall. Omit for a personal (per-user) fact.'),

@@ -27,7 +27,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
-    command: z.string().min(1).max(4000),
+    command: z.string().min(1).max(32000),
   }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readIdentity(ctx);

@@ -28,7 +28,7 @@ import { runBulk, bulkContent } from '../_bulk';
 /** The per-memory patch fields, shared by the inline single, the homogeneous
  *  `ids` default, and each heterogeneous `items[]` entry. */
 const PATCH_FIELDS = {
-  content: z.string().min(1).max(2000).optional().describe('replacement fact body (a CONTENT edit)'),
+  content: z.string().min(1).max(16000).optional().describe('replacement fact body (a CONTENT edit)'),
   kind: z
     .enum(['user', 'feedback', 'project', 'reference'])
     .optional()

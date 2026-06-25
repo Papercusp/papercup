@@ -187,6 +187,49 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(r.green).toBe(false);
     expect(r.flakeSuspects).toBeUndefined();
   });
+
+  // WI-806: a vitest WORKER-POOL crash (a fork OOM under fleet load) emits NO per-file
+  // FAIL lines, so the per-file isolation absorber finds nothing. The workspace re-run at
+  // reduced concurrency decides load-crash flake vs real break.
+  const CRASH_OUTPUT =
+    '>>> @papercusp/operator-core :: npm run test\n' +
+    'Error: [vitest-pool]: Worker forks emitted error.\n' +
+    'Caused by: Error: Worker exited unexpectedly\n' +
+    'npm error workspace @papercusp/operator-core@0.1.0\n' +
+    'npm error command sh -c vitest run --passWithNoTests\n' +
+    '1 non-quarantined task(s) failed.';
+
+  it('worker-crash: pool crash, zero per-file FAILs, workspace re-run PASSES → green + flakeSuspect, single-fork env', async () => {
+    // call 0: green command crashes the pool (no FAIL files). call 1: workspace re-run passes.
+    const { exec, calls } = makeExec([{ code: 1, stdout: CRASH_OUTPUT }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', 'base-sha');
+
+    expect(r.green).toBe(true); // absorbed: the crashed workspace passed on the re-run
+    expect(r.flakeSuspects).toEqual(['@papercusp/operator-core (worker-pool crash)']);
+    // exactly the suite + 1 workspace re-run — no SPA build (the suite started red).
+    expect(calls).toHaveLength(2);
+    const rerun = calls[1];
+    expect(rerun.cmd).toBe('npm');
+    expect(rerun.args).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);
+    expect(rerun.opts?.cwd).toBe('/cp');
+    expect(rerun.opts?.env?.VITEST_MAX_FORKS).toBe('1'); // reduced concurrency
+    expect(rerun.opts?.env?.VITEST_MAX_THREADS).toBe('1');
+    expect(rerun.opts?.env?.GREEN_CHECKPOINT).toBe('1');
+  });
+
+  it('worker-crash: re-run STILL crashes the pool → stays NOT green (never blanket-green a crash)', async () => {
+    const { exec } = makeExec([{ code: 1, stdout: CRASH_OUTPUT }, { code: 1, stdout: CRASH_OUTPUT }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    expect(r.green).toBe(false);
+    expect(r.flakeSuspects).toBeUndefined();
+  });
+
+  it('worker-crash: re-run reveals a REAL failure → stays NOT green', async () => {
+    const realFail = '>>> @papercusp/operator-core :: npm run test\n FAIL  lib/x.test.ts > c\nAssertionError';
+    const { exec } = makeExec([{ code: 1, stdout: CRASH_OUTPUT }, { code: 1, stdout: realFail }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    expect(r.green).toBe(false);
+  });
 });
 
 describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', () => {

@@ -39,7 +39,7 @@ export default defineTool({
   args: z.object({
     note: z
       .string()
-      .max(300)
+      .max(2000)
       .optional()
       .describe('Why you are idle / what you are waiting for — echoed into the wake turn.'),
     min_sleep_sec: z

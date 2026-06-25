@@ -37,6 +37,7 @@ const BORROWABLE = [
   ['libs/generic/projection-index',           'Pure utilities & infra'],
   ['libs/generic/activity-bridge',            'Pure utilities & infra'],
   ['libs/generic/plugin-loader',              'Pure utilities & infra'],
+  ['libs/generic/control-mutation',           'Pure utilities & infra'],
   ['libs/generic/embedded-pg-discovery',      'Pure utilities & infra'],
   ['libs/generic/linkable-edges',             'Pure utilities & infra'],
   ['libs/generic/plan-parser',                'Pure utilities & infra'],

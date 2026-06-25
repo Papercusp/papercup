@@ -1,17 +1,30 @@
 /**
  * useModelOverride — read/write a single agent's SESSION model override
  * (model-override-sidebar-2026-06-23), shared by the 🛡 Sentinel and 👁 Overwatch
- * tabs. Reads `hive.steering.modelOverrides[role]` (the home hive's row) and writes
+ * tabs. Reads `hive.steering.modelOverrides[role]` (the HOME hive's row) and writes
  * via `hive:set-steering` (which invalidates `hive.steering`, so the read refreshes;
  * for the Sentinel it ALSO projects the spec to ~/.papercusp/sentinel-model for the
  * dock wrapper). Writes MERGE — setting one role preserves the other's override.
+ *
+ * Like the 👑 Queen tab, this targets the workspace's HOME hive: `hive.steering`
+ * can return MULTIPLE rows, so we resolve the home slug (first kind:'hive' project,
+ * else the first steering row) via `resolveHomeHive` and BOTH read that row AND pass
+ * `hive: <home>` to the write — `hive:set-steering` defaults to hive '*' otherwise,
+ * which is not a real Hive and the write is rejected (verified live 2026-06-25).
  */
 import { useCallback, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { resolveHomeHive } from './QueenTab';
 
 interface SteeringRow {
   slug: string;
   modelOverrides?: Record<string, string> | null;
+}
+
+interface LiteProject {
+  slug: string;
+  parent_slug?: string | null;
+  harness_kind?: string | null;
 }
 
 async function runSetSteering(args: Record<string, unknown>): Promise<void> {
@@ -28,8 +41,8 @@ async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   };
   if (!res.ok || !body.ok) throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
   const text = body.result?.content?.[0]?.text;
-  const payload = text ? (JSON.parse(text) as { ok?: boolean; message?: string }) : { ok: true };
-  if (payload.ok === false) throw new Error(payload.message ?? 'hive:set-steering refused');
+  const payload = text ? (JSON.parse(text) as { ok?: boolean; error?: string; message?: string }) : { ok: true };
+  if (payload.ok === false) throw new Error(payload.message ?? payload.error ?? 'hive:set-steering refused');
 }
 
 export interface ModelOverrideState {
@@ -42,8 +55,16 @@ export interface ModelOverrideState {
 }
 
 export function useModelOverride(role: string, enabled = true): ModelOverrideState {
-  const q = useSyncQuery<SteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000, enabled });
-  const current = q.data?.[0]?.modelOverrides ?? null;
+  const steeringQ = useSyncQuery<SteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000, enabled });
+  const projectsQ = useSyncQuery<LiteProject>({
+    queryName: 'harnessProjects.lite',
+    args: { includeHiveHomes: true },
+    staleTime: 60_000,
+    enabled,
+  });
+  const rows = steeringQ.data ?? [];
+  const home = resolveHomeHive(projectsQ.data ?? [], rows);
+  const current = (rows.find((r) => r.slug === home) ?? rows[0])?.modelOverrides ?? null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,11 +77,12 @@ export function useModelOverride(role: string, enabled = true): ModelOverrideSta
       if (spec && spec.trim()) merged[role] = spec.trim();
       else delete merged[role];
       const next = Object.keys(merged).length > 0 ? merged : null;
-      void runSetSteering({ modelOverrides: next })
+      // hive: home is REQUIRED — set-steering defaults to hive '*' (not a real Hive).
+      void runSetSteering({ hive: home, modelOverrides: next })
         .catch((e) => setError(e instanceof Error ? e.message : String(e)))
         .finally(() => setBusy(false));
     },
-    [current, role],
+    [current, role, home],
   );
 
   return { override: current?.[role] ?? null, busy, error, setOverride };

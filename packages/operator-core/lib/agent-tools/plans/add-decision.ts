@@ -41,7 +41,7 @@ const AFFECTS = z
 
 const itemSpec = z.object({
   slug: z.string().min(1),
-  title: z.string().min(1).max(200),
+  title: z.string().min(1).max(1000),
   body: z.string().min(1).max(5000),
   refs: REFS.optional(),
   affects: AFFECTS.optional(),
@@ -53,7 +53,7 @@ const argsSchema = z
   .object({
     slug: z.string().min(1).optional(),
     harness: harnessArg,
-    title: z.string().min(1).max(200).optional(),
+    title: z.string().min(1).max(1000).optional(),
     body: z.string().min(1).max(5000).optional(),
     refs: REFS.optional(),
     affects: AFFECTS.optional(),

@@ -52,7 +52,7 @@ export default defineTool({
       ),
     feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
     chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
-    brief: z.string().max(2000).optional()
+    brief: z.string().max(16000).optional()
       .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060.'),
     tier: z.string().max(40).optional()
       .describe('Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user\'s per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role\'s standing default. An unknown name fails loud listing the valid menu.'),
