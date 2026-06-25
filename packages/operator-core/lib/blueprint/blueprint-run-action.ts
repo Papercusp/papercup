@@ -76,11 +76,14 @@ export function setOrphanRoutineSeams(seams: {
  * Deliberately conservative — it returns false (NOT gone) when:
  *   - the slug is a reserved `@`-prefixed harness-LESS host (e.g. the
  *     `@singleton` learning-loop routines, which legitimately have no harness), or
+ *   - the slug is the workspace sentinel itself (workspace-scoped hive/learning
+ *     routines use this harness-less install host), or
  *   - the registry reads back empty (a transient unreadable registry must never
  *     be mistaken for "every harness was deleted" → mass-disarm).
  */
 async function installIsGone(workspaceId: string, installSlug: string): Promise<boolean> {
   if (installSlug.startsWith('@')) return false; // reserved harness-less host
+  if (installSlug === workspaceId) return false; // reserved workspace-scoped harness-less host
   try {
     const projects = await readHarnessRegistryFor(workspaceId);
     if (projects.length === 0) return false; // registry empty/unreadable — don't risk a false disarm

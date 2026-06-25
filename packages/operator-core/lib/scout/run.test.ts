@@ -48,7 +48,7 @@ describe('parseScoutCycleConfig', () => {
     expect(parseScoutCycleConfig({ cadence: 'bad', budget: 7, cycleTimeoutMs: 0 } as never)).toEqual({}); // bad shapes → dropped
   });
 
-  it('unwraps blueprint-run nested payloads and clamps stale short cycle timeouts to the safe default', () => {
+  it('unwraps blueprint-run nested payloads and honors explicit cycle timeouts', () => {
     expect(parseScoutCycleConfig({
       blueprintId: 'scout',
       cycleTimeoutMs: 120_000,
@@ -60,7 +60,7 @@ describe('parseScoutCycleConfig', () => {
     } as never)).toEqual({
       cadence: { minIntervalSec: 3600 },
       budget: { maxCostUsd: 3 },
-      cycleTimeoutMs: sched.DEFAULT_SCOUT_CYCLE_TIMEOUT_MS,
+      cycleTimeoutMs: 120_000,
     });
   });
 });

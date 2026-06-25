@@ -122,7 +122,7 @@ export function parseScoutCycleConfig(payload: Record<string, unknown> | null): 
   const budget = isObj(config.budget) ? (config.budget as ScoutBudget) : undefined;
   const cycleTimeoutMs =
     typeof config.cycleTimeoutMs === 'number' && Number.isFinite(config.cycleTimeoutMs) && config.cycleTimeoutMs > 0
-      ? Math.max(config.cycleTimeoutMs, DEFAULT_SCOUT_CYCLE_TIMEOUT_MS)
+      ? config.cycleTimeoutMs
       : undefined;
   return {
     ...(cadence ? { cadence } : {}),

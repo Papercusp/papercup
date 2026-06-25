@@ -7,9 +7,15 @@ import { getSystemAction, listSystemActions, type SystemActionCtx, type SystemAc
 const gateState = vi.hoisted(() => ({
   verdict: { allow: true, consecutiveErrors: 0 } as Record<string, unknown>,
 }));
+const registryState = vi.hoisted(() => ({
+  projects: [] as Array<{ slug: string }>,
+}));
 vi.mock('../autoloop', () => ({
   checkFireGate: vi.fn(async () => gateState.verdict),
   recordFire: vi.fn(async () => {}),
+}));
+vi.mock('../device-harnesses', () => ({
+  readHarnessRegistryFor: vi.fn(async () => registryState.projects),
 }));
 
 import {
@@ -47,6 +53,7 @@ afterEach(() => {
   setNegativeSpaceScanDeps(null);
   setOrphanRoutineSeams({ installGone: null, disarm: null });
   gateState.verdict = { allow: true, consecutiveErrors: 0 };
+  registryState.projects = [];
 });
 
 describe('system:blueprint-run handler (P-021 / D-018)', () => {
@@ -215,6 +222,19 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
       expect(disarmCalled).toBe(false);
       expect(fired).toHaveLength(1);
       expect(fired[0].role).toBe('director');
+    });
+
+    it('does not disarm the workspace sentinel install host', async () => {
+      const result = await handleBlueprintRun(
+        ctx({
+          installSlug: 'papercusp-workspace',
+          workspaceId: 'papercusp-workspace',
+          payloadTemplate: { blueprintId: 'scan', kickoff: 'workspace scan' },
+        }),
+      ) as SystemActionResult | undefined;
+
+      expect(result?.durableSpawns).toHaveLength(1);
+      expect(result!.durableSpawns![0].label).toBe('papercusp-workspace/scanner');
     });
   });
 });
