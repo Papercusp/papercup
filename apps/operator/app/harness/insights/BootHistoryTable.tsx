@@ -39,6 +39,7 @@ export type BootHistoryKind =
   | 'rekey_grant_skipped'
   | 'rekey_boundary_skipped'
   | 'epoch_gate_built'
+  | 'epoch_gate_seen'
   | 'epoch_defer'
   | 'epoch_decrypt_fail'
   | 'epoch_applied';
@@ -77,6 +78,7 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   rekey_grant_skipped: 'var(--warn)',
   rekey_boundary_skipped: 'var(--warn)',
   epoch_gate_built: 'var(--accent)',
+  epoch_gate_seen: 'var(--accent)',
   epoch_defer: 'var(--warn)',
   epoch_decrypt_fail: 'var(--bad)',
   epoch_applied: 'var(--good)',
@@ -102,6 +104,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   rekey_grant_skipped: '⤼',
   rekey_boundary_skipped: '⤳',
   epoch_gate_built: '🔐',
+  epoch_gate_seen: '👁',
   epoch_defer: '⏸',
   epoch_decrypt_fail: '🔓',
   epoch_applied: '✓',

@@ -145,6 +145,40 @@ describe('hive-epoch-op-gate', () => {
     expect(deferTrace).toHaveBeenCalledWith('epoch_defer', expect.stringContaining('no-key-yet'));
   });
 
+  // WI-808 entry trace: fires for ANY encrypted-looking op so a rig can tell
+  // "reached the gate" from "dropped upstream of the gate". The epoch=NULL +
+  // rekeyVal=true case is the "wire stamp lost on receive" smoking gun.
+  it('onTrace fires epoch_gate_seen for an encrypted-looking op (incl. epoch==null ciphertext = stamp-lost)', async () => {
+    const crypto = fakeCrypto();
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 4 });
+    const enc = await cap.encryptOp(localOp({ hbKey: 'F-seen', value: { a: 1 } }));
+
+    // Normal encrypted op (epoch set) → seen with epoch=4.
+    const t1 = vi.fn();
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: t1 })(
+      async () => true,
+    )(envFromEnc(enc!, { hbKey: 'F-seen' }));
+    expect(t1).toHaveBeenCalledWith('epoch_gate_seen', expect.stringContaining('epoch=4'));
+
+    // SMOKING GUN: ciphertext value but epoch STRIPPED (the wire-drop bug) → still
+    // seen (reached the gate) with epoch=NULL, then passes through as plaintext.
+    const t2 = vi.fn();
+    const passed = vi.fn(async () => true);
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: t2 })(
+      passed,
+    )({ type: 'put', table: 'harness_features_consolidated', hbKey: 'F-x', value: enc!.value /* {__rekey} */ } as OpEnvelope);
+    expect(t2).toHaveBeenCalledWith('epoch_gate_seen', expect.stringContaining('epoch=NULL'));
+    expect(t2).toHaveBeenCalledWith('epoch_gate_seen', expect.stringContaining('rekeyVal=true'));
+    expect(passed).toHaveBeenCalledTimes(1); // passed through (the bug: ciphertext → plaintext path)
+
+    // A plaintext control op (no epoch, plain value) → NOT seen (no noise).
+    const t3 = vi.fn();
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: t3 })(
+      async () => true,
+    )({ type: 'put', table: 'hive_members', hbKey: 'm1', value: { x: 1 } } as OpEnvelope);
+    expect(t3).not.toHaveBeenCalled();
+  });
+
   it('a throw inside onTrace never alters the gate verdict (observability is best-effort)', async () => {
     const crypto = fakeCrypto();
     const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 11 });

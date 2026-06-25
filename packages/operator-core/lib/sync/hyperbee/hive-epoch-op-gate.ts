@@ -140,6 +140,19 @@ export function buildEpochDecryptGate(
   };
   return (inner) =>
     async (op: OpEnvelope): Promise<boolean> => {
+      // WI-808 DECISIVE ENTRY TRACE: fire for ANY op that looks encrypted — epoch
+      // stamped OR value is a `{__rekey}` envelope. This resolves the ambiguity the
+      // verdict-only traces left: if a content op REACHES the gate this fires (and the
+      // detail shows whether `epoch` survived the wire); if it NEVER fires, the content
+      // op is dropped UPSTREAM of the gate (merge/admission/routing), not here. A
+      // ciphertext value with epoch==null is the "stamp lost on receive" smoking gun.
+      const looksEncrypted = op.epoch != null || isRekeyValue(op.value);
+      if (looksEncrypted) {
+        trace(
+          'epoch_gate_seen',
+          `${op.table ?? '?'}/${(op.hbKey ?? '?').slice(0, 24)} epoch=${op.epoch ?? 'NULL'} rekeyVal=${isRekeyValue(op.value)} w${(op.writerPubkey ?? '?').slice(0, 8)}`,
+        );
+      }
       if (op.epoch == null) return inner(op); // plaintext / control-plane
       const ct = decodeCiphertext(op.value);
       if (!ct) return inner(op); // epoch-stamped but not our wrapper — permissive passthrough

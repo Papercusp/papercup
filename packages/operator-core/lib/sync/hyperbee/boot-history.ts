@@ -89,6 +89,11 @@ export type BootHistoryKind =
   //                             hiveId is the LOCAL home slug, not a federated field) → DROP.
   //   - 'epoch_applied'       — an encrypted op decrypted + applied (the success path).
   | 'epoch_gate_built'
+  // WI-808 decisive entry trace: an encrypted-looking op (epoch stamped OR `{__rekey}`
+  // value) REACHED the decrypt-gate. Distinguishes "content dropped UPSTREAM of the
+  // gate" (this never fires) from "reached the gate but passed through" (fires with
+  // epoch=NULL = the wire-stamp-lost case). The verdict kinds below follow it.
+  | 'epoch_gate_seen'
   | 'epoch_defer'
   | 'epoch_decrypt_fail'
   | 'epoch_applied';
