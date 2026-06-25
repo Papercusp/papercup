@@ -2631,6 +2631,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: 'inference-gateway only proxies /v1/*' }, gateway: true });
       return;
     }
+    // Codex CLI probes `/v1/models` before its first turn. The Codex response is
+    // synthesized locally in proxyOpenAi, so it must not wait behind the shared
+    // LLM admission queue; an Anthropic storm can otherwise starve metadata and
+    // make healthy Codex agents fail before their first token.
+    if (req.method === 'GET' && url.startsWith('/v1/models') && providerForGatewayRequest(url, req.headers, providerAdapters).id === 'codex') {
+      void proxyOpenAi(req, res, url).catch((e) => {
+        codexUpstreamErrors++;
+        log('error', `codex models handler crashed: ${(e as Error).message}`);
+        if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway Codex models error' }, gateway: true });
+        else res.destroy();
+      });
+      return;
+    }
     const priLabel = (req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined;
     const pri = priorityFromLabel(priLabel);
     // Tier the request from its `x-papercusp-priority` role (only when the tier layer is on — `tierMap`
