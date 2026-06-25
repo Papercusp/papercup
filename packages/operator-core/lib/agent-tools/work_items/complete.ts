@@ -48,6 +48,15 @@ const itemSpec = z.object({
   state: z.string().min(1).max(40).optional(),
   /** The structured completion record (D-004). `workItem` defaults to this item's `id`. */
   completion: completionSpec,
+  /**
+   * Optional kind-specific STRUCTURED OUTPUT the completion produced (domain-free).
+   * Carried verbatim onto the completion result + the completion reaction event, so a
+   * domain reaction rule can read the work's output WITHOUT a re-fetch. Example: an
+   * analyst bee completing a `bet-analysis` item attaches its `Signal` here, and the
+   * `oddsmith:bet-signal` reaction (decision-ledger/bet-signal-rule.ts) emits a
+   * decision-ledger disposition from it. Stays out of the fixed `completion` record.
+   */
+  outputPayload: z.unknown().optional(),
 });
 
 type CompleteItem = z.infer<typeof itemSpec>;
@@ -82,7 +91,15 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
   // Reflect-and-capture STEP at the completion boundary (self-learning-central P-001/B).
   const reflect = renderReflectStep({ harnessActive: Boolean(workItem?.harness) });
 
-  return { ok: true, id: it.id, workItem, completion, reflect, ...(stateError ? { stateError } : {}) };
+  return {
+    ok: true,
+    id: it.id,
+    workItem,
+    completion,
+    reflect,
+    ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
+    ...(stateError ? { stateError } : {}),
+  };
 }
 
 export default defineTool({

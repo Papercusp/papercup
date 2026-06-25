@@ -13,6 +13,10 @@
 import { registerReactionRule } from './registry';
 import { formatHandoff, type HandoffArgs } from './format-handoff';
 import { registerCacheTagEcaRule } from './cache-eca-rule';
+// oddsmith-domain reaction: a completed bet-analysis item → one decision-ledger
+// disposition (the signals/recent-auto-decisions feed). Self-registers on import.
+// (Cleaner long-term home: an oddsmith PluginReactionRule — see on-papercusp plan P3.)
+import '../decision-ledger/bet-signal-rule';
 
 /**
  * D-008 — the motivating rule: defer → render on the agent's pane.

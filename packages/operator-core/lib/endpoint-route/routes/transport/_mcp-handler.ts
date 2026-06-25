@@ -196,7 +196,9 @@ async function maybeRunWithDeltaProxy(input: {
       session.fields,
       viewKey,
       async (requestedDelta) => {
-        last = await input.runRaw(requestedDelta, true);
+        // DeltaToolClient stores the opaque server cursor only; the tool protocol
+        // expects the request mode plus cursor on the wire.
+        last = await input.runRaw(requestedDelta ? `not_modified~${requestedDelta}` : undefined, true);
         return adaptDeltaResponse(last);
       },
     );

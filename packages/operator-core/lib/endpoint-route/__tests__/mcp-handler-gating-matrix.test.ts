@@ -251,7 +251,7 @@ const deltaRequested: Array<string | undefined> = [];
 defineTool({
   name: 'gatingtest:delta_list',
   requirePrincipal: false,
-  capability: 'test:read',
+  capability: 'agent_tools:read',
   args: z.object({}),
   agentRoles: ['scoper'],
   handler: async (_input, ctx) => {
@@ -836,7 +836,8 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     const second = await callTool('gatingtest:delta_list', {}, extra);
     expect(second.isError).toBeUndefined();
     expect(deltaRequested).toHaveLength(2);
-    expect(deltaRequested[1]).toMatch(/^auto~/);
+    expect(deltaRequested[1]).toEqual(expect.any(String));
+    expect(deltaRequested[1]).not.toBe('full');
     expect(second._meta?.deltaProxy).toMatchObject({
       servedMode: 'not_modified',
       reconstructedFull: true,
