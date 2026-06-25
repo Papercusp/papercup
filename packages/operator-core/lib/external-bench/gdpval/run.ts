@@ -92,7 +92,7 @@ export async function runGdpval(
   const resolverDeps = makeLiveResolverDeps(pythonBin);
   tasks = await resolveGdpvalReferencesLogged(tasks, resolverDeps, log);
 
-  const llm = makeLiveGaiaLlm({ ...(opts.model ? { model: opts.model } : {}), accountId: opts.account, priority: 'interactive' });
+  const llm = makeLiveGaiaLlm({ ...(opts.model ? { model: opts.model } : {}), accountId: opts.account, priority: 'benchmark' });
   const officeExtract = resolverDeps.officeExtract;
 
   const predictions: (GdpvalPrediction | undefined)[] = new Array(tasks.length);
@@ -136,7 +136,7 @@ export async function runGdpval(
   }
   await Promise.all(Array.from({ length: Math.min(opts.concurrency ?? 3, Math.max(1, tasks.length)) }, () => worker()));
 
-  const judge = makeLiveGdpvalJudge({ ...(opts.model ? { model: opts.model } : {}), accountId: opts.account, priority: 'interactive' });
+  const judge = makeLiveGdpvalJudge({ ...(opts.model ? { model: opts.model } : {}), accountId: opts.account, priority: 'benchmark' });
   const preds = predictions.filter((p): p is GdpvalPrediction => p !== undefined);
   log(`[gdpval] judging ${preds.length} deliverables (pairwise, dual-order)...`);
   const report = await gradeGdpval(preds, { judge });

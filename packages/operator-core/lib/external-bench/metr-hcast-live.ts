@@ -443,6 +443,8 @@ export function hiveDriveArm(deps: ArmDriverDeps): MetrHcastRunnerOps['driveArm'
 
 /** The gateway header that pins a request to a specific pool account (mirrors inference-gateway ACCOUNT_HEADER). */
 export const GATEWAY_ACCOUNT_HEADER = 'x-papercusp-account';
+/** The gateway header that selects the admission lane (mirrors inference-gateway PRIORITY_HEADER). */
+export const PRIORITY_HEADER = 'x-papercusp-priority';
 
 /**
  * THE LOAD-BEARING gateway requirement (insight `max-oauth-first-system-block-must-be-claude-code-identity`):

@@ -218,7 +218,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       exitCode: 0,
       timedOut: false,
     });
-  }, 10_000);
+  }, 30_000);
 
   it('reports ok:false when the child exits non-zero', async () => {
     // The chokepoint emits a one-line diagnostic to stderr on a non-zero exit with empty

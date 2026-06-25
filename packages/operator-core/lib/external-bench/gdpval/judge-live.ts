@@ -52,11 +52,11 @@ export function makeLiveGdpvalJudge(cfg: LiveGdpvalJudgeConfig = {}): JudgeFn {
       apiKey,
       ...(baseURL ? { baseURL } : {}),
       maxRetries: cfg.maxRetries ?? 12,
-      ...(cfg.accountId || cfg.priority
+      ...(cfg.accountId || cfg.priority || throughGateway
         ? {
             defaultHeaders: {
               ...(cfg.accountId ? { [ACCOUNT_HEADER]: cfg.accountId } : {}),
-              ...(cfg.priority ? { [PRIORITY_HEADER]: cfg.priority } : {}),
+              [PRIORITY_HEADER]: cfg.priority ?? 'benchmark',
             },
           }
         : {}),

@@ -313,14 +313,18 @@ test('resolvePriorityTiers — flag OFF → null (gateway runs the flat queue)',
   assert.equal(await resolvePriorityTiers(24, { flagOverride: false }), null);
 });
 
-test('resolvePriorityTiers — flag ON → default map + reserve = max(1, ceil(slots*0.15)), tier>1 capped to slots-reserve', async () => {
+test('resolvePriorityTiers — flag ON → restoration lanes stay wide; benchmark/gym gets a bounded frame', async () => {
   const r = await resolvePriorityTiers(24, { flagOverride: true, env: {} });
   assert.ok(r, 'config returned when ON');
   assert.equal(r!.config.tier1Reserve, 4, 'ceil(24*0.15)=4');
   assert.equal(r!.config.caps![1], 24, 'tier 1 may use the whole pool');
-  assert.equal(r!.config.caps![3], 20, 'tier>1 capped to slots - reserve');
+  assert.equal(r!.config.caps![3], 20, 'implementation bees may use the shared pool');
+  assert.equal(r!.config.caps![4], 10, 'benchmark/gym is bounded below implementation capacity');
+  assert.equal(r!.config.caps![5], 7, 'unlabeled/default traffic is bounded below benchmark/gym');
   assert.equal(r!.map.queen, 1);
   assert.equal(r!.map.bee, 3);
+  assert.equal(r!.map.gym, 4);
+  assert.equal(r!.map.benchmark, 4);
   assert.equal(r!.map.su, 2);
 });
 
@@ -330,11 +334,11 @@ test('resolvePriorityTiers — GATEWAY_PRIORITY_MAP + GATEWAY_T1_RESERVE_FRAC en
     env: { GATEWAY_PRIORITY_MAP: '{"bee":4,"newrole":2}', GATEWAY_T1_RESERVE_FRAC: '0.25' },
   });
   assert.equal(r!.config.tier1Reserve, 5, 'ceil(20*0.25)=5');
-  // bee remapped to tier 4; newrole added at 2 → tiers now {1,2,3,4} still (3 still from scout? no — bee left 3)
+  // bee remapped to tier 4; newrole added at 2. The default/gym tiers remain present.
   assert.equal(r!.map.bee, 4, 'bee override applied');
   assert.equal(r!.map.newrole, 2, 'new role added');
-  // the shared (tier>1) cap is slots - reserve = 15
-  assert.equal(r!.config.caps![4], 15);
+  assert.equal(r!.config.caps![2], 15, 'tier 2 may use the shared pool');
+  assert.equal(r!.config.caps![4], 8, 'tier 4 remains a bounded benchmark/gym-style frame');
 });
 
 test('resolvePriorityTiers — reserve floored at 1 for a tiny pool / zero frac', async () => {

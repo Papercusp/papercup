@@ -149,11 +149,11 @@ export function makeLiveGaiaLlm(cfg: LiveGaiaLlmConfig = {}): LlmFn {
       // High default: ride out gateway/account 429 bursts under fleet contention (honors Retry-After) so a
       // long unattended run grinds through capacity windows instead of failing tasks. Tune via cfg.maxRetries.
       maxRetries: cfg.maxRetries ?? 12,
-      ...(cfg.accountId || cfg.priority
+      ...(cfg.accountId || cfg.priority || throughGateway
         ? {
             defaultHeaders: {
               ...(cfg.accountId ? { [ACCOUNT_HEADER]: cfg.accountId } : {}),
-              ...(cfg.priority ? { [PRIORITY_HEADER]: cfg.priority } : {}),
+              [PRIORITY_HEADER]: cfg.priority ?? 'benchmark',
             },
           }
         : {}),

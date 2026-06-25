@@ -58,6 +58,23 @@ describe('runnerScriptPath', () => {
 });
 
 describe('makeCompetitorDriver — runner protocol → canonical HiveBacklogResult', () => {
+  it('routes competitor LLM egress through the bounded benchmark priority lane', async () => {
+    let capturedInput: Record<string, unknown> | undefined;
+    let capturedEnv: Record<string, string> | undefined;
+    const exec: ExecFn = async (_bin, _args, stdin, opts) => {
+      capturedInput = JSON.parse(stdin) as Record<string, unknown>;
+      capturedEnv = opts.env;
+      return okExec()(_bin, _args, stdin, opts);
+    };
+    const driver = makeCompetitorDriver({
+      competitorId: 'langgraph', pythonBin: 'py', runnerScript: 's.py', model: 'anthropic/x',
+      clone, extractDiff, exec,
+    });
+    await driver.run(req('langgraph', ['a']));
+    expect(capturedInput?.priority).toBe('benchmark');
+    expect(capturedEnv?.ANTHROPIC_CUSTOM_HEADERS).toBe('x-papercusp-priority: benchmark');
+  });
+
   it('maps a successful run to ArmAttempts + git diff + tagged MAST coordEvents', async () => {
     const driver = makeCompetitorDriver({
       competitorId: 'langgraph', pythonBin: 'py', runnerScript: 's.py', model: 'anthropic/x',

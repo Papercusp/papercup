@@ -23,6 +23,7 @@ import { CORE_COMPETITOR_ARM_IDS, getCompetitor, type CompetitorArmId } from './
 import type { FleetTaskResult, HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
 import type { ArmAttempt, BenchTask, CloneTaskRepo, ExtractDiff, GenerationStopReason, TaskCheckout } from './types';
 import { gatewayPort, GATEWAY_BASE_URL_ENV, GATEWAY_SDK_URL_ENV } from '../inference-gateway/spawn-env';
+import { PRIORITY_HEADER } from '../inference-gateway/gateway';
 
 /** Must match `_common.py` RESULT_SENTINEL. */
 export const RESULT_SENTINEL = '@@COMPETITOR_RESULT@@';
@@ -83,6 +84,8 @@ export interface CompetitorDriverConfig {
   perTaskTimeoutMs?: number;
   /** backlog drain concurrency (default 1). */
   concurrency?: number;
+  /** Gateway admission label. Defaults to the bounded benchmark/gym lane. */
+  priority?: string;
   clone: CloneTaskRepo;
   extractDiff: ExtractDiff;
   exec?: ExecFn;
@@ -173,6 +176,7 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
   const apiKeyEnv = cfg.apiKeyEnv ?? 'ANTHROPIC_API_KEY';
   const thinkingBudgetTokens = cfg.thinkingBudgetTokens ?? DEFAULT_THINKING_BUDGET_TOKENS;
   const maxTokens = cfg.maxTokens ?? thinkingBudgetTokens + 16384;
+  const priority = cfg.priority ?? 'benchmark';
   // Gateway routing env (belt + braces with the input JSON): litellm reads ANTHROPIC_API_BASE; the anthropic
   // SDK reads ANTHROPIC_BASE_URL; the gateway strips + reinjects real creds, so the key need only be SET.
   const gatewayEnv: Record<string, string> = {
@@ -180,6 +184,7 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
     ANTHROPIC_API_BASE: baseUrl,
     [GATEWAY_SDK_URL_ENV]: baseUrl,
     ANTHROPIC_API_KEY: process.env[apiKeyEnv] ?? 'sk-gateway-routed',
+    ANTHROPIC_CUSTOM_HEADERS: `${PRIORITY_HEADER}: ${priority}`,
   };
 
   /** Stamp every within-task event with its backlog task id (MAST attribution). */
@@ -219,6 +224,7 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
               model: cfg.model,
               baseUrl,
               apiKeyEnv,
+              priority,
               thinkingBudgetTokens,
               maxTokens,
               maxIterations: cfg.maxIterations ?? 40,
