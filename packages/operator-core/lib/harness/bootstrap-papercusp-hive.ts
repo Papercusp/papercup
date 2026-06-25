@@ -169,6 +169,14 @@ function countSubmodules(repoPath: string): Promise<number> {
 /** Matches git's per-submodule completion line: `Submodule path '…': checked out …`. */
 const SUBMODULE_DONE_RE = /Submodule path .*: checked out/;
 
+/**
+ * Matches git's failure-shaped stderr so a non-zero exit can name the cause:
+ * `fatal: …`, `error: …`, `Failed to clone '…'`, `remote: Repository not found`,
+ * `Authentication failed`, `Could not read from remote`, `Permission denied`.
+ */
+const SUBMODULE_FAIL_RE =
+  /^(fatal|error):|Failed to clone|Repository not found|Authentication failed|Could not read|Permission denied|remote: /i;
+
 /** Best-effort `git submodule update --init --recursive --progress` (the 27
  *  submodules are the bulk of the ~5GB). Streams completion to `onProgress` and
  *  fires `onDone(ok)` once. Fired (not awaited) in prod; the hive is created
@@ -197,11 +205,19 @@ function defaultInitSubmodules(
     const kill = setTimeout(() => { try { child.kill('SIGTERM'); } catch { /* */ } }, 2 * 60 * 60 * 1000);
     kill.unref?.();
     let done = 0;
+    // Keep a bounded tail of failure-shaped stderr so a non-zero exit can name
+    // WHICH submodule failed and why (a bare "exited 128" cost a full live-debug
+    // round to trace a stale .gitmodules URL → 404). See agent-insights/
+    // setup-wizard-submodule-url-mismatch.
+    const failTail: string[] = [];
     child.stderr?.on('data', (b: Buffer) => {
       for (const line of b.toString().split(/[\r\n]+/)) {
         if (SUBMODULE_DONE_RE.test(line)) {
           done += 1;
           opts.onProgress?.(done, total);
+        } else if (SUBMODULE_FAIL_RE.test(line)) {
+          failTail.push(line.trim());
+          if (failTail.length > 12) failTail.shift();
         }
       }
     });
@@ -213,7 +229,12 @@ function defaultInitSubmodules(
     child.on('close', (code) => {
       clearTimeout(kill);
       if (code === 0) console.log('[papercusp-hive] submodules initialised');
-      else console.warn(`[papercusp-hive] submodule init exited ${code} (non-fatal)`);
+      else {
+        const detail = failTail.length ? ` — ${failTail.join(' | ')}` : '';
+        console.warn(
+          `[papercusp-hive] submodule init exited ${code} (${done}/${total} done, non-fatal)${detail}`,
+        );
+      }
       opts.onDone?.(code === 0);
     });
   })();

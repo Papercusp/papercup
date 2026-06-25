@@ -179,6 +179,31 @@ describe('boot-all — substrate orchestrator', () => {
     expect(result.results.map((r) => r.harnessSlug).sort()).toEqual(['h1', 'h2']);
   });
 
+  it('WI-779: bounds substrate-boot concurrency so a joiner with many members does not time out ALL of them', async () => {
+    let active = 0;
+    let peak = 0;
+    const slugs = Array.from({ length: 12 }, (_, i) => `conc-h${i}`);
+    const result = await bootAllHarnessesForActiveWorkspace({
+      workspaceIds: ['ws-conc'],
+      discoverHarnessSlugs: async () => slugs,
+      bootConcurrency: 3,
+      skipSendSideWiring: true,
+      resolveSwarmBinding: async () => null,
+      bootHarness: async ({ workspaceId, harnessSlug }) => {
+        active++;
+        peak = Math.max(peak, active);
+        // Hold the slot briefly so genuinely-overlapping boots are observable.
+        await new Promise((r) => setTimeout(r, 10));
+        active--;
+        return fakeHandle(workspaceId, harnessSlug);
+      },
+    });
+    expect(result.attempted).toBe(12);
+    expect(result.booted).toBe(12); // ALL boot — the unbounded Promise.all timed every one out
+    expect(peak).toBeLessThanOrEqual(3); // never more than bootConcurrency in flight
+    expect(peak).toBeGreaterThan(1); // ...but it IS concurrent, not serialized
+  });
+
   it('P-078: the DEFAULT discovery reads the PG registry and boots only entries with a LIVE project path', async () => {
     const liveDir = mkdtempSync(join(tmpdir(), 'boot-all-live-'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

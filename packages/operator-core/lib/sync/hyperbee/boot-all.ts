@@ -44,6 +44,7 @@ import type { SwarmBinding } from './derive-swarm-topic';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
 import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
+import { mapWithConcurrency } from '../../gym/concurrency';
 import type { BootedHarnessFacts } from './substrate-eviction-policy';
 
 const handles: Map<string, BootedHarnessHandle> = new Map();
@@ -266,6 +267,17 @@ export interface BootAllOpts {
   workspaceIds?: string[];
   /** Per-harness boot timeout. Default 30s. */
   perHarnessTimeoutMs?: number;
+  /**
+   * Max harnesses whose substrate boot runs CONCURRENTLY. Default 4
+   * (env `PAPERCUSP_SUBSTRATE_BOOT_CONCURRENCY` overrides). A joiner with
+   * many remote-hive members otherwise booted ALL substrates at once via an
+   * unbounded `Promise.all`, saturating a shared boot resource (hyperswarm /
+   * DHT join) so EVERY substrate — local ones included — exceeded the 30s
+   * `perHarnessTimeoutMs` and the node booted ZERO (witnessed live on the
+   * fed-rig 2026-06-25: 11 concurrent → all timed out; 2 → booted in 5.5s).
+   * Bounding concurrency lets them boot in batches. WI-779.
+   */
+  bootConcurrency?: number;
   /**
    * Override per-workspace harness discovery (tests inject; unit tests must
    * not touch PG). Default: the PG registry via `loadHarnessRegistry`.
@@ -492,7 +504,11 @@ export async function bootAllHarnessesForActiveWorkspace(
 ): Promise<BootAllResult> {
   const workspaceIds = opts.workspaceIds ?? (await readRegistryWorkspaceIds());
   const discover = opts.discoverHarnessSlugs ?? harnessSlugsFromPgRegistry;
-  const tasks: Array<Promise<BootSingleResult>> = [];
+  // Collect (workspace, slug) pairs FIRST (don't start the boots), then run them
+  // through a BOUNDED-concurrency mapper. An unbounded `Promise.all` over every
+  // harness saturated a shared boot resource on joiners with many members and
+  // timed out ALL substrates (WI-779) — see `bootConcurrency`.
+  const pairs: Array<{ wsId: string; slug: string }> = [];
   for (const wsId of workspaceIds) {
     let slugs: string[];
     try {
@@ -507,18 +523,20 @@ export async function bootAllHarnessesForActiveWorkspace(
       );
       continue;
     }
-    for (const slug of slugs) {
-      tasks.push(
-        bootSingleHarness(wsId, slug, {
-          timeoutMs: opts.perHarnessTimeoutMs,
-          resolveSwarmBinding: opts.resolveSwarmBinding,
-          bootHarness: opts.bootHarness,
-          skipSendSideWiring: opts.skipSendSideWiring,
-        }),
-      );
-    }
+    for (const slug of slugs) pairs.push({ wsId, slug });
   }
-  const results = await Promise.all(tasks);
+  const envConcurrency = Number(process.env.PAPERCUSP_SUBSTRATE_BOOT_CONCURRENCY);
+  const bootConcurrency =
+    opts.bootConcurrency ??
+    (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
+  const results = await mapWithConcurrency(pairs, bootConcurrency, ({ wsId, slug }) =>
+    bootSingleHarness(wsId, slug, {
+      timeoutMs: opts.perHarnessTimeoutMs,
+      resolveSwarmBinding: opts.resolveSwarmBinding,
+      bootHarness: opts.bootHarness,
+      skipSendSideWiring: opts.skipSendSideWiring,
+    }),
+  );
 
   // p2p-hive-directory P-003 boot-join: after the harnesses boot, join the global
   // hive-directory topic + announce this workspace's owned public/invite hives.
