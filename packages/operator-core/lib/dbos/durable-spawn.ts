@@ -251,7 +251,11 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
             // exhaust it lands `failed` with the capacity_shed label, never "host dead".
             throw new Error(`capacity_shed:${outcome.detail.trim()}`);
           }
-          return { ok: false, infraLoss: true, detail: outcome.detail } as const;
+          return {
+            ok: false,
+            failureClass: outcome.failureClass ?? 'infra_loss',
+            detail: outcome.detail,
+          } as const;
         }
         // Capture the response body so a non-2xx fire is self-diagnosing: the bare
         // status (`→ HTTP 400`) tells the watchdog/operator nothing about WHICH
@@ -286,8 +290,8 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   // fleet:tree row close `failed` below.
   const permanentMsg =
     fireResult && !fireResult.ok
-      ? 'infraLoss' in fireResult
-        ? `infra_loss:${fireResult.detail}`
+      ? 'failureClass' in fireResult
+        ? `${fireResult.failureClass}:${fireResult.detail}`
         : `durable-spawn fire ${input.label ?? ''} → HTTP ${fireResult.permanentStatus}${fireResult.detail} (permanent client/target error — not retried)`
       : null;
   if (permanentMsg) {

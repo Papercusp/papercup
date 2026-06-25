@@ -341,6 +341,29 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(String(fin.errorMessage)).not.toContain('capacity_shed');
   });
 
+  it('persists auth_error for Codex/OpenAI credential rejection instead of generic infra_loss', async () => {
+    h.loopbackFetch.mockResolvedValue(okBody({
+      ok: false,
+      exitCode: 1,
+      agentOutput: '',
+      timedOut: false,
+      stderr: '',
+      rawStdoutTail:
+        'unexpected status 401 Unauthorized: Incorrect API key provided: sk-ant-a***. auth error code: invalid_api_key',
+    }));
+    await expect(
+      durableSpawnFireImpl({
+        ...IMPL,
+        body: { kickoff: 'go', spawnModel: 'chatgpt:5.5' },
+        spawnRecord: { workspaceId: 'ws', childRole: 'queen' },
+      }),
+    ).resolves.toBeUndefined();
+    const fin = h.finishSpawn.mock.calls[0][1];
+    expect(fin.status).toBe('failed');
+    expect(String(fin.errorMessage)).toContain('auth_error');
+    expect(String(fin.errorMessage)).not.toContain('infra_loss:');
+  });
+
   it('records `failed` + infra_loss (NOT capacity_shed) for a clean mid-turn exit-1 when the gateway is HEALTHY', async () => {
     h.gatewayThrottled.value = false; // gateway not throttled ⇒ a real host loss, terminal
     h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: 'partial turn', timedOut: false, stderr: '' }));
