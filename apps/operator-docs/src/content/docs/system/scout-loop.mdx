@@ -115,6 +115,14 @@ Three behaviours the composition owns:
   step — a fresh/quiet hive spends $0 instead of paying the full ideator roster
   to reach `no-ideas`. `headline`/`generatedAt` don't count; only patterns ground
   ideas.
+- **Phase reporter (`ScoutCyclePhase`, 2026-06-25).** `ScoutCycleDeps` accepts an
+  optional `onPhase?: (phase: ScoutCyclePhase) => void` callback. The cycle calls
+  `markPhase(phase)` at each major stage boundary (`read-corpus`, `ideate`,
+  `read-novelty-corpus`, `critique`, `recombine`, `route`). The runner layer uses
+  additional phases (`runner-bootstrap`, `gateway-env`, `llm-client-import`,
+  `resolve-archive`, `build-cycle-deps`, `run-cycle`). Used by the scheduler for
+  timeout diagnostics: when a cycle times out, `onPhase` tells you exactly which
+  stage it was in. `ScoutCyclePhase` is the union type for all 12 phase strings.
 
 `ScoutCycleResult` carries every stage (`digest`, `ideas`, `scored`, `survivors`,
 `proposals`, `routed`, `provenance`, `calls`, `costUsd`, `stop`) so the invariants

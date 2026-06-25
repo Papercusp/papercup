@@ -198,6 +198,21 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
   back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is
   the #1 silent-local-only cause after a VM reset).
 - `merge_error`, `rekey_grant_*`, `rekey_boundary_skipped` — apply/re-key layer.
+- `epoch_gate_built` — the decrypt gate **IS** installed for this harness (non-null `rekeyDeps`);
+  carries `hiveHomeSlug` = the AAD hiveId. Absence means encrypted ops are applied raw, unchecked.
+- `epoch_gate_seen` — an encrypted-looking op (epoch-stamped OR `{__rekey}` value) **reached**
+  the gate. Distinguishes "content dropped upstream of the gate" (this never fires) from "reached
+  the gate but was processed" (fires, with `epoch=NULL` flagging the wire-stamp-lost case).
+- `epoch_defer` — op deferred: its epoch key is not yet local on this node. Will be replayed when
+  the key arrives via `drainQueuedEpochContent`.
+- `epoch_decrypt_fail` — have an epoch key but decrypt failed (wrong key / AAD mismatch — `hiveId`
+  must be the LOCAL home slug, not a federated field) → op **dropped**. A persistent stream of
+  these means the encrypt AAD and decrypt AAD disagree on the hive identity.
+- `epoch_applied` — encrypted op decrypted and applied successfully (the success path).
+
+These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06-25): previously
+all four non-success paths were **silent** (`return false`), leaving a federated op that never
+landed with no diagnostic signal at all.
 
 ## The diagnostic ladder (use this order)
 

@@ -19,12 +19,24 @@ move it to the right recall **pool** — call `memory:update` with the new field
 (no `content` needed):
 
 ```
-memory:update { id, kind: 'reference' }                 // re-categorise
-memory:update { id, workspaceId: 'papercusp-workspace' } // fix the workspace tag
-memory:update { id, scope: 'harness:papercup' }          // MOVE its recall pool (user_id)
+memory:update { id, kind: 'reference' }                  // re-categorise (single)
+memory:update { id, workspaceId: 'papercusp-workspace' } // fix workspace tag (single)
+memory:update { id, scope: 'harness:papercup' }          // MOVE recall pool (single)
+
+memory:update { ids:['id1','id2'], kind: 'reference' }   // bulk re-tag (homogeneous)
+memory:update { items:[{ id:'id1', kind:'reference' }, { id:'id2', scope:'harness:foo' }] }
+                                                          // heterogeneous bulk
 ```
 
-You can combine them, and combine with a `content` edit. This is **vec-safe**: it
+The bulk call shapes follow the house standard (bulk-endpoint-standardization-2026-06-21):
+- **Single** `{ id, …patch }` — the shorthand.
+- **Homogeneous many** `{ ids:[…], …patch }` — same patch applied to every id.
+- **Heterogeneous many** `{ items:[{ id, …patch }] }` — per-item control.
+
+All forms return `{ ok, results:[{ ok, id, error? }], counts }`. A **not-found id**
+returns that item's `{ ok:false }` without failing the rest (graceful, not a throw).
+
+You can combine metadata fields, and combine with a `content` edit. This is **vec-safe**: it
 never re-embeds (see why below). Before 2026-06-21 (EI-2032) there was **no tool**
 for this — `memory:update` was text-only and the backend threw on a metadata patch —
 which forced raw DB surgery on the shared store. Don't do that anymore.
