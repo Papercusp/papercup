@@ -40,6 +40,8 @@ export interface ExecutorReaperResult {
   cancelled: number;
   /** Orphaned workflow_queue rows purged. */
   queuePurged: number;
+  /** Routine ids pushed back to due-now after a no-first-step routineFire was reaped. */
+  requeuedRoutineIds: string[];
   /** The dead executor ids reaped this pass. */
   deadExecutorIds: string[];
   /** Stale live-row workflow ids reaped even when executor_id is reused. */
@@ -56,7 +58,13 @@ export async function reapDeadExecutorWorkflows(
   livenessThresholdMs: number = DEFAULT_LIVENESS_THRESHOLD_MS,
   staleSchedulerMs: number = DEFAULT_STALE_SCHEDULER_MS,
 ): Promise<ExecutorReaperResult> {
-  const empty: ExecutorReaperResult = { cancelled: 0, queuePurged: 0, deadExecutorIds: [], staleWorkflowIds: [] };
+  const empty: ExecutorReaperResult = {
+    cancelled: 0,
+    queuePurged: 0,
+    requeuedRoutineIds: [],
+    deadExecutorIds: [],
+    staleWorkflowIds: [],
+  };
   try {
     const now = Date.now();
     const deadAt = now - livenessThresholdMs;
@@ -102,16 +110,49 @@ export async function reapDeadExecutorWorkflows(
     // The dead-executor grouping above then sees fresh activity from the new process
     // and cannot reap the old rows. Reap only bounded-safe stale rows:
     //   - a non-terminal routinesTick older than the scheduler silence window, and
+    //   - a started routineFire whose start time is older than that window and
+    //     that NEVER entered its first DBOS step (no operation_outputs row), and
     //   - any non-terminal workflow past its explicit DBOS deadline.
-    const stale = await sql<{ workflow_uuid: string }[]>`
-      SELECT workflow_uuid
+    //
+    // The no-first-step routineFire class pins the per-routine dedup key without
+    // giving the system action a chance to run or record its own timeout/error
+    // tick. Use started_at_epoch_ms, not updated_at: DBOS recovery can refresh
+    // updated_at on a row it still has not actually entered, and that heartbeat
+    // must not keep a no-op dedup pin alive. A legitimate long routineFire should
+    // have at least one operation row (`system:<action>`, `loop:wake`, or
+    // `spawn:<role>`) shortly after start, so this selector stays narrower than
+    // "cancel all old routineFire".
+    const stale = await sql<{ workflow_uuid: string; requeue_routine_id: string | null }[]>`
+      SELECT workflow_uuid,
+             CASE
+               WHEN name = 'routineFire'
+                AND deduplication_id LIKE 'routine:%'
+                AND COALESCE(started_at_epoch_ms, created_at) < ${staleSchedulerAt}
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM dbos.operation_outputs op
+                   WHERE op.workflow_uuid = dbos.workflow_status.workflow_uuid
+                )
+               THEN substring(deduplication_id from 9)
+               ELSE NULL
+             END AS requeue_routine_id
         FROM dbos.workflow_status
        WHERE status IN ('PENDING', 'ENQUEUED')
          AND (
            (name = 'routinesTick' AND updated_at < ${staleSchedulerAt})
+           OR (
+             name = 'routineFire'
+             AND COALESCE(started_at_epoch_ms, created_at) < ${staleSchedulerAt}
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM dbos.operation_outputs op
+                WHERE op.workflow_uuid = dbos.workflow_status.workflow_uuid
+             )
+           )
            OR (workflow_deadline_epoch_ms IS NOT NULL AND workflow_deadline_epoch_ms < ${now})
          )`;
     const staleIds = stale.map((r) => r.workflow_uuid);
+    const requeueRoutineIds = [...new Set(stale.map((r) => r.requeue_routine_id).filter((id): id is string => !!id))];
     if (staleIds.length > 0) {
       const staleCancel = await sql`
         UPDATE dbos.workflow_status
@@ -128,10 +169,33 @@ export async function reapDeadExecutorWorkflows(
       } catch {
         /* queue purge is best-effort */
       }
+      if (requeueRoutineIds.length > 0) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now()),
+                 metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object(
+                        'last_error',
+                        'DBOS routineFire entered no DBOS step; executor reaper cancelled the stuck fire and requeued the routine',
+                        'last_error_at',
+                        now()::text,
+                        'last_error_source',
+                        'dbos-executor-reaper'
+                      ),
+                 updated_at = now()
+           WHERE id = ANY(${requeueRoutineIds})
+             AND active = true`;
+      }
     }
 
     if (cancelled === 0 && queuePurged === 0) return empty;
-    return { cancelled, queuePurged, deadExecutorIds: deadIds, staleWorkflowIds: staleIds };
+    return {
+      cancelled,
+      queuePurged,
+      requeuedRoutineIds: requeueRoutineIds,
+      deadExecutorIds: deadIds,
+      staleWorkflowIds: staleIds,
+    };
   } catch (e) {
     console.warn(
       `[dbos-executor-reaper] reap pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
@@ -159,7 +223,7 @@ export function startExecutorReaper(
     void reapDeadExecutorWorkflows(sql, opts.livenessThresholdMs, opts.staleSchedulerMs).then((r) => {
       if (r.cancelled > 0 || r.queuePurged > 0) {
         console.warn(
-          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}`,
+          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,
         );
       }
     });
