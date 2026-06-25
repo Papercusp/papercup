@@ -126,6 +126,8 @@ export type {
 } from '@papercusp/tooldef';
 export { diffSnapshot, applySnapshotDelta, chooseSnapshotEmission } from '@papercusp/tooldef';
 export type { SnapshotDelta, SnapshotEmission } from '@papercusp/tooldef';
+export { DeltaToolClient, dispatchWithDelta, dispatchWithConveyedDelta } from '@papercusp/tooldef';
+export type { DeltaResponse, DeltaIngestResult, DeltaDispatch, DeltaDispatchResult } from '@papercusp/tooldef';
 // Tool-result SEMANTIC-delta flag seam (agent-tool-delta-protocol-2026-06-22, the
 // flag-bite): tooldef gates the `mode:'delta'` upgrade behind this resolver, the
 // host wires it to FLAGS.TOOL_DELTA_PROTOCOL (see operator-core's

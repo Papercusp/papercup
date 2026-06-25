@@ -42,7 +42,10 @@ import {
   serializeToolResponse,
   formatOptsFromCtx,
   isSlashPromptName,
+  DeltaToolClient,
+  dispatchWithConveyedDelta,
   type UnifiedToolContext,
+  type DeltaResponse,
 } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -81,7 +84,7 @@ import {
   storeMcpResult,
   type StoredMcpResult,
 } from './_mcp-result-replay';
-import { advertisedArgsSchema } from '@papercusp/result-encoding';
+import { advertisedArgsSchema, decode, type ResultFormat } from '@papercusp/result-encoding';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
 // lazily — without this import, MCP requests would arrive before any
@@ -96,6 +99,130 @@ export const dynamic = 'force-dynamic';
 /* ─── Helpers ────────────────────────────────────────────────────────── */
 // `bearerFromExtra` / `urlFromExtra` / `headersFromExtra` are imported from
 // `@papercusp/tooldef-mcp` (P-031) — generic mcp-handler `extra` extractors.
+
+type McpCallResult = {
+  content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+  structuredContent?: unknown;
+};
+
+interface DeltaProxySession {
+  client: DeltaToolClient;
+  fields: Map<string, string>;
+}
+
+const DELTA_PROXY_SESSIONS = new Map<string, DeltaProxySession>();
+
+function deltaProxySession(sessionKey: string): DeltaProxySession {
+  let session = DELTA_PROXY_SESSIONS.get(sessionKey);
+  if (!session) {
+    session = { client: new DeltaToolClient(), fields: new Map<string, string>() };
+    DELTA_PROXY_SESSIONS.set(sessionKey, session);
+  }
+  return session;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableJson(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function parseToolText(text: string): unknown {
+  const marker = /^format: (\w+)\n/.exec(text);
+  if (!marker) return JSON.parse(text);
+  return decode(text.slice(marker[0].length), marker[1] as ResultFormat);
+}
+
+function resultRows(result: McpCallResult): unknown[] {
+  if (Array.isArray(result.structuredContent)) return result.structuredContent;
+  const text = (result.content[0] as { text?: unknown } | undefined)?.text;
+  if (typeof text !== 'string') throw new Error('delta proxy cannot parse non-text tool result');
+  const parsed = parseToolText(text);
+  if (!Array.isArray(parsed)) {
+    // Some semantic tools diff a flattened row set while returning a grouped object
+    // (for example plans:attention). A generic proxy cannot reconstruct that
+    // original body from row deltas, so it must leave those calls on the raw path.
+    throw new Error('delta proxy supports array-shaped tool results only');
+  }
+  return parsed;
+}
+
+function resultDelta(result: McpCallResult): Record<string, unknown> | undefined {
+  const delta = result._meta?.delta;
+  return delta && typeof delta === 'object' ? delta as Record<string, unknown> : undefined;
+}
+
+function adaptDeltaResponse(result: McpCallResult): DeltaResponse {
+  const delta = resultDelta(result);
+  const mode = typeof delta?.mode === 'string' ? delta.mode : 'full';
+  const cursor = typeof delta?.cursor === 'string' ? delta.cursor : undefined;
+  const itemKeyField = typeof delta?.itemKeyField === 'string' ? delta.itemKeyField : undefined;
+  if (mode === 'not_modified') return { mode: 'not_modified', cursor };
+  if (mode === 'delta') {
+    const text = (result.content[0] as { text?: unknown } | undefined)?.text;
+    if (typeof text !== 'string') throw new Error('delta proxy cannot parse non-text delta result');
+    return {
+      mode: 'delta',
+      cursor,
+      checksum: typeof delta?.checksum === 'string' ? delta.checksum : undefined,
+      changes: parseToolText(text) as never,
+      itemKeyField,
+    };
+  }
+  return { mode: 'full', cursor, rows: resultRows(result), itemKeyField };
+}
+
+async function maybeRunWithDeltaProxy(input: {
+  sessionKey: string;
+  toolName: string;
+  args: unknown;
+  requestedFormat: string | undefined;
+  explicitDelta: boolean;
+  itemKeyField: string | undefined;
+  runRaw: (requestedDelta: string | undefined, overrideDelta?: boolean) => Promise<McpCallResult>;
+}): Promise<McpCallResult> {
+  if (input.explicitDelta || !input.itemKeyField) return input.runRaw(undefined, false);
+  const viewKey = `${input.toolName}:${input.requestedFormat ?? ''}:${stableJson(input.args ?? null)}`;
+  const session = deltaProxySession(input.sessionKey);
+  let last: McpCallResult | null = null;
+  try {
+    const out = await dispatchWithConveyedDelta(
+      session.client,
+      session.fields,
+      viewKey,
+      async (requestedDelta) => {
+        last = await input.runRaw(requestedDelta, true);
+        return adaptDeltaResponse(last);
+      },
+    );
+    if (!last || last.isError || out.mode === 'full') return last ?? input.runRaw(undefined, true);
+    const meta = resultDelta(last);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(out.rows) }],
+      _meta: {
+        ...(last._meta ?? {}),
+        delta: {
+          ...(meta ?? {}),
+          mode: 'full',
+          reason: 'proxy_reconstructed',
+        },
+        deltaProxy: {
+          servedMode: out.mode,
+          reconstructedFull: true,
+        },
+      },
+    };
+  } catch {
+    session.client.forget(viewKey);
+    session.fields.delete(viewKey);
+    return input.runRaw(undefined, true);
+  }
+}
 
 /**
  * scoped-superuser-workspace-clamp exemption (EI-1810). A `crossWorkspace: true`
@@ -972,6 +1099,8 @@ const handler = createMcpHandler(
         // storage + base-presence tracking; absent ⇒ no negotiation (serve full).
         const requestedDelta =
           req.params._meta?.delta ?? urlFromExtra(extra)?.searchParams.get('delta') ?? undefined;
+        const explicitDelta =
+          req.params._meta?.delta !== undefined || urlFromExtra(extra)?.searchParams.has('delta') === true;
         // mcp-handler passes the protocol's RequestHandlerExtra here,
         // which exposes a sendNotification function bound to the right
         // session. Use it to fire notifications/progress events.
@@ -1295,27 +1424,27 @@ const handler = createMcpHandler(
           // tooldef-mcp returns an SDK-neutral McpToolCallResult; cast it to the
           // mutable shape the MCP SDK's setRequestHandler accepts (same shape the
           // legacy branch below returns) at this host boundary.
-          type McpCallResult = {
-            content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-            isError?: boolean;
-            // Format tag + envelope (P-006) and lossless structuredContent (P-010)
-            // — forwarded to the MCP SDK's tools/call result so clients see them.
-            _meta?: Record<string, unknown>;
-            structuredContent?: unknown;
-          };
           const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
             // The tool execution + idempotent persistence as ONE promise, so the P2-5
             // deadline can return a clean client error WITHOUT cancelling it: it
             // completes server-side + persists (P-046/EI-68), so a retry with the same
             // idempotencyKey replays the outcome instead of re-running.
             const execute = async (): Promise<McpCallResult> => {
-              const result = (await dispatchProjectedToolToMcp(
-                projected,
+              const result = await maybeRunWithDeltaProxy({
+                sessionKey: replayOwnerKey,
                 toolName,
-                dispatchArgs,
-                ctx,
-                PROJECTED_DEPS,
-              )) as McpCallResult;
+                args: dispatchArgs,
+                requestedFormat,
+                explicitDelta,
+                itemKeyField: projected.delta?.itemKeyField,
+                runRaw: async (autoRequestedDelta, overrideDelta = true) => (await dispatchProjectedToolToMcp(
+                  projected,
+                  toolName,
+                  dispatchArgs,
+                  overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx,
+                  PROJECTED_DEPS,
+                )) as McpCallResult,
+              });
               // Persist the outcome BEFORE the response hits the (possibly
               // already-closed) stream — the whole point of P-046/EI-68: the
               // result must survive the transport. Best-effort.

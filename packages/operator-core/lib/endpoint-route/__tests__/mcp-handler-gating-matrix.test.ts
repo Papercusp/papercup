@@ -27,6 +27,7 @@
  */
 import { createRequire } from 'node:module';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const h = vi.hoisted(() => {
@@ -185,7 +186,7 @@ process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/gating-matrix-no-manifest.js
 delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 
 await import('../routes/transport/_mcp-handler');
-const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog } =
+const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
 
@@ -245,6 +246,29 @@ registerProjectedTool({
   expose: { mcp: { name: 'cross_harness:probe' } },
   fn: probeFn('cross_harness:probe'),
 });
+
+const deltaRequested: Array<string | undefined> = [];
+defineTool({
+  name: 'gatingtest:delta_list',
+  requirePrincipal: false,
+  capability: 'test:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  handler: async (_input, ctx) => {
+    deltaRequested.push(ctx.requestedDelta);
+    return {
+      data: Array.from({ length: 12 }, (_, i) => ({
+        id: `r${i}`,
+        label: `row-${i}-padding-for-delta-proxy`,
+      })),
+    };
+  },
+  delta: {
+    itemKey: (row) => (row as { id: string }).id,
+    itemKeyField: 'id',
+    schemaVersion: 'gating-delta-v1',
+  },
+});
 // NB: the REAL flags:set (crossWorkspace:true, global flag store) is already registered,
 // so the clamp-exemption test below calls it directly — registering a 'flags:set' probe
 // here would collide (ToolRegistrationError). We assert only that the GATE doesn't deny it
@@ -301,6 +325,7 @@ interface ToolsListResult {
 interface CallResult {
   isError?: boolean;
   content: Array<{ type: string; text?: string }>;
+  _meta?: Record<string, unknown>;
 }
 
 async function listTools(extra: unknown): Promise<ToolsListResult> {
@@ -310,9 +335,10 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
   extra: unknown,
+  meta?: Record<string, unknown>,
 ): Promise<CallResult> {
   return (await h.handlers.get('tools/call')!(
-    { params: { name, arguments: args } },
+    { params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } },
     extra,
   )) as CallResult;
 }
@@ -321,6 +347,7 @@ const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').joi
 beforeEach(() => {
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
   seen.length = 0;
+  deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
   h.scopedClampFlag.value = false;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
@@ -798,6 +825,29 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(call.ctx.gateBypass).toEqual({ role: false, capability: false, quota: false });
     // P-022: the request-scoped workspace ALS is pinned for the handler.
     expect(call.alsWorkspace).toBe('ws-test');
+  });
+
+  it('delta proxy: a generic repeated MCP read sends an internal cursor and reconstructs a full result', async () => {
+    const extra = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-delta' }));
+    const first = await callTool('gatingtest:delta_list', {}, extra);
+    expect(first.isError).toBeUndefined();
+    expect(deltaRequested).toEqual([undefined]);
+
+    const second = await callTool('gatingtest:delta_list', {}, extra);
+    expect(second.isError).toBeUndefined();
+    expect(deltaRequested).toHaveLength(2);
+    expect(deltaRequested[1]).toMatch(/^auto~/);
+    expect(second._meta?.deltaProxy).toMatchObject({
+      servedMode: 'not_modified',
+      reconstructedFull: true,
+    });
+    expect(JSON.parse(textOf(second))).toHaveLength(12);
+  });
+
+  it('delta proxy: explicit client _meta.delta is honored, not overwritten by the proxy cache', async () => {
+    const extra = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-explicit-delta' }));
+    await callTool('gatingtest:delta_list', {}, extra, { delta: 'full' });
+    expect(deltaRequested).toEqual(['full']);
   });
 
   it('superuser BYPASSES the role allowlist on the same tool (workspace-scoped call)', async () => {

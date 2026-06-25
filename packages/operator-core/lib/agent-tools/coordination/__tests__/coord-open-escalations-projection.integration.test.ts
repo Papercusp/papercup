@@ -19,7 +19,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PgCoordLog } from '@papercusp/coordination/event-log';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { configureCoordLog, resetCoordLog } from '../log';
+import { listEscalations } from '../escalations';
 
 // Minimal coord_event_log shape (the migration references the table; the prod
 // table has more columns but the trigger only reads surface/workspace_id/msg_id/
@@ -77,6 +82,8 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  resetCoordLog();
+  setFlagOverridesForTest(null);
   await db.sql`DELETE FROM harness_shared.coord_event_log`;
   await db.sql`DELETE FROM harness_shared.coord_open_escalations`;
 });
@@ -130,5 +137,42 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
     // Re-run the migration's backfill/prune (idempotent) — should land exactly {e1}.
     await db.sql.unsafe(MIG_355).simple();
     expect(await openMsgIds()).toEqual(['e1']);
+  });
+
+  it('listEscalations(status=open) reads the projection instead of replaying the event log', async () => {
+    configureCoordLog(new PgCoordLog({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' }));
+    setFlagOverridesForTest({ [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true });
+
+    const openRows = [
+      {
+        ts: '2026-01-01T00:00:02.000Z',
+        msg_id: 'projection-b',
+        from: 'A',
+        to: ['human'],
+        kind: 'escalation',
+        severity: 'question',
+        summary: 'projection b',
+        resolved: null,
+      },
+      {
+        ts: '2026-01-01T00:00:01.000Z',
+        msg_id: 'projection-a',
+        from: 'A',
+        to: ['human'],
+        kind: 'escalation',
+        severity: 'question',
+        summary: 'projection a',
+        resolved: null,
+      },
+    ] as const;
+
+    for (const row of openRows) {
+      await db.sql`
+        INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+        VALUES ('default', ${row.msg_id}, ${row.ts}, ${db.sql.json(row)})`;
+    }
+
+    const got = await listEscalations({ status: 'open' });
+    expect(got.map((e) => e.msg_id)).toEqual(['projection-a', 'projection-b']);
   });
 });
