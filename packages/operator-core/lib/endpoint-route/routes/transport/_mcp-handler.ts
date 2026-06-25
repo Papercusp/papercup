@@ -1496,6 +1496,28 @@ const handler = createMcpHandler(
                 } catch {
                   // nudge is purely advisory; a failure must never change the tool outcome.
                 }
+                // orient-dedup nudge (agent-tooling-token-efficiency P-009): catch a
+                // coord:plan-events / coord:inbox / memory:search / coord:declare-intent fired right
+                // after a SUCCESSFUL coord:orient — orient already returned (+ declared) exactly that
+                // — and steer the caller back at orient's payload. Same in-process per-session map,
+                // same injection point as the batch hint. Recording the orient timestamp is the only
+                // common-path side effect; getFlag is consulted ONLY when a nudge actually fires (rare),
+                // so it runs even with the flag OFF and flipping it takes effect immediately. Role-
+                // agnostic (every agent uses orient). Best-effort — never affect the tool result.
+                try {
+                  const orientHint = maybeOrientDedupNudge({
+                    sessionKey: replayOwnerKey,
+                    toolName,
+                  });
+                  if (orientHint && (await getFlag(FLAGS.ORIENT_DEDUP_NUDGE, 'system'))) {
+                    result.content = [
+                      ...result.content,
+                      { type: 'text' as const, text: `\n[nudge] ${orientHint}` },
+                    ];
+                  }
+                } catch {
+                  // advisory only; a failure must never change the tool outcome.
+                }
               }
               return result;
             };

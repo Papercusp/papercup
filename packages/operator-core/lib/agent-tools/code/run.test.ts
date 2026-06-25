@@ -94,3 +94,35 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(captureRecipeMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * P-007 (agent-tooling-token-efficiency): a script that references an unknown tool fails the
+ * parse-check AND gets the typed signatures handed back inline — so the agent fixes the name and
+ * re-runs WITHOUT a separate code:tools discovery round-trip. Capture never fires on this path.
+ */
+describe('code:run → inline facade help on unknown refs (P-007)', () => {
+  const codeRun = () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    return tool;
+  };
+  const mkCtx = () =>
+    ({ log: () => {}, workspaceId: 'ws-test', harnessSlug: 'alpha', role: 'su', isSuperuser: true, uiClientId: 'su-test' }) as never;
+
+  beforeEach(() => captureRecipeMock.mockClear());
+
+  it('returns facadeHelp + the namespace index when a referenced namespace does not exist', async () => {
+    const tool = codeRun();
+    const res = await tool.fn({ script: 'return await tools.nope.doStuff();' }, mkCtx());
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.ok).toBe(false);
+    expect(payload.unknownRefs).toContain('nope.doStuff');
+    expect(payload.facadeHelp).toBeDefined();
+    // the note tells the agent it never needed code:tools first
+    expect(payload.facadeHelp.note).toContain('no code:tools pre-call required');
+    // an unknown namespace ⇒ the cheap index is included so the agent can find the right one
+    expect(Array.isArray(payload.facadeHelp.namespaces)).toBe(true);
+    // nothing captured on a failed run
+    expect(captureRecipeMock).not.toHaveBeenCalled();
+  });
+});

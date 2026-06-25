@@ -91,3 +91,6 @@
 [submodule "libs/generic/prospect-contract"]
 	path = libs/generic/prospect-contract
 	url = https://github.com/Papercusp/prospect-contract.git
+[submodule "libs/generic/debounce-coalesce"]
+	path = libs/generic/debounce-coalesce
+	url = https://github.com/Papercusp/debounce-coalesce.git
