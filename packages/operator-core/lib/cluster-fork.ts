@@ -61,6 +61,23 @@ export interface StartClusterOpts {
   cluster?: ClusterLike;
   /** Max automatic respawns of crashed workers (crash-loop guard). Default workers*5. */
   maxRespawns?: number;
+  /**
+   * Boot-failure backstop (2026-06-25 inconsistent-release MODULE_NOT_FOUND incident).
+   * OPT-IN: provide `onUnbootable` to arm it (legacy respawn-budget behavior otherwise).
+   * A worker that exits within `bootGraceMs` of being forked never came up; if a whole
+   * generation (`workers`) does so and NONE has ever stayed up past the grace window,
+   * the build is UNBOOTABLE — respawning just storms (would burn the full `maxRespawns`
+   * budget while serving nothing). Stop fast and call `onUnbootable` so the caller can
+   * exit cleanly (letting a supervisor/deploy roll back) instead of flapping. A worker
+   * that crashes AFTER surpassing the grace window (proving the build boots) is treated
+   * as a normal runtime crash and respawned within budget — `onUnbootable` never fires
+   * once any worker has been healthy.
+   */
+  onUnbootable?: (info: { consecutiveBootFailures: number; lastCode: number; lastSignal: string | null }) => void;
+  /** Worker uptime (ms) past which a worker counts as "booted healthy". Default 10_000. */
+  bootGraceMs?: number;
+  /** Injected clock for the boot-grace measurement; defaults to `Date.now`. */
+  now?: () => number;
   log?: (line: string) => void;
 }
 
@@ -155,23 +172,58 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
   // Primary: background machinery first, then fork + supervise the request fleet.
   opts.onPrimary?.();
   const maxRespawns = opts.maxRespawns ?? workers * 5;
+  const now = opts.now ?? Date.now;
+  const bootGraceMs = opts.bootGraceMs ?? 10_000;
   const forked: ClusterWorkerLike[] = [];
   // Live id → worker, for drain (kill all) + the watchdog's workerById lookup. Removed
   // on exit so the lookup never hands back a dead worker (the respawn gets a fresh id).
   const byId = new Map<number, ClusterWorkerLike>();
+  // id → fork timestamp, for the boot-failure backstop's grace measurement.
+  const forkedAt = new Map<number, number>();
   const track = (w: ClusterWorkerLike): ClusterWorkerLike => {
     forked.push(w);
     byId.set(w.id, w);
+    forkedAt.set(w.id, now());
     return w;
   };
   let respawns = 0;
   let draining = false;
+  // Boot-failure backstop state (armed only when opts.onUnbootable is set).
+  let sawHealthy = false; // any worker has surpassed bootGraceMs (the build CAN boot)
+  let consecutiveBootFailures = 0; // workers that exited inside the grace window, no healthy yet
+  let unbootable = false; // gave up — stop respawning
 
   for (let i = 0; i < workers; i++) track(cluster.fork(opts.workerEnv));
 
   cluster.on('exit', (worker, code, signal) => {
     byId.delete(worker.id);
+    const startedAt = forkedAt.get(worker.id);
+    forkedAt.delete(worker.id);
     if (draining) return; // intentional shutdown — let workers go
+    if (unbootable) return; // already declared the build unbootable — stop forking into the wall
+
+    // Boot-failure backstop: distinguish a boot-time failure (exited within the grace
+    // window, never came up) from a runtime crash (was healthy, then died → respawn).
+    if (opts.onUnbootable) {
+      const uptime = startedAt != null ? now() - startedAt : 0;
+      if (uptime >= bootGraceMs) {
+        sawHealthy = true;
+        consecutiveBootFailures = 0;
+      } else if (!sawHealthy) {
+        consecutiveBootFailures += 1;
+        if (consecutiveBootFailures >= workers) {
+          unbootable = true;
+          log(
+            `[cluster] FATAL: ${consecutiveBootFailures} worker(s) exited within ${bootGraceMs}ms of fork ` +
+              `and none ever stayed up — the build appears UNBOOTABLE (MODULE_NOT_FOUND / a boot-time throw). ` +
+              `Halting the respawn storm (would have burned ${maxRespawns} respawns). last exit code=${code} signal=${signal}`,
+          );
+          opts.onUnbootable({ consecutiveBootFailures, lastCode: code, lastSignal: signal });
+          return; // do NOT respawn — the caller decides what to do (exit/alert)
+        }
+      }
+    }
+
     if (respawns >= maxRespawns) {
       log(`[cluster] worker ${worker.id} exited (code=${code} signal=${signal}); respawn budget exhausted (${maxRespawns}) — NOT respawning`);
       return;

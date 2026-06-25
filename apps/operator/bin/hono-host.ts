@@ -14,8 +14,14 @@
  * Final home (Phase H): moves to `apps/operator-vite/server/` once `_hono/`
  * relocates there. See operator-vite-migration-2026-05-20.md (Phase C/H).
  */
+// MUST be first: runs the release-integrity preflight before the heavy import graph
+// (host-bootstrap → @papercusp/plugin-loader → MCP SDK → mem0 …) evaluates, so an
+// inconsistent checkout fails fast + named instead of crash-looping every worker on
+// MODULE_NOT_FOUND. See boot-integrity-first.ts / the 2026-06-25 incident.
+import './boot-integrity-first';
 import cluster from 'node:cluster';
 import { serve, createAdaptorServer } from '@hono/node-server';
+import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
@@ -321,6 +327,22 @@ const clusterHandle = startCluster({
     // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
     // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
     if (clusterWorkers > 1 && clusterLagWatchdogArmed()) startWorkerHeartbeat();
+  },
+  // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers
+  // exits within the boot grace window and NONE ever stays up — an UNBOOTABLE build
+  // (MODULE_NOT_FOUND / a boot-time throw the preflight manifest didn't enumerate) —
+  // halt the respawn storm and exit the primary with the integrity code. A clean,
+  // fast, distinct failure lets systemd/deploy-cli surface it and roll back to the
+  // last-good build, instead of flapping every worker for ~35 min (the all-pages
+  // outage). A worker that crashes AFTER serving still respawns normally.
+  onUnbootable: ({ consecutiveBootFailures, lastCode, lastSignal }) => {
+    console.error(
+      `[hono-host] cluster UNBOOTABLE: ${consecutiveBootFailures} worker(s) failed to boot and none ` +
+        `stayed up (last exit code=${lastCode} signal=${lastSignal}). Exiting the primary (${BOOT_INTEGRITY_EXIT_CODE}) ` +
+        `so the supervisor/deploy rolls back to the last-good build rather than crash-looping. See the ` +
+        `[boot-integrity] line above for the likely missing module(s); run \`npm ci\` in this checkout if persistent.`,
+    );
+    process.exit(BOOT_INTEGRITY_EXIT_CODE);
   },
 });
 
