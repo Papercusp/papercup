@@ -79,6 +79,29 @@ Regression guards live in `read-merge.test.ts` (WI-808): an epoch-stamped op car
 `epoch` through the merge to `applyImpl`; a plaintext op stays epoch-less; and `epoch`
 survives `buildSnapshotRows → snapshot merge`.
 
+### WI-808 observability — the `epoch_gate_seen` entry trace (2026-06-25)
+
+A second WI-808 fix landed after the seam-threading above: a new `epoch_gate_seen`
+trace event fires at the very TOP of the decrypt gate — before the `epoch == null`
+passthrough — for ANY op that **looks encrypted** (either `op.epoch != null` OR
+`isRekeyValue(op.value)` i.e. value has the `{__rekey: <base64>}` envelope). Wired via
+`EpochDecryptGateDeps.onTrace` → `recordBootEvent` in `hive-epoch-boot-deps.ts`.
+
+**Why:** the verdict-only traces (`epoch_defer` / `epoch_decrypt_fail` / `epoch_applied`)
+left a diagnostic gap: if a content op never reached the gate at all — dropped upstream
+in merge / admission / routing — none of those traces fired, and it was indistinguishable
+from the original wire-drop bug (the symptom in the `## Symptom` section above). Now:
+
+- `epoch_gate_seen` **fires** → the op REACHED the gate; the detail line carries `epoch=N`
+  (or `epoch=NULL`) and `rekeyVal=true/false` to confirm whether the stamp survived.
+- `epoch_gate_seen` **never fires** for a content op → the op was dropped **upstream**
+  of the gate (merge / admission / routing), not by the gate itself.
+- `epoch_gate_seen` with `epoch=NULL` + `rekeyVal=true` → the wire-drop bug is back:
+  the epoch stamp was lost at a seam (smoking gun for the original regression).
+
+Tests added in `hive-epoch-op-gate.test.ts`: verifies `epoch_gate_seen` fires for an
+epoch-stamped op AND for a ciphertext value with `epoch==null` (the regression case).
+
 ## The general lesson
 
 `OpEnvelope` (projection layer) and `PeerLogOp` (wire/log layer) are **two shapes**.
@@ -90,4 +113,7 @@ you — it only guards removal. A missing field doesn't error; it silently vanis
 the wire, and (for a gate-routing field like `epoch`) turns into a silent content drop
 that no trace explains. When debugging "federated X never arrives but leaves no
 trace", check whether a routing field is present on the *received* op before assuming
-the apply/gate logic is wrong.
+the apply/gate logic is wrong. Also look for `epoch_gate_seen` in boot-history: if
+it fires, the op reached the gate and the gate's own traces tell the rest of the story;
+if it never fires, the drop is upstream (merge / admission / routing), and the gate is
+not the culprit.
