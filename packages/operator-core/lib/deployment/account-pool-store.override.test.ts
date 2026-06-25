@@ -61,6 +61,11 @@ describe('selectSpawnAccount — P-004 override', () => {
     expect(await selectSpawnAccount('ws', 'h', undefined)).toBeUndefined();
   });
 
+  it('no override + one Codex account still pins it so Codex uses the registered gateway account', async () => {
+    readOperatorState.mockResolvedValue({ accounts: [acct('codex-a', 'codex')] });
+    expect(await selectSpawnAccount('ws', 'h', undefined, 'codex')).toBe('codex-a');
+  });
+
   it('provider-filtered Codex selection applies overrides only within Codex accounts', async () => {
     readOperatorState.mockResolvedValue({ accounts: [acct('claude-a'), acct('codex-a', 'codex'), acct('codex-b', 'codex')] });
     getAccountOverride.mockResolvedValue({ forcedAccounts: ['claude-a'], excludeAccounts: [] });

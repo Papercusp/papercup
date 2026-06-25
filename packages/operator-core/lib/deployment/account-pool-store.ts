@@ -172,8 +172,17 @@ export async function selectSpawnAccount(
     });
     return resolveSelection(ws, sel, now);
   }
-  // No override → today's exact path: no routing needed for ≤1 account.
-  if (providerPool.accounts.length <= 1) return undefined;
+  // No override. Legacy Claude behavior: no routing needed for <=1 account because the
+  // frame/default credential is that account. Codex is different: without an explicit
+  // PAPERCUSP_ACCOUNT_ID the per-session CODEX_HOME uses the launching user's default
+  // ChatGPT auth, not the registered gateway account. So a sole available Codex
+  // account must still be pinned.
+  if (providerPool.accounts.length <= 1) {
+    if (provider === 'codex' && providerPool.accounts.length === 1 && isAvailable(providerPool.accounts[0]!, now)) {
+      return providerPool.accounts[0]!.id;
+    }
+    return undefined;
+  }
   const sel = selectAccountForSpawn(providerPool, now, { harness, priorAccountId, rng });
   return resolveSelection(ws, sel, now);
 }
