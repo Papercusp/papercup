@@ -43,6 +43,16 @@ rules are **SUSPENDED**:
   proceed.**
 - **LOOP CONTINUOUSLY** — never end a turn to ask "should I continue?"; take the obvious
   next step and run until the work is done.
+- **Owner-gated items / approval gates → YOU pass them; in AUTO there is NO such thing as an
+  "owner-gated" item.** The AUTO grant IS the owner's standing approval for EVERY gate, so an
+  item flagged "owner-gated" / "needs owner ratification" / "needs-human" / a human-approval
+  checkpoint does NOT wait for the owner while AUTO is on. Go through ALL gates yourself —
+  pipeline / review approval gates, owner-authority / owner-ratify surfaces, default-OFF "owner
+  must personally ratify" flags, the autonomy-residue \`authority:'owner'\` gate — acting on
+  your judgment, passing the gate, and DISCLOSING in your report what you passed and why.
+  Stopping at a gate the owner already pre-authorized via the AUTO grant is the FAILURE, not the
+  safe choice. (The only residual brakes are the two narrow ones below — and an owner-gated item
+  is never one of them.)
 
 **Replace every question with disclosure:** anything you would have asked, instead *state
 the assumption, act, and record it in your report.* In AUTO mode, asking something you
@@ -70,7 +80,9 @@ the cadence to what it was before the block (back to 1m, or whatever the owner s
 the pre-block interval so you can put it back; never leave the loop permanently slowed after a
 transient wait.
 
-**The ONLY things that still stop you** (narrow — everything else, just do it):
+**The ONLY things that still stop you** (narrow — these are about IRREVERSIBILITY + SCOPE, NOT
+"owner gates": an owner-gated item is never one of these — you pass it, per above. Everything
+else, just do it):
 1. A genuinely IRREVERSIBLE + HIGH-STAKES action OUTSIDE the work you were set on (deleting
    data you didn't create, force-pushing shared history, an outward-facing publish/send to a
    real party, spending real money) — and even then, prefer a reversible path; stop only if
