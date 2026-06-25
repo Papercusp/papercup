@@ -84,6 +84,23 @@ describe('productionDepsBuilder', () => {
 
     expect(runCycle.mock.calls[0][0].scoutConfig.models.ideator).toBe('chatgpt:5.5');
   });
+
+  it('forwards scheduler phase diagnostics into the production cycle runner', async () => {
+    productionDepsBuilder(
+      {
+        workspaceId: 'ws',
+        installSlug: 'h',
+        payloadTemplate: null,
+      },
+      runCycle,
+    );
+
+    const onPhase = vi.fn();
+    const built = sched.buildScoutTickDeps.mock.calls[0][0];
+    await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1 }, cycleId: 'cyc-1', onPhase });
+
+    expect(runCycle.mock.calls[0][0].onPhase).toBe(onPhase);
+  });
 });
 
 describe('runScoutCycleTick — gates + governor mirror', () => {

@@ -37,6 +37,7 @@ import {
   type ScoutTickResult,
   type QueenFeedbackItem,
 } from './scheduler';
+import type { ScoutCyclePhase } from './cycle';
 import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
 import type { ScoutCadenceOptions } from './cadence';
 import { resolveScoutBudget, type ScoutBudget } from './budget';
@@ -60,6 +61,7 @@ export type ScoutCycleRunner = (ctx: {
    *  plans (register-scout-action.ts) instead of fresh ideation. */
   queenFeedback?: QueenFeedbackItem[];
   signal?: AbortSignal;
+  onPhase?: (phase: ScoutCyclePhase) => void;
 }) => Promise<ScoutCycleLike>;
 
 export interface ScoutCycleActionConfig {
@@ -91,7 +93,7 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
   return buildScoutTickDeps({
     harnessSlug: input.installSlug,
     workspaceId: input.workspaceId,
-    runCycle: ({ budget, cycleId, queenFeedback, signal }) =>
+    runCycle: ({ budget, cycleId, queenFeedback, signal, onPhase }) =>
       runCycle({
         harnessSlug: input.installSlug,
         workspaceId: input.workspaceId,
@@ -100,6 +102,7 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
         scoutConfig,
         ...(queenFeedback ? { queenFeedback } : {}),
         ...(signal ? { signal } : {}),
+        ...(onPhase ? { onPhase } : {}),
       }),
     readIdleRatio: () => readHiveIdleRatio({ workspaceId: input.workspaceId }),
     readFrictionSignals: () => readFrictionSignalCount({ harnessSlug: input.installSlug }),
