@@ -96,6 +96,22 @@ async function seedItem(
       (${WS}, ${H}, ${featureId}, 'feature', ${featureId}, ${status}, ${requeueCount}, ${takenBy},
        ${takenBy ? sql`now() - make_interval(mins => ${takenAgoMin})` : null},
        ${lastProgressAgoMin == null ? null : sql`now() - make_interval(mins => ${lastProgressAgoMin})`},
+      ${Date.now()}, ${Date.now()})`;
+}
+
+async function seedTaskItem(
+  featureId: string,
+  takenBy: string | null,
+  takenAgoMin: number,
+  status = 'todo',
+  requeueCount = 0,
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, requeue_count, taken_by, taken_at, created_ts, updated_ts)
+    VALUES
+      (${WS}, ${H}, ${featureId}, 'task', ${featureId}, ${status}, ${requeueCount}, ${takenBy},
+       ${takenBy ? sql`now() - make_interval(mins => ${takenAgoMin})` : null},
        ${Date.now()}, ${Date.now()})`;
 }
 
@@ -117,6 +133,13 @@ async function statusOf(featureId: string): Promise<{ status: string; requeue_co
   const [row] = await sql<{ status: string; requeue_count: number; taken_by: string | null }[]>`
     SELECT status, requeue_count, taken_by
       FROM harness_shared.harness_features_consolidated WHERE feature_id = ${featureId}`;
+  return row;
+}
+
+async function workItemStatusOf(featureId: string): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
+  const [row] = await sql<{ status: string; requeue_count: number; taken_by: string | null }[]>`
+    SELECT status, requeue_count, taken_by
+      FROM harness_shared.work_items WHERE feature_id = ${featureId}`;
   return row;
 }
 
@@ -195,6 +218,47 @@ describe('reclaimStaleWorkItemClaims', () => {
       action: 'freed-todo',
     });
     expect((await statusOf('F-014')).taken_by).toBeNull();
+  });
+
+  it('releases orphaned task work-items from the canonical work_items table', async () => {
+    await seedTaskItem('WI-TASK-1', 'su-dead-task-holder', 30);
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(1);
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'WI-TASK-1',
+      item_kind: 'task',
+      former_taken_by: 'su-dead-task-holder',
+      reason: 'dead',
+      action: 'freed-todo',
+    });
+    expect(await workItemStatusOf('WI-TASK-1')).toMatchObject({ status: 'todo', taken_by: null });
+  });
+
+  it('requeues mid-flight task work-items, bounded by the same cap', async () => {
+    await seedTaskItem('WI-TASK-2', 'su-dead-task-holder-2', 30, 'wip');
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'WI-TASK-2',
+      item_kind: 'task',
+      former_status: 'wip',
+      new_status: 'todo',
+      action: 'requeued',
+      requeue_count: 1,
+    });
+    expect(await workItemStatusOf('WI-TASK-2')).toMatchObject({ status: 'todo', requeue_count: 1, taken_by: null });
+  });
+
+  it('frees terminal task work-items without requeueing them', async () => {
+    await seedTaskItem('WI-TASK-3', 'su-dead-task-holder-3', 30, 'done');
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'WI-TASK-3',
+      item_kind: 'task',
+      former_status: 'done',
+      new_status: 'done',
+      action: 'freed-terminal',
+    });
+    expect(await workItemStatusOf('WI-TASK-3')).toMatchObject({ status: 'done', taken_by: null });
   });
 
   it('a mid-flight NULL-taken_at dead-holder claim is requeued → todo (EI-2534)', async () => {

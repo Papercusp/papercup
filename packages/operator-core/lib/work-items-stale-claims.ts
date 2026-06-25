@@ -59,7 +59,6 @@ import type { Sql, TransactionSql } from 'postgres';
 import { STALE_MS } from './liveness';
 import {
   FEATURE_NON_REQUEUE_STATES,
-  isRequeueableFeatureState,
   staleReclaimRequeueCap,
 } from './work-item-dispatch-states';
 
@@ -128,12 +127,25 @@ interface ReleasedRow {
 
 /** Classify a freed row from its former/new status + counter. */
 function classify(row: ReleasedRow, cap: number): StaleClaimAction {
-  if (isRequeueableFeatureState(row.former_status)) {
+  if (isRequeueableReclaimedStatus(row.former_status)) {
     return row.requeue_count >= cap ? 'dead-lettered' : 'requeued';
   }
   if (row.former_status === 'blocked') return 'freed-blocked';
   if (row.former_status === 'todo' || row.former_status === '' || row.former_status == null) return 'freed-todo';
   return 'freed-terminal';
+}
+
+const WORK_ITEM_NON_REQUEUE_STATES = Array.from(new Set([
+  ...FEATURE_NON_REQUEUE_STATES,
+  // Unified work_items terminal vocabulary (task/bug/change/feature-family).
+  'done',
+  'resolved',
+  'closed',
+  'dropped',
+]));
+
+function isRequeueableReclaimedStatus(status: string | null | undefined): boolean {
+  return status != null && status !== '' && !WORK_ITEM_NON_REQUEUE_STATES.includes(status);
 }
 
 /**
@@ -196,7 +208,7 @@ export async function reclaimStaleWorkItemClaims(
   const stalledSec = Math.max(1, Math.round((opts.stalledMs ?? STALE_CLAIM_GRACE_MS) / 1000));
   const cap = opts.requeueCap ?? staleReclaimRequeueCap();
   const includeStalled = opts.includeStalled === true;
-  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
+  const nonRequeue = WORK_ITEM_NON_REQUEUE_STATES;
   const rows = await sql<ReleasedRow[]>`
     WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
     -- Aliases of RECENTLY-terminal spawns — confirmed dead, no grace (P-003/D-004).
@@ -220,7 +232,7 @@ export async function reclaimStaleWorkItemClaims(
                WHEN NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by) THEN 'dead'
                ELSE 'stalled'
              END AS reason
-        FROM harness_shared.harness_features_consolidated f
+        FROM harness_shared.work_items f
        WHERE f.taken_by IS NOT NULL AND f.taken_by <> ''
          AND (
            -- (a) DEAD: holder not alive, past the grace window. A NULL taken_at
@@ -244,7 +256,7 @@ export async function reclaimStaleWorkItemClaims(
          )
          FOR UPDATE OF f SKIP LOCKED
     )
-    UPDATE harness_shared.harness_features_consolidated f
+    UPDATE harness_shared.work_items f
        SET taken_by = NULL,
            taken_at = NULL,
            -- Requeueable (mid-flight) rows bump the counter; everything else holds.
