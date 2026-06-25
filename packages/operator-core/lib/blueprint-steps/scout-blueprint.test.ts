@@ -50,12 +50,16 @@ test('scout:cycle is a registered known op', () => {
 
 test('running the blueprint program drives the self-gated tick to a clean done (cadence withhold)', async () => {
   let cycleRan = 0;
+  let seenPayload: Record<string, unknown> | null = null;
   setScoutCycleDeps({
     runCycle: async () => {
       cycleRan += 1;
       return { provenance: [] };
     },
-    buildDeps: withholdBuilder,
+    buildDeps: (depsCtx, runCycle) => {
+      seenPayload = depsCtx.payloadTemplate;
+      return withholdBuilder(depsCtx, runCycle);
+    },
     // no recordGovernor ⇒ hermetic (no governor IO)
   });
   const { blueprint } = loadBuiltinBlueprint('scout');
@@ -63,12 +67,14 @@ test('running the blueprint program drives the self-gated tick to a clean done (
   const ctx = makeCtx(caps, { workspaceId: 'ws-1', harnessSlug: 'pot' });
   const out = await runProgramCore({
     blueprint,
-    payload: { cadence: { minIntervalSec: 3600 } },
+    payload: { cadence: { minIntervalSec: 3600 }, cycleTimeoutMs: 2500 },
     ctx,
     runOp: inlineRunOp,
   });
   assert.equal(out.outcome, 'done');
   assert.equal(out.resolved, true);
+  assert.deepEqual(seenPayload?.cadence, { minIntervalSec: 3600 });
+  assert.equal(seenPayload?.cycleTimeoutMs, 2500);
   const r = out.scope?.cycle as { fired: boolean } | undefined;
   assert.equal(r?.fired, false); // cadence withheld → no cycle
   assert.equal(cycleRan, 0); // the (expensive) cycle never ran
