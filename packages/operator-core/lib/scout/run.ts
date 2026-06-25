@@ -29,6 +29,7 @@
  */
 import {
   buildScoutTickDeps,
+  DEFAULT_SCOUT_CYCLE_TIMEOUT_MS,
   runScoutTick,
   type ScoutCycleLike,
   type ScoutTickDeps,
@@ -116,17 +117,23 @@ function scoutBlockOf(payload: Record<string, unknown> | null): unknown {
  */
 export function parseScoutCycleConfig(payload: Record<string, unknown> | null): ScoutCycleActionConfig {
   if (!payload || typeof payload !== 'object') return {};
-  const cadence = isObj(payload.cadence) ? (payload.cadence as ScoutCadenceOptions) : undefined;
-  const budget = isObj(payload.budget) ? (payload.budget as ScoutBudget) : undefined;
+  const config = normalizeScoutPayload(payload);
+  const cadence = isObj(config.cadence) ? (config.cadence as ScoutCadenceOptions) : undefined;
+  const budget = isObj(config.budget) ? (config.budget as ScoutBudget) : undefined;
   const cycleTimeoutMs =
-    typeof payload.cycleTimeoutMs === 'number' && Number.isFinite(payload.cycleTimeoutMs) && payload.cycleTimeoutMs > 0
-      ? payload.cycleTimeoutMs
+    typeof config.cycleTimeoutMs === 'number' && Number.isFinite(config.cycleTimeoutMs) && config.cycleTimeoutMs > 0
+      ? Math.max(config.cycleTimeoutMs, DEFAULT_SCOUT_CYCLE_TIMEOUT_MS)
       : undefined;
   return {
     ...(cadence ? { cadence } : {}),
     ...(budget ? { budget } : {}),
     ...(cycleTimeoutMs != null ? { cycleTimeoutMs } : {}),
   };
+}
+
+function normalizeScoutPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const nested = isObj(payload.payload) ? payload.payload : null;
+  return nested ? { ...payload, ...nested } : payload;
 }
 
 export interface ScoutCycleDeps {

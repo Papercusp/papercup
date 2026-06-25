@@ -7,7 +7,11 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const sched = vi.hoisted(() => ({ runScoutTick: vi.fn(), buildScoutTickDeps: vi.fn(() => ({})) }));
+const sched = vi.hoisted(() => ({
+  DEFAULT_SCOUT_CYCLE_TIMEOUT_MS: 20 * 60_000,
+  runScoutTick: vi.fn(),
+  buildScoutTickDeps: vi.fn(() => ({})),
+}));
 vi.mock('./scheduler', () => sched);
 
 import { runScoutCycleTick, parseScoutCycleConfig, type ScoutCycleDeps } from './run';
@@ -36,12 +40,28 @@ describe('parseScoutCycleConfig', () => {
   });
 
   it('extracts the cadence + budget objects, dropping unknown / bad-shape keys', () => {
-    expect(parseScoutCycleConfig({ cadence: { x: 1 }, budget: { maxCostUsd: 2 }, cycleTimeoutMs: 1500, junk: 5 } as never)).toEqual({
+    expect(parseScoutCycleConfig({ cadence: { x: 1 }, budget: { maxCostUsd: 2 }, cycleTimeoutMs: 1_500_000, junk: 5 } as never)).toEqual({
       cadence: { x: 1 },
       budget: { maxCostUsd: 2 },
-      cycleTimeoutMs: 1500,
+      cycleTimeoutMs: 1_500_000,
     });
     expect(parseScoutCycleConfig({ cadence: 'bad', budget: 7, cycleTimeoutMs: 0 } as never)).toEqual({}); // bad shapes → dropped
+  });
+
+  it('unwraps blueprint-run nested payloads and clamps stale short cycle timeouts to the safe default', () => {
+    expect(parseScoutCycleConfig({
+      blueprintId: 'scout',
+      cycleTimeoutMs: 120_000,
+      payload: {
+        cadence: { minIntervalSec: 3600 },
+        budget: { maxCostUsd: 3 },
+        cycleTimeoutMs: 120_000,
+      },
+    } as never)).toEqual({
+      cadence: { minIntervalSec: 3600 },
+      budget: { maxCostUsd: 3 },
+      cycleTimeoutMs: sched.DEFAULT_SCOUT_CYCLE_TIMEOUT_MS,
+    });
   });
 });
 
@@ -104,10 +124,10 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
 
   it('passes a configured cycle timeout through to runScoutTick', async () => {
     await runScoutCycleTick(
-      { ...baseInput, payloadTemplate: { cycleTimeoutMs: 2500 } },
+      { ...baseInput, payloadTemplate: { cycleTimeoutMs: 1_500_000 } },
       mkDeps(),
     );
-    expect(sched.runScoutTick.mock.calls[0][1]).toMatchObject({ cycleTimeoutMs: 2500 });
+    expect(sched.runScoutTick.mock.calls[0][1]).toMatchObject({ cycleTimeoutMs: 1_500_000 });
   });
 
   it('mirrors a NO-OP (un-fired) tick as fired:null', async () => {
