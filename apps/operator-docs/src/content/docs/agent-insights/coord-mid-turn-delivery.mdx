@@ -38,6 +38,12 @@ so a plain `claude`/`codex` on the box no-ops. `owner == PAPERCUSP_SID`, which i
 the same id baked into the agent's MCP `&client=`, so the hook reads the *right*
 inbox/watermark.
 
+Current hook shape (2026-06-25): the shell hook is a dumb pipe. It calls
+`coord:inbox` with `since_ts`, advances the local cursor to the server's
+`summary.newest_ts`, and injects the server-rendered `injection` block verbatim.
+Formatting, capping, and the `[coord+N]` layout live on the server side rather
+than being duplicated in `posttooluse-coord-inbox.sh`.
+
 ## The cursor / dedup protocol
 
 - **Per-owner cursor.** Claude/Codex: a local file `coord-cursor-<owner>.json`
@@ -86,8 +92,10 @@ your locks explain themselves.
   `PAPERCUSP_AGENT`: Claude/OMP keep the single 150 ms CR path; Codex uses the
   longer `PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS` path (default 500 ms), then a
   second delayed CR (`PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS`, default 300 ms).
-  Do not collapse this back to one global delay without a live Codex
-  coord-injection check.
+  The code path is `controlWritesForAgent(decoded, env.PAPERCUSP_AGENT, env)`:
+  raw interrupt bytes still write once immediately, while turn injections write
+  text first and submit CR(s) as later ordered steps. Do not collapse this back
+  to one global delay without a live Codex coord-injection check.
 - **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the
   fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a
   real OMP turn to observe.

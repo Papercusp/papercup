@@ -89,7 +89,7 @@ describe('deriveQueenAlive — liveness-only, kept DISTINCT from stalled (EI-623
 
 describe('beesStatus', () => {
   const bees = (o: Partial<BeesHealth> = {}): BeesHealth => ({
-    running: 2, alive: 2, stale: 0, orphanedClaims: 0, totalLoad: 2,
+    running: 2, alive: 2, stale: 0, orphanedClaims: 0, totalLoad: 2, invalidModelFailures: 0,
     placements: { recovering: 0, cursed: 0, stranded: 0, workingTracked: 2 }, ...o,
   });
   it('crit on a cursed placement', () => {
@@ -97,6 +97,9 @@ describe('beesStatus', () => {
   });
   it('warn on orphaned claims', () => {
     expect(beesStatus(bees({ orphanedClaims: 1 }))).toBe('warn');
+  });
+  it('warn on invalid selected-model spawn failures', () => {
+    expect(beesStatus(bees({ invalidModelFailures: 1 }))).toBe('warn');
   });
   it('warn on stranded/recovering placements', () => {
     expect(beesStatus(bees({ placements: { recovering: 0, cursed: 0, stranded: 2, workingTracked: 0 } }))).toBe('warn');

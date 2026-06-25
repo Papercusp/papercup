@@ -18,7 +18,7 @@ import type { SystemHealth } from '../system-health/types';
 
 const BASE = {
   workFeed: { frontier: 0, frontierBlocked: 0, startedPlans: 1, autoEligibleStuck: 0, deadRoutines: 0, deadRoutineNames: [] },
-  bees: { running: 2, alive: 2, stale: 0, orphanedClaims: 0, totalLoad: 2, placements: { recovering: 0, cursed: 0, stranded: 0, workingTracked: 1 } },
+  bees: { running: 2, alive: 2, stale: 0, orphanedClaims: 0, totalLoad: 2, invalidModelFailures: 0, placements: { recovering: 0, cursed: 0, stranded: 0, workingTracked: 1 } },
   queen: { workingTracked: 1, stalled: false },
   watchdog: { fires24h: 0, livenessArmed: true, staleForMs: 0, recentErrors: 0 },
   scout: { lastTickAt: 1, lastRanAt: 1, ideasLastRun: 3, ideasInWindow: 6, ranInWindow: 2, transportDeath: false },

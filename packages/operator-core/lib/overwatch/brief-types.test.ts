@@ -13,7 +13,7 @@ function unhealthyBrief(): OverwatchBrief {
     hiveSlug: 'papercup-hive',
     wokeBy: 'timer',
     queen: { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 3, nextFireAt: null, coordOwner: 's-queen-1781000000-abc', consecutiveZeroTokenWakes: 0 },
-    bees: { running: 4, completed: 11, churning: 2, deadClaims: 1 },
+    bees: { running: 4, completed: 11, churning: 2, deadClaims: 1, invalidModelFailures: 3 },
     workFeed: { frontier: 7, autoEligibleStuck: 5, deadRoutines: 1, blockedStranded: 2 },
     tokens: { pausedBuckets: ['opus', 'sonnet'], gatewayFailovers: 3, gw429s: 12, accountsAvailable: 1, gatewayWedged: false, gatewaySustainedThrottle: false },
     plans: { active: 6, stalledItems: 4, agingEscalations: 2 },
@@ -72,7 +72,7 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   assert.match(out, /### Inbox — coord messages for you/);
   assert.match(out, /- \[message\] queen: re: F-FIX-021 — re-opened, thanks/);
   assert.match(out, /- \[escalation\] owner: keep an eye on the opus bucket/);
-  assert.match(out, /### Bees\n- running 4 · completed 11 · churning 2 · dead claims 1/);
+  assert.match(out, /### Bees\n- running 4 · completed 11 · churning 2 · dead claims 1 · invalid-model failures 3/);
   assert.match(out, /### Work feed\n- frontier 7 ready · 5 auto-eligible stuck · 1 dead routine\(s\) · 2 stranded/);
   assert.match(out, /### Tokens \/ gateway\n- paused buckets: opus, sonnet · 3 failover\(s\) · 12 429\(s\) · 1 account\(s\) available/);
   assert.match(out, /### Plans \+ escalations\n- 6 active plan\(s\) · 4 stalled item\(s\) · 2 aging escalation\(s\)/);

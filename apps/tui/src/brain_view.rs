@@ -385,16 +385,14 @@ fn transcript_lines(state: &BrainViewState) -> Vec<Line<'static>> {
         }
         let mut content_lines = content.lines().filter_map(compact_content_line);
         if let Some(first) = content_lines.next() {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{label} "), style),
-                Span::raw(first),
-            ]));
+            let mut spans = vec![Span::styled(format!("{label} "), style)];
+            spans.extend(styled_content_spans(&first));
+            lines.push(Line::from(spans));
         }
         for line in content_lines {
-            lines.push(Line::from(vec![
-                Span::styled("  ", Theme::dim()),
-                Span::raw(line),
-            ]));
+            let mut spans = vec![Span::styled("  ", Theme::dim())];
+            spans.extend(styled_content_spans(&line));
+            lines.push(Line::from(spans));
         }
     }
     lines
@@ -421,6 +419,119 @@ fn compact_content_line(line: &str) -> Option<String> {
     } else {
         Some(line.to_string())
     }
+}
+
+fn styled_content_spans(line: &str) -> Vec<Span<'static>> {
+    if let Some(rest) = line.strip_prefix("### ") {
+        return vec![
+            Span::styled("## ", Theme::dim()),
+            Span::styled(rest.to_string(), Theme::header()),
+        ];
+    }
+    if let Some(rest) = line.strip_prefix("- ") {
+        let mut spans = vec![Span::styled("- ", Theme::dim())];
+        spans.extend(styled_inline_spans(rest));
+        return spans;
+    }
+    if line.starts_with('<') && line.ends_with('>') {
+        return vec![Span::styled(line.to_string(), Theme::dim())];
+    }
+    if line.contains("API Error") || line.contains("Error:") {
+        return vec![Span::styled(
+            line.to_string(),
+            Theme::danger().add_modifier(Modifier::BOLD),
+        )];
+    }
+    styled_inline_spans(line)
+}
+
+fn styled_inline_spans(text: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for token in text.split_inclusive(char::is_whitespace) {
+        let trimmed = token.trim_end();
+        let suffix = &token[trimmed.len()..];
+        if !trimmed.is_empty() {
+            spans.push(Span::styled(trimmed.to_string(), token_style(trimmed)));
+        }
+        if !suffix.is_empty() {
+            spans.push(Span::raw(suffix.to_string()));
+        }
+    }
+    spans
+}
+
+fn token_style(token: &str) -> Style {
+    let normalized = token
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '.' | ',' | ':' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '!' | '?'
+            )
+        })
+        .to_ascii_lowercase();
+    let active = Theme::active();
+
+    if token.starts_with('`') || token.starts_with('\'') || token.ends_with('`') {
+        return Theme::info();
+    }
+    if normalized.starts_with("mq")
+        || normalized.starts_with("ei-")
+        || normalized.starts_with("s-")
+        || normalized.contains("0000-")
+    {
+        return Theme::dim();
+    }
+    if normalized.parse::<u64>().is_ok()
+        || normalized.ends_with('t')
+            && normalized[..normalized.len().saturating_sub(1)]
+                .parse::<u64>()
+                .is_ok()
+        || normalized.ends_with("(s)")
+    {
+        return Style::default()
+            .fg(active.accent_hot)
+            .add_modifier(Modifier::BOLD);
+    }
+    if matches!(
+        normalized.as_str(),
+        "blocked"
+            | "blocker"
+            | "dead"
+            | "error"
+            | "failure"
+            | "failed"
+            | "failing"
+            | "limiting"
+            | "stalled"
+            | "stranded"
+            | "critical"
+            | "429"
+            | "aging"
+    ) {
+        return Theme::danger();
+    }
+    if matches!(
+        normalized.as_str(),
+        "alive" | "available" | "completed" | "ready" | "resolved" | "running" | "attached" | "ok"
+    ) {
+        return Theme::success();
+    }
+    if matches!(
+        normalized.as_str(),
+        "advisory" | "paused" | "churning" | "unscheduled" | "warning" | "warn"
+    ) {
+        return Theme::warn();
+    }
+    if normalized.contains('/')
+        || normalized.contains("coord:")
+        || normalized.contains("work")
+        || normalized.contains("token")
+        || normalized.contains("gateway")
+    {
+        return Theme::info();
+    }
+
+    Style::default().fg(active.muted)
 }
 
 #[cfg(test)]
@@ -597,5 +708,31 @@ mod tests {
             .collect();
 
         assert_eq!(rendered, vec!["s alpha", "  beta", "a gamma", "  delta"]);
+    }
+
+    #[test]
+    fn transcript_content_styles_headings_metrics_status_and_ids() {
+        let heading = styled_content_spans("### Work feed");
+        assert_eq!(heading[0].content.as_ref(), "## ");
+        assert_eq!(heading[0].style, Theme::dim());
+        assert_eq!(heading[1].content.as_ref(), "Work feed");
+        assert_eq!(heading[1].style, Theme::header());
+
+        let bullet = styled_content_spans(
+            "- frontier 93 ready · 2 stalled item(s) · escalation:mqsu-0000-abcd `coord:send`",
+        );
+        let style_for = |needle: &str| {
+            bullet
+                .iter()
+                .find(|span| span.content.as_ref() == needle)
+                .map(|span| span.style)
+                .unwrap_or_else(|| panic!("missing span {needle:?}: {bullet:?}"))
+        };
+
+        assert_eq!(style_for("93"), Theme::title());
+        assert_eq!(style_for("ready"), Theme::success());
+        assert_eq!(style_for("stalled"), Theme::danger());
+        assert_eq!(style_for("escalation:mqsu-0000-abcd"), Theme::dim());
+        assert_eq!(style_for("`coord:send`"), Theme::info());
     }
 }

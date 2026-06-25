@@ -64,6 +64,14 @@ and the global projection registration pass `hiveHomeSlug:
 hiveHomeProjectionSlug ?? ownHiveHomeSlug`, so an owner's home harness engages
 the membership-aware content guard while a joiner keeps its remote-home rebind.
 
+The current wiring also keeps the two apply paths aligned: `boot.ts` passes the
+same fallback into `buildHarnessProjectionApply` and
+`registerAllHarnessProjections`, and both share the boot-scoped
+`PendingMembershipContent` buffer. That means guarded content can defer until
+the corresponding `hive_members` row arrives on either path. The fallback stays
+behind the `bindingResolvesHiveHomeProjection` gate, so ordinary private/local/gh
+harness boots still avoid the owner-home lookup.
+
 ## Fix
 
 Resolve the OWNER's own hive-home for the content-guard `hiveHomeSlug` too — the same

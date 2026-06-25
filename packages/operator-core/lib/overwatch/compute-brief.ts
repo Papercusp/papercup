@@ -254,6 +254,22 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       },
     });
   }
+  if (bees.invalidModelFailures > 0) {
+    out.push({
+      kind: 'invalid-model-config',
+      severity: 'critical',
+      subject: 'agent model config',
+      detail:
+        `${bees.invalidModelFailures} recent autonomous-role spawn(s) failed before a turn because the selected model is unavailable or inaccessible.`,
+      suggestedAction: {
+        type: 'escalate',
+        target: 'owner',
+        message:
+          `${bees.invalidModelFailures} recent autonomous-role spawn(s) failed with "selected model" unavailable/access errors. ` +
+          `Inspect /settings/agent role model overrides and tier menu; clear or replace unavailable model specs before placing more work.`,
+      },
+    });
+  }
 
   // ── Escalations aging ──────────────────────────────────────────────────────
   if (plans.agingEscalations > 0) {
@@ -375,6 +391,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
       completed: 0, // no per-window completed count in BeesHealth — fail-soft default (renderer-only).
       churning: bees.stale,
       deadClaims: bees.orphanedClaims,
+      invalidModelFailures: bees.invalidModelFailures,
     };
   }
 

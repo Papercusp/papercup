@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseDhtBootstrap, swarmConstructorOpts } from './swarm';
+import { parseDhtBootstrap, parseDhtHost, swarmConstructorOpts } from './swarm';
 
 // ─── parseDhtBootstrap ──────────────────────────────────────────────────────────
 
@@ -41,12 +41,15 @@ describe('parseDhtBootstrap', () => {
 describe('swarmConstructorOpts', () => {
   const SAVED = {
     bootstrap: process.env.PAPERCUSP_DHT_BOOTSTRAP,
+    dhtHost: process.env.PAPERCUSP_DHT_HOST,
     maxPeers: process.env.PAPERCUSP_SWARM_MAX_PEERS,
   };
   afterEach(() => {
     // restore
     if (SAVED.bootstrap === undefined) delete process.env.PAPERCUSP_DHT_BOOTSTRAP;
     else process.env.PAPERCUSP_DHT_BOOTSTRAP = SAVED.bootstrap;
+    if (SAVED.dhtHost === undefined) delete process.env.PAPERCUSP_DHT_HOST;
+    else process.env.PAPERCUSP_DHT_HOST = SAVED.dhtHost;
     if (SAVED.maxPeers === undefined) delete process.env.PAPERCUSP_SWARM_MAX_PEERS;
     else process.env.PAPERCUSP_SWARM_MAX_PEERS = SAVED.maxPeers;
   });
@@ -69,5 +72,16 @@ describe('swarmConstructorOpts', () => {
   it('honors PAPERCUSP_SWARM_MAX_PEERS override', () => {
     process.env.PAPERCUSP_SWARM_MAX_PEERS = '8';
     expect(swarmConstructorOpts().maxPeers).toBe(8);
+  });
+
+  it('trims and omits empty PAPERCUSP_DHT_HOST values', () => {
+    expect(parseDhtHost(undefined)).toBeUndefined();
+    expect(parseDhtHost('   ')).toBeUndefined();
+    expect(parseDhtHost(' 10.99.0.1 ')).toBe('10.99.0.1');
+  });
+
+  it('includes an explicit DHT host when PAPERCUSP_DHT_HOST is set', () => {
+    process.env.PAPERCUSP_DHT_HOST = '10.99.0.2';
+    expect(swarmConstructorOpts().dhtHost).toBe('10.99.0.2');
   });
 });

@@ -160,6 +160,8 @@ export interface BeesHealth {
   /** Active claims whose holder is gone/stale. */
   orphanedClaims: number;
   totalLoad: number;
+  /** Recent autonomous-role spawns that failed before a turn because the selected model is unavailable/inaccessible. */
+  invalidModelFailures: number;
   /** Open-placement dispositions (the completion watchdog). */
   placements: { recovering: number; cursed: number; stranded: number; workingTracked: number };
 }

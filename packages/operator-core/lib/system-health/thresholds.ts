@@ -131,7 +131,7 @@ export function queenPlacementStalled(args: {
  *  orphaned claims / stranded / recovering placements. ok otherwise. */
 export function beesStatus(d: BeesHealth): PanelStatus {
   if (d.placements.cursed > 0) return 'crit';
-  if (d.orphanedClaims > 0 || d.placements.stranded > 0 || d.placements.recovering > 0) return 'warn';
+  if (d.orphanedClaims > 0 || d.invalidModelFailures > 0 || d.placements.stranded > 0 || d.placements.recovering > 0) return 'warn';
   return 'ok';
 }
 

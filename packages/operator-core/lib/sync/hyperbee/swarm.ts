@@ -653,6 +653,16 @@ export interface DhtBootstrapNode {
   port: number;
 }
 
+/** Parse `PAPERCUSP_DHT_HOST` — an optional local bind/advertise host for
+ * hyperdht. Hyperswarm does not forward `host` to HyperDHT, so callers that
+ * need an explicit interface (notably the fed-a/fed-b VM rig, whose default
+ * route can be duplicate/unreachable while the private L2 is stable) need us to
+ * construct HyperDHT directly and pass it through Hyperswarm's `dht` option. */
+export function parseDhtHost(raw: string | undefined): string | undefined {
+  const host = raw?.trim();
+  return host || undefined;
+}
+
 /**
  * Parse `PAPERCUSP_DHT_BOOTSTRAP` — a comma-separated `host:port` list — into
  * hyperdht bootstrap nodes. Returns undefined when unset/empty/all-malformed
@@ -687,11 +697,16 @@ export function parseDhtBootstrap(raw: string | undefined): DhtBootstrapNode[] |
  * + exported so the wiring is unit-testable without constructing the real
  * (network-touching) swarm.
  */
-export function swarmConstructorOpts(): { maxPeers: number; bootstrap?: DhtBootstrapNode[] } {
+export function swarmConstructorOpts(): { maxPeers: number; bootstrap?: DhtBootstrapNode[]; dhtHost?: string } {
   const raw = Number.parseInt(process.env.PAPERCUSP_SWARM_MAX_PEERS ?? '', 10);
   const maxPeers = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_PEERS;
   const bootstrap = parseDhtBootstrap(process.env.PAPERCUSP_DHT_BOOTSTRAP);
-  return bootstrap ? { maxPeers, bootstrap } : { maxPeers };
+  const dhtHost = parseDhtHost(process.env.PAPERCUSP_DHT_HOST);
+  return {
+    maxPeers,
+    ...(bootstrap ? { bootstrap } : {}),
+    ...(dhtHost ? { dhtHost } : {}),
+  };
 }
 
 /**
@@ -710,6 +725,7 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
       default: new (opts?: {
         maxPeers?: number;
         bootstrap?: DhtBootstrapNode[];
+        dht?: unknown;
         firewall?: (remotePublicKey: Buffer) => boolean;
       }) => HyperswarmLike;
     }
@@ -740,12 +756,25 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
   } else {
     console.info('[swarm] DHT bootstrap = PUBLIC DHT (no PAPERCUSP_DHT_BOOTSTRAP set)');
   }
+  let dht: unknown;
+  if (opts.dhtHost) {
+    const dhtMod = await import('hyperdht');
+    const DHT = (
+      dhtMod as {
+        default?: new (opts?: { bootstrap?: DhtBootstrapNode[]; host?: string }) => unknown;
+      }
+    ).default;
+    if (!DHT) throw new Error('hyperdht default export missing');
+    dht = new DHT({ bootstrap: opts.bootstrap, host: opts.dhtHost });
+    console.info(`[swarm] DHT host = ${opts.dhtHost}`);
+  }
   // P-003: the firewall runs BEFORE the Noise handshake completes — it cheaply
   // rejects banned keys without spending handshake CPU. Hyperswarm only hands
   // the firewall the remote public key, so IP-level bans are enforced in the
   // connection handler instead.
   _sharedSwarm = new Swarm({
-    ...opts,
+    maxPeers: opts.maxPeers,
+    ...(dht ? { dht } : opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),
     firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
   });
   return _sharedSwarm;

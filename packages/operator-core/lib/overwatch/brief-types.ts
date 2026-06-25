@@ -63,6 +63,8 @@ export interface OverwatchBeeHealth {
   churning: number;
   /** Dead claims: a live lease held by a dead holder = abandoned work to re-place. */
   deadClaims: number;
+  /** Recent autonomous-role spawns failed before a turn because the selected model is unavailable/inaccessible. */
+  invalidModelFailures: number;
 }
 
 /** The work-feed (backlog) health — is work actually flowing to the bees? */
@@ -141,6 +143,7 @@ export type AnomalyKind =
   | 'escalation-aging' // an escalation has aged past the attention threshold
   | 'gateway-wedge' // the inference gateway is WEDGED (slots pinned + frozen counter) — B-GW-5
   | 'gateway-throttle' // the gateway is sustained-throttling (AIMD cut concurrency / fail-fast shed)
+  | 'invalid-model-config' // autonomous-role spawns are failing because saved model overrides point at an unavailable model
   | 'observation-dark'; // the observation lane is flat while agents are running
 
 /** Anomaly severity — drives ordering + the persona's urgency. */
@@ -235,7 +238,7 @@ export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
   return {
     hiveSlug,
     queen: { lastWakeAt: null, stalled: false, cadenceOk: true, workingTracked: 0, nextFireAt: null, coordOwner: null, consecutiveZeroTokenWakes: 0 },
-    bees: { running: 0, completed: 0, churning: 0, deadClaims: 0 },
+    bees: { running: 0, completed: 0, churning: 0, deadClaims: 0, invalidModelFailures: 0 },
     workFeed: { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 },
     tokens: { pausedBuckets: [], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0, gatewayWedged: false, gatewaySustainedThrottle: false },
     plans: { active: 0, stalledItems: 0, agingEscalations: 0 },
@@ -444,7 +447,7 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   out.push('');
   out.push('### Bees');
   out.push(
-    `- running ${b.running} · completed ${b.completed} · churning ${b.churning} · dead claims ${b.deadClaims}`,
+    `- running ${b.running} · completed ${b.completed} · churning ${b.churning} · dead claims ${b.deadClaims} · invalid-model failures ${b.invalidModelFailures}`,
   );
 
   const wf = brief.workFeed;

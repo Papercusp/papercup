@@ -237,5 +237,11 @@ export function DockWorkspace({
     );
   }
 
-  return <DockviewReact onReady={onReady} components={components} className={className ?? 'dockview-theme-dark'} />;
+  return (
+    <DockviewReact
+      onReady={onReady}
+      components={components as unknown as Parameters<typeof DockviewReact>[0]['components']}
+      className={className ?? 'dockview-theme-dark'}
+    />
+  );
 }

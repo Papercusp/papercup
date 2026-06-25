@@ -9,6 +9,7 @@ import {
   deriveBeeLiveness,
   evaluatePlacement,
   evaluateStalePlacementEscalation,
+  buildOpenPlacementSummary,
   isReaperReclaim,
   isUnitTerminal,
   isStuckBlockerState,
@@ -50,6 +51,33 @@ describe('isUnitTerminal / isStuckBlockerState', () => {
     expect(isStuckBlockerState('failing')).toBe(true);
     expect(isStuckBlockerState('failed')).toBe(true);
     for (const s of ['todo', 'passed', 'in_progress', null]) expect(isStuckBlockerState(s)).toBe(false);
+  });
+});
+
+describe('buildOpenPlacementSummary', () => {
+  it('counts all open placements separately from the bounded Queen attention sample', () => {
+    const summary = buildOpenPlacementSummary(
+      [
+        { status: 'cursed', count: 20 },
+        { status: 'recovering', count: 6 },
+        { status: 'stranded', count: 2 },
+        { status: 'working', count: 9 },
+      ],
+      Array.from({ length: 20 }, (_, i) => ({
+        work_item_id: `WI-CURSED-${i}`,
+        status: 'cursed',
+        fail_count: 3,
+        harness_slug: 'papercup',
+      })),
+    );
+
+    expect(summary).toMatchObject({
+      cursed: 20,
+      recovering: 6,
+      stranded: 2,
+      workingTracked: 9,
+    });
+    expect(summary.items).toHaveLength(20);
   });
 });
 

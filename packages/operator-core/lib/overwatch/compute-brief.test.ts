@@ -199,11 +199,21 @@ test('detectAnomalies — stranded-on-resolved-constraint → NUDGE queen to re-
 
 test('detectAnomalies — bees churning / dead claims → bees-churning NUDGE queen', () => {
   const b = base();
-  b.bees = { running: 4, completed: 2, churning: 1, deadClaims: 1 };
+  b.bees = { running: 4, completed: 2, churning: 1, deadClaims: 1, invalidModelFailures: 0 };
   const a = only(detectAnomalies(b), 'bees-churning');
   assert.equal(a.severity, 'warning'); // dead claims present → warning, not info
   assert.equal(a.suggestedAction.type, 'nudge');
   assert.match(a.detail, /1 churning · 1 dead claim/);
+});
+
+test('detectAnomalies — invalid selected-model spawn failures → critical invalid-model-config ESCALATE', () => {
+  const b = base();
+  b.bees.invalidModelFailures = 3;
+  const a = only(detectAnomalies(b), 'invalid-model-config');
+  assert.equal(a.severity, 'critical');
+  assert.equal(a.suggestedAction.type, 'escalate');
+  assert.match(a.detail, /3 recent autonomous-role spawn/);
+  assert.match(a.suggestedAction.message ?? '', /model overrides and tier menu/);
 });
 
 test('detectAnomalies — aging escalations → escalation-aging NUDGE queen', () => {
@@ -238,7 +248,7 @@ test('withAnomalies — populates the brief and renders most-severe-first end-to
   const b = base();
   b.queen.stalled = true; // critical
   b.plans.agingEscalations = 2; // warning
-  b.bees = { running: 2, completed: 0, churning: 1, deadClaims: 0 }; // info
+  b.bees = { running: 2, completed: 0, churning: 1, deadClaims: 0, invalidModelFailures: 0 }; // info
   b.observations.laneCount = 5; // suppress observation-dark so we isolate the 3 tiers
   const populated = withAnomalies(b);
   assert.equal(populated.anomalies.length, 3);
@@ -290,6 +300,7 @@ const beesData = (o: Partial<BeesHealth> = {}): BeesHealth => ({
   stale: 0,
   orphanedClaims: 0,
   totalLoad: 0,
+  invalidModelFailures: 0,
   placements: { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0 },
   ...o,
 });
@@ -406,7 +417,7 @@ test('mapSystemHealthToBrief — maps each panel onto the C-1 subset (counts + m
       nextFireAt: Date.parse('2026-06-15T01:30:00.000Z'),
       workingTracked: 3,
     }),
-    bees: beesData({ running: 5, stale: 2, orphanedClaims: 1, placements: { recovering: 0, cursed: 0, stranded: 4, workingTracked: 3 } }),
+    bees: beesData({ running: 5, stale: 2, orphanedClaims: 1, invalidModelFailures: 2, placements: { recovering: 0, cursed: 0, stranded: 4, workingTracked: 3 } }),
     workFeed: workFeedData({ frontier: 7, deadRoutines: 1 }),
     tokens: tokensData({ pausedBuckets: 2, totalBuckets: 5, accountsAvailable: 3 }),
     plans: plansData({ active: 9, stalledPlans: 2 }),
@@ -420,6 +431,7 @@ test('mapSystemHealthToBrief — maps each panel onto the C-1 subset (counts + m
   assert.equal(b.bees.running, 5);
   assert.equal(b.bees.churning, 2); // ← bees.stale
   assert.equal(b.bees.deadClaims, 1); // ← bees.orphanedClaims
+  assert.equal(b.bees.invalidModelFailures, 2);
   assert.equal(b.workFeed.frontier, 7);
   assert.equal(b.workFeed.deadRoutines, 1);
   assert.equal(b.workFeed.blockedStranded, 4); // ← bees.placements.stranded (cross-panel, the co-shape)

@@ -301,8 +301,30 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
     const orphanedClaims = bees.filter((b) => !b.alive && (b.load ?? 0) > 0).length;
     const totalLoad = bees.reduce((s, b) => s + (b.load ?? 0), 0);
     const op = ctx.openPlacements ?? { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0 };
+    let invalidModelFailures = 0;
+    try {
+      const { sql } = getOrgPg();
+      const rows = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n
+          FROM harness_shared.spawned_agents
+         WHERE workspace_id = ${ctx.ws}
+           AND child_role IN ('bee', 'queen', 'overwatch', 'scout')
+           AND status = 'failed'
+           AND started_at >= ${new Date(ctx.now - WINDOW_MS)}
+           AND (
+             coalesce(error_message, '') ILIKE '%selected model%'
+             OR coalesce(output_tail, '') ILIKE '%selected model%'
+           )
+           AND (
+             coalesce(error_message, '') ILIKE '%not exist%'
+             OR coalesce(error_message, '') ILIKE '%access%'
+             OR coalesce(output_tail, '') ILIKE '%not exist%'
+             OR coalesce(output_tail, '') ILIKE '%access%'
+           )`;
+      invalidModelFailures = rows[0]?.n ?? 0;
+    } catch { /* fail-soft — a bad diagnostic read must not grey the fleet panel */ }
     const data: BeesHealth = {
-      running, alive, stale, orphanedClaims, totalLoad,
+      running, alive, stale, orphanedClaims, totalLoad, invalidModelFailures,
       placements: { recovering: op.recovering, cursed: op.cursed, stranded: op.stranded, workingTracked: op.workingTracked },
     };
     const status = beesStatus(data);
@@ -310,7 +332,7 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
       status,
       summary: running === 0
         ? 'no bees running'
-        : `${running} bee(s), ${alive} alive${stale > 0 ? `, ${stale} stale` : ''}${op.cursed > 0 ? `, ${op.cursed} cursed` : ''}`,
+        : `${running} bee(s), ${alive} alive${stale > 0 ? `, ${stale} stale` : ''}${op.cursed > 0 ? `, ${op.cursed} cursed` : ''}${invalidModelFailures > 0 ? `, ${invalidModelFailures} invalid-model failure(s)` : ''}`,
       data,
       link: { label: 'Working', href: '/adv?tab=harnesses' },
       metrics: [
@@ -318,6 +340,7 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
         m('alive', alive),
         m('stale', stale, stale > 0 ? 'warn' : undefined),
         m('orphaned', orphanedClaims, orphanedClaims > 0 ? 'warn' : undefined),
+        m('invalid model', invalidModelFailures, invalidModelFailures > 0 ? 'warn' : undefined),
         m('cursed', op.cursed, op.cursed > 0 ? 'crit' : undefined),
       ],
     };

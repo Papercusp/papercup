@@ -32,7 +32,7 @@ export function createFetchDockLayoutStore(basePath = '/api/dock-layouts'): Dock
       const resp = await fetch(pathFor(name));
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
-        throw new Error(`GET ${pathFor(name)} -> ${resp.status}: ${text}`);
+        throw new Error(`GET ${pathFor(name)} → ${resp.status}: ${text}`);
       }
       return normalizeRow(await resp.json());
     },
@@ -49,7 +49,7 @@ export function createFetchDockLayoutStore(basePath = '/api/dock-layouts'): Dock
       if (resp.status === 409) throw new DockLayoutConflictError(name);
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
-        throw new Error(`PUT ${pathFor(name)} -> ${resp.status}: ${text}`);
+        throw new Error(`PUT ${pathFor(name)} → ${resp.status}: ${text}`);
       }
       return normalizeRow(await resp.json());
     },
@@ -57,7 +57,7 @@ export function createFetchDockLayoutStore(basePath = '/api/dock-layouts'): Dock
       const resp = await fetch(pathFor(name), { method: 'DELETE' });
       if (!resp.ok && resp.status !== 204) {
         const text = await resp.text().catch(() => '');
-        throw new Error(`DELETE ${pathFor(name)} -> ${resp.status}: ${text}`);
+        throw new Error(`DELETE ${pathFor(name)} → ${resp.status}: ${text}`);
       }
       return this.load(name);
     },
