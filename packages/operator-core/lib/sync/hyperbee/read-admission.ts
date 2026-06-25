@@ -118,6 +118,28 @@ export function makeAdmissionDecider(
   };
 }
 
+export interface TrustedHiveMemberDeviceInput {
+  devicePubkey: string;
+  sigValid: boolean;
+  memberDevices: string[];
+  revoked?: Set<string>;
+}
+
+/**
+ * Offline/durable fast path for already-verified hive members. The signed
+ * announce still has to verify, revocation still wins, and the device pubkey
+ * must already be present in the local hive_members projection for the claimed
+ * GitHub user. This removes live GitHub gist availability from the boot path
+ * for known members while preserving the local membership binding.
+ */
+export function trustedHiveMemberDeviceAdmission(
+  input: TrustedHiveMemberDeviceInput,
+): boolean {
+  if (!input.sigValid) return false;
+  if (input.revoked?.has(input.devicePubkey)) return false;
+  return input.memberDevices.includes(input.devicePubkey);
+}
+
 /**
  * A-003 (a′) — slug-aware admission scope. When one hive topic carries MULTIPLE
  * local harnesses' log announces (dc9db's (a′) swarm.ts broadcasts the hive-home

@@ -82,6 +82,7 @@ import {
 import {
   makeAdmissionDecider,
   announceSlugInScope,
+  trustedHiveMemberDeviceAdmission,
   type AdmissionInput,
   type AdmissionResult,
 } from './read-admission';
@@ -1657,6 +1658,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     return { admit: false, reason: 'pending' };
   }
 
+  async function admitsAsKnownHiveMember(
+    frame: SignedAnnounce,
+    sigValid: boolean,
+  ): Promise<boolean> {
+    if (!sigValid || revoked.has(frame.device_pubkey)) return false;
+    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const myHiveHome =
+      hiveHomeProjectionSlug ??
+      (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+    if (myHiveHome == null) return false;
+    const memberDevices = await loadHiveMembers(myHiveHome, frame.github_user_id);
+    return trustedHiveMemberDeviceAdmission({
+      devicePubkey: frame.device_pubkey,
+      sigValid,
+      memberDevices,
+      revoked,
+    });
+  }
+
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
     try {
@@ -1668,7 +1688,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         attestation_gist_id: frame.attestation_gist_id,
         sigValid,
       };
-      decision = await admit(input);
+      decision = (await admitsAsKnownHiveMember(frame, sigValid))
+        ? { admit: true }
+        : await admit(input);
     } catch (e) {
       recordBootEvent(
         opts.workspaceId,
@@ -1881,7 +1903,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           attestation_gist_id: entry.frame.attestation_gist_id,
           sigValid,
         };
-        const decision = await admit(input);
+        const decision = (await admitsAsKnownHiveMember(entry.frame, sigValid))
+          ? { admit: true }
+          : await admit(input);
         if (decision.admit) {
           // A-003 + WI-559: identity is re-verified (admit() above re-checked revocation); now
           // re-resolve SCOPE against the now-current state, in the SAME order as onAnnounce.
