@@ -77,6 +77,19 @@ async function routineFireImpl(
   targetOwnerId?: string | null,
 ): Promise<void> {
   await runWithWorkspace(workspaceId, async () => {
+    // Checkpoint immediately so the executor reaper can distinguish "workflow
+    // never entered user code" from a legitimate long-running first action.
+    await DBOS.runStep(
+      async () => ({
+        routineId,
+        workspaceId,
+        installSlug,
+        targetRole,
+        routineName: routineName ?? routineId,
+      }),
+      { name: 'routine-fire-start' },
+    );
+
     // LOOP fire (B-LOOP-3 / P-004, D-005/D-006): a loop wakes its pinned session WARM instead
     // of spawning a role / running a system action. Identified by an interval + a bound owner;
     // the fire delivers a `coord` wake (rides the existing wake-executor liveness ladder — NO

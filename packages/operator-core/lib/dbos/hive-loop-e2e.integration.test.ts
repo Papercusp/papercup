@@ -210,6 +210,11 @@ describe('hive loop whole-chain E2E (P-001)', () => {
     // real fire-gate read (clean autoloop_state → allow), then the fake Pot turn.
     await routineFireWorkflow(RID, WS, SLUG, 'system:blueprint-run', { cron: '*/30 * * * * *' }, null);
 
+    const startCheckpoints = await db.adminSql`
+      SELECT workflow_uuid, function_name FROM dbos.operation_outputs
+       WHERE function_name = 'routine-fire-start'`;
+    expect(startCheckpoints.length).toBeGreaterThan(0);
+
     expect(potTurns).toEqual([{ installSlug: SLUG, role: 'director' }]);
 
     // The Pot turn queued both features (real PG state via the work_items view).
