@@ -329,9 +329,11 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   **Trigger:** about to call the SAME tool once per item in a list (a `get` per id,
   a check per file)? That repetition IS the cue — reach for `code:run` BEFORE the
   first such call, not after firing several one-at-a-time. NOT for a single call or
-  a step needing YOUR judgment mid-flow. Flow: `code:tools
-  {}` → `code:tools { namespaces }` for typed signatures → write the script →
-  `code:run { dryRun:true }` to preview `effect:'write'` mutations → `code:run`.
+  a step needing YOUR judgment mid-flow. Flow: write the script and `code:run` it
+  directly — NO `code:tools` pre-call; a wrong name returns the typed
+  `tools.ns.verb(args)` signatures inline to fix + re-run (`code:tools` OPTIONAL).
+  For `effect:'write'`, `code:run { dryRun:true }` → inspect `plannedMutations` →
+  `code:run` to commit.
   **Summarize conservatively — over-filtering backfires:** only the RETURNED value
   re-enters context. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
 - **Plan before non-trivial work.** Present a plan and wait for review

@@ -33,7 +33,7 @@ export default defineTool({
   description:
     'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE ' +
     'call and get back ONLY the script\'s returned summary — collapsing N tool round-trips (each ' +
-    'one re-reads your whole context) into one. WRITE THE SCRIPT DIRECTLY: no discovery pre-call ' +
+    're-reads your whole context) into one. WRITE THE SCRIPT DIRECTLY: no discovery pre-call ' +
     'is required — if you reference a tool name wrong, the result hands you the exact typed ' +
     'signatures inline to fix. Use dryRun:true to preview write-effect mutations before committing.',
   guidance: {

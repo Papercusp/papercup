@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn(), setAdminPoolStatementTimeoutProvider: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', () => ({
   // 'overwatch' included so the B-10 flag-gate (which runs AFTER the known-role
   // check) is reachable in the gate tests below.

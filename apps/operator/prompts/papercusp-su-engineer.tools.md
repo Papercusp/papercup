@@ -421,10 +421,12 @@ autonomous-fleet agent.
   the signal — reach for `code:run` BEFORE the first such call; don't fire several
   one-at-a-time and switch to a script halfway. NOT
   for a single call, or a step that needs YOUR judgment mid-flow (read a result,
-  THEN decide) — call those directly. Flow: `code:tools {}` → `code:tools
-  { namespaces }` for the typed `tools.ns.verb(args)` signatures → write the script
-  → `code:run { dryRun:true }` to preview `effect:'write'` mutations → `code:run`
-  to commit. **Summarize conservatively — over-filtering backfires:** only the
+  THEN decide) — call those directly. Flow: write the script and `code:run` it
+  directly — NO `code:tools` pre-call needed; a wrong tool/arg name comes back with
+  the exact typed `tools.ns.verb(args)` signatures inline to fix + re-run (`code:tools`
+  is OPTIONAL — browse namespaces up front only if you prefer). For `effect:'write'`
+  mutations, `code:run { dryRun:true }` previews `plannedMutations` → inspect →
+  `code:run` to commit. **Summarize conservatively — over-filtering backfires:** only the
   RETURNED value re-enters context, so if you drop a field you need you re-pay the
   round-trips you saved. (The shared `CODE_RUN_NUDGE` every harness agent also
   carries.)
