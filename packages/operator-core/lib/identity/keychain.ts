@@ -7,8 +7,9 @@
  * Tiers, tried in order:
  *   1. `secret-tool` (Linux, libsecret / GNOME Keyring)
  *   2. `security` CLI (macOS Keychain)
- *   3. Encrypted-file fallback in ~/.papercusp/identity/ (AES-256-GCM,
- *      machine-derived PBKDF2 key from hostname + username)
+ *   3. Encrypted-file fallback in PAPERCUSP_IDENTITY_DIR or
+ *      ~/.papercusp/identity/ (AES-256-GCM, machine-derived PBKDF2 key from
+ *      hostname + username)
  *
  * Tier 3 is not as strong as an OS keychain but avoids storing the
  * private key in plain text. Acceptable for Phase 1b; a full Tauri
@@ -41,7 +42,10 @@ const pbkdf2Async: (...a: unknown[]) => Promise<Buffer> = (...a) =>
   (promisify(pbkdf2) as (...x: unknown[]) => Promise<Buffer>)(...a);
 
 const SERVICE_NAME = 'papercusp-device-keypair';
-const IDENTITY_DIR = join(homedir(), '.papercusp', 'identity');
+
+function identityDir(): string {
+  return process.env.PAPERCUSP_IDENTITY_DIR || join(homedir(), '.papercusp', 'identity');
+}
 
 // AES-256-GCM constants
 const KEY_LEN = 32;
@@ -208,7 +212,7 @@ async function trySecurityCli(
 function encFilePath(keychainId: string): string {
   // Sanitize the id to a safe filename component
   const safe = keychainId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return join(IDENTITY_DIR, 'keypair-' + safe + '.enc');
+  return join(identityDir(), 'keypair-' + safe + '.enc');
 }
 
 async function deriveMachineKey(salt: Buffer): Promise<Buffer> {
@@ -217,7 +221,7 @@ async function deriveMachineKey(salt: Buffer): Promise<Buffer> {
 }
 
 async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<void> {
-  await mkdir(IDENTITY_DIR, { recursive: true });
+  await mkdir(identityDir(), { recursive: true });
   const salt = randomBytes(SALT_LEN);
   const iv = randomBytes(IV_LEN);
   const key = await deriveMachineKey(salt);
