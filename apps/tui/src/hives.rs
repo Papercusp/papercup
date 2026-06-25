@@ -180,10 +180,7 @@ pub fn group_hives(rows: &[PresenceRow]) -> Vec<HiveGroup> {
             .clone()
             .filter(|k| !k.is_empty())
             .unwrap_or_else(|| r.host.clone());
-        let g = match groups
-            .iter_mut()
-            .find(|g| g.device_pubkey == key)
-        {
+        let g = match groups.iter_mut().find(|g| g.device_pubkey == key) {
             Some(g) => g,
             None => {
                 groups.push(HiveGroup {
@@ -295,10 +292,7 @@ pub fn draw_hives(f: &mut Frame, app: &App, area: Rect) {
             Trust::Gossip.style(),
         ),
     ]);
-    f.render_widget(
-        Paragraph::new(headline).style(Theme::status_bar()),
-        rows[0],
-    );
+    f.render_widget(Paragraph::new(headline).style(Theme::status_bar()), rows[0]);
 
     if groups.is_empty() && app.hive_directory.is_empty() {
         // The single-box reality until real peers announce: honest empty state.
@@ -370,7 +364,10 @@ fn draw_federated_roster(f: &mut Frame, app: &App, groups: &[HiveGroup], area: R
                 format!(" [{}]", g.harnesses.join(", "))
             };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", Trust::Federated.glyph()), Trust::Federated.style()),
+                Span::styled(
+                    format!("{} ", Trust::Federated.glyph()),
+                    Trust::Federated.style(),
+                ),
                 dot,
                 Span::raw(format!(" {:<17} ", trunc(&g.machine, 17))),
                 Span::styled(format!("{users:<12}"), Theme::dim()),
@@ -391,7 +388,10 @@ fn draw_federated_roster(f: &mut Frame, app: &App, groups: &[HiveGroup], area: R
         f,
         area,
         Theme::block(trust_section_title(Trust::Federated, tail), false),
-        &format!("      {:<18}{:<12}{:<32}{}", "machine", "user", "doing", "harnesses"),
+        &format!(
+            "      {:<18}{:<12}{:<32}{}",
+            "machine", "user", "doing", "harnesses"
+        ),
     );
     let list = List::new(items)
         .style(Theme::panel())
@@ -434,7 +434,10 @@ fn draw_directory(f: &mut Frame, app: &App, area: Rect) {
         f,
         area,
         Theme::block(trust_section_title(Trust::Gossip, tail), true),
-        &format!("   {:<24}{:<15}{:<27}{}", "hive", "owner", "description", "harnesses"),
+        &format!(
+            "   {:<24}{:<15}{:<27}{}",
+            "hive", "owner", "description", "harnesses"
+        ),
     );
     let list = List::new(items)
         .style(Theme::panel())
@@ -466,9 +469,30 @@ mod tests {
     #[test]
     fn groups_by_device_and_unions_users_harnesses() {
         let rows = vec![
-            row("mbp", "key-a", "111", "papercup", "2026-06-07T01:00:00Z", false),
-            row("mbp", "key-a", "222", "restart", "2026-06-07T02:00:00Z", false),
-            row("tower", "key-b", "111", "papercup", "2026-06-07T01:30:00Z", true),
+            row(
+                "mbp",
+                "key-a",
+                "111",
+                "papercup",
+                "2026-06-07T01:00:00Z",
+                false,
+            ),
+            row(
+                "mbp",
+                "key-a",
+                "222",
+                "restart",
+                "2026-06-07T02:00:00Z",
+                false,
+            ),
+            row(
+                "tower",
+                "key-b",
+                "111",
+                "papercup",
+                "2026-06-07T01:30:00Z",
+                true,
+            ),
         ];
         let groups = group_hives(&rows);
         assert_eq!(groups.len(), 2);
@@ -487,8 +511,22 @@ mod tests {
     #[test]
     fn one_live_row_keeps_the_hive_live() {
         let rows = vec![
-            row("mbp", "key-a", "111", "papercup", "2026-06-07T01:00:00Z", true),
-            row("mbp", "key-a", "111", "restart", "2026-06-07T02:00:00Z", false),
+            row(
+                "mbp",
+                "key-a",
+                "111",
+                "papercup",
+                "2026-06-07T01:00:00Z",
+                true,
+            ),
+            row(
+                "mbp",
+                "key-a",
+                "111",
+                "restart",
+                "2026-06-07T02:00:00Z",
+                false,
+            ),
         ];
         let groups = group_hives(&rows);
         assert_eq!(groups.len(), 1);
@@ -498,9 +536,30 @@ mod tests {
     #[test]
     fn present_in_hive_filters_to_the_key_with_live_members_first() {
         let rows = vec![
-            row("mbp", "key-a", "111", "papercup", "2026-06-07T01:00:00Z", false),
-            row("mbp", "key-a", "222", "restart", "2026-06-07T02:00:00Z", true),
-            row("tower", "key-b", "111", "papercup", "2026-06-07T01:00:00Z", false),
+            row(
+                "mbp",
+                "key-a",
+                "111",
+                "papercup",
+                "2026-06-07T01:00:00Z",
+                false,
+            ),
+            row(
+                "mbp",
+                "key-a",
+                "222",
+                "restart",
+                "2026-06-07T02:00:00Z",
+                true,
+            ),
+            row(
+                "tower",
+                "key-b",
+                "111",
+                "papercup",
+                "2026-06-07T01:00:00Z",
+                false,
+            ),
         ];
         // Only this hive's members; the other device (key-b) is excluded.
         let members = present_in_hive(&rows, "key-a");
@@ -515,7 +574,14 @@ mod tests {
 
     #[test]
     fn present_in_hive_keys_by_host_when_a_row_has_no_pubkey() {
-        let mut r = row("solo-box", "", "111", "papercup", "2026-06-07T01:00:00Z", false);
+        let mut r = row(
+            "solo-box",
+            "",
+            "111",
+            "papercup",
+            "2026-06-07T01:00:00Z",
+            false,
+        );
         r.device_pubkey = None;
         let rows = vec![r];
         // Falls back to host as the key (mirrors group_hives' keying).
@@ -582,7 +648,12 @@ mod tests {
         let render = |app: &App| -> String {
             let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
             term.draw(|f| draw_hives(f, app, f.area())).unwrap();
-            term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+            term.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
         };
         let mut app = App::new();
         app.hive_directory = vec![
@@ -621,7 +692,14 @@ mod tests {
     fn federated_and_gossip_render_as_distinct_trust_tiers() {
         use ratatui::{backend::TestBackend, Terminal};
         let mut app = App::new();
-        app.hives = vec![row("mbp", "key-a", "111", "papercup", "2026-06-07T01:00:00Z", false)];
+        app.hives = vec![row(
+            "mbp",
+            "key-a",
+            "111",
+            "papercup",
+            "2026-06-07T01:00:00Z",
+            false,
+        )];
         app.hive_directory = vec![crate::models::DiscoveredHiveRow {
             hive_id: "ash".into(),
             title: "Ash Hive".into(),

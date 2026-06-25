@@ -84,7 +84,11 @@ pub fn tail_transcript(path: &Path, offset: u64) -> std::io::Result<(u64, Vec<Ch
     let len = f.metadata()?.len();
     if len <= offset {
         // Unchanged — or truncated/rotated (a re-pinned brain): restart.
-        return if len < offset { tail_transcript(path, 0) } else { Ok((offset, Vec::new())) };
+        return if len < offset {
+            tail_transcript(path, 0)
+        } else {
+            Ok((offset, Vec::new()))
+        };
     }
     let mut start = offset;
     let mut skip_first_partial = false;
@@ -147,7 +151,11 @@ pub fn parse_transcript_line(line: &str) -> Option<ChatMessage> {
     }
     // Harness-injected user records (caveats, command echoes, reminders) are
     // not the human speaking — drop the obvious ones.
-    if kind == "user" && (text.starts_with("<local-command") || text.starts_with("<command-name>") || text.starts_with("<system-reminder>")) {
+    if kind == "user"
+        && (text.starts_with("<local-command")
+            || text.starts_with("<command-name>")
+            || text.starts_with("<system-reminder>"))
+    {
         return None;
     }
     Some(ChatMessage {
@@ -173,10 +181,16 @@ mod tests {
         std::fs::write(&target, b"{}\n").unwrap();
 
         // Found one level down (the <munged-cwd> dir), like the real layout.
-        assert_eq!(find_in_projects_dir(&projects, &format!("{uuid}.jsonl")), Some(target));
+        assert_eq!(
+            find_in_projects_dir(&projects, &format!("{uuid}.jsonl")),
+            Some(target)
+        );
         // Absent uuid / absent dir → None, never a panic.
         assert_eq!(find_in_projects_dir(&projects, "missing.jsonl"), None);
-        assert_eq!(find_in_projects_dir(&projects.join("nope"), "x.jsonl"), None);
+        assert_eq!(
+            find_in_projects_dir(&projects.join("nope"), "x.jsonl"),
+            None
+        );
     }
 
     #[test]
@@ -186,7 +200,10 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"hello queen"}}"#,
         )
         .expect("user msg");
-        assert_eq!((m.role.as_str(), m.content.as_str()), ("user", "hello queen"));
+        assert_eq!(
+            (m.role.as_str(), m.content.as_str()),
+            ("user", "hello queen")
+        );
 
         // Assistant: text blocks concatenated; thinking + tool_use skipped.
         let a = parse_transcript_line(

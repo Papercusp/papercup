@@ -104,6 +104,16 @@ describe('selectSpawnAccount — deterministic, Queen-independent egress-account
     expect(await selectSpawnAccount('ws', undefined)).toBeUndefined();
   });
 
+  it('does not pin an account that is available-by-pause but weekly-full', async () => {
+    const now = Date.now();
+    let p = poolOf('a', 'b');
+    p = recordAccountWindow(p, 'a', { utilization: 0.04, utilization7d: 1.0 }, now);
+    p = recordAccountWindow(p, 'b', { utilization: 0.12, utilization7d: 0.99 }, now);
+    h.pool = p;
+
+    expect(await selectSpawnAccount('ws', undefined, undefined, 'claude', SEED0)).toBeUndefined();
+  });
+
   it('SPREADS concurrent fresh bees across budgeted accounts instead of piling on one (anti-thundering-herd)', async () => {
     h.pool = poolOf('a', 'b', 'c'); // all equal headroom
     // Production rng (Math.random) over many fresh spawns must touch more than one account — the fix for

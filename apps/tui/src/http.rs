@@ -281,7 +281,11 @@ mod live_tests {
         assert_eq!(v["ok"], serde_json::json!(true), "health body: {v}");
         // A real pui read-surface route (workbench persistence, D-013).
         let layouts = client
-            .sys_http("GET", "/api/tui/layouts?owner=http-live-test@papercusp", None)
+            .sys_http(
+                "GET",
+                "/api/tui/layouts?owner=http-live-test@papercusp",
+                None,
+            )
             .await
             .expect("GET /api/tui/layouts");
         let v: Value = serde_json::from_slice(&layouts).expect("layouts JSON");

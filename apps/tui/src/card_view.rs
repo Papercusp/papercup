@@ -39,11 +39,25 @@ pub struct CardOption {
 /// `kind` is the discriminant; unknown kinds map to `Unknown` (fallbackText).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CardPresentation {
-    Radio { options: Vec<CardOption> },
-    Checkbox { options: Vec<CardOption> },
-    Text { placeholder: Option<String>, multiline: bool },
-    Date { min: Option<String>, max: Option<String> },
-    Slider { min: f64, max: f64, step: f64 },
+    Radio {
+        options: Vec<CardOption>,
+    },
+    Checkbox {
+        options: Vec<CardOption>,
+    },
+    Text {
+        placeholder: Option<String>,
+        multiline: bool,
+    },
+    Date {
+        min: Option<String>,
+        max: Option<String>,
+    },
+    Slider {
+        min: f64,
+        max: f64,
+        step: f64,
+    },
     /// No presentation / an unrecognized kind — render `fallbackText` only.
     Unknown,
 }
@@ -64,7 +78,10 @@ impl CardPresentation {
                     .get("placeholder")
                     .and_then(|p| p.as_str())
                     .map(str::to_string),
-                multiline: v.get("multiline").and_then(|m| m.as_bool()).unwrap_or(false),
+                multiline: v
+                    .get("multiline")
+                    .and_then(|m| m.as_bool())
+                    .unwrap_or(false),
             },
             "date" => Self::Date {
                 min: v.get("min").and_then(|m| m.as_str()).map(str::to_string),
@@ -358,7 +375,9 @@ impl CardState {
 
     /// Move the highlight (radio/checkbox) by `delta` (wraps within bounds).
     pub fn move_sel(&mut self, down: bool) {
-        let Some(head) = self.cards.first() else { return };
+        let Some(head) = self.cards.first() else {
+            return;
+        };
         let n = head.presentation.options().len();
         if n == 0 {
             return;
@@ -372,8 +391,7 @@ impl CardState {
 
     /// Toggle the highlighted option (checkbox cards only).
     pub fn toggle_checked(&mut self) {
-        if let Some(CardPresentation::Checkbox { .. }) =
-            self.cards.first().map(|c| &c.presentation)
+        if let Some(CardPresentation::Checkbox { .. }) = self.cards.first().map(|c| &c.presentation)
         {
             if self.checked.contains(&self.sel) {
                 self.checked.remove(&self.sel);
@@ -387,7 +405,9 @@ impl CardState {
     /// checkbox: toggles that option). Returns the response when a number-pick
     /// commits a radio card.
     pub fn pick_number(&mut self, n: usize) -> Option<CardResponse> {
-        let Some(head) = self.cards.first() else { return None };
+        let Some(head) = self.cards.first() else {
+            return None;
+        };
         let opts = head.presentation.options();
         if n == 0 || n > opts.len() {
             return None;
@@ -412,7 +432,11 @@ impl CardState {
         if let Some(CardPresentation::Slider { min, max, step }) =
             self.cards.first().map(|c| &c.presentation)
         {
-            let next = if up { self.slider + step } else { self.slider - step };
+            let next = if up {
+                self.slider + step
+            } else {
+                self.slider - step
+            };
             self.slider = snap(next.clamp(*min, *max), *min, *step);
         }
     }
@@ -465,9 +489,9 @@ impl CardState {
                     trimmed.to_string(),
                 )))
             }
-            CardPresentation::Slider { .. } => Some(CardResponse::SubmitValue(
-                serde_json::json!(self.slider),
-            )),
+            CardPresentation::Slider { .. } => {
+                Some(CardResponse::SubmitValue(serde_json::json!(self.slider)))
+            }
             CardPresentation::Unknown => None,
         }
     }
@@ -715,7 +739,9 @@ mod tests {
     fn malformed_snapshot_rejected() {
         assert!(SnapshotEnvelope::from_json("{not json}").is_none());
         // missing runId
-        assert!(SnapshotEnvelope::from_json(r#"{"version":1,"snapshot":{"openCards":[]}}"#).is_none());
+        assert!(
+            SnapshotEnvelope::from_json(r#"{"version":1,"snapshot":{"openCards":[]}}"#).is_none()
+        );
         // missing snapshot
         assert!(SnapshotEnvelope::from_json(r#"{"runId":"r","version":1}"#).is_none());
     }

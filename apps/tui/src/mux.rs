@@ -179,11 +179,7 @@ impl Multiplexer for Zellij {
                 vec![s("zellij"), s("action"), s("previous-swap-layout")]
             }
             MuxAction::ToggleFloat => {
-                vec![
-                    s("zellij"),
-                    s("action"),
-                    s("toggle-pane-embed-or-floating"),
-                ]
+                vec![s("zellij"), s("action"), s("toggle-pane-embed-or-floating")]
             }
         }
     }

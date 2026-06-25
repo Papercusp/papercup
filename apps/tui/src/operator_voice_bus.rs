@@ -158,7 +158,9 @@ pub fn decode_op_voice_frame(ty: u8, payload: &[u8]) -> OpVoiceIn {
             }
         }
         OPV_RESPONSE_TRANSCRIPT => match serde_json::from_slice::<serde_json::Value>(payload) {
-            Ok(v) => OpVoiceIn::ResponseTranscript { text: jstr(&v, "text") },
+            Ok(v) => OpVoiceIn::ResponseTranscript {
+                text: jstr(&v, "text"),
+            },
             Err(_) => OpVoiceIn::Unknown,
         },
         OPV_RESPONSE_TAG => match serde_json::from_slice::<serde_json::Value>(payload) {
@@ -172,7 +174,11 @@ pub fn decode_op_voice_frame(ty: u8, payload: &[u8]) -> OpVoiceIn {
             Ok(v) => OpVoiceIn::SessionState {
                 status: {
                     let s = jstr(&v, "status");
-                    if s.is_empty() { "idle".into() } else { s }
+                    if s.is_empty() {
+                        "idle".into()
+                    } else {
+                        s
+                    }
                 },
                 muted: v.get("muted").and_then(|x| x.as_bool()).unwrap_or(false),
                 mode: jstr(&v, "mode"),
@@ -247,10 +253,22 @@ mod tests {
         for (framed, want) in [
             (control_start(), serde_json::json!({ "op": "start" })),
             (control_stop(), serde_json::json!({ "op": "stop" })),
-            (control_force_host(), serde_json::json!({ "op": "force-host" })),
-            (control_mute(true), serde_json::json!({ "op": "mute", "muted": true })),
-            (control_ptt(false), serde_json::json!({ "op": "ptt", "down": false })),
-            (control_set_mode("always-on"), serde_json::json!({ "op": "set-mode", "mode": "always-on" })),
+            (
+                control_force_host(),
+                serde_json::json!({ "op": "force-host" }),
+            ),
+            (
+                control_mute(true),
+                serde_json::json!({ "op": "mute", "muted": true }),
+            ),
+            (
+                control_ptt(false),
+                serde_json::json!({ "op": "ptt", "down": false }),
+            ),
+            (
+                control_set_mode("always-on"),
+                serde_json::json!({ "op": "set-mode", "mode": "always-on" }),
+            ),
         ] {
             let mut p = FrameParser::default();
             let frames = p.push(&framed);
@@ -263,10 +281,16 @@ mod tests {
     #[test]
     fn decodes_input_transcript() {
         // host frame: encode_frame(0x13, {"text":..,"final":..})
-        let framed = encode_frame(OPV_INPUT_TRANSCRIPT, br#"{"text":"hello there","final":true}"#);
+        let framed = encode_frame(
+            OPV_INPUT_TRANSCRIPT,
+            br#"{"text":"hello there","final":true}"#,
+        );
         assert_eq!(
             round_trip(&framed),
-            OpVoiceIn::InputTranscript { text: "hello there".into(), is_final: true }
+            OpVoiceIn::InputTranscript {
+                text: "hello there".into(),
+                is_final: true
+            }
         );
     }
 
@@ -278,11 +302,18 @@ mod tests {
         pcm.extend_from_slice(&[1, 2, 3, 4]);
         let framed = encode_frame(OPV_RESPONSE_AUDIO, &pcm);
         match round_trip(&framed) {
-            OpVoiceIn::ResponseAudio { format, sample_rate, audio } => {
+            OpVoiceIn::ResponseAudio {
+                format,
+                sample_rate,
+                audio,
+            } => {
                 assert_eq!(format, AudioFormat::Pcm);
                 assert_eq!(sample_rate, 16_000);
                 assert_eq!(audio, vec![1, 2, 3, 4]);
-                assert_eq!(pcm_bytes_to_i16(&audio), vec![i16::from_le_bytes([1, 2]), i16::from_le_bytes([3, 4])]);
+                assert_eq!(
+                    pcm_bytes_to_i16(&audio),
+                    vec![i16::from_le_bytes([1, 2]), i16::from_le_bytes([3, 4])]
+                );
             }
             other => panic!("expected response_audio, got {other:?}"),
         }
@@ -302,12 +333,23 @@ mod tests {
     #[test]
     fn decodes_transcript_tag_and_state() {
         assert_eq!(
-            round_trip(&encode_frame(OPV_RESPONSE_TRANSCRIPT, br#"{"text":"<say>hi</say>"}"#)),
-            OpVoiceIn::ResponseTranscript { text: "<say>hi</say>".into() }
+            round_trip(&encode_frame(
+                OPV_RESPONSE_TRANSCRIPT,
+                br#"{"text":"<say>hi</say>"}"#
+            )),
+            OpVoiceIn::ResponseTranscript {
+                text: "<say>hi</say>".into()
+            }
         );
         assert_eq!(
-            round_trip(&encode_frame(OPV_RESPONSE_TAG, br#"{"tag":"set_mode","value":"passive"}"#)),
-            OpVoiceIn::ResponseTag { tag: "set_mode".into(), value: "passive".into() }
+            round_trip(&encode_frame(
+                OPV_RESPONSE_TAG,
+                br#"{"tag":"set_mode","value":"passive"}"#
+            )),
+            OpVoiceIn::ResponseTag {
+                tag: "set_mode".into(),
+                value: "passive".into()
+            }
         );
         match round_trip(&encode_frame(
             OPV_SESSION_STATE,
@@ -328,7 +370,9 @@ mod tests {
             OPV_SESSION_STATE,
             br#"{"status":"on-fire","muted":true,"mode":"","playerId":null,"conversationId":null}"#,
         )) {
-            OpVoiceIn::SessionState { status, player_id, .. } => {
+            OpVoiceIn::SessionState {
+                status, player_id, ..
+            } => {
                 // unknown statuses pass through as-is on the client (display-only)
                 assert_eq!(status, "on-fire");
                 assert_eq!(player_id, None);
@@ -340,10 +384,19 @@ mod tests {
     #[test]
     fn foreign_and_malformed_frames_decode_to_unknown() {
         // a CTRL (0x01) frame is not ours
-        assert_eq!(decode_op_voice_frame(0x01, br#"{"x":1}"#), OpVoiceIn::Unknown);
+        assert_eq!(
+            decode_op_voice_frame(0x01, br#"{"x":1}"#),
+            OpVoiceIn::Unknown
+        );
         // malformed JSON in an opvoice JSON slot
-        assert_eq!(decode_op_voice_frame(OPV_INPUT_TRANSCRIPT, &[0xff, 0xfe]), OpVoiceIn::Unknown);
+        assert_eq!(
+            decode_op_voice_frame(OPV_INPUT_TRANSCRIPT, &[0xff, 0xfe]),
+            OpVoiceIn::Unknown
+        );
         // too-short response audio
-        assert_eq!(decode_op_voice_frame(OPV_RESPONSE_AUDIO, &[0x00, 0x01]), OpVoiceIn::Unknown);
+        assert_eq!(
+            decode_op_voice_frame(OPV_RESPONSE_AUDIO, &[0x00, 0x01]),
+            OpVoiceIn::Unknown
+        );
     }
 }

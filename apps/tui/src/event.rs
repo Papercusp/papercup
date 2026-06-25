@@ -8,10 +8,10 @@
 
 use crate::models::{
     ActivityRow, AttentionItem, BeeAssignment, BeeMailPayload, ChatMessage, ChatToolCall,
-    ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
-    FleetRateStatus, HarnessFeature, HarnessIssue, HarnessRef, LexiconPackPayload, Notif,
-    OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution,
-    ViewState, WorkItem,
+    ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse, FleetRateStatus,
+    HarnessFeature, HarnessIssue, HarnessRef, LexiconPackPayload, Notif, OperatorConfig,
+    PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState,
+    WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;

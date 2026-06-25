@@ -30,20 +30,49 @@ function spyDeps(over: Partial<BootstrapPapercuspHiveDeps> = {}) {
     adoptShare: vi.fn(async () => null),
     goShare: vi.fn(async () => undefined),
     shareExisting: vi.fn(async () => undefined),
+    submodulesNeedUpdate: vi.fn(async () => false),
     ...over,
   };
   return deps as unknown as BootstrapPapercuspHiveDeps & typeof deps;
 }
 
 describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
-  it('no-ops + homes when the papercusp hive already exists (idempotent)', async () => {
-    const deps = spyDeps({ loadRegistry: vi.fn(async () => ({ projects: [{ slug: PAPERCUSP_HIVE_SLUG }] })) });
+  it('no-ops + homes when the papercusp hive already exists with complete submodules (idempotent)', async () => {
+    const deps = spyDeps({
+      loadRegistry: vi.fn(async () => ({ projects: [{ slug: PAPERCUSP_HIVE_SLUG, path: '/clones/papercusp' }] })),
+    });
     const res = await bootstrapPapercuspHive(deps);
     expect(res.state).toBe('already-present');
     expect(deps.clone).not.toHaveBeenCalled();
     expect(deps.ensureHive).not.toHaveBeenCalled();
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    expect(deps.submodulesNeedUpdate).toHaveBeenCalledWith('/clones/papercusp');
+    expect(deps.initSubmodules).not.toHaveBeenCalled();
     expect(deps.shareExisting).toHaveBeenCalledOnce();
+  });
+
+  it('existing hive with uninitialized submodules resumes the submodule phase', async () => {
+    const events: string[] = [];
+    const deps = spyDeps({
+      loadRegistry: vi.fn(async () => ({ projects: [{ slug: PAPERCUSP_HIVE_SLUG, path: '/clones/papercusp' }] })),
+      submodulesNeedUpdate: vi.fn(async () => true),
+      recordProgress: vi.fn((step, status, extra) =>
+        events.push(`${step}:${status}${extra?.percent != null ? `@${extra.percent}` : ''}`),
+      ),
+      initSubmodules: vi.fn((_root, opts) => {
+        opts?.onProgress?.(3, 27);
+        opts?.onDone?.(true);
+      }),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('already-present');
+    expect(deps.clone).not.toHaveBeenCalled();
+    expect(deps.ensureHive).not.toHaveBeenCalled();
+    expect(deps.initSubmodules).toHaveBeenCalledWith('/clones/papercusp', expect.any(Object));
+    expect(events).toContain('clone:done');
+    expect(events).toContain('submodules:running@0');
+    expect(events).toContain('submodules:running@11');
+    expect(events).toContain('submodules:done');
   });
 
   it('uses a LOCAL checkout in place — never clones (dev box)', async () => {
@@ -232,5 +261,29 @@ describe('startBootstrapPapercuspHive (single-flight)', () => {
     const second = await startBootstrapPapercuspHive(ok).done;
     expect(second.state).toBe('cloned-and-created');
     expect(ok.clone).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the latch when the background submodule phase fails so Retry can run again', async () => {
+    const failing = spyDeps({
+      loadRegistry: vi.fn(async () => ({ projects: [{ slug: PAPERCUSP_HIVE_SLUG, path: '/clones/papercusp' }] })),
+      submodulesNeedUpdate: vi.fn(async () => true),
+      initSubmodules: vi.fn((_root, opts) => {
+        opts?.onDone?.(false);
+      }),
+    });
+    const first = await startBootstrapPapercuspHive(failing).done;
+    expect(first.state).toBe('already-present');
+    expect(failing.initSubmodules).toHaveBeenCalledTimes(1);
+
+    const retry = spyDeps({
+      loadRegistry: vi.fn(async () => ({ projects: [{ slug: PAPERCUSP_HIVE_SLUG, path: '/clones/papercusp' }] })),
+      submodulesNeedUpdate: vi.fn(async () => true),
+      initSubmodules: vi.fn((_root, opts) => {
+        opts?.onDone?.(true);
+      }),
+    });
+    const second = await startBootstrapPapercuspHive(retry).done;
+    expect(second.state).toBe('already-present');
+    expect(retry.initSubmodules).toHaveBeenCalledTimes(1);
   });
 });

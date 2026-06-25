@@ -446,7 +446,11 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
             ]));
             // Agent brain speaking indicator (P-011) — the local agent has no
             // peer entry of its own, so surface its turn here.
-            if s.status.as_ref().map(|st| st.agent_speaking).unwrap_or(false) {
+            if s.status
+                .as_ref()
+                .map(|st| st.agent_speaking)
+                .unwrap_or(false)
+            {
                 lines.push(Line::from(vec![
                     Span::styled("🤖", Theme::info()),
                     Span::styled(" agent speaking…", Theme::info()),
@@ -682,7 +686,10 @@ mod tests {
         );
         apply_event(&mut s, VoiceUiEvent::MicState(true));
         // Releasing the PTT key stops transmit (hold-to-talk under kitty).
-        assert_eq!(handle_release(&s, KeyCode::Char('v')), Some(VoiceCmd::MicOff));
+        assert_eq!(
+            handle_release(&s, KeyCode::Char('v')),
+            Some(VoiceCmd::MicOff)
+        );
         // A non-PTT key release is ignored.
         assert_eq!(handle_release(&s, KeyCode::Char('x')), None);
     }
@@ -720,7 +727,10 @@ mod tests {
             Some(VoiceCmd::MicOn)
         );
         apply_event(&mut s, VoiceUiEvent::MicState(true));
-        assert_eq!(handle_release(&s, KeyCode::Char('t')), Some(VoiceCmd::MicOff));
+        assert_eq!(
+            handle_release(&s, KeyCode::Char('t')),
+            Some(VoiceCmd::MicOff)
+        );
     }
 
     #[test]

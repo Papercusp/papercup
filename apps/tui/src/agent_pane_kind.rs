@@ -115,9 +115,16 @@ impl AgentPaneKind {
     /// None for unglyphed names (the colony driver, bars, user panes).
     pub fn from_glyph_prefix(title: &str) -> Option<Self> {
         let t = title.trim_start();
-        [Self::Queen, Self::Overwatch, Self::Bee, Self::Sentinel, Self::Planner, Self::Su]
-            .into_iter()
-            .find(|&k| t.starts_with(k.glyph()))
+        [
+            Self::Queen,
+            Self::Overwatch,
+            Self::Bee,
+            Self::Sentinel,
+            Self::Planner,
+            Self::Su,
+        ]
+        .into_iter()
+        .find(|&k| t.starts_with(k.glyph()))
     }
 }
 
@@ -216,14 +223,20 @@ mod tests {
         // pane-kind string "watcher" — guard against that mistaken value.
         assert_eq!(AgentPaneKind::from_wire("watcher"), None);
         assert_eq!(AgentPaneKind::from_wire(""), None);
-        assert_eq!(AgentPaneKind::from_opt(&Some("queen".to_string())), Some(AgentPaneKind::Queen));
+        assert_eq!(
+            AgentPaneKind::from_opt(&Some("queen".to_string())),
+            Some(AgentPaneKind::Queen)
+        );
         assert_eq!(AgentPaneKind::from_opt(&None), None);
     }
 
     #[test]
     fn glyph_prefixed_title_prefixes_known_kinds() {
         // known kind → glyph prefixed (P-010)
-        assert_eq!(glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee)), "🐝 worker · ab12");
+        assert_eq!(
+            glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee)),
+            "🐝 worker · ab12"
+        );
         assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)), "♛ Q");
         // unknown/missing kind → unchanged
         assert_eq!(glyph_prefixed_title("x", None), "x");
@@ -264,17 +277,35 @@ mod tests {
     #[test]
     fn from_glyph_prefix_recovers_the_kind_from_a_pane_name() {
         // P-011 regrouper input: the P-010 glyph-prefixed zellij pane names.
-        assert_eq!(AgentPaneKind::from_glyph_prefix("🐝 claude · F-12"), Some(AgentPaneKind::Bee));
-        assert_eq!(AgentPaneKind::from_glyph_prefix("♛ brain"), Some(AgentPaneKind::Queen));
-        assert_eq!(AgentPaneKind::from_glyph_prefix("🛡 operator"), Some(AgentPaneKind::Sentinel));
-        assert_eq!(AgentPaneKind::from_glyph_prefix("📋 planner · my-plan"), Some(AgentPaneKind::Planner));
-        assert_eq!(AgentPaneKind::from_glyph_prefix("👁 overwatch"), Some(AgentPaneKind::Overwatch));
+        assert_eq!(
+            AgentPaneKind::from_glyph_prefix("🐝 claude · F-12"),
+            Some(AgentPaneKind::Bee)
+        );
+        assert_eq!(
+            AgentPaneKind::from_glyph_prefix("♛ brain"),
+            Some(AgentPaneKind::Queen)
+        );
+        assert_eq!(
+            AgentPaneKind::from_glyph_prefix("🛡 operator"),
+            Some(AgentPaneKind::Sentinel)
+        );
+        assert_eq!(
+            AgentPaneKind::from_glyph_prefix("📋 planner · my-plan"),
+            Some(AgentPaneKind::Planner)
+        );
+        assert_eq!(
+            AgentPaneKind::from_glyph_prefix("👁 overwatch"),
+            Some(AgentPaneKind::Overwatch)
+        );
         // Unglyphed (colony driver / user panes) → None.
         assert_eq!(AgentPaneKind::from_glyph_prefix("colony"), None);
         assert_eq!(AgentPaneKind::from_glyph_prefix("claude · ab12"), None);
         // Round-trip with the P-010 prefixer.
         let t = glyph_prefixed_title("worker", Some(AgentPaneKind::Bee));
-        assert_eq!(AgentPaneKind::from_glyph_prefix(&t), Some(AgentPaneKind::Bee));
+        assert_eq!(
+            AgentPaneKind::from_glyph_prefix(&t),
+            Some(AgentPaneKind::Bee)
+        );
     }
 
     #[test]
@@ -285,12 +316,16 @@ mod tests {
         let mut last = 0usize;
         for k in ALL_KINDS {
             let entry = format!("{} {}", k.glyph(), k.as_wire());
-            let pos = text.find(&entry).unwrap_or_else(|| panic!("legend missing {entry:?}: {text}"));
+            let pos = text
+                .find(&entry)
+                .unwrap_or_else(|| panic!("legend missing {entry:?}: {text}"));
             assert!(pos >= last, "legend out of order at {entry:?}: {text}");
             last = pos;
             // The entry span is tinted with the kind's row color.
             assert!(
-                line.spans.iter().any(|s| s.content == entry && s.style.fg == Some(k.color())),
+                line.spans
+                    .iter()
+                    .any(|s| s.content == entry && s.style.fg == Some(k.color())),
                 "legend entry {entry:?} not tinted {:?}",
                 k.color()
             );
@@ -302,7 +337,10 @@ mod tests {
     #[test]
     fn drive_mode_wire_contract() {
         assert_eq!(DriveMode::from_wire("auto"), Some(DriveMode::Auto));
-        assert_eq!(DriveMode::from_wire("responsive"), Some(DriveMode::Responsive));
+        assert_eq!(
+            DriveMode::from_wire("responsive"),
+            Some(DriveMode::Responsive)
+        );
         assert_eq!(DriveMode::Auto.as_wire(), "auto");
         assert_eq!(DriveMode::Responsive.as_wire(), "responsive");
         assert_eq!(DriveMode::from_wire("manual"), None);

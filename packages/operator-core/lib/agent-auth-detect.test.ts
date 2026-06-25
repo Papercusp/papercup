@@ -6,9 +6,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const existsSync = vi.fn();
+const spawnSync = vi.fn();
 vi.mock('node:fs', async (orig) => {
   const actual = await orig<typeof import('node:fs')>();
   return { ...actual, existsSync: (p: string) => existsSync(p) };
+});
+vi.mock('node:child_process', async (orig) => {
+  const actual = await orig<typeof import('node:child_process')>();
+  return { ...actual, spawnSync: (...args: unknown[]) => spawnSync(...args) };
 });
 vi.mock('node:os', async (orig) => {
   const actual = await orig<typeof import('node:os')>();
@@ -23,7 +28,11 @@ function onlyExist(...present: string[]) {
   existsSync.mockImplementation((p: string) => set.has(p));
 }
 
-beforeEach(() => existsSync.mockReset());
+beforeEach(() => {
+  existsSync.mockReset();
+  spawnSync.mockReset();
+  spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+});
 afterEach(() => vi.clearAllMocks());
 
 describe('claudeSignedIn', () => {
@@ -64,9 +73,41 @@ describe('codexSignedIn', () => {
 });
 
 describe('githubSignedIn', () => {
-  it('true when the gh hosts.yml exists', () => {
-    onlyExist('/home/u/.config/gh/hosts.yml');
+  it('true when gh auth is valid and setup-git wired the credential helper', () => {
+    onlyExist('/home/u/.config/gh/hosts.yml', '/usr/local/bin/gh');
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === '/usr/local/bin/gh' && args[0] === 'auth' && args[1] === 'status') {
+        return { status: 0, stdout: 'Logged in', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('credential.https://github.com.helper')) {
+        return { status: 0, stdout: '!/usr/local/bin/gh auth git-credential\n', stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: '' };
+    });
     expect(githubSignedIn()).toBe(true);
+  });
+  it('false when hosts.yml exists but gh reports an invalid token', () => {
+    onlyExist('/home/u/.config/gh/hosts.yml', '/usr/local/bin/gh');
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === '/usr/local/bin/gh' && args[0] === 'auth' && args[1] === 'status') {
+        return { status: 1, stdout: '', stderr: 'token is invalid' };
+      }
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    expect(githubSignedIn()).toBe(false);
+  });
+  it('false when gh is valid but setup-git has not wired git credentials', () => {
+    onlyExist('/home/u/.config/gh/hosts.yml', '/usr/local/bin/gh');
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === '/usr/local/bin/gh' && args[0] === 'auth' && args[1] === 'status') {
+        return { status: 0, stdout: 'Logged in', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('credential.https://github.com.helper')) {
+        return { status: 1, stdout: '', stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    expect(githubSignedIn()).toBe(false);
   });
   it('false otherwise', () => {
     onlyExist();

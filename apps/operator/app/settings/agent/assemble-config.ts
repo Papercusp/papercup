@@ -100,6 +100,7 @@ export interface PersistableAgentConfig {
   backend: GlobalBackend;
   cmd: string;
   models: Record<string, string>;
+  roleBackends: Record<string, AgentBackend>;
   backends: Partial<Record<SurfaceKey, AgentBackend>>;
   surfaceModels: Partial<Record<SurfaceKey, string>>;
   tiers: ModelTier[];
@@ -121,6 +122,7 @@ export interface AssembleInput {
   cmd: string;
   /** Committed (blur-validated) per-role models JSON text. */
   modelsJson: string;
+  roleBackends: Record<string, SurfaceChoice>;
   surfaceBackends: Record<SurfaceKey, SurfaceChoice>;
   surfaceModels: Record<SurfaceKey, string>;
   tierRows: TierRow[];
@@ -155,6 +157,13 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
   } else {
     models = {};
     lastValid.models = {};
+  }
+
+  // ── Per-role backend overrides ────────────────────────────────────────────
+  const roleBackends: Record<string, AgentBackend> = {};
+  for (const [role, choice] of Object.entries(input.roleBackends)) {
+    const key = role.trim();
+    if (key && choice !== 'inherit') roleBackends[key] = choice;
   }
 
   // ── Per-surface backend + model ─────────────────────────────────────────────
@@ -249,6 +258,7 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
       backend: input.backend,
       cmd: input.cmd,
       models,
+      roleBackends,
       backends,
       surfaceModels: surfaceModelsOut,
       tiers: tiersOut,

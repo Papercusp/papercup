@@ -187,6 +187,11 @@ describe('isAvailable / isSustainedlyLimited', () => {
     expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + MIN)).toBe(false);
   });
 
+  it('fresh unified 7d utilization at/over cap IS sustained even when 5h is fresh', () => {
+    const p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.08, utilization7d: 1.01 }, T0);
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0)).toBe(true);
+  });
+
   it('stale utilization at cap is NOT sustained (only a fresh budget reading counts)', () => {
     const p = recordAccountWindow(poolOf('a'), 'a', { utilization: 1.2 }, T0);
     expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + DRAIN_UTIL_STALE_MS + MIN)).toBe(false);
@@ -215,6 +220,13 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
     expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'b', rng: () => 0 }).accountId).toBe('a');
   });
 
+  it('falls through a weekly-full prior account even when it is not paused', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountWindow(p, 'b', { utilization: 0.05, utilization7d: 1.0 }, T0);
+    // A hard pin to a weekly-full prior account kills spawned CLI roles before they can emit artifacts.
+    expect(selectAccountForSpawn(p, T0, { priorAccountId: 'b', rng: () => 0 }).accountId).toBe('a');
+  });
+
   it('pins a harness to the account it is bound to (cache co-location)', () => {
     let p = poolOf('a', 'b', 'c');
     p = bindAccount(p, 'b', 'harness-x');
@@ -226,6 +238,13 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
     p = bindAccount(p, 'b', 'harness-x');
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
     expect(selectAccountForSpawn(p, T0 + MIN, { harness: 'harness-x', rng: () => 0 }).accountId).toBe('a');
+  });
+
+  it('skips a weekly-full bound account and falls back to headroom', () => {
+    let p = poolOf('a', 'b');
+    p = bindAccount(p, 'b', 'harness-x');
+    p = recordAccountWindow(p, 'b', { utilization: 0.02, utilization7d: 1.0 }, T0);
+    expect(selectAccountForSpawn(p, T0, { harness: 'harness-x', rng: () => 0 }).accountId).toBe('a');
   });
 
   it('falls back to the least-loaded available account with no prior/harness', () => {
@@ -252,6 +271,13 @@ describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
     for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'a', T0 + i, { pausedUntil: T0 + 20 * MIN });
     for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'b', T0 + i, { pausedUntil: T0 + 10 * MIN });
     expect(selectAccountForSpawn(p, T0 + MIN, { rng: () => 0 }).accountId).toBeUndefined();
+  });
+
+  it('does not hard-pin any account when every available account is weekly-full', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountWindow(p, 'a', { utilization: 0.05, utilization7d: 1.0 }, T0);
+    p = recordAccountWindow(p, 'b', { utilization: 0.10, utilization7d: 0.99 }, T0);
+    expect(selectAccountForSpawn(p, T0, { rng: () => 0 }).accountId).toBeUndefined();
   });
 
   it('returns undefined for an empty pool', () => {

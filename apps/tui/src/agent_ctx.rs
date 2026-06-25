@@ -38,7 +38,10 @@ pub fn draw_agent_ctx(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     match &app.agent_ctx {
         None => lines.push(Line::from(Span::styled("loading…", Theme::dim()))),
-        Some(Err(e)) => lines.push(Line::from(Span::styled(format!("error: {e}"), Theme::warn()))),
+        Some(Err(e)) => lines.push(Line::from(Span::styled(
+            format!("error: {e}"),
+            Theme::warn(),
+        ))),
         Some(Ok(d)) => {
             let who = d
                 .label

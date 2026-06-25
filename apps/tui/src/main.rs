@@ -12,6 +12,7 @@ mod agent_ctx;
 mod agent_pane_kind;
 mod app;
 mod bee;
+mod brain_view;
 mod card_view;
 mod chat_tags;
 mod client;
@@ -28,7 +29,6 @@ mod lexicon;
 mod models;
 mod mux;
 mod network;
-mod brain_view;
 mod notify;
 mod operator_voice_bus;
 mod plans_board;
@@ -62,7 +62,7 @@ use app::{Action, App, DockCmd};
 use client::OperatorClient;
 use companion::Companion;
 use event::{spawn_input_listener, Event};
-use mux::{MuxAction, Multiplexer, Zellij};
+use mux::{Multiplexer, MuxAction, Zellij};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -118,9 +118,8 @@ async fn main() -> Result<()> {
         // tab's dossier pane (B-10's generated tabs run `pui hive-pane <key>`).
         // plans-pane (pui-plans-status-board-2026-06-14): the dock's plans
         // status board — a pinned data board, the network-pane convention.
-        Some("dock-driver") | Some("wake-pane")
-        | Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
-        | Some("network-pane") | Some("hive-pane") | Some("plans-pane") => {}
+        Some("dock-driver") | Some("wake-pane") | Some("prompt-pane") | Some("mail-pane")
+        | Some("work-pane") | Some("network-pane") | Some("hive-pane") | Some("plans-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -206,8 +205,7 @@ async fn main() -> Result<()> {
     // the full TUI (no subcommand) and the dock-driver. Board panes
     // (wake/prompt/mail/work/network/hive) must never open launch panes.
     // Races among the capable modes are settled by claim-then-open.
-    let reactive_launch_panes =
-        matches!(subcommand.as_deref(), None | Some("dock-driver"));
+    let reactive_launch_panes = matches!(subcommand.as_deref(), None | Some("dock-driver"));
     // The dock-driver is the only mode with the driver-only surfaces (frame
     // tabs, the regroup repair, the Fleet roster's glyph/badge columns).
     let hive_agent_tabs = subcommand.as_deref() == Some("dock-driver");
@@ -231,7 +229,17 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, network_focus, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs, reactive_launch_panes).await;
+    let result = run(
+        &mut terminal,
+        pinned,
+        network_focus,
+        wake_filter,
+        agent_ctx_mode,
+        dock_agent_panes,
+        hive_agent_tabs,
+        reactive_launch_panes,
+    )
+    .await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -628,7 +636,14 @@ async fn run<B: Backend>(
             } => {
                 // EI-312: act on the board (release/skip one, or drain all),
                 // then re-snapshot so the pane refreshes.
-                tokio::spawn(wake_board_act(agent, verb, id, edited, app.wake_filter.clone(), tx.clone()));
+                tokio::spawn(wake_board_act(
+                    agent,
+                    verb,
+                    id,
+                    edited,
+                    app.wake_filter.clone(),
+                    tx.clone(),
+                ));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::CreateFrameTabs { tabs } => {
@@ -739,7 +754,12 @@ async fn run<B: Backend>(
                 // Fire the docs action (regenerate|verify) off the UI thread; the
                 // periodic refetch loop refreshes the badges on its next tick
                 // (harness-docs-integration P-009).
-                tokio::spawn(apply_docs_action(app.harness.clone(), action, doc_id, tx.clone()));
+                tokio::spawn(apply_docs_action(
+                    app.harness.clone(),
+                    action,
+                    doc_id,
+                    tx.clone(),
+                ));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::Launch(spec) => {
@@ -1294,7 +1314,12 @@ async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSe
 /// (harness-docs-integration P-009). Success is silent — the periodic refetch loop
 /// refreshes the source/freshness badges within a tick; failures surface as a
 /// status-bar toast so the keypress never silently no-ops.
-async fn apply_docs_action(harness: String, action: String, doc_id: String, tx: UnboundedSender<Event>) {
+async fn apply_docs_action(
+    harness: String,
+    action: String,
+    doc_id: String,
+    tx: UnboundedSender<Event>,
+) {
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
         Err(e) => {
@@ -1837,7 +1862,10 @@ async fn execute_workbench_command(
                 let _ = tx.send(Event::Error("release: no plan selected".to_string()));
                 return;
             };
-            match client.plan_item_release(&owner, &harness, &plan, &item).await {
+            match client
+                .plan_item_release(&owner, &harness, &plan, &item)
+                .await
+            {
                 Ok(v) => {
                     let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
                     if ok {
@@ -2421,9 +2449,7 @@ async fn fetch_wake_queue(agent: String, tx: UnboundedSender<Event>) {
             )
             .await
             .map_err(|e| e.to_string())
-            .and_then(|v| {
-                crate::client::parse_wake_queue_list(&v).map_err(|e| e.to_string())
-            }),
+            .and_then(|v| crate::client::parse_wake_queue_list(&v).map_err(|e| e.to_string())),
         Err(e) => Err(e.to_string()),
     };
     let _ = tx.send(Event::WakeQueue { agent, result });
@@ -2503,7 +2529,11 @@ async fn fetch_wake_board(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
                 Ok(pending) => {
                     // Roster join is best-effort: a fetch error degrades to raw
                     // owner-id labels, never an empty board.
-                    let roster = client.roster_typed().await.map(|(active, _)| active).unwrap_or_default();
+                    let roster = client
+                        .roster_typed()
+                        .await
+                        .map(|(active, _)| active)
+                        .unwrap_or_default();
                     // The global default mode: coord:wake-mode with no agent.
                     let global_mode = client
                         .run_tool("coord:wake-mode", serde_json::json!({}))
@@ -2674,9 +2704,9 @@ async fn fetch_agent_ctx(
                 let role_hint = if owner.starts_with("s-") {
                     None
                 } else {
-                    entry
-                        .and_then(|r| r.agent_pane_kind.clone())
-                        .or_else(|| matches!(scope, app::WakeFilter::Queen).then(|| "queen".to_string()))
+                    entry.and_then(|r| r.agent_pane_kind.clone()).or_else(|| {
+                        matches!(scope, app::WakeFilter::Queen).then(|| "queen".to_string())
+                    })
                 };
                 let v = client
                     .agent_prompt(Some(&owner), role_hint.as_deref())
@@ -2690,7 +2720,12 @@ async fn fetch_agent_ctx(
                 data.tier = s("tier");
             }
             app::AgentCtxMode::Mail => {
-                data.mail = Some(client.bee_mail(&owner, 30).await.map_err(|e| e.to_string())?);
+                data.mail = Some(
+                    client
+                        .bee_mail(&owner, 30)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
             }
             app::AgentCtxMode::Work => {
                 data.assignment = client
@@ -2855,7 +2890,10 @@ async fn join_hive(slug: String, links: Vec<String>, tx: UnboundedSender<Event>)
     }
     let _ = tx.send(Event::Notify(models::Notif {
         level: "info".to_string(),
-        message: format!("hive {slug}: joined {ok}/{} member harness(es)", links.len()),
+        message: format!(
+            "hive {slug}: joined {ok}/{} member harness(es)",
+            links.len()
+        ),
         harness: None,
         ts: None,
     }));
@@ -3436,12 +3474,12 @@ async fn refetch_loop(
 
     // Initial load.
     refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
-        if let Some(key) = &network_focus {
-            // hive-pane: re-pull the drill-in dossier (beacon history + ask
-            // log, P-014 item 2) on the same push-driven cadence — the
-            // network.hive.* writers fire SSE invalidates on this stream.
-            tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
-        }
+    if let Some(key) = &network_focus {
+        // hive-pane: re-pull the drill-in dossier (beacon history + ask
+        // log, P-014 item 2) on the same push-driven cadence — the
+        // network.hive.* writers fire SSE invalidates on this stream.
+        tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
+    }
     // Seed notification history once from the toast-log (P8); live
     // `attention.notify` events prepend to it as they arrive.
     match client.recent_toasts(50).await {

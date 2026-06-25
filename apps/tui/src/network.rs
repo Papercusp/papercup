@@ -89,11 +89,7 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
 
-    let live_agents: u32 = app
-        .network_rows
-        .iter()
-        .filter_map(|r| r.live_agents)
-        .sum();
+    let live_agents: u32 = app.network_rows.iter().filter_map(|r| r.live_agents).sum();
     let pending: u32 = app
         .network_rows
         .iter()
@@ -162,7 +158,9 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let sel = app.network_sel.min(app.network_rows.len().saturating_sub(1));
+    let sel = app
+        .network_sel
+        .min(app.network_rows.len().saturating_sub(1));
     let mut state = ListState::default();
     state.select(Some(sel));
     let body = crate::ui::block_with_header(
@@ -338,7 +336,10 @@ fn draw_detail(f: &mut Frame, area: Rect, row: &NetworkBoardRow, full: bool) {
     if !trust_note.is_empty() {
         lines.push(Line::from(vec![
             Span::raw(" trust: "),
-            Span::styled(format!("{} — {}", row.trust, trust_note), tier_badge_style(row)),
+            Span::styled(
+                format!("{} — {}", row.trust, trust_note),
+                tier_badge_style(row),
+            ),
         ]));
     }
 
@@ -407,7 +408,11 @@ fn draw_detail(f: &mut Frame, area: Rect, row: &NetworkBoardRow, full: bool) {
     };
     lines.push(Line::from(Span::styled(hint, Theme::dim())));
 
-    let title = if row.title.is_empty() { &row.key } else { &row.title };
+    let title = if row.title.is_empty() {
+        &row.key
+    } else {
+        &row.title
+    };
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -449,7 +454,10 @@ fn draw_beacon_history(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(lines)
             .style(Theme::panel())
-            .block(Theme::block(Line::from(format!(" beacon history — {n} ")), false)),
+            .block(Theme::block(
+                Line::from(format!(" beacon history — {n} ")),
+                false,
+            )),
         area,
     );
 }

@@ -345,7 +345,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
         )
     };
     format!(
-r#"// Papercusp chat dock (owner directive 2026-06-11): every agent chat is a
+        r#"// Papercusp chat dock (owner directive 2026-06-11): every agent chat is a
 // LIVE TUI. The QUEEN is the shared read-only `pui brain-view --queen` pane with
 // her staged-wake board directly beside it; below her, the agent
 // STACK — the operator (ElevenLabs voice) sentinel chat, the dock-driver that
@@ -561,7 +561,11 @@ fn hive_tab_kdl_named(spec: &HiveTabSpec, tab_name: &str, close_on_exit: bool) -
     };
     // A persistent axis tab omits close_on_exit so it rides the hive's lifetime;
     // the transient drill-in keeps it so it leaves no EXITED husk.
-    let coe = if close_on_exit { " close_on_exit=true" } else { "" };
+    let coe = if close_on_exit {
+        " close_on_exit=true"
+    } else {
+        ""
+    };
     let mut panes = format!(
         "\n            pane name=\"{detail_label}\" {detail_attrs}{coe} {{\n                command \"pui\"\n                args \"hive-pane\" \"{key}\"\n            }}",
     );
@@ -617,7 +621,11 @@ pub fn desired_hive_tabs(groups: &[HiveGroup]) -> Vec<HiveTabSpec> {
             } else {
                 g.machine.clone()
             };
-            HiveTabSpec { tier: 3, key, title }
+            HiveTabSpec {
+                tier: 3,
+                key,
+                title,
+            }
         })
         .collect()
 }
@@ -629,7 +637,11 @@ pub fn desired_hive_tabs(groups: &[HiveGroup]) -> Vec<HiveTabSpec> {
 pub fn default_brain_argv(env: Option<&str>) -> Vec<String> {
     match env {
         Some(s) if !s.trim().is_empty() => s.split_whitespace().map(|x| x.to_string()).collect(),
-        _ => vec!["pui".to_string(), "brain-view".to_string(), "--queen".to_string()],
+        _ => vec![
+            "pui".to_string(),
+            "brain-view".to_string(),
+            "--queen".to_string(),
+        ],
     }
 }
 
@@ -880,12 +892,22 @@ mod tests {
         // hosts `pui plans-pane`. The bars live in a `default_tab_template`
         // shared by all tabs. The workbench swap presets never appear here.
         let kdl = chat_dock_kdl(
-            &["pui".to_string(), "brain-view".to_string(), "--queen".to_string()],
+            &[
+                "pui".to_string(),
+                "brain-view".to_string(),
+                "--queen".to_string(),
+            ],
             &Lexicon::default(),
         );
         // A shared tab template carries the bars exactly once.
-        assert!(kdl.contains("default_tab_template {"), "no default_tab_template");
-        assert!(kdl.contains("children"), "template has no children placeholder");
+        assert!(
+            kdl.contains("default_tab_template {"),
+            "no default_tab_template"
+        );
+        assert!(
+            kdl.contains("children"),
+            "template has no children placeholder"
+        );
         assert_eq!(
             kdl.matches("zellij:tab-bar").count(),
             1,
@@ -919,11 +941,17 @@ mod tests {
         );
         // The network + plans tabs host their respective pinned pui boards.
         let net_pane = kdl.find("args \"network-pane\"").unwrap();
-        assert!(net_pane > nw && net_pane < pl, "network-pane must be inside the network tab");
+        assert!(
+            net_pane > nw && net_pane < pl,
+            "network-pane must be inside the network tab"
+        );
         let plans_pane = kdl.find("args \"plans-pane\"").unwrap();
         assert!(plans_pane > pl, "plans-pane must be inside the plans tab");
         // The dock is never the workbench.
-        assert!(!kdl.contains("swap_tiled_layout"), "no swap presets in the dock");
+        assert!(
+            !kdl.contains("swap_tiled_layout"),
+            "no swap presets in the dock"
+        );
     }
 
     #[test]
@@ -931,9 +959,18 @@ mod tests {
         // pui-plans-status-board-2026-06-14: the third dock tab "plans" hosts
         // the pinned `pui plans-pane` board. It is the LAST tab (after network)
         // so it never displaces tab-1 "this hive" (tier-1 GoToTab(1)).
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
-        assert!(kdl.contains("tab name=\"plans\""), "missing plans tab: {kdl}");
-        assert!(kdl.contains("args \"plans-pane\""), "plans tab must run `pui plans-pane`: {kdl}");
+        let kdl = chat_dock_kdl(
+            &["psu".to_string(), "--brain".to_string()],
+            &Lexicon::default(),
+        );
+        assert!(
+            kdl.contains("tab name=\"plans\""),
+            "missing plans tab: {kdl}"
+        );
+        assert!(
+            kdl.contains("args \"plans-pane\""),
+            "plans tab must run `pui plans-pane`: {kdl}"
+        );
         // The plans tab is last (this hive < network < plans).
         let pl = kdl.find("tab name=\"plans\"").unwrap();
         assert!(kdl.find("tab name=\"this hive\"").unwrap() < pl);
@@ -968,8 +1005,14 @@ mod tests {
         // --role=sentinel` itself — so the KDL pane carries no inline `args` (the
         // wrapper owns the flags). The old `command "psu"` + inline --role=operator
         // form is gone.
-        let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
-        assert!(on.contains("command \"psu-sentinel\""), "sentinel launches the wrapper: {on}");
+        let on = chat_dock_kdl(
+            &["psu".to_string(), "--brain".to_string()],
+            &Lexicon::default(),
+        );
+        assert!(
+            on.contains("command \"psu-sentinel\""),
+            "sentinel launches the wrapper: {on}"
+        );
         assert!(!on.contains("--role=operator")); // the wrapper picks role=sentinel; no inline role here
         assert!(!on.contains("args \"--role\" \"operator\"")); // never the dropped space form
         assert!(!on.contains("args \"chat-pane\""));
@@ -979,10 +1022,16 @@ mod tests {
         // lets every desktop instance show the SAME live queen/overwatch and survive
         // a shell exit. The one-pane `pui agent-pane` variant stays reverted.
         assert_eq!(on.matches("command \"psu-sentinel\"").count(), 1); // sentinel only (queen+overwatch are pui brain-view)
-        // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
+                                                                       // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
         assert_eq!(on.matches("command \"psu\"\n").count(), 0);
-        assert!(!on.contains("agent-pane"), "the reverted one-pane variant must not return: {on}");
-        assert!(on.contains("name=\"♛ queen\" split_direction=\"vertical\""), "queen split container: {on}");
+        assert!(
+            !on.contains("agent-pane"),
+            "the reverted one-pane variant must not return: {on}"
+        );
+        assert!(
+            on.contains("name=\"♛ queen\" split_direction=\"vertical\""),
+            "queen split container: {on}"
+        );
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
         // split, owner ask 2026-06-11): prompt → wakes → mail → work, top-down.
         assert!(on.contains("args \"prompt-pane\" \"--queen\""));
@@ -997,8 +1046,10 @@ mod tests {
         let queen_wakes_at = on.find("♛⏸ wakes").expect("queen wake pane");
         let mail_at = on.find("♛✉ mail").expect("mail pane");
         let work_at = on.find("♛☑ work").expect("work pane");
-        assert!(brief_at < queen_wakes_at && queen_wakes_at < mail_at && mail_at < work_at,
-            "side column order is prompt → wakes → mail → work");
+        assert!(
+            brief_at < queen_wakes_at && queen_wakes_at < mail_at && mail_at < work_at,
+            "side column order is prompt → wakes → mail → work"
+        );
         // P-004/D-009: the reactive driver + the fleet-wide wake board remain
         // stack members.
         assert!(on.contains("args \"dock-driver\""));
@@ -1013,11 +1064,19 @@ mod tests {
         // Order: brain precedes her side column; the queen split precedes the
         // 🐝 colony stack; the dock-driver is inside that colony stack.
         let queen_at = on.find("name=\"♛ queen\"").expect("queen container");
-        let stack_at = on.find("name=\"🐝 colony\" stacked=true").expect("colony stack");
+        let stack_at = on
+            .find("name=\"🐝 colony\" stacked=true")
+            .expect("colony stack");
         let driver_at = on.find("args \"dock-driver\"").expect("driver pane");
         assert!(queen_at < brief_at, "brain precedes her side column");
-        assert!(work_at < stack_at, "the queen split precedes the colony stack");
-        assert!(stack_at < driver_at, "the driver is inside the colony stack");
+        assert!(
+            work_at < stack_at,
+            "the queen split precedes the colony stack"
+        );
+        assert!(
+            stack_at < driver_at,
+            "the driver is inside the colony stack"
+        );
     }
 
     #[test]
@@ -1025,15 +1084,24 @@ mod tests {
         // overwatch-role-2026-06-15 (owner ask 2026-06-15): the OVERWATCH
         // supervisor's interactive pane — a fully-scoped no-picker psu launch as
         // role=overwatch, mirroring the sentinel — sits ABOVE the ♛ queen block.
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        let kdl = chat_dock_kdl(
+            &["psu".to_string(), "--brain".to_string()],
+            &Lexicon::default(),
+        );
         // The pane exists with the 👁 glyph + the `=` role form (psu drops a
         // space-separated --role, exactly like the sentinel's --role=operator).
-        assert!(kdl.contains("name=\"👁 overwatch\""), "overwatch pane missing: {kdl}");
+        assert!(
+            kdl.contains("name=\"👁 overwatch\""),
+            "overwatch pane missing: {kdl}"
+        );
         assert!(
             kdl.contains("args \"brain-view\" \"--overwatch\""),
             "overwatch read-only view args (D-003): {kdl}",
         );
-        assert!(!kdl.contains("args \"--role\" \"overwatch\""), "never the dropped space form");
+        assert!(
+            !kdl.contains("args \"--role\" \"overwatch\""),
+            "never the dropped space form"
+        );
         // It is ABOVE the queen: the overwatch pane precedes the ♛ queen split.
         let ow = kdl.find("name=\"👁 overwatch\"").expect("overwatch pane");
         let queen = kdl.find("name=\"♛ queen\"").expect("queen split");
@@ -1045,7 +1113,10 @@ mod tests {
         // owner ask 2026-06-11: Tab fullscreens the focused pane (chat → hide
         // its wakes pane; Tab again restores). A layout-level keybind (merges
         // with the user's config, dock-session-only).
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        let kdl = chat_dock_kdl(
+            &["psu".to_string(), "--brain".to_string()],
+            &Lexicon::default(),
+        );
         assert!(kdl.contains("keybinds {"), "keybinds block missing: {kdl}");
         assert!(
             kdl.contains("bind \"Tab\" { ToggleFocusFullscreen; }"),
@@ -1066,7 +1137,10 @@ mod tests {
         // never reach the focused pane's program (the Colony pane's two-level
         // pane nav). Re-bind ↑/↓ to Write the CSI cursor sequences to the pane;
         // the stack scroll stays on Alt+↑/↓.
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        let kdl = chat_dock_kdl(
+            &["psu".to_string(), "--brain".to_string()],
+            &Lexicon::default(),
+        );
         assert!(
             kdl.contains("bind \"up\" { Write 27 91 65; }"),
             "↑→pane (ESC[A) forward bind missing: {kdl}",
@@ -1083,9 +1157,18 @@ mod tests {
     fn chat_dock_glyphs_the_static_pane_names() {
         // P-010: the sentinel/queen pane NAMES carry their per-type glyph
         // (zellij has no per-pane color, D-008).
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
-        assert!(kdl.contains("name=\"🛡 sentinel\""), "sentinel glyph missing: {kdl}");
-        assert!(kdl.contains("name=\"♛ brain\""), "queen/brain glyph missing: {kdl}");
+        let kdl = chat_dock_kdl(
+            &["psu".to_string(), "--brain".to_string()],
+            &Lexicon::default(),
+        );
+        assert!(
+            kdl.contains("name=\"🛡 sentinel\""),
+            "sentinel glyph missing: {kdl}"
+        );
+        assert!(
+            kdl.contains("name=\"♛ brain\""),
+            "queen/brain glyph missing: {kdl}"
+        );
     }
 
     #[test]
@@ -1095,9 +1178,15 @@ mod tests {
         // read-only `pui brain-view --queen` tail (D-003), not a psu resume. So
         // brain_argv (the resume handle) NEVER reaches the KDL: no `--resume` line
         // leaks regardless of what brain_argv carries.
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string(), "x".to_string()], &Lexicon::default());
+        let kdl = chat_dock_kdl(
+            &["psu".to_string(), "--resume".to_string(), "x".to_string()],
+            &Lexicon::default(),
+        );
         assert!(kdl.contains("command \"psu-sentinel\""));
-        assert!(!kdl.contains("args \"--resume\""), "brain_argv must not leak a resume into the KDL: {kdl}");
+        assert!(
+            !kdl.contains("args \"--resume\""),
+            "brain_argv must not leak a resume into the KDL: {kdl}"
+        );
     }
 
     #[test]
@@ -1124,9 +1213,18 @@ mod tests {
 
     #[test]
     fn brain_default_is_the_backend_neutral_read_only_view() {
-        assert_eq!(default_brain_argv(None), vec!["pui", "brain-view", "--queen"]);
-        assert_eq!(default_brain_argv(Some("")), vec!["pui", "brain-view", "--queen"]);
-        assert_eq!(default_brain_argv(Some("   ")), vec!["pui", "brain-view", "--queen"]);
+        assert_eq!(
+            default_brain_argv(None),
+            vec!["pui", "brain-view", "--queen"]
+        );
+        assert_eq!(
+            default_brain_argv(Some("")),
+            vec!["pui", "brain-view", "--queen"]
+        );
+        assert_eq!(
+            default_brain_argv(Some("   ")),
+            vec!["pui", "brain-view", "--queen"]
+        );
     }
 
     #[test]
@@ -1218,7 +1316,11 @@ mod tests {
 
     #[test]
     fn hive_axis_tab_kdl_is_persistent_and_distinctly_named() {
-        let spec = HiveTabSpec { tier: 3, key: "key-a".into(), title: "mbp".into() };
+        let spec = HiveTabSpec {
+            tier: 3,
+            key: "key-a".into(),
+            title: "mbp".into(),
+        };
         let axis = hive_axis_tab_kdl(&spec);
         let drill = hive_tab_kdl(&spec);
         // ◆ marks the standing axis tab; ⌕ marks the transient drill-in.
@@ -1234,11 +1336,19 @@ mod tests {
     #[test]
     fn hive_axis_tab_name_falls_back_to_key_when_title_blank() {
         assert_eq!(
-            hive_axis_tab_name(&HiveTabSpec { tier: 3, key: "k".into(), title: "mbp".into() }),
+            hive_axis_tab_name(&HiveTabSpec {
+                tier: 3,
+                key: "k".into(),
+                title: "mbp".into()
+            }),
             "◆ mbp"
         );
         assert_eq!(
-            hive_axis_tab_name(&HiveTabSpec { tier: 3, key: "k".into(), title: String::new() }),
+            hive_axis_tab_name(&HiveTabSpec {
+                tier: 3,
+                key: "k".into(),
+                title: String::new()
+            }),
             "◆ k"
         );
     }
@@ -1255,9 +1365,15 @@ mod tests {
     fn hive_tab_name_prefixes_and_falls_back_to_key() {
         // Names by the row title; the ⌕ prefix marks a drill-in. Blank title →
         // the key (a foreign pubkey-b64 still gets a usable tab name).
-        assert_eq!(hive_tab_name(&hive_spec(4, "AbC+/d", "Acme Hive")), "⌕ Acme Hive");
+        assert_eq!(
+            hive_tab_name(&hive_spec(4, "AbC+/d", "Acme Hive")),
+            "⌕ Acme Hive"
+        );
         assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "")), "⌕ papercup");
-        assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "   ")), "⌕ papercup");
+        assert_eq!(
+            hive_tab_name(&hive_spec(2, "papercup", "   ")),
+            "⌕ papercup"
+        );
     }
 
     #[test]
@@ -1268,7 +1384,10 @@ mod tests {
         let kdl = hive_tab_kdl(&hive_spec(4, "k3y+b64", "Foreign Hive"));
         assert!(kdl.contains("tab name=\"⌕ Foreign Hive\""));
         assert_eq!(kdl.matches("args \"hive-pane\" \"k3y+b64\"").count(), 1);
-        assert!(!kdl.contains("stacked=true"), "a lone dossier pane is not stacked");
+        assert!(
+            !kdl.contains("stacked=true"),
+            "a lone dossier pane is not stacked"
+        );
         assert!(kdl.contains("focus=true close_on_exit=true"));
         assert!(kdl.contains("zellij:tab-bar"));
         assert!(kdl.contains("zellij:status-bar"));

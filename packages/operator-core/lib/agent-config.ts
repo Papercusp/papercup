@@ -53,6 +53,11 @@ export interface AgentConfig {
   /** Per-role model overrides (e.g. `{ worker: 'haiku', reviewer: 'opus' }`).
       Forwarded to the orchestrator via $AGENT_MODELS env (JSON). */
   models: Record<string, string>;
+  /** Per-role backend overrides for spawned fleet/operational roles. A role
+      absent from the map inherits the global backend / command. Mirrored to
+      $AGENT_ROLE_BACKENDS and applied by buildInvokeOnce before the role model
+      is appended. */
+  roleBackends?: Record<string, AgentBackend>;
   /** Per-surface backend overrides for the in-app brains. A surface absent
       from the map inherits the global `backend`. Lets you run e.g. oracle on
       claude-code while the operator stays on omp. Resolved per-call via
@@ -94,6 +99,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   backend: 'claude-code',
   cmd: '',
   models: {},
+  roleBackends: {},
   backends: {},
   surfaceModels: {},
   tiers: [],
@@ -113,6 +119,7 @@ export async function readAgentConfig(): Promise<AgentConfig> {
             .map(([k, v]) => [k, v as string]),
         )
       : {},
+    roleBackends: parseRoleBackends(raw.roleBackends),
     backends: parseBackends(raw.backends),
     surfaceModels: parseSurfaceModels(raw.surfaceModels),
     tiers: parseTiers(raw.tiers),
@@ -164,6 +171,20 @@ export function parseTierCeilings(raw: unknown, rawTiers?: unknown): Record<stri
     if (typeof role !== 'string' || !role.trim() || typeof tier !== 'string' || !tier.trim()) continue;
     if (names.size > 0 && !names.has(tier.trim().toLowerCase())) continue;
     out[role.trim()] = tier.trim();
+  }
+  return out;
+}
+
+/** Validate the per-role backend map: any non-empty role key mapped to a
+    concrete subprocess backend. Unknown backend values are dropped. */
+export function parseRoleBackends(raw: unknown): Record<string, AgentBackend> {
+  const out: Record<string, AgentBackend> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [role, v] of Object.entries(raw as Record<string, unknown>)) {
+    const key = role.trim();
+    if (key && (v === 'omp' || v === 'claude-code' || v === 'codex')) {
+      out[key] = v;
+    }
   }
   return out;
 }
@@ -233,6 +254,9 @@ export async function writeShellEnvFile(cfg: AgentConfig): Promise<string> {
   if (Object.keys(cfg.models).length > 0) {
     lines.push(`export AGENT_MODELS=${shQuote(JSON.stringify(cfg.models))}`);
   }
+  if (Object.keys(cfg.roleBackends ?? {}).length > 0) {
+    lines.push(`export AGENT_ROLE_BACKENDS=${shQuote(JSON.stringify(cfg.roleBackends))}`);
+  }
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, lines.join('\n') + '\n', { mode: 0o644 });
   return path;
@@ -249,10 +273,11 @@ function shQuote(s: string): string {
  * ground truth: "empty config value" must mean "revert to the host's boot
  * default", not "delete whatever the host was booted with".
  */
-const BOOT_AGENT_ENV: Readonly<Record<'AGENT_BACKEND' | 'AGENT_CMD' | 'AGENT_MODELS', string | undefined>> = {
+const BOOT_AGENT_ENV: Readonly<Record<'AGENT_BACKEND' | 'AGENT_CMD' | 'AGENT_MODELS' | 'AGENT_ROLE_BACKENDS', string | undefined>> = {
   AGENT_BACKEND: process.env.AGENT_BACKEND,
   AGENT_CMD: process.env.AGENT_CMD,
   AGENT_MODELS: process.env.AGENT_MODELS,
+  AGENT_ROLE_BACKENDS: process.env.AGENT_ROLE_BACKENDS,
 };
 
 function restoreBootEnv(key: keyof typeof BOOT_AGENT_ENV): void {
@@ -289,6 +314,11 @@ export function applyToProcessEnv(cfg: AgentConfig): void {
     process.env.AGENT_MODELS = JSON.stringify(cfg.models);
   } else {
     restoreBootEnv('AGENT_MODELS');
+  }
+  if (Object.keys(cfg.roleBackends ?? {}).length > 0) {
+    process.env.AGENT_ROLE_BACKENDS = JSON.stringify(cfg.roleBackends);
+  } else {
+    restoreBootEnv('AGENT_ROLE_BACKENDS');
   }
 }
 
@@ -363,7 +393,7 @@ function agentConfigOverrides(cfg: AgentConfig): OverrideEntry[] {
   if (cfg.cmd !== DEFAULT_CONFIG.cmd) {
     out.push({ key: 'cmd', effective: cfg.cmd, default: DEFAULT_CONFIG.cmd, layer: 'pg-settings' });
   }
-  for (const k of ['models', 'backends', 'surfaceModels', 'tierCeilings'] as const) {
+  for (const k of ['models', 'roleBackends', 'backends', 'surfaceModels', 'tierCeilings'] as const) {
     const v = cfg[k] ?? {};
     if (Object.keys(v).length > 0) out.push({ key: k, effective: v, default: {}, layer: 'pg-settings' });
   }

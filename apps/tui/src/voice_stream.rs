@@ -274,7 +274,10 @@ impl VoiceStream {
             // Open-mic VAD gate (P-010): drop near-silent frames (with hangover)
             // so silence / background noise isn't transmitted. Disabled for PTT.
             let transmit = {
-                let mut g = self.tx_gate.lock().map_err(|_| anyhow!("tx_gate poisoned"))?;
+                let mut g = self
+                    .tx_gate
+                    .lock()
+                    .map_err(|_| anyhow!("tx_gate poisoned"))?;
                 tx_gate_decision(&mut g, crate::voice::rms(&frame))
             };
             if !transmit {
@@ -484,11 +487,17 @@ mod tests {
     #[test]
     fn tx_gate_decision_gates_silence_with_hangover() {
         // Disabled gate (PTT): every frame transmits.
-        let mut g = TxGate { enabled: false, hangover: 0 };
+        let mut g = TxGate {
+            enabled: false,
+            hangover: 0,
+        };
         assert!(tx_gate_decision(&mut g, 0.0));
         assert!(tx_gate_decision(&mut g, 0.5));
         // Enabled gate (open-mic): silence with no hangover is dropped.
-        let mut g = TxGate { enabled: true, hangover: 0 };
+        let mut g = TxGate {
+            enabled: true,
+            hangover: 0,
+        };
         assert!(!tx_gate_decision(&mut g, 0.0));
         // A loud frame transmits and arms the hangover.
         assert!(tx_gate_decision(&mut g, 0.5));
@@ -673,7 +682,10 @@ mod tests {
         let (vs2, events2, _mix2) = VoiceStream::connect_to(&path).unwrap();
         vs2.join("standup").unwrap();
         let ev = events2.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert!(matches!(ev, VoiceEvent::Status(_)), "reconnected + got status");
+        assert!(
+            matches!(ev, VoiceEvent::Status(_)),
+            "reconnected + got status"
+        );
         srv2.join().unwrap();
         let _ = std::fs::remove_file(&path);
     }

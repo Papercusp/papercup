@@ -15,13 +15,30 @@
 //! `psu --brain`) is a separate action (TODO: bind a key on the dock).
 
 use crate::client::OperatorClient;
+use crate::models::ChatMessage;
 use crate::models::RosterEntry;
+use crate::theme::Theme;
 use crate::transcript::{locate_session_transcript, tail_transcript};
-use std::io::Write;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Paragraph, Wrap},
+    Frame, Terminal,
+};
+use std::io::stdout;
 use std::path::PathBuf;
 use std::time::Duration;
 
+const MAX_MESSAGES: usize = 240;
+
 /// Which autonomous agent this pane follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Queen,
     Overwatch,
@@ -36,14 +53,17 @@ impl Scope {
         }
     }
 
-    fn label(&self) -> &'static str {
-        // Glyph rides the existing "── {label} · live transcript ──" header line
-        // (brain-view, line ~142) so the pane is identifiable with pane_frames
-        // OFF — same ♛/👁 glyphs as the zellij pane names (owner ask 2026-06-23,
-        // distinguish panes without spending vertical space on frames).
+    fn short_label(&self) -> &'static str {
         match self {
-            Scope::Queen => "♛ Queen",
-            Scope::Overwatch => "👁 Overwatch",
+            Scope::Queen => "Queen",
+            Scope::Overwatch => "Overwatch",
+        }
+    }
+
+    fn kind(&self) -> crate::agent_pane_kind::AgentPaneKind {
+        match self {
+            Scope::Queen => crate::agent_pane_kind::AgentPaneKind::Queen,
+            Scope::Overwatch => crate::agent_pane_kind::AgentPaneKind::Overwatch,
         }
     }
 
@@ -57,6 +77,90 @@ impl Scope {
             Scope::Overwatch => r == "overwatch",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttachState {
+    Connecting,
+    Waiting,
+    Attached { short: String },
+}
+
+impl AttachState {
+    fn label(&self) -> String {
+        match self {
+            AttachState::Connecting => "connecting".to_string(),
+            AttachState::Waiting => "waiting".to_string(),
+            AttachState::Attached { short } => format!("attached {short}"),
+        }
+    }
+
+    fn style(&self) -> Style {
+        match self {
+            AttachState::Connecting => Theme::info(),
+            AttachState::Waiting => Theme::warn(),
+            AttachState::Attached { .. } => Theme::success(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BrainViewState {
+    scope: Scope,
+    status: AttachState,
+    current_uuid: Option<String>,
+    offset: u64,
+    path: Option<PathBuf>,
+    messages: Vec<ChatMessage>,
+    tick: u64,
+}
+
+impl BrainViewState {
+    fn new(scope: Scope) -> Self {
+        Self {
+            scope,
+            status: AttachState::Connecting,
+            // Impossible sentinel so the first resolve always renders a transition.
+            current_uuid: Some(String::new()),
+            offset: 0,
+            path: None,
+            messages: Vec::new(),
+            tick: 0,
+        }
+    }
+
+    fn set_resolved(&mut self, resolved: Option<(String, PathBuf)>) {
+        let uuid = resolved.as_ref().map(|(u, _)| u.clone());
+        if uuid == self.current_uuid {
+            return;
+        }
+        self.current_uuid = uuid;
+        self.offset = 0;
+        self.path = resolved.map(|(_, p)| p);
+        self.messages.clear();
+        self.status = match &self.current_uuid {
+            Some(u) if !u.is_empty() => AttachState::Attached {
+                short: short_session(u),
+            },
+            _ => AttachState::Waiting,
+        };
+    }
+
+    fn push_messages(&mut self, msgs: Vec<ChatMessage>) {
+        self.messages.extend(msgs);
+        let extra = self.messages.len().saturating_sub(MAX_MESSAGES);
+        if extra > 0 {
+            self.messages.drain(0..extra);
+        }
+    }
+
+    fn advance_tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+}
+
+fn short_session(uuid: &str) -> String {
+    uuid.chars().take(8).collect()
 }
 
 /// Resolve the autonomous session this pane follows: the NEWEST session for
@@ -120,12 +224,22 @@ fn select_newest_with_transcript(
     let mut matches: Vec<RosterEntry> = entries
         .into_iter()
         .filter(|e| {
-            e.role.as_deref().map(|r| scope.matches_role(r)).unwrap_or(false)
-                && e.session_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false)
+            e.role
+                .as_deref()
+                .map(|r| scope.matches_role(r))
+                .unwrap_or(false)
+                && e.session_id
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
         })
         .collect();
     // Newest launch first (adv_session_id is a serial PK; higher = launched later).
-    matches.sort_by(|a, b| b.adv_session_id.unwrap_or(0).cmp(&a.adv_session_id.unwrap_or(0)));
+    matches.sort_by(|a, b| {
+        b.adv_session_id
+            .unwrap_or(0)
+            .cmp(&a.adv_session_id.unwrap_or(0))
+    });
     for e in matches {
         if let Some(uuid) = e.session_id {
             if let Some(path) = locate(&uuid) {
@@ -142,71 +256,184 @@ fn select_newest_with_transcript(
 /// recycled brain, and shows a clear placeholder when the agent isn't running —
 /// it NEVER blanks or crashes. Loops until the pane is closed.
 pub async fn run(scope: Scope) -> anyhow::Result<()> {
-    let mut out = std::io::stdout();
-    let _ = writeln!(out, "── {} · live transcript (read-only) ──", scope.label());
-    let _ = out.flush();
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
+
+    let result = run_tui(&mut terminal, scope).await;
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    let _ = terminal.show_cursor();
+    result
+}
+
+async fn run_tui(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    scope: Scope,
+) -> anyhow::Result<()> {
+    let mut state = BrainViewState::new(scope);
+    terminal.draw(|f| draw_brain_view(f, &state))?;
 
     // Connect (retry until the operator is reachable — the pane outlives boot order).
     let client = loop {
         match OperatorClient::from_discovery().await {
             Ok(c) => break c,
             Err(_) => {
-                let _ = writeln!(out, "  connecting to operator…");
-                let _ = out.flush();
+                state.advance_tick();
+                terminal.draw(|f| draw_brain_view(f, &state))?;
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
     };
 
-    // Sentinel (an impossible empty uuid) so the FIRST resolve — whether it finds
-    // the session or returns None — DIFFERS from this and always renders a status
-    // line. (Plain `None` would make iteration 1's `uuid != current_uuid` be
-    // `None != None` = false, skipping the status print and leaving a blank pane.)
-    let mut current_uuid: Option<String> = Some(String::new());
-    let mut offset: u64 = 0;
-    let mut path: Option<PathBuf> = None;
-
     loop {
         // (Re)resolve the newest session + its transcript path; a new wake → new uuid.
         let resolved = resolve_session(&client, &scope).await;
-        let uuid = resolved.as_ref().map(|(u, _)| u.clone());
-        if uuid != current_uuid {
-            current_uuid = uuid;
-            offset = 0;
-            path = resolved.map(|(_, p)| p);
-            match &current_uuid {
-                Some(u) if !u.is_empty() => {
-                    let short = &u[..u.len().min(8)];
-                    let _ = writeln!(out, "\n── attached: {} {} ──", scope.label(), short);
-                }
-                _ => {
-                    let _ = writeln!(out, "\n  {} not running right now — waiting…", scope.label());
-                }
-            }
-            let _ = out.flush();
-        }
+        state.set_resolved(resolved);
 
         // Tail the transcript file read-only and print any new turns.
-        if let Some(p) = &path {
-            if let Ok((new_offset, msgs)) = tail_transcript(p, offset) {
-                offset = new_offset;
-                for m in msgs {
-                    let line = m.content.trim();
-                    if !line.is_empty() {
-                        let _ = writeln!(out, "[{}] {}", m.role, line);
-                    }
-                }
-                let _ = out.flush();
+        if let Some(p) = &state.path {
+            if let Ok((new_offset, msgs)) = tail_transcript(p, state.offset) {
+                state.offset = new_offset;
+                state.push_messages(msgs);
             }
         }
 
+        state.advance_tick();
+        terminal.draw(|f| draw_brain_view(f, &state))?;
         tokio::time::sleep(Duration::from_millis(1500)).await;
+    }
+}
+
+fn draw_brain_view(f: &mut Frame, state: &BrainViewState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(f.area());
+
+    f.render_widget(Paragraph::new(header_line(state)), chunks[0]);
+    draw_transcript(f, state, chunks[1]);
+    f.render_widget(Paragraph::new(footer_line(state)), chunks[2]);
+}
+
+fn header_line(state: &BrainViewState) -> Line<'static> {
+    let kind = state.scope.kind();
+    let mut spans = vec![
+        Span::styled(
+            format!(" {} {}", kind.glyph(), state.scope.short_label()),
+            Theme::title().fg(kind.color()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · live transcript", Theme::dim()),
+        Span::styled(" · read-only", Theme::warn()),
+        Span::raw(" · "),
+        Span::styled(state.status.label(), state.status.style()),
+    ];
+    if !state.messages.is_empty() {
+        spans.push(Span::styled(
+            format!(" · {} turns", state.messages.len()),
+            Theme::dim(),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn footer_line(state: &BrainViewState) -> Line<'static> {
+    let pulse = match state.tick % 4 {
+        0 => "·",
+        1 => "∙",
+        2 => "•",
+        _ => "∙",
+    };
+    let retained = if state.messages.len() >= MAX_MESSAGES {
+        format!(" · retaining latest {MAX_MESSAGES}")
+    } else {
+        String::new()
+    };
+    Line::from(vec![
+        Span::styled(format!(" {pulse} auto-follow"), Theme::dim()),
+        Span::styled(" · shared session mirror", Theme::dim()),
+        Span::styled(" · no input is sent from this pane", Theme::dim()),
+        Span::styled(retained, Theme::dim()),
+    ])
+}
+
+fn draw_transcript(f: &mut Frame, state: &BrainViewState, area: Rect) {
+    let mut lines = transcript_lines(state);
+    let height = area.height.max(1) as usize;
+    if lines.len() > height {
+        lines = lines.split_off(lines.len() - height);
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn transcript_lines(state: &BrainViewState) -> Vec<Line<'static>> {
+    if state.messages.is_empty() {
+        let message = match state.status {
+            AttachState::Connecting => " connecting to the operator…",
+            AttachState::Waiting => {
+                " no transcript found for this scope yet — waiting for the next wake…"
+            }
+            AttachState::Attached { .. } => " attached — waiting for transcript turns…",
+        };
+        return vec![
+            Line::default(),
+            Line::from(Span::styled(message, Theme::dim())),
+        ];
+    }
+
+    let mut lines = Vec::new();
+    for msg in &state.messages {
+        let role = msg.role.trim();
+        let (label, style) = role_style(state.scope, role);
+        let content = msg.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        let mut content_lines = content.lines();
+        if let Some(first) = content_lines.next() {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:>5} ", label), style),
+                Span::raw(first.to_string()),
+            ]));
+        }
+        for line in content_lines {
+            lines.push(Line::from(vec![
+                Span::styled("       │ ", Theme::dim()),
+                Span::raw(line.to_string()),
+            ]));
+        }
+        lines.push(Line::default());
+    }
+    if lines.last().map(|l| l.spans.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    lines
+}
+
+fn role_style(scope: Scope, role: &str) -> (&'static str, Style) {
+    match role.to_ascii_lowercase().as_str() {
+        "assistant" => (
+            "agent",
+            Theme::title()
+                .fg(scope.kind().color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        "user" => ("user", Theme::info()),
+        "system" => ("sys", Theme::warn()),
+        _ => ("turn", Theme::dim()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
 
     fn entry(role: &str, adv: i64, sid: Option<&str>) -> RosterEntry {
         RosterEntry {
@@ -231,10 +458,10 @@ mod tests {
     fn picks_newest_wake_with_a_transcript_not_the_first_stale_one() {
         // Three queen wakes; only the two newest have a transcript on disk.
         let entries = vec![
-            entry("queen", 2915, Some("old-stale")),     // oldest — would win a `.find()`
-            entry("overwatch", 3019, Some("ow")),        // wrong scope
-            entry("queen", 3329, Some("newest")),        // newest, but no file yet
-            entry("queen", 3328, Some("live")),          // 2nd-newest, HAS a file
+            entry("queen", 2915, Some("old-stale")), // oldest — would win a `.find()`
+            entry("overwatch", 3019, Some("ow")),    // wrong scope
+            entry("queen", 3329, Some("newest")),    // newest, but no file yet
+            entry("queen", 3328, Some("live")),      // 2nd-newest, HAS a file
         ];
         // `newest` (3329) has no transcript; `live` (3328) and `old-stale` do.
         let locate = |uuid: &str| -> Option<PathBuf> {
@@ -258,9 +485,9 @@ mod tests {
         // — proving the pane attaches instead of printing "waiting…". (Before the
         // fix the ended tier was dropped client-side and `entries` was empty.)
         let entries = vec![
-            entry("overwatch", 6929, Some("ow-old")),  // older ended wake, has a file
-            entry("queen", 6940, Some("q")),           // wrong scope, newer
-            entry("overwatch", 6946, Some("ow-new")),  // newest ended wake, has a file
+            entry("overwatch", 6929, Some("ow-old")), // older ended wake, has a file
+            entry("queen", 6940, Some("q")),          // wrong scope, newer
+            entry("overwatch", 6946, Some("ow-new")), // newest ended wake, has a file
         ];
         let locate = |uuid: &str| -> Option<PathBuf> {
             match uuid {
@@ -269,7 +496,10 @@ mod tests {
             }
         };
         let got = select_newest_with_transcript(entries, &Scope::Overwatch, locate);
-        assert_eq!(got, Some(("ow-new".into(), PathBuf::from("/t/ow-new.jsonl"))));
+        assert_eq!(
+            got,
+            Some(("ow-new".into(), PathBuf::from("/t/ow-new.jsonl")))
+        );
     }
 
     #[test]
@@ -281,5 +511,67 @@ mod tests {
         ];
         let got = select_newest_with_transcript(entries, &Scope::Queen, |_| None);
         assert_eq!(got, None);
+    }
+
+    #[test]
+    fn state_transition_to_new_session_resets_tail_and_messages() {
+        let mut state = BrainViewState::new(Scope::Queen);
+        state.offset = 99;
+        state.push_messages(vec![ChatMessage::assistant("old turn")]);
+
+        state.set_resolved(Some((
+            "12345678-aaaa-bbbb-cccc-123456789000".into(),
+            PathBuf::from("/tmp/q.jsonl"),
+        )));
+
+        assert_eq!(
+            state.status,
+            AttachState::Attached {
+                short: "12345678".into()
+            }
+        );
+        assert_eq!(state.offset, 0);
+        assert!(state.messages.is_empty());
+        assert_eq!(state.path, Some(PathBuf::from("/tmp/q.jsonl")));
+    }
+
+    #[test]
+    fn retained_transcript_messages_are_bounded() {
+        let mut state = BrainViewState::new(Scope::Overwatch);
+        let msgs: Vec<ChatMessage> = (0..(MAX_MESSAGES + 12))
+            .map(|i| ChatMessage::assistant(&format!("turn {i}")))
+            .collect();
+
+        state.push_messages(msgs);
+
+        assert_eq!(state.messages.len(), MAX_MESSAGES);
+        assert_eq!(state.messages.first().unwrap().content, "turn 12");
+        assert_eq!(
+            state.messages.last().unwrap().content,
+            format!("turn {}", MAX_MESSAGES + 11)
+        );
+    }
+
+    #[test]
+    fn renderer_draws_tui_chrome_and_transcript_rows() {
+        let mut state = BrainViewState::new(Scope::Queen);
+        state.status = AttachState::Attached {
+            short: "abcdef12".into(),
+        };
+        state.push_messages(vec![
+            ChatMessage::user("place the next item"),
+            ChatMessage::assistant("Placed WI-123.\nVerifier queued."),
+        ]);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal.draw(|f| draw_brain_view(f, &state)).unwrap();
+        let text = format!("{:?}", terminal.backend().buffer());
+
+        assert!(text.contains("Queen"), "{text}");
+        assert!(text.contains("read-only"), "{text}");
+        assert!(text.contains("attached abcdef12"), "{text}");
+        assert!(text.contains("place the next item"), "{text}");
+        assert!(text.contains("Placed WI-123"), "{text}");
+        assert!(text.contains("shared session mirror"), "{text}");
     }
 }

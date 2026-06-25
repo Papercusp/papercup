@@ -82,7 +82,7 @@ export interface BootstrapPapercuspHiveResult {
 /** Injectable seams (lib/ DI-for-tests pattern). Production defaults to real impls. */
 export interface BootstrapPapercuspHiveDeps {
   detectRoot?: () => string | null;
-  loadRegistry?: (ws: string) => Promise<{ projects: Array<{ slug: string }> }>;
+  loadRegistry?: (ws: string) => Promise<{ projects: Array<{ slug: string; path?: string }> }>;
   clone?: typeof cloneGithubRepo;
   ensureHive?: typeof ensurePapercuspHive;
   /** Make `ws` the active/home workspace (so the hive is visible). */
@@ -129,6 +129,8 @@ export interface BootstrapPapercuspHiveDeps {
   canonicalInvite?: CanonicalHiveInvite | null;
   /** The join orchestration. Default: joinCanonicalPapercuspHive. */
   joinCanonical?: typeof joinCanonicalPapercuspHive;
+  /** Inspect whether a repo's submodules still need init/update. */
+  submodulesNeedUpdate?: (repoPath: string) => Promise<boolean>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -223,6 +225,37 @@ function submodulePercent(done: number, total: number): number {
   return Math.min(100, Math.round((done / total) * 100));
 }
 
+/** True when `git submodule status --recursive` reports any uninitialized,
+ *  wrong-SHA, or conflicted submodule. The already-present hive path must use
+ *  this: the hive row can exist before the background submodule fill completed,
+ *  and retries must resume that work instead of declaring setup done. */
+function defaultSubmodulesNeedUpdate(repoPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let out = '';
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn('git', ['submodule', 'status', '--recursive'], { cwd: repoPath });
+    } catch {
+      resolve(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch { /* ignore */ }
+      resolve(false);
+    }, 20_000);
+    timer.unref?.();
+    child.stdout?.on('data', (b: Buffer) => (out += b.toString()));
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      resolve(out.split('\n').some((line) => /^[-+U]/.test(line.trimStart())));
+    });
+  });
+}
+
 /** Process single-flight for the dogfood bootstrap (see startBootstrapPapercuspHive). */
 let bootstrapInFlight: Promise<BootstrapPapercuspHiveResult> | null = null;
 
@@ -283,18 +316,42 @@ export async function bootstrapPapercuspHive(
   const adoptShare = deps.adoptShare ?? adoptSharedHiveIdentity;
   const goShare = deps.goShare ?? goSharedHive;
   const shareExisting = deps.shareExisting ?? shareExistingHive;
+  const submodulesNeedUpdate = deps.submodulesNeedUpdate ?? defaultSubmodulesNeedUpdate;
 
-  // 1. Idempotent: the `papercusp` hive already exists → home + done. Nothing to
-  //    download, so BOTH phases are already terminal (the setup gate is satisfied).
+  const startSubmodulePhase = (repoPath: string): void => {
+    record('submodules', 'running', { percent: 0 });
+    initSubmodules(repoPath, {
+      shallow,
+      onProgress: (d, total) =>
+        record('submodules', 'running', {
+          percent: submodulePercent(d, total),
+          detail: total > 0 ? `${Math.min(d, total)}/${total} submodules` : `${d} submodules`,
+        }),
+      onDone: (ok) => {
+        record('submodules', ok ? 'done' : 'error');
+        if (!ok) bootstrapInFlight = null;
+      },
+    });
+  };
+
+  // 1. Idempotent: the `papercusp` hive already exists → home it, then verify the
+  //    repo's submodules. The hive row can be created before the background
+  //    submodule fill finishes; retries must resume that fill instead of treating
+  //    existence as setup-complete.
   try {
     const reg = await loadRegistry(PAPERCUSP_WORKSPACE_ID);
-    if (reg.projects.some((p) => p.slug === PAPERCUSP_HIVE_SLUG)) {
+    const existing = reg.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG);
+    if (existing) {
       setHome(PAPERCUSP_WORKSPACE_ID);
       record('clone', 'done', { detail: 'already present' });
-      record('submodules', 'done');
+      if (existing.path && (await submodulesNeedUpdate(existing.path))) {
+        startSubmodulePhase(existing.path);
+      } else {
+        record('submodules', 'done');
+      }
       // Solution C: share an already-present hive (flag enabled after create / re-boot).
       await shareExisting();
-      return { state: 'already-present', slug: PAPERCUSP_HIVE_SLUG };
+      return { state: 'already-present', slug: PAPERCUSP_HIVE_SLUG, path: existing.path };
     }
   } catch {
     /* registry not ready yet — fall through; ensureHive re-checks idempotently */
@@ -365,7 +422,7 @@ export async function bootstrapPapercuspHive(
     }
   }
 
-  // 2b. Solution C (flag-gated, default-off): adopt the owner's SHARED hive identity
+  // 2b. Solution C (flag-gated, default-on/reversible): adopt the owner's SHARED hive identity
   //     from their per-owner private gist BEFORE create, so the hive is created
   //     under the OWNER's identity (one federation topic across their devices)
   //     rather than a fresh per-device one. No-op when the flag is off / gh unauth /
@@ -393,16 +450,7 @@ export async function bootstrapPapercuspHive(
   //    existing) is what the setup-finish gate waits on. A local checkout has no
   //    submodule phase, so mark it skipped → the gate is already satisfied.
   if (cloned) {
-    record('submodules', 'running', { percent: 0 });
-    initSubmodules(root, {
-      shallow,
-      onProgress: (d, total) =>
-        record('submodules', 'running', {
-          percent: submodulePercent(d, total),
-          detail: total > 0 ? `${Math.min(d, total)}/${total} submodules` : `${d} submodules`,
-        }),
-      onDone: (ok) => record('submodules', ok ? 'done' : 'error'),
-    });
+    startSubmodulePhase(root);
   } else {
     record('submodules', 'skipped', { detail: 'local checkout' });
   }

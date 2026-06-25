@@ -63,12 +63,28 @@ export function resolveSpawnBackendModel(
   overrideSpec?: string,
   overrideBackend?: string,
 ): { backend: TurnBackend; model: string } {
-  const base = applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', overrideBackend);
+  const effectiveBackend = overrideBackend || roleBackendOverride(role);
+  const base = applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', effectiveBackend);
   const cmd = applyRoleModel(base, role, overrideSpec);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
   const m = /(?:--model(?:=|\s+)|\s-m\s+)(\S+)/.exec(cmd);
   return { backend, model: m?.[1] ?? '' };
+}
+
+/** Per-role backend override from /settings/agent. Explicit per-spawn backend
+    wins before this is consulted; malformed JSON fails open to inherited. */
+export function roleBackendOverride(role: string): AgentBackend | undefined {
+  if (!role) return undefined;
+  const raw = process.env.AGENT_ROLE_BACKENDS;
+  if (!raw) return undefined;
+  try {
+    const map = JSON.parse(raw) as Record<string, unknown>;
+    const v = map[role];
+    return v === 'claude-code' || v === 'omp' || v === 'codex' ? v : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Reasoning-effort levels the `claude --effort` flag accepts. */
@@ -201,7 +217,7 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // inherited AGENT_BACKEND below: the child's resolveAgentBackend prefers the
   // explicit env over binary inference, so a swapped command with a stale
   // AGENT_BACKEND would mis-resolve every backend-keyed flag.
-  const spawnBackend = spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND;
+  const spawnBackend = spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND || roleBackendOverride(spec.role);
   const roleAgentCmd = applyRoleModel(
     applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spawnBackend),
     spec.role,
@@ -227,6 +243,9 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     // one (resolveAgentBackend prefers AGENT_BACKEND over binary inference).
     ...(spawnBackend && DEFAULT_BACKEND_CMDS[spawnBackend as AgentBackend]
       ? { AGENT_BACKEND: spawnBackend }
+      : {}),
+    ...(spawnBackend && DEFAULT_BACKEND_CMDS[spawnBackend as AgentBackend]
+      ? { PAPERCUSP_SPAWN_BACKEND: spawnBackend }
       : {}),
     // Production launchers must enable the PG state path + provide the DSN — the
     // pg-bootstrap otherwise runs with empty in-memory state and the spawned

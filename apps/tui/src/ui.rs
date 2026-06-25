@@ -1120,7 +1120,8 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|p| {
             let entry = app.doc_entries.iter().find(|e| &e.doc_id == p);
-            let (src_tag, src_style) = doc_source_tag(entry.map(|e| e.source.as_str()).unwrap_or("manual"));
+            let (src_tag, src_style) =
+                doc_source_tag(entry.map(|e| e.source.as_str()).unwrap_or("manual"));
             let (mark, mark_style) =
                 doc_status_marker(entry.map(|e| e.status.as_str()).unwrap_or("untracked"));
             ListItem::new(Line::from(vec![
@@ -1159,7 +1160,11 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!(" · {}", a.status)
             };
-            let src = if a.source.is_empty() { String::new() } else { format!(" · {}", a.source) };
+            let src = if a.source.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", a.source)
+            };
             format!("{src}{st}")
         })
         .unwrap_or_default();
@@ -1178,7 +1183,8 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
     if let Some(ov) = app.doc_active.as_ref().and_then(|a| a.overlay.as_ref()) {
         if !ov.trim().is_empty() {
             let quoted = ov.replace('\n', "\n┃ ");
-            body = format!("┃ Human note (augmented · survives regeneration)\n┃ {quoted}\n\n{body}");
+            body =
+                format!("┃ Human note (augmented · survives regeneration)\n┃ {quoted}\n\n{body}");
         }
     }
     let para = Paragraph::new(body)
@@ -1906,7 +1912,11 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
                 let selected = i == app.card_state.sel;
                 // marker: radio → ›/space; checkbox → [x]/[ ]
                 let marker = if is_checkbox {
-                    if app.card_state.is_checked(i) { "[x]" } else { "[ ]" }
+                    if app.card_state.is_checked(i) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    }
                 } else if selected {
                     "›"
                 } else {
@@ -2850,9 +2860,15 @@ fn draw_fleet_menu(f: &mut Frame, menu: &crate::app::FleetActionMenu) {
 fn draw_wake_review(f: &mut Frame, rev: &crate::app::WakeReview) {
     let mut lines: Vec<Line> = Vec::new();
     if rev.loading {
-        lines.push(Line::from(Span::styled("(loading staged wakes…)", Theme::dim())));
+        lines.push(Line::from(Span::styled(
+            "(loading staged wakes…)",
+            Theme::dim(),
+        )));
     } else if let Some(err) = &rev.error {
-        lines.push(Line::from(Span::styled(format!("error: {err}"), Theme::danger())));
+        lines.push(Line::from(Span::styled(
+            format!("error: {err}"),
+            Theme::danger(),
+        )));
         lines.push(Line::from(""));
     }
     if !rev.loading && rev.pending.is_empty() {
@@ -2871,10 +2887,17 @@ fn draw_wake_review(f: &mut Frame, rev: &crate::app::WakeReview) {
             Span::raw(trunc(&summary, 48).to_string()),
         ];
         if !src.is_empty() {
-            spans.push(Span::styled(format!("  · {}", trunc(&src, 16)), Theme::dim()));
+            spans.push(Span::styled(
+                format!("  · {}", trunc(&src, 16)),
+                Theme::dim(),
+            ));
         }
         let line = Line::from(spans);
-        lines.push(if i == rev.sel { line.style(Theme::selected()) } else { line });
+        lines.push(if i == rev.sel {
+            line.style(Theme::selected())
+        } else {
+            line
+        });
     }
     lines.push(Line::from(""));
     if let Some(buf) = &rev.edit {
@@ -2979,7 +3002,10 @@ pub(crate) fn block_with_header(f: &mut Frame, area: Rect, block: Block, header:
         f,
         area,
         block,
-        vec![Line::from(Span::styled(header.to_string(), Theme::header()))],
+        vec![Line::from(Span::styled(
+            header.to_string(),
+            Theme::header(),
+        ))],
     )
 }
 
@@ -3048,11 +3074,17 @@ fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
     // focused pane decides the body: the LIST pane → the selected plan's full
     // detail (owner ask 2026-06-15 #1); the ITEMS pane → the selected work item's
     // detail (owner ask 2026-06-16).
-    if matches!(app.tab, crate::app::Tab::Plans | crate::app::Tab::PlansBoard) {
+    if matches!(
+        app.tab,
+        crate::app::Tab::Plans | crate::app::Tab::PlansBoard
+    ) {
         if app.plans_focus == PlansFocus::Items {
             let lines = match app.selected_plan_item() {
                 Some(it) => crate::plans_board::item_detail_lines(it),
-                None => vec![Line::from(Span::styled("(no work item selected)", Theme::dim()))],
+                None => vec![Line::from(Span::styled(
+                    "(no work item selected)",
+                    Theme::dim(),
+                ))],
             };
             return (" work item · Esc close · j/k item · PgUp/Dn scroll ", lines);
         }
@@ -3077,7 +3109,10 @@ fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
             };
             let lines = match app.selected_comms_mail() {
                 Some(e) => mail_detail_lines(e, is_inbox),
-                None => vec![Line::from(Span::styled("(no message selected)", Theme::dim()))],
+                None => vec![Line::from(Span::styled(
+                    "(no message selected)",
+                    Theme::dim(),
+                ))],
             };
             (title, lines)
         }
@@ -3311,9 +3346,15 @@ mod tests {
         app.fleet_detail_open = true;
         let text = render(&app, 120, 30);
         assert!(text.contains("Esc close"), "popup title missing: {text}");
-        assert!(text.contains("plan-popup-demo"), "plan slug missing from popup");
+        assert!(
+            text.contains("plan-popup-demo"),
+            "plan slug missing from popup"
+        );
         assert!(text.contains("progress"), "progress row missing from popup");
-        assert!(text.contains("remaining"), "remaining count missing from popup");
+        assert!(
+            text.contains("remaining"),
+            "remaining count missing from popup"
+        );
     }
 
     #[test]
@@ -3336,9 +3377,15 @@ mod tests {
         app.fleet_detail_open = true;
         let text = render(&app, 120, 30);
         assert!(text.contains("Esc close"), "popup title missing: {text}");
-        assert!(text.contains("plan-detail-demo"), "plan slug missing from popup");
+        assert!(
+            text.contains("plan-detail-demo"),
+            "plan slug missing from popup"
+        );
         assert!(text.contains("progress"), "progress row missing from popup");
-        assert!(text.contains("remaining"), "remaining count missing from popup");
+        assert!(
+            text.contains("remaining"),
+            "remaining count missing from popup"
+        );
     }
 
     // --- Overview dashboard (Brief 23, overview-dashboard-2026-06-05) ---
@@ -3636,7 +3683,8 @@ mod tests {
         assert!(text.contains("claude"));
         assert!(text.contains("fleet task list"));
         // Selecting a bee swaps in ITS dossier (the bee tasklist).
-        app.bee.set_selection(Some("su-1".into()), Some("claude".into()));
+        app.bee
+            .set_selection(Some("su-1".into()), Some("claude".into()));
         app.bee.set_dossier(
             "su-1",
             Some(crate::models::BeeAssignment {
@@ -3811,7 +3859,10 @@ mod tests {
         ] {
             terms.insert(
                 k.to_string(),
-                TermForms { one: one.into(), other: other.into() },
+                TermForms {
+                    one: one.into(),
+                    other: other.into(),
+                },
             );
         }
         let mut app = App::new();
@@ -4067,7 +4118,10 @@ mod tests {
         app.show_notifs = true;
         app.notifs = vec![ui_notif("error", "bee crashed", None)];
         let text = render(&app, 90, 16);
-        assert!(text.contains("Notifications (1)"), "pinned pane must render the history: {text}");
+        assert!(
+            text.contains("Notifications (1)"),
+            "pinned pane must render the history: {text}"
+        );
         assert!(text.contains("bee crashed"));
     }
 

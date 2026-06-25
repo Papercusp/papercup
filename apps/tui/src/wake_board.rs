@@ -106,7 +106,10 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
         ));
     }
     if b.global_mode.as_deref() == Some("manual") {
-        title.push(Span::styled(" ⏸ GLOBAL MANUAL — whole fleet paused", Theme::warn()));
+        title.push(Span::styled(
+            " ⏸ GLOBAL MANUAL — whole fleet paused",
+            Theme::warn(),
+        ));
     }
     if b.loading {
         title.push(Span::styled(" loading…", Theme::dim()));
@@ -150,14 +153,21 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
                 }
                 Row::Wake { wake, selected } => {
                     let marker = if selected { "▸" } else { " " };
-                    let style = if selected { Theme::selected() } else { Style::default() };
+                    let style = if selected {
+                        Theme::selected()
+                    } else {
+                        Style::default()
+                    };
                     let mut spans = vec![
                         Span::raw("   "),
                         Span::styled(marker.to_string(), style),
                         Span::styled(format!(" {}", trunc(&wake_text(wake), 90)), style),
                     ];
                     if let Some(src) = &wake.source {
-                        spans.push(Span::styled(format!("  [{}]", trunc(src, 24)), Theme::dim()));
+                        spans.push(Span::styled(
+                            format!("  [{}]", trunc(src, 24)),
+                            Theme::dim(),
+                        ));
                     }
                     ListItem::new(Line::from(spans))
                 }
@@ -212,7 +222,10 @@ mod tests {
                 label: "queen su-75cee".into(),
                 kind: Some("queen".into()),
                 wake_mode: Some("manual".into()),
-                pending: vec![pw(27, "Watchdog wake (boot)", 30), pw(53, "cadence tick", 5)],
+                pending: vec![
+                    pw(27, "Watchdog wake (boot)", 30),
+                    pw(53, "cadence tick", 5),
+                ],
             },
             WakeGroup {
                 agent: "su-b".into(),
@@ -247,7 +260,10 @@ mod tests {
         let app = board_app();
         let s = render(&app);
         assert!(s.contains("♛ queen su-75cee"), "queen header: {s}");
-        assert!(s.contains("Watchdog wake (boot) (×30)"), "coalesced count: {s}");
+        assert!(
+            s.contains("Watchdog wake (boot) (×30)"),
+            "coalesced count: {s}"
+        );
         assert!(s.contains("cadence tick (×5)"), "second wake: {s}");
         // (asserted separately: the 🐝 glyph is double-width, so the test
         // backend pads a cell between it and the label)

@@ -384,7 +384,7 @@ export function isAvailable(account: ClaudeAccount, now: number): boolean {
 /**
  * Is the account *sustainedly* rate-limited — the P-021 scale-out trigger (provisions PAID
  * machines, so a false positive costs money)? True when EITHER:
- *   (a) the freshest observed unified-5h utilization is at/over cap (`EXHAUSTED_UTIL`) — the
+ *   (a) the freshest observed unified-5h/7d utilization is at/over cap (`EXHAUSTED_UTIL`) — the
  *       genuine, SELF-HEALING budget signal (it decays back below cap as the rolling window
  *       recovers, so the account stops reading exhausted on its own); OR
  *   (b) the account accrued `sustainedPenaltyThreshold` real penalties inside the window (a
@@ -400,7 +400,7 @@ export function isSustainedlyLimited(
 ): boolean {
   const r = account.rate;
   const utilFresh = r.utilizationAt !== undefined && now - r.utilizationAt <= DRAIN_UTIL_STALE_MS;
-  if (utilFresh && r.utilization !== undefined && r.utilization >= EXHAUSTED_UTIL) return true;
+  if (utilFresh && effectiveDrainUtil(account, now) >= EXHAUSTED_UTIL) return true;
   const inWindow = r.windowStartedAt > 0 && now - r.windowStartedAt < policy.windowMs;
   return inWindow && r.penaltyCount >= policy.sustainedPenaltyThreshold;
 }
@@ -412,7 +412,7 @@ export interface SelectOpts {
   availableOnly?: boolean;
   /** Prefer accounts with no bindings yet (spread Swarms across distinct accounts). */
   preferUnbound?: boolean;
-  /** Candidate-eligibility predicate applied when `availableOnly` (default `isAvailable`). Non-CLI
+  /** Candidate-eligibility predicate applied when `availableOnly` (default `!accountFull`). Non-CLI
    *  callers may pass `isSpawnEligible` when they can tolerate gateway pacing on a stale predictive
    *  pause. Spawned CLI agents deliberately keep the stricter default: a paused hard pin can terminate
    *  the turn before the agent emits required artifacts. */
@@ -517,7 +517,7 @@ export function effectiveDrainUtil(a: ClaudeAccount, now: number): number {
 }
 
 /**
- * Is this account effectively FULL for fresh load — paused, or its (fresh) unified-5h utilization at/
+ * Is this account effectively FULL for fresh load — paused, or its fresh unified-5h/7d utilization at/
  * above `DRAIN_FULL_UTIL`? Used to (a) LAZILY re-pin a soft cache-affinity pin off a near-cap account
  * (D-002) and (b) decide the account-aware class pause: the opus class only pauses globally when EVERY
  * account is full (mirrors the gateway failover — "only when ALL are exhausted does egress pause").
@@ -546,8 +546,9 @@ export function accountFull(a: ClaudeAccount, now: number): boolean {
  * should only EXCLUDE accounts that are truly out of budget, not ones merely carrying a stale pause.
  */
 export function isSpawnEligible(a: ClaudeAccount, now: number, policy: ScalePolicy = DEFAULT_SCALE_POLICY): boolean {
+  if (effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL) return false;
   if (isAvailable(a, now)) return true;
-  return !isSustainedlyLimited(a, now, policy) && effectiveDrainUtil(a, now) < DRAIN_FULL_UTIL;
+  return !isSustainedlyLimited(a, now, policy);
 }
 
 /**
@@ -580,7 +581,7 @@ export function anyAccountAvailable(pool: AccountPool, now: number): boolean {
  * This is the consumer-Max budget-maximizing selector D-001 wrongly excluded as "unnecessary".
  */
 export function selectAccountByDrain(pool: AccountPool, now: number, opts: SelectOpts = {}): ClaudeAccount | undefined {
-  const { exclude = [], availableOnly = true, eligible = isAvailable } = opts;
+  const { exclude = [], availableOnly = true, eligible = (a: ClaudeAccount, t: number) => !accountFull(a, t) } = opts;
   let candidates = pool.accounts.filter((a) => !exclude.includes(a.id));
   if (availableOnly) candidates = candidates.filter((a) => eligible(a, now));
   if (candidates.length === 0) return undefined;
@@ -602,12 +603,12 @@ export function selectAccountByDrain(pool: AccountPool, now: number, opts: Selec
   // SPREAD (account-spawn-spread fix, 2026-06-23): distribute a concurrent burst across accounts
   // weighted by remaining headroom so the fleet fans out instead of every bee piling on the single
   // best account (which then RPM-storms while budgeted peers idle).
-  //  - Prefer accounts AVAILABLE right now; only spread into budget-healthy-but-paused candidates
+  //  - Prefer accounts SERVING right now; only spread into budget-healthy-but-paused candidates
   //    (admitted by `isSpawnEligible`) when NO available account remains — a stale predictive pause
   //    widens the fallback set without demoting accounts that are ready to serve immediately.
   //  - Preserve the URGENT class (use-it-before-you-lose-it): when any window is about to reset,
   //    spread only among those.
-  const availableNow = sorted.filter((a) => isAvailable(a, now));
+  const availableNow = sorted.filter((a) => isAvailable(a, now) && effectiveDrainUtil(a, now) < DRAIN_FULL_UTIL);
   const tier = availableNow.length > 0 ? availableNow : sorted;
   const urgentSet = tier.filter(urgent);
   return weightedHeadroomPick(urgentSet.length > 0 ? urgentSet : tier, now, opts.rng ?? Math.random, opts.affinityId);
@@ -674,13 +675,13 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
   // 1. Sticky to the prior account while it is still usable (cache affinity dominates cost).
   if (opts.priorAccountId) {
     const prior = getAccount(pool, opts.priorAccountId);
-    if (prior && isAvailable(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
+    if (prior && !accountFull(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
   }
   const harness = opts.harness;
   let affinityId: string | undefined;
   if (harness) {
     // 2. Manually-bound account (owner/deploy intent), best drain among the bound ties — a hard pin.
-    const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && isAvailable(a, now));
+    const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && !accountFull(a, now));
     const boundBest = selectAccountByDrain({ accounts: bound }, now);
     if (boundBest) return { accountId: boundBest.id, pinSource: 'manual-bind' };
     // 3. Soft cache-affinity pin → an AFFINITY HINT for the spread (weighted preference, not a funnel).

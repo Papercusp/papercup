@@ -583,12 +583,15 @@ mod tests {
                 }
                 let req: Value = serde_json::from_slice(&payload).unwrap();
                 let id = req["id"].as_u64().unwrap();
-                let head = serde_json::json!({"id":id,"name":"head","data":{"status":200,"headers":{}}})
-                    .to_string();
+                let head =
+                    serde_json::json!({"id":id,"name":"head","data":{"status":200,"headers":{}}})
+                        .to_string();
                 let _ = w
                     .write_all(&encode_frame(FrameType::EventJson, head.as_bytes()).unwrap())
                     .await;
-                let _ = w.write_all(&event_bin_frame(id, "body", br#"{"ok":true}"#)).await;
+                let _ = w
+                    .write_all(&event_bin_frame(id, "body", br#"{"ok":true}"#))
+                    .await;
                 let done = serde_json::json!({"id":id,"result":{"content":[]}}).to_string();
                 let _ = w
                     .write_all(&encode_frame(FrameType::Done, done.as_bytes()).unwrap())

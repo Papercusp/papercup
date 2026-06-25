@@ -316,7 +316,10 @@ mod tests {
                 assert_eq!(args, vec!["--no-picker", "--agent=claude"]);
                 assert_eq!(cwd, None);
                 assert_eq!(title.as_deref(), Some("pui · claude"));
-                assert!(stack, "agent launches request stack-on-open (dockview D-008)");
+                assert!(
+                    stack,
+                    "agent launches request stack-on-open (dockview D-008)"
+                );
             }
             other => panic!("expected OpenCommandPane, got {other:?}"),
         }

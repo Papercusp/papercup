@@ -87,7 +87,13 @@ impl BeeState {
 /// Top region: the bee's full work-list in rank (priority) order. `sel` is the
 /// highlighted task cursor when this pane is the focused/entered dossier
 /// (owner ask 2026-06-16); `None` renders it cursor-free (the read-only embeds).
-pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: Option<usize>) {
+pub(crate) fn draw_tasklist(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    focused: bool,
+    sel: Option<usize>,
+) {
     let label = app.bee.display_label().unwrap_or_else(|| "?".into());
     let asn = app.bee.assignment.as_ref();
     let queued: &[BeeWorkItem] = asn.map(|a| a.queued.as_slice()).unwrap_or(&[]);
@@ -395,7 +401,8 @@ mod tests {
     #[test]
     fn renders_tasklist_in_rank_order_and_mail_both_sides() {
         let mut app = App::new();
-        app.bee.set_selection(Some("su-bee".into()), Some("forager".into()));
+        app.bee
+            .set_selection(Some("su-bee".into()), Some("forager".into()));
         app.bee.set_dossier(
             "su-bee",
             Some(BeeAssignment {

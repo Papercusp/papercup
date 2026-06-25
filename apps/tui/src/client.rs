@@ -12,13 +12,12 @@ use crate::models;
 use crate::models::{
     ActivityRecentPayload, ActivityRow, AgentConfigResponse, AttentionItem, AttentionResponse,
     BeeAssignment, BeeMailPayload, ConvDetail, ConvListResponse, ConvSummary, ConversationLoad,
-    CoordInboxResponse, CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse,
-    DocsResponse, FeaturesPayload, FleetAssignmentsPayload, FlagsResponse,
-    HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow, LayoutSummary,
-    LayoutsResponse, LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary,
-    PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
-    TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload, TurnsPage, ViewState,
-    ViewStateResponse, WorkItem, WorkItemsPayload,
+    CoordInboxResponse, CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, DocsResponse,
+    FeaturesPayload, FlagsResponse, FleetAssignmentsPayload, HarnessFeature, HarnessIssue,
+    HarnessRef, IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, LexiconPackPayload,
+    Notif, OperatorConfig, PlanItemStates, PlanSummary, PlansResponse, ProjectsResponse,
+    RosterEntry, RosterResponse, TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload,
+    TurnsPage, ViewState, ViewStateResponse, WorkItem, WorkItemsPayload,
 };
 use crate::sse::{parse_sse_frames, SseFrame};
 use anyhow::{anyhow, Context, Result};
@@ -360,11 +359,7 @@ impl OperatorClient {
     /// tool's content). The generic pui→server-tool bridge: the wake-mode UI
     /// (`coord:wake-mode` / `coord:wake-queue`, hive-agent-tabs P-008/P-009) + any
     /// future pui tool-call go through it.
-    pub async fn run_tool(
-        &self,
-        name: &str,
-        args: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    pub async fn run_tool(&self, name: &str, args: serde_json::Value) -> Result<serde_json::Value> {
         self.post_json("/api/agent-mcp/run-tool", run_tool_body(name, args))
             .await
     }
@@ -455,10 +450,7 @@ impl OperatorClient {
     /// wakes), which is why only Overwatch showed the bug. `ended` is appended
     /// after `active` so a still-live wake (if any) is seen first; the caller
     /// sorts by `adv_session_id` regardless, so ordering here is not load-bearing.
-    pub async fn roster_brain_scoped(
-        &self,
-        workspace: Option<&str>,
-    ) -> Result<Vec<RosterEntry>> {
+    pub async fn roster_brain_scoped(&self, workspace: Option<&str>) -> Result<Vec<RosterEntry>> {
         let v = self.roster_scoped(workspace).await?;
         let resp = serde_json::from_value::<RosterResponse>(v).context("decode roster")?;
         let mut entries = resp.active;
@@ -598,7 +590,10 @@ impl OperatorClient {
     /// (holepunch-voice-channels P-008). MCP envelope → inner `{ok,channels}`.
     pub async fn voice_channels_list(&self) -> Result<Vec<crate::voice_ui::VoiceChannelRow>> {
         let env = self
-            .post_json("/api/agent-tools/voice/channels", serde_json::json!({ "op": "list" }))
+            .post_json(
+                "/api/agent-tools/voice/channels",
+                serde_json::json!({ "op": "list" }),
+            )
             .await?;
         let text = env
             .get("content")
@@ -610,7 +605,9 @@ impl OperatorClient {
         struct P {
             channels: Vec<crate::voice_ui::VoiceChannelRow>,
         }
-        Ok(serde_json::from_str::<P>(text).context("parse voice channels")?.channels)
+        Ok(serde_json::from_str::<P>(text)
+            .context("parse voice channels")?
+            .channels)
     }
 
     /// Create a voice channel by name, returning the refreshed list.
@@ -630,7 +627,10 @@ impl OperatorClient {
     /// Read the operator voice-prefs (the Voice Settings overlay, P-017).
     pub async fn voice_prefs_get(&self) -> Result<crate::voice_ui::VoicePrefsView> {
         let env = self
-            .post_json("/api/agent-tools/operator/voice_prefs", serde_json::json!({ "op": "get" }))
+            .post_json(
+                "/api/agent-tools/operator/voice_prefs",
+                serde_json::json!({ "op": "get" }),
+            )
             .await?;
         let text = env
             .get("content")
@@ -985,9 +985,10 @@ impl OperatorClient {
         let payload: FleetAssignmentsPayload =
             serde_json::from_str(text).context("parse fleet assignments payload")?;
         // The `agent` filter returns just this bee, but match defensively on id/name.
-        Ok(payload.agents.into_iter().find(|a| {
-            a.agent_id == owner_id || a.name.as_deref() == Some(owner_id)
-        }))
+        Ok(payload
+            .agents
+            .into_iter()
+            .find(|a| a.agent_id == owner_id || a.name.as_deref() == Some(owner_id)))
     }
 
     /// The federated p2p roster — every remote hive announced into
@@ -1058,7 +1059,10 @@ impl OperatorClient {
                 urlencode(&args.to_string())
             ))
             .await?;
-        let rows = v.get("rows").cloned().unwrap_or_else(|| serde_json::json!([]));
+        let rows = v
+            .get("rows")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
         serde_json::from_value(rows).with_context(|| format!("parse {name} rows"))
     }
 
@@ -1109,7 +1113,11 @@ impl OperatorClient {
 
     /// Join one member harness of a discovered hive (`POST /api/harness/join-link`).
     /// The joiner's GitHub identity + device keychain are resolved server-side.
-    pub async fn join_hive_link(&self, slug: &str, harness_link_url: &str) -> Result<serde_json::Value> {
+    pub async fn join_hive_link(
+        &self,
+        slug: &str,
+        harness_link_url: &str,
+    ) -> Result<serde_json::Value> {
         self.post_json(
             "/api/harness/join-link",
             serde_json::json!({ "slug": slug, "harnessLinkUrl": harness_link_url }),
@@ -1195,7 +1203,10 @@ impl OperatorClient {
     /// startup; the pui falls back to its built-in classic labels on any error.
     pub async fn lexicon_active_pack(&self) -> Result<LexiconPackPayload> {
         let env = self
-            .post_json("/api/agent-tools/lexicon/active_pack", serde_json::json!({}))
+            .post_json(
+                "/api/agent-tools/lexicon/active_pack",
+                serde_json::json!({}),
+            )
             .await?;
         let text = env
             .get("content")
@@ -1379,9 +1390,15 @@ impl OperatorClient {
     }
 
     /// POST a docs action (regenerate | verify) for one doc (P-009 actions).
-    pub async fn docs_action(&self, slug: &str, action: &str, doc_id: &str) -> Result<serde_json::Value> {
+    pub async fn docs_action(
+        &self,
+        slug: &str,
+        action: &str,
+        doc_id: &str,
+    ) -> Result<serde_json::Value> {
         let path = format!("/api/harness/{slug}/docs/{action}");
-        self.post_json(&path, serde_json::json!({ "docId": doc_id })).await
+        self.post_json(&path, serde_json::json!({ "docId": doc_id }))
+            .await
     }
 
     pub async fn testing_domains(&self, slug: &str) -> Result<Vec<TestingDomain>> {
@@ -1792,7 +1809,9 @@ pub fn run_tool_inner_json(v: &serde_json::Value) -> Result<serde_json::Value> {
             .unwrap_or_else(|| "run-tool failed".into());
         anyhow::bail!("{msg}");
     }
-    let result = v.get("result").ok_or_else(|| anyhow::anyhow!("run-tool: no result"))?;
+    let result = v
+        .get("result")
+        .ok_or_else(|| anyhow::anyhow!("run-tool: no result"))?;
     if result.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
         let text = result
             .pointer("/content/0/text")
@@ -1814,10 +1833,16 @@ pub fn parse_wake_queue_list(v: &serde_json::Value) -> Result<Vec<crate::models:
     if inner.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         anyhow::bail!(
             "wake-queue: {}",
-            inner.get("reason").and_then(serde_json::Value::as_str).unwrap_or("not ok")
+            inner
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("not ok")
         );
     }
-    let pending = inner.get("pending").cloned().unwrap_or(serde_json::json!([]));
+    let pending = inner
+        .get("pending")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     serde_json::from_value(pending).with_context(|| "wake-queue: bad pending rows")
 }
 
@@ -1912,7 +1937,10 @@ mod tests {
             "/api/adv/roster?workspace=papercusp-workspace"
         );
         // Ids needing escaping are percent-encoded (space → %20).
-        assert_eq!(roster_path(Some("ws 1")), "/api/adv/roster?workspace=ws%201");
+        assert_eq!(
+            roster_path(Some("ws 1")),
+            "/api/adv/roster?workspace=ws%201"
+        );
     }
 
     #[test]
@@ -1994,7 +2022,10 @@ mod tests {
         );
         assert_eq!(groups[0].label, "the queen");
         assert_eq!(groups[0].kind.as_deref(), Some("queen"));
-        assert_eq!(groups[0].pending.iter().map(|w| w.id).collect::<Vec<_>>(), [3, 4]);
+        assert_eq!(
+            groups[0].pending.iter().map(|w| w.id).collect::<Vec<_>>(),
+            [3, 4]
+        );
         assert_eq!(groups[1].wake_mode.as_deref(), Some("manual"));
         // Stale owner: raw-id label, no kind/mode — still fully reviewable.
         assert_eq!(groups[2].label, "su-gone");
@@ -2012,7 +2043,9 @@ mod tests {
             "ok": true,
             "result": { "isError": true, "content": [ { "type": "text", "text": "handler_error: boom" } ] },
         });
-        let err = super::parse_wake_queue_list(&tool_err).unwrap_err().to_string();
+        let err = super::parse_wake_queue_list(&tool_err)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("boom"), "{err}");
     }
 

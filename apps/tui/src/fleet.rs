@@ -398,7 +398,11 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 /// keys to move between/within panels + the `c` layout toggle. So the comms view
 /// and panel navigation are discoverable without guessing `c`.
 fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
-    let toggle = if comms { "c: task-list+plans" } else { "c: mail+chat" };
+    let toggle = if comms {
+        "c: task-list+plans"
+    } else {
+        "c: mail+chat"
+    };
     // Two-level nav (owner ask 2026-06-15 #2): the legend names which level you
     // are in — BROWSING panes (↑/↓ switch · ⏎ enter) vs INSIDE a pane (↑/↓ move ·
     // ⏎ open · Esc back).
@@ -614,7 +618,10 @@ pub(crate) fn selected_dossier_item(app: &App) -> Option<&crate::models::BeeWork
 pub(crate) fn dossier_detail_lines(app: &App) -> Vec<Line<'static>> {
     match selected_dossier_item(app) {
         Some(w) => work_item_detail_lines(w),
-        None => vec![Line::from(Span::styled("(no work item selected)", Theme::dim()))],
+        None => vec![Line::from(Span::styled(
+            "(no work item selected)",
+            Theme::dim(),
+        ))],
     }
 }
 
@@ -701,7 +708,10 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: O
         f,
         area,
         Theme::block(
-            Line::from(format!(" {} fleet task list ({total} claimed) ", glyph::nav::FLEET)),
+            Line::from(format!(
+                " {} fleet task list ({total} claimed) ",
+                glyph::nav::FLEET
+            )),
             focused,
         ),
         " select an agent to filter · rank · st · task",
@@ -959,7 +969,11 @@ pub(crate) fn plan_progress_list(app: &App) -> Vec<&crate::models::PlanSummary> 
 /// `(no plan selected)` when the list is empty.
 pub(crate) fn plan_detail_lines(app: &App) -> Vec<Line<'static>> {
     let plans = plan_progress_list(app);
-    match plans.get(app.fleet.plan_progress_sel.min(plans.len().saturating_sub(1))) {
+    match plans.get(
+        app.fleet
+            .plan_progress_sel
+            .min(plans.len().saturating_sub(1)),
+    ) {
         Some(p) => plan_detail_lines_for(p),
         None => vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))],
     }
@@ -1059,13 +1073,7 @@ pub(crate) fn plan_detail_lines_for(p: &crate::models::PlanSummary) -> Vec<Line<
 /// highlights the plan Enter opens in a detail popup, and a `ListState` gives the
 /// highlight + auto-scroll (same idiom as the roster). With an agent selected in
 /// the roster (#2) the list narrows to that agent's plans; Esc clears.
-fn draw_plan_progress(
-    f: &mut Frame,
-    app: &App,
-    agg: &FleetAggregate,
-    area: Rect,
-    focused: bool,
-) {
+fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect, focused: bool) {
     let plans = plan_progress_list(app);
     let agent_filtered = app.bee.owner_id.is_some();
 
@@ -1107,7 +1115,9 @@ fn draw_plan_progress(
     let mut state = ListState::default();
     if !empty {
         state.select(Some(
-            app.fleet.plan_progress_sel.min(plans.len().saturating_sub(1)),
+            app.fleet
+                .plan_progress_sel
+                .min(plans.len().saturating_sub(1)),
         ));
     }
     let list = List::new(body)
@@ -1472,7 +1482,8 @@ mod tests {
         assert!(text.contains("plan-mine"));
         assert!(text.contains("plan-other"));
         // Selection → only the agent's plan; the title names the agent.
-        app.bee.set_selection(Some("su-a".into()), Some("forager".into()));
+        app.bee
+            .set_selection(Some("su-a".into()), Some("forager".into()));
         let text = render_fleet(&app, 120, 30);
         assert!(text.contains("plan-mine"));
         assert!(!text.contains("plan-other"));
@@ -1563,7 +1574,6 @@ mod tests {
                 "roster label column drifted at width {w}: {cols:?}"
             );
         }
-
     }
 
     /// Live read-only QA (feedback-no-live-keystroke-drive-pui): fetch REAL fleet

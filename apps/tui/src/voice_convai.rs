@@ -171,7 +171,18 @@ async fn session_task(
         let ended_tx = ended_tx.clone();
         std::thread::Builder::new()
             .name("pui-opvoice-read".into())
-            .spawn(move || reader_loop(reader_sock, owner, player, tx, elected, muted, stopping, ended_tx))
+            .spawn(move || {
+                reader_loop(
+                    reader_sock,
+                    owner,
+                    player,
+                    tx,
+                    elected,
+                    muted,
+                    stopping,
+                    ended_tx,
+                )
+            })
             .ok()
     };
 
@@ -275,7 +286,11 @@ fn reader_loop(
                     if elected.load(Ordering::Relaxed) {
                         match format {
                             AudioFormat::Pcm => {
-                                let rate = if sample_rate == 0 { 16_000 } else { sample_rate };
+                                let rate = if sample_rate == 0 {
+                                    16_000
+                                } else {
+                                    sample_rate
+                                };
                                 player.append_pcm(pcm_bytes_to_i16(&audio), rate);
                             }
                             AudioFormat::Encoded => player.append_encoded(audio),

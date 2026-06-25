@@ -48,7 +48,10 @@ pub enum Action {
     /// (pui-plans-status-board-2026-06-14 P-008) so the plans board's right-side
     /// work-items detail updates the instant the selection moves — the active-
     /// plan poller is the freshness backstop.
-    FetchPlanItemStates { harness: String, plan: String },
+    FetchPlanItemStates {
+        harness: String,
+        plan: String,
+    },
     /// Refetch the cross-Hive network board now (the network-pane's manual `g`
     /// — the refetch loop covers the push-driven cadence, B-09).
     FetchNetworkBoard,
@@ -60,12 +63,18 @@ pub enum Action {
     /// A pui docs action (harness-docs-integration P-009): POST regenerate|verify
     /// for the selected doc. The run loop fires it; the refetch loop refreshes the
     /// badges on its next tick.
-    DocsAction { action: String, doc_id: String },
+    DocsAction {
+        action: String,
+        doc_id: String,
+    },
     Render,
     /// Publish the swarm pane's bee selection to the ephemeral relay
     /// (pui-bee-dossier-pane-2026-06-06) so the bee-dossier pane can render it.
     /// The run loop POSTs `fleet:selected_bee { select }`. `owner_id` None clears.
-    PublishBeeSelection { owner_id: Option<String>, name: Option<String> },
+    PublishBeeSelection {
+        owner_id: Option<String>,
+        name: Option<String>,
+    },
     Quit,
     /// Open a native agent session in a new multiplexer pane.
     Launch(PaneSpec),
@@ -233,13 +242,21 @@ pub enum Action {
     FetchHives,
     /// Join every member harness of a discovered hive (p2p-hive-directory P-006):
     /// POST each `links` entry to `/api/harness/join-link`. `slug` is the hive id.
-    JoinHive { slug: String, links: Vec<String> },
+    JoinHive {
+        slug: String,
+        links: Vec<String>,
+    },
     /// P-008: set an agent's wake mode (auto|manual) via coord:wake-mode. The run
     /// loop spawns the run_tool call; the next roster poll refreshes the badge.
-    SetWakeMode { agent: String, mode: String },
+    SetWakeMode {
+        agent: String,
+        mode: String,
+    },
     /// P-009: fetch an agent's staged wakes (coord:wake-queue list) for the
     /// review overlay → `Event::WakeQueue`.
-    FetchWakeQueue { agent: String },
+    FetchWakeQueue {
+        agent: String,
+    },
     /// P-009: act on ONE staged wake — `release: true` delivers it (with
     /// `edited` content when the owner edited), `false` skips it. The run loop
     /// re-lists afterwards so the overlay refreshes.
@@ -265,11 +282,15 @@ pub enum Action {
     },
     /// P-013: create one zellij tab per (tab_name, kdl) pair via the companion's
     /// NewTab (`new_tabs_with_layout`) — the per-frame tabs.
-    CreateFrameTabs { tabs: Vec<(String, String)> },
+    CreateFrameTabs {
+        tabs: Vec<(String, String)>,
+    },
     /// Open the persistent per-hive AXIS tabs (B4 / P-004) — one standing zellij
     /// tab per live federated peer, via the companion's NewTab (same path as the
     /// per-frame tabs). The reducer's diff (`hive_tabs_to_create`) is roster-gated.
-    CreateHiveTabs { tabs: Vec<(String, String)> },
+    CreateHiveTabs {
+        tabs: Vec<(String, String)>,
+    },
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -2245,7 +2266,6 @@ impl App {
             .collect()
     }
 
-
     /// The Memory tab's visible entries (D-006): search hits while a query is
     /// active, else the full list. `memory_sel` indexes THIS list.
     pub fn visible_memories(&self) -> &[crate::models::MemoryEntry] {
@@ -2854,7 +2874,9 @@ impl App {
                 continue;
             }
             // Already an interactive pane in this dock (a reactive launch).
-            if r.adv_session_id.is_some_and(|id| self.tracked_panes.contains(&id)) {
+            if r.adv_session_id
+                .is_some_and(|id| self.tracked_panes.contains(&id))
+            {
                 continue;
             }
             // P-004: a claude bee resumes as a real Claude TUI (claude --resume
@@ -2883,7 +2905,9 @@ impl App {
                 // P-011: group same-type panes — the batch appends in group-rank
                 // order so bees land together, planners together. Unknown → last.
                 kind.map(|k| k.group_rank()).unwrap_or(u8::MAX),
-                crate::mux::PaneSpec::new(argv).titled(title).stacked_autoclose(),
+                crate::mux::PaneSpec::new(argv)
+                    .titled(title)
+                    .stacked_autoclose(),
             ));
             // NOTE (owner ask 2026-06-11): bees do NOT get a per-bee wake pane
             // here. zellij stacks can't nest a chat|wakes split, and a bee is a
@@ -3429,7 +3453,11 @@ impl App {
                         agent,
                         release: true,
                         id,
-                        edited: if edited.is_empty() { None } else { Some(edited) },
+                        edited: if edited.is_empty() {
+                            None
+                        } else {
+                            Some(edited)
+                        },
                     }
                 }
                 KeyCode::Char(c) => {
@@ -3531,7 +3559,11 @@ impl App {
                         agent,
                         verb: "release",
                         id: Some(id),
-                        edited: if edited.is_empty() { None } else { Some(edited) },
+                        edited: if edited.is_empty() {
+                            None
+                        } else {
+                            Some(edited)
+                        },
                     }
                 }
                 KeyCode::Char(c) => {
@@ -3660,9 +3692,7 @@ impl App {
     fn network_key(&mut self, code: KeyCode) -> Action {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.network_focus.is_none()
-                    && self.network_sel + 1 < self.network_rows.len()
-                {
+                if self.network_focus.is_none() && self.network_sel + 1 < self.network_rows.len() {
                     self.network_sel += 1;
                 }
                 Action::Render
@@ -3796,7 +3826,9 @@ impl App {
     /// by `Tab::Plans` + `Tab::PlansBoard`. No-op on an empty list.
     fn plans_open_focused_detail(&mut self) -> Action {
         let has = match self.plans_focus {
-            PlansFocus::List => self.selected_plan().is_some() || self.selected_board_plan().is_some(),
+            PlansFocus::List => {
+                self.selected_plan().is_some() || self.selected_board_plan().is_some()
+            }
             PlansFocus::Items => self.selected_plan_item().is_some(),
         };
         if has {
@@ -3946,10 +3978,7 @@ impl App {
             .map(|p| p.title.clone());
         let panes = crate::glyph::nav::PANES;
         Some(match focused {
-            Some(title) => format!(
-                "{panes} {n} panes · {} {title}",
-                crate::glyph::action::RUN
-            ),
+            Some(title) => format!("{panes} {n} panes · {} {title}", crate::glyph::action::RUN),
             None => format!("{panes} {n} panes"),
         })
     }
@@ -4011,7 +4040,11 @@ impl App {
                 // panes to open; record their ids so a refresh in the mark-launched
                 // window can't re-open, and hand the specs to the run loop (I/O).
                 let mut to_open = if self.reactive_launch_panes {
-                    crate::session_panes::panes_to_open(&self.tracked_panes, &pending, &self.local_host)
+                    crate::session_panes::panes_to_open(
+                        &self.tracked_panes,
+                        &pending,
+                        &self.local_host,
+                    )
                 } else {
                     // EI-358: board panes never launch sessions — only the full
                     // TUI / chat-pane / dock-driver react to pending launches.
@@ -4646,13 +4679,15 @@ impl App {
                 // PageDown/PageUp scroll a long body/thread; render clamps to the
                 // content so PageDown can't run off the end (owner ask 2026-06-14).
                 KeyCode::PageDown => {
-                    self.fleet_detail_scroll =
-                        self.fleet_detail_scroll.saturating_add(FLEET_DETAIL_SCROLL_STEP);
+                    self.fleet_detail_scroll = self
+                        .fleet_detail_scroll
+                        .saturating_add(FLEET_DETAIL_SCROLL_STEP);
                     Action::Render
                 }
                 KeyCode::PageUp => {
-                    self.fleet_detail_scroll =
-                        self.fleet_detail_scroll.saturating_sub(FLEET_DETAIL_SCROLL_STEP);
+                    self.fleet_detail_scroll = self
+                        .fleet_detail_scroll
+                        .saturating_sub(FLEET_DETAIL_SCROLL_STEP);
                     Action::Render
                 }
                 _ => Action::Render,
@@ -4837,9 +4872,7 @@ impl App {
                                     harness: None,
                                     ts: None,
                                 });
-                                Action::Workbench(PaletteCommand::Theme {
-                                    name: Some(name),
-                                })
+                                Action::Workbench(PaletteCommand::Theme { name: Some(name) })
                             } else {
                                 self.push_notif(crate::models::Notif {
                                     level: "error".to_string(),
@@ -5525,12 +5558,8 @@ impl App {
                 self.plans_focus = self.plans_focus.toggle();
                 Action::Render
             }
-            KeyCode::Char('j') | KeyCode::Down if self.tab == Tab::Plans => {
-                self.plans_tab_arrow(1)
-            }
-            KeyCode::Char('k') | KeyCode::Up if self.tab == Tab::Plans => {
-                self.plans_tab_arrow(-1)
-            }
+            KeyCode::Char('j') | KeyCode::Down if self.tab == Tab::Plans => self.plans_tab_arrow(1),
+            KeyCode::Char('k') | KeyCode::Up if self.tab == Tab::Plans => self.plans_tab_arrow(-1),
             // Enter on the Fleet tab (two-level nav, owner ask 2026-06-15 #2): at
             // the pane-browsing level it DRILLS INTO the focused pane; once
             // inside, it acts on the selection — roster → reach the agent;
@@ -5622,9 +5651,7 @@ impl App {
             {
                 self.pane_arrow(-1)
             }
-            KeyCode::Left | KeyCode::Right
-                if matches!(self.tab, Tab::Harnesses | Tab::Testing) =>
-            {
+            KeyCode::Left | KeyCode::Right if matches!(self.tab, Tab::Harnesses | Tab::Testing) => {
                 self.pane_toggle_focus();
                 Action::Render
             }
@@ -5633,7 +5660,11 @@ impl App {
             // first JOINABLE directory hive (one carrying full member links); a
             // topic-only hive lists fine but can't be one-click-joined.
             KeyCode::Char('J') if self.tab == Tab::Hives => {
-                if let Some(h) = self.hive_directory.iter().find(|h| !h.member_links.is_empty()) {
+                if let Some(h) = self
+                    .hive_directory
+                    .iter()
+                    .find(|h| !h.member_links.is_empty())
+                {
                     self.status = format!("joining hive {}…", h.title);
                     return Action::JoinHive {
                         slug: h.hive_id.clone(),
@@ -5643,7 +5674,8 @@ impl App {
                 self.status = if self.hive_directory.is_empty() {
                     "no hives in the directory yet".to_string()
                 } else {
-                    "discovered hives published topics only — a full join link is required".to_string()
+                    "discovered hives published topics only — a full join link is required"
+                        .to_string()
                 };
                 Action::Render
             }
@@ -5771,8 +5803,15 @@ impl App {
                         .find(|e| e.doc_id == doc)
                         .map(|e| e.source.as_str())
                         .unwrap_or("manual");
-                    let action = if source == "manual" { "verify" } else { "regenerate" };
-                    Action::DocsAction { action: action.to_string(), doc_id: doc }
+                    let action = if source == "manual" {
+                        "verify"
+                    } else {
+                        "regenerate"
+                    };
+                    Action::DocsAction {
+                        action: action.to_string(),
+                        doc_id: doc,
+                    }
                 } else {
                     Action::None
                 }
@@ -6165,8 +6204,7 @@ impl App {
             }
             PlanProgress => {
                 let len = crate::fleet::plan_progress_list(self).len();
-                self.fleet.plan_progress_sel =
-                    sel_step(self.fleet.plan_progress_sel, delta, len);
+                self.fleet.plan_progress_sel = sel_step(self.fleet.plan_progress_sel, delta, len);
             }
         }
     }
@@ -6278,8 +6316,7 @@ impl App {
             }
             PlanProgress => {
                 let len = crate::fleet::plan_progress_list(self).len();
-                self.fleet.plan_progress_sel =
-                    step(self.fleet.plan_progress_sel, delta, len);
+                self.fleet.plan_progress_sel = step(self.fleet.plan_progress_sel, delta, len);
                 Action::Render
             }
             // Dossier: step the task cursor within the popup so closing it leaves
@@ -6370,8 +6407,13 @@ impl App {
             // Config has no list, the Voice tab owns its own j/k in voice_ui,
             // and the Wake board / agent-context / network panes own their own
             // j/k (pinned dock panes own their whole keymap).
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx
-            | Tab::Network | Tab::PlansBoard => return,
+            Tab::Config
+            | Tab::Operator
+            | Tab::Voice
+            | Tab::Wake
+            | Tab::AgentCtx
+            | Tab::Network
+            | Tab::PlansBoard => return,
         };
         if len == 0 {
             return;
@@ -6399,8 +6441,13 @@ impl App {
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx
-            | Tab::Network | Tab::PlansBoard => return,
+            Tab::Config
+            | Tab::Operator
+            | Tab::Voice
+            | Tab::Wake
+            | Tab::AgentCtx
+            | Tab::Network
+            | Tab::PlansBoard => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -6483,20 +6530,32 @@ mod tests {
             fleet_bee("b-2", "bee"),
         ]);
         let specs = a.bee_panes_to_open();
-        let titles: Vec<&str> = specs.iter().map(|s| s.title.as_deref().unwrap_or("")).collect();
+        let titles: Vec<&str> = specs
+            .iter()
+            .map(|s| s.title.as_deref().unwrap_or(""))
+            .collect();
         // One pane per agent (owner ask 2026-06-11: bees do NOT get a per-bee
         // wake pane — they review via the fleet-wide board; the queen's inline
         // split lives in the dock KDL). 4 agents ⇒ 4 specs.
         assert_eq!(specs.len(), 4);
         // Bees (rank 2) before planners (rank 3); roster order within a group.
-        assert!(titles[0].starts_with("🐝") && titles[1].starts_with("🐝"), "{titles:?}");
-        assert!(titles[2].starts_with("📋") && titles[3].starts_with("📋"), "{titles:?}");
+        assert!(
+            titles[0].starts_with("🐝") && titles[1].starts_with("🐝"),
+            "{titles:?}"
+        );
+        assert!(
+            titles[2].starts_with("📋") && titles[3].starts_with("📋"),
+            "{titles:?}"
+        );
         // The dedup set records OWNER ids (not argv[2], which is a session id for
         // a flag-on claude --resume bee) — a re-refresh opens nothing.
         for o in ["p-1", "b-1", "p-2", "b-2"] {
             assert!(a.paned_bees.contains(o), "owner {o} not recorded");
         }
-        assert!(a.bee_panes_to_open().is_empty(), "second refresh must dedup");
+        assert!(
+            a.bee_panes_to_open().is_empty(),
+            "second refresh must dedup"
+        );
     }
 
     #[test]
@@ -6504,30 +6563,58 @@ mod tests {
         let mut a = App::new();
         a.wake_filter = WakeFilter::Owner("b-1".into());
         a.update(Event::WakeBoard {
-            result: Ok((vec![board_group("b-1", vec![pending_wake(7, "boot")])], None)),
+            result: Ok((
+                vec![board_group("b-1", vec![pending_wake(7, "boot")])],
+                None,
+            )),
         });
         let bee = fleet_bee("b-1", "bee");
         // Present → no exit, misses reset.
-        a.update(Event::Roster { active: vec![bee.clone()], pending: vec![] });
+        a.update(Event::Roster {
+            active: vec![bee.clone()],
+            pending: vec![],
+        });
         assert!(!a.wake_pane_should_exit());
         // Gone twice → still NO exit: the queue holds a reviewable wake.
-        a.update(Event::Roster { active: vec![], pending: vec![] });
-        a.update(Event::Roster { active: vec![], pending: vec![] });
+        a.update(Event::Roster {
+            active: vec![],
+            pending: vec![],
+        });
+        a.update(Event::Roster {
+            active: vec![],
+            pending: vec![],
+        });
         assert_eq!(a.wake_owner_misses, 2);
-        assert!(!a.wake_pane_should_exit(), "drain gate: staged wakes keep the pane");
+        assert!(
+            !a.wake_pane_should_exit(),
+            "drain gate: staged wakes keep the pane"
+        );
         // Queue drains → NOW it exits.
-        a.update(Event::WakeBoard { result: Ok((vec![], None)) });
+        a.update(Event::WakeBoard {
+            result: Ok((vec![], None)),
+        });
         assert!(a.wake_pane_should_exit());
         // A returning bee resets the misses (churn tolerance).
-        a.update(Event::Roster { active: vec![bee], pending: vec![] });
+        a.update(Event::Roster {
+            active: vec![bee],
+            pending: vec![],
+        });
         assert!(!a.wake_pane_should_exit());
         assert_eq!(a.wake_owner_misses, 0);
         // The static panes never self-exit, drained or not.
         let mut q = App::new();
         q.wake_filter = WakeFilter::Queen;
-        q.update(Event::WakeBoard { result: Ok((vec![], None)) });
-        q.update(Event::Roster { active: vec![], pending: vec![] });
-        q.update(Event::Roster { active: vec![], pending: vec![] });
+        q.update(Event::WakeBoard {
+            result: Ok((vec![], None)),
+        });
+        q.update(Event::Roster {
+            active: vec![],
+            pending: vec![],
+        });
+        q.update(Event::Roster {
+            active: vec![],
+            pending: vec![],
+        });
         assert!(!q.wake_pane_should_exit());
     }
 
@@ -6587,10 +6674,7 @@ mod tests {
         a.dock_agent_panes = true;
         let mis = pui_companion_proto::Topology {
             tabs: vec![],
-            panes: vec![
-                topo_pane(2, "🐝 claude · F-12"),
-                topo_pane(1, "🛡 operator"),
-            ],
+            panes: vec![topo_pane(2, "🐝 claude · F-12"), topo_pane(1, "🛡 operator")],
         };
         // First mis-ordered snapshot → the stack repair fires.
         match a.update(Event::Topology(mis.clone())) {
@@ -6602,10 +6686,7 @@ mod tests {
         // A grouped snapshot re-arms the guard.
         let grouped = pui_companion_proto::Topology {
             tabs: vec![],
-            panes: vec![
-                topo_pane(1, "🛡 operator"),
-                topo_pane(2, "🐝 claude · F-12"),
-            ],
+            panes: vec![topo_pane(1, "🛡 operator"), topo_pane(2, "🐝 claude · F-12")],
         };
         assert_eq!(a.update(Event::Topology(grouped)), Action::Render);
         assert!(a.last_regroup.is_none());
@@ -6658,7 +6739,10 @@ mod tests {
                 // streamed desktop in the webview Frames tab).
                 assert!(kdl.contains("tab name=\"☁ papercup-cloud\""), "{kdl}");
                 assert!(!kdl.contains("watch-pane"), "{kdl}");
-                assert!(!kdl.contains("su-remote") && !kdl.contains("su-local"), "{kdl}");
+                assert!(
+                    !kdl.contains("su-remote") && !kdl.contains("su-local"),
+                    "{kdl}"
+                );
             }
             other => panic!("expected CreateFrameTabs, got {other:?}"),
         }
@@ -6669,13 +6753,17 @@ mod tests {
         );
         // A tab already in topology never re-creates either.
         a.created_frame_tabs.clear();
-        a.topology.as_mut().unwrap().tabs.push(pui_companion_proto::TabNode {
-            pos: 1,
-            name: "☁ papercup-cloud".into(),
-            active: false,
-            swap_layout: None,
-            swap_dirty: false,
-        });
+        a.topology
+            .as_mut()
+            .unwrap()
+            .tabs
+            .push(pui_companion_proto::TabNode {
+                pos: 1,
+                name: "☁ papercup-cloud".into(),
+                active: false,
+                swap_layout: None,
+                swap_dirty: false,
+            });
         assert_eq!(
             a.update(Event::Frames(vec![frame("papercup-cloud", "cloud-1")])),
             Action::Render
@@ -6737,13 +6825,17 @@ mod tests {
         );
         // A tab already in topology never re-creates either.
         a.created_hive_tabs.clear();
-        a.topology.as_mut().unwrap().tabs.push(pui_companion_proto::TabNode {
-            pos: 1,
-            name: "◆ mbp".into(),
-            active: false,
-            swap_layout: None,
-            swap_dirty: false,
-        });
+        a.topology
+            .as_mut()
+            .unwrap()
+            .tabs
+            .push(pui_companion_proto::TabNode {
+                pos: 1,
+                name: "◆ mbp".into(),
+                active: false,
+                swap_layout: None,
+                swap_dirty: false,
+            });
         assert_eq!(
             a.update(Event::Hives(vec![fed_peer("mbp", "key-a", false)])),
             Action::Render
@@ -6868,9 +6960,15 @@ mod tests {
         // e seeds the edit buffer with the staged content; typing + Enter
         // releases the EDITED text.
         a.update(key('e', KeyModifiers::NONE));
-        assert_eq!(a.wake_review.as_ref().unwrap().edit.as_deref(), Some("tick"));
+        assert_eq!(
+            a.wake_review.as_ref().unwrap().edit.as_deref(),
+            Some("tick")
+        );
         a.update(key('!', KeyModifiers::NONE));
-        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        let act = a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(
             act,
             Action::WakeQueueAct {
@@ -6911,7 +7009,10 @@ mod tests {
 
     // ─── The wake-pane board (EI-312) ───
 
-    fn board_group(agent: &str, wakes: Vec<crate::models::PendingWake>) -> crate::models::WakeGroup {
+    fn board_group(
+        agent: &str,
+        wakes: Vec<crate::models::PendingWake>,
+    ) -> crate::models::WakeGroup {
         crate::models::WakeGroup {
             agent: agent.into(),
             label: agent.into(),
@@ -6927,7 +7028,10 @@ mod tests {
         a.update(Event::WakeBoard {
             result: Ok((
                 vec![
-                    board_group("su-q", vec![pending_wake(27, "boot storm"), pending_wake(53, "tick")]),
+                    board_group(
+                        "su-q",
+                        vec![pending_wake(27, "boot storm"), pending_wake(53, "tick")],
+                    ),
                     board_group("su-b", vec![pending_wake(60, "placement")]),
                 ],
                 Some("manual".into()),
@@ -6971,7 +7075,10 @@ mod tests {
         // Busy blocks a double-fire; the next snapshot clears it.
         assert_eq!(a.update(key('s', KeyModifiers::NONE)), Action::Render);
         a.update(Event::WakeBoard {
-            result: Ok((vec![board_group("su-q", vec![pending_wake(53, "tick")])], None)),
+            result: Ok((
+                vec![board_group("su-q", vec![pending_wake(53, "tick")])],
+                None,
+            )),
         });
         assert!(!a.wake_board.busy);
         // R drains the selected agent's WHOLE queue as one coalesced wake.
@@ -6985,7 +7092,9 @@ mod tests {
                 edited: None
             }
         );
-        a.update(Event::WakeBoard { result: Ok((vec![], None)) });
+        a.update(Event::WakeBoard {
+            result: Ok((vec![], None)),
+        });
         // S on an empty board is a no-op (nothing selected).
         assert_eq!(a.update(key('S', KeyModifiers::SHIFT)), Action::Render);
     }
@@ -6996,7 +7105,10 @@ mod tests {
         a.update(key('e', KeyModifiers::NONE));
         assert_eq!(a.wake_board.edit.as_deref(), Some("boot storm"));
         a.update(key('!', KeyModifiers::NONE));
-        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        let act = a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(
             act,
             Action::WakeBoardAct {
@@ -7008,7 +7120,9 @@ mod tests {
         );
         assert!(a.wake_board.edit.is_none());
         // An act error lands inline and clears busy.
-        a.update(Event::WakeBoard { result: Err("nope".into()) });
+        a.update(Event::WakeBoard {
+            result: Err("nope".into()),
+        });
         assert!(!a.wake_board.busy);
         assert_eq!(a.wake_board.error.as_deref(), Some("nope"));
     }
@@ -7024,7 +7138,10 @@ mod tests {
                 mode: "auto".into()
             }
         );
-        assert_eq!(a.update(key('g', KeyModifiers::NONE)), Action::FetchWakeBoard);
+        assert_eq!(
+            a.update(key('g', KeyModifiers::NONE)),
+            Action::FetchWakeBoard
+        );
     }
 
     #[test]
@@ -7036,7 +7153,13 @@ mod tests {
             wake_mode: Some("manual".into()),
             pending: vec![pending_wake(1, "x")],
         };
-        let groups = || vec![mk("su-q", Some("queen")), mk("su-b", Some("bee")), mk("su-gone", None)];
+        let groups = || {
+            vec![
+                mk("su-q", Some("queen")),
+                mk("su-b", Some("bee")),
+                mk("su-gone", None),
+            ]
+        };
         let roster = vec![RosterEntry {
             owner_id: "su-q".into(),
             label: "the queen".into(),
@@ -7045,7 +7168,10 @@ mod tests {
         }];
 
         // All → passthrough.
-        assert_eq!(filter_wake_groups(groups(), &WakeFilter::All, &roster).len(), 3);
+        assert_eq!(
+            filter_wake_groups(groups(), &WakeFilter::All, &roster).len(),
+            3
+        );
         // Queen → resolved from the roster by pane-kind.
         let q = filter_wake_groups(groups(), &WakeFilter::Queen, &roster);
         assert_eq!(q.len(), 1);
@@ -7118,15 +7244,17 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Voice;
         a.voice_ui.connected = true;
-        a.update(Event::VoiceUi(VE::Stream(VoiceEvent::Status(VoiceStatus {
-            channel: Some(VoiceChannelInfo {
-                id: "vc-1".into(),
-                name: "standup".into(),
-            }),
-            muted: false,
-            peers: vec![],
-            agent_speaking: false,
-        }))));
+        a.update(Event::VoiceUi(VE::Stream(VoiceEvent::Status(
+            VoiceStatus {
+                channel: Some(VoiceChannelInfo {
+                    id: "vc-1".into(),
+                    name: "standup".into(),
+                }),
+                muted: false,
+                peers: vec![],
+                agent_speaking: false,
+            },
+        ))));
         a
     }
 
@@ -7489,7 +7617,7 @@ mod tests {
         ]);
         a.fleet.agent_sel = 0;
         a.fleet.entered = true; // inside the roster pane → ↑/↓ move its cursor
-        // j moves to the second bee and publishes IT.
+                                // j moves to the second bee and publishes IT.
         match a.update(key('j', KeyModifiers::NONE)) {
             Action::PublishBeeSelection { owner_id, name } => {
                 assert_eq!(owner_id.as_deref(), Some("su-bbb"));
@@ -7533,7 +7661,10 @@ mod tests {
             owner_id: Some("su-y".into()),
             name: None,
         });
-        assert!(a.bee.assignment.is_none(), "stale dossier cleared on new selection");
+        assert!(
+            a.bee.assignment.is_none(),
+            "stale dossier cleared on new selection"
+        );
     }
 
     #[test]
@@ -7606,7 +7737,10 @@ mod tests {
         let mut terms = HashMap::new();
         terms.insert(
             "fleet".to_string(),
-            TermForms { one: "Swarm".into(), other: "Swarms".into() },
+            TermForms {
+                one: "Swarm".into(),
+                other: "Swarms".into(),
+            },
         );
         a.update(Event::LexiconPack(LexiconPackPayload {
             pack_id: "the-hive".into(),
@@ -8107,8 +8241,14 @@ mod tests {
         // only). The first Enter just DRILLS into the focused pane (two-level nav,
         // owner ask 2026-06-16); the detail popup only opens on a SECOND Enter and
         // only when there's a row to describe (none here) — so it stays closed.
-        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert!(!matches!(act, Action::Launch(_)), "Enter must not launch on Plans: {act:?}");
+        let act = a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            !matches!(act, Action::Launch(_)),
+            "Enter must not launch on Plans: {act:?}"
+        );
         assert!(!a.fleet_detail_open, "first Enter drills in, no popup yet");
     }
 
@@ -8162,7 +8302,10 @@ mod tests {
         assert_eq!(a.harness_focus, HarnessFocus::Features);
         // Browsing: ↓ switches the focused pane, NOT a row cursor.
         a.update(ev(KeyCode::Down));
-        assert_eq!((a.harness_focus, a.pane_entered), (HarnessFocus::Issues, false));
+        assert_eq!(
+            (a.harness_focus, a.pane_entered),
+            (HarnessFocus::Issues, false)
+        );
         assert_eq!(a.issue_sel, 0);
         // Enter drills into the issues pane.
         a.update(ev(KeyCode::Enter));
@@ -9287,7 +9430,7 @@ mod tests {
                 swap_dirty: false,
             }],
             panes: vec![
-                pane(10, "tab-bar", None, true), // plugin → not work
+                pane(10, "tab-bar", None, true),         // plugin → not work
                 pane(11, "pui", Some("pui hud"), false), // the HUD → not work
                 pane(12, "claude", Some("psu --agent=claude"), false),
                 pane(13, "codex", Some("psu --agent=codex"), false),
@@ -9314,7 +9457,10 @@ mod tests {
             parse_palette_command(":theme"),
             Some(PaletteCommand::Theme { name: None })
         );
-        assert_eq!(parse_palette_command("themes"), Some(PaletteCommand::Themes));
+        assert_eq!(
+            parse_palette_command("themes"),
+            Some(PaletteCommand::Themes)
+        );
     }
 
     #[test]
@@ -9332,7 +9478,9 @@ mod tests {
         );
         assert_eq!(
             parse_palette_command("dock left"),
-            Some(PaletteCommand::Dock { side: "left".into() })
+            Some(PaletteCommand::Dock {
+                side: "left".into()
+            })
         );
         assert_eq!(parse_palette_command(":dock"), None); // side required
         assert_eq!(
@@ -9399,7 +9547,10 @@ mod tests {
         a.palette_open = true;
         a.palette_input = ":stack".to_string();
         // Resolves to a no-op Render + an error notif, not a half-dispatch.
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Render
+        );
         assert!(a
             .notifs
             .first()
@@ -9453,7 +9604,9 @@ mod tests {
         a.palette_input = ":layout grid".to_string();
         assert_eq!(
             a.on_key(KeyCode::Enter, KeyModifiers::empty()),
-            Action::Dock(DockCmd::SelectLayout { name: "grid".into() })
+            Action::Dock(DockCmd::SelectLayout {
+                name: "grid".into()
+            })
         );
     }
 
@@ -9463,7 +9616,10 @@ mod tests {
         a.topology = Some(dock_topology());
         a.palette_open = true;
         a.palette_input = ":float zzz".to_string();
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Render
+        );
         assert!(a
             .notifs
             .first()
@@ -9713,15 +9869,23 @@ mod tests {
         let mut a = App::new();
         assert_eq!(a.convai_phase, ConvAiPhase::Off);
         // V starts: optimistic Connecting + the run-loop action.
-        assert_eq!(a.update(key('V', KeyModifiers::SHIFT)), Action::VoiceSessionStart);
+        assert_eq!(
+            a.update(key('V', KeyModifiers::SHIFT)),
+            Action::VoiceSessionStart
+        );
         assert_eq!(a.convai_phase, ConvAiPhase::Connecting);
         // Session connects → Live (+ a toast) and the shared thread id
         // backfills the app's conversation pointer (voice-first session).
-        a.update(Event::ConvAi(U::Connected { conversation_id: "conv_1".into() }));
+        a.update(Event::ConvAi(U::Connected {
+            conversation_id: "conv_1".into(),
+        }));
         assert_eq!(a.convai_phase, ConvAiPhase::Live);
         assert_eq!(a.conversation_id.as_deref(), Some("conv_1"));
         // V again stops.
-        assert_eq!(a.update(key('V', KeyModifiers::SHIFT)), Action::VoiceSessionStop);
+        assert_eq!(
+            a.update(key('V', KeyModifiers::SHIFT)),
+            Action::VoiceSessionStop
+        );
         assert_eq!(a.convai_phase, ConvAiPhase::Off);
         // A session error lands in the status line + resets the phase.
         a.update(key('V', KeyModifiers::SHIFT));
@@ -9754,7 +9918,9 @@ mod tests {
         assert!(!last.content.contains("set_mode"));
         assert!(a.notifs.iter().any(|n| n.message.contains("passive")));
         // Ended resets the phase + toasts the reason.
-        a.update(Event::ConvAi(U::Ended { reason: "voice session closed".into() }));
+        a.update(Event::ConvAi(U::Ended {
+            reason: "voice session closed".into(),
+        }));
         assert_eq!(a.convai_phase, ConvAiPhase::Off);
         assert!(a.notifs.iter().any(|n| n.message.contains("closed")));
     }
@@ -10310,7 +10476,7 @@ mod tests {
         a.update(key('7', KeyModifiers::NONE)); // Testing
         a.set_testing(vec![test_domain("unit"), test_domain("e2e")]);
         a.pane_entered = true; // inside the panes → Enter activates / ↑↓ move within
-        // Enter on the domain column fetches the selected domain's files.
+                               // Enter on the domain column fetches the selected domain's files.
         match a.update(ev(KeyCode::Enter)) {
             Action::FetchTestingFiles { harness, domain_id } => {
                 assert_eq!(harness, "papercup");
@@ -10362,7 +10528,7 @@ mod tests {
         a.update(key('7', KeyModifiers::NONE));
         a.set_testing(vec![test_domain("unit"), test_domain("e2e")]);
         a.pane_entered = true; // inside the panes → ↑/↓ move within (Tab still switches)
-        // A stale fetch for a NON-selected domain is dropped.
+                               // A stale fetch for a NON-selected domain is dropped.
         a.update(key('j', KeyModifiers::NONE)); // select e2e
         a.update(Event::TestingFiles {
             domain_id: "unit".into(),
@@ -10497,9 +10663,9 @@ mod tests {
         a.tab = Tab::Plans;
         a.plans = vec![plan("one"), plan("two"), plan("three")];
         a.operator_dock_open = true; // visible but NOT focused
-        // The unfocused dock lets keys reach the Plans tab's two-level nav (owner
-        // ask 2026-06-16): Enter drills into the list pane, then j moves the
-        // selection — and the chat is never scrolled.
+                                     // The unfocused dock lets keys reach the Plans tab's two-level nav (owner
+                                     // ask 2026-06-16): Enter drills into the list pane, then j moves the
+                                     // selection — and the chat is never scrolled.
         let before = a.plan_sel;
         a.update(ev(KeyCode::Enter)); // → inside the list pane
         a.update(key('j', KeyModifiers::NONE)); // moves the Plans selection
@@ -10574,7 +10740,10 @@ mod tests {
                 assert_eq!(sessions.len(), 1);
                 assert!(bees.is_empty());
                 assert_eq!(sessions[0].adv_session_id, 607);
-                assert_eq!(sessions[0].spec.argv, vec!["psu", "--no-picker", "--agent=claude"]);
+                assert_eq!(
+                    sessions[0].spec.argv,
+                    vec!["psu", "--no-picker", "--agent=claude"]
+                );
             }
             other => panic!("expected LaunchPanes, got {other:?}"),
         }
@@ -10642,7 +10811,6 @@ mod tests {
         }
     }
 
-
     /// EI-358: a board pane (reactive_launch_panes = false — watch/wake/
     /// prompt/mail/work/network/hive) must NEVER react to pending launches;
     /// only the full TUI / chat-pane / dock-driver may (and claim-then-open
@@ -10667,9 +10835,15 @@ mod tests {
         let mut a = App::new();
         a.reactive_launch_panes = true; // EI-358: tests run as a launch-capable mode
         let p = pending_launch(&a, 607, "claude");
-        let _ = a.update(Event::Roster { active: vec![], pending: vec![p.clone()] });
+        let _ = a.update(Event::Roster {
+            active: vec![],
+            pending: vec![p.clone()],
+        });
         // Same pending entry on the next refresh → dedup → just Render, no reopen.
-        let act = a.update(Event::Roster { active: vec![], pending: vec![p] });
+        let act = a.update(Event::Roster {
+            active: vec![],
+            pending: vec![p],
+        });
         assert_eq!(act, Action::Render);
         assert_eq!(a.tracked_panes.len(), 1);
     }
@@ -10679,7 +10853,10 @@ mod tests {
         let mut a = App::new();
         let mut p = pending_launch(&a, 607, "claude");
         p.host = "some-other-host".into();
-        let act = a.update(Event::Roster { active: vec![], pending: vec![p] });
+        let act = a.update(Event::Roster {
+            active: vec![],
+            pending: vec![p],
+        });
         assert_eq!(act, Action::Render);
         assert!(a.tracked_panes.is_empty());
     }
@@ -10687,7 +10864,10 @@ mod tests {
     #[test]
     fn roster_with_no_pending_just_renders() {
         let mut a = App::new();
-        let act = a.update(Event::Roster { active: vec![], pending: vec![] });
+        let act = a.update(Event::Roster {
+            active: vec![],
+            pending: vec![],
+        });
         assert_eq!(act, Action::Render);
         assert!(a.tracked_panes.is_empty());
     }
@@ -10731,7 +10911,10 @@ mod tests {
             owner_id: "bee-1".into(),
             inbox: crate::models::BeeMailSide {
                 total: 2,
-                entries: vec![comms_mail("message", "a", "i0"), comms_mail("escalation", "b", "i1")],
+                entries: vec![
+                    comms_mail("message", "a", "i0"),
+                    comms_mail("escalation", "b", "i1"),
+                ],
             },
             outbox: crate::models::BeeMailSide {
                 total: 1,
@@ -10770,16 +10953,28 @@ mod tests {
         a.fleet.entered = true; // inside the panes → ↑/↓ move within (←/→ keep switching)
         a.update(ev(KeyCode::Char('l'))); // Inbox (2 items)
         a.update(ev(KeyCode::Char('j')));
-        assert_eq!((a.fleet.fleet_focus, a.fleet.comms_inbox_sel), (FleetPanel::Inbox, 1));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.fleet.comms_inbox_sel),
+            (FleetPanel::Inbox, 1)
+        );
         a.update(ev(KeyCode::Char('j'))); // CLAMP — stays on inbox, no fall-through
-        assert_eq!((a.fleet.fleet_focus, a.fleet.comms_inbox_sel), (FleetPanel::Inbox, 1));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.fleet.comms_inbox_sel),
+            (FleetPanel::Inbox, 1)
+        );
         // Outbox/conversations are reached by CYCLING (l), not by scrolling off.
         a.update(ev(KeyCode::Char('l'))); // Outbox (1 item)
         a.update(ev(KeyCode::Char('j'))); // clamp at 0
-        assert_eq!((a.fleet.fleet_focus, a.fleet.comms_outbox_sel), (FleetPanel::Outbox, 0));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.fleet.comms_outbox_sel),
+            (FleetPanel::Outbox, 0)
+        );
         a.update(ev(KeyCode::Char('l'))); // Conversations (2)
         a.update(ev(KeyCode::Char('j')));
-        assert_eq!((a.fleet.fleet_focus, a.conversation_sel), (FleetPanel::Conversations, 1));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.conversation_sel),
+            (FleetPanel::Conversations, 1)
+        );
         a.update(ev(KeyCode::Char('k')));
         assert_eq!(a.conversation_sel, 0);
     }
@@ -10792,17 +10987,31 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Fleet; // comms off → Roster · Dossier · PlanProgress
         let mut p1 = plan("plan-a");
-        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        p1.item_counts = crate::models::ItemCounts {
+            todo: 2,
+            done: 1,
+            ..Default::default()
+        };
         let mut p2 = plan("plan-b");
-        p2.item_counts = crate::models::ItemCounts { todo: 1, done: 1, ..Default::default() };
+        p2.item_counts = crate::models::ItemCounts {
+            todo: 1,
+            done: 1,
+            ..Default::default()
+        };
         a.set_plans(vec![p1, p2]);
         assert!(!a.fleet.entered);
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
         // Browsing: ↓ switches panes (does NOT move a cursor).
         a.update(ev(KeyCode::Down));
-        assert_eq!((a.fleet.fleet_focus, a.fleet.entered), (FleetPanel::Dossier, false));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.fleet.entered),
+            (FleetPanel::Dossier, false)
+        );
         a.update(ev(KeyCode::Down));
-        assert_eq!((a.fleet.fleet_focus, a.fleet.entered), (FleetPanel::PlanProgress, false));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.fleet.entered),
+            (FleetPanel::PlanProgress, false)
+        );
         // Enter drills into the focused pane (no popup yet — just enters).
         a.update(ev(KeyCode::Enter));
         assert!(a.fleet.entered);
@@ -10824,11 +11033,19 @@ mod tests {
         use crate::fleet::FleetPanel;
         let mut a = App::new();
         a.tab = Tab::Fleet; // comms OFF (default) → Roster → Dossier → PlanProgress
-        // Two live plans so the plan-progress list is non-empty + selectable.
+                            // Two live plans so the plan-progress list is non-empty + selectable.
         let mut p1 = plan("plan-a");
-        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        p1.item_counts = crate::models::ItemCounts {
+            todo: 2,
+            done: 1,
+            ..Default::default()
+        };
         let mut p2 = plan("plan-b");
-        p2.item_counts = crate::models::ItemCounts { todo: 1, done: 1, ..Default::default() };
+        p2.item_counts = crate::models::ItemCounts {
+            todo: 1,
+            done: 1,
+            ..Default::default()
+        };
         a.set_plans(vec![p1, p2]);
         // Whole-fleet dossier (no agent selected) with 3 tasks → a non-empty,
         // selectable worklist (owner ask 2026-06-16: cursor, not bare scroll).
@@ -10909,7 +11126,10 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
-        assert!(body.contains("first task"), "popup should name the selected work item: {body}");
+        assert!(
+            body.contains("first task"),
+            "popup should name the selected work item: {body}"
+        );
         // Modal: j steps the task cursor; an unrelated key is swallowed.
         a.update(ev(KeyCode::Char('j')));
         assert_eq!(a.fleet.dossier_sel, 1);
@@ -10945,7 +11165,11 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Plans;
         let mut p1 = plan("plan-x");
-        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        p1.item_counts = crate::models::ItemCounts {
+            todo: 2,
+            done: 1,
+            ..Default::default()
+        };
         a.set_plans(vec![p1, plan("plan-y")]);
         a.plan_item_states = Some(item_states("plan-x", &["P-001", "P-002", "P-003"]));
         assert!(!a.plans_entered);
@@ -10996,7 +11220,11 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::PlansBoard;
         let mut p1 = plan("board-a");
-        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        p1.item_counts = crate::models::ItemCounts {
+            todo: 2,
+            done: 1,
+            ..Default::default()
+        };
         a.set_plans(vec![p1, plan("board-b")]);
         assert_eq!(a.plans_focus, PlansFocus::List);
         assert!(!a.plans_entered);
@@ -11042,14 +11270,20 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Fleet; // default (comms-off) view
         let mut p1 = plan("plan-alpha");
-        p1.item_counts =
-            crate::models::ItemCounts { todo: 3, done: 2, ..Default::default() };
+        p1.item_counts = crate::models::ItemCounts {
+            todo: 3,
+            done: 2,
+            ..Default::default()
+        };
         let mut p2 = plan("plan-beta");
-        p2.item_counts =
-            crate::models::ItemCounts { todo: 1, wip: 1, ..Default::default() };
+        p2.item_counts = crate::models::ItemCounts {
+            todo: 1,
+            wip: 1,
+            ..Default::default()
+        };
         a.set_plans(vec![p1, p2]);
         a.fleet.entered = true; // inside the panes → ←/→ switch, ⏎ opens, ↑/↓ within
-        // Cycle focus to the plan-progress panel (Roster → Dossier → PlanProgress).
+                                // Cycle focus to the plan-progress panel (Roster → Dossier → PlanProgress).
         a.update(ev(KeyCode::Char('l')));
         a.update(ev(KeyCode::Char('l')));
         assert_eq!(a.fleet.fleet_focus, FleetPanel::PlanProgress);
@@ -11063,7 +11297,10 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
-        assert!(body.contains("plan-alpha"), "popup should name the selected plan: {body}");
+        assert!(
+            body.contains("plan-alpha"),
+            "popup should name the selected plan: {body}"
+        );
         // Modal: j steps to the next plan WITHIN the popup; an unrelated key is
         // swallowed (can't drive the dock underneath).
         a.update(ev(KeyCode::Char('j')));
@@ -11079,12 +11316,15 @@ mod tests {
     fn comms_roster_move_resets_mail_cursor() {
         use crate::fleet::FleetPanel;
         let mut a = comms_app();
-        a.set_roster(vec![fleet_bee("bee-1", "claude"), fleet_bee("bee-2", "claude")]);
+        a.set_roster(vec![
+            fleet_bee("bee-1", "claude"),
+            fleet_bee("bee-2", "claude"),
+        ]);
         a.fleet.comms_inbox_sel = 1;
         a.fleet.comms_outbox_sel = 1;
         a.fleet.entered = true; // inside the roster → j moves its cursor
-        // Roster holds focus → j moves the roster cursor and resets the mail cursors
-        // (a new agent has new mail).
+                                // Roster holds focus → j moves the roster cursor and resets the mail cursors
+                                // (a new agent has new mail).
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
         a.update(ev(KeyCode::Char('j')));
         assert_eq!(a.fleet.comms_inbox_sel, 0);
@@ -11126,11 +11366,17 @@ mod tests {
         a.fleet.entered = true; // inside the panes
         a.update(ev(KeyCode::Char('l'))); // Inbox
         a.update(ev(KeyCode::Enter)); // open popup
-        // j/k inside the popup step within the inbox only — no fall-through.
+                                      // j/k inside the popup step within the inbox only — no fall-through.
         a.update(ev(KeyCode::Char('j')));
-        assert_eq!((a.fleet.fleet_focus, a.fleet.comms_inbox_sel), (FleetPanel::Inbox, 1));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.fleet.comms_inbox_sel),
+            (FleetPanel::Inbox, 1)
+        );
         a.update(ev(KeyCode::Char('j'))); // clamp (inbox has 2)
-        assert_eq!((a.fleet.fleet_focus, a.fleet.comms_inbox_sel), (FleetPanel::Inbox, 1));
+        assert_eq!(
+            (a.fleet.fleet_focus, a.fleet.comms_inbox_sel),
+            (FleetPanel::Inbox, 1)
+        );
         a.update(ev(KeyCode::Char('k')));
         assert_eq!(a.fleet.comms_inbox_sel, 0);
         assert!(a.fleet_detail_open);

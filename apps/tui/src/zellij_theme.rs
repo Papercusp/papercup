@@ -117,7 +117,10 @@ fn fmt_color(c: Color) -> String {
 fn component(out: &mut String, name: &str, base: Color, background: Color, emphasis: [Color; 4]) {
     out.push_str(&format!("        {name} {{\n"));
     out.push_str(&format!("            base {}\n", fmt_color(base)));
-    out.push_str(&format!("            background {}\n", fmt_color(background)));
+    out.push_str(&format!(
+        "            background {}\n",
+        fmt_color(background)
+    ));
     for (i, e) in emphasis.iter().enumerate() {
         out.push_str(&format!("            emphasis_{i} {}\n", fmt_color(*e)));
     }
@@ -154,7 +157,13 @@ pub fn theme_kdl(spec: &ThemeSpec) -> String {
         [t.danger, t.ink, t.sky, t.human],
     );
     component(&mut out, "table_title", t.accent, t.panel, std_emph);
-    component(&mut out, "table_cell_selected", t.ink, t.panel_active, std_emph);
+    component(
+        &mut out,
+        "table_cell_selected",
+        t.ink,
+        t.panel_active,
+        std_emph,
+    );
     component(&mut out, "table_cell_unselected", t.ink, t.panel, std_emph);
     component(&mut out, "list_selected", t.ink, t.panel_active, std_emph);
     component(&mut out, "list_unselected", t.ink, t.panel, std_emph);
@@ -201,11 +210,7 @@ pub fn theme_kdl(spec: &ThemeSpec) -> String {
         t.ink,
     ];
     for (i, c) in players.iter().enumerate() {
-        out.push_str(&format!(
-            "            player_{} {}\n",
-            i + 1,
-            fmt_color(*c)
-        ));
+        out.push_str(&format!("            player_{} {}\n", i + 1, fmt_color(*c)));
     }
     out.push_str("        }\n");
     out.push_str("    }\n");
@@ -292,7 +297,9 @@ pub fn set_config_theme_line(config_path: &Path, name: &str) -> io::Result<Confi
 
     if !replaced {
         lines.push(String::new());
-        lines.push(format!("// pui :theme keeps the line below in sync with the workbench theme."));
+        lines.push(format!(
+            "// pui :theme keeps the line below in sync with the workbench theme."
+        ));
         lines.push(managed_line);
     }
     let mut out = lines.join("\n");
@@ -328,7 +335,11 @@ mod tests {
                 "exit_code_error",
                 "multiplayer_user_colors",
             ] {
-                assert!(kdl.contains(&format!("{block} {{")), "{} missing {block}", spec.name);
+                assert!(
+                    kdl.contains(&format!("{block} {{")),
+                    "{} missing {block}",
+                    spec.name
+                );
             }
             for p in 1..=10 {
                 assert!(kdl.contains(&format!("player_{p} ")));
@@ -387,7 +398,10 @@ mod tests {
         std::fs::write(&cfg, "// keybinds etc\n// theme \"dracula\"\n").unwrap();
 
         // First write: appends the marked line + backs up the pre-pui config.
-        assert_eq!(set_config_theme_line(&cfg, "frost").unwrap(), ConfigOutcome::Set);
+        assert_eq!(
+            set_config_theme_line(&cfg, "frost").unwrap(),
+            ConfigOutcome::Set
+        );
         let after = std::fs::read_to_string(&cfg).unwrap();
         assert!(after.contains(&format!("theme \"frost\" {MANAGED_MARKER}")));
         assert!(after.contains("// keybinds etc"), "user content preserved");
@@ -401,12 +415,18 @@ mod tests {
             ConfigOutcome::Set
         );
         let after2 = std::fs::read_to_string(&cfg).unwrap();
-        assert_eq!(after2.matches("theme \"").count(), 2, "commented example + managed line");
+        assert_eq!(
+            after2.matches("theme \"").count(),
+            2,
+            "commented example + managed line"
+        );
         assert!(after2.contains(&format!("theme \"honeycomb\" {MANAGED_MARKER}")));
         assert!(!after2.contains("theme \"frost\""));
-        assert!(!std::fs::read_to_string(dir.path().join("config.kdl.pui-bak"))
-            .unwrap()
-            .contains(MANAGED_MARKER));
+        assert!(
+            !std::fs::read_to_string(dir.path().join("config.kdl.pui-bak"))
+                .unwrap()
+                .contains(MANAGED_MARKER)
+        );
     }
 
     #[test]
@@ -421,7 +441,10 @@ mod tests {
             ConfigOutcome::RespectedUser("gruvbox".into())
         );
         assert_eq!(std::fs::read_to_string(&cfg).unwrap(), before, "untouched");
-        assert!(!dir.path().join("config.kdl.pui-bak").exists(), "no backup on a no-op");
+        assert!(
+            !dir.path().join("config.kdl.pui-bak").exists(),
+            "no backup on a no-op"
+        );
     }
 
     #[test]

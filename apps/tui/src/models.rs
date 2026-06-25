@@ -2351,8 +2351,8 @@ mod tests {
         assert_eq!(e.role.as_deref(), Some("overwatch"));
         assert_eq!(e.owner_id, ""); // null ownerId → default, not an error
         assert!(e.launch_argv.is_empty()); // null launchArgv → [], not an error
-        // The native uuid the brain-view pane locates + tails MUST survive the
-        // round-trip — empty here = the pane filters the entry out (= "waiting…").
+                                           // The native uuid the brain-view pane locates + tails MUST survive the
+                                           // round-trip — empty here = the pane filters the entry out (= "waiting…").
         let want_sid = "5fb7d772-655e-4a64-bba3-2bf522c1d1d9";
         assert_eq!(e.session_id.as_deref(), Some(want_sid));
         // `id` (the AdvSessionRow PK) backfills adv_session_id via the alias, so the

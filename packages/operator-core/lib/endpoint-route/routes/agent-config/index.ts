@@ -17,7 +17,7 @@
  * Ported from app/api/agent-config/route.ts. `auth: 'public'` preserves
  * the original (un-authed) behavior.
  */
-import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseSurfaceModels, parseTiers, parseTierCeilings, type AgentConfig } from '../../../agent-config';
+import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseRoleBackends, parseSurfaceModels, parseTiers, parseTierCeilings, type AgentConfig } from '../../../agent-config';
 import { DEFAULT_MODEL_TIERS } from '../../../agent-config-constants';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -84,6 +84,7 @@ export default [
                   .map(([k, v]) => [k, (v as string).trim()]),
               )
             : {},
+        roleBackends: parseRoleBackends(body.roleBackends),
         backends: parseBackends(body.backends),
         surfaceModels: parseSurfaceModels(body.surfaceModels),
         tiers: parseTiers(body.tiers),
@@ -96,6 +97,9 @@ export default [
         Array.isArray(v) ? v.length : v && typeof v === 'object' ? Object.keys(v).length : 0;
       if (body.models != null && sentCount(body.models) !== Object.keys(next.models).length) {
         dropped.push('models: every value must be a non-empty model id string');
+      }
+      if (body.roleBackends != null && sentCount(body.roleBackends) !== Object.keys(next.roleBackends ?? {}).length) {
+        dropped.push('roleBackends: every value must be a concrete backend');
       }
       if (body.backends != null && sentCount(body.backends) !== Object.keys(next.backends ?? {}).length) {
         dropped.push('backends: unknown surface key or backend');

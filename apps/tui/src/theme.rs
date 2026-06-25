@@ -639,7 +639,10 @@ mod tests {
                 .bg(t.accent_hot)
                 .add_modifier(Modifier::BOLD)
         );
-        assert_eq!(Theme::tab_bar(), Style::default().fg(t.muted).bg(t.tab_bar_bg));
+        assert_eq!(
+            Theme::tab_bar(),
+            Style::default().fg(t.muted).bg(t.tab_bar_bg)
+        );
         assert_eq!(Theme::dim(), Style::default().fg(t.muted));
     }
 
@@ -676,7 +679,11 @@ mod tests {
     fn set_active_unknown_name_is_a_noop_and_false() {
         let before = Theme::active_name();
         assert!(!Theme::set_active("does-not-exist"));
-        assert_eq!(Theme::active_name(), before, "unknown name must not change the active theme");
+        assert_eq!(
+            Theme::active_name(),
+            before,
+            "unknown name must not change the active theme"
+        );
     }
 
     #[test]
@@ -714,7 +721,11 @@ mod tests {
             assert!(names.insert(t.name), "duplicate theme name {}", t.name);
             assert_ne!(t.ink, t.panel, "{}: text invisible on panel", t.name);
             assert_ne!(t.human, t.muted, "{}: needs-human dims away", t.name);
-            assert_ne!(t.on_accent, t.accent_hot, "{}: selected text invisible", t.name);
+            assert_ne!(
+                t.on_accent, t.accent_hot,
+                "{}: selected text invisible",
+                t.name
+            );
             assert_ne!(t.danger, t.sage, "{}: danger/success collide", t.name);
         }
     }
@@ -731,7 +742,11 @@ mod tests {
         // …and it carries the human hue + bold (NOT the de-emphasised dim style).
         assert_eq!(marker.style.fg, Some(t.human));
         assert!(marker.style.add_modifier.contains(Modifier::BOLD));
-        assert_ne!(marker.style.fg, Some(t.muted), "needs-human must not be dimmed");
+        assert_ne!(
+            marker.style.fg,
+            Some(t.muted),
+            "needs-human must not be dimmed"
+        );
 
         // Render it into a buffer and confirm the glyph cell survives with its hue.
         let area = Rect::new(0, 0, 4, 1);

@@ -75,9 +75,7 @@ pub fn board_rows(app: &App) -> Vec<PlanBoardRow<'_>> {
             let agents = app
                 .roster
                 .iter()
-                .filter(|r| {
-                    !r.stale && r.current_plan_slug.as_deref() == Some(plan.slug.as_str())
-                })
+                .filter(|r| !r.stale && r.current_plan_slug.as_deref() == Some(plan.slug.as_str()))
                 .collect::<Vec<_>>();
             PlanBoardRow { plan, agents }
         })
@@ -88,7 +86,12 @@ pub fn board_rows(app: &App) -> Vec<PlanBoardRow<'_>> {
         status_rank(&a.plan.status)
             .cmp(&status_rank(&b.plan.status))
             .then(b.worked().cmp(&a.worked()))
-            .then(b.plan.priority.unwrap_or(0).cmp(&a.plan.priority.unwrap_or(0)))
+            .then(
+                b.plan
+                    .priority
+                    .unwrap_or(0)
+                    .cmp(&a.plan.priority.unwrap_or(0)),
+            )
             .then(b.plan.updated.cmp(&a.plan.updated))
             .then(a.plan.slug.cmp(&b.plan.slug))
     });
@@ -127,7 +130,10 @@ fn row_line<'a>(row: &PlanBoardRow<'a>) -> Line<'a> {
     let c = &p.item_counts;
     Line::from(vec![
         Theme::status_marker(&p.status),
-        Span::styled(format!(" {:<10}", trunc(&p.status, 10)), Theme::status_style(&p.status)),
+        Span::styled(
+            format!(" {:<10}", trunc(&p.status, 10)),
+            Theme::status_style(&p.status),
+        ),
         Span::raw(format!("{:<22} ", trunc(&p.slug, 21))),
         agent_badge(row.agents.len()),
         Span::styled(format!("  {}/{}", c.done, c.total()), Theme::dim()),
@@ -142,7 +148,11 @@ fn item_line(it: &PlanItemState) -> Line<'static> {
     let (glyph, label, gstyle) = match it.disposition.as_str() {
         "active" => (liveness::LIVE, "active", Theme::success()),
         "assigned-idle" => (liveness::IDLE, "assigned", Theme::info()),
-        "claimed-pooled" => (status::NEEDS_HUMAN, "claimed", Theme::status_style("needs-human")),
+        "claimed-pooled" => (
+            status::NEEDS_HUMAN,
+            "claimed",
+            Theme::status_style("needs-human"),
+        ),
         "claimed-mismatch" => (severity::WARN, "MISMATCH", Theme::warn()),
         "pooled" => (severity::INFO, "pooled", Theme::dim()),
         _ => ("?", "—", Theme::dim()),
@@ -235,12 +245,20 @@ fn draw_plan_detail(f: &mut Frame, plan: &PlanSummary, agents: &[&RosterEntry], 
     } else {
         let names = agents
             .iter()
-            .map(|r| r.agent.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| r.label.clone()))
+            .map(|r| {
+                r.agent
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| r.label.clone())
+            })
             .map(|n| trunc(&n, 20))
             .collect::<Vec<_>>()
             .join(", ");
         Line::from(vec![
-            Span::styled(format!("agents:  {} ", agents.len()), Theme::success().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("agents:  {} ", agents.len()),
+                Theme::success().add_modifier(Modifier::BOLD),
+            ),
             Span::styled(trunc(&names, 60), Theme::success()),
         ])
     };
@@ -249,12 +267,17 @@ fn draw_plan_detail(f: &mut Frame, plan: &PlanSummary, agents: &[&RosterEntry], 
         Line::from(vec![
             Span::raw("status:  "),
             Theme::status_marker(&plan.status),
-            Span::styled(format!(" {}", plan.status), Theme::status_style(&plan.status)),
+            Span::styled(
+                format!(" {}", plan.status),
+                Theme::status_style(&plan.status),
+            ),
             Span::styled(
                 format!(
                     "   harness: {}   prio: {}",
                     plan.harness.clone().unwrap_or_else(|| "—".into()),
-                    plan.priority.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
+                    plan.priority
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "—".into()),
                 ),
                 Theme::dim(),
             ),
@@ -263,7 +286,11 @@ fn draw_plan_detail(f: &mut Frame, plan: &PlanSummary, agents: &[&RosterEntry], 
             format!(
                 "owner:   {}   updated: {}",
                 plan.owner.clone().unwrap_or_else(|| "—".into()),
-                if plan.updated.is_empty() { "—" } else { &plan.updated },
+                if plan.updated.is_empty() {
+                    "—"
+                } else {
+                    &plan.updated
+                },
             ),
             Theme::dim(),
         )),
@@ -271,16 +298,43 @@ fn draw_plan_detail(f: &mut Frame, plan: &PlanSummary, agents: &[&RosterEntry], 
         // not-started / attention).
         Line::from(vec![
             Span::raw("items:   "),
-            Span::styled(format!("{} ", progress_bar(c.done, c.total(), 14)), Theme::info()),
+            Span::styled(
+                format!("{} ", progress_bar(c.done, c.total(), 14)),
+                Theme::info(),
+            ),
             Span::styled(format!("{}", c.done), Theme::success()),
             Span::styled(format!("/{} done", c.total()), Theme::dim()),
         ]),
         Line::from(vec![
             Span::raw("         "),
-            Span::styled(format!("{} {} in-progress  ", glyph::status::WIP, c.wip), Theme::info()),
-            Span::styled(format!("{} {} not-started  ", glyph::status::TODO, c.todo), Theme::dim()),
-            Span::styled(format!("{} {} blocked  ", glyph::status::BLOCKED, c.blocked), if c.blocked > 0 { Theme::danger() } else { Theme::dim() }),
-            Span::styled(format!("{} {} needs-human", glyph::status::NEEDS_HUMAN, c.needs_human), if c.needs_human > 0 { Theme::status_style("needs-human") } else { Theme::dim() }),
+            Span::styled(
+                format!("{} {} in-progress  ", glyph::status::WIP, c.wip),
+                Theme::info(),
+            ),
+            Span::styled(
+                format!("{} {} not-started  ", glyph::status::TODO, c.todo),
+                Theme::dim(),
+            ),
+            Span::styled(
+                format!("{} {} blocked  ", glyph::status::BLOCKED, c.blocked),
+                if c.blocked > 0 {
+                    Theme::danger()
+                } else {
+                    Theme::dim()
+                },
+            ),
+            Span::styled(
+                format!(
+                    "{} {} needs-human",
+                    glyph::status::NEEDS_HUMAN,
+                    c.needs_human
+                ),
+                if c.needs_human > 0 {
+                    Theme::status_style("needs-human")
+                } else {
+                    Theme::dim()
+                },
+            ),
         ]),
         agents_line,
     ];
@@ -327,12 +381,18 @@ fn draw_work_items(
                 s.harness_liveness_mode.clone()
             };
             let header = ListItem::new(Line::from(Span::styled(
-                format!("{:<2}{:<8}{:<9}{:<16}{:<6}{}", "", "item", "state", "who", "live", "intent"),
+                format!(
+                    "{:<2}{:<8}{:<9}{:<16}{:<6}{}",
+                    "", "item", "state", "who", "live", "intent"
+                ),
                 Theme::dim(),
             )));
             let mut items = vec![header];
             items.extend(s.items.iter().map(|it| ListItem::new(item_line(it))));
-            (format!(" Work items ({}) · liveness: {mode} ", s.items.len()), items)
+            (
+                format!(" Work items ({}) · liveness: {mode} ", s.items.len()),
+                items,
+            )
         }
         Some(_) => (
             " Work items (0) ".to_string(),
@@ -343,7 +403,10 @@ fn draw_work_items(
         ),
         None => (
             " Work items ".to_string(),
-            vec![ListItem::new(Line::from(Span::styled("  loading…", Theme::dim())))],
+            vec![ListItem::new(Line::from(Span::styled(
+                "  loading…",
+                Theme::dim(),
+            )))],
         ),
     };
     let mut state = ListState::default();
@@ -377,7 +440,11 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
         Span::styled(format!(" Plans — {} total", rows.len()), Theme::title()),
         Span::styled(
             format!(" · {worked} being worked on"),
-            if worked > 0 { Theme::info() } else { Theme::dim() },
+            if worked > 0 {
+                Theme::info()
+            } else {
+                Theme::dim()
+            },
         ),
         Span::raw(" · "),
         Span::styled(
@@ -432,7 +499,14 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
         let selected = &rows[sel];
         draw_plan_detail(f, selected.plan, &selected.agents, right[0]);
         let item_cursor = items_focused.then_some(app.plan_items_sel);
-        draw_work_items(f, app, &selected.plan.slug, right[1], items_focused, item_cursor);
+        draw_work_items(
+            f,
+            app,
+            &selected.plan.slug,
+            right[1],
+            items_focused,
+            item_cursor,
+        );
     }
 
     // Footer: the two-level nav legend (owner ask 2026-06-16) + glyph legend.
@@ -482,7 +556,15 @@ mod tests {
     }
 
     fn counts(todo: u32, wip: u32, done: u32, blocked: u32, needs_human: u32) -> ItemCounts {
-        ItemCounts { todo, wip, blocked, needs_human, done, dropped: 0, unknown: 0 }
+        ItemCounts {
+            todo,
+            wip,
+            blocked,
+            needs_human,
+            done,
+            dropped: 0,
+            unknown: 0,
+        }
     }
 
     fn agent_on(plan_slug: &str, name: &str, stale: bool) -> RosterEntry {
@@ -520,7 +602,9 @@ mod tests {
     fn render(app: &App, w: u16, h: u16) -> String {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw_plans_board(f, app, f.area())).unwrap();
+        terminal
+            .draw(|f| draw_plans_board(f, app, f.area()))
+            .unwrap();
         let buf = terminal.backend().buffer().clone();
         let mut out = String::new();
         for y in 0..buf.area.height {
@@ -537,7 +621,10 @@ mod tests {
         let app = board_app();
         let rows = board_rows(&app);
         let order: Vec<&str> = rows.iter().map(|r| r.plan.slug.as_str()).collect();
-        assert_eq!(order, vec!["worked-plan", "ready-plan", "draft-plan", "shipped-plan"]);
+        assert_eq!(
+            order,
+            vec!["worked-plan", "ready-plan", "draft-plan", "shipped-plan"]
+        );
     }
 
     #[test]
@@ -547,12 +634,21 @@ mod tests {
         // Header: total live agents across plans (queen + worker = 2; ghost stale).
         assert!(s.contains("2 agent(s) active"), "header agent total: {s}");
         // Master row badge: the prominent "● N working".
-        assert!(s.contains(&format!("{} 2 working", glyph::liveness::LIVE)), "row badge: {s}");
+        assert!(
+            s.contains(&format!("{} 2 working", glyph::liveness::LIVE)),
+            "row badge: {s}"
+        );
         // Idle plans read "idle", not a misleading agent count.
-        assert!(s.contains(&format!("{} idle", glyph::liveness::STALE)), "idle badge: {s}");
+        assert!(
+            s.contains(&format!("{} idle", glyph::liveness::STALE)),
+            "idle badge: {s}"
+        );
         // Detail names the agents on the selected plan.
         assert!(s.contains("agents:  2"), "detail agent count: {s}");
-        assert!(s.contains("queen") && s.contains("worker"), "detail agent names: {s}");
+        assert!(
+            s.contains("queen") && s.contains("worker"),
+            "detail agent names: {s}"
+        );
     }
 
     #[test]
@@ -564,7 +660,10 @@ mod tests {
         assert!(s.contains("5/11 done"), "progress count: {s}");
         assert!(s.contains("3 in-progress"), "wip breakdown: {s}");
         assert!(s.contains("1 blocked"), "blocked breakdown: {s}");
-        assert!(s.contains("do the next thing for worked-plan"), "next action: {s}");
+        assert!(
+            s.contains("do the next thing for worked-plan"),
+            "next action: {s}"
+        );
     }
 
     #[test]
@@ -642,7 +741,10 @@ mod tests {
         app.tab = Tab::PlansBoard;
         let mut archived = plan("archived-plan", "active", counts(1, 0, 0, 0, 0), None);
         archived.archived = true;
-        app.set_plans(vec![archived, plan("live-plan", "active", counts(0, 1, 0, 0, 0), None)]);
+        app.set_plans(vec![
+            archived,
+            plan("live-plan", "active", counts(0, 1, 0, 0, 0), None),
+        ]);
         let rows = board_rows(&app);
         assert_eq!(rows.len(), 1, "archived plan filtered out");
         assert_eq!(rows[0].plan.slug, "live-plan");
