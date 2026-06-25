@@ -27,11 +27,15 @@
  *     fresh account). A transient CAPACITY event → RETRYABLE, NOT a host bug. This is
  *     the GENUINE all-accounts throttle that never surfaces as a 429
  *     (agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5).
+ *   - 'auth_error' — the child reached an LLM endpoint but credentials were rejected
+ *     (invalid API key / 401). Terminal until account routing/config is fixed.
+ *   - 'usage_limit' — the child reached a native account/session quota wall. Terminal
+ *     for that account; routing should pick another usable account when available.
  *   - 'infra_loss' — a genuine launcher-host death / no-turn 0-token wake → terminal.
  *     The conservative default — chosen whenever the capacity-shed signals don't BOTH
  *     hold (never relabel on uncertainty).
  */
-export type SpawnFailureClass = 'infra_loss' | 'capacity_shed';
+export type SpawnFailureClass = 'infra_loss' | 'capacity_shed' | 'auth_error' | 'usage_limit';
 
 export interface InvokeOutcome {
   /** True iff the agent completed at least one turn (or the body is unreadable/
@@ -59,6 +63,48 @@ function rawStdoutDetail(value: unknown): string {
       ? `${compact.slice(-RAW_STDOUT_DETAIL_LIMIT)} [rawStdoutTail truncated: ${compact.length} chars]`
       : compact;
   return `; rawStdoutTail=${JSON.stringify(tail)}`;
+}
+
+function diagnosticText(b: {
+  agentOutput?: unknown;
+  stdout?: unknown;
+  stderr?: unknown;
+  rawStdoutTail?: unknown;
+}): string {
+  return [b.stderr, b.rawStdoutTail, b.agentOutput, b.stdout]
+    .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    .join('\n');
+}
+
+function classifyDiagnosticFailure(text: string): { failureClass: SpawnFailureClass; detail: string } | null {
+  if (!text.trim()) return null;
+  const compact = text.replace(/\s+/g, ' ').trim();
+  const bounded = compact.slice(-RAW_STDOUT_DETAIL_LIMIT);
+  if (
+    /\b(?:invalid[_ -]?api[_ -]?key|incorrect api key|unauthorized|auth(?:entication)? error|401)\b/i.test(compact) ||
+    /\bauth error code:\s*invalid_api_key\b/i.test(compact)
+  ) {
+    return {
+      failureClass: 'auth_error',
+      detail: ` LLM credentials were rejected before the agent produced a turn (auth_error — fix account routing/config, not the launcher host): ${JSON.stringify(
+        bounded,
+      )}`,
+    };
+  }
+  if (
+    /(you(?:'|’)ve hit your usage limit|hit your (?:session|usage|weekly|monthly|daily) limit|session limit|weekly limit|monthly limit|daily limit|insufficient_quota|quota exceeded|exceeded your (?:current )?quota|out of (?:credits|quota))/i.test(
+      compact,
+    ) &&
+    !/temporarily limiting requests \(not your usage limit\)/i.test(compact)
+  ) {
+    return {
+      failureClass: 'usage_limit',
+      detail: ` LLM account/session quota stopped the agent before it produced a turn (usage_limit — route to a different healthy account or wait for the named reset): ${JSON.stringify(
+        bounded,
+      )}`,
+    };
+  }
+  return null;
 }
 
 /**
@@ -103,6 +149,15 @@ export function agentProducedTurn(
   if (b.ok === true && out.trim().length > 0) return { ran: true, detail: '' };
 
   // ── ran=false: classify the death. ───────────────────────────────────────────
+  const diagnosticFailure = classifyDiagnosticFailure(diagnosticText(b));
+  if (diagnosticFailure) {
+    return {
+      ran: false,
+      failureClass: diagnosticFailure.failureClass,
+      detail: ` ${label}${diagnosticFailure.detail}${rawStdoutDetail(b.rawStdoutTail)}`,
+    };
+  }
+
   // Capacity-shed FINGERPRINT: a CLEAN mid-turn process exit — exit code exactly 1,
   // no timeout, and EMPTY stderr. A real host loss / crash / OOM leaves a stderr trail
   // or a null/signal exit code; a capacity shed (the agent's 2nd gateway call hit the

@@ -8,6 +8,11 @@ documents:
   - packages/operator-core/lib/harness-invoke-once.ts
   - libs/papercusp/packages/orchestrator/src/env.ts
   - libs/papercusp/packages/orchestrator/src/invoke.ts
+  - libs/papercusp/packages/orchestrator/src/spawn-mcp.ts
+  - packages/operator-core/lib/fleet/invoke-outcome.ts
+  - packages/operator-core/lib/dbos/durable-spawn.ts
+  - packages/operator-core/lib/fleet/operator-spawn.ts
+  - packages/operator-core/lib/agent-tools/work_items/claim.ts
   - packages/operator-core/lib/inference-gateway/spawn-env.ts
   - packages/operator-core/lib/inference-gateway/credential-store.ts
   - packages/operator-core/lib/inference-gateway/gateway.ts
@@ -31,6 +36,11 @@ literal value to Codex CLI. It is the Papercusp user-facing alias; native Codex 
 If a spawned agent prints `There's an issue with the selected model (chatgpt:5.5)`, it
 means one of those boundaries leaked the alias through.
 
+When `operator-spawn` resolves a final `spawnModelSpec`, infer the backend from that
+final spec and override stale pins from an older role/default. A `chatgpt:*` final spec
+with `PAPERCUSP_SPAWN_BACKEND=claude-code` is a routing bug even when the argv model
+normalizes later.
+
 ## Gateway routing trap
 
 A Codex account credential backed only by ChatGPT OAuth `auth.json` is usable by native
@@ -42,6 +52,58 @@ credential; let native Codex use its own `auth.json`.
 Also keep `/v1/models` out of the shared admission queue. Codex probes model metadata
 before a turn; queueing that local synthetic response behind long-running responses can
 make the agent appear hung before it even starts.
+
+When the Codex gateway is used, the per-spawn `CODEX_HOME/config.toml` must include all
+three headers:
+
+- `x-papercusp-account` to pin the OpenAI-compatible bearer account.
+- `x-papercusp-owner` to preserve per-owner attribution.
+- `x-papercusp-priority` to keep Queen/Overwatch/bee traffic out of the low-priority
+  default tier.
+
+Missing `x-papercusp-priority` is a real liveness bug: a Queen can connect to the gateway
+and then time out behind low-priority work, which looks like a zero-output launcher loss.
+
+Do not register a random `.apikey` as a Codex account just because it is present on disk.
+Shape-check the credential first: OpenAI-compatible gateway accounts need an OpenAI
+bearer, not an Anthropic `sk-ant-*` key and not ChatGPT `auth.json`. If a bad bearer gets
+registered, remove it, clear session overrides, and `gateway:reload` immediately.
+
+## No-turn failure classes
+
+The parent durable-spawn row is the detector Overwatch and Queen usually see first. For
+Codex no-turn deaths, the important classes are:
+
+- `usage_limit` — native ChatGPT/Codex reported account quota, for example “You've hit
+  your usage limit.” This is an account routing/capacity problem, not a stale work-item
+  or launcher-host problem.
+- `auth_error` — the OpenAI-compatible gateway returned 401/invalid API key. This means
+  the account credential or gateway account pool is wrong.
+- `infra_loss` — use only when the child produced no turn and no credential/quota
+  diagnostic is present.
+
+If Overwatch sees `usage_limit` or `auth_error`, the durable idea should be account-pool
+repair or alternate healthy Codex account routing. It should not propose stale-claim
+reaping, wake retries, or host restarts as the primary fix.
+
+PG is canonical for run transcripts. A run log line like `stdout: .papercusp/logs/...`
+can be stale/misleading for orchestrator-managed runs; inspect
+`harness_shared.harness_run_output.jsonl_body` for the actual Codex error.
+
+## Work-item claim guardrail
+
+`su-loopback` is a transport identity, not a real bee. `work_items:claim` must reject
+implicit claims that resolve to `su-loopback`; otherwise Queen/Scout can see a claimed
+item with no wakeable owner and misdiagnose it as a placement failure. Explicit claims
+to a real assignee remain valid.
+
+When debugging a stale-claim/wake inconsistency, check both:
+
+- `fleet:assignments` / coord presence for a wakeable owner.
+- `harness_shared.work_items.taken_by` for transport identities such as `su-loopback`.
+
+The durable fix is to prevent the bogus claim at claim time and let the stale-claim
+reaper clear old rows in canonical `harness_shared.work_items`.
 
 ## Queen nudge routing
 

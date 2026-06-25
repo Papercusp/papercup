@@ -28,9 +28,47 @@ describe('agentProducedTurn — the shared no-turn rule (docs-audit #1)', () => 
       'h/queen',
     );
     expect(r.ran).toBe(false);
-    expect(r.failureClass).toBe('infra_loss');
+    expect(r.failureClass).toBe('auth_error');
     expect(r.detail).toContain('rawStdoutTail=');
     expect(r.detail).toContain('invalid_api_key');
+  });
+
+  it('classifies invalid API-key no-turn diagnostics as auth_error, not infra_loss', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '',
+        agentOutput: '',
+        rawStdoutTail:
+          'unexpected status 401 Unauthorized: Incorrect API key provided: sk-ant-a***. auth error code: invalid_api_key',
+      }),
+      'papercusp/queen',
+    );
+    expect(r.ran).toBe(false);
+    expect(r.failureClass).toBe('auth_error');
+    expect(r.detail).toContain('papercusp/queen');
+    expect(r.detail).toContain('account routing');
+    expect(r.detail).toContain('invalid_api_key');
+  });
+
+  it('classifies native Codex usage limits as usage_limit, not infra_loss', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '',
+        agentOutput: '',
+        rawStdoutTail: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits.",
+      }),
+      'papercusp/queen',
+    );
+    expect(r.ran).toBe(false);
+    expect(r.failureClass).toBe('usage_limit');
+    expect(r.detail).toContain('usage_limit');
+    expect(r.detail).toContain('different healthy account');
   });
 
   it('ran=false when ok:true but output is EMPTY (0-token wake) — the silent-swallow case', () => {
