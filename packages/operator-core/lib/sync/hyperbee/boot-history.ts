@@ -77,7 +77,21 @@ export type BootHistoryKind =
   // itself no-op'd (flag off / no-author / no fresh members) → live:false. Mirrors rekey_grant_skipped
   // for the grant path: names the silent boundary 0→0 so a K2 revoke that doesn't advance NAMES why
   // (instead of a manual trace to the revoke early-return).
-  | 'rekey_boundary_skipped';
+  | 'rekey_boundary_skipped'
+  // WI-808 (content-federation drop diagnosis): the apply-side epoch decrypt-gate's
+  // per-op verdict. Both failure verdicts were previously SILENT (`return false`), so a
+  // federated content op that never landed on a joiner left NO signal — indistinguishable
+  // from the gate never being installed. These name the cause:
+  //   - 'epoch_gate_built'    — rekeyDeps non-null: the decrypt gate IS wrapping applyImpl
+  //                             for this harness (carries the resolved hiveHomeSlug = AAD hiveId).
+  //   - 'epoch_defer'         — an encrypted op deferred: its epoch key is not yet local.
+  //   - 'epoch_decrypt_fail'  — have a key but decrypt failed (wrong key / AAD mismatch:
+  //                             hiveId is the LOCAL home slug, not a federated field) → DROP.
+  //   - 'epoch_applied'       — an encrypted op decrypted + applied (the success path).
+  | 'epoch_gate_built'
+  | 'epoch_defer'
+  | 'epoch_decrypt_fail'
+  | 'epoch_applied';
 
 export interface BootHistoryEntry {
   ts: number;

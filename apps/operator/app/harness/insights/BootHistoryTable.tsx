@@ -34,7 +34,14 @@ export type BootHistoryKind =
   | 'announce_pending'
   | 'announce_rejected'
   | 'announce_error'
-  | 'merge_error';
+  | 'merge_error'
+  | 'rekey_grant_failed'
+  | 'rekey_grant_skipped'
+  | 'rekey_boundary_skipped'
+  | 'epoch_gate_built'
+  | 'epoch_defer'
+  | 'epoch_decrypt_fail'
+  | 'epoch_applied';
 
 export interface BootHistoryEntry {
   ts: number;
@@ -66,6 +73,13 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   announce_rejected: 'var(--warn)',
   announce_error: 'var(--bad)',
   merge_error: 'var(--bad)',
+  rekey_grant_failed: 'var(--bad)',
+  rekey_grant_skipped: 'var(--warn)',
+  rekey_boundary_skipped: 'var(--warn)',
+  epoch_gate_built: 'var(--accent)',
+  epoch_defer: 'var(--warn)',
+  epoch_decrypt_fail: 'var(--bad)',
+  epoch_applied: 'var(--good)',
 };
 
 const KIND_MARK: Record<BootHistoryKind, string> = {
@@ -84,6 +98,13 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   announce_rejected: '⛔',
   announce_error: '✗',
   merge_error: '✗',
+  rekey_grant_failed: '✗',
+  rekey_grant_skipped: '⤼',
+  rekey_boundary_skipped: '⤳',
+  epoch_gate_built: '🔐',
+  epoch_defer: '⏸',
+  epoch_decrypt_fail: '🔓',
+  epoch_applied: '✓',
 };
 
 const EMPTY: CSSProperties = {

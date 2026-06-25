@@ -115,6 +115,52 @@ describe('hive-epoch-op-gate', () => {
     expect(out).toBe(false);
     expect(inner).not.toHaveBeenCalled();
   });
+
+  // WI-808: the two failure verdicts were SILENT — a joiner content drop left no signal.
+  // onTrace surfaces each verdict (wired to recordBootEvent at boot) so the cause is named.
+  it('onTrace fires the verdict phase: applied / decrypt-fail / defer', async () => {
+    const crypto = fakeCrypto();
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 9 });
+    const enc = await cap.encryptOp(localOp({ hbKey: 'F-9', value: { a: 1 } }));
+
+    // SUCCESS → 'epoch_applied'
+    const okTrace = vi.fn();
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: okTrace })(
+      async () => true,
+    )(envFromEnc(enc!, { hbKey: 'F-9' }));
+    expect(okTrace).toHaveBeenCalledWith('epoch_applied', expect.stringContaining(`hive=${HIVE}`));
+
+    // DECRYPT-FAIL (wrong key) → 'epoch_decrypt_fail' (the silent drop WI-808 hunts)
+    const dropTrace = vi.fn();
+    await buildEpochDecryptGate({ crypto, resolveKey: async () => 'WRONG' as unknown as EpochKey, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: dropTrace })(
+      async () => true,
+    )(envFromEnc(enc!, { hbKey: 'F-9' }));
+    expect(dropTrace).toHaveBeenCalledWith('epoch_decrypt_fail', expect.stringContaining('DROP'));
+
+    // KEY-MISSING → 'epoch_defer'
+    const deferTrace = vi.fn();
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_MISSING, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: deferTrace })(
+      async () => true,
+    )(envFromEnc(enc!, { hbKey: 'F-9' }));
+    expect(deferTrace).toHaveBeenCalledWith('epoch_defer', expect.stringContaining('no-key-yet'));
+  });
+
+  it('a throw inside onTrace never alters the gate verdict (observability is best-effort)', async () => {
+    const crypto = fakeCrypto();
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 11 });
+    const enc = await cap.encryptOp(localOp({ hbKey: 'F-11', value: { a: 1 } }));
+    const gate = buildEpochDecryptGate({
+      crypto,
+      resolveKey: KEY_OK,
+      hiveId: HIVE,
+      pending: new PendingEpochContent(),
+      onTrace: () => {
+        throw new Error('trace sink exploded');
+      },
+    });
+    const out = await gate(async () => true)(envFromEnc(enc!, { hbKey: 'F-11' }));
+    expect(out).toBe(true); // verdict unaffected by a throwing trace sink
+  });
 });
 
 describe('buildEpochKeyResolver (owner|member dispatch)', () => {

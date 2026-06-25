@@ -106,6 +106,15 @@ export function buildEpochEncryptCapability(
 export interface EpochDecryptGateDeps extends EpochOpGateDeps {
   /** J's per-apply-loop deferral buffer (key-before-content ordering). */
   pending: PendingEpochContent;
+  /**
+   * WI-808 observability: a best-effort trace of the gate's per-op DECISION
+   * (passthrough / defer / decrypt-fail / applied). The two failure paths
+   * (defer, decrypt-fail) are otherwise SILENT — a federated content op that
+   * never lands on a joiner left no signal, so the drop was indistinguishable
+   * from the gate never being installed. Wired to recordBootEvent at boot.
+   * Pure observability — a throw here must never alter the gate's verdict.
+   */
+  onTrace?: (phase: string, detail: string) => void;
 }
 
 /**
@@ -122,17 +131,26 @@ export interface EpochDecryptGateDeps extends EpochOpGateDeps {
 export function buildEpochDecryptGate(
   deps: EpochDecryptGateDeps,
 ): (inner: (op: OpEnvelope) => Promise<boolean>) => (op: OpEnvelope) => Promise<boolean> {
+  const trace = (phase: string, detail: string) => {
+    try {
+      deps.onTrace?.(phase, detail);
+    } catch {
+      // observability must never alter the gate verdict
+    }
+  };
   return (inner) =>
     async (op: OpEnvelope): Promise<boolean> => {
       if (op.epoch == null) return inner(op); // plaintext / control-plane
       const ct = decodeCiphertext(op.value);
       if (!ct) return inner(op); // epoch-stamped but not our wrapper — permissive passthrough
 
+      const where = `${op.table ?? '?'}/${(op.hbKey ?? '?').slice(0, 24)} e${op.epoch} w${(op.writerPubkey ?? '?').slice(0, 8)}`;
       let key: EpochKey;
       try {
         key = await deps.resolveKey(deps.hiveId, op.epoch);
-      } catch {
+      } catch (e) {
         // key not yet local (remaining member waiting; or removed member forever) → defer.
+        trace('epoch_defer', `${where} hive=${deps.hiveId} no-key-yet: ${(e as Error)?.message ?? e}`);
         deps.pending.defer(op, deps.hiveId, op.epoch);
         return false;
       }
@@ -142,11 +160,15 @@ export function buildEpochDecryptGate(
       let plaintext: Uint8Array;
       try {
         plaintext = await decryptOpPayload(deps.crypto, ct, { hiveId: deps.hiveId, epoch: op.epoch, id }, key);
-      } catch {
+      } catch (e) {
         // have a key but can't decrypt (wrong epoch / tampered AAD) → drop = read cut.
+        // WI-808: this is the SILENT drop — most often an AAD mismatch (hiveId is the
+        // LOCAL home slug, not a federated field, so it can differ owner↔joiner).
+        trace('epoch_decrypt_fail', `${where} hive=${deps.hiveId} DROP: ${(e as Error)?.message ?? e}`);
         return false;
       }
       // Apply the now-PLAINTEXT op; clear `epoch` so downstream sees a normal op.
+      trace('epoch_applied', `${where} hive=${deps.hiveId}`);
       return inner({ ...op, value: bytesToValue(plaintext), epoch: undefined });
     };
 }

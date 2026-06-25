@@ -34,6 +34,7 @@ import {
   buildEpochDecryptGate,
   buildEpochEncryptCapability,
 } from './hive-epoch-op-gate';
+import { recordBootEvent, type BootHistoryKind } from './boot-history';
 import type { OpEnvelope } from './op-envelope-types';
 import type { EpochEncryptCapability } from './outbox-drain';
 
@@ -81,12 +82,25 @@ export async function buildHiveRekeyBootDeps(opts: {
     isOwner: () => loadHivePubkey(opts.workspaceId, hiveHomeSlug).then((pk) => pk !== null),
   });
   const pending = new PendingEpochContent();
-  const epochGate = buildEpochDecryptGate({ crypto, resolveKey, hiveId: hiveHomeSlug, pending });
+  const epochGate = buildEpochDecryptGate({
+    crypto,
+    resolveKey,
+    hiveId: hiveHomeSlug,
+    pending,
+    // WI-808: surface the gate's otherwise-silent per-op verdict into boot-history so a
+    // joiner content drop names its cause (decrypt-fail vs defer) instead of vanishing.
+    onTrace: (phase, detail) =>
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, phase as BootHistoryKind, detail),
+  });
   const epochEncrypt = buildEpochEncryptCapability({
     crypto,
     resolveKey,
     hiveId: hiveHomeSlug,
     getCurrentEpoch: () => getHiveEpoch(opts.workspaceId, hiveHomeSlug),
   });
+  // WI-808: the gate IS installed (applyImpl will be epochGate(enforcedApply)). Records the
+  // resolved hiveHomeSlug — which is the AAD `hiveId`, so a decrypt-fail's hive=… can be
+  // compared owner↔joiner to confirm/refute the local-slug AAD-mismatch hypothesis.
+  recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `hiveHomeSlug=${hiveHomeSlug}`);
   return { hiveHomeSlug, epochGate, epochEncrypt, pending };
 }
