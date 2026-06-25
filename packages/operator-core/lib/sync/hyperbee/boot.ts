@@ -88,7 +88,9 @@ import {
 } from './read-admission';
 import {
   resolveLocalAnnounceIdentity,
+  resolveLocalAnnounceIdentityFromHiveMembers,
   type ResolveLocalAnnounceIdentityOpts,
+  type LocalAnnounceIdentity,
 } from './local-announce-identity';
 import { buildVerifyBindingAdapter } from './verify-binding-adapter';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
@@ -1985,6 +1987,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // resolution failures don't fail the boot — the harness still works as a
   // single-peer substrate.
   let swarmHandle: SwarmHandle | null = null;
+  async function resolveKnownHiveMemberAnnounceIdentityForBinding(
+    binding: SwarmBinding,
+  ): Promise<LocalAnnounceIdentity | null> {
+    if (binding.kind !== 'hive') return null;
+    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const hiveHomeSlug =
+      hiveHomeProjectionSlug ??
+      (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+    if (!hiveHomeSlug) return null;
+    const { listHiveMembers } = await import('../../hive-membership-store');
+    const members = await listHiveMembers(opts.workspaceId, hiveHomeSlug).catch(() => []);
+    return resolveLocalAnnounceIdentityFromHiveMembers({ members });
+  }
+
   // Join (or RE-KEY to) the swarm topic derived from `binding`, using THIS
   // boot's LIVE store + own log + onAnnounce. Extracted so `rekey()` can re-run
   // it against a NEW binding WITHOUT tearing down the store / open cores /
@@ -1997,15 +2013,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     try {
       const swarm = opts.swarmOverride ?? (await getSharedSwarm());
       const topic = deriveSwarmTopic(binding);
-      // Build OUR announce: bind our log core to our device identity. Throws
-      // (→ caught below) when gh-auth / keychain can't resolve, keeping the
-      // harness local-only rather than joining without an announce.
-      const identity = await resolveLocalAnnounceIdentity({
+      // Build OUR announce: bind our log core to our device identity. For Hive
+      // topics, prefer the durable local hive_members+keychain binding so a
+      // known member can rejoin during a GitHub outage; fall back to live GitHub
+      // identity resolution for first-time/non-Hive announces. Throws (→ caught
+      // below) when neither path can resolve, keeping the harness local-only
+      // rather than joining without an announce.
+      const knownHiveIdentity = opts.announceIdentityOverride
+        ? null
+        : await resolveKnownHiveMemberAnnounceIdentityForBinding(binding);
+      const identity = knownHiveIdentity ?? (await resolveLocalAnnounceIdentity({
         // Spread the test override FIRST so boot's own `logCoreKeyHex` always
         // wins (the announce must bind THIS peer's actual log core).
         ...(opts.announceIdentityOverride?.resolveOpts ?? {}),
         logCoreKeyHex: ownLog.keyHex,
-      });
+      }));
       // The signer defaults to the keychain-backed `signWithDeviceKey`; tests
       // inject a signer over a self-generated keypair so no OS keychain is
       // touched (see `announceIdentityOverride`).

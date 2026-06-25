@@ -33,6 +33,8 @@ import { loadOrGenerateDeviceKeypair, ensureAttestationGist } from '../../identi
 import { getAuthenticatedGithubUser } from '../../identity/resolve-local-github-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { getGhAuthToken } from '../../identity/gh-token';
+import { keychainLoad } from '../../identity/keychain';
+import { pubkeyBase64FromDer } from '../../identity/ed25519';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -90,6 +92,29 @@ export interface ResolveLocalAnnounceIdentityOpts {
    * default to disabled unless they pass a path explicitly.
    */
   cachePath?: string | false;
+}
+
+export interface LocalHiveMemberAnnounceIdentityMember {
+  githubUserId: number;
+  githubUsername: string;
+  deviceAttestations: Array<{
+    device_pubkey?: string | null;
+    gist_id?: string | null;
+  }>;
+  revokedPubkeys?: string[];
+}
+
+export interface ResolveLocalAnnounceIdentityFromHiveMembersOpts {
+  members: LocalHiveMemberAnnounceIdentityMember[];
+  /**
+   * Load an EXISTING keypair by keychain id. The default deliberately does not
+   * generate a key: a local membership fallback is valid only when the durable
+   * Hive membership row already names this device's existing pubkey.
+   */
+  loadExistingKeypair?: (
+    keychainId: string,
+  ) => Promise<{ keychainId: string; pubkeyBase64: string } | null>;
+  buildKeychainId?: (githubUserId: number) => string;
 }
 
 interface CachedLocalAnnounceIdentity extends LocalAnnounceIdentity {
@@ -199,6 +224,51 @@ async function defaultResolveAttestationGistId(
     githubLogin: args.githubLogin,
     token: tok.token,
   });
+}
+
+async function loadExistingDeviceKeypair(
+  keychainId: string,
+): Promise<{ keychainId: string; pubkeyBase64: string } | null> {
+  const loaded = await keychainLoad(keychainId);
+  if (loaded.kind !== 'ok') return null;
+  return { keychainId, pubkeyBase64: pubkeyBase64FromDer(loaded.value) };
+}
+
+/**
+ * Offline/durable fallback for Hive federation startup. If this device is
+ * already present in the local `hive_members` projection, its membership row
+ * carries the GitHub id/login, device pubkey, and optional gist id needed to
+ * build a signed announce. This lets known Hive members rejoin the swarm during
+ * a GitHub outage without weakening admission: peers still verify the announce
+ * signature and admit only if their own `hive_members` row names the same device
+ * pubkey (or, for unknown peers, the normal gist path still applies).
+ */
+export async function resolveLocalAnnounceIdentityFromHiveMembers(
+  opts: ResolveLocalAnnounceIdentityFromHiveMembersOpts,
+): Promise<LocalAnnounceIdentity | null> {
+  const buildKeychainId = opts.buildKeychainId ?? resolveDeviceKeychainId;
+  const loadExistingKeypair = opts.loadExistingKeypair ?? loadExistingDeviceKeypair;
+
+  for (const member of opts.members) {
+    const keychainId = buildKeychainId(member.githubUserId);
+    const keypair = await loadExistingKeypair(keychainId).catch(() => null);
+    if (!keypair) continue;
+    const revoked = new Set(member.revokedPubkeys ?? []);
+    for (const attestation of member.deviceAttestations ?? []) {
+      const devicePubkey = attestation?.device_pubkey;
+      if (!devicePubkey || revoked.has(devicePubkey)) continue;
+      if (devicePubkey !== keypair.pubkeyBase64) continue;
+      return {
+        keychainId,
+        devicePubkeyBase64: keypair.pubkeyBase64,
+        githubUserId: member.githubUserId,
+        githubLogin: member.githubUsername,
+        attestationGistId: attestation.gist_id ?? '',
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
