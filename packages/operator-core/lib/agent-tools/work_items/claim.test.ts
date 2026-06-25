@@ -6,7 +6,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
+const identity = vi.hoisted(() => ({ ownerId: 'me' }));
+vi.mock('../coordination/identity', () => ({
+  SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
+  resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
+}));
 vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn(), classifyClaimFailure: vi.fn(), getWorkItem: vi.fn() }));
 
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
@@ -20,6 +24,7 @@ const body = async (args: unknown) => (((await tool.handler(args as never, {} as
 
 beforeEach(() => {
   vi.clearAllMocks();
+  identity.ownerId = 'me';
   claimM.mockImplementation(async (id: string) => ({ id, assignee: 'me' }) as never);
 });
 
@@ -35,6 +40,22 @@ describe('work_items:claim handler (keyed-array)', () => {
     const b = await body({ ids: ['WI-1', 'WI-2'], assignee: 'bee-7' });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(claimM).toHaveBeenCalledWith('WI-2', 'bee-7', { harness: undefined });
+  });
+
+  it('refuses implicit claims as the shared su-loopback fallback', async () => {
+    identity.ownerId = 'su-loopback';
+    const b = await body({ id: 'WI-LOOPBACK' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-LOOPBACK', error: 'missing_client_identity' });
+    expect(b.results[0].hint).toMatch(/real per-session or spawn owner/);
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('still permits explicit assignee claims from a su-loopback caller', async () => {
+    identity.ownerId = 'su-loopback';
+    const b = await body({ id: 'WI-DIRECTED', assignee: 's-bee-1' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(claimM).toHaveBeenCalledWith('WI-DIRECTED', 's-bee-1', { harness: undefined });
   });
 
   it('a claim_conflict fails only that item (top-level ok stays true) with holder + hint', async () => {

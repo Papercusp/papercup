@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -30,6 +30,15 @@ interface ClaimItem {
  * phantom "not found".
  */
 async function claimOne(it: ClaimItem, claimerDefault: string): Promise<BulkItemResult> {
+  if (!it.assignee && claimerDefault === SUPERUSER_FALLBACK_CLIENT_ID) {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'missing_client_identity',
+      hint:
+        'Implicit work-item claims require a real per-session or spawn owner. This request arrived as the shared su-loopback fallback, so it was refused before mutating the claim. Reconnect with a client identity or pass an explicit assignee.',
+    };
+  }
   const claimer = it.assignee ?? claimerDefault;
   const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
   if (workItem) return { ok: true, id: it.id, workItem };

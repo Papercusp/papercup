@@ -32,7 +32,13 @@ import { parseOperatorTurn } from '../operator-converse-tags';
 import { synthesize } from '../endpoint-route/routes/agent-mcp/operator-tts';
 import { encodeResponseAudio } from '../voice-node/operator-voice-bus';
 import { decodeWavPcm16, resamplePcm16 } from '../voice-node/wav';
-import { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps } from './sentinel-context';
+import {
+  gatherSentinelContext,
+  renderSentinelContext,
+  buildSentinelContextDeps,
+  sentinelScopeLabel,
+} from './sentinel-context';
+import { isWorkspaceCoordinationOn } from '../workspace-brain-scope';
 import type { SentinelSweepDeps, SentinelFleetStatus } from './sentinel-proactive-sweep';
 
 /** The EL input PCM rate the voice-session bus speaks (mirrors the EL `audio`
@@ -47,7 +53,8 @@ const SWEEP_PCM_RATE = 16000;
  * true iff a CRITICAL anomaly or an URGENT signal is present.
  */
 export async function gatherFleetStatus(workspaceId: string, hiveSlug: string): Promise<SentinelFleetStatus> {
-  const ctx = await gatherSentinelContext(buildSentinelContextDeps(workspaceId, hiveSlug), { hiveSlug });
+  const scopeLabel = sentinelScopeLabel(workspaceId, hiveSlug || workspaceId, await isWorkspaceCoordinationOn());
+  const ctx = await gatherSentinelContext(buildSentinelContextDeps(workspaceId, hiveSlug), { hiveSlug: scopeLabel });
   const criticalAnomaly = (ctx.anomalies ?? []).find((a) => a.severity === 'critical') ?? null;
   const urgentSignal = (ctx.signals ?? []).find((s) => s.urgent || s.severity === 'blocker') ?? null;
   const salient = criticalAnomaly != null || urgentSignal != null;
