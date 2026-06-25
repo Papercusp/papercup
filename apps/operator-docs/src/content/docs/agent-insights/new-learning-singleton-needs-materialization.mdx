@@ -27,9 +27,28 @@ from:
 
 - the **seed CLI** (`packages/operator-core/lib/blueprint/seed-learning-singletons.ts`),
   run by hand, and
-- `enable-platform-mode.ts` (when the owner first enables platform mode), and
+- `enable-platform-mode.ts` (when the owner first enables platform mode — it
+  flips the `PLATFORM_IMPROVEMENT_LOOPS` flag ON **first**, then calls
+  `materializeLearningSingletons` so Class-C singletons actually get written), and
 - `harness:create` / `hive:create` (for that harness's own blueprint, not the
   workspace singletons).
+
+**P-070 deployment-mode gate (added 2026-06-14):** `materializeLearningSingletons`
+now has a skip condition for Class-C platform-improvement loops: if the
+`PLATFORM_IMPROVEMENT_LOOPS` flag is OFF (a public release or a fresh install
+before the owner enables platform mode), the seed CLI prints:
+
+```
+SKIP <id>: platform-improvement loops are OFF (PLATFORM_IMPROVEMENT_LOOPS) — release/non-platform mode (P-070)
+```
+
+and creates **no `@singleton` row** — not even a dark/inactive one. `--execute`
+returns without an error; the loop is simply not materialized. In dev/self-host
+the flag defaults ON so this gate is transparent, but on a clean install or a
+release image it is the silent barrier. Fix: enable platform mode first
+(`enablePlatformMode` / the owner's platform-mode toggle) — that flips the flag ON,
+then materializes all Class-C singletons atomically. If you are seeding manually
+on a release box, verify the flag is ON before running `--execute`.
 
 So the existing live loops (calibration, scout, iq-battery, …) got their
 `@singleton` rows from a **past owner-run seed campaign**, not from their code

@@ -18,12 +18,14 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
-import { sendMessage } from '../messages';
+import { sendMessage, getMessageById } from '../messages';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkItemResult } from '../../_bulk';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -39,7 +41,15 @@ interface SendMsg {
   plan_slug?: string;
   related_msg_id?: string;
   wake?: boolean | 'required' | 'optimistic';
+  wakeOnReply?: boolean;
   endTurn?: boolean;
+}
+
+/** Whether `to` is a DIRECTED send: at least one recipient, ALL concrete (none a
+ *  selector / wildcard / '*' / 'human' — `isSelectorOrWildcard` already covers
+ *  those). Used as the DEFAULT for wakeOnReply (ON for directed, OFF for broadcast). */
+function isDirected(to: string[]): boolean {
+  return to.length > 0 && to.every((id) => !isSelectorOrWildcard(id));
 }
 
 const wakeArg = z
@@ -47,6 +57,13 @@ const wakeArg = z
   .optional()
   .describe(
     "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort over a durable backstop (wake if present, shrug if not — e.g. the Queen survey re-dispatches anyway); a miss is silent. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+  );
+
+const wakeOnReplyArg = z
+  .boolean()
+  .optional()
+  .describe(
+    "When a peer REPLIES to this message (their coord:send sets related_msg_id to this message's msg_id), wake YOU (the sender) so you re-invoke the moment the reply lands — the dual of waking the recipient. Default: ON for DIRECTED sends (concrete recipients), OFF for broadcasts (to '*'/'human'). Set false to opt out (fire-and-forget).",
   );
 
 const endTurnArg = z
@@ -78,6 +95,7 @@ const itemSpec = z.object({
   plan_slug: z.string().optional(),
   related_msg_id: z.string().optional(),
   wake: wakeArg,
+  wakeOnReply: wakeOnReplyArg,
   endTurn: endTurnArg,
 });
 
@@ -99,6 +117,16 @@ async function sendOne(
   // loud default), false/omit → no wake.
   const wakeMode: 'required' | 'optimistic' | null =
     msg.wake === true ? 'required' : msg.wake === false || msg.wake == null ? null : msg.wake;
+
+  // wake-on-reply (coord-wake-on-reply): when a peer REPLIES to this message
+  // (their coord:send sets related_msg_id to this msg_id) the ORIGINAL sender
+  // should be re-invoked — the dual of deliver-and-wake. Default ON for a
+  // DIRECTED send (concrete recipients), OFF for a broadcast ('*'/'human');
+  // explicit `wakeOnReply:false` always wins, `true` forces on. Flag-gated:
+  // when OFF, neither the opt-in is persisted nor a reply fires the wake
+  // (today's behavior). Fail-safe to ON on a flag-read error (the new default).
+  const wakeOnReplyFlag = await getFlag(FLAGS.COORD_WAKE_ON_REPLY, 'system').catch(() => true);
+  const effectiveWakeOnReply = wakeOnReplyFlag && (msg.wakeOnReply ?? isDirected(msg.to));
 
   // owner-2026-06-17: validate + resolve recipients against the live roster
   // BEFORE sending. A short ownerId PREFIX resolves to the full id (so the exact
@@ -131,6 +159,15 @@ async function sendOne(
     }
   }
 
+  // EI-279: persist the wake intent ON the envelope so it federates — a recipient
+  // homed on a REMOTE instance is woken by the coord-message projection's fan when
+  // the row arrives there (the local fan below only covers THIS instance's await
+  // store). coord-wake-on-reply: ALSO persist `wakeOnReply:true` when this directed
+  // send opted in, so a FUTURE reply (which looks the original up by msg_id) can see
+  // the opt-in and wake us back. Both keys merge onto the persisted envelope.
+  const extra: Record<string, unknown> = {};
+  if (wakeMode) extra.wake = true;
+  if (effectiveWakeOnReply) extra.wakeOnReply = true;
   const env = await sendMessage(identity, {
     to: toSend,
     summary: msg.summary,
@@ -139,12 +176,40 @@ async function sendOne(
     plan_slug: msg.plan_slug,
     related_msg_id: msg.related_msg_id,
     ...(harnessSlug ? { harnessSlug } : {}),
-    // EI-279: persist the wake intent ON the envelope so it federates — a
-    // recipient homed on a REMOTE instance is woken by the coord-message
-    // projection's fan when the row arrives there (the local fan below only
-    // covers THIS instance's await store).
-    ...(wakeMode ? { extra: { wake: true } } : {}),
+    ...(Object.keys(extra).length ? { extra } : {}),
   });
+
+  // Reply-wake (coord-wake-on-reply): if THIS send is a REPLY (it carries a
+  // related_msg_id), look the ORIGINAL message up by that id and — when the
+  // original opted into wake-on-reply — fire an OPTIMISTIC wake back to its
+  // sender so they re-invoke the moment our reply lands. Fully fail-soft: ANY
+  // error (lookup miss, sql hiccup, wake failure) is swallowed and NEVER fails
+  // or blocks this send (the reply already persisted above). Never self-wakes and
+  // never wakes '*'/'human'. Skipped entirely when the flag is OFF.
+  let replyWake: { target: string; woken: number } | undefined;
+  if (wakeOnReplyFlag && msg.related_msg_id) {
+    try {
+      const original = await getMessageById(msg.related_msg_id);
+      const originalFrom = original?.from;
+      const optedIn =
+        original != null && (original as { wakeOnReply?: unknown }).wakeOnReply === true;
+      if (
+        optedIn &&
+        typeof originalFrom === 'string' &&
+        originalFrom &&
+        originalFrom !== identity.ownerId &&
+        !isSelectorOrWildcard(originalFrom)
+      ) {
+        const fan = await wakeRecipients([originalFrom], {
+          summary: msg.summary,
+          source: identity.ownerId,
+        });
+        replyWake = { target: originalFrom, woken: fan.woken };
+      }
+    } catch {
+      /* fail-soft: a reply-wake miss/error never blocks the (already-persisted) send */
+    }
+  }
 
   // endTurn (coord-end-turn P-002): ESC each addressed recipient's CURRENT turn BEFORE the wake. A turn
   // STUCK on an API error is NOT sleeping on its inbox-wake key, so a plain wake reaches nobody (woken:0);
@@ -270,6 +335,7 @@ async function sendOne(
     ts: env.ts,
     ...(endTurn ? { endTurn } : {}),
     ...(wake ? { wake } : {}),
+    ...(replyWake ? { replyWake } : {}),
     ...(notWoken ? { notWoken } : {}),
   };
 }
@@ -277,7 +343,7 @@ async function sendOne(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. Default: INJECTED — lands in the recipient\'s inbox, seen next turn (cheap). `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
+    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. Default: INJECTED — lands in the recipient\'s inbox, seen next turn (cheap). `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. By default a DIRECTED send sets `wakeOnReply` — when a peer REPLIES (their related_msg_id = your msg_id) YOU are auto-woken so you re-invoke the moment the reply lands (set wakeOnReply:false to opt out; broadcasts default off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
   guidance: {
     when: 'Sharing context, asking a question, or handing off work. Send several DISTINCT messages at once via items:[…] instead of looping. wake:\'required\' ONLY when the recipient is idle and MUST act now (a Queen waking a sleeping bee) — a miss returns recipient_absent. wake:\'optimistic\' when a durable backstop catches a miss (the Queen survey re-dispatches). A running recipient already sees the inject mid-turn — a wake is wasted on it.',
     notWhen: 'For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don\'t set a wake for routine/ambient notes — a wake is a billable turn (inject is the default, wake the deliberate opt-in). For ONE message to MANY recipients, use the single form with `to:[…]` — `items` is the "many distinct messages" axis, not the multi-recipient one.',
@@ -297,13 +363,14 @@ export default defineTool({
       plan_slug: z.string().optional(),
       related_msg_id: z.string().optional(),
       wake: wakeArg,
+      wakeOnReply: wakeOnReplyArg,
       endTurn: endTurnArg,
       items: z
         .array(itemSpec)
         .min(1)
         .max(100)
         .optional()
-        .describe('send many DISTINCT messages at once — each { to, summary, body?, files?, plan_slug?, related_msg_id?, wake?, endTurn? }'),
+        .describe('send many DISTINCT messages at once — each { to, summary, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || ((a.to?.length ?? 0) > 0 && Boolean(a.summary)), {
       message: 'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
@@ -328,6 +395,7 @@ export default defineTool({
             plan_slug: args.plan_slug,
             related_msg_id: args.related_msg_id,
             wake: args.wake,
+            wakeOnReply: args.wakeOnReply,
             endTurn: args.endTurn,
           },
         ];

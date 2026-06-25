@@ -957,6 +957,15 @@ export const FLAGS = {
   // cutover, flipped ON after the migration+backfill is confirmed applied in prod. OFF ⇒ the
   // authoritative event-fold (today's behavior, byte-identical). KNOWN_DARK_FLAGS.
   COORD_OPEN_ESCALATIONS_PROJECTION: "papercusp-coord-open-escalations-projection",
+  // coord-wake-on-reply: by default, when an agent coord:sends a DIRECTED message and
+  // a peer REPLIES to it (their coord:send sets related_msg_id to the original msg_id),
+  // auto-wake the ORIGINAL sender so they re-invoke the moment the reply lands — the
+  // dual of deliver-and-wake (which wakes the RECIPIENT). DEFAULT ON (alpha default-on
+  // policy): the reply-wake is OPTIMISTIC + fully fail-soft (a lookup miss / sql hiccup /
+  // wake failure is swallowed and never blocks the send), so it only ever adds a
+  // best-effort re-invoke. OFF ⇒ no opt-in persisted + no reply-wake fired (today's
+  // behavior, byte-identical: a reply just sits in the inbox until the sender's next turn).
+  COORD_WAKE_ON_REPLY: "papercusp-coord-wake-on-reply",
   // caching-layer-tag-eca-2026-06-22 P-004: wire the operator cache to the change
   // stream — a `<schema>.<table>.changed` event (emit_change_notify, mig 368 carries
   // args.id + workspace_id) fires the built-in `cache.bumpTags` reaction action, which
@@ -1699,6 +1708,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // cutover onto the coord_open_escalations projection. mig 355 verified applied — the table +
   // trigger exist + are live in harness_shared (the read now folds the projection, not the event log).
   [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true,
+  // DEFAULT ON (coord-wake-on-reply, alpha default-on policy): auto-wake the original
+  // sender of a DIRECTED coord:send when a peer replies (related_msg_id chain). The
+  // reply-wake is optimistic + fail-soft, so it only ever adds a best-effort re-invoke;
+  // OFF restores today's behavior (a reply waits in the inbox until the sender's next turn).
+  [FLAGS.COORD_WAKE_ON_REPLY]: true,
   // DEFAULT ON (caching-layer-tag-eca-2026-06-22 P-004): the cache↔change-stream ECA rule.
   // The action + rule are complete + tested and a tag-generation bump is a safe no-op side
   // effect (no consumers yet ⇒ nothing breaks); OFF ⇒ the rule no-ops (byte-identical). The

@@ -13,7 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })) }));
-vi.mock('../messages', () => ({ sendMessage: vi.fn() }));
+vi.mock('../messages', () => ({ sendMessage: vi.fn(), getMessageById: vi.fn(async () => null) }));
 vi.mock('../inbox-wake', () => ({
   wakeRecipients: vi.fn(async () => ({ targets: [], woken: 0, staged: 0 })),
   reportIdleRecipients: vi.fn(async () => ({ idle: [] })),
@@ -23,14 +23,18 @@ vi.mock('../recipient-resolve', () => ({
   resolveRecipients: vi.fn(),
 }));
 vi.mock('../../turn/interrupt', () => ({ forceEndTurn: vi.fn(async () => ({ ok: true })) }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
 
-import { sendMessage } from '../messages';
+import { sendMessage, getMessageById } from '../messages';
 import { resolveRecipients } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
+import { getFlag } from '@papercusp/flags/server';
 const sendM = vi.mocked(sendMessage);
+const getByIdM = vi.mocked(getMessageById);
 const resolveM = vi.mocked(resolveRecipients);
 const wakeM = vi.mocked(wakeRecipients);
 const idleM = vi.mocked(reportIdleRecipients);
+const flagM = vi.mocked(getFlag);
 const tool = (await import('./send')).default;
 
 type Out = { data: any };
@@ -44,6 +48,9 @@ beforeEach(() => {
   sendM.mockImplementation(async (_id, opts: { to: string[] }) => ({ to: opts.to, msg_id: `m${++n}`, ts: `t${n}` }) as never);
   // recipients resolve 1:1 by default (no unknowns)
   resolveM.mockImplementation(async (to: readonly string[]) => ({ resolved: to, unknown: [], ambiguous: [] }) as never);
+  // wake-on-reply flag ON by default; no original message by default
+  flagM.mockResolvedValue(true as never);
+  getByIdM.mockResolvedValue(null as never);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
@@ -108,5 +115,62 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.recipient_absent).toBe(true);
     expect(b.results[0].wake.recipient_dead).toBeUndefined();
     expect(b.results[0].wake.note).toMatch(/next turn|actually running/i);
+  });
+});
+
+describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
+  it('a DIRECTED send persists wakeOnReply:true in the envelope extra (default ON)', async () => {
+    await body({ to: ['bee-1'], summary: 'hi' });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).toMatchObject({ wakeOnReply: true });
+  });
+
+  it('a BROADCAST send (to:["*"]) does NOT default wakeOnReply on (no extra persisted)', async () => {
+    await body({ to: ['*'], summary: 'all hands' });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.wakeOnReply).toBeUndefined();
+  });
+
+  it('wakeOnReply:false on a directed send opts out — no persist, and a reply does NOT wake', async () => {
+    await body({ to: ['bee-1'], summary: 'hi', wakeOnReply: false });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.wakeOnReply).toBeUndefined();
+
+    // a reply pointing at an original that DID NOT opt in must not wake
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'] } as never);
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
+    expect(wakeM).not.toHaveBeenCalled();
+    expect(b.results[0].replyWake).toBeUndefined();
+  });
+
+  it('a reply to an opted-in directed message fires an optimistic wake to the ORIGINAL sender', async () => {
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0 } as never);
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
+    expect(wakeM).toHaveBeenCalledTimes(1);
+    expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
+  });
+
+  it('a reply whose sender IS the original sender does NOT self-wake', async () => {
+    // original was sent BY 'me' (the current identity) → never self-wake
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'me', to: ['peer'], wakeOnReply: true } as never);
+    const b = await body({ to: ['peer'], summary: 'reply to my own', related_msg_id: 'orig' });
+    expect(wakeM).not.toHaveBeenCalled();
+    expect(b.results[0].replyWake).toBeUndefined();
+  });
+
+  it('flag OFF → no wakeOnReply persisted and no reply-wake (behaves as today)', async () => {
+    flagM.mockResolvedValue(false as never);
+    // directed send: no opt-in persisted
+    await body({ to: ['bee-1'], summary: 'hi' });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.wakeOnReply).toBeUndefined();
+    // reply to an opted-in original: still no wake while the flag is OFF
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
+    expect(wakeM).not.toHaveBeenCalled();
+    expect(b.results[0].replyWake).toBeUndefined();
   });
 });

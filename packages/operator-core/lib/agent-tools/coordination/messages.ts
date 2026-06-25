@@ -298,6 +298,18 @@ export async function readOutbox(
 }
 
 /**
+ * Look up a single message envelope by its `msg_id` (the `messages` surface).
+ * Used by the wake-on-reply path (coord:send) to find the ORIGINAL message a
+ * reply points at via `related_msg_id` — so a peer's reply can wake the original
+ * sender. Returns null when no such message exists. Fail-soft at the call site:
+ * a lookup miss/error must never block the send.
+ */
+export async function getMessageById(msgId: string): Promise<CoordEnvelope | null> {
+  if (!msgId) return null;
+  return coordLog.getEvent('messages', msgId);
+}
+
+/**
  * Reconstruct a thread rooted at `rootMsgId` by walking the
  * `related_msg_id` chain in both directions. Sorted by ts ascending.
  */
