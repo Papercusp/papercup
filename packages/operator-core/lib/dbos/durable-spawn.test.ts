@@ -63,7 +63,13 @@ vi.mock('../inference-gateway/observability', () => ({
   gatewayWholesaleThrottled: vi.fn(async () => h.gatewayThrottled.value),
 }));
 
-import { durableSpawnFire, durableSpawnFireImpl, startDurableSpawns, isPermanentSpawnStatus } from './durable-spawn';
+import {
+  durableSpawnFire,
+  durableSpawnFireImpl,
+  startDurableSpawns,
+  isPermanentSpawnStatus,
+  durableSpawnWorkflowTimeoutMs,
+} from './durable-spawn';
 
 const INPUT = {
   url: 'http://x/api/harness/h/invoke?role=worker',
@@ -105,6 +111,26 @@ describe('durableSpawnFire (P-010)', () => {
     };
     expect(opts.workflowID).toBe('durable-spawn:k1');
     expect(opts.enqueueOptions.deduplicationID).toBe('durable-spawn:k1');
+  });
+
+  it('stamps DBOS workflow timeout from the invoke body when the launch has an explicit deadline', async () => {
+    const r = await durableSpawnFire({ ...INPUT, body: { kickoff: 'go', timeoutMs: 180_000 } });
+    expect(r).toBe(true);
+    const opts = h.startWorkflow.mock.calls[0][1] as { timeoutMS?: number };
+    expect(opts.timeoutMS).toBe(180_000);
+  });
+
+  it('leaves long-running worker launches without a DBOS workflow timeout when the body has none', async () => {
+    const r = await durableSpawnFire(INPUT);
+    expect(r).toBe(true);
+    const opts = h.startWorkflow.mock.calls[0][1] as { timeoutMS?: number };
+    expect(opts.timeoutMS).toBeUndefined();
+  });
+
+  it('derives only positive numeric workflow deadlines from durable spawn bodies', () => {
+    expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: 1234.9 } })).toBe(1234);
+    expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: 0 } })).toBeUndefined();
+    expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: '180000' } })).toBeUndefined();
   });
 
   it('returns false (never throws) when the enqueue fails — e.g. called from inside a step', async () => {

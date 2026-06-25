@@ -97,6 +97,18 @@ export interface DurableSpawnFireInput {
   };
 }
 
+export function durableSpawnWorkflowTimeoutMs(input: DurableSpawnFireInput): number | undefined {
+  const timeoutMs = input.body?.timeoutMs;
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+  return Math.trunc(timeoutMs);
+}
+
+function isCodexModelSpec(spec: unknown): boolean {
+  if (typeof spec !== 'string') return false;
+  const id = spec.trim().toLowerCase();
+  return id.startsWith('openai-codex/') || id.startsWith('chatgpt:') || /^gpt-\d/.test(id);
+}
+
 function parseInvokeTarget(input: DurableSpawnFireInput): { role: string; harnessSlug: string; workspaceId: string } | null {
   try {
     const u = new URL(input.url);
@@ -225,7 +237,9 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           // mislabeled `infra_loss` / "host dead/unstable" → sent debuggers hunting a
           // phantom host bug (~2h) when the real cause was the gateway storm.
           const { gatewayWholesaleThrottled } = await import('../inference-gateway/observability');
-          const gatewayThrottled = await gatewayWholesaleThrottled().catch(() => false);
+          const gatewayThrottled = isCodexModelSpec(fireBody.spawnModel)
+            ? false
+            : await gatewayWholesaleThrottled().catch(() => false);
           const outcome = agentProducedTurn(bodyText, input.label ?? '', { gatewayThrottled });
           if (outcome.failureClass === 'capacity_shed') {
             // RETRYABLE: THROW so the step retry (maxAttempts:3, 10s/20s backoff) re-fires
@@ -328,10 +342,12 @@ export const durableSpawnQueue = new WorkflowQueue('durable-spawn-fire', { concu
 export async function durableSpawnFire(input: DurableSpawnFireInput): Promise<boolean> {
   if (!dbosOrchestratorActive()) return false;
   const id = `durable-spawn:${input.idempotencyKey}`;
+  const timeoutMS = durableSpawnWorkflowTimeoutMs(input);
   try {
     await DBOS.startWorkflow(durableSpawnFireWorkflow, {
       workflowID: id,
       queueName: durableSpawnQueue.name,
+      ...(timeoutMS ? { timeoutMS } : {}),
       enqueueOptions: { deduplicationID: id },
     })(input);
     return true;

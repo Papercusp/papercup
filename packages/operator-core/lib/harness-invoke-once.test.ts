@@ -342,6 +342,7 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(inferBackendFromModelSpec('gpt-5.5:xhigh')).toBe('codex');
+    expect(inferBackendFromModelSpec('chatgpt:5.5')).toBe('codex');
     expect(resolveSpawnBackendModel('overwatch', 'gpt-5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
   });
 });

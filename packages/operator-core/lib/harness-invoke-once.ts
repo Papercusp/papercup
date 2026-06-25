@@ -64,7 +64,7 @@ function specModelId(spec?: string): string {
 export function inferBackendFromModelSpec(spec?: string): AgentBackend | undefined {
   const id = specModelId(spec).toLowerCase();
   if (!id) return undefined;
-  if (id.startsWith('openai-codex/') || /^gpt-\d/.test(id)) return 'codex';
+  if (id.startsWith('openai-codex/') || id.startsWith('chatgpt:') || /^gpt-\d/.test(id)) return 'codex';
   return undefined;
 }
 
