@@ -49,14 +49,24 @@ function providerForBackend(backend: AgentBackend): TurnProvider {
  * CLI instead (e.g. to draw from the CLI's separate rate bucket, paired with
  * a lighter model via LLM_TEST_SIM_MODEL / LLM_TEST_JUDGE_MODEL).
  */
-const TEST_BACKEND: AgentBackend =
-  (process.env.LLM_TEST_BACKEND as AgentBackend | undefined) ?? 'anthropic-direct';
+const TEST_BACKEND = process.env.LLM_TEST_BACKEND as AgentBackend | undefined;
+
+function isCodexModel(model: string | undefined): boolean {
+  const m = model?.trim().toLowerCase() ?? '';
+  return /^(chatgpt:|gpt-|openai-codex\/)/.test(m);
+}
+
+export function backendForLlmCall(model: string | undefined, explicitBackend: AgentBackend | undefined = TEST_BACKEND): AgentBackend {
+  if (explicitBackend) return explicitBackend;
+  return isCodexModel(model) ? 'codex' : 'anthropic-direct';
+}
 
 /**
  * One-shot completion via the `anthropic-direct` backend — the operator's
  * concrete implementation of the lib's injected `LlmCallFn` seam.
  */
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
+  const backend = backendForLlmCall(opts.model);
   let finalText = '';
   let inputTokens = 0;
   let outputTokens = 0;
@@ -78,7 +88,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
           .join('\n\n');
 
   for await (const ev of runAgentChat({
-    backend: TEST_BACKEND,
+    backend,
     model: opts.model,
     systemPromptText: opts.system,
     messages: opts.messages,
@@ -126,10 +136,10 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   }
 
   if (lastErrMsg !== undefined) {
-    const turn = lastErrTurn ?? classifyHttpError({ message: lastErrMsg }, providerForBackend(TEST_BACKEND));
+    const turn = lastErrTurn ?? classifyHttpError({ message: lastErrMsg }, providerForBackend(backend));
     throw new LlmCallError(turn);
   }
-  if (!sawResult) throw new Error(`llmCall: ${TEST_BACKEND} backend produced no result event`);
+  if (!sawResult) throw new Error(`llmCall: ${backend} backend produced no result event`);
 
   let json: unknown;
   if (opts.responseFormat === 'json') {

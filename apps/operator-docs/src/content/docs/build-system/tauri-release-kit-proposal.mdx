@@ -11,17 +11,21 @@ documents:
   - libs/generic/tauri-release-kit/src/types.ts
 ---
 
-:::note[Status: shipped in-tree; cross-repo wiring owner-gated]
-The kit **exists and is green**: `libs/generic/tauri-release-kit` (pure core +
-SSH-frame + VM driver + `runRelease` orchestrator + node ports), 58 vitest tests,
-in BORROWABLE.md, wired into `test:affected`. papercusp has an **additive**
-kit-driven path (`papercusp-desktop/bin/release.ts` + `release.config.ts`) that
-runs alongside `bin/release-local.sh` — nothing in the in-flight release scripts
-was touched. Two steps remain **owner-gated** (plan items P-010, P-011):
-(1) a live full-build Linux artifact diff + making `release-local.sh` a thin
-wrapper; (2) promoting the kit to a shared-submodule repo so oddsmith can vendor
-it (oddsmith consumes `@papercusp/*` as submodules — see D-007). Tracked in the
-`tauri-release-kit-shared-build-2026-06-25` plan.
+:::note[Status: shipped — live as a shared submodule in both repos]
+`@papercusp/tauri-release-kit` is a standalone private repo
+(`Papercusp/tauri-release-kit`) vendored as a submodule by **both** papercup
+(`libs/generic/tauri-release-kit`) and oddsmith (`libs/tauri-release-kit`). 61
+vitest tests, in BORROWABLE.md, wired into `test:affected`. papercusp drives it
+via `papercusp-desktop/bin/release.ts` + `release.config.ts` (alongside the
+existing `bin/release-local.sh`); oddsmith — which had **no** release pipeline —
+now drives it via `apps/desktop/bin/release.ts` + `release.config.ts`. A real
+Linux build (P-010) proved the kit end-to-end and surfaced + fixed two real bugs
+(cargo target-dir resolution for the `~/.cargo-target` redirect; files-only +
+version-scoped artifact collection); the same target-dir bug was also fixed in
+`release-local.sh` (EI-3782). REMAINING (low-pri — P-012 / EI-3782): bring the
+kit's mac/windows drivers to full parity with release-local.sh's VM legs
+(`.app.tar.gz` updater served for both darwin arches, `PAPERCUP_DOGFOOD_REPO_REF`,
+dmg audit) before retiring `release-local.sh` into a thin wrapper.
 :::
 
 ## The ask
