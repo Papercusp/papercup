@@ -69,6 +69,7 @@ import {
   startDurableSpawns,
   isPermanentSpawnStatus,
   durableSpawnWorkflowTimeoutMs,
+  DURABLE_SPAWN_FINISH_CUSHION_MS,
 } from './durable-spawn';
 
 const INPUT = {
@@ -113,11 +114,11 @@ describe('durableSpawnFire (P-010)', () => {
     expect(opts.enqueueOptions.deduplicationID).toBe('durable-spawn:k1');
   });
 
-  it('stamps DBOS workflow timeout from the invoke body when the launch has an explicit deadline', async () => {
+  it('stamps DBOS workflow timeout from the invoke body plus cleanup cushion when launch has a deadline', async () => {
     const r = await durableSpawnFire({ ...INPUT, body: { kickoff: 'go', timeoutMs: 180_000 } });
     expect(r).toBe(true);
     const opts = h.startWorkflow.mock.calls[0][1] as { timeoutMS?: number };
-    expect(opts.timeoutMS).toBe(180_000);
+    expect(opts.timeoutMS).toBe(180_000 + DURABLE_SPAWN_FINISH_CUSHION_MS);
   });
 
   it('leaves long-running worker launches without a DBOS workflow timeout when the body has none', async () => {
@@ -128,7 +129,9 @@ describe('durableSpawnFire (P-010)', () => {
   });
 
   it('derives only positive numeric workflow deadlines from durable spawn bodies', () => {
-    expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: 1234.9 } })).toBe(1234);
+    expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: 1234.9 } })).toBe(
+      1234 + DURABLE_SPAWN_FINISH_CUSHION_MS,
+    );
     expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: 0 } })).toBeUndefined();
     expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: '180000' } })).toBeUndefined();
   });

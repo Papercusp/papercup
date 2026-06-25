@@ -131,6 +131,25 @@ export async function leaseHeartbeatFailOpen(
 
 /** Max chars of child stderr to surface on a failed invoke (P-005). */
 const STDERR_SURFACE_LIMIT = 4000;
+/** Max chars of raw child stdout to carry across the invoke boundary for diagnostics. */
+export const RAW_STDOUT_TAIL_LIMIT = 2000;
+
+export interface SpawnInvokeOnceResult {
+  output: string;
+  exitCode: number;
+  stderr: string;
+  timedOut?: boolean;
+  /**
+   * Bounded, unfiltered stdout tail from the child process. `output` strips
+   * timestamp/log transport lines for normal action parsing; this keeps the
+   * exact CLI failure text available when an agent exits before emitting a turn.
+   */
+  rawStdoutTail?: string;
+}
+
+function rawStdoutTail(stdout: string): string {
+  return stdout.length > RAW_STDOUT_TAIL_LIMIT ? stdout.slice(-RAW_STDOUT_TAIL_LIMIT) : stdout;
+}
 
 /**
  * Build the stderr-surfacing log line for a non-zero `invoke-once` exit (P-005).
@@ -220,7 +239,7 @@ export async function spawnInvokeOnce(
      *  just reports. Best-effort: a throwing callback is ignored. */
     onOutputActivity?: () => void;
   },
-): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
+): Promise<SpawnInvokeOnceResult> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
   // child via env-transport (workspace PG is canonical; config.json is the
   // back-compat fallback). Gated on HARNESS_SLUG + PAPERCUSP_WORKSPACE_ID (set by
@@ -372,7 +391,7 @@ export async function spawnInvokeOnce(
         // egress. Only with NO gateway egress (no failover safety net) is the hard $0 fail correct.
         const gatewayEgress = !!(extraEnv.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL);
         if (!gatewayEgress) {
-          return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
+          return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait', rawStdoutTail: '' };
         }
         console.warn(`[dbos-invoke] role=${role} spawn-governor bucket paced past maxWait → proceeding via inference-gateway failover`);
         const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
@@ -413,11 +432,11 @@ function runChild(
   timeoutMs?: number,
   onChildPid?: (pid: number) => void,
   onOutputActivity?: () => void,
-): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
+): Promise<SpawnInvokeOnceResult> {
   return new Promise((resolve) => {
     // Already-aborted before we spawn → don't launch at all.
     if (signal?.aborted) {
-      resolve({ output: '', exitCode: 1, stderr: 'aborted before start' });
+      resolve({ output: '', exitCode: 1, stderr: 'aborted before start', rawStdoutTail: '' });
       return;
     }
     let timedOut = false;
@@ -474,7 +493,12 @@ function runChild(
       // signal — normalize to a non-zero "aborted" outcome so callers don't read a
       // cancelled run as a clean success.
       if (aborted) {
-        resolve({ output: extractAgentOutput(stdout), exitCode: 1, stderr: stderr.trim() || 'aborted (fleet:cancel)' });
+        resolve({
+          output: extractAgentOutput(stdout),
+          exitCode: 1,
+          stderr: stderr.trim() || 'aborted (fleet:cancel)',
+          rawStdoutTail: rawStdoutTail(stdout),
+        });
         return;
       }
       const exitCode = code ?? 1;
@@ -495,13 +519,13 @@ function runChild(
         const stderrHead = stderr.trim().slice(0, 500);
         console.warn(`[dbos-invoke] role=${role} exited 0 with stderr (${stderr.length} chars): ${stderrHead}`);
       }
-      resolve({ output: extractAgentOutput(stdout), exitCode, stderr, timedOut });
+      resolve({ output: extractAgentOutput(stdout), exitCode, stderr, timedOut, rawStdoutTail: rawStdoutTail(stdout) });
     });
     child.on('error', (err) => {
       cleanup();
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[dbos-invoke] role=${role} spawn error: ${msg}`);
-      resolve({ output: '', exitCode: 1, stderr: msg });
+      resolve({ output: '', exitCode: 1, stderr: msg, rawStdoutTail: rawStdoutTail(stdout) });
     });
   });
 }

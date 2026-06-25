@@ -97,10 +97,12 @@ export interface DurableSpawnFireInput {
   };
 }
 
+export const DURABLE_SPAWN_FINISH_CUSHION_MS = 60_000;
+
 export function durableSpawnWorkflowTimeoutMs(input: DurableSpawnFireInput): number | undefined {
   const timeoutMs = input.body?.timeoutMs;
   if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
-  return Math.trunc(timeoutMs);
+  return Math.trunc(timeoutMs) + DURABLE_SPAWN_FINISH_CUSHION_MS;
 }
 
 function isCodexModelSpec(spec: unknown): boolean {
