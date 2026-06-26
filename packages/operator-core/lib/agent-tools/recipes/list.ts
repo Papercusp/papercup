@@ -10,7 +10,7 @@
  * Server-only.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { listRecipes } from '../../code-recipes-store';
 
@@ -32,7 +32,8 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  // ALL ROLES (owner directive 2026-06-25) — in lockstep with code:run's audience.
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     limit: z.number().int().min(1).max(100).optional().describe('Max recipes to return (default 25).'),
     includeTrivial: z

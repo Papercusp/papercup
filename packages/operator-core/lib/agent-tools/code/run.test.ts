@@ -30,14 +30,19 @@ import './run'; // side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
  * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
- * (so it's itself dry-run-gateable), and is role-gated to the SU roles.
+ * (so it's itself dry-run-gateable), and is open to ALL roles (owner directive 2026-06-25 — the
+ * facade stays role-scoped per inner call, so the grant is privilege-preserving).
  */
 describe('code:run registration (B-CX-2A)', () => {
-  it('registers code:run as a write-effect, role-gated tool', () => {
+  it('registers code:run as a write-effect tool open to every role', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     expect(tool).toBeDefined();
     expect(tool?.effect).toBe('write');
     expect((tool?.agentRoles?.length ?? 0)).toBeGreaterThan(0);
+    // All-roles widening: roles excluded under the old [...SU_ROLES,'bee'] gate now qualify.
+    for (const role of ['worker', 'bee', 'sentinel', 'overwatch', 'reviewer']) {
+      expect(tool?.agentRoles).toContain(role);
+    }
   });
 });
 

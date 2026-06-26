@@ -155,10 +155,13 @@ describe('maybeOrientDedupNudge (P-009) — soft, windowed, one-shot', () => {
 });
 
 describe('CODE_RUN_CAPABLE_ROLES', () => {
-  it('includes the coding pipeline roles + bee, excludes a read-only/non-code role', () => {
+  it('includes EVERY built-in role (code:run is open to all roles, owner directive 2026-06-25)', () => {
     expect(CODE_RUN_CAPABLE_ROLES.has('worker')).toBe(true);
     expect(CODE_RUN_CAPABLE_ROLES.has('queen')).toBe(true);
     expect(CODE_RUN_CAPABLE_ROLES.has('bee')).toBe(true);
-    expect(CODE_RUN_CAPABLE_ROLES.has('sentinel')).toBe(false);
+    // Previously-excluded non-SU/bee roles now qualify — the nudge fires for them too.
+    expect(CODE_RUN_CAPABLE_ROLES.has('sentinel')).toBe(true);
+    expect(CODE_RUN_CAPABLE_ROLES.has('overwatch')).toBe(true);
+    expect(CODE_RUN_CAPABLE_ROLES.has('reviewer')).toBe(true);
   });
 });

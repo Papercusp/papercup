@@ -15,7 +15,7 @@
  * Server-only.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
@@ -40,7 +40,8 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  // ALL ROLES (owner directive 2026-06-25) — in lockstep with code:run's audience.
+  agentRoles: [...AGENT_ROLES],
   args: z
     .object({
       id: z.string().min(1).optional().describe('a single recipe id / kebab slug (n=1 shorthand for ids:[id])'),

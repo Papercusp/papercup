@@ -13,8 +13,8 @@
  *    nudged" set, so the hot path is a single Map increment on the common call.
  *  - ONE-SHOT per (session, tool): fires once when the count crosses the threshold, never again for
  *    that tool in that session — no per-call spam.
- *  - SCOPED to callers who actually HOLD code:run (SU_ROLES + bee, or superuser). A role that can't
- *    run code:run can't act on the nudge, so it never sees it.
+ *  - SCOPED to callers who actually HOLD code:run (every built-in role as of 2026-06-25, or a
+ *    superuser). A role that can't run code:run can't act on the nudge, so it never sees it.
  *  - EXCLUDES the batch tools themselves (code:* / recipes:*) — nudging "use code:run" on a code:run
  *    call is absurd.
  *  - Bounded memory: an insertion-order cap evicts the oldest session when the map is full.
@@ -27,7 +27,7 @@
  * Flag-gated at the call site (FLAGS.CODE_RUN_BATCH_NUDGE) so it has a runtime kill-switch; the
  * gate is only consulted when a hint actually fires (rare), so the per-call cost stays the Map bump.
  */
-import { SU_ROLES } from '@papercusp/agent-mcp';
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
 
 /** Same tool this many times in a session → the one-shot nudge fires. */
 export const BATCH_NUDGE_THRESHOLD = 3;
@@ -35,9 +35,11 @@ export const BATCH_NUDGE_THRESHOLD = 3;
 /** Insertion-order cap on tracked sessions (backstop against unbounded growth). */
 const MAX_TRACKED_SESSIONS = 4000;
 
-/** Roles that hold code:run (SU_ROLES + bee); a superuser caller also qualifies (handled at the
- *  call site via isSuperuser). A role outside this set can't run code:run, so it is never nudged. */
-export const CODE_RUN_CAPABLE_ROLES: ReadonlySet<string> = new Set<string>([...SU_ROLES, 'bee']);
+/** Roles that hold code:run. As of the owner directive 2026-06-25, code:run is open to EVERY
+ *  built-in role (run.ts `agentRoles: [...AGENT_ROLES]`), so the nudge audience is the full role
+ *  universe — keep this in lockstep with code:run's gate. A superuser caller also qualifies
+ *  (handled at the call site via isSuperuser). */
+export const CODE_RUN_CAPABLE_ROLES: ReadonlySet<string> = new Set<string>([...AGENT_ROLES]);
 
 /** Normalized names of the batch/reuse tools themselves — never nudge these (you don't tell a
  *  `code:run` call to "use code:run"). Normalization strips `:`/`_`/`-` so both the verb form

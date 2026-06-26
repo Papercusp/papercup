@@ -11,7 +11,7 @@
  * Server-only.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchSimilarRecipes } from '../../code-recipes-search';
 import { buildQueryEmbedder } from '../search/embedder';
@@ -35,7 +35,8 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  // ALL ROLES (owner directive 2026-06-25) — in lockstep with code:run's audience.
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     query: z.string().min(1).max(500).describe('What you want to do — title/description text, free-form.'),
     limit: z.number().int().min(1).max(20).optional().describe('Top-N to return (default 5).'),
