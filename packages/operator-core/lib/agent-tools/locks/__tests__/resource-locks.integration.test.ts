@@ -363,7 +363,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     // back the whole release. sql/013 bounds the channel to ch_coord_<md5> (41
     // bytes); this pins the RESOURCE-cascade path (the §9 HTTP-MCP test covers
     // the file-lock grant_cascade — a long domain there, but not this leg).
-    const ws = `/home/marsh-office/papercupai-workspace/papercup-release/res-${Date.now()}-${wsSeq++}`;
+    const ws = `/home/marsh-office/papercupai-workspace/papercusp-release/res-${Date.now()}-${wsSeq++}`;
     expect(`ch_coord_${ws}`.length).toBeGreaterThan(63); // the failing precondition
 
     // A holds shared; B's exclusive parks in `draining` behind it. The NOTIFY

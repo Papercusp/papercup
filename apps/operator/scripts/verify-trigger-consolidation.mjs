@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const BASELINE_PATH =
-  '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/000-baseline.sql';
+  '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql/000-baseline.sql';
 
 /**
  * Extract the live emit_change_notify() definition from the baseline dump.

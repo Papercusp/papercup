@@ -31,7 +31,7 @@ function migrationDdl(name: string): string {
   for (const p of [
     join(__dirname, '../../../../libs/papercusp/libs/db/sql/', name),
     join(__dirname, '../../../libs/papercusp/libs/db/sql/', name),
-    `/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/${name}`,
+    `/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql/${name}`,
   ]) {
     try { return readFileSync(p, 'utf8'); } catch { /* next */ }
   }

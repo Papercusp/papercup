@@ -16,4 +16,4 @@ IOSchedulingPriority=7
 # A read-only probe should finish in well under a second; fail open if a probe
 # (e.g. a wedged `ss`) hangs so the next tick is never blocked.
 TimeoutStartSec=60
-ExecStart=/home/marsh-office/papercupai-workspace/papercup/apps/operator/scripts/perf/capture-perf-signals.sh
+ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/perf/capture-perf-signals.sh

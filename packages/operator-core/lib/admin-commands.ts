@@ -18,8 +18,8 @@ export interface AdminCommand {
 const SSH_MAC = 'ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null aviweiss@127.0.0.1';
 const SSH_WIN = 'ssh -i /home/marsh-office/.ssh/papercup-vm-win -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null User@127.0.0.1';
 
-const PAPERCUSP_DESKTOP = '/home/marsh-office/papercupai-workspace/papercup/papercusp-desktop';
-const PAPERCUP_REPO = '/home/marsh-office/papercupai-workspace/papercup';
+const PAPERCUSP_DESKTOP = '/home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop';
+const PAPERCUSP_REPO = '/home/marsh-office/papercupai-workspace/papercusp';
 
 export const ADMIN_COMMANDS: AdminCommand[] = [
   // ── Building ─────────────────────────────────────────────
@@ -46,7 +46,7 @@ echo "=== build + audit complete"`,
     description: 'Rsyncs the canonical tree into the Mac VM (~/papercup-build-mac) and builds the UNIVERSAL .dmg via bin/mac-vm-build.sh (term shim + sidecar + tauri). ~30–45 min. Copies the .dmg back to /home/marsh-office/ and runs the privacy auditor.',
     command: `set -e
 echo "=== rsync tree → VM:papercup-build-mac/papercup"
-rsync -az --delete --exclude .git --exclude node_modules --exclude target --exclude .turbo --exclude .next -e "ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" ${PAPERCUP_REPO}/ aviweiss@127.0.0.1:papercup-build-mac/papercup/
+rsync -az --delete --exclude .git --exclude node_modules --exclude target --exclude .turbo --exclude .next -e "ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" ${PAPERCUSP_REPO}/ aviweiss@127.0.0.1:papercup-build-mac/papercup/
 if [ -f /home/marsh-office/.papercusp/signing/papercusp.key ]; then
   scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /home/marsh-office/.papercusp/signing/papercusp.key aviweiss@127.0.0.1:.papercusp-updater.key
 fi
@@ -83,7 +83,7 @@ echo "=== win build + audit complete"`,
     section: 'building',
     description: 'Runs bin/prod: builds the operator (Starlight docs + Vite SPA) and restarts the Hono host on :3070. Survives this stream — server keeps running after you Stop.',
     command: 'bin/prod 2>&1',
-    cwd: PAPERCUP_REPO,
+    cwd: PAPERCUSP_REPO,
   },
 
   // ── Running ──────────────────────────────────────────────
@@ -121,7 +121,7 @@ echo "=== win build + audit complete"`,
     section: 'running',
     description: 'Restarts the operator dev stack — papercup-dev (Vite frontend on :3055) and papercup-dev-api (Hono on :3070). The /admin page goes offline for a few seconds while the Hono host re-imports; the Vite side comes back via HMR almost immediately.',
     command: 'bin/dev 2>&1',
-    cwd: PAPERCUP_REPO,
+    cwd: PAPERCUSP_REPO,
   },
   {
     id: 'audit-prod-bundles',
@@ -158,7 +158,7 @@ ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`,
     section: 'packaged-build',
     description: 'Runs `npm install` in tools/perf-test/wdio. Kept out of the pnpm workspace on purpose — wdio postinstall doesn\'t play nicely with hoisting.',
     command: 'npm install 2>&1',
-    cwd: `${PAPERCUP_REPO}/tools/perf-test/wdio`,
+    cwd: `${PAPERCUSP_REPO}/tools/perf-test/wdio`,
   },
   {
     id: 'wdio-test',
@@ -166,7 +166,7 @@ ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`,
     section: 'packaged-build',
     description: 'Spawns tauri-driver on :4445 and drives the latest packaged Tauri binary via WebDriver. Runs `specs/*.spec.ts`. Prereqs: `Linux Prod Build` produced an artifact, `webkit2gtk-driver` is installed (sudo apt), and `Install wdio deps` was run once.',
     command: 'npm test 2>&1',
-    cwd: `${PAPERCUP_REPO}/tools/perf-test/wdio`,
+    cwd: `${PAPERCUSP_REPO}/tools/perf-test/wdio`,
   },
   {
     id: 'wdio-webkit-driver-check',

@@ -22,8 +22,8 @@
 # 50-staging-checkout.conf drop-in, daemon-reload, restart papercup-staging-api.
 set -euo pipefail
 
-INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-/home/marsh-office/papercupai-workspace/papercup}"
-STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-/home/marsh-office/papercupai-workspace/papercup-staging}"
+INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-/home/marsh-office/papercupai-workspace/papercusp}"
+STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-/home/marsh-office/papercupai-workspace/papercusp-staging}"
 UNIT="${PAPERCUSP_STAGING_UNIT:-papercup-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"

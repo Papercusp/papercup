@@ -20,7 +20,7 @@
 import { readFileSync } from 'node:fs';
 
 const DESKTOP_CMD =
-  'cd /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop && npm run dev';
+  'cd /home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop && npm run dev';
 
 const BLOCK_MSG = [
   '',

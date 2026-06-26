@@ -10,10 +10,10 @@ After=suspend.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/marsh-office/papercupai-workspace/papercup
+WorkingDirectory=/home/marsh-office/papercupai-workspace/papercusp
 # node/npx on PATH (linuxbrew + local). Adjust to the host's node if relocated.
 Environment="PATH=/home/linuxbrew/.linuxbrew/bin:/home/marsh-office/.local/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="PAPERCUSP_INTEGRATION_ROOT=/home/marsh-office/papercupai-workspace/papercup"
+Environment="PAPERCUSP_INTEGRATION_ROOT=/home/marsh-office/papercupai-workspace/papercusp"
 Environment="PAPERCUSP_GATEWAY_PORT=8788"
 # EXTENDED POST-ADMISSION ABSORPTION: on a slot-hold-deadline shed, release the admission slot (no slot held
 # during the wait → cannot wedge) + re-acquire, holding the caller through a TRANSIENT throttle up to this many

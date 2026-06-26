@@ -40,8 +40,8 @@
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
 set -euo pipefail
 
-INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-/home/marsh-office/papercupai-workspace/papercup}"
-RELEASE_ROOT="${PAPERCUSP_RELEASE_ROOT:-/home/marsh-office/papercupai-workspace/papercup-release}"
+INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-/home/marsh-office/papercupai-workspace/papercusp}"
+RELEASE_ROOT="${PAPERCUSP_RELEASE_ROOT:-/home/marsh-office/papercupai-workspace/papercusp-release}"
 REF="main"
 NODE_MODULES_MODE="auto"   # auto = copy when missing/lockfile-changed; force = always; skip = never
 

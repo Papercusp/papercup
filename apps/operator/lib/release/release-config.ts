@@ -38,7 +38,7 @@ export interface ReleaseConfig {
   checkpointLogDir: string;
 }
 
-const FALLBACK_INTEGRATION = '/home/marsh-office/papercupai-workspace/papercup';
+const FALLBACK_INTEGRATION = '/home/marsh-office/papercupai-workspace/papercusp';
 
 /** Repo root containing THIS script (the integration tree, since it's committed there). */
 function scriptRepoRoot(): string {

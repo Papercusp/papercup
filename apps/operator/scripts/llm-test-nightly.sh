@@ -23,7 +23,7 @@
 set -uo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────
-REPO_ROOT="${PAPERCUSP_REPO_ROOT:-/home/marsh-office/papercupai-workspace/papercup}"
+REPO_ROOT="${PAPERCUSP_REPO_ROOT:-/home/marsh-office/papercupai-workspace/papercusp}"
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:3055}"
 LOG_DIR="${LLM_TEST_LOG_DIR:-$HOME/.papercusp/llm-test-logs}"
 TARGETS="${LLM_TEST_TARGETS:-operator oracle}"

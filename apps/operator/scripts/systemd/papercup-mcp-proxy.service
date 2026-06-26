@@ -7,7 +7,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/marsh-office/papercupai-workspace/papercup/apps/operator
+WorkingDirectory=/home/marsh-office/papercupai-workspace/papercusp/apps/operator
 Environment=PAPERCUSP_MCP_PROXY_PORT=9071
 # :3071-3079 are taken on the dev box; 9071 is free. Override TARGET/RETRY via env if needed.
 # Pin Node 25 (ABI 141) like the rest of the fleet (infra-fail-fast-build-integrity P-003):

@@ -29,7 +29,7 @@ describe('IQ Battery Metrics Collectors', () => {
     const paths = [
       join(__dirname, basePath + '../../../../libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql'),
       join(__dirname, basePath + '../../../libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql'),
-      '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql',
+      '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql',
     ];
     for (const path of paths) {
       try {

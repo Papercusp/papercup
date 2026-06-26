@@ -96,7 +96,7 @@ function harnessStatus(): unknown {
     updated_ts: 1_780_456_789_000,
     spent_cents: 4231,
     budget_cents: 50000,
-    path: '/home/marsh-office/papercupai-workspace/papercup',
+    path: '/home/marsh-office/papercupai-workspace/papercusp',
     source: 'project',
     recentActivity: Array.from({ length: 10 }, (_, i) => ({
       ts: 1_780_456_000_000 + i * 60_000,

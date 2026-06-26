@@ -105,9 +105,9 @@ else
   [ -n "$MSG" ] && ok "C2 message landed in child inbox" || bad "C2 missing: $MSG"
 
   # Tier 2 substrate context for parent
-  if [ -f /home/marsh-office/papercupai-workspace/papercup/libs/papercusp/packages/orchestrator/src/tiered-context.ts ]; then
+  if [ -f /home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/orchestrator/src/tiered-context.ts ]; then
     cat > /tmp/smoke-tiered-parent.mjs <<EOFJ
-import { fetchSubstrateContext } from '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
+import { fetchSubstrateContext } from '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
 const ctx = await fetchSubstrateContext({ selfSlug: 'papercup-org', parentSlug: null });
 process.stdout.write(ctx);
 EOFJ
@@ -121,7 +121,7 @@ EOFJ
 
   # Tier 2 substrate context for child should show parent + 5 siblings
   cat > /tmp/smoke-tiered-child.mjs <<EOFJ
-import { fetchSubstrateContext } from '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
+import { fetchSubstrateContext } from '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
 const ctx = await fetchSubstrateContext({ selfSlug: 'papercup-org-business', parentSlug: 'papercup-org' });
 process.stdout.write(ctx);
 EOFJ
@@ -196,7 +196,7 @@ else
     if [ -d "$CHILD_PATH" ]; then
       cd "$CHILD_PATH"
       PROJECT_DIR="$CHILD_PATH" STATE_DIR="$CHILD_PATH/.papercusp" PAPERCUSP_OPERATOR_BASE="$OPERATOR_BASE" \
-        bash /home/marsh-office/papercupai-workspace/papercup/libs/papercusp/packages/harness/hooks/builtins/afterDone.sh
+        bash /home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/harness/hooks/builtins/afterDone.sh
       sleep 1
       DONE=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org/inbox?status=all" | jq -e ".messages[] | select(.from_slug == \"$CHILD_SLUG\" and .kind == \"Completion\")" 2>&1)
       [ -n "$DONE" ] && ok "A7 afterDone fired; Completion in parent inbox" || bad "A7 missing: $DONE"

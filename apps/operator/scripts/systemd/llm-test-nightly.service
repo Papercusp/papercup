@@ -22,4 +22,4 @@ TimeoutStartSec=90min
 # REQUIRED: the user must provide their key here (or in
 # ~/.config/environment.d/) — without it the script no-ops.
 # Environment=ANTHROPIC_API_KEY=...
-ExecStart=/home/marsh-office/papercupai-workspace/papercup/apps/operator/scripts/llm-test-nightly.sh
+ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/llm-test-nightly.sh
