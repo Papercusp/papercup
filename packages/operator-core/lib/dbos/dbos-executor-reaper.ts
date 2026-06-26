@@ -25,6 +25,7 @@
  * terminal rows; the reaper is what lets the GC (and every routine) keep firing.
  */
 import type { Sql } from 'postgres';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 /** A DBOS executor with no `workflow_status` activity in this window is considered dead. */
 const DEFAULT_LIVENESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
@@ -255,7 +256,7 @@ export async function reapDeadExecutorWorkflows(
   }
 }
 
-let reaperTimer: ReturnType<typeof setInterval> | null = null;
+let reaperTimer: ManagedHandle | null = null;
 
 /**
  * Start the reaper: an immediate boot reap + a recurring process-level sweep.
@@ -291,7 +292,6 @@ export function startExecutorReaper(
   };
 
   run(); // boot reap
-  if (reaperTimer) clearInterval(reaperTimer);
-  reaperTimer = setInterval(run, intervalMs);
-  if (typeof reaperTimer.unref === 'function') reaperTimer.unref();
+  if (reaperTimer) reaperTimer.stop();
+  reaperTimer = managedSetInterval('dbos-executor-reaper', intervalMs, run, { category: 'watchdog' });
 }

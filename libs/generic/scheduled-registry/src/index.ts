@@ -125,30 +125,44 @@ function stripUndefined<T extends object>(o: T): Partial<T> {
 }
 
 function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTimerOptions, rec: InternalRecord): () => void {
+  // Record a fire. fires + lastFireAt count every ATTEMPT (including throws); only lastError differs.
+  const settle = (err?: unknown): void => {
+    if (err === undefined) {
+      rec.entry.lastError = null;
+    } else {
+      rec.entry.lastError = err instanceof Error ? err.message : String(err);
+      resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
+    }
+    rec.entry.lastFireAt = resolved.now();
+    rec.entry.fires += 1;
+    rec.running = false;
+    rec.entry.running = false;
+  };
   return () => {
     if (rec.stopped) return;
     if (rec.running) return; // re-entrancy guard — a slow tick never piles up a second run
     if (opts.shed && resolved.shouldShed(name)) return; // shed this cycle under load
     rec.running = true;
     rec.entry.running = true;
-    void Promise.resolve()
-      .then(() => fn())
-      .then(
-        () => {
-          rec.entry.lastError = null;
-        },
-        (e: unknown) => {
-          rec.entry.lastError = e instanceof Error ? e.message : String(e);
-          resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
-        },
-      )
-      .finally(() => {
-        // fires + lastFireAt count every ATTEMPT (including throws); only lastError differs.
-        rec.entry.lastFireAt = resolved.now();
-        rec.entry.fires += 1;
-        rec.running = false;
-        rec.entry.running = false;
-      });
+    // Run a SYNCHRONOUS tick synchronously — this preserves the bare-setInterval timing
+    // semantics (a sync watchdog tick must complete in THIS turn, not a deferred microtask);
+    // only a genuinely-async tick (returns a thenable) is awaited, so the re-entrancy guard
+    // still holds across a slow async run.
+    let result: void | Promise<void>;
+    try {
+      result = fn();
+    } catch (e) {
+      settle(e);
+      return;
+    }
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      void Promise.resolve(result).then(
+        () => settle(undefined),
+        (e: unknown) => settle(e),
+      );
+    } else {
+      settle(undefined);
+    }
   };
 }
 

@@ -24,6 +24,7 @@
  */
 
 import { setFlagsFromString } from 'node:v8';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { runInNewContext } from 'node:vm';
 import { backgroundWorkersEnabled } from './background-workers';
 
@@ -188,7 +189,7 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
 
   const rssMb = () => bytesToMb(process.memoryUsage().rss);
 
-  const timer = setInterval(() => {
+  const timer = managedSetInterval('memory-watchdog', intervalMs, () => {
     if (recycled) return;
     const rss = rssMb();
     if (rss >= warnMb) {
@@ -240,14 +241,11 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
       // spike shouldn't recycle a host that GC'd back down).
       overCount = 0;
     }
-  }, intervalMs);
-  if (typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
+  }, { category: 'watchdog' });
 
   return {
     stop() {
-      clearInterval(timer);
+      timer.stop();
     },
     rssMb,
   };

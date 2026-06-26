@@ -30,6 +30,7 @@
  * (PAPERCUSP_SINGLE_PRIMARY_GUARD=0).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   openEscalation,
   resolveEscalation,
@@ -195,13 +196,12 @@ export function startSinglePrimaryGuard(opts: { intervalMs?: number } = {}): { s
   if (process.env.PAPERCUSP_SINGLE_PRIMARY_GUARD === '0') return { stop() {} };
   const envMs = Number(process.env.PAPERCUSP_SINGLE_PRIMARY_GUARD_MS);
   const intervalMs = opts.intervalMs ?? (Number.isFinite(envMs) && envMs > 0 ? envMs : DEFAULT_INTERVAL_MS);
-  const timer = setInterval(() => {
-    void runSinglePrimaryCheck().catch(() => {});
-  }, intervalMs);
-  (timer as { unref?: () => void }).unref?.();
+  const timer = managedSetInterval('single-primary-check', intervalMs, () => runSinglePrimaryCheck().catch(() => {}), {
+    category: 'watchdog',
+  });
   return {
     stop() {
-      clearInterval(timer);
+      timer.stop();
     },
   };
 }

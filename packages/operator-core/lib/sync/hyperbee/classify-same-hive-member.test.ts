@@ -18,7 +18,6 @@ const BASE: Input = {
   originSlug: 'fed-a-member',
   ownSlug: 'fed-b-member',
   hiveHome: 'fixawitness-hive',
-  githubUserId: 279242982,
   devicePubkey: '5cWxDYOf',
   memberDevices: ['5cWxDYOf', 'someOtherDevice'],
 };
@@ -47,10 +46,14 @@ describe('classifySameHiveMember', () => {
     expect(decide({ originSlug: null })).toBe('not-candidate');
   });
 
-  it('is NOT a candidate without a github identity (cannot be membership-checked)', () => {
-    expect(decide({ githubUserId: null })).toBe('not-candidate');
-    expect(decide({ githubUserId: undefined })).toBe('not-candidate');
-    expect(decide({ githubUserId: 0 })).toBe('not-candidate'); // 0 is falsy → no identity
+  it('D-002 P-001: admits by AUTHOR IDENTITY (device_pubkey ∈ hive_members) — github_user_id not required', () => {
+    // Admitted: device is registered in the federated member set.
+    expect(decide({ memberDevices: [BASE.devicePubkey] })).toBe('admit');
+    // Miss (not drop): device not yet in the set → buffer for retry.
+    expect(decide({ memberDevices: [] })).toBe('miss');
+    expect(decide({ memberDevices: ['other-device'] })).toBe('miss');
+    // Teeth: add the device back → flips to admit.
+    expect(decide({ memberDevices: [BASE.devicePubkey, 'other-device'] })).toBe('admit');
   });
 
   it('is NOT a candidate when we have no hive home to check membership against', () => {

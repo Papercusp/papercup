@@ -25,6 +25,7 @@
  * off). Always-on infra like the lag monitor + the P5-1 load-shedding it pairs with.
  */
 import { loopPressure, type LoopPressure } from './event-loop-lag-monitor';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   recordGlobalConcurrencyPenalty,
   recordGlobalConcurrencyClean,
@@ -78,12 +79,11 @@ export function startLoopPressureGovernor(opts: LoopPressureGovernorOpts = {}): 
     last = p;
   };
 
-  const timer = setInterval(tick, intervalMs);
-  (timer as { unref?: () => void }).unref?.();
+  const timer = managedSetInterval('loop-pressure-governor', intervalMs, tick, { category: 'watchdog' });
 
   const handle: LoopPressureGovernorHandle = {
     stop() {
-      clearInterval(timer);
+      timer.stop();
       if (active === handle) active = undefined;
     },
     tick,

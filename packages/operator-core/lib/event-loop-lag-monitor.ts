@@ -18,6 +18,7 @@
  * when p95 lag crosses a threshold, so a healthy host is silent.
  */
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 export interface LagMonitorOpts {
   /** How often to sample + evaluate the histogram (ms). Default 10_000. */
@@ -176,7 +177,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   let lastProfileAt = 0;
   let stopped = false;
 
-  const timer = setInterval(() => {
+  const timer = managedSetInterval('event-loop-lag-monitor', intervalMs, () => {
     const s = read();
     if (s.p95Ms >= warnP95Ms) {
       log('[event-loop-lag] high loop delay — host is CPU-bound on the main thread', {
@@ -206,15 +207,12 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     // Reset so each window is independent (a one-off spike doesn't pin the
     // gauge high forever).
     h.reset();
-  }, intervalMs);
-  if (typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
+  }, { category: 'watchdog' });
 
   return {
     stop() {
       stopped = true;
-      clearInterval(timer);
+      timer.stop();
       h.disable();
       if (_liveRead === read) _liveRead = null;
     },

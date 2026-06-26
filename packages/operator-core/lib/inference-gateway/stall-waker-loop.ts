@@ -4,6 +4,7 @@
  * spawn path when the inference gateway is on (that's exactly when bees — and thus stalls — exist).
  */
 import { StallWaker, type StallEvent, type StallWakerDeps } from './stall-waker';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { gatewayPort } from './spawn-env';
 import { fetchGatewayHeadroom } from './observability';
 import { getOrgPg } from '@papercusp/db-org';
@@ -91,22 +92,19 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
   };
 }
 
-let timer: ReturnType<typeof setInterval> | null = null;
+let timer: ManagedHandle | null = null;
 let waker: StallWaker | null = null;
 
 /** Start the poll loop if not already running (idempotent — safe to call on every spawn). */
 export function ensureStallWakerLoop(workspaceId: string): void {
   if (timer) return;
   waker = new StallWaker(createStallWakerDeps(workspaceId));
-  timer = setInterval(() => {
-    void waker!.tick().catch((e) => console.warn(`[stall-waker] tick failed: ${e instanceof Error ? e.message : String(e)}`));
-  }, POLL_MS);
-  if (typeof timer.unref === 'function') timer.unref();
+  timer = managedSetInterval('stall-waker-loop', POLL_MS, () => waker!.tick(), { category: 'global-sweep' });
   console.log(`[stall-waker] started (poll ${POLL_MS}ms, idle ${IDLE_SILENCE_MS}ms) for ${workspaceId}`);
 }
 
 export function stopStallWakerLoop(): void {
-  if (timer) clearInterval(timer);
+  if (timer) timer.stop();
   timer = null;
   waker = null;
 }

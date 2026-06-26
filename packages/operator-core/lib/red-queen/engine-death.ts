@@ -26,6 +26,7 @@
  */
 
 import type { Sql } from 'postgres';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { WatchdogCollector, WatchdogSignal } from '../harness/improvements/watchdog';
 import { captureImprovement } from '../harness/improvements/capture-core';
 import { SANDBOX_SCOPE, SANDBOX_WORKSPACE_ID } from './types';
@@ -218,7 +219,7 @@ export async function runEngineDeathSentinelPass(
 /** Default sentinel cadence — frequent enough to beat the 30s tick's users noticing. */
 export const ENGINE_DEATH_SENTINEL_INTERVAL_MS = 5 * 60_000;
 
-let sentinelTimer: ReturnType<typeof setInterval> | null = null;
+let sentinelTimer: ManagedHandle | null = null;
 
 /**
  * Arm the out-of-band sentinel: a PLAIN setInterval (never DBOS, never the
@@ -238,12 +239,13 @@ export function armEngineDeathSentinel(intervalMs: number = ENGINE_DEATH_SENTINE
     capture: captureImprovement,
     log: (m) => console.log(`[red-queen-sentinel] ${m}`),
   };
-  sentinelTimer = setInterval(() => { void runEngineDeathSentinelPass(deps); }, intervalMs);
-  sentinelTimer.unref?.();
+  sentinelTimer = managedSetInterval('red-queen-engine-death', intervalMs, () => runEngineDeathSentinelPass(deps), {
+    category: 'watchdog',
+  });
 }
 
 /** Disarm (tests). */
 export function disarmEngineDeathSentinel(): void {
-  if (sentinelTimer) clearInterval(sentinelTimer);
+  if (sentinelTimer) sentinelTimer.stop();
   sentinelTimer = null;
 }

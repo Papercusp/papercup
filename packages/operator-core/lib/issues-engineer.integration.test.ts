@@ -165,6 +165,34 @@ describe('engineer issues surface (real PG)', () => {
     expect(got?.title).toBe('shop freezes');
   });
 
+  it('issue-family writes refresh updated_at — no stale updated_ts (WI-339 regression)', async () => {
+    // The bug: the local-write helpers omitted `updated_at` from the UPDATE SET clause,
+    // so the INSTEAD OF trigger's COALESCE(NEW.updated_at, now()) carried the OLD view
+    // value and `updated_ts` never refreshed. Every mutation helper must restamp it.
+    await issues.createIssue({ title: 'stamp me', createdBy: 'agA' }); // EI-1
+    const STALE_MS = Date.now() - 86_400_000; // a day ago
+    // Backdate via the view — the trigger HONORS an explicit updated_at (the
+    // federation-preserve path the COALESCE supports), so this lands a stale updated_ts.
+    const backdate = () =>
+      db.sql`UPDATE harness_shared.engineer_issues SET updated_at = to_timestamp(${STALE_MS} / 1000.0) WHERE issue_id = 'EI-1'`;
+    const expectFresh = (iso: string | undefined) =>
+      expect(new Date(iso!).getTime()).toBeGreaterThan(Date.now() - 60_000);
+
+    await backdate();
+    expect(new Date((await issues.getIssue('EI-1'))!.updatedAt).getTime()).toBeLessThan(Date.now() - 3_600_000); // trigger honored the explicit ts
+
+    await backdate();
+    expectFresh((await issues.updateIssue('EI-1', { title: 'edited' }))?.updatedAt);
+    await backdate();
+    expectFresh((await issues.setIssueState('EI-1', 'resolved', 'agA'))?.updatedAt);
+    await backdate();
+    expectFresh((await issues.claimIssue('EI-1', 'agB'))?.updatedAt);
+    await backdate();
+    expectFresh((await issues.releaseIssue('EI-1'))?.updatedAt);
+    await backdate();
+    expectFresh((await issues.mergeIssuePayload('EI-1', { note: 'x' }))?.updatedAt);
+  });
+
   it('tag→topic fan-out: topic subscriber notified; author not self-notified', async () => {
     await topicStore.create({ slug: 'zero-cache', description: 'the replicator', created_ts: NOW });
     await subs.subscribe({ subscriber_id: 'agB', target_kind: 'topic', target_ref: 'zero-cache', created_ts: NOW });

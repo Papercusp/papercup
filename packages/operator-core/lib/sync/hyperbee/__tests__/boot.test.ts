@@ -380,7 +380,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       ownerUserId,
       'gist-owner',
     );
-    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG, ownerUserId);
+    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG);
     expect(decision).toEqual({ admit: false, reason: 'pending' });
     expect(handle.admitted.has(frame.log_core_key)).toBe(false);
   });
@@ -389,7 +389,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     const ownerUserId = 9501;
     const joiner = makeAnnounceIdentityOverride('joiner-control', 9502, 'kc-wi789-joiner-control');
     let ownerDevicePubkey = '';
-    const loadHiveMembers = vi.fn(async (_hiveHome: string, _githubUserId: number) =>
+    const loadHiveMembers = vi.fn(async (_hiveHome: string) =>
       ownerDevicePubkey ? [ownerDevicePubkey] : [],
     );
 
@@ -422,7 +422,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
 
     const decision = await handle.onAnnounce(frame);
 
-    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG, ownerUserId);
+    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG);
     expect(decision).toEqual({ admit: true });
     expect(handle.admitted.has(frame.log_core_key)).toBe(true);
   });

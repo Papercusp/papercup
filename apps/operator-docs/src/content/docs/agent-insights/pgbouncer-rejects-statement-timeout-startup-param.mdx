@@ -1,6 +1,6 @@
 ---
 title: "PgBouncer rejects statement_timeout as a startup param — fleet-wide plans:* write flakiness"
-description: "When the org pools route through PgBouncer (transaction pooling), sending statement_timeout / idle_in_transaction_session_timeout as postgres-js `connection:` STARTUP parameters makes PgBouncer 502 the connection: 'unsupported startup parameter: statement_timeout'. It surfaces as intermittent plans:* (org-pool) write failures fleet-wide. Fix: omit those GUCs at startup on POOLED connections and enforce them per-transaction via SET LOCAL. Immediate kill-switch: flip papercusp-txn-timeouts-config OFF (then RESTART the operator — the D-010 flag cache is read at boot, not live)."
+description: "When the org pools route through PgBouncer (transaction pooling), sending statement_timeout / idle_in_transaction_session_timeout as postgres-js `connection:` STARTUP parameters makes PgBouncer 502 the connection: 'unsupported startup parameter: statement_timeout'. It surfaces as intermittent plans:* (org-pool) write failures fleet-wide. Fix: omit those GUCs at startup on POOLED connections and enforce them per-transaction via SET LOCAL. Immediate kill-switch: flip papercusp-txn-timeouts-config OFF — the D-010 flag cache refreshes event-driven on flag changes (immediate in-process via onFlagChange); restart is the deterministic fallback if the flag event doesn't propagate."
 discovered: 2026-06-25
 tags: [pgbouncer, postgres, connection-pool, statement_timeout, plans, incident, txn-timeouts, db-org]
 status: active
@@ -56,10 +56,15 @@ Flip **`papercusp-txn-timeouts-config` OFF** → `adminPoolStatementTimeoutMs()`
 lock/stmt override) — it reverts `inWorkspaceTxn` to the baked 5s/5s defaults and removes only the bug
 trigger.
 
-**⚠ The flag is read through a module-level D-010 sync cache (`txn-timeouts-config.ts`) that refreshes
-on its own cadence — flipping the flag does NOT take effect on a running process immediately.**
-`db:txn-timeouts set` would invalidate it, but the deployed tool may expose only `op:get`. The
-deterministic apply is to **`systemctl --user restart papercup-dev-api.service`** (the `:3070` release
-operator boots with `cachedEnabled=false`). A plain restart is safe (same release code, picks up the
-flag); 0 errors after the restart confirms it. Re-enable the flag once the code fix is deployed (the
-admin-pool cap becomes pooler-safe — applied per-tx / on direct connections only).
+The flag is read through a module-level D-010 sync cache (`txn-timeouts-config.ts`) with three refresh
+triggers: **(a)** event-driven via `onFlagChange` — fires immediately when `papercusp-txn-timeouts-config`
+is flipped in PostHog, refreshing the in-process cache without a restart; **(b)** same-process immediate
+on any `db:txn-timeouts set` / `reset` write (all three ops — `get`, `set`, `reset` — are deployed);
+**(c)** a ~60s `.unref()`'d periodic timer for bounded cross-process + restart freshness.
+
+**Flipping the flag OFF propagates to a running process immediately via (a).** If the flag event
+doesn't propagate (flag service unreachable, cold-start race), the deterministic fallback is
+**`systemctl --user restart papercup-dev-api.service`** (the `:3070` release operator boots with
+`cachedEnabled=false`). A restart is always safe (same release code, picks up the flag); 0 errors
+after confirms it. Re-enable the flag once the code fix is deployed (the admin-pool cap becomes
+pooler-safe — applied per-tx / on direct connections only).

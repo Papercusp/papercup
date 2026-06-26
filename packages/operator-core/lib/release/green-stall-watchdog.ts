@@ -37,6 +37,7 @@
  * Kill-switch: PAPERCUSP_GREEN_STALL_WATCHDOG='0'.
  */
 import type { Sql } from 'postgres';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -260,7 +261,7 @@ export async function checkGreenStall(
   }
 }
 
-let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let watchdogTimer: ManagedHandle | null = null;
 
 /**
  * Start the watchdog: an immediate boot check + a recurring process-level sweep.
@@ -284,7 +285,6 @@ export function startGreenStallWatchdog(
   };
 
   run(); // boot check
-  if (watchdogTimer) clearInterval(watchdogTimer);
-  watchdogTimer = setInterval(run, intervalMs);
-  if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref();
+  if (watchdogTimer) watchdogTimer.stop();
+  watchdogTimer = managedSetInterval('green-stall-watchdog', intervalMs, run, { category: 'watchdog' });
 }

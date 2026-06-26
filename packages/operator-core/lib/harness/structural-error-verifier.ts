@@ -25,6 +25,7 @@
  * the orchestration is unit-testable without PG or a clock.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { parseRepeatedToolErrorKey } from './improvements/watchdog-key-migration';
 
 /**
@@ -181,7 +182,7 @@ export function makePgStructuralVerifierDeps(
   };
 }
 
-let timer: ReturnType<typeof setInterval> | null = null;
+let timer: ManagedHandle | null = null;
 
 /**
  * Start the shed-aware periodic verifier. Idempotent (a second call is a no-op while one
@@ -216,14 +217,13 @@ export function startStructuralErrorVerifier(
       );
     }
   };
-  timer = setInterval(() => void run(), intervalMs);
-  (timer as { unref?: () => void }).unref?.();
+  timer = managedSetInterval('structural-error-verifier', intervalMs, () => run(), { category: 'global-sweep' });
   return { stop: stopStructuralErrorVerifier };
 }
 
 export function stopStructuralErrorVerifier(): void {
   if (timer) {
-    clearInterval(timer);
+    timer.stop();
     timer = null;
   }
 }

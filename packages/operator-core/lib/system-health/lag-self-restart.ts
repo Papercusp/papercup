@@ -19,6 +19,7 @@
  * edit the monitor (round-3 F1's file).
  */
 import { loopPressure as defaultLoopPressure } from '../event-loop-lag-monitor';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 const DEFAULT_INTERVAL_MS = 15_000;
 const DEFAULT_SUSTAIN_CHECKS = 8; // ~2 min of unbroken 'critical' at 15s cadence
@@ -90,7 +91,7 @@ export function startLagSelfRestart(opts: LagSelfRestartOpts = {}): LagSelfResta
   let consecutiveCritical = 0;
   let restarted = false;
 
-  const timer = setInterval(() => {
+  const timer = managedSetInterval('lag-self-restart', intervalMs, () => {
     if (restarted) return;
     const p = pressure();
     if (p === 'critical') consecutiveCritical += 1;
@@ -113,14 +114,11 @@ export function startLagSelfRestart(opts: LagSelfRestartOpts = {}): LagSelfResta
       // other reusePort workers keep serving through the gap.
       setTimeout(() => exit(exitCode), 250).unref?.();
     }
-  }, intervalMs);
-  if (typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
+  }, { category: 'watchdog' });
 
   return {
     stop() {
-      clearInterval(timer);
+      timer.stop();
     },
     consecutiveCritical: () => consecutiveCritical,
   };

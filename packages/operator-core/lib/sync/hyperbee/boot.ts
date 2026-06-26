@@ -362,18 +362,13 @@ export interface BootHarnessOpts {
    */
   loadRevokedOverride?: () => Promise<Set<string>>;
   /**
-   * Test seam (WI-559) — override the same-hive membership lookup. Production
-   * leaves this undefined and the real `loadHiveMemberDevicePubkeys(workspaceId,
-   * hiveHomeSlug, githubUserId)` (reads `hive_members` from PG) is used. Tests
-   * inject a pure async loader returning the member's registered device pubkeys
-   * so the same-hive cross-member admission AND the membership-miss → pending →
-   * retry-admit path can be exercised without a database. `workspaceId` is closed
-   * over by boot; the loader receives `(hiveHomeSlug, githubUserId)`.
+   * Test seam (WI-559 + D-002) — override the same-hive membership lookup. Production
+   * leaves this undefined and the real `resolveHiveMemberDeviceSet(workspaceId, hiveHomeSlug)`
+   * (reads all member device pubkeys from the federated `hive_members` PG table) is used. Tests
+   * inject a pure async loader returning ALL member device pubkeys for the hive — no
+   * github_user_id needed (D-002: admit by AUTHOR IDENTITY / device_pubkey ∈ hive_members).
    */
-  loadHiveMembersOverride?: (
-    hiveHomeSlug: string,
-    githubUserId: number,
-  ) => Promise<string[]>;
+  loadHiveMembersOverride?: (hiveHomeSlug: string) => Promise<string[]>;
   /**
    * Test seam (WI-787 / WI-780) — resolve the OWNER device pubkey the SIGNED, gh-verified
    * hive-announce binds to a joined `hive_pubkey` (`owner_device_pubkey`, captured at join
@@ -549,31 +544,32 @@ export interface BootedHarnessHandle {
 }
 
 /**
- * WI-559: the PURE same-hive cross-member SCOPE decision, extracted so it is unit-testable in
- * isolation (the boot closure's `resolveSameHiveMember` applies it + the side effects). A frame that
- * has ALREADY passed the identity decider (sig + channel-2 binding valid, NOT revoked — checked
- * upstream, every call) and is out of this harness's OWN slug scope is classified:
- *   - 'admit'         → its github_user_id is a member of this hive AND its device is registered.
- *   - 'miss'          → a same-hive candidate (cross-slug + has a github id + we have a hive home)
- *                       whose membership has NOT federated to us yet → caller BUFFERS it for retry
+ * WI-559 + D-002 P-001: the PURE same-hive cross-member SCOPE decision, extracted so it is
+ * unit-testable in isolation. A frame that has ALREADY passed the identity decider (sig +
+ * channel-2 binding valid, NOT revoked — checked upstream, every call) and is out of this
+ * harness's OWN slug scope is classified:
+ *   - 'admit'         → device_pubkey is registered in the hive_members set (D-002 AUTHOR IDENTITY).
+ *   - 'miss'          → a same-hive candidate (cross-slug + hive home known) whose membership
+ *                       has NOT federated to us yet → caller BUFFERS it for retry
  *                       (the asymmetric A→B stall fix) instead of conclusively rejecting.
- *   - 'not-candidate' → not a same-hive cross-member (own/empty slug, no github id, or no hive home)
+ *   - 'not-candidate' → not a same-hive cross-member (own/empty slug, or no hive home)
  *                       → caller falls through to the A-003 / conclusive paths.
- * It NEVER decides revocation or the read-cut (that is the identity decider, run BEFORE it), so
- * widening 'miss' → buffer can never re-admit a revoked / read-cut peer.
+ * It NEVER decides revocation or the read-cut (that is the identity decider, run BEFORE it).
+ * github_user_id is intentionally NOT used — admission is by device_pubkey ∈ hive_members.
  */
 export type SameHiveDecision = 'admit' | 'miss' | 'not-candidate';
 export function classifySameHiveMember(input: {
   originSlug: string | null;
   ownSlug: string;
   hiveHome: string | null;
-  githubUserId: number | null | undefined;
   devicePubkey: string;
   memberDevices: readonly string[];
 }): SameHiveDecision {
-  const { originSlug, ownSlug, hiveHome, githubUserId, devicePubkey, memberDevices } = input;
-  if (!(originSlug != null && originSlug !== ownSlug && githubUserId)) return 'not-candidate';
+  const { originSlug, ownSlug, hiveHome, devicePubkey, memberDevices } = input;
+  // Not a cross-member candidate: absent/own-slug (handled upstream) or no hive home.
+  if (!(originSlug != null && originSlug !== ownSlug)) return 'not-candidate';
   if (hiveHome == null) return 'not-candidate';
+  // D-002: admit by AUTHOR IDENTITY — device in set → admit; absent → miss (buffer, not drop).
   return memberDevices.includes(devicePubkey) ? 'admit' : 'miss';
 }
 
@@ -1593,17 +1589,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     revoked,
   });
 
-  // WI-559: the same-hive membership lookup, captured once (test seam or the real
-  // PG-backed `loadHiveMemberDevicePubkeys`). Used by `resolveScope` for both the
-  // same-hive cross-member admit AND the membership-miss → pending → retry-admit
-  // path. Never throws (fail-closed to an empty member set → not-a-member → buffer).
-  const loadHiveMembers: (hiveHomeSlug: string, githubUserId: number) => Promise<string[]> =
+  // D-002 P-001: the same-hive membership lookup (test seam or real resolveHiveMemberDeviceSet).
+  // Returns ALL device pubkeys for the hive — no github_user_id (D-002: admit by AUTHOR IDENTITY).
+  // Never throws (fail-closed to empty set → not-a-member → buffer).
+  const loadHiveMembers: (hiveHomeSlug: string) => Promise<string[]> =
     opts.loadHiveMembersOverride ??
-    (async (hiveHomeSlug, githubUserId) => {
-      const { loadHiveMemberDevicePubkeys } = await import('../../hive-membership-store');
-      return loadHiveMemberDevicePubkeys(opts.workspaceId, hiveHomeSlug, githubUserId).catch(
-        () => [] as string[],
+    (async (hiveHomeSlug) => {
+      const { resolveHiveMemberDeviceSet } = await import('./hive-member-identity-set');
+      const set = await resolveHiveMemberDeviceSet(opts.workspaceId, hiveHomeSlug).catch(
+        () => new Set<string>(),
       );
+      return [...set];
     });
 
   // WI-787 / WI-780 — owner-log BOOTSTRAP seam: resolve the OWNER device pubkey the SIGNED,
@@ -1651,7 +1647,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // or null when this is not a same-hive-member candidate (caller falls through to A-003 / conclusive).
   async function resolveSameHiveMember(frame: SignedAnnounce): Promise<AdmissionResult | null> {
     const originSlug = frame.harness_slug ?? null;
-    if (!(originSlug != null && originSlug !== slug && frame.github_user_id)) return null;
+    if (!(originSlug != null && originSlug !== slug)) return null;
     const { hiveHomeSlugForHarness } = await import('../../hive-federation');
     const myHiveHome =
       hiveHomeProjectionSlug ??
@@ -1680,12 +1676,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         return admitPeer(frame);
       }
     }
-    const memberDevices = await loadHiveMembers(myHiveHome, frame.github_user_id);
+    const memberDevices = await loadHiveMembers(myHiveHome);
     const decision = classifySameHiveMember({
       originSlug,
       ownSlug: slug,
       hiveHome: myHiveHome,
-      githubUserId: frame.github_user_id,
       devicePubkey: frame.device_pubkey,
       memberDevices,
     });
@@ -1748,7 +1743,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const ownerDevice = await ownerDeviceForHive(joinedHivePubkey).catch(() => null);
       if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
     }
-    const memberDevices = await loadHiveMembers(myHiveHome, frame.github_user_id);
+    const memberDevices = await loadHiveMembers(myHiveHome);
     return trustedHiveMemberDeviceAdmission({
       devicePubkey: frame.device_pubkey,
       sigValid,

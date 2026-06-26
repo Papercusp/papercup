@@ -456,7 +456,8 @@ export async function updateIssue(id: string, patch: UpdateIssuePatch): Promise<
       kind = ${patch.kind ?? sql`kind`},
       found_during = ${patch.foundDuring !== undefined ? patch.foundDuring : sql`found_during`},
       linked_feature_id = ${patch.linkedFeatureId !== undefined ? patch.linkedFeatureId : sql`linked_feature_id`},
-      origin = 'local'
+      origin = 'local',
+      updated_at = now()
     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
@@ -478,7 +479,7 @@ export async function updateIssue(id: string, patch: UpdateIssuePatch): Promise<
 export async function claimIssue(id: string, assignee: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local'
+    UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
        AND (assignee IS NULL OR assignee = '' OR assignee = ${assignee})
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
@@ -493,7 +494,7 @@ export async function claimIssue(id: string, assignee: string): Promise<Engineer
 export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local'
+    UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local', updated_at = now()
      WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
@@ -506,7 +507,7 @@ export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
 export async function setIssueState(id: string, state: IssueState, by?: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local'
+    UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
      WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
@@ -604,7 +605,8 @@ export async function mergeIssuePayload(id: string, patch: Record<string, unknow
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues
        SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb,
-           origin = 'local'
+           origin = 'local',
+           updated_at = now()
      WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   return rows[0] ? toIssue(rows[0]) : null;
