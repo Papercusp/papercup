@@ -211,6 +211,11 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   const rec = input.spawnRecord;
   // Stable so a step retry / recovery replay updates the SAME row, not a new one.
   const spawnId = `durable-spawn:${input.idempotencyKey}`;
+  const initialFireBody = await refreshControlPlaneSpawnModel(input);
+  const initialSpawnModel =
+    typeof initialFireBody.spawnModel === 'string' && initialFireBody.spawnModel.trim()
+      ? initialFireBody.spawnModel.trim()
+      : null;
 
   // Make the durable launch visible in fleet:tree (opt-in), mirroring the
   // fire-and-forget fallback's recordSpawn (WI-108). Best-effort: a bookkeeping
@@ -230,6 +235,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
             childRole: rec.childRole,
             runId: input.idempotencyKey,
             itemId: rec.itemId ?? null,
+            modelSpec: initialSpawnModel,
             status: 'running',
           });
           // EI-85/P-033 false-reclaim fix: stamp the FIRING process's pid (THIS long-lived

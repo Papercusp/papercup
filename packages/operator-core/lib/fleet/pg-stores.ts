@@ -120,6 +120,8 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
       session_owner = COALESCE(EXCLUDED.session_owner, harness_shared.spawned_agents.session_owner),
       plan_slug     = COALESCE(EXCLUDED.plan_slug, harness_shared.spawned_agents.plan_slug),
       item_id       = COALESCE(EXCLUDED.item_id, harness_shared.spawned_agents.item_id),
+      model_spec    = COALESCE(EXCLUDED.model_spec, harness_shared.spawned_agents.model_spec),
+      model_tier    = COALESCE(EXCLUDED.model_tier, harness_shared.spawned_agents.model_tier),
       restart_strategy = EXCLUDED.restart_strategy
   `;
   // data-sync-push-completion-2026-06-23 D-008 follow-up (P-007 freshness gap): the

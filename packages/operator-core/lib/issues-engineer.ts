@@ -239,8 +239,8 @@ const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state,
   signal_origin, assignee_rank, rank_writer, rank_updated_at, created_at, updated_at`;
 
 /** Allocate the next globally-unique EI-<n> id. */
-async function nextIssueId(): Promise<string> {
-  const { sql } = getOrgPg();
+async function nextIssueId(sql = getOrgPg().sql): Promise<string> {
+  await sql`SELECT pg_advisory_xact_lock(hashtext('papercusp:engineer_issues:next-id'))`;
   const rows = await sql<{ n: number }[]>`
     SELECT COALESCE(MAX((substring(issue_id from 4))::int), 0) AS n
       FROM harness_shared.engineer_issues
@@ -304,8 +304,6 @@ export interface CreateIssueInput {
 
 /** Create an issue: insert, tag topics, auto-subscribe the author, fan out. */
 export async function createIssue(input: CreateIssueInput): Promise<EngineerIssue> {
-  const { sql } = getOrgPg();
-  const id = input.id ?? (await nextIssueId());
   const created = nowIso();
   // unified-work-item-ledger P-001: a harness-attributable item must never be
   // silently filed operator-global via a missing/blank harness. operator stays
@@ -313,17 +311,21 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // allow-scope-default: 'operator' is the explicit top-level issue scope (vs harness:<slug>), not a workspace.
   const scope = input.scope ?? 'operator';
   assertScopeWellFormed(scope);
-  const rows = await sql<IssueRowDb[]>`
-    INSERT INTO harness_shared.engineer_issues
-      (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
-       assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at)
-    VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${input.title}, ${input.body ?? ''},
-            ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
-            ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
-            ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},
-            ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created})
-    RETURNING ${sql.unsafe(ISSUE_COLS)}`;
-  const issue = toIssue(rows[0]);
+  const issue = await boundedOrgTxn(async (tx) => {
+    const id = input.id ?? (await nextIssueId(tx));
+    const rows = await tx<IssueRowDb[]>`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
+         assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at)
+      VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${input.title}, ${input.body ?? ''},
+              ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
+              ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
+              ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},
+              ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created})
+      RETURNING ${tx.unsafe(ISSUE_COLS)}`;
+    return toIssue(rows[0]);
+  });
+  const id = issue.id;
 
   for (const topic of input.topics ?? []) {
     await tags.addTag(issueRef(id), topic, { created_by: input.createdBy, created_ts: created });

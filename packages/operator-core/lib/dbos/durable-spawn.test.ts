@@ -249,6 +249,28 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(JSON.parse(req.body).spawnModel).toBe('gpt-5.5');
   });
 
+  it('records the refreshed Queen spawnModel on the durable spawn row before firing', async () => {
+    h.ownerSteering.value = {
+      modelTiers: [
+        { name: 'quick', spec: 'chatgpt:5.5', backend: 'codex' },
+        { name: 'standard', spec: 'chatgpt:5.5', backend: 'codex' },
+      ],
+      tierCeilings: { queen: 'quick' },
+      modelOverrides: null,
+    };
+    await durableSpawnFireImpl({
+      url: 'http://x/api/harness/papercusp/invoke?role=queen&ws=papercusp-workspace',
+      body: { kickoff: 'owner-directed wake' },
+      idempotencyKey: 'q-model-row',
+      label: 'papercusp/queen',
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+    });
+    expect(h.recordSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: 'durable-spawn:q-model-row',
+      modelSpec: 'chatgpt:5.5',
+    }));
+  });
+
   it('refreshes a stale Overwatch durable body from current modelOverrides before every /invoke POST', async () => {
     h.ownerSteering.value = { modelOverrides: { overwatch: 'gpt-5.5:high' } };
     await durableSpawnFireImpl({
