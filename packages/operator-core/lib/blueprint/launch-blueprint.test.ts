@@ -218,6 +218,27 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:xhigh');
   });
 
+  it('GAP-2: owner steering also raises non-Queen launch roles such as doc-steward', async () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    getOwnerSteering.mockResolvedValueOnce({
+      directive: null,
+      eligiblePlans: [],
+      eligibleHives: [],
+      pauseNewWork: false,
+      pausedUntil: null,
+      modelTiers: [
+        { name: 'standard', spec: 'chatgpt:5.5', backend: 'codex' },
+      ],
+      tierCeilings: { 'doc-steward': 'standard' },
+    });
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    const target = await fireLaunchBlueprint('doc-steward', { ...opts, kickoff: 'doc drift' });
+    expect(target.role).toBe('doc-steward');
+    expect(fired).toHaveLength(1);
+    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('chatgpt:5.5');
+  });
+
   it('GAP-2: an un-steered Hive leaves the queen on her committed default (no spawnModel pin) — byte-identical to today', async () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     // default getOwnerSteering mock = un-steered; readAgentConfig = empty menu.
