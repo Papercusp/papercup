@@ -62,6 +62,27 @@ describe('spawnInvokeOnce', () => {
     expect(console.error).not.toHaveBeenCalled();
   });
 
+  it('threads child pid and output activity callbacks on the default governor-off path', async () => {
+    vi.stubEnv('PAPERCUSP_AGENT_GOVERNOR', '');
+    H.cmd = node('process.stdout.write("chunk")');
+    const pids: number[] = [];
+    let outputEvents = 0;
+
+    const r = await spawnInvokeOnce(process.cwd(), 'bee', [], {}, {
+      onChildPid: (pid) => pids.push(pid),
+      onOutputActivity: () => {
+        outputEvents += 1;
+      },
+    });
+
+    expect(r.exitCode).toBe(0);
+    expect(pids).toHaveLength(1);
+    expect(pids[0]).toBeGreaterThan(1);
+    expect(outputEvents).toBeGreaterThanOrEqual(1);
+    expect(console.error).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
+
   it('strips [timestamp] log lines from the captured output', async () => {
     H.cmd = node('process.stdout.write("[2026-06-02T10:00:00.000Z] booting\\nDONE\\n")');
     const r = await spawnInvokeOnce(process.cwd(), 'director', [], {});

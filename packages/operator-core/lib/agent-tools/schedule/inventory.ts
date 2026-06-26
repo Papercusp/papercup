@@ -1,0 +1,48 @@
+/**
+ * schedule:inventory — the central read-only view of EVERY scheduled/recurring
+ * thing in the operator host, regardless of cadence
+ * (plan schedule-inventory-and-ephemeral-tier-2026-06-26, P-002).
+ *
+ * Unions DBOS scheduled workflows (durable) + harness_shared.routines (durable) +
+ * in-process-periodic sweeps (ephemeral) into one row shape. The aggregation logic
+ * lives in ../../schedule-inventory so the /admin/schedules data path (P-003) shares
+ * it. The managedSetInterval registry (P-006) and per-process registries (P-014)
+ * plug in as additional sources without touching this tool.
+ */
+import { z } from 'zod';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { collectScheduleInventory, summarizeInventory } from '../../schedule-inventory';
+
+export default defineTool({
+  name: 'schedule:inventory',
+  profile: 'engineer',
+  description:
+    'Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), and in-process-periodic health sweeps (ephemeral tier). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError}. Read-only.',
+  capability: 'operator:read',
+  guidance: {
+    when: 'See ALL cadences in one place — what runs on a schedule and how often (DBOS crons, system routines, in-process sweeps) — before tuning/pausing one or diagnosing a missing tick.',
+    notWhen:
+      'To CHANGE a routine use routines:set; for DBOS execution rows (status counts/recent runs) use the /admin/dbos view; for routine-only detail use routines:list.',
+    chaining: 'routines:set to retune a routine row you find here; routines:list for routine-only detail.',
+  },
+  requirePrincipal: false,
+  agentRoles: [...SU_ROLES],
+  rolesQuota: { operator: { perRun: 30 } },
+  args: z.object({
+    source: z
+      .enum(['dbos', 'routines', 'in-process', 'managed'])
+      .optional()
+      .describe('Filter to one source.'),
+    tier: z
+      .enum(['durable', 'ephemeral'])
+      .optional()
+      .describe('Filter to one execution tier (durable = DBOS-backed; ephemeral = in-process).'),
+  }),
+  async handler(args) {
+    let rows = await collectScheduleInventory();
+    if (args.source) rows = rows.filter((r) => r.source === args.source);
+    if (args.tier) rows = rows.filter((r) => r.tier === args.tier);
+    const summary = summarizeInventory(rows);
+    return { content: [{ type: 'text', text: JSON.stringify({ summary, rows }) }] };
+  },
+});

@@ -62,6 +62,7 @@ import {
   reconcileDoneStatus,
   parseAcceptanceVerdict,
   type FinalizeRecipe,
+  type ReconcileDbClient,
 } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 import { acquireAgentDisplay, agentDisplayPool } from '../deployment/display-allocator';
@@ -409,12 +410,36 @@ export async function spawnInvokeOnce(
     // Pacing off (the default): run directly, but STILL feed the child's 429/overload back into
     // the shared governor (EI-86). The await happens here (inside the try) so the display
     // lease's finally releases AFTER the child exits, not when the promise is handed back.
-    const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
+    const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
     feedGovernor(inner);
     return inner;
   } finally {
     displayLease?.release();
   }
+}
+
+type AdminPgClient = ReturnType<typeof adminClientForHarness>;
+
+function toPostgresPlaceholders(sql: string): string {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
+
+function reconcileClientFromPostgres(pg: AdminPgClient): ReconcileDbClient {
+  return {
+    prepare: (sql: string) => {
+      const query = toPostgresPlaceholders(sql);
+      return {
+        get: async (...params: unknown[]) => {
+          const rows = (await pg.unsafe(query, params as never[])) as unknown[];
+          return rows[0];
+        },
+        run: async (...params: unknown[]) => {
+          await pg.unsafe(query, params as never[]);
+        },
+      };
+    },
+  };
 }
 
 /** SIGKILL grace after the SIGTERM on abort/timeout — gives the child a moment
@@ -1019,7 +1044,7 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
   if (outcome === 'done') {
     try {
       const pg = adminClientForHarness(harnessSlug);
-      const flipped = await reconcileDoneStatus(harnessSlug, featureId, pg, (m) =>
+      const flipped = await reconcileDoneStatus(harnessSlug, featureId, reconcileClientFromPostgres(pg), (m) =>
         console.log(m),
       );
       if (flipped) {
