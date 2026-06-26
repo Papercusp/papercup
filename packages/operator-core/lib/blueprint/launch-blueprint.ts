@@ -585,17 +585,18 @@ export async function fireLaunchBlueprint(
     fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: benchModel } };
   }
 
-  // queen-steering-panel-2026-06-15 GAP-2 (P-006): resolve the QUEEN's OWN model
-  // from the owner's tier config so raising the 👑-tab menu/ceiling actually moves
-  // the autonomous queen — not just the tier she picks for bees (her launch passed
-  // NO tier, so resolveTierSpec never ran for her: roleModelDefault('queen')=sonnet
-  // was her ceiling). She runs at her ceiling-or-home tier resolved against the
-  // EFFECTIVE menu (owner-steering session override > workspace agent-config), via
-  // the SAME bodyExtra.spawnModel → PAPERCUSP_SPAWN_MODEL channel as the bench pin
-  // above — so a caller pin / bench pin (checked `== null`) still wins. Returns the
-  // spec ONLY when it differs from her committed default, so an un-steered Hive is
-  // byte-identical to today. Fail-soft: a config-read failure leaves her default.
-  if (target.role === 'queen' && fireInput.bodyExtra?.spawnModel == null) {
+  // queen-steering-panel-2026-06-15 GAP-2 (P-006), generalized after the doc-steward
+  // quota trap: resolve a launch-blueprint role's OWN model from the owner's tier
+  // config so raising the 👑-tab menu/ceiling actually moves the autonomous role.
+  // The original gap was Queen-only (she passed no tier, so her own model stayed on
+  // the committed default while only her bee picks moved). The same shape applies to
+  // other autonomous launch roles like doc-steward: a failing role with no explicit
+  // bodyExtra.spawnModel silently fell back to the host Claude command even after the
+  // owner steered the fleet to chatgpt:5.5. Use the SAME bodyExtra.spawnModel →
+  // PAPERCUSP_SPAWN_MODEL channel as the bench pin above, and let explicit caller /
+  // bench pins win. Returns a spec only when it differs from the role's committed
+  // default, so un-steered launches stay byte-identical. Fail-soft on config reads.
+  if (fireInput.bodyExtra?.spawnModel == null) {
     try {
       const [{ readAgentConfig }, { getOwnerSteering }, { effectiveTierConfig, resolveRoleOwnModelSpec }] =
         await Promise.all([
@@ -607,10 +608,10 @@ export async function fireLaunchBlueprint(
         readAgentConfig().catch(() => null),
         getOwnerSteering(input.workspaceId, input.installSlug).catch(() => null),
       ]);
-      const spec = resolveRoleOwnModelSpec('queen', effectiveTierConfig(cfg, steering));
+      const spec = resolveRoleOwnModelSpec(target.role, effectiveTierConfig(cfg, steering));
       if (spec) fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: spec } };
     } catch {
-      /* fail-soft: leave the queen on her committed default if tier config is unreadable */
+      /* fail-soft: leave the role on its committed default if tier config is unreadable */
     }
   }
 
