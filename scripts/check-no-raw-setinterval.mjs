@@ -45,6 +45,11 @@ export const ALLOWLIST_DIRS = [
   'libs/generic/scheduled-registry/', // the wrapper itself — its default seam is setInterval
   'libs/generic/sse/', // generic SSE lib: keeps its own heartbeat/reaper timers (can't import operator-core)
   'libs/generic/tooldef/', // generic tool-dispatch lib: own GC/idle timers
+  'libs/generic/p2p-voice/', // generic voice lib: own per-session timers (domain-free)
+  'packages/operator-core/lib/external-bench/', // bench harness — per-run samplers/heartbeats, not host timers
+  'packages/operator-core/lib/deployment/p2p-perf-tier3/', // perf-test CHILD processes
+  'packages/operator-core/lib/sync/hyperbee/perf/', // perf-test measurement processes
+  'apps/operator/scripts/', // standalone .mjs processes (psu-launcher/pty-host, bghost-watchdog) — separate procs
 ];
 
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */
@@ -53,6 +58,19 @@ export const ALLOWLIST = new Set([
   // "setInterval(" (the thing it bans), exactly as check-no-raw-agent-spawn allowlists
   // its own definition site.
   'scripts/check-no-raw-setinterval.mjs',
+  // Browser/client .ts — run in the webview, not the host; cannot reach the server-side
+  // registry (verified client-side: window./document./useEffect/MediaRecorder).
+  'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',
+  'apps/operator/app/_components/voice/voice-leader.ts',
+  'apps/operator/app/admin/plans/plans-api.ts',
+  'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
+  'apps/operator/lib/ui/use-ui-presence.ts',
+  'apps/operator-vite/src/lib/video/camera-capture.ts',
+  // Separate processes that don't share the operator registry.
+  'packages/operator-core/lib/deployment/cross-hive-frame.ts', // cross-hive e2e spike child process
+  'packages/operator-core/lib/inference-gateway/gateway.ts', // runs INSIDE the :8788 inference-gateway process
+  'packages/operator-core/lib/inference-gateway/launch.ts', // :8788 gateway process bootstrap
+  'packages/operator-core/lib/inference-gateway/watchdog.mjs', // standalone systemd watchdog for the gateway
 ]);
 
 /**
@@ -63,15 +81,6 @@ export const BASELINE = new Set([
   // Seeded from the tree state at P-007 (74 files). SHRINK-ONLY: P-008 migrates each to
   // managedSetInterval (remove here) or promotes a genuine separate-process/generic site
   // to ALLOWLIST_DIRS / ALLOWLIST. Do NOT add new entries.
-  'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',
-  'apps/operator/app/_components/voice/voice-leader.ts',
-  'apps/operator/app/admin/plans/plans-api.ts',
-  'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
-  'apps/operator/lib/ui/use-ui-presence.ts',
-  'apps/operator/scripts/bghost-watchdog.mjs',
-  'apps/operator/scripts/psu-pty-host.mjs',
-  'apps/operator-vite/src/lib/video/camera-capture.ts',
-  'libs/generic/p2p-voice/src/voice-node.ts',
   'packages/operator-core/lib/agent-tools/locks/acquire.ts',
   'packages/operator-core/lib/agent-tools/locks/file-lock-authority-wiring.ts',
   'packages/operator-core/lib/blueprint/launch-blueprint.ts',
@@ -79,11 +88,7 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/cross-hive-swarm-transport.ts',
   'packages/operator-core/lib/dbos/dbos-executor-reaper.ts',
   'packages/operator-core/lib/dbos/durable-spawn.ts',
-  'packages/operator-core/lib/deployment/cross-hive-frame.ts',
   'packages/operator-core/lib/deployment/frame-view.ts',
-  'packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts',
-  'packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts',
-  'packages/operator-core/lib/deployment/p2p-perf-tier3/voice-mesh-child.ts',
   'packages/operator-core/lib/device-push-credentials.ts',
   'packages/operator-core/lib/device-voice-ws.ts',
   'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-command-sse.ts',
@@ -94,9 +99,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/event-loop-lag-monitor.ts',
   'packages/operator-core/lib/events/await/engine.ts',
   'packages/operator-core/lib/expirable-registry.ts',
-  'packages/operator-core/lib/external-bench/hive-backlog-utilities.ts',
-  'packages/operator-core/lib/external-bench/run-launcher.ts',
-  'packages/operator-core/lib/external-bench/su-independent-backlog.ts',
   'packages/operator-core/lib/fleet/chat-spawn-tracking.ts',
   'packages/operator-core/lib/fleet/operator-spawn.ts',
   'packages/operator-core/lib/harness-fs-watcher.ts',
@@ -104,10 +106,7 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/harness-status-sweep.ts',
   'packages/operator-core/lib/harness/structural-error-verifier.ts',
   'packages/operator-core/lib/hive-directory.ts',
-  'packages/operator-core/lib/inference-gateway/gateway.ts',
-  'packages/operator-core/lib/inference-gateway/launch.ts',
   'packages/operator-core/lib/inference-gateway/stall-waker-loop.ts',
-  'packages/operator-core/lib/inference-gateway/watchdog.mjs',
   'packages/operator-core/lib/loop-pressure-governor.ts',
   'packages/operator-core/lib/memory-watchdog.ts',
   'packages/operator-core/lib/provision/runner.ts',
@@ -118,8 +117,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/sync/hyperbee/boot.ts',
   'packages/operator-core/lib/sync/hyperbee/directory-swarm.ts',
   'packages/operator-core/lib/sync/hyperbee/outbox-drain.ts',
-  'packages/operator-core/lib/sync/hyperbee/perf/metrics.ts',
-  'packages/operator-core/lib/sync/hyperbee/perf/peer-child.ts',
   'packages/operator-core/lib/sync/hyperbee/substrate-eviction-reaper.ts',
   'packages/operator-core/lib/sync/hyperbee/swarm.ts',
   'packages/operator-core/lib/system-health/cluster-lag-watchdog.ts',
