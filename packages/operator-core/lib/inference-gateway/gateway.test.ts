@@ -1969,7 +1969,7 @@ test('[429-absorb SU-3650] upstream 429 (bare, transient) WITHIN absorption dead
         res.end(JSON.stringify({ ok: true }));
       }
     },
-    { concurrency: 1, requestAbsorbMs: 500 },
+    { concurrency: 1, requestAbsorbMs: 500, bare429FailoverBackoffMs: 100 },
   );
   const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'bare 429 within absorption deadline is ABSORBED + retried → 200, not forwarded');

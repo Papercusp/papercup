@@ -45,7 +45,7 @@ const args = z.object({
     .optional(),
   /** Optional wall-clock cap for the cycle body; env/default applies when omitted. */
   cycleTimeoutMs: z.number().positive().optional(),
-});
+}).passthrough();
 
 /** Declared output I/O — the tick result (a fired cycle or the self-gate that withheld it). */
 const result = z.object({

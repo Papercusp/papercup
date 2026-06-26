@@ -79,3 +79,24 @@ test('running the blueprint program drives the self-gated tick to a clean done (
   assert.equal(r?.fired, false); // cadence withheld → no cycle
   assert.equal(cycleRan, 0); // the (expensive) cycle never ran
 });
+
+test('running the blueprint program preserves the scout model override payload', async () => {
+  let seenPayload: Record<string, unknown> | null = null;
+  setScoutCycleDeps({
+    runCycle: async () => ({ provenance: [] }),
+    buildDeps: (depsCtx, runCycle) => {
+      seenPayload = depsCtx.payloadTemplate;
+      return withholdBuilder(depsCtx, runCycle);
+    },
+  });
+  const { blueprint } = loadBuiltinBlueprint('scout');
+  const { caps } = makeFakeCaps();
+  const ctx = makeCtx(caps, { workspaceId: 'ws-1', harnessSlug: 'pot' });
+  const payload = {
+    cadence: { minIntervalSec: 3600 },
+    scout: { models: { ideator: 'chatgpt:5.5' } },
+  };
+  const out = await runProgramCore({ blueprint, payload, ctx, runOp: inlineRunOp });
+  assert.equal(out.outcome, 'done');
+  assert.deepEqual(seenPayload?.scout, payload.scout);
+});

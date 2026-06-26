@@ -112,6 +112,13 @@ const ABSORB_STALLS_ON = process.env.PAPERCUSP_GATEWAY_ABSORB_STALLS !== '0';
  *  makes ≈1 upstream call instead of ~2.4. The few-accounts-maxed→rotate-to-healthy path is preserved (this
  *  fires ONLY when <half the pool has rotation budget). Kill-switch: PAPERCUSP_GATEWAY_SUPPRESS_BAREBURST_ROTATE=0. */
 const SUPPRESS_BAREBURST_ROTATE_ON = process.env.PAPERCUSP_GATEWAY_SUPPRESS_BAREBURST_ROTATE !== '0';
+/** WI-673: fleet-wide bare-burst can start as a rapid cross-account CLUSTER before ≥half the
+ *  pool has been marked out of rotation. In that ramp phase the old G1 check still rotated the
+ *  first few bare 429s (A→B→C...), creating the retry fan-out observed live at only ~3.5
+ *  upstream calls/min/account. Treat a short-window cluster across multiple distinct accounts
+ *  as the same shared edge throttle and suppress rotate-retry early. */
+const BAREBURST_CLUSTER_WINDOW_MS = Number(process.env.PAPERCUSP_GATEWAY_BAREBURST_CLUSTER_WINDOW_MS) || 2_000;
+const BAREBURST_CLUSTER_MIN_ACCOUNTS = Number(process.env.PAPERCUSP_GATEWAY_BAREBURST_CLUSTER_MIN_ACCOUNTS) || 2;
 /** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
  *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
  *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the
@@ -449,6 +456,9 @@ export interface GatewayDeps {
   /** Wall-clock ceiling on internal retrying before a request sheds + frees its slot (wedge-prevention
    *  ladder). Default 60s (`INTERNAL_RETRY_DEADLINE_MS`); tests inject a tiny value to exercise the shed. */
   internalRetryDeadlineMs?: number;
+  /** Short bare-429 account pause. Production uses 15s; deterministic rigs inject a smaller value so
+   *  retry-amplification tests don't spend real wall-clock time waiting out the production penalty. */
+  bare429FailoverBackoffMs?: number;
   /** B-HOT-2: live pool config (version + account ids) for `GET /admin/config`. Absent ⇒ the endpoint
    *  reports `hotReload:false`. */
   adminConfig?: () => { version: number; accounts: string[] };
@@ -831,6 +841,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const requestAbsorbMs = deps.requestAbsorbMs ?? DEFAULT_REQUEST_ABSORB_MS;
   const interactiveAbsorbMs = deps.interactiveAbsorbMs ?? INTERACTIVE_ABSORB_MS;
   const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
+  const bare429FailoverBackoffMs = deps.bare429FailoverBackoffMs ?? BARE_429_FAILOVER_BACKOFF_MS;
   const credential401DeadThreshold = deps.credential401DeadThreshold ?? DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   // Default OFF: the LAUNCH layer (startGatewayService) opts production in from the env (like priorityTiers).
@@ -960,6 +971,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // stays correct under a shared-governor test pool, and counts the CURRENT (just-bursted) account as still
   // available (its onExhausted hasn't run yet) — so a LONE account bursting in an otherwise-healthy pool (the
   // few-maxed→rotate-to-healthy case) is never mistaken for a fleet-wide storm.
+  const recentBareBurstByAccount = new Map<string, number>();
+  const noteRecentBareBurstCluster = (accountId: string): boolean => {
+    if (!SUPPRESS_BAREBURST_ROTATE_ON || !pool.size) return false;
+    const total = pool.size();
+    if (total < 2) return false; // single-account pool: nothing to rotate to anyway
+    const now = Date.now();
+    const cutoff = now - BAREBURST_CLUSTER_WINDOW_MS;
+    for (const [id, ts] of recentBareBurstByAccount) {
+      if (ts < cutoff) recentBareBurstByAccount.delete(id);
+    }
+    recentBareBurstByAccount.set(accountId, now);
+    // Quarter-pool is the ramp detector (8 accounts ⇒ 2 accounts); min 2 avoids mistaking one
+    // account's lone transient for a fleet-wide edge throttle.
+    const threshold = Math.min(total, Math.max(BAREBURST_CLUSTER_MIN_ACCOUNTS, Math.ceil(total / 4)));
+    return recentBareBurstByAccount.size >= threshold;
+  };
+
   const isFleetWideBareBurst = (): boolean => {
     if (!SUPPRESS_BAREBURST_ROTATE_ON || !pool.healthyCount || !pool.size) return false;
     const total = pool.size();
@@ -1762,7 +1790,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         } catch (e) {
           upstreamErrors++;
           log('error', `inference-gateway: token refresh failed on '${active.accountId}': ${(e as Error).message} — penalizing account + 503`);
-          gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
+          gov.penalize({ retryAfterMs: bare429FailoverBackoffMs, resetAt: Date.now() + bare429FailoverBackoffMs });
           if (!res.headersSent) {
             beeTokenStall++;
             // P-002 autowake-coverage (2026-06-22): record a stall so the stall-waker re-wakes an IDENTIFIED bee
@@ -2089,15 +2117,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // rateLimited:true — this is a per-minute/burst RATE 429 → AIMD-decrease this account's learned rpm
               // (predict→wait→learn→retry, 2026-06-22) so decideRate paces future requests under its real rate.
               gov.penalize({ ...reset, rateLimited: true });
-              exhaustResetAt = reset.resetAt ?? Date.now() + Math.min(reset.retryAfterMs ?? BARE_429_FAILOVER_BACKOFF_MS, 5 * 60 * 1000);
+              exhaustResetAt = reset.resetAt ?? Date.now() + Math.min(reset.retryAfterMs ?? bare429FailoverBackoffMs, 5 * 60 * 1000);
             } else if (bare429) {
-              gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS, rateLimited: true });
-              exhaustResetAt = Date.now() + BARE_429_FAILOVER_BACKOFF_MS;
+              gov.penalize({ retryAfterMs: bare429FailoverBackoffMs, resetAt: Date.now() + bare429FailoverBackoffMs, rateLimited: true });
+              exhaustResetAt = Date.now() + bare429FailoverBackoffMs;
               // G1 (WI-649): a bare-burst is a TRANSIENT throttle (capacity exists) — distinct from the usage-cap
               // wall handled above. If ≥half the pool is already out of rotation, rotating onto "another" account
               // finds no capacity and just sustains the storm → suppress the rotate-retry so this request falls
               // through to the bounded transient-wait / absorb / fail-fast-shed (≈1 upstream call, not ~2.4).
-              suppressBareBurstRotate = isFleetWideBareBurst();
+              suppressBareBurstRotate = isFleetWideBareBurst() || noteRecentBareBurstCluster(active.accountId);
             } else {
               exhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000; // unifiedRejected: bounded pause already set
             }
@@ -2259,6 +2287,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (!proceed && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
             clearStall();
             peekedRest?.destroy();
+            // We consumed the error body's head for classification. If absorb re-acquire times out below,
+            // the fallback forward path must not try to pipe a stream we deliberately destroyed here.
+            peekedRest = null;
             release(); // free the slot NOW — the wait below admits nothing until an account has serviceable budget
             release = () => {}; // guard the `finally` against a double-release if the re-acquire below fails
             // A 529 does NOT rate-pause the account (server overload, not per-account budget), so the re-acquire
@@ -2508,7 +2539,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       } catch (e) {
         codexUpstreamErrors++;
         log('error', `inference-gateway: Codex token read failed on '${active.accountId}': ${(e as Error).message}`);
-        if (canRetry && rotateCodex(Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) continue;
+        if (canRetry && rotateCodex(Date.now() + bare429FailoverBackoffMs)) continue;
         if (!res.headersSent) {
           sendJson(
             res,
@@ -2560,7 +2591,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         codexUpstreamErrors++;
         active.invalidateToken?.();
         // Transport failure (dead/hanging proxy or network) → route around to another Codex account + retry.
-        if (canRetry && rotateCodex(Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) continue;
+        if (canRetry && rotateCodex(Date.now() + bare429FailoverBackoffMs)) continue;
         if (!res.headersSent) {
           sendJson(
             res,
@@ -2579,7 +2610,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         codexUpstream429++;
         if (canRetry) {
           const reset = parseRateReset(headersToObject(up.headers));
-          if (rotateCodex(reset.resetAt ?? Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) {
+          if (rotateCodex(reset.resetAt ?? Date.now() + bare429FailoverBackoffMs)) {
             detachDownstreamAbort();
             clearStall();
             try { await up.body?.cancel(); } catch { /* drain the throttle body before retrying */ }

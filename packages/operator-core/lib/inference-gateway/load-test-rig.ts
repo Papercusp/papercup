@@ -127,6 +127,9 @@ export interface RigOptions {
    *  drains/relents in a few seconds instead of sitting the full budget — keeps the vitest run fast and
    *  off the load-fragile real-timer cliff. Raise it to model a longer storm. */
   requestAbsorbMs?: number;
+  /** Test-only override for the production 15s bare-429 penalty; lower values make second-driver
+   *  amplification tests fast while preserving the same retry/rotation state transitions. */
+  bare429FailoverBackoffMs?: number;
   /** Pin concurrency by setting the AIMD floor = cap, so the OFF↔ON comparison isolates the SMOOTHING
    *  variable (AIMD shrinking would otherwise also reduce the burst). Default true. Pass false to let
    *  AIMD adapt (e.g. to measure AIMD under-reaction for P-002). */
@@ -196,6 +199,7 @@ export async function runGatewayBurstRig(opts: RigOptions = {}): Promise<RigResu
     selfHeal: { enabled: false },
     maxQueueWaitMs: opts.maxQueueWaitMs ?? 8000,
     requestAbsorbMs: opts.requestAbsorbMs ?? 4000,
+    ...(opts.bare429FailoverBackoffMs !== undefined ? { bare429FailoverBackoffMs: opts.bare429FailoverBackoffMs } : {}),
     ...(pin ? { aimd: { floor: concurrency } } : {}),
     log: () => {},
   });
