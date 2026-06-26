@@ -73,6 +73,14 @@ vi.mock('../../console-launcher', () => ({
   })),
 }));
 vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
+// launch-wakeability: the route arms the standing inbox-wake at launch (right after
+// recordAdvSession) so the session is parked/wakeable before its first turn. Mock it
+// to keep the unit test hermetic (the real one pulls the await engine + PG) and to
+// assert it's armed for the minted sid.
+const armInboxWakeMock = vi.fn(async () => ({ awaitId: 1, eventKey: 'coord:inbox-wake:x', handleNote: 'n' }));
+vi.mock('../../events/await/inbox-wake-arm', () => ({
+  armInboxWake: (...a: unknown[]) => armInboxWakeMock(...(a as [any])),
+}));
 vi.mock('../../role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
 }));
@@ -245,6 +253,28 @@ describe('bootstrap-su', () => {
     // on the identical dir the launch wrote to.
     expect(writeInteractiveClaudeConfigMock).toHaveBeenCalledWith(expect.objectContaining({ sid }));
     expect(json.envelopeEnv.CLAUDE_CONFIG_DIR).toBe(`/fake/.papercusp/session-claude/${sid}`);
+  });
+
+  it('launch-wakeability: arms the standing inbox-wake at launch for the minted sid (parked before first turn)', async () => {
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' })).json();
+    const sid = json.envelopeEnv.PAPERCUSP_SID;
+    expect(sid).toMatch(/^su-/);
+    // The arm is the SAME owner id recorded as coord_owner_id, so the recorded-session
+    // roster row (visible at launch) flips recorded → parked/wakeable immediately —
+    // no dependence on the detached, lossy SessionStart lifecycle hook.
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: sid }));
+    expect(armInboxWakeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: sid, workspaceId: 'default' }),
+    );
+  });
+
+  it('launch-wakeability: an arm failure is best-effort and never fails the launch', async () => {
+    armInboxWakeMock.mockRejectedValueOnce(new Error('pg down'));
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.envelopeEnv.PAPERCUSP_SID).toMatch(/^su-/);
   });
 
   it('EI-155: omp/codex get NO CLAUDE_CONFIG_DIR (codex isolates via CODEX_HOME; omp by its own store)', async () => {

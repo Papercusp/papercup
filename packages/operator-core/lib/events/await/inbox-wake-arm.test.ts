@@ -19,7 +19,30 @@ vi.mock('./store', () => ({
 }));
 vi.mock('./engine', () => ({ startAwaitSweeper: vi.fn() }));
 
-import { armInboxWake, cancelInboxWake } from './inbox-wake-arm';
+// The self-heal helper probes PG (getOrgPg().sql). hoist a routable tagged-template
+// mock: queries naming `event_awaits` return the "already armed?" rows, `adv_sessions`
+// the "live tracked session?" rows. Tests set h.state before calling.
+const h = vi.hoisted(() => {
+  const state = { armed: [] as unknown[], live: [] as unknown[], fail: false };
+  const sql = (strings: TemplateStringsArray) => {
+    if (state.fail) return Promise.reject(new Error('pg down'));
+    const text = strings.join(' ');
+    if (text.includes('event_awaits')) return Promise.resolve(state.armed);
+    if (text.includes('adv_sessions')) return Promise.resolve(state.live);
+    return Promise.resolve([] as unknown[]);
+  };
+  return { state, sql };
+});
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
+
+import {
+  armInboxWake,
+  cancelInboxWake,
+  ensureInboxWakeArmedForActiveSession,
+} from './inbox-wake-arm';
 import { captureWakeHandleForOwner } from './handle';
 import { upsertInboxWakeAwait, cancelInboxWakeAwaits } from './store';
 import { startAwaitSweeper } from './engine';
@@ -95,5 +118,59 @@ describe('cancelInboxWake', () => {
     const n = await cancelInboxWake('su-bee', 'ws-7');
     expect(cancelInboxWakeAwaits).toHaveBeenCalledWith('su-bee', 'ws-7');
     expect(n).toBe(2);
+  });
+});
+
+describe('ensureInboxWakeArmedForActiveSession (self-heal)', () => {
+  beforeEach(() => {
+    h.state.armed = [];
+    h.state.live = [];
+    h.state.fail = false;
+  });
+
+  it('arms a LIVE tracked session that has NO inbox-wake yet (the lost-SessionStart-arm case)', async () => {
+    h.state.armed = []; // no live await
+    h.state.live = [{ one: 1 }]; // live adv_sessions row
+    const armed = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-1', workspaceId: 'ws-1' });
+    expect(armed).toBe(true);
+    // armInboxWake landed → the standing row was upserted on the right key.
+    expect(upsertInboxWakeAwait).toHaveBeenCalledWith(
+      expect.objectContaining({ subscriberId: 'su-heal-1', eventKey: inboxWakeKey('su-heal-1') }),
+    );
+  });
+
+  it('NO-OP when the session is already wakeable (a live await exists)', async () => {
+    h.state.armed = [{ one: 1 }]; // already armed
+    h.state.live = [{ one: 1 }];
+    const armed = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-2' });
+    expect(armed).toBe(false);
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+  });
+
+  it('NO-OP when there is no live tracked session (never arms a random/ended owner)', async () => {
+    h.state.armed = [];
+    h.state.live = []; // no live adv_sessions row
+    const armed = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-3' });
+    expect(armed).toBe(false);
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+  });
+
+  it('throttles: a second call for the same owner within the window does not re-probe/re-arm', async () => {
+    h.state.armed = [];
+    h.state.live = [{ one: 1 }];
+    const first = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-4' });
+    expect(first).toBe(true);
+    vi.clearAllMocks();
+    const second = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-4' });
+    expect(second).toBe(false); // throttled
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+  });
+
+  it('best-effort: a probe failure is swallowed (returns false, never throws)', async () => {
+    h.state.fail = true; // the PG probe rejects
+    await expect(
+      ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-5' }),
+    ).resolves.toBe(false);
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
   });
 });

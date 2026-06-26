@@ -25,7 +25,11 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { recordActivity, type TodoItem, type ToolInput } from '@papercusp/activity-bridge';
 import { createPgTelemetryStore } from '../../activity-pg-store';
-import { armInboxWake, cancelInboxWake } from '../../events/await/inbox-wake-arm';
+import {
+  armInboxWake,
+  cancelInboxWake,
+  ensureInboxWakeArmedForActiveSession,
+} from '../../events/await/inbox-wake-arm';
 import { writeWatermark } from '../coordination/watermarks';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
@@ -142,6 +146,19 @@ export default defineTool({
           `[activity:report] inbox-wake ${phase} for ${owner} failed: ${e instanceof Error ? e.message : e}`,
         );
       }
+    } else if (args.kind !== 'lifecycle') {
+      // SELF-HEAL (launch-wakeability): a genuine non-lifecycle report is a native
+      // tool call from a running session. If that session's SessionStart arm was lost
+      // (the detached, fail-open lifecycle hook POST can drop at launch — leaving a
+      // live agent un-wakeable for its whole life), re-arm so it becomes a dispatch
+      // target from its first tool call onward. Throttled + best-effort + scoped to a
+      // live tracked adv_sessions row (see ensureInboxWakeArmedForActiveSession). Gated
+      // on kind!=='lifecycle' so an UNRECOGNIZED lifecycle summary stays a no-op and a
+      // clean SessionEnd (cancel, above) is never resurrected.
+      await ensureInboxWakeArmedForActiveSession({
+        ownerId: owner,
+        workspaceId: ctx.principal?.workspaceId ?? undefined,
+      }).catch(() => {});
     }
 
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...result }) }] };

@@ -18,6 +18,7 @@
  * makes an agent wakeable.
  */
 
+import { getOrgPg } from '@papercusp/db-org';
 import { captureWakeHandleForOwner } from './handle';
 import { upsertInboxWakeAwait, cancelInboxWakeAwaits } from './store';
 import { startAwaitSweeper } from './engine';
@@ -75,4 +76,74 @@ export async function armInboxWake(input: {
  *  a deliberately-ended session is not a wake target). Returns rows cancelled. */
 export async function cancelInboxWake(ownerId: string, workspaceId?: string): Promise<number> {
   return cancelInboxWakeAwaits(ownerId, workspaceId);
+}
+
+/** In-memory per-owner throttle for the activity-hot-path self-heal below. The
+ *  arm is normally done once at launch (bootstrap-su) + once at SessionStart, so
+ *  the self-heal's DB probe should run at most ~once per owner per window, not on
+ *  every tool call. Bounded; it is only a throttle, so eviction just re-probes. */
+const ensuredArmedAt = new Map<string, number>();
+const ENSURE_ARMED_TTL_MS = 120_000;
+
+/**
+ * SELF-HEAL safety net (launch-wakeability): ensure a LIVE tracked session has its
+ * standing inbox-wake armed even if the arm was never recorded — the SessionStart
+ * lifecycle hook POST is detached + fail-open + no-retry, so when it loses the race
+ * at launch a live agent stays un-wakeable for its WHOLE life (observed: a live
+ * adv_sessions row with 500+ tool calls and no await). Driven off `activity:report`
+ * (every native tool call), so the FIRST tool call after a lost arm re-arms it.
+ *
+ * Cheap on the hot path by construction:
+ *   - an in-memory per-owner throttle bounds the DB probe to ~once / ENSURE_ARMED_TTL_MS;
+ *   - it arms ONLY an owner that BOTH has no live inbox-wake await AND has a live
+ *     `adv_sessions` row (a tracked psu/console session) — never a bee (no adv row),
+ *     a just-cancelled end (no live row after SessionEnd), or a random/ended id.
+ *
+ * Idempotent (armInboxWake upserts the one standing row) + best-effort: any failure
+ * is swallowed and simply retried after the throttle window — it must never break
+ * activity:report. Returns true iff it armed on this call.
+ */
+export async function ensureInboxWakeArmedForActiveSession(input: {
+  ownerId: string;
+  workspaceId?: string;
+}): Promise<boolean> {
+  const ownerId = input.ownerId;
+  if (!ownerId) return false;
+  const now = Date.now();
+  const last = ensuredArmedAt.get(ownerId);
+  if (last != null && now - last < ENSURE_ARMED_TTL_MS) return false; // throttled
+  ensuredArmedAt.set(ownerId, now);
+  if (ensuredArmedAt.size > 1024) {
+    // Bounded: drop the oldest insertions (Map preserves insertion order) down to
+    // half. A dropped owner just re-probes on its next report — harmless.
+    for (const k of ensuredArmedAt.keys()) {
+      ensuredArmedAt.delete(k);
+      if (ensuredArmedAt.size <= 512) break;
+    }
+  }
+  try {
+    const { sql } = getOrgPg();
+    const key = inboxWakeKey(ownerId);
+    const armed = await sql<{ one: number }[]>`
+      SELECT 1 AS one
+        FROM harness_shared.event_awaits
+       WHERE subscriber_id = ${ownerId}
+         AND event_key = ${key}
+         AND fired_at IS NULL AND cancelled_at IS NULL
+         AND (expires_ts IS NULL OR expires_ts > now())
+       LIMIT 1`;
+    if (armed.length > 0) return false; // already wakeable — nothing to heal
+    const live = await sql<{ one: number }[]>`
+      SELECT 1 AS one
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId} AND ended_at IS NULL
+       LIMIT 1`;
+    if (live.length === 0) return false; // not a live tracked session — don't arm
+    await armInboxWake({ ownerId, workspaceId: input.workspaceId });
+    return true;
+  } catch {
+    // Best-effort: a self-heal miss is harmless (it retries after the throttle
+    // window). The throttle entry stands so a persistent fault can't hammer PG.
+    return false;
+  }
 }

@@ -498,6 +498,22 @@ const post = defineTool({
       sessionId: nativeSessionId,
     });
 
+    // launch-wakeability (turn-lifecycle-control): arm the standing inbox-wake NOW —
+    // the reliable, synchronous, PRE-FIRST-TURN launch moment — so a coordinator sees
+    // this session as `parked`/wakeable the instant bootstrap returns, instead of
+    // waiting on the detached, fail-open SessionStart lifecycle hook (whose lost POST
+    // otherwise leaves a freshly-launched agent visible-but-undispatchable — the "idle
+    // su peers I can't wake" gap). Composes with the recorded-session roster leg: the
+    // adv_sessions row makes it visible, this arm flips `recorded` → `parked`. Idempotent
+    // (the hook's later re-arm refreshes the same standing row) + best-effort (a launch
+    // must never fail on an arm hiccup).
+    try {
+      const { armInboxWake } = await import('../../../events/await/inbox-wake-arm');
+      await armInboxWake({ ownerId: sid, workspaceId: workspace });
+    } catch (e: any) {
+      process.stderr.write(`[bootstrap-su] inbox-wake arm failed (non-fatal): ${e?.message}\n`);
+    }
+
     const sessionKey = sessionId ?? `t-${randomUUID()}`;
 
     // psu-account-chooser: resolve before writing Codex launch artifacts so a Codex
