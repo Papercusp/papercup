@@ -19,7 +19,11 @@
  */
 import { NON_WAKEABLE } from './inbox-wake';
 import { isSelectorOrWildcard } from './recipient-resolve';
-import { fetchWakeability, deriveSessionState, type SessionState } from './presence-wakeability';
+// TYPE-ONLY import (erased): keep this module import-SAFE. The value side
+// (fetchWakeability / deriveSessionState) pulls the presence→DB chain, so it is
+// lazy-imported inside the function — a consumer (or its unit test) can import this
+// module without loading PG at module-init.
+import type { SessionState } from './presence-wakeability';
 
 export interface MissedRecipientLiveness {
   ownerId: string;
@@ -49,6 +53,8 @@ export async function describeMissedRecipients(
   );
   if (ids.length === 0) return [];
   try {
+    // Lazy value-import (keeps this module import-safe — see the type-only import above).
+    const { fetchWakeability, deriveSessionState } = await import('./presence-wakeability');
     const wake = await fetchWakeability(ids);
     return ids.map((ownerId) => {
       const w = wake.get(ownerId);

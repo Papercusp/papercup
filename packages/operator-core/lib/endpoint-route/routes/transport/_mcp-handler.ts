@@ -1487,11 +1487,18 @@ const handler = createMcpHandler(
                       dispatchSpawnCtx.isSuperuser === true ||
                       CODE_RUN_CAPABLE_ROLES.has(dispatchSpawnCtx.role),
                   });
-                  if (hint && (await getFlag(FLAGS.CODE_RUN_BATCH_NUDGE, 'system'))) {
-                    result.content = [
-                      ...result.content,
-                      { type: 'text' as const, text: `\n[batch-hint] ${hint}` },
-                    ];
+                  // Gate PER KIND: the same-tool trigger under CODE_RUN_BATCH_NUDGE, the newer
+                  // fan-out trigger under its own CODE_RUN_FANOUT_NUDGE so it is an independent A/B
+                  // knob. getFlag is consulted ONLY when a hint actually fires (rare).
+                  if (hint) {
+                    const nudgeFlag =
+                      hint.kind === 'fanout' ? FLAGS.CODE_RUN_FANOUT_NUDGE : FLAGS.CODE_RUN_BATCH_NUDGE;
+                    if (await getFlag(nudgeFlag, 'system')) {
+                      result.content = [
+                        ...result.content,
+                        { type: 'text' as const, text: `\n[batch-hint] ${hint.text}` },
+                      ];
+                    }
                   }
                 } catch {
                   // nudge is purely advisory; a failure must never change the tool outcome.

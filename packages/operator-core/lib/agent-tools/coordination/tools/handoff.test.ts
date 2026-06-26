@@ -141,6 +141,13 @@ describe('coord:handoff — wake-on-open (P-003)', () => {
     expect(wake.recipient_absent).toBeUndefined();
   });
 
+  it('FF#2: an opened handoff is PENDING, not done — accepted:false / pending_acceptance:true even when it woke someone', async () => {
+    const body = out(await handoff.handler(parse(handoff, openArgs()), ctx)); // woken:1
+    expect(body.ok).toBe(true);
+    expect(body.accepted).toBe(false);
+    expect(body.pending_acceptance).toBe(true);
+  });
+
   it('the ACCEPT path still emits handoff:accepted:<id> and does not run wake-on-open', async () => {
     // First open a handoff so accept has a target.
     const opened = out(await handoff.handler(parse(handoff, openArgs()), ctx));

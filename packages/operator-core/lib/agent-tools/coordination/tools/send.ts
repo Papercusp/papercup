@@ -62,7 +62,7 @@ const wakeArg = z
   .union([z.boolean(), z.enum(['required', 'optimistic'])])
   .optional()
   .describe(
-    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when a durable backstop re-dispatches a miss (e.g. the Queen survey); its miss is SILENT — you still get woken:0 but NO recipient_absent, so do NOT use it to hand work to a specific agent with no backstop (you will not be told nobody picked it up — use 'required' and verify woken≥1, or coord:handoff). Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when a durable backstop re-dispatches a miss (e.g. the Queen survey) — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify woken≥1) or coord:handoff. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
   );
 
 const wakeOnReplyArg = z
@@ -93,6 +93,14 @@ const summaryArg = z
   })
   .min(1, '`summary` must be a non-empty one-line headline.');
 
+const backstopArg = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    "FF#1: name the DURABLE BACKSTOP that re-dispatches a wake:'optimistic' miss (e.g. 'queen-survey re-dispatches'). Optimistic stays silent-on-miss ONLY when you declare one; WITHOUT a backstop an optimistic miss is reported as loudly as a required miss (recipient_absent). Do NOT pass a fake backstop to silence the warning — that re-creates the dead-drop trap. No effect on wake:'required' / inject.",
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -103,6 +111,7 @@ const itemSpec = z.object({
   wake: wakeArg,
   wakeOnReply: wakeOnReplyArg,
   endTurn: endTurnArg,
+  backstop: backstopArg,
 });
 
 /**
@@ -262,6 +271,9 @@ async function sendOne(
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
          *  dispatch black-holes until they are re-spawned. A LOUD miss the sender must handle. */
         recipient_dead?: string[];
+        /** FF#3: each missed addressee's FRESH session state (ended/parked/…) at the
+         *  transfer moment — the un-ignorable "this agent ended" fact in the result. */
+        recipient_liveness?: MissedRecipientLiveness[];
         note?: string;
       }
     | undefined;
@@ -272,50 +284,66 @@ async function sendOne(
     });
     wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
     if (fan.staged > 0) wake.staged = fan.staged;
-    // P-002/P-005: a REQUIRED directed wake that reached wakeable addressees
-    // (`targets` already excludes '*'/'human') yet woke nobody AND deferred
-    // nobody (Pause/manual staging) is a loud miss — recipient_absent, replacing
-    // the old silent woken:0 warning. OPTIMISTIC misses stay silent (P-004: the
-    // inbox row persisted regardless; a durable backstop picks it up).
-    if (wakeMode === 'required' && fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
-      wake.recipient_absent = true;
-      // WI-574 (dispatch-black-hole fix): a required wake that woke nobody is NOT necessarily
-      // "seen on their next turn" — if the recipient has NO live session watching its inbox-wake
-      // key, it is genuinely dead and the inject black-holes (a dead process has no next turn).
-      // Classify the missed targets (same non-firing liveness probe the no-wake path uses) and
-      // report the dead ones LOUDLY + truthfully instead of the old misleading "next turn" note.
-      let dead: string[] = [];
+    const missed = fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0;
+    if (missed) {
+      // FF#1 — the forcing function: a 'required' miss is ALWAYS loud; an 'optimistic'
+      // miss is loud UNLESS the caller consciously declared a durable backstop
+      // (`backstop:'<what re-dispatches>'`). Silent-on-miss must be CLAIMED, never the
+      // default — the incident was an optimistic transfer to a dead agent whose woken:0
+      // was read as "fine, the backstop will get it" when there was no backstop.
+      const loud = wakeMode === 'required' || !msg.backstop;
+      // FF#3: force each missed addressee's FRESH session state into the result so a
+      // transfer to a long-dead agent reads `ended`, not a silent woken:0. Miss-path only.
       try {
-        const report = await reportIdleRecipients(fan.targets, {
-          workspaceId: identity.workspaceId ?? undefined,
-        });
-        dead = report.idle;
+        const liveness = await describeMissedRecipients(fan.targets);
+        if (liveness.length > 0) wake.recipient_liveness = liveness;
       } catch {
-        /* fail-soft: keep the generic miss note below */
+        /* fail-soft: liveness enrichment is best-effort */
       }
-      if (dead.length > 0) {
-        wake.recipient_dead = dead;
-        wake.note =
-          `required wake MISSED — NO live session is watching the inbox of: ${dead.join(', ')}. ` +
-          'These agents are not running, so the message will NOT be seen on any "next turn" — the ' +
-          'dispatch black-holes until they are re-spawned/resumed. Do NOT assume it landed: re-dispatch ' +
-          'to a LIVE agent (coord:presence → wakeable:true) or respawn these via the resume path.';
+      if (loud) {
+        wake.recipient_absent = true;
+        // WI-574 (dispatch-black-hole fix): a miss is NOT necessarily "seen on their next
+        // turn" — if the recipient has NO live session watching its inbox-wake key it is
+        // genuinely dead and the inject black-holes. Classify the dead ones (same non-firing
+        // probe the no-wake path uses) and report them LOUDLY + truthfully.
+        let dead: string[] = [];
+        try {
+          const report = await reportIdleRecipients(fan.targets, {
+            workspaceId: identity.workspaceId ?? undefined,
+          });
+          dead = report.idle;
+        } catch {
+          /* fail-soft: keep the generic miss note below */
+        }
+        const optimisticNoBackstop = wakeMode === 'optimistic';
+        if (dead.length > 0) {
+          wake.recipient_dead = dead;
+          wake.note =
+            (optimisticNoBackstop
+              ? `optimistic wake with NO declared backstop MISSED — `
+              : `required wake MISSED — `) +
+            `NO live session is watching the inbox of: ${dead.join(', ')}. ` +
+            'These agents are not running, so the message will NOT be seen on any "next turn" — the ' +
+            'dispatch black-holes until they are re-spawned/resumed. Do NOT assume it landed: re-dispatch ' +
+            'to a LIVE agent (coord:presence → wakeable:true), use coord:handoff, or — only if something ' +
+            "truly re-dispatches — pass backstop:'<what re-dispatches>'.";
+        } else {
+          wake.note =
+            (optimisticNoBackstop
+              ? `optimistic wake with NO declared backstop reached no awake/watching session for: `
+              : `required wake reached no awake/watching session for: `) +
+            `${fan.targets.join(', ')} — the message was injected; a live-but-paused recipient sees it ` +
+            'next turn, but none was re-invoked now. Confirm the recipient is actually running ' +
+            '(coord:presence) before assuming pickup.';
+        }
       } else {
+        // OPTIMISTIC + a declared backstop → silence is consciously claimed. Soft note that
+        // NAMES the backstop (no recipient_absent), so it's auditable but not a loud miss.
         wake.note =
-          `required wake reached no awake/watching session for: ${fan.targets.join(', ')} — the message ` +
-          'was injected; a live-but-paused recipient sees it next turn, but none was re-invoked now. ' +
-          'Confirm the recipient is actually running (coord:presence) before assuming pickup.';
+          `optimistic wake reached no live session (woken:0) — relying on the declared backstop: ` +
+          `"${msg.backstop}". If that backstop will NOT actually re-dispatch, this was NOT picked up — ` +
+          "use wake:'required' or coord:handoff instead.";
       }
-    } else if (wakeMode === 'optimistic' && fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
-      // Optimistic misses are intentionally NOT escalated to recipient_absent (a durable
-      // backstop is assumed). Still surface a concise, NON-LOUD note so a transfer mistakenly
-      // sent optimistic to a now-dead agent isn't silently swallowed — the incident that
-      // motivated this (a deploy handoff that woke nobody and got read as "fine, the backstop
-      // will get it" when there was no backstop). Not a recipient_absent: the inbox row persisted.
-      wake.note =
-        `optimistic wake reached no live session for: ${fan.targets.join(', ')} (woken:0) — SILENT by design. ` +
-        'Only safe if a durable backstop (e.g. the Queen survey) re-dispatches. If this was a one-off transfer ' +
-        "to these agents, it was NOT picked up — use wake:'required' (or coord:handoff) and verify pickup.";
     }
   }
 
@@ -381,6 +409,7 @@ export default defineTool({
       wake: wakeArg,
       wakeOnReply: wakeOnReplyArg,
       endTurn: endTurnArg,
+      backstop: backstopArg,
       items: z
         .array(itemSpec)
         .min(1)
@@ -413,6 +442,7 @@ export default defineTool({
             wake: args.wake,
             wakeOnReply: args.wakeOnReply,
             endTurn: args.endTurn,
+            backstop: args.backstop,
           },
         ];
     const env = await runBulk(list, (msg) => sendOne(msg, identity, harnessSlug), {

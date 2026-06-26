@@ -62,6 +62,7 @@ vi.mock('../rate-limit-config', () => ({
 vi.mock('./spawn-reclaim', () => ({
   heartbeatSpawns: vi.fn(async () => {}),
   reclaimOrphanedSpawns: vi.fn(async () => ({ reclaimed: 0, spawnIds: [], workspaces: [] })),
+  recordSpawnPid: vi.fn(async () => {}),
   SPAWN_HEARTBEAT_INTERVAL_MS: 60_000,
   // operator-spawn re-exports this from spawn-reclaim (threshold centralised there);
   // selectWedgeReapCandidates uses it as a default param, so the mock must expose it.
@@ -82,7 +83,7 @@ import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
 import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
-import { reclaimOrphanedSpawns } from './spawn-reclaim';
+import { reclaimOrphanedSpawns, recordSpawnPid } from './spawn-reclaim';
 import {
   spawnAgentInHarness,
   abortLocalSpawn,
@@ -203,6 +204,19 @@ describe('spawnAgentInHarness — happy path', () => {
       exitCode: 0,
       outputTail: 'done!',
     }));
+  });
+
+  it('stamps the supervisor pid before launch so boot reconcile can own the admission-to-child window', async () => {
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    expect(res.ok).toBe(true);
+
+    expect(recordSpawnPid).toHaveBeenCalledWith(expect.anything(), res.spawnId, process.pid);
+    expect(vi.mocked(recordSpawn).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(recordSpawnPid).mock.invocationCallOrder[0],
+    );
+    expect(vi.mocked(recordSpawnPid).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(spawnInvokeOnce).mock.invocationCallOrder[0],
+    );
   });
 
   it('a non-zero child exit finishes the row failed with the stderr tail', async () => {

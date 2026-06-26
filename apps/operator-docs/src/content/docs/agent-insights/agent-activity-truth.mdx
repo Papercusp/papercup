@@ -12,6 +12,7 @@ documents:
   - packages/operator-core/lib/agent-tools/fleet/assignments.ts
   - packages/operator-core/lib/agent-tools/coordination/tools/send.ts
   - packages/operator-core/lib/agent-tools/coordination/tools/handoff.ts
+  - packages/operator-core/lib/agent-tools/coordination/recipient-liveness.ts
   - packages/operator-core/lib/dbos/in-process-periodic.ts
   - packages/operator-core/lib/harness/improvements/watchdog.ts
   - libs/papercusp/libs/db/sql/357-harness-features-last-progress-at.sql
@@ -138,7 +139,29 @@ it wakes nobody. `coord:send` is for messages; it has no pickup lifecycle. If yo
 `coord:send` to hand off, use `wake:'required'` and confirm `woken ≥ 1` — never
 `optimistic` to a ghost.
 
+### The forcing functions (so it can't just be ignored next time)
+
+Guidance alone failed once (the signals existed and were rationalized away), so the
+miss is now structurally hard to swallow:
+
+- **FF#1 — `optimistic` silence must be CLAIMED.** `coord:send wake:'optimistic'` is
+  silent-on-miss ONLY when you pass `backstop:'<what re-dispatches>'`. WITHOUT a
+  declared backstop, an optimistic miss is reported as loudly as a required miss
+  (`recipient_absent`). You can no longer silently hand work to a dead agent by
+  reaching for the quiet mode.
+- **FF#2 — a handoff is PENDING, not done.** `coord:handoff` open returns
+  `accepted:false` / `pending_acceptance:true`, classifies dead recipients
+  (`recipient_dead`), and is closed only by an acceptance (or the ~30m re-ping / 12h
+  expiry sweep). A successful OPEN is never a successful TRANSFER.
+- **FF#3 — the fresh liveness is forced into the result.** On any miss, both tools
+  attach `recipient_liveness: [{ ownerId, sessionState, wakeable }]` — the missed
+  addressee's CURRENT state, freshly read at the transfer moment
+  (`recipient-liveness.ts` → `fetchWakeability`/`deriveSessionState`). A transfer to a
+  long-ended agent reads `sessionState:'ended'` right in the answer, not a silent
+  `woken:0`.
+
 Rule of thumb: **after any handoff/wake, look at the count.** `woken ≥ 1` = a live
-session was re-invoked. `woken:0` / `recipient_absent` / `recipient_dead` = MISSED →
-re-dispatch to a LIVE agent (`coord:presence → wakeable:true`) or respawn the owner.
-"I handed it off" only counts if a live owner received it.
+session was re-invoked. `woken:0` / `recipient_absent` / `recipient_dead` /
+`recipient_liveness:[…ended]` = MISSED → re-dispatch to a LIVE agent
+(`coord:presence → wakeable:true`) or respawn the owner. "I handed it off" only counts
+if a live owner received it.

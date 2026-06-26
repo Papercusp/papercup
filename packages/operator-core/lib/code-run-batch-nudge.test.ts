@@ -1,6 +1,7 @@
 /**
- * code-run-batch-nudge.test — the inline same-tool-N× batch nudge (code-run-token-frugality,
- * owner directive 2026-06-23). Pure in-process logic, so these are deterministic unit tests.
+ * code-run-batch-nudge.test — the inline batch nudge (code-run-token-frugality, owner directive
+ * 2026-06-23; fan-out + felt-cost + backoff upgrade 2026-06-26). Pure in-process logic with an
+ * injectable clock, so these are deterministic unit tests.
  *
  * TEETH: each "fires" assertion pairs with a "does NOT fire" under the same setup minus the one
  * triggering condition, so neutering a guard flips a test RED.
@@ -11,6 +12,8 @@ import {
   maybeOrientDedupNudge,
   _resetBatchNudgeState,
   BATCH_NUDGE_THRESHOLD,
+  FANOUT_DISTINCT_THRESHOLD,
+  NUDGE_WINDOW_MS,
   ORIENT_DEDUP_WINDOW_MS,
   CODE_RUN_CAPABLE_ROLES,
 } from './code-run-batch-nudge';
@@ -19,91 +22,206 @@ const cap = { sessionKey: 's1', toolName: 'work_items:get', canCodeRun: true };
 
 beforeEach(() => _resetBatchNudgeState());
 
-describe('maybeBatchNudge — threshold + one-shot', () => {
-  it('stays silent below the threshold, fires exactly once AT it', () => {
+describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
+  it('stays silent below the threshold, fires exactly AT it with kind=same-tool', () => {
+    let t = 0;
     for (let i = 1; i < BATCH_NUDGE_THRESHOLD; i++) {
-      expect(maybeBatchNudge(cap)).toBeNull(); // calls 1..N-1
+      t += 1000;
+      expect(maybeBatchNudge({ ...cap, now: t })).toBeNull(); // calls 1..N-1
     }
-    const hit = maybeBatchNudge(cap); // the Nth call
-    expect(hit).toContain('work_items:get');
-    expect(hit).toContain('code:run');
+    t += 1000;
+    const hit = maybeBatchNudge({ ...cap, now: t }); // the Nth call
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.text).toContain('work_items:get');
+    expect(hit?.text).toContain('code:run');
   });
 
-  it('is ONE-SHOT — never fires again for the same (session, tool) after the first', () => {
-    for (let i = 1; i < BATCH_NUDGE_THRESHOLD; i++) maybeBatchNudge(cap);
-    expect(maybeBatchNudge(cap)).not.toBeNull(); // fires
-    for (let i = 0; i < 5; i++) expect(maybeBatchNudge(cap)).toBeNull(); // never again
+  it('surfaces the FELT round-trip cost — the running count + the word round-trip', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ ...cap, now: t });
+    }
+    expect(hit?.text).toContain(`${BATCH_NUDGE_THRESHOLD}×`); // "3×"
+    expect(hit?.text).toMatch(/round-trip/);
+  });
+
+  it('does NOT fire when the repeats fall OUTSIDE the window (only a bursty flurry trips it)', () => {
+    expect(maybeBatchNudge({ ...cap, now: 0 })).toBeNull(); // count 1
+    expect(maybeBatchNudge({ ...cap, now: 1000 })).toBeNull(); // count 2
+    // 3rd call far beyond the window — the earlier two aged out, so the window count is 1.
+    expect(maybeBatchNudge({ ...cap, now: NUDGE_WINDOW_MS + 2000 })).toBeNull();
   });
 
   it('states the correct boundary — judgment mid-flow, NOT data dependency', () => {
-    let hit: string | null = null;
-    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) hit = maybeBatchNudge(cap);
-    expect(hit).toContain('mechanically-chained'); // dependent-but-mechanical IS batchable
-    expect(hit).toMatch(/read its result and DECIDE/); // the real cutoff is judgment
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ ...cap, now: t });
+    }
+    expect(hit?.text).toContain('mechanically-chained'); // dependent-but-mechanical IS batchable
+    expect(hit?.text).toMatch(/read its result and DECIDE/); // the real cutoff is judgment
+  });
+
+  it('embeds a runnable list-then-loop skeleton over the EXACT repeated tool', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ ...cap, toolName: 'work_items:get', now: t });
+    }
+    expect(hit?.text).toContain('code:run { script:');
+    expect(hit?.text).toContain('tools.work_items.get(a)'); // ns.camelVerb form, loop var
+    expect(hit?.text).toMatch(/for \(const a of inputs\) out\.push\(await /);
+    expect(hit?.text).toContain('return out;');
+  });
+
+  it('camelCases a hyphenated verb in the skeleton (set-status → setStatus)', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ ...cap, toolName: 'plans:set-status', now: t });
+    }
+    expect(hit?.text).toContain('tools.plans.setStatus(a)');
+  });
+});
+
+describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', () => {
+  const fanTools = ['plans:get', 'work_items:get', 'docs:search', 'coord:inbox'];
+
+  it('fires with kind=fanout once ≥ FANOUT_DISTINCT_THRESHOLD distinct tools hit the window', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    let i = 0;
+    // for-of (not forEach): assigning `hit` inside the loop body keeps TS's flow narrowing, so the
+    // post-loop `hit?.kind` access is typed BatchNudgeResult|null, not narrowed-to-null.
+    for (const toolName of fanTools) {
+      t += 1000;
+      hit = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+      if (i < FANOUT_DISTINCT_THRESHOLD - 1) expect(hit).toBeNull(); // below the distinct threshold
+      i++;
+    }
+    expect(hit?.kind).toBe('fanout');
+  });
+
+  it('embeds a Promise.all skeleton over the EXACT distinct tools seen, in first-seen order', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const toolName of fanTools) {
+      t += 1000;
+      hit = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+    }
+    expect(hit?.text).toContain('Promise.all');
+    expect(hit?.text).toContain('tools.plans.get(');
+    expect(hit?.text).toContain('tools.work_items.get(');
+    expect(hit?.text).toContain('tools.docs.search(');
+    expect(hit?.text).toContain('tools.coord.inbox(');
+    expect(hit?.text).toMatch(/return \{ r0, r1, r2, r3 \}/);
+  });
+
+  it('surfaces the felt cost for the fan-out (distinct-tool + total-call counts)', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const toolName of fanTools) {
+      t += 1000;
+      hit = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+    }
+    expect(hit?.text).toContain(`${FANOUT_DISTINCT_THRESHOLD} different tools`);
+    expect(hit?.text).toMatch(/round-trip/);
+  });
+
+  it('does NOT fire below the distinct threshold even on many calls of < N tools', () => {
+    let t = 0;
+    // 3 distinct tools, each called twice = 6 calls, 3 distinct < 4, no same-tool ≥3 → silent.
+    for (const toolName of ['a:x', 'b:y', 'c:z', 'a:x', 'b:y', 'c:z']) {
+      t += 1000;
+      expect(maybeBatchNudge({ sessionKey: 'fn', toolName, canCodeRun: true, now: t })).toBeNull();
+    }
+  });
+});
+
+describe('maybeBatchNudge — backoff (re-fires, NOT one-shot)', () => {
+  it('re-fires on an exponential call-count cooldown instead of going permanently silent', () => {
+    const fires: number[] = [];
+    let t = 0;
+    for (let i = 0; i < 20; i++) {
+      t += 1000;
+      if (maybeBatchNudge({ ...cap, now: t })) fires.push(i);
+    }
+    // First fire at the 3rd call (index 2); then re-fires after cooldowns 4, 8 (→ indices 6, 14).
+    expect(fires).toEqual([2, 6, 14]);
+    // The gap between consecutive fires strictly grows (exponential backoff, never spam).
+    expect(fires[1] - fires[0]).toBeLessThan(fires[2] - fires[1]);
+  });
+
+  it('does NOT re-fire on the call immediately after a nudge (the cooldown is real)', () => {
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      maybeBatchNudge({ ...cap, now: t });
+    }
+    t += 1000;
+    expect(maybeBatchNudge({ ...cap, now: t })).toBeNull(); // immediate next call — still cooling down
   });
 });
 
 describe('maybeBatchNudge — scoping guards (teeth)', () => {
   it('does NOT fire for a caller that cannot run code:run', () => {
+    let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 2; i++) {
-      expect(maybeBatchNudge({ ...cap, canCodeRun: false })).toBeNull();
+      t += 1000;
+      expect(maybeBatchNudge({ ...cap, canCodeRun: false, now: t })).toBeNull();
     }
   });
 
-  it('does NOT nudge the batch tools themselves (code:run / recipes:*), in either name form', () => {
+  it('does NOT nudge the batch tools themselves, and never counts them toward fan-out', () => {
+    let t = 0;
     for (const toolName of ['code:run', 'code_run', 'recipes:search', 'recipes_run']) {
-      for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 2; i++) {
-        expect(maybeBatchNudge({ ...cap, toolName })).toBeNull();
-      }
+      t += 1000;
+      expect(maybeBatchNudge({ sessionKey: 'ex', toolName, canCodeRun: true, now: t })).toBeNull();
     }
+    // Those four distinct EXCLUDED tools must NOT have populated the window — one real read is below
+    // both thresholds, so still silent (proves excluded calls short-circuit before recording).
+    t += 1000;
+    expect(maybeBatchNudge({ sessionKey: 'ex', toolName: 'plans:get', canCodeRun: true, now: t })).toBeNull();
   });
 
   it('does NOT fire on an empty session key or empty tool name', () => {
+    let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
-      expect(maybeBatchNudge({ ...cap, sessionKey: '' })).toBeNull();
-      expect(maybeBatchNudge({ ...cap, toolName: '' })).toBeNull();
+      t += 1000;
+      expect(maybeBatchNudge({ ...cap, sessionKey: '', now: t })).toBeNull();
+      expect(maybeBatchNudge({ ...cap, toolName: '', now: t })).toBeNull();
     }
   });
 });
 
 describe('maybeBatchNudge — isolation', () => {
-  it('tracks each (session, tool) independently', () => {
-    // Two different tools in the SAME session: each needs its own N calls.
+  it('tracks each (session, tool) independently for the same-tool trigger', () => {
+    let t = 0;
     for (let i = 1; i < BATCH_NUDGE_THRESHOLD; i++) {
-      expect(maybeBatchNudge({ ...cap, toolName: 'plans:get' })).toBeNull();
-      expect(maybeBatchNudge({ ...cap, toolName: 'docs:get' })).toBeNull();
+      t += 1000;
+      expect(maybeBatchNudge({ ...cap, toolName: 'plans:get', now: t })).toBeNull();
+      expect(maybeBatchNudge({ ...cap, toolName: 'docs:get', now: t })).toBeNull();
     }
-    expect(maybeBatchNudge({ ...cap, toolName: 'plans:get' })).toContain('plans:get');
-    expect(maybeBatchNudge({ ...cap, toolName: 'docs:get' })).toContain('docs:get');
+    t += 1000;
+    // NOTE: by now the session has seen plans:get + docs:get + work_items:get-shaped names? No — only
+    // two distinct tools here, below the fan-out threshold, so only the same-tool trigger can fire.
+    expect(maybeBatchNudge({ ...cap, toolName: 'plans:get', now: t })?.text).toContain('plans:get');
   });
 
   it('does NOT bleed counts across sessions', () => {
-    for (let i = 1; i < BATCH_NUDGE_THRESHOLD; i++) maybeBatchNudge({ ...cap, sessionKey: 'a' });
+    let t = 0;
+    for (let i = 1; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      maybeBatchNudge({ ...cap, sessionKey: 'a', now: t });
+    }
     // A fresh session starts at zero — one call is below threshold, so silent.
-    expect(maybeBatchNudge({ ...cap, sessionKey: 'b' })).toBeNull();
-  });
-});
-
-describe('maybeBatchNudge — ready-to-paste skeleton (P-006)', () => {
-  it('embeds a runnable code:run skeleton targeting the EXACT repeated tool', () => {
-    let hit: string | null = null;
-    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
-      hit = maybeBatchNudge({ ...cap, toolName: 'work_items:get' });
-    }
-    expect(hit).not.toBeNull();
-    // a fill-in-the-blank loop over the EXACT tool, in the typed facade form
-    expect(hit).toContain('code:run { script:');
-    expect(hit).toContain('tools.work_items.get(a)'); // ns.camelVerb form
-    expect(hit).toMatch(/for \(const a of inputs\) out\.push\(await /);
-    expect(hit).toContain('return out;');
-  });
-
-  it('camelCases a hyphenated verb in the skeleton (set-status → setStatus)', () => {
-    let hit: string | null = null;
-    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
-      hit = maybeBatchNudge({ ...cap, toolName: 'plans:set-status' });
-    }
-    expect(hit).toContain('tools.plans.setStatus(a)');
+    t += 1000;
+    expect(maybeBatchNudge({ ...cap, sessionKey: 'b', now: t })).toBeNull();
   });
 });
 

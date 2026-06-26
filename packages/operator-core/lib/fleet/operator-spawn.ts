@@ -573,7 +573,7 @@ export function findBriefPlaceholder(brief: string | null | undefined): string |
 }
 
 async function readEffectiveSpawnTierConfig(workspaceId: string): Promise<{
-  tiers?: import('../agent-config-constants').ModelTier[];
+  tiers?: readonly import('../agent-config-constants').ModelTier[];
   tierCeilings?: Record<string, string>;
 }> {
   const [{ effectiveTierConfig }, { readAgentConfig }] = await Promise.all([
@@ -896,6 +896,21 @@ export async function spawnAgentInHarness(
       `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
     );
     return { ...res, awaitEvent };
+  }
+
+  // EI-2186/EI-85 hardening: close the admission -> child-pid gap. A row exists
+  // as soon as recordSpawn commits, but the real child pid is only known after
+  // spawnInvokeOnce starts the subprocess. If the operator restarts in between,
+  // an unstamped row has no launcher_boot_id, so boot reconcile cannot prove it
+  // belongs to the dead prior incarnation and it later dies as a stale anonymous
+  // heartbeat. Stamp THIS supervisor process immediately; onChildPid overwrites it
+  // with the actual invoke-once child pid once available.
+  try {
+    await recordSpawnPid(sql, spawnId, process.pid);
+  } catch (e) {
+    console.warn(
+      `[operator-spawn] provisional pid stamp failed for ${spawnId} (spawn continues): ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 
   // P-016/D-007: claude bees get a forced native session id, recorded here so the

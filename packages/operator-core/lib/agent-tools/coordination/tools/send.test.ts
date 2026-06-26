@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })) }));
 vi.mock('../messages', () => ({ sendMessage: vi.fn(), getMessageById: vi.fn(async () => null) }));
+vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
 vi.mock('../inbox-wake', () => ({
   wakeRecipients: vi.fn(async () => ({ targets: [], woken: 0, staged: 0 })),
   reportIdleRecipients: vi.fn(async () => ({ idle: [] })),
@@ -28,12 +29,14 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }))
 import { sendMessage, getMessageById } from '../messages';
 import { resolveRecipients } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
+import { describeMissedRecipients } from '../recipient-liveness';
 import { getFlag } from '@papercusp/flags/server';
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
 const resolveM = vi.mocked(resolveRecipients);
 const wakeM = vi.mocked(wakeRecipients);
 const idleM = vi.mocked(reportIdleRecipients);
+const livenessM = vi.mocked(describeMissedRecipients);
 const flagM = vi.mocked(getFlag);
 const tool = (await import('./send')).default;
 
@@ -117,15 +120,44 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.note).toMatch(/next turn|actually running/i);
   });
 
-  it("wake:'optimistic' miss → woken:0 + a NON-LOUD note, but NO recipient_absent (silent-by-design surfaced)", async () => {
+  it("FF#1: wake:'optimistic' miss with NO backstop → LOUD recipient_absent (same as required)", async () => {
     // The incident: an optimistic transfer to a now-dead agent woke nobody and was read
-    // as "fine, the backstop will get it". We do NOT escalate (optimistic assumes a
-    // backstop) but DO surface a note so the miss isn't silently swallowed.
+    // as "fine, the backstop will get it" — when there was no backstop. Now: no declared
+    // backstop ⇒ the miss is as loud as a required miss.
     wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0 } as never);
+    idleM.mockResolvedValueOnce({ idle: ['ghost-bee'] } as never);
     const b = await body({ to: ['ghost-bee'], summary: 'deploy this', wake: 'optimistic' });
+    expect(b.results[0].wake).toMatchObject({
+      mode: 'optimistic',
+      woken: 0,
+      recipient_absent: true,
+      recipient_dead: ['ghost-bee'],
+    });
+    expect(b.results[0].wake.note).toMatch(/NO declared backstop|black-hole|NOT be seen/i);
+  });
+
+  it("FF#1: wake:'optimistic' miss WITH a declared backstop → soft note naming it, NO recipient_absent", async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0 } as never);
+    const b = await body({
+      to: ['ghost-bee'],
+      summary: 'survey will re-place',
+      wake: 'optimistic',
+      backstop: 'queen-survey re-dispatches',
+    });
     expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 0 });
     expect(b.results[0].wake.recipient_absent).toBeUndefined();
-    expect(b.results[0].wake.note).toMatch(/SILENT by design|NOT picked up|backstop/i);
+    expect(b.results[0].wake.note).toMatch(/declared backstop|queen-survey/i);
+  });
+
+  it('FF#3: a miss forces the missed addressee\'s FRESH sessionState into the result', async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0 } as never);
+    livenessM.mockResolvedValueOnce([
+      { ownerId: 'ghost-bee', sessionState: 'ended', wakeable: false },
+    ] as never);
+    const b = await body({ to: ['ghost-bee'], summary: 'x', wake: 'required' });
+    expect(b.results[0].wake.recipient_liveness).toEqual([
+      { ownerId: 'ghost-bee', sessionState: 'ended', wakeable: false },
+    ]);
   });
 
   it("wake:'optimistic' that WOKE someone (woken:1) carries no miss note", async () => {

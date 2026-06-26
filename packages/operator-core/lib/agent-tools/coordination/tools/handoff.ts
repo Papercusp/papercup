@@ -12,7 +12,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { openHandoff, acceptHandoff } from '../handoffs';
 import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
-import { wakeRecipients } from '../inbox-wake';
+import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
+import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -120,7 +121,18 @@ export default defineTool({
     //     learns whether anyone was actually re-invoked, so a handoff that woke
     //     nobody (recipient_absent) is a loud miss they can react to, not a silent one.
     let wake:
-      | { targets: string[]; woken: number; staged?: number; recipient_absent?: boolean; note?: string }
+      | {
+          targets: string[];
+          woken: number;
+          staged?: number;
+          recipient_absent?: boolean;
+          /** FF#2: missed addressees with NO live session watching their inbox — genuinely
+           *  dead, the handoff black-holes until they're relaunched (mirrors coord:send WI-574). */
+          recipient_dead?: string[];
+          /** FF#3: each missed addressee's FRESH session state at the open moment. */
+          recipient_liveness?: MissedRecipientLiveness[];
+          note?: string;
+        }
       | undefined;
     try {
       const fan = await wakeRecipients(handoffTo, {
@@ -135,10 +147,28 @@ export default defineTool({
       // handoff injected to their inbox, but no session was re-invoked to accept it.
       if (fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
         wake.recipient_absent = true;
+        // FF#2/FF#3: classify the dead ones + force their fresh session state into the
+        // result, so a handoff to a long-ended agent isn't read as "offered, all good".
+        let dead: string[] = [];
+        try {
+          dead = (await reportIdleRecipients(fan.targets, { workspaceId: identity.workspaceId ?? undefined })).idle;
+        } catch {
+          /* fail-soft */
+        }
+        if (dead.length > 0) wake.recipient_dead = dead;
+        try {
+          const liveness = await describeMissedRecipients(fan.targets);
+          if (liveness.length > 0) wake.recipient_liveness = liveness;
+        } catch {
+          /* fail-soft */
+        }
         wake.note =
-          `handoff opened, but no awake/watching session was re-invoked for: ${fan.targets.join(', ')} — ` +
-          'it is in their inbox (seen on their next natural turn). If this work must be picked up now, ' +
-          'follow up with coord:send wake:\'required\' or reassign. (A 30m re-ping backstop will nudge you if it stays un-acked.)';
+          (dead.length > 0
+            ? `handoff opened, but NO live session is watching the inbox of: ${dead.join(', ')} — they are not running, so this offer black-holes until they are relaunched (NOT "seen on their next turn"). `
+            : `handoff opened, but no awake/watching session was re-invoked for: ${fan.targets.join(', ')} — it is in their inbox (seen on their next natural turn). `) +
+          'A handoff is NOT a pickup: it is pending until accepted (accepted:false below). If this work must ' +
+          "be picked up now, re-dispatch to a LIVE agent (coord:presence → wakeable:true) or coord:send wake:'required'. " +
+          '(A 30m re-ping backstop will nudge you if it stays un-acked; a 12h sweep auto-expires it.)';
       }
     } catch (e) {
       // The open already succeeded; a wake failure is non-fatal. Report nothing.
@@ -151,7 +181,18 @@ export default defineTool({
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, msg_id: rec.msg_id, ts: rec.ts, ...(wake ? { wake } : {}) }),
+          // FF#2 — a freshly-opened handoff is NEVER "done": it is PENDING acceptance.
+          // accepted:false makes that explicit in the result so the offerer can't read a
+          // successful OPEN as a successful TRANSFER; the accept→wake-back + reconcile sweep
+          // close the loop. Mirrors the "verify pickup, don't assume" discipline.
+          text: JSON.stringify({
+            ok: true,
+            msg_id: rec.msg_id,
+            ts: rec.ts,
+            accepted: false,
+            pending_acceptance: true,
+            ...(wake ? { wake } : {}),
+          }),
         },
       ],
     };

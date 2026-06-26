@@ -1048,6 +1048,14 @@ export const FLAGS = {
   // (hits the decision point, which beats prose for adoption). Additive (only adds a [batch-hint]
   // line, one-shot per session+tool, code:run-capable callers only); DEFAULT ON; OFF ⇒ no hint.
   CODE_RUN_BATCH_NUDGE: "papercusp-code-run-batch-nudge",
+  // code-run-token-frugality FAN-OUT upgrade (owner directive 2026-06-26): the INLINE nudge's second
+  // trigger — when an agent fires ≥4 DISTINCT tools in a short window (the "many-different-reads-once"
+  // fan-out the same-tool-N× trigger was BLIND to; the 2026-06-26 audit found same-tool covered only
+  // ~30% of multi-call SU spawns), attach a [batch-hint] with a ready-to-paste Promise.all skeleton
+  // over the exact tools seen. Its OWN flag (NOT CODE_RUN_BATCH_NUDGE) so the new trigger is an
+  // independent A/B knob: flip OFF and measure the adoption delta via the code-run-adoption metric.
+  // Additive + reversible; DEFAULT ON; OFF ⇒ only the same-tool trigger fires.
+  CODE_RUN_FANOUT_NUDGE: "papercusp-code-run-fanout-nudge",
   // agent-tooling-token-efficiency P-009 (2026-06-25): the SOFT orient-dedup nudge — when an agent
   // calls coord:plan-events / coord:inbox / memory:search / coord:declare-intent shortly after a
   // successful coord:orient (which already returned + declared exactly those), attach a one-shot
@@ -1770,6 +1778,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // + reversible (adds a one-shot [batch-hint] line to a result for a code:run-capable caller); OFF
   // ⇒ no hint, byte-identical to before.
   [FLAGS.CODE_RUN_BATCH_NUDGE]: true,
+  // DEFAULT ON (code-run-token-frugality fan-out upgrade 2026-06-26): the fan-out trigger of the
+  // inline nudge (≥4 distinct tools in a window → a Promise.all skeleton). Additive + reversible (its
+  // own flag so it can be A/B'd against the adoption metric); OFF ⇒ only the same-tool trigger fires.
+  [FLAGS.CODE_RUN_FANOUT_NUDGE]: true,
   // DEFAULT ON (agent-tooling-token-efficiency P-009 2026-06-25): the soft orient-dedup nudge.
   // Additive + reversible (adds a one-shot [nudge] line when a subsumed fetch follows a successful
   // orient); OFF ⇒ no nudge, byte-identical to before.

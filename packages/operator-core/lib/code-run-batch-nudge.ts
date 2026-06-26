@@ -1,36 +1,64 @@
 /**
- * code-run-batch-nudge.ts — the INLINE "you're calling the same tool repeatedly; bundle it into one
- * code:run" nudge (code-run-token-frugality, owner directive 2026-06-23).
+ * code-run-batch-nudge.ts — the INLINE "you're firing tool round-trips one at a time; bundle them
+ * into one code:run" nudge (code-run-token-frugality, owner directive 2026-06-23; fan-out + felt-cost
+ * upgrade, owner directive 2026-06-26).
  *
  * The STRUCTURAL complement to CODE_RUN_NUDGE's prompt prose. The prose tells agents to batch tool
- * calls; this catches them NOT doing it and nudges at the DECISION POINT — the moment a caller fires
- * the SAME tool an Nth time in a session. That beats base-prompt prose for adoption (the prose
- * already existed while recipe/code:run adoption was ~0): a nudge attached to the live tool result
- * is read in-context, exactly when the wasteful pattern is happening.
+ * calls; this catches them NOT doing it and nudges at the DECISION POINT — the live tool result,
+ * read in-context exactly when the wasteful pattern is happening. That beats base-prompt prose for
+ * adoption (the prose already existed while code:run adoption was ~0).
+ *
+ * TWO TRIGGERS (a 2026-06-26 adoption audit showed the original same-tool-only trigger could even
+ * FIRE on only ~30% of multi-call SU spawns — it was BLIND to the dominant pattern):
+ *  - SAME-TOOL: the same tool ≥ BATCH_NUDGE_THRESHOLD× inside the recent window (a `get` per id, a
+ *    check per file) → the list-then-loop skeleton.
+ *  - FAN-OUT: ≥ FANOUT_DISTINCT_THRESHOLD DISTINCT tools inside the recent window (the
+ *    "many-different-reads-once" pattern the old nudge missed) → a Promise.all skeleton over the exact
+ *    tools just seen.
+ *
+ * WINDOWED, not lifetime: counts are over a sliding NUDGE_WINDOW_MS window of recent calls, so only a
+ * BURSTY flurry (the actually-batchable shape) trips it — three calls spread across ten minutes do
+ * not. BACKOFF, not one-shot: ignoring a nudge once no longer silences it forever; it re-fires on an
+ * exponential call-count cooldown (rarer each time) so a persistent waster keeps getting reminded
+ * without spam. FELT COST: the hint leads with the running round-trip count (the token cost an agent
+ * never otherwise sees) — making the invisible cost visible in-loop is the lever prose can't pull.
  *
  * Cheap + safe by construction:
- *  - In-process only (no PG, no network): a per-session Map of tool→count + a one-shot "already
- *    nudged" set, so the hot path is a single Map increment on the common call.
- *  - ONE-SHOT per (session, tool): fires once when the count crosses the threshold, never again for
- *    that tool in that session — no per-call spam.
+ *  - In-process only (no PG, no network): a per-session ring of recent {tool, at} + a small backoff
+ *    counter. The hot path is a push + a window trim on the common call.
  *  - SCOPED to callers who actually HOLD code:run (every built-in role as of 2026-06-25, or a
  *    superuser). A role that can't run code:run can't act on the nudge, so it never sees it.
  *  - EXCLUDES the batch tools themselves (code:* / recipes:*) — nudging "use code:run" on a code:run
- *    call is absurd.
- *  - Bounded memory: an insertion-order cap evicts the oldest session when the map is full.
+ *    call is absurd, and they must not count toward the fan-out distinct-tool tally either.
+ *  - Bounded memory: a per-session recent-ring cap + an insertion-order session cap evict the oldest.
  *
  * The boundary the nudge text states matches CODE_RUN_NUDGE exactly: bundle INDEPENDENT or
  * mechanically-chained calls (a script threads one result into the next fine); keep separate only a
  * call whose result you must READ AND REASON ABOUT before the next (judgment mid-flow), since a
  * script cannot pause for the model to think.
  *
- * Flag-gated at the call site (FLAGS.CODE_RUN_BATCH_NUDGE) so it has a runtime kill-switch; the
- * gate is only consulted when a hint actually fires (rare), so the per-call cost stays the Map bump.
+ * Flag-gated at the call site, PER KIND, so each trigger has its own runtime kill-switch / A/B knob:
+ * the same-tool path under FLAGS.CODE_RUN_BATCH_NUDGE, the newer fan-out path under
+ * FLAGS.CODE_RUN_FANOUT_NUDGE. The gate is only consulted when a hint actually fires (rare), so the
+ * per-call cost stays the ring push.
  */
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 
-/** Same tool this many times in a session → the one-shot nudge fires. */
+/** Same tool this many times inside the window → the same-tool nudge is a candidate. */
 export const BATCH_NUDGE_THRESHOLD = 3;
+
+/** This many DISTINCT (non-excluded) tools inside the window → the fan-out nudge is a candidate. */
+export const FANOUT_DISTINCT_THRESHOLD = 4;
+
+/** Sliding window over which recent calls are counted. Only a bursty flurry (the actually-batchable
+ *  shape) trips a trigger; calls spread wider than this are treated as separate, deliberate steps. */
+export const NUDGE_WINDOW_MS = 90_000;
+
+/** Per-session cap on the recent-call ring (backstop against a long-lived session growing it). */
+const MAX_RECENT_PER_SESSION = 64;
+
+/** How many distinct tools the fan-out skeleton enumerates before it elides the rest. */
+const MAX_SKELETON_TOOLS = 6;
 
 /** Insertion-order cap on tracked sessions (backstop against unbounded growth). */
 const MAX_TRACKED_SESSIONS = 4000;
@@ -42,8 +70,8 @@ const MAX_TRACKED_SESSIONS = 4000;
 export const CODE_RUN_CAPABLE_ROLES: ReadonlySet<string> = new Set<string>([...AGENT_ROLES]);
 
 /** Normalized names of the batch/reuse tools themselves — never nudge these (you don't tell a
- *  `code:run` call to "use code:run"). Normalization strips `:`/`_`/`-` so both the verb form
- *  (`code:run`) and the MCP form (`code_run`) match. */
+ *  `code:run` call to "use code:run"), and never count them toward the fan-out tally. Normalization
+ *  strips `:`/`_`/`-` so both the verb form (`code:run`) and the MCP form (`code_run`) match. */
 const EXCLUDED_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'coderun',
   'codetools',
@@ -56,11 +84,21 @@ const EXCLUDED_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'recipescandidates',
 ]);
 
+/** One recorded call in the sliding window. */
+interface RecentCall {
+  tool: string;
+  at: number;
+}
+
 interface SessionState {
-  /** tool name (as called) → call count this session */
-  counts: Map<string, number>;
-  /** tools already nudged this session (one-shot guard) */
-  nudged: Set<string>;
+  /** Chronological ring of recent calls, trimmed to NUDGE_WINDOW_MS and capped. */
+  recent: RecentCall[];
+  /** How many nudges have already fired this session (drives the exponential cooldown). */
+  nudgeCount: number;
+  /** Calls recorded since the last nudge fired (the cooldown is measured in calls). */
+  callsSinceNudge: number;
+  /** Whether any nudge has fired this session (the first one has no cooldown). */
+  everNudged: boolean;
   /** ms timestamp of the last SUCCESSFUL coord:orient this session (orient-dedup, P-009). */
   lastOrientAt?: number;
   /** subsumed tools already orient-dedup-nudged this session (one-shot guard, P-009). */
@@ -70,7 +108,7 @@ interface SessionState {
 const sessions = new Map<string, SessionState>();
 
 /** Get (or lazily create, with insertion-order eviction) the per-session tracking state. The ONE
- *  shared map both nudges read/write, so orient timing and per-tool counts live together. */
+ *  shared map both nudges read/write, so orient timing and the recent-call ring live together. */
 function getOrCreateSession(sessionKey: string): SessionState {
   let st = sessions.get(sessionKey);
   if (!st) {
@@ -78,7 +116,7 @@ function getOrCreateSession(sessionKey: string): SessionState {
       const oldest = sessions.keys().next().value;
       if (oldest !== undefined) sessions.delete(oldest);
     }
-    st = { counts: new Map(), nudged: new Set(), orientDedupNudged: new Set() };
+    st = { recent: [], nudgeCount: 0, callsSinceNudge: 0, everNudged: false, orientDedupNudged: new Set() };
     sessions.set(sessionKey, st);
   }
   return st;
@@ -93,18 +131,73 @@ function camelVerb(verb: string): string {
   return verb.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase());
 }
 
-/** Render the `tools.…` facade call for `toolName(a)` used in the ready-to-paste skeleton. Prefers the
- *  typed `tools.ns.verb(a)` form; falls back to the always-valid `tools.call('ns:verb', a)` escape
- *  hatch when the name doesn't cleanly split into JS identifiers. */
-function facadeCall(toolName: string): string {
+/** Render a `tools.…` facade call for `toolName(<argExpr>)`. Prefers the typed `tools.ns.verb(arg)`
+ *  form; falls back to the always-valid `tools.call('ns:verb', arg)` escape hatch when the name does
+ *  not cleanly split into JS identifiers. `argExpr` is the literal argument source — e.g. the loop
+ *  var `a`, or a fill-in placeholder comment for the fan-out skeleton. */
+function facadeCall(toolName: string, argExpr: string): string {
   const ci = toolName.indexOf(':');
   if (ci > 0) {
     const ns = toolName.slice(0, ci);
     const verb = camelVerb(toolName.slice(ci + 1));
     const ident = /^[A-Za-z_$][\w$]*$/;
-    if (ident.test(ns) && ident.test(verb)) return `tools.${ns}.${verb}(a)`;
+    if (ident.test(ns) && ident.test(verb)) return `tools.${ns}.${verb}(${argExpr})`;
   }
-  return `tools.call(${JSON.stringify(toolName)}, a)`;
+  return `tools.call(${JSON.stringify(toolName)}, ${argExpr})`;
+}
+
+/** The same-tool list-then-loop skeleton: loop the ONE repeated call over a caller-supplied list. */
+function sameToolSkeleton(toolName: string): string {
+  return (
+    'code:run { script: `\n' +
+    `  const inputs = [/* the args for each ${toolName} call */];\n` +
+    '  const out = [];\n' +
+    `  for (const a of inputs) out.push(await ${facadeCall(toolName, 'a')});\n` +
+    '  return out;\n' +
+    '` }'
+  );
+}
+
+/** The fan-out skeleton: a Promise.all over the EXACT distinct tools just seen, each a fill-in-args
+ *  call. Acting on it is filling blanks, not authoring from scratch — the activation-energy win. */
+function fanoutSkeleton(distinctTools: string[]): string {
+  const shown = distinctTools.slice(0, MAX_SKELETON_TOOLS);
+  const binds = shown.map((_t, i) => `r${i}`).join(', ');
+  const lines = shown.map((t) => `    ${facadeCall(t, '/* args */')},`).join('\n');
+  const elided = distinctTools.length > shown.length ? `    /* …and ${distinctTools.length - shown.length} more */\n` : '';
+  return (
+    'code:run { script: `\n' +
+    `  const [${binds}] = await Promise.all([\n` +
+    lines +
+    '\n' +
+    elided +
+    '  ]);\n' +
+    `  return { ${binds} };\n` +
+    '` }'
+  );
+}
+
+const TRAILER =
+  `Only the script's return re-enters context, so return what you'll need next. Or reuse a recipe ` +
+  `(recipes:search { query }). Keep a call separate ONLY when you must read its result and DECIDE ` +
+  `before the next (a script can't pause for you to think).`;
+
+/** How many calls must pass before the NEXT nudge may fire, given how many have already fired this
+ *  session. Exponential backoff (4 → 8 → 16 → 32 → 64, capped) so ignoring a nudge once does not
+ *  silence it forever, but a persistent waster is reminded ever more sparingly rather than spammed. */
+function cooldownCalls(nudgesAlreadyFired: number): number {
+  const BASE = 4;
+  const CAP = 64;
+  return Math.min(BASE * 2 ** Math.max(0, nudgesAlreadyFired - 1), CAP);
+}
+
+export type BatchNudgeKind = 'same-tool' | 'fanout';
+
+export interface BatchNudgeResult {
+  /** The hint text to attach to the tool result (no `[batch-hint]` prefix — the call site adds it). */
+  text: string;
+  /** Which trigger fired — drives which feature flag gates it at the call site. */
+  kind: BatchNudgeKind;
 }
 
 export interface BatchNudgeInput {
@@ -114,46 +207,78 @@ export interface BatchNudgeInput {
   toolName: string;
   /** Whether the caller can actually run code:run (role ∈ CODE_RUN_CAPABLE_ROLES OR superuser). */
   canCodeRun: boolean;
+  /** Injectable clock for tests; defaults to Date.now(). */
+  now?: number;
 }
 
 /**
- * Record a tool call and, the FIRST time a (session, tool) crosses BATCH_NUDGE_THRESHOLD, return a
- * one-shot nudge string steering the caller to bundle the repeated calls into one `code:run`.
- * Returns null otherwise. Never throws. Counting still happens for excluded/incapable callers? No —
- * those short-circuit to null with no state, since they can never produce a useful nudge.
+ * Record a tool call in the session's sliding window and, when a same-tool or fan-out burst is
+ * detected (and the backoff cooldown has elapsed), return a nudge steering the caller to bundle the
+ * calls into one `code:run`. Returns null otherwise. Never throws. Excluded/incapable callers
+ * short-circuit to null with no state — they can never produce a useful nudge.
  */
-export function maybeBatchNudge(input: BatchNudgeInput): string | null {
+export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null {
   const { sessionKey, toolName, canCodeRun } = input;
   if (!canCodeRun || !sessionKey || !toolName) return null;
   if (EXCLUDED_NORMALIZED.has(normalize(toolName))) return null;
+  const now = input.now ?? Date.now();
 
   const st = getOrCreateSession(sessionKey);
 
-  const n = (st.counts.get(toolName) ?? 0) + 1;
-  st.counts.set(toolName, n);
-
-  if (n >= BATCH_NUDGE_THRESHOLD && !st.nudged.has(toolName)) {
-    st.nudged.add(toolName);
-    // P-006 (agent-tooling-token-efficiency): the hint carries a READY-TO-PASTE code:run skeleton
-    // targeting the EXACT repeated tool, so acting on it is a fill-in-the-blank, not a from-scratch
-    // authoring task. The skeleton loops the repeated call over a caller-supplied `inputs` list.
-    const skeleton =
-      'code:run { script: `\n' +
-      `  const inputs = [/* the args for each ${toolName} call */];\n` +
-      '  const out = [];\n' +
-      `  for (const a of inputs) out.push(await ${facadeCall(toolName)});\n` +
-      '  return out;\n' +
-      '` }';
-    return (
-      `you've called "${toolName}" ${n}× this session. If these are independent or ` +
-      `mechanically-chained calls, fold them into ONE code:run — ready-to-paste skeleton ` +
-      `(fill \`inputs\` with the per-call args):\n${skeleton}\n` +
-      `Only the script's return re-enters context, so return what you'll need next. Or reuse a recipe ` +
-      `(recipes:search { query }). Keep a call separate ONLY when you must read its result and DECIDE ` +
-      `before the next (a script can't pause for you to think).`
-    );
+  // Record this call, then trim the ring to the window + cap (the only common-path side effects).
+  st.recent.push({ tool: toolName, at: now });
+  st.callsSinceNudge += 1;
+  const cutoff = now - NUDGE_WINDOW_MS;
+  let drop = 0;
+  while (drop < st.recent.length && st.recent[drop].at < cutoff) drop++;
+  if (drop > 0) st.recent.splice(0, drop);
+  if (st.recent.length > MAX_RECENT_PER_SESSION) {
+    st.recent.splice(0, st.recent.length - MAX_RECENT_PER_SESSION);
   }
-  return null;
+
+  // Window stats: same-tool count, distinct tools (first-seen order), total recent calls.
+  let sameToolCount = 0;
+  const seen = new Set<string>();
+  const distinctOrder: string[] = [];
+  for (const c of st.recent) {
+    if (c.tool === toolName) sameToolCount++;
+    if (!seen.has(c.tool)) {
+      seen.add(c.tool);
+      distinctOrder.push(c.tool);
+    }
+  }
+  const totalRecent = st.recent.length;
+
+  // Pick a trigger. Same-tool wins ties (its loop skeleton is the more precise fix).
+  let kind: BatchNudgeKind | null = null;
+  if (sameToolCount >= BATCH_NUDGE_THRESHOLD) kind = 'same-tool';
+  else if (seen.size >= FANOUT_DISTINCT_THRESHOLD) kind = 'fanout';
+  if (!kind) return null;
+
+  // Backoff gate: the first nudge fires immediately; later ones wait out an exponential cooldown.
+  if (st.everNudged && st.callsSinceNudge < cooldownCalls(st.nudgeCount)) return null;
+
+  st.everNudged = true;
+  st.nudgeCount += 1;
+  st.callsSinceNudge = 0;
+
+  const windowS = Math.round(NUDGE_WINDOW_MS / 1000);
+  if (kind === 'same-tool') {
+    const burst = totalRecent > sameToolCount ? ` (${totalRecent} tool calls total this burst)` : '';
+    const text =
+      `you've called "${toolName}" ${sameToolCount}× in the last ~${windowS}s${burst} — that's ` +
+      `${sameToolCount} separate round-trips, each re-reading your whole context. If these are ` +
+      `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton ` +
+      `(fill \`inputs\` with the per-call args):\n${sameToolSkeleton(toolName)}\n${TRAILER}`;
+    return { text, kind };
+  }
+  // fan-out
+  const text =
+    `you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
+    `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. This is an ` +
+    `independent fan-out: collapse it into ONE code:run with Promise.all — ready-to-paste skeleton ` +
+    `(fill the args):\n${fanoutSkeleton(distinctOrder)}\n${TRAILER}`;
+  return { text, kind };
 }
 
 /** A subsumed re-fetch within this window after a successful coord:orient → the soft dedup nudge.
