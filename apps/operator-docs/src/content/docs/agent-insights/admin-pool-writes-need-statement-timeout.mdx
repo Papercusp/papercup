@@ -84,6 +84,10 @@ runs *after* the durable write commits and is wrapped in a wall-clock `withDeadl
 best-effort contract holds for slowness, not just errors. Migrations keep calling
 `getOrgPg()` directly and stay unbounded.
 
+`createIssue` (`issues-engineer.ts`) was also converted: its `nextIssueId` advisory-lock read +
+INSERT now run together in a single `boundedOrgTxn` — id allocation and row creation are atomic
+(no half-write a retry would duplicate) and bounded by the same 15s statement_timeout.
+
 `conversations:post` / `conversations:answer` carried the **same class** and are now closed
 the same way (WI-766). Because `appendPost` lives in a **pure core** (`conversations-core.ts`)
 over injected deps — not a binding-layer function like `commentIssue` — the tx-bound store is
@@ -106,8 +110,11 @@ the reusable way to bound a pure-core write without coupling the core to `getOrg
   binding layer (see `conversations-core.ts` ↔ `conversations.ts`). Don't import `getOrgPg`
   into the core — it breaks the integration-test-without-prod-singletons split.
 - The known per-tool offenders are now closed (`work_items:comment`, `conversations:post` /
-  `conversations:answer`). The whole interactive-write class still shares this gap, though: a
-  connection-level **default** `statement_timeout` with a migration-runner opt-out
-  (`SET LOCAL statement_timeout=0`) would fix every `getOrgPg()`-based mutating tool at the
-  source. That touches the deploy/migration path, so it's a separate, reviewed change — if you
-  add a new interactive admin-pool write before it lands, wrap it in `boundedOrgTxn` yourself.
+  `conversations:answer`, `issues:create`). **WI-832** landed a DI seam in `connection.ts`
+  (`setAdminPoolStatementTimeoutProvider`) that lets the operator inject a per-connection default
+  `statement_timeout` for every new org-pool connection (defaults to `() => 0` → no GUC,
+  byte-identical to today's behaviour). When wired to a non-zero value (behind
+  `papercusp-txn-timeouts-config`, owner-gated live flip), every new pooled connection gets that
+  per-statement cap, bounding the whole interactive-write class at the source; the migration runner
+  opts out per-txn (`SET LOCAL statement_timeout = 0`). Until that config is wired and flipped,
+  wrap any new interactive admin-pool write in `boundedOrgTxn` yourself.

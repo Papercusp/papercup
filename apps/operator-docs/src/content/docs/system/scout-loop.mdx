@@ -50,7 +50,7 @@ corpus synthesis → divergent generation → adversarial critics
 | Stage | What it does | Module |
 |---|---|---|
 | **1. Corpus synthesis** | Roll up cross-corpus *meta-patterns* over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth **`rubric-rating`** lane folding in structured rubric measurements grouped by `(rubric, source-hive, criterion)` (rubric-driven-observations-2026-06-20), so ideators leap from *measurements*, not just free-text clusters — the introspection the idea queue can't do (D-003). | `corpus-digest.ts` (`synthesizeStateOfHive`, `buildRubricRatings`) + `corpus-digest-deps.ts` |
-| **2. Divergent generation** | N ideators, each a *distinct* `CreativeLens` (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one "be creative" prompt (D-004). | `ideators.ts` (`runIdeators`) + `lenses.ts` |
+| **2. Divergent generation** | N ideators, each a *distinct* `CreativeLens` (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one "be creative" prompt (D-004). Each call has a 180s wall-clock cap (`DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS`); a cycle-level `signal` propagates parent cancellation. When ALL ideators fail their LLM call and produce zero ideas, the cycle adapter raises `ScoutIdeatorsTransportError` (total transport death — distinct from a healthy "no ideas" cycle). Partial failures never throw. | `ideators.ts` (`runIdeators`) + `lenses.ts` |
 | **3. Adversarial critics** | A **novelty** critic (search-first vs the corpus — reject the already-tried) and a **feasibility** critic, in tension, plus a high-novelty/low-feasibility **moonshot bucket** so leaps survive (D-005). | `critics.ts` (`critiqueIdeas`) + `critique-core.ts` (the pure spine) |
 | **4. Debate + recombine** | Merge surviving critiques (A's mechanism + B's framing) into proposals, each carrying a **required, structured cheap experiment** — the anti-bullshit gate (D-006). | `recombine.ts` (`recombineProposals`) |
 | **5. Routing** | Dispatch each proposal into exactly one rail: broad → `plans:new` draft / testable *component* → the gym / concrete → `improvements:capture` (D-007) / testable *whole-system* → the eval-battery **`instance`** rail. | `router.ts` (`routeProposals`) + `router-deps.ts` |
@@ -115,6 +115,12 @@ Three behaviours the composition owns:
   step — a fresh/quiet hive spends $0 instead of paying the full ideator roster
   to reach `no-ideas`. `headline`/`generatedAt` don't count; only patterns ground
   ideas.
+- **Transport-death guard.** `ScoutIdeatorsTransportError` (defined in `ideators.ts`, raised
+  by the cycle adapter `cycle-deps.ts`) distinguishes a **total transport failure** (every
+  ideator's LLM call failed → 0 ideas, $0 spend) from a healthy empty cycle (ideators ran
+  fine, model returned nothing). When raised, the scheduler records an `error` tick in
+  `scout_ticks` and calls `recordFire('error')` so the autoloop fire-gate backs off instead
+  of hammering a dead gateway every cadence. Partial failures (≥1 ideator OK) never throw.
 - **Phase reporter (`ScoutCyclePhase`, 2026-06-25).** `ScoutCycleDeps` accepts an
   optional `onPhase?: (phase: ScoutCyclePhase) => void` callback. The cycle calls
   `markPhase(phase)` at each major stage boundary (`read-corpus`, `ideate`,
