@@ -1,7 +1,7 @@
 # Why the MCP server 'keeps going down': it IS :3070, deploys restart it, and a bad swap crash-loops it
 URL: /internal/docs/agent-insights/mcp-host-3070-deploy-restarts-and-verify-before-cutover
 
-The papercusp-su MCP endpoint is served by :3070 (the green release checkout), so every deploy restarts it and a botched deploy (incomplete node_modules) used to MODULE_NOT_FOUND crash-loop it. The layered fix: a workspace-resolution gate + a pre-cutover boot preflight (verify-before-restart, zero-downtime abort) + an opt-in reconnecting local MCP proxy.
+The papercusp-su MCP endpoint is served by :3070 (the green release checkout), so every deploy restarts it and a botched deploy (incomplete node_modules) used to MODULE_NOT_FOUND crash-loop it. Five layered defenses: atomic node_modules swap (2026-06-25) + native-addon ABI auto-rebuild + workspace-resolution gate + pre-cutover boot preflight (verify-before-restart, zero-downtime abort) + an opt-in reconnecting local MCP proxy.
 
 ## What
 
@@ -13,7 +13,7 @@ crash-looped), because the MCP control plane rides the deployable operator proce
 ## Why — MCP availability is coupled to :3070's restart cycle
 
 The `papercusp-su` MCP endpoint is `http://localhost:3070/api/mcp`. **`:3070` =
-`papercup-dev-api` = the GREEN release checkout** (`papercup-release`, pinned to `main`).
+`papercup-dev-api` = the GREEN release checkout** (`papercusp-release`, pinned to `main`).
 So:
 
 * **Every deploy restarts `:3070`** (clean SIGTERM-drain). A native MCP client (Claude
@@ -35,26 +35,48 @@ runtime crash). `dev:service_health` + `dev:pipeline_position --path <file>` sho
 
 ## The layered defenses (server side)
 
-Three gates, source → cutover, all live in the deploy mechanics:
+Five gates, source → cutover, all live in the deploy mechanics:
 
-1. **Workspace-resolution gate** (`setup-release-checkout.sh`, EI-2118). After the
-   node\_modules sync, if any `@papercusp/@papercup` workspace package resolves in the
-   integration tree but **not** the release tree, the script **aborts non-zero before any
-   restart**. Runs for all three callers (deploy, green-checkpoint, staging-sync). Pure
-   shell; catches the recurring dangling-workspace-symlink class at the source.
+1. **Atomic node\_modules swap** (`setup-release-checkout.sh` `sync_one_node_modules()`,
+   2026-06-25). The hardlink-copy of `node_modules` from the integration tree is now
+   **atomic**: the source is copied into a sibling temp dir first, then swapped into place
+   with two fast renames — so the live operator's cluster workers that respawn mid-copy
+   **never see a half-populated `node_modules`**. The previous in-place `rm -rf "$dest";
+   cp -al` opened a \~1-minute window; the 2026-06-25 all-pages connection-refused outage
+   happened exactly in that window (workers exhausted the 160-respawn budget on
+   `MODULE_NOT_FOUND` for `@modelcontextprotocol/sdk`/`@papercusp/plugin-loader`). Two
+   renames shrink the exposure to the microseconds between two `rename(2)` syscalls.
 
-2. **Pre-cutover boot preflight** (`deploy.ts` `executeDeploy` + `deploy-deps.ts`
+2. **Native-addon ABI guard** (`setup-release-checkout.sh` step 3d,
+   `infra-fail-fast-build-integrity-2026-06-19` P-003). After the node\_modules copy,
+   each runtime-critical native addon (default: `better-sqlite3`; override via
+   `PAPERCUSP_PREFLIGHT_ADDONS`) is verified to load under the operator's own `node` ABI.
+   A mismatch triggers `npm rebuild` in the release checkout in place — turning the
+   hard crash-loop (2026-06-19: `better-sqlite3` built for Node 22 ABI 127, runtime Node
+   25 ABI 141 → "Module did not self-register" → mem0 never came up → all
+   memory-touching handlers hung behind a green health check) into **auto-recovery before
+   cutover**. Non-fatal: the deploy-gate native-addon preflight in `lib/native-addon-preflight.ts`
+   is the hard block; this step turns that block into a self-heal.
+
+3. **Workspace-resolution gate** (`setup-release-checkout.sh` step 3c, EI-2118). After the
+   node\_modules sync (and ABI guard), if any `@papercusp/@papercup` workspace package
+   resolves in the integration tree but **not** the release tree, the script **aborts
+   non-zero before any restart**. Runs for all three callers (deploy, green-checkpoint,
+   staging-sync). Pure shell; catches the recurring dangling-workspace-symlink class at
+   the source.
+
+4. **Pre-cutover boot preflight** (`deploy.ts` `executeDeploy` + `deploy-deps.ts`
    `realDeps.preflight`, plan `mcp-host-availability-resilience-2026-06-22` P-001). After
    the swap and **before** the live `:3070` restart, a child process imports the swapped
    checkout's side-effect-free `host-handler` module graph (`npx tsx -e`, mirroring the
    launch — no server/bootstrap/DB). A missing dep throws `MODULE_NOT_FOUND` *there*, so
    the deploy **aborts before cutover** — the old process keeps serving, **zero downtime**.
-   This catches ALL deps (not just workspace pkgs), complementing gate (1). The deploy
+   This catches ALL deps (not just workspace pkgs), complementing gate (3). The deploy
    tracks `migrateRan`/`liveCutover`: a pre-cutover failure reverts the tree with no
    restart; the rollback path re-runs the preflight so it can't cut into a SECOND
    crash-loop (prev-won't-boot → skip restart + loud manual-recovery broadcast).
 
-3. (Downstream) the green-checkpoint runs the test suite and `sync-staging-checkout` boots
+5. (Downstream) the green-checkpoint runs the test suite and `sync-staging-checkout` boots
    `:3170`, so a missing **non-workspace** dep on those paths surfaces as a test red /
    staging fault rather than silently shipping.
 
@@ -76,6 +98,7 @@ when a session's client has already dropped.
 ## TL;DR for the next agent
 
 "MCP is down" almost always = `:3070` restarted (deploy) or crash-looped (bad swap),
-not a server crash. The crash-loop class is now gated (verify-before-cutover); for a
+not a server crash. The crash-loop class is now multi-gated: atomic node\_modules swap →
+native-addon ABI auto-rebuild → workspace-resolution abort → verify-before-cutover. For a
 dropped *client*, fully relaunch the session (`/mcp` reconnect won't repopulate tools) or
 drive tools via `scripts/su-mcp.ts` until it reconnects.

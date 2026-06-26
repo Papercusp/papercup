@@ -65,6 +65,24 @@ Two footguns the script already handles, but you must know:
   workspace-scoped WRITE tool, set `FED_MCP_WS=default` so `fed.sh` injects
   `workspace:"default"` (OPT-IN — blanket injection breaks READ tools that reject an
   unknown `workspace` key).
+  * **WI-892 (FIXED 2026-06-26, su-549e0214): the `'*'` sentinel was LEAKING into
+    `harness_shared.hive_members` WRITES.** The hive-membership write tools resolved
+    `args.workspace ?? ctx.workspaceId ?? … ?? activeWorkspaceId()` — a truthy `'*'` wins,
+    so the `activeWorkspaceId()` fallback never fired and `'*'` was persisted as
+    `workspace_id`. A `'*'`-stamped row is **invisible to every concrete-workspace read**
+    (the membership guard, epoch-key grant, and cross-member content federation all filter
+    `WHERE workspace_id='<concrete>'`), so the operator's member view silently diverged from
+    the raw table (live proof on fed-a: 18 `'*'` rows; `b8recv-hive` 1 row total, 0 visible
+    under `workspace_id='default'`). MERGED rows are unaffected — `projections/hive-members.ts`
+    writes the local concrete `opts.workspaceId`, which is why a federated member can
+    "self-heal" to `default` after a re-merge. **Fix:** `resolveConcreteWorkspaceId(...candidates)`
+    in `workspace-registry.ts` (skips `'*'`/empty, never returns `'*'`) is now used by every
+    hive write tool; `upsertHiveMember`/`addRevokedHivePubkeys`/`remove*` throw on `'*'`/empty;
+    migration `406-hive-members-forbid-wildcard-workspace` backfills + adds
+    `CHECK (workspace_id <> '*' AND <> '')`. **Use `resolveConcreteWorkspaceId` for ANY write
+    that persists a `workspace_id` — `'*'` is a read sentinel, never a storable value.** (The
+    same leak likely affects the `hives` table itself — `hive:create` under unscoped MCP also
+    stamped its hives row `'*'` — a broader-class follow-up; see WI-892.)
 
 ## The two-path admission model — the thing you are actually debugging
 
@@ -186,6 +204,21 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
   back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is
   the #1 silent-local-only cause after a VM reset).
 * `merge_error`, `rekey_grant_*`, `rekey_boundary_skipped` — apply/re-key layer.
+* `epoch_gate_built` — the decrypt gate **IS** installed for this harness (non-null `rekeyDeps`);
+  carries `hiveHomeSlug` = the AAD hiveId. Absence means encrypted ops are applied raw, unchecked.
+* `epoch_gate_seen` — an encrypted-looking op (epoch-stamped OR `{__rekey}` value) **reached**
+  the gate. Distinguishes "content dropped upstream of the gate" (this never fires) from "reached
+  the gate but was processed" (fires, with `epoch=NULL` flagging the wire-stamp-lost case).
+* `epoch_defer` — op deferred: its epoch key is not yet local on this node. Will be replayed when
+  the key arrives via `drainQueuedEpochContent`.
+* `epoch_decrypt_fail` — have an epoch key but decrypt failed (wrong key / AAD mismatch — `hiveId`
+  must be the LOCAL home slug, not a federated field) → op **dropped**. A persistent stream of
+  these means the encrypt AAD and decrypt AAD disagree on the hive identity.
+* `epoch_applied` — encrypted op decrypted and applied successfully (the success path).
+
+These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06-25): previously
+all four non-success paths were **silent** (`return false`), leaving a federated op that never
+landed with no diagnostic signal at all.
 
 ## The diagnostic ladder (use this order)
 

@@ -20,7 +20,7 @@ a declarable **domain profile** and shipped **`generic-hive`** — the non-codin
 of the coding `hive`.
 
 ```bash
-hive:create { slug: 'my-research-hive', blueprintId: 'generic-hive', wakeInSeconds: 0 }
+hive:create { slug: 'my-research-hive', blueprintId: 'work', wakeInSeconds: 0 }
 ```
 
 stands up a Hive whose Queen places **research / analysis / deliberation** work onto bees
@@ -32,7 +32,7 @@ that produce **deliverables** (reports, decisions, documents):
 * **`affinity.kind: topic-overlap`** — the Queen co-locates/decomposes by subject, not files.
 * **`dependencies.blueprints: [research, review, vote]`** — the work-blueprints its bees spawn.
 
-Shipped as **`generic-hive extends hive`** (D-009), NOT a strict 3-deep `base-hive` split:
+Shipped as **`work extends coding`** (D-009, canonical ids; legacy: `generic-hive extends hive`), NOT a strict 3-deep `base-hive` split:
 the live `hive` is already the de-facto base + coding hive (repo-less, generic roles, only its
 `prompts/queen.md` is file-coded), and repointing the running fleet to a renamed `coding-hive`
 was the risky part. So `generic-hive` is an additive sibling; `hive` stays the coding hive.
@@ -80,7 +80,7 @@ registered **`judge`** role (a FROZEN\_OVERLAY role), not a new `acceptance-judg
 
 | Concern                 | Source                                                                                 |
 | ----------------------- | -------------------------------------------------------------------------------------- |
-| Blueprint + personas    | `libs/papercusp/packages/harness/blueprints/generic-hive/`                             |
+| Blueprint + personas    | `libs/papercusp/packages/harness/blueprints/work/`                                     |
 | Domain-profile schema   | `libs/papercusp/packages/orchestrator/src/blueprint/schema.ts`                         |
 | Acceptance/output gate  | `packages/operator-core/lib/dbos/orchestrator-finalize.ts` + `orchestrator-runner.ts`  |
 | Affinity presets        | `packages/operator-core/lib/fleet/placement-affinity.ts` + `place_batch.ts`            |

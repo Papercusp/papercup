@@ -97,3 +97,30 @@ disable the FS→PG mirror on **every** process and silently stale the harness p
   The file-watcher budget is.
 
 Tracked as EI-3385.
+
+## Boot-failure backstop (`onUnbootable`, 2026-06-25)
+
+A separate enhancement in `cluster-fork.ts` (same file): an optional
+`onUnbootable` callback arms a **fast-stop** when workers cannot boot at all —
+distinct from a runtime crash that happens after a worker is healthy.
+
+The heuristic: a worker that exits within `bootGraceMs` (default **10 s**) of
+being forked is counted as a **consecutive boot failure**. Once
+`consecutiveBootFailures >= workers` (every slot in the cluster has failed to
+boot, with no worker ever staying up past the grace threshold), the cluster
+declares itself **UNBOOTABLE**, logs a fatal, and calls `onUnbootable` instead
+of respawning into an infinite crash loop.
+
+Key state tracked per cluster lifecycle:
+
+* `sawHealthy` — true once ANY worker has survived past `bootGraceMs`; if set,
+  a fast exit is treated as a normal runtime crash and respawned within budget
+  (the build can boot, this is a runtime failure).
+* `consecutiveBootFailures` — count of workers that exited inside the grace
+  window before any worker was seen healthy; reset to 0 when `sawHealthy` flips.
+
+This backstop is **OPT-IN** — pass `onUnbootable` to arm it; without it the
+legacy respawn-budget behaviour continues. The production runner passes it so
+that a build that can never start (wrong Node version, missing native dep,
+MODULE\_NOT\_FOUND at startup) stops fast and surfaces cleanly instead of
+thrashing systemd's restart throttle.

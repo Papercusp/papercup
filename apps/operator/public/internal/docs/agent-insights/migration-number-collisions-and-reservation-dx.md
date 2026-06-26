@@ -1,7 +1,7 @@
-# Migration-number collisions: the reservation tool is MCP-only and lint:migrations isn't gated
+# Migration-number collisions: the reservation tool and lint:migrations aren't gated
 URL: /internal/docs/agent-insights/migration-number-collisions-and-reservation-dx
 
-Two agents racing `ls | tail` pick the same NNN-*.sql number; on the native :5432 box only one colliding file applies, so a table silently goes dark. db:next-migration prevents this but is an MCP-only agent-tool (no npm script) and the MCP client is currently dropped, so peers hand-pick and collide. lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
+Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles. lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
 
 ## What
 
@@ -40,18 +40,28 @@ boot-apply semantics.
 
 ## Why it keeps happening (three compounding gaps)
 
-1. **`db:next-migration` is MCP-only.** The atomic allocator (advisory lock +
-   `harness_shared.migration_reservations`, GREATEST(max-on-disk, max-reserved,
-   max-applied)+1) lives in `next_migration.ts` as a `defineTool` agent-tool.
-   There is **no `npm run db:next-migration`** script. An agent (or human) who
-   isn't already wired into the harness MCP just does `ls | tail` and hand-picks
-   — exactly the racing path the tool was built to replace. The lint error even
-   says "use db:next-migration", naming a command that doesn't exist as a script.
+1. **`db:next-migration` is the safe path, but was MCP-only until 2026-06-20.** The atomic
+   allocator (advisory lock + `harness_shared.migration_reservations`,
+   GREATEST(max-on-disk across the serving + staging trees, max-reserved, max-applied)+1)
+   lives in `next_migration.ts` as a `defineTool` agent-tool.
+   ~~There is **no `npm run db:next-migration`** script.~~ **Fixed (2026-06-20)** — see
+   the "How to allocate a number now" section and item #1 in the Recommended fix section.
+   An agent (or human) who isn't wired into the harness MCP still does `ls | tail`
+   and hand-picks — exactly the racing path the tool was built to replace.
+   The lint error even says "use db:next-migration", naming a command that (before
+   the fix) didn't exist as a script.
 
-2. **The MCP client is currently dropped.** Live peer presence this session
-   (`coord_presence`) notes *"harness MCP client still dropped… working via direct
-   MCP-over-curl."* So even MCP-aware agents can't reach `db:next-migration`
-   through the normal client right now, pushing everyone back to hand-picking.
+   **Role access (2026-06-25):** `db:next-migration` previously used `agentRoles: [...SU_ROLES, 'bee']` — only superuser-role agents and the generic bee could call
+   it. Changed to `agentRoles: [...AGENT_ROLES]`: every built-in role (worker,
+   validator, reviewer, architect, etc.) can now call the MCP tool directly and
+   participate in collision-free allocation without falling back to the npm CLI.
+
+2. ~~**The MCP client is currently dropped.**~~ **Historical note (2026-06-20):** At the
+   time of discovery the harness MCP client was dropped, so even MCP-aware agents
+   couldn't reach `db:next-migration` and fell back to hand-picking. The npm CLI
+   (`npm run db:next-migration`) was added precisely to fix this (gap #1 fix). The
+   MCP client drop is a session-specific transient; the systematic fix is the CLI +
+   the per-role access expansion (see gap #1 update above).
 
 3. **`lint:migrations` is not gated.** `scripts/lint-migrations.mjs` already
    detects (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would

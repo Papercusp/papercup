@@ -20,6 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { sendMessage, getMessageById } from '../messages';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
+import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
@@ -43,6 +44,11 @@ interface SendMsg {
   wake?: boolean | 'required' | 'optimistic';
   wakeOnReply?: boolean;
   endTurn?: boolean;
+  /** FF#1: name the DURABLE BACKSTOP that will re-dispatch a wake:'optimistic' miss
+   *  (e.g. 'queen-survey re-dispatches'). Optimistic is silent-on-miss ONLY when a
+   *  backstop is declared; WITHOUT one, an optimistic miss is reported as loudly as a
+   *  required miss (recipient_absent) — silence must be consciously claimed. */
+  backstop?: string;
 }
 
 /** Whether `to` is a DIRECTED send: at least one recipient, ALL concrete (none a
@@ -56,7 +62,7 @@ const wakeArg = z
   .union([z.boolean(), z.enum(['required', 'optimistic'])])
   .optional()
   .describe(
-    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort over a durable backstop (wake if present, shrug if not — e.g. the Queen survey re-dispatches anyway); a miss is silent. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when a durable backstop re-dispatches a miss (e.g. the Queen survey); its miss is SILENT — you still get woken:0 but NO recipient_absent, so do NOT use it to hand work to a specific agent with no backstop (you will not be told nobody picked it up — use 'required' and verify woken≥1, or coord:handoff). Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
   );
 
 const wakeOnReplyArg = z
@@ -300,6 +306,16 @@ async function sendOne(
           'was injected; a live-but-paused recipient sees it next turn, but none was re-invoked now. ' +
           'Confirm the recipient is actually running (coord:presence) before assuming pickup.';
       }
+    } else if (wakeMode === 'optimistic' && fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
+      // Optimistic misses are intentionally NOT escalated to recipient_absent (a durable
+      // backstop is assumed). Still surface a concise, NON-LOUD note so a transfer mistakenly
+      // sent optimistic to a now-dead agent isn't silently swallowed — the incident that
+      // motivated this (a deploy handoff that woke nobody and got read as "fine, the backstop
+      // will get it" when there was no backstop). Not a recipient_absent: the inbox row persisted.
+      wake.note =
+        `optimistic wake reached no live session for: ${fan.targets.join(', ')} (woken:0) — SILENT by design. ` +
+        'Only safe if a durable backstop (e.g. the Queen survey) re-dispatches. If this was a one-off transfer ' +
+        "to these agents, it was NOT picked up — use wake:'required' (or coord:handoff) and verify pickup.";
     }
   }
 
@@ -345,8 +361,8 @@ export default defineTool({
   description:
     'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. Default: INJECTED — lands in the recipient\'s inbox, seen next turn (cheap). `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. By default a DIRECTED send sets `wakeOnReply` — when a peer REPLIES (their related_msg_id = your msg_id) YOU are auto-woken so you re-invoke the moment the reply lands (set wakeOnReply:false to opt out; broadcasts default off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
   guidance: {
-    when: 'Sharing context, asking a question, or handing off work. Send several DISTINCT messages at once via items:[…] instead of looping. wake:\'required\' ONLY when the recipient is idle and MUST act now (a Queen waking a sleeping bee) — a miss returns recipient_absent. wake:\'optimistic\' when a durable backstop catches a miss (the Queen survey re-dispatches). A running recipient already sees the inject mid-turn — a wake is wasted on it.',
-    notWhen: 'For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don\'t set a wake for routine/ambient notes — a wake is a billable turn (inject is the default, wake the deliberate opt-in). For ONE message to MANY recipients, use the single form with `to:[…]` — `items` is the "many distinct messages" axis, not the multi-recipient one.',
+    when: 'Sharing context or asking a question. Send several DISTINCT messages at once via items:[…] instead of looping. wake:\'required\' ONLY when the recipient is idle and MUST act now (a Queen waking a sleeping bee) — a miss returns recipient_absent. wake:\'optimistic\' ONLY when a durable backstop catches a miss (the Queen survey re-dispatches). A running recipient already sees the inject mid-turn — a wake is wasted on it.',
+    notWhen: 'For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don\'t set a wake for routine/ambient notes — a wake is a billable turn (inject is the default, wake the deliberate opt-in). For ONE message to MANY recipients, use the single form with `to:[…]` — `items` is the "many distinct messages" axis, not the multi-recipient one. For a work/ownership TRANSFER (you are done; a NAMED agent picks up) use coord:handoff, not coord:send — handoff tracks acceptance and auto-re-pings/expires an un-acked offer; coord:send has no pickup lifecycle. And NEVER hand off with wake:\'optimistic\' to a specific agent with no backstop: its miss is SILENT (you get woken:0 but no recipient_absent), so you will NOT be told nobody took it — use wake:\'required\' and confirm woken≥1, or coord:handoff.',
   },
   capability: 'coord:write',
   requirePrincipal: false,

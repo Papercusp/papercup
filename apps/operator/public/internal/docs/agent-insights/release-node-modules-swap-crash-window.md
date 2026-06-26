@@ -9,7 +9,7 @@ URL: /internal/docs/agent-insights/release-node-modules-swap-crash-window
 
 ```
 [hono-host] fatal unhandledRejection — exiting: Error: Cannot find module
-  '.../papercup-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js'  code: 'MODULE_NOT_FOUND'
+  '.../papercusp-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js'  code: 'MODULE_NOT_FOUND'
 [cluster] worker N exited (code=1 signal=null); respawn budget exhausted (160) — NOT respawning
 [cluster] SIGTERM — draining 32 worker(s) + exiting primary
 ```
@@ -18,7 +18,7 @@ URL: /internal/docs/agent-insights/release-node-modules-swap-crash-window
 
 ## The mechanism (root cause)
 
-`:3070` runs the `papercup-release` checkout. A deploy shells `setup-release-checkout.sh`, whose step 3 historically refreshed node\_modules **in place**:
+`:3070` runs the `papercusp-release` checkout. A deploy shells `setup-release-checkout.sh`, whose step 3 historically refreshed node\_modules **in place**:
 
 ```sh
 [ -e "$dest" ] && rm -rf "$dest"      # deletes the LIVE root node_modules
@@ -42,8 +42,8 @@ Layer 1 prevents the window; layers 2–3 turn any *remaining* inconsistency (a 
 ## Diagnosing / recovering a live incident
 
 * `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3070/api/health` → `000`/connection-refused = down; the journal grep above confirms the MODULE\_NOT\_FOUND crash-loop.
-* It usually **self-recovers** once the in-place copy finishes; if wedged, the documented recovery is `systemctl --user stop papercup-dev-api.service` then re-run the deploy (`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute --no-drain`) or `npm ci` in `papercup-release` to complete node\_modules.
-* Confirm `papercup-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js` and `@papercusp/plugin-loader` resolve (`cd papercup-release && node -e "require.resolve('@papercusp/plugin-loader')"`).
+* It usually **self-recovers** once the in-place copy finishes; if wedged, the documented recovery is `systemctl --user stop papercup-dev-api.service` then re-run the deploy (`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute --no-drain`) or `npm ci` in `papercusp-release` to complete node\_modules.
+* Confirm `papercusp-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js` and `@papercusp/plugin-loader` resolve (`cd papercusp-release && node -e "require.resolve('@papercusp/plugin-loader')"`).
 
 ## Related
 

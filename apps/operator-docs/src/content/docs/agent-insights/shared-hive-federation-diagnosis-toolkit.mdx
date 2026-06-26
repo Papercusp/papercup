@@ -78,6 +78,24 @@ Two footguns the script already handles, but you must know:
   workspace-scoped WRITE tool, set `FED_MCP_WS=default` so `fed.sh` injects
   `workspace:"default"` (OPT-IN — blanket injection breaks READ tools that reject an
   unknown `workspace` key).
+  - **WI-892 (FIXED 2026-06-26, su-549e0214): the `'*'` sentinel was LEAKING into
+    `harness_shared.hive_members` WRITES.** The hive-membership write tools resolved
+    `args.workspace ?? ctx.workspaceId ?? … ?? activeWorkspaceId()` — a truthy `'*'` wins,
+    so the `activeWorkspaceId()` fallback never fired and `'*'` was persisted as
+    `workspace_id`. A `'*'`-stamped row is **invisible to every concrete-workspace read**
+    (the membership guard, epoch-key grant, and cross-member content federation all filter
+    `WHERE workspace_id='<concrete>'`), so the operator's member view silently diverged from
+    the raw table (live proof on fed-a: 18 `'*'` rows; `b8recv-hive` 1 row total, 0 visible
+    under `workspace_id='default'`). MERGED rows are unaffected — `projections/hive-members.ts`
+    writes the local concrete `opts.workspaceId`, which is why a federated member can
+    "self-heal" to `default` after a re-merge. **Fix:** `resolveConcreteWorkspaceId(...candidates)`
+    in `workspace-registry.ts` (skips `'*'`/empty, never returns `'*'`) is now used by every
+    hive write tool; `upsertHiveMember`/`addRevokedHivePubkeys`/`remove*` throw on `'*'`/empty;
+    migration `406-hive-members-forbid-wildcard-workspace` backfills + adds
+    `CHECK (workspace_id <> '*' AND <> '')`. **Use `resolveConcreteWorkspaceId` for ANY write
+    that persists a `workspace_id` — `'*'` is a read sentinel, never a storable value.** (The
+    same leak likely affects the `hives` table itself — `hive:create` under unscoped MCP also
+    stamped its hives row `'*'` — a broader-class follow-up; see WI-892.)
 
 ## The two-path admission model — the thing you are actually debugging
 

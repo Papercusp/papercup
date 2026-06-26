@@ -41,6 +41,8 @@ beforeAll(async () => {
   db = await createFreshPgDb('hive-members');
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '184-hives-table.sql'), 'utf8'));
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '185-hive-members-admission.sql'), 'utf8'));
+  // WI-892 / EI-3409: forbid the '*' wildcard workspace_id (heal + CHECK constraint).
+  await db.sql.unsafe(readFileSync(join(SQL_DIR, '406-hive-members-forbid-wildcard-workspace.sql'), 'utf8'));
 });
 
 afterAll(async () => {
@@ -129,6 +131,58 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a' }, db.sql);
     await deleteHive(WS, HIVE, db.sql);
     expect(await listHiveMembers(WS, HIVE, db.sql)).toHaveLength(0);
+  });
+
+  describe('WI-892 / EI-3409 — the "*" read sentinel must never become a stored workspace_id', () => {
+    it('the operator member view == the raw rows (no silent divergence) for a concrete workspace', async () => {
+      await seedHive();
+      // Two admitted members under the SAME concrete workspace — the hello-world-hive shape.
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'owner', deviceAttestations: [dev('pk-o')], bindingStatus: 'verified' },
+        db.sql,
+      );
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 2, githubUsername: 'joiner', deviceAttestations: [dev('pk-j')], bindingStatus: 'verified' },
+        db.sql,
+      );
+      // The operator's authoritative read…
+      const view = await listHiveMembers(WS, HIVE, db.sql);
+      // …vs the raw table rows for the same (workspace, hive).
+      const raw = (await db.sql.unsafe(
+        `SELECT github_user_id FROM harness_shared.hive_members
+          WHERE workspace_id = $1 AND hive_home_slug = $2`,
+        [WS, HIVE],
+      )) as unknown as Array<{ github_user_id: string | number }>;
+      expect(view.map((m) => m.githubUserId).sort()).toEqual([1, 2]);
+      expect(view).toHaveLength(raw.length); // the divergence WI-892 reported is gone
+    });
+
+    it('upsertHiveMember REFUSES the "*" sentinel and empty/blank — loudly, with the EI-3409 reason', async () => {
+      await seedHive();
+      await expect(
+        upsertHiveMember({ workspaceId: '*', hiveHomeSlug: HIVE, githubUserId: 9, githubUsername: 'x' }, db.sql),
+      ).rejects.toThrow(/EI-3409|read sentinel/);
+      await expect(
+        upsertHiveMember({ workspaceId: '', hiveHomeSlug: HIVE, githubUserId: 9, githubUsername: 'x' }, db.sql),
+      ).rejects.toThrow(/read sentinel/);
+      // and nothing leaked into the table
+      const leaked = (await db.sql.unsafe(
+        `SELECT count(*)::int AS n FROM harness_shared.hive_members WHERE workspace_id = '*'`,
+      )) as unknown as Array<{ n: number }>;
+      expect(leaked[0].n).toBe(0);
+    });
+
+    it('the migration-406 CHECK constraint blocks a raw INSERT of a "*" workspace_id (the data-layer backstop)', async () => {
+      await seedHive();
+      await expect(
+        db.sql.unsafe(
+          `INSERT INTO harness_shared.hive_members
+             (workspace_id, hive_home_slug, github_user_id, github_username, binding_status)
+           VALUES ('*', $1, 3, 'sneaky', 'verified')`,
+          [HIVE],
+        ),
+      ).rejects.toThrow(/hive_members_workspace_id_concrete|check constraint/i);
+    });
   });
 
   it('the REUSED read-admission decider denies a Hive-revoked pubkey (P-006 admission semantics)', async () => {

@@ -70,7 +70,7 @@ and release trees **never `npm install`** — `apps/operator/bin/release/setup-r
 **hardlink-copies** node\_modules from the integration tree (step 3) and, in `auto`
 mode, **skips even that copy** when only `patches/` changed (a new patch alters no
 lockfile / workspace-package set). Net effect before the fix below: a committed
-patch reached neither `papercup-checkpoint` nor `papercup-release` — so
+patch reached neither `papercup-checkpoint` nor `papercusp-release` — so
 green-checkpoint ran UNPATCHED and redded the patch's own regression test (a
 self-inflicted deadlock: the red gate blocks the deploy that would apply the patch),
 and `:3070` never got the fix. The setup script now runs `patch-package` after the
@@ -78,6 +78,17 @@ node\_modules step every checkpoint/deploy (idempotent, guarded, non-fatal). If 
 add a dep patch, **verify it's actually applied post-deploy** —
 `grep <your-marker> <tree>/node_modules/<pkg>/...`; don't assume the committed
 `.patch` is live.
+
+**Subsequent hardening in the same script (2026-06-25):** the node\_modules hardlink-copy
+(step 3) is now **atomic** — `sync_one_node_modules()` copies into a sibling temp dir
+first, then swaps into place with two fast renames, so the live operator's cluster workers
+that respawn mid-copy never see a half-populated `node_modules` window (the previous
+in-place `rm -rf "$dest"; cp -al` opened a \~1-minute gap that caused a 2026-06-25
+all-pages connection-refused outage when workers exhausted their respawn budget on
+`MODULE_NOT_FOUND`). The patch-package re-apply in step 3b still follows this copy.
+Additionally, **step 3d** (native-addon ABI guard) verifies each runtime-critical native
+addon (e.g. `better-sqlite3`) loads under the operator's Node ABI and calls `npm rebuild`
+in place on a mismatch, turning a hard crash-loop into an auto-recovery.
 
 ## Verify / where it lands
 

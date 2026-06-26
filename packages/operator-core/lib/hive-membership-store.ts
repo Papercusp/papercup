@@ -101,6 +101,27 @@ function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
 }
 
+/**
+ * WI-892 / EI-3409 write-boundary guard. `'*'` is the unscoped-superuser READ sentinel
+ * (`ctx.workspaceId` for a `?superuser=1` session that chose no workspace), never a storable
+ * workspace. A hive_members row written under `workspace_id='*'` (or empty) is invisible to
+ * EVERY concrete-workspace read — the membership guard, epoch-key grant, and cross-member
+ * content federation all filter `WHERE workspace_id = '<concrete>'` — so it silently breaks
+ * shared-hive federation. Refuse it LOUDLY here so the leak can never be silent again: the
+ * tool sites resolve a concrete workspace (`resolveConcreteWorkspaceId`) before calling in,
+ * and migration 406's CHECK constraint is the data-layer backstop for any writer that
+ * bypasses this fn (e.g. the projection's own INSERT).
+ */
+function assertStorableWorkspaceId(workspaceId: string, op: string): void {
+  if (!workspaceId || !workspaceId.trim() || workspaceId === '*') {
+    throw new Error(
+      `[hive-members] ${op}: refusing workspace_id=${JSON.stringify(workspaceId)} — ` +
+        `'*'/empty is a read sentinel, not a storable workspace (EI-3409/WI-892). ` +
+        `Resolve a concrete workspace (resolveConcreteWorkspaceId) before writing.`,
+    );
+  }
+}
+
 const COLS = `workspace_id, hive_home_slug, github_user_id, github_username,
   display_name, avatar_url, device_attestations, revoked_pubkeys, binding_status`;
 
@@ -244,6 +265,7 @@ export async function upsertHiveMember(
   input: UpsertHiveMemberInput,
   sql?: Sql,
 ): Promise<HiveMemberRecord> {
+  assertStorableWorkspaceId(input.workspaceId, 'upsertHiveMember');
   const rows = (await pg(sql).unsafe(
     `INSERT INTO harness_shared.hive_members
        (workspace_id, hive_home_slug, github_user_id, github_username,
@@ -356,6 +378,7 @@ export async function addRevokedHivePubkeys(
   pubkeys: string[],
   sql?: Sql,
 ): Promise<HiveMemberRecord | null> {
+  assertStorableWorkspaceId(workspaceId, 'addRevokedHivePubkeys');
   if (pubkeys.length === 0) {
     return getHiveMember(workspaceId, hiveHomeSlug, ownerGithubUserId, sql);
   }
@@ -387,6 +410,7 @@ export async function removeHiveMember(
   githubUserId: number,
   sql?: Sql,
 ): Promise<number> {
+  assertStorableWorkspaceId(workspaceId, 'removeHiveMember');
   const res = await pg(sql).unsafe(
     `DELETE FROM harness_shared.hive_members
       WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3`,
@@ -409,6 +433,7 @@ export async function removeAllHiveMembers(
   hiveHomeSlug: string,
   sql?: Sql,
 ): Promise<number> {
+  assertStorableWorkspaceId(workspaceId, 'removeAllHiveMembers');
   const res = await pg(sql).unsafe(
     `DELETE FROM harness_shared.hive_members
       WHERE workspace_id = $1 AND hive_home_slug = $2`,

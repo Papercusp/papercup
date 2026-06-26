@@ -81,3 +81,46 @@ None of these proves the WORK is advancing. The missing third signal was
 The durable fix makes the QUERY truthful so you needn't hand-verify; the prompt
 clause (`AGENT_ACTIVITY_TRUTH_NOTE`, shared across every role) reinforces "trust
 the live signal, not the announcement."
+
+## The corollary: a HANDOFF is not a pickup, and `woken:0` is a miss (2026-06-26)
+
+The same class re-surfaced from the OTHER direction — not "I read a stale broadcast"
+but "I made a stale read and then handed work to a ghost." An interactive `su`
+session needed a `:3070` deploy driven. It read the fleet ONCE at session start,
+saw `su-559a4885` `alive:true` with intent "hardening the gate," and then **carried
+that snapshot \~13h** while asserting "they're actively on it." By the time it
+`coord:send`'d the deploy to that agent, the agent had **ended hours earlier**. The
+send used `wake:'optimistic'` and came back `woken:0` — which was read as "fine, a
+backstop will get it." There was no backstop. The deploy was queued for a ghost.
+
+Two failures, both avoidable with signals that ALREADY existed:
+
+1. **Declared intent ≠ progress, and a snapshot decays.** `coord:presence` already
+   exposes `lastActiveSecAgo`, `sessionState` (live | parked | **ended**), and
+   `intentStale` right next to `intent`; `fleet:assignments` carries `holderAlive`
+   next to `holderIntent`. Re-READ the live signal at the moment you rely on it — a
+   13h-old "alive" is not "alive now." `fleet:assignments { agent }` returning **0
+   rows** is the loudest possible "not on it."
+
+2. **`woken:0` is a MISS, not a note — and `optimistic` hides it on purpose.**
+   `coord:send` is honest by mode: `wake:'required'` escalates a miss to
+   `recipient_absent` / `recipient_dead` with a loud note; a plain inject reports
+   `notWoken`. But **`wake:'optimistic'` is SILENT on a miss by design** (it assumes
+   a durable backstop re-dispatches) — it still returns `woken:0`, but no escalation.
+   So `optimistic` is ONLY safe when something (the Queen survey, a sweep) will
+   re-dispatch. For a one-off transfer to a specific agent it is the WRONG mode.
+
+### Use the right tool for a transfer
+
+A work/ownership **transfer** (you're done; a named agent picks up) is `coord:handoff`,
+not `coord:send`. Handoff has the **lifecycle** a message lacks: an `open → accepted |
+expired | repinged` state, an accept→wake-back loop, a reconcile sweep that auto-re-pings
+at \~30m and expires at \~12h, and (like `wake:'required'`) a loud `recipient_absent` when
+it wakes nobody. `coord:send` is for messages; it has no pickup lifecycle. If you DO use
+`coord:send` to hand off, use `wake:'required'` and confirm `woken ≥ 1` — never
+`optimistic` to a ghost.
+
+Rule of thumb: **after any handoff/wake, look at the count.** `woken ≥ 1` = a live
+session was re-invoked. `woken:0` / `recipient_absent` / `recipient_dead` = MISSED →
+re-dispatch to a LIVE agent (`coord:presence → wakeable:true`) or respawn the owner.
+"I handed it off" only counts if a live owner received it.

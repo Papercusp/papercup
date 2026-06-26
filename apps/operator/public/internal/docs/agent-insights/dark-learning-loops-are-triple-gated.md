@@ -1,7 +1,7 @@
 # A self-learning loop is "dark" until THREE gates open — but a flat output metric does NOT prove dark
 URL: /internal/docs/agent-insights/dark-learning-loops-are-triple-gated
 
-A frontier learning loop is triple-gated (routine active + flag ON + governor budgeted), so a flag being ON is not "armed". BUT the inverse trap bites too — calibration-markets looked dark (scored:0, fix-survival bets 19→53) yet a read-first DB check showed all three gates open and the real cause was young bets (none due until ~14d out), not a dead sweep. Verify gate state AND whether anything is due-but-unresolved before concluding dark or arming. Detect with improvements:learning_loops.
+A frontier learning loop is triple-gated (routine active + flag ON + governor budgeted), so a flag being ON is not "armed". As of 2026-06-23, frontier loop flags now DEFAULT ON (bulk-flip plan), making routine active + governor budgeted the live blockers. BUT the inverse trap bites too — calibration-markets looked dark (scored:0, fix-survival bets 19→53) yet a read-first DB check showed all three gates open and the real cause was young bets (none due until ~14d out), not a dead sweep. Verify gate state AND whether anything is due-but-unresolved before concluding dark or arming. Detect with improvements:learning_loops.
 
 The self-learning system has two opposite traps, and they look identical from a
 distance — a loop's output metric reads flat (`scored: 0`, 0 champions, 0 routed
@@ -24,7 +24,14 @@ when all three are true**:
 
 1. **Routine active** — a `@singleton/bp-singleton-<id>-0` cadence row that is
    `active = true` (the blueprint seeds it **inactive**).
-2. **Flag ON** — e.g. `papercusp-calibration-markets` (frontier flags default OFF).
+2. **Flag ON** — e.g. `papercusp-calibration-markets`. **Note (2026-06-23):** all
+   frontier loop flags were bulk-flipped to default ON in `FLAG_DEFAULTS` as part
+   of plan `flip-dark-flags-default-on-2026-06-23` and removed from
+   `KNOWN_DARK_FLAGS`. On a standard install this gate is now **auto-satisfied** —
+   the primary live blockers are routine active (gate 1) and governor budget (gate 3).
+   The flag gate still matters as a kill-switch (flip OFF to quiesce a loop without
+   darkening the routine) and for loops on fresh installs before the P-001 arming
+   campaign has run.
 3. **Governor allows** — a `learning_governor_loops` row whose verdict is
    `allow`. **Subtle:** `budgetUsd = NULL` ⇒ `unbudgeted` ⇒ refuse, but for a
    `per-cycle` loop `budgetUsd = 0` (not null) **ALLOWS** — `checkLoopVerdict`
@@ -79,14 +86,25 @@ write-up: `relight-self-learning-edges-2026-06-14` D-009.)
 
 ## Arming a genuinely-dark loop (the per-lane runbook)
 
-Flag ON **+** `@singleton` routine `active` **+** a governor verdict of `allow`
-(`registerLearningLoop`; for a SQL-only loop `budget_usd` 0 already allows). Arm
-the **right** row — `@singleton/bp-singleton-<id>-0`, never the legacy
-`papercup/<name>` row (both active is the D-023 double-state, reported by
-`improvements:learning_loops` as `collision`). This is a **coordinated frontier
-campaign** (the `self-learning-frontier` P-001 gate arms all parked lanes
-together); prefer it over a hand-flip. And **always read the live row first** —
-that read is what kept this exact session from "arming" an already-armed loop.
+`@singleton` routine `active` **+** a governor verdict of `allow`
+(`registerLearningLoop`; for a SQL-only loop `budget_usd` 0 already allows) **+**
+flag ON (now default true for all frontier loops since 2026-06-23; verify it
+hasn't been manually killed). Arm the **right** row —
+`@singleton/bp-singleton-<id>-0`, never the legacy `papercup/<name>` row (both
+active is the D-023 double-state, reported by `improvements:learning_loops` as
+`collision`). This is a **coordinated frontier campaign** (the
+`self-learning-frontier` P-001 gate arms all parked lanes together); prefer it
+over a hand-flip. And **always read the live row first** — that read is what kept
+this exact session from "arming" an already-armed loop.
+
+**Scout has an additional workspace-level gate (P-051, added 2026-06-14):**
+`checkScoutWorkspaceCeiling` (`learning-governor/core.ts`) sums every
+`scout:<hive>` registrant's ledgered spend in the workspace and refuses a NEW
+cycle once the total crosses `DEFAULT_SCOUT_WORKSPACE_CEILING_USD` ($10).
+This is NOT the triple-gate (scout seeds `singletonActive:true`, so it's
+always-on, not a dark frontier loop), but it matters if scout cycles stop firing
+unexpectedly: the workspace aggregate may be exhausted even when each per-hive
+cap looks fine. Tune via `PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD`.
 
 ## The general lesson
 

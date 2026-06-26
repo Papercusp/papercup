@@ -116,6 +116,24 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.recipient_dead).toBeUndefined();
     expect(b.results[0].wake.note).toMatch(/next turn|actually running/i);
   });
+
+  it("wake:'optimistic' miss → woken:0 + a NON-LOUD note, but NO recipient_absent (silent-by-design surfaced)", async () => {
+    // The incident: an optimistic transfer to a now-dead agent woke nobody and was read
+    // as "fine, the backstop will get it". We do NOT escalate (optimistic assumes a
+    // backstop) but DO surface a note so the miss isn't silently swallowed.
+    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0 } as never);
+    const b = await body({ to: ['ghost-bee'], summary: 'deploy this', wake: 'optimistic' });
+    expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 0 });
+    expect(b.results[0].wake.recipient_absent).toBeUndefined();
+    expect(b.results[0].wake.note).toMatch(/SILENT by design|NOT picked up|backstop/i);
+  });
+
+  it("wake:'optimistic' that WOKE someone (woken:1) carries no miss note", async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['live-bee'], keys: [], woken: 1, staged: 0 } as never);
+    const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'optimistic' });
+    expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 1 });
+    expect(b.results[0].wake.note).toBeUndefined();
+  });
 });
 
 describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {

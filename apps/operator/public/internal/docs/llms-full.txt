@@ -532,6 +532,8 @@ Two aggravating factors on the same path:
 
 `commentIssue` and the feature comment path now run get-or-create-thread + add-post inside `boundedOrgTxn` via a **tx-bound `PgThreadStore`** (`new PgThreadStore({ ...coordOpts, getSql: () => tx })`) — reusing the exact tested store SQL, atomic and bounded. The fan-out runs *after* the durable write commits and is wrapped in a wall-clock `withDeadline` so the best-effort contract holds for slowness, not just errors. Migrations keep calling `getOrgPg()` directly and stay unbounded.
 
+`createIssue` (`issues-engineer.ts`) was also converted: its `nextIssueId` advisory-lock read + INSERT now run together in a single `boundedOrgTxn` — id allocation and row creation are atomic (no half-write a retry would duplicate) and bounded by the same 15s statement\_timeout.
+
 `conversations:post` / `conversations:answer` carried the **same class** and are now closed the same way (WI-766). Because `appendPost` lives in a **pure core** (`conversations-core.ts`) over injected deps — not a binding-layer function like `commentIssue` — the tx-bound store is threaded through a `threadTxn` seam on `ConversationDeps`: prod binds `threadTxn: (fn) => boundedOrgTxn((tx) => fn(new PgThreadStore({ ...storeOpts, getSql: () => tx })))`, and the PG integration tests bind the *same* `boundedOrgTxn` over their throwaway client so the real atomic path is asserted (`post_count` never drifts from the row count). The seam pattern is the reusable way to bound a pure-core write without coupling the core to `getOrgPg` / `PgThreadStore`.
 
 ## When you hit this again
@@ -541,7 +543,7 @@ Two aggravating factors on the same path:
 * A `getOrgPg()`-based **mutating** tool that can hang → route its durable write through `boundedOrgTxn` (don’t reach for `getOrgPg().sql` raw on an interactive write path).
 * Don’t try to fix a DB hang with an `AbortController` / `Promise.race` alone — add the `SET LOCAL statement_timeout`. The JS race is only a secondary guard for best-effort, fire-and-forget work (like a fan-out).
 * A pure **core** (deps-injected, no `getOrgPg`) that needs a bounded write → add a `threadTxn`-style seam to its deps and bind `boundedOrgTxn` + a tx-bound store in the binding layer (see `conversations-core.ts` ↔ `conversations.ts`). Don’t import `getOrgPg` into the core — it breaks the integration-test-without-prod-singletons split.
-* The known per-tool offenders are now closed (`work_items:comment`, `conversations:post` / `conversations:answer`). The whole interactive-write class still shares this gap, though: a connection-level **default** `statement_timeout` with a migration-runner opt-out (`SET LOCAL statement_timeout=0`) would fix every `getOrgPg()`-based mutating tool at the source. That touches the deploy/migration path, so it’s a separate, reviewed change — if you add a new interactive admin-pool write before it lands, wrap it in `boundedOrgTxn` yourself.
+* The known per-tool offenders are now closed (`work_items:comment`, `conversations:post` / `conversations:answer`, `issues:create`). **WI-832** landed a DI seam in `connection.ts` (`setAdminPoolStatementTimeoutProvider`) that lets the operator inject a per-connection default `statement_timeout` for every new org-pool connection (defaults to `() => 0` → no GUC, byte-identical to today’s behaviour). When wired to a non-zero value (behind `papercusp-txn-timeouts-config`, owner-gated live flip), every new pooled connection gets that per-statement cap, bounding the whole interactive-write class at the source; the migration runner opts out per-txn (`SET LOCAL statement_timeout = 0`). Until that config is wired and flipped, wrap any new interactive admin-pool write in `boundedOrgTxn` yourself.
 
 # A proxied tool going BULK blanks its admin-UI consumers — unwrap results[0]
 
@@ -862,6 +864,26 @@ None of these proves the WORK is advancing. The missing third signal was **last\
 * Keep YOUR work legible the same way: set work-item state / checkpoint as you go so your `last_progress_at` advances and peers reading the live signal see the truth. Don’t rely on a one-time broadcast to keep a lane “owned.”
 
 The durable fix makes the QUERY truthful so you needn’t hand-verify; the prompt clause (`AGENT_ACTIVITY_TRUTH_NOTE`, shared across every role) reinforces “trust the live signal, not the announcement.”
+
+## The corollary: a HANDOFF is not a pickup, and `woken:0` is a miss (2026-06-26)
+
+[Section titled “The corollary: a HANDOFF is not a pickup, and woken:0 is a miss (2026-06-26)”](#the-corollary-a-handoff-is-not-a-pickup-and-woken0-is-a-miss-2026-06-26)
+
+The same class re-surfaced from the OTHER direction — not “I read a stale broadcast” but “I made a stale read and then handed work to a ghost.” An interactive `su` session needed a `:3070` deploy driven. It read the fleet ONCE at session start, saw `su-559a4885` `alive:true` with intent “hardening the gate,” and then **carried that snapshot \~13h** while asserting “they’re actively on it.” By the time it `coord:send`’d the deploy to that agent, the agent had **ended hours earlier**. The send used `wake:'optimistic'` and came back `woken:0` — which was read as “fine, a backstop will get it.” There was no backstop. The deploy was queued for a ghost.
+
+Two failures, both avoidable with signals that ALREADY existed:
+
+1. **Declared intent ≠ progress, and a snapshot decays.** `coord:presence` already exposes `lastActiveSecAgo`, `sessionState` (live | parked | **ended**), and `intentStale` right next to `intent`; `fleet:assignments` carries `holderAlive` next to `holderIntent`. Re-READ the live signal at the moment you rely on it — a 13h-old “alive” is not “alive now.” `fleet:assignments { agent }` returning **0 rows** is the loudest possible “not on it.”
+
+2. **`woken:0` is a MISS, not a note — and `optimistic` hides it on purpose.** `coord:send` is honest by mode: `wake:'required'` escalates a miss to `recipient_absent` / `recipient_dead` with a loud note; a plain inject reports `notWoken`. But **`wake:'optimistic'` is SILENT on a miss by design** (it assumes a durable backstop re-dispatches) — it still returns `woken:0`, but no escalation. So `optimistic` is ONLY safe when something (the Queen survey, a sweep) will re-dispatch. For a one-off transfer to a specific agent it is the WRONG mode.
+
+### Use the right tool for a transfer
+
+[Section titled “Use the right tool for a transfer”](#use-the-right-tool-for-a-transfer)
+
+A work/ownership **transfer** (you’re done; a named agent picks up) is `coord:handoff`, not `coord:send`. Handoff has the **lifecycle** a message lacks: an `open → accepted | expired | repinged` state, an accept→wake-back loop, a reconcile sweep that auto-re-pings at \~30m and expires at \~12h, and (like `wake:'required'`) a loud `recipient_absent` when it wakes nobody. `coord:send` is for messages; it has no pickup lifecycle. If you DO use `coord:send` to hand off, use `wake:'required'` and confirm `woken ≥ 1` — never `optimistic` to a ghost.
+
+Rule of thumb: **after any handoff/wake, look at the count.** `woken ≥ 1` = a live session was re-invoked. `woken:0` / `recipient_absent` / `recipient_dead` = MISSED → re-dispatch to a LIVE agent (`coord:presence → wakeable:true`) or respawn the owner. “I handed it off” only counts if a live owner received it.
 
 # Agent-mcp routes slow but /health fast = main-event-loop saturation (not a leak/pool/DB issue)
 
@@ -2482,6 +2504,21 @@ Danger
 
 Tracked as EI-3385.
 
+## Boot-failure backstop (`onUnbootable`, 2026-06-25)
+
+[Section titled “Boot-failure backstop (onUnbootable, 2026-06-25)”](#boot-failure-backstop-onunbootable-2026-06-25)
+
+A separate enhancement in `cluster-fork.ts` (same file): an optional `onUnbootable` callback arms a **fast-stop** when workers cannot boot at all — distinct from a runtime crash that happens after a worker is healthy.
+
+The heuristic: a worker that exits within `bootGraceMs` (default **10 s**) of being forked is counted as a **consecutive boot failure**. Once `consecutiveBootFailures >= workers` (every slot in the cluster has failed to boot, with no worker ever staying up past the grace threshold), the cluster declares itself **UNBOOTABLE**, logs a fatal, and calls `onUnbootable` instead of respawning into an infinite crash loop.
+
+Key state tracked per cluster lifecycle:
+
+* `sawHealthy` — true once ANY worker has survived past `bootGraceMs`; if set, a fast exit is treated as a normal runtime crash and respawned within budget (the build can boot, this is a runtime failure).
+* `consecutiveBootFailures` — count of workers that exited inside the grace window before any worker was seen healthy; reset to 0 when `sawHealthy` flips.
+
+This backstop is **OPT-IN** — pass `onUnbootable` to arm it; without it the legacy respawn-budget behaviour continues. The production runner passes it so that a build that can never start (wrong Node version, missing native dep, MODULE\_NOT\_FOUND at startup) stops fast and surfaces cleanly instead of thrashing systemd’s restart throttle.
+
 # code:run — when to reach for it, worked exemplars, and the measured payoff
 
 > The code-mode rollout (B-CX-3) — collapse a multi-step tool flow into ONE code:run instead of paying an inference round-trip per call. Two before/after exemplars + a real measured token/cost saving from agent_usage_samples.
@@ -3211,6 +3248,8 @@ The injection is a **tail append** — it lands *after* the latest tool result, 
 
 `locks:acquire` busy rows now carry **`holder_intent`** + **`holder_focused`** (`acquire.ts` `enrichBusy` → `coord:presence`). The auto-acquire hook stamps a generic `intent: 'PreToolUse:Edit'`, so a blocked peer used to see junk; now it sees the holder’s **declared** `coord:declare-intent` one-liner (and a flag when the contended path is in their `current_files`). **Declare a real intent** so your locks explain themselves.
 
+**Role access (2026-06-25):** `locks:acquire` changed from `agentRoles: [...SU_ROLES, 'bee']` to `agentRoles: [...AGENT_ROLES]`. Every built-in role can now acquire file locks (and therefore appear as lock holders with intent enrichment). Blocked peers from any role now see holder intent; conversely, any role’s auto-acquire hook stamps the generic `'PreToolUse:Edit'` intent — all the more reason to `coord:declare-intent` with a real one-liner before long edits.
+
 ## Gotchas
 
 [Section titled “Gotchas”](#gotchas)
@@ -3385,7 +3424,7 @@ If you add a tool that reads a user/harness-scoped store (not `ctx.tx`) and want
 
 # A self-learning loop is "dark" until THREE gates open — but a flat output metric does NOT prove dark
 
-> A frontier learning loop is triple-gated (routine active + flag ON + governor budgeted), so a flag being ON is not "armed". BUT the inverse trap bites too — calibration-markets looked dark (scored:0, fix-survival bets 19→53) yet a read-first DB check showed all three gates open and the real cause was young bets (none due until ~14d out), not a dead sweep. Verify gate state AND whether anything is due-but-unresolved before concluding dark or arming. Detect with improvements:learning_loops.
+> A frontier learning loop is triple-gated (routine active + flag ON + governor budgeted), so a flag being ON is not "armed". As of 2026-06-23, frontier loop flags now DEFAULT ON (bulk-flip plan), making routine active + governor budgeted the live blockers. BUT the inverse trap bites too — calibration-markets looked dark (scored:0, fix-survival bets 19→53) yet a read-first DB check showed all three gates open and the real cause was young bets (none due until ~14d out), not a dead sweep. Verify gate state AND whether anything is due-but-unresolved before concluding dark or arming. Detect with improvements:learning_loops.
 
 The self-learning system has two opposite traps, and they look identical from a distance — a loop’s output metric reads flat (`scored: 0`, 0 champions, 0 routed ideas):
 
@@ -3401,7 +3440,7 @@ Telling them apart is the whole game, and you can only do it by reading the **li
 A frontier learning loop (the 10 dark loops in `LEARNING_SINGLETONS`, `packages/operator-core/lib/blueprint/seed-learning-singletons.ts`) runs **only when all three are true**:
 
 1. **Routine active** — a `@singleton/bp-singleton-<id>-0` cadence row that is `active = true` (the blueprint seeds it **inactive**).
-2. **Flag ON** — e.g. `papercusp-calibration-markets` (frontier flags default OFF).
+2. **Flag ON** — e.g. `papercusp-calibration-markets`. **Note (2026-06-23):** all frontier loop flags were bulk-flipped to default ON in `FLAG_DEFAULTS` as part of plan `flip-dark-flags-default-on-2026-06-23` and removed from `KNOWN_DARK_FLAGS`. On a standard install this gate is now **auto-satisfied** — the primary live blockers are routine active (gate 1) and governor budget (gate 3). The flag gate still matters as a kill-switch (flip OFF to quiesce a loop without darkening the routine) and for loops on fresh installs before the P-001 arming campaign has run.
 3. **Governor allows** — a `learning_governor_loops` row whose verdict is `allow`. **Subtle:** `budgetUsd = NULL` ⇒ `unbudgeted` ⇒ refuse, but for a `per-cycle` loop `budgetUsd = 0` (not null) **ALLOWS** — `checkLoopVerdict` (`learning-governor/core.ts:101`) short-circuits per-cycle to allow before any floor check. For a SQL-only sweep that never spends, `0` is a legitimate armed value (“0 is honest”, `calibration/governor.ts`). So “the budget is 0” does **not** mean dark; “the budget is NULL” does.
 
 **A flag being ON is NOT “armed”** (a NULL-budget or inactive-routine loop is dark despite the flag) — and equally, **a flat metric is NOT “dark”.**
@@ -3432,7 +3471,9 @@ The real cause of `scored: 0` was **young bets**, not a dead sweep: `SELECT coun
 
 [Section titled “Arming a genuinely-dark loop (the per-lane runbook)”](#arming-a-genuinely-dark-loop-the-per-lane-runbook)
 
-Flag ON **+** `@singleton` routine `active` **+** a governor verdict of `allow` (`registerLearningLoop`; for a SQL-only loop `budget_usd` 0 already allows). Arm the **right** row — `@singleton/bp-singleton-<id>-0`, never the legacy `papercup/<name>` row (both active is the D-023 double-state, reported by `improvements:learning_loops` as `collision`). This is a **coordinated frontier campaign** (the `self-learning-frontier` P-001 gate arms all parked lanes together); prefer it over a hand-flip. And **always read the live row first** — that read is what kept this exact session from “arming” an already-armed loop.
+`@singleton` routine `active` **+** a governor verdict of `allow` (`registerLearningLoop`; for a SQL-only loop `budget_usd` 0 already allows) **+** flag ON (now default true for all frontier loops since 2026-06-23; verify it hasn’t been manually killed). Arm the **right** row — `@singleton/bp-singleton-<id>-0`, never the legacy `papercup/<name>` row (both active is the D-023 double-state, reported by `improvements:learning_loops` as `collision`). This is a **coordinated frontier campaign** (the `self-learning-frontier` P-001 gate arms all parked lanes together); prefer it over a hand-flip. And **always read the live row first** — that read is what kept this exact session from “arming” an already-armed loop.
+
+**Scout has an additional workspace-level gate (P-051, added 2026-06-14):** `checkScoutWorkspaceCeiling` (`learning-governor/core.ts`) sums every `scout:<hive>` registrant’s ledgered spend in the workspace and refuses a NEW cycle once the total crosses `DEFAULT_SCOUT_WORKSPACE_CEILING_USD` ($10). This is NOT the triple-gate (scout seeds `singletonActive:true`, so it’s always-on, not a dark frontier loop), but it matters if scout cycles stop firing unexpectedly: the workspace aggregate may be exhausted even when each per-hive cap looks fine. Tune via `PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD`.
 
 ## The general lesson
 
@@ -6547,7 +6588,7 @@ Built + unit-tested + correct, just unwired end-to-end: P-009 judge hard-gate (`
 The Hive/Queen/bee work-queue is no longer coding-only. The blueprint engine already carried `kind:'hive'`; what made a Hive “a coding system” was hardcoded create/runtime policy + coding-baked personas. `hive-blueprint-generalization-2026-06-15` lifted that into a declarable **domain profile** and shipped **`generic-hive`** — the non-coding counterpart of the coding `hive`.
 
 ```bash
-hive:create { slug: 'my-research-hive', blueprintId: 'generic-hive', wakeInSeconds: 0 }
+hive:create { slug: 'my-research-hive', blueprintId: 'work', wakeInSeconds: 0 }
 ```
 
 stands up a Hive whose Queen places **research / analysis / deliberation** work onto bees that produce **deliverables** (reports, decisions, documents):
@@ -6557,7 +6598,7 @@ stands up a Hive whose Queen places **research / analysis / deliberation** work 
 * **`affinity.kind: topic-overlap`** — the Queen co-locates/decomposes by subject, not files.
 * **`dependencies.blueprints: [research, review, vote]`** — the work-blueprints its bees spawn.
 
-Shipped as **`generic-hive extends hive`** (D-009), NOT a strict 3-deep `base-hive` split: the live `hive` is already the de-facto base + coding hive (repo-less, generic roles, only its `prompts/queen.md` is file-coded), and repointing the running fleet to a renamed `coding-hive` was the risky part. So `generic-hive` is an additive sibling; `hive` stays the coding hive.
+Shipped as **`work extends coding`** (D-009, canonical ids; legacy: `generic-hive extends hive`), NOT a strict 3-deep `base-hive` split: the live `hive` is already the de-facto base + coding hive (repo-less, generic roles, only its `prompts/queen.md` is file-coded), and repointing the running fleet to a renamed `coding-hive` was the risky part. So `generic-hive` is an additive sibling; `hive` stays the coding hive.
 
 ## The domain-profile schema (where each field is read)
 
@@ -6597,7 +6638,7 @@ The shared spawn preamble (`prompt-build.ts` + `testing-standard-policy.ts`) als
 
 | Concern                 | Source                                                                                 |
 | ----------------------- | -------------------------------------------------------------------------------------- |
-| Blueprint + personas    | `libs/papercusp/packages/harness/blueprints/generic-hive/`                             |
+| Blueprint + personas    | `libs/papercusp/packages/harness/blueprints/work/`                                     |
 | Domain-profile schema   | `libs/papercusp/packages/orchestrator/src/blueprint/schema.ts`                         |
 | Acceptance/output gate  | `packages/operator-core/lib/dbos/orchestrator-finalize.ts` + `orchestrator-runner.ts`  |
 | Affinity presets        | `packages/operator-core/lib/fleet/placement-affinity.ts` + `place_batch.ts`            |
@@ -7054,6 +7095,14 @@ The gym boot-spec (`gym/boot-spec.ts`) merges `{ ...process.env, ...spec.env }`,
 
 * **`autoloop-cycle` (\~120s) + `blueprint-cycle` (\~45s)** converge reliably in fake mode (manual/explicit dispatch). Committed as `.integration.test.ts` with generous timeouts.
 * **`wake-mode` is NOT committed.** Its autonomous chain is **cron-cadence-bound** (`*/15s` trigger + `*/30s` orchestrator sweep + a multi-hop pipeline), so it does not converge inside a bounded \~5min window — the decider fires (links 1–2 work) but the feature doesn’t reach `passed`. A 5–10min timing-sensitive test would flake the suite. Its **pure** oracle/blueprint/judge logic is covered by `wake-mode.test.ts` (unit); the live chain stays the `wake-mode-run.ts` manual/ nightly CLI.
+
+## Inference-gateway routing for the in-process judge/proposer (FB-16 / EI-368)
+
+[Section titled “Inference-gateway routing for the in-process judge/proposer (FB-16 / EI-368)”](#inference-gateway-routing-for-the-in-process-judgeproposer-fb-16--ei-368)
+
+`runOneAutoloopCycle` now routes the gym’s IN-PROCESS judge and proposer through the pacing gateway when `FLAGS.INFERENCE_GATEWAY` is ON (added 2026-06-25). The spawned pipeline agents already egress through it (the spawn chokepoint merges `gatewaySpawnEnv` → `ANTHROPIC_BASE_URL`), but the in-process `anthropic-direct` llmCalls (judgeCall/proposerCall in `loop-deps.ts`) never passed through that chokepoint — on the live `:3070` cycle they hit `api.anthropic.com` directly with the org-blocked OAuth → `LlmCallError 401`, opening the circuit every tick. The fix sets `PAPERCUSP_ANTHROPIC_URL` (SDK path) AND `ANTHROPIC_BASE_URL` (claude-CLI subprocess path) at call-start, flag- OFF leaves egress unchanged.
+
+The spawn env in `autoloop-cycle.ts` also directly pins three additional vars on top of `boot-spec.ts`’s sealed env: `PAPERCUSP_FLEET_SANDBOX: '0'`, `PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0'`, `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none'`.
 
 ## How to add another gym live-boot E2E
 
@@ -10071,6 +10120,17 @@ This was the second blocker observed on 2026-06-24 before EI-681 landed:
 
 Then the joiner replicates the owner’s home log and ends up holding epoch 0..K-1 (the keys it legitimately had) but **never the post-ban epoch** — the live K-CUT, and (with content encryption on) the AEAD content read-cut.
 
+## WI-887: epoch key reconcile self-heal
+
+[Section titled “WI-887: epoch key reconcile self-heal”](#wi-887-epoch-key-reconcile-self-heal)
+
+A member admitted while `papercusp-hive-rekey` was dark — or admitted after an epoch advanced before they were known to the owner — permanently lacks the epoch keys minted before them unless explicitly healed. `hive-epoch-boundary-wiring.ts` now has two complement paths:
+
+* **`reconcileEpochKeysForCurrentMembers`** — wraps epochs `[0..current]` to every LIVE (non-revoked) member device. Called via the `onMemberApplied` hook to heal the moment a membership op lands. ‘no-fresh-members’ when the hive has no live device.
+* **`reconcileOwnedHiveEpochKeys`** (WI-887 sweep) — GAP-AWARE: enumerates every hive the box knows (`harness_shared.hives`), checks whether any live device is missing the current epoch key, and only then calls `reconcileEpochKeysForCurrentMembers`. NO crypto on the steady state (the perf-anti-pattern guard). Owner-only (self-gates via `loadHivePubkey` null check), C-001-safe (revoked devices excluded), idempotent. Host on in-process periodic checks or call once at owner boot.
+
+**On the rig:** after seeding `hive_members` via the owner approval path (Gap 1 recipe), call `reconcileOwnedHiveEpochKeys` on fed-a if any member device shows missing epoch rows. It backfills without advancing the epoch — safe to call even mid-witness.
+
 ## Adjacent bug observed
 
 [Section titled “Adjacent bug observed”](#adjacent-bug-observed)
@@ -11128,7 +11188,7 @@ Disconnect still reaches blocking tools via `request.signal` (unchanged). The pr
 
 # Why the MCP server 'keeps going down': it IS :3070, deploys restart it, and a bad swap crash-loops it
 
-> The papercusp-su MCP endpoint is served by :3070 (the green release checkout), so every deploy restarts it and a botched deploy (incomplete node_modules) used to MODULE_NOT_FOUND crash-loop it. The layered fix: a workspace-resolution gate + a pre-cutover boot preflight (verify-before-restart, zero-downtime abort) + an opt-in reconnecting local MCP proxy.
+> The papercusp-su MCP endpoint is served by :3070 (the green release checkout), so every deploy restarts it and a botched deploy (incomplete node_modules) used to MODULE_NOT_FOUND crash-loop it. Five layered defenses: atomic node_modules swap (2026-06-25) + native-addon ABI auto-rebuild + workspace-resolution gate + pre-cutover boot preflight (verify-before-restart, zero-downtime abort) + an opt-in reconnecting local MCP proxy.
 
 ## What
 
@@ -11140,7 +11200,7 @@ Agents report “the MCP server keeps going down” — sessions lose their `pap
 
 [Section titled “Why — MCP availability is coupled to :3070‘s restart cycle”](#why--mcp-availability-is-coupled-to-3070s-restart-cycle)
 
-The `papercusp-su` MCP endpoint is `http://localhost:3070/api/mcp`. **`:3070` = `papercup-dev-api` = the GREEN release checkout** (`papercup-release`, pinned to `main`). So:
+The `papercusp-su` MCP endpoint is `http://localhost:3070/api/mcp`. **`:3070` = `papercup-dev-api` = the GREEN release checkout** (`papercusp-release`, pinned to `main`). So:
 
 * **Every deploy restarts `:3070`** (clean SIGTERM-drain). A native MCP client (Claude Code) drops its connection on that restart and does **not** re-run tool discovery — so a brief restart can strand a session toolless until a full *process* relaunch (not `/mcp` reconnect, not `--continue`, which preserve the empty catalog).
 * **A botched deploy used to MODULE\_NOT\_FOUND crash-loop it.** The deploy swapped the git checkout but synced `node_modules` via a heuristic (`--node-modules auto`); when that mis-decided (documented: 2026-06-09 `@dnd-kit/core`, 2026-06-20 `@papercusp/plugin-loader`), `:3070` restarted into new-code + stale node\_modules → `MODULE_NOT_FOUND` → `systemd Restart=always/5s` crash-loop. The only consistency check (`health`) ran **after** the irreversible restart, and the rollback re-ran the same heuristic, so it could leave the tree equally broken → “manual `--no-drain` recovery.”
@@ -11151,13 +11211,17 @@ Diagnostic: `journalctl --user -u papercup-dev-api.service` — `MODULE_NOT_FOUN
 
 [Section titled “The layered defenses (server side)”](#the-layered-defenses-server-side)
 
-Three gates, source → cutover, all live in the deploy mechanics:
+Five gates, source → cutover, all live in the deploy mechanics:
 
-1. **Workspace-resolution gate** (`setup-release-checkout.sh`, EI-2118). After the node\_modules sync, if any `@papercusp/@papercup` workspace package resolves in the integration tree but **not** the release tree, the script **aborts non-zero before any restart**. Runs for all three callers (deploy, green-checkpoint, staging-sync). Pure shell; catches the recurring dangling-workspace-symlink class at the source.
+1. **Atomic node\_modules swap** (`setup-release-checkout.sh` `sync_one_node_modules()`, 2026-06-25). The hardlink-copy of `node_modules` from the integration tree is now **atomic**: the source is copied into a sibling temp dir first, then swapped into place with two fast renames — so the live operator’s cluster workers that respawn mid-copy **never see a half-populated `node_modules`**. The previous in-place `rm -rf "$dest"; cp -al` opened a \~1-minute window; the 2026-06-25 all-pages connection-refused outage happened exactly in that window (workers exhausted the 160-respawn budget on `MODULE_NOT_FOUND` for `@modelcontextprotocol/sdk`/`@papercusp/plugin-loader`). Two renames shrink the exposure to the microseconds between two `rename(2)` syscalls.
 
-2. **Pre-cutover boot preflight** (`deploy.ts` `executeDeploy` + `deploy-deps.ts` `realDeps.preflight`, plan `mcp-host-availability-resilience-2026-06-22` P-001). After the swap and **before** the live `:3070` restart, a child process imports the swapped checkout’s side-effect-free `host-handler` module graph (`npx tsx -e`, mirroring the launch — no server/bootstrap/DB). A missing dep throws `MODULE_NOT_FOUND` *there*, so the deploy **aborts before cutover** — the old process keeps serving, **zero downtime**. This catches ALL deps (not just workspace pkgs), complementing gate (1). The deploy tracks `migrateRan`/`liveCutover`: a pre-cutover failure reverts the tree with no restart; the rollback path re-runs the preflight so it can’t cut into a SECOND crash-loop (prev-won’t-boot → skip restart + loud manual-recovery broadcast).
+2. **Native-addon ABI guard** (`setup-release-checkout.sh` step 3d, `infra-fail-fast-build-integrity-2026-06-19` P-003). After the node\_modules copy, each runtime-critical native addon (default: `better-sqlite3`; override via `PAPERCUSP_PREFLIGHT_ADDONS`) is verified to load under the operator’s own `node` ABI. A mismatch triggers `npm rebuild` in the release checkout in place — turning the hard crash-loop (2026-06-19: `better-sqlite3` built for Node 22 ABI 127, runtime Node 25 ABI 141 → “Module did not self-register” → mem0 never came up → all memory-touching handlers hung behind a green health check) into **auto-recovery before cutover**. Non-fatal: the deploy-gate native-addon preflight in `lib/native-addon-preflight.ts` is the hard block; this step turns that block into a self-heal.
 
-3. (Downstream) the green-checkpoint runs the test suite and `sync-staging-checkout` boots `:3170`, so a missing **non-workspace** dep on those paths surfaces as a test red / staging fault rather than silently shipping.
+3. **Workspace-resolution gate** (`setup-release-checkout.sh` step 3c, EI-2118). After the node\_modules sync (and ABI guard), if any `@papercusp/@papercup` workspace package resolves in the integration tree but **not** the release tree, the script **aborts non-zero before any restart**. Runs for all three callers (deploy, green-checkpoint, staging-sync). Pure shell; catches the recurring dangling-workspace-symlink class at the source.
+
+4. **Pre-cutover boot preflight** (`deploy.ts` `executeDeploy` + `deploy-deps.ts` `realDeps.preflight`, plan `mcp-host-availability-resilience-2026-06-22` P-001). After the swap and **before** the live `:3070` restart, a child process imports the swapped checkout’s side-effect-free `host-handler` module graph (`npx tsx -e`, mirroring the launch — no server/bootstrap/DB). A missing dep throws `MODULE_NOT_FOUND` *there*, so the deploy **aborts before cutover** — the old process keeps serving, **zero downtime**. This catches ALL deps (not just workspace pkgs), complementing gate (3). The deploy tracks `migrateRan`/`liveCutover`: a pre-cutover failure reverts the tree with no restart; the rollback path re-runs the preflight so it can’t cut into a SECOND crash-loop (prev-won’t-boot → skip restart + loud manual-recovery broadcast).
+
+5. (Downstream) the green-checkpoint runs the test suite and `sync-staging-checkout` boots `:3170`, so a missing **non-workspace** dep on those paths surfaces as a test red / staging fault rather than silently shipping.
 
 **The rule: never restart live `:3070` into a checkout that hasn’t been proven to boot.**
 
@@ -11171,7 +11235,7 @@ Even a clean restart drops the client connection. `lib/mcp-proxy/proxy.ts` + `bi
 
 [Section titled “TL;DR for the next agent”](#tldr-for-the-next-agent)
 
-“MCP is down” almost always = `:3070` restarted (deploy) or crash-looped (bad swap), not a server crash. The crash-loop class is now gated (verify-before-cutover); for a dropped *client*, fully relaunch the session (`/mcp` reconnect won’t repopulate tools) or drive tools via `scripts/su-mcp.ts` until it reconnects.
+“MCP is down” almost always = `:3070` restarted (deploy) or crash-looped (bad swap), not a server crash. The crash-loop class is now multi-gated: atomic node\_modules swap → native-addon ABI auto-rebuild → workspace-resolution abort → verify-before-cutover. For a dropped *client*, fully relaunch the session (`/mcp` reconnect won’t repopulate tools) or drive tools via `scripts/su-mcp.ts` until it reconnects.
 
 # The MCP tool surface dominates prompt-cache cost via Meridian
 
@@ -11224,6 +11288,10 @@ const stringTolerantBool = z.preprocess(
 ```
 
 Coerce **only** the two exact strings. Do **not** reach for `z.coerce.boolean()` — its `"false"` → `true` truthiness footgun is exactly why `_plans-args.ts` keeps an explicit boolean allowlist instead. A real boolean and a typo (`"yes"`, `1`) pass through to `z.boolean()` unchanged, so genuine mistakes still fail loudly. `z.toJSONSchema` renders the pipe’s **output** side, so the advertised `tools/list` schema stays `type: boolean` (a stale session still failing on a wire string is the price of the pin, but a re-connected session sees a clean boolean). Reference fix + regression test: `packages/operator-core/lib/agent-tools/plans/new.ts` + `…/plans/__tests__/new-force-coercion.test.ts`.
+
+**Note — `force` now has dual responsibility (EI-134 / 2026-06-25).** The `plans:new` `force` arg has since grown a second job: when `force !== true`, creation is first rejected with `similar_exists` + the overlapping plans when existing slugs/titles share ≥2 topic tokens (audit P-049 / EI-134 — duplicate plans split project history). So `force: true` now bypasses both the dedup gate AND signals explicit intent when a stale session coerces the string `"true"`. The string-tolerant coercion applies transparently in both cases — a stale session passing `"true"` is coerced to `true` and correctly skips the dedup check.
+
+**Role access update (2026-06-25):** `plans:new` changed from `agentRoles: [...SU_ROLES, 'bee']` to `agentRoles: [...AGENT_ROLES]` in the same batch — every built-in role can now call it. This does not affect the string-coercion or dedup behavior above, but means a wider set of sessions (worker, validator, etc.) may encounter the stale-schema `"true"` wire value when running against an old pinned manifest.
 
 # Measuring code:run adoption + token impact (a systematic A/B)
 
@@ -11728,9 +11796,9 @@ Two program shapes, discriminated by the gate (no schema field):
 * Blueprint: `libs/papercusp/packages/harness/blueprints/negative-space/blueprint.yaml`
 * Tests: `packages/operator-core/lib/blueprint-steps/negative-space-blueprint.test.ts`
 
-# Migration-number collisions: the reservation tool is MCP-only and lint:migrations isn't gated
+# Migration-number collisions: the reservation tool and lint:migrations aren't gated
 
-> Two agents racing `ls | tail` pick the same NNN-*.sql number; on the native :5432 box only one colliding file applies, so a table silently goes dark. db:next-migration prevents this but is an MCP-only agent-tool (no npm script) and the MCP client is currently dropped, so peers hand-pick and collide. lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
+> Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles. lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
 
 ## What
 
@@ -11756,9 +11824,11 @@ The fix layers are therefore **prevention at creation** (the reservation tool/CL
 
 [Section titled “Why it keeps happening (three compounding gaps)”](#why-it-keeps-happening-three-compounding-gaps)
 
-1. **`db:next-migration` is MCP-only.** The atomic allocator (advisory lock + `harness_shared.migration_reservations`, GREATEST(max-on-disk, max-reserved, max-applied)+1) lives in `next_migration.ts` as a `defineTool` agent-tool. There is **no `npm run db:next-migration`** script. An agent (or human) who isn’t already wired into the harness MCP just does `ls | tail` and hand-picks — exactly the racing path the tool was built to replace. The lint error even says “use db:next-migration”, naming a command that doesn’t exist as a script.
+1. **`db:next-migration` is the safe path, but was MCP-only until 2026-06-20.** The atomic allocator (advisory lock + `harness_shared.migration_reservations`, GREATEST(max-on-disk across the serving + staging trees, max-reserved, max-applied)+1) lives in `next_migration.ts` as a `defineTool` agent-tool. ~~There is **no `npm run db:next-migration`** script.~~ **Fixed (2026-06-20)** — see the “How to allocate a number now” section and item #1 in the Recommended fix section. An agent (or human) who isn’t wired into the harness MCP still does `ls | tail` and hand-picks — exactly the racing path the tool was built to replace. The lint error even says “use db:next-migration”, naming a command that (before the fix) didn’t exist as a script.
 
-2. **The MCP client is currently dropped.** Live peer presence this session (`coord_presence`) notes *“harness MCP client still dropped… working via direct MCP-over-curl.”* So even MCP-aware agents can’t reach `db:next-migration` through the normal client right now, pushing everyone back to hand-picking.
+   **Role access (2026-06-25):** `db:next-migration` previously used `agentRoles: [...SU_ROLES, 'bee']` — only superuser-role agents and the generic bee could call it. Changed to `agentRoles: [...AGENT_ROLES]`: every built-in role (worker, validator, reviewer, architect, etc.) can now call the MCP tool directly and participate in collision-free allocation without falling back to the npm CLI.
+
+2. ~~**The MCP client is currently dropped.**~~ **Historical note (2026-06-20):** At the time of discovery the harness MCP client was dropped, so even MCP-aware agents couldn’t reach `db:next-migration` and fell back to hand-picking. The npm CLI (`npm run db:next-migration`) was added precisely to fix this (gap #1 fix). The MCP client drop is a session-specific transient; the systematic fix is the CLI + the per-role access expansion (see gap #1 update above).
 
 3. **`lint:migrations` is not gated.** `scripts/lint-migrations.mjs` already detects (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would end the runner’s per-file wrapper txn early), and (c) numbers ≥215 absent from the reservation ledger. But `lint:migrations` is **only an npm script** — it is referenced in neither `.github/` (CI) nor `.husky/` / `.git/hooks`. So the guard never runs automatically; the dup-number check (which is PG-free and would run fine in CI) never fires on a PR.
 
@@ -12138,8 +12208,16 @@ You added a new learning loop the right way — a `blueprints/<id>/blueprint.yam
 **Why:** adding the blueprint ships only the loop’s *definition*. The actual `harness_shared.routines` row — `@singleton/bp-singleton-<id>-0`, the thing the routine engine ticks — is **never created on deploy or operator boot**. There is no boot-time materializer that walks `LEARNING_SINGLETONS` and upserts rows. `materializeLearningSingletons` / `materializeBlueprintTriggers` is called only from:
 
 * the **seed CLI** (`packages/operator-core/lib/blueprint/seed-learning-singletons.ts`), run by hand, and
-* `enable-platform-mode.ts` (when the owner first enables platform mode), and
+* `enable-platform-mode.ts` (when the owner first enables platform mode — it flips the `PLATFORM_IMPROVEMENT_LOOPS` flag ON **first**, then calls `materializeLearningSingletons` so Class-C singletons actually get written), and
 * `harness:create` / `hive:create` (for that harness’s own blueprint, not the workspace singletons).
+
+**P-070 deployment-mode gate (added 2026-06-14):** `materializeLearningSingletons` now has a skip condition for Class-C platform-improvement loops: if the `PLATFORM_IMPROVEMENT_LOOPS` flag is OFF (a public release or a fresh install before the owner enables platform mode), the seed CLI prints:
+
+```plaintext
+SKIP <id>: platform-improvement loops are OFF (PLATFORM_IMPROVEMENT_LOOPS) — release/non-platform mode (P-070)
+```
+
+and creates **no `@singleton` row** — not even a dark/inactive one. `--execute` returns without an error; the loop is simply not materialized. In dev/self-host the flag defaults ON so this gate is transparent, but on a clean install or a release image it is the silent barrier. Fix: enable platform mode first (`enablePlatformMode` / the owner’s platform-mode toggle) — that flips the flag ON, then materializes all Class-C singletons atomically. If you are seeding manually on a release box, verify the flag is ON before running `--execute`.
 
 So the existing live loops (calibration, scout, iq-battery, …) got their `@singleton` rows from a **past owner-run seed campaign**, not from their code landing. A brand-new loop inherits none of that.
 
@@ -12640,7 +12718,9 @@ The `:3070` operator host (`papercup-dev-api`, `bin/hono-host.ts`) “recycled e
 
 [Section titled “Gotcha: a patch-package patch does NOT reach :3070 or green-checkpoint on its own”](#gotcha-a-patch-package-patch-does-not-reach-3070-or-green-checkpoint-on-its-own)
 
-This bit immediately and is fleet-wide, so read it before adding ANY `patches/*.patch`: patch-package applies at **`npm install`** (postinstall) time, but the checkpoint and release trees **never `npm install`** — `apps/operator/bin/release/setup-release-checkout.sh` **hardlink-copies** node\_modules from the integration tree (step 3) and, in `auto` mode, **skips even that copy** when only `patches/` changed (a new patch alters no lockfile / workspace-package set). Net effect before the fix below: a committed patch reached neither `papercup-checkpoint` nor `papercup-release` — so green-checkpoint ran UNPATCHED and redded the patch’s own regression test (a self-inflicted deadlock: the red gate blocks the deploy that would apply the patch), and `:3070` never got the fix. The setup script now runs `patch-package` after the node\_modules step every checkpoint/deploy (idempotent, guarded, non-fatal). If you add a dep patch, **verify it’s actually applied post-deploy** — `grep <your-marker> <tree>/node_modules/<pkg>/...`; don’t assume the committed `.patch` is live.
+This bit immediately and is fleet-wide, so read it before adding ANY `patches/*.patch`: patch-package applies at **`npm install`** (postinstall) time, but the checkpoint and release trees **never `npm install`** — `apps/operator/bin/release/setup-release-checkout.sh` **hardlink-copies** node\_modules from the integration tree (step 3) and, in `auto` mode, **skips even that copy** when only `patches/` changed (a new patch alters no lockfile / workspace-package set). Net effect before the fix below: a committed patch reached neither `papercup-checkpoint` nor `papercusp-release` — so green-checkpoint ran UNPATCHED and redded the patch’s own regression test (a self-inflicted deadlock: the red gate blocks the deploy that would apply the patch), and `:3070` never got the fix. The setup script now runs `patch-package` after the node\_modules step every checkpoint/deploy (idempotent, guarded, non-fatal). If you add a dep patch, **verify it’s actually applied post-deploy** — `grep <your-marker> <tree>/node_modules/<pkg>/...`; don’t assume the committed `.patch` is live.
+
+**Subsequent hardening in the same script (2026-06-25):** the node\_modules hardlink-copy (step 3) is now **atomic** — `sync_one_node_modules()` copies into a sibling temp dir first, then swaps into place with two fast renames, so the live operator’s cluster workers that respawn mid-copy never see a half-populated `node_modules` window (the previous in-place `rm -rf "$dest"; cp -al` opened a \~1-minute gap that caused a 2026-06-25 all-pages connection-refused outage when workers exhausted their respawn budget on `MODULE_NOT_FOUND`). The patch-package re-apply in step 3b still follows this copy. Additionally, **step 3d** (native-addon ABI guard) verifies each runtime-critical native addon (e.g. `better-sqlite3`) loads under the operator’s Node ABI and calls `npm rebuild` in place on a mismatch, turning a hard crash-loop into an auto-recovery.
 
 ## Verify / where it lands
 
@@ -13432,12 +13512,25 @@ The owner’s GitHub login + token come from `resolveLocalGithubIdentity` (reads
 To fix a memory’s **metadata** — re-tag its `kind`, fix a wrong `workspaceId`, or move it to the right recall **pool** — call `memory:update` with the new fields (no `content` needed):
 
 ```plaintext
-memory:update { id, kind: 'reference' }                 // re-categorise
-memory:update { id, workspaceId: 'papercusp-workspace' } // fix the workspace tag
-memory:update { id, scope: 'harness:papercup' }          // MOVE its recall pool (user_id)
+memory:update { id, kind: 'reference' }                  // re-categorise (single)
+memory:update { id, workspaceId: 'papercusp-workspace' } // fix workspace tag (single)
+memory:update { id, scope: 'harness:papercup' }          // MOVE recall pool (single)
+
+
+memory:update { ids:['id1','id2'], kind: 'reference' }   // bulk re-tag (homogeneous)
+memory:update { items:[{ id:'id1', kind:'reference' }, { id:'id2', scope:'harness:foo' }] }
+                                                          // heterogeneous bulk
 ```
 
-You can combine them, and combine with a `content` edit. This is **vec-safe**: it never re-embeds (see why below). Before 2026-06-21 (EI-2032) there was **no tool** for this — `memory:update` was text-only and the backend threw on a metadata patch — which forced raw DB surgery on the shared store. Don’t do that anymore.
+The bulk call shapes follow the house standard (bulk-endpoint-standardization-2026-06-21):
+
+* **Single** `{ id, …patch }` — the shorthand.
+* **Homogeneous many** `{ ids:[…], …patch }` — same patch applied to every id.
+* **Heterogeneous many** `{ items:[{ id, …patch }] }` — per-item control.
+
+All forms return `{ ok, results:[{ ok, id, error? }], counts }`. A **not-found id** returns that item’s `{ ok:false }` without failing the rest (graceful, not a throw).
+
+You can combine metadata fields, and combine with a `content` edit. This is **vec-safe**: it never re-embeds (see why below). Before 2026-06-21 (EI-2032) there was **no tool** for this — `memory:update` was text-only and the backend threw on a metadata patch — which forced raw DB surgery on the shared store. Don’t do that anymore.
 
 ## Where the store actually is (the part that wastes your time)
 
@@ -14174,6 +14267,45 @@ A shared test-env helper that forces `PAPERCUSP_PGBOUNCER=0` whenever a test env
 
 Discovered 2026-06-22 while landing `shared-hive-member-content-federation-2026-06-20` P-005 (it was failing the *landed* P-001+P-002 case too). Refs that plan’s D-009.
 
+# PgBouncer rejects statement_timeout as a startup param — fleet-wide plans:* write flakiness
+
+> When the org pools route through PgBouncer (transaction pooling), sending statement_timeout / idle_in_transaction_session_timeout as postgres-js `connection:` STARTUP parameters makes PgBouncer 502 the connection: 'unsupported startup parameter: statement_timeout'. It surfaces as intermittent plans:* (org-pool) write failures fleet-wide. Fix: omit those GUCs at startup on POOLED connections and enforce them per-transaction via SET LOCAL. Immediate kill-switch: flip papercusp-txn-timeouts-config OFF (then RESTART the operator — the D-010 flag cache is read at boot, not live).
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Intermittent `plans:*` write failures fleet-wide; the operator journal fills with `[hive-survey] plan read failed for '<hive>' — skipped: unsupported startup parameter: statement_timeout` (13k+ in 30 min during the 2026-06-25 incident). No work is lost — the connection is refused, the query is retried/skipped — but the org-pool write class degrades.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`buildClient` in `connection.ts` builds the postgres-js client with a `connection: {}` block. Those keys are sent in the **libpq STARTUP packet**. When the org pools route through **PgBouncer** (`pgbouncerEnabled()` is default-ON for server-class hosts → `maybePgbouncer` reroutes to `:6432`), PgBouncer **rejects any startup parameter it isn’t told to ignore**:
+
+* `application_name` — allowed by default.
+* `search_path` — must be in PgBouncer’s `ignore_startup_parameters` (it is, on the host).
+* `idle_in_transaction_session_timeout` — same (host ignores it).
+* **`statement_timeout`** — NOT in the host’s ignore list → **`unsupported startup parameter`**.
+
+`statement_timeout` is only sent when WI-832’s `adminPoolStatementTimeoutMs` provider returns > 0 (behind the `papercusp-txn-timeouts-config` flag). Once that config is non-zero (it was 30000), every NEW pooled backend establishment fails — hence the **intermittent** nature (cached pool connections keep working; only fresh connects fail). Under transaction pooling a connect-time GUC doesn’t even persist across the pool, so the startup param was non-functional *and* fatal.
+
+## The durable fix (connection.ts)
+
+[Section titled “The durable fix (connection.ts)”](#the-durable-fix-connectionts)
+
+Extract `buildConnectionOptions({ ..., pooled })` and **omit `statement_timeout` + `idle_in_transaction_session_timeout` from the startup block when `pooled`**. Thread `pooled = pgbouncerEnabled()` from the org-pool builders (`getOrgPg`/`getOrgPgApp`); the per-harness pool stays direct (`pooled=false`). Under pooling the real enforcement is **per-transaction `SET LOCAL`** (`in-workspace-txn.ts` re-applies statement\_timeout + search\_path per tx) and PgBouncer’s own `idle_transaction_timeout`. Direct connections (the Tauri desktop’s embedded PG) keep both GUCs. Guarded by `connection-helpers.test.ts` + `connection-statement-timeout.test.ts` (assert pooled ⇒ no timeout startup params).
+
+> General rule: **never send a non-standard GUC as a startup parameter on a pooled connection.** Apply it per-transaction with `SET LOCAL`, or it’ll either be rejected or silently dropped by the pooler.
+
+## Immediate kill-switch (no deploy)
+
+[Section titled “Immediate kill-switch (no deploy)”](#immediate-kill-switch-no-deploy)
+
+Flip **`papercusp-txn-timeouts-config` OFF** → `adminPoolStatementTimeoutMs()` returns 0 → no `statement_timeout` startup param. SAFE when the config holds only `adminPoolStatementTimeoutMs` (no lock/stmt override) — it reverts `inWorkspaceTxn` to the baked 5s/5s defaults and removes only the bug trigger.
+
+**⚠ The flag is read through a module-level D-010 sync cache (`txn-timeouts-config.ts`) that refreshes on its own cadence — flipping the flag does NOT take effect on a running process immediately.** `db:txn-timeouts set` would invalidate it, but the deployed tool may expose only `op:get`. The deterministic apply is to **`systemctl --user restart papercup-dev-api.service`** (the `:3070` release operator boots with `cachedEnabled=false`). A plain restart is safe (same release code, picks up the flag); 0 errors after the restart confirms it. Re-enable the flag once the code fix is deployed (the admin-pool cap becomes pooler-safe — applied per-tx / on direct connections only).
+
 # Phase-1b federation — known limitations and the verified-commit requirement
 
 > Three Phase-1b federation gaps (D-008): multi-device collision, login-rename fragility, and why the contributor file MUST be published via the GitHub Contents API (R-1). Symptoms, root causes, fix shapes.
@@ -14573,11 +14705,23 @@ A plan item is **not** directly claimable. It becomes claimable only as a work-i
 
 `plans:start` (the same verb a human, su, or the Queen calls) auto-promotes every **OPEN** plan-item into a placeable, **UNCLAIMED** work-item (`plan-workitem-promotion.ts`, `computePromotions`). The work-item is `kind:'feature'`, carries `source_plan_item_ids` (the idempotency key with the slug, so re-starting never double-mints), and lands in the queue for the Queen/self-selection to place. Gated by `papercusp-plan-workitem-promotion`. This is why “I started a plan but the Queen sat idle” was a bug — without promotion a started plan minted zero work-items.
 
-## Bridge 2 — `plan_items:convert` (convert-at-pickup, the single path)
+## Bridge 2 — `plan_items:convert` (convert-at-pickup, the bulk path)
 
-[Section titled “Bridge 2 — plan\_items:convert (convert-at-pickup, the single path)”](#bridge-2--plan_itemsconvert-convert-at-pickup-the-single-path)
+[Section titled “Bridge 2 — plan\_items:convert (convert-at-pickup, the bulk path)”](#bridge-2--plan_itemsconvert-convert-at-pickup-the-bulk-path)
 
 `plan_items:convert` is **THE pickup verb**: it takes the policy-checked plan-item lease, mints (or resumes) the work\_item execution record **with the caller as assignee**, links it back to the plan item, and flips the plan item `todo→wip` + broadcasts the claim (via `emits:`). The work-item’s later lifecycle **reflects back** onto the plan item (`plan-items/reflect-rules.ts`: `complete→done`, `release→todo`). So “working a plan item” = convert it first — there is no untracked self-item.
+
+**Bulk API (bulk-endpoint-standardization-2026-06-21).** You can convert several items in one call:
+
+```plaintext
+plan_items:convert { plan, item }                                    // single
+plan_items:convert { plan, itemIds:['P-001','P-002'], brief }        // many in same plan
+plan_items:convert { items:[{ plan, item }, { plan, item, kind }] }  // heterogeneous
+```
+
+Returns `{ ok, results:[{ ok, plan, item, status, workItem?, planItem? }], counts }`. A refused/conflicted convert is that item’s `ok:false` without failing the rest.
+
+**`plan_items:assign` is also bulk.** Same three shapes (`{ plan, item }` / `{ plan, itemIds:[…] }` / `{ items:[…] }`), returns the same `{ ok, results, counts }` envelope.
 
 ## Claiming the LANE (declaration, not execution)
 
@@ -14595,7 +14739,7 @@ A `claim_conflict` means a live peer holds the lease — coordinate, don’t tak
 
 [Section titled “What a coordinator/Queen actually pushes work onto”](#what-a-coordinatorqueen-actually-pushes-work-onto)
 
-* **Hand a specific plan lane to a peer + get it picked up NOW** → `coord:dispatch { to, planSlug, items, note }` — it `plan_items:assign`s the lane (durable) AND wakes + confirms (see [coordinator-dispatch-and-wake](/internal/docs/agent-insights/coordinator-dispatch-and-wake)).
+* **Hand a specific plan lane to a peer + get it picked up NOW** → `coord:dispatch { to, planSlug, items, note, harness? }` — it `plan_items:assign`s the lane (durable) AND wakes + confirms (see [coordinator-dispatch-and-wake](/internal/docs/agent-insights/coordinator-dispatch-and-wake)). Pass `harness` when the plan lives in a non-default harness; it threads through to the assign.
 * **Hand a lane durably without a wake** → `plan_items:assign` (the target pulls it on its next turn).
 * **Feed the open claimable queue** → `plans:start` (bulk promotion) or `work_items:create` directly.
 * **The Queen** places ranked *work-items* onto bees (it does not hand out raw plan items) — the hive scheduler’s `get_next` offers a bee a floor-AND-spec-compliant work-item.
@@ -16246,7 +16390,7 @@ Fixed in: host-architecture-2026-05-20-v2 P-001..P-003 (D-002 has the full phase
 
 ```plaintext
 [hono-host] fatal unhandledRejection — exiting: Error: Cannot find module
-  '.../papercup-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js'  code: 'MODULE_NOT_FOUND'
+  '.../papercusp-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js'  code: 'MODULE_NOT_FOUND'
 [cluster] worker N exited (code=1 signal=null); respawn budget exhausted (160) — NOT respawning
 [cluster] SIGTERM — draining 32 worker(s) + exiting primary
 ```
@@ -16257,7 +16401,7 @@ Fixed in: host-architecture-2026-05-20-v2 P-001..P-003 (D-002 has the full phase
 
 [Section titled “The mechanism (root cause)”](#the-mechanism-root-cause)
 
-`:3070` runs the `papercup-release` checkout. A deploy shells `setup-release-checkout.sh`, whose step 3 historically refreshed node\_modules **in place**:
+`:3070` runs the `papercusp-release` checkout. A deploy shells `setup-release-checkout.sh`, whose step 3 historically refreshed node\_modules **in place**:
 
 ```sh
 [ -e "$dest" ] && rm -rf "$dest"      # deletes the LIVE root node_modules
@@ -16285,8 +16429,8 @@ Layer 1 prevents the window; layers 2–3 turn any *remaining* inconsistency (a 
 [Section titled “Diagnosing / recovering a live incident”](#diagnosing--recovering-a-live-incident)
 
 * `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3070/api/health` → `000`/connection-refused = down; the journal grep above confirms the MODULE\_NOT\_FOUND crash-loop.
-* It usually **self-recovers** once the in-place copy finishes; if wedged, the documented recovery is `systemctl --user stop papercup-dev-api.service` then re-run the deploy (`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute --no-drain`) or `npm ci` in `papercup-release` to complete node\_modules.
-* Confirm `papercup-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js` and `@papercusp/plugin-loader` resolve (`cd papercup-release && node -e "require.resolve('@papercusp/plugin-loader')"`).
+* It usually **self-recovers** once the in-place copy finishes; if wedged, the documented recovery is `systemctl --user stop papercup-dev-api.service` then re-run the deploy (`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute --no-drain`) or `npm ci` in `papercusp-release` to complete node\_modules.
+* Confirm `papercusp-release/node_modules/@modelcontextprotocol/sdk/dist/cjs/types.js` and `@papercusp/plugin-loader` resolve (`cd papercusp-release && node -e "require.resolve('@papercusp/plugin-loader')"`).
 
 ## Related
 
@@ -17377,6 +17521,7 @@ Two footguns the script already handles, but you must know:
 
 * **`$HOME` is workspace-scoped on a VM whose operator runs workspace-scoped** (`HOME=/home/tester/.papercusp-workspaces/default`, D-007). The superuser token and `gh` auth live under the operator’s *actual* HOME, not `/home/tester`. `fed.sh` derives the token from `/proc/$(pgrep -f serve.mjs)/environ`; if `hive:membership_decide` returns `no_owner_identity`, the operator’s HOME is missing `~/.config/gh` — symlink it.
 * **EI-3409 superuser-MCP workspace mismatch.** Superuser MCP resolves `ctx.workspaceId='*'` while HTTP routes/queue use `'default'`, so a hive created via `mcp` lands in the wrong workspace and routes then return `not_owner_swarm`. For a workspace-scoped WRITE tool, set `FED_MCP_WS=default` so `fed.sh` injects `workspace:"default"` (OPT-IN — blanket injection breaks READ tools that reject an unknown `workspace` key).
+  * **WI-892 (FIXED 2026-06-26, su-549e0214): the `'*'` sentinel was LEAKING into `harness_shared.hive_members` WRITES.** The hive-membership write tools resolved `args.workspace ?? ctx.workspaceId ?? … ?? activeWorkspaceId()` — a truthy `'*'` wins, so the `activeWorkspaceId()` fallback never fired and `'*'` was persisted as `workspace_id`. A `'*'`-stamped row is **invisible to every concrete-workspace read** (the membership guard, epoch-key grant, and cross-member content federation all filter `WHERE workspace_id='<concrete>'`), so the operator’s member view silently diverged from the raw table (live proof on fed-a: 18 `'*'` rows; `b8recv-hive` 1 row total, 0 visible under `workspace_id='default'`). MERGED rows are unaffected — `projections/hive-members.ts` writes the local concrete `opts.workspaceId`, which is why a federated member can “self-heal” to `default` after a re-merge. **Fix:** `resolveConcreteWorkspaceId(...candidates)` in `workspace-registry.ts` (skips `'*'`/empty, never returns `'*'`) is now used by every hive write tool; `upsertHiveMember`/`addRevokedHivePubkeys`/`remove*` throw on `'*'`/empty; migration `406-hive-members-forbid-wildcard-workspace` backfills + adds `CHECK (workspace_id <> '*' AND <> '')`. **Use `resolveConcreteWorkspaceId` for ANY write that persists a `workspace_id` — `'*'` is a read sentinel, never a storable value.** (The same leak likely affects the `hives` table itself — `hive:create` under unscoped MCP also stamped its hives row `'*'` — a broader-class follow-up; see WI-892.)
 
 ## The two-path admission model — the thing you are actually debugging
 
@@ -17447,6 +17592,13 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 * `announce_pending` — Layer-1 transient (`pending`) OR a Layer-2 membership `miss` buffered for retry. Will self-resolve if the cause clears; otherwise it ages out at 30 min.
 * `swarm_join_failed` / `peer_connected` / `peer_rejected` / `peer_rate_limited` / `peer_capped` / `peer_revoked` — the **transport** layer. No `peer_connected` for the hive topic at all ⇒ a swarm/registry/gh-auth problem, **upstream of admission** — go back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is the #1 silent-local-only cause after a VM reset).
 * `merge_error`, `rekey_grant_*`, `rekey_boundary_skipped` — apply/re-key layer.
+* `epoch_gate_built` — the decrypt gate **IS** installed for this harness (non-null `rekeyDeps`); carries `hiveHomeSlug` = the AAD hiveId. Absence means encrypted ops are applied raw, unchecked.
+* `epoch_gate_seen` — an encrypted-looking op (epoch-stamped OR `{__rekey}` value) **reached** the gate. Distinguishes “content dropped upstream of the gate” (this never fires) from “reached the gate but was processed” (fires, with `epoch=NULL` flagging the wire-stamp-lost case).
+* `epoch_defer` — op deferred: its epoch key is not yet local on this node. Will be replayed when the key arrives via `drainQueuedEpochContent`.
+* `epoch_decrypt_fail` — have an epoch key but decrypt failed (wrong key / AAD mismatch — `hiveId` must be the LOCAL home slug, not a federated field) → op **dropped**. A persistent stream of these means the encrypt AAD and decrypt AAD disagree on the hive identity.
+* `epoch_applied` — encrypted op decrypted and applied successfully (the success path).
+
+These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06-25): previously all four non-success paths were **silent** (`return false`), leaving a federated op that never landed with no diagnostic signal at all.
 
 ## The diagnostic ladder (use this order)
 
@@ -17537,13 +17689,14 @@ The live witnesses are `papercusp-desktop/bin/two-instance-*-smoke.sh` (director
 
 [Section titled “Running a witness — the gotchas (each cost hours to find)”](#running-a-witness--the-gotchas-each-cost-hours-to-find)
 
-1. **Box load is the #1 killer — and the witness ITSELF adds \~+30 to the 1-min load.** The embedded PGs are `shared_buffers≈38GB` each (memory), but the real surprise is CPU: during the cupboard-off DHT discovery the sidecar/swarm pegs **\~25 cores** (one `node` proc at \~2500% CPU), so a 2-peer run adds \~+30 to the 1-min load on its own. Above \~load 40 (128-core host) the instances OOM-kill mid-run and discovery flakes \~50%; above \~70 the bg-host wedges. **⇒ Gate the run on fleet-load < \~12, NOT <20** — twice I ran at fleet-load \~22–23 and the witness’s +30 spiked the box to 55–60 (mid-storm, toward the wedge point), forcing an abort. The number isn’t caution-theatre; it’s `headroom = wedge_point − witness_cost`. Never run heavy witnesses during a fleet infra storm — you false-fail, spike the box, AND worsen the contention everyone else is fighting.
+1. **Box load is the #1 killer — and the witness ITSELF adds \~+30 to the 1-min load.** The embedded PGs are `shared_buffers≈38GB` each (memory), but the real surprise is CPU: during the cupboard-off DHT discovery the sidecar/swarm pegs **\~25 cores** (one `node` proc at \~2500% CPU), so a 2-peer run adds \~+30 to the 1-min load on its own. Above \~load 40 (128-core host) the instances OOM-kill mid-run and discovery flakes \~50%; above \~70 the bg-host wedges. **⇒ Gate the run on fleet-load < 15 (the live gate’s `LOAD_GATE` default, tightened from 30 after a 30-threshold run spiked the box to load 94 and false-RED’d), NOT <20** — twice I ran at fleet-load \~22–23 and the witness’s +30 spiked the box to 55–60 (mid-storm, toward the wedge point), forcing an abort. The number isn’t caution-theatre; it’s `headroom = wedge_point − witness_cost`. Never run heavy witnesses during a fleet infra storm — you false-fail, spike the box, AND worsen the contention everyone else is fighting.
 2. **`DISCOVERY_RETRIES`** — the smokes poll discovery 40×3s=120s by default, too short under any load. Set `DISCOVERY_RETRIES=100` (300s). Made env-configurable on both smokes.
 3. **The re-key witness block is gated on `WITNESS_PROBE=1`** (in the from-repo smoke). Without it the run silently skips the AK + K0–K3 block and does only the federation smoke — you’ll think the re-key passed when it never ran.
 4. **`mcp_call` (MCP-over-HTTP) needs three things** or it 406s/parse-errors: `-H 'accept: application/json, text/event-stream'`, `-H "Authorization: Bearer <$HOME/.papercusp/superuser-token>"`, and a full JSON-RPC envelope `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{...}}`.
 5. **The re-key flag does NOT engage via the `PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1` env alone** — verified: the owner ends with 0 `hive_epoch_keys`. Flip it at runtime via `POST /api/flags/set {key:'papercusp-hive-rekey',enabled:true}` (persists a pg-override `getFlag` reads) BEFORE the hive is created.
 6. **Stale build = silent re-key no-op.** A `.deb`/`serve.mjs` built before a grant *call* seam landed carries the function but never calls it (e.g. `grantEpochKeysToMembers` present but no `'grantEpochKeysToMembers on admit'` string). Rebuild the sidecar (`bin/build-desktop-sidecar.sh`) and gate on a **minification-surviving code string**, not a comment (esbuild strips comments).
 7. **content-matrix needs a `.deb`; from-repo supports `HIVE_SMOKE_MODE=sidecar`** (no .deb). To test current HEAD on the content-matrix, rebuild the sidecar then `dpkg-deb -R` a base .deb, swap the fresh sidecar in, `dpkg-deb -b`.
+8. **`live-federation-gate.sh` runs an assert-core self-test (WI-754) BEFORE the load gate** — proves `federation-asserts.sh` port self-discovery logic against synthetic listeners (\~2s, no .deb, no extra load). A broken assert core makes every smoke an unexplained RED; catching it first gives a clear error message. Runs on every invocation regardless of fleet load. Override with `GATE_SKIP_SELFTEST=1`.
 
 ## The federation model you need to read results (the D-021 slug guard)
 
@@ -17578,6 +17731,8 @@ Before expecting ANY meaningful K-stage, confirm the owner actually minted epoch
 * The epoch is minted ONLY on a **boundary** — `advanceEpochOnHiveBoundary` is called only from revoke (`hive-revoke-contributor`) + go-private (`hive-set-listing`), **never on create**. A fresh hive has no epoch key (content is plaintext until the first boundary).
 * The boundary + the join-grant wrap the new key to `loadAllHiveMemberDevicePubkeys()` — the **`hive_members` device set**. In the live open-mode from-repo flow `hive_members` is EMPTY: `upsertHiveMember` fires only via `approvePendingJoin` (open-mode auto-admits at the substrate, no pending-join), and nothing self-registers the owner at create. Wrap-set = `[]` → 0 keys, and even a revoke can’t advance (nobody to wrap to).
 * The hermetic re-key tests **seed `hive_members`**, so they’re green while the live binary mints 0 keys — exactly A-003/WI-259’s pattern. The fix is to populate `hive_members` live (owner self-row at create + open-mode joiner at the Seam-2 admit), not anything in the witness.
+
+**WI-887 self-heal:** If `hive_members` is still empty when the witness runs — or a member missed epoch keys because `papercusp-hive-rekey` was dark during their admit — `reconcileOwnedHiveEpochKeys` (in `hive-epoch-boundary-wiring.ts`) provides a GAP-AWARE sweep: for each hive, it checks whether any live (non-revoked) device is missing the current epoch key and calls `reconcileEpochKeysForCurrentMembers` only then (no crypto on the steady state). Owner-only, C-001-safe, idempotent. `BoundaryRekeyResult.reason` (`'flag-disabled'` | `'no-fresh-members'` | `'no-author'`) names which silent early-return fired when the grant ran but produced 0 keys — the queryable signal a stuck hive needs.
 
 ## Self-kill footgun (cleanup)
 
@@ -17919,7 +18074,7 @@ Same hazard for `'message'` on forked children and `'data'` on any pipe whose so
 
 # Spawn-env pins leak into vitest — tests that only fail when an agent runs them
 
-> Orchestrator-spawned agents carry per-spawn env pins (PAPERCUSP_WORKSPACE_ID, GIT_CONFIG_* mounting the fleet no-push hook). Vitest inherits them, so env-sensitive tests (workspace-fallback asserts, real-git pushes) fail under the green-checkpoint or any spawned runner while passing in every interactive shell. Fixed globally by the hermetic-env scrub in libs/test-config setup; diagnose by simulating the spawn env, not by re-running locally.
+> Orchestrator-spawned agents carry per-spawn env pins (PAPERCUSP_WORKSPACE_ID, GIT_CONFIG_* mounting the fleet no-push hook, PAPERCUSP_PGBOUNCER defaulting ON for server-class hosts). Vitest inherits them, so env-sensitive tests (workspace-fallback asserts, real-git pushes, testcontainer-PG integration tests) fail under the green-checkpoint or any spawned runner while passing in every interactive shell. Fixed globally by the hermetic-env scrub in libs/test-config setup; diagnose by simulating the spawn env, not by re-running locally.
 
 ## Symptom
 
@@ -17937,8 +18092,12 @@ A small cluster of tests reds on the Tests tab at a steady cadence (every green-
 The runner was an **orchestrator-spawned agent** (the hourly green-checkpoint). Spawns carry per-spawn env pins that vitest inherits:
 
 * `PAPERCUSP_WORKSPACE_ID` — the process workspace pin, precedence step 2 in `workspace-registry.ts:activeWorkspaceId()`. Tests asserting the step-3 global fallback get the pin instead.
+
 * `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` — the spawn-env git-config injection (`gitConfigNoPushEnv` in orchestrator `invoke.ts`) that mounts `core.hooksPath` → the fleet no-push pre-push hook. git applies these env overrides in **every repo the test creates**, so real-git tests can’t push to their own temp origins.
-* `PAPERCUSP_INTEGRATION_ROOT` / `RELEASE_ROOT` / `CHECKPOINT_ROOT` / `INTEGRATION_BRANCH` / `RELEASE_REF` — the release-gate workspace-map config in gate/checkpoint runner envs. `resolveWorkspaceMapConfig` prefers them over sibling derivation, so `workspace-map.test.ts`’s derivation asserts got the runner’s real paths (it stubbed only `INTEGRATION_ROOT`, and the runner’s `RELEASE_ROOT` won).
+
+* `PAPERCUSP_INTEGRATION_ROOT` / `PAPERCUSP_RELEASE_ROOT` / `PAPERCUSP_CHECKPOINT_ROOT` / `PAPERCUSP_INTEGRATION_BRANCH` / `PAPERCUSP_RELEASE_REF` — the release-gate workspace-map config in gate/checkpoint runner envs. `resolveWorkspaceMapConfig` prefers them over sibling derivation, so `workspace-map.test.ts`’s derivation asserts got the runner’s real paths (it stubbed only `PAPERCUSP_INTEGRATION_ROOT`, and the runner’s `PAPERCUSP_RELEASE_ROOT` won).
+
+* `PAPERCUSP_PGBOUNCER` — `pgbouncerEnabled()` defaults ON for a SERVER-class host (the dev box / a dedicated CI server) even when the env is unset, so `getOrgPg()`’s `maybePgbouncer()` rewrites every org connection to `127.0.0.1:6432` — the host’s pooler. Integration tests point `getOrgPg` at a throwaway testcontainer with no bouncer, so the reroute hits the wrong Postgres: a FATAL `08P01` under transaction pooling, or “no such database: org\_\<rand>” against the host PG (and silently pollutes it). The classic “green in CI (workstation-class), red on the dev box (server-class)” leak. Pinned `OFF` as the test default via `??=` — a test that genuinely exercises the bouncer path sets it explicitly (the `??=` respects an explicit value).
 
 An interactive shell has neither pin, which is why local re-runs are useless for reproducing this class.
 
@@ -17946,7 +18105,14 @@ An interactive shell has neither pin, which is why local re-runs are useless for
 
 [Section titled “Fix (landed)”](#fix-landed)
 
-`libs/test-config/src/setup-hermetic-env.ts` — prepended to every `defineVitestConfig` setup (both console-noise branches) — deletes `PAPERCUSP_WORKSPACE_ID` and the `GIT_CONFIG_*` injection block per worker, so tests behave identically under any runner. Tests that need a pin set it themselves. Keep the scrub list to proven leak classes; broad env wipes hide real bugs.
+`libs/test-config/src/setup-hermetic-env.ts` — prepended to every `defineVitestConfig` setup (both console-noise branches) — scrubs the known leak classes per worker, so tests behave identically under any runner:
+
+* Deletes `PAPERCUSP_WORKSPACE_ID` (workspace-pin leak).
+* Deletes the `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` block (no-push hook injection).
+* Deletes `PAPERCUSP_INTEGRATION_ROOT`, `PAPERCUSP_RELEASE_ROOT`, `PAPERCUSP_CHECKPOINT_ROOT`, `PAPERCUSP_INTEGRATION_BRANCH`, `PAPERCUSP_RELEASE_REF` (release-gate workspace-map config leak).
+* Sets `PAPERCUSP_PGBOUNCER ??= '0'` (server-class bouncer default). Uses `??=` so a test that explicitly exercises the bouncer path can still set it to `'1'`.
+
+Tests that need a specific pin set it themselves. Keep the scrub list to proven leak classes; broad env wipes hide real bugs.
 
 ## How to diagnose the next one
 
@@ -17955,9 +18121,14 @@ An interactive shell has neither pin, which is why local re-runs are useless for
 If a test fails only under a spawned runner, don’t chase the code — diff the envs. Reproduce by simulating the spawn env locally:
 
 ```bash
+# Workspace-pin + git no-push hook (green-checkpoint runner shape):
 PAPERCUSP_WORKSPACE_ID=papercusp-workspace \
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/some-hooks \
   npx vitest run <file>
+
+
+# Server-class bouncer default (dev-box runner shape):
+PAPERCUSP_PGBOUNCER=1 npx vitest run <file>
 ```
 
 If that reproduces, add the offending variable to the hermetic scrub (with a comment naming the incident) rather than patching the individual test.
@@ -20440,6 +20611,98 @@ dev:pg_query  → SELECT source, max(ts) FROM harness_shared.agent_usage_samples
 
 A *fresh* `max(ts)` on `source='interactive'` (it was minutes-old at this re-measure) proves the ingest is current — so a small weekly `interactive` total is a real low, not a stuck watermark.
 
+# Token-efficiency production scorecard (live-fleet adoption + regression tracking)
+
+> The three live-fleet metrics that confirm the agent-tooling-token-efficiency work (validation limits, code:run, orient dedup) moved the needle and catch regressions — repeatable SQL over harness_shared.tool_invocations, with the 2026-06-25 baseline. Complements the offline A/B doc (measuring-code-run-adoption).
+
+The `agent-tooling-token-efficiency-2026-06-25` plan shipped three levers — (1) validation-limit tiers that **truncate instead of reject** so a too-long arg no longer wastes a whole call, (2) the `code:run` batch-nudge so N round-trips collapse into one inference call, and (3) the orient-dedup nudge so agents stop re-calling what `coord:orient` already returned. This doc is the **live-fleet scorecard** that confirms those levers actually move production behaviour and catches regressions.
+
+It is the production counterpart to [measuring code:run adoption](/internal/docs/agent-insights/measuring-code-run-adoption): that doc is the **offline A/B** (llm-testing variant seam, haiku bucket — does the model *reach* for code:run under different enforcement styles); this doc is the **live read** off real agent traffic.
+
+## The store
+
+[Section titled “The store”](#the-store)
+
+Every tool call lands one row in `harness_shared.tool_invocations` (`tool_name`, `transport`, `role`, `status`, `error_code`, `error_message`, `args_json`, `metadata_json`, `invoked_at`, …). **Always scope the rate metrics to `transport='mcp'`** — the `http` transport is dominated by the admin-UI sync polling (`plans:list`/`plans:attention`; see WI-820), which inflates the denominator by \~15× and is not agent tool-calling. (`in_process` is the operator-converse/oracle surface — tiny.)
+
+## The three metrics (repeatable SQL)
+
+[Section titled “The three metrics (repeatable SQL)”](#the-three-metrics-repeatable-sql)
+
+Run via `dev:pg_query` (read-only). One combined query gives the whole scorecard:
+
+```sql
+SELECT
+  count(*) AS total_mcp,
+  -- (2) code:run share — the round-trip-collapsing lever. The headline adoption number.
+  count(*) FILTER (WHERE tool_name='code:run') AS code_run,
+  round(100.0*count(*) FILTER (WHERE tool_name='code:run')/nullif(count(*),0),3) AS code_run_pct,
+  -- (1) validation health — overall reject rate, and the string-limit subset specifically.
+  count(*) FILTER (WHERE status='invalid-input') AS invalid_input_total,
+  round(100.0*count(*) FILTER (WHERE status='invalid-input')/nullif(count(*),0),3) AS invalid_input_pct,
+  count(*) FILTER (WHERE status='invalid-input'
+                    AND error_message LIKE '%Too big: expected string%') AS string_limit_fails,
+  -- (3) orient-dedup — loose proxy (see caveat); orient calls vs the 4 tools orient already returns.
+  count(*) FILTER (WHERE tool_name='coord:orient') AS orient_calls,
+  count(*) FILTER (WHERE tool_name IN
+    ('memory:search','coord:inbox','coord:plan-events','coord:declare-intent')) AS redundant_followups
+FROM harness_shared.tool_invocations
+WHERE transport='mcp' AND invoked_at > now() - interval '24 hours';
+```
+
+Per-tool drill-down for the string-limit metric (which tool/field keeps overflowing):
+
+```sql
+SELECT tool_name, left(error_message,90) AS msg, count(*) n
+FROM harness_shared.tool_invocations
+WHERE status='invalid-input' AND error_message LIKE '%Too big: expected string%'
+  AND invoked_at > now() - interval '24 hours'
+GROUP BY 1,2 ORDER BY 3 DESC;
+```
+
+## Baseline — 2026-06-25 (24h, transport=mcp)
+
+[Section titled “Baseline — 2026-06-25 (24h, transport=mcp)”](#baseline--2026-06-25-24h-transportmcp)
+
+| Metric                     | Value               | Reading                                                       |
+| -------------------------- | ------------------- | ------------------------------------------------------------- |
+| total mcp calls            | 63,516              | denominator                                                   |
+| **code:run share**         | **0.002%** (1 call) | **≈ zero adoption** — the nudge fires but agents don’t comply |
+| invalid\_input rate        | 0.115% (73)         | healthy overall reject rate                                   |
+| **string-limit fails**     | **17**              | 16 are `loop:arm.goal` “`<=500 chars`”                        |
+| orient calls               | 77                  | —                                                             |
+| redundant follow-ups (raw) | 13,406              | loose upper bound only — see caveat                           |
+
+### What the baseline says
+
+[Section titled “What the baseline says”](#what-the-baseline-says)
+
+* **code:run adoption is the open problem — but the audience just expanded.** At 0.002% (1 call) the round-trip-collapsing lever was effectively unused in production even though the batch-nudge shipped default-ON and emitted a paste-ready skeleton.
+
+  **Role-access context:** The 2026-06-25 baseline was taken at the moment `code:run` shifted from `agentRoles: [...SU_ROLES, 'bee']` to `agentRoles: [...AGENT_ROLES]` (owner directive 2026-06-25; `code/run.ts` + `code-run-batch-nudge.ts`). Before this, only superuser-role agents and the generic bee were nudged — the high-repeat-call roles (worker, validator, reviewer) that would benefit MOST from batch collapsing were excluded and never saw the nudge. Post-expansion, the batch-nudge fires for EVERY built-in role, so future baselines will reflect a much larger audience. The 0.002% figure describes the pre-expansion cohort (SU + bee); do NOT use it as the adoption floor for the post-expansion fleet.
+
+  The underlying fix remains an **enforcement-style** change — the way to pick the wording is the offline A/B in [measuring code:run adoption](/internal/docs/agent-insights/measuring-code-run-adoption) (`su-S13/S15/S16` scenarios on haiku). Re-run this scorecard after any enforcement change to confirm the live number moves off the floor (and S14 stays green so single calls aren’t over-wrapped). The first post-expansion 24h window is the new meaningful baseline.
+
+* **string-limit fails are a deploy-lag artifact, not a code bug.** `loop:arm.goal` is already in the `clampText` soft-limit set (`agent-tools/loop/arm.ts` → auto-truncate, no reject), but the 16 ”<=500 characters” rejects are agents hitting the **older hard limit still live on green `:3070`** before the `limits.ts` soft-clamp deploy lands. Expect `string_limit_fails` to decay to \~0 once the deploy promotes. If it *doesn’t* decay — or a different tool/field starts dominating the drill-down — that’s a real regression (a field that never got converted to a soft limit).
+
+* **validation reject rate (0.115%) is healthy** — Phase 1’s truncate-don’t-reject is doing its job; the residual rejects are wrong-type / missing-required-field, which limits can’t fix.
+
+### Caveat on the redundant-bootstrap metric
+
+[Section titled “Caveat on the redundant-bootstrap metric”](#caveat-on-the-redundant-bootstrap-metric)
+
+The raw `redundant_followups` count (13,406) is **not** the redundant-bootstrap rate — those four tools are called constantly in contexts that never followed a `coord:orient`. The true metric needs a per-session correlation (a follow-up call by the **same actor within \~N seconds after** that actor’s orient). `tool_invocations` has no first-class session id (ephemeral spawns get a fresh `spawn_id` per call), so a precise number needs either a session key threaded into `metadata_json` or a windowed self-join on `role`+time. Until then, track the **ratio trend** (`redundant_followups / orient_calls`) as a coarse directional signal, not an absolute rate, and treat a *downward* trend after the `ORIENT_DEDUP_NUDGE` deploy as the win. Refining this into a real per-session metric is the one open follow-up for this scorecard.
+
+## Cadence
+
+[Section titled “Cadence”](#cadence)
+
+Run the combined query on a weekly cadence (or after any token-efficiency deploy) and append the row to a tracking note. Three asserts catch the regressions that matter:
+
+1. `code_run_pct` trending **up** off the 0.002% floor (the adoption lever working).
+2. `string_limit_fails` at/near **0** after the soft-clamp deploy, with no new tool dominating the drill-down.
+3. `invalid_input_pct` staying **≤ \~0.15%** (Phase 1 not regressing).
+
 # Tool-arg string limits: shared tiers + truncate-don't-reject (why softText can't be a zod transform)
 
 > ~1,000+ agent tool calls in 14 days FAILED purely on too-long STRING args, then blind-retried the same over-length value. The durable fix is a shared limits.ts (named char tiers + hardText/softText/clampText). The non-obvious trap: a truncating zod .transform() in tool args CRASHES the whole MCP catalog's schema-gen, so softText advertises a plain string and truncation is applied HANDLER-side via clampText.
@@ -22611,7 +22874,7 @@ So flipping it never silently guts recall: only *new* cross-workspace `project` 
 
 # The workspaces root lives above the HOME-remap boundary
 
-> The packaged desktop spawns the operator sidecar with HOME remapped to the active workspace dir, so any TS code resolving ~/.papercusp-workspaces via homedir() lands in a nested per-workspace registry that disagrees with the Rust shell. Resolve the root from PAPERCUSP_WORKSPACES_ROOT instead.
+> Any TS code resolving ~/.papercusp-workspaces via homedir() is fragile when the caller's HOME is remapped (per-workspace child processes under P-051). Resolve the root from PAPERCUSP_WORKSPACES_ROOT instead — main.rs always passes it. Phase E (P-050) moved the sidecar itself to shared_sidecar_home() = real HOME, so the original sidecar-level trap is resolved, but the rule stands for spawned children.
 
 ## The trap
 
@@ -22619,7 +22882,7 @@ So flipping it never silently guts recall: only *new* cross-workspace `project` 
 
 `~/.papercusp-workspaces/` holds the workspace **registry.json** plus every per-workspace directory. It is **bootstrap state that lives above the per-workspace isolation boundary** — there is exactly one of it per install, shared by every workspace.
 
-But the packaged desktop spawns the operator sidecar with `HOME` **remapped to the active workspace dir** (`main.rs`: `.env("HOME", &workspace_home_str)`, where `workspace_home = ~/.papercusp-workspaces/<current>`). So inside the sidecar:
+**Historical context (Phase D — before 2026-06):** the packaged desktop used to spawn the operator sidecar with `HOME` **remapped to the active workspace dir** (`main.rs`: `.env("HOME", &workspace_home_str)`, where `workspace_home = ~/.papercusp-workspaces/<current>`). Inside that sidecar:
 
 ```ts
 import { homedir } from 'node:os';
@@ -22628,12 +22891,16 @@ join(homedir(), '.papercusp-workspaces', 'registry.json')
 //   a NESTED registry, one level inside the active workspace
 ```
 
-The Rust shell is **never** remapped, so its `switch()` / `ensure_initialized()` read the real top-level `~/.papercusp-workspaces/registry.json`. The two disagree. Symptoms:
+This made the sidecar’s registry disagree with the Rust shell’s, surfacing as nested junk registries and `switch failed: workspace dir for <id> missing`.
 
-* A nested junk registry appears at `~/.papercusp-workspaces/<ws>/.papercusp-workspaces/registry.json` (and nested `backups/`, `db-dumps/`, `clones/` if those resolvers were affected too).
-* Entries the operator-side bootstrap writes (e.g. `ensurePapercuspWorkspace`) never reach the registry the Rust `switch()` consults — surfacing as `switch failed: workspace dir for <id> missing`.
+**Current state (Phase E, P-050 / D-008 — landed 2026-06):** the sidecar now runs under the **real user HOME** via `workspaces::shared_sidecar_home()` (= `real_home()`). One shared sidecar serves ALL workspaces; per-workspace credential isolation moves to each **spawned child’s** HOME, set operator-side from the job’s workspace (P-051). The sidecar’s own `HOME` is no longer remapped.
 
-It is **invisible in dev**: `npm run dev` runs the operator with the real `HOME`, so `homedir()` happens to resolve correctly. The bug only bites in the packaged build.
+The original sidecar-level trap is therefore resolved. **The rule below still applies** because:
+
+1. `main.rs` still passes `PAPERCUSP_WORKSPACES_ROOT` explicitly (belt-and- suspenders: future HOME changes won’t silently break registry resolution).
+2. Spawned CLI children (claude, git, pi, spawned agents) can have their HOME overridden to a per-workspace dir (P-051) — any registry-touching code running in those children that uses bare `homedir()` would hit the same nested-registry trap.
+
+It is **invisible in dev** regardless of phase: `npm run dev` runs the operator with the real `HOME`, so `homedir()` happens to resolve correctly. Packaged- build differences only emerge if HOME-remapping returns for a new context.
 
 ## The rule
 
@@ -22647,11 +22914,11 @@ packages/operator-core/lib/workspace-registry.ts
 export function workspacesRoot(): string {
   const env = process.env.PAPERCUSP_WORKSPACES_ROOT;
   if (env && env.trim()) return env;
-  return join(homedir(), '.papercusp-workspaces'); // dev fallback — HOME not remapped
+  return join(homedir(), '.papercusp-workspaces'); // dev fallback — HOME not remapped in sidecar
 }
 ```
 
-`main.rs` passes `PAPERCUSP_WORKSPACES_ROOT = workspaces::workspaces_root()` (the real root) to the sidecar. The `homedir()` fallback keeps dev behavior identical, so migrating call sites is a no-op in dev and a fix in packaged mode.
+`main.rs` always passes `PAPERCUSP_WORKSPACES_ROOT = workspaces::workspaces_root()` (the real root, derived from the Rust-side `real_home()`) to the sidecar, regardless of what `HOME` is set to. The `homedir()` fallback keeps dev behavior identical (and also correct in Phase E, since the sidecar HOME is no longer remapped). For any child process spawned with a per-workspace HOME (P-051), the `PAPERCUSP_WORKSPACES_ROOT` env is the only reliable anchor.
 
 **Any path that resolves `~/.papercusp-workspaces` must go through `workspacesRoot()`** — registry, per-workspace dirs, `clones/`, `backups/`, hyperbee stores. A bare `join(homedir(), '.papercusp-workspaces', …)` is the smell.
 
@@ -23643,6 +23910,10 @@ A resource must be pre-registered in `agent_resource_registry` to be acquirable 
 * `locks:acquire_resource { resource, mode, wait?: { max_drain_sec } }` / `locks:release_resource` / `locks:heartbeat_resource`
 * `locks:list` — registry + live holders + drain state.
 * `locks:check_command { command }` — does a raw shell command touch a resource with an exclusive in flight? Returns `allow | warn | block`.
+
+**Role access (2026-06-25):** `locks:acquire_resource` previously used `agentRoles: [...SU_ROLES, 'bee']`. Changed to `agentRoles: [...AGENT_ROLES]`: every built-in role can now acquire named-resource locks (shared or exclusive). Non-SU roles that need to use a shared resource (e.g. a worker running a build that depends on the dev server being up) can now hold a shared lock and participate in the drain protocol without going through a superuser intermediary.
+
+**`locks:release_resource` response shape (2026-06-25):** The single-item release path was consolidated onto the bulk `runBulk` implementation — all releases (whether one lock or many) now return the same bulk envelope: `{ ok, results:[{ ok, lock_id?, resource?, released, released_modes, exclusive_resources }], errors, counts }`. If your code parsed the old flat single-release shape, update it to read `results[0]`.
 
 ### Blessed wrappers
 
@@ -28225,9 +28496,9 @@ If you need to validate behavioral guarantees, see [verification](/internal/docs
 
 > Abstracting the Linux/Mac/Windows Tauri build+release pipeline into a shared library usable by both papercusp and oddsmith. Design, seam contract, migration.
 
-Status: shipped in-tree; cross-repo wiring owner-gated
+Status: shipped — live as a shared submodule in both repos
 
-The kit **exists and is green**: `libs/generic/tauri-release-kit` (pure core + SSH-frame + VM driver + `runRelease` orchestrator + node ports), 56 vitest tests, in BORROWABLE.md, wired into `test:affected`. papercusp has an **additive** kit-driven path (`papercusp-desktop/bin/release.ts` + `release.config.ts`) that runs alongside `bin/release-local.sh` — nothing in the in-flight release scripts was touched. Two steps remain **owner-gated** (plan items P-010, P-011): (1) a live full-build Linux artifact diff + making `release-local.sh` a thin wrapper; (2) promoting the kit to a shared-submodule repo so oddsmith can vendor it (oddsmith consumes `@papercusp/*` as submodules — see D-007). Tracked in the `tauri-release-kit-shared-build-2026-06-25` plan.
+`@papercusp/tauri-release-kit` is a standalone private repo (`Papercusp/tauri-release-kit`) vendored as a submodule by **both** papercup (`libs/generic/tauri-release-kit`) and oddsmith (`libs/tauri-release-kit`). 61 vitest tests, in BORROWABLE.md, wired into `test:affected`. papercusp drives it via `papercusp-desktop/bin/release.ts` + `release.config.ts` (alongside the existing `bin/release-local.sh`); oddsmith — which had **no** release pipeline — now drives it via `apps/desktop/bin/release.ts` + `release.config.ts`. A real Linux build (P-010) proved the kit end-to-end and surfaced + fixed two real bugs (cargo target-dir resolution for the `~/.cargo-target` redirect; files-only + version-scoped artifact collection); the same target-dir bug was also fixed in `release-local.sh` (EI-3782). REMAINING (low-pri — P-012 / EI-3782): bring the kit’s mac/windows drivers to full parity with release-local.sh’s VM legs (`.app.tar.gz` updater served for both darwin arches, `PAPERCUP_DOGFOOD_REPO_REF`, dmg audit) before retiring `release-local.sh` into a thin wrapper.
 
 ## The ask
 
@@ -28300,22 +28571,28 @@ Oddsmith already consumes the shared `@papercusp/*` libs (`@papercusp/sse`, `@pa
 
 A git-submodule of the whole desktop tree was considered and rejected: oddsmith deliberately does not submodule papercusp, and the desktop *shells* legitimately differ (oddsmith builds its own SPA + a tiny sidecar; papercusp serves operator-vite + the heavy sidecar). Sharing the **kit** (logic), not the **shell** (the Tauri app), is the right grain.
 
-### Seam contract (sketch — illustrative, not final)
+### Seam contract (shipped — `libs/generic/tauri-release-kit/src/types.ts`)
 
-[Section titled “Seam contract (sketch — illustrative, not final)”](#seam-contract-sketch--illustrative-not-final)
+[Section titled “Seam contract (shipped — libs/generic/tauri-release-kit/src/types.ts)”](#seam-contract-shipped--libsgenerictauri-release-kitsrctypests)
+
+The shipped `TauriReleaseConfig` (authoritative source: `types.ts`):
 
 ```ts
 export interface TauriReleaseConfig {
   appName: string;              // "Papercusp"
   appId: string;                // "com.papercusp.desktop"
+  root: string;                 // desktop app root (where src-tauri/ lives)
   repo: { owner: string; name: string };
-  tagPattern: (v: string, ch: Channel) => string;   // desktop-vX.Y.Z[-ch]
-  versionFiles: VersionField[]; // [{file, kind: 'json'|'toml', path}]
-  targets: Partial<Record<Target, TargetOpts>>;      // linux-x64, ...
-  signing: { keyPath: string; passwordEnv?: string };
+  version: string;              // e.g. "0.2.1"
+  channel: Channel;             // 'alpha' | 'beta' | 'stable'
+  versionFiles: VersionFile[];  // [{path, kind: 'json'|'cargo-toml'}]
+  targets: TargetKey[];         // flat array: ['linux-x86_64', 'macos-universal', …]
+  signing: SigningConfig;       // { keyPath, passwordEnv? }
+  buildSidecar: BuildSidecar;   // ← the injected seam: (ctx: SidecarContext) => Promise<void>
   latestJsonUrl: (a: { tag: string; name: string }) => string;
-  vm?: { mac?: VmSsh; windows?: VmSsh };             // host/port/user/key/dir
-  buildSidecar: (ctx: SidecarCtx) => Promise<void>;  // ← the injected seam
+  tagFor?: (version: string, channel: Channel) => string;   // override default tag scheme
+  classifyArtifact?: (path: string) => PlatformKey | null;  // override artifact→platform mapping
+  vm?: Partial<Record<TargetKey, VmConfig>>;  // per-target SSH frame (Mac/Windows)
 }
 ```
 
@@ -59936,13 +60213,13 @@ corpus synthesis → divergent generation → adversarial critics
    → debate + recombine → routing → (Queen-triage cadence)
 ```
 
-| Stage                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Module                                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| **1. Corpus synthesis**     | Roll up cross-corpus *meta-patterns* over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth **`rubric-rating`** lane folding in structured rubric measurements grouped by `(rubric, source-hive, criterion)` (rubric-driven-observations-2026-06-20), so ideators leap from *measurements*, not just free-text clusters — the introspection the idea queue can’t do (D-003). | `corpus-digest.ts` (`synthesizeStateOfHive`, `buildRubricRatings`) + `corpus-digest-deps.ts` |
-| **2. Divergent generation** | N ideators, each a *distinct* `CreativeLens` (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one “be creative” prompt (D-004).                                                                                                                                                                                                                                                                                  | `ideators.ts` (`runIdeators`) + `lenses.ts`                                                  |
-| **3. Adversarial critics**  | A **novelty** critic (search-first vs the corpus — reject the already-tried) and a **feasibility** critic, in tension, plus a high-novelty/low-feasibility **moonshot bucket** so leaps survive (D-005).                                                                                                                                                                                                                                                                             | `critics.ts` (`critiqueIdeas`) + `critique-core.ts` (the pure spine)                         |
-| **4. Debate + recombine**   | Merge surviving critiques (A’s mechanism + B’s framing) into proposals, each carrying a **required, structured cheap experiment** — the anti-bullshit gate (D-006).                                                                                                                                                                                                                                                                                                                  | `recombine.ts` (`recombineProposals`)                                                        |
-| **5. Routing**              | Dispatch each proposal into exactly one rail: broad → `plans:new` draft / testable *component* → the gym / concrete → `improvements:capture` (D-007) / testable *whole-system* → the eval-battery **`instance`** rail.                                                                                                                                                                                                                                                               | `router.ts` (`routeProposals`) + `router-deps.ts`                                            |
+| Stage                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Module                                                                                       |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **1. Corpus synthesis**     | Roll up cross-corpus *meta-patterns* over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth **`rubric-rating`** lane folding in structured rubric measurements grouped by `(rubric, source-hive, criterion)` (rubric-driven-observations-2026-06-20), so ideators leap from *measurements*, not just free-text clusters — the introspection the idea queue can’t do (D-003).                                                                        | `corpus-digest.ts` (`synthesizeStateOfHive`, `buildRubricRatings`) + `corpus-digest-deps.ts` |
+| **2. Divergent generation** | N ideators, each a *distinct* `CreativeLens` (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one “be creative” prompt (D-004). Each call has a 180s wall-clock cap (`DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS`); a cycle-level `signal` propagates parent cancellation. When ALL ideators fail their LLM call and produce zero ideas, the cycle adapter raises `ScoutIdeatorsTransportError` (total transport death — distinct from a healthy “no ideas” cycle). Partial failures never throw. | `ideators.ts` (`runIdeators`) + `lenses.ts`                                                  |
+| **3. Adversarial critics**  | A **novelty** critic (search-first vs the corpus — reject the already-tried) and a **feasibility** critic, in tension, plus a high-novelty/low-feasibility **moonshot bucket** so leaps survive (D-005).                                                                                                                                                                                                                                                                                                                                                    | `critics.ts` (`critiqueIdeas`) + `critique-core.ts` (the pure spine)                         |
+| **4. Debate + recombine**   | Merge surviving critiques (A’s mechanism + B’s framing) into proposals, each carrying a **required, structured cheap experiment** — the anti-bullshit gate (D-006).                                                                                                                                                                                                                                                                                                                                                                                         | `recombine.ts` (`recombineProposals`)                                                        |
+| **5. Routing**              | Dispatch each proposal into exactly one rail: broad → `plans:new` draft / testable *component* → the gym / concrete → `improvements:capture` (D-007) / testable *whole-system* → the eval-battery **`instance`** rail.                                                                                                                                                                                                                                                                                                                                      | `router.ts` (`routeProposals`) + `router-deps.ts`                                            |
 
 ## The contract chain
 
@@ -59978,6 +60255,8 @@ Three behaviours the composition owns:
 * **Survivors (D-005).** `keep` + `moonshot` proceed to recombine; `reject` is dropped (the moonshot bucket survives so leaps aren’t over-pruned).
 * **Per-cycle budget (D-010).** `limits.maxCostUsd` halts the cycle before the next LLM-spending step; `limits.maxIdeators` clamps the ideator roster.
 * **Empty-digest guard (EI-303).** A digest with zero meta-patterns in the **four friction lanes** (`digestIsEmpty` checks `recurringFriction` / `timeTokenSinks` / `chronicDeferrals` / `capabilityGaps` only — it does *not* inspect the `rubricRatings` lane, so a digest carrying only rubric measurements still reads as empty) early-exits `stop: 'empty-digest'` before the first costed step — a fresh/quiet hive spends $0 instead of paying the full ideator roster to reach `no-ideas`. `headline`/`generatedAt` don’t count; only patterns ground ideas.
+* **Transport-death guard.** `ScoutIdeatorsTransportError` (defined in `ideators.ts`, raised by the cycle adapter `cycle-deps.ts`) distinguishes a **total transport failure** (every ideator’s LLM call failed → 0 ideas, $0 spend) from a healthy empty cycle (ideators ran fine, model returned nothing). When raised, the scheduler records an `error` tick in `scout_ticks` and calls `recordFire('error')` so the autoloop fire-gate backs off instead of hammering a dead gateway every cadence. Partial failures (≥1 ideator OK) never throw.
+* **Phase reporter (`ScoutCyclePhase`, 2026-06-25).** `ScoutCycleDeps` accepts an optional `onPhase?: (phase: ScoutCyclePhase) => void` callback. The cycle calls `markPhase(phase)` at each major stage boundary (`read-corpus`, `ideate`, `read-novelty-corpus`, `critique`, `recombine`, `route`). The runner layer uses additional phases (`runner-bootstrap`, `gateway-env`, `llm-client-import`, `resolve-archive`, `build-cycle-deps`, `run-cycle`). Used by the scheduler for timeout diagnostics: when a cycle times out, `onPhase` tells you exactly which stage it was in. `ScoutCyclePhase` is the union type for all 12 phase strings.
 
 `ScoutCycleResult` carries every stage (`digest`, `ideas`, `scored`, `survivors`, `proposals`, `routed`, `provenance`, `calls`, `costUsd`, `stop`) so the invariants suite can assert at each boundary.
 

@@ -131,6 +131,15 @@ Then the joiner replicates the owner's home log and ends up holding epoch 0..K-1
 it legitimately had) but **never the post-ban epoch** — the live K-CUT, and (with content
 encryption on) the AEAD content read-cut.
 
+## WI-887: epoch key reconcile self-heal
+
+A member admitted while `papercusp-hive-rekey` was dark — or admitted after an epoch advanced before they were known to the owner — permanently lacks the epoch keys minted before them unless explicitly healed. `hive-epoch-boundary-wiring.ts` now has two complement paths:
+
+* **`reconcileEpochKeysForCurrentMembers`** — wraps epochs `[0..current]` to every LIVE (non-revoked) member device. Called via the `onMemberApplied` hook to heal the moment a membership op lands. 'no-fresh-members' when the hive has no live device.
+* **`reconcileOwnedHiveEpochKeys`** (WI-887 sweep) — GAP-AWARE: enumerates every hive the box knows (`harness_shared.hives`), checks whether any live device is missing the current epoch key, and only then calls `reconcileEpochKeysForCurrentMembers`. NO crypto on the steady state (the perf-anti-pattern guard). Owner-only (self-gates via `loadHivePubkey` null check), C-001-safe (revoked devices excluded), idempotent. Host on in-process periodic checks or call once at owner boot.
+
+**On the rig:** after seeding `hive_members` via the owner approval path (Gap 1 recipe), call `reconcileOwnedHiveEpochKeys` on fed-a if any member device shows missing epoch rows. It backfills without advancing the epoch — safe to call even mid-witness.
+
 ## Adjacent bug observed
 
 `hive:create_from_repo` via the **superuser MCP** fails `member_create_failed /
