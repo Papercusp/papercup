@@ -5,7 +5,7 @@ import {
   generateToolFacadeTypes,
   listFacadeNamespaces,
   roleScopedToolNames,
-  SU_ROLES,
+  AGENT_ROLES,
 } from '@papercusp/agent-mcp';
 
 /**
@@ -44,11 +44,11 @@ export default defineTool({
   },
   // Read-only signature rendering over the tool catalog — same capability as agent_tools:list (its
   // code-mode sibling). The `:read` suffix infers effect:'read' (never dry-run-gated); agentRoles
-  // mirrors code:run's audience (SU_ROLES + `bee`, B-CX-3) and the role-scoped allowed set is the
-  // real boundary.
+  // mirrors code:run's audience (ALL ROLES, owner directive 2026-06-25) and the role-scoped allowed
+  // set is the real boundary.
   capability: 'agent_tools:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     namespaces: z
       .array(z.string())

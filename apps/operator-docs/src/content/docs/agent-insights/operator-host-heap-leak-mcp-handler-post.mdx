@@ -80,7 +80,7 @@ and release trees **never `npm install`** — `apps/operator/bin/release/setup-r
 **hardlink-copies** node_modules from the integration tree (step 3) and, in `auto`
 mode, **skips even that copy** when only `patches/` changed (a new patch alters no
 lockfile / workspace-package set). Net effect before the fix below: a committed
-patch reached neither `papercup-checkpoint` nor `papercup-release` — so
+patch reached neither `papercup-checkpoint` nor `papercusp-release` — so
 green-checkpoint ran UNPATCHED and redded the patch's own regression test (a
 self-inflicted deadlock: the red gate blocks the deploy that would apply the patch),
 and `:3070` never got the fix. The setup script now runs `patch-package` after the

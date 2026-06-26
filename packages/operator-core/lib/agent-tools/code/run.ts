@@ -6,7 +6,7 @@ import {
   roleScopedToolNames,
   generateToolFacadeTypes,
   listFacadeNamespaces,
-  SU_ROLES,
+  AGENT_ROLES,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
@@ -58,15 +58,18 @@ export default defineTool({
   // code:run is as powerful as the shell capability — it can call any of the agent's write tools.
   capability: 'capability:bash',
   requirePrincipal: false,
-  // SU_ROLES + `bee` (code-execution-tool-orchestration B-CX-3): the spawned-bee base already
-  // carries the CODE_RUN_NUDGE, and the generic hive `bee` is the dominant fleet worker doing the
-  // high-volume multi-tool work this collapses — yet it was the one role excluded here, so the nudge
-  // was inert for it. The grant is privilege-PRESERVING (the facade is role-scoped — a bee's script
-  // can only call tools the bee may already call) and capability-safe (bees hold capability:bash
-  // since the 2026-06-14 confinement lift; a hive that re-confines its bees via a blueprint
-  // allow-list still denies bash → code:run at the envelope). Same `[...SU_ROLES, 'bee']` shape the
-  // plans:* write tools use.
-  agentRoles: [...SU_ROLES, 'bee'],
+  // ALL ROLES (owner directive 2026-06-25): code:run is open to every built-in role — not just
+  // SU_ROLES + bee, which was the prior gate. Rationale: the grant is privilege-PRESERVING. The
+  // facade is role-scoped (handler below: `roleScopedToolNames(all, ctx.role, …)`), so a role's
+  // script can ONLY call tools that role may ALREADY call, and every inner call re-routes through
+  // the real dispatcher (PROJECTED_DEPS → capability-envelope + quota + authz gating). Widening the
+  // role gate therefore grants NO new reach — it just lets EVERY role collapse its own multi-call
+  // flows into one round-trip (the token-frugality win that was inert for the high-repeat-call roles
+  // worker/validator/reviewer/… while they were excluded here). A deployment that confines a role
+  // away from capability:bash via a blueprint envelope still denies code:run at that envelope.
+  // AGENT_ROLES is the complete built-in role universe; keep the companion tools (code:tools,
+  // recipes:run/search/list/get) and CODE_RUN_CAPABLE_ROLES (the batch-nudge audience) in lockstep.
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     script: z
       .string()

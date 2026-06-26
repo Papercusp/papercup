@@ -198,6 +198,7 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   'coding/queen/db:next-migration',
   'coding/queen/hive:survey',
   'coding/queen/plans:promote',
+  'coding/queen/plans:set-plan-status',
   // coding/operator.md — operator decision-tree prose naming routed/peer actions + a wake event.
   'coding/operator/coord:escalate',
   'coding/operator/db:next-migration',

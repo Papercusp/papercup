@@ -21,7 +21,7 @@ crash-looped), because the MCP control plane rides the deployable operator proce
 ## Why — MCP availability is coupled to :3070's restart cycle
 
 The `papercusp-su` MCP endpoint is `http://localhost:3070/api/mcp`. **`:3070` =
-`papercup-dev-api` = the GREEN release checkout** (`papercup-release`, pinned to `main`).
+`papercup-dev-api` = the GREEN release checkout** (`papercusp-release`, pinned to `main`).
 So:
 
 - **Every deploy restarts `:3070`** (clean SIGTERM-drain). A native MCP client (Claude

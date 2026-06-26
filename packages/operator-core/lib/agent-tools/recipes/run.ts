@@ -31,7 +31,7 @@ import {
   listAllProjectedTools,
   runToolOrchestration,
   roleScopedToolNames,
-  SU_ROLES,
+  AGENT_ROLES,
 } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -69,11 +69,11 @@ export default defineTool({
       'recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
   },
   // Same gate as code:run: as powerful as the shell capability (it can call any of
-  // the REUSER's write tools), role-gated to SU_ROLES + bee. The role-scoped facade
-  // is the privilege boundary — the recipe carries none.
+  // the REUSER's write tools), open to ALL ROLES (owner directive 2026-06-25 — in lockstep
+  // with code:run). The role-scoped facade is the privilege boundary — the recipe carries none.
   capability: 'capability:bash',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-run shorthand: the recipe id / kebab slug'),
