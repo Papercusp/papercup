@@ -133,16 +133,19 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
     rec.entry.running = true;
     void Promise.resolve()
       .then(() => fn())
-      .then(() => {
+      .then(
+        () => {
+          rec.entry.lastError = null;
+        },
+        (e: unknown) => {
+          rec.entry.lastError = e instanceof Error ? e.message : String(e);
+          resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
+        },
+      )
+      .finally(() => {
+        // fires + lastFireAt count every ATTEMPT (including throws); only lastError differs.
         rec.entry.lastFireAt = resolved.now();
         rec.entry.fires += 1;
-        rec.entry.lastError = null;
-      })
-      .catch((e: unknown) => {
-        rec.entry.lastError = e instanceof Error ? e.message : String(e);
-        resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
-      })
-      .finally(() => {
         rec.running = false;
         rec.entry.running = false;
       });

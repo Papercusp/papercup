@@ -370,6 +370,7 @@ export async function executeBatch(opts: {
       role: 'bee',
       spawnId: reservedSpawnId,
       featureId: task.id,
+      itemId: task.id,
       // Per-lane brief (payload.brief) MERGED with the Queen's batch overlay, so
       // a placed bee gets ITS wave lane's context — not just the one batch-wide
       // brief (queen-wave-dispatch P-031). spawnAgentInHarness threads it via QUEEN_BRIEF.

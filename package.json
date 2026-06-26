@@ -68,6 +68,7 @@
     "libs/generic/locks-core",
     "libs/generic/structured-concurrency",
     "libs/generic/debounce-coalesce",
+    "libs/generic/scheduled-registry",
     "libs/generic/p2p-voice",
     "libs/generic/audio-dsp",
     "libs/generic/deployment-driver",

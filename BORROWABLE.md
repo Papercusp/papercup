@@ -84,7 +84,7 @@ it here.
 
 | Package | What it is | Source |
 |---|---|---|
-| `@papercusp/tauri-release-kit` | Provider-agnostic Tauri desktop build+release orchestration: a pure core (version bump, channel/tag resolution, latest.json updater-manifest generation, artifact classification) plus a per-target driver registry (Linux-local, Mac/Windows over an SSH frame) selected by an open target discriminator, with the app-specific sidecar build injected via a buildSidecar() seam and all side effects behind Exec/Fs/Log ports. Zero domain coupling, zero runtime deps; the host wires real ports + an app release.config. | in-repo · `libs/generic/tauri-release-kit` |
+| `@papercusp/tauri-release-kit` | Provider-agnostic Tauri desktop build+release orchestration: a pure core (version bump, channel/tag resolution, latest.json updater-manifest generation, artifact classification) plus a per-target driver registry (Linux-local, Mac/Windows over an SSH frame) selected by an open target discriminator, with the app-specific sidecar build injected via a buildSidecar() seam and all side effects behind Exec/Fs/Log ports. Zero domain coupling, zero runtime deps; the host wires real ports + an app release.config. | [Papercusp/tauri-release-kit](https://github.com/Papercusp/tauri-release-kit.git) |
 
 ## Testing & QA
 
