@@ -135,13 +135,14 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   const checks = buildDefaultChecks();
   const byName = new Map(checks.map((c) => [c.name, c]));
 
-  it('converts exactly the 10 high-frequency ephemeral probes', () => {
+  it('converts exactly the 11 high-frequency ephemeral probes', () => {
     expect([...byName.keys()].sort()).toEqual(
       [
         'completion-ref-verify',
         'connection-pressure',
         'federation-drain-reconcile',
         'harness-status-sweep',
+        'hive-epoch-key-reconcile',
         'learning-infra-health',
         'service-health',
         'spawn-reclaim-sweep',
@@ -163,12 +164,21 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('learning-infra-health')!.intervalMs).toBe(120_000);
     expect(byName.get('steering-churn-sweep')!.intervalMs).toBe(300_000);
     expect(byName.get('federation-drain-reconcile')!.intervalMs).toBe(300_000);
+    expect(byName.get('hive-epoch-key-reconcile')!.intervalMs).toBe(600_000);
   });
 
   it('only the heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {
     const shedders = checks.filter((c) => c.shed).map((c) => c.name).sort();
     // federation-drain-reconcile sheds: it group-scans substrate_outbox, and a real
     // stall persists, so a shed tick is caught next interval (WI-254).
-    expect(shedders).toEqual(['federation-drain-reconcile', 'harness-status-sweep', 'system-health']);
+    // hive-epoch-key-reconcile sheds: it can derive+wrap epoch keys for a gappy hive; a real gap
+    // persists, so a shed tick is caught next interval (WI-887). It is GAP-AWARE so the steady
+    // state does no crypto regardless.
+    expect(shedders).toEqual([
+      'federation-drain-reconcile',
+      'harness-status-sweep',
+      'hive-epoch-key-reconcile',
+      'system-health',
+    ]);
   });
 });
