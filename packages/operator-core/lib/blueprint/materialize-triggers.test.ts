@@ -114,7 +114,7 @@ describe('singletonRoutinePayloadDefaults', () => {
     expect(singletonRoutinePayloadDefaults('scout')).toEqual({
       cycleTimeoutMs: SCOUT_SINGLETON_CYCLE_TIMEOUT_MS,
     });
-    expect(SCOUT_SINGLETON_CYCLE_TIMEOUT_MS).toBe(120_000);
+    expect(SCOUT_SINGLETON_CYCLE_TIMEOUT_MS).toBe(600_000);
   });
 
   it('does not add timeout payload to unrelated singleton blueprints', () => {

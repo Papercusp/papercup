@@ -35,7 +35,7 @@ vi.mock('./materialize-triggers', () => ({
   triggerRoutineSpecs: () => [{ name: h.singletonName, singleton: true }],
   isPlatformImprovementLoop: () => h.isPlatform,
   platformImprovementLoopsEnabled: async () => h.platformOn,
-  singletonRoutinePayloadDefaults: (blueprintId: string) => (blueprintId === 'scout' ? { cycleTimeoutMs: 120_000 } : {}),
+  singletonRoutinePayloadDefaults: (blueprintId: string) => (blueprintId === 'scout' ? { cycleTimeoutMs: 600_000 } : {}),
   SINGLETON_TRIGGER_HOST_SLUG: '@singleton',
 }));
 vi.mock('@papercusp/db-org', async () => {
@@ -165,7 +165,7 @@ describe('cutoverActiveLearningSingleton (PG, atomic copy)', () => {
     expect(s.payload_template).toEqual({
       blueprintId: 'scout',
       budget: { maxCostUsd: 0.5 },
-      cycleTimeoutMs: 120_000,
+      cycleTimeoutMs: 600_000,
     });
   });
 });

@@ -133,7 +133,7 @@ export interface TriggerRoutineSpec {
   singletonActive: boolean;
 }
 
-export const SCOUT_SINGLETON_CYCLE_TIMEOUT_MS = 120_000;
+export const SCOUT_SINGLETON_CYCLE_TIMEOUT_MS = 600_000;
 
 export function singletonRoutinePayloadDefaults(blueprintId: string): Record<string, unknown> {
   if (blueprintId === 'scout') {
