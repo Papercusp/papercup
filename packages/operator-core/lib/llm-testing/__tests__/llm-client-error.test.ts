@@ -81,6 +81,31 @@ describe('llmCall backend selection', () => {
 
     vi.unstubAllGlobals();
   });
+
+  it('makes the Codex JSON-mode input itself JSON-explicit even when only instructions mention JSON', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.instructions).toContain('JSON');
+      expect(body.input).toBe('generate one idea\n\nRespond with valid json.');
+      expect(body.text).toEqual({ format: { type: 'json_object' } });
+      return new Response(JSON.stringify({ output_text: '{"ok":true}' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { llmCall } = await import('../llm-client');
+
+    await llmCall({
+      system: 'Return JSON only.',
+      messages: [{ role: 'user', content: 'generate one idea' }],
+      model: 'chatgpt:5.5',
+      responseFormat: 'json',
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('llmCall subprocess error surfacing', () => {

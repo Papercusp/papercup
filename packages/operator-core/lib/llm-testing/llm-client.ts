@@ -115,7 +115,7 @@ function codexCostUsd(model: string | undefined, inputTokens: number, outputToke
 
 async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefined, promptText: string): Promise<LlmCallResult> {
   const input =
-    opts.responseFormat === 'json' && !/\bjson\b/i.test(`${opts.system ?? ''}\n${promptText}`)
+    opts.responseFormat === 'json' && !/\bjson\b/i.test(promptText)
       ? `${promptText}\n\nRespond with valid json.`
       : promptText;
   const body: Record<string, unknown> = {
