@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   loopbackFetch: vi.fn(async (..._args: unknown[]): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
+  recordSpawnPid: vi.fn(async (_sql: unknown, _spawnId: string, _pid: number) => {}),
+  heartbeatSpawns: vi.fn(async (_sql: unknown, _spawnIds: string[]) => {}),
   selectSpawnAccount: vi.fn(async () => undefined as string | undefined),
   updateAccountPool: vi.fn(async (mutator: (pool: unknown) => unknown, _ws?: string) => mutator({ accounts: [] })),
   recordAccountPenalty: vi.fn((pool: unknown, _id: string, _now: number, _opts?: { pausedUntil?: number }) => pool),
@@ -49,6 +51,11 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn }));
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
+vi.mock('../fleet/spawn-reclaim', () => ({
+  recordSpawnPid: h.recordSpawnPid,
+  heartbeatSpawns: h.heartbeatSpawns,
+  SPAWN_HEARTBEAT_INTERVAL_MS: 1000,
+}));
 vi.mock('../deployment/account-pool-store', () => ({
   selectSpawnAccount: h.selectSpawnAccount,
   updateAccountPool: h.updateAccountPool,
@@ -96,6 +103,8 @@ beforeEach(() => {
   h.startWorkflow.mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
   h.recordSpawn.mockClear();
   h.finishSpawn.mockClear();
+  h.recordSpawnPid.mockClear();
+  h.heartbeatSpawns.mockClear();
   h.selectSpawnAccount.mockReset();
   h.selectSpawnAccount.mockResolvedValue(undefined);
   h.updateAccountPool.mockReset();
@@ -243,6 +252,32 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     const fin = h.finishSpawn.mock.calls[0][1];
     expect(fin.spawnId).toBe('durable-spawn:implement:EI-9:2');
     expect(fin.status).toBe('done');
+  });
+
+  it('heartbeats a visible durable spawn row while /invoke is still pending', async () => {
+    vi.useFakeTimers();
+    let resolveFetch: ((value: { ok: boolean; status: number }) => void) | undefined;
+    h.loopbackFetch.mockImplementation(async () => new Promise((resolve) => {
+      resolveFetch = resolve;
+    }));
+    try {
+      const pending = durableSpawnFireImpl({
+        ...IMPL,
+        spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'queen' },
+      });
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.heartbeatSpawns).toHaveBeenCalledWith(h.sql, ['durable-spawn:implement:EI-9:2']);
+
+      resolveFetch!({ ok: true, status: 200 });
+      await pending;
+      expect(h.finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        spawnId: 'durable-spawn:implement:EI-9:2',
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fires /invoke through the long-running launch loopback dispatcher', async () => {

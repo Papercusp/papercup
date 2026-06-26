@@ -157,6 +157,14 @@ jobs:
       - name: Lint no-restart imports
         run: npm run lint:no-restart
 
+      # no-raw-setInterval guard (schedule-inventory-and-ephemeral-tier-2026-06-26 P-007):
+      # every operator-host recurring timer must go through managedSetInterval
+      # (@papercusp/scheduled-registry) so it is NAMED + visible in schedule:inventory.
+      # GATING on a NEW bare setInterval() outside the registry; a shrink-to-empty
+      # BASELINE grandfathers the pre-codemod sites (emptied by the P-008 codemod).
+      - name: Lint no raw setInterval
+        run: npm run lint:no-raw-setinterval
+
       # sql.json guard (EI-607): postgres-js sql.json(object) THROWS on the getOrgPg
       # client (a dual-package postgres-js module-instance mismatch in @papercusp/db)
       # — it silently broke the experiment ledger + EVERY replay-harness cell's

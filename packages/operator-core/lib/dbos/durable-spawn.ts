@@ -351,6 +351,31 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     }
   }
 
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  if (rec) {
+    try {
+      const [{ heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS }, { getOrgPg }] = await Promise.all([
+        import('../fleet/spawn-reclaim'),
+        import('@papercusp/db-org'),
+      ]);
+      const { sql } = getOrgPg();
+      heartbeat = setInterval(() => {
+        void heartbeatSpawns(sql, [spawnId]).catch(() => {
+          /* best-effort: a later reclaim/retry is safer than blocking the fire */
+        });
+      }, SPAWN_HEARTBEAT_INTERVAL_MS);
+      heartbeat.unref?.();
+    } catch {
+      /* best-effort: durable completion still closes the row */
+    }
+  }
+  const stopHeartbeat = (): void => {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  };
+
   let fireError: unknown = null;
   // The fire step returns a discriminated result (memoized by DBOS, so it
   // survives a recovery replay) instead of leaking via closure side-effects.
@@ -438,6 +463,8 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     );
   } catch (e) {
     fireError = e;
+  } finally {
+    stopHeartbeat();
   }
   // A permanent failure is terminal but deliberately NOT thrown — throwing would
   // end the workflow ERROR and trigger DBOS recovery. Surface it once and let the
