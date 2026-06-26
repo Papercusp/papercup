@@ -188,6 +188,11 @@ export async function declareHiveTimeWake(
       targetRole: 'system:blueprint-run',
       payloadTemplate: {
         blueprintId: opts.blueprintId ?? HIVE_BLUEPRINT_ID,
+        // Workspace-coordination mode keys the routine under the workspace
+        // sentinel (`install_slug = workspaceId`) so there is only one Queen
+        // wake row. The launch itself still targets the concrete hive/harness.
+        // Carry it explicitly; system:blueprint-run uses this for /invoke.
+        launchInstallSlug: opts.installSlug,
         kickoff:
           opts.kickoff ??
           `Self-declared wake (declared ${new Date().toISOString()}). You are the operator in charge; survey the fleet and figure out what to do.`,

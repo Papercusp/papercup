@@ -4,7 +4,8 @@
  * Proves, against a real Postgres (testcontainer) with migration 158 applied +
  * the baseline `routines` table shape, that the self-declared wake round-trips:
  *   - declareHiveTimeWake: one-shot routine row (no cron) with the clamped
- *     explicit next_fire_at, payload {blueprintId:'coding'}, target system:blueprint-run.
+ *     explicit next_fire_at, payload {blueprintId:'coding', launchInstallSlug},
+ *     target system:blueprint-run.
  *   - listDueCronRoutines + claimDueRoutine: the one-shot is not-due in the
  *     future, due once past, DEACTIVATED on claim (no refire loop), and a
  *     second claim loses. A cron routine stays active and advances.
@@ -132,12 +133,14 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
     const rows = await rootSql<
       Array<{ trigger_config: Record<string, unknown>; target_role: string; payload_template: Record<string, unknown>; active: boolean; next_fire_at: Date }>
     >`SELECT trigger_config, target_role, payload_template, active, next_fire_at
-        FROM harness_shared.routines WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
+        FROM harness_shared.routines
+       WHERE workspace_id = ${WS} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
     expect(rows).toHaveLength(1);
     expect(rows[0].active).toBe(true);
     expect(rows[0].trigger_config.cron).toBeUndefined();
     expect(rows[0].target_role).toBe('system:blueprint-run');
     expect(rows[0].payload_template.blueprintId).toBe('coding');
+    expect(rows[0].payload_template.launchInstallSlug).toBe(SLUG);
     expect(new Date(rows[0].next_fire_at).getTime()).toBe(requested.getTime());
   });
 
@@ -160,7 +163,7 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
 
     // Force it due (the tick's view once the wall clock passes next_fire_at).
     await rootSql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second'
-                   WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
+                   WHERE workspace_id = ${WS} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
     const due1 = await listDueCronRoutines(rootSql);
     const routine = due1.find((r) => r.name === HIVE_WAKE_ROUTINE_NAME);
     expect(routine).toBeDefined();
@@ -169,7 +172,7 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
     expect(await claimDueRoutine(rootSql, routine!)).toBe(true);
     const after = await rootSql<Array<{ active: boolean; next_fire_at: Date | null }>>`
       SELECT active, next_fire_at FROM harness_shared.routines
-       WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
+       WHERE workspace_id = ${WS} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
     expect(after[0].active).toBe(false);
     expect(after[0].next_fire_at).toBeNull();
 
@@ -216,13 +219,13 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
       at: new Date(Date.now() + 7200_000),
     });
     expect(r.clamped).toBe(false);
-    let state = await getHiveTimeWake(rootSql, SLUG);
+    let state = await getHiveTimeWake(rootSql, SLUG, { workspaceId: WS });
     expect(state?.active).toBe(true);
 
     // EI-1477: clearHiveTimeWake now DELETEs the row (not just deactivates) to avoid
     // zombie rows that collide with a subsequent UPSERT under concurrency.
-    await clearHiveTimeWake(rootSql, SLUG);
-    state = await getHiveTimeWake(rootSql, SLUG);
+    await clearHiveTimeWake(rootSql, SLUG, { workspaceId: WS });
+    state = await getHiveTimeWake(rootSql, SLUG, { workspaceId: WS });
     expect(state).toBeNull(); // row is fully deleted, not just set inactive
 
     // Re-declaring after clear must succeed (no stale row to collide with).
@@ -231,7 +234,7 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
       installSlug: SLUG,
       at: new Date(Date.now() + 3600_000),
     });
-    state = await getHiveTimeWake(rootSql, SLUG);
+    state = await getHiveTimeWake(rootSql, SLUG, { workspaceId: WS });
     expect(state?.active).toBe(true);
     expect(r2.clamped).toBe(false);
   });
@@ -248,11 +251,11 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
     // Exactly ONE routine row must exist (no duplicates from the second declare).
     const rows = await rootSql<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM harness_shared.routines
-       WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
+       WHERE workspace_id = ${WS} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
     expect(rows[0].n).toBe(1);
 
     // The stored nextFireAt must reflect the SECOND (later) declare.
-    const finalState = await getHiveTimeWake(rootSql, SLUG);
+    const finalState = await getHiveTimeWake(rootSql, SLUG, { workspaceId: WS });
     expect(new Date(finalState!.nextFireAt!).getTime()).toBe(t2.getTime());
   });
 });
