@@ -46,13 +46,21 @@ import {
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
 // Stable mock sql handle — same object every getOrgPg() call so finishSpawn
 // gets the same reference that recordSpawn got.
-const mockSql = { _tag: 'mockSql' } as unknown;
+const activeQueenRows: Array<{ spawn_id: string; harness_slug: string | null }> = [];
+const mockSql = vi.fn(async (strings: TemplateStringsArray | string) => {
+  const text = Array.isArray(strings) ? strings.join(' ') : String(strings);
+  if (text.includes('FROM harness_shared.spawned_agents')) return activeQueenRows;
+  return [];
+}) as unknown as ReturnType<typeof vi.fn> & { begin: (cb: (tx: typeof mockSql) => unknown) => unknown };
+mockSql.begin = vi.fn(async (cb: (tx: typeof mockSql) => unknown) => cb(mockSql));
 
 afterEach(() => {
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
   resetLaunchBlueprintTriggerMap();
+  activeQueenRows.length = 0;
   vi.clearAllMocks();
+  mockSql.begin = vi.fn(async (cb: (tx: typeof mockSql) => unknown) => cb(mockSql));
 });
 
 describe('defaultFire fallback — durable spawn row (WI-108)', () => {
@@ -134,6 +142,25 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     await Promise.resolve();
     expect(finishSpawn).not.toHaveBeenCalled();
 
+    warn.mockRestore();
+  });
+
+  it('skips a fallback Queen launch when the workspace already has an active Queen', async () => {
+    activeQueenRows.push({ spawn_id: 's-live-queen', harness_slug: 'papercup' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const target = await fireLaunchBlueprint('coding', {
+      ...opts,
+      kickoff: 'overlapping wake',
+      bodyExtra: { queenBrief: 'PRECOMPUTED' },
+    });
+
+    expect(target.role).toBe('queen');
+    expect(target.spawn).toMatchObject({ spawnId: 's-live-queen', runId: null, durable: false });
+    expect(recordSpawn).not.toHaveBeenCalled();
+    expect(loopbackFetch).not.toHaveBeenCalled();
+    expect(finishSpawn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Queen launch'));
     warn.mockRestore();
   });
 

@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   startWorkflow: vi.fn((_wf: unknown, _opts: unknown) => (_input: unknown) => Promise.resolve()),
-  loopbackFetch: vi.fn(async (): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
+  loopbackFetch: vi.fn(async (..._args: unknown[]): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   selectSpawnAccount: vi.fn(async () => undefined as string | undefined),
@@ -24,7 +24,8 @@ const h = vi.hoisted(() => ({
   ownerSteering: { value: null as null | Record<string, unknown> },
   agentConfig: { value: null as null | Record<string, unknown> },
   pgRunOutputRows: { value: [] as Array<{ diagnostic: string | null }> },
-  sql: vi.fn(async () => [] as Array<{ diagnostic: string | null }>),
+  activeQueenRows: { value: [] as Array<{ spawn_id: string; harness_slug: string | null }> },
+  sql: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
   state: { dbosOn: true },
   // P-006: deterministic gateway-throttle corroboration (a real probe would reach the live :8788
   // gateway and make these tests flake). false ⇒ a no-turn death classifies infra_loss (legacy);
@@ -104,8 +105,16 @@ beforeEach(() => {
   h.ownerSteering.value = null;
   h.agentConfig.value = null;
   h.pgRunOutputRows.value = [];
+  h.activeQueenRows.value = [];
   h.sql.mockReset();
-  h.sql.mockImplementation(async () => h.pgRunOutputRows.value);
+  h.sql.mockImplementation(async (strings: TemplateStringsArray | string) => {
+    const text = Array.isArray(strings) ? strings.join(' ') : String(strings);
+    if (text.includes('FROM harness_shared.spawned_agents')) return h.activeQueenRows.value;
+    return h.pgRunOutputRows.value;
+  });
+  (h.sql as typeof h.sql & { begin: (cb: (tx: typeof h.sql) => unknown) => unknown }).begin = vi.fn(
+    async (cb: (tx: typeof h.sql) => unknown) => cb(h.sql),
+  );
   h.loopbackFetch.mockReset();
   h.loopbackFetch.mockImplementation(async () => ({ ok: true, status: 200 }));
   h.gatewayThrottled.value = false; // default: gateway healthy ⇒ a no-turn death is infra_loss
@@ -283,6 +292,22 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       spawnId: 'durable-spawn:q-model-row',
       modelSpec: 'chatgpt:5.5',
     }));
+  });
+
+  it('skips a duplicate Queen launch when another Queen is already active in the workspace', async () => {
+    h.activeQueenRows.value = [{ spawn_id: 'durable-spawn:q-live', harness_slug: 'papercusp' }];
+    await durableSpawnFireImpl({
+      url: 'http://x/api/harness/papercusp/invoke?role=queen&ws=papercusp-workspace',
+      body: { kickoff: 'overlapping wake' },
+      idempotencyKey: 'q-overlap',
+      label: 'papercusp/queen',
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+    });
+
+    expect(h.recordSpawn).not.toHaveBeenCalled();
+    expect(h.loopbackFetch).not.toHaveBeenCalled();
+    expect(h.finishSpawn).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Queen launch'));
   });
 
   it('refreshes a stale Overwatch durable body from current modelOverrides before every /invoke POST', async () => {

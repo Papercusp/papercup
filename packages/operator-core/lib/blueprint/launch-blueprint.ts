@@ -35,6 +35,7 @@ import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
 import { agentProducedTurn } from '../fleet/invoke-outcome';
 import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
+import type { Db } from '../fleet/pg-stores';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
 // the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
@@ -390,34 +391,75 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
   let pg: ReturnType<typeof getOrgPg> | null = null;
   try {
     pg = getOrgPg();
-    await recordSpawn(pg.sql, {
-      spawnId,
-      workspaceId,
-      harnessSlug: installSlug,
-      // parent_role is NOT NULL in spawned_agents — a parentless system launch is
-      // recorded as spawned by the operator host (matches every other root spawn).
-      parentSpawnId: parent?.spawnId ?? null,
-      parentRole: parent?.role ?? 'operator',
-      childRole: role,
-      runId,
-      status: 'running',
-    });
-    // DURABLE QUEEN-LIVENESS (P-033, the real-Queen-reclaim fix). This launch is an
-    // IN-PROCESS `/invoke` handler (loopbackFetch below), not a spawned invoke-once
-    // child — so stamp the launch row with THIS operator process's pid + host. The
-    // P-011 reclaim sweep's liveness gate (isSpawnProcessAlive) treats a row whose
-    // pid === process.pid as alive-by-construction, so a long-running Queen wake is
-    // NEVER reaped while the operator host is up — independent of the heartbeat
-    // setInterval below, whose 60s beat starves past RECLAIM_STALE_MS(300s) under
-    // multi-task bench load (the 7-reclaim symptom). The setInterval stays as a
-    // belt-and-suspenders freshener; the pid match is the durable primary.
-    await recordSpawnPid(pg.sql, spawnId, process.pid).catch(() => {
-      /* best-effort — the heartbeat loop below still covers liveness if this misses */
-    });
+    const sql = pg.sql;
+    const writeRecord = async (db: Db): Promise<void> => {
+      await recordSpawn(db, {
+        spawnId,
+        workspaceId,
+        harnessSlug: installSlug,
+        // parent_role is NOT NULL in spawned_agents — a parentless system launch is
+        // recorded as spawned by the operator host (matches every other root spawn).
+        parentSpawnId: parent?.spawnId ?? null,
+        parentRole: parent?.role ?? 'operator',
+        childRole: role,
+        runId,
+        status: 'running',
+      });
+      // DURABLE QUEEN-LIVENESS (P-033, the real-Queen-reclaim fix). This launch is an
+      // IN-PROCESS `/invoke` handler (loopbackFetch below), not a spawned invoke-once
+      // child — so stamp the launch row with THIS operator process's pid + host. The
+      // P-011 reclaim sweep's liveness gate (isSpawnProcessAlive) treats a row whose
+      // pid === process.pid as alive-by-construction, so a long-running Queen wake is
+      // NEVER reaped while the operator host is up — independent of the heartbeat
+      // setInterval below, whose 60s beat starves past RECLAIM_STALE_MS(300s) under
+      // multi-task bench load (the 7-reclaim symptom). The setInterval stays as a
+      // belt-and-suspenders freshener; the pid match is the durable primary.
+      await recordSpawnPid(db, spawnId, process.pid).catch(() => {
+        /* best-effort — the heartbeat loop below still covers liveness if this misses */
+      });
+    };
+    if (role === 'queen') {
+      const admission = await sql.begin(async (tx): Promise<
+        | { admitted: true }
+        | { admitted: false; activeSpawnId: string; activeHarnessSlug: string | null }
+      > => {
+        await tx`SELECT pg_advisory_xact_lock(hashtext(${'queen-singleton:' + workspaceId}))`;
+        const active = await tx<{ spawn_id: string; harness_slug: string | null }[]>`
+          SELECT spawn_id, harness_slug
+            FROM harness_shared.spawned_agents
+           WHERE workspace_id = ${workspaceId}
+             AND child_role = 'queen'
+             AND status IN ('running', 'restarting')
+             AND spawn_id <> ${spawnId}
+           ORDER BY started_at DESC
+           LIMIT 1`;
+        const incumbent = active[0];
+        if (incumbent) {
+          return {
+            admitted: false,
+            activeSpawnId: incumbent.spawn_id,
+            activeHarnessSlug: incumbent.harness_slug ?? null,
+          };
+        }
+        await writeRecord(tx);
+        return { admitted: true };
+      });
+      if (!admission.admitted) {
+        console.warn(
+          `[launch-blueprint] skipped duplicate Queen launch (${installSlug}/${role}); ` +
+            `workspace ${workspaceId} already has active Queen ${admission.activeSpawnId}` +
+            `${admission.activeHarnessSlug ? ` (${admission.activeHarnessSlug})` : ''}`,
+        );
+        return { spawnId: admission.activeSpawnId, runId: null, durable: false };
+      }
+    } else {
+      await writeRecord(sql);
+    }
   } catch (e) {
     console.warn(
       `[launch-blueprint] fallback spawn record failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
     );
+    if (role === 'queen') return { spawnId: null, runId: null, durable: false };
     pg = null;
   }
 

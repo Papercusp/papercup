@@ -41,6 +41,7 @@ import { queueConcurrency } from './queue-concurrency';
 import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
 import { agentProducedTurn, type SpawnFailureClass } from '../fleet/invoke-outcome';
+import type { Db } from '../fleet/pg-stores';
 
 /**
  * HTTP statuses where retrying the IDENTICAL replayed request can never succeed,
@@ -99,6 +100,11 @@ export interface DurableSpawnFireInput {
 
 export const DURABLE_SPAWN_FINISH_CUSHION_MS = 60_000;
 const CONTROL_PLANE_USAGE_LIMIT_PAUSE_MS = 10 * 60_000;
+
+type SpawnRecordInput = NonNullable<DurableSpawnFireInput['spawnRecord']>;
+type QueenSingletonAdmission =
+  | { admitted: true }
+  | { admitted: false; activeSpawnId: string; activeHarnessSlug: string | null };
 
 export function durableSpawnWorkflowTimeoutMs(input: DurableSpawnFireInput): number | undefined {
   const timeoutMs = input.body?.timeoutMs;
@@ -246,6 +252,67 @@ async function recordControlPlaneCodexUsageLimit(
   }
 }
 
+async function recordDurableSpawnAdmission(
+  input: DurableSpawnFireInput,
+  rec: SpawnRecordInput,
+  spawnId: string,
+  initialSpawnModel: string | null,
+): Promise<QueenSingletonAdmission> {
+  const [{ recordSpawn }, { recordSpawnPid }, { getOrgPg }] = await Promise.all([
+    import('../fleet/spawn-tree'),
+    import('../fleet/spawn-reclaim'),
+    import('@papercusp/db-org'),
+  ]);
+  const { sql } = getOrgPg();
+  const writeRecord = async (db: Db): Promise<void> => {
+    await recordSpawn(db, {
+      spawnId,
+      workspaceId: rec.workspaceId,
+      harnessSlug: rec.harnessSlug,
+      parentSpawnId: rec.parentSpawnId ?? null,
+      parentRole: rec.parentRole ?? 'operator',
+      childRole: rec.childRole,
+      runId: input.idempotencyKey,
+      itemId: rec.itemId ?? null,
+      modelSpec: initialSpawnModel,
+      status: 'running',
+    });
+    // EI-85/P-033 false-reclaim fix: stamp the FIRING process's pid (THIS long-lived
+    // operator host, which holds the loopback /invoke connection for the agent's whole run)
+    // so the reclaim sweep can /proc-liveness-check this row (kind='launch' for durable-spawn
+    // rows — see spawn-reclaim.ts).
+    await recordSpawnPid(db, spawnId, process.pid);
+  };
+
+  if (rec.childRole !== 'queen') {
+    await writeRecord(sql);
+    return { admitted: true };
+  }
+
+  return sql.begin(async (tx): Promise<QueenSingletonAdmission> => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${'queen-singleton:' + rec.workspaceId}))`;
+    const active = await tx<{ spawn_id: string; harness_slug: string | null }[]>`
+      SELECT spawn_id, harness_slug
+        FROM harness_shared.spawned_agents
+       WHERE workspace_id = ${rec.workspaceId}
+         AND child_role = 'queen'
+         AND status IN ('running', 'restarting')
+         AND spawn_id <> ${spawnId}
+       ORDER BY started_at DESC
+       LIMIT 1`;
+    const incumbent = active[0];
+    if (incumbent) {
+      return {
+        admitted: false,
+        activeSpawnId: incumbent.spawn_id,
+        activeHarnessSlug: incumbent.harness_slug ?? null,
+      };
+    }
+    await writeRecord(tx);
+    return { admitted: true };
+  });
+}
+
 export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promise<void> {
   const rec = input.spawnRecord;
   // Stable so a step retry / recovery replay updates the SAME row, not a new one.
@@ -260,40 +327,28 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   // fire-and-forget fallback's recordSpawn (WI-108). Best-effort: a bookkeeping
   // failure must never abort the actual fire below.
   if (rec) {
-    await DBOS.runStep(
-      async () => {
+    const admission = await DBOS.runStep(
+      async (): Promise<QueenSingletonAdmission> => {
         try {
-          const { recordSpawn } = await import('../fleet/spawn-tree');
-          const { getOrgPg } = await import('@papercusp/db-org');
-          await recordSpawn(getOrgPg().sql, {
-            spawnId,
-            workspaceId: rec.workspaceId,
-            harnessSlug: rec.harnessSlug,
-            parentSpawnId: rec.parentSpawnId ?? null,
-            parentRole: rec.parentRole ?? 'operator',
-            childRole: rec.childRole,
-            runId: input.idempotencyKey,
-            itemId: rec.itemId ?? null,
-            modelSpec: initialSpawnModel,
-            status: 'running',
-          });
-          // EI-85/P-033 false-reclaim fix: stamp the FIRING process's pid (THIS long-lived
-          // operator host, which holds the loopback /invoke connection for the agent's whole run)
-          // so the reclaim sweep can /proc-liveness-check this row (kind='launch' for durable-spawn
-          // rows — see spawn-reclaim.ts). Without a pid the sweep CANNOT verify liveness and
-          // UNCONDITIONALLY reclaims the row as "host presumed dead" the moment its heartbeat goes
-          // stale under load — false-reclaiming a still-alive durable launch (the Queen + the
-          // EI-403-A implement workers were the observed victims, 2026-06-23 D-011).
-          const { recordSpawnPid } = await import('../fleet/spawn-reclaim');
-          await recordSpawnPid(getOrgPg().sql, spawnId, process.pid);
+          return await recordDurableSpawnAdmission(input, rec, spawnId, initialSpawnModel);
         } catch (e) {
+          if (rec.childRole === 'queen') throw e;
           console.warn(
             `[durable-spawn] record-spawn failed (${input.label ?? ''}): ${e instanceof Error ? e.message : String(e)}`,
           );
+          return { admitted: true };
         }
       },
       { name: 'durable-spawn-record', retriesAllowed: false },
     );
+    if (!admission.admitted) {
+      console.warn(
+        `[durable-spawn] skipped duplicate Queen launch (${input.label ?? ''}); ` +
+          `workspace ${rec.workspaceId} already has active Queen ${admission.activeSpawnId}` +
+          `${admission.activeHarnessSlug ? ` (${admission.activeHarnessSlug})` : ''}`,
+      );
+      return;
+    }
   }
 
   let fireError: unknown = null;
