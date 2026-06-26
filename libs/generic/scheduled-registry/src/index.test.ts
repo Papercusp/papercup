@@ -205,4 +205,41 @@ describe('managedSetInterval / listManaged', () => {
     stopAllManaged();
     expect(managedCount()).toBe(0);
   });
+
+  it('instanced: many timers share ONE name without colliding, and aggregate in listManaged', () => {
+    const h = harness();
+    const a = managedSetInterval('ws-keepalive', 20_000, () => undefined, { category: 'lifecycle', instanced: true });
+    managedSetInterval('ws-keepalive', 20_000, () => undefined, { category: 'lifecycle', instanced: true });
+    const c = managedSetInterval('ws-keepalive', 20_000, () => undefined, { category: 'lifecycle', instanced: true });
+
+    // 3 raw timers armed (NO collision — none stopped the prior)
+    expect(h.intervals.length).toBe(3);
+    expect(managedCount()).toBe(3);
+    // ...but ONE aggregated inventory row carrying the live instance count
+    const rows = listManaged();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ name: 'ws-keepalive', instanced: true, instances: 3 });
+    expect(getManaged('ws-keepalive')).toMatchObject({ instances: 3 });
+
+    // stopping one instance drops the count; the row stays until the last instance stops
+    a.stop();
+    expect(managedCount()).toBe(2);
+    expect(listManaged()[0].instances).toBe(2);
+    c.stop();
+    expect(listManaged()[0].instances).toBe(1);
+  });
+
+  it('instanced aggregation rolls up fires + most-recent lastFire across instances', async () => {
+    const h = harness();
+    managedSetInterval('hb', 1000, () => undefined, { category: 'lifecycle', instanced: true });
+    managedSetInterval('hb', 1000, () => undefined, { category: 'lifecycle', instanced: true });
+    h.setNow(5_000);
+    await h.fire(0); // instance 0 fires
+    h.setNow(8_000);
+    await h.fire(1); // instance 1 fires later
+    const row = getManaged('hb')!;
+    expect(row.instances).toBe(2);
+    expect(row.fires).toBe(2); // summed
+    expect(row.lastFireAt).toBe(8_000); // most-recent across instances
+  });
 });

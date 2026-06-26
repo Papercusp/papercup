@@ -37,6 +37,14 @@ export interface ManagedTimerOptions {
   shed?: boolean;
   /** Also run ONCE immediately on arm (heal-on-startup), not only after the first interval. */
   fireOnArm?: boolean;
+  /**
+   * Allow MANY live timers under one `name` (per-connection lifecycle timers — a WS/SSE
+   * keepalive armed per socket). Without this, re-arming a name stops the previous timer
+   * (a collision). With it, each arm coexists under a unique internal key and listManaged()
+   * AGGREGATES them into ONE inventory row carrying the live instance count + most-recent
+   * fire — so the timer is VISIBLE without per-connection churn.
+   */
+  instanced?: boolean;
 }
 
 /** The public, listable view of one armed timer. */
@@ -56,6 +64,10 @@ export interface ManagedEntry {
   fires: number;
   /** whether this timer participates in load-shedding. */
   shed: boolean;
+  /** true for per-connection instanced timers (aggregated by name in listManaged). */
+  instanced: boolean;
+  /** number of live instances aggregated into this row (1 for a singleton). */
+  instances: number;
 }
 
 export interface ManagedHandle {
@@ -100,12 +112,15 @@ let resolved: ResolvedConfig = defaults();
 
 interface InternalRecord {
   entry: ManagedEntry;
+  /** unique registry key (== name for singletons; `name#N` for instanced timers). */
+  key: string;
   timer: TimerHandle;
   running: boolean;
   stopped: boolean;
 }
 
 const registry = new Map<string, InternalRecord>();
+let instanceCounter = 0;
 
 /**
  * Override the injected seams (timer fns, clock, shed gate, logger). Partial merge —
@@ -177,12 +192,16 @@ export function managedSetInterval(
   fn: () => void | Promise<void>,
   opts: ManagedTimerOptions,
 ): ManagedHandle {
-  if (registry.has(name)) {
+  const instanced = opts.instanced ?? false;
+  // Singletons key by name (re-arming replaces); instanced timers get a unique key so many
+  // coexist under one display name (aggregated in listManaged).
+  const key = instanced ? `${name}#${(instanceCounter += 1)}` : name;
+  if (!instanced && registry.has(key)) {
     // Idempotent re-arm: silently stop the previous timer and register fresh. No warn —
     // host watchdogs re-arm across boot retries / test cases, and the inventory always
     // reflects the single latest registration. (A genuine name COLLISION is a code-review
     // concern surfaced by two distinct sites sharing a name, not a runtime warning.)
-    stopManaged(name);
+    stopManaged(key);
   }
   const entry: ManagedEntry = {
     name,
@@ -194,8 +213,10 @@ export function managedSetInterval(
     running: false,
     fires: 0,
     shed: opts.shed ?? false,
+    instanced,
+    instances: 1,
   };
-  const rec: InternalRecord = { entry, timer: { unref: undefined }, running: false, stopped: false };
+  const rec: InternalRecord = { entry, key, timer: { unref: undefined }, running: false, stopped: false };
   const tick = makeTick(name, fn, opts, rec);
   rec.timer = resolved.setIntervalImpl(tick, intervalMs);
   rec.timer.unref?.();
@@ -203,8 +224,8 @@ export function managedSetInterval(
     const t = resolved.setTimeoutImpl(tick, 0);
     t.unref?.();
   }
-  registry.set(name, rec);
-  return { stop: () => stopManaged(name) };
+  registry.set(key, rec);
+  return { stop: () => stopManaged(key) };
 }
 
 /** Stop + deregister one timer by name. Returns whether it existed. Idempotent. */
@@ -217,18 +238,43 @@ export function stopManaged(name: string): boolean {
   return true;
 }
 
-/** The whole inventory of armed timers, sorted by name. Snapshot copies (mutation-safe). */
+/**
+ * The whole inventory of armed timers, sorted by name. Singletons appear one-per-name;
+ * instanced timers are AGGREGATED into ONE row per name (instances = live count,
+ * lastFireAt = most-recent across instances, fires = sum). Snapshot copies (mutation-safe).
+ */
 export function listManaged(): ManagedEntry[] {
-  return [...registry.values()].map((r) => ({ ...r.entry })).sort((a, b) => a.name.localeCompare(b.name));
+  const singletons: ManagedEntry[] = [];
+  const grouped = new Map<string, ManagedEntry>();
+  for (const r of registry.values()) {
+    if (!r.entry.instanced) {
+      singletons.push({ ...r.entry });
+      continue;
+    }
+    const g = grouped.get(r.entry.name);
+    if (!g) {
+      grouped.set(r.entry.name, { ...r.entry });
+    } else {
+      g.instances += 1;
+      g.fires += r.entry.fires;
+      g.armedAt = Math.min(g.armedAt, r.entry.armedAt);
+      if (r.entry.lastFireAt != null) g.lastFireAt = Math.max(g.lastFireAt ?? 0, r.entry.lastFireAt);
+      if (r.entry.lastError) g.lastError = r.entry.lastError;
+      g.running = g.running || r.entry.running;
+    }
+  }
+  return [...singletons, ...grouped.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** One timer's current entry, or undefined. Snapshot copy. */
+/** One timer's current entry (singleton) or the aggregated row (instanced base name), or undefined. */
 export function getManaged(name: string): ManagedEntry | undefined {
-  const r = registry.get(name);
-  return r ? { ...r.entry } : undefined;
+  const direct = registry.get(name);
+  if (direct && !direct.entry.instanced) return { ...direct.entry };
+  // instanced base name (keys are name#N) → return the aggregated row.
+  return listManaged().find((e) => e.name === name);
 }
 
-/** Count of currently-armed timers. */
+/** Count of currently-armed timers (raw instances, NOT aggregated rows). */
 export function managedCount(): number {
   return registry.size;
 }
