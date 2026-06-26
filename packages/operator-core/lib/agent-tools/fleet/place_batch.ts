@@ -20,6 +20,7 @@
  * tool (D-006): a batch larger than headroom simply spawns up to the ceiling and
  * queues the rest with an `await_event` to retry on a freed slot.
  */
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
@@ -351,10 +352,23 @@ export async function executeBatch(opts: {
     if (awaitEvent) {
       return { task: task.id, action: 'deferred', reason: 'fleet ceiling reached earlier this batch', await_event: awaitEvent };
     }
+    const reservedSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const claim = await claimWorkItem(task.id, reservedSpawnId, { harness: task.harness ?? undefined });
+    if (!claim) {
+      return {
+        task: task.id,
+        action: 'inject-raced',
+        spawn_id: reservedSpawnId,
+        harness: task.harness,
+        reason: 'fresh-spawn reservation lost — item was claimed by another agent first',
+        ...(climbedFrom ? { climbed_from: climbedFrom } : {}),
+      };
+    }
     const res = await spawnAgentInHarness({
       workspaceId,
       harness: task.harness,
       role: 'bee',
+      spawnId: reservedSpawnId,
       featureId: task.id,
       // Per-lane brief (payload.brief) MERGED with the Queen's batch overlay, so
       // a placed bee gets ITS wave lane's context — not just the one batch-wide
@@ -369,21 +383,12 @@ export async function executeBatch(opts: {
       turnTrigger: 'coord-wake',
     });
     if (!res.ok && res.awaitEvent) {
+      await releaseWorkItem(task.id, { harness: task.harness ?? undefined }).catch(() => {});
       awaitEvent = res.awaitEvent;
       return { task: task.id, action: 'deferred', reason: res.error ?? 'over fleet ceiling', await_event: res.awaitEvent };
     }
-    if (res.ok && res.spawnId) {
-      const claim = await claimWorkItem(task.id, res.spawnId, { harness: res.harness ?? task.harness ?? undefined });
-      if (!claim) {
-        return {
-          task: task.id,
-          action: 'inject-raced',
-          spawn_id: res.spawnId,
-          harness: res.harness,
-          reason: 'fresh-spawned bee could not claim item — item was claimed by another agent first',
-          ...(climbedFrom ? { climbed_from: climbedFrom } : {}),
-        };
-      }
+    if (!res.ok) {
+      await releaseWorkItem(task.id, { harness: task.harness ?? undefined }).catch(() => {});
     }
     return {
       task: task.id,

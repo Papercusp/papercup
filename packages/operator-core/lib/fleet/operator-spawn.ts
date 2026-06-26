@@ -346,6 +346,8 @@ export interface OperatorSpawnInput {
   harness?: string | null;
   /** Child agent role (AGENT_ROLES or a plugin-namespaced role). */
   role: string;
+  /** Internal callers that must claim work before launch can pre-mint the durable spawn id. */
+  spawnId?: string | null;
   featureId?: string | null;
   chunkId?: string | null;
   /** Queen-authored brief: the situational overlay the bee is MISSING. P-060. */
@@ -813,7 +815,7 @@ export async function spawnAgentInHarness(
     return fail(`spawn rejected: harness "${slug}" project dir missing on disk: ${project.path}`);
   }
 
-  const spawnId = newSpawnId();
+  const spawnId = (input.spawnId ?? '').trim() || newSpawnId();
   const runId = `opspawn-${Date.now()}-${randomUUID().slice(0, 6)}`;
   const { sql } = getOrgPg();
   const idemKey = (input.idempotencyKey ?? '').trim() || null;

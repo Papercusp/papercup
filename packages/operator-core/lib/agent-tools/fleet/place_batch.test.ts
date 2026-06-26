@@ -49,7 +49,7 @@ type AnyMock = ReturnType<typeof vi.fn>;
 
 function makeDeps(over: Partial<Record<keyof ExecuteBatchDeps, AnyMock>> = {}) {
   const fns = {
-    spawnAgentInHarness: over.spawnAgentInHarness ?? vi.fn(async () => ({ ok: true, spawnId: 's-spawned', harness: 'h' })),
+    spawnAgentInHarness: over.spawnAgentInHarness ?? vi.fn(async (input: { spawnId?: string | null }) => ({ ok: true, spawnId: input.spawnId ?? 's-spawned', harness: 'h' })),
     claimWorkItem: over.claimWorkItem ?? vi.fn(async () => ({ ok: true })),
     releaseWorkItem: over.releaseWorkItem ?? vi.fn(async () => undefined),
     reorderWorkItem: over.reorderWorkItem ?? vi.fn(async () => undefined),
@@ -83,21 +83,23 @@ describe('executeBatch — placement execution', () => {
   it('spawn disposition → fresh spawn, reported as spawned', async () => {
     const { fns, deps } = makeDeps();
     const r = await run(plan([{ task: task('WI-1'), disposition: 'spawn', reason: 'fresh slot' }]), deps);
+    const reservedSpawnId = fns.spawnAgentInHarness.mock.calls[0]?.[0]?.spawnId;
     expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1);
     expect(fns.spawnAgentInHarness).toHaveBeenCalledWith(
-      expect.objectContaining({ featureId: 'WI-1', role: 'bee', harness: 'h', workspaceId: 'ws-1' }),
+      expect.objectContaining({ featureId: 'WI-1', role: 'bee', harness: 'h', workspaceId: 'ws-1', spawnId: expect.stringMatching(/^s-/) }),
     );
-    expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-1', 's-spawned', { harness: 'h' });
-    expect(r.placements[0]).toMatchObject({ task: 'WI-1', action: 'spawned', spawn_id: 's-spawned' });
+    expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-1', reservedSpawnId, { harness: 'h' });
+    expect(r.placements[0]).toMatchObject({ task: 'WI-1', action: 'spawned', spawn_id: reservedSpawnId });
     expect(r.summary.spawned).toBe(1);
   });
 
-  it('spawn disposition claim-race → reports inject-raced instead of silent spawned', async () => {
+  it('spawn disposition claim-race → does not spawn a stale unclaimed bee', async () => {
     const { fns, deps } = makeDeps({ claimWorkItem: vi.fn(async () => null) });
     const r = await run(plan([{ task: task('WI-1b'), disposition: 'spawn', reason: 'fresh slot' }]), deps);
-    expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1);
-    expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-1b', 's-spawned', { harness: 'h' });
-    expect(r.placements[0]).toMatchObject({ task: 'WI-1b', action: 'inject-raced', spawn_id: 's-spawned' });
+    expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
+    expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-1b', expect.stringMatching(/^s-/), { harness: 'h' });
+    expect(r.placements[0]).toMatchObject({ task: 'WI-1b', action: 'inject-raced' });
+    expect(r.placements[0].reason).toMatch(/reservation lost/);
     expect(r.summary.raced).toBe(1);
   });
 
@@ -131,6 +133,7 @@ describe('executeBatch — placement execution', () => {
     );
     expect(fns.releaseWorkItem).toHaveBeenCalledWith('WI-3', { harness: 'h' });
     expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1); // climbed the ladder
+    expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-3', expect.stringMatching(/^s-/), { harness: 'h' });
     expect(r.placements[0]).toMatchObject({ task: 'WI-3', action: 'spawned', climbed_from: 's-asleep' });
     expect(r.placements[0].reason).toMatch(/woken:0/);
     expect(r.summary.spawned).toBe(1);
