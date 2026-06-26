@@ -130,6 +130,41 @@ describe('acquireCheckpointRunLock', () => {
     stale.release();
     next.release();
   });
+
+  it('reclaims a lock that OUTLIVED the max run age even if its pid still looks alive (recycled-pid / hung-run freeze)', () => {
+    // The green-checkpoint-stale-lock-2026-06-26 freeze: a crashed/hung run left a lock
+    // whose recorded pid got recycled to an unrelated LIVE process, so the dead-pid check
+    // never reclaimed it and `main` froze for 21h. An over-age lock must reclaim regardless.
+    const lockDir = join(repo, '.checkpoint-logs', '.green-checkpoint-run.lock');
+    const t0 = Date.parse('2026-06-26T00:00:00Z');
+    const first = acquireCheckpointRunLock(lockDir, { pid: 123, isPidAlive: () => true, now: () => t0 });
+    expect(first.acquired).toBe(true);
+    // 46 min later, pid 123 STILL "alive" — but the lock is past the 45-min run window.
+    const next = acquireCheckpointRunLock(lockDir, {
+      pid: 456,
+      isPidAlive: () => true,
+      staleAfterMs: 45 * 60_000,
+      now: () => t0 + 46 * 60_000,
+    });
+    expect(next.acquired).toBe(true);
+    next.release();
+  });
+
+  it('does NOT reclaim a fresh lock with a live pid (genuine concurrent run still blocks)', () => {
+    const lockDir = join(repo, '.checkpoint-logs', '.green-checkpoint-run.lock');
+    const t0 = Date.parse('2026-06-26T00:00:00Z');
+    const first = acquireCheckpointRunLock(lockDir, { pid: 123, isPidAlive: () => true, now: () => t0 });
+    expect(first.acquired).toBe(true);
+    // 10 min later (within the run window) a live owner → the second acquire is BLOCKED.
+    const second = acquireCheckpointRunLock(lockDir, {
+      pid: 456,
+      isPidAlive: () => true,
+      staleAfterMs: 45 * 60_000,
+      now: () => t0 + 10 * 60_000,
+    });
+    expect(second).toMatchObject({ acquired: false, owner: { pid: 123 } });
+    first.release();
+  });
 });
 
 describe('runGreenCheckpoint', () => {

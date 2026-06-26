@@ -142,7 +142,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     advancedTo?: string;
   } | null;
   if (parsed?.reason) {
-    status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
+    status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed | skipped-locked
     candidate = parsed.candidate;
     summary = parsed.summary;
     failingTests = parsed.failingTests;
@@ -259,10 +259,12 @@ async function trackGateStall(
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
   const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
   // P-006: every non-green verdict counts toward the stall streak — INCLUDING 'error'
-  // (a green-checkpoint script crash, the 25-min timeout, or unparseable JSON). The old
-  // code early-returned on 'error', so a persistently crashing/hanging suite never
-  // incremented the streak and never alerted: `main` froze silently, the exact failure
-  // this detector exists to catch. Only a green verdict resets the streak now.
+  // (a green-checkpoint script crash, the 25-min timeout, or unparseable JSON) AND
+  // 'skipped-locked' (a stale run-lock the CLI couldn't acquire — green-checkpoint-stale-lock-
+  // 2026-06-26). Both are deliberately ABSENT from `isGreen` above, so a persistent crash /
+  // hang / wedged-lock increments the streak and fires the held-gate alarm instead of
+  // freezing `main` SILENTLY (the 21h fleet-deploy freeze this detector exists to catch).
+  // Only a real green verdict resets the streak.
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const rows = (await sql.unsafe(

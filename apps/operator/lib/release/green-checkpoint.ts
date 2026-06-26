@@ -112,7 +112,7 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'delta-held';
+  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'delta-held' | 'skipped-locked';
   /** P-016 (D-010): on a PARTIAL advance (reason 'advanced-prefix'), the sha `main`
    *  was FF'd to — the longest GREEN prefix — while `candidate` stays the red TIP (so
    *  failingTests + the release-fixer still target the real failure). Absent otherwise. */
@@ -144,19 +144,38 @@ function defaultPidAlive(pid: number): boolean {
   }
 }
 
+/** A checkpoint run is bounded by the routine's 25-min suite timeout, so a lock held
+ *  longer than this is DEFINITIVELY stale and is reclaimed even if its recorded pid
+ *  still looks alive. Without this, a run that hung past its timeout / crashed without
+ *  releasing / left a lock whose pid got RECYCLED to an unrelated live process wedged
+ *  the gate forever — the dead-pid check alone never reclaims a recycled-pid lock. This
+ *  is the silent multi-hour fleet-deploy freeze (green-checkpoint-stale-lock-2026-06-26). */
+export const CHECKPOINT_LOCK_STALE_MS = 45 * 60_000;
+
 export function acquireCheckpointRunLock(
   lockDir: string,
-  opts: { pid?: number; isPidAlive?: (pid: number) => boolean } = {},
+  opts: {
+    pid?: number;
+    isPidAlive?: (pid: number) => boolean;
+    /** Reclaim a held lock older than this even if its pid looks alive. Default
+     *  CHECKPOINT_LOCK_STALE_MS. Injected for tests. */
+    staleAfterMs?: number;
+    /** Clock seam — used for BOTH the lock's recorded `startedAt` and the over-age
+     *  check, so they share one timeline (injected in tests). */
+    now?: () => number;
+  } = {},
 ): CheckpointRunLock {
   const pid = opts.pid ?? process.pid;
   const isPidAlive = opts.isPidAlive ?? defaultPidAlive;
+  const now = opts.now ?? (() => Date.now());
+  const staleAfterMs = opts.staleAfterMs ?? CHECKPOINT_LOCK_STALE_MS;
   const token = randomUUID();
   mkdirSync(path.dirname(lockDir), { recursive: true });
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(lockDir);
-      writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid, startedAt: new Date().toISOString(), token }));
+      writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid, startedAt: new Date(now()).toISOString(), token }));
       return {
         acquired: true,
         lockDir,
@@ -179,7 +198,12 @@ export function acquireCheckpointRunLock(
       } catch {
         owner = { detail: 'owner metadata unreadable' };
       }
-      if (typeof owner.pid === 'number' && isPidAlive(owner.pid)) {
+      // Hold the lock for a LIVE owner — unless it has outlived the max run age, in
+      // which case it is reclaimed regardless of apparent pid liveness (hung-past-timeout,
+      // crashed-without-release, or recycled-pid — see CHECKPOINT_LOCK_STALE_MS).
+      const ageMs = owner.startedAt ? now() - Date.parse(owner.startedAt) : NaN;
+      const overAge = Number.isFinite(ageMs) && ageMs > staleAfterMs;
+      if (typeof owner.pid === 'number' && isPidAlive(owner.pid) && !overAge) {
         return { acquired: false, lockDir, owner, release: () => {} };
       }
       rmSync(lockDir, { recursive: true, force: true });
@@ -1432,7 +1456,12 @@ if (require.main === module) {
           candidate,
           from,
           green: null,
-          reason: 'up-to-date',
+          // NOT 'up-to-date' (which release-actions treats as a benign green that resets
+          // the stall streak): a lock-skip is a NON-advance, and a PERSISTENT one (a stale
+          // lock that never reclaims) is exactly the silent multi-hour deploy freeze. Its
+          // own reason keeps it OUT of the green set so trackGateStall counts it and the
+          // held-gate alarm fires. (green-checkpoint-stale-lock-2026-06-26.)
+          reason: 'skipped-locked',
           summary: `green-checkpoint skipped: another checkpoint process is already running${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ''}`,
         });
         process.exit(0);
