@@ -65,7 +65,7 @@ afterEach(() => {
 
 describe('defaultFire fallback — durable spawn row (WI-108)', () => {
   beforeEach(() => {
-    vi.mocked(getOrgPg).mockReturnValue({ sql: mockSql } as ReturnType<typeof getOrgPg>);
+    vi.mocked(getOrgPg).mockReturnValue({ sql: mockSql } as unknown as ReturnType<typeof getOrgPg>);
     vi.mocked(recordSpawn).mockResolvedValue(undefined);
     vi.mocked(finishSpawn).mockResolvedValue(undefined);
     vi.mocked(loopbackFetch).mockResolvedValue(new Response('', { status: 200 }));
@@ -191,7 +191,7 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
   const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   beforeEach(() => {
-    vi.mocked(getOrgPg).mockReturnValue({ sql: mockSql } as ReturnType<typeof getOrgPg>);
+    vi.mocked(getOrgPg).mockReturnValue({ sql: mockSql } as unknown as ReturnType<typeof getOrgPg>);
     vi.mocked(recordSpawn).mockResolvedValue(undefined);
     vi.mocked(finishSpawn).mockResolvedValue(undefined);
     vi.mocked(heartbeatSpawns).mockResolvedValue(undefined);

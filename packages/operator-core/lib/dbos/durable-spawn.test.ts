@@ -107,10 +107,11 @@ beforeEach(() => {
   h.pgRunOutputRows.value = [];
   h.activeQueenRows.value = [];
   h.sql.mockReset();
-  h.sql.mockImplementation(async (strings: TemplateStringsArray | string) => {
+  h.sql.mockImplementation(async (...args: unknown[]): Promise<unknown[]> => {
+    const strings = args[0] as TemplateStringsArray | string | undefined;
     const text = Array.isArray(strings) ? strings.join(' ') : String(strings);
-    if (text.includes('FROM harness_shared.spawned_agents')) return h.activeQueenRows.value;
-    return h.pgRunOutputRows.value;
+    if (text.includes('FROM harness_shared.spawned_agents')) return h.activeQueenRows.value as unknown[];
+    return h.pgRunOutputRows.value as unknown[];
   });
   (h.sql as typeof h.sql & { begin: (cb: (tx: typeof h.sql) => unknown) => unknown }).begin = vi.fn(
     async (cb: (tx: typeof h.sql) => unknown) => cb(h.sql),
