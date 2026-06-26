@@ -134,6 +134,15 @@ describe('resolveHiveHomeSlug', () => {
     delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
     expect(resolveHiveHomeSlug('', '')).toBe(null);
   });
+
+  it('canonicalizes retired home slugs before persisting wake launch targets', () => {
+    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+    expect(resolveHiveHomeSlug('papercup', 'ctx-slug')).toBe('papercusp');
+    expect(resolveHiveHomeSlug('  papercup-hive  ', undefined)).toBe('papercusp');
+    process.env.PAPERCUSP_HIVE_HOME_SLUG = 'papercup';
+    expect(resolveHiveHomeSlug(undefined, undefined)).toBe('papercusp');
+    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+  });
 });
 
 describe('syncHiveWakeRules (subscriptions → live reaction rules)', () => {

@@ -223,3 +223,4 @@
 [2026-06-25T20:08:59-04:00] queen -: papercup slug may resolve hive control under papercusp; use hive_get papercusp when hive_status papercup shows no queued work but watchdog reports demand.
 [2026-06-26T00:15:24.967215Z] queen -: placement can wedge when fleet nursery marks bee spawns running but coord sessions are ended; coord:wake woken:0 should trigger fleet_cancel + fresh place_batch.
 [2026-06-26T00:20:07Z] doc-steward WI-869: blueprint-run-action launchInstallSlug routing key redirects DECIDER-mode launch to a specific harness; stripped from PROGRAM-mode payload by programPayloadFromTemplate; @singleton routines need it when host slug is not a real harness install.
+[2026-06-26T00:45:15.844688Z] bee WI-774: chatgpt:5.5 autonomous-loop verification evidence lives on WI-774 comment 47833; current spawn row carried model_spec=chatgpt:5.5 while buildInvokeOnce normalized the Codex CLI argv to gpt-5.5.

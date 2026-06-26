@@ -32,6 +32,7 @@ import { getOrgPg, upsertRoutine, setRoutineActive, deleteRoutine } from '@paper
 import { computeNextFireAt } from '../harness/routines/cron';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
+import { canonicalHarnessSlug } from '../harness/operator-home-harness';
 import { registerReactionRule, unregisterReactionRule, listReactionRules } from '../events/registry';
 import {
   isWorkspaceCoordinationOn,
@@ -462,5 +463,6 @@ export async function recordHiveWake(workspaceId?: string): Promise<void> {
  *  env default. The hive is workspace-level but the invoke route is
  *  harness-scoped, so a home slug must be named somewhere. */
 export function resolveHiveHomeSlug(explicit?: string | null, ctxSlug?: string | null): string | null {
-  return explicit?.trim() || ctxSlug?.trim() || process.env.PAPERCUSP_HIVE_HOME_SLUG?.trim() || null;
+  const slug = explicit?.trim() || ctxSlug?.trim() || process.env.PAPERCUSP_HIVE_HOME_SLUG?.trim() || null;
+  return slug ? canonicalHarnessSlug(slug) : null;
 }
