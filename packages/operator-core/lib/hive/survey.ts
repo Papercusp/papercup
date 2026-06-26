@@ -35,6 +35,7 @@ import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 import type { Ranked } from '../queue-ranker';
 import { defaultBlockingStore } from '../work-item-blocking';
 import { selectReady, type ReadinessNode } from '../dbos/frontier-readiness';
+import { placementConfig } from './placement-watchdog';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -333,14 +334,12 @@ export function filterReadyFrontier(
  * `surveySlugs` empty ⇒ workspace-wide (the P-012 fallback). Oldest-first,
  * capped. One query (no per-slug loop).
  *
- * EI-865 — CURSED items are excluded. Once the placement watchdog's circuit
- * breaker latches a doomed item `cursed` (`hive_placements.status='cursed'`), it
- * must NEVER re-enter the Queen's frontier — else she re-places it the moment the
- * breaker halt wears off across a wake, defeating the latch (the failCount-356
- * regression). The anti-join is workspace-scoped (matching the breaker's own
- * scope), so a curse from ANY hive in the workspace holds the item out of the
- * frontier. The item returns only when a human/Queen clears the curse (re-places
- * it → the breaker row leaves `cursed`).
+ * EI-865 / WI-677 — PATHOLOGY-CURSED items are excluded. A watchdog `cursed`
+ * row only hard-blocks the frontier when its fail_count reached the real
+ * pathology breaker threshold. A fail_count=0 infra curse (host restart /
+ * drain / zombie with no task failure) stays re-placeable, matching
+ * place_batch's loadCursedWorkItemIds gate; otherwise Queen sees an empty
+ * survey frontier while place_batch would have accepted the work.
  */
 export async function fetchFrontierRows(
   sql: postgres.Sql,
@@ -348,6 +347,7 @@ export async function fetchFrontierRows(
   surveySlugs: readonly string[],
   limit = 50,
 ): Promise<FrontierRow[]> {
+  const breakerThreshold = placementConfig().breakerThreshold;
   const rows = await sql<FrontierRow[]>`
     SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order,
            source_plan_slug AS plan_slug
@@ -361,6 +361,7 @@ export async function fetchFrontierRows(
           WHERE p.workspace_id = f.workspace_id
             AND p.work_item_id = f.feature_id
             AND p.status = 'cursed'
+            AND p.fail_count >= ${breakerThreshold}
             -- Scope the curse to THIS hive's own installs (papercup→papercusp migration follow-up,
             -- 2026-06-20): a curse from a RETIRED/foreign install must not hide the item from the
             -- home hive's frontier. Unscoped only in the workspace-wide fallback (surveySlugs empty).
@@ -397,6 +398,7 @@ export async function countPlaceableFrontier(
   workspaceId: string,
   surveySlugs: readonly string[],
 ): Promise<number> {
+  const breakerThreshold = placementConfig().breakerThreshold;
   const rows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
       FROM harness_shared.harness_features_consolidated f
@@ -409,6 +411,7 @@ export async function countPlaceableFrontier(
           WHERE p.workspace_id = f.workspace_id
             AND p.work_item_id = f.feature_id
             AND p.status = 'cursed'
+            AND p.fail_count >= ${breakerThreshold}
             -- Scope the curse to THIS hive's own installs (papercup→papercusp migration follow-up,
             -- 2026-06-20): a curse from a RETIRED/foreign install must not hide the item from the
             -- home hive's frontier. Unscoped only in the workspace-wide fallback (surveySlugs empty).

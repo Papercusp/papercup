@@ -30,7 +30,6 @@
  * the same truth fleet:assignments enforces (agent-activity-liveness-truth).
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { activeWorkspaceId } from './workspace-registry';
 import { listFleetAssignments, deriveActivity } from './fleet/assignments';
 import { planItemRef, PLAN_ITEM_KIND } from './issue-blocks-merge';
@@ -146,12 +145,17 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
 
-  // 1. work→plan_item edges + the linked work-item's terminal state. The edge lives
-  //    in the coord workspace (like the issue-block edge). engineer_issues joins on
-  //    the GLOBALLY-unique issue_id WITHOUT a workspace filter (EI-2760: issues may
-  //    live in another workspace). A feature_id is unique only per (workspace,
-  //    harness), so the feature join is scoped to the active workspace (getWorkItem's
-  //    F-B3 rule) and matched on the harness-qualified '<harness>#<id>' src_ref.
+  // 1. work→plan_item edges + the linked work-item's terminal state. NOTE: unlike the
+  //    issue-BLOCK edge (issues:link → coord DEFAULT workspace), work_items:link writes
+  //    the work→plan edge into the CALLER's workspace, so these edges are spread across
+  //    workspaces — we must NOT filter coord_links by a fixed workspace (that silently
+  //    dropped every edge). The plan_item dst_ref ('<slug>#<item>') is GLOBALLY unique,
+  //    so an unfiltered match is collision-safe and the harness-scoped reader only ever
+  //    looks up the refs of plans it lists. engineer_issues joins on the globally-unique
+  //    issue_id (EI-2760). A feature_id is unique only per (workspace, harness), so the
+  //    feature join is pinned to the active workspace (getWorkItem's F-B3 rule) on the
+  //    harness-qualified '<harness>#<id>' src_ref — a cross-workspace feature link just
+  //    resolves to null state (treated non-terminal, the safe direction).
   const linkRows = await sql<CoverageLinkRow[]>`
     SELECT l.dst_ref, l.rel, l.src_kind, l.src_ref,
            i.state      AS issue_state,
@@ -164,8 +168,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
         ON l.src_kind = 'feature'
        AND (f.harness_slug || '#' || f.feature_id) = l.src_ref
        AND f.workspace_id = ${ws}
-     WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND l.rel IN ('fixes', 'relates', 'duplicates')
+     WHERE l.rel IN ('fixes', 'relates', 'duplicates')
        AND l.dst_kind = ${PLAN_ITEM_KIND}
      ORDER BY l.dst_ref, l.src_ref`;
 

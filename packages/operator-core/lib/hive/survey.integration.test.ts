@@ -145,6 +145,16 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     expect(rows.map((r) => r.feature_id)).toEqual(['WI-OK']); // the cursed item never re-surfaces
   });
 
+  it('WI-677/EI-3850: a fail_count=0 infra-cursed item stays in the survey frontier', async () => {
+    await seed(MEMBER_A, 'WI-OK', { createdTs: 1 });
+    await seed(MEMBER_A, 'WI-INFRA-CURSED', { createdTs: 2 });
+    await seed(MEMBER_A, 'WI-PATHOLOGY-CURSED', { createdTs: 3 });
+    await seedPlacement('WI-INFRA-CURSED', 'cursed', { failCount: 0 });
+    await seedPlacement('WI-PATHOLOGY-CURSED', 'cursed', { failCount: 3 });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-OK', 'WI-INFRA-CURSED']);
+  });
+
   it('EI-865: a NON-cursed placement row (recovering/working) does NOT exclude its item — only the curse latches it out', async () => {
     await seed(MEMBER_A, 'WI-RECOVERING', { createdTs: 1 });
     await seed(MEMBER_A, 'WI-WORKING', { createdTs: 2 });
