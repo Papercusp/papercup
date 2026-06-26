@@ -37,6 +37,10 @@ export interface PeriodicCheck {
    *  saturation / power-save. Light single-query probes do NOT shed — we want their
    *  signal precisely under load (parity with the DBOS version's shouldShedHeavyTick). */
   shed?: boolean;
+  /** Also run ONCE immediately when armed (heal-on-startup), not only after the first
+   *  interval. For self-heal sweeps that should converge on boot (e.g. epoch-key reconcile)
+   *  rather than wait a full interval. Still subject to the shed-gate. */
+  fireOnArm?: boolean;
   tick: () => Promise<void> | void;
 }
 
@@ -489,12 +493,17 @@ const federationDrainReconcileCheck: PeriodicCheck = {
 const hiveEpochKeyReconcileCheck: PeriodicCheck = {
   name: 'hive-epoch-key-reconcile',
   intervalMs: 600_000,
-  shed: true,
+  // NOT shed: gap-aware (does no crypto on an intact hive), so it stays cheap under load and the
+  // fireOnArm heal-on-startup runs even during the busy boot window (a shed tick would skip it).
+  shed: false,
+  fireOnArm: true, // heal stuck members on app startup, not only after the first 10m interval
   tick: async () => {
     const { isHiveRekeyEnabled, reconcileOwnedHiveEpochKeys } = await import(
       '../sync/hyperbee/hive-epoch-boundary-wiring'
     );
     const enabled = await isHiveRekeyEnabled();
+    // eslint-disable-next-line no-console
+    console.info(`[hive-epoch-key-reconcile] tick: rekeyEnabled=${enabled}`);
     if (!enabled) return; // re-key dark ⇒ no epoch-key distribution to reconcile
     await reconcileOwnedHiveEpochKeys({ enabled });
   },
@@ -540,15 +549,20 @@ export function armInProcessPeriodicChecks(
   armed = [];
   for (const check of checks) {
     let running = false;
-    const timer = setInterval(() => {
+    const runOnce = () => {
       if (running) return; // previous tick still in flight — skip, no pile-up
       running = true;
       void runPeriodicCheck(check, opts.deps).finally(() => {
         running = false;
       });
-    }, check.intervalMs);
+    };
+    const timer = setInterval(runOnce, check.intervalMs);
     timer.unref?.();
     armed.push({ timer });
+    // heal-on-startup: a fireOnArm check also runs once now (not only after the first
+    // interval) so a self-heal sweep converges on boot. unref'd timer(0) so it never
+    // blocks startup or holds the process open.
+    if (check.fireOnArm) setTimeout(runOnce, 0).unref?.();
   }
   console.log(
     `[in-process-periodic] armed ${checks.length} in-process check(s): ${checks.map((c) => c.name).join(', ')}`,

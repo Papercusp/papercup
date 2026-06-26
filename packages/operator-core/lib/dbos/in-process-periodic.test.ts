@@ -171,14 +171,8 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     const shedders = checks.filter((c) => c.shed).map((c) => c.name).sort();
     // federation-drain-reconcile sheds: it group-scans substrate_outbox, and a real
     // stall persists, so a shed tick is caught next interval (WI-254).
-    // hive-epoch-key-reconcile sheds: it can derive+wrap epoch keys for a gappy hive; a real gap
-    // persists, so a shed tick is caught next interval (WI-887). It is GAP-AWARE so the steady
-    // state does no crypto regardless.
-    expect(shedders).toEqual([
-      'federation-drain-reconcile',
-      'harness-status-sweep',
-      'hive-epoch-key-reconcile',
-      'system-health',
-    ]);
+    // hive-epoch-key-reconcile does NOT shed: it is GAP-AWARE (no crypto on an intact hive), so it
+    // stays cheap under load AND its fireOnArm heal-on-startup must run even during the busy boot.
+    expect(shedders).toEqual(['federation-drain-reconcile', 'harness-status-sweep', 'system-health']);
   });
 });

@@ -311,6 +311,7 @@ export async function reconcileOwnedHiveEpochKeys(
 
   const hives = await listHives(opts.sql);
   let reconciled = 0;
+  let gapsFound = 0;
   for (const { workspaceId, hiveHomeSlug } of hives) {
     try {
       const current = await getCurrentEpoch(workspaceId, hiveHomeSlug, opts.sql);
@@ -327,15 +328,43 @@ export async function reconcileOwnedHiveEpochKeys(
       if (liveDevices.length === 0) continue;
       const have = new Set(await loadEpochKeyDevices(workspaceId, hiveHomeSlug, current, opts.sql));
       const hasGap = liveDevices.some((pk) => !have.has(pk));
+      if (hiveHomeSlug === 'hello-world-hive') {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[hive-epoch-key-reconcile] DEBUG ${workspaceId}/${hiveHomeSlug}: current=${current} live=[${liveDevices.map((p) => p.slice(0, 6)).join(',')}] have=[${[...have].map((p) => p.slice(0, 6)).join(',')}] gap=${hasGap}`,
+        );
+      }
       if (!hasGap) continue; // steady state — NO crypto (perf guard)
+      gapsFound += 1;
       const r = await reconcileEpochKeysForCurrentMembers(
         { workspaceId, hiveHomeSlug, enabled: true, sql: opts.sql },
         seams,
       );
-      if (r.applied) reconciled += 1;
-    } catch {
+      if (r.applied) {
+        reconciled += 1;
+        // eslint-disable-next-line no-console
+        console.info(
+          `[hive-epoch-key-reconcile] backfilled ${hiveHomeSlug} epoch[0..${current}] for ${liveDevices.length} member device(s) (${r.distributed} key rows)`,
+        );
+      } else {
+        // A gap was found but the grant did NOT run — name the cause (no-author = not the owner
+        // box; flag-disabled; no-fresh-members). This is the queryable signal a stuck hive needs.
+        // eslint-disable-next-line no-console
+        console.info(
+          `[hive-epoch-key-reconcile] gap in ${hiveHomeSlug} epoch=${current} NOT healed: ${r.reason ?? 'unknown'}`,
+        );
+      }
+    } catch (e) {
       // best-effort per hive — one hive's failure must not abort the sweep
+      // eslint-disable-next-line no-console
+      console.info(
+        `[hive-epoch-key-reconcile] ${hiveHomeSlug} threw (skipped): ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
+  // eslint-disable-next-line no-console
+  console.info(
+    `[hive-epoch-key-reconcile] sweep done: scanned=${hives.length} gaps=${gapsFound} reconciled=${reconciled}`,
+  );
   return { scanned: hives.length, reconciled };
 }
