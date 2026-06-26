@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { loadHivePubkey } from '../../identity/hive-keypair';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { approvePendingJoin, denyPendingJoin } from '../../hive-membership-admission';
@@ -56,8 +56,11 @@ export default defineTool({
       message: 'pass `{ githubUserId, decision }` (one) or `items:[{ githubUserId, decision }]` (many)',
     }),
   async handler(args, ctx) {
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(
+      args.workspace,
+      ctx.workspaceId,
+      ctx.principal?.workspaceId,
+    );
 
     // Owner gate (once for the batch): only the Swarm that holds the Hive private key may decide.
     const ownerPubkey = await loadHivePubkey(workspaceId, args.hive).catch(() => null);

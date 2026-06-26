@@ -15,7 +15,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'default'),
+  resolveConcreteWorkspaceId: (...c: Array<string | null | undefined>) =>
+    c.find((x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== '*') ?? 'default',
+}));
 vi.mock('../../harness/leave-hive', () => ({ leaveHive: vi.fn() }));
 
 import { resolveAgentIdentity } from '../coordination/identity';

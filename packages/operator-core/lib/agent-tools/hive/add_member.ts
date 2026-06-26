@@ -24,7 +24,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { addHarnessToHive } from './_add-member';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -60,8 +60,11 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(
+      args.workspace,
+      ctx.workspaceId,
+      ctx.principal?.workspaceId,
+    );
     const result = await addHarnessToHive({
       workspaceId,
       hiveHomeSlug: args.hive,

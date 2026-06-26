@@ -17,7 +17,11 @@ const h = vi.hoisted(() => ({
   approve: vi.fn(),
   deny: vi.fn(),
 }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: () => 'default',
+  resolveConcreteWorkspaceId: (...c: Array<string | null | undefined>) =>
+    c.find((x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== '*') ?? 'default',
+}));
 vi.mock('../../identity/hive-keypair', () => ({ loadHivePubkey: h.loadHivePubkey }));
 vi.mock('../../identity/resolve-local-github-identity', () => ({ resolveLocalGithubIdentity: h.resolveIdentity }));
 vi.mock('../../hive-membership-admission', () => ({ approvePendingJoin: h.approve, denyPendingJoin: h.deny }));

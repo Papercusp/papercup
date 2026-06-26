@@ -13,7 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { DeploymentConfigSchema } from '../../deployment/config-schema';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { createHiveHarness } from './_create';
 import { resolveHive } from './_resolve';
 import { softText, clampText, LIMITS } from '../limits';
@@ -103,8 +103,11 @@ export default defineTool({
       });
     }
 
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(
+      args.workspace,
+      ctx.workspaceId,
+      ctx.principal?.workspaceId,
+    );
     const res = await createHiveHarness({
       slug: args.slug,
       workspaceId,

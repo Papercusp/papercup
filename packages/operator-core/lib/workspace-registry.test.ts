@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   readRegistry,
   activeWorkspaceId,
+  resolveConcreteWorkspaceId,
   backgroundWorkspaceIds,
   workspaceById,
   isKnownWorkspace,
@@ -49,6 +50,32 @@ describe('workspace-registry', () => {
     const id = activeWorkspaceId();
     expect(id).toBeTruthy();
     expect(typeof id).toBe('string');
+  });
+
+  describe('resolveConcreteWorkspaceId (WI-892 / EI-3409 — never the "*" read sentinel)', () => {
+    it('returns the first concrete candidate, in precedence order', () => {
+      expect(resolveConcreteWorkspaceId('default')).toBe('default');
+      expect(resolveConcreteWorkspaceId('ws-arg', 'ws-ctx')).toBe('ws-arg');
+    });
+
+    it('SKIPS the "*" wildcard and empty/blank candidates (the actual bug)', () => {
+      // '*' is truthy, so the old `arg ?? ctx ?? … ?? activeWorkspaceId()` let it WIN
+      // and persisted it as a workspace_id; here it must be skipped like a non-value.
+      expect(resolveConcreteWorkspaceId('*', 'default')).toBe('default');
+      expect(resolveConcreteWorkspaceId(undefined, null, '', '   ', 'ws-x')).toBe('ws-x');
+      expect(resolveConcreteWorkspaceId('*', '*', 'ws-y')).toBe('ws-y');
+    });
+
+    it('falls back to activeWorkspaceId() when no candidate is concrete — and NEVER returns "*"', () => {
+      // Pin a concrete request-scope workspace so the fallback is deterministic.
+      runWithWorkspace('ws-fallback', () => {
+        expect(resolveConcreteWorkspaceId('*', '', null, undefined)).toBe('ws-fallback');
+      });
+      // Even with no scope pinned, the fallback resolves a CONCRETE id, never the sentinel.
+      const out = resolveConcreteWorkspaceId('*');
+      expect(out).toBeTruthy();
+      expect(out).not.toBe('*');
+    });
   });
 
   it('workspaceById returns undefined for unknown id', () => {

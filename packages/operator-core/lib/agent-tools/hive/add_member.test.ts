@@ -15,6 +15,8 @@ vi.mock('./_add-member', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'ws-fallback',
+  resolveConcreteWorkspaceId: (...c: Array<string | null | undefined>) =>
+    c.find((x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== '*') ?? 'ws-fallback',
 }));
 
 import addMember from './add_member';

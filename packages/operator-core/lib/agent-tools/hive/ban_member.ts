@@ -14,7 +14,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { banMember, unbanMember } from '../../hive-moderation';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -45,8 +45,11 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(
+      args.workspace,
+      ctx.workspaceId,
+      ctx.principal?.workspaceId,
+    );
     if (args.unban) {
       const result = await unbanMember({ workspaceId, hiveHomeSlug: args.hive, githubUserId: args.githubUserId });
       return text({ action: 'unban', githubUserId: args.githubUserId, ...result });

@@ -128,6 +128,35 @@ export function activeWorkspaceId(): string {
   return global;
 }
 
+/**
+ * Resolve a CONCRETE workspace id from a precedence list of candidates, treating the
+ * `'*'` wildcard — the unscoped-superuser READ sentinel (`ctx.workspaceId` for a
+ * `?superuser=1` session that chose no workspace, per _mcp-handler's `workspaceId || '*'`
+ * fallback) — AND empty/blank as "not concrete". Returns the first concrete candidate,
+ * else `activeWorkspaceId()`. NEVER returns `'*'`.
+ *
+ * Use this for ANY operation that PERSISTS or filters a concrete `workspace_id` — above
+ * all WRITES. `'*'` is a read-scoping wildcard, never a storable workspace value:
+ * persisting it (EI-3409 / WI-892) stamps a row that no concrete-workspace read can ever
+ * see, silently diverging the operator's view from the table. For `harness_shared.hive_members`
+ * that means the membership guard, epoch-key grant, and cross-member content federation —
+ * all keyed off `WHERE workspace_id = '<concrete>'` — never see the row, breaking shared-hive
+ * federation. This replaces the copy-pasted `x && x !== '*' ? x : activeWorkspaceId()` idiom;
+ * the buggy `x ?? ctx.workspaceId ?? … ?? activeWorkspaceId()` form lets a truthy `'*'` win
+ * and the fallback never fires.
+ */
+export function resolveConcreteWorkspaceId(
+  ...candidates: Array<string | null | undefined>
+): string {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (trimmed && trimmed !== '*') return trimmed;
+    }
+  }
+  return activeWorkspaceId();
+}
+
 export function workspaceById(id: string): WorkspaceEntry | undefined {
   return readRegistry().workspaces.find((w) => w.id === id);
 }

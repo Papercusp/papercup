@@ -14,7 +14,11 @@ const resolveHive = vi.fn();
 // early-return assertion (nothing provisioned) is observable.
 vi.mock('./_create', () => ({ createHiveHarness: (...a: unknown[]) => createHiveHarness(...a) }));
 vi.mock('./_resolve', () => ({ resolveHive: (...a: unknown[]) => resolveHive(...a) }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: () => 'ws-active',
+  resolveConcreteWorkspaceId: (...c: Array<string | null | undefined>) =>
+    c.find((x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== '*') ?? 'ws-active',
+}));
 
 import hiveCreateTool from './create';
 
