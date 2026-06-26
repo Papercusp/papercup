@@ -9,9 +9,9 @@ import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@papercusp/ui-primitives';
-import { useFlag } from '@/lib/flag-hooks';
-import { useLexicon } from '@/lib/useLexicon';
-import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { useFlag } from '../../../lib/flag-hooks';
+import { useLexicon } from '../../../lib/useLexicon';
+import { useWorkspaceId } from '../../../lib/use-workspace-id';
 import HealthBadge from '../../harness/HealthBadge';
 import HarnessWorkspacesButton from './HarnessWorkspacesButton';
 
@@ -44,9 +44,9 @@ export default function HarnessTopBar({ slug }: Props) {
   const t = useLexicon();
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   // WI-259 P-006 — cross-member browse: the "Hive content" rollup panel is
-  // registered always but only offered in the Add-panel catalog when the flag
-  // is on (DEFAULT ON; inert outside a hive, so the gate is mostly a courtesy).
-  const crossMemberBrowse = useFlag(FLAGS.CROSS_MEMBER_BROWSE);
+  // registered always but only offered in the Add-panel catalog when the Hive
+  // umbrella flag is on (inert outside a hive, so the gate is mostly a courtesy).
+  const crossMemberBrowse = useFlag(FLAGS.THE_HIVE);
   const { data: statusRows } = useSyncQuery<StatusPayload>({
     queryName: 'harnessStatus.snapshot',
     args: slug ? { harnessSlug: slug, workspaceId, phase: 'staging' } : undefined,

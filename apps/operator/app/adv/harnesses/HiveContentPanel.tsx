@@ -15,7 +15,7 @@
 // (`?harness=<origin-slug>` + `?sel=<id>` for the Detail pane); it never mutates
 // another member's content. The per-member reads + grids are unchanged — this is
 // purely additive. Inert outside a shared hive (no `?slug=` hive home ⇒ empty
-// state), and gated behind FLAGS.CROSS_MEMBER_BROWSE at the dock catalog.
+// state), and gated behind FLAGS.THE_HIVE at the dock catalog.
 //
 // Visual vocabulary mirrors MemberWorkPanel / WorkItemsPanel (pc-advpanel chrome +
 // the shared StatusPill primitive) so it reads as one language with the dock.

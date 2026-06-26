@@ -2414,6 +2414,32 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 200, codexModelsResponse(), { [ROUTED_ACCOUNT_HEADER]: active.accountId });
       return;
     }
+
+    // Stable request abort for the Codex proxy. Scout times out its in-process
+    // `/v1/responses` call at the caller, but the gateway must also stop the
+    // upstream OpenAI request or the protected Codex admission slot stays occupied
+    // until the long non-streaming headers timeout. Install this BEFORE body read
+    // so a downstream disconnect cannot race past the per-attempt listener below.
+    const reqAbort = new AbortController();
+    let currentAc: AbortController | undefined;
+    const abortRequest = (reason: string) => {
+      const err = new Error(reason);
+      if (!reqAbort.signal.aborted) reqAbort.abort(err);
+      try { currentAc?.abort(err); } catch { /* already settled */ }
+    };
+    const onReqAborted = () => abortRequest('openai downstream request aborted');
+    const onResClose = () => abortRequest('openai downstream response closed');
+    req.once('aborted', onReqAborted);
+    res.once('close', onResClose);
+    const ceilingTimer = setTimeout(() => {
+      log('error', `inference-gateway: Codex request hit the ${requestCeilingMs}ms hard ceiling on '${active.accountId}' — force-terminating`);
+      abortRequest(`openai request ceiling: ${requestCeilingMs}ms`);
+      try { req.destroy(); } catch { /* already torn down */ }
+      try { res.destroy(); } catch { /* already torn down */ }
+    }, requestCeilingMs);
+    ceilingTimer.unref?.();
+
+    try {
     // BOUNDED body read (2026-06-22 audit F1): a Codex bee that stalls mid-upload must not hold this admission
     // slot forever — the Claude proxy's ceiling timer covers its readBody; the codex path had none, and
     // proxyOpenAi never registers in inFlightReg so the self-heal valve can't reclaim it. Cap it + free the slot.
@@ -2426,7 +2452,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       } catch {
         /* already torn down */
       }
-      if (!res.headersSent) {
+      if (!reqAbort.signal.aborted && !res.headersSent) {
         sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: Codex request body read stalled; retry shortly' }, gateway: true });
       }
       return;
@@ -2503,12 +2529,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
       headers['accept-encoding'] = 'identity';
 
       const ac = new AbortController();
-      const abortForDownstreamClose = () => ac.abort(new Error('openai downstream closed'));
-      req.once('aborted', abortForDownstreamClose);
-      res.once('close', abortForDownstreamClose);
+      currentAc = ac;
+      const abortAttempt = () =>
+        ac.abort(reqAbort.signal.reason instanceof Error ? reqAbort.signal.reason : new Error('openai request aborted'));
+      if (reqAbort.signal.aborted) abortAttempt();
+      else reqAbort.signal.addEventListener('abort', abortAttempt, { once: true });
       const detachDownstreamAbort = () => {
-        req.off('aborted', abortForDownstreamClose);
-        res.off('close', abortForDownstreamClose);
+        reqAbort.signal.removeEventListener('abort', abortAttempt);
+        if (currentAc === ac) currentAc = undefined;
       };
       // armStall(ms): abort THIS attempt's upstream call if it makes no progress for ms — first as the headers
       // TTFB (short for streams), then re-armed per body chunk below as the body-idle deadline.
@@ -2602,6 +2630,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       detachDownstreamAbort();
       clearStall();
       return;
+    }
+    } finally {
+      clearTimeout(ceilingTimer);
+      req.off('aborted', onReqAborted);
+      res.off('close', onResClose);
+      currentAc = undefined;
     }
   }
 

@@ -205,6 +205,30 @@ export function ensureWorkspaceDir(id: string): string {
   return dir;
 }
 
+/**
+ * Ensure `id` is a REGISTERED workspace entry (idempotent) and provision its
+ * data dir. Adds `{ id, name, createdAt }` to `reg.workspaces` if absent;
+ * leaves an existing entry untouched. Returns the (possibly updated) registry.
+ *
+ * The auto-join path (joinCanonicalPapercuspHive → setHome) used to set
+ * `reg.current = papercusp-workspace` WITHOUT adding that id to
+ * `reg.workspaces[]`, leaving the registry in a `current`-points-at-unlisted
+ * state. The UI then resolved a current workspace it couldn't find in the list
+ * → `unknown_workspace` on git-identity save + a greyed-out GitHub sign-in
+ * button on a fresh clean install (the workspace context was invalid). Any code
+ * that makes a workspace "current" MUST first register it — that is what this
+ * helper guarantees.
+ */
+export function ensureWorkspaceEntry(id: string, name?: string): WorkspaceRegistry {
+  const reg = readRegistry();
+  if (!reg.workspaces.some((w) => w.id === id)) {
+    reg.workspaces.push({ id, name: name ?? id, createdAt: Date.now() });
+    writeRegistry(reg);
+  }
+  ensureWorkspaceDir(id);
+  return reg;
+}
+
 export function setCompanyId(workspaceId: string, companyId: string | null): void {
   const reg = readRegistry();
   const ws = reg.workspaces.find((w) => w.id === workspaceId);

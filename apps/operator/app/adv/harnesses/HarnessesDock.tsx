@@ -74,7 +74,7 @@ function ensureRegistered() {
   panelRegistry.register('adv:member-work', MemberWorkPanel, { title: 'Members' });
   // adv:hive-content — cross-member browse rollup (WI-259 P-006). Registered
   // always (cheap + inert without a hive); its CATALOG availability is flag-gated
-  // (FLAGS.CROSS_MEMBER_BROWSE) in HarnessTopBar's allowedTypes.
+  // (FLAGS.THE_HIVE) in HarnessTopBar's allowedTypes.
   panelRegistry.register('adv:hive-content', HiveContentPanel, { title: 'Hive content' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
   panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });

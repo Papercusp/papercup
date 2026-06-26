@@ -65,6 +65,7 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(staleSelect.text).toContain('substring(deduplication_id from 9)');
     expect(staleSelect.text).toContain('created_at <');
     expect(staleSelect.text).toContain('op.workflow_uuid = dbos.workflow_status.workflow_uuid');
+    expect(staleSelect.text).toContain('op.function_id > 0');
     const requeueUpdate = calls.find((c) => c.text.includes('UPDATE harness_shared.routines'))!;
     expect(requeueUpdate.text).toContain('next_fire_at = LEAST');
     expect(requeueUpdate.text).toContain('dbos-executor-reaper');
@@ -135,6 +136,7 @@ describe('reapDeadExecutorWorkflows', () => {
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
     expect(staleSelect.text).toContain('FROM dbos.workflow_queue q');
     expect(staleSelect.text).toContain('q.completed_at_epoch_ms IS NULL');
+    expect(staleSelect.text).toContain('op.function_id > 0');
 
     const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
     const createdAtChecks = numericValues.length;

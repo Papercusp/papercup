@@ -118,6 +118,10 @@ export interface RigOptions {
   /** Gateway admission/absorb wait budget (ms). Must exceed the smoothing pace for the ON case to
    *  drain without bee-facing timeouts. Default 8000. */
   maxQueueWaitMs?: number;
+  /** OPTIONAL client-side launch spacing (ms) between logical requests. Default 0 = the fleet-concurrency
+   *  burst. Set this to spread the same per-minute volume without enabling gateway smoothing, which
+   *  separates "static rpm floor too high" from "instantaneous tumbling-window burst" in P-002. */
+  launchIntervalMs?: number;
   /** The gateway's transient-429 ABSORB budget (ms) — how long it holds + retries a bare-burst before
    *  giving up. The rig defaults this to 4000 (vs the 60s production default) so the OFF storm-repro
    *  drains/relents in a few seconds instead of sitting the full budget — keeps the vitest run fast and
@@ -213,7 +217,13 @@ export async function runGatewayBurstRig(opts: RigOptions = {}): Promise<RigResu
   };
 
   const t0 = Date.now();
-  const results = await Promise.all(Array.from({ length: n }, (_, i) => fire(i)));
+  const launchIntervalMs = opts.launchIntervalMs ?? 0;
+  const results = await Promise.all(
+    Array.from({ length: n }, async (_, i) => {
+      if (launchIntervalMs > 0) await new Promise((r) => setTimeout(r, i * launchIntervalMs));
+      return fire(i);
+    }),
+  );
   const wallMs = Date.now() - t0;
   const stats = gw.stats();
   await gw.close();

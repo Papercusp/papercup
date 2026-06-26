@@ -107,8 +107,13 @@ function defaultSetHome(ws: string): void {
   // Mirror bootstrap's defaultSetHomeWorkspace so the joined hive is the visible home.
   void (async () => {
     try {
-      const { readRegistry, writeRegistry } = await import('../workspace-registry');
-      const reg = readRegistry();
+      const { ensureWorkspaceEntry, writeRegistry } = await import('../workspace-registry');
+      // REGISTER the workspace first (idempotent + provisions the dir), THEN make
+      // it current. Setting `current` to an unlisted id left the registry in a
+      // `current`-points-at-unknown state → unknown_workspace on git-identity save
+      // + a greyed-out GitHub sign-in button on a fresh clean install. ensureWorkspaceEntry
+      // re-reads + persists the entry; we mutate the returned registry to set current.
+      const reg = ensureWorkspaceEntry(ws, 'Papercusp');
       if (reg.current !== ws) {
         reg.current = ws;
         writeRegistry(reg);

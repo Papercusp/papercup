@@ -439,4 +439,41 @@ describe('proxyOpenAi — stream-stall guards (parity with the Claude proxy)', (
     await new Promise((r) => setTimeout(r, 50));
     expect(upstreamAborted).toBe(true);
   });
+
+  it('hard-ceilings a non-streaming OpenAI request before the generous headers timeout', async () => {
+    let upstreamAborted = false;
+    await bootCodex(
+      () => {
+        /* fetchImpl below replaces the real upstream */
+      },
+      solo(),
+      {
+        fetchImpl: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+          await new Promise((_resolve, reject) => {
+            const signal = init?.signal as AbortSignal | undefined;
+            signal?.addEventListener(
+              'abort',
+              () => {
+                upstreamAborted = true;
+                reject(new Error('upstream ceiling abort'));
+              },
+              { once: true },
+            );
+          });
+          throw new Error('unreachable');
+        }) as typeof fetch,
+        requestCeilingMs: 80,
+        upstreamHeadersTimeoutMs: 5_000,
+      },
+    );
+
+    const started = Date.now();
+    const res = await postResponses({ model: 'gpt-x', input: 'hi' }).catch((e) => e);
+
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(upstreamAborted).toBe(true);
+    if (res instanceof Response) {
+      expect([502, 503]).toContain(res.status);
+    }
+  });
 });

@@ -12,6 +12,7 @@ import {
   setCompanyId,
   companyIdFor,
   workspacesRoot,
+  ensureWorkspaceEntry,
   __resetWorkspaceFallbackWarnings,
 } from './workspace-registry';
 import { runWithWorkspace, runInRequestScope } from './workspace-als';
@@ -203,6 +204,51 @@ describe('workspacesRoot', () => {
   it('ignores an empty/whitespace env value', () => {
     process.env[KEY] = '   ';
     expect(workspacesRoot()).toBe(join(homedir(), '.papercusp-workspaces'));
+  });
+});
+
+describe('ensureWorkspaceEntry — register-before-current (clean-install unknown_workspace / greyed sign-in fix)', () => {
+  const KEY = 'PAPERCUSP_WORKSPACES_ROOT';
+  let prev: string | undefined;
+  let root: string;
+  beforeEach(() => {
+    prev = process.env[KEY];
+    root = mkdtempSync(join(tmpdir(), 'ensure-ws-'));
+    process.env[KEY] = root;
+  });
+  afterEach(() => {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('adds a missing workspace entry (with name) + provisions its dir; makes it isKnownWorkspace', () => {
+    writeFileSync(join(root, 'registry.json'), JSON.stringify({ current: 'default', workspaces: [{ id: 'default', name: 'Default', createdAt: 1 }] }));
+    expect(isKnownWorkspace('papercusp-workspace')).toBe(false);
+    ensureWorkspaceEntry('papercusp-workspace', 'Papercusp');
+    const reg = readRegistry();
+    const entry = reg.workspaces.find((w) => w.id === 'papercusp-workspace');
+    expect(entry).toBeTruthy();
+    expect(entry?.name).toBe('Papercusp');
+    expect(isKnownWorkspace('papercusp-workspace')).toBe(true);
+    expect(existsSync(join(root, 'papercusp-workspace'))).toBe(true);
+  });
+
+  it('is idempotent — re-calling does not duplicate the entry', () => {
+    writeFileSync(join(root, 'registry.json'), JSON.stringify({ workspaces: [] }));
+    ensureWorkspaceEntry('papercusp-workspace', 'Papercusp');
+    ensureWorkspaceEntry('papercusp-workspace', 'Papercusp');
+    const entries = readRegistry().workspaces.filter((w) => w.id === 'papercusp-workspace');
+    expect(entries).toHaveLength(1);
+  });
+
+  it('after ensureWorkspaceEntry, setCompanyId no longer throws unknown workspace (the failing git-identity-save path)', () => {
+    writeFileSync(join(root, 'registry.json'), JSON.stringify({ current: 'papercusp-workspace', workspaces: [{ id: 'default', name: 'Default', createdAt: 1 }] }));
+    // Pre-fix state: current points at an unlisted workspace → setCompanyId throws.
+    expect(() => setCompanyId('papercusp-workspace', 'co')).toThrow(/unknown workspace/);
+    ensureWorkspaceEntry('papercusp-workspace', 'Papercusp');
+    expect(() => setCompanyId('papercusp-workspace', 'co')).not.toThrow();
+    expect(companyIdFor('papercusp-workspace')).toBe('co');
   });
 });
 
