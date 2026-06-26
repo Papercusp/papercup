@@ -151,13 +151,15 @@ would hole the WI-259 membership guard). Emits boot event `announce_admitted
 owner_bootstrap`.
 
 **Path B — member-set admission (`classifySameHiveMember`).** For every other peer:
-admit iff `frame.device_pubkey ∈ loadHiveMembers(hiveHome, github_user_id)` (the
-hive's current member device pubkeys). On `admit` → `announce_admitted
-same_hive_member`. On **`miss`** (a plausible same-hive cross-member whose
-`hive_members` row has not federated to us yet — the asymmetric A→B stall) the frame
-is **BUFFERED** for retry, **not** conclusively dropped: a 5s loop re-runs Layer-1
-`admit()` + this check each tick, admitting the instant membership federates in, or
-dropping after the 30-min grace.
+admit iff `frame.device_pubkey ∈ loadHiveMembers(hiveHome)` — **D-002 (admit by
+AUTHOR IDENTITY)**: the check is purely by device pubkey membership, not by
+`github_user_id` (the earlier per-user query via `loadHiveMemberDevicePubkeys` was
+replaced by `resolveHiveMemberDeviceSet`, which returns ALL device pubkeys for the
+hive without a per-user filter). On `admit` → `announce_admitted same_hive_member`.
+On **`miss`** (a plausible same-hive cross-member whose `hive_members` row has not
+federated to us yet — the asymmetric A→B stall) the frame is **BUFFERED** for retry,
+**not** conclusively dropped: a 5s loop re-runs Layer-1 `admit()` + this check each
+tick, admitting the instant membership federates in, or dropping after the 30-min grace.
 
 > The merge loop iterates **only `admitted.values()`** (`boot.ts`), and `admitted`
 > + `admittedIdentities` are populated together from the same announce frame — so for
