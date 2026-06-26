@@ -50,11 +50,13 @@ const operatorBase = operatorApiBase;
 export const BUILTIN_LAUNCH_BLUEPRINTS = ['deploy', 'scan', 'implement', 'merge-resolution', 'doc-steward', 'release-fix', 'content-fix', 'audit', 'coding', 'bee', 'sentinel'] as const;
 export type LaunchBlueprintId = (typeof BUILTIN_LAUNCH_BLUEPRINTS)[number];
 
-/** A Queen turn is a supervisor/control-loop turn, not an unbounded worker lane.
- * If the caller does not provide a tighter route timeout, stamp a bounded default
- * so durable-spawn gets a DBOS workflow deadline and the reaper can clear a wedged
- * model route instead of letting one hung Queen block the autonomous loop. */
-export const QUEEN_INVOKE_TIMEOUT_MS = 300_000;
+/** A Queen turn is a supervisor/control-loop turn, not a short route smoke.
+ * Cold boot + a deep frontier can legitimately spend several minutes surveying
+ * before the Queen emits its final decision line; a 5m deadline killed those runs
+ * mid-turn and left the autonomous loop with zero placements. Keep a finite DBOS
+ * deadline for wedged model routes, but match the normal full-turn budget rather
+ * than the old smoke-test budget. */
+export const QUEEN_INVOKE_TIMEOUT_MS = 900_000;
 
 /**
  * The blueprint-resolver seam — default loads the built-in by id. The operator can
