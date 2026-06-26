@@ -22,12 +22,31 @@
  * (SPAWN_RECLAIM_RELAUNCH) by the caller (host-bootstrap) — flag OFF ⇒ no seam is
  * passed ⇒ the legacy reclaim-only behaviour, byte-identical.
  */
+import { randomUUID } from 'node:crypto';
+import { getOrgPg } from '@papercusp/db-org';
+import { FEATURE_NON_REQUEUE_STATES } from '../work-item-dispatch-states';
 import { runWithWorkspace } from '../workspace-als';
 import type { RelaunchableSpawn } from './spawn-reclaim';
 
 /** The hive (Queen) launch blueprint id — what `system:blueprint-run` fires for a
  *  kind:'hive' home (the queen `run_id` is `blueprint-run:<ws>:coding:<ts>`). */
 const HIVE_BLUEPRINT_ID = 'coding';
+
+async function releaseReclaimedSpawnClaim(spawn: RelaunchableSpawn & { workItemId: string }): Promise<void> {
+  const { sql } = getOrgPg();
+  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
+  await sql`
+    UPDATE harness_shared.harness_features_consolidated
+       SET taken_by = NULL,
+           taken_at = NULL,
+           last_progress_at = NULL,
+           status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${spawn.workspaceId}
+       AND harness_slug = ${spawn.harnessSlug}
+       AND feature_id = ${spawn.workItemId}
+       AND taken_by = ${spawn.spawnId}`;
+}
 
 /**
  * Re-launch a single reclaimed queen/bee. Returns `true` when the re-fire was
@@ -58,11 +77,17 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
       // A bee with no work-item never reaches here (shouldRelaunchReclaimedSpawn
       // filters it), but guard so a null can never spawn a featureless bee.
       if (!spawn.workItemId) return false;
+      const { claimWorkItem, releaseWorkItem } = await import('../work-items');
       const { spawnAgentInHarness } = await import('./operator-spawn');
+      const spawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      await releaseReclaimedSpawnClaim({ ...spawn, workItemId: spawn.workItemId });
+      const claim = await claimWorkItem(spawn.workItemId, spawnId, { harness: spawn.harnessSlug });
+      if (!claim) return false;
       const res = await spawnAgentInHarness({
         workspaceId: spawn.workspaceId,
         harness: spawn.harnessSlug,
         role: 'bee',
+        spawnId,
         featureId: spawn.workItemId,
         itemId: spawn.workItemId,
         planSlug: spawn.planSlug,
@@ -76,6 +101,9 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
         // spawn id so a duplicate re-fire dedups to the first relaunch.
         idempotencyKey: `boot-relaunch:${spawn.spawnId}`,
       });
+      if (!res.ok) {
+        await releaseWorkItem(spawn.workItemId, { harness: spawn.harnessSlug }).catch(() => {});
+      }
       return res.ok === true;
     }
     return false;

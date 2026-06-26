@@ -783,6 +783,13 @@ export const FLAGS = {
   // hidden + the resolver returns empty + the tick no-ops. The SAME aggregation
   // also feeds the overwatch role (overwatch-role-2026-06-15 C-1, D-001).
   SYSTEM_HEALTH_TAB: "papercusp-system-health-tab",
+  // schedule-inventory-and-ephemeral-tier-2026-06-26 P-003: gates the read-only
+  // /admin/schedules page + its inventory endpoint (the central view of every
+  // scheduled/recurring thing — DBOS crons, system routines, in-process sweeps).
+  // DEFAULT ON (alpha flags-default-on): a purely additive read-only diagnostic
+  // surface over reads that already exist. OFF = the tab is hidden + the endpoint
+  // returns { enabled: false }.
+  SCHEDULE_INVENTORY: "papercusp-schedule-inventory",
   // bee-context-efficiency Phase 1 (D-001/D-018/D-019): fresh-context warm-inject.
   // When a DRAINED bee is warm-injected a NEW task, re-invoke with a FRESH session
   // (full bee-prompt re-assembly + the hydration tail) instead of `--resume`-ing the
@@ -1172,6 +1179,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +
   // its fail-soft `health.snapshot` resolver/tick (system-health-tab-2026-06-15).
   [FLAGS.SYSTEM_HEALTH_TAB]: true,
+  // DEFAULT ON (alpha flags-default-on) — additive read-only /admin/schedules
+  // inventory view (schedule-inventory-and-ephemeral-tier-2026-06-26 P-003).
+  [FLAGS.SCHEDULE_INVENTORY]: true,
   // DEFAULT ON — fresh-context interactive brain (reversible to D-013).
   [FLAGS.QUEEN_BRAIN_FRESH]: true,
   // DEFAULT ON (alpha flags-default-on) — a complete presentation switch: the nested
