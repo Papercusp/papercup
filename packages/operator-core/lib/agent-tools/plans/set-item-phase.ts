@@ -21,7 +21,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -230,7 +230,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

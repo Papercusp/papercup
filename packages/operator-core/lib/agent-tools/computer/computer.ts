@@ -24,7 +24,7 @@
 
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   assertSandboxDisplay,
   captureCommand,
@@ -225,7 +225,7 @@ export default defineTool({
   },
   capability: 'capability:computer',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   timeoutSec: 30,
   args: computerArgs,
   handler: (args, ctx) => runComputerAction(args, ctx as ComputerCtx),

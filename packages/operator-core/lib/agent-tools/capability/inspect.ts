@@ -25,7 +25,7 @@
 
 import { isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, runForeground, startBackground } from './bash-jobs';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
@@ -112,7 +112,7 @@ export default defineTool({
   },
   capability: 'capability:code-inspect',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   // Mirror capability:bash: the dispatch wall-clock must exceed the max command timeout.
   timeoutSec: Math.floor(MAX_TIMEOUT_MS / 1000) + 30,
   events: { output: z.string().describe('text/plain') },

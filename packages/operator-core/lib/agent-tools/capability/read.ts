@@ -8,7 +8,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCapabilityBaseDir } from './base-dir';
 
 const DEFAULT_LIMIT = 2000;
@@ -26,7 +26,7 @@ export default defineTool({
   },
   capability: 'capability:fs-read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     file_path: z.string().min(1).describe('Absolute path, or relative to the project dir.'),
     offset: z.number().int().nonnegative().optional().describe('1-based line to start from.'),

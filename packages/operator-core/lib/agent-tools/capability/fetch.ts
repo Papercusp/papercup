@@ -9,7 +9,7 @@
 import { createWriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 
 const DEFAULT_MAX_BYTES = 100_000;
@@ -27,7 +27,7 @@ export default defineTool({
   },
   capability: 'capability:net',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   timeoutSec: 60,
   args: z.object({
     url: z.string().url().describe('Absolute http(s) URL.'),

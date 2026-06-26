@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { checkMigrationDrift } from '../../migration-drift';
 
 export default defineTool({
@@ -24,7 +24,7 @@ export default defineTool({
   },
   capability: 'locks:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({}),
   async handler() {
     const d = await checkMigrationDrift();

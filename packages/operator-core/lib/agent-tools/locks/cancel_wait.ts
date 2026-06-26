@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryCancelWait } from './su-lock-store';
@@ -24,7 +24,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z
     .object({
       ticket_id: z.string().uuid().optional().describe('single waiter ticket to cancel'),

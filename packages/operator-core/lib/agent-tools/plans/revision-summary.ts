@@ -24,7 +24,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { runHaiku } from '../../haiku';
 import { getPlanRevisionById, setPlanRevisionRationale } from './revisions';
 import { readPlanRunTranscript, TRANSCRIPT_MAX_LIMIT } from './runs';
@@ -203,7 +203,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   timeoutSec: 30,
   args: argsSchema,

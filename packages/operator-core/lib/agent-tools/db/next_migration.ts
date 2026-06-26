@@ -24,7 +24,7 @@
 import { z } from 'zod';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveSqlDir } from '../../migration-drift';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -91,7 +91,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     name: z
       .string()

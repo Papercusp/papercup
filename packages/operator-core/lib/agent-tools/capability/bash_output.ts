@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getJob, readJobOutput } from './bash-jobs';
 
 /** Max length of an agent-supplied `filter` regex (ReDoS surface bound). */
@@ -61,7 +61,7 @@ export default defineTool({
   },
   capability: 'capability:bash',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     bash_id: z.string().min(1).describe('The id returned by capability:bash (run_in_background).'),
     filter: z

@@ -19,7 +19,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withPlanLock } from './with-plan-lock';
 import { listPlanFiles } from './source';
 import { hashPlanContent } from './content-hash';
@@ -215,7 +215,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

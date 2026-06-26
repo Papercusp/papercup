@@ -16,7 +16,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID, activeWorkspaceId } from '../../workspace-registry';
 import { resolveCtxHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
@@ -48,7 +48,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   // Demand surfaces as an EVENT (start-hive-wake P-001 / D-001): a real
   // started-transition notifies the plan's watchers. The idempotent re-start

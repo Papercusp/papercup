@@ -21,7 +21,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -39,7 +39,9 @@ import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { softText } from '../limits';
 
-const SU_BEE_ROLES = [...SU_ROLES, 'bee'] as const;
+// Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
+// real backstop. Was [...SU_ROLES, 'bee'].
+const SU_BEE_ROLES = [...AGENT_ROLES] as const;
 
 const STATUS = z.enum([...ITEM_STATUSES] as [string, ...string[]]);
 

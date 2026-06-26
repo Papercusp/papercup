@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
 
@@ -25,7 +25,7 @@ export default defineTool({
   },
   capability: 'locks:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     command: z.string().min(1).max(32000),
   }),

@@ -13,7 +13,7 @@ import { spawn as childSpawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled } from './exec-sandbox';
@@ -31,7 +31,7 @@ export default defineTool({
   },
   capability: 'capability:git',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   timeoutSec: 120,
   args: z.object({
     args: z.array(z.string()).min(1).describe('git arguments, e.g. ["status","--porcelain"] or ["diff","--stat"].'),

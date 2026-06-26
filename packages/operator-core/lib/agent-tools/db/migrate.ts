@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import { spawnSync } from 'node:child_process';
 import * as path from 'node:path';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
@@ -48,7 +48,7 @@ export default defineTool({
   capability: 'locks:write',
   timeoutSec: MAX_DRAIN_SEC + 60,
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     file: z.string().min(1).describe('Absolute path to the .sql migration file to apply.'),
     confirm: z.boolean().optional(),

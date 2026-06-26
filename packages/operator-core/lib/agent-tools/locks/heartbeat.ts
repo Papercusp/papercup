@@ -6,7 +6,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { SuLocksCoordinator } from './coordinator';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -23,7 +23,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z
     .object({
       lock_id: z.string().uuid().optional().describe('single lock id to heartbeat'),

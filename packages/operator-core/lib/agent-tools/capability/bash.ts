@@ -15,7 +15,7 @@
 
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
@@ -39,7 +39,7 @@ export default defineTool({
   },
   capability: 'capability:bash',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   // Wall-clock dispatch timeout must exceed the max command timeout so a long
   // foreground command can complete (background mode is preferred for those).
   timeoutSec: Math.floor(MAX_TIMEOUT_MS / 1000) + 30,

@@ -17,7 +17,7 @@
 
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
@@ -47,7 +47,7 @@ export default defineTool({
   capability: 'locks:write',
   timeoutSec: MAX_DRAIN_SEC + 30,
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),

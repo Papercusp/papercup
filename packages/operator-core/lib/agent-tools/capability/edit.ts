@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
 import { resolveCapabilityBaseDir } from './base-dir';
 
@@ -23,7 +23,7 @@ export default defineTool({
   },
   capability: 'capability:fs-write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     file_path: z.string().min(1).describe('Absolute path, or relative to the project dir.'),
     old_string: z.string().describe('The exact text to replace.'),

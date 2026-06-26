@@ -25,7 +25,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { enrichBusy } from './enrich-busy';
 import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
@@ -95,7 +95,7 @@ export default defineTool({
   // + unsubscribe + progress-emit work that runs after wait_until.
   timeoutSec: MAX_WAIT_SEC + 30,
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   args: z.object({
     paths: z.array(z.string().min(1)).min(1).max(50),
     intent: hardText(LIMITS.SHORT_TITLE),

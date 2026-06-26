@@ -16,7 +16,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { canManuallyRestatusRun, getPlanRun, setPlanRunStatus } from './runs';
 
 const argsSchema = z.object({
@@ -54,7 +54,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   async handler(args: RunStatusArgs, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
