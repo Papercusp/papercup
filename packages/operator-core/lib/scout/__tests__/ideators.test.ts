@@ -184,6 +184,34 @@ describe('runIdeators', () => {
     expect(failed[0].error).toContain('model exploded');
   });
 
+  it('times out one stuck ideator without waiting for the whole Scout cycle timeout', async () => {
+    let idx = 0;
+    const call: ScoutLlmCall = async () => {
+      const current = idx++;
+      if (current === 1) return new Promise<never>(() => undefined);
+      const r = oneIdeaPerCall(['wi:F-1']);
+      return { text: '', json: r.json, costUsd: r.cost, inputTokens: 10, outputTokens: 20 };
+    };
+    const started = Date.now();
+    const res = await runIdeators(digest, { llmCall: call, ideatorTimeoutMs: 10 });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(res.ideas).toHaveLength(3);
+    const failed = res.ideators.filter((i) => !i.ok);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].error).toContain('timed out after 10ms');
+  });
+
+  it('honors parent Scout aborts while waiting on ideator calls', async () => {
+    const ctrl = new AbortController();
+    const call: ScoutLlmCall = async () => new Promise<never>(() => undefined);
+    setTimeout(() => ctrl.abort(), 10).unref?.();
+    const started = Date.now();
+    const res = await runIdeators(digest, { llmCall: call, signal: ctrl.signal, ideatorTimeoutMs: 10_000 });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(res.ideas).toHaveLength(0);
+    expect(res.ideators.every((i) => !i.ok && i.error?.includes('aborted'))).toBe(true);
+  });
+
   it('passes a thinking budget through to the llmCall when set', async () => {
     const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
     await runIdeators(digest, { llmCall: call, thinkingBudgetTokens: 2000 });

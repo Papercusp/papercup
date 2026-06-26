@@ -140,7 +140,8 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // ideators arrived UNTIERED → the lowest `default` band (tier 4), which the AIMD
   // shrink sheds FIRST under fleet load → all 8 bailed every fire ("rate-limit pause
   // exceeds maxWait"), 0 ideas for 12 days while bees (tier 3) crowded the pool.
-  const llmCall: typeof rawLlmCall = (o) => rawLlmCall({ ...o, ...(signal ? { signal } : {}), priority: 'scout' });
+  const llmCall: typeof rawLlmCall = (o) =>
+    rawLlmCall({ ...o, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
 
   // ── Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20) ──────────
   // Scout's coord identity (P-003) + the two Scout→Queen ping ports (queen-notify).
@@ -252,6 +253,22 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     }
   }
 };
+
+function combineAbortSignals(parent?: AbortSignal, child?: AbortSignal): AbortSignal | undefined {
+  if (!parent) return child;
+  if (!child) return parent;
+  const any = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  if (typeof any === 'function') return any([parent, child]);
+  if (parent.aborted) return parent;
+  if (child.aborted) return child;
+  const ctrl = new AbortController();
+  const abort = () => {
+    if (!ctrl.signal.aborted) ctrl.abort();
+  };
+  parent.addEventListener('abort', abort, { once: true });
+  child.addEventListener('abort', abort, { once: true });
+  return ctrl.signal;
+}
 
 function isFlushable(a: ArchivePort): a is ScoutArchivePort {
   return typeof (a as ScoutArchivePort).flush === 'function';

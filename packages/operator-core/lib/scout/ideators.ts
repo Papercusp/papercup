@@ -26,6 +26,8 @@ import { DEFAULT_SCOUT_IDEATOR_MODEL } from './models';
 
 /** The default ideator model — a strong model matters for the creative leap. */
 export const SCOUT_IDEATOR_MODEL = DEFAULT_SCOUT_IDEATOR_MODEL;
+/** Bound one wedged ideator transport call so the whole Scout cycle can still make progress. */
+export const DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS = 180_000;
 
 /** One planned ideator: a lens, its within-lens index (drives domain rotation), and a global index. */
 export interface IdeatorSlot {
@@ -140,6 +142,10 @@ export interface RunIdeatorsOptions extends BuildRosterInput {
   model?: string;
   /** Extended-thinking budget per ideator (default none — cheaper). */
   thinkingBudgetTokens?: number;
+  /** Abort all ideator calls when the parent Scout cycle is cancelled. */
+  signal?: AbortSignal;
+  /** Per-ideator wall-clock cap (default {@link DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS}; <=0 disables). */
+  ideatorTimeoutMs?: number;
   /**
    * Optional gym-QD stepping-stone priming (P-012 archive→Scout): appended to
    * every ideator's grounded substrate so generation builds on the gym's
@@ -285,13 +291,17 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
         ...(opts.priming ? { priming: opts.priming } : {}),
       });
       try {
-        const res = await opts.llmCall({
-          model,
-          system,
-          messages: [{ role: 'user', content: user }],
-          responseFormat: 'json',
-          ...(thinking ? { thinkingBudgetTokens: thinking, maxTokens: thinking + 4096 } : { maxTokens: 4096 }),
-        });
+        const res = await callIdeatorLlm(
+          opts,
+          {
+            model,
+            system,
+            messages: [{ role: 'user', content: user }],
+            responseFormat: 'json',
+            ...(thinking ? { thinkingBudgetTokens: thinking, maxTokens: thinking + 4096 } : { maxTokens: 4096 }),
+          },
+          slot,
+        );
         const rawArr = parseIdeasPayload(res.json, res.text);
         const ideas: Idea[] = [];
         for (let j = 0; j < rawArr.length; j++) {
@@ -349,4 +359,52 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
     ideators: runs.map((r) => r.info),
     costUsd: runs.reduce((a, r) => a + r.cost, 0),
   };
+}
+
+type ScoutLlmCallInput = Parameters<ScoutLlmCall>[0];
+
+async function callIdeatorLlm(
+  opts: RunIdeatorsOptions,
+  input: ScoutLlmCallInput,
+  slot: IdeatorSlot,
+): Promise<Awaited<ReturnType<ScoutLlmCall>>> {
+  const timeoutMs =
+    opts.ideatorTimeoutMs === undefined
+      ? DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS
+      : opts.ideatorTimeoutMs;
+  if ((!Number.isFinite(timeoutMs) || timeoutMs <= 0) && !opts.signal) {
+    return opts.llmCall(input);
+  }
+
+  const ctrl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let parentAbort: (() => void) | null = null;
+  const rejectOnAbort = new Promise<never>((_, reject) => {
+    const abort = (err: Error) => {
+      if (!ctrl.signal.aborted) ctrl.abort(err);
+      reject(err);
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        abort(new Error(`Scout ideator ${slot.lens} aborted`));
+        return;
+      }
+      parentAbort = () => abort(new Error(`Scout ideator ${slot.lens} aborted`));
+      opts.signal.addEventListener('abort', parentAbort, { once: true });
+    }
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timer = setTimeout(
+        () => abort(new Error(`Scout ideator ${slot.lens} timed out after ${Math.trunc(timeoutMs)}ms`)),
+        timeoutMs,
+      );
+      if (typeof timer.unref === 'function') timer.unref();
+    }
+  });
+
+  try {
+    return await Promise.race([opts.llmCall({ ...input, signal: ctrl.signal }), rejectOnAbort]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (parentAbort && opts.signal) opts.signal.removeEventListener('abort', parentAbort);
+  }
 }
