@@ -862,6 +862,32 @@ export async function evictBootedHarnessEngine(
   return closed;
 }
 
+/**
+ * Re-boot-on-NOTIFY (AC#2 / P-008): called by the process-global outbox keepalive
+ * when it receives a `pg_notify('substrate_outbox', '${ws}::${slug}')` for a harness
+ * that is NOT currently booted. If the engine was evicted by the reaper (it's in the
+ * `evicted` set), clear the mark and fire the same background re-boot-on-access trigger,
+ * so the drain starts and the captured rows are consumed instead of piling up.
+ *
+ * No-op when:
+ *   - eviction tracking is off (flag OFF — byte-identical eager path)
+ *   - the harness is currently booted (the resident drain handles the NOTIFY)
+ *   - the key was never evicted (paranoid check — a non-evicted unbooted harness
+ *     shouldn't receive outbox NOTIFYs during normal operation)
+ */
+export function handleOutboxNotifyForEvictedHarness(
+  workspaceId: string,
+  harnessSlug: string,
+): void {
+  if (!evictionTrackingEnabled) return;
+  const k = key(workspaceId, harnessSlug);
+  if (handles.has(k)) return; // currently booted; running drain handles this NOTIFY
+  if (evicted.has(k)) {
+    evicted.delete(k);
+    rebootOnAccess(workspaceId, harnessSlug);
+  }
+}
+
 /** For tests. Clears the handle map WITHOUT closing — useful when the
  * handles were faked. Never call from production code. */
 export function _resetHandleMapForTests(): void {

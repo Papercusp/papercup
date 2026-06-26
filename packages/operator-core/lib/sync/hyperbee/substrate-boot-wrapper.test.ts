@@ -73,6 +73,16 @@ vi.mock('./substrate-eviction-reaper', () => ({
   startSubstrateEvictionReaper: () => startReaper(),
 }));
 
+const startKeepalive = vi.fn(() => ({ stop: vi.fn(async () => {}) }));
+vi.mock('./substrate-outbox-keepalive', () => ({
+  startSubstrateOutboxKeepalive: () => startKeepalive(),
+}));
+
+const mockOrgPg = vi.fn(() => ({ sql: { listen: vi.fn(async () => ({ unlisten: vi.fn(async () => {}) })) } }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => mockOrgPg(),
+}));
+
 import {
   bootSubstrateWithFallback,
   maybeStartSubstrateEvictionReaper,
@@ -88,6 +98,8 @@ beforeEach(() => {
   registerShutdown.mockClear();
   ipcCalls.length = 0;
   startReaper.mockClear();
+  startKeepalive.mockClear();
+  mockOrgPg.mockClear();
   stopSubstrateEvictionReaper(); // reset the module singleton between tests
 });
 afterEach(() => {
@@ -126,15 +138,21 @@ describe('bootSubstrateWithFallback', () => {
     expect(r.usedSidecar).toBe(false);
     expect(r.evictionReaperStarted).toBe(false);
     expect(startReaper).not.toHaveBeenCalled();
+    // Keepalive rides the same flag gate — OFF ⇒ never started (byte-identical).
+    expect(r.outboxKeepaliveStarted).toBe(false);
+    expect(startKeepalive).not.toHaveBeenCalled();
   });
 
-  it('lazy ON: boots in-process AND starts the reaper', async () => {
+  it('lazy ON: boots in-process AND starts the reaper + outbox keepalive', async () => {
     h.lazyOn = true;
     const r = await bootSubstrateWithFallback();
     expect(bootAll).toHaveBeenCalledOnce();
     expect(r.usedSidecar).toBe(false);
     expect(r.evictionReaperStarted).toBe(true);
     expect(startReaper).toHaveBeenCalledOnce();
+    // AC#2 wiring: the re-boot-on-NOTIFY keepalive starts alongside the reaper.
+    expect(r.outboxKeepaliveStarted).toBe(true);
+    expect(startKeepalive).toHaveBeenCalledOnce();
   });
 
   it('sidecar ON: spawns sidecar and boots harnesses through remote handle factory', async () => {

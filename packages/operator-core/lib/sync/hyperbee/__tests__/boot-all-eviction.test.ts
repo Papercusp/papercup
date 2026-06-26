@@ -17,6 +17,7 @@ import {
   evictBootedHarnessEngine,
   gatherBootedHarnessFacts,
   getBootedHarness,
+  handleOutboxNotifyForEvictedHarness,
 } from '../boot-all';
 import type { BootedHarnessHandle } from '../boot';
 import type { AdmittedLog } from '../read-merge';
@@ -170,6 +171,58 @@ describe('reboot-on-access', () => {
     _resetEvictionTrackingForTests();
     _setRebootOnAccessForTests(reboot);
     expect(getBootedHarness('ws', 'p')).toBeNull();
+    expect(reboot).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleOutboxNotifyForEvictedHarness (re-boot-on-NOTIFY, AC#2)', () => {
+  it('fires reboot-on-access when called for an evicted harness', async () => {
+    enableSubstrateEvictionTracking();
+    const reboot = vi.fn();
+    _setRebootOnAccessForTests(reboot);
+    _setHandleForTests('ws', 'private', fakeHandle('ws', 'private'));
+
+    await evictBootedHarnessEngine('ws::private', { now: 2_000_000, idleMs: 1000 });
+    handleOutboxNotifyForEvictedHarness('ws', 'private');
+    expect(reboot).toHaveBeenCalledExactlyOnceWith('ws', 'private');
+  });
+
+  it('clears the evicted mark so a second NOTIFY does NOT re-fire', async () => {
+    enableSubstrateEvictionTracking();
+    const reboot = vi.fn();
+    _setRebootOnAccessForTests(reboot);
+    _setHandleForTests('ws', 'private', fakeHandle('ws', 'private'));
+
+    await evictBootedHarnessEngine('ws::private', { now: 2_000_000, idleMs: 1000 });
+    handleOutboxNotifyForEvictedHarness('ws', 'private');
+    handleOutboxNotifyForEvictedHarness('ws', 'private'); // second NOTIFY
+    expect(reboot).toHaveBeenCalledOnce(); // exactly once, not twice
+  });
+
+  it('is a no-op when the harness is currently booted (resident drain handles it)', () => {
+    enableSubstrateEvictionTracking();
+    const reboot = vi.fn();
+    _setRebootOnAccessForTests(reboot);
+    // Harness is IN the handle map (currently booted) — must not trigger re-boot.
+    _setHandleForTests('ws', 'present', fakeHandle('ws', 'present'));
+    handleOutboxNotifyForEvictedHarness('ws', 'present');
+    expect(reboot).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when eviction tracking is OFF (flag-OFF path)', () => {
+    // Do NOT call enableSubstrateEvictionTracking() — tracking stays off.
+    const reboot = vi.fn();
+    _setRebootOnAccessForTests(reboot);
+    handleOutboxNotifyForEvictedHarness('ws', 'whatever');
+    expect(reboot).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op for a key that was never evicted (paranoid guard)', () => {
+    enableSubstrateEvictionTracking();
+    const reboot = vi.fn();
+    _setRebootOnAccessForTests(reboot);
+    // Key is not in handles and not in evicted.
+    handleOutboxNotifyForEvictedHarness('ws', 'never-evicted');
     expect(reboot).not.toHaveBeenCalled();
   });
 });

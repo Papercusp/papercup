@@ -34,6 +34,10 @@ import {
   startSubstrateEvictionReaper,
   type SubstrateEvictionReaper,
 } from './substrate-eviction-reaper';
+import {
+  startSubstrateOutboxKeepalive,
+  type OutboxKeepaliveHandle,
+} from './substrate-outbox-keepalive';
 import type { BootHarnessOpts } from './boot';
 
 export interface BootSubstrateOpts {
@@ -54,10 +58,15 @@ export interface BootSubstrateResult {
   usedSidecar: boolean;
   /** Whether the LAZY_SUBSTRATE_BOOT eviction reaper was started this boot. */
   evictionReaperStarted: boolean;
+  /** Whether the LAZY_SUBSTRATE_BOOT outbox NOTIFY keepalive was started this boot. */
+  outboxKeepaliveStarted: boolean;
 }
 
 /** Module singleton — one reaper per process; never started twice. */
 let reaper: SubstrateEvictionReaper | null = null;
+
+/** Module singleton — one keepalive listener per process. */
+let keepalive: OutboxKeepaliveHandle | null = null;
 
 /**
  * Start the LAZY_SUBSTRATE_BOOT eviction reaper if the flag is ON and it isn't
@@ -81,6 +90,17 @@ export async function maybeStartSubstrateEvictionReaper(): Promise<boolean> {
     });
     registerEvictionReaperShutdown();
     console.log('[substrate-boot] LAZY_SUBSTRATE_BOOT eviction reaper started');
+    // Start the outbox NOTIFY keepalive (re-boot-on-NOTIFY, AC#2).
+    try {
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      keepalive = startSubstrateOutboxKeepalive(sql);
+      console.log('[substrate-boot] outbox NOTIFY keepalive (re-boot-on-NOTIFY) started');
+    } catch (e) {
+      console.warn(
+        '[substrate-boot] outbox keepalive startup failed (re-boot-on-NOTIFY disabled):',
+        e instanceof Error ? e.message : String(e),
+      );
+    }
     return true;
   } catch (e) {
     console.warn(
@@ -111,8 +131,10 @@ function registerEvictionReaperShutdown(): void {
 export function stopSubstrateEvictionReaper(): void {
   try {
     reaper?.stop();
+    keepalive?.stop().catch(() => {});
   } finally {
     reaper = null;
+    keepalive = null;
   }
 }
 
@@ -130,7 +152,7 @@ export async function bootSubstrateWithFallback(
     usedSidecar: boolean,
   ): Promise<BootSubstrateResult> => {
     const evictionReaperStarted = await maybeStartSubstrateEvictionReaper();
-    return { ...r, usedSidecar, evictionReaperStarted };
+    return { ...r, usedSidecar, evictionReaperStarted, outboxKeepaliveStarted: keepalive !== null };
   };
 
   if (!useSidecar) {
