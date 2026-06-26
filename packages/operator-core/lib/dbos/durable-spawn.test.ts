@@ -18,6 +18,9 @@ const h = vi.hoisted(() => ({
   loopbackFetch: vi.fn(async (): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
+  selectSpawnAccount: vi.fn(async () => undefined as string | undefined),
+  updateAccountPool: vi.fn(async (mutator: (pool: unknown) => unknown, _ws?: string) => mutator({ accounts: [] })),
+  recordAccountPenalty: vi.fn((pool: unknown, _id: string, _now: number, _opts?: { pausedUntil?: number }) => pool),
   ownerSteering: { value: null as null | Record<string, unknown> },
   agentConfig: { value: null as null | Record<string, unknown> },
   pgRunOutputRows: { value: [] as Array<{ diagnostic: string | null }> },
@@ -45,6 +48,11 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn }));
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
+vi.mock('../deployment/account-pool-store', () => ({
+  selectSpawnAccount: h.selectSpawnAccount,
+  updateAccountPool: h.updateAccountPool,
+}));
+vi.mock('../deployment/account-pool', () => ({ recordAccountPenalty: h.recordAccountPenalty }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../owner-steering', () => ({
   getOwnerSteering: vi.fn(async () => h.ownerSteering.value ?? {
@@ -87,6 +95,12 @@ beforeEach(() => {
   h.startWorkflow.mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
   h.recordSpawn.mockClear();
   h.finishSpawn.mockClear();
+  h.selectSpawnAccount.mockReset();
+  h.selectSpawnAccount.mockResolvedValue(undefined);
+  h.updateAccountPool.mockReset();
+  h.updateAccountPool.mockImplementation(async (mutator: (pool: unknown) => unknown) => mutator({ accounts: [] }));
+  h.recordAccountPenalty.mockReset();
+  h.recordAccountPenalty.mockImplementation((pool: unknown) => pool);
   h.ownerSteering.value = null;
   h.agentConfig.value = null;
   h.pgRunOutputRows.value = [];
@@ -420,6 +434,51 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(String(fin.errorMessage)).toContain('usage_limit');
     expect(String(fin.errorMessage)).toContain('pgRunOutput:1782379790-queen');
     expect(String(fin.errorMessage)).not.toContain('infra_loss:');
+  });
+
+  it('feeds control-plane Codex usage-limit failures back into the account pool', async () => {
+    h.selectSpawnAccount.mockResolvedValue('aviynw_codex');
+    h.pgRunOutputRows.value = [{
+      diagnostic:
+        '{"type":"turn.failed","error":{"message":"Quota exceeded. Check your plan and billing details."}}',
+    }];
+    h.loopbackFetch.mockResolvedValue(okBody({
+      ok: false,
+      exitCode: 1,
+      agentOutput: '',
+      timedOut: false,
+      stderr: '',
+      rawStdoutTail:
+        '[2026-06-25T21:45:18.129Z] invoke queen rc=1 (stdout: /home/marsh-office/papercupai-workspace/papercup/.papercusp/logs/1782438318-queen.out)',
+    }));
+
+    await expect(
+      durableSpawnFireImpl({
+        ...IMPL,
+        url: 'http://x/api/harness/papercusp/invoke?role=queen',
+        body: { kickoff: 'owner-directed wake', spawnModel: 'chatgpt:5.5' },
+        spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+        label: 'papercusp/queen',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(h.selectSpawnAccount).toHaveBeenCalledWith(
+      'papercusp-workspace',
+      'papercusp',
+      undefined,
+      'codex',
+    );
+    expect(h.updateAccountPool).toHaveBeenCalledWith(expect.any(Function), 'papercusp-workspace');
+    expect(h.recordAccountPenalty).toHaveBeenCalledWith(
+      expect.anything(),
+      'aviynw_codex',
+      expect.any(Number),
+      { pausedUntil: expect.any(Number) },
+    );
+    const now = Date.now();
+    const opts = h.recordAccountPenalty.mock.calls[0]![3] as { pausedUntil: number };
+    expect(opts.pausedUntil).toBeGreaterThan(now + 9 * 60_000);
+    expect(opts.pausedUntil).toBeLessThanOrEqual(now + 10 * 60_000 + 5_000);
   });
 
   it('records `failed` + infra_loss (NOT capacity_shed) for a clean mid-turn exit-1 when the gateway is HEALTHY', async () => {

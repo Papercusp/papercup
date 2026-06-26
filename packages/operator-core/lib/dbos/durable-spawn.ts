@@ -98,6 +98,7 @@ export interface DurableSpawnFireInput {
 }
 
 export const DURABLE_SPAWN_FINISH_CUSHION_MS = 60_000;
+const CONTROL_PLANE_USAGE_LIMIT_PAUSE_MS = 10 * 60_000;
 
 export function durableSpawnWorkflowTimeoutMs(input: DurableSpawnFireInput): number | undefined {
   const timeoutMs = input.body?.timeoutMs;
@@ -204,6 +205,44 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
       : input.body;
   } catch {
     return input.body;
+  }
+}
+
+async function recordControlPlaneCodexUsageLimit(
+  input: DurableSpawnFireInput,
+  fireBody: Record<string, unknown>,
+): Promise<void> {
+  if (!isCodexModelSpec(fireBody.spawnModel)) return;
+  const target = parseInvokeTarget(input);
+  if (!target) return;
+
+  try {
+    const [{ selectSpawnAccount, updateAccountPool }, { recordAccountPenalty }] = await Promise.all([
+      import('../deployment/account-pool-store'),
+      import('../deployment/account-pool'),
+    ]);
+    const accountId = await selectSpawnAccount(
+      target.workspaceId,
+      target.harnessSlug,
+      undefined,
+      'codex',
+    );
+    if (!accountId) return;
+    const now = Date.now();
+    const pausedUntil = now + CONTROL_PLANE_USAGE_LIMIT_PAUSE_MS;
+    await updateAccountPool(
+      (pool) => recordAccountPenalty(pool, accountId, now, { pausedUntil }),
+      target.workspaceId,
+    );
+    console.warn(
+      `[durable-spawn] marked Codex account '${accountId}' paused after control-plane usage_limit (${target.harnessSlug}/${target.role})`,
+    );
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] Codex usage_limit account feedback failed (${input.label ?? ''}): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
   }
 }
 
@@ -356,6 +395,14 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
       : null;
   if (permanentMsg) {
     console.warn(`[durable-spawn] ${permanentMsg}`);
+    if (
+      fireResult &&
+      !fireResult.ok &&
+      'failureClass' in fireResult &&
+      fireResult.failureClass === 'usage_limit'
+    ) {
+      await recordControlPlaneCodexUsageLimit(input, initialFireBody);
+    }
   }
 
   // Close the fleet:tree row — `done` when the fire landed, `failed` (with the

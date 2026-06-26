@@ -570,6 +570,33 @@ export function findBriefPlaceholder(brief: string | null | undefined): string |
   return m ? m[0] : null;
 }
 
+async function readEffectiveSpawnTierConfig(workspaceId: string): Promise<{
+  tiers?: import('../agent-config-constants').ModelTier[];
+  tierCeilings?: Record<string, string>;
+}> {
+  const [{ effectiveTierConfig }, { readAgentConfig }] = await Promise.all([
+    import('./model-tiers'),
+    import('../agent-config'),
+  ]);
+  const cfg = await readAgentConfig().catch(() => null);
+  // Session model-tier override (queen-steering-panel D-006): the owner's 👑-tab
+  // override for the home hive takes PRECEDENCE over the workspace agent-config —
+  // so "retune the fleet's tiers for this session" changes autonomous spawns even
+  // when the Queen/recovery path did not pass an explicit per-item tier.
+  let session: import('../owner-steering').OwnerSteering | null = null;
+  try {
+    const [{ getOwnerSteering }, { resolveHiveHomeSlug }] = await Promise.all([
+      import('../owner-steering'),
+      import('../hive/wake'),
+    ]);
+    const home = resolveHiveHomeSlug();
+    if (home) session = await getOwnerSteering(workspaceId, home);
+  } catch {
+    /* fail-soft → the workspace default tiers */
+  }
+  return effectiveTierConfig(cfg, session);
+}
+
 /**
  * Spawn one agent of `role` into the named harness's project dir, tracked in the
  * durable nursery. Returns immediately after the child process is launched
@@ -678,28 +705,10 @@ export async function spawnAgentInHarness(
   let spawnModelTier: string | null = null;
   let spawnModelBackend: string | null = null;
   if (!spawnModelSpec && input.tier && input.tier.trim()) {
-    const [{ resolveTierSpec, effectiveTierConfig }, { readAgentConfig }] = await Promise.all([
+    const [{ resolveTierSpec }, { tiers, tierCeilings }] = await Promise.all([
       import('./model-tiers'),
-      import('../agent-config'),
+      readEffectiveSpawnTierConfig(input.workspaceId),
     ]);
-    const cfg = await readAgentConfig().catch(() => null);
-    // Session model-tier override (queen-steering-panel D-006): the owner's 👑-tab
-    // override for the home hive takes PRECEDENCE over the workspace agent-config —
-    // so "retune the fleet's tiers for this session" actually changes the spawns
-    // (precedence: session override > workspace default > committed default).
-    // Fail-soft: any read failure leaves the workspace default in effect.
-    let session: import('../owner-steering').OwnerSteering | null = null;
-    try {
-      const [{ getOwnerSteering }, { resolveHiveHomeSlug }] = await Promise.all([
-        import('../owner-steering'),
-        import('../hive/wake'),
-      ]);
-      const home = resolveHiveHomeSlug();
-      if (home) session = await getOwnerSteering(input.workspaceId, home);
-    } catch {
-      /* fail-soft → the workspace default tiers */
-    }
-    const { tiers, tierCeilings } = effectiveTierConfig(cfg, session);
     const resolved = resolveTierSpec({ tier: input.tier, role, tiers, tierCeilings });
     if (!resolved.ok) return fail(`spawn rejected: ${resolved.error}`);
     spawnModelSpec = resolved.spec;
@@ -737,6 +746,20 @@ export async function spawnAgentInHarness(
       }
     } catch (e) {
       console.warn(`[operator-spawn] opus-budget pacing skipped (fail-soft): ${(e as Error).message}`);
+    }
+  } else if (!spawnModelSpec) {
+    try {
+      const [{ resolveRoleOwnModelSpec }, eff] = await Promise.all([
+        import('./model-tiers'),
+        readEffectiveSpawnTierConfig(input.workspaceId),
+      ]);
+      const spec = resolveRoleOwnModelSpec(role, eff);
+      if (spec) {
+        spawnModelSpec = spec;
+        spawnModelTier = eff.tierCeilings?.[role]?.trim() || null;
+      }
+    } catch (e) {
+      console.warn(`[operator-spawn] default model steering skipped (fail-soft): ${(e as Error).message}`);
     }
   }
   const inferredBackend = inferBackendFromModelSpec(spawnModelSpec ?? undefined);

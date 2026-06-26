@@ -6,6 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const h = vi.hoisted(() => ({
+  ownerSteering: { value: null as null | Record<string, unknown> },
+}));
+
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn(), setAdminPoolStatementTimeoutProvider: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', () => ({
   // 'overwatch' included so the B-10 flag-gate (which runs AFTER the known-role
@@ -27,6 +31,21 @@ vi.mock('@papercusp/agent-mcp', () => ({
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(), onFlagChange: vi.fn() }));
 vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+vi.mock('../agent-config', () => ({ readAgentConfig: vi.fn(async () => null) }));
+vi.mock('../owner-steering', () => ({
+  getOwnerSteering: vi.fn(async () => h.ownerSteering.value ?? {
+    directive: null,
+    eligiblePlans: [],
+    eligibleHives: [],
+    pauseNewWork: false,
+    pausedUntil: null,
+    modelTiers: null,
+    tierCeilings: null,
+    modelOverrides: null,
+  }),
+  effectiveMaxBees: vi.fn((_steering: unknown, base: number) => base),
+}));
+vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
@@ -94,6 +113,7 @@ beforeEach(() => {
   delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
   runningCount = 0;
   dupRows = [];
+  h.ownerSteering.value = null;
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   // One template-tag fn answers every query by shape; `begin` (the atomic
   // admission tx, P-017/P-039) hands the same tag back as the tx.
@@ -355,6 +375,41 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
 });
 
 describe('spawnAgentInHarness — backend-aware gateway account routing', () => {
+  it('applies owner steering to an unpinned bee spawn instead of falling back to the host Claude command', async () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    h.ownerSteering.value = {
+      modelTiers: [
+        { name: 'quick', spec: 'chatgpt:5.5', backend: 'codex' },
+        { name: 'standard', spec: 'chatgpt:5.5', backend: 'codex' },
+      ],
+      tierCeilings: { bee: 'quick' },
+      modelOverrides: null,
+    };
+    try {
+      const res = await spawnAgentInHarness({
+        workspaceId: 'ws-1',
+        harness: 'demo',
+        role: 'bee',
+      });
+      expect(res.ok).toBe(true);
+      const [, , , env, opts] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+      expect(env.PAPERCUSP_SPAWN_MODEL).toBe('chatgpt:5.5');
+      expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
+      expect((opts as { forceSessionId?: string } | undefined)?.forceSessionId).toBeUndefined();
+      expect(resolveSpawnGatewayEnv).toHaveBeenCalledWith(expect.objectContaining({
+        backend: 'codex',
+        role: 'bee',
+        ownerId: res.spawnId,
+      }));
+      expect(recordSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        modelSpec: 'chatgpt:5.5',
+        modelTier: 'quick',
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('forces Codex backend for a chatgpt:* per-spawn model even when the host command is Claude', async () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     try {
