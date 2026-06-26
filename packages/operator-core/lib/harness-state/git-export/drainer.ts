@@ -11,6 +11,7 @@
  * module stays pure-IO + unit/integration testable without a git repo.
  */
 import type postgres from 'postgres';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { gitFilePath, serializeRow } from './serialize';
@@ -179,10 +180,8 @@ export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDra
     );
   });
 
-  const pollTimer = pollMs > 0 ? setInterval(() => void drainSafely(), pollMs) : null;
-  if (pollTimer && typeof (pollTimer as { unref?: () => void }).unref === 'function') {
-    (pollTimer as { unref: () => void }).unref();
-  }
+  const pollTimer =
+    pollMs > 0 ? managedSetInterval('git-export-drainer', pollMs, () => drainSafely(), { category: 'watchdog' }) : null;
 
   return {
     async stop(): Promise<void> {
@@ -190,7 +189,7 @@ export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDra
       stopped = true;
       if (pollTimer) {
         try {
-          clearInterval(pollTimer);
+          pollTimer.stop();
         } catch {
           // no-op
         }

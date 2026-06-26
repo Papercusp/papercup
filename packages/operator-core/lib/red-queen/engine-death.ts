@@ -222,8 +222,9 @@ export const ENGINE_DEATH_SENTINEL_INTERVAL_MS = 5 * 60_000;
 let sentinelTimer: ManagedHandle | null = null;
 
 /**
- * Arm the out-of-band sentinel: a PLAIN setInterval (never DBOS, never the
- * routines engine — it must survive exactly the failure it watches for).
+ * Arm the out-of-band sentinel: a managedSetInterval (out-of-band — never DBOS,
+ * never the routines engine; it must survive exactly the failure it watches for,
+ * so it registers for VISIBILITY but stays bespoke per D-005).
  * Call once from host-bootstrap AFTER the dbos start block. The
  * `papercusp-red-queen` flag is checked inside every pass, so the sentinel is
  * inert while dark and a P-001 flag flip arms it without a restart.

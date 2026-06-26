@@ -178,7 +178,10 @@ export function managedSetInterval(
   opts: ManagedTimerOptions,
 ): ManagedHandle {
   if (registry.has(name)) {
-    resolved.log(`re-registering '${name}' — stopping the previous timer (duplicate name)`);
+    // Idempotent re-arm: silently stop the previous timer and register fresh. No warn —
+    // host watchdogs re-arm across boot retries / test cases, and the inventory always
+    // reflects the single latest registration. (A genuine name COLLISION is a code-review
+    // concern surfaced by two distinct sites sharing a name, not a runtime warning.)
     stopManaged(name);
   }
   const entry: ManagedEntry = {

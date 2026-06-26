@@ -38,6 +38,7 @@
  *      placement frontier is genuinely empty (an idle fleet is correct).
  */
 import { PANEL_LABELS, type SystemHealth, type PanelKey } from './types';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { computeSystemHealth, lastSystemHealth } from './compute';
 import {
   openEscalation,
@@ -372,13 +373,12 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
   if (process.env.PAPERCUSP_INFRA_LIVENESS_ALARM === '0') return { stop() {} };
   const envMs = Number(process.env.PAPERCUSP_INFRA_LIVENESS_ALARM_MS);
   const intervalMs = opts.intervalMs ?? (Number.isFinite(envMs) && envMs > 0 ? envMs : DEFAULT_INTERVAL_MS);
-  const timer = setInterval(() => {
-    void runLivenessAlarmTick().catch(() => {});
-  }, intervalMs);
-  (timer as { unref?: () => void }).unref?.();
+  const timer = managedSetInterval('liveness-alarm', intervalMs, () => runLivenessAlarmTick().catch(() => {}), {
+    category: 'watchdog',
+  });
   return {
     stop() {
-      clearInterval(timer);
+      timer.stop();
     },
   };
 }

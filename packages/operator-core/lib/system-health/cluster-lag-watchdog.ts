@@ -39,6 +39,8 @@
  * true-cluster mode (workers > 1); inert in single-process mode (no peer to watch).
  */
 
+import { managedSetInterval } from '@papercusp/scheduled-registry';
+
 /** IPC message a worker sends to the primary each interval. */
 export const CLUSTER_HEARTBEAT_TYPE = 'papercusp:cluster-heartbeat' as const;
 export interface ClusterHeartbeatMessage {
@@ -73,11 +75,10 @@ export function startWorkerHeartbeat(opts: { beatMs?: number; send?: (m: Cluster
     }
   };
   beat(); // announce immediately so the primary registers this worker without waiting a full interval
-  const timer = setInterval(beat, beatMs);
-  timer.unref?.();
+  const timer = managedSetInterval('cluster-lag-beat', beatMs, beat, { category: 'watchdog' });
   return {
     stop() {
-      clearInterval(timer);
+      timer.stop();
     },
   };
 }
@@ -157,13 +158,12 @@ export function startClusterLagWatchdog(opts: ClusterLagWatchdogOptions): Cluste
       }
     }
   };
-  const timer = setInterval(scan, scanMs);
-  timer.unref?.();
+  const timer = managedSetInterval('cluster-lag-scan', scanMs, scan, { category: 'watchdog' });
 
   return {
     stop() {
       stopped = true;
-      clearInterval(timer);
+      timer.stop();
       lastBeat.clear();
     },
     watchedIds() {

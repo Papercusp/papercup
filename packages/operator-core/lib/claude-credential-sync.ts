@@ -48,6 +48,7 @@ import {
   type FSWatcher,
 } from 'node:fs';
 import { homedir } from 'node:os';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { dirname, join } from 'node:path';
 import { sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
 
@@ -286,15 +287,16 @@ export function startClaudeCredentialSync(opts: {
     console.warn(`[claude-cred-sync] session watch unavailable: ${(e as Error)?.message ?? e}`);
   }
 
-  const interval = setInterval(() => void pass('interval'), FALLBACK_INTERVAL_MS);
-  interval.unref?.();
+  const interval = managedSetInterval('claude-credential-sync', FALLBACK_INTERVAL_MS, () => pass('interval'), {
+    category: 'watchdog',
+  });
   void pass('boot');
 
   const handle: CredentialSyncHandle = {
     stop() {
       stopped = true;
       if (debounce) clearTimeout(debounce);
-      clearInterval(interval);
+      interval.stop();
       for (const w of watchers) w.close();
       delete g[GUARD_KEY];
     },
