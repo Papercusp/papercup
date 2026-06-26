@@ -252,3 +252,90 @@ export async function reconcileEpochKeysForCurrentMembers(
   // and wraps [0..current] idempotently. 'no-fresh-members' when the hive has no live device.
   return grantEpochKeysToMembers({ ...opts, newMemberPubkeys: pubkeys }, seams);
 }
+
+/** A hive this box knows about (its workspace + home slug). */
+export interface OwnedHiveRef {
+  workspaceId: string;
+  hiveHomeSlug: string;
+}
+
+export interface ReconcileOwnedHivesSeams
+  extends Pick<BoundaryRekeySeams, 'resolveCrypto' | 'resolveAuthorPubkey' | 'persistWrappedKeys'> {
+  getCurrentEpoch?: (ws: string, slug: string, sql?: Sql) => Promise<number>;
+  loadMembers?: (ws: string, slug: string, sql?: Sql) => Promise<HiveMemberRecord[]>;
+  /** Enumerate every hive this box knows (reconcile self-gates to the OWNED subset). */
+  listHives?: (sql?: Sql) => Promise<OwnedHiveRef[]>;
+  /** Device pubkeys that ALREADY hold the (hive, epoch) key — the gap-check read. */
+  loadEpochKeyDevices?: (ws: string, slug: string, epoch: number, sql?: Sql) => Promise<string[]>;
+}
+
+/**
+ * WI-887 self-heal SWEEP — owner-side, idempotent, GAP-AWARE. For each hive this box knows, checks
+ * whether any LIVE (non-revoked) member device is missing the CURRENT epoch key; only then runs
+ * reconcileEpochKeysForCurrentMembers. The onMemberApplied hook heals the moment a membership op
+ * applies, but a member that went stuck while papercusp-hive-rekey was dark (or across an advance
+ * that omitted it) needs a trigger that does NOT depend on a fresh membership op — this sweep is it
+ * (host it on the in-process periodic checks / call once at owner boot). GAP-AWARE so it does NO
+ * crypto on the steady state (the perf-anti-pattern guard: never re-derive+re-wrap an intact hive),
+ * only on a hive with a real gap. Self-gates per hive (reconcile no-ops where loadHivePubkey is null
+ * — a non-owner box), flag-gated, C-001-safe (revoked devices excluded by reconcileEpochKeysForCurrentMembers).
+ */
+export async function reconcileOwnedHiveEpochKeys(
+  opts: { enabled: boolean; sql?: Sql },
+  seams: ReconcileOwnedHivesSeams = {},
+): Promise<{ scanned: number; reconciled: number }> {
+  if (!opts.enabled) return { scanned: 0, reconciled: 0 };
+  const getCurrentEpoch = seams.getCurrentEpoch ?? getHiveEpoch;
+  const loadMembers = seams.loadMembers ?? listHiveMembers;
+  const listHives =
+    seams.listHives ??
+    (async (sql?: Sql) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const client = sql ?? getOrgPg().sql;
+      const rows = (await client`
+        SELECT DISTINCT workspace_id, home_slug FROM harness_shared.hives
+      `) as unknown as Array<{ workspace_id: string; home_slug: string }>;
+      return rows.map((r) => ({ workspaceId: r.workspace_id, hiveHomeSlug: r.home_slug }));
+    });
+  const loadEpochKeyDevices =
+    seams.loadEpochKeyDevices ??
+    (async (ws: string, slug: string, epoch: number, sql?: Sql) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const client = sql ?? getOrgPg().sql;
+      const rows = (await client`
+        SELECT member_device_pubkey FROM harness_shared.hive_epoch_keys
+         WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND epoch = ${epoch}
+      `) as unknown as Array<{ member_device_pubkey: string }>;
+      return rows.map((r) => r.member_device_pubkey);
+    });
+
+  const hives = await listHives(opts.sql);
+  let reconciled = 0;
+  for (const { workspaceId, hiveHomeSlug } of hives) {
+    try {
+      const current = await getCurrentEpoch(workspaceId, hiveHomeSlug, opts.sql);
+      const members = await loadMembers(workspaceId, hiveHomeSlug, opts.sql);
+      const revoked = new Set<string>();
+      for (const m of members) for (const pk of m.revokedPubkeys ?? []) revoked.add(pk);
+      const liveDevices: string[] = [];
+      for (const m of members) {
+        for (const a of m.deviceAttestations ?? []) {
+          const pk = a?.device_pubkey;
+          if (typeof pk === 'string' && pk.length > 0 && !revoked.has(pk)) liveDevices.push(pk);
+        }
+      }
+      if (liveDevices.length === 0) continue;
+      const have = new Set(await loadEpochKeyDevices(workspaceId, hiveHomeSlug, current, opts.sql));
+      const hasGap = liveDevices.some((pk) => !have.has(pk));
+      if (!hasGap) continue; // steady state — NO crypto (perf guard)
+      const r = await reconcileEpochKeysForCurrentMembers(
+        { workspaceId, hiveHomeSlug, enabled: true, sql: opts.sql },
+        seams,
+      );
+      if (r.applied) reconciled += 1;
+    } catch {
+      // best-effort per hive — one hive's failure must not abort the sweep
+    }
+  }
+  return { scanned: hives.length, reconciled };
+}

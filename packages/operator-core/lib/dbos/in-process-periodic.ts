@@ -478,6 +478,28 @@ const federationDrainReconcileCheck: PeriodicCheck = {
   },
 };
 
+// WI-887 self-heal: owner-side epoch-key reconcile. A shared-hive member that went stuck without the
+// CURRENT epoch key (it federated in around an epoch advance, or was missed while papercusp-hive-rekey
+// was dark) cannot decrypt current content, so its plans/work_items silently never materialize (the
+// live federation gap, plan shared-hive-member-content-federation D-018; the owner's Mac join hits
+// this). The onMemberApplied hook heals the moment a membership op applies; this sweep heals a hive
+// whose members are ALREADY applied (no fresh op coming) — e.g. on app restart / on the flag flip.
+// GAP-AWARE: it does NO crypto on an intact hive (only reconciles a hive with a member missing the
+// current key), owner-gated (reconcile no-ops where this box lacks the hive key), and flag-gated.
+const hiveEpochKeyReconcileCheck: PeriodicCheck = {
+  name: 'hive-epoch-key-reconcile',
+  intervalMs: 600_000,
+  shed: true,
+  tick: async () => {
+    const { isHiveRekeyEnabled, reconcileOwnedHiveEpochKeys } = await import(
+      '../sync/hyperbee/hive-epoch-boundary-wiring'
+    );
+    const enabled = await isHiveRekeyEnabled();
+    if (!enabled) return; // re-key dark ⇒ no epoch-key distribution to reconcile
+    await reconcileOwnedHiveEpochKeys({ enabled });
+  },
+};
+
 /** The converted ex-DBOS-workflow set. */
 export function buildDefaultChecks(): PeriodicCheck[] {
   return [
@@ -491,6 +513,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     learningInfraHealthCheck,
     steeringChurnSweepCheck,
     federationDrainReconcileCheck,
+    hiveEpochKeyReconcileCheck,
   ];
 }
 

@@ -3,6 +3,7 @@ import {
   advanceEpochOnHiveBoundary,
   grantEpochKeysToMembers,
   reconcileEpochKeysForCurrentMembers,
+  reconcileOwnedHiveEpochKeys,
   type BoundaryRekeySeams,
 } from './hive-epoch-boundary-wiring';
 import type { WrappedEpochKeyRow } from './hive-epoch-boundary';
@@ -240,5 +241,85 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
     );
     expect(r).toEqual({ applied: false, reason: 'no-author' });
     expect(derive).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileOwnedHiveEpochKeys (WI-887 gap-aware sweep)', () => {
+  const member = (devicePubkeys: string[], revoked: string[] = []) =>
+    ({
+      deviceAttestations: devicePubkeys.map((device_pubkey) => ({ device_pubkey })),
+      revokedPubkeys: revoked,
+    }) as never;
+
+  const cryptoSeams = (derived: number[]) => ({
+    resolveCrypto: async () =>
+      ({
+        deriveEpochKey: async (_h: string, e: number) => {
+          derived.push(e);
+          return `K${e}` as never;
+        },
+        wrapKeyToMember: async () => new Uint8Array([1]),
+      }) as never,
+    resolveAuthorPubkey: async () => 'owner',
+    persistWrappedKeys: async (_w: string, _s: string, _e: number, rows: readonly { memberDevicePubkey: string }[]) =>
+      rows.length,
+  });
+
+  it('flag OFF ⇒ no scan, no work', async () => {
+    const listHives = vi.fn(async () => [{ workspaceId: 'w', hiveHomeSlug: 'h' }]);
+    const r = await reconcileOwnedHiveEpochKeys({ enabled: false }, { listHives });
+    expect(r).toEqual({ scanned: 0, reconciled: 0 });
+    expect(listHives).not.toHaveBeenCalled();
+  });
+
+  it('STEADY STATE (no gap) ⇒ scanned but NO crypto (perf guard)', async () => {
+    const derived: number[] = [];
+    const r = await reconcileOwnedHiveEpochKeys(
+      { enabled: true },
+      {
+        ...cryptoSeams(derived),
+        listHives: async () => [{ workspaceId: 'w', hiveHomeSlug: 'hello-world-hive' }],
+        getCurrentEpoch: async () => 1,
+        loadMembers: async () => [member(['A']), member(['B'])],
+        // BOTH live devices already hold the current (epoch 1) key → no gap.
+        loadEpochKeyDevices: async () => ['A', 'B'],
+      },
+    );
+    expect(r).toEqual({ scanned: 1, reconciled: 1 - 1 }); // scanned 1, reconciled 0
+    expect(derived).toEqual([]); // ← never derived a key: intact hive does NO crypto
+  });
+
+  it('GAP (a member missing the current key) ⇒ reconciles that hive', async () => {
+    const derived: number[] = [];
+    const persisted: Array<{ epoch: number; members: string[] }> = [];
+    const r = await reconcileOwnedHiveEpochKeys(
+      { enabled: true },
+      {
+        resolveCrypto: async () =>
+          ({
+            deriveEpochKey: async (_h: string, e: number) => {
+              derived.push(e);
+              return `K${e}` as never;
+            },
+            wrapKeyToMember: async () => new Uint8Array([1]),
+          }) as never,
+        resolveAuthorPubkey: async () => 'owner',
+        persistWrappedKeys: async (_w, _s, epoch, rows) => {
+          persisted.push({ epoch, members: rows.map((row) => row.memberDevicePubkey) });
+          return rows.length;
+        },
+        listHives: async () => [{ workspaceId: 'w', hiveHomeSlug: 'hello-world-hive' }],
+        getCurrentEpoch: async () => 1,
+        loadMembers: async () => [member(['A']), member(['B'])],
+        // only 'A' holds the current key → 'B' has a GAP → reconcile.
+        loadEpochKeyDevices: async () => ['A'],
+      },
+    );
+    expect(r).toEqual({ scanned: 1, reconciled: 1 });
+    expect(derived).toEqual([0, 1]); // backfilled [0..current]
+    expect(persisted).toEqual([
+      { epoch: 0, members: ['A', 'B'] },
+      { epoch: 1, members: ['A', 'B'] }, // ← B (the stuck member) gets the current key
+    ]);
   });
 });
