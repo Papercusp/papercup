@@ -231,6 +231,13 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
       return res;
     },
     archive,
+    onScoutDraftCreated: async ({ slug, title }) => {
+      try {
+        await notifyQueenDraftRouted(queenNotifyPorts, { slug, title, scoutOwner });
+      } catch {
+        /* best-effort — a notify never breaks rubric authoring */
+      }
+    },
     limits: { maxCostUsd: budget.maxCostUsd, maxIdeators: budget.maxIdeators },
     cycleId,
     ...(onPhase ? { onPhase } : {}),

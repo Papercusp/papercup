@@ -83,6 +83,8 @@ export interface BuildScoutCycleDepsOptions {
   /** Override the dark experiment-rail dispatch port (tests). Default: the dry-run-only
    *  buildExperimentDispatchPort. Only consulted when SCOUT_EXPERIMENT_RAIL is ON. */
   experimentDispatch?: ExperimentDispatchPort;
+  /** Called when a deterministic Scout side rail authors a new draft plan that needs Queen review. */
+  onScoutDraftCreated?: (draft: { slug: string; title: string }) => Promise<void>;
   /**
    * Per-blueprint Scout tuning (P-009 scout-config seam): the ideator lens roster, the
    * search-first novelty knobs, the verdict-bucket thresholds, and the routing default +
@@ -197,7 +199,26 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
           const { FLAGS } = await import('@papercusp/flags');
           if (await getFlag(FLAGS.SCOUT_RUBRIC_RAIL, 'scout-rubric-rail')) {
             const { authorRubricGapPlans } = await import('./rubric-rail');
-            await authorRubricGapPlans(digest.rubricGaps, { harnessSlug: opts.harnessSlug });
+            const { createScoutPlanDraft } = await import('./scout-plan-draft');
+            await authorRubricGapPlans(
+              digest.rubricGaps,
+              { harnessSlug: opts.harnessSlug },
+              opts.onScoutDraftCreated
+                ? {
+                    createDraft: async (input) => {
+                      const res = await createScoutPlanDraft(input);
+                      if (res.created) {
+                        try {
+                          await opts.onScoutDraftCreated?.({ slug: res.slug, title: input.title });
+                        } catch {
+                          /* best-effort — a notify never breaks rubric authoring */
+                        }
+                      }
+                      return res;
+                    },
+                  }
+                : undefined,
+            );
           }
         }
       } catch (err) {

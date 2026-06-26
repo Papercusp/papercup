@@ -9,7 +9,19 @@
  *
  * Run from inside the package: `cd packages/operator-core && npx vitest run lib/scout/cycle-deps`.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const getFlag = vi.hoisted(() => vi.fn(async () => false));
+const createScoutPlanDraft = vi.hoisted(() =>
+  vi.fn(async (input: { slug: string; title: string }) => ({ slug: `${input.slug}-2026-06-26`, created: true })),
+);
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, getFlag };
+});
+vi.mock('@papercusp/flags', () => ({ FLAGS: { SCOUT_RUBRIC_RAIL: 'scout-rubric-rail' } }));
+vi.mock('./scout-plan-draft', () => ({ createScoutPlanDraft }));
+
 import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
 import { ScoutIdeatorsTransportError } from './ideators';
 import { resolveScoutConfig } from './config';
@@ -27,6 +39,15 @@ import type { CorpusDigest, Idea, ScoutLlmCall } from './types';
 const EMPTY_READERS: StateOfHiveReaders = fakeStateOfHiveReaders();
 
 const NOVELTY: CorpusEntry[] = [{ ref: 'plan:prior', kind: 'plan', text: 'a prior plan' }];
+
+beforeEach(() => {
+  getFlag.mockResolvedValue(false);
+  createScoutPlanDraft.mockReset();
+  createScoutPlanDraft.mockImplementation(async (input: { slug: string; title: string }) => ({
+    slug: `${input.slug}-2026-06-26`,
+    created: true,
+  }));
+});
 
 /** A never-exercised archive stub (the tests route to plan/improvement, not gym). */
 const STUB_ARCHIVE = {} as ArchivePort;
@@ -75,6 +96,36 @@ describe('buildScoutCycleDeps — assembly', () => {
   it('readNoveltyCorpus delegates to the injected reader', async () => {
     const { deps } = build();
     await expect(deps.readNoveltyCorpus()).resolves.toEqual(NOVELTY);
+  });
+
+  it('readCorpus notifies when the rubric rail authors a new draft for Queen review', async () => {
+    getFlag.mockResolvedValue(true);
+    const onScoutDraftCreated = vi.fn(async () => {});
+    const base = {
+      kind: 'bug' as const,
+      scope: 'harness:papercup',
+      title: 'Hive coordination scorecard lacks a shared rubric',
+      state: 'open' as const,
+    };
+    const { deps } = build({
+      onScoutDraftCreated,
+      stateOfHiveReaders: fakeStateOfHiveReaders({
+        friction: async () => [
+          { ...base, id: 'EI-1', createdBy: 'a', createdAt: '2026-06-24T10:00:00.000Z' },
+          { ...base, id: 'EI-2', createdBy: 'b', createdAt: '2026-06-24T11:00:00.000Z' },
+          { ...base, id: 'EI-3', createdBy: 'c', createdAt: '2026-06-25T10:00:00.000Z' },
+        ],
+        rubrics: async () => [],
+      }),
+    });
+
+    await deps.readCorpus();
+
+    expect(createScoutPlanDraft).toHaveBeenCalledTimes(1);
+    expect(onScoutDraftCreated).toHaveBeenCalledWith({
+      slug: 'scout-rubric-hive-coordination-scorecard-lacks-a-shared-rubric-2026-06-26',
+      title: 'Rubric proposal: Hive coordination scorecard lacks a shared rubric',
+    });
   });
 });
 
