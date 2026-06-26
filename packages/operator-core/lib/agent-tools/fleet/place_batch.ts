@@ -372,6 +372,19 @@ export async function executeBatch(opts: {
       awaitEvent = res.awaitEvent;
       return { task: task.id, action: 'deferred', reason: res.error ?? 'over fleet ceiling', await_event: res.awaitEvent };
     }
+    if (res.ok && res.spawnId) {
+      const claim = await claimWorkItem(task.id, res.spawnId, { harness: res.harness ?? task.harness ?? undefined });
+      if (!claim) {
+        return {
+          task: task.id,
+          action: 'inject-raced',
+          spawn_id: res.spawnId,
+          harness: res.harness,
+          reason: 'fresh-spawned bee could not claim item — item was claimed by another agent first',
+          ...(climbedFrom ? { climbed_from: climbedFrom } : {}),
+        };
+      }
+    }
     return {
       task: task.id,
       action: res.ok ? 'spawned' : 'spawn-failed',

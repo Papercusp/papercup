@@ -23,7 +23,7 @@ import { advanceEpochAndWrap, type WrappedEpochKeyRow } from './hive-epoch-bound
 import { resolveHiveEpochCrypto } from './hive-epoch-serving';
 import { putWrappedKeys } from './hive-epoch-keys-store';
 import { getHiveEpoch } from './hive-epoch-state';
-import { listHiveMembers } from '../../hive-membership-store';
+import { listHiveMembers, type HiveMemberRecord } from '../../hive-membership-store';
 import { loadHivePubkey } from '../../identity/hive-keypair';
 
 /**
@@ -204,4 +204,51 @@ export async function grantEpochKeysToMembers(
     distributed += await persistWrappedKeys(opts.workspaceId, opts.hiveHomeSlug, epoch, wrapped, author, opts.sql);
   }
   return { applied: true, newEpoch: current, distributed };
+}
+
+/**
+ * WI-887 self-heal — ensure EVERY current member holds every epoch key [0..current].
+ *
+ * The complement to grantEpochKeysToMembers (one NEW member at join) + advanceEpochOnHiveBoundary
+ * (one boundary's REMAINING set): a RECONCILE over the FULL current member set. A member who
+ * federated in AFTER an epoch advanced — or was missed while papercusp-hive-rekey was dark — is
+ * otherwise never backfilled (the per-member grant fires only on that member's own upsert, and the
+ * boundary wrap fired before the member was known on the owner), so it permanently lacks the current
+ * epoch key and DROPS all current-epoch content at the decrypt gate (reproduced live: plan
+ * shared-hive-member-content-federation-2026-06-20 D-018 — a joiner held only epoch 0). Calling this
+ * on the onMemberApplied hook (any membership change) self-heals the whole hive.
+ *
+ * Owner-only (delegates to grantEpochKeysToMembers, which self-gates: loadHivePubkey is null on a
+ * non-owner box → no-op), flag-gated, idempotent per (epoch, member). C-001 SAFE: keys off the LIVE
+ * member set and EXCLUDES every revoked device pubkey (the union of all members' revoked_pubkeys
+ * blocklists), so a removed/cut member is never re-granted the new key.
+ */
+export async function reconcileEpochKeysForCurrentMembers(
+  opts: { workspaceId: string; hiveHomeSlug: string; enabled: boolean; sql?: Sql },
+  seams: Pick<BoundaryRekeySeams, 'resolveCrypto' | 'resolveAuthorPubkey' | 'persistWrappedKeys'> & {
+    getCurrentEpoch?: (ws: string, slug: string, sql?: Sql) => Promise<number>;
+    loadMembers?: (ws: string, slug: string, sql?: Sql) => Promise<HiveMemberRecord[]>;
+  } = {},
+): Promise<BoundaryRekeyResult> {
+  if (!opts.enabled) return { applied: false, reason: 'flag-disabled' };
+  const loadMembers = seams.loadMembers ?? listHiveMembers;
+  const members = await loadMembers(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+  // C-001: a revoked device must NEVER be re-granted the current key — exclude the UNION of every
+  // member row's revoked_pubkeys blocklist (a revocation written on one member's row applies hive-wide).
+  const revoked = new Set<string>();
+  for (const m of members) for (const pk of m.revokedPubkeys ?? []) revoked.add(pk);
+  const pubkeys: string[] = [];
+  const seen = new Set<string>();
+  for (const m of members) {
+    for (const a of m.deviceAttestations ?? []) {
+      const pk = a?.device_pubkey;
+      if (typeof pk === 'string' && pk.length > 0 && !revoked.has(pk) && !seen.has(pk)) {
+        seen.add(pk);
+        pubkeys.push(pk);
+      }
+    }
+  }
+  // Delegate to the tested per-member grant with the full current set: it re-reads the CURRENT epoch
+  // and wraps [0..current] idempotently. 'no-fresh-members' when the hive has no live device.
+  return grantEpochKeysToMembers({ ...opts, newMemberPubkeys: pubkeys }, seams);
 }

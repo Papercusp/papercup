@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   advanceEpochOnHiveBoundary,
   grantEpochKeysToMembers,
+  reconcileEpochKeysForCurrentMembers,
   type BoundaryRekeySeams,
 } from './hive-epoch-boundary-wiring';
 import type { WrappedEpochKeyRow } from './hive-epoch-boundary';
@@ -151,5 +152,93 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
     );
     expect(r).toEqual({ applied: false, reason: 'no-author' });
     expect(derive).not.toHaveBeenCalled(); // owner-gate short-circuits BEFORE any derive
+  });
+});
+
+describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..current] to ALL live members)', () => {
+  // Minimal HiveMemberRecord shape the reconcile reads (deviceAttestations + revokedPubkeys).
+  const member = (devicePubkeys: string[], revoked: string[] = []) =>
+    ({
+      deviceAttestations: devicePubkeys.map((device_pubkey) => ({ device_pubkey })),
+      revokedPubkeys: revoked,
+    }) as never;
+
+  it('flag OFF ⇒ no-op (no member load, no grant)', async () => {
+    const loadMembers = vi.fn(async () => [member(['A'])]);
+    const r = await reconcileEpochKeysForCurrentMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: false },
+      { loadMembers },
+    );
+    expect(r).toEqual({ applied: false, reason: 'flag-disabled' });
+    expect(loadMembers).not.toHaveBeenCalled();
+  });
+
+  it('THE FIX: a member missing the current epoch is backfilled — wraps [0..current] to EVERY live member device', async () => {
+    // owner 'A' + joiner 'B' (B federated in after the epoch advanced to 1, so it lacks epoch 1).
+    const persisted: Array<{ epoch: number; members: string[] }> = [];
+    const r = await reconcileEpochKeysForCurrentMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true },
+      {
+        loadMembers: async () => [member(['A']), member(['B'])],
+        resolveCrypto: async () =>
+          ({
+            deriveEpochKey: async (_h: string, e: number) => `K${e}` as never,
+            wrapKeyToMember: async () => new Uint8Array([1]),
+          }) as never,
+        resolveAuthorPubkey: async () => 'owner',
+        persistWrappedKeys: async (_w, _s, epoch, rows) => {
+          persisted.push({ epoch, members: rows.map((row) => row.memberDevicePubkey) });
+          return rows.length;
+        },
+        getCurrentEpoch: async () => 1,
+      },
+    );
+    expect(persisted).toEqual([
+      { epoch: 0, members: ['A', 'B'] },
+      { epoch: 1, members: ['A', 'B'] }, // ← B (the stuck joiner) now gets the CURRENT epoch key
+    ]);
+    expect(r).toEqual({ applied: true, newEpoch: 1, distributed: 4 }); // 2 epochs × 2 members
+  });
+
+  it('C-001 SAFE: a revoked device is EXCLUDED — a removed member is never re-granted the current key', async () => {
+    const persisted: Array<{ epoch: number; members: string[] }> = [];
+    const r = await reconcileEpochKeysForCurrentMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      {
+        // 'B' is in the revoked blocklist (cut member) — must NOT receive the new key.
+        loadMembers: async () => [member(['A']), member(['B'], ['B'])],
+        resolveCrypto: async () =>
+          ({
+            deriveEpochKey: async (_h: string, e: number) => `K${e}` as never,
+            wrapKeyToMember: async () => new Uint8Array([1]),
+          }) as never,
+        resolveAuthorPubkey: async () => 'owner',
+        persistWrappedKeys: async (_w, _s, epoch, rows) => {
+          persisted.push({ epoch, members: rows.map((row) => row.memberDevicePubkey) });
+          return rows.length;
+        },
+        getCurrentEpoch: async () => 1,
+      },
+    );
+    expect(persisted).toEqual([
+      { epoch: 0, members: ['A'] }, // only the live member; revoked 'B' excluded
+      { epoch: 1, members: ['A'] },
+    ]);
+    expect(r).toEqual({ applied: true, newEpoch: 1, distributed: 2 });
+  });
+
+  it('non-owner box (resolveAuthorPubkey null) ⇒ no-op — self-gates via the delegated grant', async () => {
+    const derive = vi.fn();
+    const r = await reconcileEpochKeysForCurrentMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      {
+        loadMembers: async () => [member(['A'])],
+        resolveAuthorPubkey: async () => null, // this box does not hold the hive key
+        resolveCrypto: async () => ({ deriveEpochKey: derive }) as never,
+        getCurrentEpoch: async () => 1,
+      },
+    );
+    expect(r).toEqual({ applied: false, reason: 'no-author' });
+    expect(derive).not.toHaveBeenCalled();
   });
 });

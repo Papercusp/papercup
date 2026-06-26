@@ -158,6 +158,28 @@ async function writeToPg(
       await reapplyDrainedMemberContent(opts.pendingMemberContent.drainForDevices(devices, Date.now()));
     }
   }
+  // WI-887 self-heal epoch-key distribution (the onMemberApplied hook). A membership change can
+  // mean a member federated in AFTER an epoch advanced — or was missed while papercusp-hive-rekey
+  // was dark — leaving it without the CURRENT epoch key, so it DROPS all current-epoch content at
+  // the decrypt gate (the live federation gap, plan shared-hive-member-content-federation D-018).
+  // Re-grant [0..current] to the FULL current member set so the stuck member is backfilled the
+  // moment any membership op applies. Owner-only (the grant self-gates: loadHivePubkey null on a
+  // non-owner box → no-op), flag-gated, idempotent per (epoch, member), C-001-safe (revoked devices
+  // excluded). DYNAMIC import avoids the projection ↔ boundary-wiring cycle. Best-effort: a grant
+  // failure must NOT abort the member apply (the row is the source of truth; it retries next apply).
+  try {
+    const { reconcileEpochKeysForCurrentMembers, isHiveRekeyEnabled } = await import(
+      '../hive-epoch-boundary-wiring'
+    );
+    await reconcileEpochKeysForCurrentMembers({
+      workspaceId: opts.workspaceId,
+      hiveHomeSlug: opts.harnessSlug,
+      enabled: await isHiveRekeyEnabled(),
+      sql: opts.sql,
+    });
+  } catch {
+    /* best-effort — never fail the member apply on an epoch-key grant hiccup */
+  }
 }
 
 /** This member's bound device pubkeys (base64), deduped — the identity grain the P-004 buffer

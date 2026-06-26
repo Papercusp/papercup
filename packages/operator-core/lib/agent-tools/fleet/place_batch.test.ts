@@ -87,8 +87,18 @@ describe('executeBatch — placement execution', () => {
     expect(fns.spawnAgentInHarness).toHaveBeenCalledWith(
       expect.objectContaining({ featureId: 'WI-1', role: 'bee', harness: 'h', workspaceId: 'ws-1' }),
     );
+    expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-1', 's-spawned', { harness: 'h' });
     expect(r.placements[0]).toMatchObject({ task: 'WI-1', action: 'spawned', spawn_id: 's-spawned' });
     expect(r.summary.spawned).toBe(1);
+  });
+
+  it('spawn disposition claim-race → reports inject-raced instead of silent spawned', async () => {
+    const { fns, deps } = makeDeps({ claimWorkItem: vi.fn(async () => null) });
+    const r = await run(plan([{ task: task('WI-1b'), disposition: 'spawn', reason: 'fresh slot' }]), deps);
+    expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1);
+    expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-1b', 's-spawned', { harness: 'h' });
+    expect(r.placements[0]).toMatchObject({ task: 'WI-1b', action: 'inject-raced', spawn_id: 's-spawned' });
+    expect(r.summary.raced).toBe(1);
   });
 
   it('warm-inject delivered (woken≥1) → claim + reorder + waking send, reported as injected', async () => {
@@ -173,10 +183,12 @@ describe('executeBatch — placement execution', () => {
   });
 
   it('per-placement isolation: one placement throwing does not abort the batch', async () => {
+    const claimWorkItem = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('claim boom'))
+      .mockResolvedValueOnce({ ok: true });
     const { deps } = makeDeps({
-      claimWorkItem: vi.fn(async () => {
-        throw new Error('claim boom');
-      }),
+      claimWorkItem,
     });
     const r = await run(
       plan([
