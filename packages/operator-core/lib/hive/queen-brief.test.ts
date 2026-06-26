@@ -259,6 +259,35 @@ test('renderQueenBrief — over-cap lists are digested with a "+N more" overflow
   assert.match(out, /…\+15 more \(work_items:list to drill down\)/);
 });
 
+test('renderQueenBrief — text caps prevent prompt-admission blowups from long lines and carry-notes', () => {
+  const longTitle = `Investigate ${'very-long-title '.repeat(80)}`;
+  const longReason = `because ${'very-long-reason '.repeat(80)}`;
+  const many = Array.from({ length: 12 }, (_, i) =>
+    ranked({ id: `wi-${i}`, harness: 'papercup', title: longTitle }, 20 - i, [longReason]),
+  );
+  const out = renderQueenBrief({
+    floor: { frontier: many },
+    carryNote: 'carry '.repeat(300),
+    textCaps: { totalChars: 1_200, lineChars: 160, carryNoteChars: 120 },
+  });
+
+  assert.ok(out.length <= 1_200, `brief length ${out.length} should respect total cap`);
+  assert.match(out, /line truncated/);
+  assert.match(out, /brief truncated to 1200 chars/);
+  assert.doesNotMatch(out, new RegExp('very-long-title '.repeat(20)));
+});
+
+test('renderQueenBrief — carry-note is capped even when the full brief has room', () => {
+  const out = renderQueenBrief({
+    floor: { frontier: [] },
+    carryNote: 'carry '.repeat(200),
+    textCaps: { totalChars: 5_000, lineChars: 1_000, carryNoteChars: 90 },
+  });
+
+  assert.match(out, /carry-note truncated/);
+  assert.doesNotMatch(out, new RegExp('carry '.repeat(40)));
+});
+
 test('renderQueenBrief — most-salient why is the highest-contribution feature reason', () => {
   const r: Ranked<PlacementCandidate> = {
     id: 'wi-9',

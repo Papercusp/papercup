@@ -142,6 +142,12 @@ export interface QueenBriefCaps {
   placements: number;
 }
 
+export interface QueenBriefTextCaps {
+  totalChars: number;
+  lineChars: number;
+  carryNoteChars: number;
+}
+
 export const DEFAULT_QUEEN_BRIEF_CAPS: QueenBriefCaps = {
   frontier: 12,
   plans: 8,
@@ -152,12 +158,22 @@ export const DEFAULT_QUEEN_BRIEF_CAPS: QueenBriefCaps = {
   placements: 12,
 };
 
+export const DEFAULT_QUEEN_BRIEF_TEXT_CAPS: QueenBriefTextCaps = {
+  // Keep the volatile wake tail comfortably below the Claude CLI admission path
+  // while leaving the stable Queen persona and tool schema room in the full prompt.
+  totalChars: 24_000,
+  lineChars: 700,
+  carryNoteChars: 2_500,
+};
+
 export interface QueenBriefInput {
   floor: QueenBriefFloor;
   /** The Queen's self-authored carry-note from the prior wake (P-015). */
   carryNote?: string | null;
   /** Override the default per-section caps. */
   caps?: Partial<QueenBriefCaps>;
+  /** Override text-size caps. Intended for tests and emergency tuning only. */
+  textCaps?: Partial<QueenBriefTextCaps>;
 }
 
 /**
@@ -184,6 +200,26 @@ function renderCandidateLine(r: Ranked<PlacementCandidate>, i: number): string {
   return `${i + 1}. ${c.id} — ${title}${importanceTag(c)}${c.needsStart ? ' (needs start)' : ''} [${c.harness}] (rank ${r.rank.score.toFixed(2)})${whyOf(r)}`;
 }
 
+function truncateText(value: string, maxChars: number, label = 'truncated'): string {
+  if (!Number.isFinite(maxChars) || maxChars <= 0) return '';
+  if (value.length <= maxChars) return value;
+  const marker = `…[${label}; ${value.length - maxChars} chars omitted]`;
+  if (marker.length >= maxChars) return marker.slice(0, maxChars);
+  return `${value.slice(0, maxChars - marker.length).trimEnd()}${marker}`;
+}
+
+function capRenderedBrief(lines: readonly string[], caps: QueenBriefTextCaps): string {
+  const lineChars = Math.max(80, Math.floor(caps.lineChars));
+  const totalChars = Math.max(1_000, Math.floor(caps.totalChars));
+  let text = lines.map((line) => truncateText(line, lineChars, 'line truncated')).join('\n');
+  if (text.length <= totalChars) return text;
+
+  const marker = `\n\n…[brief truncated to ${totalChars} chars; drill down with hive:survey / coord:inbox / curation:feed as needed]`;
+  if (marker.length >= totalChars) return marker.slice(0, totalChars);
+  text = text.slice(0, totalChars - marker.length).trimEnd();
+  return `${text}${marker}`;
+}
+
 /** Append a capped list section; emits a "+N more" overflow line when truncated. */
 function section(out: string[], heading: string, lines: readonly string[], cap: number, drillHint?: string): void {
   if (lines.length === 0) return;
@@ -203,6 +239,7 @@ function section(out: string[], heading: string, lines: readonly string[], cap: 
  */
 export function renderQueenBrief(input: QueenBriefInput): string {
   const caps = { ...DEFAULT_QUEEN_BRIEF_CAPS, ...input.caps };
+  const textCaps = { ...DEFAULT_QUEEN_BRIEF_TEXT_CAPS, ...input.textCaps };
   const f = input.floor;
   const out: string[] = [];
 
@@ -431,10 +468,10 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     out.push('');
     out.push('---');
     out.push('### Your carry-note (you wrote this last wake — your in-flight intention, not world-state)');
-    out.push(note);
+    out.push(truncateText(note, Math.floor(textCaps.carryNoteChars), 'carry-note truncated'));
   }
 
-  return out.join('\n');
+  return capRenderedBrief(out, textCaps);
 }
 
 /**
