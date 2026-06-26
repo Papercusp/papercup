@@ -11,6 +11,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   spawnAgentInHarness: vi.fn(),
+  claimWorkItem: vi.fn(),
+  releaseWorkItem: vi.fn(),
   identity: vi.fn(),
 }));
 
@@ -18,6 +20,10 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: h.identity })
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
 vi.mock('../../fleet/operator-spawn', () => ({ spawnAgentInHarness: h.spawnAgentInHarness }));
+vi.mock('../../work-items', () => ({
+  claimWorkItem: h.claimWorkItem,
+  releaseWorkItem: h.releaseWorkItem,
+}));
 
 import spawnTool from './spawn';
 
@@ -26,6 +32,8 @@ const parse = (res: any) => JSON.parse(res.content[0].text);
 
 beforeEach(() => {
   h.spawnAgentInHarness.mockReset();
+  h.claimWorkItem.mockReset().mockResolvedValue({ id: 'WI-1' });
+  h.releaseWorkItem.mockReset().mockResolvedValue({ id: 'WI-1' });
   h.identity.mockReset().mockReturnValue({ ownerId: 'op-1', ownerLabel: 'Operator', workspaceId: 'default' });
 });
 
@@ -87,6 +95,74 @@ describe("fleet:spawn tool — workspace resolution never records the '*' wildca
     h.identity.mockReturnValue({ ownerId: 'su-1', ownerLabel: 'SU', workspaceId: '*' });
     await (spawnTool as any).handler({ role: 'scoper', harness: 'papercup', workspace: 'ws-x' }, CTX);
     expect(h.spawnAgentInHarness.mock.calls[0][0].workspaceId).toBe('ws-x');
+  });
+});
+
+describe('fleet:spawn tool — bee work-item reservation', () => {
+  it('infers a work item from the brief and claims it to the reserved bee spawn id', async () => {
+    h.spawnAgentInHarness.mockImplementation(async (input: any) => ({
+      ok: true,
+      spawnId: input.spawnId,
+      harness: input.harness,
+      projectDir: '/tmp',
+      error: null,
+    }));
+
+    const out = parse(await (spawnTool as any).handler({
+      role: 'bee',
+      harness: 'papercup',
+      brief: 'Pick up WI-123 and verify it.',
+    }, CTX));
+
+    expect(out.ok).toBe(true);
+    const [[workItemId, owner, claimOpts]] = h.claimWorkItem.mock.calls;
+    const [[spawnInput]] = h.spawnAgentInHarness.mock.calls;
+    expect(workItemId).toBe('WI-123');
+    expect(owner).toMatch(/^s-\d+-[0-9a-f]{8}$/);
+    expect(claimOpts).toEqual({ harness: 'papercup' });
+    expect(spawnInput).toMatchObject({
+      role: 'bee',
+      spawnId: owner,
+      featureId: 'WI-123',
+      itemId: 'WI-123',
+    });
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('releases the reserved work item if the bee spawn is rejected', async () => {
+    h.spawnAgentInHarness.mockResolvedValue({
+      ok: false,
+      spawnId: 's-rejected',
+      harness: 'papercup',
+      projectDir: null,
+      error: 'over fleet ceiling',
+      awaitEvent: 'spawn-slot:freed:default',
+    });
+
+    const out = parse(await (spawnTool as any).handler({
+      role: 'bee',
+      harness: 'papercup',
+      feature: 'WI-456',
+      brief: 'Pick up WI-456.',
+    }, CTX));
+
+    expect(out.ok).toBe(false);
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-456', expect.stringMatching(/^s-/), { harness: 'papercup' });
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-456', { harness: 'papercup' });
+  });
+
+  it('does not launch when the bee work item reservation loses the claim race', async () => {
+    h.claimWorkItem.mockResolvedValue(null);
+
+    const out = parse(await (spawnTool as any).handler({
+      role: 'bee',
+      harness: 'papercup',
+      brief: 'Pick up WI-789.',
+    }, CTX));
+
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('could not be claimed');
+    expect(h.spawnAgentInHarness).not.toHaveBeenCalled();
   });
 });
 

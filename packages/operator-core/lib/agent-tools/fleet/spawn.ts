@@ -10,11 +10,17 @@
  * fleet:tree and cancellable with fleet:cancel.
  */
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { softText, clampText, LIMITS } from '../limits';
+
+function inferSingleWorkItemId(text: string | null | undefined): string | null {
+  const matches = [...(text ?? '').matchAll(/\b(?:WI|F)-\d+\b/g)].map((m) => m[0]);
+  return matches[0] ?? null;
+}
 
 export default defineTool({
   name: 'fleet:spawn',
@@ -106,13 +112,42 @@ export default defineTool({
     // spawns are ROOTS. Inspect either with fleet:tree { spawn_id: <returned id> }.
     const ownerId = actor.ownerId ?? '';
     const parentSpawnId = /^s-/.test(ownerId) ? ownerId : null;
+    const brief = clampText(args.brief, LIMITS.BRIEF) ?? null;
+    const workItemId = args.feature ?? (args.role === 'bee' ? inferSingleWorkItemId(brief) : null);
+    let reservedSpawnId: string | null = null;
+    let reservedWorkItemId: string | null = null;
+    if (args.role === 'bee' && workItemId) {
+      const { claimWorkItem } = await import('../../work-items');
+      reservedSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const claim = await claimWorkItem(workItemId, reservedSpawnId, { harness: args.harness ?? undefined });
+      if (!claim) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                spawn_id: reservedSpawnId,
+                harness: args.harness ?? null,
+                project_dir: null,
+                error: `spawn rejected: work item ${workItemId} could not be claimed for the new bee`,
+                next: 'inspect the work item holder/state, release stale ownership if appropriate, then retry fleet:spawn.',
+              }),
+            },
+          ],
+        };
+      }
+      reservedWorkItemId = workItemId;
+    }
     const res = await spawnAgentInHarness({
       workspaceId,
       harness: args.harness ?? null,
       role: args.role,
-      featureId: args.feature ?? null,
+      spawnId: reservedSpawnId ?? undefined,
+      featureId: reservedWorkItemId ?? args.feature ?? null,
+      itemId: reservedWorkItemId ?? args.feature ?? null,
       chunkId: args.chunk ?? null,
-      brief: clampText(args.brief, LIMITS.BRIEF) ?? null,
+      brief,
       // The queen's model lever is tier NAMES only (propose/dispose split) —
       // a raw model spec from role=queen is ignored in favor of her tier.
       tier,
@@ -126,6 +161,10 @@ export default defineTool({
       // coordination trigger. Stamps turn_trigger on the run's usage sample.
       turnTrigger: 'coord-wake',
     });
+    if (!res.ok && reservedWorkItemId) {
+      const { releaseWorkItem } = await import('../../work-items');
+      await releaseWorkItem(reservedWorkItemId, { harness: args.harness ?? undefined }).catch(() => {});
+    }
     return {
       content: [
         {
