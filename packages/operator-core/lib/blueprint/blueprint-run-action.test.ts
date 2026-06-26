@@ -144,6 +144,31 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     expect(spawn.body.extra).toContain('BLUEPRINT_ID=scan');
   });
 
+  it('workspace-sentinel hive wakes launch the concrete hive slug, not the sentinel host', async () => {
+    const result = (await handleBlueprintRun(
+      ctx({
+        installSlug: 'papercusp-workspace',
+        workspaceId: 'papercusp-workspace',
+        payloadTemplate: {
+          blueprintId: 'coding',
+          launchInstallSlug: 'papercusp',
+          kickoff: 'workspace-scoped Queen wake',
+        },
+      }),
+    )) as SystemActionResult | undefined;
+
+    expect(result?.durableSpawns).toHaveLength(1);
+    const spawn = result!.durableSpawns![0];
+    expect(spawn.label).toBe('papercusp/queen');
+    expect(spawn.spawnRecord).toMatchObject({
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'papercusp',
+      childRole: 'queen',
+    });
+    expect(spawn.url).toContain('/api/harness/papercusp/invoke');
+    expect(spawn.url).not.toContain('/api/harness/papercusp-workspace/invoke');
+  });
+
   it('payload.timeoutMs threads through to the durable launch body (a scan needs >> the 90s route default)', async () => {
     const result = (await handleBlueprintRun(
       ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep now', timeoutMs: 900_000 } }),

@@ -316,6 +316,10 @@ export function programPayloadFromTemplate(payloadTemplate: Record<string, unkno
     mode: _mode,
     kickoff: _kickoff,
     timeoutMs: _timeoutMs,
+    launchInstallSlug: _launchInstallSlug,
+    hiveSlug: _hiveSlug,
+    hiveInstallSlug: _hiveInstallSlug,
+    targetInstallSlug: _targetInstallSlug,
     workItem: _workItem,
     payload,
     ...topLevel
@@ -324,6 +328,24 @@ export function programPayloadFromTemplate(payloadTemplate: Record<string, unkno
     ? (payload as Record<string, unknown>)
     : {};
   return { ...topLevel, ...nested };
+}
+
+function payloadString(payloadTemplate: Record<string, unknown> | null | undefined, key: string): string | null {
+  const raw = payloadTemplate?.[key];
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+}
+
+function launchInstallSlugFromPayload(
+  payloadTemplate: Record<string, unknown> | null | undefined,
+  fallback: string,
+): string {
+  return (
+    payloadString(payloadTemplate, 'launchInstallSlug') ??
+    payloadString(payloadTemplate, 'hiveSlug') ??
+    payloadString(payloadTemplate, 'hiveInstallSlug') ??
+    payloadString(payloadTemplate, 'targetInstallSlug') ??
+    fallback
+  );
 }
 
 /** The registered `system:blueprint-run` handler. */
@@ -393,11 +415,12 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
     // no-op). Returning the request lets the routine workflow start it DURABLY after
     // the step, where startWorkflow is legal (system-actions.ts → startDurableSpawns).
     // The handler is a checkpointed step, so this per-fire key is stable on replay.
-    const idempotencyKey = `blueprint-run:${installSlug}:${launchId}:${Date.now()}`;
+    const launchInstallSlug = launchInstallSlugFromPayload(payloadTemplate, installSlug);
+    const idempotencyKey = `blueprint-run:${launchInstallSlug}:${launchId}:${Date.now()}`;
     const durableSpawn = await buildLaunchSpawnRequest(
       launchId,
       {
-        installSlug,
+        installSlug: launchInstallSlug,
         workspaceId,
         kickoff,
         ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
@@ -405,7 +428,7 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
       idempotencyKey,
     );
     console.log(
-      `[blueprint-run] ${installSlug}: queued durable launch '${launchId}' (role ${durableSpawn.spawnRecord?.childRole ?? '?'})`,
+      `[blueprint-run] ${installSlug}: queued durable launch '${launchId}' for '${launchInstallSlug}' (role ${durableSpawn.spawnRecord?.childRole ?? '?'})`,
     );
     return { durableSpawns: [durableSpawn] };
   }
