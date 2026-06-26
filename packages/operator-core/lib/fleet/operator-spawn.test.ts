@@ -219,6 +219,51 @@ describe('spawnAgentInHarness — happy path', () => {
     );
   });
 
+  it('times out a spawn that never reaches child pid and releases only its reserved work item claim', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_SPAWN_CHILD_START_TIMEOUT_MS', '1000');
+    let captured: AbortSignal | undefined;
+    vi.mocked(spawnInvokeOnce).mockImplementation(((
+      _d: string,
+      _r: string,
+      _e: string[],
+      _env: Record<string, string>,
+      opts?: { signal?: AbortSignal },
+    ) => {
+      captured = opts?.signal;
+      return new Promise(() => {});
+    }) as never);
+    try {
+      const res = await spawnAgentInHarness({
+        workspaceId: 'ws-1',
+        harness: 'demo',
+        role: 'bee',
+        featureId: 'WI-1',
+      });
+      expect(res.ok).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captured?.aborted).toBe(true);
+      expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        spawnId: res.spawnId,
+        status: 'failed',
+        errorMessage: expect.stringContaining('timed out before child process start'),
+      }));
+
+      const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
+      const releaseCall = sqlMock.mock.calls.find(
+        (c) => Array.isArray(c[0]) && (c[0] as string[]).join('').includes('UPDATE harness_shared.harness_features_consolidated'),
+      );
+      expect(releaseCall).toBeDefined();
+      expect(releaseCall).toContain('demo');
+      expect(releaseCall).toContain('WI-1');
+      expect(releaseCall).toContain(res.spawnId);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('a non-zero child exit finishes the row failed with the stderr tail', async () => {
     vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: '', exitCode: 1, stderr: 'boom' });
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });

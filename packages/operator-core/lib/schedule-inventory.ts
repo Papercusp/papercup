@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { listDbosScheduledWorkflows, type DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
+import { listManaged, type ManagedEntry } from '@papercusp/scheduled-registry';
 
 export type ScheduleSource = 'dbos' | 'routines' | 'in-process' | 'managed';
 export type ScheduleScope = 'operator' | 'harness';
@@ -73,6 +74,9 @@ export interface InProcessChecksResult {
 export interface ScheduleInventoryDeps {
   getDbosSchedules: () => Promise<DbosScheduledEntry[]>;
   getRoutines: () => Promise<RoutineRow[]>;
+  /** LIVE managed timers from the scheduled-registry (source 'managed') — the actually-armed in-process timers with real fire times. */
+  getManaged: () => ManagedEntry[];
+  /** STATIC fallback: the known in-process sweeps as config (source 'in-process'), for checks not armed in THIS process. */
   getInProcessChecks: () => InProcessChecksResult;
 }
 
@@ -136,6 +140,7 @@ export async function collectScheduleInventory(
   const getDbos = deps.getDbosSchedules ?? (() => listDbosScheduledWorkflows());
   const getRoutines = deps.getRoutines ?? defaultGetRoutines;
   const getChecks = deps.getInProcessChecks ?? defaultGetInProcessChecks;
+  const getManaged = deps.getManaged ?? (() => listManaged());
 
   const [dbos, routines] = await Promise.all([
     getDbos().catch(() => [] as DbosScheduledEntry[]),
@@ -146,6 +151,12 @@ export async function collectScheduleInventory(
     inproc = getChecks();
   } catch {
     inproc = { checks: [], armed: false };
+  }
+  let managed: ManagedEntry[];
+  try {
+    managed = getManaged();
+  } catch {
+    managed = [];
   }
 
   const rows: ScheduleInventoryRow[] = [];
@@ -189,7 +200,32 @@ export async function collectScheduleInventory(
     });
   }
 
+  // source 'managed' — the LIVE scheduled-registry (P-006): actually-armed in-process
+  // timers (the re-homed host sweeps + any codemod'd bespoke timers) with real fire
+  // times. All managed timers are the in-process (ephemeral) mechanism per D-006.
+  const managedNames = new Set(managed.map((m) => m.name));
+  for (const m of managed) {
+    rows.push({
+      source: 'managed',
+      scope: 'operator',
+      tier: 'ephemeral',
+      category: m.category,
+      name: m.name,
+      installSlug: null,
+      cadence: humanInterval(m.intervalMs),
+      armed: true, // present in the registry == armed in this process
+      lastFire: isoFromMs(m.lastFireAt),
+      nextFire: null,
+      lastError: m.lastError,
+      detail: { intervalMs: m.intervalMs, shed: m.shed, fires: m.fires, armedAt: m.armedAt, running: m.running },
+    });
+  }
+
+  // source 'in-process' — STATIC fallback: known sweeps NOT currently armed as managed
+  // timers in THIS process (e.g. a :3070 request worker), so they're still listed
+  // (armed=false) instead of vanishing. Deduped against the live managed set above.
   for (const c of inproc.checks) {
+    if (managedNames.has(c.name)) continue;
     rows.push({
       source: 'in-process',
       scope: 'operator',
@@ -199,7 +235,7 @@ export async function collectScheduleInventory(
       installSlug: null,
       cadence: humanInterval(c.intervalMs),
       armed: inproc.armed,
-      lastFire: null, // no fire history yet — P-005 adds per-check liveness stamps
+      lastFire: null,
       nextFire: null,
       lastError: null,
       detail: { intervalMs: c.intervalMs, shed: c.shed ?? false, fireOnArm: c.fireOnArm ?? false },

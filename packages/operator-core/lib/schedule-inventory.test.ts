@@ -43,6 +43,7 @@ describe('collectScheduleInventory', () => {
     const rows = await collectScheduleInventory({
       getDbosSchedules: async () => [dbos({ name: 'backupCadence', crontab: '0 * * * * *', lastFireMs: 1_700_000_000_000 })],
       getRoutines: async () => [routine({ name: 'green-checkpoint', active: false, metadata: { last_error: 'boom' } })],
+      getManaged: () => [],
       getInProcessChecks: () => ({
         checks: [{ name: 'system-health', intervalMs: 30_000, shed: true }],
         armed: true,
@@ -78,10 +79,63 @@ describe('collectScheduleInventory', () => {
       getRoutines: async () => {
         throw new Error('pg down');
       },
+      getManaged: () => [],
       getInProcessChecks: () => ({ checks: [{ name: 'service-health', intervalMs: 60_000 }], armed: false }),
     });
     expect(rows.map((r) => r.source)).toEqual(['in-process']);
     expect(rows[0].armed).toBe(false);
+  });
+
+  it('surfaces live managed timers as source=managed with real fire times, deduping the static in-process fallback', async () => {
+    const rows = await collectScheduleInventory({
+      getDbosSchedules: async () => [],
+      getRoutines: async () => [],
+      getManaged: () => [
+        {
+          name: 'system-health',
+          category: 'global-sweep',
+          intervalMs: 30_000,
+          armedAt: 10,
+          lastFireAt: 1_700_000_000_000,
+          lastError: null,
+          running: false,
+          fires: 5,
+          shed: true,
+        },
+        {
+          name: 'engine-death-sentinel',
+          category: 'watchdog',
+          intervalMs: 300_000,
+          armedAt: 10,
+          lastFireAt: null,
+          lastError: 'last tick failed',
+          running: false,
+          fires: 2,
+          shed: false,
+        },
+      ],
+      getInProcessChecks: () => ({
+        checks: [
+          { name: 'system-health', intervalMs: 30_000, shed: true }, // also armed as managed → deduped
+          { name: 'service-health', intervalMs: 60_000 }, // NOT managed → static fallback
+        ],
+        armed: true,
+      }),
+    });
+
+    // system-health appears ONCE (live managed), not duplicated as in-process
+    const sh = rows.filter((r) => r.name === 'system-health');
+    expect(sh).toHaveLength(1);
+    expect(sh[0]).toMatchObject({ source: 'managed', tier: 'ephemeral', category: 'global-sweep', armed: true });
+    expect(sh[0].lastFire).toBe(new Date(1_700_000_000_000).toISOString());
+
+    // a watchdog managed timer is VISIBLE (source managed) but stays its own category — visibility != control
+    const wd = rows.find((r) => r.name === 'engine-death-sentinel')!;
+    expect(wd).toMatchObject({ source: 'managed', category: 'watchdog', lastError: 'last tick failed' });
+
+    // service-health is not a managed timer here → static in-process fallback (armed flag from the process)
+    const svc = rows.find((r) => r.name === 'service-health')!;
+    expect(svc).toMatchObject({ source: 'in-process', armed: true, lastFire: null });
   });
 
   it('summarizeInventory rolls up by source and tier', () => {

@@ -27,6 +27,7 @@
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
 import { createConnectionPressureGovernor } from '../connection-pressure-governor';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 /** One in-process periodic check. The tick must be idempotent — a throw is
  *  caught + logged and the next interval retries (no durable recovery). */
@@ -527,7 +528,8 @@ export function buildDefaultChecks(): PeriodicCheck[] {
 // ── The scheduler (idempotent, unref'd, never keeps the process alive) ────────
 
 interface ArmedCheck {
-  timer: ReturnType<typeof setInterval>;
+  name: string;
+  handle: ManagedHandle;
 }
 
 let armed: ArmedCheck[] | null = null;
@@ -535,43 +537,44 @@ let armed: ArmedCheck[] | null = null;
 /**
  * Arm the in-process periodic checks. Idempotent (a second call is a no-op).
  * Call ONCE from host-bootstrap gated on `backgroundWorkers` — never per cluster
- * request worker. Each check runs on its own unref'd interval with a per-check
- * re-entrancy guard (a slow tick never piles up a second concurrent run — parity
- * with DBOS's workflow-id dedup).
+ * request worker.
+ *
+ * P-005 (schedule-inventory-and-ephemeral-tier-2026-06-26): each check now rides
+ * `managedSetInterval` from @papercusp/scheduled-registry — the ONE in-process
+ * scheduling mechanism (D-006), shared with the ephemeral blueprint cadence tier.
+ * The registry supplies the unref'd timer, the per-check re-entrancy guard (a slow
+ * tick never piles up a second concurrent run — parity with DBOS's workflow-id
+ * dedup), the fireOnArm heal-on-startup setTimeout(0), AND per-check
+ * armed/last-fire/last-error tracking so every sweep is VISIBLE in schedule:inventory
+ * (category 'global-sweep'). The tick body is still `runPeriodicCheck`, so the
+ * shed-gate (shouldShedHeavyTick) + never-throw behavior is byte-identical; the
+ * registry's own shed-gate stays disabled (default shouldShed = false) to avoid
+ * double-shedding — the `shed` flag is carried only so the inventory can show which
+ * checks are shed-eligible.
  */
 export function armInProcessPeriodicChecks(
   opts: { checks?: PeriodicCheck[]; deps?: RunCheckDeps } = {},
 ): { stop: () => void } {
   if (armed) return { stop: disarmInProcessPeriodicChecks };
   const checks = opts.checks ?? buildDefaultChecks();
-  armed = [];
-  for (const check of checks) {
-    let running = false;
-    const runOnce = () => {
-      if (running) return; // previous tick still in flight — skip, no pile-up
-      running = true;
-      void runPeriodicCheck(check, opts.deps).finally(() => {
-        running = false;
-      });
-    };
-    const timer = setInterval(runOnce, check.intervalMs);
-    timer.unref?.();
-    armed.push({ timer });
-    // heal-on-startup: a fireOnArm check also runs once now (not only after the first
-    // interval) so a self-heal sweep converges on boot. unref'd timer(0) so it never
-    // blocks startup or holds the process open.
-    if (check.fireOnArm) setTimeout(runOnce, 0).unref?.();
-  }
+  armed = checks.map((check) => ({
+    name: check.name,
+    handle: managedSetInterval(check.name, check.intervalMs, () => runPeriodicCheck(check, opts.deps), {
+      category: 'global-sweep',
+      shed: check.shed,
+      fireOnArm: check.fireOnArm,
+    }),
+  }));
   console.log(
     `[in-process-periodic] armed ${checks.length} in-process check(s): ${checks.map((c) => c.name).join(', ')}`,
   );
   return { stop: disarmInProcessPeriodicChecks };
 }
 
-/** Disarm all in-process checks (tests; graceful shutdown). */
+/** Disarm all in-process checks (tests; graceful shutdown). Deregisters them from the inventory. */
 export function disarmInProcessPeriodicChecks(): void {
   if (!armed) return;
-  for (const a of armed) clearInterval(a.timer);
+  for (const a of armed) a.handle.stop();
   armed = null;
 }
 

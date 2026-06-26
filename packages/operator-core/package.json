@@ -25,6 +25,7 @@
     "@papercusp/chat-protocol": "*",
     "@papercusp/control-mutation": "*",
     "@papercusp/debounce-coalesce": "*",
+    "@papercusp/scheduled-registry": "*",
     "@papercusp/deployment-driver": "*",
     "@papercusp/eval-battery": "*",
     "@papercusp/event-reaction": "*",

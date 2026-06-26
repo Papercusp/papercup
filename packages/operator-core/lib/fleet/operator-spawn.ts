@@ -59,6 +59,7 @@ import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { backendFeatureGuard, interactiveBackendFromSpawnBackend } from '../backend-feature-capabilities';
+import { FEATURE_NON_REQUEUE_STATES } from '../work-item-dispatch-states';
 
 /**
  * The deterministic SAFETY-FLOOR ceiling on concurrently-running spawns — the
@@ -118,6 +119,33 @@ export async function effectiveSpawnCeiling(workspaceId: string): Promise<number
  */
 export function spawnSlotEventKey(workspaceId: string): string {
   return `spawn-slot:freed:${workspaceId}`;
+}
+
+const DEFAULT_CHILD_START_TIMEOUT_MS = 180_000;
+
+function spawnChildStartTimeoutMs(): number {
+  const raw = process.env.PAPERCUSP_SPAWN_CHILD_START_TIMEOUT_MS;
+  if (!raw) return DEFAULT_CHILD_START_TIMEOUT_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.max(1_000, Math.floor(n)) : DEFAULT_CHILD_START_TIMEOUT_MS;
+}
+
+async function releaseSpawnWorkItemClaim(
+  sql: Sql,
+  opts: { harness: string; workItemId: string | null | undefined; spawnId: string },
+): Promise<void> {
+  const workItemId = (opts.workItemId ?? '').trim();
+  if (!workItemId) return;
+  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
+  await sql`
+    UPDATE harness_shared.harness_features_consolidated
+       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL,
+           status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
+           updated_ts = ${Date.now()}
+     WHERE harness_slug = ${opts.harness}
+       AND feature_id = ${workItemId}
+       AND taken_by = ${opts.spawnId}
+  `;
 }
 
 /**
@@ -1184,7 +1212,63 @@ export async function spawnAgentInHarness(
   ensureSpawnHeartbeatLoop();
 
   // Fire-and-forget: the spawn returns now; completion lands on the nursery row.
+  // The row is already admitted/running here, but spawnInvokeOnce still performs
+  // async prep before runChild can report the real child pid. Bound that admission
+  // → child-start window so a wedged flag/gateway/hydration read cannot hold a
+  // fleet slot and work-item claim forever while only the supervisor pid is stamped.
   let finalStatus: 'done' | 'failed' | 'cancelled' | null = null;
+  let childStarted = false;
+  let terminalRecorded = false;
+  let childStartTimer: ReturnType<typeof setTimeout> | null = null;
+  const workItemId = input.featureId ?? input.itemId ?? null;
+  const completeSpawn = async (args: {
+    status: 'done' | 'failed' | 'cancelled';
+    exitCode?: number | null;
+    errorMessage?: string | null;
+    outputTail?: string | null;
+    releaseClaim?: boolean;
+  }): Promise<void> => {
+    if (terminalRecorded) return;
+    terminalRecorded = true;
+    if (childStartTimer) {
+      clearTimeout(childStartTimer);
+      childStartTimer = null;
+    }
+    finalStatus = args.status;
+    await finishSpawn(sql, {
+      spawnId,
+      workspaceId: input.workspaceId,
+      status: args.status,
+      exitCode: args.exitCode ?? null,
+      errorMessage: args.errorMessage ?? null,
+      outputTail: args.outputTail ?? null,
+    });
+    if (args.releaseClaim) {
+      await releaseSpawnWorkItemClaim(sql, { harness: slug, workItemId, spawnId }).catch(() => {});
+    }
+    localSpawnAborts.delete(spawnId);
+    localSpawnOutput.delete(spawnId);
+    // The terminal flip above freed a ceiling slot — wake any over-ceiling
+    // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
+    void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);
+    // EI-108: Wake parent on child death (if the spawn has a parent)
+    void wakeParentOnChildDeath(sql, spawnId, input.workspaceId, args.status).catch(() => {
+      /* best-effort — logged inside wakeParentOnChildDeath */
+    });
+  };
+
+  childStartTimer = setTimeout(() => {
+    if (childStarted || terminalRecorded) return;
+    const timeoutMs = spawnChildStartTimeoutMs();
+    abort.abort();
+    void completeSpawn({
+      status: 'failed',
+      errorMessage: `spawn launch timed out before child process start after ${timeoutMs}ms`,
+      releaseClaim: true,
+    }).catch(() => { /* PG down — nothing left to record to */ });
+  }, spawnChildStartTimeoutMs());
+  childStartTimer.unref?.();
+
   void spawnInvokeOnce(project.path, role, extras, extraEnv, {
     signal: abort.signal,
     forceSessionId,
@@ -1194,6 +1278,11 @@ export async function spawnAgentInHarness(
     // row (host briefly paused) as a dead child. Best-effort — a missed write
     // just degrades to the heartbeat-stale reclaim.
     onChildPid: (pid) => {
+      childStarted = true;
+      if (childStartTimer) {
+        clearTimeout(childStartTimer);
+        childStartTimer = null;
+      }
       void recordSpawnPid(getOrgPg().sql, spawnId, pid).catch(() => {});
     },
     // P-008: per-chunk stream signal, persisted by the heartbeat tick.
@@ -1221,9 +1310,7 @@ export async function spawnAgentInHarness(
         },
         { log: (m) => console.log(`[operator-spawn] ${spawnId} ${m}`) },
       );
-      return finishSpawn(sql, {
-        spawnId,
-        workspaceId: input.workspaceId,
+      return completeSpawn({
         status: finalStatus,
         exitCode: r.exitCode,
         errorMessage: (r.stderr || '').slice(-2000) || null,
@@ -1232,24 +1319,16 @@ export async function spawnAgentInHarness(
     })
     .catch((err) => {
       finalStatus = abort.signal.aborted ? 'cancelled' : 'failed';
-      return finishSpawn(sql, {
-        spawnId,
-        workspaceId: input.workspaceId,
+      return completeSpawn({
         status: finalStatus,
         errorMessage: err instanceof Error ? err.message : String(err),
+        releaseClaim: !childStarted,
       }).catch(() => { /* PG down — nothing left to record to */ });
     })
     .finally(() => {
-      localSpawnAborts.delete(spawnId);
-      localSpawnOutput.delete(spawnId);
-      // The terminal flip above freed a ceiling slot — wake any over-ceiling
-      // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
-      void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);
-      // EI-108: Wake parent on child death (if the spawn has a parent)
-      if (finalStatus) {
-        void wakeParentOnChildDeath(sql, spawnId, input.workspaceId, finalStatus).catch(() => {
-          /* best-effort — logged inside wakeParentOnChildDeath */
-        });
+      if (childStartTimer && terminalRecorded) {
+        clearTimeout(childStartTimer);
+        childStartTimer = null;
       }
     });
 
