@@ -217,7 +217,15 @@ export async function collectScheduleInventory(
       lastFire: isoFromMs(m.lastFireAt),
       nextFire: null,
       lastError: m.lastError,
-      detail: { intervalMs: m.intervalMs, shed: m.shed, fires: m.fires, armedAt: m.armedAt, running: m.running },
+      detail: {
+        intervalMs: m.intervalMs,
+        shed: m.shed,
+        fires: m.fires,
+        armedAt: m.armedAt,
+        running: m.running,
+        instances: m.instances ?? 1,
+        instanced: m.instanced ?? false,
+      },
     });
   }
 

@@ -3,6 +3,7 @@
  * Ported from app/api/agent-mcp/run-command/sse/route.ts. `auth: 'public'`.
  */
 import { sseResponse } from '@papercusp/sse';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   registerSession,
   unregisterSession,
@@ -44,14 +45,14 @@ export default defineTool({
 
         sink.event('hello', { workspace, sessionId });
 
-        const sessionCheck = setInterval(() => {
+        const sessionCheck = managedSetInterval('run-command-sse-session', 5000, () => {
           if (!heartbeatSession(workspace, sessionId)) {
             sink.close();
           }
-        }, 5000);
+        }, { category: 'lifecycle', instanced: true });
 
         sink.onClose(() => {
-          clearInterval(sessionCheck);
+          sessionCheck.stop();
           unregisterSession(workspace, sessionId);
         });
       },

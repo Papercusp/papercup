@@ -11,6 +11,7 @@
  * Ported from app/api/ui/intents/stream/route.ts. `auth: 'public'` — loopback inline.
  */
 import { sseResponse } from '@papercusp/sse';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { onUiIntent } from '../../../ui-intents-bus';
@@ -94,11 +95,13 @@ export default defineTool({
         // in the window between connect and the subscribe above).
         void drain();
         // Safety backstop (see BACKSTOP_MS) — never strand a pending intent on a missed NOTIFY.
-        const backstop = setInterval(() => void drain(), BACKSTOP_MS);
-        if (typeof backstop.unref === 'function') backstop.unref();
+        const backstop = managedSetInterval('ui-intents-backstop', BACKSTOP_MS, () => drain(), {
+          category: 'lifecycle',
+          instanced: true,
+        });
 
         sink.onClose(() => {
-          clearInterval(backstop);
+          backstop.stop();
           if (unsubscribe) unsubscribe();
         });
       },

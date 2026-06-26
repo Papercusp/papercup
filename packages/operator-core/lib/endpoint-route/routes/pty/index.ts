@@ -28,6 +28,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
 import { sseResponse } from '@papercusp/sse';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   killPty, markActive, resizePty, spawnPty, writePty, getPty, getPtyMeta, getHistory, PtyError,
 } from '../../../pty-bridge';
@@ -456,13 +457,12 @@ const stream = defineTool({
         }
 
         // Keep the SSE consumer counted as activity so the reaper spares it.
-        const ticker = setInterval(() => {
+        const ticker = managedSetInterval('pty-sse-active-ticker', 15_000, () => {
           if (!sink.closed) markActive(id);
-        }, 15_000);
-        if (typeof ticker.unref === 'function') ticker.unref();
+        }, { category: 'lifecycle', instanced: true });
 
         sink.onClose(() => {
-          clearInterval(ticker);
+          ticker.stop();
           handle.onData.delete(onData);
           handle.onExit.delete(onExit);
           // Don't kill the pty on SSE disconnect — PiPanel unmounts on

@@ -27,6 +27,7 @@
  * needs. Default is now 3068 so the two servers stay independent.
  */
 import { WebSocketServer, type WebSocket } from 'ws';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { IncomingMessage } from 'node:http';
 import { verifyDeviceToken } from './device-jwt';
 import { dispatchTranscript, type OutgoingFrame } from './device-voice-dispatch';
@@ -179,16 +180,16 @@ export function handleConnection(ws: WebSocket, req: IncomingMessage): void {
   // respond to ping with pong automatically, so the phone doesn't
   // need any new code.
   let alive = true;
-  const pinger = setInterval(() => {
+  const pinger = managedSetInterval('device-voice-ws-ping', 20_000, () => {
     if (!alive) {
       try { ws.terminate(); } catch { /* ignore */ }
       return;
     }
     alive = false;
     try { ws.ping(); } catch { /* ignore */ }
-  }, 20_000);
+  }, { category: 'lifecycle', instanced: true });
   ws.on('pong', () => { alive = true; });
-  ws.on('close', () => clearInterval(pinger));
+  ws.on('close', () => pinger.stop());
 
   // Per-connection state — wake word arrives in `hello`, then is cached
   // for the lifetime of the connection. Prevents per-transcript drift if

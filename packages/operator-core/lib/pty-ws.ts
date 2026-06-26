@@ -25,6 +25,7 @@
  */
 
 import { WebSocketServer, type WebSocket } from 'ws';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { IncomingMessage } from 'node:http';
 import {
   getPty,
@@ -180,7 +181,7 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
   // connections after N minutes. ws library tracks pong responses via
   // `isAlive` flag (canonical pattern from the README).
   const PING_INTERVAL_MS = 30_000;
-  const pingInterval = setInterval(() => {
+  const pingInterval = managedSetInterval('pty-ws-keepalive', PING_INTERVAL_MS, () => {
     for (const ws of wss.clients) {
       const tagged = ws as WebSocket & { _isAlive?: boolean };
       if (tagged._isAlive === false) {
@@ -190,14 +191,13 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
       tagged._isAlive = false;
       try { ws.ping(); } catch { /* */ }
     }
-  }, PING_INTERVAL_MS);
-  pingInterval.unref?.();
+  }, { category: 'lifecycle', instanced: true });
   wss.on('connection', (ws) => {
     const tagged = ws as WebSocket & { _isAlive?: boolean };
     tagged._isAlive = true;
     ws.on('pong', () => { tagged._isAlive = true; });
   });
-  wss.on('close', () => clearInterval(pingInterval));
+  wss.on('close', () => pingInterval.stop());
 
   wss.on('listening', () => {
     const addr = wss.address();
