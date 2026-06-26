@@ -328,12 +328,6 @@ export async function reconcileOwnedHiveEpochKeys(
       if (liveDevices.length === 0) continue;
       const have = new Set(await loadEpochKeyDevices(workspaceId, hiveHomeSlug, current, opts.sql));
       const hasGap = liveDevices.some((pk) => !have.has(pk));
-      if (hiveHomeSlug === 'hello-world-hive') {
-        // eslint-disable-next-line no-console
-        console.info(
-          `[hive-epoch-key-reconcile] DEBUG ${workspaceId}/${hiveHomeSlug}: current=${current} live=[${liveDevices.map((p) => p.slice(0, 6)).join(',')}] have=[${[...have].map((p) => p.slice(0, 6)).join(',')}] gap=${hasGap}`,
-        );
-      }
       if (!hasGap) continue; // steady state — NO crypto (perf guard)
       gapsFound += 1;
       const r = await reconcileEpochKeysForCurrentMembers(
@@ -362,9 +356,12 @@ export async function reconcileOwnedHiveEpochKeys(
       );
     }
   }
-  // eslint-disable-next-line no-console
-  console.info(
-    `[hive-epoch-key-reconcile] sweep done: scanned=${hives.length} gaps=${gapsFound} reconciled=${reconciled}`,
-  );
+  // Only log when there was real work (a gap found / healed) — steady-state sweeps stay silent.
+  if (gapsFound > 0) {
+    // eslint-disable-next-line no-console
+    console.info(
+      `[hive-epoch-key-reconcile] sweep: scanned=${hives.length} gaps=${gapsFound} reconciled=${reconciled}`,
+    );
+  }
   return { scanned: hives.length, reconciled };
 }

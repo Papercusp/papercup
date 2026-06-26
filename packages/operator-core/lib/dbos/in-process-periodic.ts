@@ -502,8 +502,6 @@ const hiveEpochKeyReconcileCheck: PeriodicCheck = {
       '../sync/hyperbee/hive-epoch-boundary-wiring'
     );
     const enabled = await isHiveRekeyEnabled();
-    // eslint-disable-next-line no-console
-    console.info(`[hive-epoch-key-reconcile] tick: rekeyEnabled=${enabled}`);
     if (!enabled) return; // re-key dark ⇒ no epoch-key distribution to reconcile
     await reconcileOwnedHiveEpochKeys({ enabled });
   },
