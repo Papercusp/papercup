@@ -161,9 +161,9 @@ export const DEFAULT_QUEEN_BRIEF_CAPS: QueenBriefCaps = {
 export const DEFAULT_QUEEN_BRIEF_TEXT_CAPS: QueenBriefTextCaps = {
   // Keep the volatile wake tail comfortably below the Claude CLI admission path
   // while leaving the stable Queen persona and tool schema room in the full prompt.
-  totalChars: 24_000,
-  lineChars: 700,
-  carryNoteChars: 2_500,
+  totalChars: 8_000,
+  lineChars: 900,
+  carryNoteChars: 1_200,
 };
 
 export interface QueenBriefInput {

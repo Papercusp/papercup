@@ -195,27 +195,9 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   // base/queen.base.md — the shared Queen method prose names a broad surface. These are
   // described/peer-routed actions in the generic base persona, not the coding-Queen's own
   // declared call set (her deps wire her concrete tools); left undeclared by design.
-  'coding/queen/autonomy:policy_get',
-  'coding/queen/code:run',
-  'coding/queen/coord:escalate',
-  'coding/queen/coord:resolve',
   'coding/queen/db:next-migration',
-  'coding/queen/events:await',
-  'coding/queen/events:emit',
-  'coding/queen/gym:signals',
-  'coding/queen/harness_docs:verify',
-  'coding/queen/hive:status',
   'coding/queen/hive:survey',
-  'coding/queen/memory:list',
-  'coding/queen/plan_items:convert',
-  'coding/queen/plans:add-decision',
   'coding/queen/plans:promote',
-  'coding/queen/plans:set-priority',
-  'coding/queen/plans:start',
-  'coding/queen/recipes:candidates',
-  'coding/queen/recipes:run',
-  'coding/queen/work_items:create',
-  'coding/queen/work_items:get',
   // coding/operator.md — operator decision-tree prose naming routed/peer actions + a wake event.
   'coding/operator/coord:escalate',
   'coding/operator/db:next-migration',
