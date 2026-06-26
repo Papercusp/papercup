@@ -66,12 +66,14 @@ describe('requestUrgentHiveWake', () => {
 
   it('outside the floor → fires the hive launch NOW with the urgent kickoff + records the wake', async () => {
     readHiveWakeState.mockResolvedValue({ subscriptions: [] }); // no prior wake
+    // The integration checkout has completed the papercup→papercusp rename; the
+    // wake path canonicalizes retired slugs before launching the hive brain.
     const res = await requestUrgentHiveWake({ reason: 'urgent work_item WI-7 enqueued: prod fire', harness: 'papercup', now: NOW });
     expect(res).toEqual({ fired: true, coalesced: false });
     expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
     const [bpId, input] = fireLaunchBlueprint.mock.calls[0] as unknown as [string, { installSlug: string; kickoff: string }];
     expect(bpId).toBe('coding');
-    expect(input.installSlug).toBe('papercup');
+    expect(input.installSlug).toBe('papercusp');
     expect(input.kickoff).toContain('Wake (urgent)');
     expect(input.kickoff).toContain('WI-7');
     expect(recordHiveWake).toHaveBeenCalledTimes(1);

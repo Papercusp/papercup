@@ -115,6 +115,32 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(thresholdSpan).toBeGreaterThanOrEqual(20 * 60 * 1000);
   });
 
+  it('fast-reaps orphaned no-output routineFire rows that have no live queue row', async () => {
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) {
+        return [{ workflow_uuid: 'sched-.routineFire-orphaned-before-first-step', requeue_routine_id: 'rt_scout' }];
+      }
+      if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
+      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
+      if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 25 * 60_000);
+
+    expect(res.cancelled).toBe(1);
+    expect(res.staleWorkflowIds).toEqual(['sched-.routineFire-orphaned-before-first-step']);
+    expect(res.requeuedRoutineIds).toEqual(['rt_scout']);
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    expect(staleSelect.text).toContain('FROM dbos.workflow_queue q');
+    expect(staleSelect.text).toContain('q.completed_at_epoch_ms IS NULL');
+
+    const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
+    const createdAtChecks = numericValues.length;
+    expect(createdAtChecks).toBeGreaterThanOrEqual(4);
+  });
+
   it('deduplicates requeued routines from multiple no-output routineFire rows', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];

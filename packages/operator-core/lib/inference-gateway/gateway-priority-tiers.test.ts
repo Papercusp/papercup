@@ -59,6 +59,7 @@ async function boot(
     governorFor: () => governor,
     maxQueueWaitMs: 2000,
     ...opts,
+    openaiUpstreamBase: opts.openaiUpstreamBase ?? up.base,
   });
   port = await gw.listen(0);
 }
@@ -71,6 +72,16 @@ const ask = (priority: string | undefined, content: string) =>
       ...(priority ? { [PRIORITY_HEADER]: priority } : {}),
     },
     body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content }] }),
+  });
+
+const askCodex = (priority: string | undefined, input: string) =>
+  fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(priority ? { [PRIORITY_HEADER]: priority } : {}),
+    },
+    body: JSON.stringify({ model: 'gpt-5.5', input, stream: false }),
   });
 
 const tiersDep = (config: { caps?: Record<number, number>; tier1Reserve?: number }) => ({
@@ -172,6 +183,51 @@ test('reserved tier-1 FLOOR holds a slot open under a tier-3 flood', async () =>
   holdBees = false;
   released.forEach((r) => r());
   await Promise.all([beeA, beeB, queen]);
+});
+
+test('Codex /v1/responses has its own tier-1 reserve so Scout is not starved by held bees', async () => {
+  const released: Array<() => void> = [];
+  let holdBees = true;
+  let scoutServed = false;
+  const codexPool: AccountPool = createFailoverPool([{ accountId: 'codex-a', token: async () => 'codex-token' }]);
+  await boot(
+    (req, res) => {
+      const tag = (req.headers[PRIORITY_HEADER] as string) ?? '?';
+      const finish = () => {
+        if (tag === 'scout') scoutServed = true;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ output_text: '{"ok":true}', usage: { input_tokens: 1, output_tokens: 1 } }));
+      };
+      if (tag === 'bee' && holdBees) {
+        released.push(finish);
+        return;
+      }
+      finish();
+    },
+    {
+      codexPool,
+      codexConcurrency: 2,
+      priorityTiers: tiersDep({ caps: {}, tier1Reserve: 1 }),
+    },
+  );
+
+  const beeA = askCodex('bee', 'bee-a');
+  const beeB = askCodex('bee', 'bee-b');
+  for (let i = 0; i < 50 && released.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setTimeout(r, 50));
+
+  const s = await getStats();
+  assert.equal(s.codexAdmission.tier1Reserve, 1, 'Codex queue reports the reserved Scout slot');
+  const t3 = s.codexAdmission.byTier.find((t: any) => t.tier === 3);
+  assert.equal(t3.inFlight, 1, 'only one bee can run in the two-slot Codex gate');
+
+  const scout = askCodex('scout', 'scout');
+  for (let i = 0; i < 50 && !scoutServed; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(scoutServed, true, 'Scout admitted into the Codex reserve while a bee is held');
+
+  holdBees = false;
+  released.forEach((r) => r());
+  await Promise.all([beeA, beeB, scout]);
 });
 
 test('/stats — per-tier {cap,inFlight,queued} + pool healthyAccounts; ABSENT under flag-OFF', async () => {

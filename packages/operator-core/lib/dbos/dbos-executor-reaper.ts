@@ -119,22 +119,38 @@ export async function reapDeadExecutorWorkflows(
     // and cannot reap the old rows. Reap only bounded-safe stale rows:
     //   - a non-terminal routinesTick older than the scheduler silence window, and
     //   - a routineFire whose creation time is older than the longer first-output
-    //     window and that has not checkpointed any DBOS step output, and
+    //     window and that has not checkpointed any DBOS step output, OR an
+    //     orphaned routineFire older than the scheduler silence window that has
+    //     neither a DBOS step output nor a live queue row, and
     //   - any non-terminal workflow past its explicit DBOS deadline.
     //
     // operation_outputs is a checkpoint/output table, not a live "step entered"
     // table. A legitimate long first step (Scout's budgeted cycle is the proven
     // case) has no row until it completes or records its own timeout/error. So
-    // routineFire uses a LONGER first-output window than the scheduler tick. Use
-    // created_at, not started_at_epoch_ms or updated_at: DBOS recovery can refresh
-    // BOTH timestamps on a row it still has not checkpointed, and that heartbeat
-    // must not keep a wedged dedup pin alive indefinitely.
+    // routineFire usually uses a LONGER first-output window than the scheduler
+    // tick. The exception is a no-output/no-queue row: if no workflow_queue row
+    // exists, DBOS is not actively executing that long first step, so holding the
+    // routine dedup for 25 minutes only masks an orphaned fire. Use created_at, not
+    // started_at_epoch_ms or updated_at: DBOS recovery can refresh BOTH timestamps
+    // on a row it still has not checkpointed, and that heartbeat must not keep a
+    // wedged dedup pin alive indefinitely.
     const stale = await sql<{ workflow_uuid: string; requeue_routine_id: string | null }[]>`
       SELECT workflow_uuid,
              CASE
                WHEN name = 'routineFire'
                 AND deduplication_id LIKE 'routine:%'
-                AND created_at < ${staleRoutineFireNoOutputAt}
+                AND (
+                  created_at < ${staleRoutineFireNoOutputAt}
+                  OR (
+                    created_at < ${staleSchedulerAt}
+                    AND NOT EXISTS (
+                      SELECT 1
+                        FROM dbos.workflow_queue q
+                       WHERE q.workflow_uuid = dbos.workflow_status.workflow_uuid
+                         AND q.completed_at_epoch_ms IS NULL
+                    )
+                  )
+                )
                 AND NOT EXISTS (
                   SELECT 1
                     FROM dbos.operation_outputs op
@@ -162,7 +178,18 @@ export async function reapDeadExecutorWorkflows(
            )
            OR (
              name = 'routineFire'
-             AND created_at < ${staleRoutineFireNoOutputAt}
+             AND (
+               created_at < ${staleRoutineFireNoOutputAt}
+               OR (
+                 created_at < ${staleSchedulerAt}
+                 AND NOT EXISTS (
+                   SELECT 1
+                     FROM dbos.workflow_queue q
+                    WHERE q.workflow_uuid = dbos.workflow_status.workflow_uuid
+                      AND q.completed_at_epoch_ms IS NULL
+                 )
+               )
+             )
              AND NOT EXISTS (
                SELECT 1
                  FROM dbos.operation_outputs op

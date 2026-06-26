@@ -226,6 +226,11 @@ const EGRESS_PROBE_DELAY_MS =
 const EGRESS_PROBE_HTTP_TIMEOUT_MS =
   Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_HTTP_MS) || 12_000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
+/** OpenAI/Codex requests ride a much smaller effective subscription lane than the
+ *  shared Claude admission queue. Give them their own tiered gate so three long
+ *  bee `/v1/responses` calls cannot occupy every Codex slot before a Scout request
+ *  gets to the upstream. Env-tunable for account-pool expansion. */
+const DEFAULT_CODEX_CONCURRENCY = Number(process.env.PAPERCUSP_GATEWAY_CODEX_CONCURRENCY) || 3;
 /** AIMD admission-concurrency defaults (inference-gateway-robustness-audit-2026-06-20 P1 / B-GW-1). The
  *  gateway shrinks the admission queue's EFFECTIVE maxConcurrent under sustained upstream 429s (fewer
  *  concurrent upstream calls = lower per-IP RPM = the throttle eases — breaking the retry-storm
@@ -431,6 +436,9 @@ export interface GatewayDeps {
   governorFor?(model: string): RateLimitGovernor;
   /** Max admission wait before a synthetic 429+retry-after. Default 2 min. */
   maxQueueWaitMs?: number;
+  /** Codex/OpenAI-compatible admission cap. Defaults to the conservative
+   *  subscription floor (3), independent of the larger Claude gateway queue. */
+  codexConcurrency?: number;
   /** POST-admission extended-absorption budget (ms). >0 = on a slot-hold-deadline shed, release the slot +
    *  re-acquire + retry (no slot held during the wait → no wedge) instead of 429ing, up to this budget. 0 = OFF. */
   requestAbsorbMs?: number;
@@ -535,6 +543,9 @@ export interface GatewayStats {
   /** Per-priority queue breakdown (P-011 / P-014). With the priority-TIER layer on, `admission.byTier`
    *  carries the per-tier {cap,inFlight,queued} and `admission.tier1Reserve` the reserved floor. */
   admission: AdmissionSnapshot;
+  /** Codex/OpenAI-compatible traffic has its own smaller admission gate so its
+   *  tier-1 reserve is sized to Codex capacity, not the larger Claude queue. */
+  codexAdmission: AdmissionSnapshot;
   /** Priority-TIER admission summary (gateway-priority-tiers-2026-06-22) — the per-tier
    *  {tier,cap,inFlight,queued} from the queue PLUS the pool-wide `healthyAccounts` capacity denominator,
    *  and the reserved tier-1 floor. PRESENT only when the tier layer is configured (flag ON); ABSENT under
@@ -847,6 +858,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const baseTierCaps: Record<number, number> = { ...(tierLayer?.config.caps ?? {}) };
   const queue = new PriorityAdmissionQueue({
     maxConcurrent: concurrency,
+    agingIntervalMs: deps.agingIntervalMs,
+    maxQueued,
+    ...(tierLayer ? { tiers: tierLayer.config } : {}),
+  });
+  const codexConcurrency = Math.max(1, Math.floor(deps.codexConcurrency ?? DEFAULT_CODEX_CONCURRENCY));
+  const codexQueue = new PriorityAdmissionQueue({
+    maxConcurrent: codexConcurrency,
     agingIntervalMs: deps.agingIntervalMs,
     maxQueued,
     ...(tierLayer ? { tiers: tierLayer.config } : {}),
@@ -1242,6 +1260,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const gov = governorForAccount('claude-opus-4', active.accountId);
     const snap = gov.snapshot();
     const admission = queue.snapshot();
+    const codexAdmission = codexQueue.snapshot();
     // Priority-tier /stats (step 5): per-tier demand from the queue + the pool-wide healthy-account
     // capacity denominator. Present only with the tier layer (admission.byTier set) → flag-OFF stays
     // byte-identical. `healthyCount()` is absent on a single-account pool → report 1.
@@ -1283,6 +1302,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       inFlight: admission.running,
       queueDepth: admission.queued,
       admission,
+      codexAdmission,
       ...(priorityTiers ? { priorityTiers } : {}),
       upstream429,
       queued429,
@@ -2665,8 +2685,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // is unambiguously Codex; `/v1/models` is shared, so the request-aware
     // router uses a Codex account pin to keep Codex model discovery off the
     // Anthropic proxy while preserving Claude model probes.
-    const handler = providerForGatewayRequest(url, req.headers, providerAdapters).id === 'codex' ? proxyOpenAi : proxy;
-    queue.run(pri, () => handler(req, res, url), tier !== undefined ? { tier } : undefined).catch((e) => {
+    const providerId = providerForGatewayRequest(url, req.headers, providerAdapters).id;
+    const handler = providerId === 'codex' ? proxyOpenAi : proxy;
+    const admissionQueue = providerId === 'codex' ? codexQueue : queue;
+    admissionQueue.run(pri, () => handler(req, res, url), tier !== undefined ? { tier } : undefined).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
       // instead of growing an unbounded backlog until it wedges.
