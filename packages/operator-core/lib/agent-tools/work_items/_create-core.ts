@@ -19,7 +19,8 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { createWorkItem, getWorkItem, type WorkItem, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, linkWorkItem, type WorkItem, type WorkItemKind } from '../../work-items';
+import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 
@@ -46,6 +47,11 @@ export interface CreateOneWorkItemArgs {
   force?: boolean;
   /** Atomic create+claim target (B-LOOP-4): the agent id to own the new item. */
   assign_to?: string;
+  /** Forward edge (plan-item-coverage): the plan item this work-item ADDRESSES.
+   *  Writes a coord_links work→plan_item `relates` edge on create, so the item
+   *  rolls up into that plan item's coverage and `plans:items` stops showing it as
+   *  unworked. Non-fatal — an edge failure never blocks the create. */
+  targetPlanItem?: { slug: string; itemId: string };
 }
 
 /** The acting agent identity the core needs (resolved by the caller from ctx). */
@@ -131,6 +137,22 @@ export async function createOneWorkItem(
       assignee: args.assign_to,
       assignedBy: args.assign_to ? ctx.ownerId : undefined,
     });
+    // Forward edge: link the new work-item to the plan item it addresses (coverage
+    // rollup). Non-fatal — the item is already created; an edge write that fails
+    // must not turn a successful create into an error (the manual work_items:link
+    // path stays available to retry).
+    if (args.targetPlanItem?.slug && args.targetPlanItem?.itemId) {
+      try {
+        await linkWorkItem(
+          workItem.id,
+          { kind: PLAN_ITEM_KIND, ref: planItemRef(args.targetPlanItem.slug, args.targetPlanItem.itemId) },
+          'relates',
+          { harness: harnessForItem, by: ctx.ownerId },
+        );
+      } catch {
+        // Non-fatal — coverage edge is best-effort.
+      }
+    }
     return { ok: true, workItem };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

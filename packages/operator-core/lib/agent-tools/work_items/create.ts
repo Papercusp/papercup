@@ -46,6 +46,10 @@ const itemSpec = z.object({
   urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
   force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard for this item.'),
   assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4). Overrides assign_all_to_self for this item.'),
+  plan_item: z
+    .object({ slug: z.string().min(1), item: z.string().min(1) })
+    .optional()
+    .describe('Plan item this work-item ADDRESSES (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked.'),
 });
 
 export default defineTool({
@@ -101,6 +105,10 @@ export default defineTool({
       urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
       force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard.'),
       assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — it lands already owned, no create→claim race. Omit ⇒ unclaimed.'),
+      plan_item: z
+        .object({ slug: z.string().min(1), item: z.string().min(1) })
+        .optional()
+        .describe('Plan item this work-item ADDRESSES (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked.'),
       // ── bulk-create (n≥1) ──
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many work-items at once — each is a full create spec.'),
       assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
@@ -119,6 +127,7 @@ export default defineTool({
           harness: it.harness ?? args.harness,
           workspace: args.workspace,
           assign_to: it.assign_to ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+          ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
         }))
       : [
           {
@@ -135,6 +144,7 @@ export default defineTool({
             urgent: args.urgent,
             force: args.force,
             assign_to: args.assign_to ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+            ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
           },
         ];
     const env = await runBulk(

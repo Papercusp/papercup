@@ -33,6 +33,12 @@ import {
   applyPlanItemBlocks,
   planItemRef,
 } from "../../issue-blocks-merge";
+import {
+  getAllPlanItemCoverage,
+  compactCoverage,
+  type CompactCoverage,
+  type PlanItemCoverage,
+} from "../../plan-item-coverage";
 import { ITEM_STATUSES, IMPORTANCE_LEVELS, type Importance } from "./parser";
 import { TERMINAL_PLAN_STATUSES } from "./plan-start-state";
 import { cachedRead, type CachedReadCtx } from "../../cache";
@@ -104,6 +110,10 @@ interface ItemRow {
   item: ResolvedItem;
   /** Open engineer-issue ids blocking this item (coord_links rel='blocks'), if any. */
   blockedByIssues?: string[];
+  /** "Is anyone working this?" rolled up from linked work-items + any direct claim
+   *  (plan-item-coverage). Present only when there's a signal (a link or a claim);
+   *  absent ⇒ genuinely unworked (coverage 'none'). */
+  coverage?: CompactCoverage;
 }
 
 export default defineTool({
@@ -179,6 +189,16 @@ export default defineTool({
           // Non-fatal — no issue-block overlay.
         }
 
+        // Coverage rollup (work→plan_item edges + direct plan-item claim), hoisted out
+        // of the loop like the issue-block overlay. Non-fatal — degrades to no overlay
+        // so a coord_links/fleet outage never fails the read.
+        let coverage = new Map<string, PlanItemCoverage>();
+        try {
+          coverage = await getAllPlanItemCoverage();
+        } catch {
+          // Non-fatal — no coverage overlay.
+        }
+
         for (const row of planRows) {
           if (row.isLegacy) continue;
           if (isTerminalPlanHiddenFromCrossPlan(row.status, args)) continue;
@@ -195,6 +215,7 @@ export default defineTool({
             // `storedStatus === 'needs-human'` while unarmed (D-007).
             if (args.needsHuman && !item.needsHuman) continue;
             if (args.status && item.effectiveStatus !== args.status) continue;
+            const cov = coverage.get(planItemRef(row.planSlug, item.id));
             rows.push({
               plan: row.planSlug,
               archived: row.archived,
@@ -202,6 +223,7 @@ export default defineTool({
               ...(blockingIssues[item.id]
                 ? { blockedByIssues: blockingIssues[item.id] }
                 : {}),
+              ...(cov ? { coverage: compactCoverage(cov) } : {}),
             });
           }
         }

@@ -89,6 +89,19 @@ logged warning. Currently registered:
 - `locks:check_command { command }` — does a raw shell command touch a resource
   with an exclusive in flight? Returns `allow | warn | block`.
 
+**Role access (2026-06-25):** `locks:acquire_resource` previously used
+`agentRoles: [...SU_ROLES, 'bee']`. Changed to `agentRoles: [...AGENT_ROLES]`:
+every built-in role can now acquire named-resource locks (shared or exclusive).
+Non-SU roles that need to use a shared resource (e.g. a worker running a build
+that depends on the dev server being up) can now hold a shared lock and
+participate in the drain protocol without going through a superuser intermediary.
+
+**`locks:release_resource` response shape (2026-06-25):** The single-item
+release path was consolidated onto the bulk `runBulk` implementation — all
+releases (whether one lock or many) now return the same bulk envelope:
+`{ ok, results:[{ ok, lock_id?, resource?, released, released_modes, exclusive_resources }], errors, counts }`.
+If your code parsed the old flat single-release shape, update it to read `results[0]`.
+
 ### Blessed wrappers
 
 `dev:restart` and `db:migrate` are the canonical paths for the two destructive

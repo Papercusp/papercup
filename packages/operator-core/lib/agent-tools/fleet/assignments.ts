@@ -21,7 +21,11 @@ import {
   stalledClaims,
   summarizeOrphan,
 } from '../../fleet/assignments';
+import { getAllPlanItemCoverage, compactCoverage } from '../../plan-item-coverage';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
+
+/** Coverage levels most-covered → least, for sorting the rollup. */
+const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
 
 export default defineTool({
   name: 'fleet:assignments',
@@ -100,6 +104,48 @@ export default defineTool({
       // P-021: total work-item load across live agents (the warm-inject signal).
       work_item_load: agents.reduce((n, a) => n + a.load, 0),
     };
+    // Plan-item COVERAGE rollup: which plan items are being worked via a LINKED
+    // work-item (or a direct claim) even when no plan-item lease names them — the
+    // blind spot that makes plans:items show an actively-worked item as unworked.
+    // Fuses work→plan_item edges + the work-item's liveness + any direct plan-item
+    // claim. Filtered to the queried plan when `plan` is set; bounded for output.
+    // Non-fatal — a coverage outage just omits the section.
+    const COVERAGE_CAP = 60;
+    let coverageOut: {
+      plan: string;
+      item: string;
+      level: string;
+      workers?: string[];
+      links?: { id: string; rel: string; activity: string; terminal: boolean }[];
+    }[] = [];
+    let coverageTruncated = false;
+    try {
+      const covMap = await getAllPlanItemCoverage();
+      const entries = [...covMap.values()]
+        // 'none' carries no signal worth surfacing here (it's the absence of coverage).
+        .filter((c) => c.level !== 'none')
+        .filter((c) => {
+          if (!args.plan) return true;
+          const hash = c.ref.indexOf('#');
+          return hash > 0 && c.ref.slice(0, hash) === args.plan;
+        })
+        // Most-covered first: complete/full/partial/unclaimed.
+        .sort((a, b) => COVERAGE_ORDER.indexOf(a.level) - COVERAGE_ORDER.indexOf(b.level));
+      coverageTruncated = entries.length > COVERAGE_CAP;
+      coverageOut = entries.slice(0, COVERAGE_CAP).map((c) => {
+        const hash = c.ref.indexOf('#');
+        const compact = compactCoverage(c);
+        return {
+          plan: hash > 0 ? c.ref.slice(0, hash) : c.ref,
+          item: hash > 0 ? c.ref.slice(hash + 1) : c.ref,
+          level: compact.level,
+          ...(compact.workers ? { workers: compact.workers } : {}),
+          ...(compact.links ? { links: compact.links } : {}),
+        };
+      });
+    } catch {
+      // Non-fatal — omit the coverage section.
+    }
     // EI-1597: bound the agent-facing output so a large fleet (esp. include_stale)
     // can't overflow the agent result cap. `agents` is already sorted live-first, so
     // the byte-budget trim drops the least-relevant tail. Excerpt the long `intent`
@@ -120,6 +166,16 @@ export default defineTool({
             orphaned: orphans.map(summarizeOrphan),
             // Stalled work (live holder, no progress) — also reclaimable, also "not covered".
             stalled: stalled.map(summarizeOrphan),
+            // Plan-item coverage: items being worked via a linked work-item / direct
+            // claim (even with no plan-item lease). 'none' is omitted (no signal).
+            ...(coverageOut.length
+              ? {
+                  coverage: coverageOut,
+                  ...(coverageTruncated
+                    ? { coverage_truncated: true, coverage_hint: `Coverage list trimmed to ${COVERAGE_CAP}; narrow with { plan }.` }
+                    : {}),
+                }
+              : {}),
             agents: boundedAgents,
             ...(agentsTruncated
               ? {

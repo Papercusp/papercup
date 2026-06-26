@@ -79,13 +79,24 @@ GROUP BY 1,2 ORDER BY 3 DESC;
 
 ### What the baseline says
 
-- **code:run adoption is the open problem.** At 0.002% the round-trip-collapsing lever is effectively
-  unused in production even though the batch-nudge ships default-ON and emits a paste-ready skeleton.
-  The nudge *fires* (you'll see `[batch-hint]` in tool output) but models route around it. The fix is
-  an **enforcement-style** change, not more plumbing — and the way to pick the wording is the offline
-  A/B in [measuring code:run adoption](/internal/docs/agent-insights/measuring-code-run-adoption)
+- **code:run adoption is the open problem — but the audience just expanded.** At 0.002% (1 call)
+  the round-trip-collapsing lever was effectively unused in production even though the batch-nudge
+  shipped default-ON and emitted a paste-ready skeleton.
+
+  **Role-access context:** The 2026-06-25 baseline was taken at the moment `code:run` shifted from
+  `agentRoles: [...SU_ROLES, 'bee']` to `agentRoles: [...AGENT_ROLES]` (owner directive 2026-06-25;
+  `code/run.ts` + `code-run-batch-nudge.ts`). Before this, only superuser-role agents and the generic
+  bee were nudged — the high-repeat-call roles (worker, validator, reviewer) that would benefit MOST
+  from batch collapsing were excluded and never saw the nudge. Post-expansion, the batch-nudge fires
+  for EVERY built-in role, so future baselines will reflect a much larger audience. The 0.002% figure
+  describes the pre-expansion cohort (SU + bee); do NOT use it as the adoption floor for the
+  post-expansion fleet.
+
+  The underlying fix remains an **enforcement-style** change — the way to pick the wording is the
+  offline A/B in [measuring code:run adoption](/internal/docs/agent-insights/measuring-code-run-adoption)
   (`su-S13/S15/S16` scenarios on haiku). Re-run this scorecard after any enforcement change to confirm
-  the live number moves off the floor (and S14 stays green so single calls aren't over-wrapped).
+  the live number moves off the floor (and S14 stays green so single calls aren't over-wrapped). The
+  first post-expansion 24h window is the new meaningful baseline.
 - **string-limit fails are a deploy-lag artifact, not a code bug.** `loop:arm.goal` is already in the
   `clampText` soft-limit set (`agent-tools/loop/arm.ts` → auto-truncate, no reject), but the 16 "\<=500
   characters" rejects are agents hitting the **older hard limit still live on green `:3070`** before
