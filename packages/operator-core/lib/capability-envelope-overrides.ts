@@ -16,6 +16,7 @@
  * byte-identical. protectedAdditions is TIGHTEN-ONLY (append-only; the floor is never removable — D-002).
  */
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
 import { systemDistinctId } from './flag-distinct-id';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
@@ -62,8 +63,10 @@ onFlagChange((key) => {
   if (key === null || key === FLAGS.CAPABILITY_ENVELOPE_OVERRIDES) void refreshCapabilityEnvelopeOverrides();
 });
 // D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
-const _refreshTimer = setInterval(() => void refreshCapabilityEnvelopeOverrides(), 60_000);
-if (typeof _refreshTimer.unref === 'function') _refreshTimer.unref();
+// P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
+managedSetInterval('config-refresh:capability-envelope', 60_000, () => refreshCapabilityEnvelopeOverrides(), {
+  category: 'cache',
+});
 
 // ── async read/write (the tools) ─────────────────────────────────────────────
 export async function readEnvelopeOverrides(): Promise<CapabilityEnvelopeOverrides> {

@@ -48,7 +48,12 @@ export const ALLOWLIST_DIRS = [
 ];
 
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */
-export const ALLOWLIST = new Set([]);
+export const ALLOWLIST = new Set([
+  // This guard itself: its console messages + the detection regex literally contain
+  // "setInterval(" (the thing it bans), exactly as check-no-raw-agent-spawn allowlists
+  // its own definition site.
+  'scripts/check-no-raw-setinterval.mjs',
+]);
 
 /**
  * TEMPORARY grandfather set — operator-host files with bare setInterval awaiting the
@@ -69,10 +74,7 @@ export const BASELINE = new Set([
   'libs/generic/p2p-voice/src/voice-node.ts',
   'packages/operator-core/lib/agent-tools/locks/acquire.ts',
   'packages/operator-core/lib/agent-tools/locks/file-lock-authority-wiring.ts',
-  'packages/operator-core/lib/auth-config-overrides.ts',
   'packages/operator-core/lib/blueprint/launch-blueprint.ts',
-  'packages/operator-core/lib/capability-envelope-overrides.ts',
-  'packages/operator-core/lib/capability-tier-overrides.ts',
   'packages/operator-core/lib/claude-credential-sync.ts',
   'packages/operator-core/lib/cross-hive-swarm-transport.ts',
   'packages/operator-core/lib/dbos/dbos-executor-reaper.ts',
@@ -111,7 +113,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/provision/runner.ts',
   'packages/operator-core/lib/pty-bridge.ts',
   'packages/operator-core/lib/pty-ws.ts',
-  'packages/operator-core/lib/quota-overrides.ts',
   'packages/operator-core/lib/red-queen/engine-death.ts',
   'packages/operator-core/lib/release/green-stall-watchdog.ts',
   'packages/operator-core/lib/sync/hyperbee/boot.ts',
@@ -125,8 +126,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/system-health/lag-self-restart.ts',
   'packages/operator-core/lib/system-health/liveness-alarm.ts',
   'packages/operator-core/lib/system-health/single-primary-check.ts',
-  'packages/operator-core/lib/telemetry-buffer-config.ts',
-  'packages/operator-core/lib/txn-timeouts-config.ts',
   'packages/operator-core/lib/voice-engine-health.ts',
   'packages/operator-core/lib/voice-engines/deepgram.ts',
   'packages/operator-core/lib/voice-node/operator-voice-host.ts',

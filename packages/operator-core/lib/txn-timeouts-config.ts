@@ -20,6 +20,7 @@
  * any stored override and force the defaults.
  */
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
 import { systemDistinctId } from './flag-distinct-id';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
@@ -99,8 +100,10 @@ onFlagChange((key) => {
   if (key === null || key === FLAGS.TXN_TIMEOUTS_CONFIG) void refreshTxnTimeoutsConfig();
 });
 // D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process open.
-const _refreshTimer = setInterval(() => void refreshTxnTimeoutsConfig(), 60_000);
-if (typeof _refreshTimer.unref === 'function') _refreshTimer.unref();
+// P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
+managedSetInterval('config-refresh:txn-timeouts', 60_000, () => refreshTxnTimeoutsConfig(), {
+  category: 'cache',
+});
 
 // ── async read/write (the tool) ──────────────────────────────────────────────
 export async function readTxnTimeoutsOverride(): Promise<TxnTimeoutsOverride> {

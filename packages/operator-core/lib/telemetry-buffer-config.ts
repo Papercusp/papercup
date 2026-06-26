@@ -14,6 +14,7 @@
  * ignore any stored override and force the defaults.
  */
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
 import { systemDistinctId } from './flag-distinct-id';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
@@ -70,8 +71,10 @@ onFlagChange((key) => {
   if (key === null || key === FLAGS.TELEMETRY_BUFFER_CONFIG) void refreshTelemetryBufferConfig();
 });
 // D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process open.
-const _refreshTimer = setInterval(() => void refreshTelemetryBufferConfig(), 60_000);
-if (typeof _refreshTimer.unref === 'function') _refreshTimer.unref();
+// P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
+managedSetInterval('config-refresh:telemetry-buffer', 60_000, () => refreshTelemetryBufferConfig(), {
+  category: 'cache',
+});
 
 // ── async read/write (the tool) ──────────────────────────────────────────────
 export async function readTelemetryBufferOverride(): Promise<TelemetryBufferOverride> {

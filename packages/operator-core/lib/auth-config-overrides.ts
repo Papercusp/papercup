@@ -27,6 +27,7 @@
  * reads. Refresh on (a) onFlagChange(null | the two flags), (b) local write, (c) a ~60s unref timer.
  */
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
 import { setTestingFullAccessResolver } from '@papercusp/agent-mcp';
 import { systemDistinctId } from './flag-distinct-id';
@@ -117,8 +118,10 @@ onFlagChange((key) => {
     void refreshAuthConfigOverrides();
   }
 });
-const _refreshTimer = setInterval(() => void refreshAuthConfigOverrides(), 60_000);
-if (typeof _refreshTimer.unref === 'function') _refreshTimer.unref();
+// P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
+managedSetInterval('config-refresh:auth-config', 60_000, () => refreshAuthConfigOverrides(), {
+  category: 'cache',
+});
 
 // ── async read/write (the tools) ──────────────────────────────────────────────
 export async function readAuthConfigOverrides(): Promise<AuthConfigOverrides> {

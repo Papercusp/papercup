@@ -22,6 +22,7 @@
  * onFlagChange(null | the flag), local write, and a ~60s unref timer.
  */
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
 import { setCapabilityTierOverride, type CapabilityTier } from '@papercusp/agent-mcp';
 import { systemDistinctId } from './flag-distinct-id';
@@ -71,8 +72,10 @@ export async function refreshCapabilityTierOverrides(): Promise<void> {
 onFlagChange((key) => {
   if (key === null || key === FLAGS.AUTH_CONFIG_OVERRIDES) void refreshCapabilityTierOverrides();
 });
-const _refreshTimer = setInterval(() => void refreshCapabilityTierOverrides(), 60_000);
-if (typeof _refreshTimer.unref === 'function') _refreshTimer.unref();
+// P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
+managedSetInterval('config-refresh:capability-tier', 60_000, () => refreshCapabilityTierOverrides(), {
+  category: 'cache',
+});
 
 // ── async read/write (the tool) ───────────────────────────────────────────────
 export async function readCapabilityTierOverrides(): Promise<CapabilityTierOverrides> {

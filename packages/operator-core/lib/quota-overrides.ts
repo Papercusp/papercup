@@ -20,6 +20,7 @@
  * raising it is honoured (loosen the throttle) — both are call-rate policy, not capability grants.
  */
 import { onFlagChange } from '@papercusp/flags/server';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { RolesQuota } from '@papercusp/tooldef';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
@@ -91,8 +92,10 @@ onFlagChange((key) => {
   if (key === null) void refreshQuotaOverrides();
 });
 // Bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
-const _refreshTimer = setInterval(() => void refreshQuotaOverrides(), 60_000);
-if (typeof _refreshTimer.unref === 'function') _refreshTimer.unref();
+// P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
+managedSetInterval('config-refresh:quota', 60_000, () => refreshQuotaOverrides(), {
+  category: 'cache',
+});
 
 // ── async read/write (the tool) ───────────────────────────────────────────────
 export async function readQuotaOverrides(): Promise<QuotaOverrides> {
