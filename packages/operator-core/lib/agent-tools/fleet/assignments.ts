@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   groupByAgent,
@@ -31,7 +32,7 @@ export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued`, `load` — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict; ordered plan → affinity). The single LIVE source for "is X really being worked": surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast (agent-activity-liveness-truth).',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). The result\'s top-level `self` is YOUR own ownerId and your own agent row is stamped `isSelf:true`, so you can tell which agent in the list is THIS session. Each live agent carries its ordered work-list — `doing` (head-of-line), `queued`, `load` — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict; ordered plan → affinity). The single LIVE source for "is X really being worked": surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast (agent-activity-liveness-truth).',
   guidance: {
     when: 'Answering "who\'s running / what is agent X doing / X\'s ordered work-list / how loaded is X / is anyone on plan P". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
@@ -155,12 +156,19 @@ export default defineTool({
     let agentsOut = boundRowField(agents, 'intent', 280, 14_000);
     agentsOut = boundListField(agentsOut, 'queued', 8);
     const { kept: boundedAgents, truncated: agentsTruncated } = trimToByteBudget(agentsOut, 22_000);
+    // Self-identification overlay: top-level `self` names the caller's own
+    // ownerId, and the caller's own agent row (keyed by `agentId`) is stamped
+    // `isSelf:true`, so a reader of "who's on what" can tell which agent is
+    // itself. Best-effort — an unattributable caller just gets no marker.
+    const self = resolveSelfRef(ctx);
+    const selfMarkedAgents = markSelfRows(boundedAgents, self, 'agentId');
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
+            ...(self ? { self } : {}),
             summary,
             // Abandoned work first — the reason this view is claim-primary.
             orphaned: orphans.map(summarizeOrphan),
@@ -176,11 +184,11 @@ export default defineTool({
                     : {}),
                 }
               : {}),
-            agents: boundedAgents,
+            agents: selfMarkedAgents,
             ...(agentsTruncated
               ? {
                   agents_truncated: true,
-                  agents_returned: boundedAgents.length,
+                  agents_returned: selfMarkedAgents.length,
                   agents_hint:
                     'Agent list trimmed to fit the result cap (sorted live-first). Narrow with { agent }/{ plan }/{ harness }; summary.agents has the true total.',
                 }

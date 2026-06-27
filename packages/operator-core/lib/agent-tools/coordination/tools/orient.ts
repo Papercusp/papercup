@@ -29,6 +29,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
+import { resolveSelfRef } from '../self-marker';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
@@ -261,6 +262,12 @@ export default defineTool({
       ownerId = undefined;
     }
     const result = await composeOrient(args, inProcessCall(ctx), ownerId);
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    // Fold in the caller's own identity so the orientation states YOUR ownerId
+    // explicitly (the roster/assignments it composes are about peers; `self` is
+    // the "and this is you" anchor). Best-effort — omitted for an unattributable
+    // caller. See self-marker.ts for why this is a response-layer overlay.
+    const self = resolveSelfRef(ctx);
+    const out = self ? { self, ...(result as object) } : result;
+    return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
   },
 });

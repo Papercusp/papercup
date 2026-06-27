@@ -16,12 +16,13 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
 import { readIdentity } from '../../locks/identity';
+import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List coordination agents + whether each can actually TAKE WORK. Each row carries `wakeable` (an inbox-wake await exists) and `sessionState` (live = in a turn now · parked = idle-but-wakeable, ideal dispatch target · ended = needs relaunch, NOT wake). Read `summary.wakeable`, not `active` (a fresh heartbeat can be ended). `intentStale:true` ⇒ declared `intent`/`claimedItems` is not progressing; do NOT treat its work as handled, its items are fair to pick up / re-place. Defaults to your HIVE; scope=workspace|all for admin/Queen. Stale (>10 min) sessions are summarised unless include_stale.",
+    "List coordination agents + whether each can actually TAKE WORK. The result's top-level `self` is YOUR own ownerId+label and your own row is stamped `isSelf:true` — so you can always tell which agent in the roster is THIS session (no separate coord:whoami needed). Each row carries `wakeable` (an inbox-wake await exists) and `sessionState` (live = in a turn now · parked = idle-but-wakeable, ideal dispatch target · ended = needs relaunch, NOT wake). Read `summary.wakeable`, not `active` (a fresh heartbeat can be ended). `intentStale:true` ⇒ declared `intent`/`claimedItems` is not progressing; do NOT treat its work as handled, its items are fair to pick up / re-place. Defaults to your HIVE; scope=workspace|all for admin/Queen. Stale (>10 min) sessions are summarised unless include_stale.",
   guidance: {
     when: '"Who can take work right now, and on what?" — before dispatching/handing off. Read `sessionState`/`wakeable` per row + `summary.wakeable`, NOT raw `active`. Hand a lane to a `parked` agent via coord:dispatch (assign+wake+confirm); an `ended` target needs a relaunch.',
     notWhen: 'Checking whether a specific file is free — use locks:queue. Re-reading the roster every turn — the [coord+N] lifecycle deltas already carry intent/claim/completion; tail those (see chaining).',
@@ -83,11 +84,24 @@ export default defineTool({
       includeStale: args.include_stale,
       ...(detail ? { detail } : {}),
     });
+    // Self-identification overlay (caller-dependent, so applied HERE, after the
+    // shared/byte-stable snapshot — never inside it; see self-marker.ts): a
+    // top-level `self` names the caller's own ownerId, and `isSelf:true` is
+    // stamped on the caller's own row. A reader of its own roster can now tell
+    // which agent is itself without a separate coord:whoami. Best-effort: an
+    // unattributable caller just gets no marker (`self` omitted).
+    const self = resolveSelfRef(ctx);
+    const out = {
+      ...snapshot,
+      ...(self ? { self } : {}),
+      active: markSelfRows(snapshot.active, self),
+      ...(snapshot.stale ? { stale: markSelfRows(snapshot.stale, self) } : {}),
+    };
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify(snapshot),
+          text: JSON.stringify(out),
         },
       ],
     };
