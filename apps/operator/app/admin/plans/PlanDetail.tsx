@@ -235,11 +235,19 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
     );
   }
   if (!data || data.error) {
+    // A `not_found` is a benign empty state — the plan is in a different hive's
+    // harness, was deleted, or hasn't synced yet — NOT a server failure. Render
+    // it calmly; only a genuine error gets the loud `Server: …` treatment. (This
+    // is what made the Create tab show "Server: not_found" for a hive plan.)
+    const message =
+      data?.error === 'not_found'
+        ? 'Plan not found.'
+        : data?.error
+          ? `Server: ${data.error}`
+          : 'No data.';
     return (
       <DetailShell slug={slug} onClose={onClose} showBack={showBack}>
-        <p className="pc-plans__placeholder">
-          {data?.error ? `Server: ${data.error}` : 'No data.'}
-        </p>
+        <p className="pc-plans__placeholder">{message}</p>
       </DetailShell>
     );
   }

@@ -14,7 +14,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 const { nuqs, view, maps, setters, dialogs } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
   view: { value: 'plans' as string },
-  maps: { visiblePlans: [] as Array<{ slug: string }>, planList: { loading: false } },
+  maps: { visiblePlans: [] as Array<{ slug: string }>, planList: { loading: false }, harnessByPlan: new Map<string, string>() },
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
   dialogs: { confirmAnswer: false, confirm: vi.fn() },
 }));

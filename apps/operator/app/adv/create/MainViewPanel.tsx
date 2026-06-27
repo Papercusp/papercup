@@ -73,6 +73,11 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
       <PlanDetail
         key={plan}
         slug={plan}
+        // Scope the plans:get to the plan's OWN harness (else a hive plan like
+        // a forge plan resolves against the default harness → not_found → the
+        // "Server: not_found" the Create tab showed). Per-plan harness first
+        // (from the loaded list), then the active-hive scope as a fallback.
+        harnessSlug={maps.harnessByPlan.get(plan) ?? scope.harnessFilter ?? scope.advActiveSlug ?? null}
         showBack={false}
         onClose={() => {
           if (
