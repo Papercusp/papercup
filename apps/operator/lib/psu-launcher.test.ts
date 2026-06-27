@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -40,6 +40,10 @@ import {
   fetchWithResilience,
   resolveOperatorUrl,
   readToken,
+  claudeOAuthTokenPath,
+  readStoredClaudeOAuthToken,
+  applyDefaultClaudeOAuthToken,
+  storeClaudeOAuthToken,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
@@ -67,6 +71,9 @@ describe('psu-launcher arg parsing', () => {
       account: null,
       addDir: [],
       passthrough: [],
+      setClaudeToken: false,
+      setClaudeTokenValue: null,
+      clearClaudeToken: false,
     });
   });
 
@@ -103,6 +110,9 @@ describe('psu-launcher arg parsing', () => {
       account: null,
       addDir: [],
       passthrough: [],
+      setClaudeToken: false,
+      setClaudeTokenValue: null,
+      clearClaudeToken: false,
     });
   });
 
@@ -1212,6 +1222,106 @@ describe('operator endpoint resolution (desktop vs dev box)', () => {
 
     it('returns empty string when neither source exists (dev-box open operator)', () => {
       expect(readToken({ home })).toBe('');
+    });
+  });
+});
+
+describe('default-account Claude OAuth token inheritance (psu-login-inherit / macOS keychain trap)', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'psu-claude-oauth-'));
+    mkdirSync(join(home, '.papercusp'), { recursive: true });
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  const TOKEN = 'sk-ant-oat01-EXAMPLE-token-value';
+
+  describe('store / read round-trip', () => {
+    it('reads null when no token is stored', () => {
+      expect(readStoredClaudeOAuthToken({ home })).toBeNull();
+    });
+
+    it('persists the token 0600 and reads it back trimmed', () => {
+      const p = storeClaudeOAuthToken(`  ${TOKEN}\n`, { home });
+      expect(p).toBe(claudeOAuthTokenPath({ home }));
+      expect(readStoredClaudeOAuthToken({ home })).toBe(TOKEN);
+      // 0600 — owner-only (the file holds a long-lived credential).
+      expect(statSync(p).mode & 0o777).toBe(0o600);
+    });
+
+    it('refuses to store an empty token', () => {
+      expect(() => storeClaudeOAuthToken('   ', { home })).toThrow(/empty/i);
+    });
+  });
+
+  describe('applyDefaultClaudeOAuthToken — when it injects', () => {
+    it('injects CLAUDE_CODE_OAUTH_TOKEN for a default-account claude launch', () => {
+      storeClaudeOAuthToken(TOKEN, { home });
+      const env: Record<string, string> = {};
+      applyDefaultClaudeOAuthToken('claude-su', env, { home });
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN);
+    });
+
+    it('injects on a RAW claude resume (bin `claude`) and an absolute path', () => {
+      storeClaudeOAuthToken(TOKEN, { home });
+      for (const bin of ['claude', '/Users/x/.papercusp/bin/claude', '/usr/lib/p/bin/claude-su']) {
+        const env: Record<string, string> = {};
+        applyDefaultClaudeOAuthToken(bin, env, { home });
+        expect(env.CLAUDE_CODE_OAUTH_TOKEN, bin).toBe(TOKEN);
+      }
+    });
+  });
+
+  describe('applyDefaultClaudeOAuthToken — when it stays a no-op (env byte-identical)', () => {
+    it('does nothing when no token is stored (keychain/file login as before)', () => {
+      const env: Record<string, string> = {};
+      applyDefaultClaudeOAuthToken('claude-su', env, { home });
+      expect(env).toEqual({});
+    });
+
+    it('skips non-claude backends (codex/omp authenticate by their own file creds)', () => {
+      storeClaudeOAuthToken(TOKEN, { home });
+      for (const bin of ['codex-su', 'codex', 'omp-su', 'omp', '/path/to/codex']) {
+        const env: Record<string, string> = {};
+        applyDefaultClaudeOAuthToken(bin, env, { home });
+        expect(env.CLAUDE_CODE_OAUTH_TOKEN, bin).toBeUndefined();
+      }
+    });
+
+    it('skips when an inference-gateway account is pinned (ANTHROPIC_BASE_URL set)', () => {
+      storeClaudeOAuthToken(TOKEN, { home });
+      const env: Record<string, string> = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788' };
+      applyDefaultClaudeOAuthToken('claude-su', env, { home });
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    });
+
+    it('respects an explicit user token/key already in the env', () => {
+      storeClaudeOAuthToken(TOKEN, { home });
+      for (const key of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']) {
+        const env: Record<string, string> = { [key]: 'user-supplied' };
+        applyDefaultClaudeOAuthToken('claude-su', env, { home });
+        // never overwrite what the user explicitly set
+        expect(env[key]).toBe('user-supplied');
+        if (key !== 'CLAUDE_CODE_OAUTH_TOKEN') expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      }
+    });
+  });
+
+  describe('parseArgs — credential maintenance commands', () => {
+    it('parses --set-claude-token (bare, prompts for a paste)', () => {
+      const a = parseArgs(['--set-claude-token']);
+      expect(a.setClaudeToken).toBe(true);
+      expect(a.setClaudeTokenValue).toBeNull();
+    });
+
+    it('parses the inline --set-claude-token=<token> scripting form', () => {
+      const a = parseArgs([`--set-claude-token=${TOKEN}`]);
+      expect(a.setClaudeToken).toBe(true);
+      expect(a.setClaudeTokenValue).toBe(TOKEN);
+    });
+
+    it('parses --clear-claude-token', () => {
+      expect(parseArgs(['--clear-claude-token']).clearClaudeToken).toBe(true);
     });
   });
 });

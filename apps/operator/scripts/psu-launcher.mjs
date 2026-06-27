@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -87,7 +87,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, account: null, addDir: [], passthrough: [] };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, account: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -104,6 +104,14 @@ export function parseArgs(argv) {
     // value verbatim (an account id never starts with `--`).
     if (pendingAccount) { pendingAccount = false; out.account = a; continue; }
     if (a === '--') { rest = true; continue; }
+    // One-time credential commands (handled at the top of main(), before any
+    // launch). Store/clear the default-account Claude OAuth token that
+    // default-account claude psu sessions inherit cross-platform (esp. macOS,
+    // where keychain-per-config-dir defeats file inheritance). The inline
+    // `=<token>` form is for scripting; bare prompts for a paste.
+    if (a === '--set-claude-token') { out.setClaudeToken = true; continue; }
+    else if (a.startsWith('--set-claude-token=')) { out.setClaudeToken = true; out.setClaudeTokenValue = a.slice('--set-claude-token='.length) || null; continue; }
+    else if (a === '--clear-claude-token') { out.clearClaudeToken = true; continue; }
     if (a === '--no-picker') out.picker = false;
     // THE brain (native-terminal-desktop D-013): resume the canonical pinned
     // brain session exactly (no picker); when none is pinned (or it no longer
@@ -817,6 +825,74 @@ export function readToken({ home = homedir() } = {}) {
 }
 
 /**
+ * Path to the persisted default-account Claude OAuth token (from `claude
+ * setup-token`). 0600. Overridable via env for tests / non-default homes.
+ *
+ * WHY a stored env-token is the inheritance path (not a file/keychain copy):
+ * a psu claude session runs under a per-owner isolated `CLAUDE_CONFIG_DIR`. On
+ * Linux/Windows that config dir's `.credentials.json` is healed from the global
+ * `~/.claude` login by the reconcile/symlink machinery — but on **macOS** the
+ * OAuth token lives in the Keychain keyed by a per-`CLAUDE_CONFIG_DIR` suffix
+ * (`Claude Code-credentials-<hash>`), and claude *deletes* any seeded
+ * `.credentials.json` after migrating it. So the session's config dir gets a
+ * fresh suffix that never matches the default `~/.claude` login → "launches
+ * logged out", and no file-based reconcile can fix it (Anthropic docs:
+ * file fallback + the CLAUDE_CONFIG_DIR→file relocation are Linux/Windows only).
+ * `CLAUDE_CODE_OAUTH_TOKEN` (auth precedence #5, above subscription OAuth #6) is
+ * the ONE mechanism that bypasses keychain + file + config-dir-suffix entirely
+ * and behaves identically on every OS — exactly the "log in once, inherit in
+ * every psu session" the default account wants. (psu-login-inherit / macOS.)
+ */
+export function claudeOAuthTokenPath({ home = homedir() } = {}) {
+  return process.env.PAPERCUSP_CLAUDE_OAUTH_TOKEN_FILE || join(home, '.papercusp', 'claude-oauth-token');
+}
+
+/** Read the stored token (trimmed) or null when none/unreadable. */
+export function readStoredClaudeOAuthToken({ home = homedir() } = {}) {
+  try {
+    const p = claudeOAuthTokenPath({ home });
+    if (!existsSync(p)) return null;
+    const t = readFileSync(p, 'utf8').trim();
+    return t || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Inject `CLAUDE_CODE_OAUTH_TOKEN` into a DEFAULT-account claude launch so it
+ * inherits the single stored CLI login (see `claudeOAuthTokenPath`). Mutates +
+ * returns `env`. Skipped — leaving the env byte-identical — when:
+ *   - not a claude session (codex/omp authenticate by their own file creds);
+ *   - an inference-gateway account is pinned (`ANTHROPIC_BASE_URL` set → the
+ *     gateway authenticates; an env bearer would fight its account routing);
+ *   - the user already exported a token/key (respect their explicit, and
+ *     higher- or equal-precedence, choice);
+ *   - no token is stored (→ unchanged: keychain/file OAuth login as before).
+ * Pure but for the `env` mutation; `home` injectable for tests.
+ */
+export function applyDefaultClaudeOAuthToken(wrapperBin, env, { home = homedir() } = {}) {
+  if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return env;
+  if (env.ANTHROPIC_BASE_URL) return env;
+  if (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) return env;
+  const tok = readStoredClaudeOAuthToken({ home });
+  if (tok) env.CLAUDE_CODE_OAUTH_TOKEN = tok;
+  return env;
+}
+
+/** Persist the default-account Claude OAuth token (0600); creates ~/.papercusp. */
+export function storeClaudeOAuthToken(token, { home = homedir() } = {}) {
+  const t = String(token || '').trim();
+  if (!t) throw new Error('refusing to store an empty Claude OAuth token');
+  const p = claudeOAuthTokenPath({ home });
+  mkdirSync(join(home, '.papercusp'), { recursive: true });
+  writeFileSync(p, t + '\n', { mode: 0o600 });
+  // writeFileSync's mode is ignored when the file pre-existed — force 0600.
+  try { chmodSync(p, 0o600); } catch { /* best-effort on platforms w/o chmod */ }
+  return p;
+}
+
+/**
  * Resilient fetch: retries CONNECTION failures (refused/reset — "fetch failed",
  * i.e. the operator is mid-recycle) on a short backoff until `connectBudgetMs`
  * elapses, so a launch rides THROUGH a memory-watchdog drain+restart window
@@ -1360,6 +1436,13 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   // baked url would go stale; env-interpolation + this export self-heal it.
   // OPERATOR_URL already honors an explicit PAPERCUSP_OPERATOR_URL override.
   env.PAPERCUSP_OPERATOR_URL = OPERATOR_URL;
+  // Default-account claude inherits the single stored CLI login via
+  // CLAUDE_CODE_OAUTH_TOKEN — the only cross-platform path (macOS keeps the
+  // OAuth token in the Keychain keyed per CLAUDE_CONFIG_DIR, so the per-session
+  // config dir never finds the default ~/.claude login and no file reconcile can
+  // heal it). No-op unless a token was stored (`psu --set-claude-token`) and the
+  // session is default-account claude. See applyDefaultClaudeOAuthToken.
+  applyDefaultClaudeOAuthToken(wrapperBin, env);
   // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
   // through a managed pty + owner-only control socket so the operator can inject
   // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking
@@ -1838,8 +1921,56 @@ export function agentInvalidForRole(agent) {
   return agent !== 'claude' && agent !== 'omp' && agent !== 'codex';
 }
 
+/**
+ * One-time setup: persist the default-account Claude OAuth token so every
+ * default-account claude psu session inherits the single CLI login on EVERY OS
+ * (the macOS keychain-per-config-dir trap can't be healed by file inheritance —
+ * see claudeOAuthTokenPath). `inline` is the scripting form; otherwise we guide
+ * the user through `claude setup-token` and read a pasted token.
+ */
+async function setClaudeTokenFlow(inline) {
+  let token = (inline || '').trim() || null;
+  if (!token) {
+    console.error('psu: store the default-account Claude login for psu sessions (works on macOS too).');
+    console.error('psu:   1) in a normal terminal run:   claude setup-token');
+    console.error('psu:   2) copy the printed token (starts with sk-ant-oat01-…)');
+    console.error('psu:   3) paste it below.');
+    const { input } = await import('@inquirer/prompts');
+    token = (await input({ message: 'Paste the `claude setup-token` output:' }) || '').trim() || null;
+  }
+  if (!token) {
+    console.error('psu: no token provided — nothing saved.');
+    process.exit(2);
+  }
+  if (!/^sk-ant-/.test(token)) {
+    console.error(`psu: warning — that doesn't look like a setup-token (expected sk-ant-oat01-…); saving anyway.`);
+  }
+  const p = storeClaudeOAuthToken(token);
+  console.error(`psu: saved → ${p} (0600). Default-account claude psu sessions now inherit this login.`);
+}
+
+/** Remove the stored default-account Claude OAuth token (revert to keychain/file login). */
+function clearClaudeTokenFlow() {
+  const p = claudeOAuthTokenPath();
+  if (existsSync(p)) {
+    rmSync(p, { force: true });
+    console.error(`psu: removed ${p}. Default-account claude reverts to the keychain/file login.`);
+  } else {
+    console.error('psu: no stored Claude OAuth token to clear.');
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // One-time credential maintenance commands run before any launch flow.
+  if (args.setClaudeToken) {
+    await setClaudeTokenFlow(args.setClaudeTokenValue);
+    return;
+  }
+  if (args.clearClaudeToken) {
+    clearClaudeTokenFlow();
+    return;
+  }
   // --fork only has meaning when resuming an existing session — warn (don't fail)
   // so a stray `psu --fork` on a fresh launch doesn't silently look honored.
   if (args.fork && !args.resume) {
