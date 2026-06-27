@@ -1036,12 +1036,15 @@ async function fetchAccountChoices(workspace, agent = 'claude') {
  *  "default credential — no pin" / an empty pool (gateway off). */
 async function promptAccount(accounts) {
   const pool = Array.isArray(accounts?.pool) ? accounts.pool : [];
-  if (pool.length === 0) return null; // gateway off / no pool → hidden, byte-identical
-  const exclude = new Set(accounts.excludeAccounts ?? []);
-  const forced = new Set(accounts.forcedAccounts ?? []);
+  // psu-account-chooser: ALWAYS show the picker (at least the default option) so
+  // the choice is consistent across machines — a fresh install with no gateway
+  // pool still gets the "default = system/CLI login" row, instead of silently
+  // skipping the screen the dev box shows. (Was: hidden when pool empty.)
+  const exclude = new Set(accounts?.excludeAccounts ?? []);
+  const forced = new Set(accounts?.forcedAccounts ?? []);
   const { select } = await import('@inquirer/prompts');
   const choices = [
-    { name: '· default credential — no account pin', value: null },
+    { name: '· default — use the system / CLI login (no account pin)', value: null },
     ...pool.map((id) => {
       const blocked = exclude.has(id) || (forced.size > 0 && !forced.has(id));
       const tag = exclude.has(id) ? '  (excluded)' : forced.size > 0 && !forced.has(id) ? '  (not in allow-list)' : '';
@@ -1053,7 +1056,11 @@ async function promptAccount(accounts) {
 
 async function pickAccount(workspace, agent = 'claude') {
   const accounts = await fetchAccountChoices(workspace, agent);
-  return accounts ? promptAccount(accounts) : null;
+  // Always surface the picker (at least the default = system/CLI-login row),
+  // even when the gateway is off / the pool is empty / the operator is
+  // unreachable. (Was: returned null without prompting when accounts was null,
+  // so a fresh install never saw the account screen the dev box shows.)
+  return promptAccount(accounts ?? {});
 }
 
 /** True if `id` is a pinnable account given the gateway choices (pool membership + session-override

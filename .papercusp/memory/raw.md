@@ -236,3 +236,4 @@
 [2026-06-26T00:00:00Z] doc-steward -: D-010 onFlagChange wiring (txn-timeouts-config.ts) makes flag flips propagate immediately in-process — verify before asserting 'restart required' in kill-switch runbooks
 [2026-06-26T16:07:00Z] doc-steward -: when pty/index.ts or tui/intents-stream.ts drift, check the pi-integration + pui-headless-smoke-recipe docs — auth split and polling model are key facts; internal timer refactors (setInterval→managedSetInterval) don't change doc prose, just need verify to stamp baseline.
 [2026-06-27T12:59:01Z] doc-steward -: orient.ts self-field overlays are response-layer additions (not new subsumed tools) — don't add coord:whoami to orient-dedup SQL; the 4 bootstrap tools in ORIENT_SUBSUMED_NORMALIZED remain the canonical tracked set
+[2026-06-27T00:00:00Z] doc-steward -: harness_docs:verify is NOT available as mcp-call.mjs (times out) — use direct curl to :3170/api/agent-tools/harness_docs/verify with the superuser bearer instead

@@ -161,6 +161,20 @@ export function writeInteractiveClaudeConfig(opts: {
   // has its own isolated tests in claude-credential-sync.test.ts.
   if (!process.env.VITEST) {
     try {
+      // Ensure the global ~/.claude exists BEFORE reconciling. The credential
+      // sync only PROMOTES a session-fork login to the global `.credentials.
+      // json` when ~/.claude already exists (it deliberately won't materialize
+      // the dir from its watcher path). On a FRESH box with no ~/.claude, a
+      // `claude /login` done INSIDE a psu session writes a real `.credentials.
+      // json` into the SESSION dir — and without this it is stranded there: the
+      // next psu session gets a fresh dir whose `.credentials.json` symlink
+      // dangles, so psu "launches logged out" even though the user logged in
+      // once. Creating ~/.claude here lets reconcile lift that fork to the
+      // global, so EVERY later psu session (default account) inherits the single
+      // CLI login — on a fresh box too. Idempotent; an API-key-only box just
+      // gets an empty dir claude would have created on first global use anyway.
+      // (psu-login-inherit: fresh-box credential promotion.)
+      mkdirSync(join(home, '.claude'), { recursive: true });
       reconcileClaudeCredentials({ home });
     } catch {
       /* claude surfaces a stale credential the same as before this existed */

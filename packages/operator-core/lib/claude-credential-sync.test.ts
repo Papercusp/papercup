@@ -8,6 +8,7 @@
  * bundles never win; a converged tree produces zero writes.
  */
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -144,6 +145,31 @@ describe('reconcileClaudeCredentials', () => {
     // A restored global is bundle-only — it does NOT inherit the fork's mcpOAuth.
     expect(readJson(globalPath()).mcpOAuth).toBeUndefined();
     expect(statSync(globalPath()).mode & 0o777).toBe(0o600);
+  });
+
+  it('does NOT materialize ~/.claude from a fork when the dir is absent — then promotes once it exists', () => {
+    // A truly fresh box: NO ~/.claude dir at all. A `claude /login` done INSIDE
+    // a psu session leaves a real fork, but reconcile deliberately won't create
+    // ~/.claude here — so the lone fork is stranded and a new psu session can't
+    // inherit it ("launches logged out"). This is exactly why
+    // writeInteractiveClaudeConfig now mkdir's ~/.claude BEFORE reconciling.
+    // (psu-login-inherit: fresh-box credential promotion.)
+    rmSync(join(home, '.claude'), { recursive: true, force: true });
+    writeCreds(sessionPath('su-only'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
+
+    const r = run();
+    // Fork is the winner, but with no ~/.claude nothing is promoted to global.
+    expect(r.winner?.path).toBe(sessionPath('su-only'));
+    expect(r.updated).toEqual([]);
+    expect(existsSync(globalPath())).toBe(false);
+    expect(existsSync(join(home, '.claude'))).toBe(false);
+
+    // Pre-creating ~/.claude (what writeInteractiveClaudeConfig now does) lets
+    // the SAME reconcile lift the fork to the global → inheritance works.
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    const r2 = run();
+    expect(r2.updated).toEqual([globalPath()]);
+    expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-new');
   });
 
   it('no-ops when nothing valid exists anywhere', () => {
