@@ -27,7 +27,7 @@ export default defineTool({
     when: '"Who can take work right now, and on what?" — before dispatching/handing off. Read `sessionState`/`wakeable` per row + `summary.wakeable`, NOT raw `active`. Hand a lane to a `parked` agent via coord:dispatch (assign+wake+confirm); an `ended` target needs a relaunch.',
     notWhen: 'Checking whether a specific file is free — use locks:queue. Re-reading the roster every turn — the [coord+N] lifecycle deltas already carry intent/claim/completion; tail those (see chaining).',
     chaining:
-      'Read-once + tail (presence-v2 P-008): this snapshot is byte-stable, so read it ONCE, then rely on the [coord+N] lifecycle deltas for peer transitions rather than re-reading. lastActiveSecAgo is point-in-time at as_of. After a compaction the roster baseline is re-injected automatically (P-010).',
+      'Read-once + tail: snapshot is byte-stable, so read it ONCE then tail [coord+N] lifecycle deltas for peer transitions. lastActiveSecAgo is point-in-time at as_of. After compaction the roster baseline re-injects automatically.',
   },
   capability: 'coord:read',
   requirePrincipal: false,

@@ -403,7 +403,8 @@ describe('hive:queen_efficiency (B-06 / P-010 queryable surface)', () => {
     queenWakeEfficiency.mockResolvedValue(effResult());
     const res = parse(await tool.handler({ harness: 'papercup', limit: 100 }, ctx()));
     expect(res.ok).toBe(true);
-    expect(res.harness).toBe('papercup');
+    // canonicalHarnessSlug maps 'papercup' → 'papercusp' (rename-compat shim EI-2224)
+    expect(res.harness).toBe('papercusp');
     expect(res.wakes).toBe(2);
     expect(res.cachedWakes).toBe(1); // the "cache is real" signal (P-003)
     expect(res.avgTurns).toBe(4); // Win-2 round-trips
