@@ -107,13 +107,38 @@ function runScript(
 }
 
 /**
+ * The wall-clock budget for ONE green-checkpoint suite run before runScript
+ * SIGTERMs the whole process group (P-007). This MUST track the gate's fork
+ * concurrency: GREEN_CHECKPOINT_MAX_FORKS (green-checkpoint.ts) was lowered
+ * 8→4→2 for OOM safety on this memory-pressured shared box, which ~doubled the
+ * suite's wall-clock — but this budget stayed at the original 25m, so every
+ * 2-fork run OVERRAN it and was SIGTERM-killed (exit 143) BEFORE producing any
+ * verdict, wedging the green gate (and thus every fleet deploy) for ~18h
+ * (green-checkpoint-timeout-vs-forks-2026-06-27). 55m gives a 2-fork run headroom
+ * to COMPLETE under live-fleet load.
+ *
+ * INVARIANT: keep this STRICTLY LESS than CHECKPOINT_LOCK_STALE_MS
+ * (green-checkpoint.ts, 65m) — a run must be killed by THIS timeout (and release
+ * its lock) before that lock is stale-reclaimable, else the next hourly fire
+ * spawns a SECOND concurrent suite and OOMs the box. operator-core cannot import
+ * from apps/operator, so the two constants live in separate files; whoever
+ * retunes one must retune the other (same convention as the result MARKERs above).
+ *
+ * Deeper root (see green-checkpoint.ts GREEN_CHECKPOINT_MAX_FORKS notes): the
+ * box's memory BASELINE / the :3070 operator-cluster size. Freeing memory there
+ * would let the gate run more forks → finish faster → afford a SHORTER budget.
+ * This bump UNWEDGES the gate; it does not remove that deeper cost.
+ */
+export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 55 * 60_000;
+
+/**
  * system:green-checkpoint — advance `ready` to the newest green integration
  * commit. Idempotent (FF-only, no-op when already green). Bounded so a stuck
  * suite can't wedge the routines tick.
  */
 registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   const root = integrationRoot();
-  const r = await runScript(root, 'apps/operator/lib/release/green-checkpoint.ts', [], 25 * 60_000);
+  const r = await runScript(root, 'apps/operator/lib/release/green-checkpoint.ts', [], GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
   if (r.code !== 0) {
     console.warn(`[green-checkpoint] exited ${r.code}: ${(r.stderr || r.stdout).slice(-500)}`);
   } else {

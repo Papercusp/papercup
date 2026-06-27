@@ -144,13 +144,20 @@ function defaultPidAlive(pid: number): boolean {
   }
 }
 
-/** A checkpoint run is bounded by the routine's 25-min suite timeout, so a lock held
- *  longer than this is DEFINITIVELY stale and is reclaimed even if its recorded pid
- *  still looks alive. Without this, a run that hung past its timeout / crashed without
+/** A checkpoint run is bounded by the routine's suite timeout
+ *  (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in harness/routines/release-actions.ts — 55m), so a
+ *  lock held longer than THIS is DEFINITIVELY stale and is reclaimed even if its recorded
+ *  pid still looks alive. Without this, a run that hung past its timeout / crashed without
  *  releasing / left a lock whose pid got RECYCLED to an unrelated live process wedged
  *  the gate forever — the dead-pid check alone never reclaims a recycled-pid lock. This
- *  is the silent multi-hour fleet-deploy freeze (green-checkpoint-stale-lock-2026-06-26). */
-export const CHECKPOINT_LOCK_STALE_MS = 45 * 60_000;
+ *  is the silent multi-hour fleet-deploy freeze (green-checkpoint-stale-lock-2026-06-26).
+ *  INVARIANT: keep this STRICTLY GREATER than the suite timeout, so a run is killed by the
+ *  timeout (and releases its lock) before the lock is reclaimable — else an overlapping
+ *  hourly fire spawns a 2nd concurrent suite and OOMs the box. Raised 45m→65m in lock-step
+ *  with the 25m→55m timeout bump (green-checkpoint-timeout-vs-forks-2026-06-27): the 2-fork
+ *  suite now legitimately runs ~45m, so the OLD 45m stale-threshold could reclaim a
+ *  HEALTHY in-progress run's lock mid-suite. */
+export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
 
 export function acquireCheckpointRunLock(
   lockDir: string,
