@@ -139,7 +139,8 @@ describe('hive:declare-wake', () => {
     const at = '2026-07-01T00:00:00.000Z';
     const res = parse(await tool.handler({ at, harness: 'papercup' }, ctx()));
     expect(res.ok).toBe(true);
-    expect(res.harness).toBe('papercup');
+    // canonicalHarnessSlug maps 'papercup' → 'papercusp' (rename-compat shim EI-2224)
+    expect(res.harness).toBe('papercusp');
     expect(res.mode).toBe('time');
     expect(res.time).toEqual({ at, clamped: false });
     expect(res.eventRules).toBe(0);
@@ -289,7 +290,8 @@ describe('hive:wake', () => {
   it('outside the floor → claims the fire + launches the hive', async () => {
     claimHiveWakeFire.mockResolvedValue({ fired: true, floorSec: 60 });
     const res = parse(await tool.handler({ reason: 'prod fire', source: 'user', harness: 'papercup' }, ctx()));
-    expect(res).toMatchObject({ ok: true, fired: true, role: 'operator', harness: 'papercup' });
+    // canonicalHarnessSlug maps 'papercup' → 'papercusp' (rename-compat shim EI-2224)
+    expect(res).toMatchObject({ ok: true, fired: true, role: 'operator', harness: 'papercusp' });
     expect(claimHiveWakeFire).toHaveBeenCalledWith('ws-test', { floorSec: 60, force: undefined });
     expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
     const [bp, input] = fireLaunchBlueprint.mock.calls[0] as unknown as [
@@ -347,7 +349,8 @@ describe('hive:status', () => {
 
     const res = parse(await tool.handler({ harness: 'papercup' }, ctx()));
     expect(res.ok).toBe(true);
-    expect(res.harness).toBe('papercup');
+    // canonicalHarnessSlug maps 'papercup' → 'papercusp' (rename-compat shim EI-2224)
+    expect(res.harness).toBe('papercusp');
     expect(res.time).toEqual({ active: true, nextFireAt: nextFire.toISOString(), lastFiredAt: null });
     expect(res.subscriptions).toEqual([{ on: 'coord:escalate', note: 'x' }]);
     expect(res.liveRuleIds).toEqual(['hive-wake:ws-test#0']);

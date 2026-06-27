@@ -328,13 +328,15 @@ describe('coord:send', () => {
       msgId: null,
     });
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', wake: 'optimistic' }),
+      // Backstop declared → optimistic miss is SILENT (no recipient_absent).
+      // Without a backstop the code now reports the miss loudly (recipient_absent:true).
+      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', wake: 'optimistic', backstop: 'queen-survey re-dispatches' }),
       ctx,
     );
     const { wake } = send1(res);
     expect(wake.mode).toBe('optimistic');
     expect(wake.woken).toBe(0);
-    expect(wake.recipient_absent).toBeUndefined(); // a miss over a backstop is not loud
+    expect(wake.recipient_absent).toBeUndefined(); // a miss over a declared backstop is not loud
     expect(await log.readLines('messages')).toHaveLength(1);
   });
 

@@ -49,6 +49,7 @@ const TAB_HREFS = [
   '/admin/git',
   '/admin/dogfood-substrate',
   '/admin/dbos',
+  '/admin/schedules',
   '/admin/cupboard-moderation',
 ];
 
@@ -93,7 +94,7 @@ describe('AdminShell', () => {
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual(TAB_HREFS);
 
     // Static (non-lexicon) labels render verbatim.
-    for (const label of ['Run', 'Features', 'Recipes', 'Git', 'Substrate', 'DBOS']) {
+    for (const label of ['Run', 'Features', 'Recipes', 'Git', 'Substrate', 'DBOS', 'Schedules']) {
       expect(screen.getByRole('tab', { name: label })).toBeTruthy();
     }
   });

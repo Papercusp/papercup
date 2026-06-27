@@ -21,6 +21,22 @@ vi.mock('@/app/harness/dock/close-guard', () => ({
   },
 }));
 
+// useCreateScope uses nuqs (useQueryState) which requires a framework adapter.
+// This test only cares about rendering + close-guard behavior, not hive scoping,
+// so stub useCreateScope to return null values for all scope fields.
+vi.mock('./use-create-data', async (importActual) => {
+  const actual = await importActual<Record<string, unknown>>();
+  return {
+    ...actual,
+    useCreateScope: () => ({
+      harnessFilter: null,
+      advActiveSlug: null,
+      scopeMode: 'expanded' as const,
+      harnessSlugsForFetch: undefined,
+    }),
+  };
+});
+
 // PlanDetail → a marker echoing its slug; expose onDirtyChange so the test can
 // flip the dirty flag and observe the close-guard's verdict.
 let lastOnDirtyChange: ((d: boolean) => void) | null = null;
