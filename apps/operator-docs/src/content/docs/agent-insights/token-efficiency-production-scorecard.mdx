@@ -48,7 +48,11 @@ SELECT
   round(100.0*count(*) FILTER (WHERE status='invalid-input')/nullif(count(*),0),3) AS invalid_input_pct,
   count(*) FILTER (WHERE status='invalid-input'
                     AND error_message LIKE '%Too big: expected string%') AS string_limit_fails,
-  -- (3) orient-dedup — loose proxy (see caveat); orient calls vs the 4 tools orient already returns.
+  -- (3) orient-dedup — loose proxy (see caveat); orient calls vs the 4 bootstrap tools orient already
+  --     returns (memory:search · coord:inbox · coord:plan-events · coord:declare-intent). Note: as of
+  --     2026-06-27 orient ALSO folds in the caller's own identity (self: { ownerId, ownerLabel } —
+  --     orient.ts resolveSelfRef overlay), but coord:whoami is a debug tool, not a bootstrap step, so
+  --     it is NOT added to this list — that keeps the metric focused on mandatory session-bootstrap dedup.
   count(*) FILTER (WHERE tool_name='coord:orient') AS orient_calls,
   count(*) FILTER (WHERE tool_name IN
     ('memory:search','coord:inbox','coord:plan-events','coord:declare-intent')) AS redundant_followups
@@ -132,6 +136,16 @@ self-join on `role`+time. Until then, track the **ratio trend** (`redundant_foll
 as a coarse directional signal, not an absolute rate, and treat a *downward* trend after the
 `ORIENT_DEDUP_NUDGE` deploy as the win. Refining this into a real per-session metric is the one open
 follow-up for this scorecard.
+
+**Orient `self` field (added 2026-06-27):** `coord:orient` now also folds in the caller's own
+coordination identity as a top-level `self: { ownerId, ownerLabel }` at response-assembly time
+(same overlay pattern as `coord:glance` and `coord:watermark`; see `coordination/self-marker.ts`).
+Agents no longer need a separate `coord:whoami` call to learn their own `ownerId` from within an
+orient turn. Since `coord:whoami` is a debug tool rather than a mandatory bootstrap step, it is **not**
+added to the `redundant_followups` query and this change does not affect the three scorecard metrics.
+The four tracked bootstrap tools (`memory:search`, `coord:inbox`, `coord:plan-events`,
+`coord:declare-intent`) remain unchanged in both `ORIENT_SUBSUMED_NORMALIZED`
+(`code-run-batch-nudge.ts`) and the SQL above.
 
 ## Cadence
 
