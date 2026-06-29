@@ -99,8 +99,8 @@ export function EnvSwitcherBar() {
         data-active={active ? 'true' : 'false'}
         data-reachable={op.reachable ? 'true' : 'false'}
         aria-current={active ? 'true' : undefined}
+        aria-label={op.reachable ? op.tooltip : `${op.tooltip} (not running)`}
         disabled={!op.reachable && !active}
-        title={op.reachable ? op.tooltip : `${op.tooltip} (not running)`}
         onClick={() => navigate(op)}
         style={{
           ...(release ? { marginLeft: 'auto' } : {}),
@@ -159,7 +159,7 @@ export function EnvSwitcherBar() {
         boxShadow: '0 1px 6px rgba(0,0,0,0.35)',
       }}
     >
-      <span style={{ color: 'var(--fg-mute, #888)', letterSpacing: 0.4, textTransform: 'uppercase', fontSize: 10 }}>
+      <span style={{ color: 'var(--fg-mute, #888)', textTransform: 'uppercase', fontSize: 10 }}>
         env
       </span>
       {envOps.map((op) => renderButton(op))}
