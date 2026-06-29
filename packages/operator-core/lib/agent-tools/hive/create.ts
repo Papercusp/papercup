@@ -70,6 +70,17 @@ export default defineTool({
       .describe(
         "Learning pack to seed into the hive's shared memory (learning-packs P-005). Omit ⇒ the default pack (papercusp-default); 'none' ⇒ seed nothing. learning_packs:list enumerates the available packs.",
       ),
+    repoRemote: z
+      .enum(['auto', 'local-only'])
+      .optional()
+      .describe(
+        "Fresh coding-hive repo remote policy (per-hive-git-and-release-gate). 'auto' (default) ⇒ create a PRIVATE GitHub remote + push when git creds are present (gh auth), else local-only. 'local-only' ⇒ never create a remote (the local staging→main gate still runs). Ignored when cloning/linking an existing repo.",
+      ),
+    repoOwner: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('gh owner/org for the auto-created remote (default = the authenticated GitHub login).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
@@ -118,6 +129,8 @@ export default defineTool({
       blueprintId: args.blueprintId ?? undefined,
       // 'none' ⇒ null (seed nothing); omit ⇒ undefined (default pack).
       learningPack: args.learningPack === 'none' ? null : args.learningPack ?? undefined,
+      repoRemote: args.repoRemote ?? undefined,
+      repoOwner: args.repoOwner ?? undefined,
     });
     if (!res.ok) return text({ ...res });
 
@@ -128,6 +141,7 @@ export default defineTool({
       path: res.path,
       waked: res.waked,
       ...(res.seededLearnings ? { seededLearnings: res.seededLearnings } : {}),
+      ...(res.repoInit ? { repoInit: res.repoInit } : {}),
       hive,
     });
   },

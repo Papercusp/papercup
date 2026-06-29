@@ -28,12 +28,25 @@ export interface WrappedKeyInput {
 export interface PutWrappedKeysOptions {
   /**
    * BUG B self-heal (shared-hive-member-content-federation D-028, layer 2). When true,
-   * a row that ALREADY exists is RE-WRITTEN via ON CONFLICT DO UPDATE that re-stamps
-   * origin='local' + fed_ts=NULL + fed_hlc=NULL (and refreshes wrapped_key/author).
-   * Clearing fed_ts/fed_hlc makes the BEFORE stamp trigger mint a FRESH HLC, so the
-   * AFTER INSERT OR UPDATE capture trigger (mig 411) re-enqueues the federation op and
-   * the member's LWW projection accepts the re-sent key (newer HLC wins). Default false
-   * = the original write-once ON CONFLICT DO NOTHING (existing behavior unchanged).
+   * a row that ALREADY exists is RE-WRITTEN via ON CONFLICT DO UPDATE (instead of the
+   * write-once DO NOTHING) so the member that MISSED the original federated grant gets
+   * the key RE-SENT with a FRESH HLC.
+   *
+   * MECHANISM (verified against the live triggers, not assumed): the DO UPDATE re-writes
+   * `wrapped_key` — a NON-masked content column (re-wrap is a libsodium sealed box with a
+   * per-call ephemeral key, so the blob always differs) — and sets origin='local', but
+   * does NOT touch fed_ts/fed_hlc. That makes the BEFORE stamp trigger
+   * (stamp_local_federated_write, mig 314) take its CONTENT-CHANGED branch and mint a
+   * FRESH fed_ts + fed_hlc (origin='local'); the AFTER INSERT OR UPDATE capture trigger
+   * (mig 411) then re-enqueues the federation op carrying that fresh HLC, and the
+   * member's LWW projection (fed_hlc >= existing) accepts the re-send.
+   *
+   * Why NOT null fed_ts/fed_hlc (the naive re-stamp): mig-314's stamp trigger treats a
+   * MOVED fed_ts (`NEW.fed_ts IS DISTINCT FROM OLD.fed_ts`, which NULL satisfies) as a
+   * verbatim projection-apply / explicit repair and returns WITHOUT re-stamping — so
+   * nulling fed_ts would leave the row at fed_ts/fed_hlc=NULL and NOT mint a fresh HLC.
+   *
+   * Default false = the original write-once ON CONFLICT DO NOTHING (behavior unchanged).
    */
   refederate?: boolean;
 }
@@ -58,16 +71,17 @@ export async function putWrappedKeys(
 ): Promise<number> {
   if (!Number.isInteger(epoch) || epoch < 0) throw new Error(`putWrappedKeys: bad epoch ${epoch}`);
   const s = pg(sql);
-  // refederate ⇒ DO UPDATE re-stamping origin='local' + clearing fed_ts/fed_hlc (the
-  // BEFORE stamp trigger re-mints them → the capture trigger re-federates). Otherwise
-  // the write-once DO NOTHING. updated_at is refreshed on a real re-write.
+  // refederate ⇒ DO UPDATE re-writing wrapped_key (a non-masked content column → the
+  // BEFORE stamp trigger mints a FRESH fed_ts/fed_hlc on its content-changed branch) +
+  // origin='local', WITHOUT touching fed_ts/fed_hlc (nulling them would hit the trigger's
+  // "moved fed_ts ⇒ verbatim" branch and skip the re-stamp). The AFTER INSERT OR UPDATE
+  // capture (mig 411) then re-federates with the fresh HLC. See PutWrappedKeysOptions.
+  // Otherwise the original write-once DO NOTHING.
   const conflict = opts?.refederate
     ? `DO UPDATE SET
          wrapped_key = EXCLUDED.wrapped_key,
          author_pubkey = EXCLUDED.author_pubkey,
          origin = 'local',
-         fed_ts = NULL,
-         fed_hlc = NULL,
          updated_at = (EXTRACT(EPOCH FROM now()) * 1000)::bigint`
     : `DO NOTHING`;
   let written = 0;

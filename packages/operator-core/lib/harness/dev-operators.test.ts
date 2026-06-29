@@ -65,6 +65,19 @@ describe('resolveDevOperators', () => {
     expect(staging.sha).toBeNull();
   });
 
+  it('reflects disabledIds as enabled:false on those envs; release stays enabled', async () => {
+    const fetchMock = vi.fn(async () => versionResponse('cccccccc'));
+    const { operators } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: null,
+      disabledIds: ['staging', 'local'],
+    });
+    expect(operators.find((o) => o.id === 'staging')!.enabled).toBe(false);
+    expect(operators.find((o) => o.id === 'local')!.enabled).toBe(false);
+    expect(operators.find((o) => o.id === 'dev')!.enabled).toBe(true);
+    expect(operators.find((o) => o.kind === 'release')!.enabled).toBe(true);
+  });
+
   it('treats a non-ok or aborted probe as unreachable (never throws)', async () => {
     const fetchMock = vi.fn(async () => new Response('nope', { status: 502 }));
     const { operators } = await resolveDevOperators({

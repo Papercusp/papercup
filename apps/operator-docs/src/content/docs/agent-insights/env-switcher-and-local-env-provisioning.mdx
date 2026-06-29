@@ -1,0 +1,76 @@
+---
+title: The cross-platform env switcher (dev/prod/staging/local + release) and its enabled-state
+description: How the in-webview EnvSwitcherBar works on every platform — the GET /api/desktop/dev-operators discovery feed (server-side reachability, CORS-safe), the "release" escape env (the immutable bundled package code), and how an agent reads + toggles which envs are enabled (POST /api/desktop/dev-operators/set-enabled). Read this before touching the env bar or the planned install-time local-operator provisioning.
+discovered: 2026-06-29
+tags: [env-switcher, desktop, dev-wrapper, operators, provisioning, agent-control, dogfood]
+status: active
+documents:
+  - packages/operator-core/lib/harness/dev-operators.ts
+  - packages/operator-core/lib/harness/env-switcher-prefs.ts
+  - packages/operator-core/lib/endpoint-route/routes/desktop/dev-operators.ts
+  - apps/operator-vite/src/components/env-switcher/EnvSwitcherBar.tsx
+  - papercusp-desktop/src-tauri/src/dev_wrapper.rs
+plans:
+  - dogfood-silent-canonical-hive-join-2026-06-28
+sidebar:
+  order: 32
+---
+
+## What this is
+
+On the dev box, the env switcher is a **Linux-only native GTK bar** (`dev_wrapper.rs`) that
+navigates the webview between four operator stacks on fixed local ports — `prod :3070`
+(green/release tree), `staging :3170` (staging tree), `dev :3270` (working tree), and
+`local :3055` (Vite HMR). `EnvSwitcherBar` is its **data-driven, cross-platform twin**: a
+slim fixed top bar that ships in public builds and works on macOS/Windows/Linux.
+
+It is mounted **ungated** in `apps/operator-vite/src/routes/__root.tsx`, but **self-hides
+unless ≥2 ENV operators are reachable** — so a plain single-operator install shows nothing
+until install-time provisioning brings the other envs up.
+
+## The contract — `GET /api/desktop/dev-operators`
+
+Returns `{ ok, operators, selfPort }`. Each operator:
+
+```ts
+{ id, label, port, tooltip, origin, reachable, sha, isSelf, kind, enabled }
+```
+
+- **Reachability is probed SERVER-side.** A webview served from one origin (`:3070`) cannot
+  cross-origin `fetch` a sibling operator's `/version` (CORS), so the operator itself probes
+  the localhost ports. The **switch** is a top-level `window.location` navigation (carrying
+  the current route + query), which is **not** CORS-bound.
+- **`kind: 'env' | 'release'`.** The four branch operators are `kind:'env'`. There is also one
+  `kind:'release'` entry — the **"release" button**: it switches to the **unchanged code from
+  the installed release package** (the immutable bundled operator, which local edits can't
+  break — the always-good escape hatch). Its origin = `PAPERCUSP_RELEASE_ORIGIN` (set by the
+  Tauri host / provisioning) and falls back to `prod :3070` on the dev box. There is **no**
+  remote-main git-reset button (the `POST /api/desktop/git/reset-to-remote-main` endpoint
+  still exists as a backend-only recovery API).
+
+## Enabling / disabling envs — and how an AGENT does it
+
+A user can **right-click an env** in the bar to turn it off (it won't be provisioned/started,
+and renders struck-through). This is persisted **per-machine** in
+`~/.papercusp/env-switcher-prefs.json` (`{ disabled: string[] }`, via `env-switcher-prefs.ts`)
+— **not** in browser localStorage — precisely so it's legible + controllable outside the UI.
+
+An agent can therefore **see and change** which envs are on:
+
+- **Read:** `GET /api/desktop/dev-operators` → each op's `enabled` flag.
+- **Toggle:** `POST /api/desktop/dev-operators/set-enabled` with `{ id, enabled }` (loopback +
+  a cross-site CSRF guard). e.g. re-enable staging: `{ "id": "staging", "enabled": true }`.
+
+The **`release`** env is the immutable escape hatch and can **never** be disabled (the toggle
+and the prefs reader both refuse it).
+
+## Install-time provisioning (P-017 — in progress)
+
+Making the env operators actually exist on a packaged machine is the remaining piece (owner
+chose full parity with per-env disable; D-006/D-007). The non-bundled envs run from the
+**cloned `papercup` source** (which the dogfood already clones), so they require a Node
+toolchain on the machine; provisioning must detect a missing toolchain and present that env
+as unavailable gracefully. The bundled **release** env always works with no toolchain. The
+switcher already lights up envs as they become reachable, so provisioning just needs to start
+the enabled operators — it does not change this contract. End-to-end verification is coupled to
+a real release build (plan items P-008/P-010).

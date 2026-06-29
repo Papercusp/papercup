@@ -83,6 +83,8 @@ export interface ResolvedDevOperator extends DevOperatorDescriptor {
   isSelf: boolean;
   /** 'env' = a switchable branch operator; 'release' = the immutable bundled package code (D-008). */
   kind: 'env' | 'release';
+  /** Whether the user wants this env (D-007). Disabled envs are not provisioned/started; 'release' is always enabled. */
+  enabled: boolean;
 }
 
 export interface ResolveDevOperatorsResult {
@@ -102,6 +104,8 @@ export interface ResolveDevOperatorsDeps {
   timeoutMs?: number;
   /** Candidate env operators (default DEV_OPERATORS). */
   candidates?: readonly DevOperatorDescriptor[];
+  /** Env ids the user has disabled (D-007) — reflected as `enabled:false`. 'release' is never disabled. */
+  disabledIds?: readonly string[];
 }
 
 /** This operator's listen port, from the same env the host reads (PAPERCUSP_HONO_PORT / PORT). */
@@ -173,6 +177,7 @@ export async function resolveDevOperators(
   const timeoutMs = deps.timeoutMs ?? 700;
   const candidates = deps.candidates ?? DEV_OPERATORS;
   const selfPort = deps.selfPort !== undefined ? deps.selfPort : detectSelfPort();
+  const disabled = new Set(deps.disabledIds ?? []);
 
   const envOps = await Promise.all(
     candidates.map(async (d): Promise<ResolvedDevOperator> => {
@@ -182,7 +187,7 @@ export async function resolveDevOperators(
       const { reachable, sha } = isSelf
         ? { reachable: true, sha: null }
         : await probeVersion(origin, doFetch, timeoutMs);
-      return { ...d, origin, reachable, sha, isSelf, kind: 'env' };
+      return { ...d, origin, reachable, sha, isSelf, kind: 'env', enabled: !disabled.has(d.id) };
     }),
   );
 
@@ -202,6 +207,7 @@ export async function resolveDevOperators(
     origin: releaseOrigin,
     kind: 'release',
     isSelf: releaseIsSelf,
+    enabled: true,
     ...releaseProbe,
   };
 

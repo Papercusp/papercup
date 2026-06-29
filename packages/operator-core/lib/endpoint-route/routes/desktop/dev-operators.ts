@@ -1,24 +1,33 @@
 /**
- * GET /api/desktop/dev-operators  (+ OPTIONS preflight)
+ * /api/desktop/dev-operators  — the env switcher's data + control plane.
  *
- * The data feed for the cross-platform in-webview env switcher (EnvSwitcherBar) —
- * dogfood-silent-canonical-hive-join P-012..P-014 / P-017, D-006/D-008. Returns the
- * canonical env targets (dev/prod/staging/local) PLUS the "release" env (the immutable
- * bundled package code) with SERVER-SIDE reachability + which one is serving this
- * request (active), so the switcher renders the same envs as the native Linux GTK
- * dev-wrapper bar, but on every platform.
+ *   GET  /api/desktop/dev-operators            list envs (dev/prod/staging/local +
+ *                                              release) with server-side reachability,
+ *                                              which is active (self), and `enabled`.
+ *   POST /api/desktop/dev-operators/set-enabled { id, enabled } — toggle whether an env
+ *                                              is provisioned/started (D-007). 'release'
+ *                                              can never be disabled.
+ *
+ * (dogfood-silent-canonical-hive-join P-013/P-014/P-017, D-006/D-007/D-008.)
  *
  * Reachability is probed server-side (operator → localhost) because a webview on one
  * origin can't cross-origin fetch a sibling operator's /version (CORS); the switch
  * itself is a top-level window.location navigation (not CORS-bound).
  *
- * auth: {} — the standard cookie-less desktop-webview read posture (same as
- * setup-wizard-state / git-identity). Read-only, loopback-bound, non-secret (ports +
- * reachability + shas, same class as desktop/version).
+ * AGENT-LEGIBILITY: the enabled-state lives in a known file (env-switcher-prefs), is
+ * reported here per-op (`enabled`), and is toggled by this POST — so an agent can read
+ * which envs are off and re-enable them via the same loopback API the UI uses. See
+ * agent-insights/env-switcher-and-local-env-provisioning.
+ *
+ * auth: GET {} (the cookie-less desktop-webview read posture, like setup-wizard-state).
+ * POST 'loopback' + a cross-site CSRF guard (it mutates a preference) — mirrors
+ * git-remote-main / bootstrap-hive-start.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveDevOperators } from '../../../harness/dev-operators';
+import { readEnvSwitcherPrefs, setEnvEnabled } from '../../../harness/env-switcher-prefs';
 
+const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json' };
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, OPTIONS',
@@ -31,9 +40,10 @@ export default [
     path: '/desktop/dev-operators',
     auth: {},
     async handler() {
-      const { operators, selfPort } = await resolveDevOperators();
+      const { disabled } = readEnvSwitcherPrefs();
+      const { operators, selfPort } = await resolveDevOperators({ disabledIds: disabled });
       return new Response(JSON.stringify({ ok: true, operators, selfPort }), {
-        headers: { 'content-type': 'application/json', ...CORS_HEADERS },
+        headers: { ...JSON_HEADERS, ...CORS_HEADERS },
       });
     },
   }),
@@ -43,6 +53,44 @@ export default [
     auth: {},
     handler() {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
+    },
+  }),
+  defineTool({
+    method: 'POST',
+    path: '/desktop/dev-operators/set-enabled',
+    auth: 'loopback',
+    async handler(req) {
+      // CSRF guard: refuse a cross-site browser request before any write.
+      const site = req?.headers?.get?.('sec-fetch-site');
+      if (site === 'cross-site') {
+        return new Response(JSON.stringify({ ok: false, error: 'cross_site_forbidden' }), {
+          status: 403,
+          headers: JSON_HEADERS,
+        });
+      }
+      let body: { id?: unknown; enabled?: unknown } = {};
+      try {
+        body = (await req?.json?.()) ?? {};
+      } catch {
+        body = {};
+      }
+      const id = typeof body.id === 'string' ? body.id.trim() : '';
+      if (!id) {
+        return new Response(JSON.stringify({ ok: false, error: 'missing_id' }), {
+          status: 400,
+          headers: JSON_HEADERS,
+        });
+      }
+      if (typeof body.enabled !== 'boolean') {
+        return new Response(JSON.stringify({ ok: false, error: 'missing_enabled' }), {
+          status: 400,
+          headers: JSON_HEADERS,
+        });
+      }
+      const prefs = setEnvEnabled(id, body.enabled);
+      return new Response(JSON.stringify({ ok: true, disabled: prefs.disabled }), {
+        headers: JSON_HEADERS,
+      });
     },
   }),
 ];

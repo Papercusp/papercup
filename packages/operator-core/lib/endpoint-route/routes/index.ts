@@ -45,6 +45,8 @@ import operatorRunCancel from './operator/run-cancel';
 import operatorSentinelInput from './operator/sentinel-input';
 import operatorSentinelOutput from './operator/sentinel-output';
 import operatorTurnAnswer from './operator/turn-answer';
+import operatorEventsEmit from './operator/events-emit';
+import operatorHiveSteering from './operator/hive-steering';
 import backupsIndex from './backups/index';
 import backupsBrokenList from './backups/broken-list';
 import backupsFailures from './backups/failures';
@@ -528,6 +530,9 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(operatorSentinelInput as AnyRoute),
   ...flatten(operatorSentinelOutput as AnyRoute[]),
   ...flatten(operatorTurnAnswer as AnyRoute),
+  // oddsmith P-020 engine↔operator bridge (additive + inert until armed).
+  ...flatten(operatorEventsEmit as AnyRoute),
+  ...flatten(operatorHiveSteering as AnyRoute),
   ...flatten(backupsIndex as AnyRoute[]),
   ...flatten(backupsBrokenList as AnyRoute),
   ...flatten(backupsFailures as AnyRoute),

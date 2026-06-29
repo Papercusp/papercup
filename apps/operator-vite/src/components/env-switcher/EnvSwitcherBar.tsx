@@ -22,7 +22,7 @@
  * Styling mirrors DogfoodBootstrapBanner (opaque --bg-1 bar, fixed top, overlays —
  * routes scroll underneath, no layout reservation).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface ResolvedDevOperator {
   id: string;
@@ -34,6 +34,7 @@ interface ResolvedDevOperator {
   sha: string | null;
   isSelf: boolean;
   kind: 'env' | 'release';
+  enabled: boolean;
 }
 
 interface DevOperatorsResponse {
@@ -47,29 +48,28 @@ const REFRESH_MS = 30_000;
 
 export function EnvSwitcherBar() {
   const [data, setData] = useState<DevOperatorsResponse | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/api/desktop/dev-operators', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (!r.ok) return;
+      const j = (await r.json()) as DevOperatorsResponse;
+      if (mounted.current && j?.ok) setData(j);
+    } catch {
+      /* not desktop / endpoint absent → the bar simply stays hidden */
+    }
+  }, []);
 
   useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const r = await fetch('/api/desktop/dev-operators', {
-          credentials: 'same-origin',
-          cache: 'no-store',
-        });
-        if (!r.ok) return;
-        const j = (await r.json()) as DevOperatorsResponse;
-        if (alive && j?.ok) setData(j);
-      } catch {
-        /* not desktop / endpoint absent → the bar simply stays hidden */
-      }
-    };
     void load();
-    const t = setInterval(load, REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+    const t = setInterval(() => void load(), REFRESH_MS);
+    return () => clearInterval(t);
+  }, [load]);
 
   const navigate = useCallback((op: ResolvedDevOperator) => {
     if (op.isSelf || !op.reachable) return;
@@ -78,6 +78,27 @@ export function EnvSwitcherBar() {
     const target = op.origin + window.location.pathname + window.location.search + window.location.hash;
     window.location.assign(target);
   }, []);
+
+  // Right-click an env to enable/disable whether it's provisioned/started (D-007).
+  // Persisted server-side + agent-legible (POST /api/desktop/dev-operators/set-enabled).
+  // 'release' is the immutable escape hatch — never disablable.
+  const toggleEnabled = useCallback(
+    async (op: ResolvedDevOperator) => {
+      if (op.kind === 'release') return;
+      try {
+        await fetch('/api/desktop/dev-operators/set-enabled', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: op.id, enabled: !op.enabled }),
+          credentials: 'same-origin',
+        });
+      } catch {
+        /* best-effort */
+      }
+      void load();
+    },
+    [load],
+  );
 
   const operators = data?.operators ?? [];
   const envOps = operators.filter((o) => o.kind === 'env');
@@ -91,6 +112,9 @@ export function EnvSwitcherBar() {
 
   const renderButton = (op: ResolvedDevOperator, release = false) => {
     const active = op.isSelf || (Number.isFinite(currentPort) && op.port === currentPort);
+    const off = !op.enabled; // user-disabled (D-007) — won't be provisioned/started
+    const inert = !op.reachable && !active; // not running → can't navigate
+    const label = op.reachable ? op.tooltip : `${op.tooltip} (not running)`;
     return (
       <button
         key={op.id}
@@ -98,10 +122,27 @@ export function EnvSwitcherBar() {
         data-testid={`env-btn-${op.id}`}
         data-active={active ? 'true' : 'false'}
         data-reachable={op.reachable ? 'true' : 'false'}
+        data-enabled={op.enabled ? 'true' : 'false'}
         aria-current={active ? 'true' : undefined}
-        aria-label={op.reachable ? op.tooltip : `${op.tooltip} (not running)`}
-        disabled={!op.reachable && !active}
+        aria-disabled={inert ? 'true' : undefined}
+        aria-label={
+          off
+            ? `${label} — disabled; right-click to enable`
+            : release
+              ? label
+              : `${label}; right-click to disable`
+        }
         onClick={() => navigate(op)}
+        // Right-click toggles enable/disable (no HTML `disabled`, so the context menu
+        // still fires on a not-running env). Release can't be disabled.
+        onContextMenu={
+          release
+            ? undefined
+            : (e) => {
+                e.preventDefault();
+                void toggleEnabled(op);
+              }
+        }
         style={{
           ...(release ? { marginLeft: 'auto' } : {}),
           display: 'inline-flex',
@@ -125,7 +166,8 @@ export function EnvSwitcherBar() {
                 ? 'var(--good, #22c55e)'
                 : 'var(--fg, #e8e8e8)'
               : 'var(--fg-mute, #888)',
-          opacity: op.reachable || active ? 1 : 0.45,
+          textDecoration: off ? 'line-through' : undefined,
+          opacity: off ? 0.4 : op.reachable || active ? 1 : 0.45,
           font: 'inherit',
         }}
       >
@@ -159,7 +201,10 @@ export function EnvSwitcherBar() {
         boxShadow: '0 1px 6px rgba(0,0,0,0.35)',
       }}
     >
-      <span style={{ color: 'var(--fg-mute, #888)', textTransform: 'uppercase', fontSize: 10 }}>
+      <span
+        title="Click an env to switch; right-click to enable/disable it"
+        style={{ color: 'var(--fg-mute, #888)', textTransform: 'uppercase', fontSize: 10, cursor: 'help' }}
+      >
         env
       </span>
       {envOps.map((op) => renderButton(op))}

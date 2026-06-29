@@ -85,7 +85,7 @@ describe('hive-epoch-keys store — encode + loader round-trip', () => {
     expect(insert.q).not.toMatch(/DO UPDATE/i);
   });
 
-  it('BUG B: putWrappedKeys refederate ⇒ ON CONFLICT DO UPDATE re-stamps origin=local + clears fed_ts/fed_hlc', async () => {
+  it('BUG B: putWrappedKeys refederate ⇒ ON CONFLICT DO UPDATE re-writes wrapped_key + re-stamps origin=local', async () => {
     const { sql, calls } = makeFakeSql();
     const blob = new Uint8Array([4, 5, 6]);
     const n = await putWrappedKeys(
@@ -102,13 +102,15 @@ describe('hive-epoch-keys store — encode + loader round-trip', () => {
     // DO UPDATE (not DO NOTHING) — the re-write path the mig-411 capture re-federates.
     expect(insert.q).toMatch(/ON CONFLICT[\s\S]*DO UPDATE/i);
     expect(insert.q).not.toMatch(/DO NOTHING/i);
-    // Re-stamps origin='local' so the echo-guard captures it; clears fed_ts/fed_hlc so the
-    // BEFORE-stamp trigger re-mints a fresh HLC (the member's LWW then accepts the re-send).
-    expect(insert.q).toMatch(/origin\s*=\s*'local'/i);
-    expect(insert.q).toMatch(/fed_ts\s*=\s*NULL/i);
-    expect(insert.q).toMatch(/fed_hlc\s*=\s*NULL/i);
-    // The re-sent wrapped_key + author are refreshed from the new row.
+    // Re-writes wrapped_key — a NON-masked content column — so the BEFORE stamp trigger
+    // (mig 314) mints a FRESH fed_ts/fed_hlc on its content-changed branch; origin='local'
+    // ensures the AFTER capture's echo-guard re-federates the row.
     expect(insert.q).toMatch(/wrapped_key\s*=\s*EXCLUDED\.wrapped_key/i);
+    expect(insert.q).toMatch(/origin\s*=\s*'local'/i);
+    // Must NOT null fed_ts/fed_hlc: that hits the stamp trigger's "moved fed_ts ⇒ verbatim"
+    // branch and would SKIP the fresh re-stamp (the member's LWW then needs a newer HLC).
+    expect(insert.q).not.toMatch(/fed_ts\s*=\s*NULL/i);
+    expect(insert.q).not.toMatch(/fed_hlc\s*=\s*NULL/i);
     expect(insert.params).toEqual(['default', HOME, 3, PUB, Buffer.from(blob).toString('base64'), 'owner']);
   });
   it('createPgWrappedKeyLoader decodes base64 → bytes, null when absent', async () => {

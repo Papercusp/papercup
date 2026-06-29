@@ -76,6 +76,15 @@ export interface CreateHiveOpts {
    * non-coding hive. Resolved local → installed → built-in.
    */
   blueprintId?: string;
+  /**
+   * Remote-publish policy for a FRESH coding-hive repo (per-hive-git-and-release-gate
+   * D-003). 'auto' (default) ⇒ create a PRIVATE GitHub remote + push when git creds are
+   * present (gh auth), else stay local-only. 'local-only' ⇒ never create a remote. Only
+   * the fresh-init path consults this; a linked/cloned repo keeps its own remote.
+   */
+  repoRemote?: 'auto' | 'local-only';
+  /** gh owner/org for the auto-created remote; default = the authenticated login. */
+  repoOwner?: string;
 }
 
 export interface SeededLearningsSummary {
@@ -104,8 +113,24 @@ export interface CreateHiveResult {
   seededLearnings?: SeededLearningsSummary;
   /** Present when per-hive learning-loop provisioning was attempted (P-020). */
   provisionedLoop?: ProvisionedLoopSummary;
+  /** Present when a fresh coding-hive repo was finalized — commit + branch + optional
+   *  remote publish (per-hive-git-and-release-gate P-003/P-004). */
+  repoInit?: HiveRepoInitSummary;
   error?: string;
   message?: string;
+}
+
+export interface HiveRepoInitSummary {
+  /** The integration branch the fresh repo is on (default 'staging'). */
+  branch: string;
+  /** true when the initial scaffold commit was made (fresh repo; false for link/clone). */
+  committed: boolean;
+  /** 'remote' = a GitHub remote was set; 'local-only' = no remote (creds absent/disabled/failed). */
+  remoteMode: 'remote' | 'local-only';
+  /** The remote URL when remoteMode==='remote'. */
+  remote?: string;
+  /** Why local-only (no_git_credentials, no_owner_resolved, gh_repo_create_failed: …). */
+  remoteReason?: string;
 }
 
 export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiveResult> {
@@ -232,11 +257,14 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       slug: opts.slug,
       path,
       harness_kind: HIVE_KIND,
-      // A hive LINKED to an existing repo (existingPath) IS its own checkout → mark self_repo so
-      // git-sync commits its tree (papercup→papercusp Option-B merge, 2026-06-20). Without it a
+      // A hive backed by a git repo IS its own checkout → mark self_repo so git-sync commits
+      // its tree. TWO repo-backed paths set it now: LINK-existing (an existing repo, papercup→
+      // papercusp Option-B merge 2026-06-20) AND FRESH-init (a coding hive gets a fresh repo,
+      // requiresRepo:true — per-hive-git-and-release-gate D-002/P-003). Without self_repo a
       // self-repo hive is git-sync-ineligible ('hive_home') and origin freezes (the 2026-06-20
-      // incident). A repo-less hive home (fresh dir, no existingPath) stays unmarked.
-      ...(linkExisting ? { self_repo: true } : {}),
+      // incident). A repo-less hive home (non-coding, requiresRepo:false, no existingPath) stays
+      // unmarked.
+      ...(linkExisting || requiresRepo ? { self_repo: true } : {}),
       ...(opts.deployment && opts.deployment.target !== 'local' ? { deployment: opts.deployment } : {}),
     });
     await saveHarnessRegistry(fresh, ws);
@@ -495,6 +523,61 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       );
     }
 
+    // 6e. Finalize a FRESH coding-hive repo (per-hive-git-and-release-gate-2026-06-29
+    //     P-003/P-004, D-003). The home was `git init`'d empty (step 1); now that the
+    //     scaffold (.papercusp/blueprint.yaml) is written, make the initial commit on the
+    //     `staging` integration branch so git-sync has a real repo to push (a bare init
+    //     with no commit/branch freezes origin — the 2026-06-20 incident). Then, by
+    //     DEFAULT, publish to a PRIVATE GitHub remote when git creds are present (gh auth),
+    //     else stay local-only — the local staging→main gate still runs (D-003). Only the
+    //     fresh-init path runs (a linked/cloned repo keeps its own history/branch/remote).
+    //     Best-effort: a failure here NEVER fails the create (a local repo is still valid).
+    //     Placed last (just before the wake) so a created remote is never orphaned by a rollback.
+    let repoInit: HiveRepoInitSummary | undefined;
+    if (!linkExisting && requiresRepo) {
+      try {
+        const { commitInitialHiveRepo, publishHiveRepo } = await import('../../harness/hive-repo-init');
+        const committed = await commitInitialHiveRepo({ path, slug: opts.slug });
+        let remote: string | undefined;
+        let remoteMode: 'remote' | 'local-only' = 'local-only';
+        let remoteReason: string | undefined;
+        if ((opts.repoRemote ?? 'auto') !== 'local-only') {
+          const publish = await publishHiveRepo({
+            path,
+            slug: opts.slug,
+            ...(opts.repoOwner ? { owner: opts.repoOwner } : {}),
+            branch: committed.branch,
+          });
+          remoteMode = publish.mode;
+          remote = publish.remote;
+          remoteReason = publish.reason;
+          if (publish.mode === 'remote' && publish.remote) {
+            // Record the remote so git-sync pushes it (push:true) and recovery/federation
+            // resolve origin. Re-load the registry (earlier steps may have re-saved it).
+            const reg2 = await loadHarnessRegistry(ws);
+            const entry = reg2.projects.find((p) => p.slug === opts.slug);
+            if (entry) {
+              entry.github_remote = publish.remote;
+              if (publish.repoId) entry.github_repository_id = publish.repoId;
+              entry.github_default_branch = publish.defaultBranch ?? committed.branch;
+              await saveHarnessRegistry(reg2, ws);
+            }
+          }
+        }
+        repoInit = {
+          branch: committed.branch,
+          committed: committed.committed,
+          remoteMode,
+          ...(remote ? { remote } : {}),
+          ...(remoteReason ? { remoteReason } : {}),
+        };
+      } catch (e) {
+        console.warn(
+          `[hive:create] fresh-repo finalize failed (${opts.slug}); the hive keeps its local repo: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
     // 7. Initial wake (optional): fire the Queen now, or declare a time wake.
     //    ROOT launch (no `parent`) — the no-nest guard passes for a parentless hive.
     let waked = false;
@@ -529,6 +612,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       waked,
       ...(seededLearnings ? { seededLearnings } : {}),
       ...(provisionedLoop ? { provisionedLoop } : {}),
+      ...(repoInit ? { repoInit } : {}),
     };
   } catch (e) {
     await rollback();
