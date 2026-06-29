@@ -14,7 +14,8 @@
  * The refresh token lives only in this process's memory (D-009).
  */
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -81,6 +82,44 @@ function installMcpConfig(profile: SessionProfile, ompCwd: string): () => void {
   };
 }
 
+/**
+ * Temp-install the per-session OMP gateway `models.yml` into `~/.omp/agent` so
+ * the session routes through the Papercusp inference gateway (P-005 / D-006).
+ * Mirrors installMcpConfig: backs up any existing `models.yml` AND `models.json`
+ * (pi migrates json→yml on load, which would clobber ours), writes ours, and
+ * returns a restore fn that undoes it on exit. No-op — and no `~/.omp` touch —
+ * when the bundle carries no gateway config (gateway off / not account-pinned).
+ */
+export function installOmpModelsConfig(bundle: AgentBundle): () => void {
+  const models = bundle.omp_gateway_models;
+  if (!models?.content) return () => {};
+  const agentDir = join(homedir(), '.omp', 'agent');
+  const target = join(agentDir, 'models.yml');
+  const legacyJson = join(agentDir, 'models.json');
+  const backupYml = `${target}.pre-papercusp`;
+  const backupJson = `${legacyJson}.pre-papercusp`;
+  let hadYml = false;
+  let hadJson = false;
+  try {
+    mkdirSync(agentDir, { recursive: true });
+    if (existsSync(target)) { hadYml = true; renameSync(target, backupYml); }
+    if (existsSync(legacyJson)) { hadJson = true; renameSync(legacyJson, backupJson); }
+    writeFileSync(target, models.content, { mode: 0o600 });
+    log(`gateway routing on — installed ~/.omp/agent/models.yml (model ${models.modelSelector})`);
+  } catch (err) {
+    log(`gateway models install failed (continuing on direct egress): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return () => {
+    try {
+      rmSync(target, { force: true });
+      if (hadYml && existsSync(backupYml)) renameSync(backupYml, target);
+      if (hadJson && existsSync(backupJson)) renameSync(backupJson, legacyJson);
+    } catch {
+      /* best-effort restore */
+    }
+  };
+}
+
 /** Re-copy the (refreshed) scratch `.mcp.json` into the project dir. */
 function syncMcpConfig(profile: SessionProfile, ompCwd: string): void {
   try {
@@ -95,10 +134,16 @@ function spawnOmp(
   profile: SessionProfile,
   ompCwd: string,
   resumeSessionId?: string,
+  modelSelector?: string,
 ): Promise<number> {
   const args = ['--append-system-prompt', profile.systemPromptPath];
   for (const hook of profile.hookPaths) {
     args.push('--hook', hook);
+  }
+  // Gateway routing (P-005): select the papercusp-gateway provider's model so the
+  // session uses the models.yml we installed, not pi's default/equivalenced model.
+  if (modelSelector) {
+    args.push('--model', modelSelector);
   }
   if (resumeSessionId) {
     args.push('-r', resumeSessionId);
@@ -188,6 +233,7 @@ export async function connect(opts: ConnectOptions): Promise<number> {
 
   const profile = writeProfile(opts.authSessionId, bundle, opts.accessToken);
   const restoreMcp = installMcpConfig(profile, opts.ompCwd);
+  const restoreOmpModels = installOmpModelsConfig(bundle);
 
   const stopRefresh = startRefreshLoop(
     opts.bundleUrl,
@@ -201,6 +247,7 @@ export async function connect(opts: ConnectOptions): Promise<number> {
   const teardown = (): void => {
     stopRefresh();
     restoreMcp();
+    restoreOmpModels();
     cleanupProfile(profile);
   };
   // Cover the SIGINT/SIGTERM paths too — `omp` shares the terminal's
@@ -216,7 +263,12 @@ export async function connect(opts: ConnectOptions): Promise<number> {
   process.once('SIGTERM', once);
 
   try {
-    const code = await spawnOmp(profile, opts.ompCwd, opts.resumeSessionId);
+    const code = await spawnOmp(
+      profile,
+      opts.ompCwd,
+      opts.resumeSessionId,
+      bundle.omp_gateway_models?.modelSelector,
+    );
     log(`omp exited (code ${code})`);
     return code;
   } finally {
