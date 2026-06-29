@@ -26,6 +26,7 @@ import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-ide
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
+import { CANONICAL_PAPERCUSP_HIVE_INVITE } from './canonical-hive-invite';
 
 /** The baked canonical-hive invite — pubkey + secret only (no private key). */
 export interface CanonicalHiveInvite {
@@ -36,17 +37,19 @@ export interface CanonicalHiveInvite {
 }
 
 /**
- * Resolve the baked canonical invite from `--define`'d env (build-desktop-sidecar.sh
- * bakes PAPERCUP_DOGFOOD_HIVE_PUBKEY + PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET, mirroring
- * PAPERCUP_DOGFOOD_REPO_REF). Returns null when unset (dev builds / the per-owner
- * fallback). `explicit` overrides for tests.
+ * Resolve the canonical invite. Precedence: `explicit` (tests) → `--define`'d env
+ * (PAPERCUP_DOGFOOD_HIVE_PUBKEY + PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET — a build-time
+ * OVERRIDE, e.g. pointing a staging build at a different canonical hive) → the COMMITTED
+ * canonical constant (canonical-hive-invite.ts — the version-tracked default that ships
+ * on every platform; the invite is a discovery token, not an access grant, per D-001).
+ * Returns null when none are set (dev builds before activation → per-owner create fallback).
  */
 export function bakedCanonicalHiveInvite(explicit?: CanonicalHiveInvite | null): CanonicalHiveInvite | null {
   if (explicit) return explicit;
   const pubkeyBase64 = process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY?.trim();
   const inviteSecret = process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET?.trim();
   if (pubkeyBase64 && inviteSecret) return { pubkeyBase64, inviteSecret };
-  return null;
+  return CANONICAL_PAPERCUSP_HIVE_INVITE;
 }
 
 export type JoinProgressStep = 'clone' | 'submodules';
