@@ -140,3 +140,42 @@ describe('resolveHiveReleaseEnv', () => {
     expect(res.env.PAPERCUSP_GREEN_CMD).toBe('npm run test:affected');
   });
 });
+
+describe('resolveCheckpointRouting', () => {
+  it('no installSlug → default root, empty overlay, no skip (current behavior)', async () => {
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const r = await resolveCheckpointRouting({ workspaceId: 'default' }, '/DEFAULT');
+    expect(r.root).toBe('/DEFAULT');
+    expect(r.extraEnv).toEqual({});
+    expect(r.skip).toBeUndefined();
+  });
+
+  it('operator-home slug → default root + empty overlay (exact current behavior preserved)', async () => {
+    homeSlug = 'papercusp';
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const r = await resolveCheckpointRouting({ installSlug: 'papercusp', workspaceId: 'default' }, '/DEFAULT');
+    expect(r.root).toBe('/DEFAULT');
+    expect(r.extraEnv).toEqual({});
+    expect(r.skip).toBeUndefined();
+  });
+
+  it('gated coding hive → per-hive root + env overlay', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'oddsmith-hive', path: dir, self_repo: true }];
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const r = await resolveCheckpointRouting({ installSlug: 'oddsmith-hive', workspaceId: 'default' }, '/DEFAULT');
+    expect(r.root).toBe(dir);
+    expect(r.extraEnv.PAPERCUSP_INTEGRATION_ROOT).toBe(dir);
+    expect(r.skip).toBeUndefined();
+  });
+
+  it('non-gated slug (work hive) → skip with reason, default root, no suite', async () => {
+    const dir = makeHiveDir('work', { git: true });
+    registryProjects = [{ slug: 'workhive', path: dir, self_repo: true }];
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const r = await resolveCheckpointRouting({ installSlug: 'workhive', workspaceId: 'default' }, '/DEFAULT');
+    expect(r.skip?.reason).toBe('gate_disabled');
+    expect(r.root).toBe('/DEFAULT');
+    expect(r.extraEnv).toEqual({});
+  });
+});

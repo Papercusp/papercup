@@ -229,6 +229,13 @@ export const FLAGS = {
   // provisioning (a hive still works; it just has no per-hive loop until armed
   // by hand). The matching hive:dissolve teardown is P-021.
   PER_HIVE_LEARNING_LOOPS: "papercusp-per-hive-learning-loops",
+  // per-hive-git-and-release-gate-2026-06-29 (P-009, D-008): gates seeding the per-hive
+  // staging→main green-checkpoint (+ release-trigger when a deploy target is declared) for
+  // repo-backed CODING hives at create/retrofit. DEFAULT-OFF (dark): with it off, only the
+  // operator-home (papercusp) release routines run — the live :3070 pipeline is untouched.
+  // Flip ON after verifying the gate on one canary hive (oddsmith-hive). Effective only for
+  // a hive whose releaseGate.enabled AND that actually has a repo.
+  PER_HIVE_RELEASE_GATE: "papercusp-per-hive-release-gate",
   // slash-exposure-tool-catalog-2026-06-12 (P-007): gates the DYNAMIC slash
   // projection — every MCP-exposed tool a session can see surfaces as a
   // `tool:*` MCP prompt (slash command) on prompts/list, with prompts/get
@@ -1384,6 +1391,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // flipping THIS flip only governs whether the inert rows get laid down at
   // create. OFF skips per-hive provisioning entirely.
   [FLAGS.PER_HIVE_LEARNING_LOOPS]: true,
+  // DEFAULT-OFF (dark, D-008): see the FLAGS.PER_HIVE_RELEASE_GATE note. With it off only
+  // the operator-home (papercusp) release routines run, so the live :3070 pipeline is
+  // unaffected; flip ON after a canary verify on one hive (oddsmith-hive).
+  [FLAGS.PER_HIVE_RELEASE_GATE]: false,
   // ON by default — Phase 0 foundation record-keeping (self-learning-frontier
   // P-004/FB-02): append-only attribution rows, no LLM spend, no queue filing.
   // Deliberately NOT under the plan's D-001 dark-ship rule (that covers the

@@ -137,8 +137,32 @@ export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 55 * 60_000;
  * suite can't wedge the routines tick.
  */
 registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
-  const root = integrationRoot();
-  const r = await runScript(root, 'apps/operator/lib/release/green-checkpoint.ts', [], GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+  // per-hive-git-and-release-gate P-010: route a per-hive routine to ITS OWN checkout /
+  // branches / greenCmd. Operator-home (papercusp) → default root + empty overlay = EXACT
+  // current behavior (regression-safe). A non-gated installSlug (gate disabled / no repo) →
+  // skip (never run a suite for it). The overlay rides runScript's extraEnv → the
+  // env-driven releaseConfig() in green-checkpoint.ts picks up the per-hive config.
+  const { resolveCheckpointRouting } = await import('./hive-release-env');
+  const routing = await resolveCheckpointRouting(ctx, integrationRoot());
+  if (routing.skip) {
+    console.log(`[green-checkpoint] skip ${ctx.installSlug}: ${routing.skip.reason}`);
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: 'skipped-disabled',
+      detail: { reason: routing.skip.reason },
+    });
+    return;
+  }
+  const root = routing.root;
+  const r = await runScript(
+    root,
+    'apps/operator/lib/release/green-checkpoint.ts',
+    [],
+    GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+    routing.extraEnv,
+  );
   if (r.code !== 0) {
     console.warn(`[green-checkpoint] exited ${r.code}: ${(r.stderr || r.stdout).slice(-500)}`);
   } else {

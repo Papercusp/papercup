@@ -131,3 +131,32 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   };
   return { enabled: true, env, hasDeploy: !!gate.deploy, isOperatorHome: false, greenCmd };
 }
+
+export interface CheckpointRouting {
+  /** The integration tree root the checkpoint/deploy subprocess runs in. */
+  root: string;
+  /** Env overlay for the subprocess (EMPTY for operator-home / default). */
+  extraEnv: Record<string, string>;
+  /** Present when this installSlug should NOT run a suite (not a gated coding hive). */
+  skip?: { reason: string };
+}
+
+/**
+ * Decide how a `system:green-checkpoint` / `system:release-trigger` fire should run, given
+ * the FIRING routine's installSlug (per-hive-git-and-release-gate P-010). The operator-home
+ * slug (or no slug) → the default root + EMPTY overlay = EXACT current behavior
+ * (regression-safe, D-007). A gated coding hive → its per-hive root + env overlay. A
+ * non-gated slug (gate disabled / no repo) → `skip` (the handler records it and runs no
+ * suite — a stray routine for a non-coding hive must never run the home suite).
+ */
+export async function resolveCheckpointRouting(
+  ctx: { installSlug?: string | null; workspaceId: string },
+  defaultRoot: string,
+): Promise<CheckpointRouting> {
+  if (!ctx.installSlug || ctx.installSlug === operatorHomeHarnessSlug()) {
+    return { root: defaultRoot, extraEnv: {} };
+  }
+  const hive = await resolveHiveReleaseEnv(ctx.installSlug, ctx.workspaceId);
+  if (!hive.enabled) return { root: defaultRoot, extraEnv: {}, skip: { reason: hive.reason ?? 'not-gated' } };
+  return { root: hive.env.PAPERCUSP_INTEGRATION_ROOT ?? defaultRoot, extraEnv: hive.env };
+}
