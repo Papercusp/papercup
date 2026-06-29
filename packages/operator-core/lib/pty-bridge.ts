@@ -23,6 +23,7 @@ import * as xtermHeadless from '@xterm/headless';
 import * as xtermAddonSerialize from '@xterm/addon-serialize';
 import { getCachedRateLimitConfig } from './rate-limit-config';
 import { getResourceProfile } from './resource-profile';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 // @xterm/headless + @xterm/addon-serialize are CJS; their named exports aren't
 // statically visible to ESM named-import LINKING (cjs-module-lexer) under tsx now
@@ -140,7 +141,7 @@ _globals.__papercuspPtyHandles = handles;
 function startReaper(): void {
   if (_globals.__papercuspPtyReaperStarted) return;
   _globals.__papercuspPtyReaperStarted = true;
-  setInterval(() => {
+  managedSetInterval('pty-idle-reaper', REAPER_INTERVAL_MS, () => {
     const now = Date.now();
     for (const handle of handles.values()) {
       if (handle.killed) continue;
@@ -148,7 +149,7 @@ function startReaper(): void {
         killPty(handle.id);
       }
     }
-  }, REAPER_INTERVAL_MS).unref?.();
+  }, { category: 'global-sweep' });
 }
 
 export class PtyError extends Error {

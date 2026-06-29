@@ -66,6 +66,7 @@ export const ALLOWLIST = new Set([
   'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
   'apps/operator/lib/ui/use-ui-presence.ts',
   'apps/operator-vite/src/lib/video/camera-capture.ts',
+  'packages/operator-core/lib/voice-engines/deepgram.ts', // browser STT adapter — window.setInterval + MediaRecorder, runs in the webview not the host
   // Separate processes that don't share the operator registry.
   'packages/operator-core/lib/deployment/cross-hive-frame.ts', // cross-hive e2e spike child process
   'packages/operator-core/lib/inference-gateway/gateway.ts', // runs INSIDE the :8788 inference-gateway process
@@ -82,29 +83,23 @@ export const BASELINE = new Set([
   // managedSetInterval (remove here) or promotes a genuine separate-process/generic site
   // to ALLOWLIST_DIRS / ALLOWLIST. Do NOT add new entries.
   'packages/operator-core/lib/agent-tools/locks/acquire.ts',
-  'packages/operator-core/lib/agent-tools/locks/file-lock-authority-wiring.ts',
   'packages/operator-core/lib/blueprint/launch-blueprint.ts',
   'packages/operator-core/lib/cross-hive-swarm-transport.ts',
   'packages/operator-core/lib/dbos/durable-spawn.ts',
   'packages/operator-core/lib/deployment/frame-view.ts',
   'packages/operator-core/lib/device-push-credentials.ts',
   'packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts',
-  'packages/operator-core/lib/events/await/engine.ts',
-  'packages/operator-core/lib/expirable-registry.ts',
   'packages/operator-core/lib/fleet/chat-spawn-tracking.ts',
   'packages/operator-core/lib/fleet/operator-spawn.ts',
   'packages/operator-core/lib/harness-fs-watcher.ts',
-  'packages/operator-core/lib/harness-status-sweep.ts',
   'packages/operator-core/lib/hive-directory.ts',
   'packages/operator-core/lib/provision/runner.ts',
-  'packages/operator-core/lib/pty-bridge.ts',
   'packages/operator-core/lib/sync/hyperbee/boot.ts',
   'packages/operator-core/lib/sync/hyperbee/directory-swarm.ts',
   'packages/operator-core/lib/sync/hyperbee/outbox-drain.ts',
   'packages/operator-core/lib/sync/hyperbee/substrate-eviction-reaper.ts',
   'packages/operator-core/lib/sync/hyperbee/swarm.ts',
   'packages/operator-core/lib/voice-engine-health.ts',
-  'packages/operator-core/lib/voice-engines/deepgram.ts',
   'packages/operator-core/lib/voice-node/operator-voice-host.ts',
   'packages/operator-core/lib/voice-node/screen-track/screen-publisher.ts',
   'packages/plugin-loader/src/daemon/supervisor.ts',

@@ -19,6 +19,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { decideWake } from '@papercusp/debounce-coalesce';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
@@ -414,9 +415,9 @@ export function startAwaitSweeper(): void {
   const g = globalThis as Globals;
   if (g.__papercuspAwaitSweeperStarted) return;
   g.__papercuspAwaitSweeperStarted = true;
-  setInterval(() => {
+  managedSetInterval('await-event-sweeper', SWEEP_INTERVAL_MS, () => {
     void sweepAllWorkspaces();
-  }, SWEEP_INTERVAL_MS).unref?.();
+  }, { category: 'global-sweep' });
 }
 
 /** One tick of the sweeper: sweepOnce per background workspace (P-020). */

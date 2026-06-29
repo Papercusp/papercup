@@ -30,6 +30,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 // not a DBOS candidate (dbos-scheduler-consolidation-2026-06-03 D-002 / P-011):
 // this sweeps a process-local in-memory registry of TTL'd entries — a detached
@@ -67,7 +68,7 @@ export interface ExpirableRegistration {
 
 interface RegistryState {
   registrations: Map<string, ExpirableRegistration>;
-  timer: ReturnType<typeof setInterval> | null;
+  timer: ManagedHandle | null;
   stopped: boolean;
   lastTickAt: Map<string, number>;
 }
@@ -171,11 +172,11 @@ export function ensureExpirableRegistry(): RegistryState {
   const s = state();
   if (s.timer) return s;
 
-  s.timer = setInterval(() => {
+  s.timer = managedSetInterval('expirable-registry-sweep', SWEEP_INTERVAL_MS, () => {
     tick().catch((e) =>
       console.warn('[expirable-registry] tick failed:', (e as Error)?.message ?? e),
     );
-  }, SWEEP_INTERVAL_MS);
+  }, { category: 'global-sweep' });
 
   // Cold-boot tick fires immediately so anything stale at startup gets
   // cleared without the operator having to wait 30s for the first sweep.
@@ -190,7 +191,7 @@ export function ensureExpirableRegistry(): RegistryState {
 
 export function stopExpirableRegistry(): void {
   const s = state();
-  if (s.timer) clearInterval(s.timer);
+  if (s.timer) s.timer.stop();
   s.timer = null;
   s.stopped = true;
 }

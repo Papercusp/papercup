@@ -33,6 +33,7 @@ import { existsSync } from 'node:fs';
 import { getResourceProfile } from './resource-profile';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq } from 'drizzle-orm';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 const hl = generated.harnessLanesInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
@@ -48,7 +49,7 @@ const SWEEP_INTERVAL_MS = 30_000 * getResourceProfile().backgroundCadenceMultipl
 const LANE_STALE_MS = 24 * 60 * 60_000;
 
 interface SweepState {
-  timer: ReturnType<typeof setInterval>;
+  timer: ManagedHandle;
   stopped: boolean;
 }
 
@@ -195,18 +196,18 @@ export function ensureHarnessStatusSweep(): SweepState {
   // scheduler does NOT run (e.g. the :3170 request-only operator).
   if (backgroundWorkersEnabled()) {
     _g.__harnessStatusSweep = {
-      timer: undefined as unknown as ReturnType<typeof setInterval>,
+      timer: undefined as unknown as ManagedHandle,
       stopped: true,
     };
     return _g.__harnessStatusSweep;
   }
 
   const state: SweepState = {
-    timer: setInterval(() => {
+    timer: managedSetInterval('harness-status-sweep', SWEEP_INTERVAL_MS, () => {
       tick().catch((e) =>
         console.warn('[harness-status-sweep] tick failed:', e?.message ?? e),
       );
-    }, SWEEP_INTERVAL_MS),
+    }, { category: 'global-sweep' }),
     stopped: false,
   };
 
@@ -226,7 +227,7 @@ export function stopHarnessStatusSweep(): void {
   const state = _g.__harnessStatusSweep;
   if (!state || state.stopped) return;
   state.stopped = true;
-  clearInterval(state.timer);
+  state.timer.stop();
   _g.__harnessStatusSweep = undefined;
 }
 

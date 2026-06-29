@@ -30,6 +30,7 @@
  */
 
 import { realpathSync } from 'node:fs';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 import {
   registerFileLockAuthorityOps,
@@ -166,13 +167,11 @@ export function wireFileLockAuthority(): void {
   void refreshResolverSnapshot().catch(() => {
     /* best-effort: empty maps → resolve local; the timer retries */
   });
-  const timer = setInterval(() => {
+  // Refresh the resolver snapshot on a cadence (registered for inventory visibility;
+  // the registry unrefs the timer so it never keeps the process alive).
+  managedSetInterval('file-lock-resolver-refresh', RESOLVER_REFRESH_MS, () => {
     void refreshResolverSnapshot().catch(() => undefined);
-  }, RESOLVER_REFRESH_MS);
-  // Never keep the process alive on this timer alone.
-  if (typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
+  }, { category: 'cache' });
 }
 
 /** Test seam: force a synchronous snapshot refresh (awaitable) + read the maps. */
