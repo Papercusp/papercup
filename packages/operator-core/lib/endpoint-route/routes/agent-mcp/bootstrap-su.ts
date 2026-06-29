@@ -185,7 +185,7 @@ export async function resolveAccountPin(
     if (ov.forcedAccounts.length > 0 && !ov.forcedAccounts.includes(id)) {
       return fail('it is outside the session-override allow-list (forcedAccounts)');
     }
-    if (provider === 'claude') {
+    if (provider === 'claude' && agent !== 'omp') {
       const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
       return {
         // Pass ownerId so the session ALSO sends x-papercusp-owner (not just the account pin) — this lets the
@@ -196,9 +196,17 @@ export async function resolveAccountPin(
         provider,
       };
     }
+    // Codex + OMP route via a per-session config FILE (codex CODEX_HOME config.toml /
+    // OMP <home>/.omp/agent/models.yml) keyed off PAPERCUSP_ACCOUNT_ID — neither reads
+    // the claude CLI's ANTHROPIC_BASE_URL/ANTHROPIC_CUSTOM_HEADERS. OMP pins to a Claude
+    // account (provider==='claude') but is delivered the codex-shaped signal, not the
+    // claude-CLI env. (omp-account-pinning-gateway-2026-06-29 D-001/D-003)
     return {
       env: { PAPERCUSP_ACCOUNT_ID: id },
-      notice: `pinned to Codex account ${id} (routed through the inference gateway).`,
+      notice:
+        agent === 'omp'
+          ? `pinned to account ${id} (OMP routed through the inference gateway).`
+          : `pinned to Codex account ${id} (routed through the inference gateway).`,
       accountId: id,
       provider,
     };
