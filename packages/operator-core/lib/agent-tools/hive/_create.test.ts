@@ -25,6 +25,10 @@ let queenHomeCalls: Array<{ workspaceId: string; hiveSlug: string; devicePubkey:
 // and the coding-hive repo-enforcement path (the D-002 guard + fresh-repo self_repo).
 let blueprintKnobs: Record<string, unknown>;
 let blueprintOutput: { kind: string } | undefined;
+// P-009: the self_repo-home pipeline seeds (git-sync + green-checkpoint) are mocked — their
+// own behavior is pinned in git-sync-routine.test.ts / seed-hive-release-routines.test.ts.
+let gitSyncSeedCalls: Array<{ installSlug: string }>;
+let releaseSeedCalls: Array<{ hiveSlug: string }>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -40,6 +44,8 @@ beforeEach(() => {
   // generic create-flow cases repo-less. The coding-path cases override these two.
   blueprintKnobs = { requiresRepo: false };
   blueprintOutput = { kind: 'artifacts' };
+  gitSyncSeedCalls = [];
+  releaseSeedCalls = [];
 
   vi.doMock('../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
@@ -75,6 +81,19 @@ beforeEach(() => {
   vi.doMock('../../harness/hive-repo-init', () => ({
     commitInitialHiveRepo: async (o: { branch?: string }) => ({ committed: true, branch: o.branch ?? 'staging' }),
     publishHiveRepo: async () => ({ mode: 'local-only', pushed: false, reason: 'mocked' }),
+  }));
+  // P-009: the self_repo-home pipeline seeds — record the calls; behavior pinned elsewhere.
+  vi.doMock('../../harness/git-sync/git-sync-routine', () => ({
+    seedGitSyncRoutineForMember: async (o: { installSlug: string }) => {
+      gitSyncSeedCalls.push({ installSlug: o.installSlug });
+      return { seeded: true };
+    },
+  }));
+  vi.doMock('../../harness/routines/seed-hive-release-routines', () => ({
+    seedHiveReleaseRoutines: async (o: { hiveSlug: string }) => {
+      releaseSeedCalls.push({ hiveSlug: o.hiveSlug });
+      return { seeded: false, reason: 'flag_off', undo: async () => {} };
+    },
   }));
   // The first-class Hive identity mint (PG + keychain) is mocked — this test is
   // PG-free; the keypair->store->topic seam is covered by its own integration test.
@@ -160,6 +179,8 @@ afterEach(() => {
   vi.doUnmock('../../hive-settings-store');
   vi.doUnmock('../../harness/usage-actor');
   vi.doUnmock('../../harness/hive-repo-init');
+  vi.doUnmock('../../harness/git-sync/git-sync-routine');
+  vi.doUnmock('../../harness/routines/seed-hive-release-routines');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {
@@ -283,6 +304,9 @@ describe('createHiveHarness', () => {
       expect(entry?.self_repo).toBeUndefined(); // repo-less → unmarked (git-sync-ineligible by design)
       expect(existsSync(join(res.path!, '.git'))).toBe(false); // no git repo
       expect(res.repoInit).toBeUndefined(); // fresh-repo finalize never runs
+      // P-009: a repo-less (non-coding) home seeds NO pipeline routines.
+      expect(gitSyncSeedCalls).toEqual([]);
+      expect(releaseSeedCalls).toEqual([]);
     });
 
     it('a fresh coding hive (requiresRepo:true) gets a repo, self_repo:true, and repoInit on staging', async () => {
@@ -298,6 +322,9 @@ describe('createHiveHarness', () => {
       expect(res.repoInit?.committed).toBe(true);
       expect(res.repoInit?.remoteMode).toBe('local-only'); // publish mocked → local-only
       expect(res.repoInit?.remoteReason).toBe('mocked'); // publish WAS called (default repoRemote:'auto')
+      // P-009: the self_repo home seeds git-sync (staging accumulates) + the green-checkpoint.
+      expect(gitSyncSeedCalls.map((c) => c.installSlug)).toContain('codinghive');
+      expect(releaseSeedCalls.map((c) => c.hiveSlug)).toContain('codinghive');
     });
 
     it('repoRemote:local-only skips the remote publish entirely (stays local-only, no publish call)', async () => {

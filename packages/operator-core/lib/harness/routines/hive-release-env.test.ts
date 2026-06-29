@@ -9,6 +9,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+// Generous timeout: resolveHiveReleaseGate cold-starts the built-in blueprint resolver
+// (reads + resolves the blueprint tree from disk, ~5s on first call), which tips past the
+// 5s default under heavy PARALLEL load (the full-suite green-checkpoint run) → a spurious
+// timeout. Roomy budget kills that load-flake class (the "generous timeouts on import-heavy
+// tests" convention from the green-checkpoint bring-up).
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 let registryProjects: Array<{ slug: string; path: string; self_repo?: boolean }>;
 let homeSlug: string;
 let tmpDirs: string[];

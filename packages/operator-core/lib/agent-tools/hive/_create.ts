@@ -578,6 +578,46 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       }
     }
 
+    // 6f. Seed the per-hive pipeline routines for a self_repo hive home
+    //     (per-hive-git-and-release-gate-2026-06-29 P-009): git-sync (so the home's
+    //     `staging` accumulates + pushes commits — a self_repo home IS git-sync-eligible)
+    //     AND the staging→main green-checkpoint (flag-gated PER_HIVE_RELEASE_GATE,
+    //     default-OFF → a no-op until the owner opts a hive in; D-008). Both best-effort —
+    //     a failure NEVER fails the create. The release-routine undo joins the rollback
+    //     stack. Runs for any self_repo home (fresh OR linked); skipped for a repo-less
+    //     (non-coding) home. seedHiveReleaseRoutines self-gates (skips the operator-home +
+    //     non-coding/repo-less); git-sync self-gates via its eligibility check.
+    const hasOwnRepo = linkExisting || requiresRepo;
+    if (hasOwnRepo) {
+      const regNow = await loadHarnessRegistry(ws);
+      const homeEntry = regNow.projects.find((p) => p.slug === opts.slug);
+      if (homeEntry) {
+        try {
+          const { seedGitSyncRoutineForMember } = await import('../../harness/git-sync/git-sync-routine');
+          await seedGitSyncRoutineForMember({
+            workspaceId: ws,
+            installSlug: opts.slug,
+            entry: homeEntry,
+            joinerSide: false,
+          });
+        } catch (e) {
+          console.warn(
+            `[hive:create] git-sync seed failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        try {
+          const { seedHiveReleaseRoutines } = await import('../../harness/routines/seed-hive-release-routines');
+          const { sql } = getOrgPg();
+          const seeded = await seedHiveReleaseRoutines({ sql, workspaceId: ws, hiveSlug: opts.slug });
+          if (seeded.seeded) undo.push(seeded.undo);
+        } catch (e) {
+          console.warn(
+            `[hive:create] release-routine seed failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
+
     // 7. Initial wake (optional): fire the Queen now, or declare a time wake.
     //    ROOT launch (no `parent`) — the no-nest guard passes for a parentless hive.
     let waked = false;
