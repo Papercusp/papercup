@@ -97,7 +97,16 @@ export async function platformImprovementLoopsEnabled(
  */
 export interface BlueprintTriggerInput {
   id?: string;
-  triggers?: { schedule?: Array<{ cron: string; action?: string; singleton?: boolean; singletonActive?: boolean }> };
+  triggers?: {
+    schedule?: Array<{
+      cron?: string;
+      tier?: 'durable' | 'ephemeral';
+      intervalSec?: number;
+      action?: string;
+      singleton?: boolean;
+      singletonActive?: boolean;
+    }>;
+  };
 }
 
 /**
