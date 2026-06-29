@@ -285,27 +285,35 @@ fi
 # deploy-gate native-addon preflight (lib/native-addon-preflight.ts) is the hard
 # block; this turns that block into auto-recovery. Addon set mirrors the
 # preflight's DEFAULT_REQUIRED_ADDONS (env override PAPERCUSP_PREFLIGHT_ADDONS).
-if command -v node >/dev/null 2>&1; then
-  NODE_ABI="$(node -p 'process.versions.modules' 2>/dev/null || echo '?')"
+# Named function so it can be extracted + unit-tested in setup-release-checkout-deps.test.ts
+# (same sed-extraction pattern as need_node_modules / sync_one_node_modules).
+# Reads RELEASE_ROOT + PAPERCUSP_PREFLIGHT_ADDONS from the outer scope.
+rebuild_stale_native_addons() {
+  command -v node >/dev/null 2>&1 || { log "skip native-addon ABI guard (node not on PATH — pre-build phase)"; return 0; }
+  local node_abi
+  node_abi="$(node -p 'process.versions.modules' 2>/dev/null || echo '?')"
+  local -a _addons
   IFS=',' read -ra _addons <<< "${PAPERCUSP_PREFLIGHT_ADDONS:-better-sqlite3}"
+  local addon _result=0
   for addon in "${_addons[@]}"; do
     addon="${addon//[[:space:]]/}"   # trim whitespace
     [ -n "$addon" ] || continue
-    [ -d "$RELEASE_ROOT/node_modules/$addon" ] || continue   # not on this runtime path
+    [ -d "$RELEASE_ROOT/node_modules/$addon" ] || continue   # not installed on this path
     if (cd "$RELEASE_ROOT" && node -e "require('$addon')") >/dev/null 2>&1; then
       continue   # loads cleanly under the runtime Node — ABI matches, nothing to do
     fi
-    log "WARN native addon '$addon' will not load under Node ABI $NODE_ABI — rebuilding in the release checkout"
+    log "WARN native addon '$addon' will not load under Node ABI $node_abi — rebuilding in the release checkout"
     if (cd "$RELEASE_ROOT" && npm rebuild "$addon") >/dev/null 2>&1 \
        && (cd "$RELEASE_ROOT" && node -e "require('$addon')") >/dev/null 2>&1; then
-      log "native addon '$addon' rebuilt OK for Node ABI $NODE_ABI"
+      log "native addon '$addon' rebuilt OK for Node ABI $node_abi"
     else
       log "ERROR native addon '$addon' STILL will not load after rebuild — the deploy-gate addon preflight will block this promotion"
+      _result=1
     fi
   done
-else
-  log "skip native-addon ABI guard (node not on PATH — pre-build phase)"
-fi
+  return $_result
+}
+rebuild_stale_native_addons
 
 # 4. SPA dist (deploys only) -------------------------------------------------
 # operator-vite/dist is UNTRACKED, so a fresh swap serves whatever dist was
