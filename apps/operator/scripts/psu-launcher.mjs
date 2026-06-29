@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -626,6 +626,47 @@ export function sessionHasTranscript(session, { home = homedir() } = {}) {
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
 export function planValue(picked) {
   return picked === NO_PLAN || picked == null || picked === '' ? null : picked;
+}
+
+/**
+ * An interactive SU omp session path-discovers `<cwd>/.mcp.json` (omp's
+ * `mcp.discoveryMode`). A ROLE session (console-launch `doSpawn` / a fleet role)
+ * writes a SIGNED role-scoped `.mcp.json` there and never removes it — it spawns a
+ * DETACHED, unref'd terminal with no exit hook — so a later SU omp launch in the
+ * same cwd inherits the stale role server (a per-role MCP host URL, e.g. :9071) and
+ * hangs ~30s on "papercusp timed out". An SU session needs only the USER-LEVEL
+ * papercusp-su, never a role `.mcp.json`, so PARK a role-scoped one before launch.
+ * No restore: role launchers recreate `.mcp.json` fresh on their next launch (they
+ * back up any existing one first), so parking is safe. Role-scoped is detected by a
+ * signed-role URL (`role=` query param); the SU's own papercusp-su carries
+ * `superuser=1`, never `role=`. Returns the parked path, or null when nothing was
+ * parked. Side-effects fs only; exported for tests.
+ */
+export function parkRoleScopedMcpJson(cwd) {
+  if (!cwd) return null;
+  const p = join(cwd, '.mcp.json');
+  if (!existsSync(p)) return null;
+  let roleScoped = false;
+  try {
+    const data = JSON.parse(readFileSync(p, 'utf8'));
+    const servers =
+      data && data.mcpServers && typeof data.mcpServers === 'object' ? Object.values(data.mcpServers) : [];
+    roleScoped = servers.some(
+      (s) => s && typeof s.url === 'string' && /[?&]role=/.test(s.url) && !/[?&]superuser=1(?:&|$)/.test(s.url),
+    );
+  } catch {
+    // Unparseable .mcp.json — leave it untouched (don't park what we can't classify).
+    return null;
+  }
+  if (!roleScoped) return null;
+  const parked = join(cwd, '.mcp.json.su-parked');
+  try {
+    if (existsSync(parked)) rmSync(parked, { force: true }); // overwrite a stale prior park
+    renameSync(p, parked);
+    return parked;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2074,6 +2115,18 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // folds the same file into CODEX_HOME/AGENTS.md before returning.
   if (args.launchContext && res.agent !== 'codex') {
     launchArgs.push(res.agent === 'claude' ? '--append-system-prompt-file' : '--append-system-prompt', args.launchContext);
+  }
+
+  // P-002 (omp-psu-interactive-parity-hardening-2026-06-29): an SU omp session
+  // path-discovers <cwd>/.mcp.json. A prior ROLE session leaves a signed role-scoped
+  // one there and never cleans it up (detached, unref'd terminal, no exit hook), so a
+  // later SU omp launch hangs ~30s on a dead per-role MCP host ("papercusp timed
+  // out"). Park it — the SU session needs only the user-level papercusp-su, and role
+  // launchers recreate .mcp.json fresh, so parking is safe + needs no restore.
+  // omp-only: claude uses --strict-mcp-config, codex uses CODEX_HOME.
+  if (res.agent === 'omp') {
+    const parked = parkRoleScopedMcpJson(res.cwd);
+    if (parked) console.error(`psu: parked a stale role-scoped ${res.cwd}/.mcp.json (would hang omp MCP startup; role launches recreate it)`);
   }
 
   // codex's superuser bearer is baked into its per-session config.toml
