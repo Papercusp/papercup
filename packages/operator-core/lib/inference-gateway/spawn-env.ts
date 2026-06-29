@@ -9,7 +9,7 @@
  * flipping the flag OFF instantly reverts to direct egress with no other change.
  */
 import { DEFAULT_GATEWAY_PORT } from './launch';
-import { ACCOUNT_HEADER, OWNER_HEADER, PRIORITY_HEADER } from './gateway';
+import { ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, OWNER_HEADER, PRIORITY_HEADER } from './gateway';
 import {
   accountProviderForInteractiveBackend,
   interactiveBackendFromSpawnBackend,
@@ -33,7 +33,10 @@ export function gatewayPort(): number {
  * (unchanged direct egress); `{ ANTHROPIC_BASE_URL }` when enabled. The caller passes the
  * resolved flag value so flag evaluation (PostHog / FLAG_DEFAULTS) stays at the chokepoint.
  */
-export function gatewaySpawnEnv(enabled: boolean, opts: { accountId?: string; ownerId?: string; priority?: string } = {}): Record<string, string> {
+export function gatewaySpawnEnv(
+  enabled: boolean,
+  opts: { accountId?: string; ownerId?: string; priority?: string; hardPin?: boolean } = {},
+): Record<string, string> {
   if (!enabled) return {};
   const env: Record<string, string> = { [GATEWAY_BASE_URL_ENV]: `http://127.0.0.1:${gatewayPort()}` };
   // Custom request headers the claude CLI forwards on every call — ANTHROPIC_CUSTOM_HEADERS is parsed as
@@ -46,8 +49,12 @@ export function gatewaySpawnEnv(enabled: boolean, opts: { accountId?: string; ow
   //  • the PRIORITY label (gateway-priority-tiers-2026-06-22): the spawn role (queen/scout/su/bee/…) the
   //    gateway maps → an admission TIER. Set only when the caller resolved one (the tier flag is ON);
   //    absent under flag-OFF, so the bee's request stream is byte-identical to today.
+  //  • the HARD-PIN marker (account-hard-pin-2026-06-29): only set by the operator/PSU pin path
+  //    (resolveAccountPin), NEVER by bee spawns — it tells the gateway to route to `accountId` with NO
+  //    failover (the operator explicitly chose this credential). Meaningful only alongside an accountId.
   const customHeaders: string[] = [];
   if (opts.accountId) customHeaders.push(`${ACCOUNT_HEADER}: ${opts.accountId}`);
+  if (opts.accountId && opts.hardPin) customHeaders.push(`${ACCOUNT_PIN_HEADER}: hard`);
   if (opts.ownerId) customHeaders.push(`${OWNER_HEADER}: ${opts.ownerId}`);
   if (opts.priority) customHeaders.push(`${PRIORITY_HEADER}: ${opts.priority}`);
   if (customHeaders.length) env.ANTHROPIC_CUSTOM_HEADERS = customHeaders.join('\n');
