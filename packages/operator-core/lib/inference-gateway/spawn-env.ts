@@ -121,12 +121,35 @@ export async function resolveSpawnGatewayEnv(opts: {
     accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
   }
   if (backend === 'omp') {
-    // OMP routes via a per-session models.yml (P-005/P-006) keyed off PAPERCUSP_ACCOUNT_ID;
-    // it does NOT read ANTHROPIC_BASE_URL/ANTHROPIC_CUSTOM_HEADERS (claude-CLI-specific) nor a
-    // CODEX_HOME. Emit only the account-pin signal the per-session agent-home writer consumes.
-    // (omp-account-pinning-gateway-2026-06-29 D-001/D-003)
+    // OMP routes via a per-session models.yml (P-005 connect / P-006 fleet): the gateway
+    // provider override is delivered through the omp child's HOME, NOT via ANTHROPIC_BASE_URL/
+    // ANTHROPIC_CUSTOM_HEADERS (claude-CLI-specific) nor a CODEX_HOME. Emit the account-pin
+    // signal PLUS the models.yml bytes + the model selector the per-spawn agent-home seeder
+    // (connect: profile-writer; fleet: orchestrator invoke.ts) writes into
+    // <home>/.omp/agent/models.yml and force-selects via `--model`. A bare PAPERCUSP_ACCOUNT_ID
+    // (no models.yml) keeps a pinned-but-unseeded session fail-soft on direct egress.
+    // (omp-account-pinning-gateway-2026-06-29 D-001/D-003/D-006/D-008)
     if (!accountId) return {};
-    return { PAPERCUSP_ACCOUNT_ID: accountId };
+    const env: Record<string, string> = { PAPERCUSP_ACCOUNT_ID: accountId };
+    // Same priority-TIER resolution as the claude path below (role → admission tier, flag-gated).
+    const ompPriority =
+      opts.role && (await getFlag(FLAGS.GATEWAY_PRIORITY_TIERS, 'system'))
+        ? opts.role.trim() || undefined
+        : undefined;
+    // Lazy import: omp-models-config imports gatewayPort from THIS module, so a top-level import
+    // would be a mutual cycle — defer it to the call site (the helpers above stay import-light).
+    const { ompGatewayModelsConfig, ompProviderForAccountProvider } = await import('./omp-models-config');
+    const cfg = ompGatewayModelsConfig({
+      accountId,
+      provider: ompProviderForAccountProvider(provider),
+      ownerId: opts.ownerId,
+      priority: ompPriority,
+    });
+    if (cfg) {
+      env.PAPERCUSP_OMP_MODELS_YML = cfg.content;
+      env.PAPERCUSP_OMP_MODEL_SELECTOR = cfg.modelSelector;
+    }
+    return env;
   }
   if (provider === 'codex') {
     if (!accountId) return {};
