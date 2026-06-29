@@ -338,7 +338,9 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   RECIPE — `recipes:search { query }` before authoring a multi-step script; on a hit
   `recipes:run { id }` (runs under YOUR envelope, not the author's) instead of
   re-authoring; act on the `similarRecipes` a run returns; title+describe so what you
-  save is findable.
+  save is findable. At wake it is ALREADY THERE: `coord:orient` returns a `recipes` list
+  ranked to your `intent` — scan it first; a close hit means `recipes:run { id }`, not a
+  fresh search or script.
   **Trigger:** about to call the SAME tool once per item in a list (a `get` per id,
   a check per file)? That repetition IS the cue — reach for `code:run` BEFORE the
   first such call, not after firing several one-at-a-time. NOT for a single call or

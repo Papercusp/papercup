@@ -81,7 +81,7 @@ describe('renderPresenceRebootstrapBlock', () => {
     const snap: PresenceSnapshot = {
       as_of: '2026-06-15T02:00:00.000Z',
       scope: 'hive',
-      summary: { active: 2, stale: 0, federated: 1, wakeable: 0, byState: { live: 0, parked: 0, ended: 0 } },
+      summary: { active: 2, stale: 0, federated: 1, wakeable: 0, onDesktop: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0 } },
       active: [
         { ownerLabel: 'su · a', agentRole: 'su', intent: 'reviewing the fold', currentPlanSlug: 'presence-v2-2026-06-14' },
         { ownerLabel: 'fed:42@box', intent: 'remote work' }, // no role/plan
@@ -103,7 +103,7 @@ describe('renderPresenceRebootstrapBlock', () => {
     const block = renderPresenceRebootstrapBlock({
       as_of: '2026-06-15T02:00:00.000Z',
       scope: 'workspace',
-      summary: { active: 45, stale: 0, federated: 0, wakeable: 0, byState: { live: 0, parked: 0, ended: 0 } },
+      summary: { active: 45, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0 } },
       active,
     });
     const lines = block.split('\n');

@@ -95,15 +95,36 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(h.supportsBearer).toHaveBeenCalledWith('file:/codex-auth.json');
   });
 
-  test('OMP backend → routes via PAPERCUSP_ACCOUNT_ID (claude pool), NOT the claude ANTHROPIC_BASE_URL env (D-006)', async () => {
+  test('OMP backend → emits the per-session models.yml (gateway provider + pin headers) + selector, NOT the claude ANTHROPIC_BASE_URL env (P-006/D-008)', async () => {
     h.getFlag.mockResolvedValue(true);
     h.selectSpawnAccount.mockResolvedValue('claude-main');
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'omp' });
-    // omp consumes the pin via its per-session models.yml — only the account-id signal,
+    // omp consumes the pin via its per-session models.yml — the account-id signal PLUS the
+    // models.yml bytes + the model selector the per-spawn agent-home seeder writes & force-selects;
     // never the claude-CLI gatewaySpawnEnv (ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS).
-    expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'claude-main' });
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBe('claude-main');
+    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-sonnet-4');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('papercusp-gateway:');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('baseUrl: "http://127.0.0.1:8788"');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-account": "claude-main"');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-owner": "s-1"');
     expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    expect(env).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS');
     expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'claude');
+  });
+
+  test('OMP backend + tier flag ON + role → bakes the x-papercusp-priority pin into the models.yml (P-006)', async () => {
+    h.getFlag.mockResolvedValue(true); // all flags ON incl. GATEWAY_PRIORITY_TIERS
+    h.selectSpawnAccount.mockResolvedValue('claude-main');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', role: 'bee' });
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-priority": "bee"');
+  });
+
+  test('OMP backend + tier flag OFF → NO priority pin in the models.yml (flag-OFF parity)', async () => {
+    h.getFlag.mockImplementation(async (flag: string) => flag !== 'gateway-priority-tiers');
+    h.selectSpawnAccount.mockResolvedValue('claude-main');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', role: 'bee' });
+    expect(env.PAPERCUSP_OMP_MODELS_YML ?? '').not.toContain('x-papercusp-priority');
   });
 
   test('OMP backend + no account selected → {} (nothing to pin; never an ANTHROPIC_BASE_URL leak)', async () => {

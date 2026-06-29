@@ -428,7 +428,9 @@ autonomous-fleet agent.
   authoring one, `recipes:search { query }`; on a close hit `recipes:run { id }` (it
   runs under YOUR role-scoped envelope, not the author's) instead of re-authoring; act
   on the `similarRecipes` a run surfaces; and pass a clear `title`+`description` so the
-  recipe you leave behind is findable (`recipes:list` browses the most-run).
+  recipe you leave behind is findable (`recipes:list` browses the most-run). At wake it
+  is ALREADY THERE: `coord:orient` returns a `recipes` list ranked to your `intent` —
+  scan it first; a close hit means `recipes:run { id }`, not a fresh search or script.
   **Trigger — catch the cue early:** the moment you're about to call the SAME tool
   once per item in a list (a `get` per id, a check per file), that repetition IS
   the signal — reach for `code:run` BEFORE the first such call; don't fire several

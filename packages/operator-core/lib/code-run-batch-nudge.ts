@@ -44,11 +44,14 @@
  */
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 
-/** Same tool this many times inside the window → the same-tool nudge is a candidate. */
-export const BATCH_NUDGE_THRESHOLD = 3;
+/** Same tool this many times inside the window → the same-tool nudge is a candidate. Lowered 3→2
+ *  (code-run-adoption directive 2026-06-29): the 2nd identical round-trip already IS the loop — by
+ *  the 3rd the cheap calls are spent. Catch it at the earliest point the pattern is unambiguous. */
+export const BATCH_NUDGE_THRESHOLD = 2;
 
-/** This many DISTINCT (non-excluded) tools inside the window → the fan-out nudge is a candidate. */
-export const FANOUT_DISTINCT_THRESHOLD = 4;
+/** This many DISTINCT (non-excluded) tools inside the window → the fan-out nudge is a candidate.
+ *  Lowered 4→3 (2026-06-29): three different reads in one burst is already a Promise.all-able fan-out. */
+export const FANOUT_DISTINCT_THRESHOLD = 3;
 
 /** Sliding window over which recent calls are counted. Only a bursty flurry (the actually-batchable
  *  shape) trips a trigger; calls spread wider than this are treated as separate, deliberate steps. */
@@ -191,6 +194,26 @@ function cooldownCalls(nudgesAlreadyFired: number): number {
   return Math.min(BASE * 2 ** Math.max(0, nudgesAlreadyFired - 1), CAP);
 }
 
+/** Escalation banner prepended to a nudge based on how many have ALREADY fired this session (code-run
+ *  -adoption directive 2026-06-29). The cooldown makes repeats rarer; this makes the ones that DO fire
+ *  progressively firmer — a caller still firing calls one at a time after several reminders needs a
+ *  stronger push, not the same neutral tip. `n` is the post-increment nudgeCount (1 = first fire), so
+ *  level 1 stays the original neutral message and only persistent wasters see the louder banners. */
+function escalationPrefix(n: number): string {
+  if (n <= 1) return '';
+  if (n === 2) return '(2nd reminder this session) ';
+  if (n === 3)
+    return (
+      '⚠️ 3rd reminder this session — you keep firing tool calls one at a time. Please bundle the rest ' +
+      'of this burst into a single code:run. '
+    );
+  return (
+    `🚨 ${n}× reminded this session — this is a persistent one-at-a-time pattern that is burning tokens. ` +
+    'Default to code:run for these calls now; keep one separate ONLY if you must read its result and ' +
+    'reason before the next. '
+  );
+}
+
 export type BatchNudgeKind = 'same-tool' | 'fanout';
 
 export interface BatchNudgeResult {
@@ -263,10 +286,11 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   st.callsSinceNudge = 0;
 
   const windowS = Math.round(NUDGE_WINDOW_MS / 1000);
+  const banner = escalationPrefix(st.nudgeCount);
   if (kind === 'same-tool') {
     const burst = totalRecent > sameToolCount ? ` (${totalRecent} tool calls total this burst)` : '';
     const text =
-      `you've called "${toolName}" ${sameToolCount}× in the last ~${windowS}s${burst} — that's ` +
+      `${banner}you've called "${toolName}" ${sameToolCount}× in the last ~${windowS}s${burst} — that's ` +
       `${sameToolCount} separate round-trips, each re-reading your whole context. If these are ` +
       `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton ` +
       `(fill \`inputs\` with the per-call args):\n${sameToolSkeleton(toolName)}\n${TRAILER}`;
@@ -274,7 +298,7 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   }
   // fan-out
   const text =
-    `you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
+    `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
     `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. This is an ` +
     `independent fan-out: collapse it into ONE code:run with Promise.all — ready-to-paste skeleton ` +
     `(fill the args):\n${fanoutSkeleton(distinctOrder)}\n${TRAILER}`;

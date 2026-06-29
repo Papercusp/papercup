@@ -154,6 +154,11 @@ export function noteMemoryFailure(err: unknown): void {
  */
 export function embedFailureReason(err: unknown): string | null {
   const msg = err instanceof Error ? err.message : String(err);
+  // Hit our OWN daily spend cap (embed-admission EmbedBudgetExhaustedError) — distinct from an
+  // OpenAI-side failure: the embedder is healthy, we deliberately stopped spending. The agent
+  // should narrate "embedding daily spend cap reached" (raise PAPERCUSP_EMBED_DAILY_TOKEN_CAP or
+  // wait for the UTC-day reset), not "retrying". (cost-audit-2026-06-29.)
+  if (/embed_daily_budget_exhausted/.test(msg)) return 'embed_budget_exhausted';
   if (/openai_embed_quota_exhausted/.test(msg)) return 'embed_quota_exhausted';
   if (/openai_embed_failed_429/.test(msg)) return 'embed_rate_limited';
   if (/openai_embed_failed/.test(msg)) return 'embed_unavailable';

@@ -39,6 +39,12 @@ import { hardText, LIMITS } from '../../limits';
 const MEMORY_TEXT_CAP = 200;
 const MEMORY_HITS_CAP = 10;
 const PLAN_EVENTS_FOLD = 10;
+/** Reuse-at-orient bounds (code-run-adoption): surface a few intent-relevant recipes so an
+ *  agent reuses an EXISTING code:run script instead of hand-looping/re-authoring — kept tiny
+ *  so it never re-enters context as bulk on later turns. */
+const RECIPES_DEFAULT = 3;
+const RECIPES_CAP = 5;
+const RECIPE_TITLE_CAP = 120;
 
 export interface OrientArgs {
   harness?: string;
@@ -62,6 +68,10 @@ export interface OrientArgs {
   includePlanEvents?: boolean;
   /** Only plan-events strictly later than this ISO timestamp. */
   planEventsSince?: string;
+  /** Surface reusable code:run recipes relevant to `intent`/`memoryQuery` (default true). */
+  includeRecipes?: boolean;
+  /** Max relevant recipes to surface (default 3, hard-capped 5). */
+  recipesLimit?: number;
 }
 
 export interface OrientMemoryHit {
@@ -84,6 +94,10 @@ export interface OrientResult {
   /** coord:plan-events delta — newest few + the true total; null on failure;
    *  absent when includePlanEvents:false. */
   planEvents?: { total: number; recent: unknown[] } | null;
+  /** Reusable code:run recipes relevant to `intent`/`memoryQuery` (recipes:search) —
+   *  id + title + run/similarity, bounded. Reuse one (recipes:run) instead of hand-looping
+   *  or re-authoring. null on failure; absent when no query or includeRecipes:false. */
+  recipes?: Array<{ id?: unknown; title?: string; runCount?: unknown; similarity?: unknown }> | null;
   /** Whether the optional coord:declare-intent succeeded (present only when
    *  `intent` was passed; false = the caller lacked coord:write). */
   intentDeclared?: boolean;
@@ -173,6 +187,31 @@ export async function composeOrient(
     }
   }
 
+  // ── recipes:search — surface reusable code:run RECIPES relevant to this turn's intent,
+  // so an agent batches via an EXISTING recipe instead of hand-looping or re-authoring
+  // (code-run-adoption: reuse-at-orient closes the "I didn't know one existed" gap — the
+  // measured bottleneck is awareness, not authoring). Keyed off the same intent/memoryQuery
+  // as the recall. BEST-EFFORT: a missing intel:read cap or a slow search degrades to null,
+  // never breaks orientation. COMPACT: id/title/runCount/similarity only.
+  const recipeQuery = args.intent ?? args.memoryQuery;
+  if (recipeQuery && args.includeRecipes !== false) {
+    const recLimit = Math.min(args.recipesLimit ?? RECIPES_DEFAULT, RECIPES_CAP);
+    try {
+      const rec = (await call('recipes:search', {
+        query: recipeQuery,
+        limit: recLimit,
+      })) as { recipes?: Array<{ id?: unknown; title?: unknown; runCount?: unknown; similarity?: unknown }> } | undefined;
+      result.recipes = (rec?.recipes ?? []).slice(0, recLimit).map((r) => ({
+        id: r.id,
+        title: typeof r.title === 'string' ? r.title.slice(0, RECIPE_TITLE_CAP) : undefined,
+        runCount: r.runCount,
+        similarity: r.similarity,
+      }));
+    } catch {
+      result.recipes = null;
+    }
+  }
+
   // ── coord:declare-intent — only when an intent is given (a WRITE; independently
   // capability-gated at re-dispatch, so a read-only caller gets intentDeclared:false
   // rather than an escalation). BEST-EFFORT.
@@ -216,8 +255,9 @@ export default defineTool({
       'returned (and declared) them this turn.',
     chaining:
       'Bundles: fleet:assignments + work_items:list + coord:inbox + coord:plan-events ' +
-      '[+ memory:search + coord:declare-intent when `intent` is set] — prefer this at wake ' +
-      'over calling them separately. → work_items:pickup { id, intent } the item you take.',
+      '[+ memory:search + recipes:search + coord:declare-intent when `intent` is set] — prefer ' +
+      'this at wake over calling them separately. If `recipes` comes back with a close hit, ' +
+      'recipes:run it instead of hand-looping/re-authoring. → work_items:pickup { id, intent }.',
   },
   capability: 'coord:read',
   // tool-call-batching-wrappers P-010 — composite marker: the primitives this bundles.
@@ -229,6 +269,7 @@ export default defineTool({
     'coord:inbox',
     'coord:plan-events',
     'memory:search',
+    'recipes:search',
     'coord:declare-intent',
   ],
   requirePrincipal: false,
@@ -251,6 +292,8 @@ export default defineTool({
     memoryLimit: z.number().int().positive().max(10).optional().describe('Max memory hits to fold (default 5).'),
     includePlanEvents: z.boolean().optional().describe('Fold the recent plan-events delta (default true).'),
     planEventsSince: z.string().optional().describe('Only plan-events strictly after this ISO timestamp.'),
+    includeRecipes: z.boolean().optional().describe('Surface reusable code:run recipes relevant to `intent` (default true).'),
+    recipesLimit: z.number().int().positive().max(5).optional().describe('Max relevant recipes to surface (default 3).'),
   }),
   async handler(args, ctx) {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an

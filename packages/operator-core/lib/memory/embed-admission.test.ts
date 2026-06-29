@@ -15,6 +15,7 @@ import {
   headersToRecord,
   retryAfterMs,
   EmbedShedError,
+  EmbedBudgetExhaustedError,
   type EmbedLane,
 } from './embed-admission';
 
@@ -154,6 +155,71 @@ describe('EmbedShedError', () => {
     const e = new EmbedShedError('bench');
     expect(e.lane).toBe('bench');
     expect(e.message).toBe('embed_admission_shed:bench');
+    expect(e).toBeInstanceOf(Error);
+  });
+});
+
+// cost-audit-2026-06-29: the hard daily SPEND cap — the backstop that keeps a low-balance key
+// from being drained by a runaway (bench/backfill) loop. estimateEmbedTokens('a'*40) === 10.
+describe('createEmbedAdmission — daily spend cap', () => {
+  it('throws EmbedBudgetExhaustedError once the cumulative day tokens exceed the cap (both lanes)', async () => {
+    const { governor } = stubGovernor({ grant: true });
+    const adm = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 15 });
+    await adm.acquire('a'.repeat(40), 'memory'); // +10 → 10 (ok)
+    await expect(adm.acquire('a'.repeat(40), 'memory')).rejects.toBeInstanceOf(EmbedBudgetExhaustedError); // 10+10>15
+    // and it stops the bench lane too
+    const adm2 = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 15 });
+    await adm2.acquire('a'.repeat(40), 'bench');
+    await expect(adm2.acquire('a'.repeat(40), 'bench')).rejects.toBeInstanceOf(EmbedBudgetExhaustedError);
+  });
+
+  it('enforces the cap EVEN WITH the admission flag OFF (a spend ceiling is not flag-defeatable)', async () => {
+    const { governor } = stubGovernor({ grant: false });
+    const adm = createEmbedAdmission({ governor, isEnabled: disabled, dailyTokenCap: 15 });
+    await adm.acquire('a'.repeat(40), 'memory'); // passthrough, but charged +10
+    await expect(adm.acquire('a'.repeat(40), 'memory')).rejects.toBeInstanceOf(EmbedBudgetExhaustedError);
+    expect(governor.acquire).not.toHaveBeenCalled(); // flag off → never touched the governor
+  });
+
+  it('does NOT charge the budget when a bench embed is SHED (no embed fires)', async () => {
+    const { governor } = stubGovernor({ grant: false }); // governor denies → bench sheds → null
+    const adm = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 100 });
+    for (let i = 0; i < 5; i++) expect(await adm.acquire('a'.repeat(40), 'bench')).toBeNull();
+    expect(adm.usage().dayTokens).toBe(0); // shed rows never spent → never charged
+  });
+
+  it('resets the counter on the UTC-day rollover (injected clock)', async () => {
+    let t = 0;
+    const { governor } = stubGovernor({ grant: true });
+    const adm = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 15, now: () => t });
+    await adm.acquire('a'.repeat(40), 'memory'); // day 0 → 10
+    expect(adm.usage().dayTokens).toBe(10);
+    t += 86_400_000; // advance one full day
+    await adm.acquire('a'.repeat(40), 'memory'); // new day → counter reset → 10 again, no throw
+    expect(adm.usage().dayTokens).toBe(10);
+  });
+
+  it('cap = 0 disables the cap entirely (never throws, usage.overBudget false)', async () => {
+    const { governor } = stubGovernor({ grant: true });
+    const adm = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 0 });
+    for (let i = 0; i < 50; i++) await adm.acquire('a'.repeat(4000), 'memory'); // 50 × 1000 tok
+    expect(adm.usage().overBudget).toBe(false);
+  });
+
+  it('usage() reports day tokens, cap, and the overBudget latch', async () => {
+    const { governor } = stubGovernor({ grant: true });
+    const adm = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 10 });
+    expect(adm.usage()).toMatchObject({ dayTokens: 0, capTokens: 10, overBudget: false });
+    await adm.acquire('a'.repeat(40), 'memory'); // +10 → exactly at cap
+    expect(adm.usage()).toMatchObject({ dayTokens: 10, capTokens: 10, overBudget: true });
+  });
+});
+
+describe('EmbedBudgetExhaustedError', () => {
+  it('carries the lane and a message embedFailureReason can match', () => {
+    const e = new EmbedBudgetExhaustedError('memory');
+    expect(e.lane).toBe('memory');
+    expect(e.message).toBe('embed_daily_budget_exhausted:memory');
     expect(e).toBeInstanceOf(Error);
   });
 });

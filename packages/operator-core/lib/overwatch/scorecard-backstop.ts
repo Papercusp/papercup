@@ -41,6 +41,12 @@ import { checkScorecardFreshness } from '../scorecard-freshness';
 import { computeSystemHealth } from '../system-health/compute';
 import { captureImprovement } from '../harness/improvements/capture-core';
 import type { SystemHealth } from '../system-health/types';
+import {
+  readCodeRunAdoption,
+  rollupAdoption,
+  gradeToolUtilization,
+  type RunQuery,
+} from '../code-run-adoption';
 
 /** The rubric the Overwatch scorecards against (Owner requirement #1). */
 export const COORDINATION_RUBRIC_REF = 'hive-coordination-health';
@@ -93,8 +99,17 @@ const unknown = (): ScorecardRating => ({ rating: 'unknown', evidence: UNKNOWN_E
  * is honestly 'unknown' (a deterministic floor cannot assess nuance). All 14 keys are
  * present, each with non-empty evidence (the capture completeness + evidence gates
  * require it). DB-free → unit-tested exhaustively.
+ *
+ * `toolUtilization` (code-run-adoption directive 2026-06-29): when the caller supplies a
+ * data-derived grade (the fleet code:run adoption rate → rating, computed from
+ * tool_invocations), it grounds the `tool-utilization` criterion with REAL data instead of
+ * the deterministic floor's honest 'unknown'. Omitted ⇒ 'unknown' as before (the floor stays
+ * DB-free + purely health-derived when no adoption read is wired in).
  */
-export function synthesizeCoordinationScorecard(health: SystemHealth): Record<string, ScorecardRating> {
+export function synthesizeCoordinationScorecard(
+  health: SystemHealth,
+  toolUtilization?: ScorecardRating,
+): Record<string, ScorecardRating> {
   const p = health.panels;
   const wf = p.workFeed?.data ?? null;
   const bees = p.bees?.data ?? null;
@@ -188,11 +203,14 @@ export function synthesizeCoordinationScorecard(health: SystemHealth): Record<st
     'coordination-comms',
     'chatter-economy',
     'coordination-utilization',
-    'tool-utilization',
     'scheduler-usage',
   ]) {
     r[k] = unknown();
   }
+
+  // tool-utilization — DATA-GROUNDED when an adoption grade is supplied (code:run adoption rate
+  // → rating), else 'unknown'. This is the one judgment criterion the metric makes mechanical.
+  r['tool-utilization'] = toolUtilization ?? unknown();
 
   // This scorecard IS the synthesized floor — its own emission quality is "no agent turn".
   r['overwatch-observation-quality'] = {
@@ -223,6 +241,25 @@ async function recordScorecardFire(workspaceId: string, installSlug: string, rea
   }
 }
 
+/**
+ * Default `tool-utilization` grade: read the fleet code:run adoption rollup (last 7 days) from PG
+ * and grade it. Best-effort — any failure (no table, slow query) returns undefined so the floor
+ * falls back to honest 'unknown' rather than breaking the backstop. Mirrors the RunQuery prod
+ * wiring (sql.unsafe(query, params)).
+ */
+async function defaultToolUtilizationGrade(): Promise<ScorecardRating | undefined> {
+  try {
+    const { sql } = getOrgPg();
+    const runQuery: RunQuery = async <T = unknown>(query: string, params: unknown[]) =>
+      (await sql.unsafe(query, params as never)) as unknown as T[];
+    const summaries = await readCodeRunAdoption(runQuery, { sinceDays: 7 });
+    return gradeToolUtilization(rollupAdoption(summaries));
+  } catch (e) {
+    console.warn(`[overwatch-scorecard-backstop] adoption grade failed: ${e instanceof Error ? e.message : e}`);
+    return undefined;
+  }
+}
+
 /** Dependency seam — defaults to the real impls; injectable so the whole check is
  *  unit-testable without PG / flags / vi.mock. */
 export interface OverwatchScorecardEndCheckDeps {
@@ -236,6 +273,8 @@ export interface OverwatchScorecardEndCheckDeps {
   computeHealth?: (workspaceId?: string) => Promise<SystemHealth>;
   capture?: typeof captureImprovement;
   recordFire?: (workspaceId: string, installSlug: string, reason: string) => Promise<void>;
+  /** Data-derived `tool-utilization` grade (code:run adoption). undefined ⇒ floor uses 'unknown'. */
+  toolUtilizationGrade?: () => Promise<ScorecardRating | undefined>;
 }
 
 /**
@@ -256,6 +295,7 @@ export async function overwatchScorecardEndCheck(
   const computeHealth = deps.computeHealth ?? computeSystemHealth;
   const capture = deps.capture ?? captureImprovement;
   const recordFire = deps.recordFire ?? recordScorecardFire;
+  const toolUtilizationGrade = deps.toolUtilizationGrade ?? defaultToolUtilizationGrade;
   try {
     if (!(await enabled())) return { outcome: 'skipped', reason: 'overwatch flag off' };
     if (!(await started(workspaceId, installSlug))) return { outcome: 'skipped', reason: 'overwatch not started' };
@@ -273,9 +313,11 @@ export async function overwatchScorecardEndCheck(
       return { outcome: 'skipped', reason: 'agent emitted a complete scorecard since last wake' };
     }
 
-    // The turn ended with no complete agent scorecard — synthesize the floor.
+    // The turn ended with no complete agent scorecard — synthesize the floor. Ground
+    // tool-utilization in real code:run adoption data (best-effort; undefined ⇒ 'unknown').
     const health = await computeHealth(workspaceId);
-    const ratings = synthesizeCoordinationScorecard(health);
+    const toolUtil = await toolUtilizationGrade();
+    const ratings = synthesizeCoordinationScorecard(health, toolUtil);
     await capture({
       title: 'hive-coordination-health scorecard (synthesized floor)',
       kind: 'change',

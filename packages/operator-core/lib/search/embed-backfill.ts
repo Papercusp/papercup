@@ -20,6 +20,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getResourceProfile } from '../resource-profile';
+import { embedAdmission, headersToRecord, retryAfterMs } from '../memory/embed-admission';
 
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
@@ -88,18 +89,36 @@ async function buildEmbedder(mode: ResolvedMode): Promise<(t: string) => Promise
     }
     if (!key) throw new Error('openai_api_key_missing');
     return async (text: string): Promise<number[]> => {
-      const r = await fetch('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: OPENAI_EMBEDDER_MODEL,
-          input: text,
-          dimensions: EMBEDDER_DIM,
-        }),
-      });
-      if (!r.ok) throw new Error(`openai_embed_${r.status}`);
-      const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
-      return j.data[0].embedding;
+      // Route the backfill through the SHARED embed-admission governor (cost-audit-2026-06-29).
+      // This sweep previously fired RAW, UNGOVERNED OpenAI embeds every 5 min — the one embed path
+      // that bypassed the governor, so neither the org-TPM rate cap NOR the daily spend cap applied
+      // to it. Use the 'bench' lane (lowest priority): under rate contention it sheds first, and the
+      // daily-budget cap throws EmbedBudgetExhaustedError → the per-row catch in backfillTable counts
+      // it as an error and skips, so a runaway can't drain the key. A bench-lane SHED (null slot)
+      // likewise skips the row; the next sweep retries.
+      const adm = embedAdmission();
+      const slot = await adm.acquire(text, 'bench'); // throws EmbedBudgetExhaustedError when over the daily cap
+      if (slot === null) throw new Error('openai_embed_admission_shed');
+      try {
+        const r = await fetch('https://api.openai.com/v1/embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            model: OPENAI_EMBEDDER_MODEL,
+            input: text,
+            dimensions: EMBEDDER_DIM,
+          }),
+        });
+        adm.recordResponse(headersToRecord(r.headers));
+        if (!r.ok) {
+          if (r.status === 429) adm.penalize({ retryAfterMs: retryAfterMs(headersToRecord(r.headers)) });
+          throw new Error(`openai_embed_${r.status}`);
+        }
+        const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
+        return j.data[0].embedding;
+      } finally {
+        slot.release();
+      }
     };
   }
   // local
@@ -117,7 +136,19 @@ interface BackfillTarget {
   table: string;
   embedCol: string;
   bodySql: string;
-  idCol?: string;
+  /**
+   * PRIMARY KEY column(s) used to target the row's UPDATE.
+   *
+   * cost-audit-2026-06-29: this was `idCol?: 'ctid'` for 3 of the 4 tables. `ctid` is a PHYSICAL
+   * row pointer that CHANGES on any UPDATE or (auto)VACUUM, which caused two bugs: (1) if a row's
+   * ctid drifted between the SELECT and the `UPDATE … WHERE ctid=$` the update matched NOTHING, the
+   * embedding stayed NULL, and the row was RE-EMBEDDED every 5-min sweep forever (token burn); and
+   * (2) a ctid reused by a different row could write one row's embedding onto another (corruption).
+   * Keying by the real PRIMARY KEY (stable, unique) eliminates both. These are the actual PKs:
+   * operator_turns(id) · harness_escalations(harness_slug,phase) · harness_brainstorm(harness_slug,
+   * phase) · harness_decisions(harness_slug,line_hash).
+   */
+  keyCols: string[];
 }
 
 const TARGETS: BackfillTarget[] = [
@@ -125,25 +156,25 @@ const TARGETS: BackfillTarget[] = [
     table: 'harness_shared.harness_escalations',
     embedCol: 'body_embedding',
     bodySql: `COALESCE(escalation, '') || E'\\n' || COALESCE(supervisor_notes, '')`,
-    idCol: 'ctid',
+    keyCols: ['harness_slug', 'phase'],
   },
   {
     table: 'harness_shared.harness_brainstorm',
     embedCol: 'content_embedding',
     bodySql: 'content',
-    idCol: 'ctid',
+    keyCols: ['harness_slug', 'phase'],
   },
   {
     table: 'harness_shared.operator_turns',
     embedCol: 'text_embedding',
     bodySql: 'text',
-    idCol: 'id',
+    keyCols: ['id'],
   },
   {
     table: 'harness_shared.harness_decisions',
     embedCol: 'body_embedding',
     bodySql: `COALESCE(verb, '') || ' ' || COALESCE(args, '')`,
-    idCol: 'ctid',
+    keyCols: ['harness_slug', 'line_hash'],
   },
 ];
 
@@ -160,12 +191,20 @@ async function backfillTable(
     errors: 0,
     durationMs: 0,
   };
-  const idCol = target.idCol ?? 'ctid';
+  const keyCols = target.keyCols;
+  // Select each PK column as k0, k1, … so the UPDATE can target the exact row by PK (not ctid).
+  const keySelect = keyCols.map((c, i) => `${c} AS k${i}`).join(', ');
+  const whereKeys = keyCols.map((c, i) => `${c} = $${i + 2}`).join(' AND ');
 
-  // Loop until no more NULLs.
+  // Loop until no more NULLs — OR until a full batch makes ZERO progress (every row failed to
+  // embed). Without the zero-progress break, a row whose embed PERSISTENTLY fails (e.g. every
+  // request 429s during a quota outage, or an over-long body 400s) stays NULL and is re-SELECTed
+  // by the next `WHERE … IS NULL LIMIT` pull, spinning this `while(true)` forever and re-burning
+  // tokens. Breaking on no-progress bounds the sweep and lets the next 5-min tick retry. (cost-audit-2026-06-29.)
   while (true) {
-    const batch = await sql.unsafe<Array<{ id: string; body: string }>>(
-      `SELECT ${idCol} AS id, (${target.bodySql}) AS body
+    // All PK columns here are text/uuid and the body is text → every selected value is a string.
+    const batch = await sql.unsafe<Array<Record<string, string>>>(
+      `SELECT ${keySelect}, (${target.bodySql}) AS body
          FROM ${target.table}
         WHERE ${target.embedCol} IS NULL
           AND length(${target.bodySql}) > 0
@@ -174,6 +213,7 @@ async function backfillTable(
     );
     if (!batch.length) break;
 
+    let embeddedThisBatch = 0;
     for (const row of batch) {
       stats.scanned += 1;
       try {
@@ -182,17 +222,25 @@ async function backfillTable(
           stats.errors += 1;
           continue;
         }
+        const keyVals = keyCols.map((_, i) => row[`k${i}`]);
+        // Target by PRIMARY KEY + guard `embedCol IS NULL`: a row updated concurrently (or a
+        // reused ctid) can never be clobbered, and we never redundantly overwrite.
         await sql.unsafe(
           `UPDATE ${target.table}
               SET ${target.embedCol} = $1::vector
-            WHERE ${idCol} = $2`,
-          [`[${vec.join(',')}]`, row.id],
+            WHERE ${whereKeys}
+              AND ${target.embedCol} IS NULL`,
+          [`[${vec.join(',')}]`, ...keyVals],
         );
         stats.embedded += 1;
+        embeddedThisBatch += 1;
       } catch {
         stats.errors += 1;
       }
     }
+    // No row in this batch embedded → the remaining NULLs are persistent failures. Stop, else we
+    // re-SELECT and re-attempt the same stuck rows forever (and re-spend on each).
+    if (embeddedThisBatch === 0) break;
   }
 
   stats.durationMs = Date.now() - started;

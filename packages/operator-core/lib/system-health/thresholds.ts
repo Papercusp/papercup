@@ -43,13 +43,20 @@ export const ESCALATION_AGING_MS = 6 * 60 * 60_000;
 // ── per-panel status deciders ────────────────────────────────────────────────
 
 /**
- * Queen. crit = STALLED (the origin failure mode). warn = paused (idle by
- * choice), or started-but-no-wake-armed with demand queued, or watchdog firing
- * repeatedly. ok = looping with cadence.
+ * Queen. crit = STALLED (the origin failure mode) OR paused WITH demand queued (a
+ * silent outage — autonomous-loop-canary-reliability P-003: the started-only
+ * watchdog seams skip a paused hive, so nothing recovered the multi-day canary
+ * stall and this panel only yellowed). warn = paused with nothing queued (idle by
+ * choice), started-but-no-wake-armed with demand, or watchdog firing repeatedly.
+ * ok = looping with cadence.
  */
 export function queenStatus(d: QueenHealth): PanelStatus {
   if (d.stalled) return 'crit';
-  if (!d.started) return 'warn'; // paused — nothing is running
+  // P-003: paused + demand = a silent outage → red it (was a benign yellow);
+  // paused + nothing queued stays warn (intentionally idle).
+  if (!d.started) {
+    return d.demand.todoItems > 0 || d.demand.startedPlans > 0 ? 'crit' : 'warn';
+  }
   if (!d.armed && !d.midTurn && (d.demand.todoItems > 0 || d.demand.startedPlans > 0)) return 'warn';
   if (d.watchdogFires24h >= WATCHDOG_FIRES_WARN) return 'warn';
   return 'ok';

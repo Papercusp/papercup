@@ -14,6 +14,9 @@ import {
   summarizeSpawnAdoption,
   computeCodeRunAdoption,
   readCodeRunAdoption,
+  rollupAdoption,
+  gradeToolUtilization,
+  ADOPTION_MIN_SAMPLE,
   CODE_RUN_ADOPTION_SQL,
   type CallRow,
   type SpawnAdoptionRow,
@@ -97,6 +100,50 @@ describe('computeCodeRunAdoption — end-to-end raw rows → per-(role,day) summ
       'bee/2026-06-26',
       'queen/2026-06-26',
     ]);
+  });
+});
+
+describe('rollupAdoption + gradeToolUtilization — the learning-loop signal', () => {
+  const day = '2026-06-26';
+  // Build N opportunity spawns, `adopted` of them using code:run, for one role.
+  function opportunityCalls(role: string, total: number, adopted: number): CallRow[] {
+    const rows: CallRow[] = [];
+    for (let i = 0; i < total; i++) {
+      const spawnId = `${role}-${i}`;
+      // a same-tool burst = a batchable opportunity (maxSameTool ≥ BATCH_NUDGE_THRESHOLD)
+      for (let k = 0; k < BATCH_NUDGE_THRESHOLD; k++) rows.push({ spawnId, role, day, toolName: 'work_items:get' });
+      if (i < adopted) rows.push({ spawnId, role, day, toolName: 'code:run' });
+    }
+    return rows;
+  }
+
+  it('rolls per-(role,day) summaries into one fleet figure', () => {
+    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 10, 4)));
+    expect(roll.opportunitySpawns).toBe(10);
+    expect(roll.opportunitySpawnsUsingCodeRun).toBe(4);
+    expect(roll.adoptionRate).toBeCloseTo(0.4, 5);
+  });
+
+  it('grades a ~2% baseline as broken (the number the loop must move)', () => {
+    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 50, 1)));
+    expect(gradeToolUtilization(roll).rating).toBe('broken');
+    expect(gradeToolUtilization(roll).evidence).toMatch(/adoption 2%/);
+  });
+
+  it('grades a healthy fleet (≥60% folded) as healthy, a mid fleet as degraded', () => {
+    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 20, 14)))).rating).toBe('healthy');
+    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 20, 8)))).rating).toBe('degraded');
+  });
+
+  it('too small a sample (< ADOPTION_MIN_SAMPLE opportunities) is honest unknown, not broken', () => {
+    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', ADOPTION_MIN_SAMPLE - 1, 0)));
+    expect(roll.opportunitySpawns).toBeLessThan(ADOPTION_MIN_SAMPLE);
+    expect(gradeToolUtilization(roll).rating).toBe('unknown');
+  });
+
+  it('no opportunities at all → null rate → unknown', () => {
+    expect(rollupAdoption([]).adoptionRate).toBeNull();
+    expect(gradeToolUtilization(rollupAdoption([])).rating).toBe('unknown');
   });
 });
 

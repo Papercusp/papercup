@@ -47,6 +47,9 @@ interface SessionRow {
    *  console rows or for OMP rows whose JSONL isn't loadable yet
    *  (brand-new launches still initializing). */
   summary: ServerRowSummary | null;
+  /** true ⇒ this session has a live OS window on screen right now (derived
+   *  server-side via wmctrl) — and is hard-exempt from the idle-session reaper. */
+  onDesktop?: boolean;
 }
 
 interface OmpSessionMatch {
@@ -822,6 +825,14 @@ export default function AdvSessionsClient() {
                                   {harnessForRow(row)}
                                 </span>
                               ) : null}
+                              {row.onDesktop ? (
+                                <span
+                                  className="pc-adv-sessions__desktop-chip"
+                                  title="On the desktop — a live OS window is open on screen; hard-exempt from the idle-session reaper"
+                                >
+                                  🖥 desktop
+                                </span>
+                              ) : null}
                               <span className="pc-adv-sessions__row-label">
                                 {row.label ?? row.terminalBin ?? `#${row.id}`}
                               </span>
@@ -1254,6 +1265,16 @@ export default function AdvSessionsClient() {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 10px;
           font-weight: 700;
+        }
+        .pc-adv-sessions__desktop-chip {
+          padding: 1px 6px;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 84%);
+          color: var(--accent-soft, #bae6fd);
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0;
+          white-space: nowrap;
         }
         .pc-adv-sessions__harness-filter {
           padding: 4px 6px;

@@ -266,6 +266,7 @@ import './agent_chats/send_message';
 import './agent_chats/archive';
 import './dev/harnesses';
 import './dev/telemetry';
+import './dev/code_run_adoption';
 import './dev/audit';
 import './dev/sessions';
 import './dev/activity';

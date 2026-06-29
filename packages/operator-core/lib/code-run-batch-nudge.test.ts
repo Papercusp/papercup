@@ -49,9 +49,10 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
 
   it('does NOT fire when the repeats fall OUTSIDE the window (only a bursty flurry trips it)', () => {
     expect(maybeBatchNudge({ ...cap, now: 0 })).toBeNull(); // count 1
-    expect(maybeBatchNudge({ ...cap, now: 1000 })).toBeNull(); // count 2
-    // 3rd call far beyond the window — the earlier two aged out, so the window count is 1.
+    // next call far beyond the window — the first aged out, so the window count is back to 1.
     expect(maybeBatchNudge({ ...cap, now: NUDGE_WINDOW_MS + 2000 })).toBeNull();
+    // and one more a window later — again the prior aged out, still a window count of 1.
+    expect(maybeBatchNudge({ ...cap, now: 2 * (NUDGE_WINDOW_MS + 2000) })).toBeNull();
   });
 
   it('states the correct boundary — judgment mid-flow, NOT data dependency', () => {
@@ -93,50 +94,52 @@ describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', 
   const fanTools = ['plans:get', 'work_items:get', 'docs:search', 'coord:inbox'];
 
   it('fires with kind=fanout once ≥ FANOUT_DISTINCT_THRESHOLD distinct tools hit the window', () => {
-    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     let i = 0;
-    // for-of (not forEach): assigning `hit` inside the loop body keeps TS's flow narrowing, so the
-    // post-loop `hit?.kind` access is typed BatchNudgeResult|null, not narrowed-to-null.
     for (const toolName of fanTools) {
       t += 1000;
-      hit = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
-      if (i < FANOUT_DISTINCT_THRESHOLD - 1) expect(hit).toBeNull(); // below the distinct threshold
+      const r = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+      if (i < FANOUT_DISTINCT_THRESHOLD - 1) expect(r).toBeNull(); // below the distinct threshold
+      if (r && !firstFire) firstFire = r; // capture the fire — a later call cools down to null
       i++;
     }
-    expect(hit?.kind).toBe('fanout');
+    expect(firstFire?.kind).toBe('fanout');
   });
 
   it('embeds a Promise.all skeleton over the EXACT distinct tools seen, in first-seen order', () => {
-    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     for (const toolName of fanTools) {
       t += 1000;
-      hit = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+      const r = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+      if (r && !firstFire) firstFire = r; // the fire carries the tools seen UP TO the threshold
     }
-    expect(hit?.text).toContain('Promise.all');
-    expect(hit?.text).toContain('tools.plans.get(');
-    expect(hit?.text).toContain('tools.work_items.get(');
-    expect(hit?.text).toContain('tools.docs.search(');
-    expect(hit?.text).toContain('tools.coord.inbox(');
-    expect(hit?.text).toMatch(/return \{ r0, r1, r2, r3 \}/);
+    expect(firstFire?.text).toContain('Promise.all');
+    // first-seen order, capped at the distinct threshold — the trailing tool fires later, in cooldown
+    expect(firstFire?.text).toContain('tools.plans.get(');
+    expect(firstFire?.text).toContain('tools.work_items.get(');
+    expect(firstFire?.text).toContain('tools.docs.search(');
+    expect(firstFire?.text).toMatch(/return \{ r0, r1, r2 \}/);
   });
 
   it('surfaces the felt cost for the fan-out (distinct-tool + total-call counts)', () => {
-    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     for (const toolName of fanTools) {
       t += 1000;
-      hit = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+      const r = maybeBatchNudge({ sessionKey: 'fz', toolName, canCodeRun: true, now: t });
+      if (r && !firstFire) firstFire = r;
     }
-    expect(hit?.text).toContain(`${FANOUT_DISTINCT_THRESHOLD} different tools`);
-    expect(hit?.text).toMatch(/round-trip/);
+    expect(firstFire?.text).toContain(`${FANOUT_DISTINCT_THRESHOLD} different tools`);
+    expect(firstFire?.text).toMatch(/round-trip/);
   });
 
-  it('does NOT fire below the distinct threshold even on many calls of < N tools', () => {
+  it('does NOT fire below BOTH thresholds — two distinct single reads stay silent', () => {
     let t = 0;
-    // 3 distinct tools, each called twice = 6 calls, 3 distinct < 4, no same-tool ≥3 → silent.
-    for (const toolName of ['a:x', 'b:y', 'c:z', 'a:x', 'b:y', 'c:z']) {
+    // 2 distinct tools, each once: distinct (2) < FANOUT_DISTINCT_THRESHOLD AND maxSameTool (1) <
+    // BATCH_NUDGE_THRESHOLD → below both triggers, so silent regardless of the (lowered) thresholds.
+    for (const toolName of ['a:x', 'b:y']) {
       t += 1000;
       expect(maybeBatchNudge({ sessionKey: 'fn', toolName, canCodeRun: true, now: t })).toBeNull();
     }
@@ -151,8 +154,9 @@ describe('maybeBatchNudge — backoff (re-fires, NOT one-shot)', () => {
       t += 1000;
       if (maybeBatchNudge({ ...cap, now: t })) fires.push(i);
     }
-    // First fire at the 3rd call (index 2); then re-fires after cooldowns 4, 8 (→ indices 6, 14).
-    expect(fires).toEqual([2, 6, 14]);
+    // First fire at the 2nd call (index 1, threshold lowered 3→2); then re-fires after cooldowns
+    // 4, 8 (→ indices 5, 13).
+    expect(fires).toEqual([1, 5, 13]);
     // The gap between consecutive fires strictly grows (exponential backoff, never spam).
     expect(fires[1] - fires[0]).toBeLessThan(fires[2] - fires[1]);
   });
@@ -165,6 +169,22 @@ describe('maybeBatchNudge — backoff (re-fires, NOT one-shot)', () => {
     }
     t += 1000;
     expect(maybeBatchNudge({ ...cap, now: t })).toBeNull(); // immediate next call — still cooling down
+  });
+});
+
+describe('maybeBatchNudge — escalation (the text gets firmer as nudges repeat)', () => {
+  it('first fire is neutral; later fires carry progressively firmer banners', () => {
+    const texts: string[] = [];
+    let t = 0;
+    for (let i = 0; i < 20; i++) {
+      t += 1000;
+      const r = maybeBatchNudge({ ...cap, now: t });
+      if (r) texts.push(r.text);
+    }
+    expect(texts).toHaveLength(3); // fires at indices 1, 5, 13 (see backoff test)
+    expect(texts[0]).not.toMatch(/reminder this session/); // 1st = the original neutral message
+    expect(texts[1]).toContain('2nd reminder this session'); // 2nd = firmer
+    expect(texts[2]).toContain('3rd reminder this session'); // 3rd = stronger / directive
   });
 });
 

@@ -315,6 +315,16 @@ describe('planZombieReap (slice 3: ended-session zombie procs — EI-1873, pure)
   it('two procs sharing one ended session are BOTH zombies (the dup-proc leak)', () => {
     expect(planZombieReap([p(1, 'x'), p(2, 'x')], new Set(['x'])).map((z) => z.pid)).toEqual([1, 2]);
   });
+  it('SPARES an ended-session proc whose session is on the desktop (a live OS window)', () => {
+    const procs = [p(1, 'sess-a'), p(2, 'sess-b')];
+    // both sessions ended, but sess-b currently has an open OS window → not a zombie.
+    expect(
+      planZombieReap(procs, new Set(['sess-a', 'sess-b']), new Set(['sess-b'])).map((z) => z.pid),
+    ).toEqual([1]);
+  });
+  it('the on-desktop set defaults empty (2-arg callers unchanged)', () => {
+    expect(planZombieReap([p(1, 'x')], new Set(['x'])).map((z) => z.pid)).toEqual([1]);
+  });
 });
 
 describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write half)', () => {
@@ -324,6 +334,7 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
     terminate?: boolean;
     procs?: ResumeProc[];
     ended?: string[];
+    onDesktop?: string[];
     aliveByPid?: Record<number, boolean>;
     stillByPid?: Record<number, boolean>;
   }) {
@@ -336,6 +347,7 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
       }),
       listResumeProcs: vi.fn(async () => { calls.listed += 1; return over.procs ?? []; }),
       endedSessionIds: vi.fn(async (ids: string[]) => { calls.endedQ.push(ids); return new Set(over.ended ?? []); }),
+      onDesktopSessionIds: vi.fn(async () => new Set(over.onDesktop ?? [])),
       sigterm: vi.fn((pid: number) => { calls.sigterm.push(pid); return true; }),
       pidAlive: vi.fn((pid: number) => over.aliveByPid?.[pid] ?? false),
       sigkill: vi.fn((pid: number) => { calls.sigkill.push(pid); return true; }),
@@ -365,6 +377,18 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
     expect(r).toMatchObject({ enabled: true, scannedProcs: 2, zombies: 1, killedPids: [11] });
     expect(calls.sigterm).toEqual([11]); // never 22 (open session)
     expect(calls.sigkill).toHaveLength(0); // exited on TERM
+  });
+
+  it('SPARES an ended-session proc that is on the desktop (a live OS window), kills the rest', async () => {
+    const { deps, calls } = makeDeps({
+      procs: [p(11, 'ended-x'), p(22, 'ended-desktop')],
+      ended: ['ended-x', 'ended-desktop'],
+      onDesktop: ['ended-desktop'], // has a live OS window → never killed
+      aliveByPid: { 11: false },
+    });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(r).toMatchObject({ enabled: true, scannedProcs: 2, zombies: 1, killedPids: [11] });
+    expect(calls.sigterm).toEqual([11]); // never 22 (on the desktop)
   });
 
   it('SIGKILLs a survivor (still alive after TERM) after re-verifying the cmdline', async () => {

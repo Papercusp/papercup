@@ -276,6 +276,26 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'hive-watchdog-sweep' },
   );
 
+  // autonomous-loop-canary-reliability-2026-06-29 P-003: the PAUSED-hive recovery
+  // sweep. The started-only seam above skips a paused hive, so a hive PAUSED while
+  // work is queued was a SILENT outage (the daily canary went unfulfilled for days
+  // with no alert and no recovery). This sweep alerts the owner and (unless
+  // disabled via PAPERCUSP_HIVE_PAUSED_AUTO_RESUME=off) auto-resumes a hive paused
+  // past the stale threshold WITH demand. Kill switch: PAPERCUSP_HIVE_PAUSED_
+  // RECOVERY_SEC<=0. Debounced + fail-soft inside the module.
+  await DBOS.runStep(
+    async () => {
+      const { pausedHiveRecoverySweep } = await import('../hive/watchdog');
+      const results = await pausedHiveRecoverySweep();
+      for (const res of results) {
+        if (res.outcome === 'resumed' || res.outcome === 'alerted' || res.outcome === 'error') {
+          console.warn(`[hive-watchdog] paused-recovery ${res.outcome}: ${res.installSlug} — ${res.reason}`);
+        }
+      }
+    },
+    { name: 'hive-paused-recovery-sweep' },
+  );
+
   // overwatch-role-2026-06-15 B-09 / D-004: the OVERWATCH liveness sweep — the
   // who-watches-the-watcher backstop, the same deterministic dead-man's switch as
   // the hive sweep above but for the overwatch supervisor's own wake channel. It

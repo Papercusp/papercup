@@ -12,6 +12,7 @@
  */
 import { readCredentials, writeCredentials, maskCredentials } from '../../../credentials';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { invalidateMemoryClient } from '@papercusp/memory';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default [
@@ -49,7 +50,19 @@ export default [
           if (typeof v === 'string') next[k] = v.trim() || undefined;
         }
       }
-      return Response.json(maskCredentials(await writeCredentials(next)));
+      const saved = await writeCredentials(next);
+      // A rotated embedding/extraction key must take effect WITHOUT waiting for the mem0 client's
+      // hourly TTL rebuild (cost-audit-2026-06-29 / key-rotation). The embedder + fact-extraction
+      // LLM are resolved at client BUILD and the client is cached for an hour, so a key swap was
+      // otherwise invisible to memory until the next rebuild. Drop the cached client now so the
+      // next memory op rebuilds with the new credential — cheap (a no-network JS rebuild).
+      if (
+        existing.openai_api_key !== saved.openai_api_key ||
+        existing.anthropic_api_key !== saved.anthropic_api_key
+      ) {
+        try { invalidateMemoryClient(); } catch { /* best-effort — never fail a credential write on this */ }
+      }
+      return Response.json(maskCredentials(saved));
     },
   }),
 ];

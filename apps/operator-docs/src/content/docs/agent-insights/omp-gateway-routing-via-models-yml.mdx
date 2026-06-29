@@ -11,6 +11,8 @@ documents:
   - packages/operator-core/lib/backend-feature-capabilities.ts
   - packages/operator-core/lib/inference-gateway/spawn-env.ts
   - packages/operator-core/lib/inference-gateway/provider-adapters.ts
+  - libs/papercusp/packages/orchestrator/src/spawn-mcp.ts
+  - libs/papercusp/packages/orchestrator/src/invoke.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -69,20 +71,33 @@ no `--models` flag and no agent-dir env var, so a session override must ride `HO
   `installOmpModelsConfig`) **temp-installs** it at `~/.omp/agent/models.yml` — backing up any
   existing `models.yml`/`models.json` and **restoring on exit** (incl. SIGINT/SIGTERM), so there
   is no permanent `~/.omp` edit — and selects `--model papercusp-gateway/<model>`.
-- **Fleet / autonomous spawns (follow-up):** the orchestrator spawn path (`invoke.ts`, via
-  `spawnInvokeOnce`) must mint a per-spawn OMP HOME (the peer of `writeSignedSpawnCodexHome`) and
-  write the models.yml there, keyed off the `PAPERCUSP_ACCOUNT_ID` signal `resolveSpawnGatewayEnv`
-  emits for the `omp` backend. Deferred because the orchestrator package can't import
-  operator-core (the builder must be duplicated there) and OMP has no `CODEX_HOME`-equivalent
-  (its only config-home lever is `HOME`).
+- **Fleet / autonomous spawns (shipped):** `resolveSpawnGatewayEnv` (operator-core) emits the
+  models.yml **bytes** + selector as env — `PAPERCUSP_OMP_MODELS_YML` + `PAPERCUSP_OMP_MODEL_SELECTOR`
+  alongside `PAPERCUSP_ACCOUNT_ID` — so the canonical builder stays in operator-core (no orchestrator
+  duplication; the orchestrator package can't import operator-core, and OMP has no `CODEX_HOME`
+  equivalent — its only config-home lever is `HOME`). The orchestrator spawn path (`invoke.ts`) reads
+  `process.env.PAPERCUSP_OMP_MODELS_YML` and, for an omp spawn, mints a per-spawn HOME via
+  `writeSpawnOmpHome` (the peer of `writeSignedSpawnCodexHome`): a fresh `mkdtemp` HOME whose
+  `.omp/agent` **symlinks** the source essentials (`auth.json`, `agent.db`, `config.yml`, `mcp.json`,
+  `extensions/` — no credential copy) and **authors** the gateway `models.yml`, then sets
+  `spawnEnv.HOME` to it (overriding `resolveSpawnHome`) and force-selects `--model
+  papercusp-gateway/<model>` (it must win over any role/AGENT_CMD `--model`, per the dedicated-provider
+  gotcha above — stripped via `stripExplicitModelFlags`). Cleaned up on spawn close/error. Per-spawn
+  HOME isolation is collision-free under concurrent pins and leaves no persistent `~/.omp` mutation;
+  git identity comes from the injected `gitConfigNoPushEnv`, not HOME's `.gitconfig`, so a fresh HOME
+  is fine for autonomous spawns.
 
 ## Account pinning
 
 `accountProviderForInteractiveBackend('omp')` resolves to `'claude'` — an OMP session pins to a
 **Claude/anthropic** pool account (the dominant case; OpenAI-account OMP is a later extension).
-`resolveSpawnGatewayEnv` / the bootstrap-su resolver emit **only** `PAPERCUSP_ACCOUNT_ID` for omp
-(the codex-shaped signal) — never the claude-CLI `ANTHROPIC_BASE_URL`/`ANTHROPIC_CUSTOM_HEADERS`
-env, which pi does not read.
+For omp, `resolveSpawnGatewayEnv` / the bootstrap-su resolver emit `PAPERCUSP_ACCOUNT_ID` **plus**
+the per-session `PAPERCUSP_OMP_MODELS_YML` (the gateway provider config) + `PAPERCUSP_OMP_MODEL_SELECTOR`
+— never the claude-CLI `ANTHROPIC_BASE_URL`/`ANTHROPIC_CUSTOM_HEADERS` env, which pi does not read.
+The models.yml exposes the writer's **default** model per wire (`claude-sonnet-4` for a Claude
+account); per-role model fidelity through the gateway is a tracked follow-up (the chokepoint that
+builds the models.yml does not resolve the role's configured model, and the orchestrator can't
+regenerate it — it can only pass the bytes through).
 
 ## Gotcha: omp headless boot needs `proxy-agent`
 
@@ -94,9 +109,19 @@ but the install only hoists it under `pi-voice`. Stopgap: symlink it to the top 
 
 ## Verification
 
-The routing was **verified end-to-end on real omp 15.5.13** (D-006): the exact
-`ompGatewayModelsConfig` output drove omp to `POST /v1/messages` at a local probe server carrying
-`x-papercusp-account` — using a local probe "model" (no real Claude account/quota). Unit coverage:
-`omp-models-config.test.ts`, `provider-adapters.test.ts`, the `backend-parity-smoke-matrix`
+The routing was **verified end-to-end on real omp 15.5.13** with a local probe "model" (no real
+Claude account/quota, per the owner steer): the exact `ompGatewayModelsConfig` output drove omp to
+`POST /v1/messages` carrying `x-papercusp-account`. Verified for **both** delivery paths — the
+connect path (D-006) and the **fleet path from a home produced by the real `writeSpawnOmpHome` +
+`ompGatewayModelsConfig`** (D-008), which additionally carries the `x-papercusp-priority` tier pin.
+Unit coverage: `spawn-mcp.test.ts` (the `writeSpawnOmpHome` seeder — symlinks + authored models.yml
++ cleanup), `resolve-spawn-gateway-env.test.ts` (the omp branch emits the models.yml + selector +
+tier pin), `omp-models-config.test.ts`, `provider-adapters.test.ts`, the `backend-parity-smoke-matrix`
 `gateway-account-pin` row, and the omp-plugin `omp-gateway-models-install` test (proves restore =
 no permanent `~/.omp` edit).
+
+The full **real-quota** fleet smoke through the live gateway + pool (P-010) is deferred: it needs an
+owner-authorized **isolated** pool account, because an unknown `x-papercusp-account` falls back to
+the gateway's `active()` account — which would spend real quota against the owner's "local models
+only" steer. The gateway's header-consumption + account-routing (the consumer side of the pin) is
+independently covered by the operator-core gateway / account-routing test suite.

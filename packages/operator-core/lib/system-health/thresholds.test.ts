@@ -49,8 +49,12 @@ describe('queenStatus', () => {
   it('crit when stalled (the origin failure mode)', () => {
     expect(queenStatus(queen({ stalled: true }))).toBe('crit');
   });
-  it('warn when paused (not started)', () => {
+  it('warn when paused (not started) with nothing queued — idle by choice', () => {
     expect(queenStatus(queen({ started: false }))).toBe('warn');
+  });
+  it('crit when paused with demand queued — silent outage (P-003)', () => {
+    expect(queenStatus(queen({ started: false, demand: { todoItems: 2, startedPlans: 0 } }))).toBe('crit');
+    expect(queenStatus(queen({ started: false, demand: { todoItems: 0, startedPlans: 1 } }))).toBe('crit');
   });
   it('warn when started + no wake armed + demand queued', () => {
     expect(queenStatus(queen({ armed: false, demand: { todoItems: 3, startedPlans: 0 } }))).toBe('warn');

@@ -790,6 +790,14 @@ export const FLAGS = {
   // surface over reads that already exist. OFF = the tab is hidden + the endpoint
   // returns { enabled: false }.
   SCHEDULE_INVENTORY: "papercusp-schedule-inventory",
+  // schedule-inventory-and-ephemeral-tier-2026-06-26 P-013 / D-006: gates the
+  // blueprint-declared EPHEMERAL cadence tier. Read at MATERIALIZE time (a request
+  // context — boot-time getFlag is fragile, see host-bootstrap): OFF ⇒ a blueprint's
+  // tier:'ephemeral' schedule entries are NOT materialized into routine rows, so the
+  // per-host ephemeral executor arms nothing and the frequent non-DBOS cadence never
+  // fires (durable cron + in-process sweeps unaffected). DEFAULT ON (flipped on after
+  // the P-013 real-PG live verify — do NOT ship dark).
+  EPHEMERAL_CADENCE: "papercusp-ephemeral-cadence",
   // bee-context-efficiency Phase 1 (D-001/D-018/D-019): fresh-context warm-inject.
   // When a DRAINED bee is warm-injected a NEW task, re-invoke with a FRESH session
   // (full bee-prompt re-assembly + the hydration tail) instead of `--resume`-ing the
@@ -1182,6 +1190,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (alpha flags-default-on) — additive read-only /admin/schedules
   // inventory view (schedule-inventory-and-ephemeral-tier-2026-06-26 P-003).
   [FLAGS.SCHEDULE_INVENTORY]: true,
+  // DEFAULT ON (alpha flags-default-on) — the blueprint-declared ephemeral cadence
+  // tier (schedule-inventory-and-ephemeral-tier-2026-06-26 P-013 / D-006). Flipped ON
+  // after the live verify (real-PG dogfood fire); do NOT ship dark. OFF = kill-switch
+  // (materialize skips ephemeral routine rows ⇒ the executor arms none).
+  [FLAGS.EPHEMERAL_CADENCE]: true,
   // DEFAULT ON — fresh-context interactive brain (reversible to D-013).
   [FLAGS.QUEEN_BRAIN_FRESH]: true,
   // DEFAULT ON (alpha flags-default-on) — a complete presentation switch: the nested

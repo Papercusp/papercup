@@ -30,6 +30,7 @@ import {
   dedupeEndedAgainstActive,
   pendingLaunchesToRosterEntries,
 } from '../../../adv-roster';
+import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { readOmpConfig } from '../../../omp-config';
 import {
   findOmpSessionNear,
@@ -149,6 +150,11 @@ const list = defineTool({
   auth: 'public',
   async handler() {
     const rows = await listAdvSessions(200);
+    // Which of these sessions currently have a live OS window (a desktop the user
+    // is looking at). Best-effort → empty set on a headless box / wmctrl failure,
+    // so the column is simply absent rather than wrong.
+    const onDesktop = await gatherOnDesktopSessions().catch(() => null);
+    const onDesktopIds = onDesktop?.advSessionIds ?? new Set<number>();
     // For every OMP row, attach a lightweight row-summary read from
     // the JSONL. Done server-side so the client sees the final filtered
     // list on first paint — the previous client-side filter ran AFTER
@@ -194,6 +200,9 @@ const list = defineTool({
     const responseRows = filtered.map(({ row, summary }) => ({
       ...row,
       summary,
+      // true ⇒ this session has a live OS window on screen right now (and is
+      // hard-exempt from the idle-session reaper).
+      onDesktop: onDesktopIds.has(row.id),
     }));
     return new Response(JSON.stringify({ rows: responseRows }), {
       status: 200,

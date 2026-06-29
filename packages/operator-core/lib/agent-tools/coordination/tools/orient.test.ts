@@ -69,10 +69,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls[2].args).toMatchObject({ limit: 3 });
   });
 
-  it('with `intent`: folds a memory recall AND declares the intent (full bootstrap in one call)', async () => {
+  it('with `intent`: folds a memory recall + relevant recipes AND declares the intent (full bootstrap in one call)', async () => {
     const { call, calls } = fakeCall({
       ...CORE,
       'memory:search': () => ({ ok: true, results: [{ id: 'mem1', memory: 'prefers nuqs over useState', score: 0.9 }] }),
+      'recipes:search': () => ({ ok: true, query: 'implement P-005', recipes: [{ id: 'fan-out-wi', title: 'Fan-out work items', description: 'd', runCount: 7, toolsUsed: ['work_items:get'], similarity: 0.82 }] }),
       'coord:declare-intent': () => ({ ok: true }),
     });
     const r = await composeOrient(
@@ -87,15 +88,60 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(mem.args).toMatchObject({ query: 'implement P-005', harness_slug: 'h', limit: 5 });
     const decl = calls.find((c) => c.name === 'coord:declare-intent')!;
     expect(decl.args).toMatchObject({ intent: 'implement P-005', current_plan_slug: 'tool-call-batching-wrappers-2026-06-21', items: ['P-005'] });
-    // order: core three → memory → plan-events → declare
+    // recipes:search uses intent as the query; result folded COMPACT (id/title/runCount/similarity).
+    expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({ query: 'implement P-005', limit: 3 });
+    expect(r.recipes).toEqual([{ id: 'fan-out-wi', title: 'Fan-out work items', runCount: 7, similarity: 0.82 }]);
+    // order: core three → memory → plan-events → recipes → declare
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
       'work_items:list',
       'coord:inbox',
       'memory:search',
       'coord:plan-events',
+      'recipes:search',
       'coord:declare-intent',
     ]);
+  });
+
+  it('folds intent-relevant recipes (recipes:search), compact; skipped when includeRecipes:false', async () => {
+    const recipeHandler = () => ({
+      ok: true,
+      recipes: [{ id: 'sweep-stale', title: 'Sweep stale items', description: 'd', runCount: 3, toolsUsed: ['work_items:list'], similarity: 0.7 }],
+    });
+    // present + relevant → folded
+    {
+      const { call, calls } = fakeCall({ ...CORE, 'recipes:search': recipeHandler });
+      const r = await composeOrient({ intent: 'tidy the backlog' }, call, 'me');
+      expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({ query: 'tidy the backlog', limit: 3 });
+      expect(r.recipes).toEqual([{ id: 'sweep-stale', title: 'Sweep stale items', runCount: 3, similarity: 0.7 }]);
+    }
+    // includeRecipes:false → no recipes:search call, field absent
+    {
+      const { call, calls } = fakeCall({ ...CORE, 'recipes:search': recipeHandler });
+      const r = await composeOrient({ intent: 'tidy the backlog', includeRecipes: false }, call, 'me');
+      expect(calls.some((c) => c.name === 'recipes:search')).toBe(false);
+      expect(r.recipes).toBeUndefined();
+    }
+    // no intent/memoryQuery → nothing to search, field absent
+    {
+      const { call, calls } = fakeCall({ ...CORE, 'recipes:search': recipeHandler });
+      const r = await composeOrient({}, call, 'me');
+      expect(calls.some((c) => c.name === 'recipes:search')).toBe(false);
+      expect(r.recipes).toBeUndefined();
+    }
+  });
+
+  it('best-effort: a failing recipes:search degrades to null, not a thrown orient', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'recipes:search': () => {
+        throw new Error('capability: intel:read required');
+      },
+    });
+    const r = await composeOrient({ intent: 'x' }, call, 'me');
+    expect(r.ok).toBe(true);
+    expect(r.recipes).toBeNull();
+    expect(r.claimable).toHaveLength(2);
   });
 
   it('memoryQuery overrides intent for the recall query', async () => {

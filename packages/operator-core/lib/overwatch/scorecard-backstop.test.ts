@@ -104,6 +104,15 @@ describe('synthesizeCoordinationScorecard', () => {
     expect(r['overwatch-observation-quality'].rating).toBe('unknown');
   });
 
+  it('tool-utilization is GROUNDED when an adoption grade is supplied', () => {
+    const grade = { rating: 'broken', evidence: 'code:run adoption 2% — 1/50 batchable spawns folded' };
+    const r = synthesizeCoordinationScorecard(mkHealth(), grade);
+    assertWellFormed(r);
+    expect(r['tool-utilization']).toEqual(grade); // real data overrides the floor's 'unknown'
+    // the other judgment-only criteria stay unknown — only tool-utilization is grounded
+    expect(r['coordination-comms'].rating).toBe('unknown');
+  });
+
   it('null (unread) panels degrade to unknown, never throw', () => {
     const r = synthesizeCoordinationScorecard(
       mkHealth({ workFeed: null, bees: null, queen: null, watchdog: null, scout: null, plans: null }),
@@ -134,6 +143,8 @@ function deps(over: Partial<OverwatchScorecardEndCheckDeps> = {}): {
     recordFire: async (...a: unknown[]) => {
       captured.fires.push(a);
     },
+    // hermetic: default to no adoption grade (floor → 'unknown') so the end-check never touches PG.
+    toolUtilizationGrade: async () => undefined,
     ...over,
   };
   return { d, captured };
@@ -181,6 +192,16 @@ describe('overwatchScorecardEndCheck', () => {
     expect(obs.rubricRef).toBe(COORDINATION_RUBRIC_REF);
     expect(obs.synthesized).toBe(true);
     expect(Object.keys(obs.ratings).sort()).toEqual([...COORDINATION_CRITERIA].sort());
+  });
+
+  it('flows the data-derived adoption grade into the filed floor’s tool-utilization', async () => {
+    const grade = { rating: 'broken', evidence: 'code:run adoption 2% — 1/50 batchable spawns folded' };
+    const { d, captured } = deps({ toolUtilizationGrade: async () => grade });
+    await overwatchScorecardEndCheck(opts, d);
+    const obs = (captured.capture[0] as {
+      payloadExtra: { observation: { ratings: Record<string, { rating: string; evidence: string }> } };
+    }).payloadExtra.observation;
+    expect(obs.ratings['tool-utilization']).toEqual(grade);
   });
 
   it('asks freshness for AGENT scorecards only (includeSynthesized:false)', async () => {

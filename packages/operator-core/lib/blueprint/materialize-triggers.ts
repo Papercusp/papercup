@@ -89,6 +89,22 @@ export async function platformImprovementLoopsEnabled(
 }
 
 /**
+ * Resolve the EPHEMERAL-cadence gate (schedule-inventory-and-ephemeral-tier-2026-06-26
+ * P-013 / D-006): is the blueprint-declared ephemeral tier enabled? Reads
+ * `papercusp-ephemeral-cadence` (default ON). Consulted only when a blueprint actually
+ * declares a `tier:'ephemeral'` schedule entry (a wasted read otherwise, off the hot
+ * per-install durable path). Read here — a MATERIALIZE (request) context — deliberately
+ * NOT at host-boot, where getFlag is fragile (PostHog distinct-id / unreachable → false).
+ * Injectable via `opts.flag` for tests.
+ */
+export async function ephemeralCadenceEnabled(
+  opts: { flag?: (key: typeof FLAGS.EPHEMERAL_CADENCE) => Promise<boolean> } = {},
+): Promise<boolean> {
+  const flag = opts.flag ?? ((key) => getFlag(key, 'ephemeral-cadence'));
+  return flag(FLAGS.EPHEMERAL_CADENCE);
+}
+
+/**
  * The blueprint-ish input the spec-deriver accepts. A parsed `Blueprint` is assignable (its
  * schedule entries carry the `action`/`singleton` defaults already), as is a blueprint-shaped
  * literal — `action` and `singleton` are optional here because this module applies the same
@@ -308,6 +324,8 @@ export async function materializeBlueprintTriggers(
     workspaceId?: string;
     /** Inject the P-070 platform-mode flag resolver; defaults to the real getFlag. */
     flag?: (key: typeof FLAGS.PLATFORM_IMPROVEMENT_LOOPS) => Promise<boolean>;
+    /** Inject the P-013 ephemeral-cadence flag resolver; defaults to the real getFlag. */
+    ephemeralFlag?: (key: typeof FLAGS.EPHEMERAL_CADENCE) => Promise<boolean>;
   } = {},
 ): Promise<MaterializedRoutine[]> {
   const specs = triggerRoutineSpecs(blueprint);
@@ -325,9 +343,18 @@ export async function materializeBlueprintTriggers(
     ? await platformImprovementLoopsEnabled({ flag: opts.flag })
     : true;
 
+  // P-013/D-006 ephemeral-cadence gate: only resolve the flag if this blueprint HAS a
+  // tier:'ephemeral' entry (off the hot durable-only path). OFF ⇒ ephemeral rows are
+  // not written, so the per-host executor arms none — the feature's kill-switch.
+  const hasEphemeral = specs.some((s) => s.tier === 'ephemeral');
+  const ephemeralOn = hasEphemeral ? await ephemeralCadenceEnabled({ flag: opts.ephemeralFlag }) : true;
+
   const out: MaterializedRoutine[] = [];
   for (const spec of specs) {
     if (spec.tier === 'ephemeral') {
+      // EPHEMERAL-CADENCE GATE (P-013/D-006): skip the ephemeral row when the flag is OFF
+      // (the feature's kill-switch — nothing materializes, the executor arms none).
+      if (!ephemeralOn) continue;
       // Per-install ephemeral cadence (triggerRoutineSpecs guarantees intervalSec + non-singleton).
       const row = await upsertEphemeralRoutine(sql, {
         workspaceId,
@@ -337,6 +364,26 @@ export async function materializeBlueprintTriggers(
         targetRole: spec.targetRole,
       });
       out.push({ ...spec, id: row.id, hostSlug: installSlug });
+      // Live-arm on the host running materialize (P-012/P-013 — close the dangling
+      // syncEphemeralRoutine seam so a freshly materialized cadence fires WITHOUT waiting
+      // for the next host boot). No-op when this process has not armed the executor (a
+      // request-only host); the background host re-enumerates the row on its next boot.
+      // Dynamic import keeps the executor's deps off this hot per-install path + avoids a cycle.
+      try {
+        const { syncEphemeralRoutine } = await import('../dbos/ephemeral-executor');
+        syncEphemeralRoutine({
+          id: row.id,
+          workspaceId,
+          installSlug,
+          name: spec.name,
+          targetRole: spec.targetRole,
+          intervalSec: spec.intervalSec!,
+          payloadTemplate: null,
+          triggerConfig: { interval_sec: spec.intervalSec! },
+        });
+      } catch {
+        /* best-effort live-arm: the boot enumerate is the durable path */
+      }
       continue;
     }
     // Durable from here — cron is guaranteed present by triggerRoutineSpecs.

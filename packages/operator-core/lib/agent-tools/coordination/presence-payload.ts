@@ -57,6 +57,12 @@ export type RosterRow = UnifiedPresenceRecord &
       sessionState: SessionState | null;
       /** P-001: a live inbox-wake await exists → a wake will be delivered. */
       wakeable: boolean | null;
+      /** This session is CURRENTLY on the desktop — a live OS window on the
+       *  user's screen (derived live via wmctrl + adv_sessions.window_id; owner
+       *  decision 2026-06-29). true ⇒ hard-exempt from the idle-session reaper
+       *  and the target for "assign these to the agent on the desktop". null for a
+       *  federated/unknown row (its windows live on its home box). */
+      onDesktop: boolean | null;
     } & PresenceTier1Joins
   >;
 
@@ -104,6 +110,10 @@ export const PRESENCE_LIVENESS_FIELDS = [
   'stale',
   'sessionState',
   'wakeable',
+  // Derived live from the OS window list each read — a continuous external
+  // signal, so it lives in LIVENESS (snapshot-only, never a [coord+N] delta:
+  // open/close-window churn must not ride the byte-stable delta channel).
+  'onDesktop',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /**
@@ -194,5 +204,8 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // field is always present for a reader.
     sessionState: (liveness.sessionState as SessionState | null | undefined) ?? null,
     wakeable: (liveness.wakeable as boolean | null | undefined) ?? null,
+    // "On the desktop right now" — always emitted (null when un-derived, e.g. a
+    // federated row), so a reader can always filter "agents on the desktop".
+    onDesktop: (liveness.onDesktop as boolean | null | undefined) ?? null,
   };
 }

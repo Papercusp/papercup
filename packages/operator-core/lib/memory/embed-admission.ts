@@ -47,6 +47,19 @@ export type EmbedLane = 'memory' | 'bench';
 const EMBED_ITPM_FLOOR = Number(process.env.PAPERCUSP_EMBED_ITPM) || 600_000;
 const EMBED_MAX_CONCURRENT = Number(process.env.PAPERCUSP_EMBED_MAX_CONCURRENT) || 32;
 
+// ── Daily cumulative SPEND cap (cost-audit-2026-06-29) ────────────────────────────────────────
+// The itpm/maxConcurrent caps above bound the embed RATE, not the cumulative spend — a run that
+// stays UNDER the rate cap can still rack up a large bill over hours (the $58/mo audit: a bench /
+// backfill loop re-embedding corpora). This HARD daily TOKEN budget is the spend backstop: once a
+// UTC-day's estimated embed tokens exceed the cap, EVERY embed is DENIED (throws
+// EmbedBudgetExhaustedError) until the next day — for BOTH lanes, regardless of the EMBED_ADMISSION
+// flag (a spend ceiling must not be defeatable by the rate-governing toggle). Sized GENEROUSLY by
+// default (~5M tok/day ≈ $0.10/day on text-embedding-3-small at $0.02/1M) so it NEVER trips in
+// normal operation (measured ~<1M tok/MONTH) but stops a runaway before it can drain a
+// low-balance key. Env-tunable; set to 0 to disable the cap entirely.
+export const EMBED_DAILY_TOKEN_CAP = Math.max(0, Number(process.env.PAPERCUSP_EMBED_DAILY_TOKEN_CAP) || 5_000_000);
+const MS_PER_DAY = 86_400_000;
+
 /** Per-lane admission wait budget. memory > bench so under contention MEMORY wins the shared
  *  slot (it waits longer) while BENCH sheds fast → BM25. */
 export const LANE_WAIT_MS: Record<EmbedLane, number> = {
@@ -78,6 +91,32 @@ export class EmbedShedError extends Error {
   }
 }
 
+/** Thrown by `acquire()` when the DAILY token budget (EMBED_DAILY_TOKEN_CAP) is exhausted —
+ *  a HARD spend stop for BOTH lanes. The search path's embedder try/catch degrades to BM25; the
+ *  memory path maps it (op-deadline.embedFailureReason) to `embed_budget_exhausted` so the agent
+ *  narrates "embedding daily spend cap hit" rather than retrying. Message carries `embed_daily_budget_exhausted`
+ *  so message-matching callers (configure.ts non-retryable guard) recognize it. (cost-audit-2026-06-29.) */
+export class EmbedBudgetExhaustedError extends Error {
+  readonly lane: EmbedLane;
+  constructor(lane: EmbedLane) {
+    super(`embed_daily_budget_exhausted:${lane}`);
+    this.name = 'EmbedBudgetExhaustedError';
+    this.lane = lane;
+  }
+}
+
+/** Live embed-spend usage for monitoring (cost-audit-2026-06-29). */
+export interface EmbedUsage {
+  /** UTC-day index (epoch-ms / 86.4M) the counter is currently accumulating into. */
+  day: number;
+  /** Estimated embed tokens charged so far this UTC day (across BOTH lanes). */
+  dayTokens: number;
+  /** The daily cap (0 = uncapped). */
+  capTokens: number;
+  /** True once dayTokens has reached the cap (further embeds are denied). */
+  overBudget: boolean;
+}
+
 /** A fetch `Headers` → the plain record `recordResponse` wants (governor lowercases keys).
  *  Null-safe: a response with no/odd headers (mocked fetch, edge transports) yields `{}` rather
  *  than throwing on the embed hot path. */
@@ -107,18 +146,26 @@ export interface EmbedAdmissionDeps {
   isEnabled: () => Promise<boolean>;
   /** Override per-lane wait budgets (tests). */
   laneWaitMs?: Record<EmbedLane, number>;
+  /** Daily token spend cap (default EMBED_DAILY_TOKEN_CAP; 0 = uncapped). Injectable for tests. */
+  dailyTokenCap?: number;
+  /** Clock seam (default Date.now) so tests can drive the UTC-day rollover deterministically. */
+  now?: () => number;
 }
 
 export interface EmbedAdmission {
   /** Acquire a governed slot for one embed of `text` on `lane`. Returns a release handle, or
    *  `null` ONLY for the bench lane when admission was denied within its wait budget (the caller
-   *  then sheds → BM25). The memory lane never returns null (it passes through on denial). */
+   *  then sheds → BM25). The memory lane never returns null (it passes through on denial).
+   *  THROWS `EmbedBudgetExhaustedError` (both lanes) when the daily token budget is exhausted —
+   *  a HARD spend stop that holds even with the EMBED_ADMISSION flag off. */
   acquire(text: string, lane: EmbedLane): Promise<EmbedSlot | null>;
   /** Feed an embed response's headers to the governor (learns the live limit; on remaining=0
    *  pauses to reset). Call on EVERY response (ok or 429). */
   recordResponse(headers: Record<string, string | undefined>): void;
   /** A 429: pause the shared bucket so every embed caller backs off. */
   penalize(opts: { retryAfterMs?: number; resetAt?: number }): void;
+  /** Live daily embed-spend usage (monitoring). Rolls the UTC-day window on read. */
+  usage(): EmbedUsage;
   readonly governor: RateLimitGovernor;
 }
 
@@ -128,25 +175,69 @@ export interface EmbedAdmission {
  */
 export function createEmbedAdmission(deps: EmbedAdmissionDeps): EmbedAdmission {
   const waits = deps.laneWaitMs ?? LANE_WAIT_MS;
+  const cap = deps.dailyTokenCap ?? EMBED_DAILY_TOKEN_CAP;
+  const now = deps.now ?? Date.now;
+  // Daily cumulative-spend counter (cost-audit-2026-06-29). Per-instance so a test reset / a fresh
+  // singleton starts clean. Rolls when the UTC-day index changes.
+  let day = Math.floor(now() / MS_PER_DAY);
+  let dayTokens = 0;
+  let capLoggedDay = -1; // last UTC-day index we logged the cap-hit warning (warn-once-per-day)
+  const rollDay = (): void => {
+    const d = Math.floor(now() / MS_PER_DAY);
+    if (d !== day) {
+      day = d;
+      dayTokens = 0;
+    }
+  };
   return {
     governor: deps.governor,
     async acquire(text: string, lane: EmbedLane): Promise<EmbedSlot | null> {
-      // Flag off → byte-identical passthrough (no governing, never blocks/sheds).
-      if (!(await deps.isEnabled())) return PASSTHROUGH;
-      const release = await deps.governor.acquire(
-        { inTok: estimateEmbedTokens(text) },
-        { maxWaitMs: waits[lane] },
-      );
-      if (release) return { release };
-      // Denied within the lane budget: bench SHEDS (caller → BM25); memory PROCEEDS (passthrough,
-      // its P-001 retry is the 429 backstop) so production recall never hard-fails on admission.
-      return lane === 'bench' ? null : PASSTHROUGH;
+      const tokens = estimateEmbedTokens(text);
+      // HARD daily SPEND cap FIRST — checked even when the rate-governing flag is off, so a spend
+      // ceiling can't be defeated by toggling EMBED_ADMISSION. cap===0 disables the cap.
+      rollDay();
+      if (cap > 0 && dayTokens + tokens > cap) {
+        // MONITORING: log loudly ONCE per UTC-day the cap binds, so a runaway is VISIBLE in logs
+        // rather than only surfacing as per-call `embed_budget_exhausted` reasons. NODE_ENV guard
+        // mirrors op-deadline.ts — the repo's fail-on-console rule treats console.warn as a test
+        // failure, so suppress under vitest (the throw still happens; only the log is gated).
+        if (capLoggedDay !== day && process.env.NODE_ENV !== 'test') {
+          capLoggedDay = day;
+          console.warn(
+            `[embed-admission] DAILY embed spend cap hit (${dayTokens}/${cap} est tokens this UTC day) — ` +
+              `further embeds DENIED until the day rolls over. This is the runaway backstop; if it's ` +
+              `legitimate load, raise PAPERCUSP_EMBED_DAILY_TOKEN_CAP (current ${cap}).`,
+          );
+        }
+        throw new EmbedBudgetExhaustedError(lane);
+      }
+      // Flag off → no rate-governing (byte-identical passthrough), but the embed STILL counts
+      // toward the daily cap (charge + proceed).
+      if (!(await deps.isEnabled())) {
+        dayTokens += tokens;
+        return PASSTHROUGH;
+      }
+      const release = await deps.governor.acquire({ inTok: tokens }, { maxWaitMs: waits[lane] });
+      if (release) {
+        dayTokens += tokens; // admitted → an embed will fire → charge the daily budget
+        return { release };
+      }
+      // Denied within the lane budget: bench SHEDS (caller → BM25, no embed → no charge); memory
+      // PROCEEDS (passthrough, its P-001 retry is the 429 backstop → an embed fires → charge) so
+      // production recall never hard-fails on admission.
+      if (lane === 'bench') return null;
+      dayTokens += tokens;
+      return PASSTHROUGH;
     },
     recordResponse(headers: Record<string, string | undefined>): void {
       deps.governor.recordResponse(headers);
     },
     penalize(opts: { retryAfterMs?: number; resetAt?: number }): void {
       deps.governor.penalize({ rateLimited: true, ...opts });
+    },
+    usage(): EmbedUsage {
+      rollDay();
+      return { day, dayTokens, capTokens: cap, overBudget: cap > 0 && dayTokens >= cap };
     },
   };
 }

@@ -42,6 +42,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
 import { interruptViaPty, findLiveHost } from './events/await/psu-pty-discovery';
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
+import { gatherOnDesktopSessions } from './desktop-window-liveness';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -147,6 +148,10 @@ export interface IdleSessionReapResult {
   reapedIds: number[];
   /** Owners kept because live/claim/wake-protected. */
   keptLive: number;
+  /** Owners kept because the session is CURRENTLY on the desktop (a live OS
+   *  window) — the hard-exemption (owner decision 2026-06-29). Subset of
+   *  keptLive (on-desktop owners are folded into the protected set). */
+  keptOnDesktop: number;
   dryRun: boolean;
 }
 
@@ -167,6 +172,7 @@ export async function runIdleSessionReap(
     reaped: 0,
     reapedIds: [],
     keptLive: 0,
+    keptOnDesktop: 0,
     dryRun,
   };
   const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
@@ -174,7 +180,17 @@ export async function runIdleSessionReap(
 
   try {
     const { sql } = getOrgPg();
-    const protectedOwners = await gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs });
+    // Gather the live-protected set AND the on-desktop set concurrently. A
+    // session CURRENTLY on the desktop (a live OS window the user is looking at)
+    // is HARD-EXEMPT — fold its owner into the protected set so it is never a
+    // "ghost" however long its heartbeat has lapsed (owner decision 2026-06-29).
+    // gatherOnDesktopSessions is best-effort → empty (headless box / wmctrl
+    // failure), so this can only ever PROTECT MORE, never reap more.
+    const [protectedOwners, onDesktop] = await Promise.all([
+      gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs }),
+      gatherOnDesktopSessions().catch(() => null),
+    ]);
+    if (onDesktop) for (const o of onDesktop.owners) protectedOwners.add(o);
     const open = await sql<Array<{ id: number; coord_owner_id: string | null; started_at: string | Date }>>`
       SELECT id, coord_owner_id, started_at
         FROM harness_shared.adv_sessions
@@ -195,12 +211,17 @@ export async function runIdleSessionReap(
       // (or was reaped by a racing sweep) between the read and here is left alone.
       for (const s of plan.reap) await markAdvSessionEnded(s.id, null);
     }
+    const onDesktopOwners = onDesktop?.owners ?? new Set<string>();
+    const keptOnDesktop = sessions.filter(
+      (s) => s.coordOwnerId != null && onDesktopOwners.has(s.coordOwnerId),
+    ).length;
     return {
       enabled: true,
       scanned: sessions.length,
       reaped: plan.reap.length,
       reapedIds: plan.reap.map((s) => s.id),
       keptLive: plan.keptLive.length,
+      keptOnDesktop,
       dryRun,
     };
   } catch (e) {
@@ -315,7 +336,15 @@ export async function findIdleLiveSessions(
 ): Promise<IdleLiveSession[]> {
   try {
     const { sql } = getOrgPg();
-    const busyOwners = await gatherBusyOwners(sql, { graceMs: opts.livenessMs });
+    // A session on the desktop is NEVER live-idle-terminated, however long it has
+    // been idle — fold its owner into the busy set (the live-idle classifier
+    // excludes busy owners). Best-effort → empty, so a failure can only spare
+    // fewer, never terminate an on-desktop session it would otherwise spare.
+    const [busyOwners, onDesktop] = await Promise.all([
+      gatherBusyOwners(sql, { graceMs: opts.livenessMs }),
+      gatherOnDesktopSessions().catch(() => null),
+    ]);
+    if (onDesktop) for (const o of onDesktop.owners) busyOwners.add(o);
     const rows = await sql<
       Array<{ id: number; coord_owner_id: string; heartbeat_at: string | Date; last_active_at: string | Date | null }>
     >`
@@ -522,10 +551,19 @@ export interface ResumeProc {
   sessionId: string;
 }
 
-/** PURE: the resume-procs whose session is ENDED → the zombies to kill. The
- *  ended-set is injected so the keep/kill boundary unit-tests without OS/PG. */
-export function planZombieReap(procs: ResumeProc[], endedSessionIds: ReadonlySet<string>): ResumeProc[] {
-  return procs.filter((p) => endedSessionIds.has(p.sessionId));
+/** PURE: the resume-procs whose session is ENDED → the zombies to kill, MINUS
+ *  any session currently on the desktop (a live OS window — never kill a proc the
+ *  user is looking at, even if its adv row reads ended). Both sets are injected so
+ *  the keep/kill boundary unit-tests without OS/PG. `onDesktopSessionIds` defaults
+ *  empty, so existing 2-arg callers/tests are unchanged. This is belt-and-braces
+ *  atop the foreground-TTY spare in discoverResumeProcs (a console terminal's
+ *  claude proc is already foreground), covering minimized/backgrounded edge cases. */
+export function planZombieReap(
+  procs: ResumeProc[],
+  endedSessionIds: ReadonlySet<string>,
+  onDesktopSessionIds: ReadonlySet<string> = new Set(),
+): ResumeProc[] {
+  return procs.filter((p) => endedSessionIds.has(p.sessionId) && !onDesktopSessionIds.has(p.sessionId));
 }
 
 const RESUME_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -586,6 +624,8 @@ export interface ZombieReapDeps {
   listResumeProcs: () => Promise<ResumeProc[]>;
   /** The subset of `sessionIds` whose adv_session is ENDED (ended_at NOT NULL). */
   endedSessionIds: (sessionIds: string[]) => Promise<Set<string>>;
+  /** Native session ids CURRENTLY on the desktop (a live OS window) — never reaped. */
+  onDesktopSessionIds: () => Promise<Set<string>>;
   sigterm: (pid: number) => boolean;
   pidAlive: (pid: number) => boolean;
   sigkill: (pid: number) => boolean;
@@ -655,6 +695,7 @@ const defaultZombieDeps: ZombieReapDeps = {
   isFlagOn: (flag) => getFlag(flag, 'system').catch(() => false),
   listResumeProcs: () => discoverResumeProcs(),
   endedSessionIds: (ids) => defaultEndedSessionIds(ids),
+  onDesktopSessionIds: () => gatherOnDesktopSessions().then((s) => s.sessionIds).catch(() => new Set<string>()),
   sigterm: (pid) => {
     try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; }
   },
@@ -700,7 +741,11 @@ export async function reapZombieResumeProcs(
   } catch {
     return { ...empty, enabled: true, scannedProcs: procs.length };
   }
-  const zombies = planZombieReap(procs, ended);
+  // On-desktop sessions (a live OS window) are spared even if their adv row reads
+  // ended — best-effort → empty, so a failure only loses this extra spare (the
+  // foreground-TTY guard in discoverResumeProcs still covers real terminals).
+  const onDesktopSessionIds = await deps.onDesktopSessionIds().catch(() => new Set<string>());
+  const zombies = planZombieReap(procs, ended, onDesktopSessionIds);
   const result: ZombieReapResult = {
     enabled: true,
     scannedProcs: procs.length,

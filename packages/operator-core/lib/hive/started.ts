@@ -136,3 +136,45 @@ export async function listStartedWorkspaceLoops(): Promise<
   }
   return out;
 }
+
+/** Coerce an operator_settings.updated_at value (stored as a Date.now() ms-epoch
+ *  number by setHiveStarted, but tolerant of a numeric string or a timestamptz)
+ *  to ms-epoch, or null when unparseable. */
+function toEpochMs(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (v instanceof Date) return v.getTime();
+  const s = String(v);
+  if (/^\d+$/.test(s)) return Number(s);
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Every (workspace, install) currently marked PAUSED (value='false'), with the
+ *  ms-epoch it was last paused (updated_at — for a row whose current value is
+ *  'false' that is the pause time). The paused-hive recovery watchdog
+ *  (autonomous-loop-canary-reliability P-003) iterates this set: a hive paused
+ *  with standing demand is a SILENT OUTAGE the started-only seams cannot see
+ *  (they skip !started). pausedAtMs is null when the timestamp is unreadable —
+ *  the sweep then declines to act blind. */
+export async function listPausedHives(): Promise<
+  Array<{ workspaceId: string; installSlug: string; pausedAtMs: number | null }>
+> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT key, updated_at FROM harness_shared.operator_settings
+    WHERE key LIKE ${PREFIX + '%'} AND value = 'false'
+  `;
+  const out: Array<{ workspaceId: string; installSlug: string; pausedAtMs: number | null }> = [];
+  for (const r of rows as unknown as Array<{ key: string; updated_at: unknown }>) {
+    const rest = r.key.slice(PREFIX.length);
+    const i = rest.indexOf(':');
+    if (i <= 0) continue;
+    out.push({
+      workspaceId: rest.slice(0, i),
+      installSlug: rest.slice(i + 1),
+      pausedAtMs: toEpochMs(r.updated_at),
+    });
+  }
+  return out;
+}

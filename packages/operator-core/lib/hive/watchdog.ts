@@ -127,7 +127,7 @@ export async function hiveMidTurn(installSlug: string): Promise<boolean> {
 
 // ── the fallback arm (P-009/P-010/P-011 share; P-012 records) ────────────────
 
-export type WatchdogSource = 'turn-end' | 'boot' | 'tick';
+export type WatchdogSource = 'turn-end' | 'boot' | 'tick' | 'paused-recovery';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
@@ -167,13 +167,15 @@ export async function recentWatchdogFires(
   workspaceId: string,
   installSlug: string,
   windowHours = 24,
+  source?: WatchdogSource,
 ): Promise<number> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql`
       SELECT count(*)::int AS n FROM harness_shared.hive_watchdog_fires
       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
-        AND fired_at > now() - make_interval(hours => ${windowHours})`;
+        AND fired_at > now() - make_interval(hours => ${windowHours})
+        AND ${source ? sql`source = ${source}` : sql`TRUE`}`;
     return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
   } catch {
     return 0; // mig 212 pending → no signal, not an error
@@ -360,6 +362,159 @@ export async function hiveWatchdogSweep(opts: { now?: number } = {}): Promise<Fa
     }
   } catch (e) {
     console.warn(`[hive-watchdog] sweep failed: ${e instanceof Error ? e.message : e}`);
+  }
+  return results;
+}
+
+// ── P-003 (autonomous-loop-canary-reliability-2026-06-29): paused-hive recovery ─
+// The three seams above are STARTED-only — armFallbackHiveWake returns early
+// ('hive not started') and listStartedWorkspaceLoops omits paused hives. So a hive
+// that is PAUSED while real work is queued is a SILENT OUTAGE: nothing re-arms it
+// and the health panel only yellowed (the multi-day daily-canary stall that
+// motivated this). This sweep is the missing detector — it alerts the owner and
+// (unless disabled) auto-resumes a hive paused past the stale threshold WITH
+// standing demand. Like hiveWatchdogSweep it is a cheap deterministic read on the
+// 30s tick; the alert/resume is the exception path, not a cadence.
+
+/** A paused hive quiet THIS long (with demand) is treated as a silent outage, not
+ *  a deliberate brief pause. Default 24h; env-tunable; <= 0 DISABLES the whole
+ *  paused-recovery sweep (kill switch). */
+export function pausedRecoveryStaleSec(): number {
+  const n = Number(process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC ?? 86_400);
+  return Number.isFinite(n) ? n : 86_400;
+}
+
+/** Whether a detected silent-paused-outage is AUTO-RESUMED (default) or only
+ *  ALERTED. Set PAPERCUSP_HIVE_PAUSED_AUTO_RESUME=off to alert-without-resuming
+ *  (respect a deliberate long pause while still surfacing it loudly). */
+export function pausedRecoveryAutoResume(): boolean {
+  const v = (process.env.PAPERCUSP_HIVE_PAUSED_AUTO_RESUME ?? 'on').trim().toLowerCase();
+  return !(v === 'off' || v === '0' || v === 'false');
+}
+
+/**
+ * PURE: should the paused-recovery sweep ACT on a paused hive this tick? Acts only
+ * when we KNOW when it paused (never act blind on a missing timestamp), it has been
+ * paused past the stale threshold, it has standing demand, and we have not already
+ * fired within the window (debounce, so alert-only mode does not re-fire every 30s).
+ * Whether the act is auto-resume or alert-only is the env's call
+ * (pausedRecoveryAutoResume), not this decision's.
+ */
+export function shouldActOnPausedHive(args: {
+  pausedAtMs: number | null;
+  now: number;
+  thresholdMs: number;
+  hasDemand: boolean;
+  alreadyFiredRecently: boolean;
+}): boolean {
+  if (args.pausedAtMs == null) return false;
+  if (args.now - args.pausedAtMs < args.thresholdMs) return false;
+  if (!args.hasDemand) return false;
+  if (args.alreadyFiredRecently) return false;
+  return true;
+}
+
+/** Surface a silent paused-outage to the pinned brain owner (best-effort, never
+ *  throws) — the alert the old started-only watchdog never sent. */
+async function alertOwnerPausedOutage(opts: {
+  workspaceId: string;
+  installSlug: string;
+  reason: string;
+  autoResume: boolean;
+}): Promise<void> {
+  try {
+    const { resolveBrainOwner } = await import('../harness/routines/wake-brain-action');
+    const owner = await resolveBrainOwner(opts.workspaceId).catch(() => null);
+    if (!owner) return;
+    const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+    const tail = opts.autoResume
+      ? 'Auto-resuming it now. If the pause was intentional, hive:pause again or set PAPERCUSP_HIVE_PAUSED_AUTO_RESUME=off.'
+      : 'Left paused (auto-resume disabled). hive:start to resume.';
+    await wakeRecipients([owner], {
+      summary: `⚠️ Hive "${opts.installSlug}" ${opts.reason}. ${tail}`,
+      source: 'hive-paused-recovery',
+      workspaceId: opts.workspaceId,
+    });
+  } catch (e) {
+    console.warn(`[hive-watchdog] paused-outage alert failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+export interface PausedRecoveryResult {
+  workspaceId: string;
+  installSlug: string;
+  outcome: 'resumed' | 'alerted' | 'skipped' | 'error';
+  reason: string;
+  pausedForMs: number | null;
+}
+
+/**
+ * The paused-hive recovery sweep (P-003). For each currently-paused hive with a
+ * known pause time, past the stale threshold, WITH standing demand, and not already
+ * fired this window: alert the owner and (unless disabled) auto-resume + re-arm the
+ * wake (armFallbackHiveWake now permits it once started=true). Never throws — a
+ * watchdog that crashes its host guards nothing.
+ */
+export async function pausedHiveRecoverySweep(opts: { now?: number } = {}): Promise<PausedRecoveryResult[]> {
+  const results: PausedRecoveryResult[] = [];
+  const staleSec = pausedRecoveryStaleSec();
+  if (staleSec <= 0) return results; // kill switch
+  try {
+    const { listPausedHives, setHiveStarted } = await import('./started');
+    const paused = await listPausedHives();
+    if (paused.length === 0) return results;
+    const now = opts.now ?? Date.now();
+    const thresholdMs = staleSec * 1_000;
+    const windowHours = Math.max(1, Math.round(staleSec / 3_600));
+    const autoResume = pausedRecoveryAutoResume();
+    for (const { workspaceId, installSlug, pausedAtMs } of paused) {
+      const demand = await hiveDemandCheck(workspaceId).catch(() => ({
+        demand: false,
+        todoItems: 0,
+        startedPlans: 0,
+      }));
+      const alreadyFiredRecently =
+        (await recentWatchdogFires(workspaceId, installSlug, windowHours, 'paused-recovery')) > 0;
+      if (
+        !shouldActOnPausedHive({ pausedAtMs, now, thresholdMs, hasDemand: demand.demand, alreadyFiredRecently })
+      ) {
+        continue;
+      }
+      const pausedForMs = pausedAtMs == null ? null : Math.max(0, now - pausedAtMs);
+      const reason =
+        `paused ${pausedForMs == null ? '?' : Math.round(pausedForMs / 3_600_000)}h with demand queued ` +
+        `(${demand.todoItems} todo item(s), ${demand.startedPlans} started plan(s)) — silent outage`;
+      await alertOwnerPausedOutage({ workspaceId, installSlug, reason, autoResume });
+      if (!autoResume) {
+        // Alert-only: record the fire ourselves so the debounce engages next tick.
+        await recordFire({ workspaceId, installSlug, source: 'paused-recovery', reason, wakeAt: null, demand });
+        results.push({ workspaceId, installSlug, outcome: 'alerted', reason, pausedForMs });
+        continue;
+      }
+      try {
+        await setHiveStarted(workspaceId, installSlug, true);
+        // armFallbackHiveWake records the 'paused-recovery' fire (the debounce row).
+        await armFallbackHiveWake({
+          workspaceId,
+          installSlug,
+          source: 'paused-recovery',
+          reason: `auto-resumed after silent pause: ${reason}`,
+          demand,
+          now,
+        });
+        results.push({ workspaceId, installSlug, outcome: 'resumed', reason, pausedForMs });
+      } catch (e) {
+        results.push({
+          workspaceId,
+          installSlug,
+          outcome: 'error',
+          reason: `resume failed: ${e instanceof Error ? e.message : String(e)}`,
+          pausedForMs,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn(`[hive-watchdog] paused-recovery sweep failed: ${e instanceof Error ? e.message : e}`);
   }
   return results;
 }
