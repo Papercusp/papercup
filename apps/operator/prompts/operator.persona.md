@@ -287,5 +287,3 @@ curated line carries a drill-in pointer (`drill in: <ref>`), and the
 user can always open the fleet view or a worker's pane to see the raw
 stream. If the user asks "what's everyone doing?", that's a request to
 *surface the detail* — answer it; don't withhold on "salience" grounds.
-
-<!-- LIVEPROOF-DECOUPLE-P005-7Q3X -->

@@ -100,6 +100,63 @@ account); per-role model fidelity through the gateway is a tracked follow-up (th
 builds the models.yml does not resolve the role's configured model, and the orchestrator can't
 regenerate it — it can only pass the bytes through).
 
+## The third surface: the `psu` interactive `omp-su` launch (global config)
+
+The two delivery paths above both inject a **session-scoped** models.yml. The **`psu`
+interactive `omp-su` launch** (`apps/operator/scripts/psu-launcher.mjs` → raw `omp
+--approval-mode yolo --append-system-prompt <playbook> -e <coord>`) does **neither** — it
+runs against the **global `~/.omp/agent/`** config and the owner's own in-OMP model
+selection. Per the owner steer (2026-06-29) this surface must **not** force a model; the fix
+is to make the global config's providers *work*, not to inject routing. Two ways an
+interactive OMP session reaches real Claude:
+
+1. **Native / direct (claude-parity):** pi's built-in `anthropic` provider + the owner's own
+   OMP login in `~/.omp/agent/auth.json` → `api.anthropic.com` directly — the same
+   direct-subscription path claude uses (no shared pool). An expired stored token degrades
+   silently to local ollama; an `omp` re-login restores it.
+2. **Managed gateway:** a persistent `papercusp-gateway` provider in `~/.omp/agent/models.yml`
+   carrying **`x-papercusp-priority: interactive`** and **no account pin** — so the gateway
+   picks an available pool account and admits at **tier-1**, ahead of the bee fleet. Selected
+   as `papercusp-gateway/claude-sonnet-4-6`. (When the fleet has saturated the whole pool,
+   even a tier-1 interactive request gets a `rate_limit_error`; that is a transient pool
+   condition, not a routing fault — the native/direct path or local ollama is the fallback.)
+
+<Aside type="danger" title="Defunct local 'Meridian' router gotcha">
+A box can carry a **stale** `providers.anthropic.baseUrl: http://127.0.0.1:3456` (header
+`x-meridian-agent: pi`) pointing at a local LLM router that is **no longer running** (e.g.
+host `:3458` reassigned to an unrelated container). Every Claude selection then silently
+routes nowhere and OMP falls back to a local ollama model — and `ornith:fast` is **32k +
+text-only**, so it overflows the SU tool/prompt context (~33k) on the very first turn:
+`request … exceeds the available context size (32768)` + `snapcompact needs a vision-capable
+active model` + `Operation aborted`. Remove the dead override; the only live model egress is
+local ollama + the inference gateway (`:8788`).
+</Aside>
+
+<Aside type="caution" title="Valid Anthropic model ids — bare `claude-sonnet-4` 404s">
+The gateway forwards the model id **verbatim** to `api.anthropic.com`, which rejects the bare
+alias: `404 not_found_error — model: claude-sonnet-4`. Use the dated ids `claude-sonnet-4-6`,
+`claude-opus-4-8` (or `-4-7`), `claude-haiku-4-5`. **`omp-models-config.ts` `DEFAULT_MODELS`
+still ships the bare `claude-sonnet-4` / `gpt-5-codex` fallback** — any caller that does not
+pass `opts.models` inherits an id that 404s against a real account (the shipped verification
+used a local probe "model", so it never surfaced). Fix the default to a valid dated id.
+</Aside>
+
+### MCP discovery is inherited from Claude
+
+OMP discovers MCP servers from `~/.claude.json` **and `~/.claude/plugins/installed_plugins.json`**
+(a `ClaudePlugins` discovery helper) **and** the cwd `.mcp.json`. Two consequences for a `psu`
+SU omp session:
+
+- The `github` / `cloudflare:*` / `context7` **failures are shared Claude plugins** — `github`
+  uses `Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}` (unset → "Authorization header is badly
+  formatted"); the cloudflare-api/bindings/builds/observability servers need an un-done OAuth
+  flow (→ `invalid_token`); only public `cloudflare-docs` connects. These fail **identically in
+  claude** — **not** an OMP-specific gap.
+- A **role-scoped** cwd `.mcp.json` (a signed role URL → a per-role MCP host on `:9071`) left
+  behind by a prior role session in the launch dir **leaks into the SU session** and produces a
+  30s `Connection to MCP server "papercusp" timed out`. An SU omp session needs only the
+  user-level `papercusp-su` and should not load a role-scoped cwd `.mcp.json`.
+
 ## Gotcha (RESOLVED in omp 16.2.5): omp headless boot + `proxy-agent`
 
 Headless `omp -p` on omp **15.5.13** crashed at boot with `Cannot find package 'proxy-agent'`
