@@ -6,7 +6,7 @@
  * hive clone depends on a valid `gh` token AND `gh auth setup-git`, so a stale
  * hosts.yml must not count as signed in.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -30,6 +30,63 @@ export function ompSignedIn(): boolean {
     join(home, '.omp', 'agent', 'auth.json'),
     join(home, '.pi_back', 'agent', 'auth.json'),
   ]);
+}
+
+/**
+ * OMP (pi) auth DETAIL — beyond mere file existence. A present `auth.json` with
+ * an EXPIRED OAuth access token reads as "signed in" to `ompSignedIn()` but pi
+ * may fail real Anthropic calls with "No API key found" (observed: a stale token
+ * silently degrades an interactive psu→omp session to local ollama). So a
+ * diagnostics surface needs the expiry, not just presence, to prompt a re-login.
+ *
+ * `accessExpired` is a HINT, not a hard "signed out": pi MAY refresh an expired
+ * access token from `token.refresh`. Surface it as "re-login if Anthropic calls
+ * fail", and keep `ompSignedIn()` a cheap presence probe (unchanged semantics).
+ */
+export interface OmpAuthStatus {
+  /** `auth.json` exists. */
+  present: boolean;
+  /** First configured provider key (e.g. `anthropic`), or null. */
+  provider: string | null;
+  /** The provider's auth type (e.g. `oauth`), or null. */
+  authType: string | null;
+  /** OAuth access-token expiry (epoch ms), or null when not an expiring token. */
+  expiresAt: number | null;
+  /** `expiresAt` is in the past — pi may still refresh from `hasRefresh`. */
+  accessExpired: boolean;
+  /** A refresh token is present (pi can attempt a silent refresh). */
+  hasRefresh: boolean;
+}
+
+export function ompAuthStatus(home: string = homedir(), now: number = Date.now()): OmpAuthStatus {
+  const empty: OmpAuthStatus = {
+    present: false, provider: null, authType: null, expiresAt: null, accessExpired: false, hasRefresh: false,
+  };
+  const path = [
+    join(home, '.omp', 'agent', 'auth.json'),
+    join(home, '.pi_back', 'agent', 'auth.json'),
+  ].find((p) => existsSync(p));
+  if (!path) return empty;
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    const provider = Object.keys(data)[0] ?? null;
+    const entry = (provider ? data[provider] : null) as Record<string, unknown> | null;
+    if (!entry || typeof entry !== 'object') return { ...empty, present: true };
+    const authType = typeof entry.type === 'string' ? entry.type : null;
+    const tok = (entry.token && typeof entry.token === 'object' ? entry.token : null) as Record<string, unknown> | null;
+    const expiresAt = tok && typeof tok.expires === 'number' ? tok.expires : null;
+    const hasRefresh = Boolean(tok && typeof tok.refresh === 'string' && tok.refresh);
+    return {
+      present: true,
+      provider,
+      authType,
+      expiresAt,
+      accessExpired: expiresAt != null && expiresAt < now,
+      hasRefresh,
+    };
+  } catch {
+    return { ...empty, present: true };
+  }
 }
 
 export function codexSignedIn(): boolean {

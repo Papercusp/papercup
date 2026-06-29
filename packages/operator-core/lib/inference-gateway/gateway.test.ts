@@ -778,6 +778,44 @@ test('HARD pin (x-papercusp-account-pin: hard) NEVER fails over off its account 
   resetGovernorRegistry();
 });
 
+test('a HEALTHY-but-BUSY pinned account is NOT soft-pin-failed-over onto a 7d-EXHAUSTED sibling whose reprobe-pause aged out (owner: aviynw6 has weekly room but pinned consoles 429d)', async () => {
+  // ROOT CAUSE: keyOf scored a 7d-exhausted account as merely `util` (≈1.0), so a BUSY-but-healthy pinned
+  // account (low util + the soft-pin `load` term ⇒ key ≈ 1.08) ranked WORSE than an IDLE exhausted sibling
+  // (key ≈ 1.0) — and the soft-pin-failover bounced the pinned request ONTO the exhausted account → 429.
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const healthy: ActiveAccount = { accountId: 'healthy', token: async () => 'th', invalidateToken: () => {} };
+  const exhausted: ActiveAccount = { accountId: 'exhausted', token: async () => 'te', invalidateToken: () => {} };
+  const ring = [healthy, exhausted];
+  let i = 0;
+  const pool: AccountPool = {
+    active: () => ring[i++ % ring.length]!,
+    onExhausted: () => null,
+    select: (id) => (id === 'healthy' ? healthy : id === 'exhausted' ? exhausted : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  port = await gw.listen(0);
+  // healthy = weekly headroom but BUSY (inflight ≥ PIN_YIELD_INFLIGHT ⇒ the soft-pin-failover walk fires) + a little 5h util.
+  const hg = getGovernor('anthropic', 'opus', undefined, 'healthy');
+  hg.state.unified = { window: '5h', utilization: 0.08, rejected: false, resetAt: Date.now() + 3_600_000 };
+  hg.state.inFlight = 2;
+  // exhausted = its 7-DAY window is REJECTING (util 1.0) but the predictive reprobe-pause has AGED OUT
+  // (pausedUntil in the past) — the real-world window where it looks "selectable" again and re-lures requests.
+  const eg = getGovernor('anthropic', 'opus', undefined, 'exhausted');
+  eg.state.unified = { window: '7d', utilization: 1.0, rejected: true, resetAt: Date.now() + 7 * 24 * 3_600_000 };
+  eg.state.pausedUntil = 0;
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'healthy' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer th', 'pinned request STAYED on the weekly-healthy account; it was NOT bounced to the 7d-exhausted sibling');
+  resetGovernorRegistry();
+});
+
 test('Fault #3b — pinned account is paused AND pool.active() hands it back → still walks to a healthy account, NOT a "paced/paused" 429 (owner 2026-06-21)', async () => {
   // The real-world miss: a bee pinned to a 97%-7d account that is PREDICTIVELY paused (governor pause, no
   // 429). The failover pool's exhaustedUntil can't see that, so pool.active() returns the paused pin itself
