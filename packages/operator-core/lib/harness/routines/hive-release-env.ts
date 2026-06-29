@@ -154,7 +154,14 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     PAPERCUSP_CHECKPOINT_ROOT: join(parent, `${slug}-checkpoint`),
     PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
   };
-  return { enabled: true, env, hasDeploy: !!gate.deploy, isOperatorHome: false, greenCmd };
+  return {
+    enabled: true,
+    env,
+    hasDeploy: !!gate.deploy,
+    isOperatorHome: false,
+    greenCmd,
+    greenCmdOverridden: greenCmdOverride != null,
+  };
 }
 
 export interface CheckpointRouting {
