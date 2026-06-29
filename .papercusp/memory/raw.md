@@ -238,3 +238,5 @@
 [2026-06-27T12:59:01Z] doc-steward -: orient.ts self-field overlays are response-layer additions (not new subsumed tools) — don't add coord:whoami to orient-dedup SQL; the 4 bootstrap tools in ORIENT_SUBSUMED_NORMALIZED remain the canonical tracked set
 [2026-06-27T00:00:00Z] doc-steward -: harness_docs:verify is NOT available as mcp-call.mjs (times out) — use direct curl to :3170/api/agent-tools/harness_docs/verify with the superuser bearer instead
 [2026-06-29T12:33:52Z] content-fixer -: YAML frontmatter title with partial double-quotes (e.g. title: "On-desktop" rest...) is invalid YAML — the quoted scalar ends at the closing " and trailing text causes 'bad indentation'; fix by wrapping the whole title value in single quotes.
+
+[2026-06-29T00:00:00Z] doc-steward -: harness_docs:verify IS available via mcp-call.mjs (contradicts 2026-06-27 note) — works fine today; also: setup-release-checkout.sh drift means check ALL anchored docs for missing defense layers (new guards added incrementally; older docs skip recent additions like step 3c EI-2118)

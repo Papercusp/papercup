@@ -43,6 +43,7 @@ import { markAdvSessionEnded } from './adv-sessions';
 import { interruptViaPty, findLiveHost } from './events/await/psu-pty-discovery';
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
 import { gatherOnDesktopSessions } from './desktop-window-liveness';
+import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -152,6 +153,11 @@ export interface IdleSessionReapResult {
    *  window) — the hard-exemption (owner decision 2026-06-29). Subset of
    *  keptLive (on-desktop owners are folded into the protected set). */
   keptOnDesktop: number;
+  /** Owners kept because a human is CURRENTLY viewing the session's terminal in the
+   *  operator web/Tauri PTY panel (pty-viewer-heartbeat.ts) — the deferred sibling of
+   *  keptOnDesktop for the no-OS-window case. Subset of keptLive (folded into the
+   *  protected set). */
+  keptViewerAttached: number;
   dryRun: boolean;
 }
 
@@ -173,6 +179,7 @@ export async function runIdleSessionReap(
     reapedIds: [],
     keptLive: 0,
     keptOnDesktop: 0,
+    keptViewerAttached: 0,
     dryRun,
   };
   const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
@@ -186,11 +193,17 @@ export async function runIdleSessionReap(
     // "ghost" however long its heartbeat has lapsed (owner decision 2026-06-29).
     // gatherOnDesktopSessions is best-effort → empty (headless box / wmctrl
     // failure), so this can only ever PROTECT MORE, never reap more.
-    const [protectedOwners, onDesktop] = await Promise.all([
+    const [protectedOwners, onDesktop, viewerOwners] = await Promise.all([
       gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs }),
       gatherOnDesktopSessions().catch(() => null),
+      gatherViewerAttachedOwners().catch(() => new Set<string>()),
     ]);
     if (onDesktop) for (const o of onDesktop.owners) protectedOwners.add(o);
+    // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) are HARD-EXEMPT too:
+    // a session a user is watching in the operator web/Tauri terminal panel has NO
+    // OS window, so it is invisible to gatherOnDesktopSessions. Best-effort → empty,
+    // so this only ever PROTECTS MORE, never reaps more.
+    for (const o of viewerOwners) protectedOwners.add(o);
     const open = await sql<Array<{ id: number; coord_owner_id: string | null; started_at: string | Date }>>`
       SELECT id, coord_owner_id, started_at
         FROM harness_shared.adv_sessions
@@ -215,6 +228,9 @@ export async function runIdleSessionReap(
     const keptOnDesktop = sessions.filter(
       (s) => s.coordOwnerId != null && onDesktopOwners.has(s.coordOwnerId),
     ).length;
+    const keptViewerAttached = sessions.filter(
+      (s) => s.coordOwnerId != null && viewerOwners.has(s.coordOwnerId),
+    ).length;
     return {
       enabled: true,
       scanned: sessions.length,
@@ -222,6 +238,7 @@ export async function runIdleSessionReap(
       reapedIds: plan.reap.map((s) => s.id),
       keptLive: plan.keptLive.length,
       keptOnDesktop,
+      keptViewerAttached,
       dryRun,
     };
   } catch (e) {
@@ -340,11 +357,17 @@ export async function findIdleLiveSessions(
     // been idle — fold its owner into the busy set (the live-idle classifier
     // excludes busy owners). Best-effort → empty, so a failure can only spare
     // fewer, never terminate an on-desktop session it would otherwise spare.
-    const [busyOwners, onDesktop] = await Promise.all([
+    const [busyOwners, onDesktop, viewerOwners] = await Promise.all([
       gatherBusyOwners(sql, { graceMs: opts.livenessMs }),
       gatherOnDesktopSessions().catch(() => null),
+      gatherViewerAttachedOwners().catch(() => new Set<string>()),
     ]);
     if (onDesktop) for (const o of onDesktop.owners) busyOwners.add(o);
+    // A PTY-panel-viewed session (pty-viewer-heartbeat.ts) is never live-idle-
+    // terminated either — its owner joins the busy set (no OS window, so the
+    // on-desktop check above can't see it). Best-effort → empty: a failure only
+    // spares fewer, never terminates a viewed session it would otherwise spare.
+    for (const o of viewerOwners) busyOwners.add(o);
     const rows = await sql<
       Array<{ id: number; coord_owner_id: string; heartbeat_at: string | Date; last_active_at: string | Date | null }>
     >`

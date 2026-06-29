@@ -35,6 +35,11 @@ import {
   markActive,
   getScreenSerialization,
 } from './pty-bridge';
+import {
+  recordViewerAttached,
+  refreshViewerAttached,
+  clearViewerAttached,
+} from './pty-viewer-heartbeat';
 
 // VS Code's terminal flow-control numbers, from
 // vscode/src/vs/platform/terminal/common/terminal.ts FlowControlConstants.
@@ -223,6 +228,14 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
   const handle = getPty(ptyId);
   if (!handle) { ws.close(); return; }
 
+  // PTY-panel viewer-attach signal (pty-viewer-heartbeat.ts): record that a human is
+  // now viewing this session's terminal so the idle-session reaper hard-exempts its
+  // owner — the panel case the wmctrl on-desktop signal can't see. Fire-and-forget +
+  // best-effort (never blocks the socket); refreshed on each keepalive pong
+  // (PING_INTERVAL_MS = 30s) and cleared on close below.
+  void recordViewerAttached(ptyId, handle.ownerSid);
+  ws.on('pong', () => { void refreshViewerAttached(ptyId); });
+
   // ── Server → client coalesce + flow control ─────────────────────────
   // Outgoing chunks are coalesced for COALESCE_INTERVAL_MS into one
   // binary frame (VS Code's TerminalDataBufferer pattern). When the
@@ -334,6 +347,7 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
   });
 
   ws.on('close', () => {
+    void clearViewerAttached(ptyId); // drop the viewer-attach signal (pty-viewer-heartbeat.ts)
     handle.onData.delete(onData);
     handle.onExit.delete(onExit);
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }

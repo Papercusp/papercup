@@ -63,6 +63,11 @@ export type RosterRow = UnifiedPresenceRecord &
        *  and the target for "assign these to the agent on the desktop". null for a
        *  federated/unknown row (its windows live on its home box). */
       onDesktop: boolean | null;
+      /** A human is CURRENTLY viewing this session's terminal in the operator
+       *  web/Tauri PTY panel (pty-viewer-heartbeat.ts). true ⇒ hard-exempt from the
+       *  idle-session reaper even with NO OS window — the deferred sibling of
+       *  onDesktop for the panel-viewed case. null for a federated/unknown row. */
+      viewerAttached: boolean | null;
     } & PresenceTier1Joins
   >;
 
@@ -114,6 +119,9 @@ export const PRESENCE_LIVENESS_FIELDS = [
   // signal, so it lives in LIVENESS (snapshot-only, never a [coord+N] delta:
   // open/close-window churn must not ride the byte-stable delta channel).
   'onDesktop',
+  // Same lane as onDesktop: a continuous external signal (a human watching the PTY
+  // panel), so it's snapshot-only and never rides the byte-stable [coord+N] delta.
+  'viewerAttached',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /**
