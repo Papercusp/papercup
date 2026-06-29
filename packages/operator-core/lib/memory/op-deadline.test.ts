@@ -15,6 +15,7 @@ import {
   resetMemoryDegradedForTest,
   memoryDegradedCooldownMs,
   withMemoryTimeout,
+  embedFailureReason,
 } from './op-deadline';
 
 describe('memory degraded latch — self-healing', () => {
@@ -86,5 +87,28 @@ describe('withMemoryTimeout — deadline race', () => {
 
   it('resolves with the value when the op beats the deadline', async () => {
     await expect(withMemoryTimeout(Promise.resolve('ok'), 'fast-op', 1000)).resolves.toBe('ok');
+  });
+});
+
+describe('embedFailureReason — embed failure → clean degraded reason', () => {
+  it('maps a hard insufficient_quota (billing) stop to embed_quota_exhausted, NOT rate-limited', () => {
+    // mem0-embed-insufficient-quota-classification: the billing stop must NOT be shadowed by
+    // the generic 429 branch — the agent narrates "check billing" (owner action), not "retrying".
+    expect(embedFailureReason(new Error('openai_embed_quota_exhausted: {"error":{"type":"insufficient_quota"}}')))
+      .toBe('embed_quota_exhausted');
+  });
+
+  it('maps a transient 429 rate-limit to embed_rate_limited', () => {
+    expect(embedFailureReason(new Error('openai_embed_failed_429: rate limited'))).toBe('embed_rate_limited');
+  });
+
+  it('maps other embed failures (5xx / exhausted retries) to embed_unavailable', () => {
+    expect(embedFailureReason(new Error('openai_embed_failed_503: boom'))).toBe('embed_unavailable');
+    expect(embedFailureReason(new Error('openai_embed_failed: retries exhausted'))).toBe('embed_unavailable');
+  });
+
+  it('returns null for a non-embed error (let it propagate to handler_error)', () => {
+    expect(embedFailureReason(new Error('some other failure'))).toBeNull();
+    expect(embedFailureReason('a string error')).toBeNull();
   });
 });

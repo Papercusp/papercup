@@ -201,7 +201,12 @@ export function nextEmbedBackoffMs(
  * server's own Retry-After / x-ratelimit-reset-tokens hint when present, with
  * full jitter to de-sync the post-unjam herd. A NON-retryable client error (401
  * bad/expired key, 400, 403) still fails fast — retrying won't help, fix the key.
- * (watchdog-embed-resilience-and-dedup-2026-06-17 P-001.) */
+ * (watchdog-embed-resilience-and-dedup-2026-06-17 P-001.)
+ *
+ * One 429 is NOT transient: `insufficient_quota` (the OpenAI account is out of credit
+ * / hit its billing cap) fails identically on every retry regardless of load, so it is
+ * classified as a HARD stop (fail fast, distinct `openai_embed_quota_exhausted` tag, no
+ * shared-bucket penalty) rather than a rate-limit. (mem0-embed-insufficient-quota-classification.) */
 export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {}): EmbedFn {
   const maxAttempts = opts.maxAttempts ?? EMBED_MAX_ATTEMPTS;
   const sleep = opts.sleep ?? realSleep;
@@ -245,6 +250,20 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
           return j.data[0].embedding;
         }
         const body = await r.text().catch(() => '');
+        // INSUFFICIENT_QUOTA (mem0-embed-insufficient-quota-classification): OpenAI returns
+        // HTTP 429 for TWO unrelated conditions — a transient `rate_limit_exceeded` (retry and
+        // it clears) AND a hard `insufficient_quota` (the account is out of credit / hit its
+        // billing cap). The latter is NOT load-related: it fails IDENTICALLY on every embed,
+        // one request or a thousand, until billing is fixed — so lumping it in with rate-limits
+        // (retry the budget, penalize the shared bucket, narrate "rate-limited, retrying") both
+        // wastes the budget and MISDIAGNOSES the cause (this exact conflation sent a multi-hour
+        // investigation down the throughput path when the real fix was "add OpenAI credit").
+        // Treat it like a 401/403: fail FAST (one attempt), do NOT penalize the shared admission
+        // bucket (there is no reset window to wait for), and tag it DISTINCTLY so the memory
+        // tools narrate "OpenAI quota exhausted — check billing" instead of "rate-limited".
+        if (r.status === 429 && /insufficient_quota/.test(body)) {
+          throw new Error(`openai_embed_quota_exhausted: ${body}`);
+        }
         const err = new Error(`openai_embed_failed_${r.status}: ${body}`);
         // 429 (rate limit) + 5xx are transient → retry; other 4xx (401/400/403)
         // are a config/auth problem → fail fast (no point retrying a bad key).
@@ -253,9 +272,16 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         if (r.status === 429) adm.penalize({ retryAfterMs: serverHintMs ?? undefined }); // back the whole bucket off
         lastErr = err;
       } catch (e) {
-        // A non-retryable openai_embed_failed_4xx (thrown above) propagates; a
+        // A non-retryable failure propagates immediately: a 4xx that isn't 429 (bad/expired
+        // key, malformed request — thrown above) OR a 429 that is actually a hard
+        // `insufficient_quota` billing stop (openai_embed_quota_exhausted). A bare
         // network/fetch error is transient → retry until attempts/budget run out.
-        if (e instanceof Error && /^openai_embed_failed_4(?!29)/.test(e.message)) throw e;
+        if (
+          e instanceof Error &&
+          (/^openai_embed_failed_4(?!29)/.test(e.message) || /^openai_embed_quota_exhausted/.test(e.message))
+        ) {
+          throw e;
+        }
         lastErr = e instanceof Error ? e : new Error(String(e));
       } finally {
         slot?.release();

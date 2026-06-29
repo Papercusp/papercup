@@ -143,9 +143,18 @@ export function noteMemoryFailure(err: unknown): void {
  * ACCURATELY ("memory embeddings are rate-limited") instead of the misleading "mem0 timed
  * out (backend slow), retrying…" that the old 10s-hang `memory_timeout` produced. Matches
  * the `openai_embed_failed_<status>` message thrown by `buildOpenAiEmbedder`.
+ *
+ * `embed_quota_exhausted` is the HARD-stop sibling of `embed_rate_limited`
+ * (mem0-embed-insufficient-quota-classification): OpenAI returns 429 for BOTH a transient
+ * rate-limit AND a permanent `insufficient_quota` billing condition. `buildOpenAiEmbedder`
+ * distinguishes them and tags the billing stop `openai_embed_quota_exhausted` so this maps it
+ * to its own reason — the agent narrates "OpenAI quota exhausted — check billing" (an OWNER
+ * action, not a retry) instead of the misleading "rate-limited, retrying". Checked FIRST so the
+ * generic `openai_embed_failed_429` branch can't shadow it.
  */
 export function embedFailureReason(err: unknown): string | null {
   const msg = err instanceof Error ? err.message : String(err);
+  if (/openai_embed_quota_exhausted/.test(msg)) return 'embed_quota_exhausted';
   if (/openai_embed_failed_429/.test(msg)) return 'embed_rate_limited';
   if (/openai_embed_failed/.test(msg)) return 'embed_unavailable';
   return null;

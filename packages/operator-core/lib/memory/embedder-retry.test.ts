@@ -63,6 +63,39 @@ describe('buildOpenAiEmbedder — transient-failure resilience', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // mem0-embed-insufficient-quota-classification: OpenAI returns HTTP 429 for BOTH a
+  // transient rate-limit AND a hard `insufficient_quota` (account out of credit / billing
+  // cap hit). The billing stop fails identically on every retry regardless of load, so it
+  // must fail FAST (like a 401) and be tagged DISTINCTLY — NOT ridden out as a rate-limit.
+  // This conflation once sent a multi-hour investigation down the throughput path.
+  it('fails FAST on a 429 `insufficient_quota` (billing stop) — one attempt, distinct tag', async () => {
+    const quotaBody = JSON.stringify({
+      error: {
+        type: 'insufficient_quota',
+        code: 'insufficient_quota',
+        message: 'You exceeded your current quota, please check your plan and billing details.',
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(quotaBody, { status: 429 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      // rand:()=>1 would maximize any backoff — proves we don't even reach the backoff path
+      buildOpenAiEmbedder('sk', { sleep: noSleep, rand: () => 1 })('x'),
+    ).rejects.toThrow(/openai_embed_quota_exhausted/);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // hard stop — no doomed retries
+  });
+
+  it('still RETRIES a 429 that is a true rate-limit (no insufficient_quota in body)', async () => {
+    // Guard against over-matching: a plain rate-limit 429 must keep its transient behavior.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { type: 'rate_limit_exceeded' } }), { status: 429 }))
+      .mockResolvedValueOnce(okEmbed([0.4, 0.5]));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await buildOpenAiEmbedder('sk', { sleep: noSleep })('x')).toEqual([0.4, 0.5]);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // retried, then succeeded
+  });
+
   it('rides out a SUSTAINED hintless 429 until the wall-clock BUDGET is spent, then gives up', async () => {
     // mem0-timeout-fix-2026-06-24: the embed budget is now coupled UNDER the 10s memory-tool
     // deadline (EMBED_TOTAL_BUDGET_MS), so a sustained 429 with NO server reset hint gives up
