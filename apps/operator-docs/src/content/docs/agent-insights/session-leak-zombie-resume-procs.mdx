@@ -57,8 +57,28 @@ The reliable proc↔DB join is **`adv_sessions.session_id` = the `claude --resum
 `claude --resume` procs via `/proc`, asks PG which of their sessions are ended,
 and `SIGTERM`→(grace)→`SIGKILL`s the zombies. **Deterministic** (ended + alive),
 **starvation-independent** (no heartbeat dependence), **PID-recycle-guarded**
-(re-verifies the cmdline before each signal), **double-gated**
-(`papercusp-idle-session-reaper` + `…-terminate`).
+(re-verifies the cmdline before EACH signal — before SIGTERM AND again before
+SIGKILL after the grace pause, so a pid recycled between the two is never hit),
+**double-gated** (`papercusp-idle-session-reaper` + `…-terminate`).
+
+Three additional safety guards (all added post-EI-1873):
+
+- **On-desktop spare**: `planZombieReap(procs, ended, onDesktopSessionIds)` — a
+  `claude --resume` proc whose session is currently visible in a live OS window is
+  NEVER signalled, even if its `adv_session` row reads ended. Belt-and-braces atop
+  the foreground-TTY guard below (covers minimized/backgrounded edge cases).
+  Best-effort (wmctrl failure → empty) so a failure can only spare fewer.
+- **Foreground-TTY guard** (`isForegroundTty` in `discoverResumeProcs`): a proc
+  whose `/proc/<pid>/stat` shows it is a foreground, TTY-attached process (a human
+  at a terminal) is excluded from the candidate set before any PG lookup. Exported
+  as `parseForegroundFromStat` (pure, unit-testable).
+- **Live-session HAVING fix**: `defaultEndedSessionIds` uses
+  `HAVING COUNT(*) FILTER (WHERE ended_at IS NULL) = 0` — a uuid is a zombie only
+  when it has **no open row at all**. A LIVE resumed session REUSES its `session_id`,
+  so an OLD ended row can coexist with the CURRENT open row. The earlier
+  `AND ended_at IS NOT NULL` matched the old ended row and killed the live session
+  (the `claude --resume` proc of a LIVE operator session was killed in a kill → re-resume
+  → kill loop until it was noticed). The HAVING guard makes the live open row veto.
 
 **Manual out-of-band shed during a wedge** (the reaper routine is starved): run it
 from a fresh process with the flags forced — the flag resolves OFF in a fresh
@@ -69,6 +89,23 @@ const m = await import('<repo>/packages/operator-core/lib/idle-session-reaper.ts
 await m.reapZombieResumeProcs({ dryRun: true,  deps: { isFlagOn: async () => true } }); // confirm scope first
 await m.reapZombieResumeProcs({ dryRun: false, deps: { isFlagOn: async () => true } }); // then shed
 ```
+
+## Slice 4 — dangling inbox-wake await GC (P-004)
+
+`reclaimDanglingInboxWakeAwaits()` (rides the slice-1 master flag — non-destructive,
+no second gate). The bug: every idle psu/Queen-launched agent arms a standing
+`coord:inbox-wake:<self>` await (turn-lifecycle-control always-arm). A clean session
+end cancels it, but a process that DIES never runs that hygiene — the await row persists
+forever. `coord:presence/fetchWakeability` reads these rows to derive `wakeable`/`parked`,
+so a dead session reads as a live dispatch target (`woken:0` when a coordinator tries to
+dispatch) AND `gatherProtectedSessionOwners` (slice 1's keep-gate) counts a standing await
+as alive — these dangling rows also PROTECT their ghost `adv_sessions` from being reaped.
+Measured live (2026-06-24): 334 inbox-wake awaits, 236 on dead owners.
+
+Fix: cancel an inbox-wake await whose owner is NOT live or resumable. "Live or resumable"
+= fresh presence heartbeat, running bee, in-flight wake delivery, OR an OPEN `adv_session`
+(a parked session the wake-executor can `--resume`). A parked-but-resumable session keeps
+its await; only a truly dead session loses it → flips from false `parked` to honest `ended`.
 
 ## Still open (follow-ups)
 

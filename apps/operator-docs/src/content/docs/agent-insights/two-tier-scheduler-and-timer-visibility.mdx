@@ -61,9 +61,10 @@ only: the registry impl itself, domain-free generic libs (sse/tooldef/p2p-voice)
 renderer** `.ts`/`.tsx` (run in the webview, can't reach the host registry), and genuine
 **separate processes** (the inference gateway, the psu-launcher — see *external-process* below).
 
-`collectScheduleInventory` (`schedule-inventory.ts`) unions FOUR sources into one row shape:
+`collectScheduleInventory` (`schedule-inventory.ts`) unions FIVE sources into one row shape:
 `dbos` (DBOS.getAssociatedInfo) + `routines` (the table) + `managed` (`listManaged()`) +
-`in-process` (a static fallback for a request-only process that hasn't armed the sweeps).
+`in-process` (a static fallback for a request-only process that hasn't armed the sweeps) +
+`external-process` (a static manifest of separate-process timers — see below).
 
 ## The ephemeral tier (tier:'durable' vs tier:'ephemeral')
 
@@ -98,8 +99,11 @@ Two executors, by tier:
 
 Timers in a SEPARATE process can't reach the host registry: the inference gateway (`:8788` —
 `inference-gateway/{gateway,launch}.ts`, `watchdog.mjs`) and the `psu-launcher.mjs`. They are
-allow-listed in the guard and surface as category **`external-process`** (federated into
-`schedule:inventory` over each process's own admin/IPC).
+allow-listed in the guard and surface as category **`external-process`** via a **STATIC manifest**
+(`EXTERNAL_PROCESS_TIMERS` in `schedule-inventory.ts`) — `armed` and `lastFire` are `null` in
+the inventory row because live fire-state requires per-process federation over each process's
+own admin/IPC, which is the documented follow-on. The static list is the current OR-clause:
+visibility is guaranteed even before that federation lands.
 
 ## The rule of thumb
 
