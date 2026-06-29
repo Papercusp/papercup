@@ -24,6 +24,11 @@ import type { TableProjection, ProvenanceContext } from '../projection';
 import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
+import {
+  decideContentWriteAuthority,
+  resolveContentWriteMode,
+  type ContentWriteMode,
+} from '../content-write-authority';
 
 /**
  * P-007 — clobber detection for plans. A REMOTE plan apply (origin='remote')
@@ -139,6 +144,62 @@ export interface HarnessPlansProjectionOpts {
    *  op is buffered here (keyed on the author device) + re-applied when that member joins — not
    *  lost. Undefined ⇒ today's drop (no buffer wired). Threaded via RegisterAllOpts. */
   pendingMemberContent?: PendingMembershipContent;
+  /** P-018 / D-012 — resolve the content write-authority mode for this hive. Default: read the
+   *  owner-signed policy for opts.hiveHomeSlug (resolveContentWriteMode) — so a trusted/allowlist
+   *  hive stays 'member' (today's behavior, inert) and an `open`/author-scoped hive enforces
+   *  per-row ownership. Injectable for tests. Called ONLY on cross-member REMOTE ops (the only
+   *  path author-scoping gates), so own-slug/local applies pay nothing. */
+  resolveWriteMode?: () => Promise<ContentWriteMode>;
+  /** P-018 — identities (unforgeable source-log device) with override authority: the hive owner +
+   *  moderators, allowed to overwrite/delete any row (takedown/repair). Default: none. */
+  resolvePrivilegedIdentities?: () => Promise<ReadonlySet<string>>;
+}
+
+/** Default write-mode resolver: the owner-signed hive policy for this member harness's hive-home.
+ *  Absent hiveHomeSlug (non-hive harness) or no policy ⇒ 'member' (today's behavior). */
+async function defaultResolveWriteMode(opts: HarnessPlansProjectionOpts): Promise<ContentWriteMode> {
+  if (!opts.hiveHomeSlug) return 'member';
+  try {
+    const { getHivePolicy } = await import('../../../hive-policy-store');
+    const resolved = await getHivePolicy(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+    return resolveContentWriteMode(resolved?.policy ?? null);
+  } catch {
+    // Fail-safe to today's behavior on any read error — never break federation over a policy read.
+    return 'member';
+  }
+}
+
+/**
+ * P-018 / D-012 — author-scoped write authority for a cross-member REMOTE plan op. Returns whether
+ * the op may apply, and whether the caller should BIND this op's identity as the plan's owner
+ * (first-write). Keyed on the UNFORGEABLE `sourceLogDevice` (same identity the membership guard
+ * uses), NEVER the forgeable author field. `member` mode (trusted hives) always allows + never
+ * binds — byte-identical to today.
+ */
+async function authorizePlanWrite(
+  opts: HarnessPlansProjectionOpts,
+  sql: postgres.Sql,
+  harnessSlug: string,
+  planSlug: string,
+  sourceLogDevice: string,
+): Promise<{ ok: boolean; bindOwner: boolean }> {
+  const mode = opts.resolveWriteMode ? await opts.resolveWriteMode() : await defaultResolveWriteMode(opts);
+  if (mode === 'member') return { ok: true, bindOwner: false };
+  const [row] = (await sql`
+    SELECT owner_author_pubkey FROM harness_shared.harness_plans
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
+  `) as unknown as Array<{ owner_author_pubkey: string | null }>;
+  const privileged = opts.resolvePrivilegedIdentities ? await opts.resolvePrivilegedIdentities() : undefined;
+  const decision = decideContentWriteAuthority({
+    mode,
+    ownerIdentity: row?.owner_author_pubkey ?? null,
+    opIdentity: sourceLogDevice,
+    privilegedIdentities: privileged,
+  });
+  return {
+    ok: decision.decision === 'allow',
+    bindOwner: decision.decision === 'allow' && decision.bindOwner,
+  };
 }
 
 async function planPartFederationOn(opts: HarnessPlansProjectionOpts): Promise<boolean> {
@@ -193,6 +254,16 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+  // P-018 / D-012 — author-scoped write authority. Only a cross-member REMOTE op is gated (a local
+  // op is the operator's own write; own-slug is already 'apply'). In a trusted hive the mode is
+  // 'member' → always ok, owner never bound (byte-identical to today). In an open/author-scoped
+  // hive, a non-owner member's overwrite is REJECTED here, and the first writer binds owner.
+  let ownerToBind: string | null = null;
+  if (origin === 'remote' && sourceLogDevice) {
+    const auth = await authorizePlanWrite(opts, sql, row.harness_slug, row.plan_slug, sourceLogDevice);
+    if (!auth.ok) return;
+    if (auth.bindOwner) ownerToBind = sourceLogDevice;
+  }
   // plan-federation-regrain D-004: when per-part federation is ON, the per-part
   // recompose owns content + scalars. This whole-blob path drops to BOOTSTRAP-
   // ONLY: INSERT a never-seen plan (so a brand-new plan still lands on a remote
@@ -204,13 +275,13 @@ async function writeToPg(
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, content_hash, version,
          title, status, created, updated, owner, initiative, template, template_data, promote_policy, supersedes, superseded_by,
-         archived, is_legacy, author_pubkey, origin, fed_ts, fed_hlc)
+         archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
       VALUES
         (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
          ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
          ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
          ${row.supersedes}, ${row.superseded_by},
-         ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
+         ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
       ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
     `;
     flagPlanClobber(row.plan_slug, provenance);
@@ -225,15 +296,17 @@ async function writeToPg(
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version,
        title, status, created, updated, owner, initiative, template, template_data, promote_policy, supersedes, superseded_by,
-       archived, is_legacy, author_pubkey, origin, fed_ts, fed_hlc)
+       archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
        ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
        -- jsonb: bind via JSON.stringify(x)::text::jsonb (sql.json throws under getOrgPg)
        ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
        ${row.supersedes}, ${row.superseded_by},
-       ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
+       ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
+      -- owner_author_pubkey is NOT updated here — the original owner binding is PRESERVED across
+      -- every later overwrite (P-018/D-012); only an authorized op reaches this UPDATE anyway.
       content       = EXCLUDED.content,
       content_hash  = EXCLUDED.content_hash,
       version       = harness_shared.harness_plans.version + 1,
@@ -269,11 +342,25 @@ async function deleteFromPg(
   key: string,
   delTs?: number,
   delHlc?: string,
+  provenance?: ProvenanceContext,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
+  // P-018 / D-012 — author-scoped DELETE authority. A tombstone for a plan is honored only if its
+  // UNFORGEABLE source-log author OWNS the plan (or is privileged) — this is the core fix for "a
+  // stranger-member can delete anyone's plan" in an open hive. Only cross-member REMOTE deletes are
+  // gated; a local delete is the operator's own. In 'member' mode this is a no-op (today's behavior).
+  if ((provenance?.origin ?? 'local') === 'remote') {
+    const sourceLogDevice = provenance?.authorPubkey
+      ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+      : null;
+    if (sourceLogDevice) {
+      const auth = await authorizePlanWrite(opts, sql, opts.harnessSlug, key, sourceLogDevice);
+      if (!auth.ok) return; // a non-owner cannot delete this plan
+    }
+  }
   await sql`
     DELETE FROM harness_shared.harness_plans
     WHERE workspace_id = ${opts.workspaceId}
@@ -298,7 +385,7 @@ export function buildHarnessPlansProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
+    deleteFromPg: (key, delTs, delHlc, provenance) => deleteFromPg(opts, key, delTs, delHlc, provenance),
   };
 }
 

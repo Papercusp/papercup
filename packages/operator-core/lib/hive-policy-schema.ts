@@ -46,6 +46,11 @@ export interface HivePolicy {
   membership?: HiveMembershipMode;
   allowlist?: string[];
   moderation?: HivePolicyModeration;
+  /** P-018 / D-012 — federated content write authority. 'member' (default for trusted hives) =
+   *  any member may overwrite/delete any row (today's behavior). 'author-scoped' = only a row's
+   *  owner (its first writer) or a privileged identity may mutate it. Absent ⇒ resolved by
+   *  resolveContentWriteMode (an `open` hive defaults to 'author-scoped'). */
+  contentWriteAuthority?: 'member' | 'author-scoped';
   /** EN-4 P-CONTRIB — fork→PR contribution rules. Opaque at EN-1. */
   contrib?: Record<string, unknown>;
   /** EN-4 P-CONTENT — payload/content rules. Opaque at EN-1. */
@@ -145,6 +150,13 @@ export function coerceHivePolicyInput(
   }
   if (p.membership !== undefined && !MEMBERSHIP_MODES.has(p.membership as string)) {
     return { ok: false, error: "policy.membership must be 'open' | 'approval' | 'allowlist'" };
+  }
+  if (
+    p.contentWriteAuthority !== undefined &&
+    p.contentWriteAuthority !== 'member' &&
+    p.contentWriteAuthority !== 'author-scoped'
+  ) {
+    return { ok: false, error: "policy.contentWriteAuthority must be 'member' | 'author-scoped'" };
   }
   if (p.allowlist !== undefined && !isStringArray(p.allowlist)) {
     return { ok: false, error: 'policy.allowlist must be a string[]' };

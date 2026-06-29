@@ -118,8 +118,19 @@ export interface TableProjection<Row> {
    * stale del — lower HLC — must not erase a row a newer put recreated), falling
    * back to the `delTs` ts-guard when either side lacks an hlc. `undefined` for a
    * del op without an `hlc` (legacy / claim path) → the ts-guard alone applies.
+   *
+   * P-018 / D-012: the optional 4th arg carries the SAME `ProvenanceContext` the put
+   * path resolves (the UNFORGEABLE author identity + origin), so an author-scoped
+   * deleter can authorize a tombstone by row OWNERSHIP — i.e. reject a stranger-member
+   * deleting another member's plan in a public/open hive. Optional + back-compatible:
+   * deleters that don't author-scope ignore it (today's behavior).
    */
-  deleteFromPg: (key: string, delTs?: number, delHlc?: string) => Promise<void>;
+  deleteFromPg: (
+    key: string,
+    delTs?: number,
+    delHlc?: string,
+    provenance?: ProvenanceContext,
+  ) => Promise<void>;
 }
 
 const registry = new Map<string, TableProjection<unknown>>();
@@ -171,6 +182,42 @@ export interface ApplyOpOpts {
    * clock on `stampOpHlc` (boot's send seam).
    */
   hlcClock?: HlcClock;
+}
+
+/**
+ * Resolve the {@link ProvenanceContext} for an op — origin (local vs admitted-remote, via
+ * log-source) + the UNFORGEABLE author identity + ts/hlc. Shared by the put AND del branches
+ * of {@link applyOpVia} (P-018/D-012: deletes need the same provenance the puts do, so an
+ * author-scoped deleter can authorize a tombstone by row ownership). Pure of the projection.
+ */
+function resolveOpProvenance(op: OpEnvelope, applyOpts?: ApplyOpOpts): ProvenanceContext | undefined {
+  // G1 Provenance (P-002): determine origin via log-source when possible. Log-source is the
+  // authoritative signal (D-006): an op whose sourceLogKeyHex matches the own log's keyHex was
+  // written locally and cannot be forged by a remote peer. Without ownLogKeyHex (legacy /
+  // global-registry path) we default to 'local' (safe for single-peer use).
+  if (op.writerPubkey !== undefined || applyOpts?.ownLogKeyHex !== undefined) {
+    let origin: 'local' | 'remote' = 'local';
+    if (applyOpts?.ownLogKeyHex !== undefined) {
+      origin =
+        op.sourceLogKeyHex !== undefined && op.sourceLogKeyHex === applyOpts.ownLogKeyHex
+          ? 'local'
+          : 'remote';
+    }
+    // P-002/D-004 — attribution must be UNFORGEABLE. `writerPubkey` is self-declared (a field in
+    // the op value), so a remote peer can set it to anything. For a REMOTE op attribute by the
+    // receiver-stamped, immutable `sourceLogKeyHex` (the source log core key); `''` when absent
+    // rather than trust the forgeable field. For a LOCAL op `writerPubkey` is the operator's OWN
+    // write — trustworthy. D-001: thread the op's HLC so the writer stamps fed_hlc.
+    const authorPubkey =
+      origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
+    return { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc };
+  }
+  if (typeof op.ts === 'number') {
+    // EI-79 step 2: even a provenance-less op must carry its `ts` so the writer stamps fed_ts and
+    // the PG-level LWW guard works. Default attribution to a local self-write. D-001: carry hlc too.
+    return { authorPubkey: op.writerPubkey ?? '', origin: 'local', ts: op.ts, fedHlc: op.hlc };
+  }
+  return undefined;
 }
 
 /**
@@ -230,51 +277,16 @@ export async function applyOpVia(
     // EI-79 step 2 + D-001: thread the del op's wire ts AND its HLC so the
     // deleter can guard the DELETE by the same HLC-then-fed_ts order as the put
     // guard (a stale del must not erase a row a newer put recreated).
-    await p.deleteFromPg(op.hbKey, op.ts, op.hlc);
+    // P-018/D-012: thread the SAME provenance the put path resolves, so an author-
+    // scoped deleter can authorize a tombstone by row OWNERSHIP (the unforgeable
+    // source-log identity) — rejecting a stranger-member's delete in an open hive.
+    await p.deleteFromPg(op.hbKey, op.ts, op.hlc, resolveOpProvenance(op, applyOpts));
     return true;
   }
   const row = p.decodeValue(op.value);
   if (!row) return false;
 
-  // G1 Provenance (P-002): determine origin via log-source when possible.
-  // Log-source is the authoritative signal (D-006): an op whose
-  // sourceLogKeyHex matches the own log's keyHex was written locally and
-  // cannot be forged by a remote peer. Without ownLogKeyHex (legacy /
-  // global-registry path) we default to 'local' (safe for single-peer use).
-  let provenance: ProvenanceContext | undefined;
-  if (op.writerPubkey !== undefined || applyOpts?.ownLogKeyHex !== undefined) {
-    let origin: 'local' | 'remote' = 'local';
-    if (applyOpts?.ownLogKeyHex !== undefined) {
-      // Log-source approach (preferred, D-006): compare source log to own log.
-      origin =
-        op.sourceLogKeyHex !== undefined && op.sourceLogKeyHex === applyOpts.ownLogKeyHex
-          ? 'local'
-          : 'remote';
-    }
-    // If ownLogKeyHex is absent but writerPubkey is present, default to 'local'
-    // (the global-registry / legacy path never has remote peers; no wrong split).
-    //
-    // P-002/D-004 — attribution must be UNFORGEABLE. The op's `writerPubkey` is
-    // self-declared (a field in the op value), so a remote peer can set it to
-    // anything. For a REMOTE op, attribute by the receiver-stamped, immutable
-    // `sourceLogKeyHex` (the source log core key — resolvable to its admitted
-    // device/GitHub identity at read time via the admission map; immutable, so
-    // it never goes stale on revocation/rotation the way a baked-in resolved
-    // pubkey would). With no source key on a remote op, record `''` rather than
-    // trust the forgeable field. For a LOCAL op the `writerPubkey` is the
-    // operator's OWN write — trustworthy, and the meaningful device pubkey.
-    const authorPubkey =
-      origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
-    // D-001: thread the op's HLC so the writer stamps `fed_hlc` and the PG guard
-    // orders by the SAME causal key the merge fold does (the convergence fix).
-    provenance = { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc };
-  } else if (typeof op.ts === 'number') {
-    // EI-79 step 2: even a write with no provenance (synthetic / single-harness
-    // legacy op without writerPubkey or ownLogKeyHex) must carry its `ts` so the
-    // writer stamps `fed_ts` and the PG-level LWW guard works. Default the
-    // attribution fields to a local self-write. D-001: carry `hlc` too.
-    provenance = { authorPubkey: op.writerPubkey ?? '', origin: 'local', ts: op.ts, fedHlc: op.hlc };
-  }
+  const provenance = resolveOpProvenance(op, applyOpts);
 
   await p.writeToPg(row, provenance);
   // P-035: clobber-event hook. Fires only when the incoming op has
