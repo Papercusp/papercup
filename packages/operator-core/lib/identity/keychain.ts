@@ -209,10 +209,33 @@ async function trySecurityCli(
 
 // ─── encrypted-file fallback ──────────────────────────────────────────────────
 
-function encFilePath(keychainId: string): string {
+function encFileName(keychainId: string): string {
   // Sanitize the id to a safe filename component
   const safe = keychainId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return join(identityDir(), 'keypair-' + safe + '.enc');
+  return 'keypair-' + safe + '.enc';
+}
+
+function encFilePath(keychainId: string): string {
+  // WRITES always land in the configured (primary) identityDir().
+  return join(identityDir(), encFileName(keychainId));
+}
+
+/**
+ * Dirs to READ a key from, in priority order: the configured `identityDir()`
+ * first, then the legacy `~/.papercusp/identity` default. A shared-operator
+ * switch (PAPERCUSP_IDENTITY_DIR=…/.shared/.papercusp/identity) leaves
+ * PRE-switch keys in the legacy default, so reading both makes the owner find
+ * its hive keys regardless of which dir they landed in — otherwise
+ * `loadHivePubkey` returns null and the hive silently "stays dark" (never
+ * announces/serves its content core; content federation breaks with no loud
+ * signal). Keys are machine-encrypted (hostname+username PBKDF2), so a key
+ * written in either dir decrypts identically on this machine.
+ * (shared-hive-member-content-federation D-024; D-023 BUG A — orphaned owner keys.)
+ */
+function identityReadDirs(): string[] {
+  const primary = identityDir();
+  const legacy = join(homedir(), '.papercusp', 'identity');
+  return primary === legacy ? [primary] : [primary, legacy];
 }
 
 async function deriveMachineKey(salt: Buffer): Promise<Buffer> {
@@ -235,10 +258,23 @@ async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<voi
 }
 
 async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
-  try {
-    const blob = await readFile(encFilePath(keychainId));
+  const name = encFileName(keychainId);
+  // Try each candidate dir in priority order; return the FIRST decryptable copy.
+  // A miss in the primary dir falls through to the legacy dir (split-key resilience).
+  let sawDecryptFail: KeychainError | null = null;
+  let sawIoError: KeychainError | null = null;
+  for (const dir of identityReadDirs()) {
+    let blob: Buffer;
+    try {
+      blob = await readFile(join(dir, name));
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      if (code !== 'ENOENT') sawIoError = { kind: 'io_error', reason: String(err) };
+      continue; // not in this dir — try the next candidate
+    }
     if (blob.length < FILE_HEADER_LEN) {
-      return { kind: 'error', error: { kind: 'decryption_failed', reason: 'file too short' } };
+      sawDecryptFail = { kind: 'decryption_failed', reason: 'file too short' };
+      continue;
     }
     const salt = blob.subarray(0, SALT_LEN);
     const iv = blob.subarray(SALT_LEN, SALT_LEN + IV_LEN);
@@ -252,16 +288,17 @@ async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
       const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
       return { kind: 'ok', value: plain };
     } catch {
-      return {
-        kind: 'error',
-        error: { kind: 'decryption_failed', reason: 'auth tag mismatch — key rotated or file corrupted' },
+      // Found but undecryptable here — keep trying other dirs (one may hold a good copy).
+      sawDecryptFail = {
+        kind: 'decryption_failed',
+        reason: 'auth tag mismatch — key rotated or file corrupted',
       };
     }
-  } catch (err: unknown) {
-    const code = (err as { code?: string }).code;
-    if (code === 'ENOENT') return { kind: 'error', error: { kind: 'not_found' } };
-    return { kind: 'error', error: { kind: 'io_error', reason: String(err) } };
   }
+  // Prefer the most-informative error: a found-but-broken file over a plain miss.
+  if (sawDecryptFail) return { kind: 'error', error: sawDecryptFail };
+  if (sawIoError) return { kind: 'error', error: sawIoError };
+  return { kind: 'error', error: { kind: 'not_found' } };
 }
 
 async function fileDelete(keychainId: string): Promise<void> {

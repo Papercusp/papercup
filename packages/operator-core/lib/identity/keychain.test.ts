@@ -101,6 +101,39 @@ describe('keychain (encrypted-file fallback)', () => {
     expect(b.kind === 'ok' && b.value.toString()).toBe('bbbbbbbbbbbbbbbb');
   });
 
+  it('reads a key from the LEGACY ~/.papercusp/identity dir even when PAPERCUSP_IDENTITY_DIR points elsewhere (split-key resilience — D-024 / D-023 BUG A)', async () => {
+    // Scenario: a hive key was minted BEFORE the shared-operator switch (so it
+    // lives in the legacy default ~/.papercusp/identity), then the operator is
+    // relaunched in shared-operator mode (PAPERCUSP_IDENTITY_DIR=…/.shared/…).
+    // loadHivePubkey must still find it (else the hive "stays dark" + content
+    // never federates).
+    const id = 'hive:default:legacy-only-hive';
+    const der = Buffer.from('legacy-dir-hive-key-material-0001');
+
+    // 1. store with NO override → lands in the legacy $HOME/.papercusp/identity.
+    delete process.env.PAPERCUSP_IDENTITY_DIR;
+    {
+      const { keychainStore } = await loadKeychain();
+      await keychainStore(id, der);
+    }
+    expect(existsSync(encPath(id))).toBe(true); // legacy path holds it
+
+    // 2. switch to a FRESH shared identity dir (empty — does NOT contain the key).
+    const sharedDir = mkdtempSync(join(tmpdir(), 'pc-keychain-shared-'));
+    process.env.PAPERCUSP_IDENTITY_DIR = sharedDir;
+    try {
+      vi.resetModules();
+      const { keychainLoad } = await loadKeychain();
+      const res = await keychainLoad(id);
+      expect(res.kind).toBe('ok'); // found via the legacy-dir fallback
+      if (res.kind === 'ok') expect(res.value.equals(der)).toBe(true);
+      // and the shared dir genuinely did NOT contain it
+      expect(existsSync(join(sharedDir, 'keypair-' + id.replace(/[^a-zA-Z0-9_-]/g, '_') + '.enc'))).toBe(false);
+    } finally {
+      rmSync(sharedDir, { recursive: true, force: true });
+    }
+  });
+
   it('honors PAPERCUSP_IDENTITY_DIR over HOME for fallback storage', async () => {
     const customIdentityDir = mkdtempSync(join(tmpdir(), 'pc-keychain-identity-'));
     process.env.PAPERCUSP_IDENTITY_DIR = customIdentityDir;
