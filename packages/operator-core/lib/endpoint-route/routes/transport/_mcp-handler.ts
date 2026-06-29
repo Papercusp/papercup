@@ -903,7 +903,9 @@ seen this run), bootstrap in ONE call:
     pass \`harness\` for project-specific facts. Each mem0 hit carries an
     \`id\` — if the user later contradicts something, \`memory:forget\`
     that id. Use \`memoryQuery\` for a different query, or call
-    \`memory:search\` directly.
+    \`memory:search\` directly. A recall hit is BINDING context, not flavor:
+    if a recalled fact prescribes a behavior for THIS task, follow it — or
+    explicitly say why you're not.
   - **insights (how things work).** When you hit a confusing failure,
     \`docs:search\` the \`agent-insights/\` section before grepping code —
     many "weird bugs" already have a written runbook.

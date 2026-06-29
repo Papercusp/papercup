@@ -103,7 +103,9 @@ isolation. Merge conflicts go to a resolver, not you.
 - **Confirm before hard-to-reverse or outward-facing actions** unless durably authorized;
   approval in one context doesn't carry to the next. Report outcomes faithfully — if
   tests fail, say so with the output; state done plainly only when verified.
-- **In alpha, timidity is the failure mode, not breakage.** When the right fix is a
+- **In alpha, timidity is the failure mode, not breakage** — but this bias governs HOW you
+  execute *once the owner has approved the plan and chosen the route* (or while AUTO mode is
+  ON), NOT whether to start (see "Default posture" above). When the right fix is a
   breaking change, make it now, in full; prefer a maintained library or an existing
   internal surface over rolling your own. Ship features flag-ON by default. Default-OFF
   is only for the dangerous set — irreversible migration, outward-facing publish/send,
@@ -118,6 +120,41 @@ isolation. Merge conflicts go to a resolver, not you.
   "I need a new X" is really "one more field/case/option on an existing X." When you
   DO add a new durable surface, briefly note what you reused or why nothing fit. A new
   system that duplicates an existing surface is a top review smell.
+
+## Default posture (AUTO mode OFF) — plan, then confirm before you execute
+
+AUTO mode (next section) is the standing "act, don't ask" grant. THIS is the default for
+everything else: when AUTO is OFF, a plan is a proposal, not a green light.
+
+- **A plan is a proposal, not authorization to execute.** After drafting a plan for
+  non-trivial work, STOP and present it for review; do not start executing until the owner
+  approves. A goal-shaped request — "make a plan and implement it", "build X", "fix Y" — is
+  NOT standing authorization to skip this: it names the goal, not the go-ahead.
+- **Confirm the execution route BEFORE executing — always offer these options
+  (AskUserQuestion), then wait; never infer the route:**
+  - **A. Yourself** — you implement it directly, now, in this session.
+  - **B. Hand to the Queen (colony auto-loop)** — enqueue for the queen→bee→scout loop to
+    pick up. ⚠️ State the caveat when offering it: this auto-loop flow is not fully working
+    yet, so B may not actually get picked up.
+  - **C. Send to a specific active fleet** — ONLY when ≥1 named fleet has an active agent.
+    You MUST inline-list the available fleets (name + live-agent count) right in the question,
+    queried live (`fleet:assignments` / `coord:presence` / the fleet registry) — do NOT say
+    "I'll list them first." If NO fleet is active, OMIT option C entirely.
+  - **D. Spawn a new desktop fleet** — launch a fresh fleet of terminals on the owner's
+    desktop (`fleet:spawn`) and hand the work-items off to them. When no fleet is active,
+    label this option "(there are no active fleets)" so the owner sees why C was skipped.
+- **Confirm before write-side calls** (file edits, creating work-items, shipping a plan,
+  schema writes) unless the specific action is already authorized. **Reversibility lowers the
+  bar for the irreversible-action gate ONLY — it does NOT waive plan-review or
+  route-confirmation.** A trivial, reversible, throwaway task still gets the plan-review and
+  route asks; it just doesn't also trip the hard-to-reverse gate.
+
+These asks are exactly what AUTO mode suspends. While AUTO is ON, do NOT stop to ask the
+route — CHOOSE it yourself by judgment and DISCLOSE the choice in your report: implement it
+yourself (A) for most work, or route to the queen (B), an active fleet (C), or a newly
+spawned desktop fleet (D) when the job is big enough to warrant fan-out. AUTO authorizes
+committing colony/fleet resources on your own judgment — including spawning a desktop fleet —
+so name the route you took, and why, when you report back.
 
 <!-- PAPERCUSP-SU:AUTO-MODE -->
 
@@ -240,7 +277,7 @@ The behavioral dual of the multi-account note. The **ONLY** legitimate reason yo
 
 ## Collapse a multi-step tool flow into ONE `code:run` — don't pay a round-trip per call
 
-Before a burst of tool calls, ASK: can I get this result in FEWER calls? Tokens are real cost — every separate call re-reads your whole context, so the same result in fewer calls is cheaper. Bundle the calls you can determine UP FRONT — independent ones, a mechanical loop/branch/filter over results, or a fetch whose result several later calls reuse (get it ONCE) — into one `code:run`; keep separate ONLY the steps where you must read a result and DECIDE what to do next (the cutoff is YOUR judgment mid-flow, NOT whether one call uses another's result — a script threads results fine), and batch the calls you hold THIS turn rather than stashing work to batch later (which just re-loads context + risks dropping it). When `code:run` is in your toolset and a task needs MANY tool calls with control flow — loop / branch / filter over results, fan-out reads, retry-until, "do X for each of N" — orchestrate them in a SINGLE `code:run` script instead of issuing the calls one at a time. Each separate tool call is its own inference round-trip that re-reads your whole context; a script runs all of them in the runtime and returns ONLY its final value, so N round-trips collapse into one. **Prefer it aggressively:** batching cuts your per-turn token cost SEVERAL-FOLD (each avoided round-trip is a whole context re-read skipped), which matters far more than per-call efficiency — so reach for it for ANY loop over items, even a small one: there's NO minimum N — a loop of just 2–3 IDENTICAL calls over a list (three `get`s over three ids) still batches, N=3 is NOT too small. (A few DIFFERENT one-off calls is NOT a loop — call those directly; the trigger is REPETITION of the SAME call over items, not raw call count.) When in doubt, script it. **Trigger — catch the cue early:** the moment you're about to call the SAME tool once per item in a list (a `get` per id, a check per file, a fetch per row), that repetition IS the signal — reach for `code:run` BEFORE the first such call; don't fire several one-at-a-time and switch to a script halfway. NOT for a single call, or a step that needs YOUR judgment mid-flow (read a result, THEN decide) — call those directly. Flow: write the script and `code:run` it directly — NO `code:tools` pre-call needed; a wrong tool/arg name comes back with the exact typed `tools.ns.verb(args)` signatures inline to fix + re-run (`code:tools` is OPTIONAL — browse namespaces up front only if you prefer). For `effect:'write'` mutations, `code:run { dryRun:true }` previews `plannedMutations` → inspect → `code:run` to commit. **Summarize conservatively — over-filtering backfires:** only the script's RETURNED value re-enters your context, so return what you'll actually need next; drop a field you turn out to need and you re-pay the round-trips you saved. **Reuse before you author:** every successful `code:run` is saved as a reusable RECIPE your hive can rerun, so the multi-step script you need may already exist — before authoring one, `recipes:search { query }`, and on a close hit `recipes:run { id }` (it runs under YOUR role-scoped envelope, not the author's) instead of re-authoring; act on the `similarRecipes` a run surfaces, and pass a clear `title`+`description` so the recipe you leave behind is discoverable (`recipes:list` browses the most-run). (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
+Before a burst of tool calls, ASK: can I get this result in FEWER calls? Tokens are real cost — every separate call re-reads your whole context, so the same result in fewer calls is cheaper. Bundle the calls you can determine UP FRONT — independent ones, a mechanical loop/branch/filter over results, or a fetch whose result several later calls reuse (get it ONCE) — into one `code:run`; keep separate ONLY the steps where you must read a result and DECIDE what to do next (the cutoff is YOUR judgment mid-flow, NOT whether one call uses another's result — a script threads results fine), and batch the calls you hold THIS turn rather than stashing work to batch later (which just re-loads context + risks dropping it). When `code:run` is in your toolset and a task needs MANY tool calls with control flow — loop / branch / filter over results, fan-out reads, retry-until, "do X for each of N" — orchestrate them in a SINGLE `code:run` script instead of issuing the calls one at a time. Each separate tool call is its own inference round-trip that re-reads your whole context; a script runs all of them in the runtime and returns ONLY its final value, so N round-trips collapse into one. **Prefer it aggressively:** batching cuts your per-turn token cost SEVERAL-FOLD (each avoided round-trip is a whole context re-read skipped), which matters far more than per-call efficiency — so reach for it for ANY loop over items, even a small one: there's NO minimum N — a loop of just 2–3 IDENTICAL calls over a list (three `get`s over three ids) still batches, N=3 is NOT too small. (A few DIFFERENT one-off calls is NOT a loop — call those directly; the trigger is REPETITION of the SAME call over items, not raw call count.) When in doubt, script it. **Trigger — catch the cue early:** the moment you're about to call the SAME tool once per item in a list (a `get` per id, a check per file, a fetch per row), that repetition IS the signal — reach for `code:run` BEFORE the first such call; don't fire several one-at-a-time and switch to a script halfway. NOT for a single call, or a step that needs YOUR judgment mid-flow (read a result, THEN decide) — call those directly. Flow: write the script and `code:run` it directly — NO `code:tools` pre-call needed; a wrong tool/arg name comes back with the exact typed `tools.ns.verb(args)` signatures inline to fix + re-run (`code:tools` is OPTIONAL — browse namespaces up front only if you prefer). For `effect:'write'` mutations, `code:run { dryRun:true }` previews `plannedMutations` → inspect → `code:run` to commit. **Summarize conservatively — over-filtering backfires:** only the script's RETURNED value re-enters your context, so return what you'll actually need next; drop a field you turn out to need and you re-pay the round-trips you saved. **Reuse before you author:** every successful `code:run` is saved as a reusable RECIPE your hive can rerun, so the multi-step script you need may already exist — before authoring one, `recipes:search { query }`, and on a close hit `recipes:run { id }` (it runs under YOUR role-scoped envelope, not the author's) instead of re-authoring; act on the `similarRecipes` a run surfaces, and pass a clear `title`+`description` so the recipe you leave behind is discoverable (`recipes:list` browses the most-run). At wake it is ALREADY THERE: `coord:orient` returns a `recipes` list ranked to your `intent` — scan it first; a close hit means `recipes:run { id }`, not a fresh search or script. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
 
 ## Looping — recur via the ENGINE loop, not Claude /loop
 
@@ -269,9 +306,11 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 - **Don't default to polling — push.** IPC on desktop, SSE on web; the endpoint system projects `ctx.emit`/`ctx.progress` over every transport. Polling PG as a message channel is last-resort with a stated justification.
 - **Don't paper over missing context with a default** — a missing slug / feature id / workspace means the request is underspecified; ask one short question.
 
-## Routing a plan — ask before you implement
+## Routing a plan — get EXPLICIT user confirmation on HOW before implementing
 
-A plan is not yours to start the moment you read it. BEFORE you implement ANY plan, STOP and ASK the user **how to route it**, offering these four paths (number them in the question, then act on the answer):
+**HARD RULE — NO EXCEPTIONS: BEFORE you implement ANY plan you MUST get EXPLICIT CONFIRMATION FROM THE USER ON WHICH WAY they want it done.** A plan is not yours to start the moment you read it. STOP, present the four routes below, and WAIT for the user to reply with an explicit pick. Do NOT write code, create files, claim items, flip an item to `wip`, or `plans:launch` until the user has explicitly told you which route (0–3). If you have not received that explicit confirmation, you have exactly one allowed next action: ask the question.
+
+**This ask is MANDATORY and is NOT waived by how the user phrased the request.** "implement it", "build it", "do it", "create a plan and then implement it", or any go-ahead tells you they want it BUILT — it does **NOT** mean they chose option (0). Do NOT collapse "implement it" into "I implement it myself". You MUST still present the numbered menu and WAIT for an explicit number (0–3) before you create files, claim items, `plans:launch`, or otherwise begin. The ONLY time you skip the menu is when the user explicitly names a route themselves ("do it yourself" → 0, "hand it to the queen" → 1, "send it to the X fleet" → 2, "spin up a desktop fleet" → 3).
 
 1. **(0) I implement it myself** — claim the items and drive it directly: `plans:launch` (or `coord:orient { planItems }` to claim your lane) → `work_items:claim_next` and execute.
 2. **(1) Hand to the Queen for the colony** — file it as work for the hive: `work_items:create`. This wakes the Queen, who triages it and *places* the work onto bees. You step back; the colony owns it.
