@@ -130,6 +130,9 @@ function fakeLaunchDeps(over: Partial<LaunchEnvOperatorsDeps> = {}): {
     detectSourceRoot: () => '/src/papercup',
     hasToolchain: async () => true,
     selfPort: null,
+    // Passthrough tree-prepare by default — the real git-worktree prepare is exercised
+    // in env-tree-prepare.test.ts; these tests focus on launcher orchestration.
+    prepareTree: async (_entry, root) => root,
     sleep: async (ms) => {
       staggerWaits.push(ms);
     },

@@ -178,12 +178,14 @@ describe('resolveCheckpointRouting', () => {
     expect(r.skip).toBeUndefined();
   });
 
-  it('gated coding hive → per-hive root + env overlay', async () => {
+  it('gated coding hive → TOOLING root (not the hive) + the hive in extraEnv (P-019)', async () => {
     const dir = makeHiveDir('coding', { git: true });
     registryProjects = [{ slug: 'oddsmith-hive', path: dir, self_repo: true }];
     const { resolveCheckpointRouting } = await import('./hive-release-env');
     const r = await resolveCheckpointRouting({ installSlug: 'oddsmith-hive', workspaceId: 'default' }, '/DEFAULT');
-    expect(r.root).toBe(dir);
+    // root stays the TOOLING root — green-checkpoint.ts + the setup script live there, not in
+    // the hive's repo. The hive is the SUBJECT, carried in extraEnv.
+    expect(r.root).toBe('/DEFAULT');
     expect(r.extraEnv.PAPERCUSP_INTEGRATION_ROOT).toBe(dir);
     expect(r.skip).toBeUndefined();
   });

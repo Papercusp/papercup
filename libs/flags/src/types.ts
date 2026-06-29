@@ -1171,6 +1171,22 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.AUTH_CONFIG_OVERRIDES, { case: 'owner-authority', reason: 'OWNER-AUTHORITY escalation surface — auth:set_full_access_roles can WIDEN the all-gates bypass set. OFF ⇒ the auth-config sync-cache stays empty ⇒ every surface uses its baked literal (byte-identical); owner flips ON to ratify the dials.' }],
   ]);
 
+// ── The dark allowlist's HYGIENE BOUNDS (re-review deadline + size ceiling) ────
+// Promoted here from production-defaults.test.ts (enforce-system-on-generic-work-
+// 2026-06-29 P-013) so SHIPPABLE code — the operator dark-flag-age watchdog — reads
+// the same source of truth the guard test asserts against. The test still owns the
+// ASSERTIONS (review-by not past, size <= watermark); it now IMPORTS these instead of
+// re-declaring them, so the watchdog and the CI guard reason over one set of numbers.
+//
+//   DARK_FLAGS_REVIEW_BY    — the date the allowlist must be RE-REVIEWED by. Past it,
+//                             walk every dark flag: flip what's ready (remove it from
+//                             DARK_FLAGS), THEN push this date out with a fresh look —
+//                             the bump is the LAST step, never the only one.
+//   DARK_FLAGS_HIGH_WATERMARK — the post-sweep size ceiling; the dark set may only
+//                             SHRINK below it. Raising it needs explicit owner sign-off.
+export const DARK_FLAGS_REVIEW_BY = '2026-07-15';
+export const DARK_FLAGS_HIGH_WATERMARK = 22;
+
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /
 // resolveWithDefaults) read FLAG_DEFAULTS[key] unchanged.

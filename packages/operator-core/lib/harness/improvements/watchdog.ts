@@ -124,7 +124,14 @@ export type WatchdogSource =
   // recurrence (enforce-system-on-generic-work P-009; detector done-without-test-detect.ts).
   // Naturally inert where the inline-VAL flow is dark (no requires_test assertions ⇒
   // nothing to flag), so it needs no flag gate. Per-harness: count = flagged items:
-  | 'done-without-test';
+  | 'done-without-test'
+  // the DARK_FLAGS allowlist approaching its review-by date OR at/near its size
+  // watermark — the operator-scoped recurrence guard so the dark set is re-reviewed
+  // BEFORE the production-defaults CI guard goes red (enforce-system-on-generic-work
+  // P-013; detector dark-flag-age-detect.ts). WORKSPACE-GLOBAL (one operator-scoped
+  // finding, NOT in HARNESS_SCOPED_WATCHDOG_SOURCES); no flag gate (a healthy allowlist
+  // emits nothing):
+  | 'dark-flag-age';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -1906,6 +1913,15 @@ export async function defaultPapercuspCollectors(
     {
       name: 'papercusp-done-without-test',
       collect: () => import('./done-without-test-detect').then((m) => m.collectDoneWithoutTestSignals(workspaceId)),
+    },
+    // enforce-system-on-generic-work P-013: the dark-flag-age guard — surfaces the
+    // DARK_FLAGS allowlist for owner review BEFORE its review-by lands / its size
+    // watermark is hit (the same two invariants production-defaults.test.ts enforces at
+    // test time). OPERATOR-scoped (workspace-global): no workspaceId, no PG, no flag
+    // gate; a healthy allowlist emits nothing.
+    {
+      name: 'papercusp-dark-flag-age',
+      collect: () => import('./dark-flag-age-detect').then((m) => m.collectDarkFlagAgeSignals()),
     },
   ];
 }

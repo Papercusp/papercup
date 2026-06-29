@@ -170,5 +170,10 @@ export async function resolveCheckpointRouting(
   }
   const hive = await resolveHiveReleaseEnv(ctx.installSlug, ctx.workspaceId);
   if (!hive.enabled) return { root: defaultRoot, extraEnv: {}, skip: { reason: hive.reason ?? 'not-gated' } };
-  return { root: hive.env.PAPERCUSP_INTEGRATION_ROOT ?? defaultRoot, extraEnv: hive.env };
+  // CRUCIAL (P-019): `root` is the TOOLING root — where green-checkpoint.ts + setup-release-
+  // checkout.sh + tsx physically live (the papercusp operator tree, `defaultRoot`). It is NOT
+  // the hive's repo: the hive's checkout has no release scripts. The hive is the SUBJECT,
+  // carried ONLY in extraEnv (PAPERCUSP_INTEGRATION_ROOT) so the script runs FROM papercusp
+  // and OPERATES ON the hive. (Earlier this returned the hive root → script-not-found.)
+  return { root: defaultRoot, extraEnv: hive.env };
 }

@@ -55,6 +55,58 @@ function key(workspaceId: string, harnessSlug: string): string {
   return `${workspaceId}::${harnessSlug}`;
 }
 
+// ── Process-global substrate boot defaults (SUBSTRATE_SIDECAR routing) ────────
+//
+// THE BUG this closes (shared-hive-member-content-federation): in SUBSTRATE_SIDECAR
+// mode the sidecar `bootHarness` factory + `skipSendSideWiring:true` were wired into
+// ONLY the single `bootAllHarnessesForActiveWorkspace(...)` call in
+// `bootSubstrateWithFallback` (the host-bootstrap sweep) — captured in that closure,
+// never stored process-globally. So EVERY STANDALONE boot route — `rekeyHarness` /
+// `bootSingleHarness` called by `publishCreatedHive` (owner "go shared"),
+// `joinHiveAsView` step 2c (joiner), and `join-shared-harness` (joiner) — silently
+// fell back to the IN-PROCESS `bootHarnessSubstrate`, NOT the sidecar. A harness
+// created/joined/published AFTER host-bootstrap (the common case — the live owner
+// creates the hive+content harness at runtime, so it was never in the registry the
+// bootstrap sweep read) therefore booted in the WRONG process: the main operator,
+// not the sidecar that owns every corestore. With Corestore's process-level file
+// lock that boot can't open the relocated store, so it fails or split-brains; either
+// way the sidecar's `ensureRelocatedSendSideWired` (which starts the outbox DRAIN)
+// never runs → `substrate_outbox` stays UNDRAINED forever → content captured,
+// peer_connected, but federation = 0 (the live cross-machine blocker).
+//
+// FIX: register the sidecar boot config ONCE process-globally (set by
+// `bootSubstrateWithFallback` when the flag is on), so EVERY boot path — the
+// bootstrap sweep AND every standalone `rekeyHarness`/`bootSingleHarness` — routes
+// through the sidecar consistently. The sidecar then wires the drain in
+// `handleBootHarness`/`handleRekey`, under the SAME workspaceId the content is
+// captured under. OFF (in-process mode) leaves these null/false ⇒ byte-identical to
+// today's in-process boot + in-process send-side wiring.
+let defaultBootHarness: ((opts: BootHarnessOpts) => Promise<BootedHarnessHandle>) | null = null;
+let defaultSkipSendSideWiring = false;
+
+/**
+ * Register the process-global substrate boot defaults. Called once by
+ * `bootSubstrateWithFallback`: in SUBSTRATE_SIDECAR mode it installs the remote
+ * (sidecar) boot factory + `skipSendSideWiring:true`; the in-process path clears
+ * them (passing `{ bootHarness: null, skipSendSideWiring: false }`). Every
+ * `bootSingleHarness`/`rekeyHarness` then routes the same way regardless of who
+ * called it (the bootstrap sweep, an owner publish, or a joiner). An explicit
+ * per-call `opts.bootHarness` / `opts.skipSendSideWiring` still wins.
+ */
+export function setSubstrateBootDefaults(opts: {
+  bootHarness?: ((o: BootHarnessOpts) => Promise<BootedHarnessHandle>) | null;
+  skipSendSideWiring?: boolean;
+}): void {
+  if (opts.bootHarness !== undefined) defaultBootHarness = opts.bootHarness;
+  if (opts.skipSendSideWiring !== undefined) defaultSkipSendSideWiring = opts.skipSendSideWiring;
+}
+
+/** Test seam: clear the process-global boot defaults. Never call from production. */
+export function _resetSubstrateBootDefaultsForTests(): void {
+  defaultBootHarness = null;
+  defaultSkipSendSideWiring = false;
+}
+
 /** Split a handle-map key back into (workspaceId, harnessSlug). Workspace ids
  *  never contain "::" (they are slugs like `papercusp-workspace` / `default`),
  *  so a split on the FIRST separator is unambiguous. */
@@ -411,13 +463,20 @@ export async function bootSingleHarness(
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
+  // SUBSTRATE_SIDECAR routing: an explicit per-call opt wins; else the process-global
+  // default (set by bootSubstrateWithFallback). In sidecar mode this is the remote
+  // factory + skipSendSideWiring:true so a standalone publish/join boots through the
+  // sidecar (which wires the drain), never in-process.
+  const bootHarness = opts.bootHarness ?? defaultBootHarness ?? bootHarnessSubstrate;
+  const skipSendSideWiring = opts.skipSendSideWiring ?? defaultSkipSendSideWiring;
   const cached = handles.get(k);
   if (cached) {
     // EI-521: re-attempt any send-side wiring that hasn't yet succeeded. A prior
     // boot may have cached the handle but failed to wire the drain (which would
     // otherwise stay broken until restart, since this path short-circuits). No-op
-    // once both steps are wired.
-    if (!opts.skipSendSideWiring) await ensureSendSideWired(cached, opts.wireSendSide);
+    // once both steps are wired. SKIPPED in sidecar mode (the sidecar wires the
+    // drain; re-wiring here would double-append the outbox).
+    if (!skipSendSideWiring) await ensureSendSideWired(cached, opts.wireSendSide);
     return {
       workspaceId,
       harnessSlug,
@@ -445,7 +504,6 @@ export async function bootSingleHarness(
   const workspaceRoot = opts.workspaceRoot ?? workspaceRootForId(workspaceId);
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
-  const bootHarness = opts.bootHarness ?? bootHarnessSubstrate;
   const bootPromise = (async () => {
     const swarmBinding = (await resolver(workspaceId, harnessSlug)) ?? null;
     return await Promise.race([
@@ -481,7 +539,8 @@ export async function bootSingleHarness(
     // next boot pass rather than leaving this cached handle drainless forever
     // (EI-521). The drain/presence stoppers register close-hooks on the handle,
     // so closeBootedHarness/closeAllBootedHarnesses tear them down automatically.
-    if (!opts.skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
+    // SKIPPED in sidecar mode (skipSendSideWiring) — the sidecar wires the drain.
+    if (!skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
     return {

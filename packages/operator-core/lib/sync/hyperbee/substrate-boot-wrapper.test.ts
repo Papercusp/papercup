@@ -39,11 +39,13 @@ const bootAll = vi.fn(async (opts?: { bootHarness?: (o: any) => Promise<any>; sk
     results: opts?.bootHarness ? [{ workspaceId: 'ws', harnessSlug: 'h', state: 'booted' as const }] : [],
   };
 });
+const setBootDefaults = vi.fn();
 vi.mock('./boot-all', () => ({
   bootAllHarnessesForActiveWorkspace: (opts?: unknown) => bootAll(opts as Parameters<typeof bootAll>[0]),
   enableSubstrateEvictionTracking: () => enableTracking(),
   gatherBootedHarnessFacts: () => [],
   evictBootedHarnessEngine: async () => false,
+  setSubstrateBootDefaults: (o: unknown) => setBootDefaults(o),
 }));
 
 const spawnSidecar = vi.fn(async () => {});
@@ -100,6 +102,7 @@ beforeEach(() => {
   startReaper.mockClear();
   startKeepalive.mockClear();
   mockOrgPg.mockClear();
+  setBootDefaults.mockClear();
   stopSubstrateEvictionReaper(); // reset the module singleton between tests
 });
 afterEach(() => {
@@ -135,6 +138,9 @@ describe('bootSubstrateWithFallback', () => {
   it('OFF: boots in-process, no sidecar, no reaper', async () => {
     const r = await bootSubstrateWithFallback();
     expect(bootAll).toHaveBeenCalledOnce();
+    // The process-global boot defaults are CLEARED so standalone bootSingleHarness/
+    // rekeyHarness boot in-process + wire the drain in-process (the default path).
+    expect(setBootDefaults).toHaveBeenCalledWith({ bootHarness: null, skipSendSideWiring: false });
     expect(r.usedSidecar).toBe(false);
     expect(r.evictionReaperStarted).toBe(false);
     expect(startReaper).not.toHaveBeenCalled();
@@ -161,6 +167,12 @@ describe('bootSubstrateWithFallback', () => {
     expect(spawnSidecar).toHaveBeenCalledOnce();
     expect(registerShutdown).toHaveBeenCalledOnce();
     expect(bootAll).toHaveBeenCalledWith(expect.objectContaining({ skipSendSideWiring: true }));
+    // THE FIX: the sidecar boot config is registered PROCESS-GLOBALLY so EVERY
+    // standalone boot route (owner publishCreatedHive, joiner joinHiveAsView /
+    // join-shared-harness) routes through the sidecar too — not just this sweep.
+    expect(setBootDefaults).toHaveBeenCalledWith(
+      expect.objectContaining({ bootHarness: expect.any(Function), skipSendSideWiring: true }),
+    );
     expect(ipcCalls.map((c) => c.method)).toEqual(['sidecar:healthz', 'substrate:bootHarness']);
     expect(r.usedSidecar).toBe(true);
     expect(r.booted).toBe(1);
@@ -173,6 +185,8 @@ describe('bootSubstrateWithFallback', () => {
     try {
       const r = await bootSubstrateWithFallback();
       expect(r.usedSidecar).toBe(false);
+      // Sidecar unavailable → defaults cleared so standalone boots stay in-process.
+      expect(setBootDefaults).toHaveBeenLastCalledWith({ bootHarness: null, skipSendSideWiring: false });
       expect(bootAll).toHaveBeenCalledWith(undefined);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('sidecar spawn failed'),

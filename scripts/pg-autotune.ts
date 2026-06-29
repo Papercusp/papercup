@@ -81,8 +81,25 @@ const liveMax = psql('show max_connections');
 const liveSb = psql('show shared_buffers');
 if (liveMax) console.log(`current (live):  max_connections=${liveMax}  shared_buffers=${liveSb ?? '?'}`);
 else console.log('current (live):  <unreachable — PG is wedged or down>');
+
+// Persist pg_stat_statements so a FRESH host re-provision keeps query telemetry.
+// Today it lives only in a manual conf.d/20 drop-in, which survives deploys but
+// NOT a fresh provision — so re-running this script (the provision arm) silently
+// drops query stats. Bake it into the managed drop-in instead. Union with whatever
+// is already loaded so we never DROP a lib another mechanism added. shared_preload_
+// libraries is postmaster-level (needs a restart), which --apply already does.
+// (infra-perf-reliability-audit-round4 P-020.)
+const livePreload = psql('show shared_preload_libraries') ?? '';
+const preloadLibs = Array.from(
+  new Set(
+    [...livePreload.split(','), 'pg_stat_statements'].map((s) => s.trim()).filter(Boolean),
+  ),
+);
+const preloadValue = `'${preloadLibs.join(',')}'`;
+
 console.log('derived (target):');
 for (const [k, v] of Object.entries(settings)) console.log(`  ${k} = ${v}`);
+console.log(`  shared_preload_libraries = ${preloadValue}`);
 
 if (!apply) {
   console.log('\n--print only. Re-run with --apply to write the drop-in and restart PG.');
@@ -97,9 +114,10 @@ const content =
     `# Host: ${signals.cores} cores, ${gib} GiB RAM.`,
     '',
   ].join('\n') +
-  Object.entries(settings)
-    .map(([k, v]) => `${k} = ${v}`)
-    .join('\n') +
+  [
+    ...Object.entries(settings).map(([k, v]) => `${k} = ${v}`),
+    `shared_preload_libraries = ${preloadValue}`,
+  ].join('\n') +
   '\n';
 
 const tmp = join(tmpdir(), 'papercusp-autotune.conf');

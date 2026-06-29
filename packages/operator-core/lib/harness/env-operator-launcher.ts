@@ -35,6 +35,17 @@
  * bin/release-local.sh. The PLANNER below (planEnvOperatorLaunch) is a PURE function and
  * is fully unit-tested; the effectful spawn/probe/tree seams are injected.
  *
+ * ── PROCESS LIFECYCLE / REAPING (handle at the live-verify, P-008/P-010) ────────────
+ * Spawned operators are detached + unref'd so they outlive this boot turn. They are
+ * request-only siblings of the primary, sharing its embedded Postgres — so when the
+ * desktop (and its embedded PG) exits they lose their DB and idle/error rather than serve
+ * stale state. But nothing here REAPS them on desktop shutdown (the dev box delegates that
+ * to Tauri's beforeDevCommand watchdog in bin/dev-operator-ifneeded.sh). The packaged
+ * build's live verify must own env-operator reaping — most cleanly the Tauri host tracking
+ * the returned pids and TERM/KILL-ing them on exit, mirroring the dev watchdog. This is
+ * deferred WITH the live spawn verify (not before it) because process-lifecycle behaviour
+ * is platform-specific and only observable on a real build.
+ *
  * ── GRACEFUL on a machine without the toolchain ─────────────────────────────────────
  * A non-bundled env runs from SOURCE (`npx tsx bin/hono-host.ts`, mirroring
  * bin/dev-operator-ifneeded.sh), so it needs Node + the cloned repo + installed deps.
@@ -170,11 +181,11 @@ export interface LaunchEnvOperatorsDeps {
   /** This operator's listen port (default: PAPERCUSP_HONO_PORT / PORT). */
   selfPort?: number | null;
   /** Prepare the on-disk tree for an env (worktree/branch checkout) and return its path.
-   *  DEFAULT (conservative): returns the detected source root unchanged — i.e. every env
-   *  runs the SAME checkout on its own port, which is enough to light the switcher up.
-   *  Branch-differentiated worktrees (so prod vs staging serve different code) are the
-   *  release-build refinement folded into P-008/P-010 (D-009); inject a real prepareTree
-   *  there. Returning null ⇒ this env's tree couldn't be prepared → skipped. */
+   *  DEFAULT: prepareEnvWorktree (env-tree-prepare.ts) — dev runs the working tree in
+   *  place; prod/staging get their own git worktree on main/staging under
+   *  ~/.papercusp/env-trees/ (D-006). It is idempotent + best-effort + returns null on any
+   *  git failure (shallow/offline clone), so that env is simply skipped → the switcher
+   *  self-hides it. Returning null ⇒ this env's tree couldn't be prepared → skipped. */
   prepareTree?: (entry: EnvOperatorPlanEntry, sourceRoot: string) => Promise<string | null>;
   /** Spawn one operator from `treePath` on its port (default: detached `npx tsx
    *  bin/hono-host.ts`, request-only). Returns the handle, or null on a spawn failure. */
@@ -330,9 +341,17 @@ export async function launchEnvOperators(
   const spawned: SpawnedOperator[] = [];
   const skipped: { id: string; reason: string }[] = [];
 
+  // Default: the real branch-differentiating worktree prepare (D-006) — dev runs the
+  // working tree in place; prod/staging get their own git worktree on main/staging under
+  // ~/.papercusp/env-trees/. It degrades to null→skip on any git failure, so a shallow/
+  // offline clone simply doesn't get that env (the switcher self-hides it). Lazy-imported
+  // so the type-only back-reference in env-tree-prepare stays a pure type edge.
   const prepareTree =
     deps.prepareTree ??
-    (async (_entry: EnvOperatorPlanEntry, root: string) => root); // conservative default
+    (async (entry: EnvOperatorPlanEntry, root: string) => {
+      const { prepareEnvWorktree } = await import('./env-tree-prepare');
+      return prepareEnvWorktree(entry, root);
+    });
 
   for (const entry of planned) {
     if (entry.action === 'skip') {

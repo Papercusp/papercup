@@ -29,6 +29,7 @@ import {
   enableSubstrateEvictionTracking,
   gatherBootedHarnessFacts,
   evictBootedHarnessEngine,
+  setSubstrateBootDefaults,
 } from './boot-all';
 import {
   startSubstrateEvictionReaper,
@@ -157,6 +158,9 @@ export async function bootSubstrateWithFallback(
 
   if (!useSidecar) {
     // Flag OFF (the default + correct state): in-process boot, then the reaper.
+    // Clear any sidecar boot defaults so standalone bootSingleHarness/rekeyHarness
+    // boot in-process + wire the drain in-process (the byte-identical default path).
+    setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false });
     const result = await bootAllHarnessesForActiveWorkspace(opts);
     return finish(result, false);
   }
@@ -167,34 +171,46 @@ export async function bootSubstrateWithFallback(
     registerSidecarShutdownHooks();
     const client = getSubstrateIpcClient();
     await client.call('sidecar:healthz');
+    // The remote (sidecar) boot factory. Bootstrap-sweep AND every standalone
+    // boot route must use it — see setSubstrateBootDefaults below.
+    const sidecarBootHarness = async (bootOpts: BootHarnessOpts) => {
+      const booted = await client.call<{
+        storeId: string;
+        ownLogKey: string;
+        ownLogLength?: number;
+      }>('substrate:bootHarness', {
+        workspaceRoot: bootOpts.workspaceRoot,
+        workspaceId: bootOpts.workspaceId,
+        harnessSlug: bootOpts.harnessSlug,
+        swarmBinding: bootOpts.swarmBinding ?? null,
+      });
+      return new RemoteBootedHarnessHandle({
+        workspaceId: bootOpts.workspaceId,
+        harnessSlug: bootOpts.harnessSlug,
+        storeId: booted.storeId,
+        ownLogKey: booted.ownLogKey,
+        ownLogLength: booted.ownLogLength,
+        client,
+      });
+    };
+    // Register the sidecar boot config PROCESS-GLOBALLY so EVERY boot path routes
+    // through the sidecar — not just this bootstrap sweep. Without this, a
+    // standalone rekeyHarness/bootSingleHarness (owner publishCreatedHive, joiner
+    // joinHiveAsView/join-shared-harness) for a harness created AFTER bootstrap
+    // booted IN-PROCESS, so the sidecar never wired its outbox drain → content
+    // captured + peer_connected but federation = 0 (the live cross-machine bug).
+    setSubstrateBootDefaults({ bootHarness: sidecarBootHarness, skipSendSideWiring: true });
     const result = await bootAllHarnessesForActiveWorkspace({
       ...opts,
       skipSendSideWiring: true,
-      bootHarness: async (bootOpts: BootHarnessOpts) => {
-        const booted = await client.call<{
-          storeId: string;
-          ownLogKey: string;
-          ownLogLength?: number;
-        }>('substrate:bootHarness', {
-          workspaceRoot: bootOpts.workspaceRoot,
-          workspaceId: bootOpts.workspaceId,
-          harnessSlug: bootOpts.harnessSlug,
-          swarmBinding: bootOpts.swarmBinding ?? null,
-        });
-        return new RemoteBootedHarnessHandle({
-          workspaceId: bootOpts.workspaceId,
-          harnessSlug: bootOpts.harnessSlug,
-          storeId: booted.storeId,
-          ownLogKey: booted.ownLogKey,
-          ownLogLength: booted.ownLogLength,
-          client,
-        });
-      },
+      bootHarness: sidecarBootHarness,
     });
     return finish(result, true);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn('[substrate-boot] sidecar spawn failed, falling back to in-process:', msg);
+    // Sidecar unavailable → clear the defaults so standalone boots use in-process.
+    setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false });
     const result = await bootAllHarnessesForActiveWorkspace(opts);
     return finish(result, false);
   }

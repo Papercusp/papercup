@@ -1,0 +1,190 @@
+/**
+ * P-007/P-020: harness Tests-tab ingestion — parser + persist.
+ *
+ * Pins the run-route ingestion logic that lets EVERY managed hive surface its
+ * framework-test history in its own Tests tab:
+ *   - parseVitestJsonForHarnessRows: vitest `--reporter=json` → one row per file
+ *     (status mapping pass/fail/skip/error, root-relative POSIX path, duration,
+ *     failure tail), pure + defensive.
+ *   - persistHarnessTestRuns: stamps harness_slug + workspace_id on every row,
+ *     returns the written count, and is D-007 fail-soft (never throws).
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  parseVitestJsonForHarnessRows,
+  persistHarnessTestRuns,
+  type HarnessTestFileRow,
+} from '../testing-run-store';
+
+const ROOT = '/work/harness-repo';
+
+function report(files: unknown[]): string {
+  return JSON.stringify({ numTotalTestSuites: files.length, testResults: files });
+}
+
+describe('parseVitestJsonForHarnessRows', () => {
+  it('maps a passing file to a root-relative POSIX path + pass status + duration', () => {
+    const json = report([
+      {
+        name: `${ROOT}/src/foo.test.ts`,
+        status: 'passed',
+        startTime: 1000,
+        endTime: 1350,
+        assertionResults: [
+          { status: 'passed', title: 'a' },
+          { status: 'passed', title: 'b' },
+        ],
+      },
+    ]);
+    const rows = parseVitestJsonForHarnessRows(json, ROOT);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].filePath).toBe('src/foo.test.ts');
+    expect(rows[0].status).toBe('pass');
+    expect(rows[0].durationMs).toBe(350);
+    expect(rows[0].startedAt.getTime()).toBe(1000);
+    expect(rows[0].finishedAt.getTime()).toBe(1350);
+    expect(rows[0].outputTail).toBeNull();
+  });
+
+  it('maps a failed file to fail + captures the failure tail', () => {
+    const json = report([
+      {
+        name: `${ROOT}/src/bar.test.ts`,
+        status: 'failed',
+        startTime: 0,
+        endTime: 10,
+        assertionResults: [
+          { status: 'passed', title: 'ok' },
+          { status: 'failed', title: 'broken', failureMessages: ['Expected 1 to be 2'] },
+        ],
+      },
+    ]);
+    const rows = parseVitestJsonForHarnessRows(json, ROOT);
+    expect(rows[0].status).toBe('fail');
+    expect(rows[0].outputTail).toContain('Expected 1 to be 2');
+  });
+
+  it('maps an all-skipped "passed" file to skip (not pass)', () => {
+    const json = report([
+      {
+        name: `${ROOT}/src/skipme.test.ts`,
+        status: 'passed',
+        startTime: 5,
+        endTime: 6,
+        assertionResults: [
+          { status: 'skipped', title: 's1' },
+          { status: 'pending', title: 's2' },
+        ],
+      },
+    ]);
+    const rows = parseVitestJsonForHarnessRows(json, ROOT);
+    expect(rows[0].status).toBe('skip');
+  });
+
+  it('maps a file with no recognizable status to error', () => {
+    const json = report([{ name: `${ROOT}/src/weird.test.ts`, startTime: 1, endTime: 2 }]);
+    const rows = parseVitestJsonForHarnessRows(json, ROOT);
+    expect(rows[0].status).toBe('error');
+  });
+
+  it('returns [] for malformed JSON or a non-vitest report (best-effort skip)', () => {
+    expect(parseVitestJsonForHarnessRows('not json{', ROOT)).toEqual([]);
+    expect(parseVitestJsonForHarnessRows(JSON.stringify({ ok: true }), ROOT)).toEqual([]);
+    expect(parseVitestJsonForHarnessRows(report([{ status: 'passed' }]), ROOT)).toEqual([]); // no name → dropped
+  });
+
+  it('handles multiple files in one report', () => {
+    const json = report([
+      { name: `${ROOT}/a.test.ts`, status: 'passed', startTime: 0, endTime: 1, assertionResults: [{ status: 'passed' }] },
+      { name: `${ROOT}/nested/b.test.ts`, status: 'failed', startTime: 0, endTime: 2, assertionResults: [{ status: 'failed', failureMessages: ['boom'] }] },
+    ]);
+    const rows = parseVitestJsonForHarnessRows(json, ROOT);
+    expect(rows.map((r) => r.filePath)).toEqual(['a.test.ts', 'nested/b.test.ts']);
+    expect(rows.map((r) => r.status)).toEqual(['pass', 'fail']);
+  });
+});
+
+/** Records every tagged-template insert's bound values. */
+function makeRecordingSql() {
+  const calls: unknown[][] = [];
+  const sql = (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push(values);
+    return Promise.resolve([]);
+  };
+  return { sql, calls };
+}
+
+const sampleRows: HarnessTestFileRow[] = [
+  {
+    filePath: 'src/foo.test.ts',
+    status: 'pass',
+    durationMs: 120,
+    startedAt: new Date(1000),
+    finishedAt: new Date(1120),
+    outputTail: null,
+  },
+  {
+    filePath: 'src/bar.test.ts',
+    status: 'fail',
+    durationMs: 50,
+    startedAt: new Date(2000),
+    finishedAt: new Date(2050),
+    outputTail: 'boom',
+  },
+];
+
+describe('persistHarnessTestRuns', () => {
+  it('inserts one row per file, stamping harness_slug + workspace_id', async () => {
+    const { sql, calls } = makeRecordingSql();
+    const written = await persistHarnessTestRuns({
+      harnessSlug: 'my-hive',
+      workspaceId: 'ws-42',
+      rows: sampleRows,
+      runGroupId: 'h-123',
+      branch: 'main',
+      commit: 'abc123',
+      sql,
+    });
+    expect(written).toBe(2);
+    expect(calls).toHaveLength(2);
+    // Value order: filePath, 'vitest', status, durationMs, startedAt, finishedAt,
+    // outputTail, runGroupId, source, branch, commit, harness_slug, workspace_id
+    const first = calls[0];
+    expect(first[0]).toBe('src/foo.test.ts');
+    expect(first[1]).toBe('vitest');
+    expect(first[2]).toBe('pass');
+    expect(first[7]).toBe('h-123');
+    expect(first[8]).toBe('admin-ui'); // default source satisfies the CHECK
+    expect(first[9]).toBe('main');
+    expect(first[10]).toBe('abc123');
+    expect(first[11]).toBe('my-hive'); // harness_slug
+    expect(first[12]).toBe('ws-42'); // workspace_id
+  });
+
+  it('returns 0 and never touches the DB for an empty row set', async () => {
+    const { sql, calls } = makeRecordingSql();
+    const written = await persistHarnessTestRuns({
+      harnessSlug: 'h',
+      workspaceId: 'w',
+      rows: [],
+      runGroupId: 'g',
+      sql,
+    });
+    expect(written).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('is fail-soft: a throwing sql client swallows and never rejects', async () => {
+    const throwingSql = (): never => {
+      throw new Error('pg down');
+    };
+    const written = await persistHarnessTestRuns({
+      harnessSlug: 'h',
+      workspaceId: 'w',
+      rows: sampleRows,
+      runGroupId: 'g',
+      sql: throwingSql,
+    });
+    expect(written).toBe(0);
+  });
+});

@@ -17,7 +17,15 @@
  * Pure unit, no env/network (same as types.test.ts).
  */
 import { describe, expect, it } from 'vitest';
-import { ALL_FLAG_KEYS, DARK_FLAGS, FLAGS, FLAG_DEFAULTS, type DarkCase } from './types';
+import {
+  ALL_FLAG_KEYS,
+  DARK_FLAGS,
+  DARK_FLAGS_HIGH_WATERMARK,
+  DARK_FLAGS_REVIEW_BY,
+  FLAGS,
+  FLAG_DEFAULTS,
+  type DarkCase,
+} from './types';
 
 const VALID_DARK_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>([
   'incomplete',
@@ -48,16 +56,12 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   'papercusp-test-completion-gate',
 ]);
 
-/**
- * The dark allowlist must be RE-REVIEWED by this date. Past it, the review-by
- * test below goes red — forcing the team to walk every dark flag and either flip
- * the ones now ready to default-ON (remove them from DARK_FLAGS) or consciously
- * push this date out with a fresh look. This is the "expiry" that stops a dark
- * flag lingering silently past the alpha default-on policy (owner ask, 2026-06-16).
- * Treat a red here as "do the review," not "bump the date" — the bump is the
- * LAST step, after flipping what's ready.
- */
-const DARK_FLAGS_REVIEW_BY = '2026-07-15';
+// DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
+// size ceiling) are now PROMOTED into shippable code (libs/flags/src/types.ts) so the
+// operator dark-flag-age watchdog (P-013) reasons over the same numbers this guard
+// asserts against. Imported above; the assertions below are unchanged. The review-by is
+// still the "expiry" that stops a dark flag lingering silently — past it the test below
+// goes red; treat that as "do the review," not "bump the date" (the bump is the LAST step).
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {
   it('every flag defaults ON unless consciously registered in DARK_FLAGS', () => {
@@ -121,7 +125,7 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // here: ship finished work default-ON, or — for genuinely incomplete/unsafe NEW work — graduate
     // an existing dark flag first (net-zero), or get EXPLICIT owner sign-off to raise the watermark.
     // Growth must be a deliberate, owner-visible act, never a quiet append.
-    const DARK_FLAGS_HIGH_WATERMARK = 22;
+    // (DARK_FLAGS_HIGH_WATERMARK now lives in libs/flags/src/types.ts — imported above.)
     expect(
       DARK_FLAGS.size <= DARK_FLAGS_HIGH_WATERMARK,
       `The dark allowlist GREW to ${DARK_FLAGS.size} (high-watermark ${DARK_FLAGS_HIGH_WATERMARK}). ` +
