@@ -572,30 +572,34 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     expect(handle.admitted.has(frame.log_core_key)).toBe(false);
   });
 
-  // ADVERSARIAL (WI-797) — the owner-device bypass is gated on a kind:'hive' swarmBinding.
-  // A topic-kind binding (a bare /api/harness/join-link that never resolved the hive pubkey —
-  // exactly the dead-member mis-binding seen on the live rig) carries no hive_pubkey, so the
-  // bypass never fires: even the real owner device + a failing gist gate stays rejected.
-  it('ADVERSARIAL (WI-797): a topic-kind binding never triggers the owner bypass (kind:hive required)', async () => {
+  // D-053 — the owner-device bootstrap is NOT gated on a kind:'hive' swarmBinding. A real
+  // invite/link joiner boots on a kind:'topic' binding (a /api/harness/join-link carries the
+  // Hive's TOPIC HASH, not its pubkey, so it cannot rebuild a `hive:` binding) and MUST still
+  // bootstrap-admit the owner — recovering the owner device from the VERIFIED hive-directory
+  // cache by deriving each cached hive's topic and matching `topic_hex` (ownerDeviceForTopic).
+  // This was the live cross-machine RECEIVE-side blocker (D-052): a topic-bound empty-roster
+  // joiner admitted NOTHING (0 roster/epoch/content) because the bypass only read
+  // `swarmBinding.hive_pubkey`. STILL fail-closed: no verified directory binding ⇒ no bypass.
+  it('FIX (D-053): a topic-kind binding bootstrap-admits the owner via the verified directory owner-device-for-topic binding (fail-closed without one)', async () => {
     const ownerUserId = 9721;
-    const joiner = makeAnnounceIdentityOverride('joiner-797-topic', 9722, 'kc-wi797-joiner-topic');
+    const joiner = makeAnnounceIdentityOverride('joiner-053-topic', 9722, 'kc-053-joiner-topic');
     let ownerDevice = '';
-    const ownerDeviceForHive = vi.fn(async () => ownerDevice || null);
+    const ownerDeviceForTopic = vi.fn(async () => ownerDevice || null);
 
     const handle = await bootHarnessSubstrate({
       workspaceRoot: tmpWorkspaceRoot(),
       workspaceId: WORKSPACE_ID,
       harnessSlug: JOINER_MEMBER_SLUG,
-      swarmBinding: { kind: 'topic', topic_hex: 'a'.repeat(64) }, // NOT a hive binding
+      swarmBinding: { kind: 'topic', topic_hex: 'a'.repeat(64) }, // invite/link joiner — no hive_pubkey
       swarmOverride: makeFakeSwarm(),
       swarmRefreshMs: 0,
       swarmJoinRetryMs: 0,
       mergePollMs: 0,
       pendingRetryMs: 0,
       loadRevokedOverride: async () => new Set(),
-      verifyBindingOverride: async () => 'fail',
-      loadHiveMembersOverride: async () => [],
-      ownerDeviceForHiveOverride: ownerDeviceForHive,
+      verifyBindingOverride: async () => 'fail', // gist gate REJECTS — only the bootstrap can admit
+      loadHiveMembersOverride: async () => [], // EMPTY roster (fresh join)
+      ownerDeviceForTopicOverride: ownerDeviceForTopic,
       joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
@@ -603,18 +607,25 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
 
     const frame = await validAnnounce({
       github_user_id: ownerUserId,
-      github_login: 'owner-797-topic',
-      attestation_gist_id: 'gist-797-topic',
+      github_login: 'owner-053-topic',
+      attestation_gist_id: 'gist-053-topic',
       harness_slug: OWNER_MEMBER_SLUG,
       log_core_key: 'c7'.repeat(32),
     });
-    ownerDevice = frame.device_pubkey; // would match — but the binding is not kind:'hive'
 
-    const decision = await handle.onAnnounce(frame);
-
-    // kind:'topic' ⇒ no joined hive_pubkey ⇒ bypass never fires ⇒ not admitted.
-    expect(decision.admit).toBe(false);
+    // FAIL-CLOSED: no verified directory owner-device-for-topic binding ⇒ no bypass ⇒ rejected.
+    ownerDevice = '';
+    const rejected = await handle.onAnnounce(frame);
+    expect(rejected.admit).toBe(false);
     expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+
+    // FIX: once the verified directory binding resolves the owner device for THIS topic, the
+    // topic-bound joiner bootstrap-admits the owner — gist gate failing + empty roster and all.
+    ownerDevice = frame.device_pubkey;
+    const admitted = await handle.onAnnounce(frame);
+    expect(admitted.admit).toBe(true);
+    expect(handle.admitted.has(frame.log_core_key)).toBe(true);
+    expect(ownerDeviceForTopic).toHaveBeenCalled();
   });
 
   // ADVERSARIAL (WI-797) — a FORGED owner announce (bad sig) is refused at the sig check that

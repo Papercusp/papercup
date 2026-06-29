@@ -67,6 +67,15 @@ export type LoopPressure = 'ok' | 'elevated' | 'critical';
 // started one) — callers treat null as 'ok' (no signal ⇒ don't shed).
 let _liveRead: (() => { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number }) | null = null;
 
+// Idempotency guard: at most one monitor per process. The host boots it from BOTH
+// the request plane (startRequestServers) and the background machinery (runBootstrap),
+// so the cluster bg-host PRIMARY — which serves no HTTP and so never ran the request-
+// plane monitor — also gets a live gauge. Without it, currentLoopLag() returns null on
+// the bg primary and the perf-regression rig's loop_lag_p95 never populates there (the
+// "no event-loop-lag monitor on this thread" watchdog note — infra round-4 P-014). A
+// repeat call returns the already-running handle instead of spawning a 2nd histogram.
+let _runningHandle: LagMonitorHandle | null = null;
+
 /** p95 loop-delay (ms) thresholds for the pressure bands. Env-tunable so a small
  *  host can be stricter. elevated ⇒ start widening cadences; critical ⇒ shed. */
 const ELEVATED_P95_MS = Math.max(1, Number(process.env.PAPERCUSP_LOOP_ELEVATED_MS) || 120);
@@ -141,6 +150,10 @@ export async function cooperativeYield(count: number, everyN = 4): Promise<numbe
  * for one-per-process use — call once at host boot.
  */
 export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorHandle {
+  // One monitor per process (see _runningHandle). A 2nd call — single-process mode
+  // boots both the request plane AND the bg machinery — returns the live handle so we
+  // never run two histograms/timers (or two profilers) against one event loop.
+  if (_runningHandle) return _runningHandle;
   const intervalMs = opts.intervalMs ?? 10_000;
   const warnP95Ms = opts.warnP95Ms ?? 100;
   const log =
@@ -209,15 +222,18 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     h.reset();
   }, { category: 'watchdog' });
 
-  return {
+  const handle: LagMonitorHandle = {
     stop() {
       stopped = true;
       timer.stop();
       h.disable();
       if (_liveRead === read) _liveRead = null;
+      if (_runningHandle === handle) _runningHandle = null;
     },
     sample: read,
   };
+  _runningHandle = handle;
+  return handle;
 }
 
 /**

@@ -13,7 +13,8 @@
  * (workspace_id, harness_slug). Takes an injected `Sql` (the live admin pool),
  * mirroring the gym control-plane, so the routes and the loader share one core.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 import type { Sql } from 'postgres';
 import {
   BlueprintSchema,
@@ -22,6 +23,26 @@ import {
   type Blueprint,
 } from '@papercusp/orchestrator/blueprint';
 import { blueprintRegistrySets } from './registry-sets.js';
+import { registerHarnessOpProxies, type HarnessOpManifestEntry } from '../harness-ops/proxy.js';
+
+/**
+ * P-002: register a PROXY CoordOp for each harness-provided op a blueprint SOURCE
+ * file declares, BEFORE `loadBlueprintFromFile` validates it — `resolveBlueprint`
+ * THROWS on an `unknown-op`, so a program blueprint whose spine references a
+ * harness op would otherwise fail resolution on a cold cache (and silently fall
+ * back to `coding`). Best-effort + direct-ops only (the blueprint that ships the
+ * ops declares them on itself); a real parse error is surfaced by the load below.
+ */
+function preRegisterSourceFileOps(path: string): void {
+  try {
+    const raw = parseYaml(readFileSync(path, 'utf8')) as { ops?: unknown } | null;
+    if (raw && Array.isArray(raw.ops)) {
+      registerHarnessOpProxies(raw.ops as HarnessOpManifestEntry[]);
+    }
+  } catch {
+    /* loadBlueprintFromFile surfaces the real parse error */
+  }
+}
 
 export interface ProjectBlueprintInput {
   workspaceId: string;
@@ -118,13 +139,27 @@ export async function getEffectiveBlueprint(
   opts: EffectiveBlueprintOpts,
 ): Promise<Blueprint | null> {
   const cached = await readBlueprintFromPg(sql, opts.workspaceId, opts.harnessSlug);
-  if (cached) return cached;
+  if (cached) {
+    // P-002: this is also the RUNTIME admission point (the cadence dispatcher
+    // resolves the effective blueprint to RUN it). Register the cached blueprint's
+    // harness-op proxies so they're live in THIS process before the program's
+    // `requireCoordOp` fires — a cache hit skips the file-load registration below.
+    registerHarnessOpProxies((cached.ops ?? []) as HarnessOpManifestEntry[]);
+    return cached;
+  }
   if (!opts.blueprintPath || !existsSync(opts.blueprintPath)) return null;
+  // P-002: pre-register the source file's harness-op proxies BEFORE the load —
+  // `resolveBlueprint` throws on `unknown-op`, so a program spine that references a
+  // harness op needs its proxy live for validation to resolve it.
+  preRegisterSourceFileOps(opts.blueprintPath);
   // P-001: validate ops/roles against the live registries at the PG-projection
   // chokepoint — the point a blueprint is admitted to the durable pipeline — so an
   // unregistered op is rejected here, not surfaced as a `requireCoordOp` throw mid
   // `coordProgramWorkflow`.
   const loaded = loadBlueprintFromFile(opts.blueprintPath, undefined, blueprintRegistrySets());
+  // Defensive: also register from the resolved blueprint (covers ops merged in via
+  // `extends`, which the raw-file pre-register above wouldn't have seen).
+  registerHarnessOpProxies((loaded.blueprint.ops ?? []) as HarnessOpManifestEntry[]);
   await projectBlueprintToPg(sql, {
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,

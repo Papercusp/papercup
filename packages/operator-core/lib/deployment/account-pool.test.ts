@@ -22,9 +22,14 @@ import {
   selectAccountByDrain,
   selectAccountForSpawn,
   decideScaleOut,
+  drainUtil,
+  drainUtil7d,
+  effectiveDrainUtil,
+  accountFull,
   AccountPoolError,
   DEFAULT_SCALE_POLICY,
   DRAIN_UTIL_STALE_MS,
+  DRAIN_FULL_UTIL,
   type AccountPool,
 } from './account-pool';
 
@@ -514,6 +519,65 @@ describe('selectAccountByDrain spread (anti-thundering-herd, 2026-06-23)', () =>
     );
     expect(both.has('a')).toBe(true);
     expect(both.has('b')).toBe(true);
+  });
+});
+
+describe('window-reset expiry — a freed account auto-re-enters rotation (stale-capped-projection fix, 2026-06-29)', () => {
+  it('drainUtil expires a FRESH-but-window-reset 5h reading to 0 (no manual accounts:reset-rate needed)', () => {
+    // util 0.99 observed at T0 with a 5h window that resets in 2 min. The observation is still FRESH
+    // (well within DRAIN_UTIL_STALE_MS) at T0+3min, but the window has RESET — the prior fraction
+    // describes a window that no longer exists, so the budget is freed → 0.
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 0.99, windowResetAt: T0 + 2 * MIN }, T0);
+    const a = getAccount(p, 'a')!;
+    expect(drainUtil(a, T0 + MIN)).toBe(0.99); // before the reset: still gated full
+    expect(drainUtil(a, T0 + 3 * MIN)).toBe(0); // after the reset, even though the reading is fresh
+  });
+
+  it('drainUtil7d expires a FRESH-but-weekly-reset reading to 0', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization7d: 1.0, windowResetAt7d: T0 + 5 * MIN }, T0);
+    const a = getAccount(p, 'a')!;
+    expect(drainUtil7d(a, T0 + MIN)).toBe(1.0); // weekly window still open → gated full
+    expect(drainUtil7d(a, T0 + 6 * MIN)).toBe(0); // weekly window reset → freed (fresh reading notwithstanding)
+  });
+
+  it('drainUtil7d STILL holds a weekly-capped account out until its reset (no regression of the aviynw2 trap)', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 0.05, utilization7d: 1.0, windowResetAt7d: T0 + 7 * 24 * 60 * MIN }, T0);
+    const a = getAccount(p, 'a')!;
+    // Stale reading but the weekly window is still open → keeps reading full (the harder constraint).
+    expect(drainUtil7d(a, T0 + DRAIN_UTIL_STALE_MS + MIN)).toBe(1.0);
+    // Past the weekly reset → freed.
+    expect(drainUtil7d(a, T0 + 8 * 24 * 60 * MIN)).toBe(0);
+  });
+
+  it('a window-reset account is no longer accountFull and becomes spawn-eligible / drain-selectable again', () => {
+    let p = poolOf('a', 'b');
+    // a was weekly-capped (1.0) with its window resetting in 5 min; b is healthy but mid-utilization.
+    p = recordAccountWindow(p, 'a', { utilization: 0.1, utilization7d: 1.0, windowResetAt7d: T0 + 5 * MIN }, T0);
+    p = recordAccountWindow(p, 'b', { utilization: 0.5, utilization7d: 0.5, windowResetAt7d: T0 + 7 * 24 * 60 * MIN }, T0);
+    const after = T0 + 6 * MIN; // a's weekly window has reset
+    const a = getAccount(p, 'a')!;
+    expect(accountFull(a, T0 + MIN)).toBe(true); // before the reset: full
+    expect(effectiveDrainUtil(a, after)).toBe(0.1); // after: only its (fresh, healthy) 5h reading remains
+    expect(accountFull(a, after)).toBe(false);
+    expect(isSpawnEligible(a, after)).toBe(true);
+    // a (effective 0.1) now beats b (effective 0.5) in the drain selector — the freed account re-enters.
+    expect(selectAccountByDrain(p, after)!.id).toBe('a');
+  });
+
+  it('isSustainedlyLimited clears once the window resets even with a fresh at-cap reading', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 1.01, windowResetAt: T0 + 2 * MIN }, T0);
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + MIN)).toBe(true); // before reset
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + 3 * MIN)).toBe(false); // window reset → derived limit cleared
+  });
+
+  it('DRAIN_FULL_UTIL guard is unaffected: a still-open at-cap window is full', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: DRAIN_FULL_UTIL, windowResetAt: T0 + 60 * MIN }, T0);
+    expect(accountFull(getAccount(p, 'a')!, T0 + MIN)).toBe(true);
   });
 });
 

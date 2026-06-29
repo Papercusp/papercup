@@ -48,6 +48,12 @@ import './recipes/candidates';
 import './recipes/merge';
 import './recipes/sweep';
 
+// reflexive-platform-extensibility-datatypes-2026-06-24 P-013 — the datatype
+// registry surface: meta:define-datatype (declare + dedup gate) and the read verbs.
+import './datatypes/declare';
+import './datatypes/list';
+import './datatypes/get';
+
 import './operator/stats';
 import './operator/converse';
 // Sentinel-as-Herald: the sentinel:converse alias (same brain, Herald persona).

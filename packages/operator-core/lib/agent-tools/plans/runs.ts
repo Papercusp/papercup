@@ -433,12 +433,17 @@ export async function appendPlanRunTurn(
   return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<{ seq: number }[]>`
       INSERT INTO harness_shared.plan_run_turns (
-        workspace_id, plan_run_id, seq, role, content,
+        workspace_id, plan_run_id, harness_slug, seq, role, content,
         tokens_in, tokens_out, cost_usd, created_at
       )
       SELECT
         ${activeWorkspaceId()},
         ${args.planRunId},
+        -- data-scoping-audit P-005: mirror the parent run's harness_slug so the
+        -- turn is directly scope-bearing (RLS/federation symmetry), not only via
+        -- a parent join. NULL if the parent run vanished (defensive; FK keeps it
+        -- present in practice).
+        (SELECT harness_slug FROM harness_shared.plan_runs WHERE id = ${args.planRunId}),
         COALESCE(MAX(seq), 0) + 1,
         ${args.role}, ${args.content},
         ${args.tokensIn ?? null}, ${args.tokensOut ?? null},

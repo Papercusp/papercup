@@ -19,10 +19,12 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { createWorkItem, getWorkItem, linkWorkItem, type WorkItem, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, linkWorkItem, isWorkItemKind, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
+import { getOrgPg } from '@papercusp/db-org';
+import { hasGenericKind } from '../../datatype-registry-store';
 
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
@@ -104,6 +106,28 @@ export async function createOneWorkItem(
       (typeof args.workspace === 'string' && args.workspace.trim()) ? args.workspace.trim()
         : (ctx.workspaceId && ctx.workspaceId !== '*') ? ctx.workspaceId
           : undefined;
+    // P-001 generic-kind gate (reflexive-platform-extensibility-datatypes-2026-06-24):
+    // accept a BUILT-IN kind OR a workspace-registered generic-kind datatype. Built-ins
+    // pass via the cheap in-memory check with NO DB query, so every existing caller is
+    // byte-identical; only a NON-built-in kind hits the registry (today always rejected
+    // here — now a registered generic-kind passes). Dark until a datatype is declared, so
+    // there is no behavior change until meta:define-datatype registers a kind. This is the
+    // platform-side registration path the oddsmith F1 gap needed (oddsmith D-017/P-021).
+    if (!isWorkItemKind(args.kind)) {
+      const registered = workspaceId
+        ? await hasGenericKind(getOrgPg().sql, workspaceId, args.kind).catch(() => false)
+        : false;
+      if (!registered) {
+        return {
+          ok: false,
+          error: 'unknown_kind',
+          message:
+            `unknown work-item kind "${args.kind}" — use a built-in kind ` +
+            `(feature, research-task, chunk, bug, change, task), or first declare it via ` +
+            `meta:define-datatype (generic-kind tier) in this workspace, then create instances with that kind.`,
+        };
+      }
+    }
     // Hive-scope gate (D-019/D-020): a PIPELINE work-item belongs to a hive's fleet
     // queue, so it must resolve to a hive — auto-resolve-then-require from the explicit
     // `hive` arg, else the item's harness, else the session's harness. Issue kinds

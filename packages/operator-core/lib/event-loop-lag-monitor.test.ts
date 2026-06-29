@@ -16,6 +16,7 @@ import {
   captureCpuProfile,
   classifyLoopPressure,
   cooperativeYield,
+  currentLoopLag,
   isLoopSaturated,
   loopPressure,
   startEventLoopLagMonitor,
@@ -67,6 +68,27 @@ describe('event-loop-lag-monitor', () => {
     expect(typeof s.p95Ms).toBe('number');
     expect(typeof s.maxMs).toBe('number');
     expect(() => handle?.stop()).not.toThrow();
+  });
+
+  // infra round-4 P-014: the host boots the monitor from BOTH the request plane
+  // (startRequestServers) and the bg machinery (runBootstrap) so the cluster bg-host
+  // primary — which serves no HTTP — also has a live gauge for the perf-regression rig.
+  // That double-boot must NOT spawn two histograms/timers against one loop.
+  it('is idempotent per process: a 2nd start returns the SAME running handle', () => {
+    handle = startEventLoopLagMonitor({ intervalMs: 10_000, warnP95Ms: 1000 });
+    // currentLoopLag() reads the live published gauge — non-null once a monitor runs.
+    expect(currentLoopLag()).not.toBeNull();
+    const second = startEventLoopLagMonitor({ intervalMs: 50, warnP95Ms: 5 });
+    expect(second).toBe(handle); // re-entry returns the live handle, ignores new opts
+  });
+
+  it('after stop(), a fresh start creates a NEW monitor (guard is cleared)', () => {
+    const first = startEventLoopLagMonitor({ intervalMs: 10_000, warnP95Ms: 1000 });
+    first.stop();
+    expect(currentLoopLag()).toBeNull(); // published gauge cleared on stop
+    handle = startEventLoopLagMonitor({ intervalMs: 10_000, warnP95Ms: 1000 });
+    expect(handle).not.toBe(first); // a clean process-start, not the stopped handle
+    expect(currentLoopLag()).not.toBeNull();
   });
 });
 

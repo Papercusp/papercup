@@ -384,6 +384,16 @@ export interface BootHarnessOpts {
    */
   ownerDeviceForHiveOverride?: (hivePubkey: string) => Promise<string | null>;
   /**
+   * Test seam (D-053) — resolve the OWNER device pubkey to bootstrap-admit when this peer
+   * boots on a `kind:'topic'` binding (a real invite/link joiner learns the Hive's TOPIC
+   * HASH, not its pubkey, so it cannot key `ownerDeviceForHiveOverride`/`loadHiveOwnerDevicePubkey`
+   * by pubkey). Production leaves this undefined and the real path recovers the pubkey from the
+   * verified `hive_directory_cache` by deriving each cached hive's topic and matching `topic_hex`.
+   * Receives `(topicHex)`; `workspaceId` is closed over by boot. Same one-bound-owner-device
+   * guarantee as `ownerDeviceForHiveOverride`.
+   */
+  ownerDeviceForTopicOverride?: (topicHex: string) => Promise<string | null>;
+  /**
    * Slow re-verify interval (ms). At this cadence, every admitted peer's
    * channel-2 binding is re-checked via `verifyBinding`. A conclusive `'fail'`
    * drops the peer from the admitted set (but does NOT add it to the published
@@ -1716,6 +1726,49 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       return loadHiveOwnerDevicePubkey(opts.workspaceId, hivePubkey).catch(() => null);
     });
 
+  // D-053 — owner-bootstrap for a TOPIC-bound joiner. A real invite/link joiner boots on a
+  // `{ kind:'topic', topic_hex }` binding (boot-all.ts defaultResolveSwarmBinding step 2: it
+  // learns the Hive's TOPIC HASH from the link, NOT its pubkey, so it cannot rebuild a `hive:`
+  // binding) — so `opts.swarmBinding.hive_pubkey` is ABSENT and the by-pubkey owner-bootstrap
+  // (gated on `kind==='hive'`) never fires, leaving an empty-roster joiner unable to admit the
+  // owner (the live cross-machine RECEIVE-side blocker: 0 roster / 0 epoch / 0 content). Recover
+  // the bound hive's pubkey from the VERIFIED hive-directory cache by deriving each cached hive's
+  // topic and matching `topic_hex`, then return that descriptor's owner device. Same one-device
+  // guarantee as `ownerDeviceForHive`; fail-closed to null. The directory only records
+  // descriptors that passed `verifyHiveAnnounce`, so the binding is cryptographically verified.
+  const ownerDeviceForTopic: (topicHex: string) => Promise<string | null> =
+    opts.ownerDeviceForTopicOverride ??
+    (async (topicHex) => {
+      const want = topicHex.toLowerCase();
+      const { loadHiveOwnerDeviceBindings } = await import('../../hive-membership-store');
+      const bindings = await loadHiveOwnerDeviceBindings(opts.workspaceId).catch(() => []);
+      for (const b of bindings) {
+        let derived: string;
+        try {
+          derived = deriveSwarmTopic({ kind: 'hive', hive_pubkey: b.hivePubkey })
+            .toString('hex')
+            .toLowerCase();
+        } catch {
+          continue; // a malformed cached pubkey can't derive a topic — skip it
+        }
+        if (derived === want) return b.ownerDevicePubkey;
+      }
+      return null;
+    });
+
+  // D-053 — resolve the owner device to bootstrap-admit for the CURRENTLY-JOINED hive,
+  // regardless of the binding KIND: a `hive` binding carries the pubkey directly; a `topic`
+  // binding (the invite/link joiner) recovers it from the directory cache by topic match. Used
+  // by BOTH owner-bootstrap sites (admitsAsKnownHiveMember + resolveSameHiveMember) so they
+  // can't drift. Returns null for a non-hive/non-topic binding (no hive to bootstrap).
+  const resolveJoinedHiveOwnerDevice = async (): Promise<string | null> => {
+    const binding = opts.swarmBinding;
+    if (!binding) return null;
+    if (binding.kind === 'hive') return ownerDeviceForHive(binding.hive_pubkey).catch(() => null);
+    if (binding.kind === 'topic') return ownerDeviceForTopic(binding.topic_hex).catch(() => null);
+    return null;
+  };
+
   /**
    * Admit (or reject) an inbound signed announce. Verifies the sig, runs the
    * D-004 + D-002 decision, and on admit opens + admits the peer's remote log
@@ -1764,19 +1817,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // (swarmBinding.hive_pubkey) — never on github_user_id alone and never any OTHER device
     // (that would hole the WI-259 membership guard). The IDENTITY decider (sig + channel-2
     // binding) has already passed for this frame upstream, so the device is gh-attested too.
-    const joinedHivePubkey =
-      opts.swarmBinding?.kind === 'hive' ? opts.swarmBinding.hive_pubkey : null;
-    if (joinedHivePubkey) {
-      const ownerDevice = await ownerDeviceForHive(joinedHivePubkey).catch(() => null);
-      if (ownerDevice && frame.device_pubkey === ownerDevice) {
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'announce_admitted',
-          `owner_bootstrap hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
-        );
-        return admitPeer(frame);
-      }
+    // D-053: resolve the joined hive's owner device for BOTH binding kinds (a topic-bound
+    // invite/link joiner has no `hive_pubkey` — recover it from the directory cache by topic).
+    const ownerDevice = await resolveJoinedHiveOwnerDevice();
+    if (ownerDevice && frame.device_pubkey === ownerDevice) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'announce_admitted',
+        `owner_bootstrap hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
+      );
+      return admitPeer(frame);
     }
     const memberDevices = await loadHiveMembers(myHiveHome);
     const isKnownMember = memberDevices.includes(frame.device_pubkey);
@@ -1852,12 +1903,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // hive is `swarmBinding.hive_pubkey` AND `frame.device_pubkey` is that exact bound
     // owner device. `sigValid` is already checked above; never widens to github_user_id
     // alone or any other device (that would hole the WI-259 membership guard).
-    const joinedHivePubkey =
-      opts.swarmBinding?.kind === 'hive' ? opts.swarmBinding.hive_pubkey : null;
-    if (joinedHivePubkey) {
-      const ownerDevice = await ownerDeviceForHive(joinedHivePubkey).catch(() => null);
-      if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
-    }
+    // D-053: resolve the joined hive's owner device for BOTH binding kinds (a topic-bound
+    // invite/link joiner has no `hive_pubkey` — recover it from the directory cache by topic).
+    const ownerDevice = await resolveJoinedHiveOwnerDevice();
+    if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
     const memberDevices = await loadHiveMembers(myHiveHome);
     return trustedHiveMemberDeviceAdmission({
       devicePubkey: frame.device_pubkey,

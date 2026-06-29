@@ -3,7 +3,12 @@
  * Pure member→hive resolution over registry entries; no PG.
  */
 import { describe, expect, it } from 'vitest';
-import { hiveScopeKey, hiveSlugFromScope, hiveSlugsForHarnesses } from './hive-scope';
+import {
+  hiveScopeKey,
+  hiveSlugFromScope,
+  hiveSlugsForHarnesses,
+  narrowHarnessSlugsToSessionHive,
+} from './hive-scope';
 
 const entries = [
   { slug: 'my-hive', harness_kind: 'hive' },
@@ -47,5 +52,52 @@ describe('hiveSlugsForHarnesses', () => {
 
   it('empty input → empty output', () => {
     expect(hiveSlugsForHarnesses(entries, [])).toEqual([]);
+  });
+});
+
+describe('narrowHarnessSlugsToSessionHive (P-018 — confine default fan-out to the session hive)', () => {
+  const allSlugs = ['my-hive', 'member-a', 'member-b', 'other-hive', 'standalone', 'joined-view'];
+
+  it('a hive-confined session (member harness) keeps only its own hive subtree', () => {
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, 'member-a')).toEqual([
+      'my-hive',
+      'member-a',
+      'member-b',
+    ]);
+  });
+
+  it('a session pinned to the hive HOME narrows the same as a member', () => {
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, 'my-hive')).toEqual([
+      'my-hive',
+      'member-a',
+      'member-b',
+    ]);
+  });
+
+  it("a workspace/unscoped session ('*'/empty/null) is NOT narrowed (Queen spans its hives)", () => {
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, '*')).toEqual(allSlugs);
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, '')).toEqual(allSlugs);
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, undefined)).toEqual(allSlugs);
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, null)).toEqual(allSlugs);
+  });
+
+  it('a session on a standalone (no-hive) harness is NOT narrowed (no hive to confine to)', () => {
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, 'standalone')).toEqual(allSlugs);
+  });
+
+  it('drops a sibling hive entirely from a confined fan-out', () => {
+    expect(narrowHarnessSlugsToSessionHive(entries, allSlugs, 'other-hive')).toEqual(['other-hive']);
+  });
+
+  it('an unknown candidate slug is dropped from a confined fan-out', () => {
+    expect(narrowHarnessSlugsToSessionHive(entries, ['member-a', 'ghost'], 'member-a')).toEqual([
+      'member-a',
+    ]);
+  });
+
+  it('returns a fresh array (no aliasing of the input) on the pass-through path', () => {
+    const out = narrowHarnessSlugsToSessionHive(entries, allSlugs, '*');
+    expect(out).not.toBe(allSlugs);
+    expect(out).toEqual(allSlugs);
   });
 });

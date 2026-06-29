@@ -99,6 +99,17 @@ export interface Frame {
   placement: DeploymentPlacement;
   /** Reachable host / IP once provisioned, if any. */
   host?: string;
+  /**
+   * The harness sidecar's CALLABLE HTTP port on this frame — where the operator
+   * dispatches harness-provided ops (`harness-provided-cadence-ops-2026-06-26`
+   * P-004 / D-001). A deployed harness runs its own runtime (sidecar) listening
+   * on this port; a proxy CoordOp's `run()` POSTs `/api/op/<name>` to
+   * `http://{host}:{callablePort}`. The lib never reads it; the operator's
+   * `harnessApiBase` does. Absent ⇒ the frame exposes no callable op endpoint
+   * (a non-op harness, or the LOCAL path which uses the sidecar's advertised
+   * `localEndpoint` instead).
+   */
+  callablePort?: number;
   kind?: FrameKind;
   region?: string;
   /**

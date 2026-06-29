@@ -35,7 +35,7 @@ function op(p: {
   };
 }
 
-function mockFetch(operators: ReturnType<typeof op>[]) {
+function mockFetch(operators: ReturnType<typeof op>[], pipeline?: unknown) {
   const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/api/desktop/dev-operators/set-enabled')) {
@@ -47,6 +47,10 @@ function mockFetch(operators: ReturnType<typeof op>[]) {
         status: 200,
         json: async () => ({ ok: true, operators, selfPort: operators.find((o) => o.isSelf)?.port ?? null }),
       } as unknown as Response;
+    }
+    if (u.includes('/api/desktop/git-pipeline')) {
+      // Stats endpoint (ported from the native bar). Default: no stats unless a test supplies them.
+      return { ok: true, status: 200, json: async () => pipeline ?? {} } as unknown as Response;
     }
     throw new Error(`unexpected fetch ${u}`);
   });
@@ -71,20 +75,69 @@ beforeEach(() => {
 });
 afterEach(() => {
   Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+  delete (window as { __PAPERCUSP_DEV_WRAPPER__?: boolean }).__PAPERCUSP_DEV_WRAPPER__;
   cleanup();
   vi.clearAllMocks();
 });
 
 describe('EnvSwitcherBar', () => {
-  it('self-hides when fewer than 2 ENV envs are reachable (single-operator install)', async () => {
+  it('ALWAYS VISIBLE: shows even with <2 reachable envs (single-operator install); not-running envs are disabled', async () => {
     mockFetch([
       op({ id: 'dev', port: 3270, reachable: true, isSelf: true }),
       op({ id: 'prod', port: 3070, reachable: false }),
-      op({ id: 'release', port: 3070, reachable: true, kind: 'release' }),
+      op({ id: 'staging', port: 3170, reachable: false }),
+      op({ id: 'local', port: 3055, reachable: false }),
+      op({ id: 'release', port: 3070, reachable: false, kind: 'release' }),
     ]);
+    render(<EnvSwitcherBar />);
+    // The bar is shown (no longer self-hidden), with the not-running envs present-but-disabled.
+    await screen.findByTestId('env-switcher-bar');
+    expect((screen.getByTestId('env-btn-prod') as HTMLButtonElement).getAttribute('data-reachable')).toBe('false');
+    expect(screen.getByTestId('env-btn-dev').getAttribute('data-active')).toBe('true');
+  });
+
+  it('hidden ONLY when the dev-operators endpoint is absent (non-desktop / no env data)', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/api/desktop/dev-operators')) return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+      if (u.includes('/api/desktop/git-pipeline')) return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+      throw new Error(`unexpected fetch ${u}`);
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     render(<EnvSwitcherBar />);
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByTestId('env-switcher-bar')).toBeNull();
+  });
+
+  it('is the SINGLE bar now: shows even if the retired native wrapper flag lingers (D-019)', async () => {
+    // The native GTK bar is retired (main.rs opt-in); the old de-dup is gone, so a stray
+    // __PAPERCUSP_DEV_WRAPPER__ must NOT hide this bar anymore.
+    (window as { __PAPERCUSP_DEV_WRAPPER__?: boolean }).__PAPERCUSP_DEV_WRAPPER__ = true;
+    mockFetch([
+      op({ id: 'dev', port: 3270, reachable: true, isSelf: true }),
+      op({ id: 'staging', port: 3170, reachable: true }),
+    ]);
+    render(<EnvSwitcherBar />);
+    expect(await screen.findByTestId('env-switcher-bar')).toBeTruthy();
+  });
+
+  it('ports the native bar stats: renders staging/green/deployed SHAs + gate when git-pipeline returns deploy', async () => {
+    mockFetch(
+      [
+        op({ id: 'dev', port: 3270, reachable: true, isSelf: true }),
+        op({ id: 'staging', port: 3170, reachable: true }),
+      ],
+      {
+        deploy: { mainHead: { sha: 'aaaaaaa1234' }, ready: { sha: 'bbbbbbb5678' }, deployed: { sha: 'ccccccc9012' } },
+        gate: { stalled: false },
+      },
+    );
+    render(<EnvSwitcherBar />);
+    const stats = await screen.findByTestId('env-pipeline-stats');
+    expect(stats.textContent).toContain('aaaaaaa'); // staging (mainHead) sha7
+    expect(stats.textContent).toContain('bbbbbbb'); // green (ready) sha7
+    expect(stats.textContent).toContain('ccccccc'); // deployed sha7
+    expect(stats.textContent).toContain('✓ gate');
   });
 
   it('renders a button per env + a release button, with the self env active', async () => {

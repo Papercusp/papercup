@@ -29,6 +29,67 @@ export interface FailoverPoolOptions {
 
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 
+/** Weight of ONE in-flight request in the load-aware selection key, relative to the [0,1) utilization
+ *  term. ≥1 so a single extra concurrent request outranks the ENTIRE utilization range — i.e. among
+ *  accounts that all have headroom the LEAST-LOADED (fewest in-flight) wins, and utilization (residual
+ *  budget) only breaks ties between equally-loaded accounts. This is the proactive load-balancing lever
+ *  (load-aware-routing-2026-06-29): selection no longer waits for an account to be stressed before it
+ *  spreads. Env-tunable. */
+export const ACCOUNT_INFLIGHT_LOAD_WEIGHT = Number(process.env.PAPERCUSP_GATEWAY_INFLIGHT_LOAD_WEIGHT) || 1;
+/** Cache-affinity tiebreak credit: how much "better" a soft-pinned account is TREATED as when deciding
+ *  whether to yield it, so a sequential / single-session request KEEPS its warm per-credential cache
+ *  (siblings within this margin do not displace the pin) but the pin YIELDS the moment a sibling is
+ *  meaningfully less loaded — a concurrent pile-up on the pin (in-flight ≥ 1) or a climbing utilization
+ *  band, WELL before the pinned account is maxed. Kept < ACCOUNT_INFLIGHT_LOAD_WEIGHT so even ONE extra
+ *  in-flight request on the pin overcomes the credit and spreads load. Env-tunable. */
+export const SOFT_PIN_AFFINITY_CREDIT = Number(process.env.PAPERCUSP_GATEWAY_SOFT_PIN_AFFINITY_CREDIT) || 0.5;
+/** A flaky-proxy account (an unrecovered transport-failure streak) is bucketed behind EVERY clean
+ *  account regardless of its load, so a clean account always wins — but it still ranks ahead of a
+ *  paused / exhausted account (which scores Infinity). Large enough to dominate any realistic in-flight
+ *  count, finite so two flaky accounts still order by their own load. */
+const FLAKY_LOAD_BUCKET = 1e6;
+
+/** Inputs to the pure load-aware selection key. All optional + defaulted so a partial / cold-start
+ *  snapshot degrades gracefully (an unknown field reads as idle/healthy). */
+export interface AccountLoadInputs {
+  /** Governor hard-paused / egress-circuit-open / cold-start-hint paused right now ⇒ never pick. */
+  paused?: boolean;
+  /** A budget window is rejected by the server, or essentially full (util ≳ cap) ⇒ never pick — an
+   *  exhausted account is UNUSABLE, not merely "slightly worse" than a healthy one. */
+  exhausted?: boolean;
+  /** An unrecovered upstream transport-failure streak (dead/flaky egress proxy) ⇒ bucket behind every
+   *  clean account, but still ahead of a paused/exhausted one. */
+  flaky?: boolean;
+  /** Concurrent requests on this (model, account) governor — the PRIMARY load term. */
+  inFlight?: number;
+  /** Observed unified utilization fraction [0,1] — the residual-budget tiebreak among equal-load peers. */
+  utilization?: number;
+}
+
+/**
+ * Load-aware account selection key (LOWER = better) — the shared scoring the gateway uses for BOTH the
+ * unpinned proactive pick and the soft-pin failover (load-aware-routing-2026-06-29). Pure + synchronous
+ * so it is exhaustively unit-testable in isolation.
+ *
+ * Ordering, strongest first:
+ *   1. paused / exhausted        → Infinity (out of the race entirely);
+ *   2. flaky (clean otherwise)   → bucketed behind every clean account (`FLAKY_LOAD_BUCKET`);
+ *   3. in-flight count           → the PRIMARY load term (weighted ≥ the whole utilization range), so
+ *                                  selection lands on the account with the LEAST live load — never piling
+ *                                  onto one account while siblings idle;
+ *   4. utilization               → residual-budget tiebreak among equally-loaded healthy accounts.
+ *
+ * An idle, clean, fresh-proxy account scores 0 (the happy path), so a caller can cheaply gate "is the
+ * current pick already optimal?" on `key === 0`.
+ */
+export function accountLoadKey(i: AccountLoadInputs): number {
+  if (i.paused || i.exhausted) return Infinity;
+  const inFlight = Number.isFinite(i.inFlight) ? Math.max(0, i.inFlight as number) : 0;
+  const utilRaw = Number.isFinite(i.utilization) ? (i.utilization as number) : 0;
+  const util = Math.min(1, Math.max(0, utilRaw));
+  return (i.flaky ? FLAKY_LOAD_BUCKET : 0) + inFlight * ACCOUNT_INFLIGHT_LOAD_WEIGHT + util;
+}
+
 export function createFailoverPool(entries: readonly ActiveAccount[], opts: FailoverPoolOptions = {}): AccountPool {
   if (entries.length === 0) throw new Error('createFailoverPool: at least one account is required');
   const now = opts.now ?? (() => Date.now());

@@ -237,21 +237,47 @@ export async function loadHiveOwnerDevicePubkey(
   hivePubkeyBase64: string,
 ): Promise<string | null> {
   if (!hivePubkeyBase64) return null;
+  const bindings = await loadHiveOwnerDeviceBindings(workspaceId);
+  for (const b of bindings) {
+    if (b.hivePubkey === hivePubkeyBase64) return b.ownerDevicePubkey;
+  }
+  return null;
+}
+
+/**
+ * WI-787 / D-053 — the FULL set of VERIFIED `(hivePubkey → ownerDevicePubkey)` bindings from
+ * the P2P hive-directory offline cache (`hive_directory_cache`, migration 182).
+ *
+ * Returned so a caller that knows only the swarm TOPIC (an invite/link joiner boots on a
+ * `kind:'topic'` binding — it learns the Hive's TOPIC HASH, not its pubkey) can recover the
+ * owner device by deriving each cached hive's topic and matching it. The single-pubkey
+ * `loadHiveOwnerDevicePubkey` above is the by-pubkey lookup; this is the by-topic enabler.
+ * Same cryptographic guarantee: the directory only records descriptors that passed
+ * `verifyHiveAnnounce`. Fail-closed to [] on any error; never throws.
+ */
+export async function loadHiveOwnerDeviceBindings(
+  workspaceId: string,
+): Promise<Array<{ hivePubkey: string; ownerDevicePubkey: string }>> {
   try {
     const { readOperatorState } = await import('./operator-state-pg');
     const row = await readOperatorState<{
       hives?: Array<{ hivePubkey?: string; ownerDevicePubkey?: string }>;
     }>('hive_directory_cache', workspaceId).catch(() => null);
+    const out: Array<{ hivePubkey: string; ownerDevicePubkey: string }> = [];
     for (const h of row?.hives ?? []) {
-      if (h && h.hivePubkey === hivePubkeyBase64) {
-        return typeof h.ownerDevicePubkey === 'string' && h.ownerDevicePubkey.length > 0
-          ? h.ownerDevicePubkey
-          : null;
+      if (
+        h &&
+        typeof h.hivePubkey === 'string' &&
+        h.hivePubkey.length > 0 &&
+        typeof h.ownerDevicePubkey === 'string' &&
+        h.ownerDevicePubkey.length > 0
+      ) {
+        out.push({ hivePubkey: h.hivePubkey, ownerDevicePubkey: h.ownerDevicePubkey });
       }
     }
-    return null;
+    return out;
   } catch {
-    return null;
+    return [];
   }
 }
 

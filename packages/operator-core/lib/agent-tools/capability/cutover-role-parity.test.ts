@@ -16,7 +16,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { SU_ROLES, AGENT_ROLES, lookupByMcpName } from '@papercusp/agent-mcp';
-import { FLEET_CAPABILITY_ROLES } from '@papercusp/orchestrator';
+import {
+  FLEET_CAPABILITY_ROLES,
+  FLEET_CAPABILITY_REPLACED_TOOLS,
+  fleetAllowedToolsForRole,
+  fleetDisallowedToolsForRole,
+} from '@papercusp/orchestrator';
 
 // Importing a capability tool module projects it into the shared catalog.
 import './bash';
@@ -54,6 +59,65 @@ describe('B-18 cutover role parity — FLEET_CAPABILITY_ROLES ≡ capability too
       expect(roles, `${toolName} should be open to all roles`).toEqual(allRoles);
       // The cutover set must remain a SUBSET (safety invariant — re-asserted here for locality).
       for (const r of EXPECTED_ROLES) expect(roles.has(r)).toBe(true);
+    }
+  });
+});
+
+/**
+ * Drift guard #2 (autonomous-loop-canary-reliability D-002 / P-005): the bee + queen kit
+ * MUST carry the capability:* replacements, and a cut-over role's allow-list must NOT list a
+ * native that its deny-list strips. Before P-005, BEE_MCP_TOOL_NAMES lacked capability:* AND
+ * BEE_ALLOWED_TOOLS early-returned BEFORE the cutover filter, so under the cutover a confined
+ * bee's allow-list still LISTED Bash/Edit/Write/WebFetch while the deny-list removed them — a
+ * stranded role with no working write surface (the daily-canary break). This pins both the kit
+ * additions and the allow/deny-asymmetry fix in fleetAllowedToolsForRole.
+ *
+ * Asserted through the orchestrator's public functions (the index does not re-export the raw
+ * kit arrays), so the test tracks the SHIPPED resolution, not an internal constant.
+ */
+const mcpName = (short: string) => `mcp__papercusp__${short.replace(':', '_')}`;
+const CAPABILITY_REPLACEMENT_MCP_NAMES = [
+  'capability:bash',
+  'capability:edit',
+  'capability:write',
+  'capability:fetch',
+  'capability:git',
+  'capability:read',
+].map(mcpName);
+
+describe('D-002 cut-over allow/deny asymmetry — confined bee/queen kit carries capability:* and lists no stripped native', () => {
+  const CUTOVER_ROLES = ['bee', 'queen'] as const;
+
+  it.each(CUTOVER_ROLES)(
+    'under the cutover, %s allow-list excludes every replaced native (no tool both allowed and denied)',
+    (role) => {
+      const allow = new Set(fleetAllowedToolsForRole(role, /* capabilityOnly */ true));
+      const deny = new Set(fleetDisallowedToolsForRole(role, /* capabilityOnly */ true));
+      // Every native the cutover replaces must be ABSENT from the allow-list…
+      for (const native of FLEET_CAPABILITY_REPLACED_TOOLS) {
+        expect(allow.has(native), `${role} allow-list must not list replaced native "${native}"`).toBe(false);
+        // …and PRESENT on the deny-list (airtight removal, not mere omission).
+        expect(deny.has(native), `${role} deny-list must strip replaced native "${native}"`).toBe(true);
+      }
+      // The asymmetry invariant in one line: allow ∩ deny is empty.
+      for (const t of allow) expect(deny.has(t), `"${t}" is both allowed and denied for ${role}`).toBe(false);
+    },
+  );
+
+  it.each(CUTOVER_ROLES)(
+    'under the cutover, %s allow-list still carries the capability:* replacement surface',
+    (role) => {
+      const allow = new Set(fleetAllowedToolsForRole(role, /* capabilityOnly */ true));
+      for (const name of CAPABILITY_REPLACEMENT_MCP_NAMES) {
+        expect(allow.has(name), `${role} must keep capability replacement "${name}" under the cutover`).toBe(true);
+      }
+    },
+  );
+
+  it('cutover OFF leaves the bee native write surface intact (no regression to the unconfined path)', () => {
+    const allow = new Set(fleetAllowedToolsForRole('bee', /* capabilityOnly */ false));
+    for (const native of FLEET_CAPABILITY_REPLACED_TOOLS) {
+      expect(allow.has(native), `cutover-off bee must keep native "${native}"`).toBe(true);
     }
   });
 });

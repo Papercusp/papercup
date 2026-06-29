@@ -22,6 +22,7 @@ import {
 } from '@papercusp/orchestrator/blueprint';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { blueprintRegistrySets } from '../../blueprint/registry-sets';
+import { registerHarnessOpProxies } from '../../harness-ops/proxy';
 
 export interface ResolveResult {
   ok: boolean;
@@ -69,6 +70,11 @@ export function resolveAndValidate(
   } catch (e) {
     return { ok: false, parseError: `schema validation failed: ${e instanceof Error ? e.message : String(e)}` };
   }
+  // P-002: register a PROXY CoordOp for any harness-provided ops this blueprint
+  // declares (`ops:` manifest) BEFORE we snapshot the op registry below — so the
+  // spine may reference an op that lives in the harness and validation resolves it
+  // instead of flagging `unknown-op`. Default-inert when `ops` is empty.
+  registerHarnessOpProxies(blueprint.ops);
   // P-001: enforce the op/role liveness contract at authoring time — a
   // `blueprint:validate`/`blueprint:extend` over a deterministic program that
   // names an unregistered op now returns a clear `unknown-op` error instead of

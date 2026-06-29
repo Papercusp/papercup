@@ -26,7 +26,6 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { WORK_ITEM_KINDS } from '../../work-items';
 import { hiveArg } from '../_hive-scope';
 import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
 import { runBulk, bulkContent } from '../_bulk';
@@ -34,7 +33,9 @@ import { hardText, LIMITS } from '../limits';
 
 /** One per-item create spec — the same per-item shape as the single-call fields. */
 const itemSpec = z.object({
-  kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]),
+  // Built-in kind OR a workspace-registered generic-kind datatype (P-001) — validated
+  // per item in createOneWorkItem; an unregistered kind is rejected there as `unknown_kind`.
+  kind: z.string().min(1).max(80).describe('built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
   title: hardText(LIMITS.SHORT_TITLE),
   summary: hardText(8000).optional().describe('body / summary text'),
   harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
@@ -93,7 +94,10 @@ export default defineTool({
   args: z
     .object({
       // ── single-create shorthand (n=1) ──
-      kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
+      // Built-in kind OR a workspace-registered generic-kind datatype — validated in
+      // createOneWorkItem (P-001). Relaxed from z.enum so a registered kind passes; an
+      // unregistered one is rejected there with `unknown_kind` (was a zod enum error).
+      kind: z.string().min(1).max(80).optional().describe('built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
       harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),

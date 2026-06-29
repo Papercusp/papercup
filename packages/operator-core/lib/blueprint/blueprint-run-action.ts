@@ -45,6 +45,7 @@ import '../coord-ops/index'; // register coord ops (program-mode spine steps)
 import '../blueprint-steps/index'; // register deterministic step-ops (P-010)
 import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner';
 import { buildCoordOpCtx } from '../coord-ops/prod-caps';
+import { registerHarnessOpProxies } from '../harness-ops/proxy';
 
 const operatorBase = operatorApiBase;
 
@@ -297,6 +298,13 @@ async function runScheduledProgram(
     harnessSlug: opts.installSlug,
     depth: 0,
   });
+  // P-002 (runtime guarantee): register a PROXY CoordOp for each harness-provided
+  // op THIS program declares, right before the spine runs — so `inlineRunOp`'s
+  // `requireCoordOp` resolves a harness op regardless of which path resolved the
+  // blueprint (launch blueprint or the harness's own effective blueprint), and
+  // independent of whether admission ran in this (possibly freshly-restarted)
+  // process. Idempotent + default-inert.
+  registerHarnessOpProxies((bp.ops ?? []) as Parameters<typeof registerHarnessOpProxies>[0]);
   try {
     const outcome = await runProgramCore({ blueprint: bp, payload, ctx, runOp: inlineRunOp });
     console.log(

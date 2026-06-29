@@ -43,11 +43,26 @@ interface DevOperatorsResponse {
   selfPort: number | null;
 }
 
+/** The subset of GET /api/desktop/git-pipeline this bar renders — the SAME pipeline stats
+ *  the native dev-wrapper bar showed (dev_wrapper.rs status line): the staging (mainHead) /
+ *  green-pin (ready) / deployed SHAs + the green-checkpoint gate health. */
+interface PipelineStats {
+  deploy?: {
+    mainHead?: { sha?: string | null } | null; // the integration branch == "staging" (field name predates the rename)
+    ready?: { sha?: string | null } | null; // the green pin == the `main` release branch
+    deployed?: { sha?: string | null } | null; // what the :3070 release checkout runs
+  } | null;
+  gate?: { stalled?: boolean } | null;
+}
+
+const sha7 = (s: string | null | undefined): string => (typeof s === 'string' && s ? s.slice(0, 7) : '—');
+
 // Matches the native bar's status cadence (dev_wrapper.rs POLL_INTERVAL / VersionBadge).
 const REFRESH_MS = 30_000;
 
 export function EnvSwitcherBar() {
   const [data, setData] = useState<DevOperatorsResponse | null>(null);
+  const [pipeline, setPipeline] = useState<PipelineStats | null>(null);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
 
@@ -62,6 +77,14 @@ export function EnvSwitcherBar() {
       if (mounted.current && j?.ok) setData(j);
     } catch {
       /* not desktop / endpoint absent → the bar simply stays hidden */
+    }
+    // Pipeline stats (ported from the native dev-wrapper bar) — best-effort; the bar still
+    // renders without them. Same public endpoint + 30s cadence the native bar polled.
+    try {
+      const pr = await fetch('/api/desktop/git-pipeline', { credentials: 'same-origin', cache: 'no-store' });
+      if (pr.ok && mounted.current) setPipeline((await pr.json()) as PipelineStats);
+    } catch {
+      /* stats are decorative — never block the bar */
     }
   }, []);
 
@@ -103,9 +126,15 @@ export function EnvSwitcherBar() {
   const operators = data?.operators ?? [];
   const envOps = operators.filter((o) => o.kind === 'env');
   const releaseOp = operators.find((o) => o.kind === 'release');
-  // Self-regulating visibility: show only when there's a REAL choice (≥2 reachable
-  // ENV operators). Single-operator installs (pre-P-017) render nothing.
-  if (envOps.filter((o) => o.reachable).length < 2) return null;
+  // (The old native GTK dev-wrapper bar is RETIRED — D-019 — so there is no longer a native bar
+  // to defer to; this in-webview bar is the single env bar on every platform.)
+  // ALWAYS VISIBLE (owner request): show the bar whenever the desktop dev-operators endpoint
+  // returns the canonical env list — even on a single-operator install where the other envs
+  // aren't running yet (they render greyed / disabled with a "not running" hint until install-
+  // time provisioning, P-017, brings them up). Hidden ONLY when there is no env data at all —
+  // i.e. the endpoint isn't present (non-desktop / a build without it) or the fetch hasn't
+  // resolved yet — so we never paint an empty bar where the feature doesn't apply.
+  if (!data || envOps.length === 0) return null;
 
   const currentPort =
     typeof window !== 'undefined' && window.location.port ? Number(window.location.port) : NaN;
@@ -208,6 +237,27 @@ export function EnvSwitcherBar() {
         env
       </span>
       {envOps.map((op) => renderButton(op))}
+      {pipeline?.deploy && (
+        <span
+          data-testid="env-pipeline-stats"
+          title="git pipeline — staging (integration) / green (the release pin) / deployed (:3070) SHAs + green-checkpoint gate"
+          style={{
+            marginLeft: 14,
+            fontSize: 10,
+            fontWeight: 400,
+            whiteSpace: 'nowrap',
+            color: 'var(--fg-mute, #888)',
+          }}
+        >
+          staging {sha7(pipeline.deploy.mainHead?.sha)} · green {sha7(pipeline.deploy.ready?.sha)} ·
+          deployed {sha7(pipeline.deploy.deployed?.sha)}
+          <span
+            style={{ marginLeft: 6, color: pipeline.gate?.stalled ? 'var(--bad, #ef4444)' : 'var(--good, #22c55e)' }}
+          >
+            {pipeline.gate?.stalled ? '⚠ gate' : '✓ gate'}
+          </span>
+        </span>
+      )}
       {releaseOp && renderButton(releaseOp, true)}
     </nav>
   );

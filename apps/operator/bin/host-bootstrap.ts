@@ -19,6 +19,7 @@ import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mo
 import cluster from 'node:cluster';
 import { ensureHarnessFsWatcher } from '@papercusp/operator-core/lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-status-sweep';
+import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
@@ -586,6 +587,26 @@ export function runBootstrap(): void {
     console.log(
       '[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)',
     );
+  }
+
+  // [infra-perf-reliability-audit-round4 P-014] Boot the event-loop-lag gauge on the
+  // BACKGROUND primary too. The request plane (startRequestServers) boots it on every
+  // HTTP worker, but in cluster mode the bg-host primary serves no HTTP — so it ran the
+  // heavy DBOS/derive loop with NO lag monitor, leaving the perf-regression rig's
+  // loop_lag_p95 perpetually null on the very process whose saturation matters most
+  // (the "no event-loop-lag monitor on this thread" watchdog note that blocked Lane E
+  // verification). Idempotent: in single-process mode startRequestServers' call returns
+  // this one. Request-only workers (BACKGROUND_WORKERS=0) skip here and still get it via
+  // the request plane. Profiler-on-saturation matches the request plane (PAPERCUSP_LOOP_
+  // PROFILER=0 disables). Best-effort — a monitor failure must never wedge boot.
+  if (backgroundWorkers) {
+    try {
+      startEventLoopLagMonitor({
+        profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER !== '0',
+      });
+    } catch (e) {
+      console.warn('[event-loop-lag] bg-primary monitor start failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
   }
 
   if (backgroundWorkers)

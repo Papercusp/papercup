@@ -13,6 +13,7 @@ import {
   buildActivityArgs,
   buildObjectiveTitleOsc,
   callMcpTool,
+  resolveHookWorkspace,
   collapseDigestNotifies,
   detectSymlinkedPaths,
   reportLifecycle,
@@ -38,6 +39,19 @@ import {
 } from '../coord-hook';
 
 // ── native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010) ─────
+
+// hookOwnerId now PREFERS PAPERCUSP_SID; the dev/CI env may carry a real one, which would make the
+// minted-`omp-…`-owner assertions throughout this suite see a `su-…` owner instead. Clear it by
+// default so the suite runs in the deterministic minted-fallback mode; the single PAPERCUSP_SID-path
+// test in the hookOwnerId describe sets it explicitly within its own body.
+const _origPaperSidForSuite = process.env.PAPERCUSP_SID;
+beforeEach(() => {
+  delete process.env.PAPERCUSP_SID;
+});
+afterEach(() => {
+  if (_origPaperSidForSuite === undefined) delete process.env.PAPERCUSP_SID;
+  else process.env.PAPERCUSP_SID = _origPaperSidForSuite;
+});
 
 describe('OS_SCHEDULER_CMD_RE (command-position OS-scheduler match)', () => {
   it('matches schedulers at command position, incl. compound + sudo forms', () => {
@@ -872,13 +886,28 @@ describe('onToolCall writes the health markers (file-locking #3)', () => {
 
 describe('hookOwnerId — per-process coordination owner (file-locking #2)', () => {
   const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
+  const prevPaperSid = process.env.PAPERCUSP_SID;
+  beforeEach(() => {
+    // The minted-id path is the FALLBACK (only when there is no PAPERCUSP_SID); clear it so the
+    // minted cases below exercise that fallback rather than the now-preferred PAPERCUSP_SID path.
+    delete process.env.PAPERCUSP_SID;
+    _resetHookOwnerIdForTests();
+  });
   afterEach(() => {
     if (prevSid === undefined) delete process.env.PAPERCUSP_AUTH_SESSION_ID;
     else process.env.PAPERCUSP_AUTH_SESSION_ID = prevSid;
+    if (prevPaperSid === undefined) delete process.env.PAPERCUSP_SID;
+    else process.env.PAPERCUSP_SID = prevPaperSid;
     _resetHookOwnerIdForTests();
   });
 
-  it('mints omp-<session>-<pid> from PAPERCUSP_AUTH_SESSION_ID', () => {
+  it('PREFERS PAPERCUSP_SID (the psu adv-session id) so the operator resolves the workspace via the adv-row', () => {
+    process.env.PAPERCUSP_SID = 'su-abc-123';
+    _resetHookOwnerIdForTests();
+    expect(hookOwnerId()).toBe('su-abc-123');
+  });
+
+  it('mints omp-<session>-<pid> from PAPERCUSP_AUTH_SESSION_ID when no PAPERCUSP_SID', () => {
     process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-abc';
     _resetHookOwnerIdForTests();
     expect(hookOwnerId()).toBe(`omp-pus-abc-${process.pid}`);
@@ -896,7 +925,7 @@ describe('hookOwnerId — per-process coordination owner (file-locking #2)', () 
     expect(hookOwnerId()).toBe(hookOwnerId());
   });
 
-  it('always ends with the real pid (distinguishes sibling shells)', () => {
+  it('always ends with the real pid (distinguishes sibling shells) in the minted fallback', () => {
     _resetHookOwnerIdForTests();
     expect(hookOwnerId().endsWith(`-${process.pid}`)).toBe(true);
   });
@@ -1619,6 +1648,30 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
     // Exactly one BEL (the terminator) and one ESC (the introducer).
     expect([...osc].filter((c) => c === BEL)).toHaveLength(1);
     expect([...osc].filter((c) => c === '\x1b')).toHaveLength(1);
+  });
+});
+
+describe('resolveHookWorkspace (robust workspace resolution)', () => {
+  const prevWs = process.env.PAPERCUSP_WORKSPACE;
+  const prevHome = process.env.PAPERCUSP_HOME;
+  afterEach(() => {
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE; else process.env.PAPERCUSP_WORKSPACE = prevWs;
+    if (prevHome === undefined) delete process.env.PAPERCUSP_HOME; else process.env.PAPERCUSP_HOME = prevHome;
+  });
+  it('prefers PAPERCUSP_WORKSPACE when set', () => {
+    process.env.PAPERCUSP_WORKSPACE = 'ws-env';
+    process.env.PAPERCUSP_HOME = '/home/u/.papercusp-workspaces/ws-path/.papercusp';
+    expect(resolveHookWorkspace()).toBe('ws-env');
+  });
+  it('derives the workspace from the .papercusp-workspaces/<ws>/ session path when no env var', () => {
+    delete process.env.PAPERCUSP_WORKSPACE;
+    process.env.PAPERCUSP_HOME = '/home/u/.papercusp-workspaces/papercusp-workspace/.papercusp';
+    expect(resolveHookWorkspace()).toBe('papercusp-workspace');
+  });
+  it('returns a string (empty) when neither env nor a workspace path is present', () => {
+    delete process.env.PAPERCUSP_WORKSPACE;
+    process.env.PAPERCUSP_HOME = '/home/u/not/a/workspace';
+    expect(typeof resolveHookWorkspace()).toBe('string');
   });
 });
 

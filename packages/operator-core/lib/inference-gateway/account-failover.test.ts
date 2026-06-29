@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { createFailoverPool } from './account-failover';
+import {
+  createFailoverPool,
+  accountLoadKey,
+  ACCOUNT_INFLIGHT_LOAD_WEIGHT,
+  SOFT_PIN_AFFINITY_CREDIT,
+} from './account-failover';
 import type { ActiveAccount } from './gateway';
 
 const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
@@ -32,6 +37,63 @@ describe('createFailoverPool (EI-535) — load distribution', () => {
     expect(seen.has('b')).toBe(false);
     expect(seen.has('a')).toBe(true);
     expect(seen.has('c')).toBe(true);
+  });
+});
+
+describe('accountLoadKey — load-aware selection (load-aware-routing-2026-06-29)', () => {
+  it('an idle, clean, fresh-proxy account scores 0 (the happy path — the proactive walk skips it)', () => {
+    expect(accountLoadKey({})).toBe(0);
+    expect(accountLoadKey({ inFlight: 0, utilization: 0 })).toBe(0);
+  });
+
+  it('paused or exhausted ⇒ Infinity (out of the race entirely)', () => {
+    expect(accountLoadKey({ paused: true })).toBe(Infinity);
+    expect(accountLoadKey({ exhausted: true })).toBe(Infinity);
+    // exhausted dominates even an otherwise-idle account (an exhausted account is UNUSABLE, not "slightly worse").
+    expect(accountLoadKey({ exhausted: true, inFlight: 0, utilization: 1 })).toBe(Infinity);
+  });
+
+  it('among accounts with headroom, the LEAST-LOADED (fewest in-flight) wins — in-flight is the primary term', () => {
+    // One extra in-flight request must outweigh the ENTIRE utilization range, so a busier-but-emptier
+    // account ranks WORSE than a quieter-but-fuller one.
+    const busyButEmpty = accountLoadKey({ inFlight: 1, utilization: 0.0 });
+    const quietButFull = accountLoadKey({ inFlight: 0, utilization: 0.95 });
+    expect(quietButFull).toBeLessThan(busyButEmpty);
+  });
+
+  it('utilization breaks ties between equally-loaded accounts (residual budget)', () => {
+    const emptier = accountLoadKey({ inFlight: 2, utilization: 0.2 });
+    const fuller = accountLoadKey({ inFlight: 2, utilization: 0.8 });
+    expect(emptier).toBeLessThan(fuller);
+    expect(fuller - emptier).toBeCloseTo(0.6, 6);
+  });
+
+  it('a flaky proxy is bucketed BEHIND every clean account but AHEAD of a paused/exhausted one', () => {
+    const flakyIdle = accountLoadKey({ flaky: true, inFlight: 0, utilization: 0 });
+    const cleanSlammed = accountLoadKey({ inFlight: 50, utilization: 1 });
+    expect(cleanSlammed).toBeLessThan(flakyIdle); // any clean account beats a flaky one…
+    expect(flakyIdle).toBeLessThan(Infinity); // …but a flaky account still beats a paused/exhausted one
+  });
+
+  it('the in-flight weight ≥ 1 so a single concurrent request overcomes the affinity credit (a pin yields)', () => {
+    // A pinned account at in-flight 1 vs an idle sibling at the same utilization: the sibling is better by
+    // ~ACCOUNT_INFLIGHT_LOAD_WEIGHT, which must exceed the affinity credit so the soft pin spreads.
+    expect(ACCOUNT_INFLIGHT_LOAD_WEIGHT).toBeGreaterThan(SOFT_PIN_AFFINITY_CREDIT);
+    const pin = accountLoadKey({ inFlight: 1, utilization: 0.3 });
+    const idleSibling = accountLoadKey({ inFlight: 0, utilization: 0.3 });
+    expect(idleSibling + SOFT_PIN_AFFINITY_CREDIT).toBeLessThan(pin); // sibling wins the yield decision
+  });
+
+  it('a sequential pin (in-flight 0) at the SAME utilization as a sibling is KEPT (affinity tiebreak)', () => {
+    const pin = accountLoadKey({ inFlight: 0, utilization: 0.3 });
+    const sibling = accountLoadKey({ inFlight: 0, utilization: 0.3 });
+    expect(sibling + SOFT_PIN_AFFINITY_CREDIT).not.toBeLessThan(pin); // sibling NOT better-by-credit → pin holds
+  });
+
+  it('non-finite / out-of-range inputs degrade gracefully (fail-soft)', () => {
+    expect(accountLoadKey({ inFlight: NaN, utilization: NaN })).toBe(0);
+    expect(accountLoadKey({ inFlight: -5, utilization: -1 })).toBe(0); // clamped to 0
+    expect(accountLoadKey({ inFlight: 0, utilization: 5 })).toBe(1); // utilization clamped to 1
   });
 });
 

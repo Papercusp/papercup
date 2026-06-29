@@ -33,6 +33,7 @@ import {
   type DependencyHostSets,
 } from '@papercusp/blueprint-distribution';
 import { blueprintRegistrySets } from '../blueprint/registry-sets';
+import { registerHarnessOpProxies } from '../harness-ops/proxy';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -186,6 +187,14 @@ export async function installBlueprintFromCupboardCore(
       blueprints: [],
     };
     if (!abstract) {
+      // P-002: register a PROXY CoordOp per harness-provided op this blueprint
+      // declares (`ops:` manifest), BEFORE the resolve+validate snapshots the op
+      // registry — so an installed blueprint that ships its own harness ops
+      // validates clean (the op name resolves) instead of failing `unknown-op`.
+      // Ops are declared on the blueprint that ships them, so the raw manifest is
+      // authoritative here. Default-inert when absent.
+      const rawOps = (raw as { ops?: unknown }).ops;
+      if (Array.isArray(rawOps)) registerHarnessOpProxies(rawOps as Parameters<typeof registerHarnessOpProxies>[0]);
       // P-001: validate the installed blueprint's ops/roles against THIS host's
       // live registries — a marketplace blueprint that names an op the host hasn't
       // registered fails the import with a clear `unknown-op` (422), not a runtime

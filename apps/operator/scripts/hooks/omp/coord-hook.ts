@@ -248,12 +248,23 @@ type AdvSessionLinkState = 'pending' | 'linked' | 'conflict';
 let _advSessionLinkState: AdvSessionLinkState = 'pending';
 export function hookOwnerId(): string {
   if (_hookOwnerId === null) {
-    const session =
-      process.env.PAPERCUSP_AUTH_SESSION_ID &&
-      process.env.PAPERCUSP_AUTH_SESSION_ID.length > 0
-        ? process.env.PAPERCUSP_AUTH_SESSION_ID
-        : Math.random().toString(36).slice(2, 10);
-    _hookOwnerId = `omp-${session}-${process.pid}`;
+    // Prefer the psu-assigned session id (PAPERCUSP_SID): it has an adv_sessions row the operator
+    // resolves the WORKSPACE through, so coord calls succeed even when PAPERCUSP_WORKSPACE is NOT in
+    // the env (the scoped-superuser clamp would otherwise reject every call → "coordination call
+    // failed this turn", every turn). It is unique per psu launch (lock isolation preserved) and
+    // matches the identity the agent's own MCP tool calls use, so the hook's presence/locks no longer
+    // split from the session. Fall back to a minted `omp-<session>-<pid>` only for a bare/non-psu omp
+    // launch that has no PAPERCUSP_SID.
+    const sid = process.env.PAPERCUSP_SID && process.env.PAPERCUSP_SID.length > 0 ? process.env.PAPERCUSP_SID : '';
+    if (sid) {
+      _hookOwnerId = sid;
+    } else {
+      const session =
+        process.env.PAPERCUSP_AUTH_SESSION_ID && process.env.PAPERCUSP_AUTH_SESSION_ID.length > 0
+          ? process.env.PAPERCUSP_AUTH_SESSION_ID
+          : Math.random().toString(36).slice(2, 10);
+      _hookOwnerId = `omp-${session}-${process.pid}`;
+    }
   }
   return _hookOwnerId;
 }
@@ -264,6 +275,29 @@ export function _resetHookOwnerIdForTests(): void {
   _advSessionLinkState = 'pending';
   _mode = 'attached';
   _lastProbeAtMs = 0;
+}
+
+/**
+ * Resolve the workspace for a coord call. PAPERCUSP_WORKSPACE is the primary source, but psu does
+ * NOT always export it into the omp env (and a bare `omp` launch never does), so fall back to the
+ * workspace name embedded in the session PATH — `.papercusp-workspaces/<workspace>/.papercusp`, the
+ * value PAPERCUSP_HOME / the cwd carries. Without a resolved workspace the scoped-superuser clamp
+ * rejects EVERY coord call ("coordination call failed this turn", every turn). Exported for tests.
+ */
+export function resolveHookWorkspace(): string {
+  const fromEnv = (process.env.PAPERCUSP_WORKSPACE ?? '').trim();
+  if (fromEnv) return fromEnv;
+  let cwd = '';
+  try {
+    cwd = process.cwd();
+  } catch {
+    cwd = '';
+  }
+  for (const p of [process.env.PAPERCUSP_HOME ?? '', cwd]) {
+    const m = p.match(/\.papercusp-workspaces\/([^/]+)/);
+    if (m && m[1] && m[1] !== '.papercusp') return m[1];
+  }
+  return '';
 }
 
 export async function callMcpTool(
@@ -307,14 +341,12 @@ export async function callMcpTool(
     }
   }
   const sessionId = env.sessionId ?? process.env.PAPERCUSP_AUTH_SESSION_ID ?? '';
-  // Workspace scope (scoped-superuser-workspace-clamp-2026-06-18): the clamp flag REJECTS a
-  // superuser coord call whose workspace can't be resolved (`scoped_superuser_workspace_unresolved`).
-  // The hook's minted owner id (`omp-<session>-<pid>`, hookOwnerId) has NO adv_sessions row to
-  // resolve a workspace through, and the one-shot POST carries no MCP session — so WITHOUT this
-  // header every coord call fails ("Papercusp coordination call failed this turn", every turn, once
-  // the clamp is on). psu exports PAPERCUSP_WORKSPACE into the OMP session env (the same value the
-  // user-level mcp.json passes via `!printf`); send it as the header the handler reads FIRST.
-  const workspace = env.workspace ?? process.env.PAPERCUSP_WORKSPACE ?? '';
+  // Workspace scope (scoped-superuser-workspace-clamp-2026-06-18): the clamp REJECTS a superuser
+  // coord call whose workspace can't be resolved — every coord call then fails ("Papercusp
+  // coordination call failed this turn", every turn). resolveHookWorkspace() resolves it robustly
+  // (PAPERCUSP_WORKSPACE if exported, else derived from the .papercusp-workspaces/<ws>/ session path),
+  // sent as the `x-papercusp-workspace` header the operator reads FIRST.
+  const workspace = env.workspace ?? resolveHookWorkspace();
   try {
     const res = await fetch(mcpUrl, {
       method: 'POST',

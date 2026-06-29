@@ -484,10 +484,17 @@ export const DRAIN_FULL_UTIL = 0.97;
 export const SOFT_PIN_AFFINITY_WEIGHT = Number(process.env.PAPERCUSP_SPAWN_SOFT_PIN_AFFINITY_WEIGHT) || 1.3;
 
 /** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never
- *  observed / stale (treat as most-available so a cold pool degrades gracefully). */
+ *  observed / stale / window-expired (treat as most-available so a cold pool degrades gracefully). */
 export function drainUtil(a: ClaudeAccount, now: number): number {
   const r = a.rate;
   if (r.utilization === undefined) return 0;
+  // WINDOW-RESET EXPIRY (stale-capped-projection fix, 2026-06-29): once the observed 5h window has
+  // passed its reset, the prior reading describes a window that NO LONGER EXISTS — the rolling budget
+  // is freed at the reset, so the stale "capped" fraction must self-expire to 0. Without this a fresh
+  // (within-staleness) reading kept gating a freed account as full, so it stayed excluded from
+  // rotation until a human ran `accounts:reset-rate` (owner-reported: aviynw + aviynw8 stuck capped
+  // after their windows had already reset). Re-validates automatically on the next observation.
+  if (r.windowResetAt !== undefined && now >= r.windowResetAt) return 0;
   if (r.utilizationAt !== undefined && now - r.utilizationAt > DRAIN_UTIL_STALE_MS) return 0;
   return r.utilization;
 }
@@ -502,6 +509,11 @@ export function drainUtil(a: ClaudeAccount, now: number): number {
 export function drainUtil7d(a: ClaudeAccount, now: number): number {
   const r = a.rate;
   if (r.utilization7d === undefined) return 0;
+  // WINDOW-RESET EXPIRY (mirrors drainUtil): a 7d reading past its weekly reset describes an expired
+  // window → 0, so a weekly-capped account auto-re-enters rotation the instant its window resets — even
+  // if the last observation is still "fresh" (within DRAIN_UTIL_STALE_MS). Handled BEFORE the staleness
+  // branch so the freed budget is recognised whether the reading is fresh or stale.
+  if (r.windowResetAt7d !== undefined && now >= r.windowResetAt7d) return 0;
   if (r.utilizationAt !== undefined && now - r.utilizationAt > DRAIN_UTIL_STALE_MS) {
     const weeklyResetPending = r.windowResetAt7d !== undefined && r.windowResetAt7d > now;
     if (weeklyResetPending && r.utilization7d >= DRAIN_FULL_UTIL) return r.utilization7d;

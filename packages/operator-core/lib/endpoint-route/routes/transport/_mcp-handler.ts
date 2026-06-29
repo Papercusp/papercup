@@ -916,6 +916,11 @@ Right layer for READS and WRITES — the memory↔docs boundary:
     drift-TRACKED (the freshness sweep) and AUTO-HEALED (the doc-steward); a mem0 vector cannot
     be anchored/swept/auto-rewritten, so how-it-works left only in mem0 silently rots. Do NOT
     park a runbook in mem0.
+  - **WHY a subsystem/decision is the way it is** (the rationale behind a design, not how it works):
+    READ via \`rationale:feed { topic }\` — a topic-keyed projection over the relevant
+    plan-decisions + work-items + insights, kept fresh by the event engine (\`topics:list\` for the
+    topic, then \`plans:get\`/\`docs:get\` on an entry's \`ref\` for the full text). The discoverable
+    "why" layer — reach for it before grepping plans/decisions by hand.
   - **A durable PERSONAL/PREFERENCE fact** (who the user is, a convention, an owner pref):
     READ via \`memory:search\`; WRITE via \`memory:remember\`. Keep mem0 entries SHORT, and when
     the why already lives in a doc/plan store only the non-derivable fact + a POINTER

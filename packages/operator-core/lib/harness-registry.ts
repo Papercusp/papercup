@@ -115,6 +115,33 @@ export interface ProjectEntry {
   /** Per-instance overrides of blueprint knobs (maxCostUsd, parallelWorkers, …) —
    *  the residue of config.json after phase/phases/dept are split out. */
   configOverrides?: Record<string, unknown>;
+  /**
+   * The local HTTP endpoint this harness's sidecar advertised on boot
+   * (`harness-provided-cadence-ops-2026-06-26` P-005). When a harness ships
+   * dispatched ops (`ops:` manifest, D-001), its sidecar POSTs `{host,port}` to
+   * the operator (`POST /harness/endpoint`), which persists it HERE so the
+   * routines engine / a proxy CoordOp's `run()` can find the sidecar to dispatch
+   * to (`harnessApiBase`). The durable registration path (vs. a home-dir
+   * discovery file): it lives in workspace PG with the rest of the project row,
+   * survives operator restarts, and is generic across harnesses. A DEPLOYED
+   * harness uses `deploymentFrame.callablePort` instead; this is the LOCAL path.
+   * Absent ⇒ no sidecar has advertised (the op dispatch fails closed with a clear
+   * "endpoint not registered" error — the cron is seeded INACTIVE so it never
+   * fires silently).
+   */
+  localEndpoint?: HarnessLocalEndpoint;
+}
+
+/** A harness sidecar's advertised local HTTP endpoint (P-005). */
+export interface HarnessLocalEndpoint {
+  /** Loopback host the sidecar bound (typically `127.0.0.1`). */
+  host: string;
+  /** The sidecar's HTTP port. */
+  port: number;
+  /** The sidecar process pid (diagnostics — detect a stale advert after a crash). */
+  pid?: number;
+  /** ISO timestamp of the advert (staleness check / last-seen). */
+  advertisedAt: string;
 }
 
 export interface HarnessRegistry {

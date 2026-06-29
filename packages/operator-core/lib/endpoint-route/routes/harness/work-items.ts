@@ -20,6 +20,7 @@
 import {
   listWorkItems,
   countWorkItems,
+  createWorkItem,
   isWorkItemKind,
   WORK_ITEMS_MAX_LIMIT,
   type WorkItem,
@@ -141,7 +142,58 @@ const getWorkItems = defineTool({
   },
 });
 
-export default [getWorkItems];
+/**
+ * POST /api/harness/:slug/work-items — create one work item for the harness
+ * (`harness-provided-cadence-ops-2026-06-26` P-007). The generic write seam a
+ * HARNESS sidecar uses to enqueue from a dispatched op: the oddsmith `prospect`
+ * op (now sidecar-owned) reads the bet-analysis backlog via the GET above for
+ * dedup and POSTs one generic `kind:'task'` item per survivor here (the
+ * `bet-analysis` payload, D-009/D-014), instead of operator-core hard-coding
+ * `createWorkItem` for it. A thin wrapper over the tested `createWorkItem` facade.
+ *
+ * `auth: 'loopback'` — a LOCAL sidecar enqueues over loopback (writes, unlike the
+ * public read above). Body: { kind, title, summary?, payload?, createdBy?,
+ * severity?, parent?, topics?, assignee? }. `kind` must be a known work-item kind.
+ */
+const postWorkItem = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/work-items',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    let body: Record<string, unknown>;
+    try {
+      body = (await req.json()) as Record<string, unknown>;
+    } catch {
+      return Response.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    }
+    const kind = body.kind;
+    if (typeof kind !== 'string' || !isWorkItemKind(kind)) {
+      return Response.json({ ok: false, error: `unknown or missing work_item kind '${String(kind)}'` }, { status: 400 });
+    }
+    const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : '';
+    if (!title) return Response.json({ ok: false, error: 'title required' }, { status: 400 });
+    try {
+      const item = await createWorkItem({
+        kind,
+        title,
+        summary: typeof body.summary === 'string' ? body.summary : undefined,
+        harness: slug,
+        payload: 'payload' in body ? body.payload : undefined,
+        createdBy: typeof body.createdBy === 'string' ? body.createdBy : undefined,
+        severity: body.severity as never,
+        parent: typeof body.parent === 'string' ? body.parent : undefined,
+        topics: Array.isArray(body.topics) ? (body.topics as string[]) : undefined,
+        assignee: typeof body.assignee === 'string' ? body.assignee : undefined,
+      });
+      return Response.json({ ok: true, id: item.id, item });
+    } catch (e) {
+      return Response.json({ ok: false, error: `work-item create failed: ${(e as Error).message}` }, { status: 500 });
+    }
+  },
+});
+
+export default [getWorkItems, postWorkItem];
 
 // Exported for unit tests (the pure merge; the SQL is live-exercised).
 export const __test = { mergeWorkItemDimensions };
