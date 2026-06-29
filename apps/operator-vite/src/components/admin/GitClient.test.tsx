@@ -17,6 +17,11 @@ vi.mock('nuqs', () => ({
   parseAsString: { withDefault: () => ({}) },
 }));
 
+// Tooltip pulls deps that don't load in the vite test env — passthrough (codebase convention).
+vi.mock('@/app/harness/Tooltip', () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 const snapshot = {
   slug: 'papercup',
   generatedAtMs: Date.now(),
