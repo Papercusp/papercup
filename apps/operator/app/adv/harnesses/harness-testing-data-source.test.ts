@@ -81,12 +81,27 @@ describe('makeHarnessTestingDataSource — read endpoints', () => {
     expect(await ds.fetchHealth('dom')).toBeNull();
   });
 
-  it('fetchHistory is always empty (harness keeps no per-file history)', async () => {
-    const spy = stubFetch(async () => ok({}));
+  it('fetchHistory hits file-history with the encoded filePath + limit + phase and returns rows (P-007/P-020)', async () => {
+    const rows = [{ status: 'pass', finishedAt: 1 }];
+    const spy = stubFetch(async () => ok({ rows }));
+    const ds = makeHarnessTestingDataSource('h', 'staging');
+    const out = await ds.fetchHistory('any.ts', 10);
+    expect(spy.mock.calls[0][0]).toBe(
+      '/api/harness/h/testing/file-history?filePath=any.ts&limit=10&phase=staging',
+    );
+    expect(out).toEqual(rows);
+  });
+
+  it('fetchHistory falls back to [] when the body has no rows key', async () => {
+    stubFetch(async () => ok({}));
     const ds = makeHarnessTestingDataSource('h', 'staging');
     expect(await ds.fetchHistory('any.ts', 10)).toEqual([]);
-    // No network call — it short-circuits to [].
-    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('fetchHistory falls back to [] on a non-ok response (fail-soft, never throws into the panel)', async () => {
+    stubFetch(async () => notOk(500));
+    const ds = makeHarnessTestingDataSource('h', 'staging');
+    expect(await ds.fetchHistory('any.ts', 10)).toEqual([]);
   });
 });
 
