@@ -153,7 +153,7 @@ type SqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<u
  * a human-edited row is never clobbered. ONLY the per-slug name is auto-registered —
  * extra_lock_resources names must already exist in the registry.
  */
-async function registerGitSyncResource(tx: SqlTag, slug: string): Promise<void> {
+export async function registerGitSyncResource(tx: SqlTag, slug: string): Promise<void> {
   const resource = gitSyncResourceName(slug);
   const description =
     `The automated git-sync pipeline for harness "${slug}" (commit + submodule push + merge + push to origin). ` +

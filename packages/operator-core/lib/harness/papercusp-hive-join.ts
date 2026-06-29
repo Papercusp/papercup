@@ -78,7 +78,14 @@ export interface JoinCanonicalDeps {
    *  Default: hive-directory listDiscoveredHives. */
   listDiscovered?: () => Promise<Array<{ hiveId: string; hivePubkey?: string; memberLinks?: string[] }>>;
   /** The hive join. Default: harness/join-hive joinHiveAsView. */
-  joinHive?: (opts: { hiveId: string; title?: string; memberLinks: string[]; workspaceId: string }) => Promise<{
+  joinHive?: (opts: {
+    hiveId: string;
+    title?: string;
+    /** The hive's Ed25519 pubkey (base64) — keys the joiner's hives-row identity (P-005). */
+    hivePubkey?: string;
+    memberLinks: string[];
+    workspaceId: string;
+  }) => Promise<{
     ok: boolean;
     hiveSlug?: string;
     error?: string;
