@@ -58,6 +58,47 @@ export function resolveClientNavigation(
   return { mode: 'soft', href, replace };
 }
 
+/**
+ * Perform a GENUINE hard navigation that survives the static desktop host's
+ * `location.assign`/`location.replace` override.
+ *
+ * The desktop host (`apps/operator-vite/index.html`, active on :3070/:4173 —
+ * what the packaged desktop webview loads) redefines `location.assign` and
+ * `location.replace` to a SAME-ORIGIN soft `pushState`/`replaceState`, so a
+ * stray JS navigation can't reload the desktop session mid-task while
+ * `vite build --watch` rewrites `dist/`. That override silently downgrades a
+ * forced-hard nav (a workspace switch → `/harness?ws=<id>`) to a soft one: the
+ * document never reloads, the host never re-injects `window.__PAPERCUSP_WS__`,
+ * and `getBrowserWorkspaceId()` keeps returning the OLD workspace — the
+ * "switch does nothing" bug.
+ *
+ * The host stashes the genuine methods on `window` BEFORE installing the
+ * overrides (`__papercuspOriginalAssign`/`__papercuspOriginalReplace`, mirroring
+ * `__papercuspOriginalReload` — see lib/hard-reload.ts), precisely so a
+ * deliberate hard nav can bypass the suppression. The stash + the override are
+ * installed together in one try-block (stash first), so the two consistent
+ * states are: (a) stash present AND override present → use the stash to bypass;
+ * (b) no stash AND no override (off-desktop, or the block aborted) → the native
+ * methods are genuine. Either way this reaches a real document load.
+ */
+function hardNavigate(href: string, replace: boolean): void {
+  const w = window as unknown as {
+    __papercuspOriginalAssign?: (target: string) => void;
+    __papercuspOriginalReplace?: (target: string) => void;
+  };
+  const stashed = replace ? w.__papercuspOriginalReplace : w.__papercuspOriginalAssign;
+  if (typeof stashed === 'function') {
+    try {
+      stashed(href);
+      return;
+    } catch {
+      /* fall through to the native methods (genuine off-desktop) */
+    }
+  }
+  if (replace) window.location.replace(href);
+  else window.location.assign(href);
+}
+
 export function navigateClient(target: string, opts?: { replace?: boolean; hard?: boolean }): void {
   if (typeof window === 'undefined') return;
   const action = resolveClientNavigation(target, window.location.href, {
@@ -65,8 +106,7 @@ export function navigateClient(target: string, opts?: { replace?: boolean; hard?
     currentWorkspaceId: getBrowserWorkspaceId(),
   });
   if (action.mode === 'hard' && action.href) {
-    if (action.replace) window.location.replace(action.href);
-    else window.location.assign(action.href);
+    hardNavigate(action.href, action.replace);
     return;
   }
   if (action.mode === 'none') return;

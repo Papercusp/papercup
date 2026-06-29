@@ -17,13 +17,26 @@
           const originalReload = location.reload.bind(location);
           const originalAssign = location.assign.bind(location);
           const originalReplace = location.replace.bind(location);
-          // Stash the genuine reload FIRST — before the reload/assign/replace
-          // overrides below, which can throw on some webviews (WebKitGTK) and
-          // would otherwise abort this block before the escape hatch is set,
-          // leaving hardReload() (lib/hard-reload.ts) with no working reload.
+          // Stash the genuine reload/assign/replace FIRST — before the
+          // reload/assign/replace overrides below, which can throw on some
+          // webviews (WebKitGTK) and would otherwise abort this block before the
+          // escape hatches are set, leaving hardReload() (lib/hard-reload.ts) and
+          // hardNavigate() (lib/client-navigation.ts) with no genuine method to
+          // bypass the suppression. The assign/replace stashes let a DELIBERATE
+          // hard navigation (a workspace switch → /harness?ws=<id>) force a real
+          // document load; without them the override below downgrades it to a
+          // soft pushState and the switch silently no-ops.
           Object.defineProperty(window, '__papercuspOriginalReload', {
             configurable: true,
             value: originalReload,
+          });
+          Object.defineProperty(window, '__papercuspOriginalAssign', {
+            configurable: true,
+            value: originalAssign,
+          });
+          Object.defineProperty(window, '__papercuspOriginalReplace', {
+            configurable: true,
+            value: originalReplace,
           });
           const softNavigate = (target, replace) => {
             try {

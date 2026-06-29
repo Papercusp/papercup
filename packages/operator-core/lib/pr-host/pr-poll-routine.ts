@@ -110,6 +110,7 @@ export async function getPrPollRoutine(sql: Sql, installSlug: string): Promise<R
     payloadTemplate: (r.payload_template ?? null) as RoutineRow['payloadTemplate'],
     concurrency: r.concurrency as RoutineRow['concurrency'],
     catchup: r.catchup as RoutineRow['catchup'],
+    tier: (r.tier as RoutineRow['tier']) ?? 'durable',
     active: Boolean(r.active),
     lastFiredAt: (r.last_fired_at ?? null) as Date | null,
     nextFireAt: (r.next_fire_at ?? null) as Date | null,

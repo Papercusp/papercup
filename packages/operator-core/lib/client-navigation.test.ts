@@ -135,4 +135,47 @@ describe('navigateClient', () => {
     expect(w.history.pushState).toHaveBeenCalledWith({}, '', '/harness/sub?ws=alpha');
     expect(w.location.assign).not.toHaveBeenCalled();
   });
+
+  // Regression: the static desktop host (apps/operator-vite/index.html, :3070/
+  // :4173) overrides location.assign/replace to a same-origin soft pushState.
+  // A forced-hard nav (workspace switch) MUST bypass that via the stashed
+  // genuine methods, or the document never reloads and the switch no-ops
+  // ("switching workspaces does nothing" on the desktop).
+  it('hard nav bypasses the desktop-host assign override via the stashed original', () => {
+    const w = stubWindow();
+    const orig = vi.fn();
+    (w as { __papercuspOriginalAssign?: (t: string) => void }).__papercuspOriginalAssign = orig;
+    navigateClient('http://localhost:3070/harness?ws=beta', { hard: true });
+    expect(orig).toHaveBeenCalledWith('http://localhost:3070/harness?ws=beta');
+    // The overridden (soft-downgrading) assign must NOT be used.
+    expect(w.location.assign).not.toHaveBeenCalled();
+    expect(w.history.pushState).not.toHaveBeenCalled();
+  });
+
+  it('hard replace nav bypasses the desktop-host replace override via the stashed original', () => {
+    const w = stubWindow();
+    const orig = vi.fn();
+    (w as { __papercuspOriginalReplace?: (t: string) => void }).__papercuspOriginalReplace = orig;
+    navigateClient('http://localhost:3070/harness?ws=beta', { hard: true, replace: true });
+    expect(orig).toHaveBeenCalledWith('http://localhost:3070/harness?ws=beta');
+    expect(w.location.replace).not.toHaveBeenCalled();
+  });
+
+  it('a workspace switch on the desktop host forces a real document load', () => {
+    // The exact bug scenario: window is in workspace alpha, switch to beta.
+    const w = stubWindow();
+    (w as { __PAPERCUSP_WS__?: string }).__PAPERCUSP_WS__ = 'alpha';
+    const orig = vi.fn();
+    (w as { __papercuspOriginalAssign?: (t: string) => void }).__papercuspOriginalAssign = orig;
+    navigateClient('/harness?ws=beta');
+    expect(orig).toHaveBeenCalledWith('http://localhost:3070/harness?ws=beta');
+    expect(w.location.assign).not.toHaveBeenCalled();
+    expect(w.history.pushState).not.toHaveBeenCalled();
+  });
+
+  it('falls back to native assign off-desktop when no stash is present', () => {
+    const w = stubWindow();
+    navigateClient('http://evil.com/x', { hard: true });
+    expect(w.location.assign).toHaveBeenCalledWith('http://evil.com/x');
+  });
 });

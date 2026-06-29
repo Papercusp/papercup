@@ -24,8 +24,8 @@ describe('triggerRoutineSpecs (P-021 / D-018)', () => {
       },
     });
     expect(specs).toEqual([
-      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false, singletonActive: false },
-      { name: 'bp-schedule-1', cron: '*/30 * * * * *', targetRole: 'system:git-sync', singleton: false, singletonActive: false },
+      { name: 'bp-schedule-0', tier: 'durable', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false, singletonActive: false },
+      { name: 'bp-schedule-1', tier: 'durable', cron: '*/30 * * * * *', targetRole: 'system:git-sync', singleton: false, singletonActive: false },
     ]);
   });
 
@@ -76,8 +76,8 @@ describe('triggerRoutineSpecs — workspace-singleton triggers (D-018)', () => {
       },
     });
     expect(specs).toEqual([
-      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false, singletonActive: false },
-      { name: 'bp-singleton-regret-1', cron: '0 35 */6 * * *', targetRole: 'system:blueprint-run', singleton: true, singletonActive: false },
+      { name: 'bp-schedule-0', tier: 'durable', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false, singletonActive: false },
+      { name: 'bp-singleton-regret-1', tier: 'durable', cron: '0 35 */6 * * *', targetRole: 'system:blueprint-run', singleton: true, singletonActive: false },
     ]);
   });
 
@@ -106,6 +106,52 @@ describe('triggerRoutineSpecs — workspace-singleton triggers (D-018)', () => {
   it('the reserved host-slug is disjoint from real harness slugs (leading @)', () => {
     expect(SINGLETON_TRIGGER_HOST_SLUG).toBe('@singleton');
     expect(SINGLETON_TRIGGER_HOST_SLUG.startsWith('@')).toBe(true);
+  });
+});
+
+describe('triggerRoutineSpecs — ephemeral tier (P-011 / D-006)', () => {
+  it('derives an ephemeral spec (tier=ephemeral, intervalSec, no cron) from a tier:ephemeral entry', () => {
+    const specs = triggerRoutineSpecs({
+      triggers: { schedule: [{ tier: 'ephemeral', action: 'system:hive-watchdog-sweep', intervalSec: 5 }] },
+    });
+    expect(specs).toEqual([
+      {
+        name: 'bp-schedule-0',
+        tier: 'ephemeral',
+        intervalSec: 5,
+        targetRole: 'system:hive-watchdog-sweep',
+        singleton: false,
+        singletonActive: false,
+      },
+    ]);
+    expect(specs[0].cron).toBeUndefined();
+  });
+
+  it('defaults tier to durable for a plain cron entry', () => {
+    const specs = triggerRoutineSpecs({ triggers: { schedule: [{ cron: '*/5 * * * *', action: 'system:foo' }] } });
+    expect(specs[0].tier).toBe('durable');
+    expect(specs[0].intervalSec).toBeUndefined();
+  });
+
+  it('throws when a tier:ephemeral entry omits intervalSec', () => {
+    expect(() =>
+      triggerRoutineSpecs({ triggers: { schedule: [{ tier: 'ephemeral', action: 'system:foo' }] } }),
+    ).toThrow(/ephemeral.*requires intervalSec/i);
+  });
+
+  it('throws when a tier:durable entry omits cron', () => {
+    expect(() =>
+      triggerRoutineSpecs({ triggers: { schedule: [{ action: 'system:foo' }] } }),
+    ).toThrow(/durable.*requires cron/i);
+  });
+
+  it('rejects an ephemeral singleton (unsupported combination)', () => {
+    expect(() =>
+      triggerRoutineSpecs({
+        id: 'x',
+        triggers: { schedule: [{ tier: 'ephemeral', action: 'system:foo', intervalSec: 5, singleton: true }] },
+      }),
+    ).toThrow(/ephemeral.*not supported for a singleton/i);
   });
 });
 

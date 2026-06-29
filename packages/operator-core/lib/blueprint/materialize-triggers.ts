@@ -130,8 +130,13 @@ export interface TriggerRoutineSpec {
    *  `bp-schedule-<i>`. Singleton: `bp-singleton-<blueprintId>-<i>` (blueprint-unique under
    *  the shared reserved host-slug). */
   name: string;
-  /** 6- or 5-field crontab. */
-  cron: string;
+  /** Execution tier (P-010/D-006): 'durable' = a cron routine fired by routinesTick;
+   *  'ephemeral' = a frequent in-process cadence (intervalSec), excluded from the tick. */
+  tier: 'durable' | 'ephemeral';
+  /** 6- or 5-field crontab — present for tier:'durable'; undefined for tier:'ephemeral'. */
+  cron?: string;
+  /** Cadence in SECONDS — present for tier:'ephemeral'; undefined for tier:'durable'. */
+  intervalSec?: number;
   /** target_role — `system:<action>` routes to a registered system action; a bare role spawns it. */
   targetRole: string;
   /** Workspace-singleton (D-018): one dark routine per workspace under the reserved host-slug,
@@ -179,9 +184,24 @@ export function triggerRoutineSpecs(blueprint: BlueprintTriggerInput): TriggerRo
           'host-slug). Pass the full blueprint, not just its triggers.',
       );
     }
+    const tier = entry.tier ?? 'durable';
+    // Post-validate invariants (blueprint:validate enforces these author-time; guard here so a
+    // raw/hand-built input can never mint a malformed routine row).
+    if (tier === 'ephemeral') {
+      if (entry.intervalSec == null) {
+        throw new Error(`materializeBlueprintTriggers: tier:'ephemeral' schedule entry ${i} requires intervalSec`);
+      }
+      if (singleton) {
+        throw new Error(`materializeBlueprintTriggers: tier:'ephemeral' is not supported for a singleton trigger (entry ${i})`);
+      }
+    } else if (entry.cron == null) {
+      throw new Error(`materializeBlueprintTriggers: tier:'durable' schedule entry ${i} requires cron`);
+    }
     return {
       name: singleton ? `bp-singleton-${blueprint.id}-${i}` : `bp-schedule-${i}`,
+      tier,
       cron: entry.cron,
+      intervalSec: entry.intervalSec,
       targetRole: entry.action || DEFAULT_SCHEDULE_ACTION,
       singleton,
       singletonActive: singleton ? (entry.singletonActive ?? false) : false,
@@ -235,6 +255,40 @@ async function upsertSingletonRoutine(
 }
 
 /**
+ * Upsert a per-install EPHEMERAL routine (schedule-inventory-and-ephemeral-tier-2026-06-26
+ * P-011 / D-006). An ephemeral row carries `tier='ephemeral'`, the cadence in
+ * `trigger_config.interval_sec` (seconds), NO cron, and `next_fire_at = NULL` — the DBOS
+ * `routinesTick` EXCLUDES it (`listDueCronRoutines` is durable-only), and the per-host
+ * ephemeral executor (P-012) arms a `managedSetInterval` per ACTIVE ephemeral row on boot.
+ * Idempotent on (install_slug, name). Seeded ACTIVE (the blueprint author declared it).
+ */
+async function upsertEphemeralRoutine(
+  sql: Sql,
+  input: { workspaceId: string; installSlug: string; name: string; intervalSec: number; targetRole: string },
+): Promise<{ id: string }> {
+  const id = `rt_${input.installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+  const triggerConfig = JSON.stringify({ interval_sec: input.intervalSec });
+  const rows = await sql<{ id: string }[]>`
+    INSERT INTO harness_shared.routines
+      (id, install_slug, name, trigger_kind, trigger_config, target_role,
+       concurrency, catchup, active, tier, next_fire_at, workspace_id)
+    VALUES (
+      ${id}, ${input.installSlug}, ${input.name}, 'cron',
+      ${triggerConfig}::text::jsonb, ${input.targetRole},
+      'skip', 'skip-old', TRUE, 'ephemeral', NULL, ${input.workspaceId}
+    )
+    ON CONFLICT (install_slug, name) DO UPDATE SET
+      trigger_kind   = EXCLUDED.trigger_kind,
+      trigger_config = EXCLUDED.trigger_config,
+      target_role    = EXCLUDED.target_role,
+      tier           = EXCLUDED.tier,
+      updated_at     = now()
+    RETURNING id
+  `;
+  return { id: rows[0].id };
+}
+
+/**
  * Upsert a blueprint's schedule triggers as `harness_shared.routines` rows.
  * Returns the materialized routines ([] when the blueprint declares no schedule).
  *
@@ -273,6 +327,20 @@ export async function materializeBlueprintTriggers(
 
   const out: MaterializedRoutine[] = [];
   for (const spec of specs) {
+    if (spec.tier === 'ephemeral') {
+      // Per-install ephemeral cadence (triggerRoutineSpecs guarantees intervalSec + non-singleton).
+      const row = await upsertEphemeralRoutine(sql, {
+        workspaceId,
+        installSlug,
+        name: spec.name,
+        intervalSec: spec.intervalSec!,
+        targetRole: spec.targetRole,
+      });
+      out.push({ ...spec, id: row.id, hostSlug: installSlug });
+      continue;
+    }
+    // Durable from here — cron is guaranteed present by triggerRoutineSpecs.
+    const cron = spec.cron!;
     if (spec.singleton) {
       // DEPLOYMENT-MODE GATE (P-070): skip a Class-C platform-improvement singleton when
       // platform mode is OFF — no @singleton row is written, so it ships dark on a public
@@ -284,7 +352,7 @@ export async function materializeBlueprintTriggers(
       const row = await upsertSingletonRoutine(sql, {
         workspaceId,
         name: spec.name,
-        cron: spec.cron,
+        cron,
         targetRole: spec.targetRole,
         blueprintId: blueprint.id as string,
         seedActive: spec.singletonActive,
@@ -300,7 +368,7 @@ export async function materializeBlueprintTriggers(
         installSlug,
         name: spec.name,
         triggerKind: 'cron',
-        triggerConfig: { cron: spec.cron },
+        triggerConfig: { cron },
         targetRole: spec.targetRole,
         active: true,
       },
