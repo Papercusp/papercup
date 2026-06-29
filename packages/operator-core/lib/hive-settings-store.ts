@@ -216,6 +216,51 @@ export async function listHiveInstancePromptOverrides(
   return out;
 }
 
+// ── Per-hive release green-command override ───────────────────────────────────────
+// per-hive-git-and-release-gate-2026-06-29 P-014 (+ P-007's deferred override layering).
+// The green-gate command resolves blueprint-knob `releaseGate.greenCmd` ?? the detected
+// `testCommand` ?? build (hive-release-env.ts). An OWNER can override it per-hive from
+// /admin/git — stored here as a federated `hive_settings` value so it survives a re-clone
+// and rides the Hive peer-log. resolveHiveReleaseEnv reads this as the TOP precedence
+// (override > knob > testCommand > build), so the gate runs the edited command.
+
+export const RELEASE_GREEN_CMD_SETTING_KEY = 'release.greenCmd';
+
+/** Get a hive's per-install green-command override (null when unset / blank). */
+export async function getReleaseGreenCmdOverride(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  sql?: Sql,
+): Promise<string | null> {
+  const rec = await getHiveSetting(workspaceId, hiveHomeSlug, RELEASE_GREEN_CMD_SETTING_KEY, sql);
+  if (!rec || rec.value == null) return null;
+  const v = typeof rec.value === 'string' ? rec.value : String(rec.value);
+  const trimmed = v.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Set (upsert) a hive's per-install green-command override. Federates. */
+export async function setReleaseGreenCmdOverride(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  greenCmd: string,
+  sql?: Sql,
+): Promise<void> {
+  await setHiveSetting(
+    { workspaceId, hiveHomeSlug, settingKey: RELEASE_GREEN_CMD_SETTING_KEY, value: greenCmd },
+    sql,
+  );
+}
+
+/** Delete a hive's green-command override (idempotent — reverts to the detected default). */
+export async function deleteReleaseGreenCmdOverride(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  sql?: Sql,
+): Promise<boolean> {
+  return deleteHiveSetting(workspaceId, hiveHomeSlug, RELEASE_GREEN_CMD_SETTING_KEY, sql);
+}
+
 // ── Hive-INSTANCE structured config deltas (the local-tier blueprint config) ──────
 // domain-generic-hive-architecture-2026-06-18 P-015 / D-005. A role's PROSE persona
 // rides `promptOverride.<role>` above; but the hive's STRUCTURED tuning (e.g. how the

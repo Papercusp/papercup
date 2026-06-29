@@ -321,6 +321,32 @@ test('a BARE upstream 429 (no rate-limit headers) fails over to the next account
   assert.ok(seen.has(survivor), `the healthy account '${survivor}' still serves rotation`);
 });
 
+test('BARE-429 PERSISTENCE CIRCUIT: a sustained bare-429 streak on one account ESCALATES its pause so the pool auto-routes around a per-IP-throttled egress IP (auto-route-around 2026-06-29)', async () => {
+  // The bug: a 429 means "the proxy worked", so the TRANSPORT egress circuit never trips on a per-IP edge
+  // 429-throttle — the account was paced only the base backoff, rejoined, and got re-throttled forever (the
+  // pool never auto-routed around the bad IP → owner-reported "constant api errors on the pinned account
+  // though it has quota"). Fix: consecutive bare-429s ESCALATE the pause (×2 past the threshold), so the
+  // pool's pin-yield / soft-pin-failover / health-pick route AROUND the throttled IP.
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    // This account's egress IP is persistently edge-throttled: ALWAYS a bare 429 (no rate-limit headers).
+    res.writeHead(429, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+  });
+  const onlyA: ActiveAccount = { accountId: 'A', token: async () => 't', invalidateToken: () => {} };
+  const pool: AccountPool = { active: () => onlyA, onExhausted: () => null, select: (id) => (id === 'A' ? onlyA : null) };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50, requestAbsorbMs: 0, internalRetryDeadlineMs: 2000, bare429FailoverBackoffMs: 50 });
+  port = await gw.listen(0);
+  const gov = getGovernor('anthropic', 'opus', undefined, 'A');
+  // One request drives the consecutive-bare-429 retry ladder past the streak threshold (default 4).
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  const pausedForMs = gov.state.pausedUntil - Date.now();
+  // Base backoff is 50ms; the circuit escalates it (×2 per step past the threshold), so the surviving pause
+  // is well beyond a single 50ms pace — which is what makes the pool durably route AROUND this IP.
+  assert.ok(pausedForMs > 100, `bare-429 circuit escalated A's pause to ${pausedForMs}ms (>> the 50ms base) so the pool routes around the throttled IP`);
+  resetGovernorRegistry();
+});
+
 test('ALL accounts transiently throttled (bare 429) → gateway WAITS out the short penalty + retries, returns the recovered 200 (not a forwarded retryable 429)', async () => {
   // The owner-reported gap (2026-06-18): a transient burst-throttle (bare 429, x-should-retry:true —
   // capacity EXISTS) on EVERY pool account used to make the gateway give up + forward the retryable

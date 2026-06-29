@@ -127,6 +127,18 @@ const BAREBURST_CLUSTER_MIN_ACCOUNTS = Number(process.env.PAPERCUSP_GATEWAY_BARE
  *  transient-throttle duration: long enough to let it clear, short enough not to over-bench an
  *  account that's already recovered (which would thin the pool under broad concurrent contention). */
 const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
+/** BARE-429 PERSISTENCE CIRCUIT (auto-route-around fix, 2026-06-29). A bare/burst 429 is normally a SHORT
+ *  transient (paced 15s above). But a per-IP Cloudflare EDGE throttle on an account's egress proxy returns
+ *  the SAME bare 429 PERSISTENTLY — and since a 429 means "the proxy WORKED", the transport egress circuit
+ *  (which counts only stalls/connect-errors) never trips. So the account was paced only 15s, rejoined
+ *  rotation, and got re-throttled forever — the pool NEVER auto-routed around the bad IP (owner-reported
+ *  "constant api errors on the pinned account even though it has usage + rate-limit headroom"; the throttle
+ *  is on the IP, not the account quota). FIX: count CONSECUTIVE bare-429s per account; once the streak
+ *  crosses the threshold, ESCALATE the pause (double per step, capped) so the existing pin-yield /
+ *  soft-pin-failover / health-pick selectors route AROUND the throttled IP to healthy accounts — the 429
+ *  analogue of the transport egress circuit. Reset on the next 2xx. Disable with THRESHOLD=0. */
+const BARE429_CIRCUIT_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_BARE429_CIRCUIT_THRESHOLD ?? 4);
+const BARE429_CIRCUIT_MAX_MS = Number(process.env.PAPERCUSP_GATEWAY_BARE429_CIRCUIT_MAX_MS) || 120_000;
 /** SOFT-PIN failover threshold: the per-account in-flight count at/above which a header-PINNED request stops
  *  funneling onto its pinned account and yields to the healthiest idle sibling instead (owner-reported
  *  "unpinned 10+ sessions fine, but pinned breaks after a few" — pinning concentrates N concurrent sessions
@@ -1050,6 +1062,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // account's circuit via gov.pausedUntil (the same lever the 429 hard-cap uses). `egressProbePending`
   // dedupes the half-open probe.
   const egressFailStreak = new Map<string, number>();
+  /** Consecutive bare-429 streak per account → the BARE-429 PERSISTENCE CIRCUIT (auto-route-around). Reset on 2xx. */
+  const bare429Streak = new Map<string, number>();
   const egressProbePending = new Set<string>();
   // FLAPPING BACKOFF state (2026-06-22): per-account reopen count + last-open time, so a proxy that keeps
   // reopening soon after readmit gets a progressively longer circuit-open (decays via EGRESS_FLAP_RESET_MS).
@@ -2141,8 +2155,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
               gov.penalize({ ...reset, rateLimited: true });
               exhaustResetAt = reset.resetAt ?? Date.now() + Math.min(reset.retryAfterMs ?? bare429FailoverBackoffMs, 5 * 60 * 1000);
             } else if (bare429) {
-              gov.penalize({ retryAfterMs: bare429FailoverBackoffMs, resetAt: Date.now() + bare429FailoverBackoffMs, rateLimited: true });
-              exhaustResetAt = Date.now() + bare429FailoverBackoffMs;
+              // BARE-429 PERSISTENCE CIRCUIT (auto-route-around): a brief burst is paced 15s, but a SUSTAINED
+              // streak = a per-IP edge throttle that isn't clearing → escalate the pause (double per step, capped)
+              // so the pool routes AROUND this IP to healthy accounts instead of re-hammering it every 15s forever.
+              const streak = (bare429Streak.get(active.accountId) ?? 0) + 1;
+              bare429Streak.set(active.accountId, streak);
+              const circuitOn = BARE429_CIRCUIT_THRESHOLD > 0 && streak >= BARE429_CIRCUIT_THRESHOLD;
+              const pauseMs = circuitOn
+                ? Math.min(bare429FailoverBackoffMs * 2 ** (streak - BARE429_CIRCUIT_THRESHOLD + 1), BARE429_CIRCUIT_MAX_MS)
+                : bare429FailoverBackoffMs;
+              gov.penalize({ retryAfterMs: pauseMs, resetAt: Date.now() + pauseMs, rateLimited: true });
+              exhaustResetAt = Date.now() + pauseMs;
+              if (circuitOn) {
+                log('warn', `inference-gateway: BARE-429 CIRCUIT for '${active.accountId}' (${streak} consecutive bare-429s — persistent per-IP edge throttle, not a brief burst) → pausing ${Math.round(pauseMs / 1000)}s so the pool routes around this IP`);
+              }
               // G1 (WI-649): a bare-burst is a TRANSIENT throttle (capacity exists) — distinct from the usage-cap
               // wall handled above. If ≥half the pool is already out of rotation, rotating onto "another" account
               // finds no capacity and just sustains the storm → suppress the rotate-retry so this request falls
@@ -2351,6 +2377,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // its consecutive-401 streak so a later dead-credential episode re-arms a fresh alert (and a
           // recovered-but-previously-flapping credential never carries a stale streak into a false alert).
           if (credential401Streak.has(active.accountId)) credential401Streak.delete(active.accountId);
+          // BARE-429 PERSISTENCE CIRCUIT: a 2xx means this account's egress IP is serving again → clear its
+          // bare-429 streak so a recovered IP rejoins rotation at the base 15s pace (no stale escalation).
+          if (bare429Streak.has(active.accountId)) bare429Streak.delete(active.accountId);
         }
         // P-002 autowake-coverage (2026-06-22): a FORWARDED retryable rate-limit (a 429/529 the gateway could not
         // retry away) to an IDENTIFIED bee → record a stall so the stall-waker re-wakes it when this account

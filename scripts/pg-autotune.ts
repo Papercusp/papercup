@@ -175,3 +175,14 @@ if (newMax !== settings.max_connections) {
       `(another conf.d file or an ALTER SYSTEM override may win).`,
   );
 }
+
+const newPreload = psql('show shared_preload_libraries') ?? '';
+if (newPreload.includes('pg_stat_statements')) {
+  console.log(`✓ shared_preload_libraries now live: ${newPreload}`);
+} else {
+  console.error(
+    `WARNING: shared_preload_libraries=${newPreload || '<empty>'} does not include ` +
+      `pg_stat_statements — query telemetry will not be collected (a later conf.d ` +
+      `file or ALTER SYSTEM may override the drop-in).`,
+  );
+}

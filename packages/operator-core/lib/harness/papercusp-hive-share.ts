@@ -77,6 +77,13 @@ export interface HiveShareDeps {
   /** Extra GitHub logins admitted beyond the owner — the team allowlist that makes the
    *  dogfood a real SHARED hive (P-007). Default: CANONICAL_HIVE_TEAM_ALLOWLIST. */
   teamAllowlist?: readonly string[];
+  /** P-019 — the hive's membership admission mode. Default 'allowlist' (the canonical dogfood
+   *  hive is a PRIVATE team hive — D-001). A PUBLIC project hive passes 'open' so anyone may join
+   *  + contribute without being a collaborator; 'approval' queues join requests for the owner. */
+  membershipMode?: 'open' | 'approval' | 'allowlist';
+  /** P-018 / D-012 — federated content write authority. Default: author-scoped for an `open` hive
+   *  (so a stranger-member can't delete others' plans), else 'member' (trusted-hive behavior). */
+  contentWriteAuthority?: 'member' | 'author-scoped';
 }
 
 async function defaultIsEnabled(): Promise<boolean> {
@@ -181,12 +188,21 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
     // makes the dogfood a real SHARED hive while repos stay private), all authenticated
     // via the device-attestation binding (not spoofable); refuse everyone else.
     const teamAllowlist = deps.teamAllowlist ?? CANONICAL_HIVE_TEAM_ALLOWLIST;
+    const membershipMode = deps.membershipMode ?? 'allowlist';
+    // P-019: an `open` PUBLIC hive admits anyone (no allowlist gate) and DEFAULTS to author-scoped
+    // content writes (P-018/D-012) so a stranger-member can't overwrite/delete others' plans. A
+    // private allowlist/approval hive keeps the owner+team gate and 'member' writes (today).
+    const contentWriteAuthority =
+      deps.contentWriteAuthority ?? (membershipMode === 'open' ? 'author-scoped' : 'member');
     await authorPolicy({
       workspaceId: PAPERCUSP_WORKSPACE_ID,
       hiveHomeSlug: PAPERCUSP_HIVE_SLUG,
       policy: {
-        membership: 'allowlist',
+        membership: membershipMode,
+        // The allowlist is only consulted under 'allowlist' mode, but we always carry the owner+team
+        // set so flipping modes later doesn't lose it; it is inert under 'open'/'approval'.
         allowlist: Array.from(new Set([state.githubLogin, ...teamAllowlist])),
+        ...(contentWriteAuthority === 'author-scoped' ? { contentWriteAuthority } : {}),
       },
     });
   } catch {

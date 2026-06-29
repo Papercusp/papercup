@@ -521,7 +521,16 @@ export function extractPublicKeyHex(peerInfo: unknown): string | undefined {
  * cleared on `close()`.
  */
 export const DEFAULT_SUBSTRATE_REFRESH_MS = 2500;
-export const DEFAULT_SUBSTRATE_FAST_WINDOW_MS = 30_000;
+// D-045 (shared-hive-member-content-federation): widened 30_000 → 120_000. A
+// freshly-SPAWNED sidecar process joining over the PUBLIC DHT reliably misses the
+// first several announce/lookup rounds (cold start); with the old 30s fast window
+// the next announce after 30s fell to the 60s SLOW cadence → a ~90s dead zone where
+// two genuinely-separate machines never peer_connected (live run-12 'no peer in
+// ~90s'; local testnet peers instantly so it was invisible to tests). 120s of 2.5s
+// re-announces keeps a cold node aggressively discoverable until it pairs, then drops
+// to the bounded SLOW keepalive — a real join-latency fix for a user joining a hive,
+// still bounded (no forever-hammering). Re-armed on last-peer-loss for snappy reheal.
+export const DEFAULT_SUBSTRATE_FAST_WINDOW_MS = 120_000;
 export const DEFAULT_SUBSTRATE_SLOW_REFRESH_MS = 60_000;
 
 export async function joinHarnessSwarm(

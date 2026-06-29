@@ -23,6 +23,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { decideMemberContentOp } from '../member-content-guard';
+import type { PendingMembershipContent } from '../pending-membership-content';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
  *  federate via harness_plans). */
@@ -69,6 +71,13 @@ export interface CoordMessageProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of the global getOrgPg().sql. */
   sql?: postgres.Sql;
+  /** WI-259 parity (shared-hive comms federation): hive-home slug when this harness is a hive
+   *  MEMBER — a cross-member coord op is membership-gated only when set. */
+  hiveHomeSlug?: string;
+  /** WI-259 parity: resolve an op's VERIFIED source-log device pubkey from sourceLogKeyHex. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
+  /** WI-259 P-004 parity: content-before-membership defer buffer. */
+  pendingMemberContent?: PendingMembershipContent;
 }
 
 function composeKey(row: CoordMessageRow): string {
@@ -80,7 +89,30 @@ async function writeToPg(
   row: CoordMessageRow,
   provenance?: ProvenanceContext,
 ): Promise<void> {
-  if (row.harness_slug !== opts.harnessSlug) return;
+  // WI-259 parity (shared-hive comms federation): own-slug applies; a CROSS-member message/handoff/
+  // escalation applies iff its VERIFIED source-log device ∈ the hive's CURRENT members (the bare slug
+  // early-return previously dropped every peer member's message — the highest-value coord surface).
+  // It lands under its AUTHORED slug (the INSERT keys on row.harness_slug).
+  const sourceLogDevice = provenance?.authorPubkey
+    ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+    : null;
+  const memberDecision = await decideMemberContentOp(row.harness_slug, opts, sourceLogDevice);
+  if (memberDecision !== 'apply') {
+    if (memberDecision === 'defer' && sourceLogDevice && opts.pendingMemberContent) {
+      opts.pendingMemberContent.defer(
+        {
+          authorDevice: sourceLogDevice,
+          tableTag: 'coord-messages',
+          rowKey: composeKey(row),
+          fedHlc: provenance?.fedHlc ?? null,
+          fedTs: provenance?.ts ?? null,
+          reapply: () => writeToPg(opts, row, provenance),
+        },
+        Date.now(),
+      );
+    }
+    return;
+  }
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
@@ -173,7 +205,9 @@ async function deleteFromPg(
     DELETE FROM harness_shared.coord_event_log
     WHERE workspace_id = ${opts.workspaceId}
       AND msg_id = ${key}
-      AND harness_slug = ${opts.harnessSlug}
+      -- WI-259 parity: msg_id is globally unique within the workspace (the fed unique index), so a
+      -- cross-member delete must NOT be over-restricted by the receiver's own slug (that dropped a
+      -- peer member's deletion just like the put-path bare guard dropped its writes).
       -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
       -- as the put guard (fall back to the ts-guard when either side lacks an HLC).
       AND (

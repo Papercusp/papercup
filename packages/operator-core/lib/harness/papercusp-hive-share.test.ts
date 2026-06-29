@@ -111,6 +111,36 @@ describe('goSharedHive', () => {
     expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi'] });
   });
 
+  it('P-019: an `open` public hive authors membership:open + contentWriteAuthority:author-scoped', async () => {
+    let policy: { policy?: { membership?: string; allowlist?: string[]; contentWriteAuthority?: string } } | undefined;
+    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: EXISTING };
+    await goSharedHive(state, {
+      setListing: async () => ({}) as unknown as never,
+      authorPolicy: async (input) => {
+        policy = input;
+        return { ok: true } as unknown as never;
+      },
+      membershipMode: 'open',
+    });
+    expect(policy?.policy?.membership).toBe('open');
+    // open ⇒ author-scoped by default (D-012: strangers can't delete others' plans)
+    expect(policy?.policy?.contentWriteAuthority).toBe('author-scoped');
+  });
+
+  it('P-019: default (no membershipMode) stays the private allowlist hive, no author-scoping (today)', async () => {
+    let policy: { policy?: { membership?: string; contentWriteAuthority?: string } } | undefined;
+    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: EXISTING };
+    await goSharedHive(state, {
+      setListing: async () => ({}) as unknown as never,
+      authorPolicy: async (input) => {
+        policy = input;
+        return { ok: true } as unknown as never;
+      },
+    });
+    expect(policy?.policy?.membership).toBe('allowlist');
+    expect(policy?.policy?.contentWriteAuthority).toBeUndefined();
+  });
+
   it('first device: reads key → publishes gist → announces with the fresh secret + policy', async () => {
     let published: OwnerHiveIdentity | undefined;
     let listing: { visibility?: string; inviteSecret?: string } | undefined;

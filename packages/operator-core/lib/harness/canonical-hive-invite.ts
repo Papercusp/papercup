@@ -70,9 +70,12 @@ export const CANONICAL_PAPERCUSP_HIVE_INVITE: CanonicalHiveInviteConst | null =
  * installs auto-joins and federates content, while repos stay PRIVATE and non-allowlisted
  * installs are refused (dogfood-silent-canonical-hive-join D-001 / P-007).
  *
- * TO POPULATE (owner): add each teammate's GitHub login, e.g.
- *   export const CANONICAL_HIVE_TEAM_ALLOWLIST = ['aviynw', 'teammate-2', 'teammate-3'];
- * Empty ⇒ only the owner's own devices auto-merge (the pre-P-007 behaviour). Logins are
- * matched against each peer's device-attestation-bound GitHub identity (not spoofable).
+ * POPULATED (P-007, 2026-06-29) by DERIVING from the live canonical-hive membership — the
+ * GitHub identities VERIFIED in the `papercusp` hive (harness_shared.hive_members, binding_status
+ * 'verified'): `aviynw` (the owner) + `papercupai` (the org/bot identity, a verified member across
+ * all of this workspace's hives). These are the actual team, not guessed. `aviynw` is also auto-
+ * merged as the owner in goSharedHive (dedup-safe). To add a NEW teammate: append their GitHub
+ * login here. Empty ⇒ only the owner's own devices auto-merge. Logins are matched against each
+ * peer's device-attestation-bound GitHub identity (not spoofable).
  */
-export const CANONICAL_HIVE_TEAM_ALLOWLIST: readonly string[] = [];
+export const CANONICAL_HIVE_TEAM_ALLOWLIST: readonly string[] = ['aviynw', 'papercupai'];
