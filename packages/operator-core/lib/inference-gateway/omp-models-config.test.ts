@@ -19,8 +19,8 @@ describe('ompGatewayModelsConfig', () => {
     expect(cfg.providerId).toBe(OMP_GATEWAY_PROVIDER_ID);
     expect(cfg.baseUrl).toBe('http://127.0.0.1:8788');
     expect(cfg.headers['x-papercusp-account']).toBe('acct-7');
-    expect(cfg.models).toEqual(['claude-sonnet-4']);
-    expect(cfg.modelSelector).toBe('papercusp-gateway/claude-sonnet-4');
+    expect(cfg.models).toEqual(['claude-sonnet-4-6']);
+    expect(cfg.modelSelector).toBe('papercusp-gateway/claude-sonnet-4-6');
     // dedicated provider block, NOT a bare `anthropic` override (D-006)
     expect(cfg.content).toContain('# BEGIN PAPERCUSP_OMP_GATEWAY');
     expect(cfg.content).toContain('  papercusp-gateway:');
@@ -30,7 +30,7 @@ describe('ompGatewayModelsConfig', () => {
     expect(cfg.content).toContain('api: anthropic-messages');
     expect(cfg.content).toContain('auth: apiKey');
     expect(cfg.content).toContain('"x-papercusp-account": "acct-7"');
-    expect(cfg.content).toContain('- id: "claude-sonnet-4"');
+    expect(cfg.content).toContain('- id: "claude-sonnet-4-6"');
   });
 
   it('routes the openai wire through the /v1 path with the responses api', () => {

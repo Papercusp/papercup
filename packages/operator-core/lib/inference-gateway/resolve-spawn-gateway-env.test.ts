@@ -103,7 +103,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     // models.yml bytes + the model selector the per-spawn agent-home seeder writes & force-selects;
     // never the claude-CLI gatewaySpawnEnv (ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS).
     expect(env.PAPERCUSP_ACCOUNT_ID).toBe('claude-main');
-    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-sonnet-4');
+    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-sonnet-4-6');
     expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('papercusp-gateway:');
     expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('baseUrl: "http://127.0.0.1:8788"');
     expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-account": "claude-main"');

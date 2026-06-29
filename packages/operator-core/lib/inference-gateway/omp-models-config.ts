@@ -46,7 +46,11 @@ export const OMP_MODELS_REL_PATH = '.omp/agent/models.yml';
  *  (the spawn site) SHOULD pass the role's actual model id(s); these are the
  *  fallback so a config is always usable. */
 const DEFAULT_MODELS: Record<OmpGatewayProvider, string[]> = {
-  anthropic: ['claude-sonnet-4'],
+  // Must be a VALID dated Anthropic id — the gateway forwards the model id verbatim to
+  // api.anthropic.com, which 404s the bare alias `claude-sonnet-4` (`not_found_error`).
+  // Callers that don't pass opts.models inherit this, so a bare id breaks real-account
+  // spawns (the shipped verification used a local probe model, so it never surfaced).
+  anthropic: ['claude-sonnet-4-6'],
   openai: ['gpt-5-codex'],
 };
 
