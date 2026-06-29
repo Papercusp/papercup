@@ -108,9 +108,11 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 - **Don't default to polling — push.** IPC on desktop, SSE on web; the endpoint system projects `ctx.emit`/`ctx.progress` over every transport. Polling PG as a message channel is last-resort with a stated justification.
 - **Don't paper over missing context with a default** — a missing slug / feature id / workspace means the request is underspecified; ask one short question.
 
-## Routing a plan — ask before you implement
+## Routing a plan — get EXPLICIT user confirmation on HOW before implementing
 
-A plan is not yours to start the moment you read it. BEFORE you implement ANY plan, STOP and ASK the user **how to route it**, offering these four paths (number them in the question, then act on the answer):
+**HARD RULE — NO EXCEPTIONS: BEFORE you implement ANY plan you MUST get EXPLICIT CONFIRMATION FROM THE USER ON WHICH WAY they want it done.** A plan is not yours to start the moment you read it. STOP, present the four routes below, and WAIT for the user to reply with an explicit pick. Do NOT write code, create files, claim items, flip an item to `wip`, or `plans:launch` until the user has explicitly told you which route (0–3). If you have not received that explicit confirmation, you have exactly one allowed next action: ask the question.
+
+**This ask is MANDATORY and is NOT waived by how the user phrased the request.** "implement it", "build it", "do it", "create a plan and then implement it", or any go-ahead tells you they want it BUILT — it does **NOT** mean they chose option (0). Do NOT collapse "implement it" into "I implement it myself". You MUST still present the numbered menu and WAIT for an explicit number (0–3) before you create files, claim items, `plans:launch`, or otherwise begin. The ONLY time you skip the menu is when the user explicitly names a route themselves ("do it yourself" → 0, "hand it to the queen" → 1, "send it to the X fleet" → 2, "spin up a desktop fleet" → 3).
 
 1. **(0) I implement it myself** — claim the items and drive it directly: `plans:launch` (or `coord:orient { planItems }` to claim your lane) → `work_items:claim_next` and execute.
 2. **(1) Hand to the Queen for the colony** — file it as work for the hive: `work_items:create`. This wakes the Queen, who triages it and *places* the work onto bees. You step back; the colony owns it.

@@ -21,6 +21,10 @@ import { MemoryTimeoutError, withMemoryToolTimeout, embedFailureReason } from '.
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { isEphemeralBenchmarkHarnessSlug } from '../../harness/improvements/watchdog';
+import { narrowHarnessSlugsToSessionHive } from '../../memory/hive-scope';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { systemDistinctId } from '../../flag-distinct-id';
 
 /** Map a neutral entry onto the stable wire row the surfaces consume.
  *  `kind` is materialized into `metadata.kind` — the TUI Memory tab reads
@@ -114,6 +118,23 @@ export default defineTool({
           harnessSlugs = reg.projects
             .map((p) => p.slug)
             .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
+          // P-018 (scoped-superuser-workspace-clamp / D-009 P-016b): confine the
+          // DEFAULT fan-out to the session's hive subtree so a hive-confined
+          // session (concrete `ctx.harnessSlug` — a bee or a hive-scoped su) does
+          // NOT recall SIBLING hives' harness pools — a cross-hive recall bleed,
+          // live now that the workspace runs multiple hives. A workspace/unscoped
+          // session (harness '*') is left untouched (the workspace-scoped Queen
+          // recalls across its hives). Gated by the clamp flag (rides its rollout;
+          // a kill-switch). Fail-OPEN — a flag-read error keeps the full fan-out,
+          // matching the clamp's fail-open-on-infra-error posture (no recall loss
+          // on a flag hiccup; the worst case is over-broad recall, never a leak).
+          try {
+            if (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, systemDistinctId())) {
+              harnessSlugs = narrowHarnessSlugsToSessionHive(reg.projects, harnessSlugs, ctx.harnessSlug);
+            }
+          } catch {
+            /* fail-open: keep the full workspace fan-out */
+          }
         } catch {
           harnessSlugs = [];
         }

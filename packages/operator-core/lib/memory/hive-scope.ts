@@ -64,3 +64,39 @@ export async function resolveHiveSlugsForHarnesses(
   const reg = await loadHarnessRegistry(workspaceId);
   return hiveSlugsForHarnesses(reg.projects, harnessSlugs);
 }
+
+/**
+ * P-018 (scoped-superuser-workspace-clamp-2026-06-18 / D-009 P-016b): confine a
+ * DEFAULT memory fan-out to the SESSION's hive subtree.
+ *
+ * `memory:search`/`memory:list` with no explicit `harness_slug` fan out over the
+ * user pool + EVERY workspace harness pool. In a MULTI-hive workspace that bleeds
+ * a hive-confined session's recall across SIBLING hives' harness pools (e.g. a
+ * papercusp-hive bee/su recalling oddsmith-hive lessons) — the leak this closes.
+ * Within a hive, member harness pools stay shared (learning-packs seed each
+ * member, they aren't cross-recalled), so narrowing to the subtree drops only the
+ * cross-hive bleed, never intra-hive sharing.
+ *
+ * Given the registry entries + the candidate fan-out + the session's PINNED
+ * harness (`ctx.harnessSlug`), keep only candidates in the SAME hive. Returns the
+ * candidates UNCHANGED when the session has no concrete hive — `sessionHarness`
+ * is `'*'`/empty (a workspace-spanning or unscoped session, e.g. the
+ * workspace-scoped Queen, which legitimately recalls across the workspace's
+ * hives) or resolves to no hive (a plain standalone harness). Pure — the registry
+ * IO + flag gate live at the call site. */
+export function narrowHarnessSlugsToSessionHive(
+  entries: readonly RegistryEntryLite[],
+  harnessSlugs: readonly string[],
+  sessionHarness: string | null | undefined,
+): string[] {
+  if (!sessionHarness || sessionHarness === '*') return [...harnessSlugs];
+  const scopeHive = hiveSlugsForHarnesses(entries, [sessionHarness])[0];
+  if (!scopeHive) return [...harnessSlugs]; // session not in a hive → no narrowing
+  const bySlug = new Map(entries.map((e) => [e.slug, e]));
+  return harnessSlugs.filter((slug) => {
+    const e = bySlug.get(slug);
+    if (!e) return false; // unknown slug → drop from a confined fan-out
+    const hive = e.harness_kind === 'hive' ? e.slug : e.hive_slug;
+    return hive === scopeHive;
+  });
+}
