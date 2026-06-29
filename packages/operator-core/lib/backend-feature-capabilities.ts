@@ -42,11 +42,6 @@ export interface BackendFeatureGuard {
 export type BackendFeatureMatrix = Record<InteractiveBackend, Record<BackendFeature, BackendFeatureCapability>>;
 
 const supported = (mechanism: string): BackendFeatureCapability => ({ state: 'supported', mechanism });
-const soft = (mechanism: string, unsupportedReason: string): BackendFeatureCapability => ({
-  state: 'soft',
-  mechanism,
-  unsupportedReason,
-});
 const unsupported = (mechanism: string, unsupportedReason: string): BackendFeatureCapability => ({
   state: 'unsupported',
   mechanism,
@@ -128,8 +123,8 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'launch-context': supported('--append-system-prompt'),
     'saved-prompts': supported('.claude/commands materialization shared with OMP command discovery'),
     'slash-tool-prompts': supported('MCP prompt/slash surface through OMP-compatible command discovery'),
-    'account-pinning': unsupported('capability-gated', 'OMP provider account routing is not implemented yet'),
-    'gateway-routing': unsupported('capability-gated', 'OMP provider gateway adapter is not implemented yet'),
+    'account-pinning': supported('per-session models.yml papercusp-gateway provider headers carry the x-papercusp-account pin (omp-account-pinning-gateway D-006)'),
+    'gateway-routing': supported('per-session models.yml papercusp-gateway provider baseUrl routes Anthropic /v1/messages through the inference gateway (omp-account-pinning-gateway D-006)'),
     'file-lock-enforcement': supported('OMP coordination extension'),
     'native-fork': unsupported(
       'capability-gated in the launcher',
@@ -151,7 +146,7 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'forced-native-session-id': unsupported('thread id tracking', 'OMP resumes by thread id and does not accept a forced Claude-style session UUID'),
     'runtime-home-inheritance': supported('per-spawn OMP agent dir copies auth/config/tool cache'),
     'mcp-http-auth': supported('OMP mcp.json carries HTTP MCP headers'),
-    'settings-diagnostics': soft('OMP settings pages exist', 'provider account/gateway diagnostics are pending OMP gateway work'),
+    'settings-diagnostics': supported('OMP gateway routeability surfaced via the shared account/gateway diagnostics; omp delegates to the anthropic adapter'),
   },
 };
 
