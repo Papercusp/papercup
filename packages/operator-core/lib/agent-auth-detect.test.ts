@@ -7,10 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 
 const existsSync = vi.fn();
+const readFileSync = vi.fn();
 const spawnSync = vi.fn();
 vi.mock('node:fs', async (orig) => {
   const actual = await orig<typeof import('node:fs')>();
-  return { ...actual, existsSync: (p: string) => existsSync(p) };
+  return { ...actual, existsSync: (p: string) => existsSync(p), readFileSync: (...a: unknown[]) => readFileSync(...a) };
 });
 vi.mock('node:child_process', async (orig) => {
   const actual = await orig<typeof import('node:child_process')>();
@@ -21,7 +22,7 @@ vi.mock('node:os', async (orig) => {
   return { ...actual, homedir: () => '/home/u' };
 });
 
-import { claudeSignedIn, codexSignedIn, ompSignedIn, githubSignedIn, anyAgentSignedIn } from './agent-auth-detect';
+import { claudeSignedIn, codexSignedIn, ompSignedIn, ompAuthStatus, githubSignedIn, anyAgentSignedIn } from './agent-auth-detect';
 
 /** Mark exactly the given absolute paths as existing. */
 function onlyExist(...present: string[]) {
@@ -31,6 +32,7 @@ function onlyExist(...present: string[]) {
 
 beforeEach(() => {
   existsSync.mockReset();
+  readFileSync.mockReset();
   spawnSync.mockReset();
   spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
 });
@@ -59,6 +61,39 @@ describe('ompSignedIn', () => {
   it('false when none exist', () => {
     onlyExist();
     expect(ompSignedIn()).toBe(false);
+  });
+});
+
+describe('ompAuthStatus', () => {
+  const AUTH = '/home/u/.omp/agent/auth.json';
+  it('present:false when no auth.json exists', () => {
+    onlyExist();
+    expect(ompAuthStatus('/home/u', 1000)).toEqual({
+      present: false, provider: null, authType: null, expiresAt: null, accessExpired: false, hasRefresh: false,
+    });
+  });
+  it('parses an oauth token and FLAGS an expired access token (refresh present)', () => {
+    onlyExist(AUTH);
+    readFileSync.mockReturnValue(JSON.stringify({ anthropic: { type: 'oauth', token: { access: 'a', refresh: 'r', expires: 500 } } }));
+    const s = ompAuthStatus('/home/u', 1000);
+    expect(s).toEqual({ present: true, provider: 'anthropic', authType: 'oauth', expiresAt: 500, accessExpired: true, hasRefresh: true });
+  });
+  it('not expired when expiry is in the future', () => {
+    onlyExist(AUTH);
+    readFileSync.mockReturnValue(JSON.stringify({ anthropic: { type: 'oauth', token: { access: 'a', refresh: 'r', expires: 2000 } } }));
+    expect(ompAuthStatus('/home/u', 1000).accessExpired).toBe(false);
+  });
+  it('falls back to the legacy .pi_back path', () => {
+    onlyExist('/home/u/.pi_back/agent/auth.json');
+    readFileSync.mockReturnValue(JSON.stringify({ anthropic: { type: 'oauth', token: { expires: 2000 } } }));
+    expect(ompAuthStatus('/home/u', 1000).present).toBe(true);
+  });
+  it('present:true but inert on malformed json (never throws)', () => {
+    onlyExist(AUTH);
+    readFileSync.mockReturnValue('not json{');
+    expect(ompAuthStatus('/home/u', 1000)).toEqual({
+      present: true, provider: null, authType: null, expiresAt: null, accessExpired: false, hasRefresh: false,
+    });
   });
 });
 

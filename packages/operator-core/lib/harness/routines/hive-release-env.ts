@@ -133,7 +133,17 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   }
 
   const parent = dirname(entry.path);
-  const greenCmd = gate.greenCmd ?? gate.testCommand ?? DEFAULT_GREEN_CMD;
+  // Per-hive owner override (P-014): top precedence over the blueprint knob / detected
+  // testCommand / build fallback, so editing the green command on /admin/git actually
+  // changes what the gate runs. Best-effort — a DB hiccup must never break gate routing.
+  let greenCmdOverride: string | null = null;
+  try {
+    const { getReleaseGreenCmdOverride } = await import('../../hive-settings-store');
+    greenCmdOverride = await getReleaseGreenCmdOverride(workspaceId, slug);
+  } catch {
+    greenCmdOverride = null;
+  }
+  const greenCmd = greenCmdOverride ?? gate.greenCmd ?? gate.testCommand ?? DEFAULT_GREEN_CMD;
   const env: Record<string, string> = {
     PAPERCUSP_INTEGRATION_ROOT: entry.path,
     PAPERCUSP_RELEASE_SLUG: slug,

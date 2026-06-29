@@ -25,6 +25,7 @@ vi.mock('../../agent-auth-detect', () => ({
   claudeSignedIn: vi.fn(() => true),
   codexSignedIn: vi.fn(() => false),
   ompSignedIn: vi.fn(() => false),
+  ompAuthStatus: vi.fn(() => ({ present: true, provider: 'anthropic', authType: 'oauth', expiresAt: 123, accessExpired: true, hasRefresh: true })),
   githubSignedIn: vi.fn(() => false),
   anyAgentSignedIn: vi.fn(() => true),
 }));
@@ -152,7 +153,11 @@ describe('desktop route ports', () => {
   it('GET /desktop/agent-auth-status returns per-provider status', async () => {
     const res = await appWith(desktopAgentAuthStatus as AnyRoute).request('/desktop/agent-auth-status');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ claude: true, codex: false, omp: false, github: false });
+    expect(await res.json()).toEqual({
+      claude: true, codex: false, omp: false,
+      ompAuth: { present: true, provider: 'anthropic', authType: 'oauth', expiresAt: 123, accessExpired: true, hasRefresh: true },
+      github: false,
+    });
   });
 
   it('POST /desktop/agent-login-envelope rejects an unknown provider', async () => {
