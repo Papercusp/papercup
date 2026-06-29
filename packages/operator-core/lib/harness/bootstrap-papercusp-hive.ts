@@ -129,6 +129,10 @@ export interface BootstrapPapercuspHiveDeps {
   canonicalInvite?: CanonicalHiveInvite | null;
   /** The join orchestration. Default: joinCanonicalPapercuspHive. */
   joinCanonical?: typeof joinCanonicalPapercuspHive;
+  /** P-005 fire-once latch: resolve whether THIS box already joined the canonical hive
+   *  (a hives row keyed on the canonical pubkey, written by joinHiveAsView on a prior
+   *  boot). Default: getHiveByPubkey. Returns the joined view slug, or null. */
+  findJoinedCanonical?: (pubkeyBase64: string) => Promise<{ slug: string } | null>;
   /** Inspect whether a repo's submodules still need init/update. */
   submodulesNeedUpdate?: (repoPath: string) => Promise<boolean>;
 }
@@ -141,6 +145,19 @@ function defaultSetHomeWorkspace(ws: string): void {
   if (reg.current !== ws) {
     reg.current = ws;
     writeRegistry(reg);
+  }
+}
+
+/** P-005 default: has THIS box already joined the canonical hive? joinHiveAsView's
+ *  identity upsert writes a hives row keyed on the hive pubkey; a row keyed on the
+ *  baked canonical pubkey means a prior boot already joined. Best-effort → null. */
+async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug: string } | null> {
+  try {
+    const { getHiveByPubkey } = await import('../hive-store');
+    const row = await getHiveByPubkey(PAPERCUSP_WORKSPACE_ID, pubkeyBase64);
+    return row ? { slug: row.homeSlug } : null;
+  } catch {
+    return null;
   }
 }
 
@@ -401,6 +418,21 @@ export async function bootstrapPapercuspHive(
   //     fallback. Best-effort: a skip (gh unauth / owner offline) retries next boot.
   const canonicalInvite = bakedCanonicalHiveInvite(deps.canonicalInvite);
   if (canonicalInvite) {
+    // P-005 fire-once latch: if this box ALREADY joined the canonical hive on a prior
+    // boot (a hives row keyed on the canonical pubkey exists from joinHiveAsView's
+    // identity upsert), short-circuit. Re-running the join would re-pay the ~25s
+    // confirmInviteAnnounce wait AND then spuriously SKIP — confirmInviteAnnounce only
+    // fires on a FRESH appearance, but on a reboot the canonical hive is already in the
+    // discovered set, so the join would report "not announcing yet" every boot forever.
+    // (The OWNER box never reaches here: step 1 finds its own slug:'papercusp' hive.)
+    const findJoinedCanonical = deps.findJoinedCanonical ?? defaultFindJoinedCanonical;
+    const alreadyJoined = await findJoinedCanonical(canonicalInvite.pubkeyBase64).catch(() => null);
+    if (alreadyJoined) {
+      setHome(PAPERCUSP_WORKSPACE_ID);
+      record('clone', 'done', { detail: 'already joined the Papercusp hive' });
+      record('submodules', 'done');
+      return { state: 'already-present', slug: alreadyJoined.slug };
+    }
     const joinCanonical = deps.joinCanonical ?? joinCanonicalPapercuspHive;
     const joinRes = await joinCanonical(canonicalInvite, { record });
     return joinRes.state === 'joined'

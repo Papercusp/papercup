@@ -185,7 +185,16 @@ export async function joinCanonicalPapercuspHive(
 
     // 5. JOIN — read-only-clones each member repo + re-keys onto the owner's topic.
     record('clone', 'running', { percent: 40, detail: 'joining + cloning the Papercusp hive' });
-    const res = await joinHive({ hiveId, title: 'Papercusp', memberLinks, workspaceId: PAPERCUSP_WORKSPACE_ID });
+    const res = await joinHive({
+      hiveId,
+      title: 'Papercusp',
+      // The canonical hive's identity == the baked pubkey (P-003 invariant); prefer the
+      // announced pubkey when present. This keys the joiner's hives-row identity so the
+      // P-005 fire-once latch (getHiveByPubkey on the baked pubkey) finds it next boot.
+      hivePubkey: confirm.hive?.hivePubkey ?? invite.pubkeyBase64,
+      memberLinks,
+      workspaceId: PAPERCUSP_WORKSPACE_ID,
+    });
     if (!res.ok) {
       record('clone', 'error', { detail: res.error ?? 'join failed' });
       return { state: 'skipped', slug: null, reason: `join failed: ${res.error ?? 'unknown'}` };

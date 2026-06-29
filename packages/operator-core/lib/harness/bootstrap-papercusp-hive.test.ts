@@ -101,6 +101,59 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(res.path).toBe('/clones/papercusp');
   });
 
+  it('P-005 latch: already joined the canonical hive (hives row keyed on the baked pubkey) → already-present, NO re-join', async () => {
+    const joinCanonical = vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp' }));
+    const findJoinedCanonical = vi.fn(async () => ({ slug: 'papercusp' }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical,
+      joinCanonical,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('already-present');
+    expect(res.slug).toBe('papercusp');
+    // The expensive ~25s confirm+join is skipped once we've already joined.
+    expect(joinCanonical).not.toHaveBeenCalled();
+    expect(findJoinedCanonical).toHaveBeenCalledWith('CANON_PUB');
+    expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    expect(deps.clone).not.toHaveBeenCalled();
+  });
+
+  it('P-006: bootstrap dispatches to the JOIN path on a baked invite (joined → cloned-and-created)', async () => {
+    const joinCanonical = vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' }));
+    const findJoinedCanonical = vi.fn(async () => null);
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical,
+      joinCanonical,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('cloned-and-created');
+    expect(res.slug).toBe('papercusp-view');
+    expect(joinCanonical).toHaveBeenCalledOnce();
+    expect(deps.clone).not.toHaveBeenCalled(); // JOIN path, never the per-owner clone+create
+    expect(deps.ensureHive).not.toHaveBeenCalled();
+  });
+
+  it('P-006: a join SKIP propagates as skipped (next-boot retry) — never falls through to clone+create', async () => {
+    const joinCanonical = vi.fn(async () => ({
+      state: 'skipped' as const,
+      slug: null,
+      reason: 'canonical hive not announcing yet (owner offline)',
+    }));
+    const findJoinedCanonical = vi.fn(async () => null);
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical,
+      joinCanonical,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('skipped');
+    expect(res.reason).toMatch(/not announcing yet/);
+    expect(joinCanonical).toHaveBeenCalledOnce();
+    expect(deps.ensureHive).not.toHaveBeenCalled();
+  });
+
   it('no-ops on auth_required (gh not signed in) — leaves home untouched so the next boot retries', async () => {
     const deps = spyDeps({
       clone: vi.fn(async () => ({ code: 'auth_required' as const, message: 'Authentication failed' })),
