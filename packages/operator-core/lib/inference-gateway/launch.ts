@@ -424,13 +424,14 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // alone dropped them silently on the wedge-watchdog / deploy / crash restarts). The accounts:pin tool also
   // pushes each change to /admin/owner-pin for IMMEDIATE effect; this is the load + periodic-resync path.
   const refreshGatewayHints = async (): Promise<void> => {
+    const { activeWorkspaceId } = await import('../workspace-registry');
+    const ws = opts.workspace ?? activeWorkspaceId();
+    // RATE HINTS (cold-start seed) — from operator_account_pool (migration 190, ALWAYS present): seed keyOf
+    // so a known-dead account is disqualified immediately after a restart. Independent try so it works even
+    // before the owner-pins table (migration 416) exists.
     try {
-      const { getOwnerPinsList } = await import('../deployment/account-owner-pins');
       const { loadAccountPool } = await import('../deployment/account-pool-store');
-      const { activeWorkspaceId } = await import('../workspace-registry');
-      const ws = opts.workspace ?? activeWorkspaceId();
-      const [ownerPins, poolFull] = await Promise.all([getOwnerPinsList(ws), loadAccountPool(ws)]);
-      gateway.setOwnerPins(ownerPins);
+      const poolFull = await loadAccountPool(ws);
       gateway.setAccountRateHints(
         (poolFull.accounts ?? []).map((a) => ({
           accountId: a.id,
@@ -442,7 +443,15 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
         })),
       );
     } catch (e) {
-      log('warn', `inference-gateway: gateway-hint refresh failed: ${(e as Error).message}`);
+      log('warn', `inference-gateway: rate-hint refresh failed: ${(e as Error).message}`);
+    }
+    // OWNER PINS (durable dynamic pins) — from operator_owner_pins (migration 416). Fail-soft until that
+    // migration boot-applies; the in-memory pins set via /admin/owner-pin still work in the interim.
+    try {
+      const { getOwnerPinsList } = await import('../deployment/account-owner-pins');
+      gateway.setOwnerPins(await getOwnerPinsList(ws));
+    } catch (e) {
+      log('warn', `inference-gateway: owner-pin refresh failed (expected until migration 416 applies): ${(e as Error).message}`);
     }
   };
   await refreshGatewayHints();

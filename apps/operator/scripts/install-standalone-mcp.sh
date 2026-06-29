@@ -174,6 +174,13 @@ CC_OBJECTIVE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-objective-title.sh"
 # entry, matcher "Bash"; fail-open + a local keyword pre-filter so the vast
 # majority of commands never hit the operator.
 CC_BASH_GATE_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-bash-resource-gate.sh"
+# PostToolUse + Stop/SessionEnd hook: the PER-TURN VERIFY-not-CREATE work-item
+# BACKSTOP (enforce-system-on-generic-work-2026-06-29, P-019). Marks a session that
+# edited workspace code; at turn/session end, if the session holds no objective in
+# the ledger (coord:glance self.objective empty) it emits ONE reminder to open a
+# work-item. Never creates anything; gated behind papercusp-workitem-verify-nudge
+# (default ON); fail-open + fire-and-forget + psu-gated. Own settings entries.
+CC_WORKITEM_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/workitem-verify-nudge.sh"
 
 # Merge our PreToolUse + PostToolUse lock hooks into a settings.json
 # (Claude's ~/.claude/settings.json or a codex-su CODEX_HOME). Idempotent
@@ -343,6 +350,55 @@ hooks = cfg.setdefault('hooks', {})
 for event in ('SessionStart', 'SessionEnd'):
     arr = [e for e in hooks.get(event, []) if not is_ours(e)]
     arr.append({'hooks': [{'type': 'command', 'command': lifecycle}]})
+    hooks[event] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the work-item VERIFY-nudge backstop hook (P-019). ONE script, three entries:
+# a PostToolUse "Edit|Write|MultiEdit" marker entry + Stop + SessionEnd nudge entries
+# (no tool matcher on the latter — session/turn events). The script self-gates on
+# PAPERCUSP_SID, reads the event name from stdin, is gated behind the
+# papercusp-workitem-verify-nudge flag (default ON), and is fail-open + fire-and-forget,
+# so it's inert/cheap outside a psu session. Idempotent: drops any prior entry pointing
+# at our script across all three events, preserves every other hook, then appends fresh.
+#   $1 = settings.json path
+merge_workitem_nudge_hook() {
+  python3 - "$1" "$CC_WORKITEM_NUDGE_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, nudge = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {nudge, os.path.basename(nudge)}
+
+def is_ours(entry):
+    for h in (entry.get('hooks') or []):
+        if any(o in h.get('command', '') for o in ours):
+            return True
+    return False
+
+hooks = cfg.setdefault('hooks', {})
+# PostToolUse marker entry (file-edit tools only).
+post = [e for e in hooks.get('PostToolUse', []) if not is_ours(e)]
+post.append({'matcher': 'Edit|Write|MultiEdit',
+             'hooks': [{'type': 'command', 'command': nudge}]})
+hooks['PostToolUse'] = post
+# Stop + SessionEnd nudge entries (no tool matcher — session/turn events).
+for event in ('Stop', 'SessionEnd'):
+    arr = [e for e in hooks.get(event, []) if not is_ours(e)]
+    arr.append({'hooks': [{'type': 'command', 'command': nudge}]})
     hooks[event] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -746,6 +802,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" "$CC_BASH_GATE_HOOK"
     chmod 755 "$CC_BASH_GATE_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/workitem-verify-nudge.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/workitem-verify-nudge.sh" "$CC_WORKITEM_NUDGE_HOOK"
+    chmod 755 "$CC_WORKITEM_NUDGE_HOOK"
+  fi
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
@@ -762,6 +822,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_COORD_HOOK" ] && merge_coord_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_ACTIVITY_HOOK" ] && merge_activity_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_LIFECYCLE_HOOK" ] && merge_lifecycle_hooks "$CLAUDE_SETTINGS"
+  [ -x "$CC_WORKITEM_NUDGE_HOOK" ] && merge_workitem_nudge_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_STATUSLINE" ] && merge_statusline "$CLAUDE_SETTINGS"
   [ -x "$CC_BASH_GATE_HOOK" ] && merge_bash_gate_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"

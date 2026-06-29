@@ -104,6 +104,30 @@ export function isBenignFileWatcherError(e: unknown): boolean {
 }
 
 /**
+ * A plan-scope resolution that cannot resolve its workspace — `resolvePlanScope` throws
+ * "resolvePlanScope: harness '<x>' is not registered in the harness registry …" or
+ * "resolvePlanScope: plans are Hive-scoped, but '<x>' is not a Hive home …" (WI-148: it refuses to
+ * silently default to a wrong workspace). Some callers resolve the scope in a FIRE-AND-FORGET
+ * (a plan-event projection / best-effort emit / audit) whose promise we can't try/catch at our
+ * `await handler(req)` call site, so a request naming an unresolvable harness (e.g. `'operator'`, or a
+ * non-Hive harness) surfaced the throw as an UNHANDLED REJECTION that crash-looped a :3070 cluster
+ * worker — killing all of that worker's in-flight requests + churning a respawn (the owner-reported
+ * "~10 worker crashes / 3 days"). It is request-scoped (only that one operation can't resolve), so
+ * SWALLOW it (keep the multi-tenant host alive) rather than down the whole worker.
+ *
+ * Scoped TIGHTLY to the `resolvePlanScope:` signature + its two distinctive WI-148 phrases, so a
+ * genuine unrelated error still fails fast. The underlying "why was an unresolvable harness passed"
+ * is a separate caller-quality issue; this only stops it from CRASHING the host.
+ */
+export function isUnresolvablePlanScopeError(e: unknown): boolean {
+  const m = (e as { message?: string } | null)?.message ?? '';
+  return (
+    /resolvePlanScope:/.test(m) &&
+    (/is not registered in the harness registry/.test(m) || /is not a Hive home/.test(m))
+  );
+}
+
+/**
  * Any process-level error that is client-caused + request-scoped, OR a transient
  * recoverable infra blip (a torn-down PG connection, an exhausted file-watcher
  * budget) → the host guards log it and KEEP RUNNING. Everything else stays fail-fast
@@ -114,6 +138,7 @@ export function isBenignHostError(e: unknown): boolean {
     isBenignStreamClose(e) ||
     isBenignRequestParse(e) ||
     isTransientPgConnectionError(e) ||
-    isBenignFileWatcherError(e)
+    isBenignFileWatcherError(e) ||
+    isUnresolvablePlanScopeError(e)
   );
 }

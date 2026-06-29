@@ -1143,6 +1143,16 @@ export const FLAGS = {
   // done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion is
   // byte-identical to today (the gate is never consulted). FAIL-OPEN even when ON. KNOWN_DARK_FLAGS.
   TEST_COMPLETION_GATE: "papercusp-test-completion-gate",
+  // DEFAULT ON (enforce-system-on-generic-work-2026-06-29 P-019): the per-turn VERIFY-not-CREATE
+  // work-item BACKSTOP behind the prompt directive (P-015). When a psu session ENDS A TURN having
+  // edited workspace code but holds NO objective in the ledger (no in-execution work-item AND no
+  // declared coord intent → coord:glance self.objective empty), the `workitem-verify-nudge` cc-hook
+  // emits ONE short reminder to open a work-item (work_items:create / claim a plan item). It NEVER
+  // creates anything — only reminds; fail-open + fire-and-forget + psu-gated, and per-TURN (not
+  // per-edit — distinct from the rejected per-edit auto-capture hook). Safe default-on: additive +
+  // reversible. OFF ⇒ the hook's nudge branch is inert (no reminder ever emitted); the cheap local
+  // edit-marker touch is harmless either way. The owner kill-switch for the backstop.
+  WORKITEM_VERIFY_NUDGE: "papercusp-workitem-verify-nudge",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

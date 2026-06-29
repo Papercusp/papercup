@@ -8,10 +8,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-// nuqs: useQueryState needs the adapter context — stub it to a plain ['24h', noop].
+// nuqs: useQueryState needs the adapter context — stub it. The 'window' state reads '24h';
+// the per-hive 'hive' selection reads from `selectedHive` (default '' → nothing expanded).
+let selectedHive = '';
 vi.mock('nuqs', () => ({
-  useQueryState: () => ['24h', vi.fn()],
+  useQueryState: (key: string) => (key === 'hive' ? [selectedHive, vi.fn()] : ['24h', vi.fn()]),
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
+  parseAsString: { withDefault: () => ({}) },
 }));
 
 const snapshot = {
@@ -49,7 +52,12 @@ const snapshot = {
 };
 
 let mockResult: Record<string, unknown> = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => mockResult }));
+// The per-hive section reads dev.gitPipelineHives (rows array, default empty).
+let hivesResult: Record<string, unknown> = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: (opts: { queryName?: string }) =>
+    opts?.queryName === 'dev.gitPipelineHives' ? hivesResult : mockResult,
+}));
 
 import GitClient from './GitClient';
 
@@ -86,5 +94,50 @@ describe('GitClient', () => {
     mockResult = { data: [], loading: true, fetching: true, error: null, invalidate: vi.fn(), transport: 'POLL' };
     render(<GitClient />);
     expect(screen.getByText(/Loading pipeline/i)).toBeTruthy();
+  });
+
+  // ── per-hive surface (P-014) ──
+  it('per-hive section: empty state when no gated coding hives', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    hivesResult = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByText(/Per-hive pipelines/)).toBeTruthy();
+    expect(screen.getByText(/No per-hive coding pipelines yet/i)).toBeTruthy();
+  });
+
+  it('per-hive section: renders a gated hive row with its green command, override badge, and gap', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    hivesResult = {
+      data: [
+        {
+          slug: 'oddsmith-hive',
+          root: '/h/oddsmith-hive',
+          greenCmd: 'npm run gate:custom',
+          greenCmdOverridden: true,
+          integrationBranch: 'staging',
+          releaseRef: 'main',
+          hasDeploy: false,
+          greenCheckpointActive: true,
+          gateStatus: 'green',
+          consecutiveReds: 0,
+          lastGreenAtMs: Date.now() - 3_600_000,
+          lastGreenSha: 'deadbeef0123',
+          stagingMainGap: 4,
+          lastDeployAtMs: null,
+          lastDeployStatus: null,
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+      transport: 'POLL',
+    };
+    render(<GitClient />);
+    expect(screen.getByText('oddsmith-hive')).toBeTruthy();
+    expect(screen.getByText(/npm run gate:custom/)).toBeTruthy();
+    expect(screen.getByText('override')).toBeTruthy(); // owner-override badge
+    expect(screen.getByText(/4 staging→main/)).toBeTruthy(); // staging↔main gap
+    expect(screen.getByText(/🟩 deadbeef0123/)).toBeTruthy(); // last green sha
   });
 });

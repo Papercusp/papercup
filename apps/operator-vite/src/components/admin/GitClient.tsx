@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { StatusPill } from '../ui';
 
 /**
@@ -326,15 +327,16 @@ function PerHiveSection() {
                       >
                         {saving ? 'Saving…' : 'Save override'}
                       </button>
-                      <button
-                        type="button"
-                        className="pc-git__hive-reset"
-                        disabled={saving || !r.greenCmdOverridden}
-                        onClick={() => void save(true)}
-                        title="Revert to the auto-detected command"
-                      >
-                        Reset to default
-                      </button>
+                      <Tooltip label="Revert to the auto-detected command">
+                        <button
+                          type="button"
+                          className="pc-git__hive-reset"
+                          disabled={saving || !r.greenCmdOverridden}
+                          onClick={() => void save(true)}
+                        >
+                          Reset to default
+                        </button>
+                      </Tooltip>
                     </div>
                     <div className="pc-git__hive-meta">
                       runs <code>{r.greenCmd}</code> in <code>{r.root}</code> · checkpoint{' '}
@@ -731,7 +733,7 @@ const gitCss = `
   .pc-git__hive-row:hover { background: rgba(255,255,255,0.02); }
   .pc-git__hive-slug { font-weight: 680; }
   .pc-git__hive-cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 28%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pc-git__hive-badge { margin-left: 6px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 1px 5px; border-radius: 5px; background: rgba(96, 165, 250, 0.16); color: #93c5fd; }
+  .pc-git__hive-badge { margin-left: 6px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; padding: 1px 5px; border-radius: 5px; background: rgba(96, 165, 250, 0.16); color: #93c5fd; }
   .pc-git__hive-gap, .pc-git__hive-green, .pc-git__hive-deploy { font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 45%); white-space: nowrap; }
   .pc-git__hive-caret { color: color-mix(in srgb, var(--fg), transparent 50%); text-align: center; }
   .pc-git__hive-edit { border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%); padding: 10px 12px; display: grid; gap: 8px; background: rgba(255,255,255,0.012); }

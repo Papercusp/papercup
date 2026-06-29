@@ -15,6 +15,7 @@ import {
   isBenignRequestParse,
   isBenignStreamClose,
   isTransientPgConnectionError,
+  isUnresolvablePlanScopeError,
 } from './host-benign-errors';
 
 /** The inotify watch-exhaustion error Node throws from chokidar/fs.watch when the
@@ -167,12 +168,33 @@ describe('isBenignFileWatcherError (EI-3385 — inotify exhaustion must not cras
   });
 });
 
+describe('isUnresolvablePlanScopeError (resolvePlanScope float must not crash a :3070 worker)', () => {
+  it('classifies the two WI-148 resolvePlanScope throws as benign (request-scoped)', () => {
+    expect(
+      isUnresolvablePlanScopeError(
+        new Error("resolvePlanScope: harness 'operator' is not registered in the harness registry (harness_shared.harness_registry) or harness_shared.projects in any workspace"),
+      ),
+    ).toBe(true);
+    expect(
+      isUnresolvablePlanScopeError(new Error("resolvePlanScope: plans are Hive-scoped, but 'foo' is not a Hive home and …")),
+    ).toBe(true);
+  });
+
+  it('does NOT classify an unrelated error as benign (real bugs still fail fast)', () => {
+    expect(isUnresolvablePlanScopeError(new Error('is not registered in the harness registry'))).toBe(false); // no resolvePlanScope prefix
+    expect(isUnresolvablePlanScopeError(new Error('resolvePlanScope: some other failure'))).toBe(false); // not the WI-148 phrases
+    expect(isUnresolvablePlanScopeError(new TypeError("Cannot read properties of undefined (reading 'x')"))).toBe(false);
+    expect(isUnresolvablePlanScopeError(null)).toBe(false);
+  });
+});
+
 describe('isBenignHostError (the combined fail-fast boundary)', () => {
   it('is true for every benign class', () => {
     expect(isBenignHostError(realJsonParseError('{bad'))).toBe(true);
     expect(isBenignHostError(Object.assign(new Error('x'), { code: 'ERR_INVALID_STATE' }))).toBe(true);
     expect(isBenignHostError(pgNullWriteError('cjs'))).toBe(true); // the 2026-06-18 (EI-1405) crash-loop fix — real incident CJS stack
     expect(isBenignHostError(watcherEnospc())).toBe(true); // EI-3385 — inotify exhaustion
+    expect(isBenignHostError(new Error("resolvePlanScope: harness 'operator' is not registered in the harness registry"))).toBe(true); // worker-crash fix
   });
 
   it('is FALSE for a real host bug — the guard must still exit on these', () => {
