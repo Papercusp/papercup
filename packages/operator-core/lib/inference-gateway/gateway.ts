@@ -1511,7 +1511,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const keyOf = (cgov: RateLimitGovernor, accountId: string): number => {
       if (cgov.state.pausedUntil > now0) return Infinity;
       if ((egressPauseUntil.get(accountId) ?? 0) > now0) return Infinity;
-      const u = cgov.snapshot().unified?.utilization ?? 0;
+      const unified = cgov.snapshot().unified;
+      const u = unified?.utilization ?? 0;
+      // DISQUALIFY a budget-EXHAUSTED account — its binding 5h/7d window is REJECTING or essentially full,
+      // so it WILL 429 (e.g. a Claude-Max account whose 7-DAY opus budget is spent: util7d=1.0 while its 5h
+      // window reads ~0). Scoring it as merely `u` (≈1.0) made it look only "slightly worse" than a healthy
+      // account — so a BUSY-but-healthy account (low util + the soft-pin `load` term ⇒ key>1) ranked WORSE
+      // than an IDLE exhausted sibling (key≈1.0), and the soft-pin-failover / proactive pick bounced the
+      // request ONTO the exhausted account → 429. Owner-reported: an account with weekly headroom kept
+      // throwing api errors on its pinned consoles because their requests were being failed over onto the
+      // 7d-exhausted siblings. An exhausted account is UNUSABLE, not "slightly worse" — take it out of the race.
+      if (unified?.rejected || u >= 0.99) return Infinity;
       const flaky = (egressFailStreak.get(accountId) ?? 0) > 0 ? 1 : 0;
       return flaky + u;
     };

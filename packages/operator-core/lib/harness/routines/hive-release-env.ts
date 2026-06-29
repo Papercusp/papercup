@@ -96,6 +96,9 @@ export interface HiveReleaseEnv {
   isOperatorHome: boolean;
   /** The resolved green command (for logging / the /admin/git surface). */
   greenCmd?: string;
+  /** True when greenCmd came from the per-hive owner override (hive_settings), not the
+   *  blueprint knob / detected testCommand / build fallback (P-014 /admin/git surface). */
+  greenCmdOverridden?: boolean;
 }
 
 function disabled(reason: HiveReleaseEnv['reason']): HiveReleaseEnv {
