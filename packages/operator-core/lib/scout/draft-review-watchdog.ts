@@ -150,14 +150,11 @@ async function fireReviewWake(
   const more = stale.length > shown.length ? `\n…and ${stale.length - shown.length} more.` : '';
   await wakeRecipients([queenOwner], {
     summary:
-      `Scout-draft review backstop: ${stale.length} scout-routed draft(s) unreviewed > ${hours}h — ` +
-      `review so the Queen↔Scout loop doesn't starve.`,
-    body:
-      `These DRAFT plans the Scout routed have sat unreviewed for > ${hours}h (the plan-review idle ` +
-      `activity never ran — the hive has been saturated, so the Queen was never idle). This is a backstop ` +
-      `WAKE, not an idle activity: review each and either promote it (= ready), coord:send feedback to its ` +
-      `scout owner to iterate, or deprecate it WITH learnings. Clearing or progressing them stops this wake.\n\n` +
-      `${list}${more}`,
+      `Scout-draft review backstop: ${stale.length} scout-routed draft(s) unreviewed > ${hours}h (the ` +
+      `plan-review idle activity never ran — the hive has been saturated, so the Queen was never idle). ` +
+      `This is a backstop WAKE, not an idle activity: review each and either promote it (= ready), coord:send ` +
+      `feedback to its scout owner to iterate, or deprecate it WITH learnings (never just leave it). Clearing ` +
+      `or progressing them stops this wake.\n\n${list}${more}`,
     payload: { kind: 'scout-draft-review', slugs: stale.map((s) => s.planSlug), staleHours: hours },
     source: 'scout-draft-review',
     workspaceId,

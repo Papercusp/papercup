@@ -18,6 +18,25 @@ import type { DrainableOutbox } from './cross-hive-outbox-drain';
 import type { DetailedPendingEnvelope } from './cross-hive-outbox-pg';
 import type { HiveDirectoryMeta } from './hive-publish';
 
+// Mock the owner-key-health signal at the boundary so this unit test stays
+// hermetic (no real coord broadcast / PG toast) while still asserting the WIRING:
+// an OWNED-but-keyless hive must raise signalOwnedHiveKeyMissing, and a hive whose
+// key loads must clearOwnedHiveKeyHealth. The signal's own behavior (dedup,
+// best-effort) is covered by hive-owner-key-health.test.ts.
+const KEYHEALTH = vi.hoisted(() => ({
+  missing: [] as Array<{ workspaceId: string; hiveSlug: string; context: string }>,
+  cleared: [] as Array<{ workspaceId: string; hiveSlug: string }>,
+}));
+vi.mock('./hive-owner-key-health', () => ({
+  signalOwnedHiveKeyMissing: async (ref: { workspaceId: string; hiveSlug: string; context: string }) => {
+    KEYHEALTH.missing.push(ref);
+    return true;
+  },
+  clearOwnedHiveKeyHealth: (ref: { workspaceId: string; hiveSlug: string }) => {
+    KEYHEALTH.cleared.push(ref);
+  },
+}));
+
 const WS = 'ws-test';
 
 const meta = (hiveId: string, visibility: HiveDirectoryMeta['visibility']): HiveDirectoryMeta => ({
@@ -114,6 +133,8 @@ function fixture(initial: HiveDirectoryMeta[]): Fixture {
 
 afterEach(() => {
   __resetCrossHiveBoundaryBootForTests();
+  KEYHEALTH.missing.length = 0;
+  KEYHEALTH.cleared.length = 0;
 });
 
 describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
@@ -161,15 +182,17 @@ describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
     expect(listWiredCrossHiveBoundaries()).toEqual([]);
   });
 
-  it('a published hive without an identity pubkey is skipped (stays dark, no throw)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('a published hive without an identity pubkey is skipped (stays dark, loud owner-key signal, no throw)', async () => {
     const f = fixture([meta('no-key', 'public'), meta('ok', 'public')]);
     const res = await ensureCrossHiveBoundariesWired(WS, f.opts);
     expect(res.skipped).toEqual(['no-key']);
     expect(res.wired).toEqual(['ok']);
     expect(getCrossHiveBoundary(WS, 'no-key')).toBeUndefined();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no Hive identity pubkey'));
-    warn.mockRestore();
+    // The OWNED-but-keyless hive raised the deduped owner-key-missing escalation
+    // instead of a silent skip (D-024 / D-023 BUG A).
+    expect(KEYHEALTH.missing).toEqual([{ workspaceId: WS, hiveSlug: 'no-key', context: 'cross-hive-boot' }]);
+    // The hive whose key DID load cleared any stale alert (recovery re-arm).
+    expect(KEYHEALTH.cleared).toContainEqual({ workspaceId: WS, hiveSlug: 'ok' });
   });
 
   it('a hive-listing failure leaves existing boundaries untouched', async () => {

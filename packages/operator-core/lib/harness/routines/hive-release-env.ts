@@ -1,0 +1,133 @@
+/**
+ * hive-release-env — resolve a hive's effective staging→main release gate and the env
+ * overlay the green-checkpoint / deploy SUBPROCESS runs under.
+ *
+ * Plan per-hive-git-and-release-gate-2026-06-29 (P-006, D-007/D-008).
+ *
+ * The release lib (apps/operator/lib/release/release-config.ts) is intentionally
+ * lightweight + fully env-overridable and CANNOT import the harness registry / blueprint
+ * layer. So per-hive generalization lives HERE (operator-core, where both are reachable):
+ * compute the per-hive env vars from the registry path + the hive's `releaseGate` knob and
+ * hand them to the subprocess; its `releaseConfig()` re-derives everything from that env.
+ * No change to release-config.ts is needed — its env seam already supports this.
+ *
+ * The operator-home (papercusp) slug is special-cased to an EMPTY overlay so its LIVE :3070
+ * pipeline keeps its EXACT current behavior (systemd-unit env + releaseConfig defaults) —
+ * regression-safe (D-007). The gate is effective ONLY when `releaseGate.enabled` AND the
+ * hive actually has a repo (belt-and-suspenders — a repo-less / non-coding hive can never
+ * be gated, D-002).
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { parse as parseYaml } from 'yaml';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
+import { resolveAndValidate } from '../../agent-tools/blueprint/_resolve';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
+
+/** Fallback green command when a hive has neither an explicit releaseGate.greenCmd nor a
+ *  detected `testCommand` knob — gate on "it at least builds", never an unconditional FF. */
+export const DEFAULT_GREEN_CMD = 'npm run build';
+
+export interface HiveReleaseGate {
+  enabled: boolean;
+  integrationBranch: string;
+  releaseRef: string;
+  /** Explicit green command, or null to fall back to testCommand → DEFAULT_GREEN_CMD. */
+  greenCmd: string | null;
+  /** Deploy target (leg 3). null/undefined ⇒ green-gate only (no release-trigger). */
+  deploy: { systemdUnit?: string; healthUrl?: string } | null;
+  /** The repo's detected test command (the existing `testCommand` knob) — the preferred
+   *  greenCmd default so the gate runs the SAME command the worker/gym use (D-004). */
+  testCommand?: string;
+}
+
+/**
+ * Resolve a hive's effective `releaseGate` knob (+ `testCommand`) by reading its
+ * `.papercusp/blueprint.yaml` and resolving the blueprint `extends` chain. Returns null
+ * when the hive has no blueprint file or it fails to resolve.
+ */
+export function resolveHiveReleaseGate(hivePath: string): HiveReleaseGate | null {
+  const bpFile = join(hivePath, '.papercusp', 'blueprint.yaml');
+  if (!existsSync(bpFile)) return null;
+  let childObj: Record<string, unknown>;
+  try {
+    childObj = (parseYaml(readFileSync(bpFile, 'utf8')) ?? {}) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const resolver = operatorResolveExtends({ localDirs: [] });
+  const validation = resolveAndValidate(childObj, resolver);
+  if (!validation.ok || !validation.blueprint) return null;
+  const knobs = (validation.blueprint.knobs ?? {}) as Record<string, unknown>;
+  const gate = (knobs.releaseGate ?? {}) as Record<string, unknown>;
+  return {
+    enabled: gate.enabled === true,
+    integrationBranch: typeof gate.integrationBranch === 'string' ? gate.integrationBranch : 'staging',
+    releaseRef: typeof gate.releaseRef === 'string' ? gate.releaseRef : 'main',
+    greenCmd: typeof gate.greenCmd === 'string' ? gate.greenCmd : null,
+    deploy: (gate.deploy as HiveReleaseGate['deploy']) ?? null,
+    testCommand: typeof knobs.testCommand === 'string' ? knobs.testCommand : undefined,
+  };
+}
+
+export interface HiveReleaseEnv {
+  /** Whether this hive should run the green gate (enabled knob AND has a repo). */
+  enabled: boolean;
+  /** Why disabled, when enabled === false. */
+  reason?: 'not_found' | 'no_blueprint' | 'gate_disabled' | 'no_repo';
+  /** The env overlay to merge over process.env for the green-checkpoint/deploy subprocess.
+   *  EMPTY for the operator-home slug (preserve exact current behavior). */
+  env: Record<string, string>;
+  /** Whether a deploy target is configured (releaseGate.deploy) → release-trigger seeded. */
+  hasDeploy: boolean;
+  /** True for the operator-home (papercusp) slug — overlay is intentionally empty. */
+  isOperatorHome: boolean;
+  /** The resolved green command (for logging / the /admin/git surface). */
+  greenCmd?: string;
+}
+
+function disabled(reason: HiveReleaseEnv['reason']): HiveReleaseEnv {
+  return { enabled: false, reason, env: {}, hasDeploy: false, isOperatorHome: false };
+}
+
+/**
+ * Compute the per-hive release-gate env overlay for the green-checkpoint / deploy
+ * subprocess. Returns `{ enabled:false, reason }` when the hive shouldn't be gated
+ * (not found / no blueprint / gate disabled / no repo) — callers skip seeding/running.
+ */
+export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): Promise<HiveReleaseEnv> {
+  const reg = await loadHarnessRegistry(workspaceId);
+  const entry = reg.projects.find((p) => p.slug === slug);
+  if (!entry) return disabled('not_found');
+
+  const gate = resolveHiveReleaseGate(entry.path);
+  if (!gate) return disabled('no_blueprint');
+  if (!gate.enabled) return disabled('gate_disabled');
+
+  // Belt-and-suspenders (D-002): a hive can only be gated if it actually has a repo —
+  // self_repo marked AND a real .git on disk.
+  const hasRepo = entry.self_repo === true && existsSync(join(entry.path, '.git'));
+  if (!hasRepo) return disabled('no_repo');
+
+  // Operator-home (papercusp): EMPTY overlay → the subprocess uses the existing systemd-unit
+  // env + releaseConfig defaults, i.e. EXACT current behavior (D-007, regression-safe).
+  if (slug === operatorHomeHarnessSlug()) {
+    return { enabled: true, env: {}, hasDeploy: !!gate.deploy, isOperatorHome: true };
+  }
+
+  const parent = dirname(entry.path);
+  const greenCmd = gate.greenCmd ?? gate.testCommand ?? DEFAULT_GREEN_CMD;
+  const env: Record<string, string> = {
+    PAPERCUSP_INTEGRATION_ROOT: entry.path,
+    PAPERCUSP_RELEASE_SLUG: slug,
+    PAPERCUSP_INTEGRATION_BRANCH: gate.integrationBranch,
+    PAPERCUSP_RELEASE_REF: gate.releaseRef,
+    PAPERCUSP_GREEN_CMD: greenCmd,
+    PAPERCUSP_RELEASE_ROOT: join(parent, `${slug}-release`),
+    PAPERCUSP_CHECKPOINT_ROOT: join(parent, `${slug}-checkpoint`),
+    PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
+  };
+  return { enabled: true, env, hasDeploy: !!gate.deploy, isOperatorHome: false, greenCmd };
+}
