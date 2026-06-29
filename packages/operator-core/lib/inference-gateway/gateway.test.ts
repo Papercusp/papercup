@@ -721,6 +721,34 @@ test('per-request x-papercusp-account header routes to the named pool account (P
   assert.equal(upstream.last.headers['x-papercusp-account'], undefined);
 });
 
+test('DYNAMIC owner pin (POST /admin/owner-pin) routes an owner to the pinned account, overrides the static header, and unpin reverts (account-dynamic-pin-2026-06-29)', async () => {
+  const acct = (id: string, tok: string): ActiveAccount => ({ accountId: id, token: async () => tok, invalidateToken: () => {} });
+  const acctA = acct('A', 'tA');
+  const acctB = acct('B', 'tB');
+  const pool: AccountPool = {
+    active: () => acctA,
+    onExhausted: () => null,
+    select: (id) => (id === 'A' ? acctA : id === 'B' ? acctB : null),
+  };
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  }, { pool });
+  // pin owner 'spawn-7' → account B (runtime, via the admin endpoint accounts:pin wraps)
+  const pinRes = await ask('/admin/owner-pin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'spawn-7', account: 'B' }) });
+  assert.equal(pinRes.status, 200, 'owner-pin set ok');
+  // a request from spawn-7 with NO account header → the dynamic pin routes it to B (not the active default A)
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer tB', 'dynamic owner pin routed spawn-7 → B');
+  // it OVERRIDES a conflicting static x-papercusp-account header (the dynamic pin wins by owner id)
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer tB', 'dynamic owner pin overrides the static x-papercusp-account header');
+  // unpin → reverts to the static header (A)
+  await ask('/admin/owner-pin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'spawn-7', clear: true }) });
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer tA', 'after unpin, spawn-7 reverts to its static header account A');
+});
+
 test('Fault #3 — a header-pinned request whose account is paced fails over to active() (no $0 hang)', async () => {
   resetGovernorRegistry();
   upstream = await startUpstream((_req, res) => {

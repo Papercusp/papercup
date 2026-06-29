@@ -1191,6 +1191,7 @@ export async function spawnAgentInHarness(
       ownerId: spawnId,
       backend,
       role, // gateway-priority-tiers: role → admission tier (flag-gated header)
+      model: spawnModelSpec ?? undefined, // P-005/WI-951: per-role Claude model fidelity through the gateway
     }),
   );
   // Start the stall-waker poll loop once the gateway is in play (idempotent + unref'd): it watches the

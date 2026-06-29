@@ -322,6 +322,15 @@ async function publishListingForMeta(
     for (const m of members) {
       const parsed = m.github_remote ? parseGithubUrl(m.github_remote) : null;
       if (!parsed || typeof m.github_repository_id !== 'number') continue;
+      // D-047/D-048 (shared-hive join blocker): a member-JOIN link must point at a real MEMBER
+      // repo a fresh joiner can `git clone`, NEVER the hive HOME itself. A hive built from <repo>
+      // has hive slug <repo>-hive which is GIST-BACKED (NOT a GitHub repo) — emitting a link with
+      // github=<owner>/<repo>-hive made EVERY fresh joiner's `git clone …/<repo>-hive.git` 404, so
+      // the joiner never booted onto the swarm topic → 0 cross-machine federation (the live blocker;
+      // non-deterministic because the good <repo> link + this bad one both landed in memberLinks and
+      // the picker took whichever enumerated first). The hive home is the federation identity, not a
+      // cloneable member — skip it (by slug AND by a repo-name == hive-slug belt).
+      if (m.slug === meta.hiveId || parsed.repo === meta.hiveId) continue;
       memberLinks.push(
         formatHarnessLink({
           topic: hiveTopicHex,

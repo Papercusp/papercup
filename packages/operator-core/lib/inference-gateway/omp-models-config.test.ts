@@ -2,10 +2,26 @@ import { describe, it, expect } from 'vitest';
 import {
   ompGatewayModelsConfig,
   ompProviderForAccountProvider,
+  ompModelIdFromSpec,
   OMP_MODELS_REL_PATH,
   OMP_GATEWAY_PROVIDER_ID,
   OMP_GATEWAY_PLACEHOLDER_KEY,
 } from './omp-models-config';
+
+describe('ompModelIdFromSpec (P-005 per-role fidelity)', () => {
+  it('extracts the bare Claude id from a full spec (strips provider + tier)', () => {
+    expect(ompModelIdFromSpec('anthropic/claude-opus-4-8:high')).toBe('claude-opus-4-8');
+    expect(ompModelIdFromSpec('claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
+    expect(ompModelIdFromSpec('claude-sonnet-4-6:medium')).toBe('claude-sonnet-4-6');
+  });
+  it('returns null for non-claude / local / empty specs (caller falls back to the wire default)', () => {
+    expect(ompModelIdFromSpec('ollama/ornith:fast')).toBe(null);
+    expect(ompModelIdFromSpec('gpt-5-codex')).toBe(null);
+    expect(ompModelIdFromSpec('')).toBe(null);
+    expect(ompModelIdFromSpec(null)).toBe(null);
+    expect(ompModelIdFromSpec(undefined)).toBe(null);
+  });
+});
 
 describe('ompGatewayModelsConfig', () => {
   it('returns null when no account is pinned (fail-soft, direct egress)', () => {

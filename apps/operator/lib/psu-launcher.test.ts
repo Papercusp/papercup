@@ -6,6 +6,7 @@ import {
   parseArgs,
   planValue,
   parkRoleScopedMcpJson,
+  ompDefaultModelAdvisory,
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
@@ -84,6 +85,26 @@ describe('parkRoleScopedMcpJson (P-002 SU-omp role-MCP leak guard)', () => {
     writeFileSync(mcp(), 'not json{');
     expect(parkRoleScopedMcpJson(dir)).toBe(null);
     expect(existsSync(mcp())).toBe(true);
+  });
+});
+
+describe('ompDefaultModelAdvisory (P-004 first-turn overflow guard)', () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-cfg-')); mkdirSync(join(home, '.omp', 'agent'), { recursive: true }); });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+  const writeCfg = (s: string) => writeFileSync(join(home, '.omp', 'agent', 'config.yml'), s);
+
+  it('advises when the default role is a local ollama model', () => {
+    writeCfg('modelRoles:\n  default: ollama/ornith:fast\n  slow: anthropic/claude-opus-4-6:high\n');
+    expect(ompDefaultModelAdvisory(home)).toMatch(/ollama\/ornith:fast/);
+  });
+  it('no advisory when the default is a gateway/anthropic model', () => {
+    writeCfg('modelRoles:\n  default: papercusp-gateway/claude-sonnet-4-6\n');
+    expect(ompDefaultModelAdvisory(home)).toBe(null);
+  });
+  it('no advisory when config.yml is absent', () => {
+    rmSync(join(home, '.omp', 'agent', 'config.yml'), { force: true });
+    expect(ompDefaultModelAdvisory(home)).toBe(null);
   });
 });
 

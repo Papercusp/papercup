@@ -1206,6 +1206,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   interface RouteEntry { account: string; model: string; at: number; }
   const ROUTE_MAP_MAX = 4096;
   const lastRouteByOwner = new Map<string, RouteEntry>();
+  // DYNAMIC OWNER PIN (account-dynamic-pin-2026-06-29): a RUNTIME owner→account pin, set via accounts:pin
+  // (POST /admin/owner-pin) and honored per-request keyed by the x-papercusp-owner header — it OVERRIDES the
+  // static x-papercusp-account spawn header, so any agent can re-route ANY agent (by owner id; its own id to
+  // self-pin) LIVE without a respawn. `hard` ⇒ no failover (like the static hard pin). In-memory: pins are
+  // re-applied if the gateway restarts (durable persistence is a follow-up).
+  const ownerPinMap = new Map<string, { accountId: string; hard: boolean }>();
   function recordRoute(ownerId: string | undefined, accountId: string, model: string): void {
     if (!ownerId) return; // only identified callers (x-papercusp-owner present) are addressable
     if (!lastRouteByOwner.has(ownerId) && lastRouteByOwner.size >= ROUTE_MAP_MAX) {
@@ -1459,10 +1465,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // Cache-affinity routing (P-002/P-003): a spawn pins its requests to one account via the
     // x-papercusp-account header so its per-credential conversation cache survives; an unknown id
     // (or no header / a single-account pool) falls back to the active account — today's behavior.
-    const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
+    const wantAccountHeader = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
     // The bee's coord ownerId (== spawnId), if it identified itself — lets the gateway attribute an
     // all-throttled shed back to this bee for the stall-waker (P-002). Absent ⇒ not wake-able (no-op).
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
+    // DYNAMIC OWNER PIN (account-dynamic-pin-2026-06-29): a runtime pin (accounts:pin) keyed by owner id
+    // OVERRIDES the static x-papercusp-account spawn header — so an agent can re-route itself or another LIVE.
+    // Absent ⇒ the static header (today's behavior). The dynamic pin also carries its own hard/soft choice.
+    const dynPin = wantOwner ? ownerPinMap.get(wantOwner) : undefined;
+    const wantAccount = dynPin?.accountId ?? wantAccountHeader;
     const pinned = (wantAccount && pool.select?.(wantAccount)) || null;
     // HARD PIN (account-hard-pin-2026-06-29): an operator / PSU-utility pin that must NEVER fail over.
     // When set (only honored once the pin resolved to a live pool account), every "cache-affinity yields
@@ -1470,7 +1481,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // account — the request waits / 429s / 503s ON its pinned credential. The operator explicitly chose
     // this account and accepts its latency/limits. Soft (bee) pins are unaffected: hardPin stays false for
     // them, so all guards below are no-ops and their behavior is byte-identical to before.
-    const hardPin = pinned !== null && (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard';
+    const hardPin =
+      pinned !== null &&
+      (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
     const poolActive = pool.active();
     // Fault #3 — pinned-but-paced failover. The spawn-side drain selector pins a bee to an account by
     // its cross-process BUDGET projection, which can't see the gateway's LIVE pacing — so it can pin a
@@ -2786,6 +2799,45 @@ export function createInferenceGateway(deps: GatewayDeps) {
         .onAdminReload()
         .then((r) => sendJson(res, 200, { ok: true, ...r }))
         .catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `inference-gateway: reload failed: ${(e as Error).message}` }, gateway: true }));
+      return;
+    }
+    if (req.method === 'POST' && url === '/admin/owner-pin') {
+      // DYNAMIC OWNER PIN set/clear (accounts:pin / accounts:unpin). Body: {ownerId, account, hard?, clear?}.
+      // Sets the in-memory owner→account pin the routing above honors per-request (overriding the static
+      // x-papercusp-account header). NOT persisted — re-applied by the caller if the gateway restarts.
+      // Promise-chained (this admin-dispatch scope is sync, like /admin/reload — no await here).
+      void readBody(req)
+        .then((buf) => {
+          let body: { ownerId?: string; account?: string; hard?: boolean; clear?: boolean };
+          try {
+            body = JSON.parse(buf.toString('utf8') || '{}');
+          } catch {
+            sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'owner-pin: body must be JSON' }, gateway: true });
+            return;
+          }
+          const ownerId = body.ownerId?.trim();
+          if (!ownerId) {
+            sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'owner-pin: ownerId required' }, gateway: true });
+            return;
+          }
+          if (body.clear) {
+            const cleared = ownerPinMap.delete(ownerId);
+            sendJson(res, 200, { ok: true, ownerId, cleared, pin: null, count: ownerPinMap.size });
+            return;
+          }
+          const account = body.account?.trim();
+          if (!account) {
+            sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'owner-pin: account required (or clear:true)' }, gateway: true });
+            return;
+          }
+          ownerPinMap.set(ownerId, { accountId: account, hard: !!body.hard });
+          sendJson(res, 200, { ok: true, ownerId, pin: ownerPinMap.get(ownerId), count: ownerPinMap.size });
+        })
+        .catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `owner-pin: ${(e as Error).message}` }, gateway: true }));
+      return;
+    }
+    if (req.method === 'GET' && url === '/admin/owner-pins') {
+      sendJson(res, 200, { ok: true, now: Date.now(), pins: [...ownerPinMap.entries()].map(([ownerId, p]) => ({ ownerId, ...p })) });
       return;
     }
     if (!url.startsWith('/v1/')) {

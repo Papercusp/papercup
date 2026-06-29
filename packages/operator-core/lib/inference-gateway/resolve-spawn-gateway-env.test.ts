@@ -113,6 +113,21 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'claude');
   });
 
+  test('OMP backend + role Claude model spec → exposes + selects the ROLE model (P-005/WI-951 fidelity)', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.selectSpawnAccount.mockResolvedValue('claude-main');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', model: 'anthropic/claude-opus-4-8:high' });
+    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-opus-4-8');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('claude-opus-4-8');
+  });
+
+  test('OMP backend + local (non-claude) model spec → falls back to the wire default (no fidelity override)', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.selectSpawnAccount.mockResolvedValue('claude-main');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', model: 'ollama/ornith:fast' });
+    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-sonnet-4-6');
+  });
+
   test('OMP backend + tier flag ON + role → bakes the x-papercusp-priority pin into the models.yml (P-006)', async () => {
     h.getFlag.mockResolvedValue(true); // all flags ON incl. GATEWAY_PRIORITY_TIERS
     h.selectSpawnAccount.mockResolvedValue('claude-main');

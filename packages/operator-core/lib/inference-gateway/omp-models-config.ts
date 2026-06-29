@@ -97,6 +97,22 @@ export function ompProviderForAccountProvider(p: 'claude' | 'codex'): OmpGateway
   return p === 'codex' ? 'openai' : 'anthropic';
 }
 
+/**
+ * Extract the bare Anthropic model id from a per-spawn model SPEC for the gateway
+ * provider (P-005 per-role fidelity, WI-951). A spec is `[provider/]<id>[:tier]`,
+ * e.g. `anthropic/claude-opus-4-8:high` → `claude-opus-4-8`. Returns the id ONLY
+ * when it's an Anthropic/Claude model (the gateway provider's anthropic wire); a
+ * non-claude spec (`ollama/ornith:fast`, a codex/openai id, empty) → null so the
+ * caller falls back to the wire default. Net: an omp spawn that gateway-routes to a
+ * Claude account exposes + selects the ROLE's ACTUAL Claude model instead of the
+ * default sonnet, while a local/non-claude spec leaves the default untouched.
+ */
+export function ompModelIdFromSpec(spec?: string | null): string | null {
+  if (!spec) return null;
+  const id = spec.trim().split('/').pop()?.split(':')[0]?.trim();
+  return id && /^claude-/.test(id) ? id : null;
+}
+
 /** Anthropic egress hits the gateway root; OpenAI-compatible egress hits `/v1`
  *  (matches provider-adapters.ts `providerForGatewayPath` path routing). */
 function gatewayBaseUrl(provider: OmpGatewayProvider, port: number): string {

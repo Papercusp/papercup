@@ -50,7 +50,7 @@ export interface BoundaryRekeyResult {
    * throw-only rekey_grant_failed event never sees them; the admit call-site reads this to
    * emit a queryable rekey_grant_skipped event so a 0-keys run NAMES the cause.
    */
-  reason?: 'flag-disabled' | 'no-fresh-members' | 'no-author';
+  reason?: 'flag-disabled' | 'no-fresh-members' | 'no-author' | 'no-gap';
 }
 
 export interface BoundaryRekeySeams {
@@ -217,6 +217,26 @@ export async function grantEpochKeysToMembers(
 }
 
 /**
+ * Default reader for the device pubkeys that already hold a given epoch's wrapped key.
+ * Extracted (was inline in reconcileOwnedHiveEpochKeys) so the onMemberApplied gap-guard in
+ * reconcileEpochKeysForCurrentMembers and the gap-aware sweep share ONE implementation.
+ */
+async function defaultLoadEpochKeyDevices(
+  ws: string,
+  slug: string,
+  epoch: number,
+  sql?: Sql,
+): Promise<string[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const client = sql ?? getOrgPg().sql;
+  const rows = (await client`
+    SELECT member_device_pubkey FROM harness_shared.hive_epoch_keys
+     WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND epoch = ${epoch}
+  `) as unknown as Array<{ member_device_pubkey: string }>;
+  return rows.map((r) => r.member_device_pubkey);
+}
+
+/**
  * WI-887 self-heal — ensure EVERY current member holds every epoch key [0..current].
  *
  * The complement to grantEpochKeysToMembers (one NEW member at join) + advanceEpochOnHiveBoundary
@@ -256,6 +276,7 @@ export async function reconcileEpochKeysForCurrentMembers(
   seams: Pick<BoundaryRekeySeams, 'resolveCrypto' | 'resolveAuthorPubkey' | 'persistWrappedKeys'> & {
     getCurrentEpoch?: (ws: string, slug: string, sql?: Sql) => Promise<number>;
     loadMembers?: (ws: string, slug: string, sql?: Sql) => Promise<HiveMemberRecord[]>;
+    loadEpochKeyDevices?: (ws: string, slug: string, epoch: number, sql?: Sql) => Promise<string[]>;
   } = {},
 ): Promise<BoundaryRekeyResult> {
   if (!opts.enabled) return { applied: false, reason: 'flag-disabled' };
@@ -284,6 +305,23 @@ export async function reconcileEpochKeysForCurrentMembers(
         seen.add(pk);
         pubkeys.push(pk);
       }
+    }
+  }
+  // Perf guard (plan shared-hive-cross-machine-scale-10k P-020): the onMemberApplied projection
+  // hook calls this on EVERY membership apply. Without a gap-check the delegate below re-wraps
+  // [0..current] to every device every time → O(E·M) per apply, O(E·M²) per onboarding wave (the
+  // owner-box serial-crypto wall). Mirror reconcileOwnedHiveEpochKeys' guard: when every live
+  // device already holds the CURRENT epoch key there is nothing to grant — skip the crypto.
+  // SKIP for the reconnect re-grant (refederate/onlyDevices), which intentionally re-sends.
+  if (!opts.refederate && !opts.onlyDevices && pubkeys.length > 0) {
+    const getCurrentEpoch = seams.getCurrentEpoch ?? getHiveEpoch;
+    const loadEpochKeyDevices = seams.loadEpochKeyDevices ?? defaultLoadEpochKeyDevices;
+    const currentEpoch = await getCurrentEpoch(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+    const have = new Set(
+      await loadEpochKeyDevices(opts.workspaceId, opts.hiveHomeSlug, currentEpoch, opts.sql),
+    );
+    if (pubkeys.every((pk) => have.has(pk))) {
+      return { applied: false, reason: 'no-gap' };
     }
   }
   // Delegate to the tested per-member grant with the resolved set: it re-reads the CURRENT epoch
@@ -345,17 +383,7 @@ export async function reconcileOwnedHiveEpochKeys(
       `) as unknown as Array<{ workspace_id: string; home_slug: string }>;
       return rows.map((r) => ({ workspaceId: r.workspace_id, hiveHomeSlug: r.home_slug }));
     });
-  const loadEpochKeyDevices =
-    seams.loadEpochKeyDevices ??
-    (async (ws: string, slug: string, epoch: number, sql?: Sql) => {
-      const { getOrgPg } = await import('@papercusp/db-org');
-      const client = sql ?? getOrgPg().sql;
-      const rows = (await client`
-        SELECT member_device_pubkey FROM harness_shared.hive_epoch_keys
-         WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND epoch = ${epoch}
-      `) as unknown as Array<{ member_device_pubkey: string }>;
-      return rows.map((r) => r.member_device_pubkey);
-    });
+  const loadEpochKeyDevices = seams.loadEpochKeyDevices ?? defaultLoadEpochKeyDevices;
 
   const hives = await listHives(opts.sql);
   let reconciled = 0;

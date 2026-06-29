@@ -40,6 +40,74 @@ export const gatewayStatusTool = defineTool({
   },
 });
 
+export const accountsPinTool = defineTool({
+  name: 'accounts:pin',
+  description:
+    "Pin an agent to a pool account on the inference gateway, LIVE (no respawn). `agent` = the TARGET agent's owner/spawn id — pass your OWN id to pin yourself, or another agent's id to pin them. `account` = a pool account id (see gateway:status / accounts:list). `hard:true` ⇒ NEVER fail over off it (waits / 429s on that account); default (soft) prefers it but yields if it is paused/exhausted. The gateway routes that agent's SUBSEQUENT requests to the account, overriding its spawn-time pin. CAUTION: concentrating many agents on one account rate-throttles it — prefer accounts with headroom (gateway:status) and spread load. In-memory: re-apply after a gateway restart. Returns {ok, ownerId, pin}.",
+  guidance: {
+    when: 'Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.',
+    notWhen: 'Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override.',
+    chaining: 'gateway:status (pick an account with headroom) → accounts:pin { agent, account } → accounts:unpin to revert.',
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    agent: z.string().min(1).describe("target agent's owner/spawn id (pass your own id to pin yourself)"),
+    account: z.string().min(1).describe('pool account id to route the agent to'),
+    hard: z.boolean().optional().describe('true ⇒ never fail over off the account (default: soft, yields if paused/exhausted)'),
+  }),
+  async handler({ agent, account, hard }) {
+    try {
+      const cfg = (await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) })
+        .then((r) => r.json())
+        .catch(() => ({}))) as { accounts?: string[] };
+      if (Array.isArray(cfg.accounts) && !cfg.accounts.includes(account)) {
+        return fail({ error: `account '${account}' is not in the gateway pool`, accounts: cfg.accounts });
+      }
+      const r = await fetch(`${gwBase()}/admin/owner-pin`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ownerId: agent, account, hard: !!hard }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      return r.ok ? ok(b) : fail({ error: `gateway /admin/owner-pin → ${r.status}`, ...b });
+    } catch (e) {
+      return fail({ error: `gateway unreachable at ${gwBase()}: ${errMsg(e)}` });
+    }
+  },
+});
+
+export const accountsUnpinTool = defineTool({
+  name: 'accounts:unpin',
+  description:
+    'Remove a dynamic account pin set by accounts:pin (LIVE). `agent` = the target agent owner/spawn id. The agent reverts to its spawn-time routing (its static x-papercusp-account header, or the pool default). Returns {ok, ownerId, cleared}.',
+  guidance: {
+    when: 'Reverting an accounts:pin so the agent routes normally again.',
+    notWhen: 'It was never dynamically pinned (no-op — cleared:false).',
+    chaining: 'accounts:pin … → accounts:unpin { agent }.',
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({ agent: z.string().min(1).describe('target agent owner/spawn id to unpin') }),
+  async handler({ agent }) {
+    try {
+      const r = await fetch(`${gwBase()}/admin/owner-pin`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ownerId: agent, clear: true }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      return r.ok ? ok(b) : fail({ error: `gateway /admin/owner-pin → ${r.status}`, ...b });
+    } catch (e) {
+      return fail({ error: `gateway unreachable at ${gwBase()}: ${errMsg(e)}` });
+    }
+  },
+});
+
 export const gatewayReloadTool = defineTool({
   name: 'gateway:reload',
   description:

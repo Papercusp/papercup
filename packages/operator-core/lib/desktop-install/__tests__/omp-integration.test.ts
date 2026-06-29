@@ -23,6 +23,8 @@ import {
   uninstallOmpIntegration,
   readOmpIntegrationState,
   resolveOmpPaths,
+  ensureOmpGatewayProvider,
+  removeOmpGatewayProvider,
 } from '../omp-integration';
 import { resolveInstallPaths } from '../papercusp-files';
 
@@ -69,6 +71,48 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fs.rm(tmpHome, { recursive: true, force: true });
+});
+
+describe('ensureOmpGatewayProvider / removeOmpGatewayProvider (P-001)', () => {
+  const modelsYml = () => resolveOmpPaths(tmpHome).modelsYmlPath;
+
+  it('creates models.yml with the papercusp-gateway provider when absent', async () => {
+    const r = await ensureOmpGatewayProvider(modelsYml(), { port: 8788 });
+    expect(r).toEqual({ wrote: true, created: true });
+    const txt = await fs.readFile(modelsYml(), 'utf8');
+    expect(txt).toContain('papercusp-gateway:');
+    expect(txt).toContain('http://127.0.0.1:8788');
+    expect(txt).toContain('claude-sonnet-4-6');
+    expect(txt).toContain('x-papercusp-priority');
+  });
+
+  it('is idempotent on re-run (no second write)', async () => {
+    await ensureOmpGatewayProvider(modelsYml(), { port: 8788 });
+    expect(await ensureOmpGatewayProvider(modelsYml(), { port: 8788 })).toEqual({ wrote: false, created: false });
+  });
+
+  it('preserves other providers, the default, and comments', async () => {
+    await fs.mkdir(path.dirname(modelsYml()), { recursive: true });
+    await fs.writeFile(modelsYml(), '# my comment\nproviders:\n  ollama:\n    baseUrl: "http://127.0.0.1:11434"\n');
+    const r = await ensureOmpGatewayProvider(modelsYml(), { port: 9999 });
+    expect(r.wrote).toBe(true);
+    const txt = await fs.readFile(modelsYml(), 'utf8');
+    expect(txt).toContain('# my comment');          // comment preserved
+    expect(txt).toContain('ollama:');                // other provider preserved
+    expect(txt).toContain('papercusp-gateway:');      // new provider added
+    expect(txt).toContain('http://127.0.0.1:9999');   // honors the port override
+  });
+
+  it('removeOmpGatewayProvider deletes only the gateway provider', async () => {
+    await fs.mkdir(path.dirname(modelsYml()), { recursive: true });
+    await fs.writeFile(modelsYml(), 'providers:\n  ollama:\n    baseUrl: "x"\n');
+    await ensureOmpGatewayProvider(modelsYml(), { port: 8788 });
+    expect(await removeOmpGatewayProvider(modelsYml())).toBe(true);
+    const txt = await fs.readFile(modelsYml(), 'utf8');
+    expect(txt).not.toContain('papercusp-gateway');
+    expect(txt).toContain('ollama:');
+    expect(await removeOmpGatewayProvider(modelsYml())).toBe(false); // second remove is a no-op
+  });
 });
 
 describe('installOmpIntegration', () => {

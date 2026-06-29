@@ -211,6 +211,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
       { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true },
       {
         loadMembers: async () => [member(['A']), member(['B'])],
+        loadEpochKeyDevices: async () => [], // nobody has any key yet ⇒ a gap exists ⇒ the guard grants
         resolveCrypto: async () =>
           ({
             deriveEpochKey: async (_h: string, e: number) => `K${e}` as never,
@@ -238,6 +239,8 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
       {
         // 'B' is in the revoked blocklist (cut member) — must NOT receive the new key.
         loadMembers: async () => [member(['A']), member(['B'], ['B'])],
+        loadEpochKeyDevices: async () => [], // a gap exists ⇒ the guard delegates to the grant
+
         resolveCrypto: async () =>
           ({
             deriveEpochKey: async (_h: string, e: number) => `K${e}` as never,
@@ -264,6 +267,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
       { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
       {
         loadMembers: async () => [member(['A'])],
+        loadEpochKeyDevices: async () => [], // a gap exists ⇒ guard passes through to the (self-gating) grant
         resolveAuthorPubkey: async () => null, // this box does not hold the hive key
         resolveCrypto: async () => ({ deriveEpochKey: derive }) as never,
         getCurrentEpoch: async () => 1,
@@ -311,6 +315,53 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
     ]);
     expect(seenRefederate).toEqual([true, true]); // refederate threaded into every persist
     expect(r).toEqual({ applied: true, newEpoch: 1, distributed: 2 });
+  });
+
+  it('PERF GUARD (P-020): every live device already holds the current epoch key ⇒ NO crypto, reason no-gap', async () => {
+    // The hot onMemberApplied path. Without this guard, every membership apply re-wraps
+    // [0..current] to every device → O(E·M) per apply, O(E·M²) per onboarding wave.
+    const wrap = vi.fn(async () => new Uint8Array([1]));
+    const derive = vi.fn(async () => 'K' as never);
+    const persist = vi.fn(async () => 1);
+    const r = await reconcileEpochKeysForCurrentMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      {
+        loadMembers: async () => [member(['A']), member(['B'])],
+        getCurrentEpoch: async () => 1,
+        loadEpochKeyDevices: async () => ['A', 'B'], // both already hold the current epoch key
+        resolveCrypto: async () => ({ deriveEpochKey: derive, wrapKeyToMember: wrap }) as never,
+        resolveAuthorPubkey: async () => 'owner',
+        persistWrappedKeys: persist,
+      },
+    );
+    expect(r).toEqual({ applied: false, reason: 'no-gap' });
+    expect(wrap).not.toHaveBeenCalled();
+    expect(derive).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('PERF GUARD bypassed by refederate ⇒ re-sends even when no device is missing the key', async () => {
+    const persisted: Array<{ epoch: number; members: string[] }> = [];
+    const r = await reconcileEpochKeysForCurrentMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, refederate: true },
+      {
+        loadMembers: async () => [member(['A'])],
+        getCurrentEpoch: async () => 0,
+        loadEpochKeyDevices: async () => ['A'], // A already holds it — guard WOULD skip, but refederate bypasses it
+        resolveCrypto: async () =>
+          ({
+            deriveEpochKey: async (_h: string, e: number) => `K${e}` as never,
+            wrapKeyToMember: async () => new Uint8Array([1]),
+          }) as never,
+        resolveAuthorPubkey: async () => 'owner',
+        persistWrappedKeys: async (_w, _s, epoch, rows) => {
+          persisted.push({ epoch, members: rows.map((row) => row.memberDevicePubkey) });
+          return rows.length;
+        },
+      },
+    );
+    expect(persisted).toEqual([{ epoch: 0, members: ['A'] }]); // re-sent despite no gap
+    expect(r).toEqual({ applied: true, newEpoch: 0, distributed: 1 });
   });
 });
 

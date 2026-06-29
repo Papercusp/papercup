@@ -670,6 +670,34 @@ export function parkRoleScopedMcpJson(cwd) {
 }
 
 /**
+ * P-004 (omp-psu-interactive-parity-hardening-2026-06-29): an SU omp session loads
+ * `~/.omp/agent/config.yml` `modelRoles.default`. When that's a LOCAL ollama model
+ * (e.g. `ollama/ornith:fast` — 32k + text-only), the very first turn overflows the SU
+ * toolset (~33k > 32k) BEFORE the user can `/model` to a bigger one — the exact cryptic
+ * `exceeds the available context size (32768)` failure the owner hit. Return a one-line
+ * advisory (else null) so the launcher warns UP FRONT. The owner's default is deliberately
+ * left untouched (their "use my default" steer); this only surfaces the gotcha. Reads
+ * config.yml; side-effects fs read only; exported for tests.
+ */
+export function ompDefaultModelAdvisory(home = homedir()) {
+  try {
+    const text = readFileSync(join(home, '.omp', 'agent', 'config.yml'), 'utf8');
+    const m = text.match(/modelRoles:[\s\S]*?\n[ \t]+default:[ \t]*([^\s#]+)/);
+    const def = m?.[1]?.trim();
+    if (def && /^ollama\//i.test(def)) {
+      return (
+        `psu: omp's default model is ${def} (a local model with a small context) — if your first turn ` +
+        `errors with "exceeds the available context size", run /model to pick a larger one ` +
+        `(e.g. papercusp-gateway/claude-sonnet-4-6).`
+      );
+    }
+  } catch {
+    /* no / unreadable config.yml → no advisory */
+  }
+  return null;
+}
+
+/**
  * Env for a resumed session. Pure — exported for tests. Identity + scope
  * SURVIVE the resume (psu-workspace-scoping fix):
  *   - A tracked row's `coordOwnerId` is re-exported as PAPERCUSP_SID —
@@ -2127,6 +2155,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   if (res.agent === 'omp') {
     const parked = parkRoleScopedMcpJson(res.cwd);
     if (parked) console.error(`psu: parked a stale role-scoped ${res.cwd}/.mcp.json (would hang omp MCP startup; role launches recreate it)`);
+    const advisory = ompDefaultModelAdvisory();
+    if (advisory) console.error(advisory);
   }
 
   // codex's superuser bearer is baked into its per-session config.toml
