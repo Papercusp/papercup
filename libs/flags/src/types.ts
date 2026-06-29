@@ -927,9 +927,13 @@ export const FLAGS = {
   // master gate for the hive epoch RE-KEY — content encrypted under a per-epoch group
   // key so a removed/excluded peer cannot READ post-boundary content. The K-half
   // modules (hive-epoch-* / resolveHiveEpochCrypto) + the boundary + op-path wiring all
-  // resolve behind it. DEFAULT OFF (dark): OFF ⇒ the notImplemented crypto stub, no
-  // encryption, byte-identical to today. KNOWN_DARK_FLAGS. Owner flips ON only after the
-  // live cut-off witness (P-008) passes on the real binary.
+  // resolve behind it. DEFAULT ON (graduated 2026-06-29 via the P-011 flag-default
+  // inversion — NOT in DARK_FLAGS): the live cut-off witness (P-008 / public-release
+  // GATE-1) passed cross-machine on the real binary (shared-hive-public-release D-014)
+  // and shipped in desktop alpha.2, so the gate condition is met. ON ⇒ the real
+  // per-epoch crypto (encrypt-on-write / decrypt-on-read) for NEW hives; existing hives
+  // stay legacy-unencrypted (rekey D-003). Re-add to DARK_FLAGS to fall back to the
+  // notImplemented stub (byte-identical to pre-rekey).
   HIVE_REKEY: "papercusp-hive-rekey",
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the master gate for
   // engine-managed LOOPS — the tracked replacement for Claude /loop (loop:arm re-wakes a

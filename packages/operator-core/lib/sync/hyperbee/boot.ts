@@ -2310,6 +2310,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             peerLabel(keyHex, ip),
           );
         },
+        // P-008 (harden-shared-hive-to-256-peers): turn P-004's process-global
+        // near-cap signal into a DURABLE, queryable boot-event. Hyperswarm
+        // SILENTLY stops accepting once maxPeers is reached (peer N+1 never
+        // connects, no error) — recording it makes approaching/hitting the 256
+        // ceiling VISIBLE: the remedy is raising PAPERCUSP_SWARM_MAX_PEERS /
+        // scaling the box, or (past 256 active) the trigger to un-defer the
+        // relay/sharding re-architecture.
+        onNearPeerCap: (info) => {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_cap_near',
+            `${info.liveConnections}/${info.maxPeers} swarm peer connections` +
+              (info.atCap
+                ? ' — AT CAP: new peers are being silently refused; raise PAPERCUSP_SWARM_MAX_PEERS or scale the box'
+                : ' — approaching the peer cap'),
+          );
+        },
       });
       // eslint-disable-next-line no-console
       console.info(

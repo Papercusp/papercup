@@ -598,9 +598,12 @@ describe('swarmConstructorOpts (P-001 — maxPeers cap)', () => {
     else process.env[KEY] = orig;
   });
 
-  it('defaults maxPeers to 256', () => {
+  it('uses the provided default for maxPeers when there is no env override', () => {
+    // Hermetic (P-004): the no-arg default now DERIVES from the host resource
+    // profile (resolveDefaultMaxPeers — cores/RAM), which is host/ordering-
+    // dependent, so inject a known default to keep this env-parsing test stable.
     delete process.env[KEY];
-    expect(swarmConstructorOpts()).toEqual({ maxPeers: 256 });
+    expect(swarmConstructorOpts({ defaultMaxPeers: 256 })).toEqual({ maxPeers: 256 });
   });
 
   it('honors a positive PAPERCUSP_SWARM_MAX_PEERS override', () => {
@@ -608,11 +611,11 @@ describe('swarmConstructorOpts (P-001 — maxPeers cap)', () => {
     expect(swarmConstructorOpts()).toEqual({ maxPeers: 32 });
   });
 
-  it('falls back to the default for non-numeric / non-positive values', () => {
+  it('falls back to the provided default for non-numeric / non-positive values', () => {
     process.env[KEY] = 'nope';
-    expect(swarmConstructorOpts().maxPeers).toBe(256);
+    expect(swarmConstructorOpts({ defaultMaxPeers: 256 }).maxPeers).toBe(256);
     process.env[KEY] = '0';
-    expect(swarmConstructorOpts().maxPeers).toBe(256);
+    expect(swarmConstructorOpts({ defaultMaxPeers: 256 }).maxPeers).toBe(256);
   });
 });
 

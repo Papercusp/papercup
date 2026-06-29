@@ -182,6 +182,177 @@ function RoutineCard({ r, label }: { r: RoutineInfo | null; label: string }) {
   );
 }
 
+// ── per-hive surface (per-hive-git-and-release-gate P-014) ──
+// One row per OTHER repo-backed coding hive that is green-gated (the operator-home has its
+// own full view above). Mirrors the server shape from git-pipeline-hives.ts.
+interface GitPipelineHiveRow {
+  slug: string;
+  root: string;
+  greenCmd: string;
+  greenCmdOverridden: boolean;
+  integrationBranch: string;
+  releaseRef: string;
+  hasDeploy: boolean;
+  greenCheckpointActive: boolean;
+  gateStatus: 'green' | 'held' | 'stalled' | 'unknown';
+  consecutiveReds: number;
+  lastGreenAtMs: number | null;
+  lastGreenSha: string | null;
+  stagingMainGap: number | null;
+  lastDeployAtMs: number | null;
+  lastDeployStatus: string | null;
+}
+
+function gateTone(s: GitPipelineHiveRow['gateStatus']): Tone {
+  return s === 'green' ? 'good' : s === 'held' ? 'warn' : s === 'stalled' ? 'bad' : 'neutral';
+}
+function gateLabel(r: GitPipelineHiveRow): string {
+  if (r.gateStatus === 'green') return 'green';
+  if (r.gateStatus === 'held') return `held · ${r.consecutiveReds} red`;
+  if (r.gateStatus === 'stalled') return 'STALLED';
+  return 'no runs yet';
+}
+
+/** The per-hive pipelines section: a row per gated coding hive + an inline editor that wires
+ *  the green-command edit to the per-hive override (POST /api/desktop/git/hive-green-cmd).
+ *  The selected hive lives in the URL (nuqs) so it's deep-linkable + agent-driveable. */
+function PerHiveSection() {
+  const sync = useSyncQuery<GitPipelineHiveRow>({ queryName: 'dev.gitPipelineHives', staleTime: 30_000 });
+  const rows = sync.data ?? [];
+  const [selected, setSelected] = useQueryState('hive', parseAsString.withDefault(''));
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const sel = rows.find((r) => r.slug === selected) ?? null;
+  // Seed the edit draft from the selected row's resolved command (a mid-edit form draft is
+  // useState, not nuqs — per AGENTS.md).
+  useEffect(() => {
+    setErr(null);
+    setDraft(sel ? sel.greenCmd : '');
+  }, [selected, sel?.greenCmd]);
+
+  async function save(clear: boolean) {
+    if (!sel) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await fetch('/api/desktop/git/hive-green-cmd', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: sel.slug, greenCmd: clear ? '' : draft }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; message?: string };
+      if (!res.ok || body.ok === false) {
+        setErr(body.error ? `${body.error}${body.message ? `: ${body.message}` : ''}` : `HTTP ${res.status}`);
+      } else {
+        void sync.invalidate();
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="pc-git__sec">
+      <h3 className="pc-git__h">
+        Per-hive pipelines <span className="pc-git__muted">· other coding hives</span>
+      </h3>
+      {sync.error && <div className="pc-git__err">{String(sync.error.message || sync.error)}</div>}
+      {rows.length === 0 ? (
+        <div className="pc-git__empty">
+          No per-hive coding pipelines yet — a coding hive backed by a repo (green gate enabled) appears here. The
+          operator-home pipeline is shown above.
+        </div>
+      ) : (
+        <div className="pc-git__hives">
+          {rows.map((r) => {
+            const open = r.slug === selected;
+            return (
+              <div key={r.slug} className={`pc-git__hive ${open ? 'is-open' : ''}`}>
+                <button
+                  type="button"
+                  className="pc-git__hive-row"
+                  onClick={() => void setSelected(open ? '' : r.slug)}
+                  aria-expanded={open}
+                >
+                  <span className="pc-git__hive-slug">{r.slug}</span>
+                  <StatusPill tone={gateTone(r.gateStatus)} label={gateLabel(r)} />
+                  <code className="pc-git__hive-cmd">
+                    {r.greenCmd}
+                    {r.greenCmdOverridden && <span className="pc-git__hive-badge">override</span>}
+                  </code>
+                  <span className="pc-git__hive-gap">
+                    {r.stagingMainGap == null
+                      ? '—'
+                      : `${r.stagingMainGap} ${r.integrationBranch}→${r.releaseRef}`}
+                  </span>
+                  <span className="pc-git__hive-green">
+                    {r.lastGreenSha ? `🟩 ${r.lastGreenSha}` : 'no green'} · {fmtRel(r.lastGreenAtMs)}
+                  </span>
+                  <span className="pc-git__hive-deploy">
+                    {r.lastDeployStatus
+                      ? `${r.lastDeployStatus} ${fmtRel(r.lastDeployAtMs)}`
+                      : r.hasDeploy
+                        ? 'no deploy yet'
+                        : 'gate-only'}
+                  </span>
+                  <span className="pc-git__hive-caret" aria-hidden="true">
+                    {open ? '▾' : '▸'}
+                  </span>
+                </button>
+                {open && (
+                  <div className="pc-git__hive-edit">
+                    <label className="pc-git__hive-k" htmlFor={`gc-${r.slug}`}>
+                      green command
+                    </label>
+                    <input
+                      id={`gc-${r.slug}`}
+                      className="pc-git__hive-input mono"
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      placeholder={r.greenCmd}
+                      spellCheck={false}
+                      autoComplete="off"
+                    />
+                    <div className="pc-git__hive-actions">
+                      <button
+                        type="button"
+                        className="pc-git__hive-save"
+                        disabled={saving || draft.trim().length === 0 || draft.trim() === r.greenCmd}
+                        onClick={() => void save(false)}
+                      >
+                        {saving ? 'Saving…' : 'Save override'}
+                      </button>
+                      <button
+                        type="button"
+                        className="pc-git__hive-reset"
+                        disabled={saving || !r.greenCmdOverridden}
+                        onClick={() => void save(true)}
+                        title="Revert to the auto-detected command"
+                      >
+                        Reset to default
+                      </button>
+                    </div>
+                    <div className="pc-git__hive-meta">
+                      runs <code>{r.greenCmd}</code> in <code>{r.root}</code> · checkpoint{' '}
+                      {r.greenCheckpointActive ? 'active' : 'inactive'} ·{' '}
+                      {r.greenCmdOverridden ? 'owner override' : 'detected default'}
+                    </div>
+                    {err && <div className="pc-git__err">{err}</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function GitClient() {
   const [win, setWin] = useQueryState('window', parseAsStringEnum(['24h', '7d']).withDefault('24h'));
   const sync = useSyncQuery<GitPipelineSnapshot>({ queryName: 'dev.gitPipeline', staleTime: 30_000 });
@@ -452,6 +623,9 @@ export default function GitClient() {
         </div>
       )}
 
+      {/* Per-hive coding pipelines — independent of the operator-home snapshot above. */}
+      <PerHiveSection />
+
       <style>{gitCss}</style>
     </div>
   );
@@ -548,4 +722,27 @@ const gitCss = `
 
   .pc-git__empty { color: color-mix(in srgb, var(--fg), transparent 45%); font-size: 13px; padding: 12px 0; }
   .pc-git__err { color: #fca5a5; font-size: 12px; border: 1px solid rgba(248, 113, 113, 0.35); border-radius: 8px; padding: 8px 10px; }
+
+  /* per-hive pipelines (P-014) */
+  .pc-git__hives { display: grid; gap: 6px; }
+  .pc-git__hive { border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%); border-radius: 10px; background: rgba(255,255,255,0.012); overflow: hidden; }
+  .pc-git__hive.is-open { border-color: color-mix(in srgb, var(--accent-strong), transparent 70%); }
+  .pc-git__hive-row { display: grid; grid-template-columns: minmax(120px, 1.1fr) auto minmax(140px, 1.6fr) minmax(96px, auto) minmax(120px, auto) minmax(110px, auto) 16px; gap: 10px; align-items: center; width: 100%; text-align: left; background: transparent; border: 0; color: var(--fg); padding: 9px 12px; cursor: pointer; font-size: 12px; }
+  .pc-git__hive-row:hover { background: rgba(255,255,255,0.02); }
+  .pc-git__hive-slug { font-weight: 680; }
+  .pc-git__hive-cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 28%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-git__hive-badge { margin-left: 6px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 1px 5px; border-radius: 5px; background: rgba(96, 165, 250, 0.16); color: #93c5fd; }
+  .pc-git__hive-gap, .pc-git__hive-green, .pc-git__hive-deploy { font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 45%); white-space: nowrap; }
+  .pc-git__hive-caret { color: color-mix(in srgb, var(--fg), transparent 50%); text-align: center; }
+  .pc-git__hive-edit { border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%); padding: 10px 12px; display: grid; gap: 8px; background: rgba(255,255,255,0.012); }
+  .pc-git__hive-k { font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 40%); }
+  .pc-git__hive-input { width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.18); border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%); border-radius: 7px; color: var(--fg); padding: 7px 9px; font-size: 12px; }
+  .pc-git__hive-input:focus { outline: none; border-color: color-mix(in srgb, var(--accent), transparent 50%); }
+  .pc-git__hive-actions { display: flex; gap: 8px; }
+  .pc-git__hive-save, .pc-git__hive-reset { border-radius: 7px; padding: 5px 12px; font-size: 12px; font-weight: 640; cursor: pointer; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%); }
+  .pc-git__hive-save { background: color-mix(in srgb, var(--accent), transparent 80%); color: var(--fg); }
+  .pc-git__hive-reset { background: transparent; color: color-mix(in srgb, var(--fg), transparent 25%); }
+  .pc-git__hive-save:disabled, .pc-git__hive-reset:disabled { opacity: 0.45; cursor: default; }
+  .pc-git__hive-meta { font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 50%); }
+  .pc-git__hive-meta code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 `;
