@@ -31,7 +31,7 @@ import {
   advanceReady,
   type AdvanceResult,
 } from './git-ops';
-import type { ReleaseConfig } from './release-config';
+import { toolingRoot, type ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromEnv } from './perf-gate';
 import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
 import { heldGateAlert } from './held-gate-alarm';
@@ -1130,7 +1130,9 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
     isolationRun,
     workspaceRerun,
     async setupTree(ref) {
-      const script = path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
+      // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot
+      // (the SUBJECT — a per-hive repo has no release scripts). --integration stays the subject.
+      const script = path.join(toolingRoot(), 'apps/operator/bin/release/setup-release-checkout.sh');
       // `force` (not `auto`) for the CHECKPOINT tree: the `auto` lockfile/entry-set
       // heuristic is structurally blind to NESTED dependency drift (e.g. astro's nested
       // get-tsconfig@5.0.0-beta.4 vs the hoisted root 4.14.0), so it intermittently left

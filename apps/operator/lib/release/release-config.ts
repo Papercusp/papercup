@@ -53,6 +53,19 @@ function scriptRepoRoot(): string {
   }
 }
 
+/**
+ * The TOOLING root — the operator repo where the release SCRIPTS physically live
+ * (green-checkpoint.ts, setup-release-checkout.sh, verify-release-paths.ts). Resolved from
+ * THIS file's location, INDEPENDENT of cfg.integrationRoot (the SUBJECT being gated): a
+ * per-hive gate's subject is the hive's repo, which has NO release scripts, so the scripts
+ * must be resolved from here, not the subject (per-hive-git-and-release-gate P-019). For
+ * papercusp tooling == subject == papercusp, so every resolved script path is byte-identical
+ * to the old `cfg.integrationRoot`-based one — regression-safe.
+ */
+export function toolingRoot(): string {
+  return scriptRepoRoot();
+}
+
 export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseConfig {
   // Precedence: explicit caller override > env > derived. Env must NOT beat an
   // explicit override — the operator host exports PAPERCUSP_INTEGRATION_ROOT
@@ -93,7 +106,9 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
   };
 }
 
-/** The setup script that (re)builds the release/checkpoint checkout. */
-export function setupScriptPath(cfg: ReleaseConfig): string {
-  return path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
+/** The setup script that (re)builds the release/checkpoint checkout. It lives in the TOOLING
+ *  tree, NOT the per-hive SUBJECT integration tree (P-019) — for papercusp these are the
+ *  same path. The cfg is no longer needed but kept for call-site stability. */
+export function setupScriptPath(_cfg?: ReleaseConfig): string {
+  return path.join(toolingRoot(), 'apps/operator/bin/release/setup-release-checkout.sh');
 }

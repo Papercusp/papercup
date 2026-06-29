@@ -31,7 +31,7 @@ import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/op
 // backup API" and aborts the deploy → rollback (observed 2026-06-05).
 import '@papercusp/operator-core/lib/backup/configure';
 import { workspaceBackupFor } from '@papercusp/backup';
-import type { ReleaseConfig } from './release-config';
+import { toolingRoot, type ReleaseConfig } from './release-config';
 import { VERIFY_RESULT_MARKER } from './verify-release-paths';
 import type { DeployDeps, SnapshotInfo } from './deploy';
 import { applyStagedMigrations } from './migrate';
@@ -150,7 +150,8 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
     },
 
     async runSetup(targetSha): Promise<void> {
-      const script = path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
+      // P-019: script from the TOOLING tree; --integration (below) is the SUBJECT.
+      const script = path.join(toolingRoot(), 'apps/operator/bin/release/setup-release-checkout.sh');
       await run('bash', [
         script,
         '--ref', targetSha,
@@ -196,8 +197,10 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       // Run the integration tree's verify script with cwd = the release tree, so
       // process.cwd()-based resolution checks the release checkout. (Integration
       // tsx/script are always present — avoids a first-deploy chicken-and-egg.)
-      const tsx = path.join(cfg.integrationRoot, 'node_modules/.bin/tsx');
-      const script = path.join(cfg.integrationRoot, 'apps/operator/lib/release/verify-release-paths.ts');
+      // P-019: tsx + the verify SCRIPT come from the TOOLING tree (the subject's checkout may
+      // lack them); verify-release-paths.ts reads the SUBJECT release root from cfg/env.
+      const tsx = path.join(toolingRoot(), 'node_modules/.bin/tsx');
+      const script = path.join(toolingRoot(), 'apps/operator/lib/release/verify-release-paths.ts');
       // The verify script prints exactly one marker-delimited JSON line on
       // stdout; everything else (human text, stray PG NOTICEs from imported
       // modules) is noise we must skip. Parse the marker line, not the whole

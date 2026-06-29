@@ -24,6 +24,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { decideMemberContentOp } from '../member-content-guard';
+import type { PendingMembershipContent } from '../pending-membership-content';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -83,6 +85,13 @@ export interface EngineerIssuesProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of getOrgPg().sql. */
   sql?: postgres.Sql;
+  /** WI-259 parity (shared-hive member-content federation): hive-home slug when this harness is a
+   *  hive MEMBER — a cross-member issue op is membership-gated only when set. */
+  hiveHomeSlug?: string;
+  /** WI-259 parity: resolve an op's VERIFIED source-log device pubkey from sourceLogKeyHex. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
+  /** WI-259 P-004 parity: content-before-membership defer buffer. */
+  pendingMemberContent?: PendingMembershipContent;
 }
 
 /** Per-harness Hyperbee key == issue_id (matches the capture trigger's TG_ARGV[0]). */
@@ -99,7 +108,30 @@ async function writeToPg(
   row: EngineerIssueRow,
   provenance?: ProvenanceContext,
 ): Promise<void> {
-  if (row.harness_slug !== opts.harnessSlug) return;
+  // WI-259/D-027 parity (shared-hive member-content federation): own-slug applies; a CROSS-member
+  // issue/task applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. The bare slug
+  // early-return previously DROPPED every peer member's issue (members have distinct slugs in a real
+  // hive). It lands under its AUTHORED slug (the write persists row.scope = 'harness:<authored>').
+  const sourceLogDevice = provenance?.authorPubkey
+    ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+    : null;
+  const memberDecision = await decideMemberContentOp(row.harness_slug, opts, sourceLogDevice);
+  if (memberDecision !== 'apply') {
+    if (memberDecision === 'defer' && sourceLogDevice && opts.pendingMemberContent) {
+      opts.pendingMemberContent.defer(
+        {
+          authorDevice: sourceLogDevice,
+          tableTag: 'engineer-issues',
+          rowKey: composeKey(row),
+          fedHlc: provenance?.fedHlc ?? null,
+          fedTs: provenance?.ts ?? null,
+          reapply: () => writeToPg(opts, row, provenance),
+        },
+        Date.now(),
+      );
+    }
+    return;
+  }
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
