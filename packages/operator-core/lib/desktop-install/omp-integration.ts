@@ -33,6 +33,7 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveInstallPaths } from './papercusp-files';
+import { parseDocument } from 'yaml';
 
 const exec = promisify(execFile);
 
@@ -44,6 +45,8 @@ export interface OmpPaths {
   ompAgentDir: string;
   /** ~/.omp/agent/mcp.json — MCP server config. */
   mcpJsonPath: string;
+  /** ~/.omp/agent/models.yml — model/provider config (where the papercusp-gateway provider lives). */
+  modelsYmlPath: string;
   /** ~/.omp/agent/CLAUDE.md — vanilla context file (where the legacy block lived). */
   legacyContextPath: string;
   /** ~/.omp/agent/extensions/papercusp-coord.ts — legacy auto-discovered extension. */
@@ -95,6 +98,7 @@ export function resolveOmpPaths(home: string): OmpPaths {
   return {
     ompAgentDir,
     mcpJsonPath: path.join(ompAgentDir, 'mcp.json'),
+    modelsYmlPath: path.join(ompAgentDir, 'models.yml'),
     legacyContextPath: path.join(ompAgentDir, 'CLAUDE.md'),
     legacyExtensionPath: path.join(ompAgentDir, 'extensions', 'papercusp-coord.ts'),
   };
@@ -107,6 +111,84 @@ async function pathExists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** The dedicated OMP model-provider id that routes real Claude through the local
+ *  Papercusp inference gateway. (omp-psu-interactive-parity-hardening-2026-06-29 P-001 +
+ *  agent-insights/omp-gateway-routing-via-models-yml.) */
+export const OMP_GATEWAY_PROVIDER_ID = 'papercusp-gateway';
+
+function ompGatewayProviderValue(port: number) {
+  const model = (id: string, name: string) => ({
+    id, name, api: 'anthropic-messages', input: ['text'], contextWindow: 200000, maxTokens: 8192,
+  });
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    apiKey: 'papercusp-gateway', // inert placeholder; the gateway strips + reinjects the account OAuth
+    api: 'anthropic-messages',
+    auth: 'apiKey',
+    headers: { 'x-papercusp-priority': 'interactive' }, // no account pin → gateway load-balances
+    models: [
+      model('claude-sonnet-4-6', 'Papercusp Gateway Sonnet 4.6'),
+      model('claude-opus-4-8', 'Papercusp Gateway Opus 4.8'),
+      model('claude-haiku-4-5', 'Papercusp Gateway Haiku 4.5'),
+    ],
+  };
+}
+
+/**
+ * Ensure a `papercusp-gateway` provider exists in ~/.omp/agent/models.yml so a psu→omp
+ * interactive session can SELECT real Claude (`papercusp-gateway/claude-sonnet-4-6`) routed
+ * through the local inference gateway — the persistent counterpart to the session-scoped
+ * connect/fleet routing. ADDITIVE + idempotent: the comment-preserving Document API sets only
+ * `providers.papercusp-gateway`, leaving every other provider + the user's default model + all
+ * comments untouched. No account pin (priority-only → the gateway load-balances). Returns
+ * { wrote, created }. (omp-psu-interactive-parity-hardening-2026-06-29 P-001.)
+ */
+export async function ensureOmpGatewayProvider(
+  modelsYmlPath: string,
+  opts: { port?: number } = {},
+): Promise<{ wrote: boolean; created: boolean }> {
+  const port = opts.port ?? (Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788);
+  const desired = ompGatewayProviderValue(port);
+  let text = '';
+  let created = false;
+  try {
+    text = await fs.readFile(modelsYmlPath, 'utf8');
+  } catch {
+    created = true;
+  }
+  const doc = parseDocument(text);
+  const existing = doc.getIn(['providers', OMP_GATEWAY_PROVIDER_ID]);
+  const existingJs =
+    existing && typeof (existing as { toJSON?: () => unknown }).toJSON === 'function'
+      ? (existing as { toJSON: () => unknown }).toJSON()
+      : (existing ?? null);
+  // Idempotent: skip the write when the provider already matches.
+  if (existingJs && JSON.stringify(existingJs) === JSON.stringify(desired)) {
+    return { wrote: false, created: false };
+  }
+  if (doc.getIn(['providers']) == null) doc.setIn(['providers'], {});
+  doc.setIn(['providers', OMP_GATEWAY_PROVIDER_ID], desired);
+  await fs.mkdir(path.dirname(modelsYmlPath), { recursive: true });
+  await fs.writeFile(modelsYmlPath, doc.toString(), { mode: 0o600 });
+  return { wrote: true, created };
+}
+
+/** Remove the `papercusp-gateway` provider from models.yml (uninstall symmetry). Leaves every
+ *  other provider + the user's default untouched. Returns true when a provider was removed. */
+export async function removeOmpGatewayProvider(modelsYmlPath: string): Promise<boolean> {
+  let text = '';
+  try {
+    text = await fs.readFile(modelsYmlPath, 'utf8');
+  } catch {
+    return false;
+  }
+  const doc = parseDocument(text);
+  if (doc.getIn(['providers', OMP_GATEWAY_PROVIDER_ID]) == null) return false;
+  doc.deleteIn(['providers', OMP_GATEWAY_PROVIDER_ID]);
+  await fs.writeFile(modelsYmlPath, doc.toString(), { mode: 0o600 });
+  return true;
 }
 
 async function detectOmpBinary(): Promise<string | null> {
@@ -361,6 +443,20 @@ export async function installOmpIntegration(opts: InstallOptions = {}): Promise<
     actions.push(merge.created ? `created ${ompPaths.mcpJsonPath}` : `updated mcpServers.papercusp-su`);
   }
 
+  // 1b. Ensure the papercusp-gateway model provider so a psu→omp interactive session can
+  //     SELECT real Claude (papercusp-gateway/claude-sonnet-4-6) routed through the local
+  //     inference gateway. Additive + idempotent; preserves the user's other providers,
+  //     default model, and comments. (omp-psu-interactive-parity-hardening-2026-06-29 P-001.)
+  try {
+    const gw = await ensureOmpGatewayProvider(ompPaths.modelsYmlPath);
+    if (gw.wrote) {
+      actions.push(gw.created ? `created ${ompPaths.modelsYmlPath} (papercusp-gateway provider)` : 'added providers.papercusp-gateway to models.yml');
+    }
+  } catch (e) {
+    // Never fail the whole integration on a models.yml hiccup — the MCP merge is the critical leg.
+    actions.push(`WARN: could not ensure papercusp-gateway provider: ${(e as Error)?.message ?? String(e)}`);
+  }
+
   // 2. strip the legacy CLAUDE.md block (no-op when already stripped or file missing).
   if (await stripLegacyBlock(ompPaths.legacyContextPath)) {
     actions.push(`stripped legacy playbook block from ${ompPaths.legacyContextPath}`);
@@ -423,6 +519,11 @@ export async function uninstallOmpIntegration(opts: InstallOptions = {}): Promis
       await fs.writeFile(ompPaths.mcpJsonPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
       actions.push(`removed mcpServers.papercusp-su from ${ompPaths.mcpJsonPath}`);
     }
+  }
+
+  // 1b. remove the papercusp-gateway model provider (install step 1b symmetry).
+  if (await removeOmpGatewayProvider(ompPaths.modelsYmlPath)) {
+    actions.push(`removed providers.papercusp-gateway from ${ompPaths.modelsYmlPath}`);
   }
 
   // 2. remove wrapper.

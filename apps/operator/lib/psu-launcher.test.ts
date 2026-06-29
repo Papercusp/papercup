@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseArgs,
   planValue,
+  parkRoleScopedMcpJson,
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
@@ -47,6 +48,44 @@ import {
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
+
+describe('parkRoleScopedMcpJson (P-002 SU-omp role-MCP leak guard)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'psu-park-')); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const mcp = () => join(dir, '.mcp.json');
+  const parked = () => join(dir, '.mcp.json.su-parked');
+
+  it('parks a role-scoped .mcp.json (signed role= URL) and removes the original', () => {
+    writeFileSync(mcp(), JSON.stringify({ mcpServers: { papercusp: { type: 'http', url: 'http://127.0.0.1:9071/api/mcp?workspace=ws&role=planner&sig=abc&exp=1' } } }));
+    expect(parkRoleScopedMcpJson(dir)).toBe(parked());
+    expect(existsSync(mcp())).toBe(false);
+    expect(existsSync(parked())).toBe(true);
+  });
+
+  it('leaves a superuser (non-role) .mcp.json untouched', () => {
+    writeFileSync(mcp(), JSON.stringify({ mcpServers: { 'papercusp-su': { type: 'http', url: 'http://localhost:3070/api/mcp?superuser=1&client=x' } } }));
+    expect(parkRoleScopedMcpJson(dir)).toBe(null);
+    expect(existsSync(mcp())).toBe(true);
+  });
+
+  it('no-op when there is no .mcp.json', () => {
+    expect(parkRoleScopedMcpJson(dir)).toBe(null);
+  });
+
+  it('overwrites a stale prior park instead of failing', () => {
+    writeFileSync(parked(), 'STALE');
+    writeFileSync(mcp(), JSON.stringify({ mcpServers: { p: { url: 'http://h/api/mcp?role=sentinel&sig=z' } } }));
+    expect(parkRoleScopedMcpJson(dir)).toBe(parked());
+    expect(existsSync(mcp())).toBe(false);
+  });
+
+  it('leaves an unparseable .mcp.json untouched (never throws)', () => {
+    writeFileSync(mcp(), 'not json{');
+    expect(parkRoleScopedMcpJson(dir)).toBe(null);
+    expect(existsSync(mcp())).toBe(true);
+  });
+});
 
 describe('psu-launcher arg parsing', () => {
   it('defaults to the interactive picker', () => {
