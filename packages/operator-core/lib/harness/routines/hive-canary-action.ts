@@ -203,15 +203,25 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   const title = typeof payloadTemplate?.title === 'string' && payloadTemplate.title.trim()
     ? payloadTemplate.title.trim()
     : 'Canary: append today\'s date to CANARY.md';
+  // P-006 (autonomous-loop-canary-reliability-2026-06-29): seed the canary with a
+  // HIGH backlog priority (low feature_order — the claim layer orders feature_order
+  // ASC NULLS LAST) so the deadline-bound health check is placed PROMPTLY even in a
+  // deep frontier. Without it the canary lands feature_order=NULL and sorts behind
+  // every prioritized item (observed: a 214-deep frontier left it unplaced for hours,
+  // failing the deadline even though the loop was healthy). Configurable via the
+  // routine payload (featureOrder); default 0 = top of the backlog.
+  const canaryOrder = Number.isFinite(Number(payloadTemplate?.featureOrder))
+    ? Math.trunc(Number(payloadTemplate.featureOrder))
+    : 0;
   try {
     const inserted = await sql<{ feature_id: string }[]>`
       INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, title, summary, status, attempts, item_kind,
-         payload, needs_human_review, workspace_id, ts, created_ts, updated_ts)
+         feature_order, payload, needs_human_review, workspace_id, ts, created_ts, updated_ts)
       VALUES
         (${installSlug}, ${plan.queueId}, ${title},
          'Trivial daily canary feature — the autonomous loop must carry it to DONE untouched.',
-         'todo', 0, 'feature', '{"canary": true}'::jsonb, FALSE, ${workspaceId}, ${now}, ${now}, ${now})
+         'todo', 0, 'feature', ${canaryOrder}, '{"canary": true}'::jsonb, FALSE, ${workspaceId}, ${now}, ${now}, ${now})
       ON CONFLICT (harness_slug, feature_id) DO NOTHING
       RETURNING feature_id`;
     if (inserted.length > 0) {

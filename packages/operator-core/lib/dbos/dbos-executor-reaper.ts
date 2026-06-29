@@ -34,11 +34,27 @@ const DEFAULT_LIVENESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
  *  freeze threshold so the reaper can fix the row before the host restart loop. */
 const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
 /** A routineFire may be inside its first DBOS step; operation_outputs is written
- *  when that step checkpoints, not when it starts. Scout's blueprint step is the
- *  proven long-first-step path: its scheduler default is 20 minutes, and it owns
- *  recording its own error tick on timeout. Keep this reaper window above that
- *  timeout so a healthy long Scout cycle is not cancelled before it can report. */
-const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 25 * 60 * 1000;
+ *  when that step checkpoints, not when it starts. The longest legit no-output
+ *  first step is the GREEN-CHECKPOINT suite: its action (release-actions.ts) does a
+ *  single ~55-min `await runScript(...)` over the test suite with NO intermediate
+ *  DBOS checkpoint, so it records nothing in operation_outputs until it completes.
+ *  This window MUST stay ABOVE that suite's full runtime, else the reaper cancels a
+ *  HEALTHY long checkpoint at the window and the green gate (→ every fleet deploy)
+ *  wedges — the 2026-06-29 incident this constant caused at 25m (green-checkpoint-
+ *  reaper-window-vs-suite). Earlier this was 25m, tuned only for Scout's 20-min
+ *  cycle, before green-checkpoint's runtime grew to 55m.
+ *
+ *  INVARIANT (cross-file, same convention as the result MARKERs / lock-stale in
+ *  release-actions.ts + green-checkpoint.ts): keep
+ *    GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (55m, release-actions.ts)  <  THIS (60m)
+ *      <  CHECKPOINT_LOCK_STALE_MS (65m, green-checkpoint.ts)
+ *  so a checkpoint is SIGTERM-killed by its own suite timeout (recording its result
+ *  → a terminal, non-reapable workflow) before this reaper window elapses, yet still
+ *  before its run-lock is stale-reclaimable. Whoever retunes one must retune these.
+ *  (The fast orphan path below — no live queue row — still reaps a genuinely-stuck
+ *  fire in ~90s, so this longer window only delays the rare has-queue-row-but-no-
+ *  output case, never the common dead-executor / orphaned-fire wedge.) */
+const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 60 * 60 * 1000;
 /** How often the recurring sweep runs. */
 const DEFAULT_REAP_INTERVAL_MS = 2 * 60 * 1000; // 2 min
 

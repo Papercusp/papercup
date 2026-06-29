@@ -52,6 +52,10 @@ import { NavigationProgress } from '../components/NavigationProgress';
 import ChunkReloadPrompt from '../components/ChunkReloadPrompt';
 import OfflineIndicator from '../components/OfflineIndicator';
 import VersionBadge from '../components/VersionBadge';
+// Cross-platform env switcher top bar (dogfood-silent-canonical-hive-join P-013/P-014/
+// P-017). The data-driven, public-shippable twin of the Linux-only native GTK dev bar;
+// ungated (P-013) but self-hides unless ≥2 envs are reachable.
+import EnvSwitcherBar from '../components/env-switcher/EnvSwitcherBar';
 import RouteErrorBoundary from '../components/RouteErrorBoundary';
 import '@/app/globals.css';
 // App-wide command-palette chrome (⌘K / Ctrl+P). The palette markup uses
@@ -183,6 +187,10 @@ function RootComponent() {
           <Suspense fallback={null}>
             <NuqsAdapter>
               <UiPresenceProvider />
+              {/* Cross-platform env switcher + release escape button (P-013/P-014/
+                  P-017). Self-hides unless ≥2 envs are reachable, so it's inert on a
+                  plain single-operator install. */}
+              <EnvSwitcherBar />
               {/* App-wide keyboard surfaces — mounted at the router root,
                   above ChromeShell, so Ctrl+P (palette) and Alt+Left/Right
                   (history nav) work on EVERY route, including /settings and

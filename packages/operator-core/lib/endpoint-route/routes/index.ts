@@ -415,6 +415,10 @@ import devTableRows from './dev/table-rows';
 import devDrizzleStudio from './dev/drizzle-studio';
 import desktopGitPipeline from './desktop/git-pipeline';
 import desktopGitRemoteMain from './desktop/git-remote-main';
+// dogfood-silent-canonical-hive-join P-013/P-014 — the cross-platform env switcher's
+// operator-discovery feed (server-side reachability of the dev/prod/staging/local +
+// release envs).
+import desktopDevOperators from './desktop/dev-operators';
 // Legacy /templates routes + the dead :3057 marketplace install/slug/uninstall
 // are RETIRED (revive-cupboard-distribution D-004). Only catalog (bundled) +
 // spawnable survive — ungated internal scaffold-support endpoints, no :3057.
@@ -832,6 +836,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(devDrizzleStudio as AnyRoute[]),
   ...flatten(desktopGitPipeline as AnyRoute[]),
   ...flatten(desktopGitRemoteMain as AnyRoute[]),
+  ...flatten(desktopDevOperators as AnyRoute[]),
   ...flatten(marketplaceCatalog as AnyRoute),
   ...flatten(marketplaceSpawnable as AnyRoute),
   // Gym control-plane (gym-ui-handoff backend). /gym/harnesses (literal) precedes
