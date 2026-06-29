@@ -14,6 +14,8 @@ import { getActivePowerUserSession } from '../../../power-user-sessions';
 import { workspaceById } from '../../../workspace-registry';
 import { spliceToolingOverlay } from '../../../desktop-install/splice-tooling-overlay';
 import { defineTool } from '@papercusp/agent-mcp';
+import { accountProviderForInteractiveBackend, backendFeatureGuard } from '../../../backend-feature-capabilities';
+import { ompGatewayModelsConfig, ompProviderForAccountProvider } from '../../../inference-gateway/omp-models-config';
 
 interface BundleFile {
   name: string;
@@ -84,6 +86,55 @@ async function lookupUser(
   return { id: userId, username: userId, displayName: userId };
 }
 
+export interface OmpGatewayModelsBundle {
+  /** Path under the OMP agent HOME to write (`.omp/agent/models.yml`). */
+  relPath: string;
+  /** The models.yml bytes. */
+  content: string;
+  /** `papercusp-gateway/<model>` — the client sets this as the session model. */
+  modelSelector: string;
+}
+
+/**
+ * Resolve the per-session OMP gateway model config for the power-user connect
+ * flow (omp-account-pinning-gateway-2026-06-29 P-005 / D-006/D-007). Returns the
+ * models.yml the @papercusp/omp client temp-installs into ~/.omp/agent so the
+ * session routes through the inference gateway pinned to a pool account.
+ *
+ * MATRIX-GATED: returns null while omp gateway-routing is unsupported (dormant
+ * until the P-007 capability-matrix flip), and fail-soft on any error so the
+ * bundle stays byte-identical to today when the gateway is off / no pool.
+ */
+async function resolveOmpGatewayModels(
+  workspaceId: string,
+  ownerId: string,
+): Promise<OmpGatewayModelsBundle | null> {
+  try {
+    if (!backendFeatureGuard('omp', 'gateway-routing').supported) return null;
+    const provider = accountProviderForInteractiveBackend('omp');
+    if (!provider) return null;
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return null;
+    const { loadAccountPool } = await import('../../../deployment/account-pool-store');
+    const { accountsForProvider } = await import('../../../deployment/account-pool');
+    const pool = await loadAccountPool(workspaceId);
+    const accounts = accountsForProvider(pool, provider);
+    if (accounts.length === 0) return null;
+    const { gatewayPort } = await import('../../../inference-gateway/spawn-env');
+    const cfg = ompGatewayModelsConfig({
+      provider: ompProviderForAccountProvider(provider),
+      accountId: accounts[0].id,
+      ownerId,
+      port: gatewayPort(),
+    });
+    if (!cfg) return null;
+    return { relPath: cfg.relPath, content: cfg.content, modelSelector: cfg.modelSelector };
+  } catch {
+    return null;
+  }
+}
+
 export default defineTool({
   method: 'GET',
   path: '/agent-bundle',
@@ -135,6 +186,7 @@ export default defineTool({
     const origin = new URL(req.url).origin;
     const ws = workspaceById(claims.workspaceId);
     const user = await lookupUser(claims.userId);
+    const omp_gateway_models = await resolveOmpGatewayModels(claims.workspaceId, claims.authSessionId);
     return Response.json({
       persona,
       toolsmd,
@@ -143,6 +195,9 @@ export default defineTool({
       mcp_url: `${origin}/api/mcp?power_user=1&profile=power`,
       workspace: { id: claims.workspaceId, name: ws?.name ?? claims.workspaceId },
       user,
+      // Per-session OMP gateway routing config (P-005 / D-006). null = no gateway
+      // routing (matrix-dormant, gateway off, or no pool account).
+      omp_gateway_models,
       expires_at: new Date(claims.exp * 1000).toISOString(),
     });
   },

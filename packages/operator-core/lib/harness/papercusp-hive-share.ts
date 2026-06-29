@@ -43,6 +43,7 @@ import {
   publishOwnerHiveIdentity,
   type OwnerHiveIdentity,
 } from './papercusp-shared-identity-gist';
+import { bakedCanonicalHiveInvite } from './papercusp-hive-join';
 
 /** State threaded from the BEFORE hook (adopt) to the AFTER hook (goShared). */
 export interface SharedHiveState {
@@ -64,6 +65,10 @@ export interface HiveShareDeps {
   setListing?: typeof setHiveListing;
   authorPolicy?: typeof authorHivePolicy;
   randomSecret?: () => string;
+  /** The canonical invite secret baked into the public build (so every one of the
+   *  owner's devices announces on the SAME invite topic that fresh installs listen on
+   *  — WI-867 cause (a)). Default: bakedCanonicalHiveInvite()?.inviteSecret ?? null. */
+  canonicalSecret?: () => string | null;
   /** Derive the raw-32 pubkey (base64) from the private DER. Default: pubkeyBase64FromDer. */
   derivePubkey?: (der: Buffer) => string;
   /** This hive's actual pubkey (null if not the owner box). Default: loadHivePubkey. */
@@ -124,18 +129,24 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
   const setListing = deps.setListing ?? setHiveListing;
   const authorPolicy = deps.authorPolicy ?? authorHivePolicy;
   const randomSecret = deps.randomSecret ?? (() => randomBytes(32).toString('hex'));
+  const canonicalSecret = deps.canonicalSecret ?? (() => bakedCanonicalHiveInvite()?.inviteSecret ?? null);
   const derivePubkey = deps.derivePubkey ?? pubkeyBase64FromDer;
 
   try {
-    let inviteSecret = state.existing?.inviteSecret;
+    // The baked canonical secret is AUTHORITATIVE for the public release: every owner
+    // device must announce on the SAME invite topic that fresh installs listen on. It
+    // wins over a (possibly drifted) gist secret; only dev builds with no baked invite
+    // fall back to the gist secret / a fresh random one.
+    const bakedSecret = canonicalSecret();
+    let inviteSecret = bakedSecret ?? state.existing?.inviteSecret;
 
     if (!state.existing) {
-      // First device: read the just-minted hive keypair and publish it (+ a fresh
-      // invite secret) to the per-owner private gist, so the owner's NEXT device
-      // adopts the same identity.
+      // First device: read the just-minted hive keypair and publish it (+ the canonical
+      // invite secret, or a fresh random one for dev builds) to the per-owner private
+      // gist, so the owner's NEXT device adopts the same identity.
       const loaded = await loadKey(hiveKeychainId(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG), HIVE_KEYPAIR_SERVICE);
       if (loaded.kind !== 'ok') return; // can't read our own key — skip, retry next boot
-      inviteSecret = randomSecret();
+      inviteSecret = bakedSecret ?? randomSecret();
       await publishIdentity(state.token, {
         version: 1,
         privateKeyDer: Buffer.from(loaded.value).toString('base64'),

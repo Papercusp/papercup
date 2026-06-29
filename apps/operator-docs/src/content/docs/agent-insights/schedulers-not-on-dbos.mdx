@@ -51,6 +51,18 @@ this list first — these are conscious keeps, not stragglers.
   `llm-test-nightly.timer` stays systemd too (a heavy external test-suite runner
   needing `ANTHROPIC_API_KEY`, ~90min — CI-shaped, not operator maintenance; D-004).
 
+## Update (2026-06-28): off-DBOS ≠ invisible anymore
+
+These loops still deliberately stay OFF DBOS — but they are no longer runtime-INVISIBLE. The
+`schedule-inventory-and-ephemeral-tier-2026-06-26` pass routed **every** operator-host
+`setInterval` through `managedSetInterval` (`@papercusp/scheduled-registry`), so each off-DBOS
+keep here (`expirable-registry`, `harness-fs-watcher`, `outbox-drain`, the per-connection
+keepalives, the watchdogs) now appears in `schedule:inventory` / `/admin/schedules` with a name +
+category + last-fire — *visibility ≠ control* (registering does NOT move it onto a central
+scheduler). A bare `setInterval` is now a `lint:no-raw-setinterval` build failure. See
+[The scheduler layer model](/agent-insights/two-tier-scheduler-and-timer-visibility/) for the full
+two-tier model (DBOS durable / in-process `managedSetInterval` / the ephemeral blueprint cadence).
+
 ## The rule of thumb
 
 DBOS scheduled workflows are for **periodic, durable, operator-process maintenance

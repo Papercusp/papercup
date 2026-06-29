@@ -138,6 +138,48 @@ describe('goSharedHive', () => {
     expect(policy?.policy?.allowlist).toEqual(['avi']);
   });
 
+  it('first device WITH a baked canonical secret: publishes + announces the BAKED secret (not random)', async () => {
+    let published: OwnerHiveIdentity | undefined;
+    let listing: { inviteSecret?: string } | undefined;
+    await goSharedHive(
+      { githubLogin: 'avi', token: 'tok', existing: null },
+      {
+        canonicalSecret: () => 'baked-canonical-sec',
+        publishIdentity: async (_t, id) => {
+          published = id;
+          return { gistId: 'g' };
+        },
+        setListing: async (i) => {
+          listing = i;
+          return {} as unknown as never;
+        },
+        authorPolicy: async () => ({ ok: true }) as unknown as never,
+        loadKey: async () => ({ kind: 'ok' as const, value: Buffer.from('mykey') }),
+        randomSecret: () => 'should-not-be-used',
+        derivePubkey: () => 'pub',
+      },
+    );
+    // The baked secret is authoritative — every owner device must announce on it.
+    expect(published?.inviteSecret).toBe('baked-canonical-sec');
+    expect(listing?.inviteSecret).toBe('baked-canonical-sec');
+  });
+
+  it('later device: a baked canonical secret OVERRIDES a drifted gist secret on announce', async () => {
+    let listing: { inviteSecret?: string } | undefined;
+    await goSharedHive(
+      { githubLogin: 'avi', token: 'tok', existing: { ...EXISTING, inviteSecret: 'drifted-old' } },
+      {
+        canonicalSecret: () => 'baked-canonical-sec',
+        setListing: async (i) => {
+          listing = i;
+          return {} as unknown as never;
+        },
+        authorPolicy: async () => ({ ok: true }) as unknown as never,
+      },
+    );
+    expect(listing?.inviteSecret).toBe('baked-canonical-sec');
+  });
+
   it('first device but the keychain read fails → no publish / announce', async () => {
     const publishIdentity = vi.fn();
     const setListing = vi.fn(setOk);

@@ -11,6 +11,19 @@ export interface BundleFile {
   source: string;
 }
 
+/**
+ * Per-session OMP inference-gateway model config (omp-account-pinning-gateway P-005).
+ * Present (non-null) only when the gateway is on AND the session is pinned to a
+ * pool account; absent/null = normal direct egress. The client temp-installs
+ * `content` at `<HOME>/.omp/agent/<relPath-tail>` (backed up + restored on exit)
+ * and selects `modelSelector` as the session model.
+ */
+export interface OmpGatewayModels {
+  relPath: string;
+  content: string;
+  modelSelector: string;
+}
+
 export interface AgentBundle {
   persona: string;
   toolsmd: string;
@@ -19,6 +32,8 @@ export interface AgentBundle {
   mcp_url: string;
   workspace: { id: string; name: string };
   user: { id: string; username: string; displayName: string };
+  /** OMP gateway routing config, or null/absent when not gateway-routed. */
+  omp_gateway_models?: OmpGatewayModels | null;
   expires_at: string;
 }
 

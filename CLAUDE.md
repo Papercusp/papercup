@@ -84,6 +84,18 @@ operator-mobile's polled path) and the full recipe:
 `/internal/docs/data-sync` + the
 [adding-a-sync-query](/internal/docs/agent-insights/adding-a-sync-query) insight.
 
+## Scheduling: no bare `setInterval`, no new scheduler
+
+Recurring work has exactly **two execution mechanisms** + **one declaration surface** — don't
+add a third. Durable + Postgres-backed → a **DBOS scheduled workflow** (or a `tier:durable`
+routine fired by `routinesTick`). A frequent in-process bounded sweep → declare a
+**`tier:ephemeral`** blueprint `triggers.schedule` (deterministic `system:<action>` + `intervalSec`;
+the per-host `ephemeral-executor` runs it). A watchdog / per-connection / cache timer that must
+stay bespoke → still wrap it in `managedSetInterval(name, ms, fn, { category })` so it is VISIBLE
+in `schedule:inventory` (*visibility ≠ control*). A bare `setInterval` fails
+`lint:no-raw-setinterval` (the BASELINE is empty). Full model:
+[the scheduler layer model](/internal/docs/agent-insights/two-tier-scheduler-and-timer-visibility).
+
 ## Deployment model: desktop is the product; the standalone webapp is RETIRED
 
 Shipping target = the Tauri desktop app; **desktop SSE is the sync path that
