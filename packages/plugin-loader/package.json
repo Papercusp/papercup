@@ -37,7 +37,8 @@
   },
   "dependencies": {
     "@papercusp/plugin-loader-core": "*",
-    "@papercusp/plugin-sdk": "*"
+    "@papercusp/plugin-sdk": "*",
+    "@papercusp/scheduled-registry": "*"
   },
   "devDependencies": {
     "tsx": "^4.7.0",

@@ -11,6 +11,7 @@
  * the *current* process so the existing dispatcher reads them transparently.
  */
 import { readFileSync, existsSync } from 'node:fs';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { createSign, createPrivateKey } from 'node:crypto';
 import { dbosTimersActive } from './dbos/dbos-flags';
 
@@ -37,9 +38,9 @@ export function startPushCredentialRefresher(): void {
     return;
   }
   refreshAll().catch((e) => console.error('[push-creds] initial refresh', e));
-  setInterval(() => {
+  managedSetInterval('device-push-credentials-refresh', REFRESH_INTERVAL_MS, () => {
     refreshAll().catch((e) => console.error('[push-creds] periodic refresh', e));
-  }, REFRESH_INTERVAL_MS).unref();
+  }, { category: 'cache' });
 }
 
 /** One refresh pass (APNs + FCM). Called by the DBOS scheduled workflow

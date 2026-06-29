@@ -12,6 +12,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { existsSync, statSync } from 'node:fs';
 import { JsonRpcBridge, type JsonRpcNotification } from './jsonrpc-bridge';
 import { buildBwrapArgs } from './bwrap-args';
@@ -96,7 +97,8 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
   let restartCount = 0;
   let lastExitCode: number | null = null;
   let stopped = false;
-  let healthTimer: NodeJS.Timeout | null = null;
+  let healthTimer: ManagedHandle | null = null;
+  let diskQuotaTimer: ManagedHandle | null = null;
 
   const audit = (event: DaemonAuditRow['event'], detail?: string): void => {
     if (!opts.onAudit) return;
@@ -195,7 +197,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
   // Disk quota check (Batch I6).
   if (opts.diskQuotaBytes && opts.diskQuotaBytes > 0) {
     const quota = opts.diskQuotaBytes;
-    setInterval(() => {
+    diskQuotaTimer = managedSetInterval('plugin-disk-quota-check', 60_000, () => {
       if (stopped) return;
       try {
         const sz = dirSizeApprox(opts.cwd);
@@ -205,14 +207,14 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
           child?.kill('SIGTERM');
         }
       } catch { /* ignore */ }
-    }, 60_000).unref();
+    }, { category: 'lifecycle', instanced: true });
   }
 
   // Health check (Batch I4).
   const healthInterval = opts.healthIntervalMs ?? 30_000;
   if (healthInterval > 0) {
     let consecutiveFails = 0;
-    healthTimer = setInterval(async () => {
+    healthTimer = managedSetInterval('plugin-health-check', healthInterval, async () => {
       if (stopped || !bridge) return;
       try {
         await bridge.call('papercup.ping', undefined, 5_000);
@@ -225,8 +227,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
           child.kill('SIGTERM');
         }
       }
-    }, healthInterval);
-    healthTimer.unref();
+    }, { category: 'lifecycle', instanced: true });
   }
 
   return {
@@ -256,7 +257,8 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     },
     async shutdown() {
       stopped = true;
-      if (healthTimer) clearInterval(healthTimer);
+      if (healthTimer) healthTimer.stop();
+      if (diskQuotaTimer) diskQuotaTimer.stop();
       bridge?.shutdown();
       if (child?.pid) {
         child.kill('SIGTERM');

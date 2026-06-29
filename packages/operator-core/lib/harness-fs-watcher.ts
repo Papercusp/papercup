@@ -54,6 +54,7 @@
  *     the staleness window is proportionally wider during a switch.
  */
 import { promises as fs, existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getResourceProfile } from './resource-profile';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -131,7 +132,7 @@ interface WatcherState {
    */
   watchedPathSet: Set<string>;
   topWatchedPathSet: Set<string>;
-  reconcileTimer: ReturnType<typeof setInterval>;
+  reconcileTimer: ManagedHandle;
   debouncers: Map<string, ReturnType<typeof setTimeout>>;
   stopped: boolean;
 }
@@ -703,11 +704,11 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
     projects,
     watchedPathSet: new Set(allPaths),
     topWatchedPathSet: new Set(topPaths),
-    reconcileTimer: setInterval(() => {
+    reconcileTimer: managedSetInterval('harness-fs-reconcile', RECONCILE_INTERVAL_MS, () => {
       reconcileAll(state).catch((e) =>
         console.warn('[harness-fs-watcher] reconcile failed:', e?.message ?? e),
       );
-    }, RECONCILE_INTERVAL_MS),
+    }, { category: 'global-sweep' }),
     debouncers: new Map(),
     stopped: false,
   };
@@ -759,7 +760,7 @@ export function stopHarnessFsWatcher(): void {
   state.stopped = true;
   for (const t of state.debouncers.values()) clearTimeout(t);
   state.debouncers.clear();
-  clearInterval(state.reconcileTimer);
+  state.reconcileTimer.stop();
   void state.watcher.close();
   void state.topWatcher.close();
   void state.enabledPluginsWatcher.close();

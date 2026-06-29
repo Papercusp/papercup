@@ -75,18 +75,14 @@ export const ALLOWLIST = new Set([
 ]);
 
 /**
- * TEMPORARY grandfather set — operator-host files with bare setInterval awaiting the
- * P-008 codemod. SHRINK-ONLY: never add a new entry. Emptied by P-008.
+ * EMPTY (P-008 complete, 2026-06-28) — every operator-host bare setInterval has been
+ * migrated to managedSetInterval (or, for genuine separate-process / browser / generic
+ * sites, promoted into ALLOWLIST_DIRS / ALLOWLIST). This grandfather set was seeded with
+ * 74 files at P-007 and shrank to empty as the codemod landed. It MUST stay empty: a NEW
+ * bare setInterval is a hard guard failure, not a BASELINE addition — that is the whole
+ * universal-visibility ratchet. Do NOT add entries here.
  */
-export const BASELINE = new Set([
-  // Seeded from the tree state at P-007 (74 files). SHRINK-ONLY: P-008 migrates each to
-  // managedSetInterval (remove here) or promotes a genuine separate-process/generic site
-  // to ALLOWLIST_DIRS / ALLOWLIST. Do NOT add new entries.
-  'packages/operator-core/lib/deployment/frame-view.ts',
-  'packages/operator-core/lib/device-push-credentials.ts',
-  'packages/operator-core/lib/harness-fs-watcher.ts',
-  'packages/plugin-loader/src/daemon/supervisor.ts',
-]);
+export const BASELINE = new Set([]);
 
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||

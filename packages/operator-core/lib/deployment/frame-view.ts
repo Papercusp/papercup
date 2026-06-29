@@ -14,6 +14,7 @@
  * track, D-004) replaces this with a real push transport.
  */
 import type { DeploymentConfig, Frame } from '@papercusp/deployment-driver';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { RemoteExec } from './remote-exec';
 import { defaultMakeRemoteExec } from './frame-installer';
 import { DESKTOP_CAPTURE_DIR } from './desktop-capture';
@@ -109,7 +110,7 @@ const DEFAULT_INTERVAL_MS = 5_000;
 
 class FramePoller {
   private subs = new Set<FrameViewSubscriber>();
-  private timer: ReturnType<typeof setInterval> | undefined;
+  private timer: ManagedHandle | undefined;
   private ticking = false;
   private resolved: { frame: Frame; config: DeploymentConfig; exec: RemoteExec } | undefined;
 
@@ -126,7 +127,7 @@ class FramePoller {
   add(sub: FrameViewSubscriber): void {
     this.subs.add(sub);
     if (!this.timer) {
-      this.timer = setInterval(() => void this.tick(), this.deps.intervalMs ?? DEFAULT_INTERVAL_MS);
+      this.timer = managedSetInterval('frame-view-poll', this.deps.intervalMs ?? DEFAULT_INTERVAL_MS, () => void this.tick(), { category: 'lifecycle', instanced: true });
       void this.tick(); // first frame immediately, not one interval late
     }
   }
@@ -137,7 +138,7 @@ class FramePoller {
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) this.timer.stop();
     this.timer = undefined;
     this.resolved = undefined;
   }
