@@ -120,6 +120,14 @@ export async function resolveSpawnGatewayEnv(opts: {
     const { selectSpawnAccount } = await import('../deployment/account-pool-store');
     accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
   }
+  if (backend === 'omp') {
+    // OMP routes via a per-session models.yml (P-005/P-006) keyed off PAPERCUSP_ACCOUNT_ID;
+    // it does NOT read ANTHROPIC_BASE_URL/ANTHROPIC_CUSTOM_HEADERS (claude-CLI-specific) nor a
+    // CODEX_HOME. Emit only the account-pin signal the per-session agent-home writer consumes.
+    // (omp-account-pinning-gateway-2026-06-29 D-001/D-003)
+    if (!accountId) return {};
+    return { PAPERCUSP_ACCOUNT_ID: accountId };
+  }
   if (provider === 'codex') {
     if (!accountId) return {};
     try {

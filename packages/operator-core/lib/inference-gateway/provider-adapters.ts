@@ -54,13 +54,21 @@ export function makeGatewayProviderAdapters(opts: {
       pool: opts.codexPool ?? null,
       unavailableMessage: 'inference-gateway: no Codex account pool configured',
     },
+    // OMP (pi) is multi-provider and routes by REUSING the existing adapters
+    // rather than owning a bespoke protocol: a Tier-1 OMP session is pinned to a
+    // Claude account and egresses Anthropic-protocol traffic through the gateway
+    // root, so it shares the claude/anthropic adapter (pool + upstream). This row
+    // is the DIAGNOSTICS view of that delegation — the gateway dispatches by
+    // request PATH (providerForGatewayRequest), never by this entry.
+    // (omp-account-pinning-gateway-2026-06-29 D-003: OMP pins to Claude accounts
+    // for Tier-1 parity; OpenAI-account-pinned OMP is a deliberate follow-up.)
     omp: {
       id: 'omp',
-      label: 'OMP provider',
-      protocol: 'unsupported',
-      upstreamBase: null,
-      pool: null,
-      unavailableMessage: 'inference-gateway: OMP provider gateway adapter is not implemented yet',
+      label: 'OMP (via Claude / Anthropic)',
+      protocol: 'anthropic',
+      upstreamBase: opts.anthropicUpstreamBase,
+      pool: opts.claudePool,
+      unavailableMessage: null,
     },
   };
 }
