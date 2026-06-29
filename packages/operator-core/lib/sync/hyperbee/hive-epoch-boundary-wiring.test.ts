@@ -154,6 +154,36 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
     expect(r).toEqual({ applied: false, reason: 'no-author' });
     expect(derive).not.toHaveBeenCalled(); // owner-gate short-circuits BEFORE any derive
   });
+
+  it('BUG B: refederate flag is THREADED into persistWrappedKeys (DEFAULT false)', async () => {
+    const seenRefederate: Array<boolean | undefined> = [];
+    const seams = {
+      resolveCrypto: async () =>
+        ({ deriveEpochKey: async () => 'K' as never, wrapKeyToMember: async () => new Uint8Array([1]) }) as never,
+      resolveAuthorPubkey: async () => 'owner',
+      getCurrentEpoch: async () => 0,
+      persistWrappedKeys: async (
+        _w: string,
+        _s: string,
+        _e: number,
+        rows: readonly { memberDevicePubkey: string }[],
+        _a: string | null,
+        _sql?: unknown,
+        opts?: { refederate?: boolean },
+      ) => {
+        seenRefederate.push(opts?.refederate);
+        return rows.length;
+      },
+    };
+    // default (no refederate) ⇒ persistWrappedKeys sees refederate undefined/false (write-once).
+    await grantEpochKeysToMembers({ workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'] }, seams);
+    // refederate:true ⇒ persistWrappedKeys sees refederate true (DO UPDATE re-stamp path).
+    await grantEpochKeysToMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'], refederate: true },
+      seams,
+    );
+    expect(seenRefederate).toEqual([undefined, true]);
+  });
 });
 
 describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..current] to ALL live members)', () => {
@@ -241,6 +271,46 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
     );
     expect(r).toEqual({ applied: false, reason: 'no-author' });
     expect(derive).not.toHaveBeenCalled();
+  });
+
+  it('BUG B: refederate + onlyDevices ⇒ re-sends ONLY the target member device, refederate threaded, C-001 still excludes revoked', async () => {
+    const persisted: Array<{ epoch: number; members: string[] }> = [];
+    const seenRefederate: Array<boolean | undefined> = [];
+    const r = await reconcileEpochKeysForCurrentMembers(
+      // The whole hive is owner 'A' + member 'B' + revoked-and-cut 'R'; the reconnecting
+      // member announces devices ['B','R']. onlyDevices targets B; C-001 drops R (revoked).
+      { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true, refederate: true, onlyDevices: ['B', 'R'] },
+      {
+        loadMembers: async () => [member(['A']), member(['B']), member(['R'], ['R'])],
+        resolveCrypto: async () =>
+          ({
+            deriveEpochKey: async (_h: string, e: number) => `K${e}` as never,
+            wrapKeyToMember: async () => new Uint8Array([1]),
+          }) as never,
+        resolveAuthorPubkey: async () => 'owner',
+        persistWrappedKeys: async (
+          _w: string,
+          _s: string,
+          epoch: number,
+          rows: readonly { memberDevicePubkey: string }[],
+          _a: string | null,
+          _sql?: unknown,
+          opts?: { refederate?: boolean },
+        ) => {
+          seenRefederate.push(opts?.refederate);
+          persisted.push({ epoch, members: rows.map((row) => row.memberDevicePubkey) });
+          return rows.length;
+        },
+        getCurrentEpoch: async () => 1,
+      },
+    );
+    // Only B is re-granted: 'A' filtered out by onlyDevices, 'R' filtered out by C-001 revoked.
+    expect(persisted).toEqual([
+      { epoch: 0, members: ['B'] },
+      { epoch: 1, members: ['B'] },
+    ]);
+    expect(seenRefederate).toEqual([true, true]); // refederate threaded into every persist
+    expect(r).toEqual({ applied: true, newEpoch: 1, distributed: 2 });
   });
 });
 

@@ -33,6 +33,7 @@ function depsWith(policy: HivePolicy | null, over: Partial<MembershipAdmissionDe
   recordPendingJoin: ReturnType<typeof vi.fn>;
   upsertHiveMember: ReturnType<typeof vi.fn>;
   setPendingJoinDecision: ReturnType<typeof vi.fn>;
+  refederateMemberEpochKeys: ReturnType<typeof vi.fn>;
 } {
   const recordPendingJoin = vi.fn(async (input: Record<string, unknown>) => ({
     ...input,
@@ -55,14 +56,18 @@ function depsWith(policy: HivePolicy | null, over: Partial<MembershipAdmissionDe
       reason?: string | null,
     ) => ({ githubUserId, status, decidedByGithubUserId: decidedBy, reason: reason ?? null }),
   ) as ReturnType<typeof vi.fn>;
+  // BUG B (D-028) reconnect re-grant seam — a no-op spy by default so the default impl
+  // (which dynamic-imports the boundary-wiring) never runs in these hermetic unit tests.
+  const refederateMemberEpochKeys = vi.fn(async () => {}) as ReturnType<typeof vi.fn>;
   const deps: MembershipAdmissionDeps = {
     getPolicy: async () => policy,
     recordPendingJoin: recordPendingJoin as never,
     upsertHiveMember: upsertHiveMember as never,
     setPendingJoinDecision: setPendingJoinDecision as never,
+    refederateMemberEpochKeys: refederateMemberEpochKeys as never,
     ...over,
   };
-  return { deps, recordPendingJoin, upsertHiveMember, setPendingJoinDecision };
+  return { deps, recordPendingJoin, upsertHiveMember, setPendingJoinDecision, refederateMemberEpochKeys };
 }
 
 describe('evaluateJoinAdmission — routes off the policy', () => {
@@ -200,14 +205,47 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
     expect(recordPendingJoin).not.toHaveBeenCalled();
   });
 
-  it('NOT a member + open/null policy ⇒ trust-admit (upsert), no pending', async () => {
-    const { deps, upsertHiveMember, recordPendingJoin } = depsWith(null, {
+  it('BUG B (D-028): ALREADY a member ⇒ refederating epoch-key re-grant fires for THIS member device on reconnect', async () => {
+    const { deps, refederateMemberEpochKeys } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => memberRow) as never },
+    );
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
+    expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
+    expect(refederateMemberEpochKeys).toHaveBeenCalledTimes(1);
+    // Re-grant is scoped to the reconnecting member's announced device pubkeys (BUG-B target).
+    expect(refederateMemberEpochKeys.mock.calls[0][0]).toEqual({
+      workspaceId: 'w',
+      hiveHomeSlug: 'h',
+      memberDevicePubkeys: ['devA'],
+    });
+  });
+
+  it('BUG B (D-028): a re-grant THROW is swallowed — never fails the reconnect admission', async () => {
+    const { deps } = depsWith(
+      { membership: 'approval' },
+      {
+        getHiveMember: (async () => memberRow) as never,
+        refederateMemberEpochKeys: (async () => {
+          throw new Error('boundary-wiring blew up');
+        }) as never,
+      },
+    );
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
+    expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
+  });
+
+  it('NOT a member + open/null policy ⇒ trust-admit (upsert), no pending, NO refederate re-grant', async () => {
+    const { deps, upsertHiveMember, recordPendingJoin, refederateMemberEpochKeys } = depsWith(null, {
       getHiveMember: (async () => null) as never,
     });
     const out = await ownerAdmitOrPend({ workspaceId: 'w', hiveHomeSlug: 'h', joiner }, deps);
     expect(out).toMatchObject({ action: 'admitted', reason: 'policy_admit' });
     expect(upsertHiveMember).toHaveBeenCalledTimes(1);
     expect(recordPendingJoin).not.toHaveBeenCalled();
+    // A NEW admit's grant is upsertHiveMember's own [0..current] write-once grant — the
+    // refederating re-send is the RECONNECT-only path, so it must NOT fire here.
+    expect(refederateMemberEpochKeys).not.toHaveBeenCalled();
   });
 
   it('NOT a member + approval ⇒ pending (record), NEVER trust-admit', async () => {

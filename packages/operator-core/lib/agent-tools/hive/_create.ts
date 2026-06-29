@@ -149,6 +149,28 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
   // path must already exist (path_not_found if not). Otherwise (fresh mode) the
   // home is a new dir at parentDir/slug and dest_exists guards against a clash.
   const linkExisting = typeof opts.existingPath === 'string' && opts.existingPath.trim() !== '';
+
+  // CODING hives MUST be backed by a git repo (per-hive-git-and-release-gate-2026-06-29
+  // D-002): a repo-commit-output blueprint that would end up repo-less — neither linking/
+  // cloning an existing repo NOR initializing a fresh one (requiresRepo:false) — is
+  // rejected here. It is impossible to create a coding hive without either cloning an
+  // existing repo or initializing a new one. `output.kind` is the INDEPENDENT coding
+  // signal (defaults to 'repo-commit'); the non-coding `work` profile
+  // (output.kind:'artifacts') is exempt and may be repo-less (its repo, if any, is
+  // backup-only). Using output.kind (not requiresRepo) avoids a circular guard.
+  const outputKind = validation.blueprint.output?.kind ?? 'repo-commit';
+  const isCodingProfile = outputKind === 'repo-commit';
+  if (isCodingProfile && !linkExisting && !requiresRepo) {
+    return {
+      ok: false,
+      error: 'hive_requires_repo',
+      message:
+        `Coding hive "${opts.slug}" (blueprint "${blueprintId}", output.kind=repo-commit) must be backed by a ` +
+        `git repo. Either link/clone an existing repo (existingPath / hive:create_from_repo) or use a blueprint ` +
+        `with knobs.requiresRepo:true so a fresh repo is initialized. A repo-less coding hive is not allowed.`,
+    };
+  }
+
   const parentDir = opts.parentDir ?? join(homedir(), '.papercusp', 'hives');
   const dest = linkExisting
     ? resolvePath(opts.existingPath!.trim())

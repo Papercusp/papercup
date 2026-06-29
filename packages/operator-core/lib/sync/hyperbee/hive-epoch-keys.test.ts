@@ -18,13 +18,13 @@ import { putWrappedKeys, createPgWrappedKeyLoader } from './hive-epoch-keys-stor
 
 /** A tagged-template + .unsafe fake matching the postgres-js surface these modules use. */
 function makeFakeSql(returns: unknown[] = []) {
-  const calls: Array<{ kind: 'tag' | 'unsafe'; params?: unknown[] }> = [];
+  const calls: Array<{ kind: 'tag' | 'unsafe'; q?: string; params?: unknown[] }> = [];
   const fn = ((_s: TemplateStringsArray, ..._v: unknown[]) => {
     calls.push({ kind: 'tag' });
     return Promise.resolve(returns);
   }) as unknown as postgres.Sql & { unsafe: (q: string, p?: unknown[]) => Promise<unknown> };
-  (fn as { unsafe: (q: string, p?: unknown[]) => Promise<unknown> }).unsafe = (_q, p) => {
-    calls.push({ kind: 'unsafe', params: p });
+  (fn as { unsafe: (q: string, p?: unknown[]) => Promise<unknown> }).unsafe = (q, p) => {
+    calls.push({ kind: 'unsafe', q, params: p });
     return Promise.resolve(returns);
   };
   return { sql: fn, calls };
@@ -74,6 +74,41 @@ describe('hive-epoch-keys store — encode + loader round-trip', () => {
     const n = await putWrappedKeys('default', HOME, 3, [{ memberDevicePubkey: PUB, wrappedKey: blob }], 'owner', sql);
     expect(n).toBe(1);
     const insert = calls.find((c) => c.kind === 'unsafe')!;
+    expect(insert.params).toEqual(['default', HOME, 3, PUB, Buffer.from(blob).toString('base64'), 'owner']);
+  });
+
+  it('putWrappedKeys DEFAULT is write-once: ON CONFLICT DO NOTHING (existing behavior)', async () => {
+    const { sql, calls } = makeFakeSql();
+    await putWrappedKeys('default', HOME, 3, [{ memberDevicePubkey: PUB, wrappedKey: new Uint8Array([1]) }], 'owner', sql);
+    const insert = calls.find((c) => c.kind === 'unsafe')!;
+    expect(insert.q).toMatch(/ON CONFLICT[\s\S]*DO NOTHING/i);
+    expect(insert.q).not.toMatch(/DO UPDATE/i);
+  });
+
+  it('BUG B: putWrappedKeys refederate ⇒ ON CONFLICT DO UPDATE re-stamps origin=local + clears fed_ts/fed_hlc', async () => {
+    const { sql, calls } = makeFakeSql();
+    const blob = new Uint8Array([4, 5, 6]);
+    const n = await putWrappedKeys(
+      'default',
+      HOME,
+      3,
+      [{ memberDevicePubkey: PUB, wrappedKey: blob }],
+      'owner',
+      sql,
+      { refederate: true },
+    );
+    expect(n).toBe(1);
+    const insert = calls.find((c) => c.kind === 'unsafe')!;
+    // DO UPDATE (not DO NOTHING) — the re-write path the mig-411 capture re-federates.
+    expect(insert.q).toMatch(/ON CONFLICT[\s\S]*DO UPDATE/i);
+    expect(insert.q).not.toMatch(/DO NOTHING/i);
+    // Re-stamps origin='local' so the echo-guard captures it; clears fed_ts/fed_hlc so the
+    // BEFORE-stamp trigger re-mints a fresh HLC (the member's LWW then accepts the re-send).
+    expect(insert.q).toMatch(/origin\s*=\s*'local'/i);
+    expect(insert.q).toMatch(/fed_ts\s*=\s*NULL/i);
+    expect(insert.q).toMatch(/fed_hlc\s*=\s*NULL/i);
+    // The re-sent wrapped_key + author are refreshed from the new row.
+    expect(insert.q).toMatch(/wrapped_key\s*=\s*EXCLUDED\.wrapped_key/i);
     expect(insert.params).toEqual(['default', HOME, 3, PUB, Buffer.from(blob).toString('base64'), 'owner']);
   });
   it('createPgWrappedKeyLoader decodes base64 → bytes, null when absent', async () => {

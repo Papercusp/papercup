@@ -65,8 +65,51 @@ export interface MembershipAdmissionDeps {
   /** Read an existing member row — the ownerAdmitOrPend already-member fast path.
    *  Default: getHiveMember. */
   getHiveMember?: typeof realGetHiveMember;
+  /**
+   * BUG B self-heal (shared-hive-member-content-federation D-028, layer 3): RE-grant +
+   * re-FEDERATE the reconnecting member's epoch keys [0..current]. Called from
+   * ownerAdmitOrPend's already_member branch so a member that MISSED the original
+   * federated grant (joined-after-grant / forward-only cursor / re-session) gets it
+   * re-sent on reconnect. Default: re-grant via reconcileEpochKeysForCurrentMembers
+   * with refederate=true + onlyDevices=the member's devices (C-001: revoked excluded).
+   * Injectable so the unit tests can assert it fires on reconnect (and only then).
+   */
+  refederateMemberEpochKeys?: (args: {
+    workspaceId: string;
+    hiveHomeSlug: string;
+    memberDevicePubkeys: readonly string[];
+  }) => Promise<void>;
   /** Per-file test schema threaded into the stores. */
   sql?: Sql;
+}
+
+/**
+ * Default BUG-B reconnect re-grant: re-send the reconnecting member's epoch keys
+ * [0..current] with refederate=true so the mig-411 AFTER INSERT OR UPDATE capture
+ * re-federates them. Owner-only + flag-gated (the delegate self-gates: loadHivePubkey
+ * is null / the flag is off ⇒ no-op), C-001-safe (reconcileEpochKeysForCurrentMembers
+ * excludes the revoked union, intersected with onlyDevices). DYNAMIC import avoids the
+ * admission ↔ boundary-wiring module cycle (same pattern as upsertHiveMember's grant).
+ */
+async function defaultRefederateMemberEpochKeys(
+  args: { workspaceId: string; hiveHomeSlug: string; memberDevicePubkeys: readonly string[] },
+  sql?: Sql,
+): Promise<void> {
+  const devices = args.memberDevicePubkeys.filter(
+    (pk): pk is string => typeof pk === 'string' && pk.length > 0,
+  );
+  if (devices.length === 0) return;
+  const { reconcileEpochKeysForCurrentMembers, isHiveRekeyEnabled } = await import(
+    './sync/hyperbee/hive-epoch-boundary-wiring'
+  );
+  await reconcileEpochKeysForCurrentMembers({
+    workspaceId: args.workspaceId,
+    hiveHomeSlug: args.hiveHomeSlug,
+    enabled: await isHiveRekeyEnabled(),
+    refederate: true,
+    onlyDevices: devices,
+    sql,
+  });
 }
 
 async function defaultGetPolicy(
@@ -260,7 +303,29 @@ export async function ownerAdmitOrPend(
   //     re-route an established member through the policy gate.
   const existing = await getMember(workspaceId, hiveHomeSlug, joiner.githubUserId, deps.sql);
   if (existing) {
-    return { action: 'admitted', member: await upsert(), reason: 'already_member' };
+    const member = await upsert();
+    // BUG B self-heal (D-028, layer 3): upsert's own grant is ON CONFLICT DO NOTHING, so a
+    // member that MISSED the original federated epoch-key grant (joined-after-grant /
+    // forward-only cursor / re-session) is never re-sent it — the owner's gap-check reads its
+    // OWN hive_epoch_keys (sees "no gap") and the capture trigger was AFTER INSERT only. On
+    // RECONNECT, re-grant [0..current] to THIS member's devices with refederate=true: the row
+    // is re-stamped (origin='local', fed_ts/fed_hlc cleared) → the mig-411 AFTER INSERT OR
+    // UPDATE capture re-federates → the member's LWW accepts the re-sent key. C-001 preserved
+    // (revoked devices excluded). Best-effort: a re-grant hiccup must NOT fail admission.
+    try {
+      const refederate =
+        deps.refederateMemberEpochKeys ?? ((a) => defaultRefederateMemberEpochKeys(a, deps.sql));
+      await refederate({
+        workspaceId,
+        hiveHomeSlug,
+        memberDevicePubkeys: (joiner.deviceAttestations ?? [])
+          .map((d) => d.device_pubkey)
+          .filter((pk): pk is string => typeof pk === 'string' && pk.length > 0),
+      });
+    } catch {
+      /* best-effort — never fail a reconnect admission on an epoch-key re-grant */
+    }
+    return { action: 'admitted', member, reason: 'already_member' };
   }
 
   // 2 — not yet a member: the owner-signed policy decides. evaluateJoinAdmission

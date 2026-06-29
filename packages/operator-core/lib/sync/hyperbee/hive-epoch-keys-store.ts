@@ -24,10 +24,28 @@ export interface WrappedKeyInput {
   wrappedKey: Uint8Array;
 }
 
+/** Options for putWrappedKeys. */
+export interface PutWrappedKeysOptions {
+  /**
+   * BUG B self-heal (shared-hive-member-content-federation D-028, layer 2). When true,
+   * a row that ALREADY exists is RE-WRITTEN via ON CONFLICT DO UPDATE that re-stamps
+   * origin='local' + fed_ts=NULL + fed_hlc=NULL (and refreshes wrapped_key/author).
+   * Clearing fed_ts/fed_hlc makes the BEFORE stamp trigger mint a FRESH HLC, so the
+   * AFTER INSERT OR UPDATE capture trigger (mig 411) re-enqueues the federation op and
+   * the member's LWW projection accepts the re-sent key (newer HLC wins). Default false
+   * = the original write-once ON CONFLICT DO NOTHING (existing behavior unchanged).
+   */
+  refederate?: boolean;
+}
+
 /**
  * Persist the per-member wrapped epoch keys for (hive, epoch) as LOCAL rows — the
  * boundary trigger (advanceEpochAndWrap) calls this on the owner; the capture trigger
- * (mig 316) federates them. Idempotent per (hive, epoch, member).
+ * (mig 316/411) federates them. Idempotent per (hive, epoch, member).
+ *
+ * `opts.refederate` (default false) switches the ON CONFLICT clause from write-once
+ * DO NOTHING to a re-stamping DO UPDATE — the BUG-B reconnect re-grant uses it to
+ * RE-SEND a key a member missed (see PutWrappedKeysOptions).
  */
 export async function putWrappedKeys(
   workspaceId: string,
@@ -36,9 +54,22 @@ export async function putWrappedKeys(
   rows: readonly WrappedKeyInput[],
   authorPubkey: string | null,
   sql?: Sql,
+  opts?: PutWrappedKeysOptions,
 ): Promise<number> {
   if (!Number.isInteger(epoch) || epoch < 0) throw new Error(`putWrappedKeys: bad epoch ${epoch}`);
   const s = pg(sql);
+  // refederate ⇒ DO UPDATE re-stamping origin='local' + clearing fed_ts/fed_hlc (the
+  // BEFORE stamp trigger re-mints them → the capture trigger re-federates). Otherwise
+  // the write-once DO NOTHING. updated_at is refreshed on a real re-write.
+  const conflict = opts?.refederate
+    ? `DO UPDATE SET
+         wrapped_key = EXCLUDED.wrapped_key,
+         author_pubkey = EXCLUDED.author_pubkey,
+         origin = 'local',
+         fed_ts = NULL,
+         fed_hlc = NULL,
+         updated_at = (EXTRACT(EPOCH FROM now()) * 1000)::bigint`
+    : `DO NOTHING`;
   let written = 0;
   for (const r of rows) {
     if (!r.memberDevicePubkey) continue;
@@ -49,7 +80,7 @@ export async function putWrappedKeys(
       `INSERT INTO harness_shared.hive_epoch_keys
          (workspace_id, harness_slug, epoch, member_device_pubkey, wrapped_key, author_pubkey, origin)
        VALUES ($1, $2, $3, $4, $5, $6, 'local')
-       ON CONFLICT (workspace_id, harness_slug, epoch, member_device_pubkey) DO NOTHING`,
+       ON CONFLICT (workspace_id, harness_slug, epoch, member_device_pubkey) ${conflict}`,
       [workspaceId, hiveHomeSlug, epoch, r.memberDevicePubkey, wrapped, authorPubkey],
     );
     written += 1;

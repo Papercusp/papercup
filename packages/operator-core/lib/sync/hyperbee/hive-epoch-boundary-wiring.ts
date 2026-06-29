@@ -64,6 +64,7 @@ export interface BoundaryRekeySeams {
     rows: readonly WrappedEpochKeyRow[],
     author: string | null,
     sql?: Sql,
+    opts?: { refederate?: boolean },
   ) => Promise<number>;
   advanceAndWrap?: typeof advanceEpochAndWrap;
 }
@@ -164,6 +165,13 @@ export async function grantEpochKeysToMembers(
     enabled: boolean;
     /** the new member's device pubkeys (base64) to grant the current epoch key. */
     newMemberPubkeys: readonly string[];
+    /**
+     * BUG B (D-028, layer 3): re-SEND keys a member already has a row for. Threads
+     * refederate=true into persistWrappedKeys so an existing wrapped_key row is
+     * re-stamped (origin='local', fed_ts/fed_hlc cleared) and the AFTER INSERT OR
+     * UPDATE capture trigger (mig 411) re-federates it. Default false = write-once.
+     */
+    refederate?: boolean;
     sql?: Sql;
   },
   seams: Pick<BoundaryRekeySeams, 'resolveCrypto' | 'resolveAuthorPubkey' | 'persistWrappedKeys'> & {
@@ -201,7 +209,9 @@ export async function grantEpochKeysToMembers(
     for (const pk of fresh) {
       wrapped.push({ memberDevicePubkey: pk, wrappedKey: await crypto.wrapKeyToMember(key, pk) });
     }
-    distributed += await persistWrappedKeys(opts.workspaceId, opts.hiveHomeSlug, epoch, wrapped, author, opts.sql);
+    distributed += await persistWrappedKeys(opts.workspaceId, opts.hiveHomeSlug, epoch, wrapped, author, opts.sql, {
+      refederate: opts.refederate,
+    });
   }
   return { applied: true, newEpoch: current, distributed };
 }
@@ -224,7 +234,25 @@ export async function grantEpochKeysToMembers(
  * blocklists), so a removed/cut member is never re-granted the new key.
  */
 export async function reconcileEpochKeysForCurrentMembers(
-  opts: { workspaceId: string; hiveHomeSlug: string; enabled: boolean; sql?: Sql },
+  opts: {
+    workspaceId: string;
+    hiveHomeSlug: string;
+    enabled: boolean;
+    /**
+     * BUG B (D-028, layer 3): re-SEND keys, not just fill gaps. Threaded to
+     * grantEpochKeysToMembers → persistWrappedKeys so existing rows are re-stamped and
+     * re-federated (mig 411). Default false = write-once (the onMemberApplied/sweep heal).
+     */
+    refederate?: boolean;
+    /**
+     * BUG B (D-028, layer 3): when set, restrict the re-grant to THIS device set (the
+     * reconnecting member's devices) instead of the whole hive — the C-001 revoked
+     * exclusion still applies (the intersection of live-non-revoked ∩ onlyDevices). Omit
+     * for the whole-hive self-heal (onMemberApplied hook / the gap-aware sweep).
+     */
+    onlyDevices?: readonly string[];
+    sql?: Sql;
+  },
   seams: Pick<BoundaryRekeySeams, 'resolveCrypto' | 'resolveAuthorPubkey' | 'persistWrappedKeys'> & {
     getCurrentEpoch?: (ws: string, slug: string, sql?: Sql) => Promise<number>;
     loadMembers?: (ws: string, slug: string, sql?: Sql) => Promise<HiveMemberRecord[]>;
@@ -237,20 +265,40 @@ export async function reconcileEpochKeysForCurrentMembers(
   // member row's revoked_pubkeys blocklist (a revocation written on one member's row applies hive-wide).
   const revoked = new Set<string>();
   for (const m of members) for (const pk of m.revokedPubkeys ?? []) revoked.add(pk);
+  // Optional device targeting (BUG B reconnect re-grant): intersect with onlyDevices so a single
+  // member's reconnect re-sends ONLY its own keys, never re-federating the whole hive. C-001 holds
+  // (revoked still excluded) regardless of the target set.
+  const only = opts.onlyDevices ? new Set(opts.onlyDevices) : null;
   const pubkeys: string[] = [];
   const seen = new Set<string>();
   for (const m of members) {
     for (const a of m.deviceAttestations ?? []) {
       const pk = a?.device_pubkey;
-      if (typeof pk === 'string' && pk.length > 0 && !revoked.has(pk) && !seen.has(pk)) {
+      if (
+        typeof pk === 'string' &&
+        pk.length > 0 &&
+        !revoked.has(pk) &&
+        !seen.has(pk) &&
+        (!only || only.has(pk))
+      ) {
         seen.add(pk);
         pubkeys.push(pk);
       }
     }
   }
-  // Delegate to the tested per-member grant with the full current set: it re-reads the CURRENT epoch
-  // and wraps [0..current] idempotently. 'no-fresh-members' when the hive has no live device.
-  return grantEpochKeysToMembers({ ...opts, newMemberPubkeys: pubkeys }, seams);
+  // Delegate to the tested per-member grant with the resolved set: it re-reads the CURRENT epoch
+  // and wraps [0..current] idempotently. 'no-fresh-members' when no live device matched.
+  return grantEpochKeysToMembers(
+    {
+      workspaceId: opts.workspaceId,
+      hiveHomeSlug: opts.hiveHomeSlug,
+      enabled: opts.enabled,
+      newMemberPubkeys: pubkeys,
+      refederate: opts.refederate,
+      sql: opts.sql,
+    },
+    seams,
+  );
 }
 
 /** A hive this box knows about (its workspace + home slug). */
