@@ -28,6 +28,7 @@ import { fetchWakeability, deriveSessionState, type WakeabilitySignals } from '.
 import { writeWatermark } from './watermarks';
 import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
 import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
+import { gatherViewerAttachedOwners } from '../../pty-viewer-heartbeat';
 import type { Watermark } from '@papercusp/coordination/core';
 
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
@@ -68,6 +69,9 @@ export interface PresenceSnapshot {
     /** Agents CURRENTLY on the desktop (a live OS window) — the "assign these to
      *  the agent on the desktop" count, and the reaper's hard-exempt cohort. */
     onDesktop: number;
+    /** Agents a human is CURRENTLY viewing in the operator web/Tauri PTY panel
+     *  (no OS window) — the reaper's other hard-exempt cohort (pty-viewer-heartbeat.ts). */
+    viewerAttached: number;
     byState: { live: number; parked: number; ended: number; recorded: number };
   };
   active: Record<string, unknown>[];
@@ -158,6 +162,7 @@ export async function assemblePresenceSnapshot(
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
   let onDesktopOwners = new Set<string>();
+  let viewerAttachedOwners = new Set<string>();
   await Promise.all([
     // each best-effort + independent — presence must list even if any join fails.
     fetchPresenceTier1(localActiveIds)
@@ -176,6 +181,14 @@ export async function assemblePresenceSnapshot(
     gatherOnDesktopSessions()
       .then((s) => {
         onDesktopOwners = s.owners;
+      })
+      .catch(() => {}),
+    // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) — the no-OS-window
+    // sibling of on-desktop. Best-effort + independent so a DB hiccup never affects
+    // the other joins.
+    gatherViewerAttachedOwners()
+      .then((s) => {
+        viewerAttachedOwners = s;
       })
       .catch(() => {}),
   ]);
@@ -205,8 +218,16 @@ export async function assemblePresenceSnapshot(
   const withOnDesktop = (r: RosterRow): RosterRow =>
     isFederated(r) ? r : { ...r, onDesktop: onDesktopOwners.has(r.ownerId) };
 
-  const activeEnriched = mergeTier1(active, joins, now).map(withWakeability).map(withOnDesktop);
-  const staleEnriched = stale.map((r) => withOnDesktop(withWakeability(r as RosterRow)));
+  /** Attach the PTY-panel viewer flag for LOCAL rows (a federated row's viewers live
+   *  on its home box → leave it null/unknown, like onDesktop). */
+  const withViewerAttached = (r: RosterRow): RosterRow =>
+    isFederated(r) ? r : { ...r, viewerAttached: viewerAttachedOwners.has(r.ownerId) };
+
+  const activeEnriched = mergeTier1(active, joins, now)
+    .map(withWakeability)
+    .map(withOnDesktop)
+    .map(withViewerAttached);
+  const staleEnriched = stale.map((r) => withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))));
   let activeRows = activeEnriched.map(toStableRosterRow);
 
   // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the
@@ -230,9 +251,11 @@ export async function assemblePresenceSnapshot(
   const byState = { live: 0, parked: 0, ended: 0, recorded: 0 };
   let wakeable = 0;
   let onDesktop = 0;
+  let viewerAttached = 0;
   for (const r of [...activeEnriched, ...staleEnriched]) {
     if (r.wakeable === true) wakeable += 1;
     if (r.onDesktop === true) onDesktop += 1;
+    if (r.viewerAttached === true) viewerAttached += 1;
     const state = r.sessionState;
     if (state === 'live' || state === 'parked' || state === 'ended' || state === 'recorded') {
       byState[state] += 1;
@@ -250,6 +273,7 @@ export async function assemblePresenceSnapshot(
       federated: federated.length,
       wakeable,
       onDesktop,
+      viewerAttached,
       byState,
     },
     active: activeRows,

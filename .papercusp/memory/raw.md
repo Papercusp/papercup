@@ -240,3 +240,4 @@
 [2026-06-29T12:33:52Z] content-fixer -: YAML frontmatter title with partial double-quotes (e.g. title: "On-desktop" rest...) is invalid YAML — the quoted scalar ends at the closing " and trailing text causes 'bad indentation'; fix by wrapping the whole title value in single quotes.
 
 [2026-06-29T00:00:00Z] doc-steward -: harness_docs:verify IS available via mcp-call.mjs (contradicts 2026-06-27 note) — works fine today; also: setup-release-checkout.sh drift means check ALL anchored docs for missing defense layers (new guards added incrementally; older docs skip recent additions like step 3c EI-2118)
+[2026-06-29T00:00:00Z] doc-steward -: when a doc describes INTENDED design ahead of implementation, sweep will flag it once the code catches up — verify all claims against code, and if accurate just re-verify (no edits); the doc was correct all along

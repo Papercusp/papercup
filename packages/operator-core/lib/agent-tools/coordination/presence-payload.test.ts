@@ -62,6 +62,7 @@ const MAXIMAL_ROW: RosterRow = {
   sessionState: 'live',
   wakeable: true,
   onDesktop: true,
+  viewerAttached: true,
   // — dropped (raw churning timestamps) —
   heartbeatAt: '2026-06-14T01:00:00.000Z',
   lastActiveAt: '2026-06-14T00:59:00.000Z',
@@ -102,7 +103,7 @@ describe('partitionPresenceRow', () => {
     const { identity, state, liveness } = partitionPresenceRow(MAXIMAL_ROW);
     expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', hiveSlug: 'papercup-hive' });
     expect(state).toMatchObject({ intent: 'doing things', claimedItems: ['P-001'], wakeMode: 'auto' });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, stale: false, sessionState: 'live', wakeable: true, onDesktop: true });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, stale: false, sessionState: 'live', wakeable: true, onDesktop: true, viewerAttached: true });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');
@@ -177,6 +178,8 @@ describe('byte-stability (D-006)', () => {
     expect(emitted).toHaveProperty('wakeable');
     // on-desktop is always emitted (null when un-derived, e.g. a federated row).
     expect(emitted).toHaveProperty('onDesktop');
+    // viewer-attached (PTY panel) is likewise always emitted.
+    expect(emitted).toHaveProperty('viewerAttached');
   });
 });
 

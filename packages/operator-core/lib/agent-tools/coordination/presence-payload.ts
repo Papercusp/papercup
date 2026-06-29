@@ -215,5 +215,8 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // "On the desktop right now" — always emitted (null when un-derived, e.g. a
     // federated row), so a reader can always filter "agents on the desktop".
     onDesktop: (liveness.onDesktop as boolean | null | undefined) ?? null,
+    // "A human is viewing this session's PTY panel right now" — always emitted (null
+    // when un-derived, e.g. a federated row), so a reader can always filter it.
+    viewerAttached: (liveness.viewerAttached as boolean | null | undefined) ?? null,
   };
 }

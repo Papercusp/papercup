@@ -18,6 +18,8 @@ import type postgres from 'postgres';
 import { joinFederatedParts, hashPlanContent, parsePlan, type FederatedPart, type PlanPartKind } from '@papercusp/plan-parser';
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { decideMemberContentOp } from '../member-content-guard';
+import type { PendingMembershipContent } from '../pending-membership-content';
 import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store';
 import { ensurePlanPartsBaseline } from '../../../plan-parts/federation';
 
@@ -62,6 +64,17 @@ export interface HarnessPlanPartsProjectionOpts {
    *  incoming part for a plan, seed the full baseline from this content so the
    *  recompose merges into the whole plan instead of a broken join({one part}). */
   readLocalContent?: (planSlug: string) => Promise<string | null>;
+  /** WI-259 parity (D-027): hive-home slug when this harness is a hive MEMBER —
+   *  a cross-member plan-part op is membership-gated only when set; undefined for a
+   *  non-hive / owned-home harness. Threaded via RegisterAllOpts (same as harness-plans). */
+  hiveHomeSlug?: string;
+  /** WI-259 parity: resolve an op's VERIFIED source-log device pubkey from its
+   *  receiver-stamped sourceLogKeyHex (boot's admittedIdentities). */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
+  /** WI-259 P-004 parity: content-before-membership defer buffer — a cross-member part
+   *  op the guard drops ONLY because the author's hive_members row hasn't federated yet
+   *  is buffered + re-applied on the onMemberApplied drain, not lost. */
+  pendingMemberContent?: PendingMembershipContent;
 }
 
 function composeKey(row: PlanPartWireRow): string {
