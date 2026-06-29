@@ -134,3 +134,15 @@ mode — covers `plans:launch/resume` cwd + harness registration) and
 
 `seed-release-routines.ts` encodes these per-routine defaults — running it with no
 flags (re)applies the decided posture.
+
+## Per-hive generalization (per-hive-git-and-release-gate-2026-06-29)
+
+This gate is no longer papercusp-only. It is generalized to **every coding hive** via the
+blueprint `releaseGate` knob — see `agent-insights/per-hive-staging-main-pipeline`. The
+short version: this `release-config.ts` is **unchanged** (its env seam is the integration
+point); `packages/operator-core/lib/harness/routines/hive-release-env.ts`
+(`resolveHiveReleaseEnv` / `resolveCheckpointRouting`) computes a per-hive env overlay from
+the hive's `releaseGate` knob + registry path, and the `system:green-checkpoint` handler
+passes it to the subprocess. The **operator-home (papercusp) gets an EMPTY overlay**, so
+everything above describes its behavior verbatim. Per-hive seeding
+(`seed-hive-release-routines.ts`) is **flag-gated `PER_HIVE_RELEASE_GATE`, default-OFF**.

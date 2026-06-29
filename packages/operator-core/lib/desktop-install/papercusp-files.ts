@@ -266,6 +266,9 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   let out = spliceGeneratedSection(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
   out = spliceGeneratedSection(out, COORD_LEGEND_MARKER, renderCoordLegend());
   out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  // per-hive-git-and-release-gate P-012: the staging→main promotion contract, generated
+  // from the same release-gate config (non-coding hives render nothing → marker removed).
+  out = spliceGeneratedSection(out, PROMOTION_MODEL_MARKER, renderPromotionModelSection());
   // AUTO mode (act-don't-ask switch + its AUTO↔loop relationship) — profile-agnostic, so
   // both engineer + power get the one canonical clause spliced here at the marker.
   out = spliceGeneratedSection(out, AUTO_MODE_MARKER, renderAutoModePolicy());
@@ -646,10 +649,11 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   );
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
   const withMap = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  const withPromo = spliceGeneratedSection(withMap, PROMOTION_MODEL_MARKER, renderPromotionModelSection());
   // AUTO mode is profile-agnostic (the act-don't-ask grant + its AUTO↔loop relationship apply to
   // every interactive su surface), so splice it BEFORE the engineer-only shared-base notes — both
   // engineer + power carry the marker and get the one canonical clause.
-  const withAuto = spliceGeneratedSection(withMap, AUTO_MODE_MARKER, renderAutoModePolicy());
+  const withAuto = spliceGeneratedSection(withPromo, AUTO_MODE_MARKER, renderAutoModePolicy());
   // Only the ENGINEER profile works the Papercusp repo (where this pipeline + its green gate live);
   // the power profile manages an EXTERNAL repo, so the Papercusp-specific note does not apply there.
   const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withAuto) : withAuto;

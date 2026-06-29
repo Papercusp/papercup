@@ -199,6 +199,11 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   'coding/queen/hive:survey',
   'coding/queen/plans:promote',
   'coding/queen/plans:set-plan-status',
+  // The Scout-routed draft review section names the rubric-ratify verb in the shared
+  // persona prose (a rubric proposal is ratified by filling templateData + promoting);
+  // like the plan-lifecycle verbs above it is a generic-persona mention, not in the
+  // coding-Queen's concrete deps.
+  'coding/queen/rubrics:ratify',
   // coding/operator.md — operator decision-tree prose naming routed/peer actions + a wake event.
   'coding/operator/coord:escalate',
   'coding/operator/db:next-migration',
