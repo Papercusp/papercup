@@ -101,6 +101,10 @@ export async function resolveSpawnGatewayEnv(opts: {
   /** The spawn ROLE (queen/scout/overwatch/su/bee/worker/…) → mapped to an admission TIER by the gateway
    *  when `GATEWAY_PRIORITY_TIERS` is ON. Omit for an untiered caller. */
   role?: string;
+  /** The role's resolved model SPEC (e.g. `anthropic/claude-opus-4-8:high`). For an omp spawn that
+   *  gateway-routes to a Claude account, the bare Claude id is exposed + selected via the per-session
+   *  models.yml (P-005/WI-951 per-role fidelity); a non-claude/local spec falls back to the wire default. */
+  model?: string;
 }): Promise<Record<string, string>> {
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
@@ -145,12 +149,16 @@ export async function resolveSpawnGatewayEnv(opts: {
         : undefined;
     // Lazy import: omp-models-config imports gatewayPort from THIS module, so a top-level import
     // would be a mutual cycle — defer it to the call site (the helpers above stay import-light).
-    const { ompGatewayModelsConfig, ompProviderForAccountProvider } = await import('./omp-models-config');
+    const { ompGatewayModelsConfig, ompProviderForAccountProvider, ompModelIdFromSpec } = await import('./omp-models-config');
+    // P-005/WI-951 per-role fidelity: expose + select the ROLE's actual Claude model (from its
+    // resolved spec) instead of the wire default, when the spawn gateway-routes to a Claude account.
+    const roleModelId = ompModelIdFromSpec(opts.model);
     const cfg = ompGatewayModelsConfig({
       accountId,
       provider: ompProviderForAccountProvider(provider),
       ownerId: opts.ownerId,
       priority: ompPriority,
+      models: roleModelId ? [roleModelId] : undefined,
     });
     if (cfg) {
       env.PAPERCUSP_OMP_MODELS_YML = cfg.content;
