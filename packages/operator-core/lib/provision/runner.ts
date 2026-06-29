@@ -13,6 +13,7 @@
  */
 
 import { promises as fs } from 'node:fs';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { spawn } from 'node:child_process';
 import { join, resolve as pathResolve } from 'node:path';
 import { RUNTIME_LIB_SH } from './runtime/lib-source';
@@ -426,7 +427,7 @@ async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
       // fifo missing — fine
     }
   };
-  const fifoTimer = setInterval(drainFifo, 200);
+  const fifoTimer = managedSetInterval('provision-fifo-drain', 200, drainFifo, { category: 'lifecycle', instanced: true });
 
   return await new Promise<ScriptRunResult>((resolve) => {
     const child = spawn(bin, rest, {
@@ -465,7 +466,7 @@ async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
     }, input.timeoutMs);
     child.on('error', (err) => {
       clearTimeout(timer);
-      clearInterval(fifoTimer);
+      fifoTimer.stop();
       // Final FIFO drain in case the script wrote-then-errored.
       drainFifo().finally(() => {
         resolve({ ok: false, exitCode: null, error: err.message });
@@ -473,7 +474,7 @@ async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
     });
     child.on('exit', (code) => {
       clearTimeout(timer);
-      clearInterval(fifoTimer);
+      fifoTimer.stop();
       // flush remaining stdout/stderr buffers
       if (stdoutBuf) input.onStdout(stdoutBuf).catch(() => { /* ignore */ });
       if (stderrBuf) input.onStderr(stderrBuf).catch(() => { /* ignore */ });

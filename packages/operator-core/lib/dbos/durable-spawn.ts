@@ -42,6 +42,7 @@ import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
 import { agentProducedTurn, type SpawnFailureClass } from '../fleet/invoke-outcome';
 import type { Db } from '../fleet/pg-stores';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 /**
  * HTTP statuses where retrying the IDENTICAL replayed request can never succeed,
@@ -351,7 +352,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     }
   }
 
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let heartbeat: ManagedHandle | null = null;
   if (rec) {
     try {
       const [{ heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS }, { getOrgPg }] = await Promise.all([
@@ -359,19 +360,18 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
         import('@papercusp/db-org'),
       ]);
       const { sql } = getOrgPg();
-      heartbeat = setInterval(() => {
+      heartbeat = managedSetInterval('durable-spawn-heartbeat', SPAWN_HEARTBEAT_INTERVAL_MS, () => {
         void heartbeatSpawns(sql, [spawnId]).catch(() => {
           /* best-effort: a later reclaim/retry is safer than blocking the fire */
         });
-      }, SPAWN_HEARTBEAT_INTERVAL_MS);
-      heartbeat.unref?.();
+      }, { category: 'lifecycle', instanced: true });
     } catch {
       /* best-effort: durable completion still closes the row */
     }
   }
   const stopHeartbeat = (): void => {
     if (heartbeat) {
-      clearInterval(heartbeat);
+      heartbeat.stop();
       heartbeat = null;
     }
   };

@@ -34,6 +34,7 @@ import { operatorApiBase } from '../operator-api-base';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
 import { agentProducedTurn } from '../fleet/invoke-outcome';
 import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 import type { Db } from '../fleet/pg-stores';
 
@@ -477,20 +478,19 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
   // row for as long as THIS process is awaiting the fetch — when this process dies
   // the beats stop and the reclaim correctly frees the slot. unref'd so it never
   // holds the process open; cleared the instant the fetch settles.
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let heartbeat: ManagedHandle | null = null;
   if (pg) {
     const sql = pg.sql;
-    heartbeat = setInterval(() => {
+    heartbeat = managedSetInterval('launch-blueprint-heartbeat', SPAWN_HEARTBEAT_INTERVAL_MS, () => {
       void heartbeatSpawns(sql, [spawnId]).catch(() => {
         /* best-effort — a missed beat at worst risks an early reclaim, itself
            recoverable (the launch re-fires on the next cadence/wake). */
       });
-    }, SPAWN_HEARTBEAT_INTERVAL_MS);
-    if (typeof heartbeat.unref === 'function') heartbeat.unref();
+    }, { category: 'lifecycle', instanced: true });
   }
   const stopHeartbeat = (): void => {
     if (heartbeat) {
-      clearInterval(heartbeat);
+      heartbeat.stop();
       heartbeat = null;
     }
   };

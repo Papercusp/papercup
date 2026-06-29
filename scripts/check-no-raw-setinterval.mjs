@@ -82,26 +82,9 @@ export const BASELINE = new Set([
   // Seeded from the tree state at P-007 (74 files). SHRINK-ONLY: P-008 migrates each to
   // managedSetInterval (remove here) or promotes a genuine separate-process/generic site
   // to ALLOWLIST_DIRS / ALLOWLIST. Do NOT add new entries.
-  'packages/operator-core/lib/agent-tools/locks/acquire.ts',
-  'packages/operator-core/lib/blueprint/launch-blueprint.ts',
-  'packages/operator-core/lib/cross-hive-swarm-transport.ts',
-  'packages/operator-core/lib/dbos/durable-spawn.ts',
   'packages/operator-core/lib/deployment/frame-view.ts',
   'packages/operator-core/lib/device-push-credentials.ts',
-  'packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts',
-  'packages/operator-core/lib/fleet/chat-spawn-tracking.ts',
-  'packages/operator-core/lib/fleet/operator-spawn.ts',
   'packages/operator-core/lib/harness-fs-watcher.ts',
-  'packages/operator-core/lib/hive-directory.ts',
-  'packages/operator-core/lib/provision/runner.ts',
-  'packages/operator-core/lib/sync/hyperbee/boot.ts',
-  'packages/operator-core/lib/sync/hyperbee/directory-swarm.ts',
-  'packages/operator-core/lib/sync/hyperbee/outbox-drain.ts',
-  'packages/operator-core/lib/sync/hyperbee/substrate-eviction-reaper.ts',
-  'packages/operator-core/lib/sync/hyperbee/swarm.ts',
-  'packages/operator-core/lib/voice-engine-health.ts',
-  'packages/operator-core/lib/voice-node/operator-voice-host.ts',
-  'packages/operator-core/lib/voice-node/screen-track/screen-publisher.ts',
   'packages/plugin-loader/src/daemon/supervisor.ts',
 ]);
 

@@ -28,6 +28,7 @@
  */
 
 import type postgres from 'postgres';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
@@ -404,13 +405,10 @@ export function startOutboxDrain(
   // keeps the process alive on its own.
   const pollTimer =
     pollMs > 0
-      ? setInterval(() => {
+      ? managedSetInterval('hyperbee-outbox-drain-poll', pollMs, () => {
           void drainSafely();
-        }, pollMs)
+        }, { category: 'lifecycle', instanced: true })
       : null;
-  if (pollTimer && typeof (pollTimer as { unref?: () => void }).unref === 'function') {
-    (pollTimer as { unref: () => void }).unref();
-  }
 
   return {
     async stop(): Promise<void> {
@@ -418,7 +416,7 @@ export function startOutboxDrain(
       stopped = true;
       if (pollTimer) {
         try {
-          clearInterval(pollTimer);
+          pollTimer.stop();
         } catch {
           // no-op
         }

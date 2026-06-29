@@ -25,6 +25,7 @@
  * Hyperswarm in the cross-machine E2E.
  */
 import Protomux from 'protomux';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import c from 'compact-encoding';
 import type { HyperswarmLike } from './sync/hyperbee/swarm';
 import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
@@ -238,9 +239,9 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   // Keep BOTH sides continuously discoverable: a periodic per-topic refresh
   // re-runs each topic's announce + lookup round, so a sender and a receiver
   // converge even when a round is missed. Cleared on close.
-  let reannounceTimer: ReturnType<typeof setInterval> | null = null;
+  let reannounceTimer: ManagedHandle | null = null;
   if (reannounceMs > 0) {
-    reannounceTimer = setInterval(() => {
+    reannounceTimer = managedSetInterval('cross-hive-reannounce', reannounceMs, () => {
       const now = Date.now();
       for (const t of joined.values()) {
         const inFastWindow = now - t.fastWindowStartMs < fastWindowMs;
@@ -253,8 +254,7 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
           /* best-effort per topic */
         }
       }
-    }, reannounceMs);
-    reannounceTimer.unref?.();
+    }, { category: 'lifecycle', instanced: true });
   }
 
   return {
@@ -300,7 +300,7 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
 
     async close(): Promise<void> {
       if (reannounceTimer) {
-        clearInterval(reannounceTimer);
+        reannounceTimer.stop();
         reannounceTimer = null;
       }
       if (opts.swarm.off) opts.swarm.off('connection', handler);

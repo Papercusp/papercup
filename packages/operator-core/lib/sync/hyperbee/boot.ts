@@ -34,6 +34,7 @@
  */
 
 import { getHarnessStore, closeHarnessStore, type HarnessStoreOpts } from './corestore';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
@@ -1563,13 +1564,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // to call mergeNow() — no separate out-of-lock refresh here.
   const mergeTimer =
     mergePollMs > 0
-      ? setInterval(async () => {
+      ? managedSetInterval('hyperbee-merge-poll', mergePollMs, async () => {
           await mergeNow();
-        }, mergePollMs)
+        }, { category: 'lifecycle', instanced: true })
       : null;
-  if (mergeTimer && typeof (mergeTimer as { unref?: () => void }).unref === 'function') {
-    (mergeTimer as { unref: () => void }).unref();
-  }
 
   // ── Read-admission decider (4c) ── the D-004 + D-002 sig+binding decision
   // applied to an inbound announce. verifyBinding wires the write-free adapter
@@ -2434,7 +2432,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // but clear cleanly).
       if (mergeTimer) {
         try {
-          clearInterval(mergeTimer);
+          mergeTimer.stop();
         } catch {
           // no-op
         }

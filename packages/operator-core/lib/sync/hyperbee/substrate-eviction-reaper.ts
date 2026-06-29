@@ -31,6 +31,7 @@ import {
   type BootedHarnessFacts,
   type EvictionDecision,
 } from './substrate-eviction-policy';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 /** Default reaper tick cadence (ms): re-evaluate the resident set every minute. */
 export const DEFAULT_REAPER_INTERVAL_MS = 60_000;
@@ -125,23 +126,20 @@ export function startSubstrateEvictionReaper(
     return evictedKeys;
   }
 
-  const timer: ReturnType<typeof setInterval> | null =
+  const timer: ManagedHandle | null =
     intervalMs > 0
-      ? setInterval(() => {
+      ? managedSetInterval('substrate-eviction-reaper', intervalMs, () => {
           if (stopped) return;
           void tickOnce();
-        }, intervalMs)
+        }, { category: 'lifecycle', instanced: true })
       : null;
-  if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
 
   return {
     stop() {
       stopped = true;
       if (timer) {
         try {
-          clearInterval(timer);
+          timer.stop();
         } catch {
           // no-op
         }

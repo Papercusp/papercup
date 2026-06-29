@@ -26,6 +26,7 @@
  */
 
 import type Corestore from 'corestore';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import Protomux from 'protomux';
 import c from 'compact-encoding';
 import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
@@ -676,9 +677,9 @@ export async function joinHarnessSwarm(
   const refreshMs = opts.refreshMs ?? DEFAULT_SUBSTRATE_REFRESH_MS;
   const fastWindowMs = opts.fastWindowMs ?? DEFAULT_SUBSTRATE_FAST_WINDOW_MS;
   const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SUBSTRATE_SLOW_REFRESH_MS;
-  let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  let refreshTimer: ManagedHandle | null = null;
   if (refreshMs > 0) {
-    refreshTimer = setInterval(() => {
+    refreshTimer = managedSetInterval('hyperbee-swarm-refresh', refreshMs, () => {
       const now = Date.now();
       const inFastWindow = now - fastWindowStartMs < fastWindowMs;
       const slowDue = now - lastRefreshMs >= slowRefreshMs;
@@ -692,8 +693,7 @@ export async function joinHarnessSwarm(
       } catch {
         // best-effort — refresh is keepalive, not load-bearing for this tick
       }
-    }, refreshMs);
-    refreshTimer.unref?.();
+    }, { category: 'lifecycle', instanced: true });
   }
 
   const handle: SwarmHandle = {
@@ -704,7 +704,7 @@ export async function joinHarnessSwarm(
     async close() {
       // WI-752: stop the self-heal loop FIRST so no refresh fires after leave.
       if (refreshTimer) {
-        clearInterval(refreshTimer);
+        refreshTimer.stop();
         refreshTimer = null;
       }
       if (opts.swarm.off) opts.swarm.off('connection', handler);

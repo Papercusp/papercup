@@ -42,6 +42,7 @@
  */
 
 import Protomux from 'protomux';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import c from 'compact-encoding';
 import type { HyperswarmLike } from './swarm';
 import type { SignedHiveAnnounce } from './hive-announce';
@@ -265,9 +266,9 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
   const refreshMs = opts.refreshMs ?? DEFAULT_REFRESH_MS;
   const fastWindowMs = opts.fastWindowMs ?? DEFAULT_FAST_WINDOW_MS;
   const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SLOW_REFRESH_MS;
-  let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  let refreshTimer: ManagedHandle | null = null;
   if (refreshMs > 0) {
-    refreshTimer = setInterval(() => {
+    refreshTimer = managedSetInterval('directory-swarm-refresh', refreshMs, () => {
       const now = Date.now();
       for (const st of topics.values()) {
         const inFastWindow = now - st.fastWindowStartMs < fastWindowMs;
@@ -280,8 +281,7 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
           /* best-effort per topic */
         }
       }
-    }, refreshMs);
-    refreshTimer.unref?.();
+    }, { category: 'lifecycle', instanced: true });
   }
 
   return {
@@ -349,7 +349,7 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
       if (closed) return;
       closed = true;
       if (refreshTimer) {
-        clearInterval(refreshTimer);
+        refreshTimer.stop();
         refreshTimer = null;
       }
       if (opts.swarm.off) opts.swarm.off('connection', handler);

@@ -23,6 +23,7 @@
  */
 
 import { createMcpHandler } from 'mcp-handler';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { z } from 'zod';
 import {
   getCatalog,
@@ -1799,10 +1800,10 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
   const reader = res.body.getReader();
   let cancelled = false;
   let closed = false;
-  let keepalive: ReturnType<typeof setInterval> | undefined;
+  let keepalive: ManagedHandle | undefined;
   const stopKeepalive = (): void => {
     if (keepalive) {
-      clearInterval(keepalive);
+      keepalive.stop();
       keepalive = undefined;
     }
   };
@@ -1818,15 +1819,14 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
       // runs), so a pending consumer read is satisfied by the comment — resetting the
       // idle timers — without waiting on the tool to produce.
       if (keepaliveMs > 0) {
-        keepalive = setInterval(() => {
+        keepalive = managedSetInterval('mcp-sse-keepalive', keepaliveMs, () => {
           if (cancelled || closed) return;
           try {
             controller.enqueue(SSE_KEEPALIVE);
           } catch {
             stopKeepalive(); // controller closed/errored between checks — stop pinging
           }
-        }, keepaliveMs);
-        (keepalive as { unref?: () => void }).unref?.();
+        }, { category: 'lifecycle', instanced: true });
       }
     },
     pull(controller) {

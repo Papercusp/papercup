@@ -25,6 +25,7 @@
  */
 
 import { z } from 'zod';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { enrichBusy } from './enrich-busy';
@@ -306,7 +307,7 @@ export default defineTool({
     // ceiling to re-poll. Bug-#14 fix.
     let pendingWake = false;
     let unsubscribe: (() => Promise<void>) | null = null;
-    let progressTimer: ReturnType<typeof setInterval> | null = null;
+    let progressTimer: ManagedHandle | null = null;
 
     // Capture ctx.progress safely — UnifiedToolContext exposes it
     // when the transport supports streaming; older shapes / shim
@@ -408,9 +409,9 @@ export default defineTool({
           // Best-effort — progress events should never break the wait.
         }
       };
-      progressTimer = setInterval(() => {
+      progressTimer = managedSetInterval('lock-wait-progress', PROGRESS_TICK_MS, () => {
         void emitProgressTick();
-      }, PROGRESS_TICK_MS);
+      }, { category: 'lifecycle', instanced: true });
       // Emit one immediately so the agent sees state before the first
       // 10s tick fires.
       void emitProgressTick();
@@ -541,7 +542,7 @@ export default defineTool({
       };
     } finally {
       if (progressTimer) {
-        clearInterval(progressTimer);
+        progressTimer.stop();
         progressTimer = null;
       }
       if (unsubscribe) {

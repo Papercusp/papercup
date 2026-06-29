@@ -9,6 +9,7 @@
  * desktop WS bridge are up.
  */
 import { startLocalVoiceSocket, broadcastOpVoice, setOperatorVoiceSession } from './local-audio-socket';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { OperatorVoiceSession } from './operator-voice-session';
 import { createOperatorVoiceSessionDeps } from './operator-voice-session-deps';
 import { runSentinelProactiveSweep, type SentinelSweepDeps } from '../sentinel/sentinel-proactive-sweep';
@@ -28,8 +29,8 @@ function sentinelSweepTickMs(): number {
 
 let started = false;
 let session: OperatorVoiceSession | null = null;
-let heartbeat: ReturnType<typeof setInterval> | null = null;
-let sentinelSweep: ReturnType<typeof setInterval> | null = null;
+let heartbeat: ManagedHandle | null = null;
+let sentinelSweep: ManagedHandle | null = null;
 // The sweep dep set is built lazily once (the heavy legs are lazy-imported inside
 // it), reusing the host's broadcastOpVoice sink so a proactive utterance fans to
 // every attached client exactly like the EL audio path does.
@@ -46,11 +47,9 @@ export function startOperatorVoiceHost(): void {
   startLocalVoiceSocket();
   session = new OperatorVoiceSession(createOperatorVoiceSessionDeps(broadcastOpVoice));
   setOperatorVoiceSession(session);
-  heartbeat = setInterval(() => {
+  heartbeat = managedSetInterval('operator-voice-heartbeat', LEASE_HEARTBEAT_MS, () => {
     void session?.heartbeat();
-  }, LEASE_HEARTBEAT_MS);
-  // Never hold the process open just for the heartbeat.
-  if (typeof heartbeat.unref === 'function') heartbeat.unref();
+  }, { category: 'lifecycle' });
 
   // Server-side Sentinel proactive "decide to speak" sweep (P-019). DEFAULT OFF:
   // the very first gate inside the sweep is FLAGS.SENTINEL_PROACTIVE (default
@@ -60,7 +59,7 @@ export function startOperatorVoiceHost(): void {
   // the elected voice lease (single-owner) *and* the persona is sentinel *and* no
   // DND/pause/over-budget — see sentinel-proactive-sweep.ts for the full gate set.
   sweepDeps = buildSentinelSweepDeps(broadcastOpVoice);
-  sentinelSweep = setInterval(() => {
+  sentinelSweep = managedSetInterval('operator-voice-sentinel-sweep', sentinelSweepTickMs(), () => {
     if (sweepInFlight || !session || !sweepDeps) return;
     sweepInFlight = true;
     void runSentinelProactiveSweep(session.sweepState(), sweepDeps)
@@ -71,19 +70,18 @@ export function startOperatorVoiceHost(): void {
       .finally(() => {
         sweepInFlight = false;
       });
-  }, sentinelSweepTickMs());
-  if (typeof sentinelSweep.unref === 'function') sentinelSweep.unref();
+  }, { category: 'lifecycle' });
 
   console.log('[voice-host] operator voice session host attached to the bus');
 }
 
 export async function stopOperatorVoiceHost(): Promise<void> {
   if (heartbeat) {
-    clearInterval(heartbeat);
+    heartbeat.stop();
     heartbeat = null;
   }
   if (sentinelSweep) {
-    clearInterval(sentinelSweep);
+    sentinelSweep.stop();
     sentinelSweep = null;
   }
   sweepDeps = null;

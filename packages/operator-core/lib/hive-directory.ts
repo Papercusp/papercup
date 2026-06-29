@@ -45,6 +45,7 @@ import {
   type SignedHiveUnlist,
 } from './sync/hyperbee/hive-unlist';
 import { sanitizeBeacon, type HiveStatusBeacon } from './hive-beacon';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 export { isHiveUnlistFrame, type SignedHiveUnlist } from './sync/hyperbee/hive-unlist';
 
@@ -212,7 +213,7 @@ export class HiveDirectory {
   /** P-005: withdrawal tombstones — hiveId → the unlist frame's ts. An
    *  announce with ts ≤ this stays dropped; a newer one relists + clears. */
   private readonly tombstones = new Map<string, number>();
-  private reannounceTimer: ReturnType<typeof setInterval> | null = null;
+  private reannounceTimer: ManagedHandle | null = null;
 
   constructor(private readonly deps: HiveDirectoryDeps) {}
 
@@ -523,16 +524,14 @@ export class HiveDirectory {
   /** Start the re-announce timer (prod: boot wiring). Returns a stop fn. Idempotent. */
   startReannounce(intervalMs: number): () => void {
     this.stopReannounce();
-    this.reannounceTimer = setInterval(() => {
+    this.reannounceTimer = managedSetInterval('hive-directory-reannounce', intervalMs, () => {
       void this.reannounceAll();
-    }, intervalMs);
-    // Don't keep the process alive solely for re-announce.
-    this.reannounceTimer.unref?.();
+    }, { category: 'lifecycle', instanced: true });
     return () => this.stopReannounce();
   }
   stopReannounce(): void {
     if (this.reannounceTimer) {
-      clearInterval(this.reannounceTimer);
+      this.reannounceTimer.stop();
       this.reannounceTimer = null;
     }
   }

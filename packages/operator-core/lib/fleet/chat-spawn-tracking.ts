@@ -25,6 +25,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { recordSpawnPg, finishSpawnPg, type Db } from './pg-stores';
 import { heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS } from './spawn-reclaim';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 export type ChatRunStatus = 'done' | 'failed' | 'cancelled';
 
@@ -135,13 +136,12 @@ export async function beginChatSpawnTracking(
     return null;
   }
 
-  const timer = setInterval(() => {
+  const timer = managedSetInterval('chat-spawn-heartbeat', SPAWN_HEARTBEAT_INTERVAL_MS, () => {
     void heartbeatSpawns(sql, [spawnId]).catch(() => {
       /* best-effort — a missed beat only matters if it persists past the
          5-min reclaim window, and the next beat heals it */
     });
-  }, SPAWN_HEARTBEAT_INTERVAL_MS);
-  timer.unref?.();
+  }, { category: 'lifecycle', instanced: true });
 
   let finished = false;
   return {
@@ -149,7 +149,7 @@ export async function beginChatSpawnTracking(
     async finish(outcome) {
       if (finished) return;
       finished = true;
-      clearInterval(timer);
+      timer.stop();
       try {
         await finishSpawnPg(sql, {
           spawnId,

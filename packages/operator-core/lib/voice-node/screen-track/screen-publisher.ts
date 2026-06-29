@@ -18,6 +18,7 @@
  * without hyperswarm/ffmpeg.
  */
 import { encodeVideoPayload } from '@papercusp/p2p-voice';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { agentDisplayPool } from '../../deployment/display-allocator';
 import { startScreenCapture, type ScreenCapture } from './screen-capture-source';
 
@@ -100,13 +101,13 @@ export function startFrameScreenPublisher(opts: ScreenPublisherOpts): ScreenPubl
   };
 
   void reconcile();
-  const timer = setInterval(() => void reconcile(), opts.pollMs ?? 5_000);
+  const timer = managedSetInterval('screen-publisher-reconcile', opts.pollMs ?? 5_000, () => void reconcile(), { category: 'lifecycle', instanced: true });
 
   return {
     tracks: () => [...live.keys()].sort((a, b) => a - b),
     async stop() {
       stopped = true;
-      clearInterval(timer);
+      timer.stop();
       const all = [...live.values()];
       live.clear();
       await Promise.all(all.map((p) => p.then((t) => t?.stop()).catch(() => {})));

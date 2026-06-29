@@ -18,6 +18,8 @@
  *   - On transition down→up: fire reconnect notice
  */
 
+import { managedSetInterval } from '@papercusp/scheduled-registry';
+
 const TTS_DISABLE_THRESHOLD = 3;
 const STT_PROBE_INTERVAL_MS = 30_000;
 
@@ -110,12 +112,12 @@ export function startSttHealthMonitor(
   // Kick once immediately to anchor lastUp.
   void tick();
 
-  const handle = setInterval(() => void tick(), intervalMs);
+  const handle = managedSetInterval('voice-engine-health-probe', intervalMs, () => void tick(), { category: 'lifecycle', instanced: true });
 
   return {
     stop(): void {
       stopped = true;
-      clearInterval(handle);
+      handle.stop();
     },
   };
 }

@@ -56,6 +56,7 @@ import {
 export { WEDGE_REAP_SILENT_MS } from './spawn-reclaim';
 import { wakeParentOnChildDeath } from './parent-wake';
 import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { backendFeatureGuard, interactiveBackendFromSpawnBackend } from '../backend-feature-capabilities';
@@ -323,13 +324,13 @@ async function reapWedgedLocalSpawns(now: number): Promise<void> {
  * the process open. The same tick stamps `last_output_at` for spawns whose
  * stream moved since the last persist (P-008 — zero extra write cadence).
  */
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let heartbeatTimer: ManagedHandle | null = null;
 function ensureSpawnHeartbeatLoop(): void {
   if (heartbeatTimer) return;
-  heartbeatTimer = setInterval(() => {
+  heartbeatTimer = managedSetInterval('operator-spawn-heartbeat', SPAWN_HEARTBEAT_INTERVAL_MS, () => {
     const ids = [...localSpawnAborts.keys()];
     if (ids.length === 0) {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (heartbeatTimer) heartbeatTimer.stop();
       heartbeatTimer = null;
       return;
     }
@@ -351,8 +352,7 @@ function ensureSpawnHeartbeatLoop(): void {
     void reapWedgedLocalSpawns(Date.now()).catch(() => {
       /* best-effort — a failed reap retries next tick */
     });
-  }, SPAWN_HEARTBEAT_INTERVAL_MS);
-  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
+  }, { category: 'lifecycle' });
 }
 
 /**
