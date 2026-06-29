@@ -27,9 +27,21 @@ import type { RouteContext } from '@papercusp/tooldef';
 const H = vi.hoisted(() => {
   const calls: Array<Record<string, unknown>> = [];
   const state: { entries: unknown[]; depth: number } = { entries: [], depth: 0 };
+  // Sidecar seam: the flag (default OFF → local ring) + a fake IPC client whose
+  // `call` is overridable per-test (success → sidecar data; throw → fallback).
+  const sidecar: {
+    flag: boolean;
+    ipcCalls: Array<{ method: string; params: unknown }>;
+    call: (method: string, params: unknown) => Promise<unknown>;
+  } = {
+    flag: false,
+    ipcCalls: [],
+    call: async () => ({ entries: [], depth: 0 }),
+  };
   return {
     calls,
     state,
+    sidecar,
     listBootHistory: (opts: Record<string, unknown>) => {
       calls.push(opts);
       return state.entries;
@@ -41,6 +53,19 @@ const H = vi.hoisted(() => {
 vi.mock('../../../../sync/hyperbee/boot-history', () => ({
   listBootHistory: H.listBootHistory,
   bootHistoryDepth: H.bootHistoryDepth,
+}));
+
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: async () => H.sidecar.flag,
+}));
+
+vi.mock('../../../../sync/hyperbee/substrate-ipc-client', () => ({
+  getSubstrateIpcClient: () => ({
+    call: (method: string, params: unknown) => {
+      H.sidecar.ipcCalls.push({ method, params });
+      return H.sidecar.call(method, params);
+    },
+  }),
 }));
 
 import route from '../dogfood-substrate-boot-history';
@@ -66,6 +91,9 @@ beforeEach(() => {
   H.calls.length = 0;
   H.state.entries = [];
   H.state.depth = 0;
+  H.sidecar.flag = false;
+  H.sidecar.ipcCalls.length = 0;
+  H.sidecar.call = async () => ({ entries: [], depth: 0 });
 });
 
 describe('dogfood-substrate-boot-history route metadata', () => {
@@ -81,7 +109,7 @@ describe('dogfood-substrate-boot-history route metadata', () => {
 });
 
 describe('GET boot-history response shape', () => {
-  it('200 with { entries, depth }', async () => {
+  it('200 with { entries, depth } from the local ring (sidecar OFF, source:main)', async () => {
     H.state.entries = [{ ts: 1, workspaceId: 'ws1', harnessSlug: 'papercup', kind: 'boot_ok' }];
     H.state.depth = 7;
     const res = await route[0].handler(reqWith(), ctx());
@@ -89,6 +117,48 @@ describe('GET boot-history response shape', () => {
     const body = await res.json();
     expect(body.entries).toEqual(H.state.entries);
     expect(body.depth).toBe(7);
+    expect(body.source).toBe('main');
+    expect(H.sidecar.ipcCalls).toHaveLength(0); // no IPC when the flag is off
+  });
+});
+
+describe('SUBSTRATE_SIDECAR proxy', () => {
+  it('flag ON ⇒ proxies to substrate:getBootHistory and returns the SIDECAR ring (source:sidecar)', async () => {
+    H.sidecar.flag = true;
+    // the main ring is empty (the bug) — the real events live in the sidecar.
+    H.state.entries = [];
+    H.state.depth = 0;
+    const sidecarEntries = [{ ts: 99, workspaceId: 'ws1', harnessSlug: 'papercup', kind: 'announce_admitted' }];
+    H.sidecar.call = async () => ({ entries: sidecarEntries, depth: 42 });
+
+    const res = await route[0].handler(reqWith('workspace_id=ws1&limit=10'), ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toEqual(sidecarEntries);
+    expect(body.depth).toBe(42);
+    expect(body.source).toBe('sidecar');
+    // proxied with the SAME ListBootHistoryOpts the local path would have used.
+    expect(H.sidecar.ipcCalls).toHaveLength(1);
+    expect(H.sidecar.ipcCalls[0]!.method).toBe('substrate:getBootHistory');
+    expect(H.sidecar.ipcCalls[0]!.params).toMatchObject({ workspaceId: 'ws1', limit: 10 });
+    expect(H.calls).toHaveLength(0); // never touched the local ring
+  });
+
+  it('flag ON but IPC throws ⇒ degrades to the local ring (source:main-fallback)', async () => {
+    H.sidecar.flag = true;
+    H.state.entries = [{ ts: 2, workspaceId: 'ws1', harnessSlug: 'papercup', kind: 'boot_ok' }];
+    H.state.depth = 3;
+    H.sidecar.call = async () => {
+      throw new Error('sidecar socket closed');
+    };
+
+    const res = await route[0].handler(reqWith(), ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toEqual(H.state.entries); // fell back to the local ring
+    expect(body.depth).toBe(3);
+    expect(body.source).toBe('main-fallback');
+    expect(H.sidecar.ipcCalls).toHaveLength(1); // it DID try the sidecar first
   });
 });
 

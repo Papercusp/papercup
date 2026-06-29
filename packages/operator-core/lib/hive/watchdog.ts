@@ -127,7 +127,7 @@ export async function hiveMidTurn(installSlug: string): Promise<boolean> {
 
 // ── the fallback arm (P-009/P-010/P-011 share; P-012 records) ────────────────
 
-export type WatchdogSource = 'turn-end' | 'boot' | 'tick' | 'paused-recovery';
+export type WatchdogSource = 'turn-end' | 'boot' | 'tick' | 'paused-recovery' | 'scout-draft-review';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
@@ -138,7 +138,7 @@ export interface FallbackArmResult {
   reason: string;
 }
 
-async function recordFire(opts: {
+export async function recordFire(opts: {
   workspaceId: string;
   installSlug: string;
   source: WatchdogSource;

@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { createSubstrateSidecarHost, type SubstrateSidecarHost } from './substrate-sidecar-host';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import type { BootedHarnessHandle, BootHarnessOpts, LocalWriteOp } from './boot';
+import { recordBootEvent, _resetBootHistoryForTests } from './boot-history';
 import { makeFakeBootedHandle } from './__tests__/fake-booted-handle';
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -242,5 +243,34 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     const binding = { kind: 'gh', github_repository_id: 123 };
     await host.methods['substrate:rekey']({ storeId: boot.storeId, binding });
     expect(fake.rekey).toHaveBeenCalledWith(binding);
+  });
+});
+
+describe('substrate:getBootHistory (sidecar-ring read surface)', () => {
+  it('returns the sidecar process boot-history ring (entries + depth), honoring filters', () => {
+    _resetBootHistoryForTests();
+    cleanups.push(() => _resetBootHistoryForTests());
+    // These are recorded HERE (the sidecar process) in SUBSTRATE_SIDECAR mode.
+    recordBootEvent(WS, SLUG, 'boot_ok');
+    recordBootEvent(WS, SLUG, 'announce_admitted', 'peer-x');
+    recordBootEvent('other-ws', 'other', 'boot_fail');
+
+    const host = makeHost();
+    const all = host.methods['substrate:getBootHistory']({}) as {
+      entries: Array<{ kind: string }>;
+      depth: number;
+    };
+    expect(all.depth).toBe(3);
+    expect(all.entries).toHaveLength(3);
+
+    // Filter pass-through (workspace + kind) — the route forwards ListBootHistoryOpts verbatim.
+    const filtered = host.methods['substrate:getBootHistory']({
+      workspaceId: WS,
+      kinds: ['announce_admitted'],
+    }) as { entries: Array<{ kind: string; message?: string }>; depth: number };
+    expect(filtered.entries).toHaveLength(1);
+    expect(filtered.entries[0]!.kind).toBe('announce_admitted');
+    expect(filtered.entries[0]!.message).toBe('peer-x');
+    expect(filtered.depth).toBe(3); // depth is the whole ring, unaffected by filters
   });
 });

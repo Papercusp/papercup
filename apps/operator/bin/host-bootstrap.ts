@@ -23,6 +23,10 @@ import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-s
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
 import { backgroundWorkersEnabled, utilityHostEnabled } from '@papercusp/operator-core/lib/background-workers';
+import type {
+  OddsmithProspectBridge,
+  ProspectBridgeResult,
+} from '@papercusp/operator-core/lib/blueprint-steps/ops/oddsmith-prospect';
 import { startClaudeCredentialSync } from '@papercusp/operator-core/lib/claude-credential-sync';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -917,6 +921,73 @@ export function runBootstrap(): void {
         }
       } catch (err) {
         console.warn('[in-process-periodic] arm failed (non-fatal):', err instanceof Error ? err.message : err);
+      }
+    })();
+  }
+
+  // P-020 — wire the oddsmith market-prospector bridge (paper two-plane, path-a).
+  // The `oddsmith:prospect` CoordOp reads live Kalshi/Polymarket markets, but that
+  // live-read code + creds live in the oddsmith engine (separate repo + DB), so we
+  // inject it here as an HTTP bridge to the oddsmith sidecar's read-only prospect-sweep
+  // endpoint (discovered from ~/.oddsmith/operator.json, which the sidecar writes atomically).
+  // FULLY DEFENSIVE: a type-only top import (erased), a dynamic runtime import inside
+  // try/catch, and a per-tick fetch with a hard timeout that returns an empty result on any
+  // error — a wiring/discovery/transport fault is non-fatal and can never block boot. The
+  // op is read-only + propose-only (enqueues bet-analysis work_items; NEVER trades), and the
+  // oddsmith-prospector cron is seeded INACTIVE (singletonActive:false), so nothing fires
+  // until BOTH the bridge is wired AND the cron is armed. PAPER only.
+  if (backgroundWorkers && !utilityHost) {
+    void (async () => {
+      try {
+        const { setOddsmithProspectDeps } = await import(
+          '@papercusp/operator-core/lib/blueprint-steps/ops/oddsmith-prospect'
+        );
+        const { readFile } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        const { homedir } = await import('node:os');
+        // Discover the oddsmith sidecar (it writes ~/.oddsmith/operator.json = { host, port, ... }).
+        let base: string | undefined;
+        try {
+          const disc = JSON.parse(
+            await readFile(join(homedir(), '.oddsmith', 'operator.json'), 'utf8'),
+          ) as { host?: string; port?: number };
+          if (disc.port) base = `http://${disc.host || '127.0.0.1'}:${disc.port}`;
+        } catch {
+          /* sidecar not up — bridge stays unconfigured (op fail-dark; cron inactive regardless) */
+        }
+        if (!base) {
+          console.log(
+            '[oddsmith-prospect-bridge] oddsmith sidecar not discovered — prospector stays inactive until it launches',
+          );
+          return;
+        }
+        const bridge: OddsmithProspectBridge = async ({ options, alreadyQueued }) => {
+          try {
+            const res = await fetch(`${base}/api/oddsmith/prospect-sweep`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ...options, alreadyQueued }),
+              signal: AbortSignal.timeout(8000),
+            });
+            if (!res.ok) throw new Error(`sidecar prospect-sweep HTTP ${res.status}`);
+            return (await res.json()) as ProspectBridgeResult;
+          } catch (e) {
+            console.warn(
+              '[oddsmith-prospect-bridge] sweep failed (candidates dropped this tick):',
+              e instanceof Error ? e.message : e,
+            );
+            return { toEnqueue: [], swept: 0, candidates: 0, deduped: 0, capped: 0, gated: false, byVenue: {}, errors: 1 };
+          }
+        };
+        setOddsmithProspectDeps({ bridge });
+        console.log(
+          `[oddsmith-prospect-bridge] wired to oddsmith sidecar ${base} — oddsmith-prospector ready to arm`,
+        );
+      } catch (err) {
+        console.warn(
+          '[oddsmith-prospect-bridge] wire failed (non-fatal):',
+          err instanceof Error ? err.message : err,
+        );
       }
     })();
   }

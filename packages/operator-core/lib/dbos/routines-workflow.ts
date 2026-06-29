@@ -338,6 +338,28 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'hive-placement-watchdog-sweep' },
   );
 
+  // queen-scout-feedback-loop-2026-06-20 D-003 #2 (hardening): the scout-draft REVIEW
+  // backstop. The Scout produces drafts on a friction-OR-idle cadence but pings the
+  // Queen with a NO-WAKE durable message, so review only happens on an IDLE wake — and
+  // a saturated hive (Queen never idle) starves scout-routed drafts (neither ratified
+  // nor deprecated). This sweep finds drafts unreviewed past a deadline and fires ONE
+  // debounced WAKE to the live Queen, moving review onto the FRICTION path. It NEVER
+  // ratifies/deprecates (the Queen still disposes). Same deterministic dead-man's-switch
+  // shape (the wake is the exception path). Default-safe; kill switch:
+  // PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC<=0. Debounced + fail-soft inside the module.
+  await DBOS.runStep(
+    async () => {
+      const { scoutDraftReviewSweep } = await import('../scout/draft-review-watchdog');
+      const results = await scoutDraftReviewSweep();
+      for (const res of results) {
+        if (res.outcome === 'nudged' || res.outcome === 'error') {
+          console.warn(`[scout-draft-review] ${res.outcome}: ${res.installSlug} — ${res.reason}`);
+        }
+      }
+    },
+    { name: 'scout-draft-review-sweep' },
+  );
+
   // scheduled-recurring-plans-2026-06-16 (Phase 5) — the scheduled-plan RUN completion +
   // governance sweep. A `system:plan-run` fire mints a plan_runs row at status='running' +
   // work_items; nothing settled the run when those finished, and the cost-cap / failure-streak

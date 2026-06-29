@@ -49,6 +49,7 @@ import {
 import type { SwarmBinding } from './derive-swarm-topic';
 import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
+import { listBootHistory, bootHistoryDepth, type ListBootHistoryOpts } from './boot-history';
 
 /**
  * Minimal Hypercore surface used by the observability methods. corestore's
@@ -450,6 +451,17 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       logs: [...(rec.booted?.admitted.keys() ?? [])],
     };
   }
+
+  /**
+   * Read the sidecar's OWN boot-history ring. In SUBSTRATE_SIDECAR mode the real
+   * boot/merge/admission/epoch_* events are recorded HERE (bootHarnessSubstrate +
+   * the merge loop run in this process), so the main operator's ring is empty —
+   * the admin route proxies to this method to surface the real timeline.
+   */
+  function handleGetBootHistory(params: unknown): unknown {
+    const opts = (params ?? {}) as ListBootHistoryOpts;
+    return { entries: listBootHistory(opts), depth: bootHistoryDepth() };
+  }
   async function handleRevoke(params: unknown): Promise<unknown> {
     const p = params as { storeId: string; devicePubkey: string };
     const rec = requireRecord(p.storeId);
@@ -575,6 +587,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     'substrate:triggerMergeNow': handleTriggerMergeNow,
     'substrate:getMergeStatus': handleGetMergeStatus,
     'substrate:getAdmittedLogs': handleGetAdmittedLogs,
+    'substrate:getBootHistory': handleGetBootHistory,
     'substrate:revoke': handleRevoke,
     'substrate:rekey': handleRekey,
     'substrate:prepareSocketHandoff': handlePrepareSocketHandoff,

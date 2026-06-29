@@ -13,6 +13,7 @@ documents:
   - packages/operator-core/lib/inference-gateway/provider-adapters.ts
   - libs/papercusp/packages/orchestrator/src/spawn-mcp.ts
   - libs/papercusp/packages/orchestrator/src/invoke.ts
+  - packages/operator-core/lib/omp-headless-boot.test.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -99,13 +100,18 @@ account); per-role model fidelity through the gateway is a tracked follow-up (th
 builds the models.yml does not resolve the role's configured model, and the orchestrator can't
 regenerate it — it can only pass the bytes through).
 
-## Gotcha: omp headless boot needs `proxy-agent`
+## Gotcha (RESOLVED in omp 16.2.5): omp headless boot + `proxy-agent`
 
-`omp -p` (headless) crashes at boot with `Cannot find package 'proxy-agent'` from
-`@puppeteer/browsers/.../httpUtil.js` — `@puppeteer/browsers@2.13.2` declares `proxy-agent@^6.5.0`
-but the install only hoists it under `pi-voice`. Stopgap: symlink it to the top level
-(`~/node_modules/proxy-agent` → `pi-voice/node_modules/proxy-agent`). Durable fix = ensure
-`proxy-agent` is a top-level dependency of the omp install (tracked as a bug).
+Headless `omp -p` on omp **15.5.13** crashed at boot with `Cannot find package 'proxy-agent'`
+from `@puppeteer/browsers@2.13.2/.../httpUtil.js` — that version eagerly imported
+`proxy-agent@^6.5.0`, which the install only hoisted nested under `pi-voice`. A symlink to the top
+level was the temporary stopgap. **Resolved by the omp 16.2.5 upgrade (WI-934, verified live):**
+`@puppeteer/browsers@3.0.5` no longer eagerly imports `proxy-agent` (it is now an OPTIONAL peer),
+and `proxy-agent@8.0.1` is hoisted as a real top-level dep — so headless omp boots with no symlink.
+Recurrence guard: `packages/operator-core/lib/omp-headless-boot.test.ts` boots `omp -p` against an
+isolated empty HOME and fails if the crash signature regresses; it self-skips where `omp` is not on
+PATH (CI has no omp binary — the regression only manifests on a dev/release box with the real
+install, e.g. after a release node_modules swap).
 
 ## Verification
 

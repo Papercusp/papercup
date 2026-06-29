@@ -20,6 +20,11 @@ let ensureCalls: Array<[string, string]>;
 let deleteHiveCalls: Array<[string, string]>;
 let provisionCalls: Array<{ workspaceId: string; hiveSlug: string }>;
 let queenHomeCalls: Array<{ workspaceId: string; hiveSlug: string; devicePubkey: string }>;
+// per-hive-git-and-release-gate-2026-06-29: the mock blueprint's knobs + output sink are
+// per-test configurable so we can exercise BOTH the repo-less non-coding path (default)
+// and the coding-hive repo-enforcement path (the D-002 guard + fresh-repo self_repo).
+let blueprintKnobs: Record<string, unknown>;
+let blueprintOutput: { kind: string } | undefined;
 
 beforeEach(() => {
   vi.resetModules();
@@ -30,6 +35,11 @@ beforeEach(() => {
   deleteHiveCalls = [];
   provisionCalls = [];
   queenHomeCalls = [];
+  // Default: a NON-CODING, repo-less hive (output.kind:'artifacts'). The D-002 repo guard
+  // only fires for a repo-COMMIT output blueprint that would be repo-less, so this keeps the
+  // generic create-flow cases repo-less. The coding-path cases override these two.
+  blueprintKnobs = { requiresRepo: false };
+  blueprintOutput = { kind: 'artifacts' };
 
   vi.doMock('../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
@@ -53,10 +63,18 @@ beforeEach(() => {
         id: 'hive',
         kind: childObj?.extends === 'research' ? 'harness' : 'hive',
         version: '0',
-        knobs: { requiresRepo: false },
+        knobs: blueprintKnobs,
+        ...(blueprintOutput ? { output: blueprintOutput } : {}),
         dependencies: {},
       },
     }),
+  }));
+  // per-hive-git-and-release-gate P-003/P-004: the fresh-repo finalize (commit + branch +
+  // remote publish) is mocked — its own behavior is pinned in hive-repo-init.test.ts; here
+  // we only assert createHiveHarness CALLS it for a fresh coding hive and records self_repo.
+  vi.doMock('../../harness/hive-repo-init', () => ({
+    commitInitialHiveRepo: async (o: { branch?: string }) => ({ committed: true, branch: o.branch ?? 'staging' }),
+    publishHiveRepo: async () => ({ mode: 'local-only', pushed: false, reason: 'mocked' }),
   }));
   // The first-class Hive identity mint (PG + keychain) is mocked — this test is
   // PG-free; the keypair->store->topic seam is covered by its own integration test.
@@ -141,6 +159,7 @@ afterEach(() => {
   vi.doUnmock('../../hive/provision-learning-loop');
   vi.doUnmock('../../hive-settings-store');
   vi.doUnmock('../../harness/usage-actor');
+  vi.doUnmock('../../harness/hive-repo-init');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {
@@ -237,6 +256,65 @@ describe('createHiveHarness', () => {
     expect(res.message).toMatch(/work/); // surfaces the available hive templates
     expect(existsSync(join(tmpParent, 'wrong-kind'))).toBe(false); // no side effect
     expect(ensureCalls).toEqual([]); // rejected before identity mint
+  });
+
+  // ── per-hive-git-and-release-gate: coding-hive repo enforcement (P-002/P-003/P-004) ──
+  describe('coding-hive repo enforcement', () => {
+    it('rejects a repo-less coding hive (output.kind:repo-commit + requiresRepo:false + no existingPath) → hive_requires_repo', async () => {
+      blueprintOutput = { kind: 'repo-commit' }; // coding profile (the independent signal)
+      blueprintKnobs = { requiresRepo: false }; // …but no fresh repo would be initialized
+      const { createHiveHarness } = await import('./_create');
+      const res = await createHiveHarness({ slug: 'repoless-coding', workspaceId: 'default', parentDir: tmpParent });
+      expect(res.ok).toBe(false);
+      expect(res.error).toBe('hive_requires_repo');
+      // Rejected before any side effect — no dir, no registry entry, no identity mint.
+      expect(existsSync(join(tmpParent, 'repoless-coding'))).toBe(false);
+      expect(registry.projects.find((p) => p.slug === 'repoless-coding')).toBeUndefined();
+      expect(ensureCalls).toEqual([]);
+    });
+
+    it('a non-coding hive (output.kind:artifacts) may be repo-less — no guard, no self_repo, no repoInit', async () => {
+      blueprintOutput = { kind: 'artifacts' };
+      blueprintKnobs = { requiresRepo: false };
+      const { createHiveHarness } = await import('./_create');
+      const res = await createHiveHarness({ slug: 'workhive', workspaceId: 'default', parentDir: tmpParent });
+      expect(res.ok).toBe(true);
+      const entry = registry.projects.find((p) => p.slug === 'workhive');
+      expect(entry?.self_repo).toBeUndefined(); // repo-less → unmarked (git-sync-ineligible by design)
+      expect(existsSync(join(res.path!, '.git'))).toBe(false); // no git repo
+      expect(res.repoInit).toBeUndefined(); // fresh-repo finalize never runs
+    });
+
+    it('a fresh coding hive (requiresRepo:true) gets a repo, self_repo:true, and repoInit on staging', async () => {
+      blueprintOutput = { kind: 'repo-commit' };
+      blueprintKnobs = { requiresRepo: true };
+      const { createHiveHarness } = await import('./_create');
+      const res = await createHiveHarness({ slug: 'codinghive', workspaceId: 'default', parentDir: tmpParent });
+      expect(res.ok).toBe(true);
+      const entry = registry.projects.find((p) => p.slug === 'codinghive');
+      expect(entry?.self_repo).toBe(true); // git-sync eligible — no 'hive_home' origin-freeze (2026-06-20 incident)
+      expect(existsSync(join(res.path!, '.git'))).toBe(true); // real git init ran (initLocalHarnessDir)
+      expect(res.repoInit?.branch).toBe('staging');
+      expect(res.repoInit?.committed).toBe(true);
+      expect(res.repoInit?.remoteMode).toBe('local-only'); // publish mocked → local-only
+      expect(res.repoInit?.remoteReason).toBe('mocked'); // publish WAS called (default repoRemote:'auto')
+    });
+
+    it('repoRemote:local-only skips the remote publish entirely (stays local-only, no publish call)', async () => {
+      blueprintOutput = { kind: 'repo-commit' };
+      blueprintKnobs = { requiresRepo: true };
+      const { createHiveHarness } = await import('./_create');
+      const res = await createHiveHarness({
+        slug: 'localonly-hive',
+        workspaceId: 'default',
+        parentDir: tmpParent,
+        repoRemote: 'local-only',
+      });
+      expect(res.ok).toBe(true);
+      expect(res.repoInit?.remoteMode).toBe('local-only');
+      // reason 'mocked' only appears when publishHiveRepo is CALLED; local-only never calls it.
+      expect(res.repoInit?.remoteReason).toBeUndefined();
+    });
   });
 
   // ── LINK-EXISTING mode ("every created Pot is a hive") ──────────────────────

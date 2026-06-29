@@ -52,6 +52,7 @@ import {
 } from './cross-hive-boundary-registry';
 import type { HiveDirectoryMeta } from './hive-publish';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { signalOwnedHiveKeyMissing, clearOwnedHiveKeyHealth } from './hive-owner-key-health';
 
 /** One wired (workspace, hive) boundary + the ports its drain needs. */
 export interface WiredCrossHiveBoundary {
@@ -222,12 +223,15 @@ async function wireOneHive(
     opts.loadPubkey ?? (await import('./identity/hive-keypair')).loadHivePubkey;
   const hivePubkey = await loadPubkey(workspaceId, hiveSlug).catch(() => null);
   if (!hivePubkey) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[cross-hive-boot] ${workspaceId}/${hiveSlug} is published but holds no Hive identity pubkey — staying dark`,
-    );
+    // OWNED (this slug came from listOwnedHiveMeta) but the on-box identity key is
+    // gone (D-024 split-brain / D-023 BUG A orphaned owner keys) — the owner can
+    // neither dial nor sign/serve this hive. Escalate LOUD + deduped instead of a
+    // silent boot-log warn; best-effort so it never breaks the per-hive wire.
+    void signalOwnedHiveKeyMissing({ workspaceId, hiveSlug, context: 'cross-hive-boot' }).catch(() => {});
     return null;
   }
+  // Key loaded — clear any outstanding owner-key alert so a future loss re-alerts.
+  clearOwnedHiveKeyHealth({ workspaceId, hiveSlug });
 
   const outbox = opts.makeOutbox
     ? opts.makeOutbox(workspaceId, hiveSlug)
