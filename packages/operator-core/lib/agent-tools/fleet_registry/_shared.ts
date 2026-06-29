@@ -1,0 +1,80 @@
+/**
+ * fleet_registry shared helpers (named-su-agent-fleets-2026-06-29 P-004).
+ *
+ * The six `fleet:*` registry tools all (a) resolve the CALLER's coord owner-id +
+ * the workspace to scope the agent_fleets registry / coord_presence to, and (b)
+ * return a small JSON envelope. This module factors out both, plus the two PURE
+ * membership-role decisions D-002 turns on (leader-vs-member, and whether a handoff
+ * demotes a prior leader) so they unit-test without PG.
+ */
+import { resolveAgentIdentity, type AgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { activeWorkspaceId } from '../../workspace-registry';
+
+export interface FleetCaller {
+  /** The full coordination identity (needed to seed a presence row via heartbeatPresence). */
+  identity: AgentIdentity;
+  /** The caller's stable coord owner-id — the presence-row + leader key. */
+  ownerId: string;
+  /** The workspace the fleet registry + presence are scoped to. */
+  workspaceId: string;
+}
+
+/**
+ * Resolve the caller exactly like the coordination layer does: `resolveAgentIdentity`
+ * (the SAME primitive coord:declare-intent / coord:whoami use — never a new scheme) for
+ * the owner-id, and the capability:terminal workspace pattern (the ctx workspace, else
+ * the process-active one) for the scope. A real su/bee agent always carries a workspace
+ * on ctx, so the resolved workspace matches the one its presence row was written under.
+ */
+export function resolveFleetCaller(ctx: ResolveIdentityCtx): FleetCaller {
+  const identity = resolveAgentIdentity(ctx);
+  const workspaceId =
+    ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+  return { identity, ownerId: identity.ownerId, workspaceId };
+}
+
+/** PURE: the caller's membership role in a fleet — ONE leader per fleet (D-002), so the
+ *  caller is `leader` iff they are the registry's recorded leader, else `member`. */
+export function fleetRoleFor(
+  leaderOwnerId: string | null,
+  callerOwnerId: string,
+): 'leader' | 'member' {
+  return leaderOwnerId === callerOwnerId ? 'leader' : 'member';
+}
+
+/** PURE: should a take-leadership handoff demote the PRIOR leader's presence to `member`?
+ *  Only when there was a distinct prior leader whose presence STILL labels them in this
+ *  fleet (D-002: prior leader demoted to member, stays a member — never yanked out of a
+ *  different fleet they have since joined, and a dead/no-row leader is left alone). */
+export function shouldDemotePriorLeader(
+  previousLeader: string | null,
+  callerOwnerId: string,
+  priorPresenceFleetSlug: string | null,
+  targetFleetSlug: string,
+): boolean {
+  return (
+    !!previousLeader &&
+    previousLeader !== callerOwnerId &&
+    priorPresenceFleetSlug === targetFleetSlug
+  );
+}
+
+/** Small JSON envelope helper — the registry tools all return `{ ok, ... }`. */
+export function json(payload: Record<string, unknown>, isError = false) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    isError,
+  };
+}
+
+/**
+ * The routing-ladder pointer every registry tool's `guidance` carries (P-007). "Send a
+ * plan to a fleet" is NOT a separate engine — it is `fleet:take-leadership` (the handoff
+ * agent becomes the leader, D-002); the other rungs reuse existing tools.
+ */
+export const ROUTING_LADDER =
+  'Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. ' +
+  '(1) QUEEN/colony — work_items:create → the hive intake. (2) FLEET — hand the plan to ' +
+  'an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then ' +
+  'drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } ' +
+  'to launch the member windows.';

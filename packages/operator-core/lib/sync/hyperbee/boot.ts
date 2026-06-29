@@ -391,17 +391,20 @@ export interface BootHarnessOpts {
    * normal admission re-admits it if the binding returns). `'pending'` / a thrown
    * error keeps the peer (fail-open per D-004).
    *
-   * The re-verify runs INSIDE `mergeNow` under the `merging` lock, throttled so
-   * it only actually fires at most once per `reverifyIntervalMs` — this avoids
-   * racing a concurrent merge mutating `admitted` without a separate lock.
+   * The GitHub `verifyBinding` I/O runs LOCKLESS — OFF the `merging` lock
+   * (P-002). `mergeNow` only KICKS OFF the verify (throttled to at most once per
+   * `reverifyIntervalMs`) fire-and-forget and APPLIES the resulting conclusive-
+   * fail drops under the gate via a drop queue. This keeps zero network I/O under
+   * the merge lock so a large admitted set can't freeze read-merge convergence.
    *
    * Channel-2 reads hit the GitHub API; keep this cadence slow (default
    * 15 min). With small dogfood peer counts this is negligible load; at scale
-   * consider staggering per-peer calls (a comment in `reverifyAdmitted` notes
+   * consider staggering per-peer calls (a comment by `reverifyAdmitted` notes
    * this).
    *
-   * Set to `0` to disable the automatic throttle-in-mergeNow trigger entirely
-   * (tests drive `reverifyAdmitted()` by hand via the handle). Default 15 min.
+   * Set to `0` to disable the automatic throttle-in-mergeNow kick-off entirely
+   * (tests drive `reverifyAdmitted()` + `mergeNow()` by hand via the handle).
+   * Default 15 min.
    */
   reverifyIntervalMs?: number;
   /**
@@ -499,22 +502,23 @@ export interface BootedHarnessHandle {
    */
   revoke(devicePubkey: string): Promise<void>;
   /**
-   * Re-verify all admitted peers' channel-2 bindings (rev-v2 Component A).
-   * Exposed for testing so `reverifyIntervalMs: 0` tests can drive it by hand.
+   * LOCKLESS channel-2 re-verify producer (rev-v2 Component A; P-002). Exposed
+   * for testing so `reverifyIntervalMs: 0` tests can drive it by hand.
    *
    * For each admitted peer EXCEPT the own log, calls `verifyBinding` with the
-   * peer's recorded `{devicePubkey, githubLogin, githubUserId}`:
-   *   - `'fail'` (conclusive) → drops the peer from `admitted` +
-   *     `admittedIdentities` (does NOT add to the published `revoked` set —
-   *     a GitHub-deleted binding may be re-published; normal admission re-admits
-   *     if it returns). Records a `peer_revoked` boot-history event noting
-   *     channel-2 revocation.
+   * peer's recorded `{devicePubkey, githubLogin, githubUserId, attestationGistId}`:
+   *   - `'fail'` (conclusive) → ENQUEUES the peer's logKey for a drop. The drop
+   *     (delete from `admitted` + `admittedIdentities` + `pubkeyToLogKey`, plus a
+   *     `peer_revoked` boot-history event) is APPLIED on a SUBSEQUENT merge pass
+   *     under the gate — NOT synchronously here. Does NOT add to the published
+   *     `revoked` set (a GitHub-deleted binding may be re-published; normal
+   *     admission re-admits if it returns).
    *   - `'pending'` / thrown error → keeps the peer (fail-open per D-004).
    *
-   * IMPORTANT: callers MUST hold the `merging` flag or otherwise guarantee
-   * single-threaded access to `admitted` while this runs. The
-   * throttled-in-mergeNow path guarantees this; direct test calls should use
-   * `reverifyIntervalMs: 0` and drive this while no concurrent merge is running.
+   * Does ZERO mutation of the shared `admitted` maps, so it is SAFE to call
+   * WITHOUT holding the `merging` flag (that is the whole point of P-002 — the
+   * GitHub I/O is off the merge lock). To observe a drop in a test, call this,
+   * then `mergeNow()` to drain the queue under the gate.
    */
   reverifyAdmitted(): Promise<void>;
   /** Swarm handle. Null when this boot didn't join a swarm
@@ -985,12 +989,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   // ── Channel-2 re-verify for admitted peers (rev-v2 Component A) ──
   //
-  // Design: throttled inside mergeNow under the `merging` lock (mirrors
-  // rev-v1's applyRevocationRefresh pattern). This avoids a separate timer
-  // racing a concurrent merge mutating `admitted`. The slow cadence is enforced
-  // by `lastReverifyAt` — mergeNow calls `maybeReverifyAdmitted()` every pass,
-  // but the actual per-peer GitHub calls only fire when >= reverifyIntervalMs has
-  // elapsed since the last run.
+  // Design (harden-shared-hive-to-256-peers P-002): the GitHub `verifyBinding`
+  // I/O runs LOCKLESS — OFF the merge lock — mirroring the admissionQueue
+  // deferred-mutation pattern. The OLD design awaited a SERIAL `verifyBinding`
+  // call per admitted peer INSIDE the merge pass under the `merging` lock; at
+  // 256 peers that's ~256 serial network round-trips holding the lock for tens
+  // of seconds → read-merge convergence FREEZE. Now:
+  //   • `reverifyAdmitted()` (the producer) snapshots `admittedIdentities`, makes
+  //     the `verifyBinding` calls OFF the lock, and ENQUEUES each conclusive-`fail`
+  //     logKey into `reverifyDropQueue`. It MUTATES nothing shared.
+  //   • `drainReverifyDropQueue()` (the consumer) applies those drops UNDER the
+  //     merge gate at the TOP of each pass, right alongside `drainAdmissionQueue()`
+  //     (delete from the three maps + a `peer_revoked` boot-event).
+  //   • `maybeReverifyAdmitted()` (still under the lock) only drains the drop queue
+  //     and, when the cadence has elapsed and no verify is already in flight, KICKS
+  //     OFF the lockless producer as a non-awaited `void (async …)()`. NET: zero
+  //     GitHub I/O under the merge lock.
+  // The slow cadence is enforced by `lastReverifyAt`; `reverifyInFlight` coalesces
+  // so a long verify never stacks up behind every poll tick.
   //
   // Re-admit path: a channel-2-fail drop does NOT add the pubkey to the published
   // `revoked` set. A GitHub-deleted binding is a GitHub-side revocation, not a
@@ -1000,13 +1016,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // and is intentional: let normal admission re-verify rather than blocklisting.
   //
   // Scaling note: with N admitted peers each `reverifyAdmitted()` pass makes N
-  // GitHub API calls. For small dogfood peer counts (< ~20) at 15 min cadence
-  // this is negligible. At larger scale, consider staggering calls across passes
-  // (e.g. pick one peer per pass in round-robin) to spread the GitHub API load.
+  // GitHub API calls. They now run OFF the lock so they no longer freeze merge,
+  // but they are still SERIAL — at larger scale consider staggering calls across
+  // passes (e.g. pick one peer per pass in round-robin) to spread the API load.
   // That optimisation is deferred to a later component.
 
-  /** Timestamp of the last successful `reverifyAdmitted` run (ms). 0 = never. */
+  /** Timestamp of the last `reverifyAdmitted` KICK-OFF (ms). 0 = never. */
   let lastReverifyAt = 0;
+
+  // P-002: logKeys whose channel-2 binding came back a conclusive `'fail'` from
+  // the LOCKLESS `reverifyAdmitted()` producer. Drained + applied UNDER the merge
+  // gate by `drainReverifyDropQueue()` at the top of each pass (mirror of
+  // `admissionQueue`). `reverifyInFlight` coalesces overlapping verify runs.
+  const reverifyDropQueue: string[] = [];
+  let reverifyInFlight = false;
 
   const DEFAULT_REVERIFY_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
   const reverifyIntervalMs = Number.isFinite(opts.reverifyIntervalMs as number)
@@ -1019,25 +1042,33 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const verifyBinding = opts.verifyBindingOverride ?? buildVerifyBindingAdapter();
 
   /**
-   * Re-verify every admitted peer's channel-2 binding. Drops peers whose
-   * binding returns a conclusive `'fail'`. Keeps peers on `'pending'` or
-   * thrown error (fail-open per D-004). Does NOT add dropped peers to the
-   * published `revoked` set — a channel-2 drop is a GitHub-side removal, not
-   * a permanent blocklist (normal admission re-admits if the binding returns).
+   * LOCKLESS channel-2 re-verify PRODUCER (P-002). Snapshots `admittedIdentities`
+   * and makes the SERIAL GitHub `verifyBinding` calls OFF the merge lock. It does
+   * NOT mutate `admitted` / `admittedIdentities` / `pubkeyToLogKey`; instead it
+   * ENQUEUES each peer whose binding returns a conclusive `'fail'` into
+   * `reverifyDropQueue`, which `drainReverifyDropQueue()` applies UNDER the merge
+   * gate on a subsequent pass. Peers on `'pending'` / `'verified'` / a thrown
+   * (transient) error are KEPT (fail-open per D-004) — only a conclusive `'fail'`
+   * enqueues a drop. A drop does NOT add the pubkey to the published `revoked`
+   * set (a GitHub-side removal is re-admittable; normal admission re-admits if the
+   * binding returns).
    *
-   * MUST be called while holding the `merging` flag (or when no merge is
-   * running) — it mutates `admitted` / `admittedIdentities` / `pubkeyToLogKey`
-   * synchronously after each await, the same way `applyRevocationRefresh` does.
+   * SAFE to call without holding the `merging` flag: it only READS a snapshot and
+   * pushes logKeys onto the queue. The snapshot is taken up front so concurrent
+   * merge-pass mutations (revoke / refresh drops) can't corrupt iteration; the
+   * drain re-checks liveness before applying, so a peer already gone by drain time
+   * is skipped.
    */
   async function reverifyAdmitted(): Promise<void> {
-    // Snapshot the log keys to iterate safely while the map mutates.
-    const logKeys = [...admitted.keys()];
-    for (const logKey of logKeys) {
+    // Snapshot identities up front so the off-lock awaits below iterate a stable
+    // set even if a concurrent merge pass mutates the live maps. (Only admitted
+    // PEERS have an identity entry — the own log is absent, so it is never
+    // re-verified or enqueued.)
+    const snapshot = [...admittedIdentities.entries()];
+    for (const [logKey, identity] of snapshot) {
       // Never re-verify the own log (can't revoke yourself via GitHub-side removal).
       if (logKey === ownLog.keyHex) continue;
-
-      const identity = admittedIdentities.get(logKey);
-      if (!identity) continue; // own log or peer admitted before identity tracking
+      if (!identity) continue;
 
       let result: 'verified' | 'pending' | 'fail';
       try {
@@ -1059,39 +1090,86 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
 
       if (result === 'fail') {
-        // Conclusive channel-2 revocation: drop from admitted set.
-        // Do NOT add to `revoked` — this is a GitHub-side deletion, not a
-        // permanent self-revocation. The peer can re-announce and be re-admitted
-        // if the binding is re-published.
-        admitted.delete(logKey);
-        admittedIdentities.delete(logKey);
-        // Clean up the pubkey→logKey reverse mapping.
-        if (identity.devicePubkey) {
-          pubkeyToLogKey.delete(identity.devicePubkey);
-        }
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'peer_revoked',
-          `channel-2 revoked ${peerLabel(logKey)}`,
-        );
+        // Conclusive channel-2 revocation: ENQUEUE the drop. The actual map
+        // mutation + `peer_revoked` event happen in `drainReverifyDropQueue()`
+        // under the merge gate — never here, off the lock.
+        reverifyDropQueue.push(logKey);
       }
       // 'pending' or 'verified': keep the peer (fail-open; only conclusive fail drops).
     }
   }
 
   /**
-   * Run `reverifyAdmitted()` if the slow cadence has elapsed. Intended to be
-   * called inside `mergeNow` under the `merging` lock. A no-op when
-   * `reverifyIntervalMs <= 0` (disabled — tests drive it directly via the
-   * handle).
+   * Apply queued channel-2 re-verify drops. MUST run under the merge gate
+   * (called at the top of `mergeOnePass`, alongside `drainAdmissionQueue`, and
+   * from `maybeReverifyAdmitted`). Idempotent: a peer already dropped between
+   * enqueue and drain (e.g. by `revoke()` / `applyRevocationRefresh`) is skipped
+   * without a duplicate event. Does NOT add to the published `revoked` set.
+   */
+  function drainReverifyDropQueue(): void {
+    while (reverifyDropQueue.length > 0) {
+      const logKey = reverifyDropQueue.shift()!;
+      // Never drop the own log (defensive; the producer never enqueues it).
+      if (logKey === ownLog.keyHex) continue;
+      // Already gone (revoked / refreshed away since enqueue) → skip silently.
+      if (!admitted.has(logKey) && !admittedIdentities.has(logKey)) continue;
+      const identity = admittedIdentities.get(logKey);
+      admitted.delete(logKey);
+      admittedIdentities.delete(logKey);
+      // Clean up the pubkey→logKey reverse mapping.
+      if (identity?.devicePubkey) {
+        pubkeyToLogKey.delete(identity.devicePubkey);
+      }
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'peer_revoked',
+        `channel-2 revoked ${peerLabel(logKey)}`,
+      );
+    }
+  }
+
+  /**
+   * Called inside `mergeOnePass` under the `merging` lock. Does ZERO GitHub I/O
+   * under the lock: it only (1) drains any drops the lockless producer already
+   * enqueued, and (2) when `reverifyIntervalMs` has elapsed and no verify is in
+   * flight, KICKS OFF the lockless `reverifyAdmitted()` producer fire-and-forget
+   * (mirroring the owner-admit fire-and-forget in `drainAdmissionQueue`). The
+   * producer runs OFF the lock and requests a merge pass when it has drops to
+   * apply. A no-op kick-off when `reverifyIntervalMs <= 0` (disabled — tests drive
+   * `reverifyAdmitted()` + `mergeNow()` directly via the handle).
    */
   async function maybeReverifyAdmitted(): Promise<void> {
+    // Apply drops a prior off-lock verify enqueued (cheap; usually empty).
+    drainReverifyDropQueue();
     if (reverifyIntervalMs <= 0) return;
     const now = Date.now();
     if (now - lastReverifyAt < reverifyIntervalMs) return;
+    if (reverifyInFlight) return; // coalesce: a verify is already running off-lock
     lastReverifyAt = now;
-    await reverifyAdmitted();
+    reverifyInFlight = true;
+    // Fire-and-forget: the GitHub I/O runs OFF the merge lock (mirrors the
+    // owner-admit fire-and-forget in drainAdmissionQueue). When the producer
+    // enqueues drops it requests a merge pass to apply them under the gate.
+    void (async () => {
+      try {
+        await reverifyAdmitted();
+        if (reverifyDropQueue.length > 0) {
+          // Request a pass to drain the drops under the gate (coalesces with any
+          // in-flight/poll pass). NOT awaited — this runs off the lock.
+          void mergeNow();
+        }
+      } catch (e) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_error',
+          `reverify run failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      } finally {
+        reverifyInFlight = false;
+      }
+    })();
   }
 
   // ── Read-merge driver ── replaces the old Autobase read-loop. A pass:
@@ -1315,6 +1393,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Queued admissions land first so THIS pass merges them (P-022).
       await drainAdmissionQueue();
 
+      // Apply any channel-2 re-verify drops the LOCKLESS producer enqueued
+      // (P-002) — mirror of drainAdmissionQueue: the GitHub I/O ran off the
+      // merge lock; this only applies its conclusive-fail results under the gate.
+      drainReverifyDropQueue();
+
       // ── Revocation refresh BEFORE collecting the merge set (G7 fix) ──
       // A published revocation that has propagated to this peer's loader (e.g.
       // A's revoked_pubkeys row federated to B's PG) must drop the revoked
@@ -1388,8 +1471,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
       if (!changed) {
-        // applyRevocationRefresh already ran at the top of this pass (G7 fix);
-        // only the slow-cadence channel-2 reverify remains for the idle tick.
+        // applyRevocationRefresh + drainReverifyDropQueue already ran at the top
+        // of this pass; on the idle tick maybeReverifyAdmitted only re-drains and
+        // (cadence permitting) kicks off the LOCKLESS verify — zero I/O here.
         await maybeReverifyAdmitted();
         return 0;
       }
@@ -1541,14 +1625,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Kept inside the serialized merge block, under the merging lock, exactly as
       // before; no re-entrancy into mergeNow.
 
-      // ── Channel-2 re-verify (rev-v2 Component A): run inside the same
-      // serialized merge block so it cannot race a concurrent merge mutating
-      // `admitted`. `maybeReverifyAdmitted` is a no-op when:
+      // ── Channel-2 re-verify (rev-v2 Component A; P-002): the GitHub I/O runs
+      // LOCKLESS. Here, under the merge gate, `maybeReverifyAdmitted` only drains
+      // any conclusive-fail drops the off-lock producer enqueued and (cadence
+      // permitting, and if no verify is in flight) KICKS OFF the next verify
+      // fire-and-forget. It is a no-op kick-off when:
       //   (a) reverifyIntervalMs <= 0 (disabled; tests drive reverifyAdmitted directly), or
-      //   (b) the slow cadence hasn't elapsed since the last run.
-      // When it does fire, it re-checks every admitted peer's channel-2 binding
-      // via verifyBinding, dropping any whose binding conclusively fails. Kept
-      // under the merging lock for the same reason applyRevocationRefresh is.
+      //   (b) the slow cadence hasn't elapsed since the last kick-off.
+      // No `verifyBinding` network call ever runs under this lock.
       await maybeReverifyAdmitted();
 
       return applied;

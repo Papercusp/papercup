@@ -3406,6 +3406,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // dev.gitPipelineHives — per-hive-git-and-release-gate P-014: the PER-HIVE rows for the
+  // /admin/git surface — every repo-backed coding hive that is green-gated (NOT the
+  // operator-home, which has its own full view above). Each row: resolved green command
+  // (+ owner-override flag), gate 🟩/🟥 status, staging↔main gap, last green sha, last
+  // deploy. Empty until a coding hive with a repo is gated (PER_HIVE_RELEASE_GATE is
+  // default-OFF during rollout — D-008).
+  'dev.gitPipelineHives': {
+    resolve: async () => {
+      const { gitPipelineHiveRows } = await import('../git-pipeline-hives');
+      return await gitPipelineHiveRows();
+    },
+  },
+
   // dev.pgHealth — pool usage snapshot (total / active / idle + version).
   'dev.pgHealth': {
     resolve: async () => {

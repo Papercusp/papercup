@@ -110,11 +110,14 @@ interface LivePeerRow {
  * deterministic without a booted operator.
  */
 export interface LockAuthorityDeps {
-  /** Fetch ALL presence rows for a harness (freshness filtered in TS). */
-  fetchPresenceRows?: (harnessSlug: string) => Promise<LivePeerRow[]>;
-  /** Fetch ALL presence rows for a HIVE (P-009 — `WHERE hive_slug = ?`). Used by
-   *  {@link lockAuthorityForHive}; freshness filtered in TS like the harness path. */
-  fetchHivePresenceRows?: (hiveSlug: string) => Promise<LivePeerRow[]>;
+  /** Fetch presence rows for a harness. `staleMs` is the (TS) staleness window so
+   *  the impl can apply a LOOSE SQL pre-filter (P-006); the authoritative freshness
+   *  cut still happens in TS. Impls may ignore it (e.g. test stubs). */
+  fetchPresenceRows?: (harnessSlug: string, staleMs: number) => Promise<LivePeerRow[]>;
+  /** Fetch presence rows for a HIVE (P-009 — `WHERE hive_slug = ?`). Used by
+   *  {@link lockAuthorityForHive}; `staleMs` threads the same LOOSE SQL pre-filter
+   *  as the harness path. Freshness filtered in TS. */
+  fetchHivePresenceRows?: (hiveSlug: string, staleMs: number) => Promise<LivePeerRow[]>;
   /** Resolve THIS peer's swarm identity, or null if it has none. */
   resolveSelf?: () => Promise<SelfSwarmIdentity | null>;
   /** Current epoch ms (injectable clock). */
@@ -140,7 +143,16 @@ export interface LockAuthorityDeps {
 export async function queryPresenceRows(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
   harnessSlug: string,
+  staleMs: number = DEFAULT_AUTHORITY_STALE_MS,
 ): Promise<LivePeerRow[]> {
+  // P-006: prune long-dead peers in SQL so Postgres does not materialize EVERY
+  // presence row ever seen for the harness (an unbounded scan at 256 peers). The
+  // cutoff is deliberately LOOSE — 2× the staleness window — so the SQL pre-filter
+  // is strictly wider than the authoritative TS freshness cut applied later in
+  // {@link selectAuthorityFromRows} (`last_seen_ms > now - staleMs`). It can never
+  // drop a row the TS filter would have kept, even under app↔DB clock skew, so the
+  // argmin-over-fresh-rows result is byte-identical; only dead rows are excluded.
+  const looseWindowSecs = (2 * staleMs) / 1000;
   const rows = (await sql`
     SELECT device_pubkey,
            github_user_id,
@@ -149,6 +161,7 @@ export async function queryPresenceRows(
     FROM harness_shared.shared_presence
     WHERE harness_slug = ${harnessSlug}
       AND device_pubkey <> ''
+      AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{
     device_pubkey: string;
     github_user_id: number;
@@ -163,9 +176,9 @@ export async function queryPresenceRows(
   }));
 }
 
-async function defaultFetchPresenceRows(harnessSlug: string): Promise<LivePeerRow[]> {
+async function defaultFetchPresenceRows(harnessSlug: string, staleMs: number): Promise<LivePeerRow[]> {
   const { sql } = getOrgPg();
-  return queryPresenceRows(sql as never, harnessSlug);
+  return queryPresenceRows(sql as never, harnessSlug, staleMs);
 }
 
 /**
@@ -176,7 +189,13 @@ async function defaultFetchPresenceRows(harnessSlug: string): Promise<LivePeerRo
 export async function queryPresenceRowsForHive(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
   hiveSlug: string,
+  staleMs: number = DEFAULT_AUTHORITY_STALE_MS,
 ): Promise<LivePeerRow[]> {
+  // P-006: same LOOSE (2× staleness window) SQL pre-filter as the harness path —
+  // Postgres prunes long-dead Swarms instead of scanning every hive row ever seen,
+  // while staying strictly wider than the TS freshness cut so the Hive argmin is
+  // unchanged. See {@link queryPresenceRows} for the full rationale.
+  const looseWindowSecs = (2 * staleMs) / 1000;
   const rows = (await sql`
     SELECT device_pubkey,
            github_user_id,
@@ -185,6 +204,7 @@ export async function queryPresenceRowsForHive(
     FROM harness_shared.shared_presence
     WHERE hive_slug = ${hiveSlug}
       AND device_pubkey <> ''
+      AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{
     device_pubkey: string;
     github_user_id: number;
@@ -199,9 +219,9 @@ export async function queryPresenceRowsForHive(
   }));
 }
 
-async function defaultFetchHivePresenceRows(hiveSlug: string): Promise<LivePeerRow[]> {
+async function defaultFetchHivePresenceRows(hiveSlug: string, staleMs: number): Promise<LivePeerRow[]> {
   const { sql } = getOrgPg();
-  return queryPresenceRowsForHive(sql as never, hiveSlug);
+  return queryPresenceRowsForHive(sql as never, hiveSlug, staleMs);
 }
 
 async function defaultResolveSelf(): Promise<SelfSwarmIdentity | null> {
@@ -303,7 +323,7 @@ export async function lockAuthorityFor(
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
-  const [rows, self] = await Promise.all([fetchRows(harnessSlug), resolveSelf()]);
+  const [rows, self] = await Promise.all([fetchRows(harnessSlug, staleMs), resolveSelf()]);
   const nowMs = now();
   const excluded = evictionExclusions(harnessSlug, rows, self, nowMs, deps);
   return selectAuthorityFromRows(rows, self, nowMs, staleMs, excluded);
@@ -358,7 +378,7 @@ export async function lockAuthorityForHive(
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
-  const [rows, self] = await Promise.all([fetchRows(hiveSlug), resolveSelf()]);
+  const [rows, self] = await Promise.all([fetchRows(hiveSlug, staleMs), resolveSelf()]);
   const nowMs = now();
   const excluded = evictionExclusions(hiveSlug, rows, self, nowMs, deps);
   return selectAuthorityFromRows(rows, self, nowMs, staleMs, excluded);

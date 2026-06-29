@@ -19,6 +19,7 @@ import { existsSync } from 'node:fs';
 import { loadHarnessRegistry } from './harness-registry';
 import { resolveHiveReleaseEnv } from './harness/routines/hive-release-env';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
+import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
 
 export type HiveGateStatus = 'green' | 'held' | 'stalled' | 'unknown';
 
@@ -123,7 +124,7 @@ async function buildRow(slug: string, env: Awaited<ReturnType<typeof resolveHive
  * The per-hive pipeline rows for the /admin/git surface: every repo-backed coding hive that
  * is green-gated, EXCLUDING the operator-home (it has its own full view). Sorted by slug.
  */
-export async function gitPipelineHiveRows(workspaceId: string): Promise<GitPipelineHiveRow[]> {
+export async function gitPipelineHiveRows(workspaceId: string = DEFAULT_WORKSPACE_ID): Promise<GitPipelineHiveRow[]> {
   let projects: Array<{ slug: string }>;
   try {
     const reg = await loadHarnessRegistry(workspaceId);

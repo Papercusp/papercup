@@ -133,6 +133,14 @@ export interface ResourceProfile {
   /** Embedding batch size — how many items to embed per call. Bigger hosts push
    *  bigger batches for throughput; small hosts keep latency/memory down. */
   readonly embedBatchSize: number;
+  /** Process-global ceiling on TOTAL concurrent Hyperswarm peer connections,
+   *  shared across EVERY joined topic (the one shared swarm per process passes
+   *  this straight to Hyperswarm's `maxPeers`). FLOORED at 256 so even the
+   *  smallest host can hold one FULL 256-peer shared hive; scaled UP with
+   *  cores/RAM so a 256-peer hive doesn't starve the box's OTHER topics
+   *  (directory gossip + sibling harnesses); CEILED so a connection-flood can't
+   *  exhaust file descriptors / RAM. */
+  readonly maxSwarmPeers: number;
   /** RECOMMENDED placement of the shared background machinery (DBOS pipelines,
    *  the routines engine, periodic timers, drains) given this host's capacity.
    *  `true` ⇒ keep it IN the serving process — the desktop default: splitting buys
@@ -360,6 +368,7 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
  * | pgPoolMax            | maxSimultaneousAgents + dbosQueueConcurrency + 4      |   4   |   64    |
  * | serializationWorkers | cores - 2  (0 ⇒ inline; only earned past ~4 cores)   |   0   |    8    |
  * | embedBatchSize       | 32 * 2^hostClassTier (laptop 32 / wkstn 64 / srv 128)|  16   |  256    |
+ * | maxSwarmPeers        | min(cores * 32, totalGiB * 64)                       |  256  |  2048   |
  * | backgroundInProcess  | false only on a server-class host w/ native PG; else true | — | — |
  * | httpWorkers          | server ? min(cores-1, connBudget) : 1 (EI-3377)     |   1   |   32    |
  */
@@ -404,6 +413,20 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   // Embedding batch grows by host class tier.
   const tier = hostClass === 'laptop' ? 0 : hostClass === 'workstation' ? 1 : 2;
   const embedBatchSize = clamp(32 * 2 ** tier, 16, 256);
+
+  // Peer-connection ceiling for the process-global shared Hyperswarm (`maxPeers`),
+  // shared across ALL joined topics. FLOOR 256 so even a 2-core laptop can hold one
+  // FULL 256-peer shared hive (P-004 harden-shared-hive-to-256-peers); scale UP with
+  // cores (32/core) AND total RAM (~64 peers/GiB) so a bigger box has headroom for a
+  // 256-peer hive PLUS its other topics instead of starving them; CEIL 2048 so a
+  // connection-flood still can't exhaust fds/RAM. RAM uses TOTAL memory — this is a
+  // static capacity ceiling, not the instantaneous free-RAM agent budget — and
+  // min(byCore, byRam) keeps a core-rich / RAM-poor host from advertising slots it
+  // can't actually hold. (`clamp` maps a NaN/Infinity signal to the 256 floor.)
+  const totalGib = Math.max(0, Number.isFinite(signals.totalMemBytes) ? signals.totalMemBytes : 0) / GIB;
+  const peersByCore = cores * 32;
+  const peersByRam = Math.floor(totalGib * 64);
+  const maxSwarmPeers = clamp(Math.min(peersByCore, peersByRam), 256, 2048);
 
   // Background placement: keep it in-process everywhere EXCEPT a server-class host
   // with a dedicated (native) PG, where a real multi-tenant box has the headroom +
@@ -458,6 +481,7 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
     pgPoolMax,
     serializationWorkers,
     embedBatchSize,
+    maxSwarmPeers,
     backgroundInProcess,
     httpWorkers,
     processCount,

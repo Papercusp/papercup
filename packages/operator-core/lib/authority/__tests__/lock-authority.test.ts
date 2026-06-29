@@ -11,6 +11,8 @@ import {
   lockAuthorityFor,
   selectAuthorityFromRows,
   routeToAuthority,
+  queryPresenceRows,
+  queryPresenceRowsForHive,
   DEFAULT_AUTHORITY_STALE_MS,
   type LockAuthorityDeps,
   type PeerRef,
@@ -72,6 +74,78 @@ describe('selectAuthorityFromRows — direct selection branches', () => {
     expect(res.isSelf).toBe(false);
     expect(res.peer?.devicePubkey).toBe('mmm');
     expect(res.liveCount).toBe(2);
+  });
+});
+
+// ── P-006: LOOSE SQL pre-filter prunes long-dead rows without changing the argmin ──
+describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pre-filter (P-006)', () => {
+  // A fake tagged-template `sql` that records each query's text + interpolated
+  // values and returns canned rows — lets these pure tests assert the SQL shape
+  // (the new `last_seen_at >=` predicate) without a real Postgres.
+  function recordingSql(rows: unknown[]) {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = (<T,>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> => {
+      calls.push({ text: strings.join('§'), values });
+      return Promise.resolve(rows as T);
+    }) as never;
+    return { sql, calls };
+  }
+
+  it('harness query adds `last_seen_at >= now() - make_interval(2× staleness)` and maps the rows', async () => {
+    const { sql, calls } = recordingSql([
+      { device_pubkey: 'aaa', github_user_id: '1', machine_label: 'm1', last_seen_ms: '123' },
+    ]);
+    const out = await queryPresenceRows(sql, 'h', 90_000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].text).toMatch(/harness_slug =/);
+    expect(calls[0].text).toMatch(/last_seen_at\s*>=\s*now\(\)\s*-\s*make_interval/);
+    // values = [harnessSlug, looseWindowSecs]; loose cutoff = 2×90s = 180s.
+    expect(calls[0].values).toEqual(['h', 180]);
+    // BIGINT→string columns are still coerced to numbers.
+    expect(out).toEqual([{ device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: 123 }]);
+  });
+
+  it('hive query adds the same loose predicate, scoped on hive_slug', async () => {
+    const { sql, calls } = recordingSql([]);
+    await queryPresenceRowsForHive(sql, 'my-hive', 10_000);
+    expect(calls[0].text).toMatch(/hive_slug =/);
+    expect(calls[0].text).toMatch(/last_seen_at\s*>=\s*now\(\)\s*-\s*make_interval/);
+    expect(calls[0].values).toEqual(['my-hive', 20]); // 2×10s
+  });
+
+  it('defaults the loose window to 2× the DEFAULT staleness window when staleMs is omitted', async () => {
+    const { sql, calls } = recordingSql([]);
+    await queryPresenceRows(sql, 'h');
+    expect(calls[0].values[1]).toBe((2 * DEFAULT_AUTHORITY_STALE_MS) / 1000); // 180
+  });
+
+  it('the loose pre-filter never changes the argmin — selection is byte-identical to the un-pre-filtered set', async () => {
+    const staleMs = 90_000;
+    // Spans the three regimes around the cutoffs:
+    //  - 'aaa' FRESH (within staleMs) — the rightful authority.
+    //  - 'bbb' just-stale (between staleMs and 2× staleMs) — KEPT by the loose SQL,
+    //    then dropped by the TS freshness cut; proves the 2× margin is harmless.
+    //  - 'a00' long-dead (older than 2× staleMs) — the LOWEST pubkey, so it would
+    //    hijack argmin if freshness were ignored; the loose SQL is what prunes it.
+    const allRows = [
+      { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm-fresh', last_seen_ms: NOW - 1_000 },
+      { device_pubkey: 'bbb', github_user_id: 2, machine_label: 'm-juststale', last_seen_ms: NOW - 120_000 },
+      { device_pubkey: 'a00', github_user_id: 3, machine_label: 'm-dead', last_seen_ms: NOW - 5_000_000 },
+    ];
+    // What Postgres returns under the loose (2× staleMs) cutoff: only 'a00' is pruned.
+    const looseCutoff = NOW - 2 * staleMs;
+    const afterLooseSql = allRows.filter((row) => row.last_seen_ms >= looseCutoff);
+    expect(afterLooseSql.map((r) => r.device_pubkey).sort()).toEqual(['aaa', 'bbb']); // 'a00' gone
+
+    const fromPrefiltered = await lockAuthorityFor('h', {
+      now: () => NOW,
+      staleMs,
+      fetchPresenceRows: async () => afterLooseSql,
+      resolveSelf: async () => null,
+    });
+    const fromFull = selectAuthorityFromRows(allRows, null, NOW, staleMs);
+    expect(fromPrefiltered).toEqual(fromFull);
+    expect(fromPrefiltered.peer?.devicePubkey).toBe('aaa'); // not the long-dead 'a00'
   });
 });
 

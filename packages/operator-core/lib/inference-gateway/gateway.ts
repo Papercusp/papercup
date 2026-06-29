@@ -1212,6 +1212,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // self-pin) LIVE without a respawn. `hard` ⇒ no failover (like the static hard pin). In-memory: pins are
   // re-applied if the gateway restarts (durable persistence is a follow-up).
   const ownerPinMap = new Map<string, { accountId: string; hard: boolean }>();
+  // COLD-START RATE SEED (account-cold-start-seed-2026-06-29): the DURABLE per-account rate projection
+  // (pausedUntil / 5h+7d utilization + window resets), loaded by the launch layer at startup + on its poll.
+  // Right after a gateway restart the LIVE per-account governor is blank, so it can't yet know an account is
+  // 403-disqualified / 429-exhausted / weekly-capped — it would bounce requests onto the dead accounts until
+  // it re-learns by failing on each (the owner-reported "the fleet can't use the one healthy account's room
+  // after a restart"). keyOf consults this as a fallback so a known-bad account is disqualified IMMEDIATELY.
+  const accountRateHints = new Map<
+    string,
+    { pausedUntil?: number; utilization?: number; utilization7d?: number; windowResetAt?: number; windowResetAt7d?: number }
+  >();
   function recordRoute(ownerId: string | undefined, accountId: string, model: string): void {
     if (!ownerId) return; // only identified callers (x-papercusp-owner present) are addressable
     if (!lastRouteByOwner.has(ownerId) && lastRouteByOwner.size >= ROUTE_MAP_MAX) {
@@ -1524,6 +1534,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const keyOf = (cgov: RateLimitGovernor, accountId: string): number => {
       if (cgov.state.pausedUntil > now0) return Infinity;
       if ((egressPauseUntil.get(accountId) ?? 0) > now0) return Infinity;
+      // COLD-START fallback: the live governor is blank right after a gateway restart, so consult the durable
+      // rate hint — disqualify an account the projection knows is paused (403/429/transport) or at/over a
+      // still-open 5h/7d window. Without this the selector bounces requests onto known-dead accounts until it
+      // re-learns by failing on each (and burst-throttles the one healthy survivor with the retry churn).
+      const h = accountRateHints.get(accountId);
+      if (h) {
+        if ((h.pausedUntil ?? 0) > now0) return Infinity;
+        if ((h.utilization7d ?? 0) >= 0.99 && (h.windowResetAt7d ?? 0) > now0) return Infinity;
+        if ((h.utilization ?? 0) >= 0.99 && (h.windowResetAt ?? 0) > now0) return Infinity;
+      }
       const unified = cgov.snapshot().unified;
       const u = unified?.utilization ?? 0;
       // DISQUALIFY a budget-EXHAUSTED account — its binding 5h/7d window is REJECTING or essentially full,
@@ -2935,6 +2955,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
   return {
     server,
     stats,
+    // DYNAMIC OWNER PIN seeding (account-dynamic-pin-2026-06-29): replace the in-memory owner→account pin map
+    // from the durable DB store. Called by the launch layer at startup + on its pool-reload poll so pins
+    // SURVIVE a gateway restart. The /admin/owner-pin endpoint still applies single-pin changes immediately.
+    setOwnerPins(pins: ReadonlyArray<{ ownerId: string; account: string; hard?: boolean }>): void {
+      ownerPinMap.clear();
+      for (const p of pins) {
+        if (p?.ownerId && p?.account) ownerPinMap.set(p.ownerId, { accountId: p.account, hard: p.hard === true });
+      }
+    },
+    // COLD-START RATE SEED (account-cold-start-seed-2026-06-29): replace the durable per-account rate hint
+    // keyOf consults right after a restart (before the live governor has learned each account's state).
+    setAccountRateHints(
+      hints: ReadonlyArray<{ accountId: string; pausedUntil?: number; utilization?: number; utilization7d?: number; windowResetAt?: number; windowResetAt7d?: number }>,
+    ): void {
+      accountRateHints.clear();
+      for (const h of hints) {
+        if (h?.accountId) {
+          accountRateHints.set(h.accountId, {
+            pausedUntil: h.pausedUntil,
+            utilization: h.utilization,
+            utilization7d: h.utilization7d,
+            windowResetAt: h.windowResetAt,
+            windowResetAt7d: h.windowResetAt7d,
+          });
+        }
+      }
+    },
     listen(port = 0): Promise<number> {
       return new Promise((resolve, reject) => {
         server.once('error', reject);

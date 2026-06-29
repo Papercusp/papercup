@@ -8,6 +8,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { setOwnerPin, clearOwnerPin } from '../../deployment/account-owner-pins';
 
 /** Localhost base of the running gateway. Read PER-CALL (not at module load) so tests can point it at a
  *  mock server via PAPERCUSP_GATEWAY_PORT, and so an env override is honored without a re-import. */
@@ -56,8 +58,10 @@ export const accountsPinTool = defineTool({
     agent: z.string().min(1).describe("target agent's owner/spawn id (pass your own id to pin yourself)"),
     account: z.string().min(1).describe('pool account id to route the agent to'),
     hard: z.boolean().optional().describe('true ⇒ never fail over off the account (default: soft, yields if paused/exhausted)'),
+    workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
-  async handler({ agent, account, hard }) {
+  async handler({ agent, account, hard, workspace }, ctx) {
+    const ws = workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
     try {
       const cfg = (await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) })
         .then((r) => r.json())
@@ -65,16 +69,25 @@ export const accountsPinTool = defineTool({
       if (Array.isArray(cfg.accounts) && !cfg.accounts.includes(account)) {
         return fail({ error: `account '${account}' is not in the gateway pool`, accounts: cfg.accounts });
       }
+      // DURABLE write FIRST (the DB store is the source of truth — survives a gateway restart), THEN push to
+      // the running gateway for IMMEDIATE effect. If the live push fails, the pin is still durable and loads
+      // on the gateway's next poll / restart, so we report success-with-warning rather than failing.
+      const pin = await setOwnerPin(ws, agent, { account, hard: !!hard });
       const r = await fetch(`${gwBase()}/admin/owner-pin`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ownerId: agent, account, hard: !!hard }),
         signal: AbortSignal.timeout(10000),
+      }).catch((e) => ({ ok: false, status: 0, _e: errMsg(e) }) as unknown as Response);
+      void import('../../sync-sse').then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
+      return ok({
+        ownerId: agent,
+        pin,
+        appliedLive: r.ok,
+        ...(r.ok ? {} : { warn: `pin saved durably but live apply to the gateway failed (it will load on the next poll/restart)` }),
       });
-      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-      return r.ok ? ok(b) : fail({ error: `gateway /admin/owner-pin → ${r.status}`, ...b });
     } catch (e) {
-      return fail({ error: `gateway unreachable at ${gwBase()}: ${errMsg(e)}` });
+      return fail({ error: `accounts:pin failed: ${errMsg(e)}` });
     }
   },
 });
@@ -91,19 +104,24 @@ export const accountsUnpinTool = defineTool({
   capability: 'harness:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ agent: z.string().min(1).describe('target agent owner/spawn id to unpin') }),
-  async handler({ agent }) {
+  args: z.object({
+    agent: z.string().min(1).describe('target agent owner/spawn id to unpin'),
+    workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
+  }),
+  async handler({ agent, workspace }, ctx) {
+    const ws = workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
     try {
+      const cleared = await clearOwnerPin(ws, agent); // durable clear first
       const r = await fetch(`${gwBase()}/admin/owner-pin`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ownerId: agent, clear: true }),
         signal: AbortSignal.timeout(10000),
-      });
-      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-      return r.ok ? ok(b) : fail({ error: `gateway /admin/owner-pin → ${r.status}`, ...b });
+      }).catch((e) => ({ ok: false, status: 0, _e: errMsg(e) }) as unknown as Response);
+      void import('../../sync-sse').then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
+      return ok({ ownerId: agent, cleared, appliedLive: r.ok });
     } catch (e) {
-      return fail({ error: `gateway unreachable at ${gwBase()}: ${errMsg(e)}` });
+      return fail({ error: `accounts:unpin failed: ${errMsg(e)}` });
     }
   },
 });

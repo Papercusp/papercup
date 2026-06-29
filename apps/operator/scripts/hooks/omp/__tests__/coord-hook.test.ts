@@ -1621,3 +1621,42 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
     expect([...osc].filter((c) => c === '\x1b')).toHaveLength(1);
   });
 });
+
+describe('callMcpTool workspace scoping (scoped-superuser clamp fix)', () => {
+  const originalFetch = global.fetch;
+  const prevWs = process.env.PAPERCUSP_WORKSPACE;
+  let headers: Record<string, string> = {};
+  beforeEach(() => {
+    headers = {};
+    global.fetch = (async (_url: unknown, init: { headers: Record<string, string> }) => {
+      headers = init.headers;
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] } }),
+      };
+    }) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE;
+    else process.env.PAPERCUSP_WORKSPACE = prevWs;
+  });
+
+  it('sends x-papercusp-workspace from PAPERCUSP_WORKSPACE so the superuser clamp resolves the call', async () => {
+    process.env.PAPERCUSP_WORKSPACE = 'papercusp-workspace';
+    await callMcpTool('coord:inbox', {}, { mcpUrl: 'http://op/api/mcp?superuser=1', bearer: 'x' });
+    expect(headers['x-papercusp-workspace']).toBe('papercusp-workspace');
+  });
+
+  it('honors an explicit workspace override', async () => {
+    await callMcpTool('coord:inbox', {}, { mcpUrl: 'http://op/api/mcp?superuser=1', bearer: 'x', workspace: 'ws-override' });
+    expect(headers['x-papercusp-workspace']).toBe('ws-override');
+  });
+
+  it('omits the header when no workspace is resolvable (no worse than before)', async () => {
+    delete process.env.PAPERCUSP_WORKSPACE;
+    await callMcpTool('coord:inbox', {}, { mcpUrl: 'http://op/api/mcp?superuser=1', bearer: 'x', workspace: '' });
+    expect(headers['x-papercusp-workspace']).toBeUndefined();
+  });
+});

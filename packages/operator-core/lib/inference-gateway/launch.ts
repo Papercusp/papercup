@@ -419,6 +419,39 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     reloadTimer.unref?.();
   }
 
+  // DYNAMIC OWNER PIN durability (account-dynamic-pin-2026-06-29): load the durable agent→account pins from
+  // the DB store into the gateway at startup + on the poll, so they SURVIVE a gateway restart (in-memory
+  // alone dropped them silently on the wedge-watchdog / deploy / crash restarts). The accounts:pin tool also
+  // pushes each change to /admin/owner-pin for IMMEDIATE effect; this is the load + periodic-resync path.
+  const refreshGatewayHints = async (): Promise<void> => {
+    try {
+      const { getOwnerPinsList } = await import('../deployment/account-owner-pins');
+      const { loadAccountPool } = await import('../deployment/account-pool-store');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const ws = opts.workspace ?? activeWorkspaceId();
+      const [ownerPins, poolFull] = await Promise.all([getOwnerPinsList(ws), loadAccountPool(ws)]);
+      gateway.setOwnerPins(ownerPins);
+      gateway.setAccountRateHints(
+        (poolFull.accounts ?? []).map((a) => ({
+          accountId: a.id,
+          pausedUntil: a.rate?.pausedUntil,
+          utilization: a.rate?.utilization,
+          utilization7d: a.rate?.utilization7d,
+          windowResetAt: a.rate?.windowResetAt,
+          windowResetAt7d: a.rate?.windowResetAt7d,
+        })),
+      );
+    } catch (e) {
+      log('warn', `inference-gateway: gateway-hint refresh failed: ${(e as Error).message}`);
+    }
+  };
+  await refreshGatewayHints();
+  let hintTimer: ReturnType<typeof setInterval> | undefined;
+  if (reloadMs > 0) {
+    hintTimer = setInterval(() => void refreshGatewayHints(), reloadMs);
+    hintTimer.unref?.();
+  }
+
   return {
     gateway,
     port,
@@ -430,6 +463,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     async stop() {
       if (timer) clearInterval(timer);
       if (reloadTimer) clearInterval(reloadTimer);
+      if (hintTimer) clearInterval(hintTimer);
       unobserve();
       await gateway.close();
     },

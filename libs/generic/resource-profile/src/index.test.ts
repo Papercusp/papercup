@@ -205,6 +205,55 @@ describe('free-RAM clamp', () => {
   });
 });
 
+describe('maxSwarmPeers — P-004 shared-hive peer budget', () => {
+  it('floors at 256 on a tiny host so one shared hive can still reach 256 peers', () => {
+    // 2 cores / 4 GiB: byCore = 64, byRam = 256 → min 64 → floored to 256.
+    const tiny = deriveResourceProfile(
+      signals({ cores: 2, totalMemBytes: 4 * GIB, freeMemBytes: 4 * GIB }),
+    );
+    expect(tiny.maxSwarmPeers).toBe(256);
+    // 4 cores / 8 GiB (the laptop fixture) also sits on the floor.
+    const laptop = deriveResourceProfile(
+      signals({ cores: 4, totalMemBytes: 8 * GIB, freeMemBytes: 8 * GIB }),
+    );
+    expect(laptop.maxSwarmPeers).toBe(256);
+  });
+
+  it('scales above the floor on a mid-size box (cores * 32)', () => {
+    // 32 cores / 128 GiB: byCore = 1024, byRam = 8192 → min 1024.
+    const mid = deriveResourceProfile(
+      signals({ cores: 32, totalMemBytes: 128 * GIB, freeMemBytes: 128 * GIB }),
+    );
+    expect(mid.maxSwarmPeers).toBe(1024);
+    expect(mid.maxSwarmPeers).toBeGreaterThan(256); // genuine headroom for OTHER topics
+  });
+
+  it('ceilings at 2048 on a huge box so a connection-flood cannot exhaust fds/RAM', () => {
+    // 128 cores / 512 GiB: byCore = 4096, byRam = 32768 → min 4096 → clamped to 2048.
+    const server = deriveResourceProfile(
+      signals({ cores: 128, totalMemBytes: 512 * GIB, freeMemBytes: 512 * GIB }),
+    );
+    expect(server.maxSwarmPeers).toBe(2048);
+  });
+
+  it('lets TOTAL RAM bind below the core-derived budget on a core-rich / RAM-poor host', () => {
+    // 64 cores but only 8 GiB: byCore = 2048, byRam = 512 → min 512 (RAM bound it,
+    // so the host never advertises peer slots it cannot hold).
+    const ramPoor = deriveResourceProfile(
+      signals({ cores: 64, totalMemBytes: 8 * GIB, freeMemBytes: 8 * GIB }),
+    );
+    expect(ramPoor.maxSwarmPeers).toBe(512);
+  });
+
+  it('falls back to the 256 floor on a non-finite signal (never poisons the cap)', () => {
+    expect(deriveResourceProfile(signals({ cores: NaN })).maxSwarmPeers).toBe(256);
+    expect(
+      deriveResourceProfile(signals({ cores: 64, totalMemBytes: Number.POSITIVE_INFINITY }))
+        .maxSwarmPeers,
+    ).toBe(256);
+  });
+});
+
 describe('hostRole shrinks the queue on non-draining hosts', () => {
   it('request-only halves the DBOS queue', () => {
     const full = deriveResourceProfile(signals({ cores: 16, hostRole: 'full' }));

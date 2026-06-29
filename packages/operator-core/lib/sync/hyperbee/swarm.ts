@@ -30,6 +30,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import Protomux from 'protomux';
 import c from 'compact-encoding';
 import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
+import { getResourceProfile } from '../../resource-profile';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
 
@@ -45,6 +46,18 @@ export interface SwarmHandle {
   topicHex: string;
   /** Number of times the connection handler has fired since join. */
   connectionCount: number;
+}
+
+/** Snapshot of the shared swarm's peer-budget pressure at a near-cap crossing
+ *  (P-004). Carried by {@link JoinHarnessSwarmOpts.onNearPeerCap}. */
+export interface PeerCapInfo {
+  /** Live peer connections on the shared swarm at the moment of the signal. */
+  liveConnections: number;
+  /** The process-global `maxPeers` ceiling the swarm was constructed with. */
+  maxPeers: number;
+  /** True once `liveConnections` has actually REACHED the ceiling — Hyperswarm
+   *  will now silently refuse further peers until a slot frees. */
+  atCap: boolean;
 }
 
 /**
@@ -69,6 +82,10 @@ export interface HyperswarmLike {
    *  shared swarm AFTER a socket exists never re-emits 'connection' for it, so
    *  late joiners must attach to these retroactively. */
   connections?: Iterable<unknown>;
+  /** The process-global total-connection ceiling this swarm was constructed with
+   *  (Hyperswarm stores its `maxPeers` here). Read for the near-cap pressure
+   *  signal (P-004); undefined on minimal test fakes. */
+  maxPeers?: number;
 }
 
 export interface JoinHarnessSwarmOpts {
@@ -93,6 +110,16 @@ export interface JoinHarnessSwarmOpts {
   /** Fires when a connection trips the per-peer connection-rate limit and is
    *  banned + dropped (P-007 observability). */
   onPeerRateLimited?: (remotePublicKeyHex?: string, remoteIp?: string) => void;
+  /**
+   * P-004 observability: fires when the SHARED swarm's live peer count crosses
+   * into the near-cap zone (>= {@link PEER_CAP_NEAR_RATIO} × the process-global
+   * `maxPeers`). Hyperswarm SILENTLY stops accepting/opening connections once
+   * `maxPeers` is reached — so peer N+1 just never connects, with no signal. This
+   * makes that pressure VISIBLE before (and at) the cap so the caller can wire a
+   * metric/alert. Best-effort + rate-limited (fires once per crossing via
+   * hysteresis, re-arms after the count drops back below the threshold).
+   */
+  onNearPeerCap?: (info: PeerCapInfo) => void;
   /**
    * OUR signed announce — sent to every (non-dropped) peer right after the
    * `papercusp/announce` channel opens, binding our log core to our device
@@ -476,6 +503,89 @@ function fireSafely(
 }
 
 /**
+ * P-004 near-cap signal. Hyperswarm's `maxPeers` is a PROCESS-GLOBAL ceiling on
+ * total live connections across every joined topic; once it's reached Hyperswarm
+ * SILENTLY stops opening/accepting — so peer N+1 just never connects, with no
+ * log/event. This fraction of `maxPeers` is the threshold at which we emit a
+ * LOUD, rate-limited signal so that silent drop is VISIBLE before (and at) the
+ * cap. 0.9 leaves ~10% headroom to act (raise the budget / scale the box).
+ */
+export const PEER_CAP_NEAR_RATIO = 0.9;
+
+/** Hysteresis state, keyed by swarm: have we already warned for the CURRENT
+ *  approach to the cap? Re-armed once the live count drops back below threshold
+ *  so a later re-approach warns again, but a steady stream of connections at the
+ *  cap doesn't spam the log/event on every single `connection`. */
+const peerCapNearState = new WeakMap<object, boolean>();
+
+/** Count live peer sockets on a swarm. Real Hyperswarm exposes a Set (cheap
+ *  `.size`); fakes may expose any Iterable or nothing. Returns undefined when
+ *  the count is unknowable (no `connections`). */
+export function countLiveConnections(swarm: HyperswarmLike): number | undefined {
+  const conns = swarm.connections;
+  if (!conns) return undefined;
+  const size = (conns as { size?: unknown }).size;
+  if (typeof size === 'number') return size;
+  let n = 0;
+  for (const _ of conns) n++;
+  return n;
+}
+
+/** Fire the near-cap callback without letting a diagnostic throw crash the handler. */
+function fireNearCapSafely(cb: ((info: PeerCapInfo) => void) | undefined, info: PeerCapInfo): void {
+  if (!cb) return;
+  try {
+    cb(info);
+  } catch {
+    // diagnostic-only callback; swallow
+  }
+}
+
+/**
+ * P-004: emit the near-cap pressure signal (a loud `console.warn` + the optional
+ * `onNearPeerCap` event) when the shared swarm's live peer count first crosses
+ * into the near-cap zone, so the otherwise-SILENT refusal of peer N+1 is
+ * observable. Hysteresis (via {@link peerCapNearState}) makes it fire ONCE per
+ * approach and re-arm after the count recedes, so it can be called on every
+ * `connection` without spamming. No-op (returns null) when `maxPeers` or the
+ * live count can't be read (minimal fakes). Exported for unit testing.
+ */
+export function reportPeerCapPressure(
+  swarm: HyperswarmLike,
+  onNearPeerCap?: (info: PeerCapInfo) => void,
+): PeerCapInfo | null {
+  const maxPeers =
+    typeof swarm.maxPeers === 'number' && swarm.maxPeers > 0 ? swarm.maxPeers : undefined;
+  if (!maxPeers) return null;
+  const live = countLiveConnections(swarm);
+  if (live === undefined) return null;
+  const key = swarm as unknown as object;
+  const near = live >= Math.ceil(maxPeers * PEER_CAP_NEAR_RATIO);
+  if (!near) {
+    // Re-arm so the NEXT approach to the cap warns again.
+    if (peerCapNearState.get(key)) peerCapNearState.set(key, false);
+    return null;
+  }
+  if (peerCapNearState.get(key)) return null; // already warned for this approach
+  peerCapNearState.set(key, true);
+  const atCap = live >= maxPeers;
+  const info: PeerCapInfo = { liveConnections: live, maxPeers, atCap };
+  // console.warn (a genuine defect/pressure signal — never fires in clean tests,
+  // which stay well below 90% of maxPeers; same convention as the DHT-bootstrap
+  // misconfig warn above).
+  console.warn(
+    `[swarm] ⚠ peer cap pressure: ${live}/${maxPeers} live peer connections ` +
+      `(>= ${Math.round(PEER_CAP_NEAR_RATIO * 100)}% of the process-global maxPeers). ` +
+      (atCap
+        ? 'AT CAP — Hyperswarm will SILENTLY refuse further peers until a slot frees.'
+        : 'Approaching cap — further peers will be silently refused once full.') +
+      ' Raise PAPERCUSP_SWARM_MAX_PEERS or run on a larger host to grow the budget.',
+  );
+  fireNearCapSafely(onNearPeerCap, info);
+  return info;
+}
+
+/**
  * Pull the remote peer's Noise public key (hex) out of Hyperswarm's PeerInfo
  * (the 2nd arg of the `connection` event), defensively — the substrate's
  * per-peer accounting + DoS guard key off this. Returns undefined when the
@@ -649,6 +759,9 @@ export async function joinHarnessSwarm(
         // Diagnostic-only callback; swallow.
       }
     }
+    // P-004: now that this peer is live, check the process-global peer budget and
+    // loudly surface near-cap pressure BEFORE the next peer is silently refused.
+    reportPeerCapPressure(opts.swarm, opts.onNearPeerCap);
   };
 
   opts.swarm.on('connection', handler);
@@ -731,11 +844,32 @@ export async function joinHarnessSwarm(
 
 let _sharedSwarm: HyperswarmLike | null = null;
 
-/** Default total-connection ceiling. Hyperswarm's own default is unlimited;
- *  this bounds a connection-flood DoS regardless of the data layer. Generous
- *  for the dogfood scale (a few peers × a few harnesses); override for larger
- *  topologies via PAPERCUSP_SWARM_MAX_PEERS. */
+/** FLOOR for the total-connection ceiling, and the fallback when the host's
+ *  resource profile can't be read. Hyperswarm's own default is unlimited; this
+ *  bounds a connection-flood DoS regardless of the data layer. 256 so a single
+ *  shared hive can fill to its full 256 peers even on the smallest host (P-004);
+ *  the EFFECTIVE default scales UP from here with cores/RAM (see
+ *  {@link resolveDefaultMaxPeers}), and PAPERCUSP_SWARM_MAX_PEERS overrides both. */
 const DEFAULT_MAX_PEERS = 256;
+
+/**
+ * P-004: the effective default `maxPeers` for the shared swarm, DERIVED from the
+ * host's resource profile (`resource-profile.maxSwarmPeers` — cores/RAM, floored
+ * at 256, ceiled at 2048) instead of a hardcoded constant. So a single shared
+ * hive can actually reach 256 peers AND a capable box gets headroom for its
+ * OTHER topics rather than starving them. Falls back to the 256 floor if the
+ * profile can't be read (best-effort — a swarm must never fail to construct over
+ * a host-detection hiccup). `PAPERCUSP_SWARM_MAX_PEERS` still wins in
+ * {@link swarmConstructorOpts}.
+ */
+export function resolveDefaultMaxPeers(): number {
+  try {
+    const derived = getResourceProfile().maxSwarmPeers;
+    return Number.isFinite(derived) && derived > 0 ? derived : DEFAULT_MAX_PEERS;
+  } catch {
+    return DEFAULT_MAX_PEERS;
+  }
+}
 
 /** One DHT bootstrap node (host + UDP port). */
 export interface DhtBootstrapNode {
@@ -783,13 +917,21 @@ export function parseDhtBootstrap(raw: string | undefined): DhtBootstrapNode[] |
  * Constructor options for the shared Hyperswarm — the DoS resource ceiling
  * (P-001 of hyperswarm-dos-hardening). `maxPeers` caps total concurrent peer
  * connections; `bootstrap` (when `PAPERCUSP_DHT_BOOTSTRAP` is set) points the
- * underlying hyperdht at a custom/isolated DHT instead of the public one. Pure
- * + exported so the wiring is unit-testable without constructing the real
+ * underlying hyperdht at a custom/isolated DHT instead of the public one.
+ * Exported so the wiring is unit-testable without constructing the real
  * (network-touching) swarm.
+ *
+ * `maxPeers` precedence (P-004): `PAPERCUSP_SWARM_MAX_PEERS` > the host-derived
+ * default ({@link resolveDefaultMaxPeers} — cores/RAM, ≥256). Pass
+ * `defaultMaxPeers` to inject the host-derived value (keeps the function pure
+ * for unit tests); omitted, it reads the real resource profile.
  */
-export function swarmConstructorOpts(): { maxPeers: number; bootstrap?: DhtBootstrapNode[]; dhtHost?: string } {
+export function swarmConstructorOpts(args?: {
+  defaultMaxPeers?: number;
+}): { maxPeers: number; bootstrap?: DhtBootstrapNode[]; dhtHost?: string } {
   const raw = Number.parseInt(process.env.PAPERCUSP_SWARM_MAX_PEERS ?? '', 10);
-  const maxPeers = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_PEERS;
+  const fallback = args?.defaultMaxPeers ?? resolveDefaultMaxPeers();
+  const maxPeers = Number.isFinite(raw) && raw > 0 ? raw : fallback;
   const bootstrap = parseDhtBootstrap(process.env.PAPERCUSP_DHT_BOOTSTRAP);
   const dhtHost = parseDhtHost(process.env.PAPERCUSP_DHT_HOST);
   return {

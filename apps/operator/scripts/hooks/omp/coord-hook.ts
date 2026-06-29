@@ -269,7 +269,7 @@ export function _resetHookOwnerIdForTests(): void {
 export async function callMcpTool(
   toolName: string,
   args: Record<string, unknown>,
-  env: { mcpUrl?: string; bearer?: string; sessionId?: string } = {},
+  env: { mcpUrl?: string; bearer?: string; sessionId?: string; workspace?: string } = {},
 ): Promise<unknown | null> {
   // Append the per-process coordination owner as `?client=` so the
   // operator attributes every coord/locks call to THIS process, not
@@ -307,6 +307,14 @@ export async function callMcpTool(
     }
   }
   const sessionId = env.sessionId ?? process.env.PAPERCUSP_AUTH_SESSION_ID ?? '';
+  // Workspace scope (scoped-superuser-workspace-clamp-2026-06-18): the clamp flag REJECTS a
+  // superuser coord call whose workspace can't be resolved (`scoped_superuser_workspace_unresolved`).
+  // The hook's minted owner id (`omp-<session>-<pid>`, hookOwnerId) has NO adv_sessions row to
+  // resolve a workspace through, and the one-shot POST carries no MCP session — so WITHOUT this
+  // header every coord call fails ("Papercusp coordination call failed this turn", every turn, once
+  // the clamp is on). psu exports PAPERCUSP_WORKSPACE into the OMP session env (the same value the
+  // user-level mcp.json passes via `!printf`); send it as the header the handler reads FIRST.
+  const workspace = env.workspace ?? process.env.PAPERCUSP_WORKSPACE ?? '';
   try {
     const res = await fetch(mcpUrl, {
       method: 'POST',
@@ -315,6 +323,7 @@ export async function callMcpTool(
         Accept: 'application/json, text/event-stream',
         ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
         ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
+        ...(workspace ? { 'x-papercusp-workspace': workspace } : {}),
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
