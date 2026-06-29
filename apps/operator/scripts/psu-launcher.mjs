@@ -19,7 +19,7 @@
  * Interactive:   psu
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -949,6 +949,31 @@ export function applyDefaultClaudeOAuthToken(wrapperBin, env, { home = homedir()
   return env;
 }
 
+/**
+ * Make the GitHub Copilot MCP plugin AUTHENTICATE instead of failing. That plugin (a Claude
+ * plugin OMP also discovers via claude-plugin discovery) sends
+ * `Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}`; when the env var is unset the header is
+ * a bare `Bearer ` and the server rejects it ("Authorization header is badly formatted", HTTP 400)
+ * on EVERY claude/omp launch. The `gh` CLI already holds a working token (verified: it
+ * authenticates the Copilot MCP → HTTP 200), so export it into the agent env when unset. Fail-soft:
+ * no gh / not logged in → env untouched (the plugin then fails exactly as before, never worse).
+ * Mutates + returns env. `runGh` injectable for tests.
+ */
+export function applyGithubTokenEnv(
+  env,
+  { runGh = () => spawnSync('gh', ['auth', 'token'], { encoding: 'utf8', timeout: 5000 }) } = {},
+) {
+  if (env.GITHUB_PERSONAL_ACCESS_TOKEN) return env;
+  try {
+    const out = runGh();
+    const tok = (out && out.status === 0 ? String(out.stdout || '') : '').trim();
+    if (tok) env.GITHUB_PERSONAL_ACCESS_TOKEN = tok;
+  } catch {
+    /* gh missing / not logged in → leave env unchanged (fail-soft) */
+  }
+  return env;
+}
+
 /** Persist the default-account Claude OAuth token (0600); creates ~/.papercusp. */
 export function storeClaudeOAuthToken(token, { home = homedir() } = {}) {
   const t = String(token || '').trim();
@@ -1512,6 +1537,10 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   // heal it). No-op unless a token was stored (`psu --set-claude-token`) and the
   // session is default-account claude. See applyDefaultClaudeOAuthToken.
   applyDefaultClaudeOAuthToken(wrapperBin, env);
+  // The GitHub Copilot MCP plugin (a Claude plugin OMP also discovers) needs
+  // GITHUB_PERSONAL_ACCESS_TOKEN; unset → "Authorization header is badly formatted" (HTTP 400) on
+  // every claude/omp launch. Export the gh CLI token when unset (verified it authenticates the MCP).
+  applyGithubTokenEnv(env);
   // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
   // through a managed pty + owner-only control socket so the operator can inject
   // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking

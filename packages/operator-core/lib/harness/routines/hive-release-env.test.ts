@@ -41,10 +41,16 @@ beforeEach(() => {
   vi.doMock('../operator-home-harness', () => ({
     operatorHomeHarnessSlug: () => homeSlug,
   }));
+  // Default: no per-hive greenCmd override (deterministic + DB-free). A specific test
+  // re-mocks this to assert the P-014 override precedence.
+  vi.doMock('../../hive-settings-store', () => ({
+    getReleaseGreenCmdOverride: async () => null,
+  }));
 });
 afterEach(() => {
   vi.doUnmock('../../harness-registry');
   vi.doUnmock('../operator-home-harness');
+  vi.doUnmock('../../hive-settings-store');
   for (const d of tmpDirs) {
     try {
       rmSync(d, { recursive: true, force: true });
@@ -157,6 +163,22 @@ describe('resolveHiveReleaseEnv', () => {
     const { resolveHiveReleaseEnv } = await import('./hive-release-env');
     const res = await resolveHiveReleaseEnv('mycode', 'default');
     expect(res.env.PAPERCUSP_GREEN_CMD).toBe('npm run test:affected');
+    expect(res.greenCmdOverridden).toBe(false);
+  });
+
+  it('a per-hive owner override beats the knob/testCommand/build and sets greenCmdOverridden (P-014)', async () => {
+    const dir = makeHiveDir('coding', { git: true, extraKnobs: '  testCommand: npm run test:affected' });
+    registryProjects = [{ slug: 'mycode', path: dir, self_repo: true }];
+    // The /admin/git edit stores a per-hive override in hive_settings → it wins.
+    vi.doMock('../../hive-settings-store', () => ({
+      getReleaseGreenCmdOverride: async (_ws: string, slug: string) =>
+        slug === 'mycode' ? 'npm run gate:custom' : null,
+    }));
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('mycode', 'default');
+    expect(res.env.PAPERCUSP_GREEN_CMD).toBe('npm run gate:custom');
+    expect(res.greenCmd).toBe('npm run gate:custom');
+    expect(res.greenCmdOverridden).toBe(true);
   });
 });
 

@@ -45,6 +45,7 @@ import {
   claudeOAuthTokenPath,
   readStoredClaudeOAuthToken,
   applyDefaultClaudeOAuthToken,
+  applyGithubTokenEnv,
   storeClaudeOAuthToken,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
@@ -105,6 +106,26 @@ describe('ompDefaultModelAdvisory (P-004 first-turn overflow guard)', () => {
   it('no advisory when config.yml is absent', () => {
     rmSync(join(home, '.omp', 'agent', 'config.yml'), { force: true });
     expect(ompDefaultModelAdvisory(home)).toBe(null);
+  });
+});
+
+describe('applyGithubTokenEnv (GitHub MCP plugin token)', () => {
+  it('exports the gh token into env when unset', () => {
+    const env: Record<string, string> = {};
+    applyGithubTokenEnv(env, { runGh: () => ({ status: 0, stdout: 'gho_abc123\n' }) });
+    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('gho_abc123');
+  });
+  it('leaves an already-set token untouched', () => {
+    const env: Record<string, string> = { GITHUB_PERSONAL_ACCESS_TOKEN: 'preset' };
+    applyGithubTokenEnv(env, { runGh: () => ({ status: 0, stdout: 'gho_other' }) });
+    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('preset');
+  });
+  it('fail-soft when gh errors or is logged out (env unchanged)', () => {
+    const env: Record<string, string> = {};
+    applyGithubTokenEnv(env, { runGh: () => ({ status: 1, stdout: '' }) });
+    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBeUndefined();
+    applyGithubTokenEnv(env, { runGh: () => { throw new Error('no gh'); } });
+    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBeUndefined();
   });
 });
 
