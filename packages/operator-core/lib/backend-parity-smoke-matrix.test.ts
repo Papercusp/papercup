@@ -107,19 +107,19 @@ describe('BACKEND_PARITY_SMOKE_MATRIX', () => {
     ]);
   });
 
-  it('keeps account routing fail-closed for backends without provider adapters', () => {
+  it('marks account routing supported for claude, codex AND omp (omp via the models.yml gateway provider, D-006)', () => {
     const row = BACKEND_PARITY_SMOKE_MATRIX.find(
       (candidate) => candidate.area === 'gateway-account-pin-fail-closed',
     );
     expect(row?.capabilities).toEqual(
       expect.arrayContaining([
-        { backend: 'omp', feature: 'account-pinning', state: 'unsupported' },
-        { backend: 'omp', feature: 'gateway-routing', state: 'unsupported' },
+        { backend: 'omp', feature: 'account-pinning', state: 'supported' },
+        { backend: 'omp', feature: 'gateway-routing', state: 'supported' },
       ]),
     );
     expect(accountProviderForInteractiveBackend('claude')).toBe('claude');
     expect(accountProviderForInteractiveBackend('codex')).toBe('codex');
-    expect(accountProviderForInteractiveBackend('omp')).toBeNull();
+    expect(accountProviderForInteractiveBackend('omp')).toBe('claude');
   });
 
   it('keeps retired brain pinning fail-closed for every backend', () => {

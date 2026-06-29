@@ -57,6 +57,7 @@ const NOW = 1_700_000_000_000;
 async function signedAnnounce(
   hiveId: string,
   visibility: HiveVisibility,
+  extra: { member_links?: string[]; hive_pubkey?: string } = {},
 ): Promise<Awaited<ReturnType<typeof buildHiveAnnounce>>> {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const pubkey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
@@ -72,6 +73,8 @@ async function signedAnnounce(
       owner_device_pubkey: pubkey,
       attestation_gist_id: 'g',
       member_topics: [],
+      ...(extra.member_links ? { member_links: extra.member_links } : {}),
+      ...(extra.hive_pubkey ? { hive_pubkey: extra.hive_pubkey } : {}),
       visibility,
       created_at: NOW - 1,
       ts: NOW,
@@ -226,6 +229,72 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
     await wiring.stop();
   });
 
+  it('canonical-hive host advertises on the BAKED invite secret, overriding a drifted meta secret (WI-867 a)', async () => {
+    const { deriveInviteTopic } = await import('./sync/hyperbee/derive-hive-topic');
+    const prevPub = process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY;
+    const prevSec = process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
+    process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = 'CANON_PUBKEY_B64';
+    process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = 'baked-canonical-secret';
+    try {
+      const f = fakeSwarm();
+      const dir = new HiveDirectory(fakeDirDeps());
+      const wiring = await wireHiveDirectoryAtBoot({
+        swarm: f.swarm,
+        keychainId: 'kc',
+        owner: ownerIdentity(),
+        // The canonical hive — matched by its real pubkey — but its persisted meta
+        // secret has DRIFTED to the old random value (the WI-867 failure).
+        ownedHives: [
+          meta({
+            hiveId: 'papercusp',
+            visibility: 'invite',
+            inviteSecret: 'drifted-old-secret',
+            hivePubkey: 'CANON_PUBKEY_B64',
+          }),
+        ],
+        dir,
+      });
+      // It joined the BAKED secret's topic (what fresh installs listen on), NOT the drifted one.
+      expect(f.joined).toHaveLength(2); // global + the (overridden) invite topic
+      expect(f.joined[1].equals(deriveInviteTopic('baked-canonical-secret'))).toBe(true);
+      expect(f.joined[1].equals(deriveInviteTopic('drifted-old-secret'))).toBe(false);
+      await wiring.stop();
+    } finally {
+      if (prevPub === undefined) delete process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY;
+      else process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = prevPub;
+      if (prevSec === undefined) delete process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
+      else process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = prevSec;
+    }
+  });
+
+  it('a NON-canonical invite hive (pubkey mismatch) keeps its own meta secret — joiners unaffected', async () => {
+    const { deriveInviteTopic } = await import('./sync/hyperbee/derive-hive-topic');
+    const prevPub = process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY;
+    const prevSec = process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
+    process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = 'CANON_PUBKEY_B64';
+    process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = 'baked-canonical-secret';
+    try {
+      const f = fakeSwarm();
+      const dir = new HiveDirectory(fakeDirDeps());
+      const wiring = await wireHiveDirectoryAtBoot({
+        swarm: f.swarm,
+        keychainId: 'kc',
+        owner: ownerIdentity(),
+        ownedHives: [
+          meta({ hiveId: 'other', visibility: 'invite', inviteSecret: 'others-secret', hivePubkey: 'DIFFERENT_PUBKEY' }),
+        ],
+        dir,
+      });
+      expect(f.joined[1].equals(deriveInviteTopic('others-secret'))).toBe(true); // untouched
+      await wiring.stop();
+    } finally {
+      if (prevPub === undefined) delete process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY;
+      else process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = prevPub;
+      if (prevSec === undefined) delete process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
+      else process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = prevSec;
+    }
+  });
+
   it('an invite hive announces ONLY on its invite topic, never the global one (no leak)', async () => {
     const f = fakeSwarm();
     const dir = new HiveDirectory(fakeDirDeps());
@@ -307,6 +376,24 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       expect(res.found).toBe(true);
       expect(res.hive?.hiveId).toBe('remote-invite');
       expect(res.hive?.visibility).toBe('invite');
+      await wiring.stop();
+    });
+
+    it('surfaces the discovered hive memberLinks + hivePubkey on the confirm (primary join path) — P-004', async () => {
+      const f = fakeSwarm();
+      const dir = new HiveDirectory(fakeDirDeps());
+      const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
+      const frame = await signedAnnounce('mlinks-invite', 'invite', {
+        member_links: ['papercusp://m1', 'papercusp://m2'],
+        hive_pubkey: 'HIVEPUB',
+      });
+      const p = wiring.confirmInviteAnnounce('a-real-secret', { timeoutMs: 2000, pollMs: 20 });
+      await dir.ingestAnnounce(frame);
+      const res = await p;
+      expect(res.found).toBe(true);
+      // The caller can JOIN straight off this — no second listDiscovered + pubkey re-match.
+      expect(res.hive?.memberLinks).toEqual(['papercusp://m1', 'papercusp://m2']);
+      expect(res.hive?.hivePubkey).toBe('HIVEPUB');
       await wiring.stop();
     });
 

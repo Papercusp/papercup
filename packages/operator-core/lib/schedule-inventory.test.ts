@@ -48,6 +48,7 @@ describe('collectScheduleInventory', () => {
         checks: [{ name: 'system-health', intervalMs: 30_000, shed: true }],
         armed: true,
       }),
+      getExternalProcess: () => [], // this test asserts the dbos/routines/in-process union only
     });
 
     expect(rows).toHaveLength(3);
@@ -81,9 +82,48 @@ describe('collectScheduleInventory', () => {
       },
       getManaged: () => [],
       getInProcessChecks: () => ({ checks: [{ name: 'service-health', intervalMs: 60_000 }], armed: false }),
+      getExternalProcess: () => [],
     });
     expect(rows.map((r) => r.source)).toEqual(['in-process']);
     expect(rows[0].armed).toBe(false);
+  });
+
+  it('lists external-process timers (P-014) as source=external-process, per-process, with fire-state null', async () => {
+    const rows = await collectScheduleInventory({
+      getDbosSchedules: async () => [],
+      getRoutines: async () => [],
+      getManaged: () => [],
+      getInProcessChecks: () => ({ checks: [], armed: false }),
+      getExternalProcess: () => [
+        { process: 'inference-gateway', name: 'gw-self-heal', cadence: 'every ~10s', source: 'inference-gateway/gateway.ts' },
+        { process: 'psu-launcher', name: 'psu-supervisor-heartbeat', cadence: 'every ~60s', source: 'apps/operator/scripts/psu-launcher.mjs' },
+      ],
+    });
+    expect(rows.map((r) => r.source)).toEqual(['external-process', 'external-process']);
+    const gw = rows.find((r) => r.name === 'gw-self-heal')!;
+    expect(gw).toMatchObject({
+      source: 'external-process',
+      category: 'external-process',
+      tier: 'ephemeral',
+      cadence: 'every ~10s',
+      armed: null, // live fire-state requires federation (the follow-on)
+      lastFire: null,
+    });
+    expect(gw.detail).toMatchObject({ process: 'inference-gateway', source: 'inference-gateway/gateway.ts' });
+  });
+
+  it('the DEFAULT external-process manifest covers the gateway + watchdog + psu-launcher (D-007)', async () => {
+    const rows = await collectScheduleInventory({
+      getDbosSchedules: async () => [],
+      getRoutines: async () => [],
+      getManaged: () => [],
+      getInProcessChecks: () => ({ checks: [], armed: false }),
+      // no getExternalProcess → the default EXTERNAL_PROCESS_TIMERS manifest is used
+    });
+    const ext = rows.filter((r) => r.source === 'external-process');
+    expect(ext.length).toBeGreaterThanOrEqual(6);
+    const processes = new Set(ext.map((r) => (r.detail as { process: string }).process));
+    expect(processes).toEqual(new Set(['inference-gateway', 'gateway-watchdog', 'psu-launcher']));
   });
 
   it('surfaces live managed timers as source=managed with real fire times, deduping the static in-process fallback', async () => {

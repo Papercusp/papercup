@@ -29,6 +29,7 @@ import { getHiveDirectory, setHiveDirectoryTransport } from './hive-directory-de
 import { isHiveUnlistFrame } from './hive-directory';
 import { publishHiveToDirectory, type HiveDirectoryMeta, type HiveOwnerIdentity } from './hive-publish';
 import type { HiveDirectory } from './hive-directory';
+import { bakedCanonicalHiveInvite } from './harness/papercusp-hive-join';
 
 /** Default re-announce cadence (5 min) — keeps a hive fresh under the TTL. */
 export const DEFAULT_REANNOUNCE_MS = 5 * 60 * 1000;
@@ -59,8 +60,11 @@ export interface WireHiveDirectoryOpts {
 export interface InviteAnnounceConfirm {
   /** A verified invite hive announced on this secret's topic within the wait. */
   found: boolean;
-  /** The discovered hive, when found (for an honest "Found 'X' — joining" copy). */
-  hive?: { hiveId: string; title: string; visibility: string };
+  /** The discovered hive, when found (for an honest "Found 'X' — joining" copy).
+   *  Carries the joiner-side memberLinks + hivePubkey so the caller can JOIN straight
+   *  off the confirm, instead of a second listDiscovered lookup + pubkey re-match
+   *  (which fails when the owner's actual pubkey differs from the baked one) — P-004. */
+  hive?: { hiveId: string; title: string; visibility: string; memberLinks?: string[]; hivePubkey?: string };
   /** Swarm peers currently paired on the invite topic (0 = nobody is home — the
    *  announce can never arrive). Informational; `found` is the decision. */
   peersOnTopic: number;
@@ -97,6 +101,20 @@ export interface HiveDirectoryWiring {
 
 export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Promise<HiveDirectoryWiring> {
   const dir = opts.dir ?? getHiveDirectory();
+
+  // Canonical-hive host (WI-867 cause (a)): the box that OWNS the canonical `papercusp`
+  // hive must advertise it on the BAKED invite secret — the exact discovery topic fresh
+  // installs listen on — overriding any drifted/missing meta secret. The old share path
+  // minted a RANDOM per-device secret, so the host announced on a topic nobody was
+  // joined to and every clean-install join timed out. We match the canonical hive by its
+  // real Ed25519 pubkey (enriched onto each owned meta), so a JOINER box (which does not
+  // OWN the canonical hive) is never affected.
+  const baked = bakedCanonicalHiveInvite();
+  const ownedHives: HiveDirectoryMeta[] = (opts.ownedHives ?? []).map((h) =>
+    baked && h.hivePubkey === baked.pubkeyBase64
+      ? { ...h, visibility: 'invite', inviteSecret: baked.inviteSecret }
+      : h,
+  );
 
   // 0. Hydrate the discovered set from the PG offline cache FIRST, so the
   //    browse list answers "what did I last see" before the swarm reconnects
@@ -142,7 +160,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
 
   // 1b. Each owned INVITE hive's invite topic, so its announce has a transport
   //     AND we hear other announces on that invite topic.
-  for (const hive of opts.ownedHives ?? []) {
+  for (const hive of ownedHives) {
     if (hive.visibility === 'invite' && hive.inviteSecret) {
       try {
         gossip.joinTopic(deriveInviteTopic(hive.inviteSecret));
@@ -173,7 +191,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
   setHiveDirectoryTransport(transport, opts.keychainId, (topicHex) => gossip.openChannelCount(topicHex));
 
   // 3. Register + announce owned hives (transport is set, so public + invite go out).
-  for (const hive of opts.ownedHives ?? []) {
+  for (const hive of ownedHives) {
     try {
       await publishHiveToDirectory(dir, hive, opts.owner);
     } catch (e) {
@@ -221,11 +239,20 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
           .filter((h) => h.visibility === 'invite')
           .map((h) => h.hiveId),
       );
-      const findFresh = (): { hiveId: string; title: string; visibility: string } | null => {
+      const findFresh = (): InviteAnnounceConfirm['hive'] | null => {
         const h = dir
           .listDiscoveredHives()
           .find((d) => d.visibility === 'invite' && !seen.has(d.hiveId));
-        return h ? { hiveId: h.hiveId, title: h.title, visibility: h.visibility } : null;
+        return h
+          ? {
+              hiveId: h.hiveId,
+              title: h.title,
+              visibility: h.visibility,
+              // Surface the join targets so the caller skips the listDiscovered re-match.
+              ...(h.memberLinks ? { memberLinks: h.memberLinks } : {}),
+              ...(h.hivePubkey ? { hivePubkey: h.hivePubkey } : {}),
+            }
+          : null;
       };
       const deadline = Date.now() + timeoutMs;
       for (;;) {

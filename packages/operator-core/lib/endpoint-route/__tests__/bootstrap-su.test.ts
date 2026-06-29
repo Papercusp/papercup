@@ -527,14 +527,17 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/gateway is off/i);
   });
 
-  it('OMP account pinning fails closed from the backend capability matrix before launch', async () => {
+  it('OMP account pinning routes through the gateway (D-006): the account-id signal, not the claude ANTHROPIC_BASE_URL env', async () => {
     getFlagMock.mockResolvedValue(true);
     const r = await pin('aviynw6', 'omp');
-    expect(r.env).toEqual({});
-    expect(r.accountId).toBeNull();
-    expect(r.notice).toMatch(/account pinning is unsupported for omp/i);
-    expect(r.notice).toMatch(/not implemented/i);
-    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+    // omp consumes PAPERCUSP_ACCOUNT_ID via its per-session models.yml — it must NOT
+    // get the claude-CLI gatewaySpawnEnv (ANTHROPIC_BASE_URL/ANTHROPIC_CUSTOM_HEADERS).
+    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'aviynw6' });
+    expect(r.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    expect(r.accountId).toBe('aviynw6');
+    expect(r.provider).toBe('claude');
+    expect(r.notice).toMatch(/OMP routed through the inference gateway/i);
+    expect(loadAccountPoolMock).toHaveBeenCalled();
   });
 
   it('unknown account (not in pool) → fail-soft notice', async () => {
@@ -642,14 +645,13 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     expect(r.pool).toEqual(['codex-main']);
   });
 
-  it('OMP choices are hidden with the matrix unsupported reason', async () => {
+  it('OMP choices resolve to the claude account pool (omp pins claude accounts, D-006)', async () => {
     getFlagMock.mockResolvedValue(true);
     const r = await choices('omp');
-    expect(r.gatewayOn).toBe(false);
-    expect(r.pool).toEqual([]);
-    expect(r.provider).toBeNull();
-    expect(r.unsupportedReason).toMatch(/not implemented/i);
-    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+    expect(r.gatewayOn).toBe(true);
+    expect(r.provider).toBe('claude');
+    expect(r.unsupportedReason).toBeUndefined();
+    expect(loadAccountPoolMock).toHaveBeenCalled();
   });
 
   it('GET /options surfaces the accounts field (empty when gateway off)', async () => {

@@ -164,9 +164,9 @@ export const BACKEND_PARITY_SMOKE_MATRIX: readonly BackendParitySmokeRow[] = [
   {
     id: 'gateway-account-pin-fail-closed',
     area: 'gateway-account-pin-fail-closed',
-    title: 'Gateway/account pinning is supported for Claude and Codex, and fails closed for OMP',
+    title: 'Gateway/account pinning is supported for Claude, Codex, and OMP',
     backends: ['claude', 'codex', 'omp'],
-    requirement: 'launchers only emit account routing for providers with both account pinning and gateway routing',
+    requirement: 'launchers only emit account routing for providers with both account pinning and gateway routing; OMP routes via a per-session models.yml gateway provider (omp-account-pinning-gateway D-006)',
     coverage: [
       { kind: 'vitest', path: 'packages/operator-core/lib/backend-feature-capabilities.test.ts' },
       { kind: 'vitest', path: 'packages/operator-core/lib/deployment/account-spawn-routing.test.ts' },
@@ -177,8 +177,8 @@ export const BACKEND_PARITY_SMOKE_MATRIX: readonly BackendParitySmokeRow[] = [
       { backend: 'claude', feature: 'gateway-routing', state: 'supported' },
       { backend: 'codex', feature: 'account-pinning', state: 'supported' },
       { backend: 'codex', feature: 'gateway-routing', state: 'supported' },
-      { backend: 'omp', feature: 'account-pinning', state: 'unsupported' },
-      { backend: 'omp', feature: 'gateway-routing', state: 'unsupported' },
+      { backend: 'omp', feature: 'account-pinning', state: 'supported' },
+      { backend: 'omp', feature: 'gateway-routing', state: 'supported' },
     ],
   },
   {

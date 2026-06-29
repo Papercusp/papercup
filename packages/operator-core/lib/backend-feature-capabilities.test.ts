@@ -108,16 +108,19 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
     }
   });
 
-  it('keeps OMP gateway/account work capability-gated until its provider adapter exists', () => {
-    expect(backendFeatureCapability('omp', 'account-pinning').state).toBe('unsupported');
-    expect(backendFeatureCapability('omp', 'gateway-routing').unsupportedReason).toMatch(/not implemented/i);
+  it('marks OMP gateway/account routing supported via the models.yml gateway provider (D-006)', () => {
+    expect(backendFeatureCapability('omp', 'account-pinning').state).toBe('supported');
+    expect(backendFeatureCapability('omp', 'gateway-routing').state).toBe('supported');
+    expect(backendFeatureCapability('omp', 'settings-diagnostics').state).toBe('supported');
   });
 
   it('provides a reusable fail-closed guard reason for live launcher paths', () => {
     expect(backendFeatureGuard('claude', 'account-pinning')).toMatchObject({ supported: true, reason: null });
-    expect(backendFeatureGuard('omp', 'account-pinning')).toMatchObject({
+    // OMP account-pinning is now supported (D-006); native-fork remains a real CLI gap → fail-closed guard.
+    expect(backendFeatureGuard('omp', 'account-pinning')).toMatchObject({ supported: true, reason: null });
+    expect(backendFeatureGuard('omp', 'native-fork')).toMatchObject({
       supported: false,
-      reason: expect.stringMatching(/not implemented/i),
+      reason: expect.stringMatching(/fork/i),
     });
   });
 
@@ -127,9 +130,9 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
     expect(interactiveBackendFromSpawnBackend('omp')).toBe('omp');
   });
 
-  it('derives account providers only for backends with supported pinning + routing', () => {
+  it('derives account providers for backends with supported pinning + routing (omp pins claude accounts, D-006)', () => {
     expect(accountProviderForInteractiveBackend('claude')).toBe('claude');
     expect(accountProviderForInteractiveBackend('codex')).toBe('codex');
-    expect(accountProviderForInteractiveBackend('omp')).toBeNull();
+    expect(accountProviderForInteractiveBackend('omp')).toBe('claude');
   });
 });

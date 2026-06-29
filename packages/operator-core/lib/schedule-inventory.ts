@@ -21,7 +21,7 @@ import { listDbosScheduledWorkflows, type DbosScheduledEntry } from './dbos/dbos
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
 import { listManaged, type ManagedEntry } from '@papercusp/scheduled-registry';
 
-export type ScheduleSource = 'dbos' | 'routines' | 'in-process' | 'managed';
+export type ScheduleSource = 'dbos' | 'routines' | 'in-process' | 'managed' | 'external-process';
 export type ScheduleScope = 'operator' | 'harness';
 /** Execution mechanism (D-006): durable = DBOS-backed; ephemeral = in-process setInterval. */
 export type ScheduleTier = 'durable' | 'ephemeral';
@@ -71,6 +71,38 @@ export interface InProcessChecksResult {
   armed: boolean;
 }
 
+/**
+ * A bespoke recurring timer in a SEPARATE process (NOT the operator host registry) — P-014.
+ * Listed in the inventory for VISIBILITY; its live fire-state (armed/last-fire) requires
+ * per-process federation (the follow-on, once each process exposes its managed-timer list over
+ * its own admin/IPC), so until then armed/lastFire are null. Source of truth = each process's code.
+ */
+export interface ExternalProcessTimer {
+  /** The owning process — the per-process sub-list grouping (D-007). */
+  process: string;
+  name: string;
+  /** Human cadence where statically known, else '(external)'. */
+  cadence: string;
+  /** Repo source location the timer lives at. */
+  source: string;
+}
+
+/**
+ * STATIC manifest of the known external-process timers (mirrors P-009 / D-007). These run in the
+ * inference gateway (:8788), its standalone systemd watchdog, and the psu-launcher — all
+ * allow-listed from the host `check-no-raw-setinterval` guard. This static list is the plan's
+ * OR-clause ("list each as category 'external-process'"); LIVE federation (real fire-state over
+ * each process's admin/IPC) is the documented follow-on that replaces it.
+ */
+export const EXTERNAL_PROCESS_TIMERS: ExternalProcessTimer[] = [
+  { process: 'inference-gateway', name: 'gateway-serviceable-admission-clamp', cadence: 'every ~2s', source: 'packages/operator-core/lib/inference-gateway/gateway.ts' },
+  { process: 'inference-gateway', name: 'gateway-self-heal', cadence: 'every ~10s', source: 'packages/operator-core/lib/inference-gateway/gateway.ts' },
+  { process: 'inference-gateway', name: 'gateway-readiness-probe', cadence: '(external)', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
+  { process: 'inference-gateway', name: 'gateway-reload-check', cadence: '(external)', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
+  { process: 'gateway-watchdog', name: 'gateway-watchdog-poll', cadence: 'every ~15s', source: 'packages/operator-core/lib/inference-gateway/watchdog.mjs' },
+  { process: 'psu-launcher', name: 'psu-supervisor-heartbeat', cadence: 'every ~60s', source: 'apps/operator/scripts/psu-launcher.mjs' },
+];
+
 export interface ScheduleInventoryDeps {
   getDbosSchedules: () => Promise<DbosScheduledEntry[]>;
   getRoutines: () => Promise<RoutineRow[]>;
@@ -78,6 +110,8 @@ export interface ScheduleInventoryDeps {
   getManaged: () => ManagedEntry[];
   /** STATIC fallback: the known in-process sweeps as config (source 'in-process'), for checks not armed in THIS process. */
   getInProcessChecks: () => InProcessChecksResult;
+  /** STATIC manifest of separate-process timers (source 'external-process', P-014); live fire-state requires federation (follow-on). */
+  getExternalProcess: () => ExternalProcessTimer[];
 }
 
 const iso = (d: Date | null | undefined): string | null =>
@@ -141,6 +175,7 @@ export async function collectScheduleInventory(
   const getRoutines = deps.getRoutines ?? defaultGetRoutines;
   const getChecks = deps.getInProcessChecks ?? defaultGetInProcessChecks;
   const getManaged = deps.getManaged ?? (() => listManaged());
+  const getExternal = deps.getExternalProcess ?? (() => EXTERNAL_PROCESS_TIMERS);
 
   const [dbos, routines] = await Promise.all([
     getDbos().catch(() => [] as DbosScheduledEntry[]),
@@ -157,6 +192,12 @@ export async function collectScheduleInventory(
     managed = getManaged();
   } catch {
     managed = [];
+  }
+  let external: ExternalProcessTimer[];
+  try {
+    external = getExternal();
+  } catch {
+    external = [];
   }
 
   const rows: ScheduleInventoryRow[] = [];
@@ -247,6 +288,27 @@ export async function collectScheduleInventory(
       nextFire: null,
       lastError: null,
       detail: { intervalMs: c.intervalMs, shed: c.shed ?? false, fireOnArm: c.fireOnArm ?? false },
+    });
+  }
+
+  // source 'external-process' — bespoke timers in SEPARATE processes (P-014): the inference
+  // gateway, its standalone watchdog, the psu-launcher. Listed for VISIBILITY (the per-process
+  // sub-list is detail.process); armed/lastFire are null because live fire-state requires the
+  // per-process federation follow-on.
+  for (const e of external) {
+    rows.push({
+      source: 'external-process',
+      scope: 'operator',
+      tier: 'ephemeral',
+      category: 'external-process',
+      name: e.name,
+      installSlug: null,
+      cadence: e.cadence,
+      armed: null,
+      lastFire: null,
+      nextFire: null,
+      lastError: null,
+      detail: { process: e.process, source: e.source, note: 'static manifest — live fire-state requires P-014 federation' },
     });
   }
 

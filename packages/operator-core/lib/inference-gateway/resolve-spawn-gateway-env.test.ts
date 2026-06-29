@@ -95,10 +95,21 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(h.supportsBearer).toHaveBeenCalledWith('file:/codex-auth.json');
   });
 
-  test('OMP backend → unsupported provider account routing; no gateway env and no account selection', async () => {
+  test('OMP backend → routes via PAPERCUSP_ACCOUNT_ID (claude pool), NOT the claude ANTHROPIC_BASE_URL env (D-006)', async () => {
     h.getFlag.mockResolvedValue(true);
-    expect(await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'omp' })).toEqual({});
-    expect(h.selectSpawnAccount).not.toHaveBeenCalled();
+    h.selectSpawnAccount.mockResolvedValue('claude-main');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'omp' });
+    // omp consumes the pin via its per-session models.yml — only the account-id signal,
+    // never the claude-CLI gatewaySpawnEnv (ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS).
+    expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'claude-main' });
+    expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'claude');
+  });
+
+  test('OMP backend + no account selected → {} (nothing to pin; never an ANTHROPIC_BASE_URL leak)', async () => {
+    h.getFlag.mockImplementation(async (flag: string) => flag === 'inference-gateway'); // multi-account OFF
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp' });
+    expect(env).toEqual({});
   });
 
   test('Codex backend + multi-account OFF → {} — codex needs an account pin; no Anthropic base URL leaks', async () => {
