@@ -900,6 +900,21 @@ export function runBootstrap(): void {
 
         const { armInProcessPeriodicChecks } = await import('@papercusp/operator-core/lib/dbos/in-process-periodic');
         armInProcessPeriodicChecks();
+
+        // Ephemeral blueprint cadence tier (schedule-inventory-and-ephemeral-tier-2026-06-26 P-012 / D-006):
+        // arm each ACTIVE ephemeral routine as an in-process managed timer. Single-owner: the same
+        // backgroundWorkers gate as the sweeps above, AND never on a utility host (the request/util
+        // tier owns no schedules). Non-fatal — a query/arm failure must not block boot.
+        if (!utilityHostEnabled()) {
+          try {
+            const { armEphemeralExecutor, productionEphemeralExecutorDeps } = await import(
+              '@papercusp/operator-core/lib/dbos/ephemeral-executor'
+            );
+            await armEphemeralExecutor(productionEphemeralExecutorDeps());
+          } catch (err) {
+            console.warn('[ephemeral-executor] arm failed (non-fatal):', err instanceof Error ? err.message : err);
+          }
+        }
       } catch (err) {
         console.warn('[in-process-periodic] arm failed (non-fatal):', err instanceof Error ? err.message : err);
       }
