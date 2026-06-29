@@ -400,6 +400,26 @@ export default defineTool({
       }
     }
 
+    // 5a-bis. per-hive-git-and-release-gate P-018: a code MEMBER (e.g. a create_from_repo
+    //     clone like oddsmith) IS the hive's code repo — seed its staging→main
+    //     green-checkpoint too (the member-side equivalent of the self_repo home's step 6f).
+    //     FLAG-GATED (PER_HIVE_RELEASE_GATE, default-OFF) + self-gating (seedHiveReleaseRoutines
+    //     skips non-coding / repo-less / the operator-home), so a coding member gates by
+    //     default once the flag is on. Best-effort — never fails the create.
+    if (hiveMembership) {
+      try {
+        const { seedHiveReleaseRoutines } = await import('../../harness/routines/seed-hive-release-routines');
+        const { activeWorkspaceId } = await import('../../workspace-registry');
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { sql } = getOrgPg();
+        await seedHiveReleaseRoutines({ sql, workspaceId: activeWorkspaceId(), hiveSlug: args.slug });
+      } catch (e) {
+        console.warn(
+          `[harness:create] release-routine seed failed (${args.slug}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
     // 5b. Doc-integrity TWIN of the git-sync seed (owner 2026-06-22): a repo harness
     //     inherits doc-drift tracking, so a NEW coding hive is doc-honest FROM BIRTH —
     //     its existing docs are registered as tracked records now, and the post-sync

@@ -197,6 +197,20 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
   }
 
   const parentDir = opts.parentDir ?? join(homedir(), '.papercusp', 'hives');
+  // Fresh-install fix (shared-hive-member-content-federation D-035): on a brand-new
+  // machine the DEFAULT hive-home parent (~/.papercusp/hives) does not exist yet, and
+  // initLocalHarnessDir hard-fails ('parent_missing') rather than creating it — so the
+  // FIRST hive create/from-repo on a clean install errors ("Parent directory does not
+  // exist: …/.papercusp/hives"; pinned live on a fresh Hetzner VM). Ensure the default
+  // parent exists. A caller-PROVIDED parentDir keeps the existsSync guard (intentional —
+  // never auto-create an arbitrary user-named path).
+  if (!opts.parentDir) {
+    try {
+      mkdirSync(parentDir, { recursive: true });
+    } catch {
+      // best-effort — initLocalHarnessDir still guards + surfaces a clear error.
+    }
+  }
   const dest = linkExisting
     ? resolvePath(opts.existingPath!.trim())
     : resolvePath(join(parentDir, opts.slug));

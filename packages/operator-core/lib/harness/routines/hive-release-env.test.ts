@@ -81,6 +81,13 @@ describe('resolveHiveReleaseGate', () => {
     expect(gate?.testCommand).toBe('npm run test:ci');
     expect(gate?.greenCmd).toBeNull(); // explicit greenCmd unset → caller falls back to testCommand
   });
+
+  it('a coding MEMBER blueprint (coding-factory — no explicit releaseGate) gates by default (P-017 derived)', async () => {
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    // coding-factory carries no releaseGate knob but IS a code repo (requiresRepo, repo-commit
+    // output) — the derived rule enables it; the member is what create_from_repo clones run.
+    expect(resolveHiveReleaseGate(makeHiveDir('coding-factory'))?.enabled).toBe(true);
+  });
 });
 
 describe('resolveHiveReleaseEnv', () => {
@@ -100,15 +107,20 @@ describe('resolveHiveReleaseEnv', () => {
     expect(res.reason).toBe('gate_disabled');
   });
 
-  it('no_repo for a coding hive without a .git (or without self_repo)', async () => {
+  it('no_repo only when the checkout has no .git (a metadata-only home)', async () => {
     const noGit = makeHiveDir('coding', { git: false });
     registryProjects = [{ slug: 'c1', path: noGit, self_repo: true }];
     const { resolveHiveReleaseEnv } = await import('./hive-release-env');
     expect((await resolveHiveReleaseEnv('c1', 'default')).reason).toBe('no_repo');
+  });
 
+  it('a code MEMBER (has .git, self_repo NOT set) IS gated — P-017 code-in-member', async () => {
     const withGit = makeHiveDir('coding', { git: true });
-    registryProjects = [{ slug: 'c2', path: withGit, self_repo: false }]; // self_repo NOT set
-    expect((await resolveHiveReleaseEnv('c2', 'default')).reason).toBe('no_repo');
+    registryProjects = [{ slug: 'c2', path: withGit, self_repo: false }]; // a member, not a self_repo home
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('c2', 'default');
+    expect(res.enabled).toBe(true);
+    expect(res.env.PAPERCUSP_INTEGRATION_ROOT).toBe(withGit);
   });
 
   it('operator-home slug → enabled with an EMPTY overlay (exact current behavior preserved)', async () => {

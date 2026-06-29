@@ -54,6 +54,18 @@ test('gatewaySpawnEnv — with an accountId emits the x-papercusp-account routin
   });
 });
 
+test('gatewaySpawnEnv — hardPin adds the x-papercusp-account-pin: hard marker (only with an accountId) (account-hard-pin-2026-06-29)', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  assert.deepEqual(gatewaySpawnEnv(true, { accountId: 'acct-x', hardPin: true }), {
+    [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:8788',
+    ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-account: acct-x\nx-papercusp-account-pin: hard',
+  });
+  // hardPin without an accountId is meaningless → no pin marker (nothing to pin to)
+  assert.equal(gatewaySpawnEnv(true, { hardPin: true }).ANTHROPIC_CUSTOM_HEADERS, undefined);
+  // a SOFT pin (no hardPin) is unchanged — the bee path never emits the marker
+  assert.equal(gatewaySpawnEnv(true, { accountId: 'acct-x' }).ANTHROPIC_CUSTOM_HEADERS, 'x-papercusp-account: acct-x');
+});
+
 test('gatewaySpawnEnv — no accountId sets no routing header; disabled ignores the accountId (P-004)', () => {
   delete process.env.PAPERCUSP_GATEWAY_PORT;
   assert.equal(gatewaySpawnEnv(true).ANTHROPIC_CUSTOM_HEADERS, undefined);

@@ -130,6 +130,45 @@ export function runBootstrap(): void {
     })();
   }
 
+  // [dogfood-silent-canonical-hive-join P-017 / D-006/D-007/D-009] Install-time
+  // provisioning of the LOCAL env operators (dev :3270 / prod :3070 / staging :3170)
+  // from the already-cloned `papercup` source, so the cross-platform env switcher
+  // (EnvSwitcherBar) — which self-hides on a single-operator install — lights up.
+  // DEFAULT-OFF + ships dark: gated on PAPERCUSP_PROVISION_ENV_OPERATORS=1 (the idiom of
+  // the other boot toggles — PAPERCUSP_DBOS_ENABLE / PAPERCUSP_GIT_EXPORT_COMMIT) AND
+  // PAPERCUSP_DESKTOP=1 (never hijack a dev/server operator). The spawn path is
+  // toolchain-dependent and only end-to-end verifiable on a real packaged build (D-009 —
+  // the verify is folded into P-008/P-010); a release build flips it on by exporting the
+  // env before the sidecar build (mirroring the PAPERCUP_DOGFOOD_HIVE_* injection in
+  // bin/release-local.sh). SAFE: every operator it spawns is REQUEST-ONLY
+  // (PAPERCUSP_BACKGROUND_WORKERS=0) so the EI-126 single-writer invariant holds — only
+  // THIS primary runs the shared-DB background machinery. Idempotent (skips ports already
+  // served + this operator's own), graceful (missing tree/toolchain ⇒ that env is skipped),
+  // fire-and-forget + non-fatal (a failure can never wedge boot; the launcher swallows its
+  // own per-env errors). The launch is deferred ~20s so the PRIMARY's migrations + substrate
+  // boot win the race against the request-only siblings (no cold-boot migration contention).
+  if (
+    process.env.PAPERCUSP_DESKTOP === '1' &&
+    process.env.PAPERCUSP_PROVISION_ENV_OPERATORS === '1'
+  ) {
+    const armEnvOperators = setTimeout(() => {
+      void (async () => {
+        try {
+          const { launchEnvOperators } = await import(
+            '@papercusp/operator-core/lib/harness/env-operator-launcher'
+          );
+          const res = await launchEnvOperators();
+          console.log(
+            `[env-operators] provisioning: spawned=${res.spawned.length} skipped=${res.skipped.length}`,
+          );
+        } catch (e) {
+          console.warn('[env-operators] provisioning failed (non-fatal):', (e as Error)?.message ?? e);
+        }
+      })();
+    }, 20_000);
+    armEnvOperators.unref?.();
+  }
+
   // [power] P5-3 of operator-scalability-event-loop-2026-06-16 — detect the power
   // source ONCE and fold onBattery into the resource profile BEFORE the background
   // machinery reads it. Fire-and-forget + first thing at boot so it (a few fast fs

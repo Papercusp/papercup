@@ -62,8 +62,18 @@ export function resolveHiveReleaseGate(hivePath: string): HiveReleaseGate | null
   if (!validation.ok || !validation.blueprint) return null;
   const knobs = (validation.blueprint.knobs ?? {}) as Record<string, unknown>;
   const gate = (knobs.releaseGate ?? {}) as Record<string, unknown>;
+  // GATED when releaseGate.enabled is explicitly true, OR — when the knob is unset — it's a
+  // CODING profile (output.kind:'repo-commit' + requiresRepo). Coding MEMBERS run kind:harness
+  // blueprints (coding-factory / coding-solo) that carry no releaseGate knob but ARE code
+  // repos, so they gate by default; explicit releaseGate.enabled:false (the non-coding `work`
+  // blueprint) opts OUT. (per-hive-git-and-release-gate P-017 — gate code-in-member hives,
+  // not just self_repo homes.)
+  const outputKind =
+    ((validation.blueprint as { output?: { kind?: string } }).output?.kind as string | undefined) ?? 'repo-commit';
+  const codingProfile = outputKind === 'repo-commit' && knobs.requiresRepo !== false;
+  const enabled = gate.enabled === true || (gate.enabled !== false && codingProfile);
   return {
-    enabled: gate.enabled === true,
+    enabled,
     integrationBranch: typeof gate.integrationBranch === 'string' ? gate.integrationBranch : 'staging',
     releaseRef: typeof gate.releaseRef === 'string' ? gate.releaseRef : 'main',
     greenCmd: typeof gate.greenCmd === 'string' ? gate.greenCmd : null,
@@ -106,9 +116,11 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   if (!gate) return disabled('no_blueprint');
   if (!gate.enabled) return disabled('gate_disabled');
 
-  // Belt-and-suspenders (D-002): a hive can only be gated if it actually has a repo —
-  // self_repo marked AND a real .git on disk.
-  const hasRepo = entry.self_repo === true && existsSync(join(entry.path, '.git'));
+  // A harness is gateable when its checkout has a real `.git` — a self_repo HOME (fresh-init
+  // hive) OR a code MEMBER (a create_from_repo clone, e.g. oddsmith). The metadata-only home
+  // (no .git) is correctly excluded — the gate rides the code-bearing harness, not the
+  // control dir. (P-017: gate code-in-member hives, not just self_repo homes.)
+  const hasRepo = existsSync(join(entry.path, '.git'));
   if (!hasRepo) return disabled('no_repo');
 
   // Operator-home (papercusp): EMPTY overlay → the subprocess uses the existing systemd-unit

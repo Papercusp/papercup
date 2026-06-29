@@ -151,6 +151,11 @@ export async function resolveAccountPin(
   requested: string | null | undefined,
   agent: SuAgent = 'claude',
   ownerId?: string,
+  // HARD PIN (account-hard-pin-2026-06-29): when true, the gateway routes this session to its pinned
+  // account with NO failover ever (the operator explicitly chose it). The interactive PSU launcher passes
+  // true (a person picking an account means "use THIS one"); autonomous role spawns leave it false so the
+  // fleet's soft cache-affinity pin (which yields to liveness/load) is unchanged.
+  hardPin: boolean = false,
 ): Promise<{ env: Record<string, string>; notice: string | null; accountId: string | null; provider: BackendAccountProvider | null }> {
   const id = requested?.trim();
   if (!id) return { env: {}, notice: null, accountId: null, provider: null };
@@ -190,8 +195,8 @@ export async function resolveAccountPin(
       return {
         // Pass ownerId so the session ALSO sends x-papercusp-owner (not just the account pin) — this lets the
         // gateway attribute the session's routed account (GET /admin/route → the statusline ⇢ <account> chip).
-        env: { ...gatewaySpawnEnv(true, { accountId: id, ownerId }), PAPERCUSP_ACCOUNT_ID: id },
-        notice: `pinned to account ${id} (routed through the inference gateway).`,
+        env: { ...gatewaySpawnEnv(true, { accountId: id, ownerId, hardPin }), PAPERCUSP_ACCOUNT_ID: id },
+        notice: `pinned to account ${id} (routed through the inference gateway${hardPin ? ', HARD pin — no failover' : ''}).`,
         accountId: id,
         provider,
       };
@@ -526,7 +531,9 @@ const post = defineTool({
 
     // psu-account-chooser: resolve before writing Codex launch artifacts so a Codex
     // account pin can be baked into CODEX_HOME/config.toml.
-    const accountPin = await resolveAccountPin(workspace, body.account, agent, sid);
+    // HARD pin (account-hard-pin-2026-06-29): the interactive PSU launcher pins are STRICT — the operator
+    // explicitly chose this account, so route there with no failover (stricter than the bees' soft pins).
+    const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
     const launchContextPath = body.launch_context?.trim() || null;
     let promptText = spec.promptText;
     if (agent === 'codex' && launchContextPath) {

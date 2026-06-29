@@ -28,9 +28,9 @@
  * a watchdog that throws into its caller guards nothing. DEFAULT-SAFE: when no draft is
  * stale it does nothing (no behavior change).
  *
- * Where the drafts live (storage, verified): the DRAFT row is
- * `harness_shared.harness_plans` under workspace_id='default' (DEFAULT_WORKSPACE_ID —
- * scout pins drafts there so the plan surface sees them, register-scout-action.ts),
+ * Where the drafts live (storage, verified against LIVE data 2026-06-29): the DRAFT row
+ * is `harness_shared.harness_plans` under the HIVE's OWN workspace_id (e.g.
+ * 'papercusp-workspace' — NOT 'default'; the sweep passes the started-hive workspaceId),
  * harness_slug = the hive slug, status='draft', `origin: scout` in the `content`
  * frontmatter, and `updated_at` (auto-bumped on every write — a scout revision off Queen
  * feedback resets the clock, which is correct: the draft was just touched). The
@@ -40,7 +40,6 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { listStartedHives } from '../hive/started';
 import { resolveQueenOwner } from '../hive/placement-watchdog';
 import { recentWatchdogFires, recordFire } from '../hive/watchdog';
@@ -100,13 +99,15 @@ interface DraftRow {
 
 /** Read this hive's scout-routed DRAFT candidates (no time filter — the pure decider
  *  applies the threshold). Scout-origin is read from the plan's own frontmatter
- *  (`origin: scout`), which both scout rails write; drafts live under DEFAULT_WORKSPACE_ID. */
+ *  (`origin: scout`), which both scout rails write. `planWorkspaceId` MUST be the hive's
+ *  OWN workspace — where the scout plan rows actually live (verified 'papercusp-workspace',
+ *  NOT 'default'); the sweep passes the started-hive workspaceId. */
 export async function readScoutDraftCandidates(
   sql: Sql,
+  planWorkspaceId: string,
   installSlug: string,
-  opts: { planWorkspaceId?: string; limit?: number } = {},
+  opts: { limit?: number } = {},
 ): Promise<ScoutDraftCandidate[]> {
-  const planWorkspaceId = opts.planWorkspaceId ?? DEFAULT_WORKSPACE_ID;
   const limit = opts.limit ?? 50;
   const rows = await sql<DraftRow[]>`
     SELECT plan_slug, title,
@@ -180,7 +181,7 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
     for (const { workspaceId, installSlug } of started) {
       try {
-        const candidates = await readScoutDraftCandidates(sql, installSlug);
+        const candidates = await readScoutDraftCandidates(sql, workspaceId, installSlug);
         const stale = selectStaleDrafts(candidates, { now, thresholdMs });
         if (stale.length === 0) continue;
         const alreadyFiredRecently =

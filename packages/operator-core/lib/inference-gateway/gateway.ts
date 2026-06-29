@@ -357,6 +357,14 @@ export const PRIORITY_HEADER = 'x-papercusp-priority';
 /** Header a spawn sets to pin its requests to one pool account for cache affinity
  *  (inference-gateway-multi-credential-routing P-003). Stripped before the upstream forward. */
 export const ACCOUNT_HEADER = 'x-papercusp-account';
+/** Header marking a pin as HARD (operator / PSU-utility pins, account-hard-pin-2026-06-29): value
+ *  `hard` ⇒ route the request to its pinned account with NO failover whatsoever — it never yields to
+ *  liveness/load/stall, never soft-pin-failover, and never rotates off the account in the retry loop.
+ *  The operator EXPLICITLY chose this credential and accepts its latency/limits (an exhausted/stalled
+ *  pin waits or 429s ON the pin rather than serving a different account). Absent / any other value ⇒
+ *  today's SOFT pin (a cache-affinity preference that yields). Bees keep the soft pin unchanged; only
+ *  bootstrap-su's resolveAccountPin sets this. Stripped before the upstream forward. */
+export const ACCOUNT_PIN_HEADER = 'x-papercusp-account-pin';
 /** Response header naming the pool account the gateway ACTUALLY routed a request to. Lets the
  *  caller (psu launcher / bootstrap-su / tests / operator) detect a silent fallback off a pinned
  *  account — e.g. the pin was ignored because the gateway's pool didn't contain it (the
@@ -369,7 +377,7 @@ export const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
 export const OWNER_HEADER = 'x-papercusp-owner';
 const ANTHROPIC_VERSION = '2023-06-01';
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
-const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'x-papercusp-owner', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
+const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'x-papercusp-account-pin', 'x-papercusp-owner', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
 /** The account the gateway currently egresses through — its id + a fresh-token getter. */
@@ -1442,6 +1450,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // all-throttled shed back to this bee for the stall-waker (P-002). Absent ⇒ not wake-able (no-op).
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
     const pinned = (wantAccount && pool.select?.(wantAccount)) || null;
+    // HARD PIN (account-hard-pin-2026-06-29): an operator / PSU-utility pin that must NEVER fail over.
+    // When set (only honored once the pin resolved to a live pool account), every "cache-affinity yields
+    // to liveness/load/stall" branch below is suppressed AND the upstream retry loop never rotates off the
+    // account — the request waits / 429s / 503s ON its pinned credential. The operator explicitly chose
+    // this account and accepts its latency/limits. Soft (bee) pins are unaffected: hardPin stays false for
+    // them, so all guards below are no-ops and their behavior is byte-identical to before.
+    const hardPin = pinned !== null && (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard';
     const poolActive = pool.active();
     // Fault #3 — pinned-but-paced failover. The spawn-side drain selector pins a bee to an account by
     // its cross-process BUDGET projection, which can't see the gateway's LIVE pacing — so it can pin a
@@ -1451,7 +1466,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // short window), serve this request through the pool's active() (failover-walked to a healthy
     // account). The pin still holds for the bee's later requests — each re-checks, so it returns to
     // its per-credential cache once the account recovers.
-    const canFailover = pinned !== null && poolActive.accountId !== pinned.accountId;
+    const canFailover = !hardPin && pinned !== null && poolActive.accountId !== pinned.accountId;
     let active = pinned ?? poolActive;
     let gov = governorForAccount(model, active.accountId);
     if (canFailover && active.accountId === pinned!.accountId && gov.state.pausedUntil > Date.now()) {
@@ -1510,7 +1525,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         active = bestCand;
         gov = bestGov;
       }
-    } else {
+    } else if (!hardPin) {
       // SOFT-PIN FAILOVER (pinned-concentration fix, 2026-06-23, owner-reported "unpinned 10+ sessions fine but
       // PINNED breaks after a few"): a pin is a cache-affinity PREFERENCE, not a hard funnel. Pinning N CONCURRENT
       // sessions onto one account saturates ITS per-account RPM/burst limit while the rest of the pool sits idle,
@@ -1565,7 +1580,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // still ALLOWS it) → acquire with allowSoftPaused so the governor admits it. See the graceful-degradation
     // tier below.
     let serveSoft = false;
-    if (gov.state.pausedUntil > Date.now()) {
+    if (hardPin && gov.state.pausedUntil > Date.now()) {
+      // HARD PIN: never route off the pinned account. If it's only SOFT-paused (predictively near-cap but
+      // still ALLOWED by Anthropic + its egress proxy is up), serve it; a HARD pause falls through to
+      // acquire(maxQueueWaitMs) below, which waits it out or 429s ON the pin — we never fail over.
+      if (gov.softPaused(Date.now()) && (egressPauseUntil.get(active.accountId) ?? 0) <= Date.now()) serveSoft = true;
+    } else if (gov.state.pausedUntil > Date.now()) {
       let soonestPaused = gov.state.pausedUntil;
       let found = false;
       // Best SERVICEABLE soft-paused fallback: predictively paused (still ALLOWED, util < 1) AND its egress
@@ -1656,8 +1676,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // A still-pinned request gets only a SHORT admission wait, then fails over to active() rather than
     // waiting the full maxQueueWaitMs and 429-looping the bee.
     const stillPinned = pinned !== null && active.accountId === pinned.accountId;
-    let release = await gov.acquire(est, { maxWaitMs: stillPinned ? PINNED_FAILOVER_WAIT_MS : maxQueueWaitMs, allowSoftPaused: serveSoft });
-    if (!release && stillPinned) {
+    // HARD PIN waits the FULL queue on its own account (not the short PINNED_FAILOVER_WAIT_MS, which exists
+    // only to fail soft pins over fast) and never fails over on an admission timeout — it 429s on the pin.
+    let release = await gov.acquire(est, { maxWaitMs: stillPinned && !hardPin ? PINNED_FAILOVER_WAIT_MS : maxQueueWaitMs, allowSoftPaused: serveSoft });
+    if (!release && stillPinned && !hardPin) {
       log('warn', `inference-gateway: pinned '${pinned!.accountId}' admission-timeout → failover to active '${poolActive.accountId}'`);
       active = poolActive;
       gov = governorForAccount(model, active.accountId);
@@ -1908,7 +1930,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // would otherwise chain INTERNAL_RETRY_MAX_ATTEMPTS × ~60s stalls and squat the slot for minutes
             // (past the 75s self-heal / 120s watchdog → the restart storm). Past the deadline → fall through
             // to the fast retryable 503 below, freeing the slot so the bee's CLI retries against a recovered pool.
-            if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 && Date.now() < retryDeadlineAt) {
+            if (!hardPin && attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 && Date.now() < retryDeadlineAt) {
               const next = pool.onExhausted(active.accountId, resetAt);
               if (next && next.accountId !== active.accountId) {
                 failovers++;
@@ -2211,6 +2233,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // below (≈1 upstream call/request instead of ~2.4). recordThrottle still fires below (routedAround
               // stays false) — an un-routable bare-burst IS genuine pool-wide saturation, so AIMD shrinks admission.
               bareBurstRotateSuppressed++;
+            } else if (internalRetry.rotate && hardPin) {
+              // HARD PIN: a per-account 429 must NOT rotate off the pin. Leave proceed=false so we fall through
+              // to the bounded transient-WAIT (waits on THIS same account + retries) / absorb / forward below —
+              // a transient throttle is waited out on the pin; a usage cap is forwarded. We never fail over.
             } else if (internalRetry.rotate) {
               const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
               if (next && next.accountId !== active.accountId) {

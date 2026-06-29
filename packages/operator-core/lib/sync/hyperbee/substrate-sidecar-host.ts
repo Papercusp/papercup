@@ -190,6 +190,15 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
 
   const storeMap = new Map<string, StoreRecord>();
   const handoffs = new Map<string, HandoffEntry>();
+  // Send-side wiring is idempotent + retryable (mirrors boot-all.ts
+  // `ensureSendSideWired`): each leg is marked wired ONLY on success and skipped
+  // once wired, keyed by `${workspaceId}::${harnessSlug}`. This is what makes it
+  // SAFE to wire from BOTH `handleBootHarness` (boot) AND `handleRekey` (the
+  // re-key that brings a joined/created harness onto its Hive topic) — a second
+  // drain loop would double-append + double-GC the same outbox. Cleared on close
+  // so a re-boot re-wires (the close-hook stops the prior drain).
+  const outboxWired = new Set<string>();
+  const presenceWired = new Set<string>();
   let nextStoreId = 1;
   let nextConnId = 1;
   let nextHandoffId = 1;
@@ -270,6 +279,13 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       } catch {
         // best-effort: a store that already closed shouldn't fail the RPC
       }
+    }
+    if (rec) {
+      // Forget the send-side-wired flags so a re-boot of the same harness
+      // re-wires (the booted handle's close-hook already stopped its drain).
+      const k = `${rec.workspaceId}::${rec.harnessSlug}`;
+      outboxWired.delete(k);
+      presenceWired.delete(k);
     }
     storeMap.delete(p.storeId);
     return { ok: true };
@@ -395,22 +411,39 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     return { ok: true, ownLogLength: ownLog.length, hlc: stamped.hlc };
   }
 
+  /**
+   * Bring the relocated harness's send-side loops (outbox drain + presence
+   * announce) online — idempotently + retryably (mirrors boot-all.ts
+   * `ensureSendSideWired`). Each leg runs only until it SUCCEEDS, then no-ops;
+   * a failure is LOGGED (never thrown — it must not break boot/rekey) and retried
+   * on the next call. Called from BOTH `handleBootHarness` (boot) and
+   * `handleRekey` (the re-key onto the Hive topic), so the idempotence guard is
+   * what stops a re-key from starting a SECOND drain loop on an already-wired
+   * harness while still wiring one whose boot-time wiring never took.
+   */
   async function ensureRelocatedSendSideWired(handle: BootedHarnessHandle): Promise<void> {
-    try {
-      await wireOutbox(handle);
-    } catch (e) {
-      console.error(
-        `[substrate-sidecar-host] outbox wiring failed for ${handle.workspaceId}::${handle.harnessSlug}:`,
-        e instanceof Error ? e.message : String(e),
-      );
+    const k = `${handle.workspaceId}::${handle.harnessSlug}`;
+    if (!outboxWired.has(k)) {
+      try {
+        await wireOutbox(handle);
+        outboxWired.add(k);
+      } catch (e) {
+        console.error(
+          `[substrate-sidecar-host] outbox wiring failed for ${k}:`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
-    try {
-      await wirePresence(handle);
-    } catch (e) {
-      console.error(
-        `[substrate-sidecar-host] presence wiring failed for ${handle.workspaceId}::${handle.harnessSlug}:`,
-        e instanceof Error ? e.message : String(e),
-      );
+    if (!presenceWired.has(k)) {
+      try {
+        await wirePresence(handle);
+        presenceWired.add(k);
+      } catch (e) {
+        console.error(
+          `[substrate-sidecar-host] presence wiring failed for ${k}:`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
   }
 
@@ -474,6 +507,21 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     const rec = requireRecord(p.storeId);
     if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
     await rec.booted.rekey(p.binding);
+    // EI-521 (WI-971, D-034/D-037): a re-key joins the harness's Hive-pubkey
+    // federation topic IN PLACE (so it peer_connects), and rekeyHarness is the
+    // SOLE production route bringing a JOINED (joinHiveAsView) / from-repo-CREATED
+    // (publishCreatedHive) hive harness onto the Hive topic. In SUBSTRATE_SIDECAR
+    // mode the main-process rekeyHarness SKIPS its own send-side wiring for a
+    // RemoteBootedHarnessHandle (boot-all.ts: `!(handle instanceof
+    // RemoteBootedHarnessHandle)`), delegating to US — but until now the sidecar
+    // only wired the outbox DRAIN in handleBootHarness (boot), NOT here. So the
+    // drain loop never started for those harnesses → substrate_outbox stayed
+    // UNDRAINED forever → content captured but never federated despite
+    // peer_connected (the live cross-machine blocker). Wire it now;
+    // ensureRelocatedSendSideWired is idempotent, so this is a no-op when boot
+    // already wired it (never a second drain loop) and best-effort (it never
+    // throws into the rekey).
+    await ensureRelocatedSendSideWired(rec.booted);
     return { ok: true, rekeyed: true };
   }
 
@@ -632,6 +680,8 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     }
     storeMap.clear();
     handoffs.clear();
+    outboxWired.clear();
+    presenceWired.clear();
   }
 
   return {

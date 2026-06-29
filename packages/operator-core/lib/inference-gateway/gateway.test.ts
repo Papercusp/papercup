@@ -722,6 +722,36 @@ test('Fault #3 — a header-pinned request whose account is paced fails over to 
   resetGovernorRegistry();
 });
 
+test('HARD pin (x-papercusp-account-pin: hard) NEVER fails over off its account — paced pin 429s ON the pin, healthy sibling untouched (account-hard-pin-2026-06-29)', async () => {
+  // The SOFT-pin twin of this is "Fault #3" above: a paced pin yields to a healthy active() → 200 Bearer
+  // healthy-tok. A HARD (operator/PSU) pin must do the OPPOSITE: never touch the healthy sibling — it waits
+  // / 429s ON its own account. Same setup as Fault #3; the ONLY difference is the x-papercusp-account-pin
+  // header. Proves all the cache-affinity-yields-to-liveness branches are suppressed for a hard pin.
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const paced: ActiveAccount = { accountId: 'paced-acct', token: async () => 'paced-tok' };
+  const healthy: ActiveAccount = { accountId: 'healthy-acct', token: async () => 'healthy-tok' };
+  const pool: AccountPool = {
+    active: () => healthy, // a healthy alternative IS available (a soft pin WOULD take it)...
+    onExhausted: () => healthy, // ...and rotation would hand it back
+    select: (id) => (id === 'paced-acct' ? paced : id === 'healthy-acct' ? healthy : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50 });
+  port = await gw.listen(0);
+  getGovernor('anthropic', 'opus', undefined, 'paced-acct').penalize({ retryAfterMs: 60 * 60_000 });
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'paced-acct', 'x-papercusp-account-pin': 'hard' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 429, 'hard pin on a paced account 429s ON the pin (pause >> maxQueueWaitMs) — never fails over');
+  assert.equal(r.headers.get('x-papercusp-routed-account'), 'paced-acct', 'routed-account stays the pinned account, never the healthy sibling');
+  resetGovernorRegistry();
+});
+
 test('Fault #3b — pinned account is paused AND pool.active() hands it back → still walks to a healthy account, NOT a "paced/paused" 429 (owner 2026-06-21)', async () => {
   // The real-world miss: a bee pinned to a 97%-7d account that is PREDICTIVELY paused (governor pause, no
   // 429). The failover pool's exhaustedUntil can't see that, so pool.active() returns the paused pin itself

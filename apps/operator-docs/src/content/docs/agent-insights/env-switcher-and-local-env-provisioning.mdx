@@ -7,6 +7,7 @@ status: active
 documents:
   - packages/operator-core/lib/harness/dev-operators.ts
   - packages/operator-core/lib/harness/env-switcher-prefs.ts
+  - packages/operator-core/lib/harness/env-operator-launcher.ts
   - packages/operator-core/lib/endpoint-route/routes/desktop/dev-operators.ts
   - apps/operator-vite/src/components/env-switcher/EnvSwitcherBar.tsx
   - papercusp-desktop/src-tauri/src/dev_wrapper.rs
@@ -64,13 +65,38 @@ An agent can therefore **see and change** which envs are on:
 The **`release`** env is the immutable escape hatch and can **never** be disabled (the toggle
 and the prefs reader both refuse it).
 
-## Install-time provisioning (P-017 — in progress)
+## Install-time provisioning (P-017) — the launcher
 
-Making the env operators actually exist on a packaged machine is the remaining piece (owner
-chose full parity with per-env disable; D-006/D-007). The non-bundled envs run from the
-**cloned `papercup` source** (which the dogfood already clones), so they require a Node
-toolchain on the machine; provisioning must detect a missing toolchain and present that env
-as unavailable gracefully. The bundled **release** env always works with no toolchain. The
-switcher already lights up envs as they become reachable, so provisioning just needs to start
-the enabled operators — it does not change this contract. End-to-end verification is coupled to
-a real release build (plan items P-008/P-010).
+The launcher that brings the env operators up lives in
+`packages/operator-core/lib/harness/env-operator-launcher.ts` (owner chose full parity with
+per-env disable; D-006/D-007). It spawns each **enabled, not-yet-running** env (dev :3270 /
+prod :3070 / staging :3170) from the **cloned `papercup` source** on its fixed port, sharing the
+one embedded Postgres. `local :3055` (Vite HMR, no operator of its own) and `release` (the
+immutable bundled sidecar) are never spawned from source.
+
+- **Pure planner** — `planEnvOperatorLaunch(...)` decides spawn-or-skip per env with a
+  deterministic reason: `disabled` → `is-self` → `already-reachable` → `no-source-tree` →
+  `no-toolchain` → `spawn`. It is idempotent (an already-served port + this operator's own port
+  are skipped) and graceful (a missing toolchain/source tree marks the env unavailable, never an
+  error). Fully unit-tested (`env-operator-launcher.test.ts`).
+- **Effectful launcher** — `launchEnvOperators(...)` reads the enabled prefs, probes the ports,
+  runs the planner, then spawns each planned operator **staggered** (default 4s, only between
+  real boots) to avoid cold-boot migration contention. Probe / spawn / source-detect / toolchain
+  / tree-prepare are all injected seams.
+- **EI-126 single-writer safety** — every spawned operator is **request-only**
+  (`PAPERCUSP_BACKGROUND_WORKERS=0`, DBOS off, IPC off): only the PRIMARY runs the shared-DB
+  background machinery, so the extra envs can't re-create the double-writer substrate echo. They
+  are reached by top-level navigation, not the primary's IPC fast path.
+
+**Default-OFF, ships dark.** The boot integration (`apps/operator/bin/host-bootstrap.ts`) arms the
+launcher only when `PAPERCUSP_DESKTOP=1` **and** `PAPERCUSP_PROVISION_ENV_OPERATORS=1` (the idiom of
+the other boot toggles — `PAPERCUSP_DBOS_ENABLE`, `PAPERCUSP_GIT_EXPORT_COMMIT`), fire-and-forget +
+non-fatal, deferred ~20s so the primary's migrations/substrate win the boot race. A release build
+turns it on by exporting that env before the sidecar build (mirroring the `PAPERCUP_DOGFOOD_HIVE_*`
+injection in `bin/release-local.sh`). It is dark because the spawn path is toolchain-dependent and
+only **end-to-end** verifiable on a real packaged build (D-009 folds that verify into P-008/P-010).
+
+**Branch differentiation is the release-build refinement.** The default `prepareTree` seam runs each
+env from the detected checkout (enough to light the switcher up: ≥2 reachable operators). Serving
+genuinely different code per env (prod=`main` vs staging=`staging` worktrees) is injected at the
+release-build stage — that, plus the real cross-platform spawn verify, is the P-008/P-010 work.
