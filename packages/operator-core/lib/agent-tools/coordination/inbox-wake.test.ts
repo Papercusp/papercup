@@ -3,6 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./wake-mode', () => ({ resolveWakeMode: vi.fn() }));
 vi.mock('./pending-wakes', () => ({ stagePendingWake: vi.fn() }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
+// Isolate from the LIVE coord roster: resolveBestEffortAgainstRoster resolves a short
+// ownerId PREFIX against coord_presence (owner-2026-06-17), so a real live session whose
+// id starts with a test recipient (e.g. 's-1' ⊂ 's-1782…') would leak into `targets`.
+// Identity-resolve keeps these unit tests deterministic regardless of who is live; the
+// real isSelectorOrWildcard is preserved via importActual.
+vi.mock('./recipient-resolve', async (importActual) => ({
+  ...(await importActual<typeof import('./recipient-resolve')>()),
+  resolveBestEffortAgainstRoster: vi.fn(async (recipients: readonly string[]) => [...recipients]),
+}));
 
 import { wakeRecipients } from './inbox-wake';
 import { resolveWakeMode } from './wake-mode';

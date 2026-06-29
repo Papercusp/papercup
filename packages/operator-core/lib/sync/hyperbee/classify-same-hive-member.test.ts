@@ -62,4 +62,25 @@ describe('classifySameHiveMember', () => {
     expect(decide({ hiveHome: null })).toBe('not-candidate');
     expect(decide({ hiveHome: null, memberDevices: [] })).toBe('not-candidate');
   });
+
+  it('D-023 BUG C: the OWNER ADMITS a verified brand-new joiner on a MISS (no deadlock); a non-owner still buffers', () => {
+    // A cross-slug joiner whose hive_members row does not exist yet (the OWNER is its SOURCE —
+    // join-hive's freeSlug gives the joiner a member slug ≠ the owner's home slug, so its announce
+    // is always out-of-own-scope and lands here as a MISS).
+    const joinerMiss: Partial<Input> = { memberDevices: [] };
+    // Non-owner (or owner-ness unknown) → BUFFER for retry (WI-559, unchanged).
+    expect(decide({ ...joinerMiss })).toBe('miss');
+    expect(decide({ ...joinerMiss, isOwner: false })).toBe('miss');
+    expect(decide({ ...joinerMiss, memberDevices: ['someOtherDevice'], isOwner: false })).toBe('miss');
+    // THE FIX: the OWNER ADMITS so admitAnnouncedPeerAsOwner runs the membership policy + upserts
+    // the row — instead of buffering forever (the open-mode auto-admission deadlock, D-023 BUG C).
+    expect(decide({ ...joinerMiss, isOwner: true })).toBe('admit');
+    expect(decide({ ...joinerMiss, memberDevices: ['someOtherDevice'], isOwner: true })).toBe('admit');
+    // isOwner NEVER widens a non-candidate (own-slug / no hive-home stay not-candidate).
+    expect(decide({ originSlug: BASE.ownSlug, isOwner: true })).toBe('not-candidate');
+    expect(decide({ hiveHome: null, isOwner: true })).toBe('not-candidate');
+    // A KNOWN member is 'admit' regardless of isOwner (the owner-gate only affects a MISS).
+    expect(decide({ isOwner: false })).toBe('admit');
+    expect(decide({ isOwner: true })).toBe('admit');
+  });
 });

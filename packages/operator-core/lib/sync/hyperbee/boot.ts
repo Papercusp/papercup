@@ -565,13 +565,33 @@ export function classifySameHiveMember(input: {
   hiveHome: string | null;
   devicePubkey: string;
   memberDevices: readonly string[];
+  /**
+   * D-023 BUG C — true when THIS box OWNS the hive (holds its private key = the membership
+   * AUTHORITY). On a membership MISS a NON-owner correctly BUFFERS (WI-559: the member's row
+   * will federate IN from the owner momentarily). But the OWNER is the SOURCE of membership —
+   * a brand-new joiner's hive_members row is created by the owner's OWN admit seam
+   * (admitAnnouncedPeerAsOwner → ownerAdmitOrPend → upsertHiveMember), which runs ONLY AFTER
+   * the joiner's LOG is admitted. So an owner that buffers a verified joiner DEADLOCKS: the
+   * row that would admit it is the row the admit would create. A joiner's member-harness slug
+   * differs from the owner's home slug (join-hive freeSlug suffixing — joinHiveAsView), so the
+   * joiner's announce is ALWAYS out of the owner's home-slug scope and reaches here as a MISS.
+   * ADMIT it instead, so the admit seam runs the owner-signed policy (open ⇒ upsert; approval ⇒
+   * pending; banned/revoked already refused upstream by the identity decider's `revoked` set).
+   * This only widens SCOPE — sig + channel-2 binding + revocation are enforced upstream — so it
+   * never weakens security; it closes the open-mode auto-admission gap (the boot.ts admit seam
+   * WI-280 wired was unreachable for a brand-new cross-slug joiner without this).
+   */
+  isOwner?: boolean;
 }): SameHiveDecision {
-  const { originSlug, ownSlug, hiveHome, devicePubkey, memberDevices } = input;
+  const { originSlug, ownSlug, hiveHome, devicePubkey, memberDevices, isOwner } = input;
   // Not a cross-member candidate: absent/own-slug (handled upstream) or no hive home.
   if (!(originSlug != null && originSlug !== ownSlug)) return 'not-candidate';
   if (hiveHome == null) return 'not-candidate';
-  // D-002: admit by AUTHOR IDENTITY — device in set → admit; absent → miss (buffer, not drop).
-  return memberDevices.includes(devicePubkey) ? 'admit' : 'miss';
+  // D-002: admit by AUTHOR IDENTITY — device already in the federated member set → admit.
+  if (memberDevices.includes(devicePubkey)) return 'admit';
+  // D-023 BUG C: the OWNER must not buffer a verified brand-new joiner (deadlock) — admit so its
+  // own admit seam runs the policy + upserts the row. A non-owner → miss (buffer for retry).
+  return isOwner ? 'admit' : 'miss';
 }
 
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
@@ -1675,19 +1695,32 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
     }
     const memberDevices = await loadHiveMembers(myHiveHome);
+    const isKnownMember = memberDevices.includes(frame.device_pubkey);
+    // D-023 BUG C owner-gate: on a membership MISS, am I the OWNER of this hive (hold its private
+    // key)? The owner must ADMIT a verified brand-new joiner (whose member slug is out of our
+    // home-slug scope) instead of buffering it, else admitAnnouncedPeerAsOwner (the upsert seam)
+    // never runs and the open-mode auto-admission deadlocks. loadHivePubkey is the SAME owner
+    // self-gate admitAnnouncedPeerAsOwner uses, so admit-here ⇒ upsert-there agree. Resolved ONLY
+    // on a miss (skip the keychain read on the common already-a-member path).
+    const isOwner =
+      !isKnownMember &&
+      !!(await import('../../identity/hive-keypair')
+        .then((m) => m.loadHivePubkey(opts.workspaceId, myHiveHome))
+        .catch(() => null));
     const decision = classifySameHiveMember({
       originSlug,
       ownSlug: slug,
       hiveHome: myHiveHome,
       devicePubkey: frame.device_pubkey,
       memberDevices,
+      isOwner,
     });
     if (decision === 'admit') {
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,
         'announce_admitted',
-        `same_hive_member origin=${originSlug} hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
+        `${isKnownMember ? 'same_hive_member' : 'owner_admit_joiner'} origin=${originSlug} hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
       );
       return admitPeer(frame);
     }
