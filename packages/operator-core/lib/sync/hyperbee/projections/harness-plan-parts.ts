@@ -153,17 +153,50 @@ async function readLocalPlanContent(opts: HarnessPlanPartsProjectionOpts, planSl
 }
 
 async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWireRow, provenance?: ProvenanceContext): Promise<void> {
-  if (row.harness_slug !== opts.harnessSlug) return;
-  const store = storeFor(opts);
+  // WI-259 parity (D-027): own-slug applies; a CROSS-member part op applies iff its VERIFIED
+  // source-log device ∈ the hive's CURRENT members — the SAME membership guard the 6 content
+  // projections use (member-content-guard.ts decideMemberContentOp). Previously a bare
+  // `row.harness_slug !== opts.harnessSlug` early-return meant plan-PARTS (unlike plan ROWS)
+  // never federated cross-member: the plan DOCUMENT crossed but its ITEMS silently did not.
+  const sourceLogDevice = provenance?.authorPubkey
+    ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+    : null;
+  const memberDecision = await decideMemberContentOp(row.harness_slug, opts, sourceLogDevice);
+  if (memberDecision !== 'apply') {
+    // P-004 parity: a cross-member op dropped ONLY because the author's hive_members row hasn't
+    // federated to this peer yet ('defer', author device known) is BUFFERED + re-applied on the
+    // onMemberApplied drain — not lost to the advancing merge cursor (TTL evicts a genuine non-member).
+    if (memberDecision === 'defer' && sourceLogDevice && opts.pendingMemberContent) {
+      opts.pendingMemberContent.defer(
+        {
+          authorDevice: sourceLogDevice,
+          tableTag: 'plan-parts',
+          rowKey: composeKey(row),
+          fedHlc: provenance?.fedHlc ?? null,
+          fedTs: provenance?.ts ?? null,
+          reapply: () => applyPart(opts, row, provenance),
+        },
+        Date.now(),
+      );
+    }
+    return;
+  }
+  // The plan ROW applies under its AUTHORED harness_slug (harness-plans keeps row.harness_slug),
+  // so the PARTS store + the harness_plans recompose must target that SAME slug — not the
+  // receiver's member slug. Own-slug: identical (no-op spread). Cross-member: the author's slug,
+  // matching where harness-plans landed the plan document.
+  const effOpts: HarnessPlanPartsProjectionOpts =
+    row.harness_slug === opts.harnessSlug ? opts : { ...opts, harnessSlug: row.harness_slug };
+  const store = storeFor(effOpts);
   // P-010 receive-side baseline: before applying the FIRST incoming part for a
   // plan, seed the full baseline from the local harness_plans.content (deterministic
   // fed_ts=0), so the recompose merges into the WHOLE plan rather than a broken
   // join({one part}). Flag-gated (DARK stays inert) + best-effort (a baseline
   // failure must never drop the incoming op). No-op once any part exists.
-  if (await flagOn(opts)) {
+  if (await flagOn(effOpts)) {
     try {
       if ((await store.getParts(row.plan_slug)).size === 0) {
-        const localContent = await readLocalPlanContent(opts, row.plan_slug);
+        const localContent = await readLocalPlanContent(effOpts, row.plan_slug);
         if (localContent) await ensurePlanPartsBaseline(store, row.plan_slug, localContent);
       }
     } catch {
@@ -180,7 +213,7 @@ async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWire
     ...(row.tombstone ? { tombstone: true as const } : {}),
   };
   await store.upsertPart(row.plan_slug, part, 'remote'); // origin='remote' → echo-guard skips re-federating our own apply
-  await recompose(opts, store, row.plan_slug, provenance);
+  await recompose(effOpts, store, row.plan_slug, provenance);
 }
 
 async function deletePart(opts: HarnessPlanPartsProjectionOpts, key: string, delTs?: number): Promise<void> {

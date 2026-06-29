@@ -111,6 +111,24 @@ describe('POST /api/discovery/join-hive (Gap 9)', () => {
     expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ hivePubkey: 'pubkey==' });
   });
 
+  it('accepts the WI-931 offer shape — { hiveId, memberLinks, hivePubkey } a fresh hive now yields — and forwards it (no 400)', async () => {
+    // The memberLinks + hivePubkey the from-repo `created` response now surfaces
+    // (hive-publish-from-repo PublishCreatedHiveOutcome) are exactly this route's
+    // accepted body — proving a freshly-created hive's offer is directly joinable.
+    const { status, body } = await post({
+      hiveId: 'shop-hive',
+      memberLinks: [LINK],
+      hivePubkey: 'HIVEPUB==',
+    });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true });
+    expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({
+      hiveId: 'shop-hive',
+      memberLinks: [LINK],
+      hivePubkey: 'HIVEPUB==',
+    });
+  });
+
   it('omits a blank title (defaults downstream)', async () => {
     await post({ hiveId: 'acme', title: '   ', memberLinks: [LINK] });
     expect(joinHiveAsView.mock.calls[0][0]).not.toHaveProperty('title');

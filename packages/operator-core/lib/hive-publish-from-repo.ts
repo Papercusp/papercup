@@ -54,6 +54,17 @@ export interface PublishCreatedHiveOutcome {
   inviteLink?: string;
   /** The hive's Ed25519 identity pubkey (base64, 32 bytes), when loadable. */
   hivePubkey?: string;
+  /**
+   * The one-click `papercusp://harness?...` member-join links over the HIVE
+   * federation topic — the SAME set the directory announce carries (member loop
+   * below) and the `existing` join-offer surfaces (lookup-hive-for-repo
+   * HiveHit.memberLinks). Surfaced on the outcome so a freshly-created hive's
+   * `created` response yields a join target a joiner can pass straight to POST
+   * /api/discovery/join-hive `{ hiveId, memberLinks, hivePubkey }` WITHOUT a
+   * second directory round-trip (WI-931). Absent when no joinable topic exists
+   * (no hive pubkey) or no id-bearing member repo is registered yet.
+   */
+  memberLinks?: string[];
   cupboard: {
     attempted: boolean;
     /** Why the Cupboard leg was skipped, when it was. */
@@ -499,6 +510,10 @@ async function publishListingForMeta(
     cupboard,
     localBindings,
     ...(hivePubkey ? { hivePubkey } : {}),
+    // WI-931: surface the join target the announce already carried, so the
+    // from-repo `created` response yields memberLinks a joiner can pass to
+    // join-hive (mirrors how `hivePubkey` already flows out here).
+    ...(memberLinks.length ? { memberLinks } : {}),
     ...(announceError ? { error: announceError } : {}),
   };
 }

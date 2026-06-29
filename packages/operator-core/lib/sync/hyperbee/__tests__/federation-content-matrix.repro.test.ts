@@ -638,32 +638,26 @@ describe('federation content matrix — ALL shared content types federate BOTH d
       expect(landedPlan).toMatchObject({ plan_slug: 'owner-plan-1', title: 'Owner Plan', origin: 'remote' });
       expect(landedPlan!.content).toContain('Owner Plan');
 
-      // ── CASE 2 (plan-parts→joiner): harness_plan_parts. DOCUMENTED FEDERATION GAP. ──
-      // The op IS captured (asserted above) + drained to the owner's log + admitted &
-      // replicated to the JOINER — PROVEN because the SIBLING harness_plans row on the
-      // SAME owner log applied (origin='remote', CASE 1 above). It is dropped at the
-      // APPLY layer: the plan-parts projection `applyPart` (harness-plan-parts.ts:143)
-      // gates with ONLY the bare `if (row.harness_slug !== opts.harnessSlug) return;`
-      // slug guard — it never got the WI-259 membership-aware guard the 6 content
-      // projections (features/plans/issues/claims/queue/working-set) have, AND it is NOT
-      // in the hive-home rebind set (register-all.ts wires it with `opts`, not
-      // `hiveScoped`). So the owner op (row.harness_slug='owner-hive') is dropped by the
-      // JOINER's plan-parts projection (scoped to opts.harnessSlug='joined-owner-hive').
-      // No [A-003] line is emitted: that trace covers only decideMemberContentOp (the 6
-      // content projections); plan-parts bypasses the member-guard entirely.
-      // FLIPS RED (→ change to .toBeTruthy) once plan-parts gets the membership-aware
-      // guard / hive-home rebind, at which point this content type federates too.
+      // ── CASE 2 (plan-parts→joiner): harness_plan_parts — FIXED (D-027). ──
+      // Previously a DOCUMENTED GAP: plan-parts' applyPart used ONLY a bare
+      // `if (row.harness_slug !== opts.harnessSlug) return;` slug guard, so (unlike plan
+      // ROWS) the owner's cross-slug part op was dropped on the JOINER — the plan document
+      // crossed but its ITEMS silently did not. D-027 gave plan-parts the SAME WI-259
+      // membership-aware guard (decideMemberContentOp) the 6 content projections use, and
+      // routes the parts store + recompose under the op's AUTHORED slug (row.harness_slug,
+      // == HIVE_HOME here), matching where harness-plans landed the plan document. The part
+      // now federates: the owner's item:P-001 lands on the JOINER under the hive-home slug,
+      // origin='remote'.
       for (let i = 0; i < 8; i++) await Promise.all([handleOwner!.mergeNow(), handleJoiner!.mergeNow()]);
       const partOnJoiner =
         (await readPlanPartForSlug(orgDb.adminSql, HIVE_HOME, 'owner-plan-1', 'item:P-001')) ??
         (await readPlanPartForSlug(orgDb.adminSql, JOINER_SLUG, 'owner-plan-1', 'item:P-001'));
       expect(
         partOnJoiner,
-        'CASE plan-parts→joiner is a known GAP: harness_plan_parts has no membership-aware ' +
-          'apply guard and is not in the hive-home rebind set, so the JOINER drops the ' +
-          "owner's cross-slug part op at harness-plan-parts.ts:143. If this now LANDS, the " +
-          'gap was fixed — flip this assertion to .toBeTruthy and assert origin=remote.',
-      ).toBeUndefined();
+        'CASE plan-parts→joiner (D-027): the owner plan-part must now federate to the JOINER ' +
+          'via the membership-aware guard added to harness-plan-parts.ts applyPart.',
+      ).toBeTruthy();
+      expect(partOnJoiner).toMatchObject({ part_key: 'item:P-001', origin: 'remote' });
     },
     180_000,
   );
@@ -861,10 +855,10 @@ describe('federation content matrix — ALL shared content types federate BOTH d
         (await readPlanPartForSlug(orgDb.adminSql, HIVE_HOME, 'member-plan-1', 'item:P-001'));
       expect(
         partOnOwner,
-        'CASE plan-part joiner→owner is a known GAP: harness_plan_parts bypasses the ' +
-          "membership-aware guard, so the OWNER drops the member's cross-slug part op at " +
-          'harness-plan-parts.ts:143. If this now LANDS, the gap was fixed — flip to .toBeTruthy.',
-      ).toBeUndefined();
+        'CASE plan-part joiner→owner (D-027): the member plan-part must now federate to the ' +
+          'OWNER via the membership-aware guard added to harness-plan-parts.ts applyPart.',
+      ).toBeTruthy();
+      expect(partOnOwner).toMatchObject({ part_key: 'item:P-001', origin: 'remote' });
     },
     180_000,
   );

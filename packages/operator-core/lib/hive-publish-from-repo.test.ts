@@ -173,6 +173,37 @@ describe('publishCreatedHive (P-007)', () => {
     expect(out.inviteLink).toBeUndefined();
   });
 
+  it('public: the OUTCOME surfaces the same member-join links + pubkey the announce carried — a fresh hive yields a join target (WI-931)', async () => {
+    const { deps, calls } = fakes();
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    // The from-repo `created` response can now hand a joiner everything POST
+    // /api/discovery/join-hive needs — { hiveId, memberLinks, hivePubkey } —
+    // WITHOUT a second directory round-trip. Same set the announce broadcast.
+    expect(out.memberLinks).toEqual(calls.published[0].memberLinks);
+    expect(out.hivePubkey).toBe(HIVE_PUBKEY);
+    // …and those links pass discovery/join-hive's body validation (non-empty
+    // strings, ≤ 64 — the exact gate that 400s "hiveId and memberLinks[] required").
+    const links = out.memberLinks!;
+    expect(links.length).toBeGreaterThan(0);
+    expect(links.length).toBeLessThanOrEqual(64);
+    expect(links.every((l) => typeof l === 'string' && l.length > 0)).toBe(true);
+    expect(links[0]).toContain('papercusp://harness?');
+  });
+
+  it('invite: the OUTCOME also surfaces member-join links + pubkey (the secret-topic join target — WI-931)', async () => {
+    const { deps, calls } = fakes();
+    const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);
+    expect(out.memberLinks).toEqual(calls.published[0].memberLinks);
+    expect(out.memberLinks!.length).toBeGreaterThan(0);
+    expect(out.hivePubkey).toBe(HIVE_PUBKEY);
+  });
+
+  it('no hive pubkey: the outcome carries no member links (nothing joinable — WI-931)', async () => {
+    const { deps } = fakes({ loadPubkey: async () => null });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(out.memberLinks).toBeUndefined();
+  });
+
   it('public + private repo: Cupboard skipped (the public registry refuses private repos)', async () => {
     const { deps, calls } = fakes();
     const out = await publishCreatedHive({ ...BASE, visibility: 'public', repoIsPrivate: true }, deps);
