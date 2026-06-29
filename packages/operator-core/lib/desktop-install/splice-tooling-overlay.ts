@@ -45,6 +45,17 @@ export const COORD_LEGEND_MARKER = '<!-- PAPERCUSP-SU:COORD-LEGEND -->';
 export const WORKSPACE_MAP_MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
 
 /**
+ * Marker for the generated "How your change reaches `main`" promotion model
+ * (per-hive-git-and-release-gate-2026-06-29 P-012) — the staging→main contract (work lands
+ * on the integration branch; `main` is green-only; a red suite freezes it; tests gate
+ * promotion; watch /admin/git). Rendered by `renderPromotionModelSection()` from the SAME
+ * release-gate env seams as the workspace map, so it follows the config instead of drifting.
+ * A non-coding hive (no gate) renders an EMPTY section → the marker is removed (never a
+ * contract for a gate that doesn't run). Same splice contract.
+ */
+export const PROMOTION_MODEL_MARKER = '<!-- PAPERCUSP-SU:PROMOTION-MODEL -->';
+
+/**
  * Marker for the spliced PROJECT GUIDE (psu-isolation P-001) — the repo's
  * `CLAUDE.md` (the single editable source; `AGENTS.md` is a symlink to it).
  * Spliced by `renderSuPlaybook` from `renderProjectGuideSection(guideText)`.

@@ -1480,6 +1480,12 @@ const handler = createMcpHandler(
               // path stays a single in-memory increment. Best-effort — never affect the tool result.
               // Attached AFTER idempotent persistence so a replay serves the raw stored result.
               if (!result.isError) {
+                // A delta-protocol result (`result._meta.delta` set — e.g. a delta-proxy
+                // RECONSTRUCTED full body, mcp-handler-gating-matrix delta-proxy:845) carries a
+                // single structured JSON payload in content[0].text that the client JSON.parses;
+                // appending an advisory `[batch-hint]`/`[nudge]` text item corrupts that parse.
+                // Only attach the advisory nudges to PLAIN-TEXT results.
+                const canAttachAdvisory = (result._meta as Record<string, unknown> | undefined)?.delta == null;
                 try {
                   const hint = maybeBatchNudge({
                     sessionKey: replayOwnerKey,
@@ -1491,7 +1497,7 @@ const handler = createMcpHandler(
                   // Gate PER KIND: the same-tool trigger under CODE_RUN_BATCH_NUDGE, the newer
                   // fan-out trigger under its own CODE_RUN_FANOUT_NUDGE so it is an independent A/B
                   // knob. getFlag is consulted ONLY when a hint actually fires (rare).
-                  if (hint) {
+                  if (hint && canAttachAdvisory) {
                     const nudgeFlag =
                       hint.kind === 'fanout' ? FLAGS.CODE_RUN_FANOUT_NUDGE : FLAGS.CODE_RUN_BATCH_NUDGE;
                     if (await getFlag(nudgeFlag, 'system')) {
@@ -1517,7 +1523,7 @@ const handler = createMcpHandler(
                     sessionKey: replayOwnerKey,
                     toolName,
                   });
-                  if (orientHint && (await getFlag(FLAGS.ORIENT_DEDUP_NUDGE, 'system'))) {
+                  if (orientHint && canAttachAdvisory && (await getFlag(FLAGS.ORIENT_DEDUP_NUDGE, 'system'))) {
                     result.content = [
                       ...result.content,
                       { type: 'text' as const, text: `\n[nudge] ${orientHint}` },

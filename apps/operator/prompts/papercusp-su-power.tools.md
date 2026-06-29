@@ -238,6 +238,8 @@ blocks you anyway); coordinate through `locks:*` (files) and `coord:*`
 
 <!-- PAPERCUSP-SU:WORKSPACE-MAP -->
 
+<!-- PAPERCUSP-SU:PROMOTION-MODEL -->
+
 **Two operators — `:3070` auto-serves green `main`, `:3170` is where your
 edits run.** The site + fleet MCP server **`:3070`** (`papercup-dev-api`)
 runs from the **release checkout** (`papercup-release`), pinned to the green

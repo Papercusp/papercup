@@ -46,6 +46,7 @@ import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { mapWithConcurrency } from '../../gym/concurrency';
 import type { BootedHarnessFacts } from './substrate-eviction-policy';
+import { RemoteBootedHarnessHandle } from './remote-booted-harness';
 
 const handles: Map<string, BootedHarnessHandle> = new Map();
 const inflight: Map<string, Promise<BootedHarnessHandle>> = new Map();
@@ -737,11 +738,20 @@ export async function rekeyHarness(
   opts: {
     workspaceRoot?: string;
     resolveSwarmBinding?: SwarmBindingResolver;
+    /** Test seam — override the send-side wiring fns (default: getOrgPg + the
+     *  real wireOutboxForHarness / wirePresenceAnnounceForHarness). Threaded into
+     *  both the fresh-boot (bootSingleHarness) and the in-place re-key wiring. */
+    wireSendSide?: SendSideWiringDeps;
+    /** Remote handles are wired in their owning (sidecar) process; skip the
+     *  main-process send-side loops. Defaults false; a remote handle is also
+     *  auto-detected below so a missed flag never double-wires the sidecar. */
+    skipSendSideWiring?: boolean;
   } = {},
 ): Promise<{ rekeyed: boolean; boot?: BootSingleResult }> {
   const handle = handles.get(key(workspaceId, harnessSlug));
   if (!handle) {
-    // Not booted yet → a fresh boot resolves + joins the new binding itself.
+    // Not booted yet → a fresh boot resolves + joins the new binding itself
+    // (bootSingleHarness wires the outbox drain + presence via ensureSendSideWired).
     const boot = await bootSingleHarness(workspaceId, harnessSlug, opts);
     return { rekeyed: false, boot };
   }
@@ -753,6 +763,19 @@ export async function rekeyHarness(
     return { rekeyed: false };
   }
   await handle.rekey(binding);
+  // EI-521: a re-key joins the harness's federation topic IN PLACE (so it
+  // peer_connects), but — unlike bootSingleHarness — it never wired the outbox
+  // DRAIN / presence-announce loops. A harness booted WITHOUT its send-side wired
+  // (or whose wiring failed) would then sit peer_connected with its
+  // substrate_outbox UNDRAINED forever (content captured but never federated) —
+  // the live cross-machine blocker on joined/created hive harnesses, whose ONLY
+  // route onto the Hive topic is rekeyHarness (publishCreatedHive / joinHiveAsView).
+  // ensureSendSideWired is idempotent (a no-op once wired), so this is safe on an
+  // already-wired handle. A REMOTE (sidecar) handle is skipped: its owning sidecar
+  // process wires the drain, so re-wiring here would double-append the outbox.
+  if (!opts.skipSendSideWiring && !(handle instanceof RemoteBootedHarnessHandle)) {
+    await ensureSendSideWired(handle, opts.wireSendSide);
+  }
   return { rekeyed: true };
 }
 

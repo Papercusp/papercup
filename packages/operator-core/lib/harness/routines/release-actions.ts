@@ -801,6 +801,18 @@ async function recentDeployFailedFor(slug: string, targetSha: string): Promise<b
  * unit survives the restart and completes the whole lifecycle.
  */
 registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
+  // per-hive-git-and-release-gate-2026-06-29 (D-001): per-hive AUTO-DEPLOY (leg 3) is
+  // DEFERRED — the systemd unit (AUTO_DEPLOY_UNIT) + health probe below are operator-home-
+  // specific. A non-home release-trigger only exists if a hive declared releaseGate.deploy
+  // and opted in; guard it to a NO-OP so it can NEVER run the papercusp deploy for another
+  // hive. When per-hive deploy lands, resolve a per-hive deploy target here instead.
+  const { operatorHomeHarnessSlug } = await import('../operator-home-harness');
+  if (ctx.installSlug && ctx.installSlug !== operatorHomeHarnessSlug()) {
+    console.warn(
+      `[release-trigger] per-hive auto-deploy not yet supported (${ctx.installSlug}) — skipping (leg-3 deferred, D-001)`,
+    );
+    return;
+  }
   const root = integrationRoot();
   // Cheap, side-effect-free: is there anything green to deploy?
   const plan = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', [], 60_000);

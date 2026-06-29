@@ -24,6 +24,15 @@ vi.mock('../git-sync/pipeline-events', () => ({
   appendPipelineEvent: (...a: unknown[]) => appendPipelineEvent(...a),
 }));
 
+// per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
+// route per-hive (green-checkpoint) / guard leg-3 (release-trigger). Make the fixture's
+// `my-harness` BE the operator-home so these tests exercise the home (default) path; other
+// exports are preserved.
+vi.mock('../operator-home-harness', async (orig) => ({
+  ...(await orig<typeof import('../operator-home-harness')>()),
+  operatorHomeHarnessSlug: () => 'my-harness',
+}));
+
 // importing register-system-actions runs every side-effect import (git-sync,
 // blueprint, release-actions) so the registry is populated as in production.
 import '../git-sync/git-sync-action';

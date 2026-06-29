@@ -279,6 +279,8 @@ Coordinate through locks + coord, not tree isolation.
 
 <!-- PAPERCUSP-SU:WORKSPACE-MAP -->
 
+<!-- PAPERCUSP-SU:PROMOTION-MODEL -->
+
 **Two operators — `:3070` auto-serves green `main`; `:3170` is where your edits
 run.** `:3070` (`papercup-dev-api`) runs from the **release checkout** pinned
 to green `main` — restarting it does NOT pick up your `staging` edits. To test

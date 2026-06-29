@@ -19,12 +19,13 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER } from './splice-tooling-overlay';
+import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER } from './splice-tooling-overlay';
 import { renderAutoModePolicy } from '../auto-mode-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
 import { renderPeerWakeNote } from '../peer-wake-policy';
 import { renderWorkspaceMapSection } from './workspace-map';
+import { renderPromotionModelSection } from './promotion-model';
 import { renderWireSchemasSection } from '../prompt-assembly';
 import { renderCoordLegend } from '../coord-schema';
 
