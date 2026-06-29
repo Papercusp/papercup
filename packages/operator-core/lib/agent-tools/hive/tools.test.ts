@@ -299,7 +299,7 @@ describe('hive:wake', () => {
       { installSlug: string; workspaceId: string; kickoff: string },
     ];
     expect(bp).toBe('coding');
-    expect(input.installSlug).toBe('papercup');
+    expect(input.installSlug).toBe('papercusp'); // canonicalHarnessSlug maps 'papercup' → 'papercusp' (EI-2224)
     expect(input.workspaceId).toBe('ws-test');
     expect(input.kickoff).toContain('prod fire');
     expect(recordHiveWake).not.toHaveBeenCalled();
@@ -409,7 +409,7 @@ describe('hive:queen_efficiency (B-06 / P-010 queryable surface)', () => {
     expect(res.cachedWakes).toBe(1); // the "cache is real" signal (P-003)
     expect(res.avgTurns).toBe(4); // Win-2 round-trips
     expect(res.cacheHitRatio).toBeCloseTo(8000 / 17000, 9); // Win-1 cache
-    expect(queenWakeEfficiency).toHaveBeenCalledWith('ws-test', { harnessSlug: 'papercup', limit: 100 });
+    expect(queenWakeEfficiency).toHaveBeenCalledWith('ws-test', { harnessSlug: 'papercusp', limit: 100 }); // canonicalized EI-2224
   });
 
   it('no harness (+ no env) → workspace-wide (harnessSlug undefined), harness:null, default limit 50', async () => {
