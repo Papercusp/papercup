@@ -442,6 +442,47 @@ describe('assembleRolePrompt — observation-rubric nudge (rubric-driven-observa
   });
 });
 
+describe('assembleRolePrompt — plan-discipline + observation-capture (enforce-system-on-generic-work-2026-06-29)', () => {
+  it('injects the plan-discipline bright-line into the SHARED base every role inherits (P-016)', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## A plan is REQUIRED when work spans multiple steps');
+    expect(out.text).toContain('A plan is REQUIRED when work decomposes into >=2 work-items');
+    expect(out.text).toContain("Don't over-apply");
+    expect(out.sections.some((s) => s.name === 'plan-discipline-note')).toBe(true);
+  });
+
+  it('injects the work-item PRECONDITION into the SHARED base every role inherits (P-015)', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Hold a work-item before you edit');
+    expect(out.text).toContain('Before your first code/deliverable edit you MUST hold a work-item');
+    expect(out.text).toContain('private scratch, never a substitute');
+    expect(out.sections.some((s) => s.name === 'work-record-note')).toBe(true);
+  });
+
+  it('injects the observation-capture routing into the SHARED base every role inherits (P-017)', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Capture what you notice — the moment you notice it');
+    expect(out.text).toContain('an agent-insights doc');
+    expect(out.sections.some((s) => s.name === 'observation-capture-note')).toBe(true);
+  });
+
+  it('injects the sharpened flag-on dangerous-set rule into the SHARED base every role inherits (P-010)', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('Ship features flag-ON by default');
+    expect(out.text).toContain('Default-OFF is ONLY for the dangerous set');
+    expect(out.text).toContain('registered WITH A REASON in the dark-flags registry');
+    expect(out.sections.some((s) => s.name === 'finish-the-rollout-note')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — friction trip-wire (self-learning-central P-001/A, D-006)', () => {
   it('injects the near-zero friction trip-wire into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

@@ -18,6 +18,7 @@ import type {
   DomainDetail,
   FileStatusEntry,
   HealthStripData,
+  HistoryRow,
   RunSnapshot,
 } from '@papercusp/testing-shell';
 
@@ -70,10 +71,17 @@ export function makeHarnessTestingDataSource(slug: string, phase: string): Testi
     async pollRun(runId) {
       return runResults.get(runId) ?? null;
     },
-    // The harness doesn't keep per-file run history (the tester records a
-    // single pass/fail, not a series). Empty until that exists.
-    async fetchHistory() {
-      return [];
+    // Per-file run history for THIS hive's Tests tab (P-007/P-020). The harness
+    // `run` route ingests one harness_shared.test_runs row per test file (scoped
+    // by harness_slug + workspace_id); this fetches it back. Empty is a valid
+    // "no runs yet" — fail-soft, never throws into the panel.
+    async fetchHistory(filePath, limit) {
+      const r = await fetch(
+        `${base}/file-history?filePath=${encodeURIComponent(filePath)}&limit=${limit}&${q}`,
+      );
+      if (!r.ok) return [];
+      const d = (await r.json()) as { rows?: HistoryRow[] };
+      return d.rows ?? [];
     },
   };
 }

@@ -118,7 +118,13 @@ export type WatchdogSource =
   // promotion silently stopped producing placeable work (the recurrence guard for the
   // unified-work-item-ledger P-003 silent-zero class; detector zero-promotion-detect.ts,
   // gated by papercusp-plan-workitem-promotion so it is inert while promotion is dark):
-  | 'zero-promotion';
+  | 'zero-promotion'
+  // a feature work-item marked DONE (terminal/passed) that still carries requires_test
+  // VAL(s) with NO passing covering test — the "claimed done, no framework test"
+  // recurrence (enforce-system-on-generic-work P-009; detector done-without-test-detect.ts).
+  // Naturally inert where the inline-VAL flow is dark (no requires_test assertions ⇒
+  // nothing to flag), so it needs no flag gate. Per-harness: count = flagged items:
+  | 'done-without-test';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -1892,6 +1898,15 @@ export async function defaultPapercuspCollectors(
       name: 'papercusp-zero-promotion',
       collect: () => import('./zero-promotion-detect').then((m) => m.collectZeroPromotionSignals(workspaceId)),
     },
+    // enforce-system-on-generic-work P-009: the "done without test" recurrence guard —
+    // a feature work-item marked done (terminal/passed) that still carries requires_test
+    // VAL(s) with no passing covering test. SQL-only (three workspace-scoped reads), no
+    // flag gate (naturally inert where the inline-VAL flow is dark). One finding per
+    // harness, count = number of flagged items.
+    {
+      name: 'papercusp-done-without-test',
+      collect: () => import('./done-without-test-detect').then((m) => m.collectDoneWithoutTestSignals(workspaceId)),
+    },
   ];
 }
 
@@ -1928,6 +1943,9 @@ const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
   // zero-promotion is per-plan/per-harness: a torn-down benchmark instance's
   // started plan firing is test debris, not an improvement (P-006 dedup class).
   'zero-promotion',
+  // done-without-test is per-harness (scope harness:<slug>): a torn-down benchmark
+  // instance's done-without-test items are test debris, not an improvement.
+  'done-without-test',
 ]);
 
 /** A signal is ephemeral-benchmark debris when it is a per-harness source AND any slug it

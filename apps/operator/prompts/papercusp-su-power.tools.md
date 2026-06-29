@@ -353,14 +353,18 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   `code:run` to commit.
   **Summarize conservatively — over-filtering backfires:** only the RETURNED value
   re-enters context. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
-- **Plan before non-trivial work.** Present a plan and wait for review
-  before building anything beyond a small fix. Prior work + plan docs live
-  behind `plans:*` (see *Named workflows*). Your client's plan mode (Claude's
-  `ExitPlanMode`, etc.) and native task/to-do tools are for *ephemeral*
-  in-session approval + checklists ONLY — they persist nothing and no peer can
-  see them. Any **durable** plan must live in `plans:*` (PG-canonical,
-  fleet-visible, reviewable); never let a plan exist only in your client's plan
-  mode — use it, if at all, to *draft* what you then write to `plans:*`.
+- **Plan before non-trivial work.** A plan is REQUIRED when work decomposes
+  into ≥2 work-items, has inter-dependent steps, outlives one session, or
+  sequences multiple subsystems: `plans:new` + `plans:add-item`, then
+  `plans:start` (promotes items into work-items). Don't over-apply — a single
+  work-item, a one-shot fix, or pure investigation needs no plan. Prior work +
+  plan docs live behind `plans:*` (see *Named workflows*). Your client's plan
+  mode (Claude's `ExitPlanMode`, etc.) and native task/to-do tools are for
+  *ephemeral* in-session approval + checklists ONLY — they persist nothing and
+  no peer can see them. Any **durable** plan must live in `plans:*`
+  (PG-canonical, fleet-visible, reviewable); never let a plan exist only in
+  your client's plan mode — use it, if at all, to *draft* what you then write
+  to `plans:*`.
 - **Deferring is the user's call — ASK before you defer.** Don't quietly
   decide an in-scope item is "out of scope". Surface it *before* deferring
   (the item + why + the cost of doing it now) and get an explicit yes. Silent
@@ -393,7 +397,9 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   elsewhere; the long-run maintainability + expandability win is worth it.
   Same for reuse: prefer a library / existing surface over rolling your own,
   lift general code into a shared/generic lib. Tell the user what changed;
-  don't ask permission to do it right or water it down to feel safe.
+  don't ask permission to do it right or water it down to feel safe. **Ship
+  features flag-ON by default** — default-OFF is only for the dangerous set
+  (see the flags rule below).
 - **New feature flags DEFAULT TO ENABLED.** The app is alpha — finished work
   never ships dark. A flag you create for a feature gets its `FLAG_DEFAULTS`
   entry (`libs/flags/src/types.ts`) set to `true` so the feature is ACTIVE on
@@ -403,10 +409,13 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   gated OFF — by a flag OR a `process.env.PAPERCUSP_*` boolean (never gate a
   feature on env; it dodges the default-on guard + the dark-flag expiry) — is
   INCOMPLETE, not done; "built + proven in isolation + left off" is the #1 way
-  good work silently dies (the PgBouncer-stayed-dark class). Default-OFF only for
-  genuinely incomplete/unsafe work or an explicit owner ask — and then register
-  it (`KNOWN_DARK_FLAGS` + review-by) and surface the pending flip loudly in the
-  plan + your report.
+  good work silently dies (the PgBouncer-stayed-dark class). Default-OFF is ONLY
+  for the dangerous set — an irreversible migration, an outward-facing
+  publish/send, a fleet-autonomy escalation, auth/security, or a kill-switch —
+  and only when registered WITH A REASON in the dark-flags registry
+  (`KNOWN_DARK_FLAGS` + review-by). A routine feature behind a dark flag nobody
+  flips is an unfinished ship; surface the pending flip loudly in the plan +
+  your report.
 - **Data fetching → `@papercusp/sync`.** Route ALL client data reads/writes
   through `@papercusp/sync` (`useSyncQuery` / `useSyncMutate` / `useOwnedSyncEntity`
   / `selectOwnedData`) — never hand-roll `fetch` / SWR / React-Query / direct-Zero
@@ -502,10 +511,13 @@ so you see what's happening in your areas and others see what you discover:
   Prefer it over a cold `coord:send`; ask peers here before escalating — only ask
   the owner (`coord:ask-owner` / `coord:escalate`) if the answer is still unclear
   after asking.
-- **File what you discover.** Out-of-scope problem → `work_items:create { kind:'bug', title,
-  severity, topics }` (never drop it); `topics:tag` routes any object to an
-  area; `work_items:claim` before fixing; `work_items:set_state`/`work_items:promote { harness }`
-  on resolution.
+- **File what you discover — the moment you notice it.** Don't let it evaporate into
+  prose: a health/degradation signal or turn-end reflection → `improvements:capture`
+  (with evidence); durable how-it-works → an agent-insights doc; a concrete actionable
+  out-of-scope problem → `work_items:create { kind:'bug', title, severity, topics }`
+  (never drop it) — `topics:tag` routes any object to an area; `work_items:claim` before
+  fixing; `work_items:set_state`/`work_items:promote { harness }` on resolution.
+  Evidence-bearing signal only.
 - **Papercusp friction → `improvements:capture { kind, title }`** (the
   self-improvement loop): search-firsts + tags `papercusp-improvement`; `kind=bug`
   (broken → auto-implement-eligible) vs `change`/`feature` (human-reviewed).

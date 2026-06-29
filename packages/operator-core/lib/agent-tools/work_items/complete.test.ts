@@ -16,6 +16,18 @@ vi.mock('../../work-items', () => ({
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
 }));
 
+// TEST-COMPLETION GATE (P-006): the flag + the gate helper are mocked so these unit tests
+// exercise the gate WIRING in completeOne (flag-off skips, flag-on consults, refusal blocks)
+// without PG. The default beforeEach state is flag OFF + gate OK (= today's behavior).
+const getFlag = vi.fn();
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: (...a: unknown[]) => getFlag(...a),
+}));
+const itemTestGate = vi.fn();
+vi.mock('../../harness-test-gate', () => ({
+  itemTestGate: (...a: unknown[]) => itemTestGate(...a),
+}));
+
 import complete from './complete';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
@@ -34,6 +46,12 @@ const item = { id: 'F-12', kind: 'feature', family: 'feature', state: 'in_progre
 beforeEach(() => {
   getWorkItem.mockReset();
   setWorkItemState.mockReset();
+  // Default: gate flag OFF + (when consulted) gate OK — reproduces today's behavior. The
+  // flag mock MUST resolve a promise so the `.catch(() => false)` guard in completeOne works.
+  getFlag.mockReset();
+  getFlag.mockResolvedValue(false);
+  itemTestGate.mockReset();
+  itemTestGate.mockResolvedValue({ ok: true });
 });
 
 describe('work_items:complete (keyed-array)', () => {
@@ -123,5 +141,65 @@ describe('work_items:complete (keyed-array)', () => {
     expect(out.results.map((r: { id: string }) => r.id)).toEqual(['F-1', 'F-404', 'F-3']);
     expect(out.results[1]).toMatchObject({ ok: false, id: 'F-404' });
     expect(out.results[0]).toMatchObject({ ok: true, id: 'F-1', completion: { summary: 'a' } });
+  });
+
+  // ── TEST-COMPLETION GATE (enforce-system-on-generic-work-2026-06-29 P-006) ──────────────
+  describe('test-completion gate (P-006, flag default OFF)', () => {
+    it('flag OFF: a terminal feature completion proceeds unchanged; the gate is never consulted', async () => {
+      getFlag.mockResolvedValue(false); // explicit (also the beforeEach default)
+      getWorkItem.mockResolvedValue(item); // family:'feature', harness:'papercup'
+      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(itemTestGate).not.toHaveBeenCalled();
+      expect(setWorkItemState).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
+      expect(r.ok).toBe(true);
+      expect(r.workItem.state).toBe('passed');
+    });
+
+    it('flag ON + gate PASSES: completes + transitions normally (gate consulted with harness+id)', async () => {
+      getFlag.mockResolvedValue(true);
+      itemTestGate.mockResolvedValue({ ok: true });
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(itemTestGate).toHaveBeenCalledWith('papercup', 'F-12');
+      expect(setWorkItemState).toHaveBeenCalled();
+      expect(r.ok).toBe(true);
+      expect(r.workItem.state).toBe('passed');
+    });
+
+    it('flag ON + gate FAILS: refuses with {ok:false,id,error}, NO completion, setWorkItemState NOT called', async () => {
+      getFlag.mockResolvedValue(true);
+      itemTestGate.mockResolvedValue({ ok: false, reason: 'test-requiring VAL(s) not yet passing: VAL-3' });
+      getWorkItem.mockResolvedValue(item);
+      const out = await env({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(out.counts).toEqual({ ok: 0, failed: 1 });
+      expect(out.results[0]).toEqual({
+        ok: false,
+        id: 'F-12',
+        error: 'refusing to complete F-12: test-requiring VAL(s) not yet passing: VAL-3',
+      });
+      // No completion record on a refusal ⇒ the emit rule (keys on result.completion) fires nothing.
+      expect(out.results[0].completion).toBeUndefined();
+      expect(setWorkItemState).not.toHaveBeenCalled();
+    });
+
+    it('flag ON but record-only (no `state`): the gate is NOT consulted — only terminal transitions gate', async () => {
+      getFlag.mockResolvedValue(true);
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', completion: { summary: 'progress note' } });
+      expect(itemTestGate).not.toHaveBeenCalled();
+      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(r.ok).toBe(true);
+    });
+
+    it('flag ON but an ISSUE-family item: the gate is NOT consulted (feature-only)', async () => {
+      getFlag.mockResolvedValue(true);
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue' });
+      setWorkItemState.mockResolvedValue({ ...item, id: 'WI-9', family: 'issue', state: 'resolved' });
+      const r = await one({ id: 'WI-9', state: 'resolved', completion: { summary: 'fixed' } });
+      expect(itemTestGate).not.toHaveBeenCalled();
+      expect(r.ok).toBe(true);
+    });
   });
 });

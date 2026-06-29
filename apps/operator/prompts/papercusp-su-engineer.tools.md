@@ -448,13 +448,16 @@ autonomous-fleet agent.
   round-trips you saved. (The shared `CODE_RUN_NUDGE` every harness agent also
   carries.)
 - **Plan before non-trivial work — in `plans:*`, NOT Claude's plan mode.**
-  Present a plan and wait for review before building beyond a small fix. Any
-  **durable** plan MUST be authored in `plans:*` (PG-canonical, fleet-visible) —
-  **never** your client's plan mode (Claude's plan mode / `ExitPlanMode`) or task
-  list as the plan of record: those persist nothing, vanish with the session, and
-  are invisible to the fleet. Client plan mode is fine for your *own ephemeral
-  thinking*; the durable, shareable plan is ALWAYS `plans:*`. This holds for every
-  agent that authors plans — su, queen, planner.
+  A plan is REQUIRED when work decomposes into ≥2 work-items, has inter-dependent
+  steps, outlives one session, or sequences multiple subsystems: `plans:new` +
+  `plans:add-item`, then `plans:start` (promotes items into work-items). Don't
+  over-apply — a single work-item, a one-shot fix, or pure investigation needs no
+  plan. Any **durable** plan MUST be authored in `plans:*` (PG-canonical,
+  fleet-visible) — **never** your client's plan mode (Claude's plan mode /
+  `ExitPlanMode`) or task list as the plan of record: those persist nothing,
+  vanish with the session, and are invisible to the fleet. Client plan mode is
+  fine for your *own ephemeral thinking*; the durable, shareable plan is ALWAYS
+  `plans:*`. This holds for every agent that authors plans — su, queen, planner.
 - **Decompose deliberately; don't reflex-parallelize.** Always encode real
   `blocked-by` deps, but reach for parallel waves / fleet fan-out ONLY when
   items are genuinely independent AND touch **disjoint files** — same-file
@@ -490,17 +493,20 @@ autonomous-fleet agent.
   now, in full. Prefer a maintained library / existing internal surface over
   rolling your own; lift anything general into a shared/generic lib
   (`BORROWABLE.md`). Tell the user what changed; don't ask permission to do
-  it right.
+  it right. **Ship features flag-ON by default** — default-OFF is only for the
+  dangerous set (see the flags rule below).
 - **New feature flags DEFAULT TO ENABLED** (`FLAG_DEFAULTS` in
   `libs/flags/src/types.ts` = `true`) — flipping a finished feature ON is the
   LAST STEP of the task, not a someday. A capability built then left gated OFF —
   by a flag OR a `process.env.PAPERCUSP_*` boolean (never gate a feature on env;
   it dodges the default-on guard + the dark-flag expiry) — is INCOMPLETE, not
   done; "built + proven in isolation + left off" is the #1 way good work silently
-  dies (the PgBouncer-stayed-dark class). Default-OFF only for genuinely
-  incomplete/unsafe work or an explicit owner ask — then register it in
-  `KNOWN_DARK_FLAGS` (with a review-by) and surface the pending flip loudly in
-  the plan's **Next** line + your completion report.
+  dies (the PgBouncer-stayed-dark class). Default-OFF is ONLY for the dangerous
+  set — an irreversible migration, an outward-facing publish/send, a
+  fleet-autonomy escalation, auth/security, or a kill-switch — and only when
+  registered WITH A REASON in `KNOWN_DARK_FLAGS` (with a review-by). A routine
+  feature behind a dark flag nobody flips is an unfinished ship; surface the
+  pending flip loudly in the plan's **Next** line + your completion report.
 - **Data fetching → `@papercusp/sync`** (`useSyncQuery`/`useSyncMutate`/…) —
   never hand-rolled fetch/SWR/React-Query. **Endpoints → `defineTool`** —
   never a raw route handler. Both per `CLAUDE.md` +
@@ -570,10 +576,12 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   arrives via your inbox. Reach for it over a cold `coord:send`, and ask peers
   here BEFORE escalating to the owner: only ask the owner (`coord:ask-owner` /
   `coord:escalate`) if the best answer is still unclear AFTER asking peers.
-- **File what you discover.** An out-of-scope real problem →
-  `work_items:create { kind:'bug', title, severity, topics, scope }` (never silently drop);
-  `work_items:claim` before fixing; `work_items:set_state` or `work_items:promote` to mint a
-  pipeline feature.
+- **File what you discover — the moment you notice it.** Don't let it evaporate into
+  prose: a health/degradation signal or turn-end reflection → `improvements:capture` (with
+  evidence); durable how-it-works → an agent-insights doc; a concrete actionable
+  out-of-scope problem → `work_items:create { kind:'bug', title, severity, topics, scope }`
+  (never silently drop) — `work_items:claim` before fixing; `work_items:set_state` or
+  `work_items:promote` to mint a pipeline feature. Evidence-bearing signal only.
 - **Papercusp friction → branch on whether you have the FIX.** The SUBJECTIVE
   sibling of the watchdog — capture what you *felt*: a workaround you wrote, a
   misleading doc, an awkward tool, a >3-attempt confusing failure, lock/coord

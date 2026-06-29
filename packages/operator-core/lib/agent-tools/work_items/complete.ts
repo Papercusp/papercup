@@ -37,6 +37,11 @@ import { CompletionRecordSchema, type CompletionRecord } from '../../coord-lifec
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { itemTestGate } from '../../harness-test-gate';
+import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 
 const completionSpec = CompletionRecordSchema.extend({ workItem: z.string().min(1).optional() });
 
@@ -67,6 +72,22 @@ type CompleteItem = z.infer<typeof itemSpec>;
 async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabel?: string }): Promise<BulkItemResult> {
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
+
+  // TEST-COMPLETION GATE (enforce-system-on-generic-work-2026-06-29 P-006). A feature
+  // work-item being moved to a TERMINAL state must have every plan-derived test-requiring
+  // VAL passing. Flag-gated (FLAGS.TEST_COMPLETION_GATE, default OFF → inert) and FAIL-OPEN
+  // (itemTestGate returns ok:true on any error, never blocking a completion on a gate bug).
+  // On refusal we return the SAME shape as the not-found case (ok:false + error, NO completion
+  // record) so the completion emit rule — which keys on result.completion — fires no false
+  // completion notification.
+  if (it.state && existing.family === 'feature' && existing.harness) {
+    const norm = normalizeFeatureStateInput(it.state);
+    const isTerminal = norm.ok && FEATURE_TERMINAL_STATES.includes(norm.state);
+    if (isTerminal && (await getFlag(FLAGS.TEST_COMPLETION_GATE, activeWorkspaceId()).catch(() => false))) {
+      const gate = await itemTestGate(existing.harness, it.id);
+      if (!gate.ok) return { ok: false, id: it.id, error: `refusing to complete ${it.id}: ${gate.reason}` };
+    }
+  }
 
   // Optional explicit terminal transition. A failed state write must NEVER lose the
   // completion record (EI-24): catch, report it as `stateError`, still record + emit.

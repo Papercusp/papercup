@@ -31,7 +31,10 @@
  */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { readFileSync, rmSync } from 'node:fs';
 import { defineTool } from '@papercusp/agent-mcp';
+import { parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../../testing-run-store';
 import { resolvePhasedProject, safeRead } from '../../../harness-core';
 import { type ProjectEntry, loadHarnessRegistry, resolveHarnessContentPath } from '../../../harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '../../../harness-phases';
@@ -231,8 +234,9 @@ const run = defineTool({
   path: '/harness/:slug/testing/run',
   auth: 'loopback',
   async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
     const url = new URL(req.url);
-    const resolved = await resolveCtx(ctx.params.slug as string, url.searchParams.get('phase'));
+    const resolved = await resolveCtx(slug, url.searchParams.get('phase'));
     if (resolved instanceof Response) return resolved;
     const { root } = resolved;
 
@@ -252,28 +256,169 @@ const run = defineTool({
     // matches the existing /harness/:slug/tests/:id/run route). Vitest only —
     // the panel's per-file Run always requests vitest; playwright/pytest
     // acceptance tests run via the orchestrator's tester loop, not here.
+    //
+    // P-007/P-020 ingestion: we run the JSON reporter ALONGSIDE the human
+    // `default` reporter (the latter still drives the panel's `output`), then
+    // parse the JSON file into one harness_shared.test_runs row per file so this
+    // hive's Tests tab can render history. This runs INSIDE the operator, which
+    // has DB access — robust, and it never loads the operator's reporter into a
+    // foreign repo's vitest. The completion-gate side is the global
+    // papercusp-test-completion-gate flag (P-006), so a coding hive needs no
+    // separate gate wiring here.
     const started = Date.now();
+    const runId = `h-${started}`;
+    const jsonOut = join(tmpdir(), `psu-harness-vitest-${started}-${Math.random().toString(36).slice(2)}.json`);
     let exitCode = 0;
     let output = '';
     try {
-      output = execFileSync('npx', ['vitest', 'run', ...files], {
-        cwd: root,
-        encoding: 'utf8',
-        timeout: 120_000,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      output = execFileSync(
+        'npx',
+        ['vitest', 'run', '--reporter=default', '--reporter=json', `--outputFile.json=${jsonOut}`, ...files],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          timeout: 120_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
     } catch (e) {
       const err = e as { stdout?: string; stderr?: string; status?: number };
       output = String(err.stdout ?? '') + String(err.stderr ?? '');
       exitCode = err.status ?? 1;
     }
+
+    // Best-effort ingestion — D-007 fail-soft: a parse/DB error must NOT change
+    // the run result the panel sees. A non-vitest report (no JSON file / no
+    // testResults) simply yields zero rows and is skipped gracefully.
+    try {
+      let jsonText = '';
+      try {
+        jsonText = readFileSync(jsonOut, 'utf8');
+      } catch {
+        /* reporter wrote nothing (e.g. vitest crashed before reporting) */
+      }
+      if (jsonText) {
+        const rows = parseVitestJsonForHarnessRows(jsonText, root);
+        if (rows.length > 0) {
+          // Resolve the HARNESS worktree's branch/commit directly (not the
+          // operator's — resolveGitContext() is pinned+cached to the operator
+          // root). Best-effort: null on any failure.
+          const gitIn = (args: string[]): string | null => {
+            try {
+              return execFileSync('git', args, {
+                cwd: root,
+                encoding: 'utf8',
+                timeout: 2_000,
+                stdio: ['ignore', 'pipe', 'ignore'],
+              }).trim();
+            } catch {
+              return null;
+            }
+          };
+          const branchRaw = gitIn(['rev-parse', '--abbrev-ref', 'HEAD']);
+          const branch = branchRaw && branchRaw !== 'HEAD' ? branchRaw : null;
+          const commit = gitIn(['rev-parse', 'HEAD']);
+          await persistHarnessTestRuns({
+            harnessSlug: slug,
+            workspaceId: activeWorkspaceId(),
+            rows,
+            runGroupId: runId,
+            branch,
+            commit,
+          });
+        }
+      }
+    } catch {
+      /* swallow — D-007: ingestion never breaks the run */
+    } finally {
+      try {
+        rmSync(jsonOut, { force: true });
+      } catch {
+        /* swallow */
+      }
+    }
+
     return Response.json({
-      runId: `h-${started}`,
+      runId,
       status: exitCode === 0 ? 'pass' : 'fail',
       exitCode,
       output: output.slice(-8000),
       finishedAt: Date.now(),
     });
+  },
+});
+
+// ── Per-file run history (P-007/P-020) ─────────────────────────────────────
+// Mirrors /admin/testing/file-history but scoped to THIS hive:
+//   WHERE harness_slug = :slug AND workspace_id = activeWorkspaceId()
+//        AND file_path = ?filePath
+// Backs the Tests-tab status-chip history sheet (fetchHistory) for every
+// managed harness — populated by the `run` route's ingestion above, so a hive
+// renders its own history with no per-repo scaffolding.
+
+interface HistoryDbRow {
+  id: string;
+  status: string;
+  framework: string;
+  duration_ms: string | null;
+  started_at: Date | string | null;
+  finished_at: Date | string | null;
+  output_tail: string | null;
+  source: string;
+  branch: string | null;
+  commit_sha: string | null;
+}
+
+function toIso(v: unknown): string | null {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'string') return new Date(v).toISOString();
+  return null;
+}
+
+const fileHistory = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/testing/file-history',
+  auth: 'public',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const url = new URL(req.url);
+    const filePath = url.searchParams.get('filePath');
+    if (!filePath) {
+      return Response.json({ error: 'missing_query_param', param: 'filePath' }, { status: 400 });
+    }
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 200);
+    try {
+      const { sql } = getOrgPg();
+      const ws = activeWorkspaceId();
+      const rows = await sql<HistoryDbRow[]>`
+        SELECT id, status, framework, duration_ms, started_at, finished_at,
+               output_tail, source, branch, commit_sha
+          FROM harness_shared.test_runs
+         WHERE harness_slug = ${slug} AND workspace_id = ${ws} AND file_path = ${filePath}
+         ORDER BY finished_at DESC NULLS LAST, id DESC
+         LIMIT ${limit}
+      `;
+      return Response.json({
+        filePath,
+        rows: rows.map((r) => ({
+          id: Number(r.id),
+          status: r.status,
+          framework: r.framework,
+          durationMs: r.duration_ms !== null ? Number(r.duration_ms) : null,
+          startedAt: toIso(r.started_at),
+          finishedAt: toIso(r.finished_at),
+          outputTail: r.output_tail,
+          source: r.source,
+          branch: r.branch,
+          commitSha: r.commit_sha,
+        })),
+      });
+    } catch {
+      // Table/PG absent — empty is a valid "no history yet" (e.g. a hive whose
+      // tests have never been run through the Tests tab).
+      return Response.json({ filePath, rows: [] });
+    }
   },
 });
 
@@ -381,4 +526,4 @@ const planItemsTestStatus = defineTool({
   },
 });
 
-export default [domainDetail, listDomains, fileStatus, healthStrip, run, listAssertions, patchAssertion, planItemsTestStatus];
+export default [domainDetail, listDomains, fileStatus, healthStrip, run, fileHistory, listAssertions, patchAssertion, planItemsTestStatus];

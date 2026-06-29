@@ -56,6 +56,8 @@ import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 import { renderCodeRunNudge } from './code-run-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
 import { renderWorkRecordNote } from './work-record-policy';
+import { renderPlanDisciplineNote } from './plan-discipline-policy';
+import { renderObservationCaptureNote } from './observation-capture-policy';
 import { renderTurnEndObservation } from './turn-end-observation-policy';
 import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
 import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
@@ -165,12 +167,15 @@ export interface AssembledSection {
     | 'concurrency-first-note'
     | 'deploy-pipeline-note'
     | 'reuse-first-nudge'
+    | 'plan-discipline-note'
     | 'work-record-note'
+    | 'observation-capture-note'
     | 'turn-end-observation'
     | 'code-run-note'
     | 'finish-the-rollout-note'
     | 'agent-activity-truth-note'
     | 'wait-loop-note'
+    | 'peer-wake-note'
     | 'runtime';
   chars: number;
 }
@@ -561,15 +566,39 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
     sections.push({ name: 'reuse-first-nudge', chars: reuseFirstNudge.length });
   }
 
-  // Work-record note (audit-trail discipline; owner ask 2026-06-23) — the SHARED base every
-  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). Every unit
-  // of work gets a work-item record even when small; a tiny task may be recorded AFTER finishing (or
-  // batched) rather than pre-claimed. Sourced from the one WORK_RECORD_NOTE constant (orchestrator)
+  // Plan-discipline note (enforce-system-on-generic-work-2026-06-29 P-016) — the SHARED base every
+  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). The bright-line
+  // for WHEN a plan is required (>=2 work-items / interdependent steps / outlives a session / sequences
+  // subsystems) vs. when it is over-applied ceremony (a one-shot fix). Sourced from the one
+  // PLAN_DISCIPLINE_NOTE constant (orchestrator) so this base + the spawned-bee base can't desync.
+  const planDisciplineNote = renderPlanDisciplineNote();
+  if (planDisciplineNote) {
+    parts.push(planDisciplineNote);
+    sections.push({ name: 'plan-discipline-note', chars: planDisciplineNote.length });
+  }
+
+  // Work-record note (audit-trail discipline; owner ask 2026-06-23, sharpened 2026-06-29 with the
+  // work-item PRECONDITION) — the SHARED base every operator-launched role inherits, mirroring the
+  // spawned-bee base (buildPromptParts). Hold a work-item BEFORE your first code/deliverable edit; not
+  // done until work_items:complete; every unit of work gets a record even when small (a tiny exception
+  // task may be recorded AFTER finishing). Sourced from the one WORK_RECORD_NOTE constant (orchestrator)
   // so this base + the spawned-bee base can't desync.
   const workRecordNote = renderWorkRecordNote();
   if (workRecordNote) {
     parts.push(workRecordNote);
     sections.push({ name: 'work-record-note', chars: workRecordNote.length });
+  }
+
+  // Observation-capture note (enforce-system-on-generic-work-2026-06-29 P-017) — the SHARED base every
+  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). The ROUTING
+  // sibling of the friction trip-wire: capture what you notice the moment you notice it and route it —
+  // signal → improvements:capture (with evidence), problem → issue/work-item, how-it-works → an
+  // agent-insights doc. Sourced from the one OBSERVATION_CAPTURE_NOTE constant (orchestrator) so this
+  // base + the spawned-bee base can't desync.
+  const observationCaptureNote = renderObservationCaptureNote();
+  if (observationCaptureNote) {
+    parts.push(observationCaptureNote);
+    sections.push({ name: 'observation-capture-note', chars: observationCaptureNote.length });
   }
 
   // Turn-end observation pass (owner ask 2026-06-23) — the DELIBERATE end-of-turn reflection step
