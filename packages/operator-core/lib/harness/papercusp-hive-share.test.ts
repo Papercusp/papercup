@@ -1,4 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
+
+// The canonical invite is now COMMITTED (P-003), so goSharedHive's default canonicalSecret
+// returns the BAKED secret. Mock the constant to null here so the gist/random-secret tests
+// keep their pre-activation behaviour; the baked-secret tests pass `canonicalSecret` explicitly.
+vi.mock('./canonical-hive-invite', () => ({ CANONICAL_PAPERCUSP_HIVE_INVITE: null, CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
+
 import {
   adoptSharedHiveIdentity,
   goSharedHive,
@@ -162,6 +168,22 @@ describe('goSharedHive', () => {
     // The baked secret is authoritative — every owner device must announce on it.
     expect(published?.inviteSecret).toBe('baked-canonical-sec');
     expect(listing?.inviteSecret).toBe('baked-canonical-sec');
+  });
+
+  it('P-007: admits the owner PLUS the team allowlist (deduped) in the admission policy', async () => {
+    let policy: { policy?: { membership?: string; allowlist?: string[] } } | undefined;
+    await goSharedHive(
+      { githubLogin: 'avi', token: 'tok', existing: EXISTING },
+      {
+        teamAllowlist: ['teammate-1', 'teammate-2', 'avi'], // 'avi' dup collapses
+        setListing: async () => ({}) as unknown as never,
+        authorPolicy: async (input) => {
+          policy = input;
+          return { ok: true } as unknown as never;
+        },
+      },
+    );
+    expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi', 'teammate-1', 'teammate-2'] });
   });
 
   it('later device: a baked canonical secret OVERRIDES a drifted gist secret on announce', async () => {

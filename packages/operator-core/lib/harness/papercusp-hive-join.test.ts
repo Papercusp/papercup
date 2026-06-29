@@ -5,6 +5,7 @@ import {
   type CanonicalHiveInvite,
   type JoinCanonicalDeps,
 } from './papercusp-hive-join';
+import { CANONICAL_PAPERCUSP_HIVE_INVITE } from './canonical-hive-invite';
 
 const okId = async () => ({ kind: 'ok' as const, token: 'tok', githubUserId: 7, githubLogin: 'aviynw' });
 const INVITE: CanonicalHiveInvite = { pubkeyBase64: 'PUB==', inviteSecret: 'sec' };
@@ -23,15 +24,15 @@ describe('bakedCanonicalHiveInvite', () => {
     process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = 'S';
     expect(bakedCanonicalHiveInvite()).toEqual({ pubkeyBase64: 'P', inviteSecret: 'S' });
   });
-  it('null when unset (per-owner fallback)', () => {
+  it('falls back to the committed canonical constant when env is unset', () => {
     delete process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY;
     delete process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
-    expect(bakedCanonicalHiveInvite()).toBeNull();
+    expect(bakedCanonicalHiveInvite()).toEqual(CANONICAL_PAPERCUSP_HIVE_INVITE);
   });
-  it('null when only one present', () => {
+  it('falls back to the committed constant when only one env var is present', () => {
     process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = 'P';
     delete process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
-    expect(bakedCanonicalHiveInvite()).toBeNull();
+    expect(bakedCanonicalHiveInvite()).toEqual(CANONICAL_PAPERCUSP_HIVE_INVITE);
   });
 });
 

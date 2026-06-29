@@ -1,4 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// The canonical invite is now COMMITTED (P-003 activation), so bakedCanonicalHiveInvite()
+// returns it by default — which would route every no-`canonicalInvite` test through the
+// JOIN path. Mock the constant to null so the legacy clone+create-path tests still exercise
+// the per-owner fallback; the P-005/P-006 tests pass `canonicalInvite` explicitly (explicit
+// wins over the constant), so they are unaffected.
+vi.mock('./canonical-hive-invite', () => ({ CANONICAL_PAPERCUSP_HIVE_INVITE: null, CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
+
 import {
   bootstrapPapercuspHive,
   startBootstrapPapercuspHive,

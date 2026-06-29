@@ -44,6 +44,7 @@ import {
   type OwnerHiveIdentity,
 } from './papercusp-shared-identity-gist';
 import { bakedCanonicalHiveInvite } from './papercusp-hive-join';
+import { CANONICAL_HIVE_TEAM_ALLOWLIST } from './canonical-hive-invite';
 
 /** State threaded from the BEFORE hook (adopt) to the AFTER hook (goShared). */
 export interface SharedHiveState {
@@ -73,6 +74,9 @@ export interface HiveShareDeps {
   derivePubkey?: (der: Buffer) => string;
   /** This hive's actual pubkey (null if not the owner box). Default: loadHivePubkey. */
   loadPubkey?: (workspaceId: string, slug: string) => Promise<string | null>;
+  /** Extra GitHub logins admitted beyond the owner — the team allowlist that makes the
+   *  dogfood a real SHARED hive (P-007). Default: CANONICAL_HIVE_TEAM_ALLOWLIST. */
+  teamAllowlist?: readonly string[];
 }
 
 async function defaultIsEnabled(): Promise<boolean> {
@@ -171,14 +175,19 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
       PAPERCUSP_WORKSPACE_ID,
     );
 
-    // Owner-only admission. Default policy is `open` (admit ANY peer on the topic),
+    // Allowlist admission. Default policy is `open` (admit ANY peer on the topic),
     // which would let a stranger merge — so this allowlist is the ESSENTIAL gate:
-    // admit ONLY the owner's own GitHub login (authenticated via the device
-    // attestation binding, not spoofable), refuse everyone else.
+    // admit the owner's own GitHub login PLUS each allowlisted teammate (P-007 — what
+    // makes the dogfood a real SHARED hive while repos stay private), all authenticated
+    // via the device-attestation binding (not spoofable); refuse everyone else.
+    const teamAllowlist = deps.teamAllowlist ?? CANONICAL_HIVE_TEAM_ALLOWLIST;
     await authorPolicy({
       workspaceId: PAPERCUSP_WORKSPACE_ID,
       hiveHomeSlug: PAPERCUSP_HIVE_SLUG,
-      policy: { membership: 'allowlist', allowlist: [state.githubLogin] },
+      policy: {
+        membership: 'allowlist',
+        allowlist: Array.from(new Set([state.githubLogin, ...teamAllowlist])),
+      },
     });
   } catch {
     // best-effort — a failed announce / policy author retries on the next boot.

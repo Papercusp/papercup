@@ -42,10 +42,17 @@ export interface CanonicalHiveInviteConst {
   inviteSecret: string;
 }
 
+// VERIFIED 2026-06-29 from the LIVE operator Postgres (harness_shared.hives +
+// harness_registry.hiveDirectoryMeta) for workspace 'papercusp-workspace', home_slug
+// 'papercusp' — the authoritative canonical hive identity the owner is announcing on.
+// NOTE: WI-867 recorded pubkey `73cHWul…`, which is STALE/divergent — the LIVE hive
+// federation pubkey is the value below (`dt7o6io…`). The invite secret matches WI-867.
+// Content/federation topic = d85dc18c…; member link → Papercusp/papercup.
+
 /** Raw-32 Ed25519 PUBLIC key (base64) of the canonical `papercusp` hive. Empty ⇒ dark. */
-const CANONICAL_PUBKEY_BASE64 = '';
+const CANONICAL_PUBKEY_BASE64 = 'dt7o6ioLVBSnppkg+H7WO+NLLKK1EUcXHQVR45BMNyA=';
 /** Directory invite secret (hex) of the canonical `papercusp` hive. Empty ⇒ dark. */
-const CANONICAL_INVITE_SECRET = '';
+const CANONICAL_INVITE_SECRET = 'b395df2e0980d58b9730d820d315ee8bf559abae22b34c6efdc5ffa97a32ab0e';
 
 /**
  * The committed canonical invite, or null when not yet minted (then the build bakes no
@@ -55,3 +62,17 @@ export const CANONICAL_PAPERCUSP_HIVE_INVITE: CanonicalHiveInviteConst | null =
   CANONICAL_PUBKEY_BASE64 && CANONICAL_INVITE_SECRET
     ? { pubkeyBase64: CANONICAL_PUBKEY_BASE64, inviteSecret: CANONICAL_INVITE_SECRET }
     : null;
+
+/**
+ * The TEAM allowlist for the canonical `papercusp` hive — GitHub LOGINS that the
+ * owner-signed admission policy admits IN ADDITION to the owner (papercusp-hive-share.ts
+ * goSharedHive). This is what makes the dogfood a real SHARED hive: every teammate who
+ * installs auto-joins and federates content, while repos stay PRIVATE and non-allowlisted
+ * installs are refused (dogfood-silent-canonical-hive-join D-001 / P-007).
+ *
+ * TO POPULATE (owner): add each teammate's GitHub login, e.g.
+ *   export const CANONICAL_HIVE_TEAM_ALLOWLIST = ['aviynw', 'teammate-2', 'teammate-3'];
+ * Empty ⇒ only the owner's own devices auto-merge (the pre-P-007 behaviour). Logins are
+ * matched against each peer's device-attestation-bound GitHub identity (not spoofable).
+ */
+export const CANONICAL_HIVE_TEAM_ALLOWLIST: readonly string[] = [];
