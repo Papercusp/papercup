@@ -721,6 +721,38 @@ test('per-request x-papercusp-account header routes to the named pool account (P
   assert.equal(upstream.last.headers['x-papercusp-account'], undefined);
 });
 
+test('COLD-START rate hint disqualifies a projection-known-exhausted account even when its live governor is blank (account-cold-start-seed-2026-06-29)', async () => {
+  // After a gateway restart the live governors are blank, so without the durable hint the selector treats a
+  // weekly-capped / 403 / 429 account as "healthy" (util 0) and bounces requests onto it. The hint (loaded
+  // from the account-pool projection at startup) lets keyOf disqualify it immediately → traffic goes to the
+  // one account with real room (the owner-reported "the fleet can't use aviynw6's headroom after a restart").
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const dead: ActiveAccount = { accountId: 'dead', token: async () => 'tdead', invalidateToken: () => {} };
+  const healthy: ActiveAccount = { accountId: 'healthy', token: async () => 'thealthy', invalidateToken: () => {} };
+  const ring = [dead, healthy]; // round-robin hands back 'dead' FIRST — the cold-start trap
+  let i = 0;
+  const pool: AccountPool = {
+    active: () => ring[i++ % ring.length]!,
+    onExhausted: () => null,
+    select: (id) => (id === 'dead' ? dead : id === 'healthy' ? healthy : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50 });
+  port = await gw.listen(0);
+  // Governors are BLANK (fresh registry) — the LIVE state cannot know 'dead' is exhausted yet. Seed the
+  // durable hint: 'dead' is weekly-capped (util7d=1.0, window still open); 'healthy' has room.
+  gw.setAccountRateHints([
+    { accountId: 'dead', utilization7d: 1.0, windowResetAt7d: Date.now() + 7 * 24 * 3_600_000 },
+    { accountId: 'healthy', utilization7d: 0.05, windowResetAt7d: Date.now() + 7 * 24 * 3_600_000 },
+  ]);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer thealthy', 'cold-start: routed to the account with room; the projection-known-exhausted account was disqualified despite a blank live governor');
+  resetGovernorRegistry();
+});
+
 test('DYNAMIC owner pin (POST /admin/owner-pin) routes an owner to the pinned account, overrides the static header, and unpin reverts (account-dynamic-pin-2026-06-29)', async () => {
   const acct = (id: string, tok: string): ActiveAccount => ({ accountId: id, token: async () => tok, invalidateToken: () => {} });
   const acctA = acct('A', 'tA');
