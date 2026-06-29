@@ -6,13 +6,16 @@
  *
  * Ported from app/api/agent-mcp/console/launch/route.ts. `auth: 'public'` —
  * requirePrincipal() inline.
+ *
+ * The OS-native spawn primitive (terminal selection, the launcher one-liner,
+ * the per-plan window appearance) lives in `lib/console-spawn.ts` so this route
+ * and the `capability:terminal` agent tool share ONE spawner.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import { homedir } from 'node:os';
-import { appendFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
+import { advSessionTitleTag, spawnConsole } from '../../../console-spawn';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
 import { recordAdvSession, markAdvSessionEnded, resolveWindowIdForTitleFragment, setAdvSessionPid, setAdvSessionWindowId } from '../../../adv-sessions';
@@ -21,12 +24,11 @@ import { recordAdvSession, markAdvSessionEnded, resolveWindowIdForTitleFragment,
 // when the spawned terminal closes. detached+unref'd children still
 // emit 'exit' on the parent's ChildProcess handle as long as we keep
 // the JS reference alive — we don't, because the parent process
-// outlives any one terminal. So we attach the listener before
-// `unref()` and let Node hold it via the closure; the row will close
-// when the terminal exits if the operator process is still alive,
-// otherwise the row stays "active" (acceptable — operator-restart is
-// the recovery boundary anyway). A future reaper can sweep stale
-// rows by querying live pids.
+// outlives any one terminal. So we attach the listener and let Node
+// hold it via the closure; the row will close when the terminal exits
+// if the operator process is still alive, otherwise the row stays
+// "active" (acceptable — operator-restart is the recovery boundary
+// anyway). A future reaper can sweep stale rows by querying live pids.
 function attachExitWatcher(child: ChildProcess, sessionPromise: Promise<number | null>): void {
   child.on('exit', (code) => {
     sessionPromise
@@ -50,9 +52,6 @@ const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-headers': 'content-type, accept',
 };
 
-// (kickoff-kind allowlist + validator moved to @/lib/agent-kickoff/kickoff-kind
-//  in P-032 — this route no longer launches omp/kickoff; omp rides launch-su.)
-
 function jsonRes(body: unknown, init?: number | ResponseInit): Response {
   const r = Response.json(body, typeof init === 'number' ? { status: init } : init);
   for (const [k, v] of Object.entries(CORS_HEADERS)) r.headers.set(k, v);
@@ -71,136 +70,6 @@ async function gatePrincipal(headers: Headers): Promise<Response | null> {
   }
 }
 
-const LINUX_TERMINALS: Array<[string, string[]]> = [
-  // gnome-terminal is a thin client talking to gnome-terminal-server; without
-  // `--wait` the client process exits immediately after creating the window,
-  // which makes adv_sessions rows look "ended" even while the real terminal is
-  // still open.
-  ['gnome-terminal', ['--wait', '--window', '--']],
-  ['konsole', ['--new-window', '-e']],
-  ['xfce4-terminal', ['--window', '-e']],
-  ['alacritty', ['-e']],
-  ['kitty', ['--']],
-  ['wezterm', ['start', '--always-new-process', '--']],
-  ['xterm', ['-e']],
-];
-
-function isOnPath(bin: string): boolean {
-  const paths = (process.env.PATH ?? '').split(':');
-  paths.push('/usr/bin', '/usr/local/bin');
-  return paths.some((p) => existsSync(join(p, bin)));
-}
-
-// Cache the terminal selection — it's the same on every call
-// (terminal binaries don't appear/disappear at runtime), and the
-// existsSync sweep across LINUX_TERMINALS was adding noticeable
-// latency to every console launch.
-let cachedTerminal: { bin: string; args: string[] } | null | undefined;
-function findLinuxTerminal(): { bin: string; args: string[] } | null {
-  if (cachedTerminal !== undefined) return cachedTerminal;
-  const fromEnv = process.env.TERMINAL;
-  if (fromEnv && isOnPath(fromEnv)) {
-    cachedTerminal =
-      fromEnv === 'gnome-terminal'
-        ? { bin: fromEnv, args: ['--wait', '--'] }
-        : { bin: fromEnv, args: ['-e'] };
-    return cachedTerminal;
-  }
-  for (const [bin, args] of LINUX_TERMINALS) {
-    if (isOnPath(bin)) {
-      cachedTerminal = { bin, args: [...args] };
-      return cachedTerminal;
-    }
-  }
-  cachedTerminal = null;
-  return cachedTerminal;
-}
-
-function shellEscape(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-/**
- * Emit the OSC escape sequences that recolor + retitle the terminal
- * window: foreground (OSC 10), background (OSC 11), window title
- * (OSC 0). Per-plan background is hashed from the plan slug for
- * visual identity; foreground is fixed white for contrast.
- *
- * Why dark backgrounds + light foreground (not light + black):
- * agent CLIs (omp / claude / codex) emit ANSI bright colors
- * (bright-yellow, bright-cyan, bright-white) which are designed for
- * dark-themed terminals. On a light pastel background they become
- * illegible — the "bright text on bright background" failure mode.
- * Dark saturated backgrounds keep those ANSI brights readable while
- * still letting each plan's terminal be visually distinct at a
- * glance.
- *
- * Wrapped in `printf` with literal escape bytes (`\033` = ESC,
- * `\007` = BEL) so the sequence reaches the tty verbatim regardless
- * of the shell's echo dialect, before the spawned shell starts
- * reading.
- */
-interface AppearanceOpts {
-  mode: 'omp' | 'console';
-  planSlug: string | null;
-  label: string | null;
-  advSessionId?: number | null;
-}
-function buildAppearancePrelude(opts: AppearanceOpts): string {
-  const bg = hashSlugToColor(opts.planSlug, opts.mode);
-  const fg = '#f4f4f5'; // zinc-100 — bright but not pure white (avoids halation on dark bg)
-  const title = formatWindowTitle(opts);
-  // OSC sequences:
-  //   ESC ] 10 ; <fg> BEL    → default foreground
-  //   ESC ] 11 ; <bg> BEL    → default background
-  //   ESC ] 0  ; <title> BEL → window + tab title
-  const titleEsc = title.replace(/'/g, "'\\''");
-  return [
-    `printf '\\033]10;${fg}\\007'`,
-    `printf '\\033]11;${bg}\\007'`,
-    `printf '\\033]0;${titleEsc}\\007'`,
-  ].join(' && ');
-}
-
-/**
- * Deterministic slug → background color. Picks from a curated palette
- * of dark, saturated, high-distinctness hues. Every color is dark
- * enough that ANSI bright colors (90–97 / brights 8–15 / true-color
- * pastels) remain readable on top — the contrast budget is reserved
- * for whatever the agent CLI emits, not for the default text. Fixed
- * neutral fallback when planSlug is null.
- */
-function hashSlugToColor(planSlug: string | null, mode: 'omp' | 'console'): string {
-  // mode-specific defaults: deep teal for OMP, dark indigo for raw consoles.
-  if (!planSlug) return mode === 'omp' ? '#0f3a36' : '#1e1b4b';
-  const palette = [
-    '#1e293b', // slate-800
-    '#0f172a', // slate-900
-    '#1e1b4b', // indigo-950
-    '#312e81', // indigo-900
-    '#3b0764', // purple-950
-    '#581c87', // purple-900
-    '#831843', // pink-900
-    '#7f1d1d', // red-900
-    '#7c2d12', // orange-900
-    '#78350f', // amber-900
-    '#365314', // lime-900
-    '#14532d', // green-900
-    '#134e4a', // teal-900
-    '#164e63', // cyan-900
-    '#0c4a6e', // sky-900
-  ];
-  let h = 0;
-  for (let i = 0; i < planSlug.length; i++) {
-    h = ((h << 5) - h + planSlug.charCodeAt(i)) | 0;
-  }
-  return palette[Math.abs(h) % palette.length];
-}
-
-function advSessionTitleTag(id: number | null | undefined): string {
-  return id != null ? `[adv:${id}]` : '';
-}
-
 async function resolveAndStoreWindowIdForAdvSession(id: number): Promise<void> {
   const tag = advSessionTitleTag(id);
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -211,44 +80,6 @@ async function resolveAndStoreWindowIdForAdvSession(id: number): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-}
-
-function formatWindowTitle(opts: AppearanceOpts): string {
-  const tag = opts.mode === 'omp' ? 'OMP' : 'SH';
-  const advTag = advSessionTitleTag(opts.advSessionId);
-  const name = opts.label?.trim() || opts.planSlug;
-  return name ? `${tag}${advTag}: ${name}` : `${tag}${advTag}`;
-}
-
-function buildOneliner(
-  cwd: string,
-  env: Record<string, string>,
-  greeting: string,
-  appearance: AppearanceOpts,
-): string {
-  const envExports: string[] = [];
-  // Prepend the writable shim dir (psu/ptool, ~/.papercusp/bin) AND the bundled
-  // scripts dir to PATH so the in-app terminal can run papercup/psu/ptool. Bin
-  // dir first so a user shim wins over a same-named bundled script
-  // (psu-in-desktop-builds-2026-06-23 A2b).
-  const pathPrepend = [env.PAPERCUSP_BIN_DIR, env.PAPERCUSP_SCRIPTS_DIR].filter(Boolean) as string[];
-  if (pathPrepend.length) {
-    envExports.push(`export PATH=${pathPrepend.map((d) => shellEscape(d)).join(':')}:\${PATH}`);
-  }
-  for (const [k, v] of Object.entries(env)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
-    envExports.push(`export ${k}=${shellEscape(v)}`);
-  }
-  const escapedCwd = shellEscape(cwd);
-  return [
-    buildAppearancePrelude(appearance),
-    `cd ${escapedCwd}`,
-    ...envExports,
-    `touch .papercup-console-active.$`,
-    `trap 'rm -f .papercup-console-active.$' EXIT`,
-    `(${greeting.replace(/'/g, "'\\''")})`,
-    `exec "\${SHELL:-/bin/bash}" -l`,
-  ].join(' && ').replace(' && (', ' ; (');
 }
 
 // Safety floor for INTERACTIVE launches (P-012 / D-013 residual 3): the shared
@@ -270,29 +101,9 @@ async function doSpawn(opts: { slug: string | null; operatorBaseUrl: string }): 
     slug: opts.slug,
     operatorBaseUrl: opts.operatorBaseUrl,
   });
-  const mcpPath = join(envelope.cwd, '.mcp.json');
-  if (existsSync(mcpPath)) {
-    const bak = join(envelope.cwd, '.mcp.json.papercusp.bak');
-    if (!existsSync(bak)) renameSync(mcpPath, bak);
-  }
-  writeFileSync(mcpPath, envelope.mcpJsonContents);
-  if (process.platform !== 'linux') throw new Error('linux-only spawn for now');
-  const term = findLinuxTerminal();
-  if (!term) throw new Error('no terminal emulator found');
-  const oneliner = buildOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
-    mode: 'console',
-    planSlug: null,
-    label: null,
-  });
-  const childArgs = [...term.args, 'bash', '-lc', oneliner];
-  const child = spawn(term.bin, childArgs, {
-    detached: true,
-    stdio: 'ignore',
-    cwd: envelope.cwd,
-    env: { ...process.env, ...envelope.env },
-  });
-  child.unref();
-  dlog(`doSpawn launched ${term.bin} pid=${child.pid}`);
+  const result = spawnConsole({ envelope, writeMcpJson: true });
+  if (result.status === 'error') throw new Error(result.error);
+  dlog(`doSpawn launched ${result.terminal} pid=${result.pid}`);
 }
 
 const options = defineTool({
@@ -395,68 +206,35 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: e?.message ?? 'envelope build failed' }, 400);
     }
 
-    try {
-      const mcpPath = join(envelope.cwd, '.mcp.json');
-      if (existsSync(mcpPath)) {
-        const bak = join(envelope.cwd, '.mcp.json.papercusp.bak');
-        if (!existsSync(bak)) renameSync(mcpPath, bak);
-      }
-      writeFileSync(mcpPath, envelope.mcpJsonContents);
-    } catch (e: any) {
-      console.warn(`[console-launch] write .mcp.json failed: ${e?.message}`);
-      return jsonRes({ status: 'error', error: `write .mcp.json: ${e?.message}` }, 500);
-    }
-
-    if (process.platform !== 'linux') {
-      return jsonRes(
-        { status: 'error', error: 'server-side spawn only implemented for Linux; use the Tauri path on macOS/Windows' },
-        501,
-      );
-    }
-    const term = findLinuxTerminal();
-    if (!term) {
-      return jsonRes(
-        { status: 'error', error: 'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm' },
-        500,
-      );
-    }
-
-    const oneliner = buildOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
-      mode: 'console',
+    // Spawn (writes/back-ups .mcp.json, picks a terminal, opens a new window).
+    // Linux-only at this tier; non-Linux operators get code 501 and the
+    // renderer falls back to the Tauri console_launch command.
+    const result = spawnConsole({
+      envelope,
       planSlug: body.planSlug ?? null,
       label: body.label ?? null,
+      writeMcpJson: true,
     });
-    const childArgs = [...term.args, 'bash', '-lc', oneliner];
-    try {
-      const child = spawn(term.bin, childArgs, {
-        detached: true,
-        stdio: 'ignore',
-        cwd: envelope.cwd,
-        env: { ...process.env, ...envelope.env },
-      });
-      const sessionPromise = recordAdvSession({
-        planSlug: body.planSlug ?? null,
-        mode: 'console',
-        terminalBin: term.bin,
-        pid: child.pid ?? null,
-        label: body.label ?? null,
-        cwd: envelope.cwd,
-      });
-      attachExitWatcher(child, sessionPromise);
-      child.unref();
-      console.log(`[console-launch] spawned ${term.bin} pid=${child.pid} cwd=${envelope.cwd}`);
-      return jsonRes({
-        status: 'ok',
-        pid: child.pid,
-        terminal: term.bin,
-      });
-    } catch (e: any) {
-      console.warn(`[console-launch] spawn ${term.bin} failed: ${e?.message}`);
-      return jsonRes(
-        { status: 'error', error: `spawn ${term.bin} failed: ${e?.message}` },
-        500,
-      );
+    if (result.status === 'error') {
+      console.warn(`[console-launch] spawn failed (${result.code}): ${result.error}`);
+      return jsonRes({ status: 'error', error: result.error }, result.code);
     }
+
+    const sessionPromise = recordAdvSession({
+      planSlug: body.planSlug ?? null,
+      mode: 'console',
+      terminalBin: result.terminal,
+      pid: result.pid,
+      label: body.label ?? null,
+      cwd: envelope.cwd,
+    });
+    attachExitWatcher(result.child, sessionPromise);
+    console.log(`[console-launch] spawned ${result.terminal} pid=${result.pid} cwd=${envelope.cwd}`);
+    return jsonRes({
+      status: 'ok',
+      pid: result.pid,
+      terminal: result.terminal,
+    });
   },
 });
 

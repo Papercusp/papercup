@@ -89,6 +89,21 @@ export interface BuildEnvelopeOpts {
    * UI entry is also flag-gated). psu is on PATH via the ~/.papercusp/bin shim.
    */
   runPsu?: boolean;
+  /**
+   * capability:terminal — run this EXACT command in the opened terminal. It
+   * becomes the greetingCmd, executed in a subshell before the terminal drops
+   * to an interactive login shell — so the command runs and the window stays
+   * open. Mutually exclusive with runPsu / resumeSessionId (runCommand wins).
+   * Arbitrary by design: same trust model as capability:bash.
+   */
+  runCommand?: string;
+  /**
+   * Skip the superuser `.mcp.json` setup entirely. capability:terminal opens a
+   * terminal to RUN a command, not to host an MCP-connected agent console, so
+   * it must not displace the project's real .mcp.json. Sets mcpJsonContents to
+   * '' (the spawner then skips writing it) and needsSuperuserBootstrap to false.
+   */
+  skipMcpJson?: boolean;
 }
 
 // (kickoff-kind allowlist moved to @/lib/agent-kickoff/kickoff-kind in P-032,
@@ -211,36 +226,46 @@ export async function buildConsoleEnvelope(
   //    If the token is missing the Tauri side will install it before
   //    using this. We still emit the file shape so callers can write
   //    it after bootstrap.
-  const token = readSuperuserToken();
-  const needsSuperuserBootstrap = token === null;
-  // Workspace-scoped by default — superuser ctx.workspaceId defaults to
-  // '*' which most first-party tools reject. Baking &workspace=<slug>
-  // gives the user's agent useful defaults; tool-by-tool override via
-  // args still works.
-  const mcpUrl = buildSuperuserMcpUrl(opts.operatorBaseUrl, opts.workspaceId, opts.allWorkspaces);
-  const mcpJsonContents = JSON.stringify(
-    {
-      mcpServers: {
-        papercusp: {
-          url: mcpUrl,
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+  // capability:terminal passes skipMcpJson — it opens a terminal to RUN a
+  // command, not to host an MCP-connected agent console, so it must not
+  // displace the project's real .mcp.json. Empty contents ⇒ the spawner skips
+  // writing it.
+  let mcpJsonContents = '';
+  let needsSuperuserBootstrap = false;
+  if (!opts.skipMcpJson) {
+    const token = readSuperuserToken();
+    needsSuperuserBootstrap = token === null;
+    // Workspace-scoped by default — superuser ctx.workspaceId defaults to
+    // '*' which most first-party tools reject. Baking &workspace=<slug>
+    // gives the user's agent useful defaults; tool-by-tool override via
+    // args still works.
+    const mcpUrl = buildSuperuserMcpUrl(opts.operatorBaseUrl, opts.workspaceId, opts.allWorkspaces);
+    mcpJsonContents = JSON.stringify(
+      {
+        mcpServers: {
+          papercusp: {
+            url: mcpUrl,
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          },
         },
       },
-    },
-    null,
-    2,
-  );
+      null,
+      2,
+    );
+  }
 
   // plan-agent-launch P-023: a resume launch reuses the same shell
   // shape (cwd, env, .mcp.json, superuser bootstrap), but lands the
   // user in the live agent CLI via `-r <sessionId>` instead of a
   // plain shell. Default greeting stays unchanged for normal launches.
   let greetingCmd = 'papercup status 2>/dev/null || true';
-  // psu-in-desktop-builds B: a "superuser session" launch runs psu directly.
-  // Gated server-side on PSU_END_USER (the UI entry is also flag-gated). psu
-  // runs in the greeting subshell; when its agent session exits the user drops
-  // to the normal shell (still superuser-scoped). Mutually exclusive with resume.
-  if (opts.runPsu && !opts.resumeSessionId && (await getFlag(FLAGS.PSU_END_USER, 'system'))) {
+  if (opts.runCommand) {
+    // capability:terminal — run the caller's command verbatim, arbitrary by
+    // design (same trust model as capability:bash). buildConsoleOneliner
+    // single-quote-escapes + subshell-wraps it, so quotes/pipes/multiline
+    // survive into `bash -lc '…'`. Wins over runPsu/resume when set.
+    greetingCmd = opts.runCommand;
+  } else if (opts.runPsu && !opts.resumeSessionId && (await getFlag(FLAGS.PSU_END_USER, 'system'))) {
     greetingCmd = 'psu';
   } else if (opts.resumeSessionId) {
     // resolveBackend/resolveAgentBin take a RunAgentChatOptions with

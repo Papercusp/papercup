@@ -122,6 +122,35 @@ export function deriveAgentRole(identity: AgentIdentity): string | null {
   }
 }
 
+/** The agent's named-fleet membership (named-su-agent-fleets-2026-06-29 P-005). */
+export interface FleetMembership {
+  /** The named-fleet slug the process is pinned to (PAPERCUSP_FLEET_SLUG), or null
+   *  when the agent is in no fleet. */
+  fleetSlug: string | null;
+  /** Role within the fleet — 'leader' | 'member' (designed extensible); defaults to
+   *  'member' when a fleet is pinned without an explicit role, null when no fleet. */
+  fleetRole: string | null;
+}
+
+/**
+ * Derive the agent's named-fleet membership from the env the launcher pins
+ * (named-su-agent-fleets-2026-06-29 P-005 / D-003) — PAPERCUSP_FLEET_SLUG +
+ * PAPERCUSP_FLEET_ROLE, the per-process mirror of the account pin. Membership is a
+ * SOFT presence label (written onto coord_presence by the presence write path, the
+ * per-agent mirror of hive_slug); this env read is its SOURCE — consumed by the
+ * presence write and surfaced by coord:whoami. A fleet pinned WITHOUT an explicit
+ * role defaults to 'member' (the creator / handoff path pins 'leader', D-002); no
+ * slug ⇒ no fleet (both null). Mirrors `deriveAgentRole`'s env read.
+ */
+export function deriveFleetMembership(): FleetMembership {
+  const slug =
+    typeof process !== 'undefined' ? (process.env?.PAPERCUSP_FLEET_SLUG ?? '').trim() : '';
+  if (!slug) return { fleetSlug: null, fleetRole: null };
+  const role =
+    typeof process !== 'undefined' ? (process.env?.PAPERCUSP_FLEET_ROLE ?? '').trim() : '';
+  return { fleetSlug: slug, fleetRole: role || 'member' };
+}
+
 /**
  * Default coordination domain for callers without a workspace. The
  * coordination *domain* (the L2 lock partition) is per-machine, not

@@ -39,6 +39,8 @@ const MAXIMAL_ROW: RosterRow = {
   startedAt: '2026-06-14T00:00:00.000Z',
   agentRole: 'su',
   hiveSlug: 'papercup-hive',
+  fleetSlug: 'ui-fleet',
+  fleetRole: 'leader',
   model: 'opus',
   userId: 'u1',
   federated: false,

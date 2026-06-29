@@ -87,7 +87,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, account: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -95,6 +95,7 @@ export function parseArgs(argv) {
   let rest = false;
   let pendingAddDir = false;
   let pendingAccount = false;
+  let pendingFleet = false;
   for (const a of argv) {
     if (rest) { out.passthrough.push(a); continue; }
     // `--add-dir <dir>` (space form) — the previous token armed this; take the
@@ -103,6 +104,10 @@ export function parseArgs(argv) {
     // `--account <id>` (space form) — the previous token armed this; take the
     // value verbatim (an account id never starts with `--`).
     if (pendingAccount) { pendingAccount = false; out.account = a; continue; }
+    // `--fleet <slug>` (space form) — join an EXISTING named fleet by slug
+    // (member role). A new fleet is only created interactively (the picker
+    // prompts for a name → leader), so the flag form always means "member".
+    if (pendingFleet) { pendingFleet = false; out.fleet = a; out.fleetRole = 'member'; continue; }
     if (a === '--') { rest = true; continue; }
     // One-time credential commands (handled at the top of main(), before any
     // launch). Store/clear the default-account Claude OAuth token that
@@ -163,6 +168,13 @@ export function parseArgs(argv) {
     // off or the id is unknown/disallowed.
     else if (a === '--account') pendingAccount = true;
     else if (a.startsWith('--account=')) out.account = a.slice('--account='.length);
+    // named-su-agent-fleets P-006: pin this session into a named fleet (`psu
+    // --fleet ops-team` or `--fleet=ops-team`). Threaded to bootstrap-su, which
+    // folds PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE into the spawn env (mirrors
+    // --account). The flag joins an EXISTING fleet → member; creating a new fleet
+    // (→ leader) is only offered through the interactive picker.
+    else if (a === '--fleet') pendingFleet = true;
+    else if (a.startsWith('--fleet=')) { out.fleet = a.slice('--fleet='.length); out.fleetRole = 'member'; }
     // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
     else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
@@ -1233,6 +1245,67 @@ async function pickAccount(workspace, agent = 'claude') {
   return promptAccount(accounts ?? {});
 }
 
+/**
+ * Derive a stable fleet slug from a user-entered name. MIRRORS
+ * `fleetSlugFromName` in packages/operator-core/lib/agent-fleets-store.ts (kept in
+ * sync) — the launcher is plain Node ESM and can't import the TS store. The server
+ * RE-DERIVES authoritatively from the entered name (sent as `fleet_name`), so this
+ * client copy is only the picker's display value. Pure — exported for tests.
+ */
+export function fleetSlugFromName(name) {
+  const slug = String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return slug || 'fleet';
+}
+
+/** The durable named fleets the workspace offers (agent_fleets rows — they persist
+ *  even with zero live members, D-003). Same live `/options` endpoint the account
+ *  picker reads. null on any error (fail-soft → the picker shows just the two
+ *  default rows). */
+async function fetchFleetChoices(workspace) {
+  try {
+    const params = new URLSearchParams();
+    if (workspace) params.set('workspace', workspace);
+    const q = params.toString() ? `?${params.toString()}` : '';
+    return (await api(`/api/agent-mcp/console/bootstrap-su/options${q}`)).fleets ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * named-su-agent-fleets P-006: pick a named fleet to run this session in, create a
+ * new one, or stay unfleeted (default). Mirrors pickAccount — the FIRST row keeps
+ * today's behavior (no fleet, no name). Picking an existing persisted fleet JOINS it
+ * as a member; entering a NEW name makes this agent the LEADER of a freshly-created
+ * fleet (D-002). Returns `{ slug, role, name }`: slug+role null for "no fleet";
+ * `name` is set only for a freshly-entered new fleet (its title — threaded to the
+ * server, which creates the agent_fleets row + re-derives the slug authoritatively).
+ */
+async function pickFleet(workspace) {
+  const fleets = await fetchFleetChoices(workspace);
+  const existing = Array.isArray(fleets) ? fleets : [];
+  const NEW = '__new__';
+  const { select, input } = await import('@inquirer/prompts');
+  const choices = [
+    { name: '· no fleet — default (no name)', value: null },
+    { name: '+ create a new fleet…', value: NEW },
+    ...existing.map((f) => ({ name: f.title || f.slug, value: f.slug })),
+  ];
+  const chosen = await select({ message: 'Fleet', default: null, choices });
+  if (chosen === null) return { slug: null, role: null, name: null };
+  if (chosen === NEW) {
+    const name = (await input({ message: 'New fleet name' })).trim();
+    if (!name) return { slug: null, role: null, name: null }; // empty name → no fleet
+    return { slug: fleetSlugFromName(name), role: 'leader', name };
+  }
+  return { slug: chosen, role: 'member', name: null };
+}
+
 /** True if `id` is a pinnable account given the gateway choices (pool membership + session-override
  *  allow/exclude). Pure — mirrors the server's resolveAccountPin gating. Exported for tests. */
 export function accountPinnable(accounts, id) {
@@ -1696,12 +1769,18 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     ...(args.profile ? { profile: args.profile } : {}),
     ...(brain ? { brain: true } : {}),
     ...(args.account ? { account: args.account } : {}),
+    // named-su-agent-fleets P-006: `fleet` = the slug to JOIN (member); `fleet_name`
+    // = a freshly-entered name the server creates a fleet row from (this agent leads
+    // it). The server folds PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE into the env.
+    ...(args.fleet ? { fleet: args.fleet } : {}),
+    ...(args.fleetRole ? { fleet_role: args.fleetRole } : {}),
+    ...(args.fleetName ? { fleet_name: args.fleetName } : {}),
     ...(args.launchContext ? { launch_context: args.launchContext } : {}),
     cwd: process.cwd(),
   };
 }
 
-export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account } = {}) {
+export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet, fleetRole, fleetName } = {}) {
   return {
     role,
     agent,
@@ -1710,6 +1789,9 @@ export function roleBootstrapBody({ role, agent, workspace, harness, feature, pl
     feature,
     plan,
     ...(account ? { account } : {}),
+    ...(fleet ? { fleet } : {}),
+    ...(fleetRole ? { fleet_role: fleetRole } : {}),
+    ...(fleetName ? { fleet_name: fleetName } : {}),
   };
 }
 
@@ -1942,6 +2024,14 @@ async function roleFlow(args, role, rolesMeta) {
   if (args.picker) {
     agent = args.agent || (await pickRoleBackend());
     workspace = args.workspace || (await pickWorkspace());
+    // named-su-agent-fleets P-006: fleet selection IMMEDIATELY before the account
+    // pin (same as the SU flow). A new name → leader; an existing fleet → member.
+    if (!args.fleet) {
+      const f = await pickFleet(workspace);
+      args.fleet = f.slug;
+      args.fleetRole = f.role;
+      args.fleetName = f.name;
+    }
     account = args.account || (await pickAccount(workspace, agent));
     harness = args.harness || (await pickHarnessRequired(workspace));
     if (args.feature) feature = args.feature;
@@ -1970,7 +2060,7 @@ async function roleFlow(args, role, rolesMeta) {
 
   const res = await api('/api/agent-mcp/console/bootstrap-role', {
     method: 'POST',
-    body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account })),
+    body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet: args.fleet, fleetRole: args.fleetRole, fleetName: args.fleetName })),
   });
 
   // omp role sessions load the coordination extension (lock enforcement + coord +
@@ -2106,6 +2196,15 @@ async function main() {
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
     const plan = p.needPlan ? planValue(await pickPlan(workspace, harness)) : p.plan;
+    // named-su-agent-fleets P-006: choose a named fleet (or none) IMMEDIATELY
+    // before the account pin, mirroring it. A new name → this agent leads the
+    // fresh fleet; an existing fleet → member. `--fleet=<slug>` preselects + skips.
+    if (!args.fleet) {
+      const f = await pickFleet(workspace);
+      args.fleet = f.slug;
+      args.fleetRole = f.role;
+      args.fleetName = f.name;
+    }
     // psu-account-chooser P-005: offer a pool-account pin when one is meaningful
     // (gateway on + a non-empty pool). pickAccount returns null — and prompts
     // nothing — otherwise, so the default launch stays byte-identical.
@@ -2139,6 +2238,9 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // psu-account-chooser: surface whether the `--account` pin took effect (or the
   // fail-soft reason it was skipped) so the user is never silently unpinned.
   if (res.accountNotice) console.error(`psu: account — ${res.accountNotice}`);
+  // named-su-agent-fleets P-006: surface the chosen fleet (leading a new one /
+  // joining an existing one), or the fail-soft reason it was skipped.
+  if (res.fleetNotice) console.error(`psu: fleet — ${res.fleetNotice}`);
 
   // P-020: exec the RAW backend (not a *-su wrapper) with the engineer
   // playbook (res.promptFile) + flags. MCP + lock hooks are user-level for

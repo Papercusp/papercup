@@ -46,7 +46,7 @@ import {
 } from '../../../saved-prompts-materialize';
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
-import { resolveAccountPin } from './bootstrap-su';
+import { resolveAccountPin, resolveFleet } from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
 
 const CORS_HEADERS: Record<string, string> = {
@@ -107,6 +107,13 @@ export interface BootstrapRoleResult {
   codexHome: string | null;
   /** Human-facing account pin result; null when no pin was requested or it resolved cleanly to default behavior. */
   accountNotice?: string | null;
+  /**
+   * named-su-agent-fleets P-009: a human-readable note about the chosen fleet,
+   * mirroring bootstrap-su's fleetNotice — "leading fleet X (Name)." / "joined
+   * fleet X as <role>." / the fail-soft reason it was skipped. null when no fleet
+   * was chosen.
+   */
+  fleetNotice?: string | null;
   /** Non-secret env the launcher exports into the child. */
   envelopeEnv: Record<string, string>;
 }
@@ -136,6 +143,17 @@ const post = defineTool({
       feature?: string | null;
       plan?: string | null;
       account?: string | null;
+      /** named-su-agent-fleets P-009: the durable slug of a named fleet to JOIN
+       *  (member). Folded into PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE on the
+       *  spawn env, mirroring bootstrap-su. Ignored when `fleet_name` is present
+       *  (a new fleet wins). */
+      fleet?: string | null;
+      /** Membership role for `fleet` — 'leader' | 'member' (default member). */
+      fleet_role?: string | null;
+      /** named-su-agent-fleets P-009: a freshly-entered fleet NAME. The server
+       *  derives its slug + creates the agent_fleets row with this session as
+       *  leader (D-002). */
+      fleet_name?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -259,6 +277,17 @@ const post = defineTool({
     // client. It's stored as coord_owner_id, the live-roster join key to
     // coord_presence.owner_id (adv-sessions-live-roster P-001).
     const sid = spec.sid;
+
+    // named-su-agent-fleets P-009: resolve the chosen fleet (create-on-new-name +
+    // membership env), mirroring bootstrap-su. Deferred until here because the fleet's
+    // owner + leader is this session's coord owner id (sid), which the launch-spec mints
+    // (D-002). Fail-soft: any error ⇒ empty env + a notice, never a throw.
+    const fleetPin = await resolveFleet(workspace, {
+      fleet: body.fleet,
+      fleetRole: body.fleet_role,
+      fleetName: body.fleet_name,
+      ownerId: sid,
+    });
 
     // Forced native session UUID for EXACT resumability (claude --session-id;
     // unify-launch-mechanics P-003 invariant d). Recording it as the adv row's
@@ -423,6 +452,7 @@ const post = defineTool({
       mcpJsonPath,
       codexHome,
       accountNotice: accountPin.notice,
+      fleetNotice: fleetPin.notice,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
         PAPERCUSP_ROLE: role,
@@ -434,6 +464,10 @@ const post = defineTool({
         ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         ...accountPin.env,
+        // named-su-agent-fleets P-009: fold the fleet membership env (PAPERCUSP_FLEET_SLUG /
+        // PAPERCUSP_FLEET_ROLE) right next to the account pin — the presence-write path reads
+        // those exact var names. Empty when no fleet was chosen (byte-identical to today).
+        ...fleetPin.env,
         ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),
         ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),

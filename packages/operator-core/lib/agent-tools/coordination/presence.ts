@@ -12,6 +12,7 @@
  * NOT stored here — they live in the separate papercusp_su DB.
  */
 
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   PgPresenceStore,
@@ -19,7 +20,7 @@ import {
   type PresenceInput,
   type PresenceRecord,
 } from '@papercusp/coordination/presence';
-import { deriveAgentRole, type AgentIdentity } from './identity';
+import { deriveAgentRole, deriveFleetMembership, type AgentIdentity } from './identity';
 import { writeSessionBrief } from '../../session-brief';
 
 export { PRESENCE_STALE_MS };
@@ -55,6 +56,26 @@ export async function writePresence(
   }
   await store.write(identity, { ...input, agentRole, hiveSlug });
 
+  // Fleet membership (named-su-agent-fleets-2026-06-29 P-005): the SOFT presence label,
+  // sourced from env at registration (PAPERCUSP_FLEET_SLUG / PAPERCUSP_FLEET_ROLE), the
+  // per-agent mirror of hive_slug. The @papercusp/coordination store SELECT/INSERT does
+  // not touch the fleet columns, so a follow-up FILL-IF-ABSENT update sets them here
+  // (mig 407 added fleet_slug/fleet_role to coord_presence). COALESCE(existing, env)
+  // means: the first declared write populates them, every later declare/heartbeat
+  // PRESERVES them (like hive_slug's populate-once-then-keep), and a leader role a
+  // handoff (P-007) promoted this row to is never clobbered back to the env default.
+  // Only runs when the process actually carries a fleet, so non-fleet agents pay nothing.
+  const { fleetSlug, fleetRole } = deriveFleetMembership();
+  if (fleetSlug) {
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.coord_presence
+         SET fleet_slug = COALESCE(fleet_slug, ${fleetSlug}),
+             fleet_role = COALESCE(fleet_role, ${fleetRole})
+       WHERE owner_id = ${identity.ownerId}
+    `;
+  }
+
   // WI-573 (honest-presence): a declared presence write is GENUINE activity — so if this owner's
   // adv_sessions row still carries a stale `ended_at` from a PRIOR incarnation (resumed via a path
   // that never re-POSTed bootstrap-su, e.g. harness compaction), clear it now so a LIVE agent never
@@ -79,6 +100,33 @@ export async function writePresence(
     harnessSlug: harnessSlug ?? null,
     hiveSlug,
   });
+}
+
+/**
+ * EXPLICIT named-fleet membership setter (named-su-agent-fleets-2026-06-29 P-004).
+ *
+ * `writePresence`'s fleet fill-if-absent (COALESCE(existing, env)) is populate-once-
+ * then-keep — it can NEVER OVERWRITE a label, which is exactly what the fleet REGISTRY
+ * tools must do: promote the caller to `leader` on create / take-leadership, demote a
+ * prior leader to `member`, set `member` on join, or clear both on leave. They go
+ * through this AUTHORITATIVE hard UPDATE instead. Pass (null, null) to clear membership.
+ * Keyed on (workspace_id, owner_id) — owner_id is the coord_presence PK, workspace_id is
+ * the defensive scope guard. No-op (0 rows) when the owner has no presence row, so a
+ * dead prior-leader is silently skipped (D-002 demotion only touches a live row).
+ */
+export async function setPresenceFleet(
+  workspaceId: string,
+  ownerId: string,
+  fleetSlug: string | null,
+  fleetRole: string | null,
+  sql?: Sql,
+): Promise<void> {
+  const s = sql ?? getOrgPg().sql;
+  await s`
+    UPDATE harness_shared.coord_presence
+       SET fleet_slug = ${fleetSlug}, fleet_role = ${fleetRole}
+     WHERE workspace_id = ${workspaceId} AND owner_id = ${ownerId}
+  `;
 }
 
 /** Bump heartbeat_at ONLY — the keepalive path (the 60s supervisor beat). No-op

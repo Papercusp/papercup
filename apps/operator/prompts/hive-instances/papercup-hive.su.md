@@ -107,3 +107,19 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 - **Don't raw-SQL schema-canonical tables or hand-roll a feature-state write.** Work-item state flows through `work_items:*` verbs; feature-pipeline state (F-NNN) advances via the pipeline roles + `messages:send` (`to_feature_id`) — there is no `features:update`. Documented verbs emit audit rows + sync invalidation; raw SQL doesn't.
 - **Don't default to polling — push.** IPC on desktop, SSE on web; the endpoint system projects `ctx.emit`/`ctx.progress` over every transport. Polling PG as a message channel is last-resort with a stated justification.
 - **Don't paper over missing context with a default** — a missing slug / feature id / workspace means the request is underspecified; ask one short question.
+
+## Routing a plan — ask before you implement
+
+A plan is not yours to start the moment you read it. BEFORE you implement ANY plan, STOP and ASK the user **how to route it**, offering these four paths (number them in the question, then act on the answer):
+
+1. **(0) I implement it myself** — claim the items and drive it directly: `plans:launch` (or `coord:orient { planItems }` to claim your lane) → `work_items:claim_next` and execute.
+2. **(1) Hand to the Queen for the colony** — file it as work for the hive: `work_items:create`. This wakes the Queen, who triages it and *places* the work onto bees. You step back; the colony owns it.
+3. **(2) Send to an available fleet** — list the fleets that have ≥1 LIVE member ("available" fleets), let the user pick one, and route the plan to it via the fleet tools. **When you do this, YOU become that fleet's leader** (D-002).
+4. **(3) Create a new desktop fleet** — make a named fleet and open it as N visible terminals on the user's desktop: `fleet:create { name }`, then `capability:terminal { terminals:[…] }` with one `psu --no-picker --fleet=<slug> …` window per member. **You are its leader** from creation.
+
+LEADER responsibility (D-002) — the handoff makes you the leader; you do NOT get to walk away once you delegate:
+1. Whenever you hand a plan to a fleet (path 2) OR create one (path 3), **you are the fleet leader** — the completion owner, the per-fleet analog of the Queen.
+2. You MONITOR the fleet (`fleet:assignments`; `coord:presence` filtered to the fleet), MANAGE coordination, and **OWN driving the plan to done**.
+3. Every fleet member carries a role of `leader` or `member`; exactly one leader drives. Delegating is taking the leader seat, not vacating responsibility.
+
+Note: a fleet is **named + PERSISTENT** — its registry row survives even when every one of its agents has been killed, so it stays selectable in psu. "Available" means something narrower: it currently has ≥1 LIVE member (a recent presence heartbeat). A killed-empty fleet is still selectable but is NOT "available" for path 2.

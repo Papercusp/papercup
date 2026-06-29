@@ -46,6 +46,16 @@ const EXACT: Record<string, CapabilityTier> = {
   'coord:write': 'medium',
   'pending_events:read': 'low',
   'routines:read': 'low',
+  // Named-fleet registry (named-su-agent-fleets-2026-06-29 P-004). Reads are 'low'
+  // (registry list / one fleet's roster); the membership MUTATIONS — create a fleet,
+  // join/leave it, take leadership (the D-002 handoff) — write coord_presence labels +
+  // the agent_fleets leader, so 'medium' (the same tier as coord:write / plans:write).
+  'fleet:list': 'low',
+  'fleet:status': 'low',
+  'fleet:create': 'medium',
+  'fleet:join': 'medium',
+  'fleet:leave': 'medium',
+  'fleet:take-leadership': 'medium',
   'storage:plugin-private': 'low',
   // Storage settings page (storage-settings-page-2026-06-15). Read is a usage
   // introspection; write is a destructive prune-by-age (+ VACUUM FULL) → high.
@@ -96,6 +106,13 @@ const EXACT: Record<string, CapabilityTier> = {
   // host :0). High: it drives a GUI that can run arbitrary apps. Display is
   // resolved server-side from the lease env; the tool hard-refuses :0.
   'capability:computer': 'high',
+  // capability:terminal — opens a VISIBLE terminal on the user's HOST desktop
+  // and runs an arbitrary command in it (the visible-terminal sibling of
+  // capability:bash). High: it executes arbitrary code. Unlike capability:bash
+  // it runs in the user's REAL desktop session OUTSIDE the bwrap exec-sandbox
+  // (the visible terminal IS the point) — same tier/role gating, but NOT the
+  // fs/credential/egress containment. A deliberate trade recorded on the plan.
+  'capability:terminal': 'high',
   'capability:fs-read': 'low',
   // capability:inspect (EI-524 / P-035) — read-only verification (typecheck/test)
   // via FIXED commands, no free-form exec. Low: it's the read-only sibling of

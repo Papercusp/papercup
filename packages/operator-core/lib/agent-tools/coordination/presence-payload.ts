@@ -68,6 +68,12 @@ export type RosterRow = UnifiedPresenceRecord &
        *  idle-session reaper even with NO OS window — the deferred sibling of
        *  onDesktop for the panel-viewed case. null for a federated/unknown row. */
       viewerAttached: boolean | null;
+      /** named-su-agent-fleets P-005: the agent's named-fleet slug (the SOFT
+       *  coord_presence membership label, joined in via fetchPresenceFleet — it does
+       *  NOT ride the base PresenceRecord the way hive_slug does). Absent ⇒ no fleet. */
+      fleetSlug: string | null;
+      /** named-su-agent-fleets P-005: role within the fleet ('leader' | 'member'). */
+      fleetRole: string | null;
     } & PresenceTier1Joins
   >;
 
@@ -82,6 +88,8 @@ export const PRESENCE_IDENTITY_FIELDS = [
   'startedAt',
   'agentRole',
   'hiveSlug',
+  'fleetSlug',
+  'fleetRole',
   'model',
   'userId',
   'federated',

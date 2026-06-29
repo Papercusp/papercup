@@ -362,6 +362,11 @@ import './locks/check_command';
 import './capability/bash';
 import './capability/bash_output';
 import './capability/bash_kill';
+// Visible-terminal sibling of bash: opens a NEW terminal window on the user's
+// HOST desktop and runs an arbitrary command in it. Reuses the console-launcher
+// envelope + console-spawn primitive; runs OUTSIDE bwrap (the visible terminal
+// is the point) — same tier/role gating as bash, recorded as a plan decision.
+import './capability/terminal';
 import './capability/read';
 import './capability/write';
 import './capability/edit';
@@ -390,6 +395,18 @@ import './dev/worker_chunk_loop_metrics';
 import './db/migrate';
 import './db/check_drift';
 import './db/next_migration';
+
+// Named-fleet registry tools (named-su-agent-fleets-2026-06-29 P-004 / D-002 / D-003):
+// create / list / status / join / leave / take-leadership over the durable
+// harness_shared.agent_fleets registry + the soft coord_presence fleet_slug label.
+// fleet:take-leadership IS routing option (2) — "hand a plan to a fleet" makes the
+// handoff agent the leader (P-007); there is no separate routing engine.
+import './fleet_registry/create';
+import './fleet_registry/list';
+import './fleet_registry/status';
+import './fleet_registry/join';
+import './fleet_registry/leave';
+import './fleet_registry/take-leadership';
 
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md

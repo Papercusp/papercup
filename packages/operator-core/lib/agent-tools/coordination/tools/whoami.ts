@@ -9,14 +9,14 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../identity';
+import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { inboxWakeKey } from '../inbox-wake';
 
 export default defineTool({
   name: 'coord:whoami',
   description:
-    'Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.',
+    'Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, your named-fleet membership (fleetSlug/fleetRole, from the launch env), and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.',
   guidance: {
     when: 'Debugging identity — "what ownerId am I?" before relying on lock or message behaviour.',
     notWhen: 'Routine work — identity is resolved automatically by every coord:* and locks:* call.',
@@ -52,11 +52,20 @@ export default defineTool({
         ],
       };
     }
+    // Named-fleet membership (P-005): sourced from the launch env (PAPERCUSP_FLEET_SLUG
+    // / PAPERCUSP_FLEET_ROLE) — the fleet this process was launched into. fleetSlug is
+    // null when the agent is in no fleet.
+    const fleet = deriveFleetMembership();
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ...identity, inbox_wake_key: inboxWakeKey(identity.ownerId) }),
+          text: JSON.stringify({
+            ...identity,
+            fleetSlug: fleet.fleetSlug,
+            fleetRole: fleet.fleetRole,
+            inbox_wake_key: inboxWakeKey(identity.ownerId),
+          }),
         },
       ],
     };

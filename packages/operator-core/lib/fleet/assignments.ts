@@ -77,6 +77,14 @@ export interface FleetAssignmentRow {
   assigneeRank: number | null;
   /** Who set assigneeRank — 'bee' | 'queen' (the propose/dispose audit, D-008). */
   rankWriter: string | null;
+  /** named-su-agent-fleets P-005: the holder's named-fleet slug (the SOFT
+   *  coord_presence membership label, surfaced by the view via the presence join,
+   *  mig 407), or null when the holder is in no fleet / not present. Optional so a
+   *  partial test/synthesizer row need not set it; `listFleetAssignments` always does. */
+  fleetSlug?: string | null;
+  /** named-su-agent-fleets P-005: the holder's role within the fleet
+   *  ('leader' | 'member'), or null. */
+  fleetRole?: string | null;
 }
 
 /**
@@ -172,6 +180,8 @@ export async function listFleetAssignments(
       declaredPlanMatches: (r.declared_plan_matches as boolean | null) ?? null,
       assigneeRank: r.assignee_rank == null ? null : Number(r.assignee_rank),
       rankWriter: (r.rank_writer as string | null) ?? null,
+      fleetSlug: (r.fleet_slug as string | null) ?? null,
+      fleetRole: (r.fleet_role as string | null) ?? null,
     }),
   );
 }
@@ -217,6 +227,12 @@ export interface AgentAssignment {
   intent: string;
   /** Self-declared current plan (presence). */
   declaredPlanSlug: string | null;
+  /** named-su-agent-fleets P-005: the agent's named-fleet slug (the SOFT presence
+   *  membership label), or null when in no fleet. Optional so presence-only
+   *  synthesizers (hive-roster) need not set it. */
+  fleetSlug?: string | null;
+  /** named-su-agent-fleets P-005: role within the fleet ('leader' | 'member'), or null. */
+  fleetRole?: string | null;
   claims: AgentClaim[];
   /** Any active claim whose holder (this agent) is DEAD — abandoned work. */
   orphaned: boolean;
@@ -300,6 +316,8 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
         heartbeatAt: null,
         intent: '',
         declaredPlanSlug: null,
+        fleetSlug: null,
+        fleetRole: null,
         claims: [],
         orphaned: false,
         stalled: false,
@@ -326,6 +344,9 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
       g.heartbeatAt = r.holderHeartbeatAt;
       g.intent = r.detail;
       g.declaredPlanSlug = r.planSlug;
+      // Named-fleet membership rides the presence backbone row (P-005).
+      g.fleetSlug = r.fleetSlug ?? null;
+      g.fleetRole = r.fleetRole ?? null;
     } else {
       g.claims.push(toClaim(r));
       // Accumulate the ordered work-list from work-item claims (P-021).
@@ -351,6 +372,10 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
         g.heartbeatAt = g.heartbeatAt ?? r.holderHeartbeatAt;
         g.intent = g.intent || (r.holderIntent ?? '');
         g.declaredPlanSlug = g.declaredPlanSlug ?? r.holderPlanSlug;
+        // The holder-joined fleet label, as a fallback for an agent whose presence
+        // backbone row didn't lead the group (P-005).
+        g.fleetSlug = g.fleetSlug ?? r.fleetSlug ?? null;
+        g.fleetRole = g.fleetRole ?? r.fleetRole ?? null;
       }
       if (r.agentName) {
         g.name = g.name ?? r.agentName;

@@ -23,6 +23,7 @@ import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
+import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
 import { toStableRosterRow, type RosterRow } from './presence-payload';
 import { fetchWakeability, deriveSessionState, type WakeabilitySignals } from './presence-wakeability';
 import { writeWatermark } from './watermarks';
@@ -163,6 +164,10 @@ export async function assemblePresenceSnapshot(
   let wakeability = new Map<string, WakeabilitySignals>();
   let onDesktopOwners = new Set<string>();
   let viewerAttachedOwners = new Set<string>();
+  // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
+  // (it does NOT ride the base PresenceRecord like hive_slug). Fetched for the WHOLE
+  // local roster (active + stale) so a parked fleet member still shows its fleet.
+  let fleet = new Map<string, FleetMembership>();
   await Promise.all([
     // each best-effort + independent — presence must list even if any join fails.
     fetchPresenceTier1(localActiveIds)
@@ -189,6 +194,12 @@ export async function assemblePresenceSnapshot(
     gatherViewerAttachedOwners()
       .then((s) => {
         viewerAttachedOwners = s;
+      })
+      .catch(() => {}),
+    // Named-fleet membership (P-005) — best-effort + independent of the other joins.
+    fetchPresenceFleet(localAllIds)
+      .then((m) => {
+        fleet = m;
       })
       .catch(() => {}),
   ]);
@@ -223,11 +234,22 @@ export async function assemblePresenceSnapshot(
   const withViewerAttached = (r: RosterRow): RosterRow =>
     isFederated(r) ? r : { ...r, viewerAttached: viewerAttachedOwners.has(r.ownerId) };
 
+  /** Attach the P-005 named-fleet membership. An agent in no fleet (or a federated
+   *  row with no local coord_presence) has no entry → fleetSlug/fleetRole stay absent
+   *  (toStableRosterRow emits them only when present, so no null spam for non-members). */
+  const withFleet = (r: RosterRow): RosterRow => {
+    const f = fleet.get(r.ownerId);
+    return f ? { ...r, fleetSlug: f.fleetSlug, fleetRole: f.fleetRole } : r;
+  };
+
   const activeEnriched = mergeTier1(active, joins, now)
     .map(withWakeability)
     .map(withOnDesktop)
-    .map(withViewerAttached);
-  const staleEnriched = stale.map((r) => withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))));
+    .map(withViewerAttached)
+    .map(withFleet);
+  const staleEnriched = stale.map((r) =>
+    withFleet(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow)))),
+  );
   let activeRows = activeEnriched.map(toStableRosterRow);
 
   // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the

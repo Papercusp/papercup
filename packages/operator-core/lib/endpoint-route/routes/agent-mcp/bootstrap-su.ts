@@ -117,6 +117,13 @@ export interface BootstrapSuResult {
    * prints it so the user always knows whether the pin took effect.
    */
   accountNotice?: string | null;
+  /**
+   * named-su-agent-fleets P-006: a human-readable note about the chosen fleet —
+   * "leading fleet X (Name)." for a freshly-created fleet, "joined fleet X as
+   * member." for an existing one, or the fail-soft reason it was skipped. null when
+   * no fleet was chosen. The launcher prints it so the membership is never silent.
+   */
+  fleetNotice?: string | null;
 }
 
 const options = defineTool({
@@ -254,6 +261,57 @@ export async function resolveAccountChoices(
   }
 }
 
+/**
+ * named-su-agent-fleets P-006: resolve the chosen fleet into the env the spawned
+ * agent reads — PAPERCUSP_FLEET_SLUG + PAPERCUSP_FLEET_ROLE (the presence-write
+ * path keys off EXACTLY those names). Two shapes, mirroring resolveAccountPin:
+ *   - `fleetName` (a freshly-entered name) → CREATE the durable agent_fleets row
+ *     (D-001, idempotent) with this agent as owner + leader (D-002); role=leader.
+ *   - `fleet` (an existing slug) → JOIN it; role=member (or the requested role).
+ * No fleet ⇒ empty env (byte-identical to today). Fail-soft (mirrors the account
+ * pin): any error ⇒ no env + a human `notice` the launcher prints, never a throw.
+ * Exported so the resolution unit-tests without the POST handler.
+ */
+export async function resolveFleet(
+  workspaceId: string,
+  opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; ownerId?: string } = {},
+): Promise<{ env: Record<string, string>; notice: string | null; fleetSlug: string | null; fleetRole: string | null }> {
+  const name = opts.fleetName?.trim();
+  const requested = opts.fleet?.trim();
+  if (!name && !requested) return { env: {}, notice: null, fleetSlug: null, fleetRole: null };
+  try {
+    const { fleetSlugFromName, createFleetIfAbsent } = await import('../../../agent-fleets-store');
+    if (name) {
+      // A new fleet → create it (idempotent) with this agent as owner + leader.
+      const fleetSlug = fleetSlugFromName(name);
+      await createFleetIfAbsent({
+        workspaceId,
+        fleetSlug,
+        title: name,
+        owner: opts.ownerId ?? null,
+        leaderOwnerId: opts.ownerId ?? null,
+      });
+      return {
+        env: { PAPERCUSP_FLEET_SLUG: fleetSlug, PAPERCUSP_FLEET_ROLE: 'leader' },
+        notice: `leading fleet ${fleetSlug} (${name}).`,
+        fleetSlug,
+        fleetRole: 'leader',
+      };
+    }
+    // An existing fleet → join it. Default member; honor an explicit leader request.
+    const fleetSlug = requested as string;
+    const role = opts.fleetRole?.trim() === 'leader' ? 'leader' : 'member';
+    return {
+      env: { PAPERCUSP_FLEET_SLUG: fleetSlug, PAPERCUSP_FLEET_ROLE: role },
+      notice: `joined fleet ${fleetSlug} as ${role}.`,
+      fleetSlug,
+      fleetRole: role,
+    };
+  } catch (e: any) {
+    return { env: {}, notice: `fleet selection skipped (${e?.message ?? e}).`, fleetSlug: null, fleetRole: null };
+  }
+}
+
 const brainGet = defineTool({
   method: 'GET',
   path: '/agent-mcp/console/bootstrap-su/brain',
@@ -340,7 +398,18 @@ const optionsGet = defineTool({
     // psu-account-chooser P-005: pool accounts the interactive picker offers (empty +
     // hidden unless the gateway is on — see resolveAccountChoices).
     const accounts = await resolveAccountChoices(workspace, accountAgent);
-    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts });
+    // named-su-agent-fleets P-006: the durable named fleets this workspace offers
+    // for the psu fleet picker. Persist even with zero live members (D-003), so
+    // this is the "pick existing fleet" list. Fail-soft: any error ⇒ [] (the picker
+    // still shows its "no fleet" / "create new" rows).
+    let fleets: Array<{ slug: string; title: string | null }> = [];
+    try {
+      const { listFleets } = await import('../../../agent-fleets-store');
+      fleets = (await listFleets(workspace)).map((f) => ({ slug: f.fleetSlug, title: f.title }));
+    } catch {
+      /* fleet listing is optional — proceed without it */
+    }
+    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts, fleets });
   },
 });
 
@@ -371,6 +440,16 @@ const post = defineTool({
        *  is on + the id is a valid, allowed pool account; fail-soft to the default
        *  credential + an `accountNotice` otherwise. */
       account?: string | null;
+      /** named-su-agent-fleets P-006: the durable slug of a named fleet to JOIN
+       *  (member). Folded into PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE on the
+       *  spawn env. Ignored when `fleet_name` is present (a new fleet wins). */
+      fleet?: string | null;
+      /** Membership role for `fleet` — 'leader' | 'member' (default member). */
+      fleet_role?: string | null;
+      /** named-su-agent-fleets P-006: a freshly-entered fleet NAME. The server
+       *  derives its slug (fleetSlugFromName) + creates the agent_fleets row, and
+       *  this agent becomes the leader (D-002). */
+      fleet_name?: string | null;
       /** Optional kickoff/launch-context file generated by the operator UI.
        * Claude/OMP receive this as an extra system prompt from the launcher;
        * Codex has no such flag, so bootstrap folds it into AGENTS.md. */
@@ -534,6 +613,15 @@ const post = defineTool({
     // HARD pin (account-hard-pin-2026-06-29): the interactive PSU launcher pins are STRICT — the operator
     // explicitly chose this account, so route there with no failover (stricter than the bees' soft pins).
     const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
+    // named-su-agent-fleets P-006: resolve the chosen fleet (create-on-new-name +
+    // membership env). sid is this session's coord owner id → the fleet's owner +
+    // leader when it creates a new fleet (D-002).
+    const fleetPin = await resolveFleet(workspace, {
+      fleet: body.fleet,
+      fleetRole: body.fleet_role,
+      fleetName: body.fleet_name,
+      ownerId: sid,
+    });
     const launchContextPath = body.launch_context?.trim() || null;
     let promptText = spec.promptText;
     if (agent === 'codex' && launchContextPath) {
@@ -657,6 +745,10 @@ const post = defineTool({
     // the gateway-pin env into the envelope (fail-soft — a skipped pin just adds a
     // notice the launcher prints, never an error).
     Object.assign(envelopeEnv, accountPin.env);
+    // named-su-agent-fleets P-006: fold the fleet membership env (PAPERCUSP_FLEET_SLUG /
+    // PAPERCUSP_FLEET_ROLE) right next to the account pin — the presence-write path
+    // reads those exact var names. Empty when no fleet was chosen (byte-identical).
+    Object.assign(envelopeEnv, fleetPin.env);
 
     const result: BootstrapSuResult = {
       status: 'ok',
@@ -672,6 +764,7 @@ const post = defineTool({
       coordExtPath,
       envelopeEnv,
       accountNotice: accountPin.notice,
+      fleetNotice: fleetPin.notice,
     };
     return jsonRes(result);
   },

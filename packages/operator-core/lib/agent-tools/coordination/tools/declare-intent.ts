@@ -29,6 +29,7 @@ import { resolveAgentIdentity } from '../identity';
 import { resolveActorIdentity, actorMailboxKeys } from '../actor-identity';
 import { drainAndDeliverUserMailbox } from '../messages';
 import { writePresence, getPresence } from '../presence';
+import { fetchPresenceFleet } from '../presence-fleet';
 import { COORD_ROLES } from '../roles';
 import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
 import { reconcileDeclaredClaims } from '../../../plan-items/claim-discipline';
@@ -198,11 +199,21 @@ export default defineTool({
     }
 
     const record = await getPresence(identity.ownerId);
+    // Surface the agent's named-fleet membership (P-005) alongside its presence row —
+    // fleet_slug/fleet_role are a SOFT coord_presence label that does NOT ride the base
+    // PresenceRecord, so join the STORED value (reflects a leader role a handoff may have
+    // promoted this row to, not just the launch env). Absent ⇒ no fleet.
+    const fleet = record
+      ? (await fetchPresenceFleet([identity.ownerId])).get(identity.ownerId)
+      : undefined;
+    const presence = record
+      ? { ...record, fleetSlug: fleet?.fleetSlug ?? null, fleetRole: fleet?.fleetRole ?? null }
+      : record;
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, presence: record, ...(claims ? { claims } : {}) }),
+          text: JSON.stringify({ ok: true, presence, ...(claims ? { claims } : {}) }),
         },
       ],
     };
