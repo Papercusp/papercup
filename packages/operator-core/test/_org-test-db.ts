@@ -136,6 +136,17 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const appSql = postgres(appDsn, clientOpts);
   const adminSql = postgres(adminDsn, clientOpts);
 
+  // Post-baseline datatype registry (migration 421): the work-item VISIBILITY +
+  // PLACEMENT clauses (featureFamilyKindClause / frontierPlacementKindClause) reference
+  // harness_shared.datatype_registry, which a booted operator has (boot applies 421) but a
+  // STALE cached template can predate — making listWorkItems / fetchFrontierRows / the
+  // claim floors fail "relation harness_shared.datatype_registry does not exist". Apply it
+  // idempotently here (CREATE TABLE IF NOT EXISTS + DROP/CREATE POLICY) so every org test DB
+  // matches production; a no-op when the template already carries it.
+  await adminSql
+    .unsafe(readFileSync(resolve(SQL_DIR, '421-datatype-registry.sql'), 'utf8'))
+    .catch(() => {});
+
   const cleanup = async () => {
     await appSql.end({ timeout: 5 }).catch(() => {});
     await adminSql.end({ timeout: 5 }).catch(() => {});
