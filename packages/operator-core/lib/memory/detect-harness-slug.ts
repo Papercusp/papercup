@@ -100,11 +100,20 @@ function looksLikePapercupRepo(dir: string): boolean {
 /**
  * Walk `cwd` upward (inclusive). Returns each directory until either
  * the filesystem root or MAX_WALK_DEPTH ancestors are exhausted.
+ *
+ * Optional `boundary`: a directory the walk will not ascend ABOVE. The
+ * boundary dir itself is yielded, then iteration stops — so detection is
+ * confined to the `boundary` subtree. Omitted ⇒ walk to the filesystem
+ * root, the normal su-shell behavior. (If `cwd` is not within `boundary`
+ * the boundary is simply never hit, so the walk falls back to unbounded —
+ * a missing/mismatched boundary can never make the walk MORE eager.)
  */
-function* walkUp(cwd: string): Generator<string> {
+function* walkUp(cwd: string, boundary?: string): Generator<string> {
   let cur = path.resolve(cwd);
+  const stopAt = boundary ? path.resolve(boundary) : null;
   for (let i = 0; i < MAX_WALK_DEPTH; i++) {
     yield cur;
+    if (stopAt && cur === stopAt) break;
     const parent = path.dirname(cur);
     if (parent === cur) break;
     cur = parent;
@@ -123,6 +132,12 @@ export function detectHarnessSlugSync(opts: {
   // full `NodeJS.ProcessEnv`, which requires `NODE_ENV`) so callers/tests
   // can pass a partial `{ PAPERCUSP_HARNESS_SLUG }` map.
   env?: Record<string, string | undefined>;
+  // Optional upper bound for the cwd walk: detection will not ascend above
+  // this directory (see walkUp). The su shell omits it (walk to `/`); tests
+  // pass their isolated temp root so the walk can't escape into whatever
+  // repo the temp dir happens to live under (e.g. vitest's project-local
+  // TMPDIR=.vitest-tmp inside this monorepo — EI-5541).
+  boundary?: string;
 }): DetectResult {
   const env = opts.env ?? process.env;
 
@@ -133,7 +148,7 @@ export function detectHarnessSlugSync(opts: {
   }
 
   // 2. Walk for .papercusp/slug marker
-  for (const dir of walkUp(opts.cwd)) {
+  for (const dir of walkUp(opts.cwd, opts.boundary)) {
     const marker = readSlugMarker(dir);
     if (marker) return { slug: marker, source: 'marker-file' };
   }
@@ -143,7 +158,7 @@ export function detectHarnessSlugSync(opts: {
   //    `env` resolved above), NOT a baked literal — papercup→papercusp is
   //    an env switch, not a code change. Falls back to the legacy default
   //    only when the pointer is unset (pre-pointer installs).
-  for (const dir of walkUp(opts.cwd)) {
+  for (const dir of walkUp(opts.cwd, opts.boundary)) {
     if (looksLikePapercupRepo(dir)) {
       const home = env[HOME_HARNESS_ENV]?.trim();
       return {
@@ -170,6 +185,8 @@ export async function detectHarnessSlug(opts: {
   cwd: string;
   // Plain env record (not full NodeJS.ProcessEnv) — see detectHarnessSlugSync.
   env?: Record<string, string | undefined>;
+  // Optional upper bound for the cwd walk — see detectHarnessSlugSync.
+  boundary?: string;
   registryLookup?: (cwd: string) => Promise<string | null>;
 }): Promise<DetectResult> {
   const sync = detectHarnessSlugSync(opts);
