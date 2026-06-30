@@ -8,7 +8,6 @@ import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
 import {
   listWorkItems,
-  WORK_ITEM_KINDS,
   type WorkItemKind,
 } from "../../work-items";
 import { boundRowField } from "../_bound-output";
@@ -95,7 +94,20 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().max(80).optional(),
-    kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
+    // P-001/P-011 generic-kind: a built-in kind OR a workspace-registered generic-kind
+    // datatype (declared via meta:define-datatype). familyOf() maps any non-issue kind to
+    // the feature family + featureFamilyKindClause admits registered generic kinds, so the
+    // filter works downstream; an unknown kind simply lists empty. Enum-locking this arg
+    // was the observability gap — the queue could hold demo-bet rows the list tool refused
+    // to filter by. Free string mirrors work_items:create.
+    kind: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe(
+        'built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype',
+      ),
     state: z.string().max(40).optional(),
     parent: z
       .string()

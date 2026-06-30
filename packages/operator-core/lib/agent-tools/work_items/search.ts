@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { searchWorkItems, WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
+import { searchWorkItems, type WorkItemKind } from '../../work-items';
 
 export default defineTool({
   name: 'work_items:search',
@@ -22,7 +22,18 @@ export default defineTool({
   args: z.object({
     query: z.string().min(1).max(400),
     harness: z.string().max(80).optional(),
-    kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
+    // P-001/P-011 generic-kind: a built-in kind OR a workspace-registered generic-kind
+    // datatype. familyOf() routes it to the feature family + featureFamilyKindClause admits
+    // it, so the filter works; an unknown kind simply yields no matches. Enum-locking this
+    // blocked filtering search by a declared datatype. Mirrors work_items:create.
+    kind: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe(
+        'built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype',
+      ),
     limit: z.number().int().positive().max(200).optional(),
   }),
   async handler(args) {
