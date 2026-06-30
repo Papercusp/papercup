@@ -50,10 +50,15 @@ export function egressEntries(account: {
   egress?: AccountEgress;
   egressPool?: AccountEgress[];
 }): AccountEgress[] {
-  const hasRoute = (e: AccountEgress | undefined): e is AccountEgress => !!e && (!!e.proxyUrl || !!e.localAddress);
-  const pool = (account.egressPool ?? []).filter(hasRoute);
-  if (pool.length > 0) return pool;
-  return hasRoute(account.egress) ? [account.egress] : [];
+  // An EXPLICIT pool keeps ALL its entries verbatim — including a `{}` entry, which is a VALID distinct
+  // egress meaning "the box's default outbound IP" (no proxy / no bound source). That is how an account
+  // gets a second free IP (e.g. aviynw8 = [its Rayobyte proxy, the box-direct IP]). Only array holes are
+  // dropped. The SINGULAR/legacy `egress` is a 1-entry pool ONLY when it actually routes (a bare `{}`
+  // singular ⇒ default egress ⇒ no pool, today's behavior).
+  const pool = account.egressPool;
+  if (pool && pool.length > 0) return pool.filter((e): e is AccountEgress => !!e);
+  const e = account.egress;
+  return e && (e.proxyUrl || e.localAddress) ? [e] : [];
 }
 
 export const ACCOUNT_PROVIDERS = ['claude', 'codex'] as const;

@@ -2322,9 +2322,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // off-cooldown egress IP, cool THIS IP (escalating with its per-IP streak) + retry the same account
               // /credential on the sibling IP — honoring hard pins, with NO whole-account pause. Only when the
               // account has no other usable IP do we fall through to the per-account BARE-429 circuit (today's path).
+              // A bare-burst 429 is a Cloudflare per-IP throttle on WHATEVER IP this attempt used (a proxy
+              // OR the box-default IP) — so rotate to any sibling IP regardless of the current IP's kind
+              // (unlike the transport circuit, which is proxy-scoped because a no-proxy stall is Anthropic-side).
               const usedEg = curEgressEntry ?? active.egress;
-              const ipHasProxy = !!usedEg?.proxyUrl && /^https?:\/\//i.test(usedEg.proxyUrl);
-              if (ipHasProxy && siblingEgressAvailable(active, Date.now(), curEgressKey)) {
+              if (siblingEgressAvailable(active, Date.now(), curEgressKey)) {
                 const ipStreak = (ipBare429Streak.get(curEgressKey) ?? 0) + 1;
                 ipBare429Streak.set(curEgressKey, ipStreak);
                 const ipCoolMs = Math.min(bare429FailoverBackoffMs * 2 ** (ipStreak - 1), IP_COOLDOWN_MAX_MS);
