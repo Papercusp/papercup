@@ -37,6 +37,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readDeployStatus, launchDetachedDeploy, type DeployStatus } from '../../release-deploy-launch';
+import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 
@@ -117,7 +119,23 @@ export default defineTool({
 
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-    const status = await readDeployStatus();
+    // Step 0 (WI-1320): a REAL (confirmed) deploy commits the latest staging FIRST via git-sync,
+    // so it ships CURRENT work — not a stale tree when git-sync is lagging/wedged (the
+    // force-deploy-ships-stale-staging asymmetry). Best-effort (never block the deploy on it),
+    // then re-read status because staging HEAD may have advanced (force resolves stagingHeadSha).
+    // A dry-run (confirm absent/false) does NOT commit — it only previews.
+    let status = await readDeployStatus();
+    if ((args as { confirm?: boolean }).confirm === true) {
+      // Wrap the WHOLE step (slug resolution + fire + re-read) — it must NEVER fail the deploy.
+      try {
+        await fireGitSyncNow(operatorHomeHarnessSlug(), activeWorkspaceId());
+        const refreshed = await readDeployStatus();
+        if (refreshed) status = refreshed;
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[release:deploy] pre-deploy git-sync fire failed (continuing with current staging):', (e as Error)?.message);
+      }
+    }
 
     // ── trigger: expedite a GREEN-but-stalled deploy ──
     if (args.op === 'trigger') {

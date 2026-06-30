@@ -1114,4 +1114,21 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   }
 }
 
+/**
+ * Fire the git-sync action ONCE, on demand — the SAME work a cron tick does (lock,
+ * content-guard, attribution, commit + push). Shared by the git-sync:run verb and by
+ * release:deploy (fire-before-deploy so a (force-)deploy ships CURRENT staging, not a
+ * stale tree when git-sync is lagging/wedged — WI-1320). Reads the routine's own
+ * trigger_config so it behaves exactly like a tick; default config when the row is absent.
+ */
+export async function fireGitSyncNow(installSlug: string, workspaceId: string): Promise<void> {
+  const { sql } = getOrgPg();
+  const rows = (await sql`
+    SELECT trigger_config FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = 'git-sync'
+     LIMIT 1`) as Array<{ trigger_config: Record<string, unknown> | null }>;
+  const triggerConfig = rows[0]?.trigger_config ?? {};
+  await handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null });
+}
+
 registerSystemAction('git-sync', handleGitSync);

@@ -31,6 +31,18 @@ vi.mock('../../attention-notify', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../attention-notify')>()),
   notifyAttention: notifyM,
 }));
+// WI-1320: a confirmed release:deploy fires git-sync FIRST (so it ships current staging, not
+// stale). Mock that I/O (no-op) so the tool's decision logic is tested in isolation — same as
+// the readDeployStatus / launch / notify mocks above. Spread the real module so the rest of
+// the import graph keeps git-sync-action's other exports.
+vi.mock('../../harness/git-sync/git-sync-action', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/git-sync/git-sync-action')>()),
+  fireGitSyncNow: vi.fn(),
+}));
+vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/operator-home-harness')>()),
+  operatorHomeHarnessSlug: () => 'test-home',
+}));
 
 import { readDeployStatus, launchDetachedDeploy } from '../../release-deploy-launch';
 const statusM = vi.mocked(readDeployStatus);
