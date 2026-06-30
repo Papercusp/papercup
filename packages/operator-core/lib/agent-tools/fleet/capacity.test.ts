@@ -54,8 +54,28 @@ test('proposed headroom is clamped to spare capacity under load', () => {
   assert.equal(r.throttled, true);
 });
 
-test('paused pool ⇒ factor 0 + "place only tier-1" advice', () => {
-  const r = buildCapacityReport(tieredHr({ paused: true, utilization: 1 }), { clampArmed: true, headroom: 20 });
+test('GENUINELY saturated pool (paused + NO tiered spare capacity) ⇒ factor 0 + "place only tier-1" advice', () => {
+  // The pool is paused AND has no healthy accounts / no bee-tier spare slots — a
+  // real saturation, distinct from the bound-account-only false-saturation the
+  // adjacent `rejected … broad placement` test guards (capacity-oracle-false-
+  // saturation-2026-06-29). Here there IS no fresh capacity, so factor must floor to 0.
+  const r = buildCapacityReport(
+    tieredHr({
+      paused: true,
+      utilization: 1,
+      priorityTiers: {
+        healthyAccounts: 0, // no healthy account → pool truly has no fresh capacity
+        tier1Reserve: 0,
+        tiers: [
+          { tier: 1, cap: 24, inFlight: 24, queued: 0 },
+          { tier: 2, cap: 20, inFlight: 20, queued: 0 },
+          { tier: 3, cap: 20, inFlight: 20, queued: 0 }, // bee tier full → no spare
+          { tier: 4, cap: 8, inFlight: 8, queued: 0 },
+        ],
+      },
+    }),
+    { clampArmed: true, headroom: 20 },
+  );
   assert.equal(r.factor, 0);
   assert.equal(r.paused, true);
   assert.match(r.advice, /SATURATED/);

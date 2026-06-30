@@ -25,7 +25,12 @@ const ME: AgentIdentity = {
   workspaceId: 'default',
   userId: null,
 };
-vi.mock('../identity', () => ({ resolveAgentIdentity: () => ME }));
+// whoami also reads named-fleet membership from `../identity` (P-005); mock the
+// full module surface it consumes — no fleet env in the unit harness ⇒ no fleet.
+vi.mock('../identity', () => ({
+  resolveAgentIdentity: () => ME,
+  deriveFleetMembership: () => ({ fleetSlug: null, fleetRole: null }),
+}));
 
 // The handoff handler resolves short ownerId prefixes against the live presence
 // roster (a PG read). For these in-memory handler tests the resolver is a

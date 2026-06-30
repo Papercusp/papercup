@@ -88,7 +88,9 @@ describe('routeFileLockOp — D-009 scope guard + hot-path guard', () => {
     const res = await routeFileLockOp('/repo', o, deps);
     expect(res.via).toBe('local-authority');
     expect(o.localCalls).toBe(1);
-    expect(harnessFetch).toHaveBeenCalledWith('harness-x'); // harness-scoped presence consulted
+    // P-006: presence fetch carries the (TS) staleMs window as a loose SQL pre-filter
+    // (DEFAULT_AUTHORITY_STALE_MS). We assert the SCOPE (harness slug), not the tunable window.
+    expect(harnessFetch).toHaveBeenCalledWith('harness-x', expect.any(Number)); // harness-scoped presence consulted
     expect(hiveFetch).not.toHaveBeenCalled();
   });
 
@@ -106,7 +108,7 @@ describe('routeFileLockOp — D-009 scope guard + hot-path guard', () => {
     const o = op('R');
     const res = await routeFileLockOp('/repo', o, deps);
     expect(res.via).toBe('local-authority');
-    expect(hiveFetch).toHaveBeenCalledWith('hive-1'); // hive-scoped presence consulted
+    expect(hiveFetch).toHaveBeenCalledWith('hive-1', expect.any(Number)); // hive-scoped presence consulted (P-006 staleMs window)
     expect(harnessFetch).not.toHaveBeenCalled();
   });
 });

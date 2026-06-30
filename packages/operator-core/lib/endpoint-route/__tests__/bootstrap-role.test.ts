@@ -36,7 +36,12 @@ vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock })
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
-vi.mock('../routes/agent-mcp/bootstrap-su', () => ({ resolveAccountPin: (...a: unknown[]) => resolveAccountPinMock(...a) }));
+// bootstrap-role also resolves named-fleet env from bootstrap-su (P-005); these
+// CODEX_HOME unit cases pass no fleet, so stub the no-fleet default (empty env).
+vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
+  resolveAccountPin: (...a: unknown[]) => resolveAccountPinMock(...a),
+  resolveFleet: async () => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null }),
+}));
 vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (opts: { sid: string }) => writeInteractiveClaudeConfigMock(opts) }));
 // No-op the best-effort saved-prompts materialize side effect — this unit test
 // isn't exercising it (the materialize integration test is), and running it for

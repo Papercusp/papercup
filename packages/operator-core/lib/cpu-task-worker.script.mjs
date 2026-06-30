@@ -51,12 +51,18 @@ parentPort.on('message', async (msg) => {
       // thread this avoids blocking the worker's own JS loop, and crucially
       // frees the MAIN loop immediately after postMessage returns the structured clone.
       const buf = await gzipAsync(json);
-      // Transfer the underlying ArrayBuffer so the main thread receives
-      // a zero-copy view (Transferable, avoids a Buffer clone across the channel).
-      const arr = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      // gzip output is frequently a VIEW into Node's shared ~8 KiB Buffer pool
+      // (buf.byteOffset != 0, buf.buffer.byteLength == 8192). Transferring that
+      // pooled ArrayBuffer is BROKEN two ways: postMessage rejects it ("Cannot
+      // transfer object of unsupported type"), and even if it didn't, detaching
+      // the shared pool would corrupt every other live Buffer sharing it. Copy
+      // into a standalone, exactly-sized buffer we solely own (byteOffset 0),
+      // then transfer THAT — zero-copy across the channel, no pool hazard.
+      const out = new Uint8Array(buf.byteLength);
+      out.set(buf);
       parentPort.postMessage(
-        { kind: 'serialize_ok', id, json: null, compressed: arr },
-        [arr.buffer],
+        { kind: 'serialize_ok', id, json: null, compressed: out },
+        [out.buffer],
       );
     } else {
       parentPort.postMessage({ kind: 'serialize_ok', id, json, compressed: null });
