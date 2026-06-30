@@ -1881,32 +1881,43 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     sigValid: boolean,
   ): Promise<boolean> {
     if (!sigValid || revoked.has(frame.device_pubkey)) return false;
+    // WI-797 — owner-log BOOTSTRAP at the IDENTITY stage (the keystone's missing half),
+    // HOISTED ABOVE the `myHiveHome == null` gate (recv-but-no-admit-during-rekey fix; the
+    // live-pinned A→B blocker). A fresh joiner's hive_members is EMPTY, so the OWNER's own
+    // announce fails the gist-binding gate (`admit()` → 'binding_invalid' whenever the owner's
+    // live attestation gist is unresolvable in the fresh-join window) and is CONCLUSIVELY
+    // rejected in `onAnnounce` BEFORE `resolveSameHiveMember`'s owner-bootstrap (which only
+    // runs AFTER a positive identity decision) can ever rescue it — the bootstrap deadlock the
+    // A1 keystone (WI-787) was supposed to break. Admit the ONE directory-verified owner device
+    // of the JOINED hive here, bypassing the gist gate.
+    //
+    // WHY ABOVE THE GATE: a fresh joiner boots home=<none> (its hive-home SLUG resolves only at
+    // the 2c rekey), and the owner's announce arrives in that window. `resolveJoinedHiveOwnerDevice`
+    // resolves the owner device from the swarm BINDING (`hive_pubkey` / `topic_hex`) + the seeded
+    // directory cache — it does NOT need the resolved hive-home slug — so gating it behind
+    // `myHiveHome != null` (the prior bug) DROPPED the owner frame (→ binding_invalid → conclusive
+    // reject, NOT buffered), leaving the rekey replay nothing to re-drive → A→B never federated
+    // (live-pinned via announce-debug: B RECEIVES A's owner announce but processes it at home=<none>).
+    // Running the bootstrap FIRST lets the owner frame pass IDENTITY at home=<none> → the A-003
+    // `scope_unresolved` buffer in `onAnnounce` holds it → `retryPendingOnce` (which re-runs THIS
+    // fn) admits it once the rekey resolves the home.
+    //
+    // Identical cryptographic guarantee as the `resolveSameHiveMember` copy — the
+    // `(hive_pubkey → owner_device_pubkey)` binding read by `ownerDeviceForHive`/`ownerDeviceForTopic`
+    // comes from the offline hive-directory cache, which only records descriptors that passed
+    // `verifyHiveAnnounce` (Ed25519 sig + the owner_device↔hive_pubkey binding). Strictly the ONE
+    // bound owner device; `sigValid` is already checked above; never widens to github_user_id alone
+    // or any other device (that would hole the WI-259 membership guard). D-053: BOTH binding kinds
+    // (a topic-bound invite/link joiner has no `hive_pubkey` — recover it from the cache by topic).
+    const ownerDevice = await resolveJoinedHiveOwnerDevice();
+    if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
+    // Member admission (below) needs the resolved hive-home slug — resolve it AFTER the
+    // binding-only owner-bootstrap above, so a home=<none> joiner still bootstrap-admits the owner.
     const { hiveHomeSlugForHarness } = await import('../../hive-federation');
     const myHiveHome =
       hiveHomeProjectionSlug ??
       (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return false;
-    // WI-797 — owner-log BOOTSTRAP at the IDENTITY stage (the keystone's missing half).
-    // A fresh joiner's hive_members is EMPTY, so the OWNER's own announce fails the
-    // gist-binding gate (`admit()` → 'binding_invalid' whenever the owner's live
-    // attestation gist is unresolvable in the fresh-join window) and is CONCLUSIVELY
-    // rejected in `onAnnounce` BEFORE `resolveSameHiveMember`'s owner-bootstrap (which
-    // only runs AFTER a positive identity decision) can ever rescue it — the bootstrap
-    // deadlock the A1 keystone (WI-787) was supposed to break but couldn't, because it
-    // sat downstream of the gate. Hoist the SAME owner-bootstrap admit to the identity
-    // stage: admit the ONE directory-verified owner device of the JOINED hive here,
-    // bypassing the gist gate. Identical cryptographic guarantee as the
-    // `resolveSameHiveMember` copy — the `(hive_pubkey → owner_device_pubkey)` binding
-    // read by `ownerDeviceForHive` comes from the offline hive-directory cache, which
-    // only records descriptors that passed `verifyHiveAnnounce` (Ed25519 sig + the
-    // owner_device↔hive_pubkey binding). Strictly scoped: ONLY when the frame's joined
-    // hive is `swarmBinding.hive_pubkey` AND `frame.device_pubkey` is that exact bound
-    // owner device. `sigValid` is already checked above; never widens to github_user_id
-    // alone or any other device (that would hole the WI-259 membership guard).
-    // D-053: resolve the joined hive's owner device for BOTH binding kinds (a topic-bound
-    // invite/link joiner has no `hive_pubkey` — recover it from the directory cache by topic).
-    const ownerDevice = await resolveJoinedHiveOwnerDevice();
-    if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
     const memberDevices = await loadHiveMembers(myHiveHome);
     return trustedHiveMemberDeviceAdmission({
       devicePubkey: frame.device_pubkey,

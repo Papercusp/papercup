@@ -1527,9 +1527,55 @@ interface HookApi {
   ): void;
 }
 
+/**
+ * Orientation primer (tool-discovery-for-weak-models-2026-06-30 WS4). Injected
+ * ONCE at session_start, always-visible (it's a sendMessage, not an MCP tool, so
+ * omp's tool-discovery never hides it). Teaches weaker/local models the two
+ * things they get wrong — observed with `ollama/qwen3.5` and `ornith` running
+ * blind: (1) plans/work-items/inbox live in the coordination SYSTEM, not files
+ * (they `ls`/`find` for them and find nothing); (2) Papercusp MCP tools are
+ * hidden behind discovery, so a tool must be loaded via `search_tool_bm25`
+ * before it can be called (they hallucinate names → "Tool X not found").
+ *
+ * The core list mirrors CORE_MCP_TOOL_NAMES (orchestrator/invoke.ts). omp-only:
+ * this hook is omp's `-e` coordination module; claude/codex load the full
+ * catalog directly and need none of this.
+ */
+const ORIENTATION_PRIMER = [
+  '<system-reminder type="papercusp-orientation">',
+  'You are a Papercusp superuser agent. Read this once.',
+  '',
+  'WHERE THINGS LIVE: plans, work-items, inbox, assignments, and coordination state live in the Papercusp COORDINATION SYSTEM (a database), NOT as files on disk. Do NOT ls/find/read the filesystem to find them — use the coordination tools below.',
+  '',
+  'HOW TOOLS WORK HERE: Papercusp tools are MCP tools and most are HIDDEN behind tool-discovery to save context, so calling one by name can fail "not found". To use a hidden tool, FIRST call search_tool_bm25 with its name or your intent to load it, THEN call it. Example: search_tool_bm25("coord:orient"), then call coord:orient.',
+  '',
+  'START HERE: search_tool_bm25("coord:orient"), then call coord:orient — one call returns your assignments, the claimable backlog, your unread inbox, recent plan changes, and a memory recall.',
+  '',
+  'YOUR CORE TOOLSET (load each with search_tool_bm25 as needed):',
+  '  coord:orient · coord:inbox · coord:ack · coord:send · coord:glance · coord:ask',
+  '  plans:get · plans:set-status · plans:items · work_items:list · work_items:claim · work_items:set_state · work_items:update',
+  '  locks:acquire_granular · locks:release_granular · docs:search · memory:search · memory:remember · tools:find',
+  '',
+  'FINDING OTHER TOOLS: the catalog has ~550 tools in namespaces like coord, plans, work_items, hive, fleet, flags, deploy, docs, memory, locks, harness, capability, accounts. To find one by intent call tools:find("<what you need>"), or search_tool_bm25("<keywords>") directly, then call it.',
+  '</system-reminder>',
+].join('\n');
+
 export default function register(pi: HookApi): void {
   pi.on('session_start', async (_event, ctx) => {
     await safe(() => onSessionStart(ctx), undefined);
+    // WS4 orientation primer — inject once, model-facing (display:false,
+    // attribution:'agent' = not billed to the user), same channel as the
+    // coord reminders. Non-fatal: the primer is additive guidance.
+    try {
+      pi.sendMessage({
+        customType: 'papercusp-orientation',
+        content: ORIENTATION_PRIMER,
+        display: false,
+        attribution: 'agent',
+      });
+    } catch {
+      /* additive — never gate the session on the primer */
+    }
   });
 
   pi.on('turn_start', async (_event, ctx) => {

@@ -292,12 +292,20 @@ async function bootViaSidecarHost(args: {
  * Run the fresh-joiner owner-bootstrap-admit scenario for a given JOINER binding KIND.
  * Returns whether the joiner admitted the owner's log + a diagnostic dump.
  */
-async function runScenario(joinerBindingKind: 'hive' | 'topic'): Promise<{
+async function runScenario(
+  joinerBindingKind: 'hive' | 'topic',
+  scenarioOpts: { unresolvedHomeUntilRekey?: boolean } = {},
+): Promise<{
   joinerAdmittedOwner: boolean;
   joinerEvents: ReturnType<typeof listBootHistory>;
 }> {
   const HIVE_HOME = 'owner-hive';
   const JOINER_SLUG = 'joined-owner-hive';
+  // recv-but-no-admit-during-rekey regression: when set, the JOINER boots with its hive-home
+  // UNRESOLVED (home=<none> — the real first-join state before the 2c rekey) via the
+  // joinerHiveHomeSlugOverride seam; the owner's announce arrives in that window, then we rekey.
+  const unresolvedHome = scenarioOpts.unresolvedHomeUntilRekey === true;
+  let homeResolved = !unresolvedHome;
 
   // ── env-route getOrgPg at a migrated org DB = the JOINER's PG view. ──
   const orgDb: OrgTestDb = await createOrgTestDb();
@@ -428,6 +436,14 @@ async function runScenario(joinerBindingKind: 'hive' | 'topic'): Promise<{
     bootExtra: {
       announceIdentityOverride: idJoiner.override,
       applyOverride: async () => true,
+      // home=<none> until rekey (the real first-join 2c flow) — exercises the
+      // recv-but-no-admit-during-rekey path the already-bound scenarios skip.
+      ...(unresolvedHome
+        ? {
+            joinerHiveHomeSlugOverride: async (): Promise<string | null> =>
+              homeResolved ? HIVE_HOME : null,
+          }
+        : {}),
     },
   });
 
@@ -445,6 +461,21 @@ async function runScenario(joinerBindingKind: 'hive' | 'topic'): Promise<{
     schema_version: 1,
     writerPubkey: idOwner.devicePubkey,
   });
+
+  if (unresolvedHome) {
+    // Let the joiner RECEIVE the owner's announce while home=<none>: with the fix it BUFFERS
+    // (scope_unresolved) instead of conclusively rejecting, and must NOT yet admit.
+    for (let i = 0; i < 10; i++) await Promise.all([owner.mergeNow(), joiner.mergeNow()]);
+    expect(
+      joiner.handle.admitted.has(owner.handle.ownLog.keyHex),
+      'precondition: a home=<none> joiner must NOT admit the owner before the rekey',
+    ).toBe(false);
+    // The 2c rekey: the hive-home now resolves → rebind → retryPendingOnce re-runs admit on the
+    // buffered owner announce. PRE-FIX the announce was DROPPED at home=<none> (owner-bootstrap was
+    // gated on myHiveHome != null), so there was nothing to replay → the joiner never admitted.
+    homeResolved = true;
+    await joiner.handle.rekey(joinerBinding);
+  }
 
   const joinerAdmittedOwner =
     (await pollUntil(
@@ -494,6 +525,25 @@ describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY hive_members, real l
       expect(
         joinerAdmittedOwner,
         "the FRESH JOINER (empty hive_members, TOPIC binding) did NOT admit the owner's log — owner-bootstrap is gated on swarmBinding.kind==='hive', so a topic-bound joiner never bootstrap-admits (D-053)",
+      ).toBe(true);
+    },
+    180_000,
+  );
+
+  it(
+    'JOINER whose hive-home resolves only at REKEY (home=<none> at boot — the real first-join 2c flow) STILL bootstrap-admits the owner [recv-but-no-admit-during-rekey regression]',
+    async () => {
+      const { joinerAdmittedOwner, joinerEvents } = await runScenario('topic', {
+        unresolvedHomeUntilRekey: true,
+      });
+      // eslint-disable-next-line no-console
+      console.log(
+        '[repro home<none>→rekey] joiner events:',
+        joinerEvents.map((e) => `${e.kind}:${e.message ?? ''}`).join(' | '),
+      );
+      expect(
+        joinerAdmittedOwner,
+        'a joiner that RECEIVED the owner announce at home=<none> then rekeyed did NOT admit the owner — the owner-bootstrap was gated behind the myHiveHome resolution, so the announce was dropped (not buffered) and the rekey replay had nothing to re-drive (the live A→B recv-but-no-admit-during-rekey blocker)',
       ).toBe(true);
     },
     180_000,

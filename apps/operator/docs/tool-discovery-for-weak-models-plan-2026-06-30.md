@@ -63,10 +63,11 @@ Proposed `CORE_MCP_TOOL_NAMES` (define next to `BEE_/QUEEN_MCP_TOOL_NAMES` in `l
 \* confirm exact name in the `plan_items` namespace.
 
 **Tasks**
-- [ ] Add `CORE_MCP_TOOL_NAMES` constant + a parity test (mirrors the existing `BEE_/QUEEN_` lists).
-- [ ] **Fix:** `coord:orient` is absent from both `BEE_` and `QUEEN_` allow-lists today — add it (it's the documented bootstrap entry point).
-- [ ] Wire the **omp** MCP url (`~/.omp/agent/mcp.json`) to advertise the core catalog via a scoped `?role=`/profile param so `tools/list` returns ~core (under the 40-tool discovery threshold → core loads *directly*, no search). Superuser dispatch is unchanged (the role only narrows the *advertised* surface; superuser can still call anything — see the `roleParam` handling in `_mcp-handler.ts` and the `invoke.ts` "advertises that role's catalog instead of the full operator-tier surface" note).
+- [x] Add `CORE_MCP_TOOL_NAMES` (+ `CORE_ALLOWED_TOOLS`) constant next to `BEE_/QUEEN_` in `invoke.ts`, with a parity test. **Done** (19 tools; used `plans:items`, not the nonexistent `plan_items:list`; added `tools:find` for WS3; +`memory:remember`). Test: `invoke.test.ts` → green.
+- [x] **Fix:** `coord:orient` was absent from both `BEE_` and `QUEEN_` allow-lists — **added to both** (the documented bootstrap entry point). Test-pinned.
 - [ ] Leave Claude/Codex on the full catalog (they have the context).
+
+> **Design correction (found during implementation): DO NOT narrow omp's advertised catalog.** omp's `search_tool_bm25` can only activate tools it *received* in `tools/list`; if the operator advertises only the core, the other ~530 tools become **unreachable** (omp never received them, so search finds nothing). And omp cannot pin individual MCP tools visible — `tools.essentialOverride` filters to built-ins only (`Z in NJ`), and `mcp.discoveryMode` hides MCP tools *all-or-nothing*. So the omp fix is **keep the full catalog** (so native search reaches everything) and make the model *use* discovery well via the **WS4 primer** ("tools are hidden — `search_tool_bm25('coord orient')` to load orient first; here's the map") + the **WS2 capability map** + **WS3 `tools:find`**. `CORE_MCP_TOOL_NAMES` is therefore the **"load-these-first" set the primer highlights**, not an advertised-catalog filter.
 
 ### WS2 — Derived capability map (catalogue summaries)
 
