@@ -47,6 +47,8 @@ import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
 import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
+import { egressEntries } from '../deployment/account-pool';
+import { egressCacheKey } from './egress-dispatcher';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -400,8 +402,15 @@ export interface ActiveAccount {
   invalidateToken?(): void;
   /** Per-account upstream egress (per-account IP routing — D-003). When set, the gateway forwards
    *  THIS account's upstream requests through a dedicated undici Dispatcher (an HTTP/SOCKS proxy or
-   *  a bound source IP) so each Max subscription egresses from its own IP. Absent ⇒ default egress. */
+   *  a bound source IP) so each Max subscription egresses from its own IP. Absent ⇒ default egress.
+   *  Singular/legacy — superseded by a non-empty `egressPool`. */
   egress?: AccountEgress;
+  /** Per-account egress IP POOL (gateway-per-account-egress-ip-pool-2026-06-30): the rotating list of
+   *  egress bindings. When non-empty the gateway ROUND-ROBINS this account's upstream across these IPs
+   *  (skipping ones on per-IP cooldown), so a per-IP Cloudflare edge throttle (bare-burst 429) takes one
+   *  IP out of rotation rather than pausing the whole account, and a HARD pin rides its account's pool.
+   *  Resolve the effective list with `egressEntries(account)`. Absent/empty ⇒ the singular `egress`. */
+  egressPool?: AccountEgress[];
 }
 
 /**
@@ -1050,8 +1059,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // all share one egress IP. Built lazily from undici + cached per (accountId + binding).
   const dispatcherCache = new Map<string, UndiciDispatcher>();
   let undiciMod: typeof import('undici') | undefined;
-  async function dispatcherFor(account: ActiveAccount): Promise<UndiciDispatcher | undefined> {
-    const eg = account.egress;
+  async function dispatcherFor(
+    account: ActiveAccount,
+    eg: AccountEgress | undefined = account.egress,
+  ): Promise<UndiciDispatcher | undefined> {
     if (!eg || (!eg.proxyUrl && !eg.localAddress)) return undefined;
     // undici's ProxyAgent is an HTTP-CONNECT proxy client — it does NOT speak SOCKS. A socks:// (or any
     // non-http(s)) proxyUrl CONSTRUCTS without error but fails at REQUEST time (the proxy rejects the
@@ -1064,7 +1075,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       log('warn', `inference-gateway: egress proxyUrl for '${account.accountId}' ('${eg.proxyUrl}') is not http(s) — undici ProxyAgent is HTTP-CONNECT only; ignoring it (native SOCKS is a follow-up, WI-284)`);
     }
     if (!httpProxy && !eg.localAddress) return undefined;
-    const key = `${account.accountId}|${httpProxy ?? ''}|${eg.localAddress ?? ''}`;
+    const key = egressCacheKey(account.accountId, eg);
     const hit = dispatcherCache.get(key);
     if (hit) return hit;
     try {
@@ -1114,6 +1125,52 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  fire the loud `onCredentialDead` side-channel ONCE per episode. RESET on the next successful auth (a 2xx
    *  for that account — see the 2xx success path), which re-arms the alert for a later episode. */
   const credential401Streak = new Map<string, number>();
+  // ── Per-account egress IP POOL rotation (gateway-per-account-egress-ip-pool-2026-06-30) ──────────────
+  // An account can carry a POOL of egress IPs (ActiveAccount.egressPool). The gateway round-robins an
+  // account's upstream across its IPs, and a bare-burst 429 (Cloudflare per-IP edge throttle) / transport
+  // failure cools ONLY the IP that hit it — the SAME account/credential then retries on a sibling IP. So a
+  // per-IP throttle no longer pauses the whole account, and a HARD pin rides its account's IP pool instead
+  // of erroring on its one throttled IP. The existing account-level circuit (gov.pausedUntil / egressPauseUntil)
+  // still fires — but only once ALL of an account's IPs are cooled, so a 0/1-IP account is byte-identical.
+  const IP_TRANSPORT_COOLDOWN_MS = EGRESS_CIRCUIT_OPEN_MS; // a transport-failed egress IP rests this long
+  const IP_COOLDOWN_MAX_MS = BARE429_CIRCUIT_MAX_MS; // ceiling for the escalating bare-429 per-IP cooldown
+  const egressCursor = new Map<string, number>(); // per-account round-robin cursor over its egress IPs
+  const ipCooldownUntil = new Map<string, number>(); // per-egress-IP key (egressCacheKey) → cooldown-until (epoch ms)
+  const ipBare429Streak = new Map<string, number>(); // per-egress-IP consecutive bare-429s → escalating cooldown
+  const egDesc = (eg?: AccountEgress): string =>
+    eg?.proxyUrl ?? (eg?.localAddress ? `src ${eg.localAddress}` : 'default-egress');
+  const coolIp = (key: string, ms: number): void => {
+    ipCooldownUntil.set(key, Math.max(ipCooldownUntil.get(key) ?? 0, Date.now() + ms)); // take-MAX: never shorten
+  };
+  /** Does `account` have an egress IP OTHER than `currentKey` that is off cooldown right now? */
+  const siblingEgressAvailable = (account: ActiveAccount, now: number, currentKey: string): boolean => {
+    const entries = egressEntries(account);
+    if (entries.length <= 1) return false;
+    return entries.some((e) => {
+      const k = egressCacheKey(account.accountId, e);
+      return k !== currentKey && (ipCooldownUntil.get(k) ?? 0) <= now;
+    });
+  };
+  /** Pick the egress IP this attempt egresses through: round-robin from the account's cursor, preferring an
+   *  off-cooldown IP; if every IP is cooled, return the cursor IP (last resort — the account-level circuit
+   *  fallback handles all-IPs-down). 0 entries ⇒ default egress; 1 entry ⇒ that entry (no cursor churn). */
+  const pickEgress = (account: ActiveAccount, now: number): { entry: AccountEgress | undefined; key: string } => {
+    const entries = egressEntries(account);
+    if (entries.length === 0) return { entry: undefined, key: egressCacheKey(account.accountId, undefined) };
+    if (entries.length === 1) return { entry: entries[0], key: egressCacheKey(account.accountId, entries[0]) };
+    const start = (egressCursor.get(account.accountId) ?? 0) % entries.length;
+    let chosenIdx = start;
+    for (let i = 0; i < entries.length; i++) {
+      const idx = (start + i) % entries.length;
+      if ((ipCooldownUntil.get(egressCacheKey(account.accountId, entries[idx])) ?? 0) <= now) {
+        chosenIdx = idx;
+        break;
+      }
+    }
+    egressCursor.set(account.accountId, (chosenIdx + 1) % entries.length); // advance so the next attempt tries a different IP
+    const entry = entries[chosenIdx];
+    return { entry, key: egressCacheKey(account.accountId, entry) };
+  };
   /** Half-open egress probe: after a circuit opens, re-test the account's proxy (egress-probe.ts) on a short
    *  LOOP. On the FIRST success it LIFTS the transport pause IMMEDIATELY — clears the streak, lifts the
    *  governor's transport pause (gov.liftTransportPause, a no-op if a real 429 pause superseded it), and
@@ -1935,6 +1992,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           stallTimer.unref?.();
         };
         let up: Response;
+        // Per-attempt egress IP selected from the account's pool (egress-ip-pool) — declared at loop-body
+        // scope so the transport-failure catch + the 429 handler cool/rotate the EXACT IP this attempt used.
+        let curEgressEntry: AccountEgress | undefined;
+        let curEgressKey = egressCacheKey(active.accountId, undefined);
         try {
           // Per-account egress ATTEMPT tally (denominator for egressFailsByAccount → /stats egressFailRateByAccount).
           // Counted here (token refresh already succeeded, so the egress proxy is about to be dialed) — a token
@@ -1942,9 +2003,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           egressAttemptsByAccount.set(active.accountId, (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1);
           const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
           if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
-          // Per-account IP routing: forward this account's request through its dedicated egress
-          // dispatcher (proxy / bound source IP) when configured; absent ⇒ default (shared) egress.
-          const dispatcher = await dispatcherFor(active);
+          // Per-account IP routing: forward this account's request through the egress IP selected from its
+          // pool this attempt (egress-ip-pool round-robin); absent ⇒ default (shared) egress.
+          const picked = pickEgress(active, Date.now());
+          curEgressEntry = picked.entry;
+          curEgressKey = picked.key;
+          const dispatcher = await dispatcherFor(active, curEgressEntry);
           if (dispatcher) init.dispatcher = dispatcher;
           // Wait for response HEADERS under the headers deadline; once they arrive, switch to the
           // per-chunk body-idle deadline (reset on each streamed byte below).

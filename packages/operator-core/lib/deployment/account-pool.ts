@@ -38,6 +38,24 @@ export interface AccountEgress {
   localAddress?: string;
 }
 
+/**
+ * The ordered list of egress bindings for an account — the per-account IP POOL the gateway rotates the
+ * account's upstream across (gateway-per-account-egress-ip-pool-2026-06-30). Precedence: a non-empty
+ * `egressPool` supersedes the singular `egress`; otherwise the singular `egress` is treated as a 1-entry
+ * pool; neither ⇒ `[]` (default shared egress). Entries with no proxyUrl AND no localAddress are dropped
+ * (they carry no routing). SINGLE SOURCE OF TRUTH so every consumer (the gateway's dispatcher selector,
+ * the egress probe, the status read-model) sees the SAME ordered list and can never drift. Pure.
+ */
+export function egressEntries(account: {
+  egress?: AccountEgress;
+  egressPool?: AccountEgress[];
+}): AccountEgress[] {
+  const hasRoute = (e: AccountEgress | undefined): e is AccountEgress => !!e && (!!e.proxyUrl || !!e.localAddress);
+  const pool = (account.egressPool ?? []).filter(hasRoute);
+  if (pool.length > 0) return pool;
+  return hasRoute(account.egress) ? [account.egress] : [];
+}
+
 export const ACCOUNT_PROVIDERS = ['claude', 'codex'] as const;
 export type AccountProvider = (typeof ACCOUNT_PROVIDERS)[number];
 
@@ -67,8 +85,19 @@ export interface ClaudeAccount {
   credentialRef: string;
   /** Optional human label. */
   label?: string;
-  /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress. */
+  /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress.
+   *  SINGULAR (legacy / single-IP). Superseded by a non-empty `egressPool`; kept for back-compat and
+   *  as the implicit 1-entry pool. Resolve the effective list via `egressEntries(account)`. */
   egress?: AccountEgress;
+  /**
+   * Per-account egress IP POOL (gateway-per-account-egress-ip-pool-2026-06-30): a list of egress
+   * bindings the gateway ROTATES this account's upstream across, so a per-IP Cloudflare edge throttle
+   * (a bare-burst 429 on ONE egress IP) takes only THAT IP out of rotation instead of pausing the whole
+   * account — and a HARD-pinned agent rides its account's own IP pool instead of erroring on its single
+   * throttled IP. Empty/absent ⇒ fall back to the singular `egress` (a 1-entry pool) ⇒ today's behavior.
+   * Resolve via `egressEntries(account)`. The owner provisions the IPs (owner-gated infra, like creds).
+   */
+  egressPool?: AccountEgress[];
   /** When added (epoch ms). */
   addedAt: number;
   /** Swarm member harness slugs currently bound to this account (P-020). A MANUAL / deploy-time
@@ -197,7 +226,14 @@ export function accountByCredentialRef(pool: AccountPool, credentialRef: string)
  */
 export function registerAccount(
   pool: AccountPool,
-  input: { id: string; credentialRef: string; label?: string; egress?: AccountEgress; provider?: AccountProvider },
+  input: {
+    id: string;
+    credentialRef: string;
+    label?: string;
+    egress?: AccountEgress;
+    egressPool?: AccountEgress[];
+    provider?: AccountProvider;
+  },
   now: number,
 ): AccountPool {
   const id = input.id.trim();
@@ -213,7 +249,14 @@ export function registerAccount(
     return {
       accounts: pool.accounts.map((a) =>
         a.id === id
-          ? { ...a, provider, credentialRef, label: input.label ?? a.label, egress: input.egress ?? a.egress }
+          ? {
+              ...a,
+              provider,
+              credentialRef,
+              label: input.label ?? a.label,
+              egress: input.egress ?? a.egress,
+              egressPool: input.egressPool ?? a.egressPool,
+            }
           : a,
       ),
     };
@@ -224,6 +267,7 @@ export function registerAccount(
     credentialRef,
     label: input.label,
     egress: input.egress,
+    egressPool: input.egressPool,
     addedAt: now,
     boundTo: [],
     rate: freshRate(),

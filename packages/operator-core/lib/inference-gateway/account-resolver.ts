@@ -28,8 +28,12 @@ export interface ResolvedAccount {
    *  `sole-pool-account` = the single registered account; `env` = the PAPERCUSP_ACCOUNT_ID pin;
    *  `local-fallback` = the box's own login (no accounts registered). */
   source: 'env' | 'pool' | 'sole-pool-account' | 'local-fallback';
-  /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress. */
+  /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress.
+   *  Singular/legacy — superseded by a non-empty `egressPool`. */
   egress?: AccountEgress;
+  /** Per-account egress IP POOL (rotating list) — gateway-per-account-egress-ip-pool-2026-06-30.
+   *  When set, the gateway rotates this account's upstream across these IPs. Absent ⇒ singular `egress`. */
+  egressPool?: AccountEgress[];
 }
 
 /**
@@ -77,12 +81,12 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
   const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
   if (wanted) {
     const acct = accounts.find((a) => a.id === wanted);
-    if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, egress: acct.egress, source: 'env' };
+    if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, egress: acct.egress, egressPool: acct.egressPool, source: 'env' };
     throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
   }
   if (accounts.length === 1) {
     const a = accounts[0];
-    return { accountId: a.id, credentialRef: a.credentialRef, egress: a.egress, source: 'sole-pool-account' };
+    return { accountId: a.id, credentialRef: a.credentialRef, egress: a.egress, egressPool: a.egressPool, source: 'sole-pool-account' };
   }
   // No env pin and 0 or >1 pool accounts → the box's own login. (>1 with no pin is ambiguous;
   // the local login is the safe, explicit default rather than guessing which pool account.)
@@ -105,6 +109,7 @@ export async function resolveAccountPool(ws?: string, provider: AccountProvider 
     accountId: a.id,
     credentialRef: a.credentialRef,
     egress: a.egress,
+    egressPool: a.egressPool,
     source: 'pool' as const,
   }));
   if (all.length === 0 && provider === 'claude') {

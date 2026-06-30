@@ -280,13 +280,23 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       // Per-account IP routing (D-003): route this account's upstream through its own egress dispatcher
       // (proxy / bound source IP) when configured; absent ⇒ default shared egress.
       egress: account.egress,
+      // Per-account egress IP POOL (gateway-per-account-egress-ip-pool-2026-06-30): the rotating list of
+      // egress IPs; when set the gateway round-robins this account's upstream across them so a per-IP
+      // Cloudflare throttle takes one IP out of rotation, not the whole account.
+      egressPool: account.egressPool,
     }));
     return { resolvers: rs, entries };
   }
-  /** Stable signature of a resolved pool — id + credentialRef + egress — so a reload only swaps on a REAL
-   *  change, not on every poll. */
+  /** Stable signature of a resolved pool — id + credentialRef + egress (singular + pool) — so a reload only
+   *  swaps on a REAL change, not on every poll. */
+  const egSig = (e?: { proxyUrl?: string; localAddress?: string }) => `${e?.proxyUrl ?? ''}~${e?.localAddress ?? ''}`;
   const sigOf = (a: ResolvedAccount[]) =>
-    a.map((x) => `${x.accountId}|${x.credentialRef}|${x.egress?.proxyUrl ?? ''}|${x.egress?.localAddress ?? ''}`).join(',');
+    a
+      .map(
+        (x) =>
+          `${x.accountId}|${x.credentialRef}|${egSig(x.egress)}|${(x.egressPool ?? []).map(egSig).join('+')}`,
+      )
+      .join(',');
 
   let accounts: ResolvedAccount[] = opts.resolveAccount
     ? [await opts.resolveAccount(opts.workspace)]
@@ -308,7 +318,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   const buildBearerEntries = (accts: ResolvedAccount[]) =>
     accts.map((a) => {
       const resolver = makeBearerCredentialResolver(a.credentialRef);
-      return { accountId: a.accountId, token: () => resolver.current(), invalidateToken: () => resolver.invalidate(), egress: a.egress };
+      return { accountId: a.accountId, token: () => resolver.current(), invalidateToken: () => resolver.invalidate(), egress: a.egress, egressPool: a.egressPool };
     });
   const codexPool = createOptionalFailoverPool(buildBearerEntries(codexAccounts), { log });
   const unobserve = observePool(primary.accountId, opts.workspace, log);
