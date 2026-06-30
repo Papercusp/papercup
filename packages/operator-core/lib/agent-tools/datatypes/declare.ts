@@ -34,6 +34,7 @@ import {
   DATATYPE_TIERS,
 } from '../../datatype-registry-store';
 import { checkSelfImprovementForDeclare } from '../../datatype-self-improvement';
+import { buildQueryEmbedder } from '../search/embedder';
 
 export default defineTool({
   name: 'meta:define-datatype',
@@ -145,12 +146,21 @@ export default defineTool({
       });
     }
 
+    // The title+description embedding — the cosine dedup leg AND the stored vector.
+    // Failure-tolerant (mirrors recipes:search): no embedder configured / a transient
+    // error ⇒ null ⇒ the lexical (title_tsv) dedup leg carries it, exactly as before.
+    const embedder = await buildQueryEmbedder().catch(() => null);
+    const embedding = embedder
+      ? await embedder(`${args.title ?? args.name}\n${args.description}`).catch(() => null)
+      : null;
+
     // Soft semantic gate (D-010) — only for a genuinely NEW id (re-declaring the same
     // id is an in-place update, not a duplicate). `force` skips the gate.
     if (!exists && !args.force) {
       const similar = await findSimilarDatatypes(sql, workspaceId, {
         title: args.title ?? args.name,
         description: args.description,
+        embedding,
         excludeId: id,
         limit: 5,
       });
@@ -182,8 +192,9 @@ export default defineTool({
       // P-010: the validated surface (new), the preserved stored surface (omitted update), or null (projection)
       selfImprovement: siCheck.value,
       tags: args.tags ?? [],
-      // embedding wired in a follow-up; lexical (title_tsv) dedup applies meanwhile
-      embedding: null,
+      // the title+description vector (cosine dedup); null when no embedder — upsert COALESCEs
+      // so a re-declare without an embedder keeps any previously-computed vector.
+      embedding,
       createdBy: ident.ownerId,
     });
 
