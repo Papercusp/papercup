@@ -17,6 +17,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   joinHarnessSwarm,
   type HyperswarmLike,
@@ -149,5 +150,97 @@ describe('joinHarnessSwarm — bounded connection listener count (P-005)', () =>
     // Simulate what getSharedSwarm does after construction:
     (swarm as { setMaxListeners?: (n: number) => void })?.setMaxListeners?.(0);
     expect(swarm.maxListenersSet).toBe(0);
+  });
+});
+
+// ── Brief 10 / WI-1089: sustained-multi-boot + failed-join recurrence guards ──
+// The happy-path tests above prove ONE boot of N harnesses cleans up. These
+// prove the leak CLASS the brief names — "swarm.on('connection') added without
+// removal" — cannot return under the two paths that actually leak on a
+// long-running federated node: (1) repeated (re)join/close churn over the
+// process-singleton swarm, and (2) a FAILED join (boot.ts's armSwarmJoinRetry
+// re-calls joinHarnessSwarm on EVERY failed attempt). setMaxListeners(0) hides
+// the count, so only a count assertion can catch a regression.
+
+/** A tracking swarm whose join() throws — models a degraded node (e.g. EMFILE
+ *  while the DHT opens its announce socket). */
+function throwingJoinSwarm(): TrackingSwarm {
+  const swarm = trackingSwarm();
+  swarm.join = (() => {
+    throw new Error('simulated swarm.join() failure (DHT/EMFILE)');
+  }) as TrackingSwarm['join'];
+  return swarm;
+}
+
+describe('joinHarnessSwarm — leak-class recurrence guards (Brief 10 / WI-1089)', () => {
+  it('sustained join→close churn over the shared swarm stays flat (no listener accumulation)', async () => {
+    const swarm = trackingSwarm();
+    _setSharedSwarmForTests(swarm);
+    const store = fakeStore();
+
+    // Many sequential (re)join/close cycles on the SAME process-singleton swarm —
+    // models a node that rekeys/reconnects repeatedly over days. After each cycle
+    // the count returns to 0, and it never exceeds 1 during the run (flat).
+    let peak = 0;
+    for (let cycle = 0; cycle < 200; cycle++) {
+      const handle = await joinHarnessSwarm({ swarm, store, topic: topic(1), refreshMs: 0 });
+      peak = Math.max(peak, swarm.listenerCount('connection'));
+      expect(swarm.listenerCount('connection')).toBe(1);
+      await handle.close();
+      expect(swarm.listenerCount('connection')).toBe(0);
+    }
+    expect(peak).toBe(1); // one live listener at most, fully removed each cycle
+    expect(swarm.listenerCount('connection')).toBe(0);
+  });
+
+  it('a FAILED join removes the connection listener it added (no orphan to leak)', async () => {
+    const swarm = throwingJoinSwarm();
+    _setSharedSwarmForTests(swarm);
+    const store = fakeStore();
+
+    expect(swarm.listenerCount('connection')).toBe(0);
+    await expect(
+      joinHarnessSwarm({ swarm, store, topic: topic(1), refreshMs: 0 }),
+    ).rejects.toThrow(/join/i);
+    // The bug: swarm.on('connection') is registered BEFORE swarm.join(); a throw
+    // there used to orphan the listener (no handle returned → never off()'d).
+    expect(swarm.listenerCount('connection')).toBe(0);
+  });
+
+  it('the boot.ts retry pattern (N failed joins) accumulates ZERO listeners', async () => {
+    const swarm = throwingJoinSwarm();
+    _setSharedSwarmForTests(swarm);
+    const store = fakeStore();
+
+    // armSwarmJoinRetry re-calls joinForBinding → joinHarnessSwarm on EVERY failed
+    // attempt. Pre-fix, each failed attempt orphaned one listener → unbounded on a
+    // node whose join keeps failing. Post-fix the count stays pinned at 0.
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await expect(
+        joinHarnessSwarm({ swarm, store, topic: topic(1), refreshMs: 0 }),
+      ).rejects.toThrow();
+    }
+    expect(swarm.listenerCount('connection')).toBe(0);
+  });
+});
+
+// ── Brief 10 / WI-1089: socket-handle leak-class structural guard ──
+// The per-connection trackers in swarm.ts MUST stay Weak (WeakSet/WeakMap keyed
+// by the socket/muxer object) so a closed peer socket — and everything it pins —
+// is GC'd. Downgrading any to a strong Set/Map would retain every peer socket
+// ever seen on the process-singleton swarm forever = the "socket-handle leak"
+// the brief names. A source-level guard (no runtime GC dependency) that fails
+// loudly if a Weak tracker is downgraded.
+describe('swarm.ts per-socket trackers stay Weak (socket-handle leak guard)', () => {
+  const src = readFileSync(new URL('../swarm.ts', import.meta.url), 'utf8');
+  it.each([
+    ['guardCountedSockets', 'WeakSet'],
+    ['announceTopicStateByMuxer', 'WeakMap'],
+    ['announcePairedMuxers', 'WeakSet'],
+    ['announceMuxDebugIds', 'WeakMap'],
+    ['peerCapNearState', 'WeakMap'],
+  ])('%s is declared as a %s (not a strong Set/Map)', (name, weakKind) => {
+    const re = new RegExp(`const\\s+${name}\\s*=\\s*new\\s+${weakKind}\\b`);
+    expect(src).toMatch(re);
   });
 });

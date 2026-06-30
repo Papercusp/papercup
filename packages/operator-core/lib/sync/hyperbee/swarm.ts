@@ -783,39 +783,64 @@ export async function joinHarnessSwarm(
   } catch {
     // connections iteration is best-effort (absent on minimal fakes)
   }
-  const discovery = opts.swarm.join(opts.topic, { server: true, client: true });
-  // Best-effort flush — some Hyperswarm builds expose this, some
-  // don't. Either way, returning before flush is fine because peers
-  // can connect any time after the join call returns.
-  if (discovery && typeof discovery.flushed === 'function') {
-    void discovery.flushed().catch(() => {});
-  }
-
-  // ── WI-752 / FED-2 self-heal re-peer loop ──
-  // Re-run this topic's DHT announce+lookup on a two-speed cadence so a dropped
-  // peer / aged-out announce re-pairs WITHOUT an operator restart (see the
-  // constant block above + directory-swarm.ts). FAST inside the post-join /
-  // post-peer-loss window, then a SLOW keepalive. `refreshMs: 0` disables it.
-  const refreshMs = opts.refreshMs ?? DEFAULT_SUBSTRATE_REFRESH_MS;
-  const fastWindowMs = opts.fastWindowMs ?? DEFAULT_SUBSTRATE_FAST_WINDOW_MS;
-  const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SUBSTRATE_SLOW_REFRESH_MS;
+  // Brief 10 / WI-1089 — exception-safe setup after the 'connection' listener is
+  // registered (above). swarm.join() / the refresh-timer setup can throw — most
+  // plausibly on a degraded long-running federated node (e.g. EMFILE when the
+  // DHT opens its announce socket). If one does, the listener we just added
+  // would be ORPHANED on the process-singleton shared swarm with no handle to
+  // remove it, and boot.ts's join-retry loop (armSwarmJoinRetry) re-calls
+  // joinHarnessSwarm on every failed attempt — so a flapping join would
+  // accumulate one leaked 'connection' listener per retry, unbounded, with
+  // setMaxListeners(0) hiding the count. Undo the listener (+ any timer) on any
+  // setup failure so a failed join leaks nothing.
   let refreshTimer: ManagedHandle | null = null;
-  if (refreshMs > 0) {
-    refreshTimer = managedSetInterval('hyperbee-swarm-refresh', refreshMs, () => {
-      const now = Date.now();
-      const inFastWindow = now - fastWindowStartMs < fastWindowMs;
-      const slowDue = now - lastRefreshMs >= slowRefreshMs;
-      if (!inFastWindow && !slowDue) return;
-      lastRefreshMs = now;
-      try {
-        // Re-announce (server) + re-lookup (client) — the same call the
-        // swarm-chaos test uses as its deterministic reconnect driver. A throw
-        // / rejection must never crash the host.
-        void Promise.resolve(discovery?.refresh?.({ client: true, server: true })).catch(() => {});
-      } catch {
-        // best-effort — refresh is keepalive, not load-bearing for this tick
-      }
-    }, { category: 'lifecycle', instanced: true });
+  try {
+    const discovery = opts.swarm.join(opts.topic, { server: true, client: true });
+    // Best-effort flush — some Hyperswarm builds expose this, some
+    // don't. Either way, returning before flush is fine because peers
+    // can connect any time after the join call returns.
+    if (discovery && typeof discovery.flushed === 'function') {
+      void discovery.flushed().catch(() => {});
+    }
+
+    // ── WI-752 / FED-2 self-heal re-peer loop ──
+    // Re-run this topic's DHT announce+lookup on a two-speed cadence so a dropped
+    // peer / aged-out announce re-pairs WITHOUT an operator restart (see the
+    // constant block above + directory-swarm.ts). FAST inside the post-join /
+    // post-peer-loss window, then a SLOW keepalive. `refreshMs: 0` disables it.
+    const refreshMs = opts.refreshMs ?? DEFAULT_SUBSTRATE_REFRESH_MS;
+    const fastWindowMs = opts.fastWindowMs ?? DEFAULT_SUBSTRATE_FAST_WINDOW_MS;
+    const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SUBSTRATE_SLOW_REFRESH_MS;
+    if (refreshMs > 0) {
+      refreshTimer = managedSetInterval('hyperbee-swarm-refresh', refreshMs, () => {
+        const now = Date.now();
+        const inFastWindow = now - fastWindowStartMs < fastWindowMs;
+        const slowDue = now - lastRefreshMs >= slowRefreshMs;
+        if (!inFastWindow && !slowDue) return;
+        lastRefreshMs = now;
+        try {
+          // Re-announce (server) + re-lookup (client) — the same call the
+          // swarm-chaos test uses as its deterministic reconnect driver. A throw
+          // / rejection must never crash the host.
+          void Promise.resolve(discovery?.refresh?.({ client: true, server: true })).catch(() => {});
+        } catch {
+          // best-effort — refresh is keepalive, not load-bearing for this tick
+        }
+      }, { category: 'lifecycle', instanced: true });
+    }
+  } catch (e) {
+    // Setup failed after the listener was registered — undo it (and any timer)
+    // so a failed/flapping join never orphan-accumulates 'connection' listeners.
+    if (refreshTimer) {
+      try { refreshTimer.stop(); } catch { /* no-op */ }
+      refreshTimer = null;
+    }
+    try {
+      opts.swarm.off?.('connection', handler);
+    } catch {
+      /* no-op — best-effort listener cleanup on the error path */
+    }
+    throw e;
   }
 
   const handle: SwarmHandle = {
