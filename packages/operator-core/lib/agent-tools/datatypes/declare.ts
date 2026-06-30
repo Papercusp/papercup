@@ -35,6 +35,7 @@ import {
 } from '../../datatype-registry-store';
 import { checkSelfImprovementForDeclare } from '../../datatype-self-improvement';
 import { isCompilableSchema } from '../../datatype-payload-validation';
+import { scaffoldFirstClassDatatype } from '../../datatype-firstclass-scaffold';
 import { buildQueryEmbedder } from '../search/embedder';
 
 export default defineTool({
@@ -210,13 +211,23 @@ export default defineTool({
       createdBy: ident.ownerId,
     });
 
+    // first-class tier: scaffold the reviewable SQL backing migration (PR rail, D-003 — not
+    // applied at runtime) from the payload_schema, so the caller gets it immediately.
+    const firstClassScaffold =
+      tier === 'first-class'
+        ? scaffoldFirstClassDatatype({ id, title: args.title ?? args.name, payloadSchema: args.payloadSchema ?? null })
+        : null;
+
     return reply({
       ok: true,
       datatype: row,
       updated: Boolean(exists),
+      ...(firstClassScaffold && firstClassScaffold.ok
+        ? { scaffold: { files: firstClassScaffold.files, reviewNotes: firstClassScaffold.reviewNotes, nextSteps: firstClassScaffold.nextSteps } }
+        : {}),
       note:
         tier === 'first-class'
-          ? 'first-class declared in the registry; ship its SQL migration + CRUD tooldefs via the dogfood PR rail (NOT runtime).'
+          ? 'first-class declared; the SQL backing migration is scaffolded in `scaffold.files` — ship it via the reviewed PR rail (NOT runtime).'
           : tier === 'projection'
             ? `projection declared; ${row.authoritativeWriter} is the single writer — Papercusp holds a read-only view.`
             : `generic-kind declared; work_items:create { kind:"${row.workItemKind}" } is now accepted in this workspace.`,

@@ -168,6 +168,14 @@ everything else: when AUTO is OFF, a plan is a proposal, not a green light.
   bar for the irreversible-action gate ONLY — it does NOT waive plan-review or
   route-confirmation.** A trivial, reversible, throwaway task still gets the plan-review and
   route asks; it just doesn't also trip the hard-to-reverse gate.
+- **An explicit owner route/approach choice is STICKY for the whole task.** Once the owner
+  picks WHO runs the work (you / the Queen / a fleet) or HOW to build it, do NOT silently
+  switch to a different route or approach mid-task because the chosen path got interrupted,
+  closed, or failed — RE-ESTABLISH it (relaunch the agent, reopen the window, retry the
+  approach), or surface the deviation and confirm first. Quietly switching to something the
+  owner did not pick re-decides what they already decided — that is the failure, *even if the
+  work still gets done*. Treat ambiguous asides after an interruption ("continue", "continue
+  as you were", "keep going") as *resume the chosen route*, not *abandon it for an easier one*.
 
 These asks are exactly what AUTO mode suspends — and the boundary is BINARY, not a
 continuum: **AUTO OFF ⇒ ASK the route, always (per above); AUTO ON ⇒ SELF-SELECT it.** While
@@ -349,5 +357,6 @@ LEADER responsibility (D-002) — the handoff makes you the leader; you do NOT g
 1. Whenever you hand a plan to a fleet (path 2) OR create one (path 3), **you are the fleet leader** — the completion owner, the per-fleet analog of the Queen.
 2. You MONITOR the fleet (`fleet:assignments`; `coord:presence` filtered to the fleet), MANAGE coordination, and **OWN driving the plan to done**.
 3. Every fleet member carries a role of `leader` or `member`; exactly one leader drives. Delegating is taking the leader seat, not vacating responsibility.
+4. **Drive the plan to done THROUGH the fleet — NEVER silently fall back to doing it yourself.** "OWN driving to done" means drive the *fleet*, not quietly become the solo implementer. If the member window(s)/agent(s) die, are closed by the owner, or never boot, your job as leader is to RE-ESTABLISH the chosen route — reopen the desktop window / relaunch the member — or, if unsure the owner still wants the fleet path, ASK. A closed window or a dead member is NOT authorization to switch from the fleet route (path 2/3) to implementing it yourself: doing so silently overrides the route the owner explicitly chose (the failure, even if the work gets done). Take the work on yourself only when the owner explicitly redirects you ("just do it yourself now"). Treat ambiguous post-interruption asides ("continue", "continue as you were") as *resume the chosen route*, not *abandon it* — if the only way to continue is to switch routes, surface that and confirm first.
 
 Note: a fleet is **named + PERSISTENT** — its registry row survives even when every one of its agents has been killed, so it stays selectable in psu. "Available" means something narrower: it currently has ≥1 LIVE member (a recent presence heartbeat). A killed-empty fleet is still selectable but is NOT "available" for path 2.

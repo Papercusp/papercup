@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 538,
+  "count": 541,
   "tools": [
     {
       "name": "ablation:report",
@@ -4495,6 +4495,76 @@
       }
     },
     {
+      "name": "datatypes:catalog",
+      "http": {
+        "path": "/api/agent-tools/datatypes/catalog",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Browse the GLOBAL catalog of APPROVED published datatypes (the shared tier) — datatypes other workspaces published and an operator approved. Install one into your workspace with datatypes:install. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "Before declaring a new datatype — check whether an approved global one already fits, to reuse instead of re-inventing.",
+        "notWhen": "To browse YOUR workspace's datatypes (datatypes:list). To declare one (meta:define-datatype).",
+        "chaining": "datatypes:catalog → datatypes:install { id } → work_items:create { kind } / blueprint dependencies.datatypes."
+      }
+    },
+    {
       "name": "datatypes:get",
       "http": {
         "path": "/api/agent-tools/datatypes/get",
@@ -4562,6 +4632,76 @@
         "when": "When you have datatype id(s) (from datatypes:list) and want the full definition before referencing or instantiating it.",
         "notWhen": "To browse the registry — datatypes:list. To declare — meta:define-datatype.",
         "chaining": "datatypes:list → datatypes:get { ids:[…] } (inspect) → work_items:create { kind } / blueprint dependencies.datatypes."
+      }
+    },
+    {
+      "name": "datatypes:install",
+      "http": {
+        "path": "/api/agent-tools/datatypes/install",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install an APPROVED global datatype (from datatypes:catalog) into your workspace — copies its definition as a LOCAL datatype you can use like one you declared. Idempotent: already-present ⇒ no change.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "After finding a useful approved datatype via datatypes:catalog — install it so this workspace can create instances / reference it.",
+        "notWhen": "To declare a NEW datatype (meta:define-datatype). To publish one (datatypes:publish).",
+        "chaining": "datatypes:catalog → datatypes:install { id } → work_items:create { kind } / dependencies.datatypes."
       }
     },
     {
@@ -5949,6 +6089,32 @@
       "guidance": {
         "when": "You want to publish a hive to the P2P directory so other peers can discover + join it, or edit an existing listing (title/description/visibility).",
         "notWhen": "To deploy a hive’s execution frames use deploy:hive. To browse OTHERS’ hives use discovery:hives. Setting visibility:private withdraws a hive from the directory (it stops being re-announced; peers age it out via TTL)."
+      }
+    },
+    {
+      "name": "docs:author",
+      "http": {
+        "path": "/api/agent-tools/docs/author",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create a NEW manual / agent-insights doc the right way, in one call: writes <section>/<slug>.mdx to the canonical docs root (resolved exactly like docs:search — for papercusp that's apps/operator-docs/src/content/docs), stamps the full frontmatter convention (title/description/discovered/tags/status/documents/plans), and AUTO-anchors + verifies it so it ships drift-tracked. Eliminates the wrong-dir / missing-frontmatter / forgot-to-anchor footgun. Returns { ok, path, slug, section, surface, anchored, status, subjectRef, warnings }.",
+      "capabilities": [
+        "docs:write"
+      ],
+      "agentRoles": [
+        "documenter",
+        "operator",
+        "worker",
+        "architect",
+        "bee",
+        "curator"
+      ],
+      "guidance": {
+        "when": "You have a durable HOW-IT-WORKS runbook / failure-mode / hard-won gotcha to write down (the CLAUDE.md \"write it as an anchored agent-insights MDX\" rule). Pass `documents` with the files/symbols the doc covers so it ships drift-tracked.",
+        "notWhen": "For a quick personal fact use memory:remember (not a doc). To EDIT an existing doc use capability:write/edit then harness_docs:verify. To only declare a subject_ref on an already-written doc use harness_docs:anchor.",
+        "chaining": "docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }."
       }
     },
     {

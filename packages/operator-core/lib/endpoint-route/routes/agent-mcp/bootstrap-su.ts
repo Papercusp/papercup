@@ -280,11 +280,21 @@ export async function resolveFleet(
   const requested = opts.fleet?.trim();
   if (!name && !requested) return { env: {}, notice: null, fleetSlug: null, fleetRole: null };
   try {
-    const { fleetSlugFromName, createFleetIfAbsent } = await import('../../../agent-fleets-store');
+    const { fleetSlugFromName, createFleetIfAbsent, resolveFleetScheme, getFleetScheme } =
+      await import('../../../agent-fleets-store');
+    // The fleet's bound scheme as env the psu launch path reads to recolor the
+    // window at startup — so EVERY fleet window (not just capability:terminal)
+    // shows the fleet color (fleet-color-schemes: psu/bee terminals). The values
+    // are `#rrggbb`, shell-safe; the psu-pty host builds the OSC from them.
+    const schemeEnv = (s: { bg: string; fg: string; cursor: string }): Record<string, string> => ({
+      PAPERCUSP_FLEET_BG: s.bg,
+      PAPERCUSP_FLEET_FG: s.fg,
+      PAPERCUSP_FLEET_CURSOR: s.cursor,
+    });
     if (name) {
       // A new fleet → create it (idempotent) with this agent as owner + leader.
       const fleetSlug = fleetSlugFromName(name);
-      await createFleetIfAbsent({
+      const { record } = await createFleetIfAbsent({
         workspaceId,
         fleetSlug,
         title: name,
@@ -292,7 +302,11 @@ export async function resolveFleet(
         leaderOwnerId: opts.ownerId ?? null,
       });
       return {
-        env: { PAPERCUSP_FLEET_SLUG: fleetSlug, PAPERCUSP_FLEET_ROLE: 'leader' },
+        env: {
+          PAPERCUSP_FLEET_SLUG: fleetSlug,
+          PAPERCUSP_FLEET_ROLE: 'leader',
+          ...schemeEnv(resolveFleetScheme(record)),
+        },
         notice: `leading fleet ${fleetSlug} (${name}).`,
         fleetSlug,
         fleetRole: 'leader',
@@ -301,8 +315,13 @@ export async function resolveFleet(
     // An existing fleet → join it. Default member; honor an explicit leader request.
     const fleetSlug = requested as string;
     const role = opts.fleetRole?.trim() === 'leader' ? 'leader' : 'member';
+    const scheme = await getFleetScheme(workspaceId, fleetSlug);
     return {
-      env: { PAPERCUSP_FLEET_SLUG: fleetSlug, PAPERCUSP_FLEET_ROLE: role },
+      env: {
+        PAPERCUSP_FLEET_SLUG: fleetSlug,
+        PAPERCUSP_FLEET_ROLE: role,
+        ...(scheme ? schemeEnv(scheme) : {}),
+      },
       notice: `joined fleet ${fleetSlug} as ${role}.`,
       fleetSlug,
       fleetRole: role,

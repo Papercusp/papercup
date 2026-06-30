@@ -115,3 +115,21 @@ export function allocateNextSchemeName(usedNames: readonly string[]): string {
   if (free) return free.name;
   return COLOR_SCHEMES[usedNames.length % COLOR_SCHEMES.length]!.name;
 }
+
+/**
+ * The RAW OSC escape bytes that recolor a live terminal to `scheme`: OSC 10
+ * (foreground), OSC 11 (background), OSC 12 (cursor), each BEL-terminated (`\x07`).
+ *
+ * This is the RUNTIME-recolor sibling of console-spawn's `buildAppearancePrelude`:
+ * that one emits a `printf '\033]11;…'` SHELL one-liner the freshly-spawned shell
+ * runs at startup; this returns the bytes to write STRAIGHT to a TTY (the psu-pty
+ * host's stdout, or the agent's controlling terminal) so an already-open window
+ * recolors with no relaunch. Keep the OSC numbers here and there in lockstep.
+ *
+ * Pure — no IO. The single canonical definition of the recolor sequence; the psu
+ * launch path (psu-pty-host.mjs) builds the same bytes inline from the resolved
+ * `#rrggbb` env values, so a change here must mirror there.
+ */
+export function oscRecolorSequence(scheme: ColorScheme): string {
+  return `\x1b]10;${scheme.fg}\x07\x1b]11;${scheme.bg}\x07\x1b]12;${scheme.cursor}\x07`;
+}

@@ -11,6 +11,7 @@ import {
   findLiveHost,
   injectIntoHost,
   interruptViaPty,
+  recolorViaPty,
   sanitizeKey,
   PSU_PTY_DIR,
 } from './psu-pty-discovery';
@@ -118,9 +119,56 @@ describe('injectIntoHost', () => {
     expect(JSON.parse(await received)).toEqual({ v: 1, mode: 'raw', data: '' });
   });
 
+  it('writes a v1 osc envelope (recolor bytes for the terminal display)', async () => {
+    const dir = tmpDir();
+    const { sock, received } = startSocket(dir, 'su-osc');
+    const osc = '\x1b]11;#581c87\x07';
+    const ok = await injectIntoHost(sock, { mode: 'osc', data: osc });
+    expect(ok).toBe(true);
+    expect(JSON.parse(await received)).toEqual({ v: 1, mode: 'osc', data: osc });
+  });
+
   it('resolves false when the socket does not exist', async () => {
     const ok = await injectIntoHost(join(tmpDir(), 'absent.sock'), { mode: 'turn', data: 'x' }, 500);
     expect(ok).toBe(false);
+  });
+});
+
+describe('recolorViaPty (fleet-color-schemes live recolor)', () => {
+  // recolorViaPty reads the REAL PSU_PTY_DIR (no dir param), so set up a live host
+  // there under a unique throwaway ownerId, then clean it up — mirrors interruptViaPty.
+  it('injects an osc envelope into a live host; false when no host or empty osc', async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-recolor-test-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`);
+    const meta = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.json`);
+    const recv: string[] = [];
+    const server = net.createServer((conn) => {
+      const chunks: Buffer[] = [];
+      conn.on('data', (d) => chunks.push(d));
+      conn.on('end', () => recv.push(Buffer.concat(chunks).toString('utf8')));
+    });
+    await new Promise<void>((r) => server.listen(sock, r));
+    writeFileSync(
+      meta,
+      JSON.stringify({ ownerId, advSessionId: null, pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1 }),
+    );
+    cleanups.push(() => {
+      server.close();
+      for (const p of [sock, meta]) if (existsSync(p)) unlinkSync(p);
+    });
+
+    const osc = '\x1b]10;#f5e8ff\x07\x1b]11;#581c87\x07\x1b]12;#d8b4fe\x07';
+    // no live host → false (recolor doesn't land; the bound scheme applies next window)
+    expect(await recolorViaPty('su-no-such-owner-recolor', osc)).toBe(false);
+    // empty osc → false (nothing to write) even with a live host
+    expect(await recolorViaPty(ownerId, '')).toBe(false);
+    // live host → injects the osc envelope
+    expect(await recolorViaPty(ownerId, osc)).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(recv.length).toBe(1);
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'osc', data: osc });
   });
 });
 

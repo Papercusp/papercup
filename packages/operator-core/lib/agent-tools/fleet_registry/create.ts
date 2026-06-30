@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { createFleetIfAbsent, fleetSlugFromName } from '../../agent-fleets-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
-import { fleetRoleFor, json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
 export default defineTool({
   name: 'fleet:create',
@@ -59,6 +59,9 @@ export default defineTool({
     const role = fleetRoleFor(record.leaderOwnerId, ownerId);
     await heartbeatPresence(identity); // guarantee a presence row to label
     await setPresenceFleet(workspaceId, ownerId, fleetSlug, role);
+    // Recolor the caller's live window to the new fleet's bound scheme — no second
+    // call (fleet-color-schemes). Best-effort: a no-op for non-psu-hosted callers.
+    await recolorCallerTerminal(ownerId, record);
 
     return json({
       ok: true,
@@ -67,6 +70,7 @@ export default defineTool({
       title: record.title,
       leader: record.leaderOwnerId,
       role,
+      scheme: record.colorScheme,
       ...(role === 'member'
         ? { note: 'fleet already existed under another leader — call fleet:take-leadership to drive it' }
         : {}),

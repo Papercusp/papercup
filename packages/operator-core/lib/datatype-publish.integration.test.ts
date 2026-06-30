@@ -19,6 +19,8 @@ import {
   listPendingPublishedDatatypes,
   moderatePublishedDatatype,
   findSimilarPublishedDatatypes,
+  listApprovedPublishedDatatypes,
+  installPublishedDatatype,
 } from './datatype-registry-store';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -42,6 +44,7 @@ describe('datatype publish + moderation lifecycle (real PG)', () => {
     db = await createOrgTestDb();
     await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '421-datatype-registry.sql'), 'utf8'));
     await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '425-datatype-review-status.sql'), 'utf8'));
+    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '426-datatype-approved-global-read.sql'), 'utf8'));
   }, 120_000);
 
   afterAll(async () => {
@@ -136,5 +139,81 @@ describe('datatype publish + moderation lifecycle (real PG)', () => {
     const ids = hits.map((h) => h.id);
     expect(ids).toContain('kelly-stake'); // the PUBLISHED one (cross-workspace)
     expect(ids).not.toContain('kelly-stake-local'); // unpublished ⇒ not in the global namespace
+  });
+
+  it('distribution: publish → approve → catalog lists it → install into another workspace', async () => {
+    const src = 'ws-dist-src';
+    const target = 'ws-dist-target';
+    await upsertDatatype(db.adminSql, {
+      id: 'parlay',
+      workspaceId: src,
+      title: 'Parlay',
+      description: 'a multi-leg combined bet',
+      tier: 'generic-kind',
+      workItemKind: 'parlay',
+      payloadSchema: { type: 'object', properties: { legs: { type: 'array' } }, required: ['legs'] },
+    });
+    await publishDatatype(db.adminSql, src, 'parlay');
+
+    // Not in the approved catalog until moderated.
+    expect((await listApprovedPublishedDatatypes(db.adminSql)).map((d) => d.id)).not.toContain('parlay');
+    // Can't install a not-yet-approved datatype.
+    expect((await installPublishedDatatype(db.adminSql, 'parlay', target)).ok).toBe(false);
+
+    await moderatePublishedDatatype(db.adminSql, src, 'parlay', 'approve');
+    expect((await listApprovedPublishedDatatypes(db.adminSql)).map((d) => d.id)).toContain('parlay');
+
+    // Install into a DIFFERENT workspace — it lands as a usable LOCAL datatype there.
+    const installed = await installPublishedDatatype(db.adminSql, 'parlay', target);
+    expect(installed.ok).toBe(true);
+    if (!installed.ok) throw new Error('unreachable');
+    expect(installed.datatype.workspaceId).toBe(target);
+    expect(installed.datatype.reviewStatus).toBe('none'); // a fresh LOCAL copy, not re-published
+    expect(installed.datatype.published).toBe(false);
+    expect(installed.datatype.payloadSchema).toMatchObject({ type: 'object' });
+
+    // It's usable locally in the target (the create gate's fetch-by-kind sees it).
+    const local = await getGenericKindDatatype(db.adminSql, target, 'parlay');
+    expect(local).not.toBeNull();
+    expect(local!.status).toBe('active');
+
+    // Re-installing is idempotent (already present).
+    expect((await installPublishedDatatype(db.adminSql, 'parlay', target)).ok).toBe(false);
+  });
+
+  it('RLS (migration 426): approved rows are GLOBALLY readable; non-approved stay workspace-isolated', async () => {
+    // Seed via admin (RLS bypass): an APPROVED datatype + a LOCAL one, both in ws-rls-owner.
+    await upsertDatatype(db.adminSql, {
+      id: 'rls-approved', workspaceId: 'ws-rls-owner', title: 'Approved', description: 'globally shared',
+      tier: 'generic-kind', workItemKind: 'rls-approved',
+    });
+    await publishDatatype(db.adminSql, 'ws-rls-owner', 'rls-approved');
+    await moderatePublishedDatatype(db.adminSql, 'ws-rls-owner', 'rls-approved', 'approve');
+    await upsertDatatype(db.adminSql, {
+      id: 'rls-private', workspaceId: 'ws-rls-owner', title: 'Private', description: 'workspace local',
+      tier: 'generic-kind', workItemKind: 'rls-private',
+    });
+
+    // A DIFFERENT workspace (ws-rls-other), through the RLS-ENFORCED app role:
+    await db.appSql.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', 'ws-rls-other', true)`);
+      const visible = (
+        await tx<{ id: string }[]>`SELECT id FROM harness_shared.datatype_registry WHERE id IN ('rls-approved','rls-private')`
+      ).map((r) => r.id);
+      expect(visible).toContain('rls-approved'); // approved ⇒ globally readable (426)
+      expect(visible).not.toContain('rls-private'); // non-approved ⇒ NOT visible across workspaces
+    });
+  });
+
+  it('RLS: writes stay workspace-scoped — a cross-workspace insert is rejected (WITH CHECK)', async () => {
+    // ws-rls-other cannot insert a row OWNED by another workspace — the base policy's WITH CHECK
+    // (migration 421) is unchanged by 426 (which is SELECT-only). The whole tx is rejected.
+    await expect(
+      db.appSql.begin(async (tx) => {
+        await tx.unsafe(`SELECT set_config('app.workspace_id', 'ws-rls-other', true)`);
+        await tx`INSERT INTO harness_shared.datatype_registry (id, workspace_id, title, description, tier)
+                 VALUES ('sneaky', 'ws-rls-owner', 't', 'd', 'generic-kind')`;
+      }),
+    ).rejects.toThrow();
   });
 });

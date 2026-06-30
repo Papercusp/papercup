@@ -30,6 +30,43 @@ function digestTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
 }
 
+/** EI-5350: a no-`limit` digest can serialize the WHOLE backlog (observed 232KB)
+ *  and overflow the agent token cap — the caller then gets an error + a spill file
+ *  instead of a usable result, unlike every other house read (the bulk tools cap +
+ *  flag). This bounds the SERIALIZED digest the same way: it only bites when the
+ *  digest exceeds the byte budget, keeps every rollup/headline, and truncates the
+ *  per-item arrays to a top-N with a `truncated` note. Pure + exported for tests.
+ *  Verified low-blast: the Queen survey reads the rollups, not these arrays. */
+export const DIGEST_MAX_BYTES = 80_000;
+const DIGEST_ARRAY_KEYS = ['autoEligible', 'humanQueue', 'likelyDuplicates', 'recurringSignatures'] as const;
+
+export function boundDigestForSerialization(
+  digest: unknown,
+  opts: { maxBytes?: number; perArrayCap?: number } = {},
+): unknown {
+  const maxBytes = opts.maxBytes ?? DIGEST_MAX_BYTES;
+  const perArrayCap = opts.perArrayCap ?? 100;
+  if (!digest || typeof digest !== 'object') return digest;
+  const full = JSON.stringify(digest);
+  if (full.length <= maxBytes) return digest; // under budget — unchanged
+  const src = digest as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...src };
+  const truncated: Record<string, { kept: number; total: number }> = {};
+  for (const k of DIGEST_ARRAY_KEYS) {
+    const arr = src[k];
+    if (Array.isArray(arr) && arr.length > perArrayCap) {
+      truncated[k] = { kept: perArrayCap, total: arr.length };
+      out[k] = arr.slice(0, perArrayCap);
+    }
+  }
+  out.truncated = {
+    ...truncated,
+    originalBytes: full.length,
+    note: 'digest exceeded the byte budget — per-item arrays truncated to keep the result under the agent token cap. Pass `limit`, `state:"open"`, or `harnessSlug` to narrow.',
+  };
+  return out;
+}
+
 export default defineTool({
   name: 'improvements:digest',
   profile: 'engineer',
@@ -71,7 +108,11 @@ export default defineTool({
           timer = setTimeout(() => reject(new DigestTimeoutError()), digestTimeoutMs());
         }),
       ]);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      // EI-5350: cap the serialized digest so a no-`limit` call can't overflow the
+      // agent token cap. Only bites when over budget; keeps rollups, truncates the
+      // per-item arrays with a `truncated` note.
+      const bounded = { ...result, digest: boundDigestForSerialization(result.digest) };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(bounded) }] };
     } catch (e) {
       // EI-1715: a contention-slow read returns a fast DEGRADED-but-valid empty
       // digest (buildDigest([]) — pure, no DB) flagged `degraded`, so a Queen

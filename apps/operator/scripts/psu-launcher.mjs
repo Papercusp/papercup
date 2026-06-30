@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { hostThroughPty } from './psu-pty-host.mjs';
+import { hostThroughPty, fleetOscFromEnv } from './psu-pty-host.mjs';
 
 export const AGENTS = ['claude', 'omp', 'codex'];
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
@@ -1580,6 +1580,17 @@ export async function reportSessionResumed(
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
 function spawnInherit({ wrapperBin, args = [], cwd, env }) {
+  // Fleet color for the no-pty fallback (the managed-pty host writes its own at
+  // startup — see hostThroughPty). Recolor THIS window before the child takes the
+  // terminal over; no fleet ⇒ no write (the profile default stands).
+  const osc = fleetOscFromEnv(env);
+  if (osc) {
+    try {
+      process.stdout.write(osc);
+    } catch {
+      /* best-effort — a recolor must never break the launch */
+    }
+  }
   const child = spawn(wrapperBin, args, { cwd, env, stdio: 'inherit' });
   child.on('error', (e) => {
     console.error(`psu: failed to launch ${wrapperBin}: ${e.message}`);

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import digestTool from './digest';
+import digestTool, { boundDigestForSerialization, DIGEST_MAX_BYTES } from './digest';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
 import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
@@ -88,5 +88,72 @@ describe('improvements:digest tool envelope', () => {
       if (prev === undefined) delete process.env.PAPERCUSP_DIGEST_TIMEOUT_MS;
       else process.env.PAPERCUSP_DIGEST_TIMEOUT_MS = prev;
     }
+  });
+});
+
+// EI-5350: the no-`limit` overflow guard. The cap must bite ONLY over budget, keep
+// every rollup, and truncate the per-item arrays with a clear flag (the same
+// truncate-and-flag pattern the bulk tools use).
+function digestWith(autoEligibleCount: number) {
+  return {
+    generatedAt: '2026-06-30T00:00:00.000Z',
+    total: autoEligibleCount,
+    byKind: { bug: autoEligibleCount },
+    headline: 'rollup headline that must survive truncation',
+    recurringSignatures: [{ signature: 'x', count: 3 }],
+    humanQueue: [],
+    likelyDuplicates: [],
+    autoEligible: Array.from({ length: autoEligibleCount }, (_, i) => ({
+      id: `EI-${1000 + i}`,
+      title: `item ${i} with a reasonably long title to take up some serialized bytes`,
+      scope: 'operator',
+      score: 15,
+      tierReason: 'no protected path/keyword → AUTO-eligible (still gated by blueprint + tests)',
+    })),
+  };
+}
+
+describe('boundDigestForSerialization (EI-5350 byte-cap)', () => {
+  it('returns the digest UNCHANGED when under budget', () => {
+    const d = digestWith(3);
+    expect(boundDigestForSerialization(d)).toBe(d); // same reference, no copy
+    expect((boundDigestForSerialization(d) as Record<string, unknown>).truncated).toBeUndefined();
+  });
+
+  it('truncates oversized per-item arrays and adds a `truncated` flag when over budget', () => {
+    const d = digestWith(300);
+    const out = boundDigestForSerialization(d, { maxBytes: 2000, perArrayCap: 50 }) as Record<string, any>;
+    expect(out.autoEligible).toHaveLength(50);
+    expect(out.truncated.autoEligible).toEqual({ kept: 50, total: 300 });
+    expect(typeof out.truncated.originalBytes).toBe('number');
+    expect(out.truncated.note).toMatch(/Pass `limit`/);
+  });
+
+  it('keeps every rollup/headline intact when truncating', () => {
+    const d = digestWith(300);
+    const out = boundDigestForSerialization(d, { maxBytes: 2000, perArrayCap: 10 }) as Record<string, any>;
+    expect(out.headline).toBe('rollup headline that must survive truncation');
+    expect(out.byKind).toEqual({ bug: 300 });
+    expect(out.total).toBe(300);
+    expect(out.recurringSignatures).toEqual([{ signature: 'x', count: 3 }]);
+  });
+
+  it('only lists oversized arrays in `truncated` (an under-cap array is left whole)', () => {
+    const d = digestWith(300);
+    const out = boundDigestForSerialization(d, { maxBytes: 2000, perArrayCap: 50 }) as Record<string, any>;
+    expect(out.truncated.humanQueue).toBeUndefined();
+    expect(out.truncated.likelyDuplicates).toBeUndefined();
+    expect(out.humanQueue).toEqual([]);
+  });
+
+  it('passes through non-object input', () => {
+    expect(boundDigestForSerialization(null)).toBeNull();
+    expect(boundDigestForSerialization(undefined)).toBeUndefined();
+    expect(boundDigestForSerialization('x')).toBe('x');
+  });
+
+  it('has a sane default budget', () => {
+    expect(DIGEST_MAX_BYTES).toBeGreaterThan(10_000);
+    expect(DIGEST_MAX_BYTES).toBeLessThan(200_000);
   });
 });

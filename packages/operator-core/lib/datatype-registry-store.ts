@@ -479,3 +479,63 @@ export async function findSimilarPublishedDatatypes(
     }))
     .filter((r) => r.score > 0);
 }
+
+/**
+ * D-010 distribution: the GLOBAL catalog of APPROVED published datatypes (the shared tier),
+ * across all workspaces. Needs a cross-workspace (admin/RLS-bypass) handle. Newest first.
+ */
+export async function listApprovedPublishedDatatypes(
+  sql: postgres.Sql,
+  opts: { limit?: number } = {},
+): Promise<DatatypeRow[]> {
+  const lim = clampLimit(opts.limit);
+  const rows = await sql<DbRow[]>`
+    SELECT ${SELECT_COLS(sql)} FROM harness_shared.datatype_registry
+     WHERE review_status = 'approved'
+     ORDER BY updated_at DESC, id
+     LIMIT ${lim}`;
+  return rows.map(mapRow);
+}
+
+export type InstallPublishedResult =
+  | { ok: true; datatype: DatatypeRow }
+  | { ok: false; reason: 'not_found' | 'already_present' };
+
+/**
+ * D-010 distribution: install an APPROVED published datatype into `targetWorkspaceId` — copies
+ * its definition (title/description/tier/work_item_kind/payload_schema/self_improvement/tags) as
+ * a LOCAL datatype there (review_status resets to the insert default 'none', `published` false),
+ * so the target uses it like a locally-declared one. Idempotent: a datatype already present under
+ * that id in the target is left untouched (`already_present`). Cross-workspace ⇒ needs an
+ * admin/RLS-bypass handle to read the global source.
+ */
+export async function installPublishedDatatype(
+  sql: postgres.Sql,
+  id: string,
+  targetWorkspaceId: string,
+): Promise<InstallPublishedResult> {
+  const src = await sql<DbRow[]>`
+    SELECT ${SELECT_COLS(sql)} FROM harness_shared.datatype_registry
+     WHERE id = ${id} AND review_status = 'approved'
+     LIMIT 1`;
+  if (!src[0]) return { ok: false, reason: 'not_found' };
+  if (await getDatatype(sql, targetWorkspaceId, id)) return { ok: false, reason: 'already_present' };
+  const s = mapRow(src[0]);
+  const row = await upsertDatatype(sql, {
+    id: s.id,
+    workspaceId: targetWorkspaceId,
+    hiveSlug: null,
+    title: s.title,
+    description: s.description,
+    tier: s.tier,
+    workItemKind: s.workItemKind,
+    payloadSchema: s.payloadSchema,
+    authoritativeWriter: s.authoritativeWriter,
+    selfImprovement: s.selfImprovement,
+    published: false,
+    tags: s.tags,
+    embedding: null, // re-embedded locally on next declare if wanted; the vector is not copied
+    createdBy: null,
+  });
+  return { ok: true, datatype: row };
+}

@@ -55,6 +55,9 @@ import './datatypes/list';
 import './datatypes/get';
 // D-010 shared leg — offer a local datatype to the global tier (PENDING moderation):
 import './datatypes/publish';
+// D-010 distribution — browse the approved global catalog + install one into your workspace:
+import './datatypes/catalog';
+import './datatypes/install';
 
 // reflexive-platform-extensibility-datatypes-2026-06-24 P-004 — tools:scaffold:
 // PURE codegen of a reviewable defineTool skeleton (writes/runs/mints nothing).

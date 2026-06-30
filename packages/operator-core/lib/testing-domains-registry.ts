@@ -247,6 +247,10 @@ defineTestDomain({
         'apps/operator/e2e/harness-*.spec.ts',
         'apps/operator/e2e/dock.spec.ts',
       ] },
+    // Tauri desktop sidecar harness-path resolution (promptHarnessRoot / harnessRoot).
+    // papercusp-desktop/src-tauri/sidecar is NOT an npm workspace, so this vitest test
+    // was invisible to the tab + skipped by the gate until wired here (orphan-test audit).
+    { id: 'sidecar-paths', label: 'Sidecar paths', globs: ['papercusp-desktop/src-tauri/sidecar/harness/**/*.test.ts'] },
   ],
 });
 
@@ -574,6 +578,10 @@ defineTestDomain({
         'libs/generic/desktop-ipc/src/**/*.test.ts',
         'packages/operator-core/lib/transport-adapters/**/*.test.ts',
       ] },
+    // The operator sync delta codec (createSyncDeltaCodec) — the sync delta seam.
+    // Lives under apps/operator/providers; was gate-run but not registry-globbed
+    // (invisible in the Tests tab) until wired here (orphan-test audit).
+    { id: 'sync-delta', label: 'Sync delta codec', globs: ['apps/operator/providers/**/*.test.ts'] },
   ],
 });
 

@@ -98,13 +98,14 @@ export function findLiveHost(ownerId: string, dir: string = PSU_PTY_DIR): PsuPty
 /**
  * Inject one control message into a live host's socket. `mode:'turn'` = a wake
  * turn (idle-gated host-side, then submitted); `mode:'raw'` = verbatim +
- * IMMEDIATE (force-interrupt bytes: Ctrl-C '\x03' / Esc '\x1b'). Resolves true
- * on a clean write, false on connect error / timeout. Mirrors psu-pty-host.mjs's
- * v1 envelope.
+ * IMMEDIATE (force-interrupt bytes: Ctrl-C '\x03' / Esc '\x1b'); `mode:'osc'` =
+ * recolor escape bytes written to the host's STDOUT (the visible terminal), not
+ * the agent's stdin — the fleet-recolor path. Resolves true on a clean write,
+ * false on connect error / timeout. Mirrors psu-pty-host.mjs's v1 envelope.
  */
 export function injectIntoHost(
   sock: string,
-  msg: { mode: 'turn' | 'raw'; data: string },
+  msg: { mode: 'turn' | 'raw' | 'osc'; data: string },
   timeoutMs = 2000,
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -153,4 +154,23 @@ export async function interruptViaPty(
   if (!host) return false;
   const data = key === 'esc' ? '\x1b' : '\x03';
   return injectIntoHost(host.sock, { mode: 'raw', data });
+}
+
+/**
+ * Recolor a live psu-hosted INTERACTIVE session's terminal by injecting OSC
+ * escape bytes (fleet-color-schemes). Unlike interruptViaPty (which lands on the
+ * agent's stdin), the host routes `mode:'osc'` to its OWN stdout — the visible
+ * terminal — so an already-open window recolors LIVE with no relaunch. `osc` is
+ * the escape string from console-color-schemes.oscRecolorSequence.
+ *
+ * Returns false when the owner has NO live psu-pty host (headless / no-pty / a
+ * non-psu session): the recolor just doesn't land live — the bound scheme still
+ * applies the next time the fleet opens a window. Best-effort by design (the
+ * fleet:join/create callers ignore the result), so a recolor never fails a join.
+ */
+export async function recolorViaPty(ownerId: string, osc: string): Promise<boolean> {
+  if (!osc) return false;
+  const host = findLiveHost(ownerId);
+  if (!host) return false;
+  return injectIntoHost(host.sock, { mode: 'osc', data: osc });
 }

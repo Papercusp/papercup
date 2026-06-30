@@ -105,6 +105,10 @@ const COVERAGE_IGNORE_DIRS = new Set([
   // own `node --test` suite the throwaway Hive runs against), not operator tests —
   // they belong to the fixture's runtime, never the /adv Tests tab.
   'fixtures',
+  // Transient vitest scratch: the test-data-generator seeds temp `.vitest-tmp/tdg-*`
+  // test trees that leak into the walk mid-run and surface as phantom orphans. And
+  // `scratch/` is the throwaway demo space (dummy-plan-demo/*), never canonical app tests.
+  '.vitest-tmp', 'vitest-tmp', 'scratch',
 ]);
 
 const CANONICAL_TEST_RE = /\.(test|spec)\.(ts|tsx|mts|cts|mjs|js|jsx)$/;
@@ -146,6 +150,11 @@ function globMatches(g: CompiledGlob, relPath: string): boolean {
   return g.re.test(rel);
 }
 
+// Transient build temp dirs carry a pid suffix (e.g. `sidecar.tmp.4001496`, created
+// while the Tauri sidecar bundles); they leak into the FS walk as phantom orphans.
+// Match by pattern since the suffix is dynamic.
+const COVERAGE_IGNORE_RE = /\.tmp\.\d+$/;
+
 /** Recursively list every file under `dir` whose basename matches `match`,
  * POSIX-relative, skipping ignore dirs. Defaults to canonical TS/JS tests. */
 async function walkAll(dir: string, match: RegExp = CANONICAL_TEST_RE, base = ''): Promise<string[]> {
@@ -155,7 +164,7 @@ async function walkAll(dir: string, match: RegExp = CANONICAL_TEST_RE, base = ''
   for (const e of entries) {
     const rel = base ? posix.join(base, e.name) : e.name;
     if (e.isDirectory()) {
-      if (COVERAGE_IGNORE_DIRS.has(e.name)) continue;
+      if (COVERAGE_IGNORE_DIRS.has(e.name) || COVERAGE_IGNORE_RE.test(e.name)) continue;
       out.push(...await walkAll(join(dir, e.name), match, rel));
     } else if (e.isFile() && match.test(e.name)) {
       out.push(rel);

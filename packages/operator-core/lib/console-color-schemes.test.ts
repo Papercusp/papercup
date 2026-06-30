@@ -9,6 +9,7 @@ import {
   COLOR_SCHEMES,
   DEFAULT_SCHEME,
   allocateNextSchemeName,
+  oscRecolorSequence,
   schemeByName,
   schemeForSlug,
   type ColorScheme,
@@ -33,6 +34,33 @@ function contrast(a: string, b: string): number {
   const [hi, lo] = la >= lb ? [la, lb] : [lb, la];
   return (hi + 0.05) / (lo + 0.05);
 }
+
+describe('oscRecolorSequence', () => {
+  const scheme: ColorScheme = { name: 'demo', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' };
+
+  it('emits OSC 10 (fg), 11 (bg), 12 (cursor), each BEL-terminated', () => {
+    expect(oscRecolorSequence(scheme)).toBe(
+      '\x1b]10;#f5e8ff\x07\x1b]11;#581c87\x07\x1b]12;#d8b4fe\x07',
+    );
+  });
+
+  it('orders fg → bg → cursor (the bg paint lands before the cursor)', () => {
+    const s = oscRecolorSequence(scheme);
+    expect(s.indexOf(']10;')).toBeLessThan(s.indexOf(']11;'));
+    expect(s.indexOf(']11;')).toBeLessThan(s.indexOf(']12;'));
+  });
+
+  it('every catalog scheme yields exactly three well-formed OSC triples', () => {
+    for (const sc of COLOR_SCHEMES) {
+      const seq = oscRecolorSequence(sc);
+      expect(seq).toContain(`\x1b]10;${sc.fg}\x07`);
+      expect(seq).toContain(`\x1b]11;${sc.bg}\x07`);
+      expect(seq).toContain(`\x1b]12;${sc.cursor}\x07`);
+      // one BEL per OSC, no stray control bytes
+      expect((seq.match(/\x07/g) ?? []).length).toBe(3);
+    }
+  });
+});
 
 describe('COLOR_SCHEMES catalog', () => {
   it('has a healthy number of schemes', () => {

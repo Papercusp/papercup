@@ -150,6 +150,28 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     ]);
   });
 
+  it('carries each account egress POOL through (gateway-per-account-egress-ip-pool-2026-06-30)', async () => {
+    // An account's egressPool must survive the resolve path so the gateway can rotate across its IPs.
+    // A {} entry means "the box-direct IP" — a valid distinct egress, not a no-op. An account with
+    // only the singular `egress` must still carry that field (the resolver does not touch it). An
+    // account with neither must come through with both fields undefined.
+    mockedLoad.mockResolvedValue({
+      accounts: [
+        { id: 'a', credentialRef: 'ref:a', egressPool: [{ proxyUrl: 'http://10.0.0.1:3128' }, {}] },
+        { id: 'b', credentialRef: 'ref:b', egress: { proxyUrl: 'http://10.0.0.2:3128' } },
+        acct('c', 'ref:c'),
+      ],
+    } as never);
+    const pool = await resolveAccountPool('ws');
+    expect(pool.map((p) => p.egressPool)).toEqual([
+      [{ proxyUrl: 'http://10.0.0.1:3128' }, {}],
+      undefined,
+      undefined,
+    ]);
+    // singular egress is still carried for the single-egress account
+    expect(pool[1].egress).toEqual({ proxyUrl: 'http://10.0.0.2:3128' });
+  });
+
   it('falls back to a single local account when the pool is empty', async () => {
     mockedLoad.mockResolvedValue({ accounts: [] } as never);
     const pool = await resolveAccountPool('ws');

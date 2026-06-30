@@ -24,8 +24,11 @@ Two things to know before you touch the harness **Tests** tab (`/adv` →
 ## The domain nav is HARNESS-owned data, not an operator registry
 
 The operator's testing API (`/api/admin/testing/*`; the old `/admin/testing`
-UI route was removed 2026-06-11) reads `adminRegistry` (the 8-domain Universal
-tier — formerly "generalized" — plus ~30 Papercusp domains, i.e.
+UI route was removed 2026-06-11) reads `adminRegistry` (the 1-domain Universal
+tier — `routes` only; the former 8-domain "generalized" set was narrowed down as
+the portable tabs moved to custom-panel domains via `UNIVERSAL_PANEL_DOMAINS`
+in `@papercusp/testing-shell`, which are appended client-side and are NOT part
+of `adminRegistry` — plus ~35 Papercusp domains, i.e.
 `[...operatorUniversal, ...papercuspRegistry]`) from
 `packages/operator-core/lib/testing-domains-registry.ts` — operator-internal code.
 The **harness** Tests tab does NOT import that. Each harness declares its own
@@ -114,3 +117,30 @@ Corollary: server-side edits to `harness/testing.ts` need a host restart
 (`systemctl --user restart papercup-dev-api.service`) — the `:3070` host has no
 hot-reload — and frontend edits to `HarnessTestsView` ship via the operator-vite
 watch-build + a desktop reload.
+
+## What the harness testing routes expose (current as of 2026-06-30)
+
+`endpoint-route/routes/harness/testing.ts` exports these routes:
+
+- `GET  /harness/:slug/testing/domains` — harness-owned domains + tier labels (the one this page is about).
+- `GET  /harness/:slug/testing/domain-detail` — file list + runners for one domain.
+- `GET  /harness/:slug/testing/file-status` — per-file pass/fail chips (Acceptance domain only; built-in domains render "none").
+- `GET  /harness/:slug/testing/health-strip` — minimal flake/duration strip.
+- `POST /harness/:slug/testing/run` — synchronous vitest run. Now also runs the JSON
+  reporter alongside `default`, parses the JSON file via
+  `parseVitestJsonForHarnessRows`, and persists one `harness_shared.test_runs`
+  row per file via `persistHarnessTestRuns` (best-effort, fail-soft — a DB error
+  never changes the run result the panel sees). This is how the hive's Tests tab
+  renders per-file run history without per-repo scaffolding.
+- `GET  /harness/:slug/testing/file-history` — per-file run history from
+  `harness_shared.test_runs`, scoped to this harness + workspace. Backs the
+  status-chip history sheet in the Tests tab.
+- `GET  /harness/:slug/testing/assertions` — list VAL assertions from
+  `harness_shared.harness_plan_assertions` (optionally filtered by `?plan=`).
+- `POST /harness/:slug/testing/assertions/:valId` — patch `requires_test` on a VAL.
+- `GET  /harness/:slug/plan-items-test-status` — per-plan-item coverage rollup via
+  `computePlanItemTestStatus` (joins assertions ↔ tests through the VAL).
+
+`resolveCtx` also handles `kind:'hive'` harnesses: a repo-less hive harness has
+its `path` pointing to the hive state dir, so `resolveCtx` now calls
+`resolveHarnessContentPath` to find the member repo's worktree for glob walks.

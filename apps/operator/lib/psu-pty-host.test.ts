@@ -14,6 +14,7 @@ import {
   controlBytes,
   controlWrites,
   controlWritesForAgent,
+  fleetOscFromEnv,
   turnSubmitCrDelayForAgent,
   makeIdleGate,
   makeActivityTracker,
@@ -60,6 +61,11 @@ describe('control wire protocol (v1)', () => {
   it('Esc force interrupt round-trips', () => {
     expect(controlBytes(decodeControl(encodeControl({ mode: 'raw', data: '' })))).toBe('');
   });
+  it('osc envelope → immediate, verbatim recolor bytes (terminal display, not the agent)', () => {
+    const osc = '\x1b]11;#581c87\x07';
+    const d = decodeControl(encodeControl({ mode: 'osc', data: osc }));
+    expect(d).toEqual({ mode: 'osc', data: osc, gated: false });
+  });
   it('a non-envelope payload is a legacy idle-gated turn (psupty back-compat)', () => {
     const d = decodeControl('just some text');
     expect(d).toEqual({ mode: 'turn', data: 'just some text', gated: true });
@@ -88,6 +94,10 @@ describe('controlWrites — a turn submits via a SEPARATE delayed CR (paste-dete
   it('a raw (force-interrupt) message is ONE immediate verbatim write — no CR appended', () => {
     const ctrlC = decodeControl(encodeControl({ mode: 'raw', data: '\x03' }));
     expect(controlWrites(ctrlC)).toEqual([{ data: '\x03', delayMs: 0 }]);
+  });
+  it('an osc (recolor) message is ONE immediate verbatim write — no CR, no gate', () => {
+    const d = decodeControl(encodeControl({ mode: 'osc', data: '\x1b]11;#166534\x07' }));
+    expect(controlWrites(d)).toEqual([{ data: '\x1b]11;#166534\x07', delayMs: 0 }]);
   });
   it('the total bytes still match controlBytes (text + CR), just delivered in two writes', () => {
     const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
@@ -154,6 +164,29 @@ describe('controlWritesForAgent', () => {
   it('does not add submit bytes to raw control messages for any backend', () => {
     const d = decodeControl(encodeControl({ mode: 'raw', data: '\x03' }));
     expect(controlWritesForAgent(d, 'codex', {})).toEqual([{ data: '\x03', delayMs: 0 }]);
+  });
+  it('does not add submit bytes to osc (recolor) messages for any backend', () => {
+    const d = decodeControl(encodeControl({ mode: 'osc', data: '\x1b]11;#000000\x07' }));
+    expect(controlWritesForAgent(d, 'codex', {})).toEqual([{ data: '\x1b]11;#000000\x07', delayMs: 0 }]);
+  });
+});
+
+describe('fleetOscFromEnv (launch-time fleet recolor)', () => {
+  it('builds OSC 10/11/12 from the PAPERCUSP_FLEET_* env vars (matches oscRecolorSequence)', () => {
+    expect(
+      fleetOscFromEnv({
+        PAPERCUSP_FLEET_BG: '#581c87',
+        PAPERCUSP_FLEET_FG: '#f5e8ff',
+        PAPERCUSP_FLEET_CURSOR: '#d8b4fe',
+      }),
+    ).toBe('\x1b]10;#f5e8ff\x07\x1b]11;#581c87\x07\x1b]12;#d8b4fe\x07');
+  });
+  it('returns null when no fleet bg is set — the no-fleet session keeps its profile default', () => {
+    expect(fleetOscFromEnv({})).toBeNull();
+    expect(fleetOscFromEnv({ PAPERCUSP_FLEET_FG: '#ffffff' })).toBeNull();
+  });
+  it('bg alone is enough; fg + cursor are optional', () => {
+    expect(fleetOscFromEnv({ PAPERCUSP_FLEET_BG: '#166534' })).toBe('\x1b]11;#166534\x07');
   });
 });
 

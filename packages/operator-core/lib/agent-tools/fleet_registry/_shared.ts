@@ -9,6 +9,9 @@
  */
 import { resolveAgentIdentity, type AgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveFleetScheme, type AgentFleetRecord } from '../../agent-fleets-store';
+import { oscRecolorSequence } from '../../console-color-schemes';
+import { recolorViaPty } from '../../events/await/psu-pty-discovery';
 
 export interface FleetCaller {
   /** The full coordination identity (needed to seed a presence row via heartbeatPresence). */
@@ -78,3 +81,22 @@ export const ROUTING_LADDER =
   'an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then ' +
   'drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } ' +
   'to launch the member windows.';
+
+/**
+ * Best-effort: recolor the CALLER's live terminal to a fleet's bound scheme right
+ * after a join/create, so the window reflects the fleet WITHOUT a second call
+ * (fleet-color-schemes). Only a psu-pty-hosted session has a reachable window —
+ * recolorViaPty returns false for headless / no-pty / non-psu callers, and the
+ * bound scheme then applies the next time the fleet opens a window. Never throws,
+ * so a recolor miss can never fail the join/create itself.
+ */
+export async function recolorCallerTerminal(
+  ownerId: string,
+  fleet: AgentFleetRecord,
+): Promise<void> {
+  try {
+    await recolorViaPty(ownerId, oscRecolorSequence(resolveFleetScheme(fleet)));
+  } catch {
+    /* best-effort — a recolor must never break fleet membership */
+  }
+}

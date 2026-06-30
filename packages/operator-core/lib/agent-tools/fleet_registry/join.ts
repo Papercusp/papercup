@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
-import { fleetRoleFor, json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
 export default defineTool({
   name: 'fleet:join',
@@ -44,6 +44,9 @@ export default defineTool({
     const role = fleetRoleFor(fleet.leaderOwnerId, ownerId);
     await heartbeatPresence(identity); // guarantee a presence row to label
     await setPresenceFleet(workspaceId, ownerId, args.fleet, role);
-    return json({ ok: true, slug: args.fleet, role });
+    // Recolor the caller's live window to the fleet's bound scheme — no second
+    // call (fleet-color-schemes). Best-effort: a no-op for non-psu-hosted callers.
+    await recolorCallerTerminal(ownerId, fleet);
+    return json({ ok: true, slug: args.fleet, role, scheme: fleet.colorScheme });
   },
 });

@@ -206,6 +206,13 @@
             "apps/operator/e2e/harness-*.spec.ts",
             "apps/operator/e2e/dock.spec.ts"
           ]
+        },
+        {
+          "id": "sidecar-paths",
+          "label": "Sidecar paths",
+          "globs": [
+            "papercusp-desktop/src-tauri/sidecar/harness/**/*.test.ts"
+          ]
         }
       ]
     },
@@ -732,6 +739,13 @@
           "globs": [
             "libs/generic/desktop-ipc/src/**/*.test.ts",
             "packages/operator-core/lib/transport-adapters/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "sync-delta",
+          "label": "Sync delta codec",
+          "globs": [
+            "apps/operator/providers/**/*.test.ts"
           ]
         }
       ]

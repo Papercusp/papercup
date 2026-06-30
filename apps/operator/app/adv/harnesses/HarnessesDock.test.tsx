@@ -36,7 +36,6 @@ vi.mock('./AdvChatPanel', () => ({ default: () => null }));
 vi.mock('./AdvAgentsPanel', () => ({ default: () => null }));
 vi.mock('./MemberWorkPanel', () => ({ default: () => null }));
 vi.mock('./AdvLogsPanel', () => ({ default: () => null }));
-vi.mock('./AdvOverviewPanel', () => ({ default: () => null }));
 vi.mock('./AdvInsightsPanel', () => ({ default: () => null }));
 vi.mock('./AdvContributorsPanel', () => ({ default: () => null }));
 

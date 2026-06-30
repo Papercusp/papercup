@@ -251,10 +251,12 @@ export function decodeControl(payload) {
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
   try {
     const o = JSON.parse(text);
-    if (o && o.v === 1 && (o.mode === 'turn' || o.mode === 'raw')) {
-      return o.mode === 'raw'
-        ? { mode: 'raw', data: String(o.data ?? ''), gated: false }
-        : { mode: 'turn', data: String(o.data ?? ''), gated: true };
+    if (o && o.v === 1 && (o.mode === 'turn' || o.mode === 'raw' || o.mode === 'osc')) {
+      if (o.mode === 'raw') return { mode: 'raw', data: String(o.data ?? ''), gated: false };
+      // osc = recolor escape bytes for the terminal DISPLAY (not the agent) —
+      // ungated + immediate, routed to the host stdout (see the handler sink).
+      if (o.mode === 'osc') return { mode: 'osc', data: String(o.data ?? ''), gated: false };
+      return { mode: 'turn', data: String(o.data ?? ''), gated: true };
     }
   } catch {
     /* not an envelope — fall through to legacy */
@@ -276,7 +278,9 @@ export function controlBytes(decoded) {
  *  Claude Code TUI's paste detector (the CR becomes a literal newline and the
  *  turn never submits). Pure — exported for tests. */
 export function controlWrites(decoded, crDelayMs = TURN_SUBMIT_CR_DELAY_MS) {
-  if (decoded.mode === 'raw') return [{ data: decoded.data, delayMs: 0 }];
+  // raw (force-interrupt byte) and osc (recolor bytes) are both ONE immediate
+  // verbatim write — no idle gate, no submit CR.
+  if (decoded.mode === 'raw' || decoded.mode === 'osc') return [{ data: decoded.data, delayMs: 0 }];
   return [
     { data: decoded.data, delayMs: 0 },
     { data: '\r', delayMs: crDelayMs },
@@ -307,7 +311,7 @@ function codexTurnResubmitCrDelay(env = process.env) {
  *  delayed submit CR because the first CR can be consumed as input, leaving the
  *  turn text visible but unsent. */
 export function controlWritesForAgent(decoded, agent, env = process.env) {
-  if (decoded.mode === 'raw') return controlWrites(decoded);
+  if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
   const normalized = String(agent || '').trim().toLowerCase();
   if (normalized !== 'codex') {
     return controlWrites(decoded, turnSubmitCrDelayForAgent(agent, env));
@@ -317,6 +321,28 @@ export function controlWritesForAgent(decoded, agent, env = process.env) {
     { data: '\r', delayMs: turnSubmitCrDelayForAgent(agent, env) },
     { data: '\r', delayMs: codexTurnResubmitCrDelay(env) },
   ];
+}
+
+/**
+ * The OSC recolor bytes for a fleet-bound session, from the PAPERCUSP_FLEET_BG /
+ * PAPERCUSP_FLEET_FG / PAPERCUSP_FLEET_CURSOR env vars bootstrap-su resolves from
+ * the fleet's bound scheme — or null when the session has no fleet (leave the
+ * terminal's profile default untouched). OSC 10 (fg) / 11 (bg) / 12 (cursor),
+ * each BEL-terminated. This is the launch-time twin of operator-core
+ * console-color-schemes.oscRecolorSequence (the runtime fleet:join path emits the
+ * same bytes over the 'osc' control mode); inlined here so this plain-mjs host
+ * needs no cross-package import — keep the OSC format in lockstep. Pure;
+ * exported for tests + psu-launcher's no-pty fallback. */
+export function fleetOscFromEnv(env = process.env) {
+  const bg = env.PAPERCUSP_FLEET_BG;
+  if (!bg) return null;
+  const fg = env.PAPERCUSP_FLEET_FG;
+  const cursor = env.PAPERCUSP_FLEET_CURSOR;
+  let s = '';
+  if (fg) s += `\x1b]10;${fg}\x07`;
+  s += `\x1b]11;${bg}\x07`;
+  if (cursor) s += `\x1b]12;${cursor}\x07`;
+  return s;
 }
 
 /**
@@ -429,6 +455,20 @@ export function hostThroughPty(o) {
     }
   };
   writeMeta();
+  // Fleet color at launch (fleet-color-schemes): if bootstrap-su bound this
+  // session to a fleet (PAPERCUSP_FLEET_BG/FG/CURSOR from the fleet's scheme),
+  // recolor THIS window now by writing the OSC straight to our stdout (= the
+  // visible terminal), so the window opens in the fleet color instead of the
+  // gnome profile default. No fleet ⇒ no write (profile default stands). The
+  // runtime fleet:join path reuses the same bytes via the 'osc' control mode.
+  const launchOsc = fleetOscFromEnv(env);
+  if (launchOsc) {
+    try {
+      stdout.write(launchOsc);
+    } catch {
+      /* best-effort — a recolor must never break the session */
+    }
+  }
   let lastPersisted = 0;
   const activityTimer = setInterval(() => {
     const snap = activity.snapshot();
@@ -456,13 +496,17 @@ export function hostThroughPty(o) {
       const msg = decodeControl(payload);
       try {
         if (bridgeTty && msg.gated) await idleGate.waitIdle();
+        // mode:'osc' targets the terminal DISPLAY — the host's stdout IS the
+        // visible window — so a fleet:join recolors the LIVE window. Every other
+        // mode targets the agent's stdin (a wake turn / a force-interrupt byte).
+        const sink = msg.mode === 'osc' ? stdout : child;
         // Deliver as ordered steps: a turn writes its text, THEN the submit CR as
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
         for (const step of controlWritesForAgent(msg, env.PAPERCUSP_AGENT, env)) {
           if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
-          child.write(step.data);
+          sink.write(step.data);
         }
       } catch {
         /* child may have exited mid-inject */

@@ -19,7 +19,6 @@ import AdvAgentsPanel from './AdvAgentsPanel';
 import MemberWorkPanel from './MemberWorkPanel';
 import HiveContentPanel from './HiveContentPanel';
 import AdvLogsPanel from './AdvLogsPanel';
-import AdvOverviewPanel from './AdvOverviewPanel';
 import AdvInsightsPanel from './AdvInsightsPanel';
 import AdvContributorsPanel from './AdvContributorsPanel';
 
@@ -77,7 +76,6 @@ function ensureRegistered() {
   // (FLAGS.THE_HIVE) in HarnessTopBar's allowedTypes.
   panelRegistry.register('adv:hive-content', HiveContentPanel, { title: 'Hive content' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
-  panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
   // Phase-8 Insights (P-073) — built + tested but previously had no in-shell
   // mount; register it so it's openable from the panel menu (additive — not
   // forced into the default layout).

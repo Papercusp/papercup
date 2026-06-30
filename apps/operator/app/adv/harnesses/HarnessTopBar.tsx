@@ -25,9 +25,9 @@ interface Props {
  * `harnessLanes.snapshot`), which the Queen/bee placement model replaced —
  * so they sat frozen/zero. The underlying `harness_status` / `harness_lanes`
  * tables, their sync resolvers, and the `/orchestrator/status` endpoint are
- * KEPT: they're still live, non-orphaned infra (AdvOverviewPanel reads
- * `harnessStatus.snapshot`; device-harnesses / device-feeds + the 30s
- * lane-occupancy sweeper read the tables).
+ * KEPT: `harness_lanes` is the live agent-lane occupancy tracker (PID-swept
+ * every ~30s) and both `harness_status` / `harness_lanes` are read by the
+ * device-harnesses / device-feeds surfaces — so the tables stay.
  *
  * The harness selector + Start/Stop + running-agents-thinking pills now
  * live in the AdvShell header (one global instance shared across every
@@ -51,7 +51,6 @@ export default function HarnessTopBar({ slug }: Props) {
             allowedTypes={[
               'adv:work-items',
               'adv:detail',
-              'adv:overview',
               'adv:agents',
               'adv:logs',
               'adv:contributors',
