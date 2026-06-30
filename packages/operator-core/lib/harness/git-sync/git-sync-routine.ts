@@ -29,7 +29,13 @@ export const GIT_SYNC_ROUTINE_NAME = 'git-sync';
 export const GIT_SYNC_TARGET = 'system:git-sync';
 // Every 10 minutes — matches the live `papercup` cadence (trigger_config.cron); the
 // superproject's branch is `staging` and lives in trigger_config, not here.
-export const DEFAULT_GIT_SYNC_CRON = '0 */10 * * * *';
+// Every 3 minutes (owner directive 2026-06-30, reverting an undocumented 3m→10m bump). Tighter
+// cadence keeps staging fresh so a (force-)deploy ships current work, not a stale tree. The
+// trade-off — more frequent commits = more index.lock contention across ~50 agents — is now
+// safe because the stranding guard in run-git-sync.ts always runs the catch-all `git add -A`
+// even when a per-agent commit loses an index.lock race, so a contended tick no longer orphans
+// untracked files. (A manual `git-sync:run` lever exists for on-demand freshness too.)
+export const DEFAULT_GIT_SYNC_CRON = '0 */3 * * * *';
 
 export interface GitSyncRoutineInput {
   /** Owning workspace_id (routines.workspace_id is NOT NULL, no default). */
