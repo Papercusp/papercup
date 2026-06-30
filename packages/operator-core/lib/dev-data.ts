@@ -329,6 +329,8 @@ export interface SessionEntry {
   harness_slug: string | null;
   role: string | null;
   run_id: string | null;
+  /** Coordination owner id of the agent that ran this spawn (migration 427). NULL on legacy rows. */
+  coord_owner_id: string | null;
   started_at: string;
   ended_at: string;
   tool_count: number;
@@ -362,6 +364,7 @@ export async function listSessions(
     harness_slug: string | null;
     role: string | null;
     run_id: string | null;
+    coord_owner_id: string | null;
     started_at: string;
     ended_at: string;
     tool_count: number;
@@ -377,6 +380,7 @@ export async function listSessions(
           MAX(harness_slug) AS harness_slug,
           MAX(role) AS role,
           MAX(run_id) AS run_id,
+          MAX(coord_owner_id) AS coord_owner_id,
           MIN(invoked_at) AS started_at,
           MAX(invoked_at) AS ended_at,
           count(*)::int AS tool_count,
@@ -399,6 +403,7 @@ export async function listSessions(
           MAX(harness_slug) AS harness_slug,
           MAX(role) AS role,
           MAX(run_id) AS run_id,
+          MAX(coord_owner_id) AS coord_owner_id,
           MIN(invoked_at) AS started_at,
           MAX(invoked_at) AS ended_at,
           count(*)::int AS tool_count,
@@ -414,6 +419,165 @@ export async function listSessions(
       `) as unknown as Row[]);
 
   return { entries: rows };
+}
+
+// ── Owner → session resolver (coord owner id ↔ session ids) ────────
+//
+// WI-1279. Given a coordination owner id (su-… interactive SU, s-… fleet bee,
+// pus-… power-user — the `from` field of plan-events / coord:presence /
+// coord:whoami's ownerId), return the session(s) it ran in: the native resume
+// session_id (claude/codex — what `claude --resume` takes), omp_thread_id (omp),
+// the spawn/run ids, plan, cwd, and the per-turn telemetry activity. The
+// owner↔native-session link is ALREADY persisted in adv_sessions (interactive SU)
+// and spawned_agents (bees); this reads it. tool_invocations.coord_owner_id
+// (migration 427) supplies the per-turn activity rollup.
+
+export interface OwnerSession {
+  source: 'adv_sessions' | 'spawned_agents';
+  owner_id: string;
+  /** Native CLI session id — the value you pass to `claude --resume` / codex resume. */
+  session_id: string | null;
+  /** OMP native thread id (omp resume), when the agent was omp. */
+  omp_thread_id: string | null;
+  spawn_id: string | null;
+  run_id: string | null;
+  agent: string | null;
+  role: string | null;
+  mode: string | null;
+  harness_slug: string | null;
+  plan_slug: string | null;
+  cwd: string | null;
+  status: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+export interface OwnerActivityRollup {
+  spawn_id: string;
+  workspace_id: string | null;
+  harness_slug: string | null;
+  tool_count: number;
+  error_count: number;
+  started_at: string;
+  ended_at: string;
+}
+
+export interface OwnerResolution {
+  owner_id: string;
+  sessions: OwnerSession[];
+  /** Per-spawn telemetry attributed to this owner via tool_invocations.coord_owner_id (migration 427). */
+  activity: OwnerActivityRollup[];
+}
+
+export async function resolveOwnerSessions(ownerId: string): Promise<OwnerResolution> {
+  const { sql } = getOrgPg();
+
+  // 1. Interactive SU / console sessions — adv_sessions holds coord_owner_id ↔
+  //    the native resume session_id (+ omp_thread_id for omp).
+  type AdvRow = {
+    session_id: string | null;
+    omp_thread_id: string | null;
+    agent: string | null;
+    role: string | null;
+    mode: string | null;
+    plan_slug: string | null;
+    cwd: string | null;
+    started_at: string | null;
+    ended_at: string | null;
+  };
+  const advRows = (await sql`
+    SELECT session_id, omp_thread_id, agent, role, mode, plan_slug, cwd, started_at, ended_at
+    FROM harness_shared.adv_sessions
+    WHERE coord_owner_id = ${ownerId}
+    ORDER BY started_at DESC NULLS LAST
+    LIMIT 50
+  `) as AdvRow[];
+
+  // 2. Fleet bees — spawned_agents holds session_owner (the owner id) ↔ spawn_id +
+  //    the native session_id. Also match when the owner id IS a spawn id.
+  type SpawnRow = {
+    spawn_id: string;
+    run_id: string | null;
+    session_id: string | null;
+    child_role: string | null;
+    harness_slug: string | null;
+    plan_slug: string | null;
+    status: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+  };
+  const spawnRows = (await sql`
+    SELECT spawn_id, run_id, session_id, child_role, harness_slug, plan_slug, status, started_at, finished_at
+    FROM harness_shared.spawned_agents
+    WHERE session_owner = ${ownerId} OR spawn_id = ${ownerId}
+    ORDER BY started_at DESC NULLS LAST
+    LIMIT 50
+  `) as SpawnRow[];
+
+  // 3. Per-turn telemetry attributed to this owner (migration 427 column).
+  type ActRow = {
+    spawn_id: string;
+    workspace_id: string | null;
+    harness_slug: string | null;
+    tool_count: number;
+    error_count: number;
+    started_at: string;
+    ended_at: string;
+  };
+  const actRows = (await sql`
+    SELECT
+      spawn_id,
+      MAX(workspace_id) AS workspace_id,
+      MAX(harness_slug) AS harness_slug,
+      count(*)::int AS tool_count,
+      count(*) FILTER (WHERE status != 'ok')::int AS error_count,
+      MIN(invoked_at) AS started_at,
+      MAX(invoked_at) AS ended_at
+    FROM harness_shared.tool_invocations
+    WHERE coord_owner_id = ${ownerId}
+    GROUP BY spawn_id
+    ORDER BY started_at DESC
+    LIMIT 100
+  `) as ActRow[];
+
+  const sessions: OwnerSession[] = [
+    ...advRows.map((r) => ({
+      source: 'adv_sessions' as const,
+      owner_id: ownerId,
+      session_id: r.session_id,
+      omp_thread_id: r.omp_thread_id,
+      spawn_id: null,
+      run_id: null,
+      agent: r.agent,
+      role: r.role,
+      mode: r.mode,
+      harness_slug: null,
+      plan_slug: r.plan_slug,
+      cwd: r.cwd,
+      status: null,
+      started_at: r.started_at,
+      ended_at: r.ended_at,
+    })),
+    ...spawnRows.map((r) => ({
+      source: 'spawned_agents' as const,
+      owner_id: ownerId,
+      session_id: r.session_id,
+      omp_thread_id: null,
+      spawn_id: r.spawn_id,
+      run_id: r.run_id,
+      agent: null,
+      role: r.child_role,
+      mode: null,
+      harness_slug: r.harness_slug,
+      plan_slug: r.plan_slug,
+      cwd: null,
+      status: r.status,
+      started_at: r.started_at,
+      ended_at: r.finished_at,
+    })),
+  ];
+
+  return { owner_id: ownerId, sessions, activity: actRows };
 }
 
 // ── Tool co-occurrence (which tools fire together in one spawn) ────
