@@ -20,7 +20,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER } from './splice-tooling-overlay';
-import { renderAutoModePolicy } from '../auto-mode-policy';
+import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
 import { renderPeerWakeNote } from '../peer-wake-policy';
@@ -269,9 +269,10 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   // per-hive-git-and-release-gate P-012: the staging→main promotion contract, generated
   // from the same release-gate config (non-coding hives render nothing → marker removed).
   out = spliceGeneratedSection(out, PROMOTION_MODEL_MARKER, renderPromotionModelSection());
-  // AUTO mode (act-don't-ask switch + its AUTO↔loop relationship) — profile-agnostic, so
-  // both engineer + power get the one canonical clause spliced here at the marker.
-  out = spliceGeneratedSection(out, AUTO_MODE_MARKER, renderAutoModePolicy());
+  // Operating modes (AUTO act-don't-ask switch + its AUTO↔loop relationship, plus the IDEATE
+  // invent-vs-patch switch and the AUTO×IDEATE composition table) — profile-agnostic, so both
+  // engineer + power get the one canonical clause spliced here at the (still-named) AUTO marker.
+  out = spliceGeneratedSection(out, AUTO_MODE_MARKER, renderModesPolicy());
   out = injectSharedBaseNotes(out);
   // Project guide (P-001): engineer-profile install splices the repo's CLAUDE.md.
   if (out.includes(PROJECT_GUIDE_MARKER)) {
@@ -650,10 +651,11 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
   const withMap = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
   const withPromo = spliceGeneratedSection(withMap, PROMOTION_MODEL_MARKER, renderPromotionModelSection());
-  // AUTO mode is profile-agnostic (the act-don't-ask grant + its AUTO↔loop relationship apply to
-  // every interactive su surface), so splice it BEFORE the engineer-only shared-base notes — both
-  // engineer + power carry the marker and get the one canonical clause.
-  const withAuto = spliceGeneratedSection(withPromo, AUTO_MODE_MARKER, renderAutoModePolicy());
+  // Operating modes are profile-agnostic (the AUTO act-don't-ask grant + its AUTO↔loop
+  // relationship, plus the IDEATE invent-vs-patch switch and the AUTO×IDEATE table, apply to
+  // every interactive su surface), so splice them BEFORE the engineer-only shared-base notes —
+  // both engineer + power carry the marker and get the one canonical clause.
+  const withAuto = spliceGeneratedSection(withPromo, AUTO_MODE_MARKER, renderModesPolicy());
   // Only the ENGINEER profile works the Papercusp repo (where this pipeline + its green gate live);
   // the power profile manages an EXTERNAL repo, so the Papercusp-specific note does not apply there.
   const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withAuto) : withAuto;

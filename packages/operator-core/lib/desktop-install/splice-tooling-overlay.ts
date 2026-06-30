@@ -72,13 +72,17 @@ export const PROMOTION_MODEL_MARKER = '<!-- PAPERCUSP-SU:PROMOTION-MODEL -->';
 export const PROJECT_GUIDE_MARKER = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
 
 /**
- * Marker for the generated "## AUTO mode" section (auto-mode-policy.ts) — the
- * owner's "act, don't ask" switch + its relationship to the engine loop. Authored
- * ONCE in `renderAutoModePolicy()` and spliced into the engineer + power su
- * playbooks by `renderSuPlaybook` / `writeSplicedPlaybook`, so the two surfaces
- * can't desync (it used to be a hand-maintained copy in papercusp-su-engineer.tools.md
- * only — power had none). Same splice contract: an absent marker leaves the section
- * out (a future profile can opt out); an empty section removes the marker.
+ * Marker for the generated operating-modes section (operating-modes-policy.ts) — the owner's
+ * AUTO ("act, don't ask") switch + its relationship to the engine loop, PLUS the IDEATE
+ * ("invent net-new, don't just patch") switch and the AUTO×IDEATE composition table. Authored
+ * ONCE in `renderModesPolicy()` and spliced into the engineer + power su playbooks by
+ * `renderSuPlaybook` / `writeSplicedPlaybook`, so the two surfaces can't desync (the AUTO half
+ * used to be a hand-maintained copy in papercusp-su-engineer.tools.md only — power had none).
+ * The marker keeps its `AUTO-MODE` name: the string is a contract shared by both base
+ * playbooks, the `libs/papercusp` blueprint persona, and build artifacts, so renaming it would
+ * need a lock-step cross-repo edit with a silent section-drop on any mismatch. Same splice
+ * contract: an absent marker leaves the section out (a future profile can opt out); an empty
+ * section removes the marker.
  */
 export const AUTO_MODE_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
 

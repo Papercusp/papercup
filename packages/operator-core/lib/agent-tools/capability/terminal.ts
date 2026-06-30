@@ -34,6 +34,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
+import type { ColorScheme } from '../../console-color-schemes';
 
 /** Opening more than this many desktop windows in one call is almost certainly a
  *  mistake (and is heavy); cap it. A fleet larger than this should be spawned in
@@ -99,6 +101,12 @@ export default defineTool({
       .max(MAX_TERMINALS)
       .optional()
       .describe(`Bulk form: open N terminals (one per entry, max ${MAX_TERMINALS}) in a single call. Use EITHER \`command\` or \`terminals\`.`),
+    fleet: z
+      .string()
+      .optional()
+      .describe(
+        "Optional fleet name or slug — every terminal in this call uses that fleet's permanently-bound color scheme (a stable per-fleet look). Omit for the default per-plan coloring.",
+      ),
   }),
   async handler(args, ctx) {
     // Normalize the single | bulk forms to one items[] list.
@@ -132,6 +140,17 @@ export default defineTool({
       return err(`Failed to prepare terminal(s): ${e?.message ?? e}`);
     }
 
+    // Resolve the fleet's permanently-bound color scheme, if a fleet was named.
+    // Color is cosmetic — a lookup failure must never block the launch.
+    let scheme: ColorScheme | null = null;
+    if (args.fleet) {
+      try {
+        scheme = await getFleetScheme(workspaceId, fleetSlugFromName(args.fleet));
+      } catch {
+        scheme = null;
+      }
+    }
+
     const opened: Array<{ command: string; cwd: string; terminal: string; pid: number | null }> = [];
     const failed: Array<{ command: string; error: string; code: number }> = [];
 
@@ -146,6 +165,7 @@ export default defineTool({
         envelope: { ...base, greetingCmd: item.command, cwd },
         label: item.label ?? null,
         writeMcpJson: false,
+        scheme,
       });
       if (result.status === 'ok') {
         opened.push({ command: item.command, cwd, terminal: result.terminal, pid: result.pid });
@@ -156,7 +176,8 @@ export default defineTool({
 
     const lines: string[] = [];
     if (opened.length) {
-      lines.push(`Opened ${opened.length} terminal${opened.length > 1 ? 's' : ''}:`);
+      const schemeNote = scheme ? ` (fleet scheme: ${scheme.name})` : '';
+      lines.push(`Opened ${opened.length} terminal${opened.length > 1 ? 's' : ''}${schemeNote}:`);
       for (const o of opened) {
         lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${o.cwd} — ${o.command}`);
       }

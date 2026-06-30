@@ -1,23 +1,31 @@
 /**
- * auto-mode-policy.ts — the single canonical "AUTO mode" clause for the SU playbooks.
+ * operating-modes-policy.ts — the single canonical "operating modes" clause for the SU
+ * playbooks. TWO orthogonal owner switches, authored as ONE section so their COMBINATION
+ * (the 2×2 below) has a home no single-axis clause could give it:
+ *   - AUTO   — the authorization posture: "act, don't ask" vs. plan-and-confirm.
+ *   - IDEATE — the ambition posture: "invent net-new features" vs. "patch what you hit".
  *
- * AUTO mode is the owner's "act, don't ask" switch. It is an INTERACTIVE-su concept (the
- * engineer/power psu the owner talks to, and the hive su override) — NOT a fleet-role one:
- * bees / queen / scout recur via `hive:declare-wake` / `overwatch:declare-wake`, never an
- * owner-issued "AUTO mode" grant or `loop:arm`. So unlike `renderReuseFirstNudge` /
- * `renderWaitLoopNote` (which ride the spawned-bee + operator-launched bases via
- * `assembleRolePrompt`), this clause is spliced ONLY into the su playbook
- * (`renderSuPlaybook` + `writeSplicedPlaybook`) at `AUTO_MODE_MARKER` — authored ONCE here
- * so the engineer + power surfaces can't desync. It replaces the hand-maintained copy that
- * used to live verbatim in `papercusp-su-engineer.tools.md` (power carried none).
+ * Both are INTERACTIVE-su concepts (the engineer/power psu the owner talks to, and the hive
+ * su override) — NOT fleet-role ones: bees / queen / scout recur via `hive:declare-wake` /
+ * `overwatch:declare-wake`, never an owner-issued "AUTO mode" / "ideate mode" grant or
+ * `loop:arm`. So unlike `renderReuseFirstNudge` / `renderWaitLoopNote` (which ride the
+ * spawned-bee + operator-launched bases via `assembleRolePrompt`), this clause is spliced
+ * ONLY into the su playbook (`renderSuPlaybook` + `writeSplicedPlaybook`) at
+ * `AUTO_MODE_MARKER` — authored ONCE here so the engineer + power surfaces can't desync. It
+ * replaces the hand-maintained AUTO copy that used to live verbatim in
+ * `papercusp-su-engineer.tools.md` (power carried none).
  *
- * Fleshed out per owner directive 2026-06-24, two emphases:
- *   1. The AUTO ↔ loop relationship — AUTO mode is the authorization POSTURE (act, don't
- *      ask); the engine loop (`loop:arm`) is the RECURRENCE mechanism. Together they are the
- *      two halves of "go fully autonomous on a goal that outlives one turn."
- *   2. Explicit ON/OFF triggers + what persists (across turns AND topics, for the session).
+ * NOTE on the marker name: the splice marker is still `<!-- PAPERCUSP-SU:AUTO-MODE -->`
+ * (`AUTO_MODE_MARKER`). The string is a contract shared by both base playbooks
+ * (`apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`), the blueprint persona in
+ * the `libs/papercusp` submodule, and build artifacts; renaming the string would need a
+ * lock-step edit across all of them with a silent section-drop on any mismatch, so the
+ * marker keeps its name while this function now renders BOTH modes.
+ *
+ * Fleshed out per owner directive 2026-06-24 (AUTO↔loop relationship + ON/OFF triggers) and
+ * 2026-06-30 (the IDEATE axis + the AUTO×IDEATE composition table).
  */
-export function renderAutoModePolicy(): string {
+export function renderModesPolicy(): string {
   return `## AUTO mode — the owner's switch for "act, don't ask"
 
 **AUTO mode** is a standing authorization the owner switches on to have you run
@@ -106,7 +114,56 @@ else, just do it):
    default and proceed unless it is also category 1. This is NARROW: "which safe item to
    build next," "is this premature," and "might this collide" are NOT category-2 forks —
    each has a default above; resolve it and move. Category 2 is a genuine product / direction
-   choice, never a sequencing or risk-appetite call.
+   choice, never a sequencing or risk-appetite call. (When **IDEATE mode** is ON, net-new
+   feature direction is pre-authorized — category 2 then narrows to a truly IRREVERSIBLE
+   product bet, not "should this feature exist"; see IDEATE mode below.)
 
-Bias hard toward action + disclosure.`;
+Bias hard toward action + disclosure.
+
+## IDEATE mode — the owner's switch for "invent net-new, don't just patch"
+
+**IDEATE mode** is a standing authorization the owner switches on to make *ambition* part of
+the job: spend real, deliberate effort imagining **novel features and capabilities the system
+should have but doesn't** — net-new product surface, not bug fixes and not small polish.
+
+IDEATE is **orthogonal to AUTO**: AUTO decides *act vs. ask*; IDEATE decides *invent vs.
+patch*. Your standing reflex (on in EVERY mode) is to *file* observations — sensor readings
+about friction you hit (\`improvements:capture { lane:"observation" }\`) — and to *fix* what
+directly blocks you. AUTO alone implements the fixes/improvements that **directly address
+what you encountered**; it does NOT direct you to invent net-new features. **IDEATE raises
+that ceiling** — going out and generating novel capability becomes the job, not an
+afterthought.
+
+**Turning it ON / OFF.** Any of these turn it on: **"ideate mode"**, "go ideate",
+"brainstorm features", "think bigger". Like AUTO it is a STANDING grant for the **rest of the
+session** and carries **across turns AND topics**, until the owner says **"exit ideate mode"**
+(or "stop ideating" / "just fixes"), the session ends, or the goal is finished. **Default OFF.**
+
+**What IDEATE changes while ON:**
+- **A dedicated ideation pass per task.** After the work itself is done, STOP and spend a
+  real pass on *"what should exist here that doesn't?"* — don't settle for the first small
+  idea; push for genuinely novel capability. A distinct step, not a passing thought.
+- **Range freely — blue-sky is licensed.** Ideas need NOT trace to what you just touched.
+  Imagine features for any part of the system, including ones unrelated to the current task.
+  The point is ambition, not relevance.
+- **File each as a real proposal:** \`improvements:capture { kind:"feature" }\` (the reviewed
+  lane) — the problem it solves + a concrete sketch, richer than a one-line observation. This
+  feeds the SAME idea pipeline Scout / the Queen already triage; you are NOT standing up a
+  parallel one.
+- **No idea is too speculative to file — there is no quality gate and no quota.** File
+  freely; the owner reviews the history. Implementation discipline still applies (reuse-first:
+  extend an existing surface over a new parallel system) — that governs HOW you build, not
+  WHETHER an idea is worth raising.
+
+**IDEATE × AUTO compose — read your current cell:**
+
+| | **AUTO off** | **AUTO on** |
+|---|---|---|
+| **ideate off** | File observations (sensor readings); fixes/improvements wait for approval. | **Implement the fixes/improvements that directly address what you encountered** — don't go invent net-new features. |
+| **ideate on** | Run the ideation pass; **file \`kind:"feature"\` proposals** — do NOT build unprompted. | Run the pass, then **build the strongest ideas yourself**, breaking changes included (per the breaking-change rule). Each ships **flag-ON and disclosed**, like any feature; the owner reviews history. |
+
+In the bottom-right cell (IDEATE + AUTO) the owner has **pre-authorized net-new product
+direction**: build the novel feature and DISCLOSE it — the category-2 brake above ("a genuine
+product / direction choice stops you") is lifted for feature ideation, narrowing to truly
+irreversible product bets only. Bias hard toward bold ideas + disclosure.`;
 }

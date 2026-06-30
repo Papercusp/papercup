@@ -75,3 +75,25 @@ describe('advSessionTitleTag', () => {
     expect(advSessionTitleTag(undefined)).toBe('');
   });
 });
+
+describe('fleet color scheme (AppearanceOpts.scheme)', () => {
+  const SCHEME = { name: 'royal-purple', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' };
+
+  it('a bound scheme drives fg (OSC 10), bg (OSC 11) and cursor (OSC 12) — overriding the plan hash', () => {
+    const out = buildConsoleOneliner('/x', {}, 'true', {
+      mode: 'console',
+      planSlug: 'some-plan',
+      label: null,
+      scheme: SCHEME,
+    });
+    expect(out).toContain("printf '\\033]10;#f5e8ff\\007'");
+    expect(out).toContain("printf '\\033]11;#581c87\\007'");
+    expect(out).toContain("printf '\\033]12;#d8b4fe\\007'");
+  });
+
+  it('without a scheme: no cursor OSC, and bg falls back to the per-plan hash', () => {
+    const out = buildConsoleOneliner('/x', {}, 'true', { mode: 'console', planSlug: null, label: null });
+    expect(out).not.toContain('\\033]12;'); // no cursor sequence
+    expect(out).toContain("printf '\\033]11;#1e1b4b\\007'"); // console null-slug fallback
+  });
+});

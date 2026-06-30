@@ -26,6 +26,7 @@ import { existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
+import type { ColorScheme } from './console-color-schemes';
 
 // ─── Linux terminal selection ────────────────────────────────────────
 
@@ -84,6 +85,9 @@ export interface AppearanceOpts {
   planSlug: string | null;
   label: string | null;
   advSessionId?: number | null;
+  /** A bound fleet color scheme — when set it overrides the per-plan hashed
+   *  background and also drives the foreground + cursor colors. */
+  scheme?: ColorScheme | null;
 }
 
 /**
@@ -98,15 +102,16 @@ export interface AppearanceOpts {
  * letting each plan's terminal be visually distinct at a glance.
  */
 function buildAppearancePrelude(opts: AppearanceOpts): string {
-  const bg = hashSlugToColor(opts.planSlug, opts.mode);
-  const fg = '#f4f4f5'; // zinc-100 — bright but not pure white (avoids halation on dark bg)
+  // A bound fleet scheme wins: it sets bg + fg + cursor. Otherwise fall back to
+  // the per-plan hashed background + default light foreground (no cursor OSC).
+  const bg = opts.scheme?.bg ?? hashSlugToColor(opts.planSlug, opts.mode);
+  const fg = opts.scheme?.fg ?? '#f4f4f5'; // zinc-100 — bright but not pure white (avoids halation on dark bg)
   const title = formatWindowTitle(opts);
   const titleEsc = title.replace(/'/g, "'\\''");
-  return [
-    `printf '\\033]10;${fg}\\007'`,
-    `printf '\\033]11;${bg}\\007'`,
-    `printf '\\033]0;${titleEsc}\\007'`,
-  ].join(' && ');
+  const lines = [`printf '\\033]10;${fg}\\007'`, `printf '\\033]11;${bg}\\007'`];
+  if (opts.scheme?.cursor) lines.push(`printf '\\033]12;${opts.scheme.cursor}\\007'`); // OSC 12 = cursor color
+  lines.push(`printf '\\033]0;${titleEsc}\\007'`);
+  return lines.join(' && ');
 }
 
 /**
@@ -198,6 +203,8 @@ export interface SpawnConsoleOpts {
   label?: string | null;
   /** Window-color/title mode. Default 'console'. */
   appearanceMode?: 'omp' | 'console';
+  /** A bound fleet color scheme — overrides the per-plan hash for this window. */
+  scheme?: ColorScheme | null;
   /**
    * Displace (back up + write) the envelope's superuser `.mcp.json` into the
    * cwd before spawning. The superuser console wants this so the user's agent
@@ -262,6 +269,7 @@ export function spawnConsole(opts: SpawnConsoleOpts): SpawnConsoleResult {
     mode: opts.appearanceMode ?? 'console',
     planSlug: opts.planSlug ?? null,
     label: opts.label ?? null,
+    scheme: opts.scheme ?? null,
   });
   const childArgs = [...term.args, 'bash', '-lc', oneliner];
   try {

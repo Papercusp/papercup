@@ -422,10 +422,12 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(generic.text).toContain('# Engineer base');
   });
 
-  // auto-mode consolidation (owner directive 2026-06-24): the one canonical AUTO-mode clause
-  // (auto-mode-policy.ts) is spliced into BOTH the engineer + power su bases at AUTO_MODE_MARKER —
-  // it used to be hand-copied into papercusp-su-engineer.tools.md only (power had none).
-  it('splices the canonical AUTO mode clause at the AUTO-MODE marker (engineer + power)', async () => {
+  // operating-modes consolidation (owner directives 2026-06-24 + 2026-06-30): the one canonical
+  // operating-modes clause (operating-modes-policy.ts) — AUTO act-don't-ask + the IDEATE
+  // invent-vs-patch switch + the AUTO×IDEATE composition table — is spliced into BOTH the
+  // engineer + power su bases at AUTO_MODE_MARKER (the AUTO half used to be hand-copied into
+  // papercusp-su-engineer.tools.md only; power had none).
+  it('splices the canonical operating-modes clause (AUTO + IDEATE) at the AUTO-MODE marker (engineer + power)', async () => {
     const AUTO_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
     for (const [profile, baseName, label] of [
       ['engineer', 'papercusp-su-engineer.tools.md', '# Engineer base'],
@@ -441,6 +443,10 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
       expect(r.text).toContain('AUTO mode + the engine loop are the two halves');
       // the AUTO-mode loop cadence default (1m) must be present (owner directive 2026-06-24)
       expect(r.text).toContain('intervalSec: 60');
+      // IDEATE mode (owner directive 2026-06-30): the second switch + the AUTO×IDEATE table
+      expect(r.text).toContain('## IDEATE mode — the owner\'s switch for "invent net-new, don\'t just patch"');
+      expect(r.text).toContain('IDEATE × AUTO compose');
+      expect(r.text).toContain('| **ideate on** |');
       // the generated marker comment must never ship literally
       expect(r.text).not.toContain(AUTO_MARKER);
     }
@@ -450,6 +456,7 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     // The beforeEach fixture base carries NO auto-mode marker — a base may opt out.
     const r = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: tmpAppRoot });
     expect(r.text).not.toContain('## AUTO mode');
+    expect(r.text).not.toContain('## IDEATE mode');
     expect(r.text).not.toContain('<!-- PAPERCUSP-SU:AUTO-MODE -->');
   });
 });

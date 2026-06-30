@@ -175,6 +175,7 @@ describe('annotateFleetsWithCounts (available = >=1 live member)', () => {
     description: null,
     owner: 'su-x',
     leaderOwnerId: 'su-x',
+    colorScheme: null,
     createdAt: 1,
     updatedAt: 1,
   });

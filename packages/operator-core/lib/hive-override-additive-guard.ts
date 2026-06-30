@@ -18,7 +18,8 @@
 /** Stable section headings the GENERATED su base / its splices own — an override that
  *  re-states one is duplicating, not adding. (Substring match on a `## ` heading line.) */
 const BASE_OWNED_HEADINGS: readonly string[] = [
-  'AUTO mode', // generated via PAPERCUSP-SU:AUTO-MODE (auto-mode-policy.ts)
+  'AUTO mode', // generated via PAPERCUSP-SU:AUTO-MODE (operating-modes-policy.ts)
+  'IDEATE mode', // generated via PAPERCUSP-SU:AUTO-MODE (operating-modes-policy.ts) — same section
   'Who you are',
   'Working in a shared environment',
   'Git — a background routine owns commit',
