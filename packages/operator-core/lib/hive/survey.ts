@@ -28,6 +28,7 @@ import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { IMPORTANCE_LEVELS, type Importance } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from '../workspace-registry';
+import { frontierPlacementKindClause } from '../datatype-frontier-placement';
 import { loadHarnessRegistry } from '../harness-registry';
 import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/source';
 import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
@@ -353,7 +354,7 @@ export async function fetchFrontierRows(
            source_plan_slug AS plan_slug
       FROM harness_shared.harness_features_consolidated f
      WHERE workspace_id = ${workspaceId}
-       AND item_kind IN ('feature', 'research-task', 'chunk')
+       AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
        AND NOT EXISTS (
@@ -403,7 +404,7 @@ export async function countPlaceableFrontier(
     SELECT count(*)::int AS n
       FROM harness_shared.harness_features_consolidated f
      WHERE workspace_id = ${workspaceId}
-       AND item_kind IN ('feature', 'research-task', 'chunk')
+       AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
        AND NOT EXISTS (

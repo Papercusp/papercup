@@ -43,6 +43,7 @@ import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process';
 import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
+import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
 const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
@@ -416,6 +417,12 @@ async function main(): Promise<void> {
   // any embedded-PG / operator boot; the net server keeps the process alive.
   if (process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1') {
     runSubstrateSidecarServer();
+    return;
+  }
+  // PACKAGED spawner-sidecar (WI-344 ③): same re-exec divert for the agent-spawn
+  // sidecar — serve.mjs is re-execed with PAPERCUSP_SPAWNER_SIDECAR_MODE=1.
+  if (process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1') {
+    runSpawnerSidecarServer();
     return;
   }
   const args = new Set(process.argv.slice(2));

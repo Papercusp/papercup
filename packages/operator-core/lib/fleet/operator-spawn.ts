@@ -27,7 +27,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
-import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
+import { spawnInvokeOnceWithFallback } from '../dbos/orchestrator-runner';
 import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -1270,7 +1270,10 @@ export async function spawnAgentInHarness(
   }, spawnChildStartTimeoutMs());
   childStartTimer.unref?.();
 
-  void spawnInvokeOnce(project.path, role, extras, extraEnv, {
+  // WI-344 ③: route through the spawner-sidecar front door — when
+  // PAPERCUSP_SPAWNER_SIDECAR=1 (bg-host only) the child_process.spawn + buildInvokeOnce
+  // run in the sidecar process, OFF this main loop; env unset ⇒ in-process, byte-identical.
+  void spawnInvokeOnceWithFallback(project.path, role, extras, extraEnv, {
     signal: abort.signal,
     forceSessionId,
     ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),

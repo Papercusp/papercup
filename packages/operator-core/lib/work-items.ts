@@ -51,6 +51,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { autoPickableWhereSql } from './work-items-admission';
+import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
 import {
   ISSUE_KIND,
@@ -395,8 +396,9 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
  *
  * SCOPE: this is the user/agent-facing VISIBILITY filter (list/count/search). The Queen's
  * autonomous PLACEMENT frontier (claimFloorsWhereSql / survey.fetchFrontierRows /
- * wake-frontier-guard) is deliberately NOT broadened here — whether a generic-kind item
- * enters autonomous bee placement is an opt-in design decision, tracked as a follow-up.
+ * wake-frontier-guard) is a SEPARATE clause — `frontierPlacementKindClause`
+ * (datatype-frontier-placement.ts) — gated on the `hive-placement` opt-in tag, because a
+ * datatype is visible without necessarily auto-placing a bee per instance (placement is opt-in).
  */
 function featureFamilyKindClause(sql: OrgSql, workspaceId: string) {
   return sql`(item_kind IN ('feature', 'research-task', 'chunk')
@@ -1236,7 +1238,9 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   return sql`
     harness_slug = ${opts.harness}
     AND workspace_id = ${opts.workspaceId}
-    AND item_kind IN ('feature', 'research-task', 'chunk')
+    -- Built-in placeable kinds + any generic-kind datatype that opted into placement
+    -- (the 'hive-placement' tag — frontierPlacementKindClause). DARK until a datatype opts in.
+    AND ${frontierPlacementKindClause(sql, opts.workspaceId)}
     -- G2 admission (shared-hive-trust-admission P-002): never self-select a remote,
     -- un-admitted item — the same gate the feature frontier enforces (P-010 trust leg,
     -- ws-scoped via the same ws this query filters on).

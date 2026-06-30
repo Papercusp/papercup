@@ -16,6 +16,7 @@
  * (`listUnplacedHiveFrontier`), split so the decision unit-tests with no PG.
  */
 import type postgres from 'postgres';
+import { frontierPlacementKindClause } from '../datatype-frontier-placement';
 
 export interface WakeFrontierGuardInput {
   /** Whether the declaration sets a time component (`at`/`inSeconds`). A timer
@@ -99,7 +100,7 @@ export async function listUnplacedHiveFrontier(
       FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
-       AND item_kind IN ('feature', 'research-task', 'chunk')
+       AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
      ORDER BY created_ts ASC

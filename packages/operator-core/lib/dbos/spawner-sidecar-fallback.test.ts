@@ -80,6 +80,7 @@ vi.mock('../fleet/spawner-ipc-client', () => ({
 import { spawnInvokeOnceWithFallback } from './orchestrator-runner';
 
 beforeEach(() => {
+  delete process.env.PAPERCUSP_SPAWNER_SIDECAR; // v1 gate is the per-host env, default unset
   H.spawnerOn = false;
   H.inputs = [];
   H.stdout = 'DONE\n';
@@ -90,9 +91,9 @@ beforeEach(() => {
   // exits clean, so none fires. Silence defensively (vitest-fail-on-console).
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { delete process.env.PAPERCUSP_SPAWNER_SIDECAR; vi.restoreAllMocks(); });
 
-describe('spawnInvokeOnceWithFallback — flag OFF', () => {
+describe('spawnInvokeOnceWithFallback — env gate OFF (PAPERCUSP_SPAWNER_SIDECAR unset)', () => {
   it('calls the in-process spawnInvokeOnce verbatim (pass-through args + result), never the sidecar', async () => {
     const r = await spawnInvokeOnceWithFallback('/proj', 'bee', ['F=1'], { FOO: 'bar' });
 
@@ -115,7 +116,7 @@ describe('spawnInvokeOnceWithFallback — flag OFF', () => {
 
 describe('spawnInvokeOnceWithFallback — flag ON but the IPC call throws', () => {
   it('falls back to the in-process spawnInvokeOnce and warns', async () => {
-    H.spawnerOn = true;
+    process.env.PAPERCUSP_SPAWNER_SIDECAR = '1';
     ipcCall.mockRejectedValueOnce(new Error('ipc boom'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

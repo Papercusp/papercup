@@ -1409,9 +1409,17 @@ export async function spawnInvokeOnceWithFallback(
     onOutputActivity?: () => void;
   },
 ): Promise<SpawnInvokeOnceResult> {
-  const on = await getFlag(FLAGS.SPAWNER_SIDECAR, 'system').catch(() => false);
+  // v1 rollout control is a PER-HOST env opt-in (PAPERCUSP_SPAWNER_SIDECAR=1), NOT
+  // the global papercusp-spawner-sidecar flag: post the 2026-06-29 flag-default
+  // inversion that flag derives default-ON and is system-scope (global) + is not
+  // settable via the MCP flags tool, so it can neither stage a per-host rollout nor
+  // offer an off-switch. The env gate is set ONLY on the bg-host systemd unit (the
+  // host whose main loop the spawn CPU saturates), default-unset everywhere else ⇒
+  // byte-identical, instantly reversible (unset + restart). The flag stays registered
+  // as a future global control once it is in DARK_FLAGS + the MCP enum.
+  const on = process.env.PAPERCUSP_SPAWNER_SIDECAR === '1';
   if (!on) {
-    // Flag OFF (the default): in-process spawn, byte-identical to today.
+    // Env unset (the default): in-process spawn, byte-identical to today.
     return spawnInvokeOnce(projectDir, role, extras, extraEnv, opts);
   }
 

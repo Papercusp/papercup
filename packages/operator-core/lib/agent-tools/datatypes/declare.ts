@@ -99,7 +99,15 @@ export default defineTool({
           '— so the datatype is self-improvable by construction. Optional for projection (external engine owns it). ' +
           'On an in-place update you may omit it to keep the stored one.',
       ),
-    tags: z.array(z.string()).max(32).optional(),
+    tags: z
+      .array(z.string())
+      .max(32)
+      .optional()
+      .describe(
+        'free-form tags. Special: include "hive-placement" on a generic-kind datatype to opt its ' +
+          'work-items into the autonomous placement frontier (a bee gets auto-placed); omit it and items ' +
+          'are tracked + visible but not auto-placed.',
+      ),
     force: z.boolean().optional().describe('bypass the soft semantic-dedup gate (declare even when a similar datatype exists)'),
   }),
   async handler(args, ctx) {
