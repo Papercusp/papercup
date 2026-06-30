@@ -19,8 +19,7 @@ const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown>
   JSON.parse(r.content[0].text);
 type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };
 
-// QUARANTINED (flaky 60s timeout in checkpoint CI — testcontainers/resource contention; de-quarantine + root-cause in WI-1053)
-describe.skip('hive lifecycle tools refuse a bee / fleet-spawn caller (root-only)', () => {
+describe('hive lifecycle tools refuse a bee / fleet-spawn caller (root-only)', () => {
   it('hive:create refuses', async () => {
     const tool = (await import('./create')).default as unknown as Tool;
     const res = parse(await tool.handler({ slug: 'x' }, BEE_CTX));

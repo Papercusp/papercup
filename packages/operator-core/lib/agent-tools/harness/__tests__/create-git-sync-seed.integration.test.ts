@@ -101,8 +101,7 @@ async function runCreate(args: Record<string, unknown>): Promise<Record<string, 
 }
 
 describe('harness:create { hive } — B-01 git-sync seeding', () => {
-  // QUARANTINED (flaky 60s timeout in checkpoint CI — testcontainers/resource contention; de-quarantine + root-cause in WI-1053)
-  it.skip('seeds the member routine (creator side, active workspace, the new entry) and reports gitSync', async () => {
+  it('seeds the member routine (creator side, active workspace, the new entry) and reports gitSync', async () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'create-gitsync-'));
     try {
       const payload = await runCreate({

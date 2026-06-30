@@ -71,6 +71,14 @@ spawn path was never finished.
   can import it without an auto-running bin guard firing (in the bundle a bin's
   `import.meta.url === argv[1]` guard would resolve TRUE on every boot and start a
   stray sidecar). `apps/operator/bin/substrate-sidecar.ts` is now a thin dev shim.
+- **Pattern reused for spawner-sidecar (WI-344 ③, 2026-06-30).** The identical
+  `serve.mjs` re-exec approach was applied to the agent-spawn sidecar
+  (`packages/operator-core/lib/fleet/spawner-sidecar-server.ts`, plan
+  `spawner-sidecar-offload-2026-06-30`): `serve.ts` now also diverts under
+  `PAPERCUSP_SPAWNER_SIDECAR_MODE=1` to `runSpawnerSidecarServer()` before any
+  operator boot. The no-top-level-side-effects rule and the absolute socket path are
+  both enforced in the new sidecar from the start, closing both P-006 root causes for
+  the spawner path before they could recur.
 
 ## Verifying it actually engaged
 

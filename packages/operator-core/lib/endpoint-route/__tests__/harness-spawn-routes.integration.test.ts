@@ -198,8 +198,7 @@ describe('POST /harness/:slug/launch (P-031)', () => {
 });
 
 describe('POST /harness/:slug/invoke (P-031)', () => {
-  // QUARANTINED (flaky 30s timeout in checkpoint CI — testcontainers/resource contention; de-quarantine + root-cause in WI-1053)
-  it.skip('routes through the spawnInvokeOnce chokepoint → spawn() with buildInvokeOnce argv + returns the captured output', async () => {
+  it('routes through the spawnInvokeOnce chokepoint → spawn() with buildInvokeOnce argv + returns the captured output', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
     expect(res.status, await res.clone().text()).toBe(200);
     expect(spawnMock).toHaveBeenCalledTimes(1);

@@ -111,10 +111,13 @@ the reusable way to bound a pure-core write without coupling the core to `getOrg
   into the core — it breaks the integration-test-without-prod-singletons split.
 - The known per-tool offenders are now closed (`work_items:comment`, `conversations:post` /
   `conversations:answer`, `issues:create`). **WI-832** landed a DI seam in `connection.ts`
-  (`setAdminPoolStatementTimeoutProvider`) that lets the operator inject a per-connection default
-  `statement_timeout` for every new org-pool connection (defaults to `() => 0` → no GUC,
-  byte-identical to today's behaviour). When wired to a non-zero value (behind
-  `papercusp-txn-timeouts-config`, owner-gated live flip), every new pooled connection gets that
-  per-statement cap, bounding the whole interactive-write class at the source; the migration runner
-  opts out per-txn (`SET LOCAL statement_timeout = 0`). Until that config is wired and flipped,
-  wrap any new interactive admin-pool write in `boundedOrgTxn` yourself.
+  (`setAdminPoolStatementTimeoutProvider`) — **now wired** at boot by
+  `packages/operator-core/lib/agent-tools/locks/configure.ts` →
+  `adminPoolStatementTimeoutMs()` from `txn-timeouts-config.ts`. The default is **0 (no
+  timeout)**: the admin pool stays deliberately unbounded unless a non-zero value is set at
+  runtime via the `db:txn-timeouts` tool (`adminPoolStatementTimeoutMs` field; kill-switch:
+  `papercusp-txn-timeouts-config`). When set to a non-zero value, every new pooled connection
+  gets that per-statement cap, bounding the whole interactive-write class at the source; the
+  migration runner opts out per-txn (`SET LOCAL statement_timeout = 0`). Until
+  `adminPoolStatementTimeoutMs` is configured to a non-zero value, wrap any new interactive
+  admin-pool write in `boundedOrgTxn` yourself.
