@@ -5,6 +5,7 @@ plans:
   - learning-packs-2026-06-11
   - domain-generic-hive-architecture-2026-06-18
   - self-improvement-consume-edges-2026-06-12
+  - scoped-superuser-workspace-clamp-2026-06-18
 documents:
   - packages/operator-core/lib/learning-packs
   - packages/operator-core/lib/agent-tools/learning_packs
@@ -65,7 +66,8 @@ that instead (see [Built-in packs](#built-in-packs-three-of-them)).
 | A hive's live learnings | mem0 rows, scope `hive:<home-slug>` |
 | Pack mute state | hive setting `learning-packs:disabled` (federated hive_settings) |
 | Seeding | `hive:create` step 6b (flag `LEARNING_PACKS`, default ON; undo-stacked, best-effort) |
-| Injection | `buildMemoryContextBlock` — hive pool resolved member→hive via the registry's `hive_slug`; token-budgeted (~4k default, `PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS`), priority user > harness > hive-organic > hive-pack; muted packs filtered |
+| Pre-turn injection | `buildMemoryContextBlock` — hive pool resolved member→hive via the registry's `hive_slug`; token-budgeted (~4k default, `PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS`), priority user > harness > hive-organic > hive-pack; muted packs filtered |
+| Runtime recall scope | `memory:search` default fan-out is **confined to the session's hive subtree** (P-018, `narrowHarnessSlugsToSessionHive`, `lib/memory/hive-scope.ts`). A hive-scoped agent never cross-recalls sibling hives' harness pools. Workspace-spanning sessions (`harness='*'`) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by `FLAGS.SCOPED_SUPERUSER_CLAMP`; fail-open (flag read error → full fan-out retained). `memory:list` is unaffected (it only adds explicitly-passed hive pools). |
 
 ## Built-in packs (three of them)
 
