@@ -551,6 +551,8 @@ export interface AccountStatusRow {
   rate: AccountRateState;
   /** Per-account egress pin (proxy / local source IP), if the account is IP-routed. */
   egress?: AccountEgress;
+  /** Per-account egress IP POOL (the rotating list) when the account is multi-IP routed. */
+  egressPool?: AccountEgress[];
   /** Live governor buckets keyed to this account (present only if THIS process ran under it). */
   liveBuckets: { key: string; provider: string; modelClass: string; paused: boolean; pausedUntil: number }[];
 }
@@ -570,6 +572,7 @@ export async function accountStatus(ws?: string, now = Date.now()): Promise<Acco
     sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
     rate: a.rate,
     egress: a.egress,
+    egressPool: a.egressPool,
     liveBuckets: live
       .filter((b) => b.accountId === a.id)
       .map((b) => ({

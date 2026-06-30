@@ -72,12 +72,27 @@ Proposed `CORE_MCP_TOOL_NAMES` (define next to `BEE_/QUEEN_MCP_TOOL_NAMES` in `l
 
 **What:** a compact (~1–2k token) map of the ~125 namespaces grouped into ~12 functional areas, one line each, injected into the always-loaded context so the model knows *what exists* and the *vocabulary to search*. **Generated**, never hand-maintained.
 
+**Implement exactly like `defineTool` descriptions** (define-tool.ts): a tool declares structured `guidance: {when,notWhen,chaining}` and the description is *composed at register time* — `description = input.description ?? describeFromGuidance(guidance) ?? \`Tool ${name}\`` — then self-`register()`s; `tools/list` is generated from the catalog. We mirror every step:
+
+| `defineTool` (tools) | `defineGroup` (catalogue) |
+|---|---|
+| file `tools/<group>/<verb>.ts` (name from call-site path) | co-located `tools/<group>/_group.ts` |
+| `register()` → tool catalog | `registerGroup()` → group registry |
+| `description = input.description ?? describeFromGuidance(guidance) ?? \`Tool ${name}\`` | `summary = group.summary ?? describeGroupFromMembers(members) ?? slug` |
+| `describeFromGuidance(guidance)` composes from `when/notWhen/chaining` | `describeGroupFromMembers(members)` composes from members' `guidance.when` |
+| `tools/list` generated from catalog | `catalogueProjection()` generated from `getCatalog()` + group registry |
+
+```ts
+// tools/plans/_group.ts — optional, mirrors defineTool's explicit description
+defineGroup('plans', { summary: 'Work-plan store — plans, items, decisions, status' })
+```
+
 **Tasks**
-- [ ] `catalogueProjection()` in tooldef (next to `tool-projection.ts`): read `registry.getCatalog()`, group by derived `<group>`, emit `{ group, oneLiner, toolCount }[]`.
-  - **Level 1 (default, zero authoring):** derive each group's one-liner from its tools' `guidance`/descriptions (same way `defineTool` composes a description from `guidance`).
-  - **Level 2 (optional, cleaner):** add `defineGroup(slug, oneLiner)` (or a co-located `_group.ts` in `tools/<group>/`); projection prefers the declared line, falls back to Level 1.
+- [ ] `defineGroup(slug, { summary })` + a `groupRegistry` (mirrors `register()`/`registry.ts`), in tooldef.
+- [ ] `describeGroupFromMembers(members)` — Level-1 derivation from member tools' `guidance.when`/description (mirrors `describeFromGuidance`).
+- [ ] `catalogueProjection()` (next to `tool-projection.ts`): read `getCatalog()`, group by derived `<group>`, emit `{ group, summary, toolCount }[]` with the `summary ?? derive ?? slug` precedence above. **Level-1 works for every namespace with zero authoring on day one;** `defineGroup` is opportunistic polish.
 - [ ] A renderer producing the markdown map block.
-- [ ] Inject into the omp playbook + coord-hook session-start primer (WS4). Optionally surface to Claude/Codex too.
+- [ ] Inject into the omp playbook + coord-hook session-start primer (WS4). (omp-only scope — see §7.)
 
 ### WS3 — `tools:find` (hybrid semantic + lexical catalog search)
 
@@ -89,7 +104,7 @@ Proposed `CORE_MCP_TOOL_NAMES` (define next to `BEE_/QUEEN_MCP_TOOL_NAMES` in `l
 |---|---|---|
 | Corpus (551 tools: name/category/capability/description) | `collectToolMeta()` + `resolveToolEntries()` — `packages/operator-core/lib/cupboard/tools-discovery.ts` (reads `getCatalog()` + `listAllProjectedTools()`) | ✅ exists |
 | Lexical leg ("BM25") | `scoreTool`/`searchTools` + `FIELD_WEIGHTS` — `packages/operator-core/lib/cupboard/tools-search.ts` (name 10 … description 2) | ✅ exists |
-| Embedding leg (new) | `buildLocalEmbedder`/`embedViaWorker` (`libs/generic/memory/src/local-embedder-worker.ts`) + `buildQueryEmbedder` (`packages/operator-core/lib/agent-tools/search/embedder.ts`) — 384-d, OpenAI-or-local cascade | borrow |
+| Embedding leg (new) | `buildQueryEmbedder` (`packages/operator-core/lib/agent-tools/search/embedder.ts`) — **already reads `voice-prefs.memoryEmbedderMode`** (`openai\|local\|auto`), so it honors the **settings page for free** (currently openai). 384-d, same space as memories. Index-side: `buildLocalEmbedder`/`embedViaWorker` when mode=local. | borrow |
 | Fusion | `rrfCombine` (`libs/generic/rrf/src/index.ts`) **or** `fuse()` floored-union (`libs/generic/memory/src/hybrid-fusion.ts`) | borrow |
 | End-to-end template | `packages/operator-core/lib/code-recipes-search.ts` — a *global* (workspace-ignoring) hybrid `SearchSource` + `runHybridSearch` | copy shape |
 
@@ -136,12 +151,15 @@ Proposed `CORE_MCP_TOOL_NAMES` (define next to `BEE_/QUEEN_MCP_TOOL_NAMES` in `l
 - **`tools:find` quality:** intent queries resolve correctly — "feature flag" → `flags:*`, "spawn a worker" → `fleet:spawn`, "what plans are open" → `plans:*`. Exact-name queries never buried.
 - **No regression:** Claude/Codex keep the full catalog; they additionally gain `tools:find` + the map.
 
-## 7. Open decisions
+## 7. Decisions
 
-1. **Universal core vs role-aware core?** Recommend **universal first** (the 17 cover most turns); roles `tools:find` their extras.
-2. **Scope: omp-only, or also slim Claude/Codex?** Recommend **omp-first**; revisit the Claude/Codex ~141k tool-tax later (would need `tools:find` + a registration/`tools/list_changed` story).
-3. **Embedding provider:** local `bge-small-en-v1.5` (no external dep) default; OpenAI `text-embedding-3-small` when a key is present. Both 384-d (same space as memories).
-4. **`defineGroup` now or derive-only?** Ship Level-1 derivation first; add `defineGroup` opportunistically for groups whose auto-summary reads poorly.
+1. **Scope — RESOLVED: omp-only.** Claude/Codex keep the full catalog (they have the context). No `tools/list_changed`/registration story needed for now. Their only gain is `tools:find` + the map being available.
+2. **Embeddings — RESOLVED: settings-driven.** Use `buildQueryEmbedder`, which reads `voice-prefs.memoryEmbedderMode` — currently **openai** (`text-embedding-3-small`, 384-d). No new provider logic; it follows the settings page.
+3. **Universal core vs role-aware core — PENDING (recommend universal-first).**
+   - *Universal:* every omp session gets the same ~17 (bootstrap + coordination + plans/work + locks + knowledge) regardless of role. One list, one source of truth; a Queen `tools:find`s its `fleet:*`.
+   - *Role-aware:* the core is tailored per role (promote `BEE_/QUEEN_MCP_TOOL_NAMES` into per-role cores) — fewer discovery round-trips, but N lists to maintain; role is already known at launch.
+   - Recommendation: **universal first** (the 17 are the spine every role needs); make it role-aware later if a role's round-trips annoy — additive, the `BEE_/QUEEN_` lists are ready to become role cores.
+4. **`defineGroup` now or derive-only?** Ship Level-1 derivation first (works for every namespace, zero authoring); add `defineGroup` opportunistically for groups whose auto-summary reads poorly. (Mirrors `defineTool`'s explicit-vs-derived description — see WS2.)
 
 ## 8. Risks
 
