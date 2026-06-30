@@ -249,10 +249,46 @@ describe('dev:session_detail', () => {
 
 describe('dev:sessions', () => {
   it('returns count + entries', async () => {
-    const entries = [{ spawn_id: 's1', parent_spawn_id: null, workspace_id: 'default', harness_slug: null, role: null, run_id: null, started_at: 'now', ended_at: 'now', tool_count: 1, error_count: 0, total_duration_ms: 100 }];
+    const entries = [{ spawn_id: 's1', parent_spawn_id: null, workspace_id: 'default', harness_slug: null, role: null, run_id: null, coord_owner_id: 'su-abc', started_at: 'now', ended_at: 'now', tool_count: 1, error_count: 0, total_duration_ms: 100 }];
     vi.doMock('../../../dev-data', () => ({ listSessions: vi.fn(async () => ({ entries })) }));
     const { default: tool } = await import('../sessions');
     expect(parsePayload((await tool.handler({}, MAKE_CTX())) as never)).toEqual({ count: 1, entries });
+  });
+});
+
+// ── dev:resolve_owner ───────────────────────────────────────────────
+
+describe('dev:resolve_owner', () => {
+  it('passes the ownerId through and returns the resolution payload', async () => {
+    const resolution = {
+      owner_id: 'su-5988767d',
+      sessions: [
+        {
+          source: 'adv_sessions',
+          owner_id: 'su-5988767d',
+          session_id: 'fe9419e7-4430-4248-ab1a-b3ae0b8a1b1f',
+          omp_thread_id: null,
+          spawn_id: null,
+          run_id: null,
+          agent: 'claude',
+          role: null,
+          mode: 'console',
+          harness_slug: null,
+          plan_slug: null,
+          cwd: '/x',
+          status: null,
+          started_at: 'then',
+          ended_at: 'now',
+        },
+      ],
+      activity: [],
+    };
+    const mock = vi.fn(async () => resolution);
+    vi.doMock('../../../dev-data', () => ({ resolveOwnerSessions: mock }));
+    const { default: tool } = await import('../resolve_owner');
+    const result = await tool.handler({ ownerId: 'su-5988767d' }, MAKE_CTX());
+    expect(mock).toHaveBeenCalledWith('su-5988767d');
+    expect(parsePayload(result as never)).toEqual(resolution);
   });
 });
 

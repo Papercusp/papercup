@@ -44,6 +44,7 @@ import { envelopeRoleOverrides, envelopeProtectedAdditions } from './capability-
 // Returns the baked defaults when the kill-switch flag is off / no override ⇒ byte-identical.
 import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { recordDecisionLedger } from './decision-ledger/emit';
+import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 
 /**
  * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
@@ -172,9 +173,10 @@ const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
     feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
     window_key, duration_ms, status, output_ref, output_size,
     error_message, args_json, transport, event_count, metadata_json,
-    principal_kind, principal_auth_method, principal_trust, error_code)
+    principal_kind, principal_auth_method, principal_trust, error_code,
+    coord_owner_id)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24)`;
+         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25)`;
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
@@ -275,6 +277,16 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     const meta = reaction ? { ...(input.metadataJson ?? {}), reaction } : input.metadataJson;
     return meta ? jsonbSafeStringify(meta) : null;
   })();
+  // WI-1279: stamp the calling agent's coordination owner id so dev:sessions can
+  // attribute/group a session by its agent (su-… interactive SU, the bee's s-…
+  // spawn id, pus-… power-user). resolveAgentIdentity THROWS on an unattributable
+  // ctx; telemetry is best-effort, so a throw → NULL (never breaks a tool call).
+  let coordOwnerId: string | null = null;
+  try {
+    coordOwnerId = resolveAgentIdentity(input.ctx).ownerId ?? null;
+  } catch {
+    coordOwnerId = null;
+  }
   return {
     workspaceId: input.ctx.workspaceId,
     params: [
@@ -305,6 +317,7 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       p?.authMethod ?? null,
       p?.trust ?? null,
       input.errorCode ?? null,
+      coordOwnerId,
     ],
   };
 }

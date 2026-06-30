@@ -24,6 +24,40 @@ export function defaultClaudeProjectsRoot(): string {
 }
 
 /**
+ * Base dir holding per-session ISOLATED Claude configs:
+ * ~/.papercusp/session-claude/<coord-owner-id>/ . psu/su CONSOLE sessions run
+ * under a per-session CLAUDE_CONFIG_DIR keyed by the owner id, so their
+ * transcripts live at <base>/<owner>/projects/<encoded-cwd>/<session-id>.jsonl —
+ * NOT under ~/.claude/projects (EI-5790 / reference_session_launch_dirs_unified_keying).
+ */
+export function papercuspSessionClaudeBase(): string {
+  return join(homedir(), '.papercusp', 'session-claude');
+}
+
+/**
+ * Every Claude `projects/` root to scan: the global ~/.claude/projects PLUS each
+ * per-session isolation root ~/.papercusp/session-claude/<owner>/projects. Without
+ * the isolation roots, a psu/su console session is invisible to dev:claude_session
+ * (the bug that made `su-…` console transcripts unfindable). Fail-soft: a missing
+ * or unreadable isolation base yields the global root only. Params are injectable
+ * for tests.
+ */
+export async function claudeProjectsRoots(
+  globalRoot: string = defaultClaudeProjectsRoot(),
+  isolationBase: string = papercuspSessionClaudeBase(),
+): Promise<string[]> {
+  const roots = [globalRoot];
+  try {
+    for (const owner of await fs.readdir(isolationBase)) {
+      roots.push(join(isolationBase, owner, 'projects'));
+    }
+  } catch {
+    // no isolation base (or unreadable) — global root only
+  }
+  return roots;
+}
+
+/**
  * Decode a Claude project dir name to a cwd hint. Claude encodes the cwd by
  * replacing '/' with '-', which is NOT invertible when a real path segment
  * contains a dash — so this is a FALLBACK hint only; prefer the `cwd` read from a
@@ -140,9 +174,11 @@ async function metaForFile(dir: string, filePath: string): Promise<ClaudeSession
 }
 
 /** All session metas under `root`, newest-first, optionally filtered by cwd substring. */
-export async function allClaudeSessionMetas(opts: { root?: string; cwd?: string } = {}): Promise<ClaudeSessionMeta[]> {
-  const root = opts.root ?? defaultClaudeProjectsRoot();
-  const files = await listJsonlFiles(root);
+export async function allClaudeSessionMetas(opts: { root?: string; roots?: string[]; cwd?: string } = {}): Promise<ClaudeSessionMeta[]> {
+  // Explicit roots/root win (tests); otherwise scan global + per-session isolation roots.
+  const scanRoots = opts.roots ?? (opts.root ? [opts.root] : await claudeProjectsRoots());
+  const fileLists = await Promise.all(scanRoots.map((r) => listJsonlFiles(r)));
+  const files = fileLists.flat();
   const metas = (await Promise.all(files.map((f) => metaForFile(f.dir, f.filePath)))).filter(
     (m): m is ClaudeSessionMeta => m != null,
   );
@@ -156,7 +192,7 @@ export async function allClaudeSessionMetas(opts: { root?: string; cwd?: string 
 }
 
 /** List sessions newest-first (bounded). The reliable "which session for project X around date Y" read. */
-export async function listClaudeSessions(opts: { root?: string; cwd?: string; limit?: number } = {}): Promise<{
+export async function listClaudeSessions(opts: { root?: string; roots?: string[]; cwd?: string; limit?: number } = {}): Promise<{
   sessions: ClaudeSessionMeta[];
   total: number;
   truncated: boolean;
@@ -185,6 +221,7 @@ async function readUpTo(filePath: string, maxBytes: number): Promise<string> {
 /** Bounded content search across transcripts. Lossy by nature — see the module note. */
 export async function searchClaudeSessions(opts: {
   root?: string;
+  roots?: string[];
   query: string;
   cwd?: string;
   limit?: number;
@@ -197,7 +234,7 @@ export async function searchClaudeSessions(opts: {
   const perFileMaxBytes = Math.min(Math.max(opts.perFileMaxBytes ?? 1_000_000, 1024), 5_000_000);
   if (!query) return { matches: [], filesScanned: 0, filesTotal: 0, truncated: false };
 
-  const all = await allClaudeSessionMetas({ ...(opts.root ? { root: opts.root } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}) });
+  const all = await allClaudeSessionMetas({ ...(opts.root ? { root: opts.root } : {}), ...(opts.roots ? { roots: opts.roots } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}) });
   const candidates = all.slice(0, maxFiles); // newest-first, so a scan cap keeps the most-relevant
   const q = query.toLowerCase();
   const matches: ClaudeSessionMatch[] = [];

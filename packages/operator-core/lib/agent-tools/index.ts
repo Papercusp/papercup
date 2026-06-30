@@ -306,6 +306,7 @@ import './dev/state_counter';
 import './dev/event_emitter';
 import './dev/processes';
 import './dev/session_detail';
+import './dev/resolve_owner';
 // tool-call-batching-wrappers-2026-06-21 P-001 — tool co-occurrence miner
 // (the deterministic wrapper-candidate / code-recipes-promotion signal).
 import './dev/tool_cooccurrence';
@@ -432,6 +433,7 @@ import './fleet_registry/join';
 import './fleet_registry/leave';
 import './fleet_registry/take-leadership';
 import './fleet_registry/launch-on-plan';
+import './fleet_registry/recolor';
 
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md
@@ -488,6 +490,12 @@ import './coordination/tools/handoffs';
 // The whole-fleet coordination firehose — every envelope across every channel
 // (high-tier audit:read; backs the /adv Conversations "Feed" view).
 import './coordination/tools/feed';
+// Audience-keyed catch-up — the message history for a fleet/topic you belong to
+// (low-tier coord:read, membership-checked; the pull counterpart to @fleet:/@topic:).
+import './coordination/tools/catch-up';
+// Per-member fleet delivery override — full | digest | muted for a fleet's broadcasts
+// without leaving it (the "+ optional override" on the derived fleet subscription).
+import './coordination/tools/fleet-delivery';
 // Spawn admission — the brain decides worth-it (unify-agent-spawn-chokepoint P-005/P-006)
 import './spawn/request';
 import './spawn/approve';

@@ -15,6 +15,8 @@ import {
   listClaudeSessions,
   searchClaudeSessions,
   readClaudeSession,
+  allClaudeSessionMetas,
+  claudeProjectsRoots,
 } from './claude-sessions';
 
 describe('pure helpers', () => {
@@ -119,5 +121,51 @@ describe('fs entrypoints (fixture root)', () => {
 
   it('readClaudeSession: missing file → null', async () => {
     expect(await readClaudeSession({ filePath: join(root, 'nope.jsonl') })).toBeNull();
+  });
+});
+
+describe('isolation-dir scanning (EI-5790)', () => {
+  it('claudeProjectsRoots includes the global root + each per-session isolation projects dir', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'claude-iso-base-'));
+    const globalRoot = join(base, 'global');
+    const isoBase = join(base, 'session-claude');
+    await fs.mkdir(join(isoBase, 'su-owner-1', 'projects'), { recursive: true });
+    await fs.mkdir(join(isoBase, 'su-owner-2', 'projects'), { recursive: true });
+    try {
+      const roots = await claudeProjectsRoots(globalRoot, isoBase);
+      expect(roots[0]).toBe(globalRoot);
+      expect(roots).toContain(join(isoBase, 'su-owner-1', 'projects'));
+      expect(roots).toContain(join(isoBase, 'su-owner-2', 'projects'));
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('claudeProjectsRoots fail-soft to global-only when the isolation base is absent', async () => {
+    const roots = await claudeProjectsRoots('/tmp/dne-global-xyz', '/tmp/dne-iso-base-xyz');
+    expect(roots).toEqual(['/tmp/dne-global-xyz']);
+  });
+
+  it('allClaudeSessionMetas merges sessions across roots (global + isolation), newest-first', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'claude-multiroot-'));
+    const globalRoot = join(base, 'global');
+    const isoRoot = join(base, 'iso-owner', 'projects');
+    await fs.mkdir(join(globalRoot, '-home-x-glob'), { recursive: true });
+    await fs.mkdir(join(isoRoot, '-home-x-console'), { recursive: true });
+    const gFile = join(globalRoot, '-home-x-glob', 'glob-sess.jsonl');
+    const cFile = join(isoRoot, '-home-x-console', 'console-sess.jsonl');
+    await fs.writeFile(gFile, JSON.stringify({ type: 'user', cwd: '/home/x/glob', message: { role: 'user', content: 'hi' } }) + '\n');
+    await fs.writeFile(cFile, JSON.stringify({ type: 'user', cwd: '/home/x/console', message: { role: 'user', content: 'hi' } }) + '\n');
+    await fs.utimes(gFile, new Date('2026-06-01T00:00:00Z'), new Date('2026-06-01T00:00:00Z'));
+    await fs.utimes(cFile, new Date('2026-06-02T00:00:00Z'), new Date('2026-06-02T00:00:00Z')); // newer
+    try {
+      const metas = await allClaudeSessionMetas({ roots: [globalRoot, isoRoot] });
+      const ids = metas.map((m) => m.sessionId);
+      expect(ids).toContain('glob-sess');
+      expect(ids).toContain('console-sess'); // the isolation-dir console session is now discoverable
+      expect(metas[0].sessionId).toBe('console-sess'); // newest-first across roots
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
   });
 });

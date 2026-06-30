@@ -26,7 +26,7 @@ export default defineTool({
   name: 'dev:claude_session',
   profile: 'engineer',
   description:
-    'Find / search / read local Claude Code chat transcripts (~/.claude/projects/*/*.jsonl) — the Claude-Code analogue of dev:omp_session. op=list (sessions by cwd + recency, the reliable read), op=search (bounded content search — lossy, returns matchCount + snippet), op=read (one session as a compact bounded turn list). Pass filePath or sessionId to read.',
+    'Find / search / read local Claude Code chat transcripts — the Claude-Code analogue of dev:omp_session. Scans BOTH ~/.claude/projects AND the per-session isolation dirs ~/.papercusp/session-claude/<owner>/projects, so psu/su CONSOLE sessions are found too. op=list (sessions by cwd + recency, the reliable read), op=search (bounded content search — lossy, returns matchCount + snippet), op=read (one session as a compact bounded turn list). Pass filePath or sessionId to read.',
   capability: 'intel:read',
   guidance: {
     when: 'Find or continue a prior Claude Code session: list by cwd to pin "the operator-vite session from ~06-29", or search content for a distinctive marker. Read a session to see where it left off.',
