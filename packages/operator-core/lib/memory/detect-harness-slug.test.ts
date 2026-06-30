@@ -36,10 +36,23 @@ function mkFile(rel: string, content: string): string {
   return p;
 }
 
+// Every detection call is bounded to `tmpRoot` so the upward walk cannot escape
+// into whatever repo the temp dir happens to live under. vitest relocates TMPDIR
+// to a project-local `.vitest-tmp` INSIDE this monorepo (libs/test-config), so an
+// UNBOUNDED walk from a temp dir reaches the real papercup root and falsely
+// meta-detects `{ slug: papercusp, source: meta-papercup }` — the EI-5541 red.
+// (`boundary` only ever makes the walk LESS eager, never more — see walkUp.)
+function detectSync(opts: Parameters<typeof detectHarnessSlugSync>[0]) {
+  return detectHarnessSlugSync({ boundary: tmpRoot, ...opts });
+}
+function detectAsync(opts: Parameters<typeof detectHarnessSlug>[0]) {
+  return detectHarnessSlug({ boundary: tmpRoot, ...opts });
+}
+
 describe('detectHarnessSlugSync — env var override', () => {
   it('returns env var slug when set', () => {
     const cwd = mkDir('some/project');
-    const r = detectHarnessSlugSync({
+    const r = detectSync({
       cwd,
       env: { PAPERCUSP_HARNESS_SLUG: 'overridden-slug' },
     });
@@ -48,7 +61,7 @@ describe('detectHarnessSlugSync — env var override', () => {
 
   it('ignores invalid env slug', () => {
     const cwd = mkDir('some/project');
-    const r = detectHarnessSlugSync({
+    const r = detectSync({
       cwd,
       env: { PAPERCUSP_HARNESS_SLUG: 'bad slug with spaces' },
     });
@@ -57,7 +70,7 @@ describe('detectHarnessSlugSync — env var override', () => {
 
   it('ignores empty env slug', () => {
     const cwd = mkDir('some/project');
-    const r = detectHarnessSlugSync({ cwd, env: { PAPERCUSP_HARNESS_SLUG: '' } });
+    const r = detectSync({ cwd, env: { PAPERCUSP_HARNESS_SLUG: '' } });
     expect(r).toEqual({ slug: null, source: null });
   });
 });
@@ -66,21 +79,21 @@ describe('detectHarnessSlugSync — marker file', () => {
   it('reads slug from .papercusp/slug at cwd', () => {
     const cwd = mkDir('proj');
     mkFile('proj/.papercusp/slug', 'sheets\n');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     expect(r).toEqual({ slug: 'sheets', source: 'marker-file' });
   });
 
   it('reads slug from parent .papercusp/slug (walks up)', () => {
     const deep = mkDir('proj/sub/sub/sub');
     mkFile('proj/.papercusp/slug', 'forms');
-    const r = detectHarnessSlugSync({ cwd: deep, env: {} });
+    const r = detectSync({ cwd: deep, env: {} });
     expect(r).toEqual({ slug: 'forms', source: 'marker-file' });
   });
 
   it('skips invalid slug in marker file', () => {
     const cwd = mkDir('proj');
     mkFile('proj/.papercusp/slug', 'INVALID UPPER');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     expect(r.slug).toBe(null);
   });
 
@@ -90,7 +103,7 @@ describe('detectHarnessSlugSync — marker file', () => {
     mkFile('papercup-root/package.json', JSON.stringify({ name: 'papercup' }));
     mkDir('papercup-root/libs/papercusp');
     mkFile('papercup-root/.papercusp/slug', 'my-harness');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     expect(r).toEqual({ slug: 'my-harness', source: 'marker-file' });
   });
 });
@@ -100,7 +113,7 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     const cwd = mkDir('papercup-root/some/sub');
     mkFile('papercup-root/package.json', JSON.stringify({ name: 'papercup' }));
     mkDir('papercup-root/libs/papercusp');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     // Pointer unset → the legacy-default home slug (post owner-directed
     // migration: papercusp). Asserted against the source-of-truth constant,
     // not a baked literal — baking the literal here is exactly what broke the
@@ -117,7 +130,7 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     const cwd = mkDir('mono-root/apps/x');
     mkFile('mono-root/package.json', JSON.stringify({ name: '@papercupai/papercusp-monorepo' }));
     mkDir('mono-root/libs/papercusp');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     // The point of this case is that the scoped name is DETECTED (source:
     // meta-papercup); the env-less slug is the legacy-default home constant.
     expect(r).toEqual({ slug: LEGACY_DEFAULT_HOME_HARNESS, source: 'meta-papercup' });
@@ -127,7 +140,7 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     const cwd = mkDir('cusp-root');
     mkFile('cusp-root/package.json', JSON.stringify({ name: 'papercusp-monorepo' }));
     mkDir('cusp-root/libs/papercusp');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     // The renamed package name is still DETECTED; env-less slug is the
     // legacy-default home constant.
     expect(r).toEqual({ slug: LEGACY_DEFAULT_HOME_HARNESS, source: 'meta-papercup' });
@@ -137,7 +150,7 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     const cwd = mkDir('papercup-root');
     mkFile('papercup-root/package.json', JSON.stringify({ name: 'papercup' }));
     mkDir('papercup-root/libs/papercusp');
-    const r = detectHarnessSlugSync({ cwd, env: { PAPERCUSP_HIVE_HOME_SLUG: 'papercusp' } });
+    const r = detectSync({ cwd, env: { PAPERCUSP_HIVE_HOME_SLUG: 'papercusp' } });
     expect(r).toEqual({ slug: 'papercusp', source: 'meta-papercup' });
   });
 
@@ -145,14 +158,14 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     const cwd = mkDir('other-root');
     mkFile('other-root/package.json', JSON.stringify({ name: 'not-papercup' }));
     mkDir('other-root/libs/papercusp');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     expect(r).toEqual({ slug: null, source: null });
   });
 
   it('does NOT detect when libs/papercusp missing', () => {
     const cwd = mkDir('lonely-pkg');
     mkFile('lonely-pkg/package.json', JSON.stringify({ name: 'papercup' }));
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     expect(r).toEqual({ slug: null, source: null });
   });
 });
@@ -160,13 +173,13 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
 describe('detectHarnessSlugSync — null path', () => {
   it('returns null when nothing matches', () => {
     const cwd = mkDir('boring/project');
-    const r = detectHarnessSlugSync({ cwd, env: {} });
+    const r = detectSync({ cwd, env: {} });
     expect(r).toEqual({ slug: null, source: null });
   });
 
   it('returns null when env var is invalid AND no marker present', () => {
     const cwd = mkDir('boring/project');
-    const r = detectHarnessSlugSync({
+    const r = detectSync({
       cwd,
       env: { PAPERCUSP_HARNESS_SLUG: 'WITH SPACES' },
     });
@@ -174,11 +187,38 @@ describe('detectHarnessSlugSync — null path', () => {
   });
 });
 
+describe('detectHarnessSlugSync — boundary confines the upward walk (EI-5541)', () => {
+  // Regression for EI-5541: vitest relocates TMPDIR to a project-local
+  // `.vitest-tmp` INSIDE this monorepo, so an UNBOUNDED walk from a temp dir
+  // climbs past the temp tree into the real papercup root and falsely
+  // meta-detects. The `boundary` param confines the walk to the temp subtree.
+  it('does NOT escape into an ancestor papercup repo when bounded below it', () => {
+    // A real papercup repo sits ABOVE the cwd...
+    mkFile('repo/package.json', JSON.stringify({ name: 'papercup' }));
+    mkDir('repo/libs/papercusp');
+    const cwd = mkDir('repo/nested/work');
+    // ...but the walk is bounded at `repo/nested`, below the repo root.
+    const boundary = path.join(tmpRoot, 'repo', 'nested');
+    const r = detectHarnessSlugSync({ cwd, env: {}, boundary });
+    expect(r).toEqual({ slug: null, source: null });
+  });
+
+  it('still finds an ancestor papercup repo when the walk is unbounded (sanity)', () => {
+    // Same tree, no boundary -> the upward walk DOES reach the ancestor repo,
+    // proving the boundary above is what suppresses the match (not a no-op).
+    mkFile('repo/package.json', JSON.stringify({ name: 'papercup' }));
+    mkDir('repo/libs/papercusp');
+    const cwd = mkDir('repo/nested/work');
+    const r = detectHarnessSlugSync({ cwd, env: {} });
+    expect(r.source).toBe('meta-papercup');
+  });
+});
+
 describe('detectHarnessSlug — async with registry fallback', () => {
   it('uses sync result when found', async () => {
     const cwd = mkDir('proj');
     mkFile('proj/.papercusp/slug', 'sheets');
-    const r = await detectHarnessSlug({
+    const r = await detectAsync({
       cwd,
       env: {},
       registryLookup: async () => 'should-not-be-used',
@@ -188,7 +228,7 @@ describe('detectHarnessSlug — async with registry fallback', () => {
 
   it('falls back to registry when sync returns null', async () => {
     const cwd = mkDir('orphan');
-    const r = await detectHarnessSlug({
+    const r = await detectAsync({
       cwd,
       env: {},
       registryLookup: async (c) => (c === cwd ? 'registry-slug' : null),
@@ -198,7 +238,7 @@ describe('detectHarnessSlug — async with registry fallback', () => {
 
   it('returns null when registry returns invalid slug', async () => {
     const cwd = mkDir('orphan');
-    const r = await detectHarnessSlug({
+    const r = await detectAsync({
       cwd,
       env: {},
       registryLookup: async () => 'BAD SLUG',
@@ -208,7 +248,7 @@ describe('detectHarnessSlug — async with registry fallback', () => {
 
   it('returns null when registry throws', async () => {
     const cwd = mkDir('orphan');
-    const r = await detectHarnessSlug({
+    const r = await detectAsync({
       cwd,
       env: {},
       registryLookup: async () => {
@@ -220,7 +260,7 @@ describe('detectHarnessSlug — async with registry fallback', () => {
 
   it('returns null when no registryLookup + no sync match', async () => {
     const cwd = mkDir('orphan');
-    const r = await detectHarnessSlug({ cwd, env: {} });
+    const r = await detectAsync({ cwd, env: {} });
     expect(r).toEqual({ slug: null, source: null });
   });
 });

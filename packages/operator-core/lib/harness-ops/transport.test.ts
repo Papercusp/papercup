@@ -5,7 +5,7 @@
  * and env-var name normalization. The local-registration path (PG-backed) is
  * exercised by the live arm/verify (P-010).
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import type { Frame } from '@papercusp/deployment-driver';
 
 // Hermetic isolation (EI-5416): the resolver's step-3 LOCAL-registration lookup
@@ -30,6 +30,16 @@ describe('harnessEndpointEnvVar', () => {
 
 describe('harnessApiBase resolution order', () => {
   const envVar = harnessEndpointEnvVar('oddsmith-ops');
+  // Hermetic (EI-5416 follow-up): clear the endpoint env var BEFORE each test, not
+  // only after. The green-checkpoint suite is spawned by the running operator, whose
+  // process env can carry a `PAPERCUSP_HARNESS_ENDPOINT__*` for a live harness — an
+  // ambient value the resolver's step-1 reads, making the "no endpoint resolvable"
+  // case falsely RESOLVE (a CI-only RED that never reproduces in a clean shell). With
+  // step-1 (env, here) + step-2 (no workspaceId → frame lookup skipped) + step-3
+  // (loadHarnessRegistry mocked above) all neutralized, the throw is deterministic.
+  beforeEach(() => {
+    delete process.env[envVar];
+  });
   afterEach(() => {
     delete process.env[envVar];
   });
