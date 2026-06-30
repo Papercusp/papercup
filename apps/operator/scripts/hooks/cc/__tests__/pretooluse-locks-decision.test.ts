@@ -37,7 +37,7 @@ beforeAll(async () => {
   fs.writeFileSync(join(home, '.papercusp', 'su-agent-id'), 'test-agent\n');
   cache = fs.mkdtempSync(join(os.tmpdir(), 'cchook-dec-cache-'));
   ws = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'cchook-dec-ws-')));
-  repo = join(ws, 'papercup-test');
+  repo = join(ws, 'papercusp'); // the canonical staging tree (worktree guard default: <ws>/papercusp)
   fs.mkdirSync(join(repo, 'sub'), { recursive: true });
   fs.writeFileSync(join(repo, '.git'), 'gitdir: /nonexistent\n');
 
@@ -176,5 +176,30 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     const r = await run(editOf('sub/sse2.ts', 'tu-sse2'));
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  it('worktree guard: refuses an edit in a stray sibling worktree, BEFORE any acquire', async () => {
+    // A sibling worktree under the workspace root that is NOT the canonical
+    // staging tree (papercusp) — e.g. the detached papercup-staging that
+    // stranded a feature on 2026-06-30. The guard must deny locally, before
+    // ever reaching the operator, with a reason the model can act on.
+    const stray = join(ws, 'papercup-staging');
+    fs.mkdirSync(join(stray, 'sub'), { recursive: true });
+    fs.writeFileSync(join(stray, '.git'), 'gitdir: /nonexistent\n');
+    nextInner = { ok: true, lock_id: 'should-not-be-acquired' }; // operator would grant…
+    const r = await run({
+      tool_name: 'Edit',
+      tool_input: { file_path: join(stray, 'sub/x.ts') },
+      tool_use_id: 'tu-stray',
+      session_id: 's',
+      cwd: stray,
+    });
+    expect(r.status).toBe(0); // deny emits JSON then exits 0
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('worktree guard');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('canonical staging tree');
+    // …but the guard fired first, so no lock was acquired/cached.
+    expect(fs.existsSync(join(cache, 'tu-stray.lock'))).toBe(false);
   });
 });

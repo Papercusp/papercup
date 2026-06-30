@@ -216,6 +216,34 @@ for p in raw_paths:
     if not root:
         continue  # Outside any repo — the lock store is repo-scoped; allow.
 
+    # ── Worktree discipline: only the canonical staging tree is editable ──
+    # The shared staging tree (papercusp) is the ONE tree agents edit — its
+    # changes are what git-sync auto-commits + deploys. A stray sibling
+    # worktree (papercup-staging, papercup-release, papercup-checkpoint,
+    # papercusp-staging, old feature worktrees) is a direct child of the
+    # workspace root just like the canonical tree, but work left in one never
+    # reaches the committed tree (it stranded a whole feature on 2026-06-30).
+    # Refuse edits in any such sibling. Isolation worktrees created by the
+    # migration/synthesis roles live under <tree>/.papercusp/worktrees/, whose
+    # parent is NOT the workspace root, so they pass through; foreign repos
+    # outside the workspace are likewise unaffected. See plan
+    # worktree-discipline-single-tree-enforcement-2026-06-30.
+    try:
+        _canonical_tree = os.path.realpath(
+            os.environ.get('PAPERCUSP_CANONICAL_TREE')
+            or os.path.join(workspace_root, 'papercusp'))
+        if (os.path.realpath(os.path.dirname(root)) == workspace_root
+                and os.path.realpath(root) != _canonical_tree):
+            deny(
+                f"worktree guard: refused — you are editing in '{root}', which "
+                f"is not the canonical staging tree. Agents edit ONLY the shared "
+                f"staging tree ({_canonical_tree}); other worktrees are off-limits "
+                f"because work left in them never reaches the auto-committed tree. "
+                f"cd into the staging tree and make this edit there."
+            )
+    except Exception:
+        pass  # The guard must never wedge an edit on its own error (fail-open).
+
     if os.path.realpath(os.path.dirname(root)) != workspace_root:
         continue  # A git repo, but not a papercup-workspace worktree.
 

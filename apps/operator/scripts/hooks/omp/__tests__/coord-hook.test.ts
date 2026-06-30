@@ -164,7 +164,7 @@ async function makeWorktreeFixture(): Promise<{
   const base = await fs.realpath(
     await fs.mkdtemp(join(tmpdir(), 'omp-hook-ws-')),
   );
-  const repo = join(base, 'papercup');
+  const repo = join(base, 'papercusp'); // canonical staging tree (worktree guard default: <ws>/papercusp)
   await fs.mkdir(join(repo, '.git'), { recursive: true });
   return {
     workspace: base,
@@ -806,6 +806,71 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     }) as unknown as typeof fetch;
     await onToolResult({ type: 'tool_result', toolCallId: 'never' });
     expect(called).toBe(false);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// worktree discipline — only the canonical staging tree is editable
+// ────────────────────────────────────────────────────────────────────
+
+describe('onToolCall worktree guard (single-tree discipline)', () => {
+  const originalFetch = global.fetch;
+  const prevWs = process.env.PAPERCUSP_WORKSPACE_ROOT;
+  const prevCanon = process.env.PAPERCUSP_CANONICAL_TREE;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  let fx: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+
+  beforeEach(async () => {
+    fx = await makeWorktreeFixture(); // fx.repo = <base>/papercusp (the canonical tree)
+    process.env.PAPERCUSP_WORKSPACE_ROOT = fx.workspace;
+    delete process.env.PAPERCUSP_CANONICAL_TREE; // default → <ws>/papercusp = fx.repo
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-wt';
+    _resetToolCallCacheForTests();
+    // Any acquire is granted, so the canonical-allow path resolves to {} (not blocked).
+    global.fetch = (async () => ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, lock_id: 'L' }) }] },
+        }),
+    })) as unknown as typeof fetch;
+  });
+  afterEach(async () => {
+    global.fetch = originalFetch;
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+    else process.env.PAPERCUSP_WORKSPACE_ROOT = prevWs;
+    if (prevCanon === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+    else process.env.PAPERCUSP_CANONICAL_TREE = prevCanon;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    await fx.cleanup();
+  });
+
+  it('denies an edit in a stray sibling worktree (e.g. papercup-staging)', async () => {
+    const stray = join(fx.workspace, 'papercup-staging');
+    await fs.mkdir(join(stray, '.git'), { recursive: true });
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'wt-stray',
+      input: { path: join(stray, 'x.ts'), content: 'x' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('worktree guard');
+    expect(r.reason).toContain('canonical staging tree');
+  });
+
+  it('allows an edit in the canonical staging tree', async () => {
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'wt-canon',
+      input: { path: join(fx.repo, 'x.ts'), content: 'x' },
+    });
+    expect(r.block).toBeUndefined(); // guard passes → lock granted → {}
   });
 });
 

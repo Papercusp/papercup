@@ -1382,6 +1382,50 @@ export async function onToolCall(
   const targets = extractLockTargets(event.toolName, event.input);
   if (targets.length === 0) return {};
 
+  // ── Worktree discipline: only the canonical staging tree is editable ──
+  // extractLockTargets already kept ONLY worktrees that are direct children
+  // of the workspace root (papercusp, papercup-staging, papercup-release, old
+  // feature worktrees, …). The canonical staging tree (papercusp) is the ONE
+  // tree agents edit — its changes are what git-sync auto-commits + deploys.
+  // Work left in any sibling worktree never reaches the committed tree (it
+  // stranded a whole feature on 2026-06-30). Refuse such an edit. Isolation
+  // worktrees under <tree>/.papercusp/worktrees/ have a non-workspace-root
+  // parent, so extractLockTargets already dropped them — they pass through;
+  // foreign repos are likewise untouched. Mirrors the cc hook's guard;
+  // fail-open on any error (a guard must never wedge an edit on its own bug).
+  try {
+    const canonicalTree = (() => {
+      const raw =
+        process.env.PAPERCUSP_CANONICAL_TREE ?? join(workspaceRoot(), 'papercusp');
+      try {
+        return realpathSync(raw);
+      } catch {
+        return raw;
+      }
+    })();
+    for (const t of targets) {
+      let rr: string;
+      try {
+        rr = realpathSync(t.root);
+      } catch {
+        rr = t.root;
+      }
+      if (rr !== canonicalTree) {
+        return {
+          block: true,
+          reason:
+            `worktree guard: refused — you are editing in '${t.root}', which ` +
+            `is not the canonical staging tree. Agents edit ONLY the shared ` +
+            `staging tree (${canonicalTree}); other worktrees are off-limits ` +
+            `because work left in them never reaches the auto-committed tree. ` +
+            `cd into the staging tree and make this edit there.`,
+        };
+      }
+    }
+  } catch {
+    /* guard must never wedge an edit on its own error (fail-open) */
+  }
+
   // Symlink refusal (file-locking #1) — runs BEFORE the acquire. The
   // operator keys locks on the path string and cannot see that two
   // strings alias one file; the hook, running on the agent's
