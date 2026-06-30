@@ -127,6 +127,25 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
 });
 
+// papercusp-hive-rekey defaults ON (P-011 inversion), so buildHiveRekeyBootDeps
+// runs in EVERY substrate boot and calls getHiveBySlug via getOrgPg — which the
+// rig's orgSqlHolder doesn't satisfy during bootPresencePeer (each peer's throwaway
+// DB has no harness_shared.hives table), throwing "undefined reading unsafe" and
+// ABORTING the boot. This suite proves presence/coord/authority FEDERATION, not
+// rekey, so force HIVE_REKEY OFF → buildHiveRekeyBootDeps early-returns null → no
+// getHiveBySlug → boot succeeds. (Other boot flags keep their real resolution;
+// boot.ts reads them with .catch(()=>false), so delegation is safe.)
+vi.mock('@papercusp/flags/server', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
+  return {
+    ...actual,
+    getFlag: async (key: unknown, scope?: unknown) =>
+      key === 'papercusp-hive-rekey'
+        ? false
+        : (actual.getFlag as (k: unknown, s?: unknown) => Promise<boolean>)(key, scope),
+  };
+});
+
 afterEach(rigAfterEach);
 
 describe('cross-peer coordination on a shared Hive — presence federation → authority election', () => {

@@ -237,9 +237,11 @@ export default function AdvShell({
     list.scrollBy({ left: dir * Math.max(140, list.clientWidth * 0.7), behavior: 'smooth' });
   }, []);
   const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
-  // The Harnesses-tab member axis (`?harness=`). The shell only WRITES it on an
-  // into-hive create (focus the new member in the rail, P-011 contract) — the
-  // tab owns reading it. Mirrors HarnessesWorkspace.handleCreated.
+  // The Harnesses-tab member axis (`?harness=`). The shell WRITES it on an into-hive
+  // create (focus the new member in the rail, P-011 contract) and CLEARS it (→ null)
+  // whenever a hive is picked in the selector / keyboard switcher, so the Harnesses
+  // dock re-scopes to the picked hive instead of staying pinned to a drilled-into
+  // sub-hive (the stale-?harness bug). The tab owns READING it.
   const [, setActiveHarness] = useQueryState('harness', parseAsString);
   // P-015: scope axis. 'expanded' (default) means consumers UNION the
   // selected slug + its sub-harnesses; 'self' narrows to just the picked
@@ -385,6 +387,9 @@ export default function AdvShell({
     // adapter and the scope write is lost), then set + persist the pick.
     if (allMode) await setScopeMode('expanded');
     await setActiveSlug(next);
+    // Same as the selector: reset the within-hive member focus so the dock follows
+    // the newly-picked hive (sequential await — same-tick writes collide in the adapter).
+    await setActiveHarness(null);
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
     }
@@ -435,6 +440,13 @@ export default function AdvShell({
                 // all-mode. Exit all-mode first, then set the slug.
                 if (allMode) await setScopeMode('expanded');
                 await setActiveSlug(next);
+                // BUGFIX: picking a hive must RESET the within-hive member focus (?harness=)
+                // so the Harnesses dock re-scopes to THIS hive instead of staying pinned to a
+                // sub-hive the user had drilled into (e.g. selecting `papercusp` while
+                // `?harness=hive-canary` lingered → panels kept showing hive-canary, because
+                // the child IS a valid member so the stale-guard never cleared it). Sequential
+                // await — the custom nuqs adapter merges each write, so a same-tick pair collides.
+                await setActiveHarness(null);
                 if (next && typeof window !== 'undefined') {
                   window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
                 }

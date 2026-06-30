@@ -300,6 +300,20 @@ describe('AdvShell — strip + header', () => {
   });
 });
 
+describe('AdvShell — hive pick resets the member focus (?harness)', () => {
+  it('picking a hive in the selector CLEARS ?harness so the Harnesses dock re-scopes (bugfix: panels stayed pinned to a drilled-into sub-hive)', async () => {
+    nuqsState.slug = 'pot-a';
+    nuqsState.harness = 'pot-b'; // a sticky within-hive member focus from a prior drill-in
+    await renderShell();
+    fireEvent.change(screen.getByLabelText(/Select pot/i), { target: { value: 'pot-b' } });
+    await waitFor(() => expect(nuqsSetters.slug).toHaveBeenCalledWith('pot-b'));
+    // THE FIX: the member focus is reset to null so dockSlug follows the picked hive
+    // instead of the stale sub-hive (which is a valid member, so the stale-guard kept it).
+    await waitFor(() => expect(nuqsSetters.harness).toHaveBeenCalledWith(null));
+    nuqsState.harness = undefined; // don't leak into other tests
+  });
+});
+
 describe('AdvShell — selection restore (resolveAdvHarnessSelection wiring)', () => {
   it('a valid URL slug wins — no restore writes', async () => {
     nuqsState.slug = 'pot-a';

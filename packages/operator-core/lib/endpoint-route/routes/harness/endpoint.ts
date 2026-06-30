@@ -47,4 +47,4 @@ const post = defineTool({
   },
 });
 
-export default post;
+export default [post];

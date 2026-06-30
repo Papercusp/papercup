@@ -108,6 +108,21 @@ type DbRow = {
 
 const asIso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
 
+/** JSONB columns come back parsed on some driver configs and as raw text on others
+ *  (e.g. the integration fixture's admin client) — normalize to an object|null. */
+function parseJsonbMaybe(v: unknown): Record<string, unknown> | null {
+  if (v == null) return null;
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof v === 'object' ? (v as Record<string, unknown>) : null;
+}
+
 function mapRow(r: DbRow): DatatypeRow {
   return {
     id: r.id,
@@ -117,9 +132,9 @@ function mapRow(r: DbRow): DatatypeRow {
     description: r.description,
     tier: (isDatatypeTier(r.tier) ? r.tier : 'generic-kind'),
     workItemKind: r.work_item_kind,
-    payloadSchema: r.payload_schema,
+    payloadSchema: parseJsonbMaybe(r.payload_schema),
     authoritativeWriter: r.authoritative_writer,
-    selfImprovement: r.self_improvement,
+    selfImprovement: parseJsonbMaybe(r.self_improvement),
     status: r.status,
     published: r.published,
     tags: r.tags ?? [],
@@ -248,8 +263,16 @@ export async function findSimilarDatatypes(
   workspaceId: string,
   q: { title: string; description?: string; embedding?: number[] | null; excludeId?: string; limit?: number },
 ): Promise<SimilarDatatype[]> {
-  const terms = `${q.title} ${q.description ?? ''}`.trim();
-  if (!terms) return [];
+  // OR semantics (any shared keyword is a dedup candidate, ranked by ts_rank) — NOT
+  // websearch_to_tsquery, which ANDs the words and would miss near-duplicates that
+  // share only some terms. Sanitize to alphanumeric tokens (len≥2 drops 'a'/noise)
+  // and join with ' | '; the english config stems + drops stopwords.
+  const tokens = `${q.title} ${q.description ?? ''}`
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 2);
+  if (tokens.length === 0) return [];
+  const orQuery = tokens.join(' | ');
   const lim = Math.max(1, Math.min(20, q.limit ?? 5));
   const embeddingLiteral =
     q.embedding && q.embedding.length > 0 ? `[${q.embedding.join(',')}]` : null;
@@ -261,17 +284,17 @@ export async function findSimilarDatatypes(
       ${
         embeddingLiteral
           ? sql`GREATEST(
-                  ts_rank(title_tsv, websearch_to_tsquery('english', ${terms})),
+                  ts_rank(title_tsv, to_tsquery('english', ${orQuery})),
                   CASE WHEN embedding IS NULL THEN 0
-                       ELSE 0.4 * ts_rank(title_tsv, websearch_to_tsquery('english', ${terms}))
+                       ELSE 0.4 * ts_rank(title_tsv, to_tsquery('english', ${orQuery}))
                             + 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END
                 )`
-          : sql`ts_rank(title_tsv, websearch_to_tsquery('english', ${terms}))`
+          : sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`
       } AS score
       FROM harness_shared.datatype_registry
      WHERE workspace_id = ${workspaceId} AND status = 'active' ${exclude}
        AND (
-         title_tsv @@ websearch_to_tsquery('english', ${terms})
+         title_tsv @@ to_tsquery('english', ${orQuery})
          ${embeddingLiteral ? sql`OR embedding IS NOT NULL` : sql``}
        )
      ORDER BY score DESC

@@ -1,0 +1,73 @@
+---
+title: Where the su persona lives and how it reaches a live session
+description: A su agent's system prompt is layered and projected, not one file. The DOMAIN-NEUTRAL base is libs/papercusp/.../base/prompts/su.md (a git submodule); per-client + code-generated sections splice in at `<!-- PAPERCUSP-SU:* -->` markers (AUTO mode is renderAutoModePolicy(), not a file); the per-hive override is a DB row appended last. renderSuPlaybook() assembles the prompt fresh per launch behind the SU_BLUEPRINT_PERSONA flag, so a base edit is live for NEW sessions immediately — but the .materialized/coding/su.md copies lag and are not on the live path.
+discovered: 2026-06-29
+tags: [su, persona, prompts, blueprints, splice-markers, render, submodule, launch-context]
+status: active
+documents:
+  - libs/papercusp/packages/harness/blueprints/base/prompts/su.md
+  - packages/operator-core/lib/role-launch-spec.ts
+  - packages/operator-core/lib/desktop-install/papercusp-files.ts
+  - packages/operator-core/lib/auto-mode-policy.ts
+  - packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts
+  - packages/operator-core/lib/hive-settings-store.ts
+  - apps/operator/prompts/papercusp-su.claude.md
+plans:
+  - su-persona-plan-authorization-and-routing-2026-06-29
+---
+
+## What
+
+A su agent's system prompt is **layered and projected**, not one file. To change su
+behavior you edit the canonical SOURCE for the right layer; the live prompt is assembled at
+launch. Editing the wrong copy (a build artifact, a sibling worktree, a materialized copy)
+looks like it worked and changes nothing live.
+
+## The layers (in render order)
+
+| # | Layer | Canonical source | Edit it for |
+|---|---|---|---|
+| 1 | **Base domain-neutral persona** | `libs/papercusp/packages/harness/blueprints/base/prompts/su.md` — a git **submodule** @ `main` | the universal "how we work" spine: discipline, coordination, default posture, memory |
+| 2 | **Per-client tooling overlay** | `apps/operator/prompts/papercusp-su.claude.md` (`.codex.md` / `.omp.md`), spliced at `<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->` (su.md ~L19) | client-specific tool guidance (task tracking, engine loops, lock hook) |
+| 3 | **Code-generated sections** | TS renderers, spliced at `<!-- PAPERCUSP-SU:* -->` markers | AUTO mode, wire schemas, coord legend, promotion model |
+| 4 | **Per-hive instance override** | DB `harness_shared.hive_settings`, key `promptOverride.su`, appended LAST (`hive-settings-store.ts` → `getHiveInstancePromptOverride` / `setHiveInstancePromptOverride`) | a single hive's domain specifics |
+
+The marker-spliced code sections are **not in any `.md`** — e.g. `## AUTO mode` is produced
+by `renderAutoModePolicy()` (`auto-mode-policy.ts`) and spliced at `<!-- PAPERCUSP-SU:AUTO-MODE -->`
+(su.md ~L122). Marker constants live in `desktop-install/splice-tooling-overlay.ts`.
+
+## The render path
+
+`buildSuLaunchSpec()` (`role-launch-spec.ts`) gates on flag **`SU_BLUEPRINT_PERSONA`**
+(`"papercusp-su-blueprint-persona"`, currently ON): when ON it resolves base = blueprint
+`su.md`, overlayDir = `apps/operator/prompts`. It then calls **`renderSuPlaybook()`**
+(`desktop-install/papercusp-files.ts`) — the in-memory launch-time assembler that
+`spliceGeneratedSection()`s each generated block into the base at its marker and returns the
+finished prompt. The on-disk installer twin is `writeSplicedPlaybook()`. A rendered prompt is
+written to `~/.papercusp/launch-context/session-*.md`.
+
+## Where to edit what
+
+- **A new persona section that must render _before_ AUTO mode** → author it in `su.md`
+  **before** the `<!-- PAPERCUSP-SU:AUTO-MODE -->` marker. Everything before the marker renders
+  before `## AUTO mode`; everything after renders after it.
+- **AUTO-mode wording** → `auto-mode-policy.ts` (code, not a file).
+- **The orient / mem0 bootstrap instructions** (the MCP `instructions` block) →
+  `packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts`.
+
+## Gotchas (these bite)
+
+- **`su.md` is in a git submodule** (`libs/papercusp`). The outer repo's `git ls-files`
+  errors on it; it's tracked + committed in the submodule (`main`), while the live working
+  tree is `staging`. `git -C <submodule> status` is how you see your edit's commit state.
+- **Several copies look canonical but are NOT:** `**/.materialized/blueprints/**/su.md`
+  (generated), sibling worktrees (`papercup-staging`, `papercup-release`, `papercup-checkpoint`),
+  and the desktop sidecar (`papercusp-desktop/src-tauri/sidecar/harness/...`). Edit the base in
+  `libs/papercusp`; the background git-sync commits + propagates to the siblings.
+- **A base edit is live for NEW sessions immediately** — `renderSuPlaybook()` renders fresh
+  from the base into `launch-context/session-*.md`, so the `.materialized/coding/su.md` copies
+  can lag without affecting new launches. **Verify by grepping a fresh
+  `~/.papercusp/launch-context/session-*.md`, not the materialized copy.**
+- **Don't hand-write into a generated section.** If the fact belongs in AUTO mode / promotion
+  model / wire schemas, change the renderer — the next splice overwrites anything you typed
+  between the markers.

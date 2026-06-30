@@ -135,20 +135,31 @@ the operator's routines tick dispatches; `GET {sidecar}/api/op` lists the regist
 prospect tick creates `bet-analysis` work_items; an ingest tick upserts `markets`. No real-money
 path is touched (both ops are read-only/propose-only).
 
-## NOT YET DONE — P-009 (engine trading tick + live-loop → LOCAL DBOS)
+## Engine trading tick + live-loop → LOCAL DBOS (P-009 / D-005)
 
 The engine TRADING tick (`@oddsmith/engine`, via `engine-wiring.startEngine`) and the live-loop
-producer (`./live-loop.startLiveLoop`, via `live-loop-wiring`) own their own `setInterval`s. D-005
-(inviolable): these money-path loops must keep running even when operator-core is down, so they
-get durability from a **LOCAL DBOS runtime inside the sidecar** — NOT the central routines engine
-(that's why they are NOT harness ops). This is **deferred**, deliberately: it adds
-`@dbos-inc/dbos-sdk` + a local DBOS bootstrap (mirror `operator-core/lib/dbos/bootstrap.ts`:
-config → `DBOS.launch()` against the embedded PG → `DBOS.registerScheduled(tickWf, {crontab})`),
-and re-expressing the trading tick as a scheduled workflow touches the **money-path** — it must be
-verified by a LIVE paper run that survives a process restart before it can be trusted. That
-verification can't be faked from a code change, so it is a separate, gated workstream rather than
-an unverified default-OFF scaffold. Seams when picked up: expose a per-tick/per-cycle function
-from the engine + live-loop, register each as a `DBOS.registerScheduled` workflow gated by a new
-`ODDSMITH_ENGINE_DBOS=1` (default-OFF keeps the existing loops, so D-005 stays intact during
-bring-up), launch local DBOS in `serve.ts` after the DB boots, and stop it in the shutdown
-sequence.
+producer (`./live-loop`, via `live-loop-wiring`) are the money-path loops. D-005 (inviolable): they
+must keep running even when operator-core is down — so, UNLIKE the discovery/data cadences
+(prospect/ingest, which ride the CENTRAL routines engine via dispatched ops), they get durability
+from a **LOCAL DBOS runtime inside the sidecar**, against the sidecar's OWN embedded Postgres.
+They are NOT harness ops.
+
+`apps/desktop/src/lib/local-dbos-wiring.ts` launches DBOS (mirrors `operator-core/lib/dbos/
+bootstrap.ts`: `DBOS.setConfig({systemDatabaseUrl: <embedded PG>, systemDatabaseSchemaName:'dbos',
+applicationVersion, runAdminServer:false})` → `registerWorkflow` + `registerScheduled` → `launch()`).
+The cadence seam already existed: the engine drives its loop through an injected `Scheduler` and
+exposes `TradingEngine.tick()`; the live-loop's per-cycle work is `createLiveLoopRunner().runCycle()`
+(factored out of `startLiveLoop`). In **DBOS mode** the wiring DOESN'T start the in-process loop —
+it BINDS the per-tick fn (`bindEngineTick` / `bindLiveLoopCycle`), and a `DBOS.registerScheduled`
+workflow fires it on a crontab derived from the loop's `intervalMs` (`intervalToCrontab`: sub-minute
+→ seconds field). Each fire is a durable, checkpointed workflow; an in-flight tick that crashes is
+recovered on restart. `SchedulerMode.ExactlyOncePerIntervalWhenActive` SKIPS make-up work for slots
+missed while the sidecar was down — a restart never replays a backlog of stale trading ticks.
+
+**Gate:** `ODDSMITH_ENGINE_DBOS=1` (default-OFF). OFF ⇒ the engine + live-loop run their existing
+in-process loops byte-for-byte and DBOS is never imported/launched (D-005 unchanged). ON ⇒
+`serve.ts` builds them in `dbosMode`, then `launchLocalDbos` registers a scheduled workflow per
+ENABLED cadence and launches; the DBOS scheduler is stopped FIRST in the shutdown sequence so no
+tick fires into a half-torn-down engine. Verified live (`local-dbos-wiring.integration.test.ts`):
+DBOS boots against a real PG, runs its migrations, and the scheduled `oddsmithEngineTick` workflow
+fires the bound tick on the crontab.
