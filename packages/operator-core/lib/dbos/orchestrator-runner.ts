@@ -1371,3 +1371,100 @@ export function wireOrchestratorInvokeRunner(): void {
   // orchestrator loop's audit lane can screen remote-pending features.
   wireAuditorLane();
 }
+
+/**
+ * spawnInvokeOnceWithFallback — the SPAWNER_SIDECAR-gated front door to the agent
+ * spawn chokepoint (WI-344 ③, plan spawner-sidecar-offload-2026-06-30).
+ *
+ * Mirrors substrate's `bootSubstrateWithFallback`. OFF (the default + correct state
+ * until the sidecar is wired + verified) ⇒ byte-identical in-process spawnInvokeOnce.
+ * ON ⇒ ensure the spawner sidecar is up, then route the spawn over IPC so the
+ * `child_process.spawn` of bee/queen children + the synchronous `buildInvokeOnce`
+ * run in the sidecar process — OFF the bg-host main event loop that they currently
+ * saturate (the ~24.5% main-loop CPU that freezes routinesTick). The mid-turn
+ * signals the in-process path emits (child pid, output-activity) are delivered back
+ * over the sidecar's push channel and re-fired into the SAME `opts` callbacks; an
+ * `opts.signal` abort is forwarded as a `spawn:cancel` for the captured request id.
+ *
+ * INERT until deliberately wired: nothing calls this yet (operator-spawn.ts /
+ * serve.ts / host-bootstrap.ts are wired by the orchestrator separately), and the
+ * sidecar machinery is loaded via DYNAMIC import only on the ON path — so loading
+ * orchestrator-runner.ts (the hot bg-host module) pulls in NONE of it. ANY error
+ * (flag read, sidecar spawn, or the IPC call) falls back to in-process — the sidecar
+ * is strictly optional, exactly like the substrate sidecar.
+ *
+ * Return type is unchanged (SpawnInvokeOnceResult); spawnInvokeOnce is NOT modified.
+ */
+export async function spawnInvokeOnceWithFallback(
+  projectDir: string,
+  role: string,
+  extras: string[],
+  extraEnv: Record<string, string>,
+  opts?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    resultPath?: string;
+    forceSessionId?: string;
+    onChildPid?: (pid: number) => void;
+    onOutputActivity?: () => void;
+  },
+): Promise<SpawnInvokeOnceResult> {
+  const on = await getFlag(FLAGS.SPAWNER_SIDECAR, 'system').catch(() => false);
+  if (!on) {
+    // Flag OFF (the default): in-process spawn, byte-identical to today.
+    return spawnInvokeOnce(projectDir, role, extras, extraEnv, opts);
+  }
+
+  try {
+    // Dynamic import keeps the sidecar machinery OFF the hot path's module graph —
+    // it is loaded only when the flag is ON and this wrapper is actually called.
+    const { spawnSpawnerSidecar } = await import('../fleet/spawner-sidecar-spawn');
+    const { getSpawnerIpcClient } = await import('../fleet/spawner-ipc-client');
+
+    await spawnSpawnerSidecar();
+    const client = getSpawnerIpcClient();
+
+    // Capture the request id the client assigns so an abort can cancel ACROSS the
+    // IPC boundary (the sidecar holds the AbortController for that request id).
+    let requestId: number | undefined;
+    const onAbort = (): void => {
+      if (requestId !== undefined) {
+        void client.call('spawn:cancel', { requestId }).catch(() => {
+          /* best-effort cancel; the timeout in the sidecar is the backstop */
+        });
+      }
+    };
+    const signal = opts?.signal;
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    try {
+      return await client.call<SpawnInvokeOnceResult>(
+        'spawn:invokeOnce',
+        {
+          projectDir,
+          role,
+          extras,
+          extraEnv,
+          timeoutMs: opts?.timeoutMs,
+          resultPath: opts?.resultPath,
+          forceSessionId: opts?.forceSessionId,
+        },
+        {
+          onPid: opts?.onChildPid,
+          onOutputActivity: opts?.onOutputActivity,
+          onRequestId: (id) => {
+            requestId = id;
+          },
+        },
+      );
+    } finally {
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+  } catch (e) {
+    console.warn('[spawner-sidecar] fell back to in-process:', e);
+    return spawnInvokeOnce(projectDir, role, extras, extraEnv, opts);
+  }
+}

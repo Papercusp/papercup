@@ -180,6 +180,22 @@ export const FLAGS = {
   // Phase 1 (this sprint): skeleton + basic methods + IPC client.
   // Phase 2: socket handoff + integration tests. Listed in KNOWN_DARK_FLAGS.
   SUBSTRATE_SIDECAR: "papercusp-substrate-sidecar",
+  // spawner-sidecar-offload-2026-06-30 WI-344 ③ — the SPAWNER sibling of
+  // SUBSTRATE_SIDECAR. When ON, spawnInvokeOnceWithFallback (orchestrator-runner.ts)
+  // routes the agent-spawn fork/exec + buildInvokeOnce (the ~24.5% main-loop CPU
+  // that freezes routinesTick) OFF the bg-host main loop into a dedicated sidecar
+  // process (apps/operator/bin/spawner-sidecar.ts, JSON-RPC 2.0 over a Unix socket,
+  // mirroring the substrate sidecar). Registered enum-only — EXACTLY like its
+  // SUBSTRATE_SIDECAR sibling (which is also NOT in DARK_FLAGS post the 2026-06-29
+  // P-011 inversion, so it likewise DERIVES default-ON; the live OFF state is a
+  // runtime `system`-scope override, the same way the substrate sidecar is staged).
+  // It stays DARK in practice because spawnInvokeOnceWithFallback is INERT — nothing
+  // wires it into the hot path yet (the orchestrator does that separately), so the
+  // flag's default is byte-irrelevant to the running operator until it is wired +
+  // verified. Adding it to DARK_FLAGS for a code-level default-OFF is intentionally
+  // NOT done here: the production-defaults guards (count==9 + value-preserving
+  // snapshot + owner anti-reconstruction mandate) forbid a NEW default-OFF flag.
+  SPAWNER_SIDECAR: "papercusp-spawner-sidecar",
   // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
   // reaper. When ON, a periodic sweep marks DEAD-process open adv_sessions ended
   // (owner stopped heartbeating past the liveness grace), reclaiming the live

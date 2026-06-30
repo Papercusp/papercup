@@ -14,6 +14,12 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import {
+  allocateNextSchemeName,
+  schemeByName,
+  schemeForSlug,
+  type ColorScheme,
+} from './console-color-schemes';
 
 /** A named-fleet registry row. */
 export interface AgentFleetRecord {
@@ -26,6 +32,10 @@ export interface AgentFleetRecord {
   /** The CURRENT leader's coord owner-id (D-002). Null when unset (e.g. the
    *  fleet persists but no agent currently leads it). */
   leaderOwnerId: string | null;
+  /** The fleet's permanently-bound color-scheme NAME (console-color-schemes).
+   *  Null on legacy rows created before the binding existed — resolveFleetScheme
+   *  falls back to a deterministic slug hash for those. */
+  colorScheme: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -37,6 +47,8 @@ export interface CreateFleetInput {
   description?: string | null;
   owner?: string | null;
   leaderOwnerId?: string | null;
+  /** Force a specific scheme name; omit to auto-allocate the next unused one. */
+  colorScheme?: string | null;
 }
 
 interface FleetRow {
@@ -46,6 +58,7 @@ interface FleetRow {
   description: string | null;
   owner: string | null;
   leader_owner_id: string | null;
+  color_scheme: string | null;
   created_at: string | number;
   updated_at: string | number;
 }
@@ -58,6 +71,7 @@ function rowToRecord(r: FleetRow): AgentFleetRecord {
     description: r.description,
     owner: r.owner,
     leaderOwnerId: r.leader_owner_id,
+    colorScheme: r.color_scheme,
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -67,7 +81,7 @@ function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
 }
 
-const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, created_at, updated_at`;
+const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, created_at, updated_at`;
 
 /**
  * Derive a stable fleet_slug from a user-entered fleet NAME. The original name
@@ -120,9 +134,15 @@ export async function createFleetIfAbsent(
 ): Promise<{ record: AgentFleetRecord; created: boolean }> {
   const s = pg(sql);
   const now = Date.now();
+  // Bind a color scheme at birth — per-fleet permanent visual identity. Caller
+  // may force one; else allocate the next UNUSED catalog scheme so distinct
+  // fleets look distinct. A wasted allocation on an idempotent no-op insert is
+  // harmless: the existing row (ON CONFLICT DO NOTHING) keeps its first scheme.
+  const colorScheme =
+    input.colorScheme ?? (await allocateSchemeForWorkspace(input.workspaceId, sql));
   const inserted = (await s.unsafe(
     `INSERT INTO harness_shared.agent_fleets (${COLS})
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
      ON CONFLICT (workspace_id, fleet_slug) DO NOTHING
      RETURNING ${COLS}`,
     [
@@ -132,6 +152,7 @@ export async function createFleetIfAbsent(
       input.description ?? null,
       input.owner ?? null,
       input.leaderOwnerId ?? null,
+      colorScheme,
       now,
     ],
   )) as unknown as FleetRow[];
@@ -198,4 +219,62 @@ export async function deleteFleet(
     [workspaceId, fleetSlug],
   )) as unknown as Array<{ fleet_slug: string }>;
   return rows.length > 0;
+}
+
+// ─── Color schemes (fleet-color-schemes-2026-06-30) ──────────────────
+
+/**
+ * Pick the next catalog scheme NAME for a new fleet in this workspace: the first
+ * scheme not already bound to a fleet here (so distinct fleets stay distinct).
+ * Best-effort distinctness — there's a benign race if two fleets are created at
+ * once, and the catalog wraps once every scheme is in use.
+ */
+async function allocateSchemeForWorkspace(workspaceId: string, sql?: Sql): Promise<string> {
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT color_scheme FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND color_scheme IS NOT NULL`,
+    [workspaceId],
+  )) as unknown as Array<{ color_scheme: string }>;
+  return allocateNextSchemeName(rows.map((r) => r.color_scheme));
+}
+
+/**
+ * Resolve a fleet record to its concrete {@link ColorScheme}: the persisted
+ * binding if present, else a deterministic slug-hash fallback for legacy rows.
+ * Always returns a real catalog scheme.
+ */
+export function resolveFleetScheme(record: AgentFleetRecord): ColorScheme {
+  return schemeByName(record.colorScheme) ?? schemeForSlug(record.fleetSlug);
+}
+
+/** The bound scheme for a fleet slug, or null if the fleet doesn't exist. */
+export async function getFleetScheme(
+  workspaceId: string,
+  fleetSlug: string,
+  sql?: Sql,
+): Promise<ColorScheme | null> {
+  const fleet = await getFleet(workspaceId, fleetSlug, sql);
+  return fleet ? resolveFleetScheme(fleet) : null;
+}
+
+/**
+ * Override a fleet's bound scheme (the otherwise-immutable binding) — the
+ * `fleet:recolor` escape hatch. Returns null if the fleet doesn't exist.
+ */
+export async function setFleetScheme(
+  workspaceId: string,
+  fleetSlug: string,
+  schemeName: string,
+  sql?: Sql,
+): Promise<AgentFleetRecord | null> {
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET color_scheme = $3, updated_at = $4
+      WHERE workspace_id = $1 AND fleet_slug = $2
+      RETURNING ${COLS}`,
+    [workspaceId, fleetSlug, schemeName, Date.now()],
+  )) as unknown as FleetRow[];
+  return rows[0] ? rowToRecord(rows[0]) : null;
 }
