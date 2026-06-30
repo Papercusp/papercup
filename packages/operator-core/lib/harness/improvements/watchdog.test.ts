@@ -1634,6 +1634,51 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
     expect(classifySpawnError(null)).toBe('other');
   });
 
+  // EI-5485: an admission-ceiling rejection is expected D-004 backpressure (await spawn-slot:freed +
+  // retry), recorded as a `failed` row for durability — NOT a spawn failure. It must classify as
+  // 'backpressure', not 'other', so it can be excluded from the failed-spawn signal.
+  it('classifies the admission-ceiling rejection as backpressure, not a failure', () => {
+    const ceilingMsg =
+      'spawn rejected: 3 bee spawns already running (fleet ceiling 3 — owner maxBees). ' +
+      'Do not drop or busy-wait: events:await { event: "spawn-slot:freed:papercusp-workspace" }, ' +
+      'end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.';
+    expect(classifySpawnError(ceilingMsg)).toBe('backpressure');
+    expect(classifySpawnError('spawn rejected: 16 spawns already running (fleet ceiling 16 — maxSimultaneousAgents).')).toBe('backpressure');
+  });
+
+  it('EXCLUDES admission-ceiling backpressure rows from the failed-spawn signal (EI-5485)', () => {
+    const ceiling = (slot: number) => ({
+      error_message:
+        `spawn rejected: 3 bee spawns already running (fleet ceiling 3 — owner maxBees). ` +
+        `events:await { event: "spawn-slot:freed:papercusp-workspace" } — slot ${slot}`,
+      started_at: '2026-06-30T16:00:00.000Z',
+    });
+    // 57 ceiling rejections + 4 timeouts + 4 config: only the 8 genuine failures should count.
+    const rows = [
+      ...Array.from({ length: 57 }, (_, i) => ceiling(i)),
+      ...Array.from({ length: 4 }, () => ({ error_message: 'spawn timed out after 280s', started_at: '2026-06-30T15:00:00.000Z' })),
+      ...Array.from({ length: 4 }, () => ({ error_message: 'invalid spawn config', started_at: '2026-06-30T14:00:00.000Z' })),
+    ];
+    const out = failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 });
+    expect(out).toHaveLength(1);
+    // Dominant of the GENUINE failures is timeout (4), not the ceiling backpressure (57).
+    expect(out[0].key).toBe('failed-spawns:timeout');
+    expect(out[0].title).toContain('(timeout)');
+    expect(out[0].body).not.toContain('backpressure');
+    // Count reflects only the 8 real failures, not the 65 total rows.
+    expect(out[0].body).toContain('8 agent spawn(s) failed');
+    expect(out[0].body).toContain('timeout: 4');
+    expect(out[0].body).toContain('config: 4');
+  });
+
+  it('ceiling-only rejections never fire (all backpressure, below the genuine-failure threshold)', () => {
+    const rows = Array.from({ length: 30 }, () => ({
+      error_message: 'spawn rejected: 3 bee spawns already running (fleet ceiling 3 — owner maxBees).',
+      started_at: '2026-06-30T16:00:00.000Z',
+    }));
+    expect(failedSpawnSignalsFromRows(rows, { minCount: 5 })).toEqual([]);
+  });
+
   it('keys by the DOMINANT class with the full breakdown in the body + latestAt', () => {
     const rows = [
       { error_message: 'timed out', started_at: '2026-06-09T10:00:00.000Z' },

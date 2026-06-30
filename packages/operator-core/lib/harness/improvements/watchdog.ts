@@ -1161,9 +1161,15 @@ export async function collectStuckPlanSignals(sql: Sql, workspaceId: string, sta
  * resolved timeout-storm item would mask a new auth breakage. Keying the signal
  * by DOMINANT class gives one capture per diagnosable problem.
  */
-export type SpawnErrorClass = 'timeout' | 'network' | 'auth' | 'missing-file' | 'config' | 'other';
+export type SpawnErrorClass = 'backpressure' | 'timeout' | 'network' | 'auth' | 'missing-file' | 'config' | 'other';
 export function classifySpawnError(message: string | null | undefined): SpawnErrorClass {
   const m = message ?? '';
+  // Admission-ceiling rejection (D-004 backpressure): `spawn rejected: N … already running
+  // (fleet ceiling … — owner maxBees/maxSimultaneousAgents) … events:await spawn-slot:freed …`.
+  // Recorded as a `failed` row for queue+await durability, but it is EXPECTED, working-as-designed
+  // backpressure — NOT a spawn failure. Checked FIRST so its message never falls through to a real
+  // failure class (and so failedSpawnSignalsFromRows can exclude it — EI-5485).
+  if (/fleet ceiling|spawn-slot:freed|max(?:Bees|SimultaneousAgents)|already running \(fleet/i.test(m)) return 'backpressure';
   if (/timed?\s*out|timeout/i.test(m)) return 'timeout';
   if (/econnrefused|econnreset|enotfound|socket|network|fetch failed/i.test(m)) return 'network';
   if (/auth|credential|api.?key|401|403|unauthorized|forbidden/i.test(m)) return 'auth';
@@ -1187,10 +1193,16 @@ export function failedSpawnSignalsFromRows(
 ): WatchdogSignal[] {
   const windowHours = opts.windowHours ?? 6;
   const minCount = opts.minCount ?? 5;
-  if (rows.length < minCount) return [];
+  // Drop admission-ceiling backpressure rows: a ceiling rejection is recorded as a `failed`
+  // nursery row for D-004 queue+await durability, but it is EXPECTED behavior (the caller awaits
+  // spawn-slot:freed and retries), not a failure the loop can fix. Counting it inflated the signal
+  // and re-filed a non-actionable improvement every cadence (EI-5485: 57/69 "other" were ceiling
+  // rejections), masking genuine failure causes.
+  const failures = rows.filter((r) => classifySpawnError(r.error_message) !== 'backpressure');
+  if (failures.length < minCount) return [];
   const byClass = new Map<SpawnErrorClass, { n: number; sample: string | null }>();
   let latestAt: string | undefined;
-  for (const r of rows) {
+  for (const r of failures) {
     const cls = classifySpawnError(r.error_message);
     const agg = byClass.get(cls) ?? { n: 0, sample: null };
     agg.n += 1;
@@ -1207,10 +1219,10 @@ export function failedSpawnSignalsFromRows(
     key: `failed-spawns:${dominantClass}`,
     title: `Agent spawns are failing repeatedly (${dominantClass})`,
     body:
-      `Watchdog signal (failed-spawn): ${rows.length} agent spawn(s) failed in the last ${windowHours}h; ` +
-      `the dominant cause class is "${dominantClass}" (${dominant.n}/${rows.length}).\n\n` +
+      `Watchdog signal (failed-spawn): ${failures.length} agent spawn(s) failed in the last ${windowHours}h; ` +
+      `the dominant cause class is "${dominantClass}" (${dominant.n}/${failures.length}).\n\n` +
       `Class breakdown: ${breakdown}\n\nSample (${dominantClass}): ${(dominant.sample ?? '').slice(0, 600) || '(none captured)'}`,
-    severity: rows.length >= 20 ? 'major' : 'minor',
+    severity: failures.length >= 20 ? 'major' : 'minor',
     kind: 'bug',
     latestAt,
   }];

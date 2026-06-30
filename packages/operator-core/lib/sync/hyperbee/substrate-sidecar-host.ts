@@ -692,11 +692,63 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
   };
 }
 
-/** Dumb-pipe a raw transport into a corestore replication protocol stream. */
+/**
+ * Pipe a raw transport into a corestore replication protocol stream, with MUTUAL
+ * TEARDOWN so neither side dangles when the peer goes away.
+ *
+ * WI-1089 (bg-host leak hunt): `store.replicate(initiator)` returns a NEW protocol
+ * stream that we manually pipe — unlike `store.replicate(socket)` (the in-process
+ * swarm path, swarm.ts), NOTHING tears THIS stream down when the transport dies. On
+ * the COMMON unclean disconnect (peer reset / timeout → the transport emits
+ * 'error'/'close' WITHOUT a graceful 'end'), Node's `.pipe()` does NOT destroy the
+ * destination — so the corestore replication stream (its Protomux muxer, per-core
+ * channels, and send/recv buffers, all still referenced by the corestore) would
+ * dangle FOREVER. Across churning peers in the long-lived sidecar that is an
+ * unbounded per-connection heap + handle leak — a candidate driver of the +1GB/min
+ * RSS climb. Destroying either side when the other ends frees the corestore stream
+ * (corestore removes it on the replication stream's 'close'). See
+ * {@link pipeWithMutualTeardown}.
+ */
 function replicateOverTransport(store: Corestore, transport: Duplex, initiator: boolean): void {
   const repl = store.replicate(initiator) as unknown as Duplex;
-  transport.on('error', () => {});
-  repl.on('error', () => {});
+  pipeWithMutualTeardown(transport, repl);
+}
+
+/**
+ * Bidirectionally pipe two duplex streams and DESTROY both when EITHER errors or
+ * closes — the teardown the bare `transport.pipe(repl).pipe(transport)` lacked
+ * (WI-1089). Exported for unit testing. Idempotent + best-effort: the `tearing`
+ * guard collapses the error→close cascade into a single teardown, and a throwing
+ * `destroy()` is swallowed (a teardown must never crash the host it cleans up after).
+ *
+ * The per-side `'error'` listener also prevents an unclean-disconnect 'error' from
+ * escalating to an uncaught exception (it replaces the prior bare `() => {}` swallow
+ * with a swallow-AND-teardown).
+ */
+export function pipeWithMutualTeardown(transport: Duplex, repl: Duplex): void {
+  let tearing = false;
+  const teardown = (err?: Error): void => {
+    if (tearing) return;
+    tearing = true;
+    if (!repl.destroyed) {
+      try {
+        repl.destroy(err);
+      } catch {
+        // best-effort — freeing the corestore stream must not throw
+      }
+    }
+    if (!transport.destroyed) {
+      try {
+        transport.destroy(err);
+      } catch {
+        // best-effort
+      }
+    }
+  };
+  transport.on('error', (e: unknown) => teardown(e instanceof Error ? e : undefined));
+  repl.on('error', (e: unknown) => teardown(e instanceof Error ? e : undefined));
+  transport.on('close', () => teardown());
+  repl.on('close', () => teardown());
   transport.pipe(repl).pipe(transport);
 }
 

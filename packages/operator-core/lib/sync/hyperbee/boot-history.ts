@@ -55,6 +55,11 @@ export type BootHistoryKind =
   | 'swarm_join_failed'
   | 'peer_rejected'
   | 'peer_rate_limited'
+  // P-008 (harden-shared-hive-to-256-peers): swarm peer-CONNECTION at/near the maxPeers
+  // ceiling — Hyperswarm silently refuses peer N+1 at the cap, so onNearPeerCap records it
+  // to make approaching/hitting 256 VISIBLE. Distinct from 'peer_capped' below (an admitted
+  // peer's LOG exceeded the per-author op cap, not a connection-count signal).
+  | 'peer_cap_near'
   | 'peer_capped'
   | 'peer_revoked'
   | 'announce_admitted'

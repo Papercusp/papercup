@@ -17,7 +17,13 @@ import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSubstrateSidecarHost, type SubstrateSidecarHost } from './substrate-sidecar-host';
+import { PassThrough } from 'node:stream';
+import { once } from 'node:events';
+import {
+  createSubstrateSidecarHost,
+  pipeWithMutualTeardown,
+  type SubstrateSidecarHost,
+} from './substrate-sidecar-host';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import type { BootedHarnessHandle, BootHarnessOpts, LocalWriteOp } from './boot';
 import { recordBootEvent, _resetBootHistoryForTests } from './boot-history';
@@ -272,5 +278,50 @@ describe('substrate:getBootHistory (sidecar-ring read surface)', () => {
     expect(filtered.entries[0]!.kind).toBe('announce_admitted');
     expect(filtered.entries[0]!.message).toBe('peer-x');
     expect(filtered.depth).toBe(3); // depth is the whole ring, unaffected by filters
+  });
+});
+
+describe('pipeWithMutualTeardown — replication-stream teardown (WI-1089 leak fix)', () => {
+  // Two PassThroughs stand in for the raw peer transport + the corestore replication
+  // stream. We never WRITE data (the bidi pipe would echo a self-cycle); we only assert
+  // that DESTROY propagates — the thing the bare `transport.pipe(repl).pipe(transport)`
+  // failed to do on an unclean disconnect, leaking the corestore stream per churning peer.
+
+  it('destroys the corestore replication stream when the raw transport closes', async () => {
+    const transport = new PassThrough();
+    const repl = new PassThrough();
+    pipeWithMutualTeardown(transport, repl);
+    expect(repl.destroyed).toBe(false);
+
+    const replClosed = once(repl, 'close');
+    transport.destroy(); // simulate the peer socket closing (clean)
+    await replClosed;
+    expect(repl.destroyed).toBe(true);
+  });
+
+  it('destroys the transport when the replication stream errors (unclean disconnect, no uncaught throw)', async () => {
+    const transport = new PassThrough();
+    const repl = new PassThrough();
+    pipeWithMutualTeardown(transport, repl);
+
+    const transportClosed = once(transport, 'close');
+    // An 'error' WITHOUT a graceful 'end' is the common peer reset/timeout case — the
+    // exact path the old code leaked. The function's own 'error' listeners keep this
+    // from escalating to an uncaught exception.
+    repl.destroy(new Error('peer reset'));
+    await transportClosed;
+    expect(transport.destroyed).toBe(true);
+  });
+
+  it('a transport error tears down BOTH sides exactly once (idempotent cascade)', async () => {
+    const transport = new PassThrough();
+    const repl = new PassThrough();
+    pipeWithMutualTeardown(transport, repl);
+
+    const bothClosed = Promise.all([once(transport, 'close'), once(repl, 'close')]);
+    transport.destroy(new Error('ECONNRESET'));
+    await bothClosed;
+    expect(transport.destroyed).toBe(true);
+    expect(repl.destroyed).toBe(true);
   });
 });

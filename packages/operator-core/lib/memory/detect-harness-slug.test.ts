@@ -108,12 +108,14 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     expect(r).toEqual({ slug: LEGACY_DEFAULT_HOME_HARNESS, source: 'meta-papercup' });
   });
 
-  it('detects the real scoped monorepo name (@papercupai/papercup-monorepo)', () => {
-    // The live repo's package.json name — the old `name === 'papercup'`
-    // check rejected this, leaving meta-detection dead. Generalized match
-    // strips the npm scope and accepts papercup[-monorepo].
+  it('detects the real scoped monorepo name (@papercupai/papercusp-monorepo)', () => {
+    // The live repo's package.json name (post papercup→papercusp rename). The
+    // generalized match strips the npm scope and accepts papercu(p|sp)[-monorepo],
+    // so the renamed scoped name is detected with no code edit here. (The old
+    // `name === 'papercup'` exact check rejected scoped names, leaving
+    // meta-detection dead.)
     const cwd = mkDir('mono-root/apps/x');
-    mkFile('mono-root/package.json', JSON.stringify({ name: '@papercupai/papercup-monorepo' }));
+    mkFile('mono-root/package.json', JSON.stringify({ name: '@papercupai/papercusp-monorepo' }));
     mkDir('mono-root/libs/papercusp');
     const r = detectHarnessSlugSync({ cwd, env: {} });
     // The point of this case is that the scoped name is DETECTED (source:
