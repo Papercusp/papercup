@@ -54,26 +54,61 @@ function resolveOperatorBaseUrl(): string {
   return `http://localhost:${port}`;
 }
 
-/**
- * Build the scripted psu launch command for one fleet member working a plan. Pure +
- * exported for tests. `--no-picker --plan` is what triggers the EI-5503 auto-kickoff,
- * so a member starts working on boot. Args are shell-token-safe (slugs + the agent
- * enum), so no quoting is needed.
- */
-export function memberLaunchCommand(opts: {
+/** Optional psu launch flags threaded onto EVERY member's `psu` invocation (EI-5765 /
+ *  owner request). Each maps to the matching `psu --flag=value`; `brain` is the boolean
+ *  `--brain`; `extraArgs` is a verbatim escape hatch for any psu flag without a first-class
+ *  field. The fleet/agent/harness/plan/no-picker tokens are owned by the tool and not
+ *  overridable here. */
+export interface MemberLaunchOpts {
   fleetSlug: string;
   agent: string;
   harness: string;
   plan: string;
-}): string {
-  return [
+  account?: string;
+  workspace?: string;
+  role?: string;
+  model?: string;
+  feature?: string;
+  launchContext?: string;
+  profile?: string;
+  brain?: boolean;
+  addDir?: string[];
+  extraArgs?: string[];
+}
+
+/** Shell-quote a value for the spawned greetingCmd: leave a safe token bare (clean,
+ *  matches the slug-style flags) and single-quote anything with whitespace / shell
+ *  metacharacters (paths, free-form extraArgs) so a member command can never be injected. */
+function shq(v: string): string {
+  return /^[A-Za-z0-9_.:=/+@-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Build the scripted psu launch command for one fleet member working a plan. Pure +
+ * exported for tests. `--no-picker --plan` is what triggers the EI-5503 auto-kickoff, so a
+ * member starts working on boot. The base tokens (fleet/agent/harness/plan) are constrained
+ * slugs/enums (no quoting needed); every optional flag's VALUE is shell-quoted via shq.
+ */
+export function memberLaunchCommand(opts: MemberLaunchOpts): string {
+  const parts = [
     'psu',
     '--no-picker',
     `--fleet=${opts.fleetSlug}`,
     `--agent=${opts.agent}`,
     `--harness=${opts.harness}`,
     `--plan=${opts.plan}`,
-  ].join(' ');
+  ];
+  if (opts.account) parts.push(`--account=${shq(opts.account)}`);
+  if (opts.workspace) parts.push(`--workspace=${shq(opts.workspace)}`);
+  if (opts.role) parts.push(`--role=${shq(opts.role)}`);
+  if (opts.model) parts.push(`--model=${shq(opts.model)}`);
+  if (opts.feature) parts.push(`--feature=${shq(opts.feature)}`);
+  if (opts.launchContext) parts.push(`--launch-context=${shq(opts.launchContext)}`);
+  if (opts.profile) parts.push(`--profile=${shq(opts.profile)}`);
+  if (opts.brain) parts.push('--brain');
+  for (const d of opts.addDir ?? []) if (d) parts.push(`--add-dir=${shq(d)}`);
+  for (const a of opts.extraArgs ?? []) if (a) parts.push(shq(a));
+  return parts.join(' ');
 }
 
 function err(text: string) {
@@ -83,7 +118,7 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
+    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, brain, add-dir, plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
   guidance: {
     when: 'Routing option (3) — "spawn a new desktop fleet to work a plan" — in ONE call instead of fleet:create + capability:terminal + a manual kickoff. Pass the plan slug + a fleet name; members open on the user\'s desktop and start working immediately.',
     notWhen:
@@ -116,10 +151,51 @@ export default defineTool({
       .max(MAX_MEMBERS)
       .optional()
       .describe(`Number of member terminals to open (default 1, max ${MAX_MEMBERS}).`),
+    // --- optional psu launch flags threaded onto EVERY member (EI-5765 / owner request) ---
+    account: z
+      .string()
+      .optional()
+      .describe(
+        "psu --account: pin every member to this inference-gateway pool account (account ids from accounts:list / gateway:status). Use it to isolate or concentrate the fleet's model load on a chosen account; omit to use the pool default. (For a multi-account spread, launch in batches with different `account` values.)",
+      ),
+    workspace: z
+      .string()
+      .optional()
+      .describe(
+        "psu --workspace: the workspace the fleet + every member launch under. Defaults to the launch session's workspace.",
+      ),
+    role: z
+      .string()
+      .optional()
+      .describe('psu --role: the su role each member runs as (default the standard su collaborator).'),
+    model: z
+      .string()
+      .optional()
+      .describe('psu --model: a per-member model spec, e.g. "opus:high" (default the role/tier default).'),
+    feature: z.string().optional().describe('psu --feature: a feature id each member should pick up.'),
+    launchContext: z
+      .string()
+      .optional()
+      .describe("psu --launch-context: path to a brief/markdown file injected as each member's launch context."),
+    profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
+    brain: z.boolean().optional().describe('psu --brain: launch each member in brain mode.'),
+    addDir: z
+      .array(z.string())
+      .optional()
+      .describe("psu --add-dir (repeatable): extra directories added to each member's workspace."),
+    extraArgs: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Escape hatch for any other psu flag: each element is one full token (e.g. ["--yes", "--add-dir=/x"]), appended verbatim to every member\'s psu launch — covers psu args without a first-class field above.',
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);
-    const workspaceId = callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId();
+    // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
+    // member; otherwise the launch session's workspace (never the '*' wildcard).
+    const workspaceId =
+      args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
     const agent = args.agent ?? 'claude'; // constrained to claude|omp|codex by the arg enum
     const count = args.count ?? 1;
 
@@ -189,7 +265,22 @@ export default defineTool({
       scheme = null;
     }
 
-    const command = memberLaunchCommand({ fleetSlug, agent, harness, plan: args.plan });
+    const command = memberLaunchCommand({
+      fleetSlug,
+      agent,
+      harness,
+      plan: args.plan,
+      account: args.account?.trim() || undefined,
+      workspace: args.workspace?.trim() || undefined,
+      role: args.role?.trim() || undefined,
+      model: args.model?.trim() || undefined,
+      feature: args.feature?.trim() || undefined,
+      launchContext: args.launchContext?.trim() || undefined,
+      profile: args.profile?.trim() || undefined,
+      brain: args.brain || undefined,
+      addDir: args.addDir,
+      extraArgs: args.extraArgs,
+    });
     const opened: Array<{ terminal: string; pid: number | null }> = [];
     const failed: Array<{ error: string; code: number }> = [];
     for (let i = 0; i < count; i++) {
@@ -233,6 +324,7 @@ export default defineTool({
         plan: args.plan,
         harness,
         agent,
+        account: args.account?.trim() || null,
         requested: count,
         opened,
         failed,
