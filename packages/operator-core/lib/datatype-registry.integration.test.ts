@@ -44,6 +44,7 @@ describe('datatype_registry store (real PG)', () => {
     // Migration 421 is post-squash → not in the baseline; apply it. A failure here
     // IS the "does the migration apply?" verification.
     await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '421-datatype-registry.sql'), 'utf8'));
+    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '425-datatype-review-status.sql'), 'utf8'));
   }, 120_000);
 
   afterAll(async () => {

@@ -94,6 +94,11 @@ export interface JoinCanonicalDeps {
   record?: (step: JoinProgressStep, status: JoinProgressStatus, extra?: { percent?: number; detail?: string }) => void;
   /** confirmInviteAnnounce bounded-wait budget (ms). Default 25s. */
   confirmTimeoutMs?: number;
+  /** Bound the directory-wiring step (ensureWired + joinInviteTopic) so a hung
+   *  connect degrades to a retry instead of freezing the bar at 5%. Default 30s
+   *  (> the Octokit 20s request timeout, so the inner timeout wins on the normal
+   *  hung-GitHub path and this stays the last-resort backstop). */
+  wireTimeoutMs?: number;
 }
 
 async function defaultEnsureWired(workspaceId: string) {
@@ -135,6 +140,28 @@ function defaultSetHome(ws: string): void {
 }
 
 /**
+ * Race a promise against a timeout; rejects with a labeled Error on expiry so the
+ * caller can degrade to a retry instead of awaiting forever. Defense-in-depth atop
+ * the Octokit request timeout: bounds the join's wiring step against ANY hang, so a
+ * stalled connect never pins the dogfood progress bar at 5%.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
  * JOIN the canonical `papercusp` hive from its baked invite. Best-effort; the NEXT
  * boot retries on any skip (gh unauth / owner offline / no member-links yet).
  */
@@ -149,6 +176,7 @@ export async function joinCanonicalPapercuspHive(
   const setHome = deps.setHomeWorkspace ?? defaultSetHome;
   const record = deps.record ?? (() => {});
   const confirmTimeoutMs = deps.confirmTimeoutMs ?? 25_000;
+  const wireTimeoutMs = deps.wireTimeoutMs ?? 30_000;
 
   try {
     // 1. gh identity — the directory needs an announce identity to wire.
@@ -161,12 +189,27 @@ export async function joinCanonicalPapercuspHive(
 
     // 2. Wire the directory + subscribe to the canonical invite topic.
     record('clone', 'running', { percent: 5, detail: 'connecting to the Papercusp hive' });
-    const wiring = await ensureWired(PAPERCUSP_WORKSPACE_ID);
+    let wiring: Awaited<ReturnType<typeof ensureWired>>;
+    try {
+      wiring = await withTimeout(ensureWired(PAPERCUSP_WORKSPACE_ID), wireTimeoutMs, 'hive directory wiring');
+    } catch (e) {
+      // A stalled wire (e.g. a hung GitHub call that never responds) must NOT pin
+      // the bar at 5% forever — degrade to a retry like every other non-fatal step
+      // here; the NEXT boot re-runs the whole join.
+      record('clone', 'running', { percent: 10, detail: 'waiting for the Papercusp hive to come online' });
+      return {
+        state: 'skipped',
+        slug: null,
+        reason: `hive directory wiring stalled: ${(e as Error)?.message ?? e}`.slice(0, 200),
+      };
+    }
     if (!wiring) {
       record('clone', 'running', { percent: 0, detail: AWAITING_GH_SIGNIN_DETAIL });
       return { state: 'skipped', slug: null, reason: 'hive directory not wired (gh auth?)' };
     }
-    await wiring.joinInviteTopic(invite.inviteSecret);
+    // joinInviteTopic voids discovery.flushed() so it should return promptly, but
+    // bound it defensively too — a hang here would also strand the bar at 5%.
+    await withTimeout(wiring.joinInviteTopic(invite.inviteSecret), wireTimeoutMs, 'join invite topic').catch(() => {});
 
     // 3. Bounded-wait for the owner's hive to actually announce on the topic.
     const confirm = wiring.confirmInviteAnnounce

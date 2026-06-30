@@ -56,6 +56,43 @@ export function clearOctokitCache(): void {
   _g.__octokitClient = null;
 }
 
+/** Default GitHub request timeout — generous enough that only a genuine hang trips it. */
+const DEFAULT_GITHUB_TIMEOUT_MS = 20_000;
+
+/** Resolve the request timeout: explicit arg → PAPERCUSP_GITHUB_TIMEOUT_MS env → default. */
+export function resolveGithubTimeoutMs(explicit?: number): number {
+  if (typeof explicit === 'number' && explicit > 0) return explicit;
+  const env = Number(process.env.PAPERCUSP_GITHUB_TIMEOUT_MS);
+  return Number.isFinite(env) && env > 0 ? env : DEFAULT_GITHUB_TIMEOUT_MS;
+}
+
+/**
+ * Wrap a fetch so a request that never responds is aborted after `timeoutMs`
+ * (composing any caller-supplied AbortSignal). On timeout it REJECTS — which is
+ * exactly what every GitHub caller's try/catch cache-fallback expects. Without
+ * this, a stalled socket (captive portal, api.github.com hiccup) never resolves
+ * or rejects and the await blocks forever — the root cause of the dogfood
+ * hive-join freezing at 5% (resolveLocalAnnounceIdentity's GET /user + gist calls).
+ *
+ * Exported for tests.
+ */
+export function makeTimeoutFetch(timeoutMs: number, baseFetch: typeof fetch = fetch): typeof fetch {
+  return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(
+      () => ctrl.abort(new Error(`github request timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    const callerSignal = init?.signal ?? undefined;
+    if (callerSignal) {
+      const reasonOf = (s: AbortSignal) => (s as AbortSignal & { reason?: unknown }).reason;
+      if (callerSignal.aborted) ctrl.abort(reasonOf(callerSignal));
+      else callerSignal.addEventListener('abort', () => ctrl.abort(reasonOf(callerSignal)), { once: true });
+    }
+    return baseFetch(input, { ...(init ?? {}), signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  }) as typeof fetch;
+}
+
 /**
  * Factory — exported for tests that want a fresh instance.
  *
@@ -64,8 +101,20 @@ export function clearOctokitCache(): void {
  * from gh-token's cache on every request — same per-request
  * resolution, just via the v7 API.
  */
-export function createOctokit(): Octokit {
-  const oc = new Octokit({});
+export interface CreateOctokitOpts {
+  /** Per-request timeout in ms. Default: PAPERCUSP_GITHUB_TIMEOUT_MS env or 20s. */
+  timeoutMs?: number;
+  /** Base fetch to wrap (tests inject a fake). Default: global fetch. */
+  fetch?: typeof fetch;
+}
+
+export function createOctokit(opts: CreateOctokitOpts = {}): Octokit {
+  // A request timeout HERE is the single app-wide guard against a hung GitHub
+  // socket: every caller routes through getOctokit()/createOctokit(), and their
+  // cache-fallback paths only fire on a rejection — never on a stalled await.
+  const oc = new Octokit({
+    request: { fetch: makeTimeoutFetch(resolveGithubTimeoutMs(opts.timeoutMs), opts.fetch) },
+  });
 
   oc.hook.before('request', async (options) => {
     const result = await getGhAuthToken();

@@ -161,6 +161,17 @@ function RootComponent() {
     if (!DevAdminRail) return;
     void import('@/app/_components/voice/voice-mode');
   }, []);
+
+  // The persistent env-bar "chrome" webview (plan persistent-env-bar-chrome-webview)
+  // loads the SPA at ?chrome=env-bar and renders ONLY the bar — no app shell. It lives
+  // OUTSIDE the navigable content webview, so switching envs can never unmount it.
+  if (
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('chrome') === 'env-bar'
+  ) {
+    return <EnvSwitcherBar chrome />;
+  }
+
   return (
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
@@ -187,10 +198,12 @@ function RootComponent() {
           <Suspense fallback={null}>
             <NuqsAdapter>
               <UiPresenceProvider />
-              {/* Cross-platform env switcher + release escape button (P-013/P-014/
-                  P-017). Self-hides unless ≥2 envs are reachable, so it's inert on a
-                  plain single-operator install. */}
-              <EnvSwitcherBar />
+              {/* The env switcher now lives in a SEPARATE persistent "chrome" webview
+                  (plan persistent-env-bar-chrome-webview) rendered by the desktop shell
+                  OUTSIDE this navigable content webview — so an env switch can't unmount
+                  it. It's no longer rendered in-content here (that caused a double bar).
+                  Off-desktop (plain browser) there is no chrome webview; if we ever need
+                  the bar there, render <EnvSwitcherBar/> conditionally on !isTauri. */}
               {/* App-wide keyboard surfaces — mounted at the router root,
                   above ChromeShell, so Ctrl+P (palette) and Alt+Left/Right
                   (history nav) work on EVERY route, including /settings and

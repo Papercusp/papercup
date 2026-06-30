@@ -81,6 +81,18 @@ export default defineTool({
           ...(it.verify !== undefined ? { verify: it.verify } : {}),
           ...(it.title ? { title: it.title } : {}),
         });
+        // EI-4889: a doc that resolved 0 subject refs comes back anchored:false /
+        // status:'untracked' — but ok:true reads as success, so an agent following
+        // the "omit documents → read frontmatter" guidance silently believes its doc
+        // is drift-tracked when it is NOT. Surface the no-op as a `warning` so the
+        // signal is loud. (The other half — wrong-dir reads — is prevented by writing
+        // through docs:author, which writes to the same root anchor reads from.)
+        const warning =
+          res.ok && !res.anchored
+            ? it.documents === undefined
+              ? "anchored:false — no `documents` resolved from the doc's `documents:` frontmatter or path inference. Is the doc written to THIS harness's docs root, and does it have a `documents:` block? Pass `documents` explicitly. The doc is NOT drift-tracked."
+              : 'anchored:false — the provided `documents` resolved to 0 subject refs (check the paths/feature-ids actually exist in the repo). The doc is NOT drift-tracked.'
+            : undefined;
         return res.ok
           ? {
               ok: true as const,
@@ -89,6 +101,7 @@ export default defineTool({
               status: res.record.status,
               anchored: res.anchored,
               subjectRef: res.subjectRef,
+              ...(warning ? { warning } : {}),
             }
           : { ok: false as const, docId: it.docId, error: res.error };
       },

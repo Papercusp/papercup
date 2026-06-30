@@ -367,6 +367,7 @@
             "packages/operator-core/lib/agent-tools/agents/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/agent_tools/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/architect/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/autoloop/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/backup/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/chat/**/*.test.ts",

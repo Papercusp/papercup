@@ -368,3 +368,114 @@ export async function listRegisteredDatatypeNames(
      WHERE workspace_id = ${workspaceId} AND status = 'active'`;
   return rows.map((r) => r.id);
 }
+
+// ── D-010 shared/published tier (migration 425) ──────────────────────────────────────────
+// A datatype's LOCAL `status` is untouched by publishing (it stays usable in its workspace);
+// `review_status` is the SEPARATE global-tier gate: none → pending → approved | rejected.
+
+/**
+ * Mark a workspace-local datatype as PUBLISHED + PENDING moderation (the publish INTENT).
+ * Only a not-yet-published ('none') row transitions; returns the updated row, or null when
+ * absent / already in a publish lifecycle. Workspace-scoped (the owning workspace publishes).
+ */
+export async function publishDatatype(
+  sql: postgres.Sql,
+  workspaceId: string,
+  id: string,
+): Promise<DatatypeRow | null> {
+  const rows = await sql<DbRow[]>`
+    UPDATE harness_shared.datatype_registry
+       SET published = true, review_status = 'pending', updated_at = now()
+     WHERE workspace_id = ${workspaceId} AND id = ${id} AND review_status = 'none'
+    RETURNING ${SELECT_COLS(sql)}`;
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
+ * The operator moderation QUEUE — published datatypes awaiting review, across ALL workspaces.
+ * Needs a cross-workspace (RLS-bypass / admin) handle; an org-scoped handle sees only its own
+ * workspace. Newest first.
+ */
+export async function listPendingPublishedDatatypes(
+  sql: postgres.Sql,
+  opts: { limit?: number } = {},
+): Promise<DatatypeRow[]> {
+  const lim = clampLimit(opts.limit);
+  const rows = await sql<DbRow[]>`
+    SELECT ${SELECT_COLS(sql)} FROM harness_shared.datatype_registry
+     WHERE review_status = 'pending'
+     ORDER BY updated_at DESC, id
+     LIMIT ${lim}`;
+  return rows.map(mapRow);
+}
+
+/**
+ * Moderate a pending published datatype: `approve` → 'approved' (globally visible),
+ * `reject` → 'rejected'. Only a 'pending' row transitions (idempotent re-moderation is a
+ * no-op → null). Returns the updated row or null.
+ */
+export async function moderatePublishedDatatype(
+  sql: postgres.Sql,
+  workspaceId: string,
+  id: string,
+  decision: 'approve' | 'reject',
+): Promise<DatatypeRow | null> {
+  const next = decision === 'approve' ? 'approved' : 'rejected';
+  const rows = await sql<DbRow[]>`
+    UPDATE harness_shared.datatype_registry
+       SET review_status = ${next}, updated_at = now()
+     WHERE workspace_id = ${workspaceId} AND id = ${id} AND review_status = 'pending'
+    RETURNING ${SELECT_COLS(sql)}`;
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
+ * D-010 GLOBAL semantic dedup: existing PUBLISHED datatypes (pending or approved) across ALL
+ * workspaces that look like the one being published — so the published namespace stays
+ * globally coherent. The same lexical+cosine surface as {@link findSimilarDatatypes}, but
+ * GLOBAL (no workspace filter) and scoped to `review_status IN ('pending','approved')`. Needs
+ * a cross-workspace (admin/RLS-bypass) handle — the server moderation path's primitive.
+ */
+export async function findSimilarPublishedDatatypes(
+  sql: postgres.Sql,
+  q: { title: string; description?: string; embedding?: number[] | null; excludeId?: string; limit?: number },
+): Promise<SimilarDatatype[]> {
+  const tokens = `${q.title} ${q.description ?? ''}`
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 2);
+  if (tokens.length === 0) return [];
+  const orQuery = tokens.join(' | ');
+  const lim = Math.max(1, Math.min(20, q.limit ?? 5));
+  const embeddingLiteral = q.embedding && q.embedding.length > 0 ? `[${q.embedding.join(',')}]` : null;
+  const exclude = q.excludeId ? sql`AND id <> ${q.excludeId}` : sql``;
+  const rows = await sql<{ id: string; title: string; description: string; tier: string; score: number }[]>`
+    SELECT id, title, description, tier,
+      ${
+        embeddingLiteral
+          ? sql`GREATEST(
+                  ts_rank(title_tsv, to_tsquery('english', ${orQuery})),
+                  CASE WHEN embedding IS NULL THEN 0
+                       ELSE 0.4 * ts_rank(title_tsv, to_tsquery('english', ${orQuery}))
+                            + 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END
+                )`
+          : sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`
+      } AS score
+      FROM harness_shared.datatype_registry
+     WHERE review_status IN ('pending', 'approved') ${exclude}
+       AND (
+         title_tsv @@ to_tsquery('english', ${orQuery})
+         ${embeddingLiteral ? sql`OR embedding IS NOT NULL` : sql``}
+       )
+     ORDER BY score DESC
+     LIMIT ${lim}`;
+  return rows
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      tier: (isDatatypeTier(r.tier) ? r.tier : 'generic-kind') as DatatypeTier,
+      score: Number(r.score) || 0,
+    }))
+    .filter((r) => r.score > 0);
+}

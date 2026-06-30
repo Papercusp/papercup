@@ -5,6 +5,9 @@
   "description": "Canonical WIT (WebAssembly Interface Type) definitions for the Papercusp plugin protocol. Shared between the JS host (jco-transpiled) and the Rust runtime (wasmtime + bindgen!). Bump versions by adding a new wit/<version>/ directory; never edit a published version in place.",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run --passWithNoTests"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",

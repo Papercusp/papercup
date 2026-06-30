@@ -3,6 +3,7 @@ import {
   clearOctokitCache,
   createOctokit,
   isUnauthorizedError,
+  makeTimeoutFetch,
   OctokitAuthError,
 } from './octokit-client';
 import { clearGhAuthTokenCache } from './gh-token';
@@ -106,5 +107,47 @@ describe('getOctokit — live integration smoke', () => {
     // P-068 will exercise the null branch when a user uninstalls gh.
     // Leaving this as a contract spec, not an enforced test.
     expect(true).toBe(true);
+  });
+});
+
+describe('makeTimeoutFetch', () => {
+  it('rejects (aborts) a hung request after timeoutMs', async () => {
+    // A fetch that never resolves on its own — only the abort signal settles it.
+    // This is the stalled-socket case the GitHub cache-fallback paths can't catch,
+    // and the root cause of the dogfood hive-join freezing at 5%.
+    const hung = ((_input: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject((init.signal as AbortSignal & { reason?: unknown }).reason ?? new Error('aborted')),
+          { once: true },
+        );
+      })) as unknown as typeof fetch;
+    const tf = makeTimeoutFetch(40, hung);
+    const start = Date.now();
+    await expect(tf('https://api.github.com/x')).rejects.toThrow(/timed out after 40ms/);
+    expect(Date.now() - start).toBeLessThan(2_000);
+  });
+
+  it('passes a fast response through untouched', async () => {
+    const ok = ((_input: unknown) => Promise.resolve(new Response('ok', { status: 200 }))) as unknown as typeof fetch;
+    const res = await makeTimeoutFetch(1_000, ok)('https://api.github.com/x');
+    expect(res.status).toBe(200);
+  });
+
+  it('honors a caller-supplied abort signal', async () => {
+    const hung = ((_input: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject((init.signal as AbortSignal & { reason?: unknown }).reason ?? new Error('aborted')),
+          { once: true },
+        );
+      })) as unknown as typeof fetch;
+    const tf = makeTimeoutFetch(5_000, hung);
+    const ctrl = new AbortController();
+    const p = tf('https://api.github.com/x', { signal: ctrl.signal });
+    ctrl.abort(new Error('caller cancelled'));
+    await expect(p).rejects.toThrow(/caller cancelled/);
   });
 });

@@ -35,6 +35,7 @@ describe('frontier placement opt-in (real PG)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '421-datatype-registry.sql'), 'utf8'));
+    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '425-datatype-review-status.sql'), 'utf8'));
   }, 120_000);
 
   afterAll(async () => {

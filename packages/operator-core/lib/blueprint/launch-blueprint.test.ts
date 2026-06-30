@@ -28,12 +28,12 @@ describe('installedAwareLaunchResolver (D-007 / WI-1146)', () => {
     // file path for an id the built-in loader would NOT find by id.
     // The id maps to coding's blueprint file; parents (e.g. `base`) fall through to built-in.
     const resolve = (id: string) => (id === 'pretend-installed' ? builtinBlueprintPath('coding') : builtinBlueprintPath(id));
-    const bp = await installedAwareLaunchResolver(resolve)('pretend-installed');
+    const bp = await installedAwareLaunchResolver(() => resolve)('pretend-installed');
     expect(bp.id).toBe('coding');
   });
 
   it('falls back to the built-in loader (preserves the throw) for a truly-unknown id', () => {
-    expect(() => installedAwareLaunchResolver(() => null)('no-such-blueprint-xyz')).toThrow(/no built-in blueprint/);
+    expect(() => installedAwareLaunchResolver(() => () => null)('no-such-blueprint-xyz')).toThrow(/no built-in blueprint/);
   });
 });
 
@@ -154,7 +154,11 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
 
   it('WI-269: fails loud when `*` is unresolvable (no harness ws + host pin is `*`) — beats a silent replay zombie', async () => {
     resolveWorkspaceForHarnessSlug.mockResolvedValueOnce(null);
-    stubActiveWorkspaceId.mockReturnValueOnce('*');
+    // Persistent (not Once): the installed-aware default resolver (D-007/WI-1146) reads
+    // activeWorkspaceId() via papercuspRoot() during blueprint resolution, so the
+    // workspace-resolution step needs the stub to still return '*' on its own call.
+    // In prod activeWorkspaceId() is stable, so both reads see the same value.
+    stubActiveWorkspaceId.mockReturnValue('*');
     await expect(
       resolveLaunchTarget('coding', { installSlug: 'nope', workspaceId: '*' }),
     ).rejects.toThrow(/WI-269/);

@@ -53,6 +53,8 @@ import './recipes/sweep';
 import './datatypes/declare';
 import './datatypes/list';
 import './datatypes/get';
+// D-010 shared leg — offer a local datatype to the global tier (PENDING moderation):
+import './datatypes/publish';
 
 // reflexive-platform-extensibility-datatypes-2026-06-24 P-004 — tools:scaffold:
 // PURE codegen of a reviewable defineTool skeleton (writes/runs/mints nothing).
@@ -342,6 +344,7 @@ import './backup/settings_set';
 import './docs/outline';
 import './docs/get';
 import './docs/search';
+import './docs/author';
 import './docs/resource-index';
 import './docs/resource-section';
 

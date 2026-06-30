@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 536,
+  "count": 538,
   "tools": [
     {
       "name": "ablation:report",
@@ -4632,6 +4632,76 @@
         "when": "To discover what datatypes exist before declaring a new one (avoid duplicates), or to find the name to put in a blueprint's dependencies.datatypes, or the generic-kind to pass to work_items:create.",
         "notWhen": "To read one datatype's full definition — use datatypes:get. To declare one — meta:define-datatype.",
         "chaining": "datatypes:list → datatypes:get { id } (inspect) → work_items:create { kind } / blueprint dependencies.datatypes."
+      }
+    },
+    {
+      "name": "datatypes:publish",
+      "http": {
+        "path": "/api/agent-tools/datatypes/publish",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Offer a workspace-local datatype to the shared/global tier (D-010): marks it PENDING operator moderation. Local usability is UNCHANGED — an operator approves it before it is globally visible. Idempotent: a datatype already pending/approved/rejected reports its current review_status.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "When a datatype you declared (meta:define-datatype) is worth sharing globally, not just locally — so other workspaces can discover/reuse it.",
+        "notWhen": "To declare a datatype (meta:define-datatype). To use one locally — a local datatype needs no publishing. Publishing does NOT distribute it cross-machine by itself (that rides the Comb worker once approved).",
+        "chaining": "meta:define-datatype → datatypes:publish { id } → (operator moderates) → globally visible."
       }
     },
     {
@@ -16452,6 +16522,76 @@
         "when": "Telemetry rows are being dropped under burst (the \"telemetry queue overflow\" warning) — raise maxPending; or tune flush debounce/batch for PG load. get to inspect the effective config + override.",
         "notWhen": "Not for quota/rate limits (operator:rate_limit_config), nor for retention (storage settings). This only sizes the in-memory telemetry flush queue.",
         "chaining": "config:list-overrides shows the active telemetry-buffer override; config:reset-overrides reverts it. The kill-switch papercusp-telemetry-buffer-config (default ON) forces the baked defaults when OFF."
+      }
+    },
+    {
+      "name": "tools:find",
+      "http": {
+        "path": "/api/agent-tools/tools/find",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with descriptions. Use when you need a capability that is not in your core toolset — e.g. tools:find(\"feature flag\") or tools:find(\"spawn a worker\"). In omp, a returned tool is hidden behind discovery: load it with search_tool_bm25(\"<exact name>\") before calling.",
+      "capabilities": [
+        "agent_tools:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO (\"set a feature flag\", \"list open plans\", \"spawn a worker bee\"). The intent-aware replacement for guessing names.",
+        "notWhen": "When the tool is already in your core set or you know its exact name — just call it (in omp, search_tool_bm25(\"<name>\") then call). For a full permission-annotated dump use agent_tools:list.",
+        "chaining": "tools:find(\"<intent>\") → take the top tool name → (omp) search_tool_bm25(\"<name>\") to load it → call it."
       }
     },
     {

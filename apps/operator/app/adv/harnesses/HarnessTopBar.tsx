@@ -1,40 +1,33 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { useSyncQuery } from '@papercusp/sync';
-import { Activity, CheckCircle2, Coins, LayoutGrid, Network } from 'lucide-react';
+import { useState } from 'react';
+import { LayoutGrid, Network } from 'lucide-react';
 import { FLAGS } from '@papercusp/flags';
 import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
 import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
-import { StatCard } from '@papercusp/ui-primitives';
 import { useFlag } from '../../../lib/flag-hooks';
 import { useLexicon } from '../../../lib/useLexicon';
-import { useWorkspaceId } from '../../../lib/use-workspace-id';
-import HealthBadge from '../../harness/HealthBadge';
 import HarnessWorkspacesButton from './HarnessWorkspacesButton';
-
-interface StatusPayload {
-  iteration: number;
-  alive: boolean;
-  counts?: Record<string, number>;
-  missionCostUsd?: number;
-}
-
-interface LanesPayload {
-  lanes: Array<{ featureId: string; elapsedSeconds: number; alive: boolean }>;
-  max: number;
-}
 
 interface Props {
   slug: string;
 }
 
 /**
- * /adv/harnesses top bar — color-accented stat cards (pulse, lanes,
- * passed/total, $ spent, health) on the left, panel/layout actions on
- * the right.
+ * /adv/harnesses top bar — Hive-level actions: workspaces, register
+ * sub-hives, add panel, reset layout.
+ *
+ * The legacy coding-pipeline stat cards (pulse / lanes / passed/total /
+ * $ spent / health) were removed 2026-06-30. They read the superseded
+ * per-harness orchestrator-status model (`harnessStatus.snapshot` /
+ * `harnessLanes.snapshot`), which the Queen/bee placement model replaced —
+ * so they sat frozen/zero. The underlying `harness_status` / `harness_lanes`
+ * tables, their sync resolvers, and the `/orchestrator/status` endpoint are
+ * KEPT: they're still live, non-orphaned infra (AdvOverviewPanel reads
+ * `harnessStatus.snapshot`; device-harnesses / device-feeds + the 30s
+ * lane-occupancy sweeper read the tables).
  *
  * The harness selector + Start/Stop + running-agents-thinking pills now
  * live in the AdvShell header (one global instance shared across every
@@ -42,81 +35,13 @@ interface Props {
  */
 export default function HarnessTopBar({ slug }: Props) {
   const t = useLexicon();
-  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   // WI-259 P-006 — cross-member browse: the "Hive content" rollup panel is
   // registered always but only offered in the Add-panel catalog when the Hive
   // umbrella flag is on (inert outside a hive, so the gate is mostly a courtesy).
   const crossMemberBrowse = useFlag(FLAGS.THE_HIVE);
-  const { data: statusRows } = useSyncQuery<StatusPayload>({
-    queryName: 'harnessStatus.snapshot',
-    args: slug ? { harnessSlug: slug, workspaceId, phase: 'staging' } : undefined,
-    enabled: !!slug && !!workspaceId,
-  });
-  const { data: laneRows } = useSyncQuery<LanesPayload>({
-    queryName: 'harnessLanes.snapshot',
-    args: slug ? { harnessSlug: slug, workspaceId, phase: 'staging' } : undefined,
-    enabled: !!slug && !!workspaceId,
-  });
-  const status = statusRows?.[0] ?? null;
-  const lanes = laneRows?.[0] ?? null;
-
-  const passedCount = status?.counts?.passed ?? 0;
-  const totalCount = useMemo(
-    () => Object.values(status?.counts ?? {}).reduce((acc, n) => acc + (n ?? 0), 0),
-    [status?.counts],
-  );
-  const progressPct = totalCount > 0 ? Math.floor((passedCount / totalCount) * 100) : 0;
-  const activeLanes = useMemo(() => (lanes?.lanes ?? []).filter((l) => l.alive), [lanes]);
 
   return (
     <div className="pc-adv-topbar">
-      <div className="pc-adv-topbar__stats">
-        {status && (
-          <>
-            <div className="pc-adv-stat pc-adv-stat--pulse" title={`Total pulses: ${status.iteration}`}>
-              <StatCard label="pulse" value={`#${status.iteration}`} icon={<Activity size={13} />} />
-            </div>
-            {lanes && (
-              <div
-                className="pc-adv-stat pc-adv-stat--lanes"
-                title={
-                  activeLanes.length > 0
-                    ? `Active lanes:\n${activeLanes
-                        .map((l) => `  ${l.featureId} · ${l.elapsedSeconds}s`)
-                        .join('\n')}`
-                    : 'No active lanes — adjust max in the Settings tab.'
-                }
-              >
-                <StatCard label="Lanes" value={`${activeLanes.length}/${lanes.max}`} />
-              </div>
-            )}
-            <div className="pc-adv-stat pc-adv-stat--passed" title={`${passedCount} passed out of ${totalCount} features`}>
-              <StatCard
-                label="passed"
-                value={`${passedCount}/${totalCount}`}
-                tone={totalCount > 0 && progressPct === 100 ? 'good' : undefined}
-                icon={<CheckCircle2 size={13} />}
-              />
-            </div>
-            {typeof status.missionCostUsd === 'number' && status.missionCostUsd > 0 && (
-              <div className="pc-adv-stat pc-adv-stat--cost" title="$ spent on this harness">
-                <StatCard
-                  label="$ spent"
-                  value={status.missionCostUsd.toFixed(2)}
-                  icon={<Coins size={13} />}
-                />
-              </div>
-            )}
-            {slug && (
-              <div className="pc-adv-stat pc-adv-stat--health">
-                <HealthBadge slug={slug} />
-              </div>
-            )}
-          </>
-        )}
-        {!status && slug && <span className="pc-adv-topbar__loading">loading…</span>}
-      </div>
-
       <div className="pc-adv-topbar__actions">
         {slug && <HarnessWorkspacesButton slug={slug} />}
         {slug && <RegisterSubsButton slug={slug} />}
@@ -161,60 +86,11 @@ export default function HarnessTopBar({ slug }: Props) {
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
           min-height: 48px;
         }
-        .pc-adv-topbar__stats {
-          display: flex;
-          align-items: stretch;
-          gap: 8px;
-          min-width: 0;
-          flex-wrap: wrap;
-        }
         .pc-adv-topbar__actions {
           display: flex;
           align-items: center;
           gap: 8px;
           flex-shrink: 0;
-          margin-left: auto;
-        }
-
-        /* Color-accented stat cards. Each card carries its own --stat-accent;
-           the shared shell tints the border + background, colors the label and
-           icon, and colors the value unless a semantic tone class already owns
-           it (passed/health use .good/.warn/.bad). */
-        .pc-adv-stat {
-          --stat-accent: var(--accent, #38bdf8);
-          border: 1px solid color-mix(in oklab, var(--stat-accent), transparent 62%);
-          background: color-mix(in oklab, var(--stat-accent), transparent 88%);
-          border-radius: 8px;
-          display: flex;
-          align-items: center;
-        }
-        .pc-adv-stat .h-stat {
-          border-left: none;
-          min-width: 52px;
-          padding: 4px 12px;
-        }
-        .pc-adv-stat .h-stat-label {
-          color: color-mix(in oklab, var(--stat-accent), var(--fg-dim, #b9d4e8) 45%);
-        }
-        .pc-adv-stat .h-stat-value svg {
-          color: var(--stat-accent);
-        }
-        .pc-adv-stat .h-stat-value:not(.good):not(.warn):not(.bad):not(.info) {
-          color: var(--stat-accent);
-        }
-        /* Per-stat accents: passed/cost carry real status semantics → the
-           --good/--warn tokens; lanes/health are decorative category colors
-           (no semantic token exists — same exemption as the tab-strip accents). */
-        .pc-adv-stat--pulse  { --stat-accent: var(--accent, #38bdf8); }
-        .pc-adv-stat--lanes  { --stat-accent: #a855f7; }
-        .pc-adv-stat--passed { --stat-accent: var(--good, #34d399); }
-        .pc-adv-stat--cost   { --stat-accent: var(--warn, #fbbf24); }
-        .pc-adv-stat--health { --stat-accent: #f472b6; }
-
-        .pc-adv-topbar__loading {
-          color: var(--fg-mute, #7f9bb4);
-          font-size: 12px;
-          font-style: italic;
         }
         .pc-adv-topbar__add-panel {
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);

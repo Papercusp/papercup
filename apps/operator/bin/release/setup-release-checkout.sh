@@ -60,6 +60,17 @@ done
 
 log() { echo "[setup-release] $*"; }
 
+# Symlink-safe roots: `find` (default -P) does NOT descend through a symlinked
+# START path, so a symlinked INTEGRATION_ROOT (e.g. papercup -> papercusp, since
+# 2026-06-25) makes the node_modules copy loop below (`find "$INTEGRATION_ROOT"
+# -name node_modules -type d`) enumerate ZERO dirs and silently copy NOTHING —
+# leaving release node_modules stale until the workspace-resolution gate aborts
+# every deploy (the 2026-06-30 "@papercusp/scheduled-registry unresolved" stall
+# that left :3070 166 commits behind). Normalize to real paths so find/cp operate
+# on the real tree regardless of how the caller named the root.
+INTEGRATION_ROOT="$(realpath "$INTEGRATION_ROOT")"
+RELEASE_ROOT="$(realpath -m "$RELEASE_ROOT")"
+
 [ -d "$INTEGRATION_ROOT/.git" ] || { echo "[setup-release] integration root is not a git repo: $INTEGRATION_ROOT" >&2; exit 1; }
 
 # Resolve the target commit from the integration repo (refs are shared with the worktree).

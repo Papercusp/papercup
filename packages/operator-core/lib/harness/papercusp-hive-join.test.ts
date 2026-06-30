@@ -124,4 +124,19 @@ describe('joinCanonicalPapercuspHive', () => {
     });
     expect(res.state).toBe('skipped');
   });
+
+  it('a hung wire is bounded → skipped + advances off 5% (the dogfood stall fix)', async () => {
+    const records: Array<[string, string, { percent?: number; detail?: string } | undefined]> = [];
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      // ensureWired never settles — the exact failure mode that froze the bar at 5%.
+      ensureWired: (() => new Promise(() => {})) as unknown as JoinCanonicalDeps['ensureWired'],
+      wireTimeoutMs: 60,
+      record: (s, st, e) => records.push([s, st, e]),
+    });
+    expect(res.state).toBe('skipped');
+    expect(res.reason).toMatch(/stalled/);
+    // Must move the bar OFF 5% so the banner doesn't read "connecting (5%)" forever.
+    expect(records.some((r) => r[2]?.percent === 10)).toBe(true);
+  }, 5_000);
 });

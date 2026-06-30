@@ -35,6 +35,8 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
+import { fetchPresenceFleet } from '../coordination/presence-fleet';
+import { resolveAgentIdentity } from '../coordination/identity';
 import type { ColorScheme } from '../../console-color-schemes';
 
 /** Opening more than this many desktop windows in one call is almost certainly a
@@ -105,7 +107,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "Optional fleet name or slug — every terminal in this call uses that fleet's permanently-bound color scheme (a stable per-fleet look). Omit for the default per-plan coloring.",
+        "Optional fleet name or slug — every terminal in this call uses that fleet's permanently-bound color scheme. When omitted, the tool automatically resolves your presence-fleet color (if you are a fleet member). Use this to OVERRIDE the presence fleet or when you are not a fleet member.",
       ),
   }),
   async handler(args, ctx) {
@@ -140,12 +142,28 @@ export default defineTool({
       return err(`Failed to prepare terminal(s): ${e?.message ?? e}`);
     }
 
-    // Resolve the fleet's permanently-bound color scheme, if a fleet was named.
+    // Resolve the fleet's permanently-bound color scheme.
+    // Precedence: explicit `fleet` arg → caller's shared_presence fleet_slug → null (plan-hash fallback).
     // Color is cosmetic — a lookup failure must never block the launch.
     let scheme: ColorScheme | null = null;
     if (args.fleet) {
+      // Explicit fleet name wins.
       try {
         scheme = await getFleetScheme(workspaceId, fleetSlugFromName(args.fleet));
+      } catch {
+        scheme = null;
+      }
+    } else {
+      // Fallback: resolve from the caller's shared_presence fleet_slug so every
+      // terminal a fleet member opens inherits their fleet's color without an
+      // explicit arg (capability-terminal fleet-color-schemes-2026-06-30 P-003).
+      try {
+        const ownerId = resolveAgentIdentity(ctx).ownerId;
+        const fleetMap = await fetchPresenceFleet([ownerId]);
+        const membership = fleetMap.get(ownerId);
+        if (membership?.fleetSlug) {
+          scheme = await getFleetScheme(workspaceId, membership.fleetSlug);
+        }
       } catch {
         scheme = null;
       }
@@ -176,7 +194,11 @@ export default defineTool({
 
     const lines: string[] = [];
     if (opened.length) {
-      const schemeNote = scheme ? ` (fleet scheme: ${scheme.name})` : '';
+      const schemeNote = scheme
+        ? args.fleet
+          ? ` (fleet scheme: ${scheme.name})`
+          : ` (fleet scheme: ${scheme.name} — from your presence fleet)`
+        : '';
       lines.push(`Opened ${opened.length} terminal${opened.length > 1 ? 's' : ''}${schemeNote}:`);
       for (const o of opened) {
         lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${o.cwd} — ${o.command}`);

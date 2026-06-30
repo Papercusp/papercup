@@ -66,7 +66,12 @@ export const QUEEN_INVOKE_TIMEOUT_MS = 900_000;
  * the coord-program workflow's resolver is overridable. Pass `null` to restore.
  */
 export type LaunchResolverFn = (blueprintId: string) => Blueprint | Promise<Blueprint>;
-const builtinResolver: LaunchResolverFn = (id) => loadBuiltinBlueprint(id).blueprint;
+// DEFAULT resolver is installed-aware (D-007/WI-1146): installed (`~/.papercusp/blueprints`)
+// → built-in. `installedAwareLaunchResolver` is a hoisted function declaration so it can be
+// referenced here. Lives in THIS module (not wired externally) so `resolveLaunchBlueprint`
+// uses it directly — avoiding the ESM dual-instance trap where an external
+// `setLaunchBlueprintResolver` set a different module copy's `_resolver`.
+const builtinResolver: LaunchResolverFn = installedAwareLaunchResolver();
 let _resolver: LaunchResolverFn = builtinResolver;
 export function setLaunchBlueprintResolver(fn: LaunchResolverFn | null): void {
   _resolver = fn ?? builtinResolver;
@@ -83,14 +88,15 @@ export function setLaunchBlueprintResolver(fn: LaunchResolverFn | null): void {
  * `no built-in blueprint "…"` instead of resolving — the missing integration that
  * blocked the harness-provided-cadence live-arm (harness-provided-cadence-ops-2026-06-26
  * D-007 / WI-1146). Built-in ids resolve identically (the composed resolver includes
- * the built-in tier), so this is purely additive. Wire it once at operator boot via
- * `setLaunchBlueprintResolver(installedAwareLaunchResolver())`. `resolve` is injectable
- * for tests.
+ * the built-in tier), so this is purely additive. This IS the default resolver
+ * (`builtinResolver`). `resolveFactory` is injectable for tests; it is invoked PER
+ * resolve so the installed dir always reflects the current `papercuspRoot()`.
  */
 export function installedAwareLaunchResolver(
-  resolve: ResolveExtendsPath = operatorResolveExtends(),
+  resolveFactory: () => ResolveExtendsPath = operatorResolveExtends,
 ): LaunchResolverFn {
   return (id) => {
+    const resolve = resolveFactory();
     const file = resolve(id);
     if (file) return loadBlueprintFromFile(file, resolve).blueprint;
     // Truly-unknown id: fall back to the built-in loader so the error message

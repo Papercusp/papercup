@@ -87,7 +87,15 @@ function ago(ms: number | null | undefined): string {
 // Matches the native bar's status cadence (dev_wrapper.rs POLL_INTERVAL / VersionBadge).
 const REFRESH_MS = 30_000;
 
-export function EnvSwitcherBar() {
+/**
+ * @param chrome - when true, this instance is rendered as the dedicated, persistent
+ *   "chrome" webview (plan persistent-env-bar-chrome-webview): it fills its own webview
+ *   (position static, no #root layout-reservation), and an env switch navigates the
+ *   CONTENT webview via the shell (Tauri `papercusp:env-switch` event) instead of doing a
+ *   top-level navigation on itself — so the bar survives the switch. Default false = the
+ *   legacy in-content render.
+ */
+export function EnvSwitcherBar({ chrome = false }: { chrome?: boolean } = {}) {
   const [data, setData] = useState<DevOperatorsResponse | null>(null);
   const [pipeline, setPipeline] = useState<PipelineStats | null>(null);
   const mounted = useRef(true);
@@ -122,13 +130,29 @@ export function EnvSwitcherBar() {
     return () => clearInterval(t);
   }, [load]);
 
-  const navigate = useCallback((op: ResolvedDevOperator) => {
-    if (op.isSelf || !op.reachable) return;
-    // Carry the current SPA route + query across the env switch (matches the native
-    // bar's switch_to). A top-level navigation is not CORS-bound.
-    const target = op.origin + window.location.pathname + window.location.search + window.location.hash;
-    window.location.assign(target);
-  }, []);
+  const navigate = useCallback(
+    (op: ResolvedDevOperator) => {
+      if (op.isSelf || !op.reachable) return;
+      if (chrome) {
+        // We ARE the persistent chrome webview — switch by navigating the CONTENT
+        // webview through the shell (Tauri event), never ourselves, so the bar
+        // stays put across the switch. Fall back to a top-level nav off-desktop.
+        void import('@tauri-apps/api/event')
+          .then(({ emit }) => emit('papercusp:env-switch', { origin: op.origin }))
+          .catch(() => {
+            window.location.assign(
+              op.origin + window.location.pathname + window.location.search + window.location.hash,
+            );
+          });
+        return;
+      }
+      // Legacy in-content render: carry the current SPA route + query across the env
+      // switch (matches the native bar's switch_to). A top-level navigation is not CORS-bound.
+      const target = op.origin + window.location.pathname + window.location.search + window.location.hash;
+      window.location.assign(target);
+    },
+    [chrome],
+  );
 
   // Right-click an env to enable/disable whether it's provisioned/started (D-007).
   // Persisted server-side + agent-legible (POST /api/desktop/dev-operators/set-enabled).
@@ -164,7 +188,8 @@ export function EnvSwitcherBar() {
   useLayoutEffect(() => {
     const root = document.getElementById('root');
     if (!root) return;
-    if (!barVisible) {
+    // In chrome mode the bar IS its own webview — nothing to reserve space against.
+    if (!barVisible || chrome) {
       root.style.removeProperty('padding-top');
       return;
     }
@@ -182,7 +207,7 @@ export function EnvSwitcherBar() {
       window.removeEventListener('resize', apply);
       root.style.removeProperty('padding-top');
     };
-  }, [barVisible]);
+  }, [barVisible, chrome]);
   // (The old native GTK dev-wrapper bar is RETIRED — D-019 — so there is no longer a native bar
   // to defer to; this in-webview bar is the single env bar on every platform.)
   // ALWAYS VISIBLE (owner request): show the bar whenever the desktop dev-operators endpoint
@@ -269,7 +294,9 @@ export function EnvSwitcherBar() {
       data-testid="env-switcher-bar"
       aria-label="Environment switcher"
       style={{
-        position: 'fixed',
+        // chrome mode: the bar fills its own dedicated webview → static, not a
+        // fixed overlay. Legacy in-content mode: fixed strip over the content.
+        position: chrome ? 'static' : 'fixed',
         top: 0,
         left: 0,
         right: 0,

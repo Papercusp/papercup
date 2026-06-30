@@ -183,6 +183,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     work_item_kind  text,
     tier            text NOT NULL DEFAULT 'generic-kind',
     status          text NOT NULL DEFAULT 'active',
+    review_status   text NOT NULL DEFAULT 'none',
     tags            text[] NOT NULL DEFAULT '{}',
     PRIMARY KEY (workspace_id, id)
   );`;
