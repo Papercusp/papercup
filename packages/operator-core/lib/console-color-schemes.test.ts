@@ -10,6 +10,7 @@ import {
   DEFAULT_SCHEME,
   allocateNextSchemeName,
   oscRecolorSequence,
+  oscResetSequence,
   schemeByName,
   schemeForSlug,
   type ColorScheme,
@@ -59,6 +60,17 @@ describe('oscRecolorSequence', () => {
       // one BEL per OSC, no stray control bytes
       expect((seq.match(/\x07/g) ?? []).length).toBe(3);
     }
+  });
+});
+
+describe('oscResetSequence', () => {
+  it('resets fg (OSC 110), bg (111), cursor (112) to the terminal default', () => {
+    expect(oscResetSequence()).toBe('\x1b]110\x07\x1b]111\x07\x1b]112\x07');
+  });
+  it('carries no color values (pure reset) and exactly three BELs', () => {
+    const s = oscResetSequence();
+    expect(s).not.toContain('#');
+    expect((s.match(/\x07/g) ?? []).length).toBe(3);
   });
 });
 

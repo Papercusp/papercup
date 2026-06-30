@@ -5,7 +5,7 @@
  * which is what these cover — proving the agent can never inject a shell command.
  */
 import { describe, expect, it } from 'vitest';
-import { resolveInspectCommand } from './inspect';
+import { resolveInspectCommand, filterTscOutputToPaths } from './inspect';
 
 const BASE = '/repo';
 
@@ -81,5 +81,44 @@ describe('resolveInspectCommand — security (no shell injection / traversal)', 
   it('rejects an absolute package or path', () => {
     expect(resolveInspectCommand({ check: 'test', package: '/etc' }, BASE).ok).toBe(false);
     expect(resolveInspectCommand({ check: 'test', package: 'pkg', path: '/etc/passwd' }, BASE).ok).toBe(false);
+  });
+});
+
+describe('filterTscOutputToPaths — "did MY change add a NEW error" (WI-1255)', () => {
+  const OUT = [
+    "lib/agent-tools/docs/author.ts(46,26): error TS2307: Cannot find module 'x'.",
+    "../plugin-loader/src/wasm/jco-transpiler.ts(46,26): error TS2307: Cannot find module '@bytecodealliance/jco'.",
+    "lib/other/foo.ts(1,1): error TS1005: ';' expected.",
+    'Found 3 errors in 3 files.',
+  ].join('\n');
+
+  it('counts all errors but matches only the requested file', () => {
+    const r = filterTscOutputToPaths(OUT, ['lib/agent-tools/docs/author.ts']);
+    expect(r.totalErrors).toBe(3);
+    expect(r.matchedErrors).toBe(1);
+    expect(r.matchedLines[0]).toContain('author.ts');
+  });
+
+  it('matches loosely (a basename fragment finds the file)', () => {
+    expect(filterTscOutputToPaths(OUT, ['author.ts']).matchedErrors).toBe(1);
+  });
+
+  it('a directory fragment matches every file under it (and excludes others)', () => {
+    const r = filterTscOutputToPaths(OUT, ['lib/']);
+    expect(r.matchedErrors).toBe(2); // author.ts + other/foo.ts, NOT the ../plugin-loader one
+  });
+
+  it('an unmatched path → 0 matched, full total (the clean signal)', () => {
+    const r = filterTscOutputToPaths(OUT, ['lib/nope/missing.ts']);
+    expect(r.matchedErrors).toBe(0);
+    expect(r.totalErrors).toBe(3);
+  });
+
+  it('ignores non-error lines (summary, blank)', () => {
+    expect(filterTscOutputToPaths('Found 3 errors in 3 files.\n\n', ['x']).totalErrors).toBe(0);
+  });
+
+  it('empty output → zeros', () => {
+    expect(filterTscOutputToPaths('', ['x'])).toEqual({ matchedErrors: 0, totalErrors: 0, matchedLines: [] });
   });
 });

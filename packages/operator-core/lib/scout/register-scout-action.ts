@@ -128,7 +128,8 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   }
 
   onPhase?.('llm-client-import');
-  const { llmCall: rawLlmCall } = await import('../llm-testing/llm-client');
+  const { llmCall: rawLlmCall, backendForLlmCall } = await import('../llm-testing/llm-client');
+  const { SCOUT_IDEATOR_MODEL } = await import('./ideators');
   const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
 
   // Gateway admission-tier label (gateway-priority-tiers-2026-06-22): stamp every
@@ -140,8 +141,18 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // ideators arrived UNTIERED → the lowest `default` band (tier 4), which the AIMD
   // shrink sheds FIRST under fleet load → all 8 bailed every fire ("rate-limit pause
   // exceeds maxWait"), 0 ideas for 12 days while bees (tier 3) crowded the pool.
-  const llmCall: typeof rawLlmCall = (o) =>
-    rawLlmCall({ ...o, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
+  // su-5e6cc (2026-06-30): PIN Scout's in-process LLM onto the gateway's ANTHROPIC pool.
+  // The runtime ideator model was resolving to a codex/gpt model → routed to OpenAI
+  // (quota-EXHAUSTED) → "all 1 ideator failed, 0 ideas, $0 spent" → circuit-open/gated
+  // for hours, DESPITE the claude-opus-4-8 default + INFERENCE_GATEWAY on (that flag only
+  // redirects the anthropic-direct path, NOT codex). OpenAI has no quota; the Anthropic
+  // pool (the gateway) does. So force any codex-backend model back to the Claude ideator
+  // default → it egresses anthropic-direct → the gateway. (LLM_TEST_BACKEND is unset on
+  // bg-host, so backendForLlmCall is model-derived — pinning the model is sufficient.)
+  const llmCall: typeof rawLlmCall = (o) => {
+    const model = backendForLlmCall(o.model) === 'codex' ? SCOUT_IDEATOR_MODEL : o.model;
+    return rawLlmCall({ ...o, model, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
+  };
 
   // ── Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20) ──────────
   // Scout's coord identity (P-003) + the two Scout→Queen ping ports (queen-notify).

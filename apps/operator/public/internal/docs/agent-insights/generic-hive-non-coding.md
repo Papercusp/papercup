@@ -37,6 +37,22 @@ the live `hive` is already the de-facto base + coding hive (repo-less, generic r
 `prompts/queen.md` is file-coded), and repointing the running fleet to a renamed `coding-hive`
 was the risky part. So `generic-hive` is an additive sibling; `hive` stays the coding hive.
 
+**Important**: because `coding` (and therefore `work`) now defaults `knobs.requiresRepo: true`
+and `knobs.releaseGate.enabled: true` (per-hive-git-and-release-gate-2026-06-29 D-002), the
+`work` blueprint explicitly overrides both back to `false` in its
+`libs/papercusp/packages/harness/blueprints/work/blueprint.yaml`:
+
+```yaml
+knobs:
+  requiresRepo: false        # work extends coding, which now sets requiresRepo:true
+  releaseGate:
+    enabled: false           # …and releaseGate.enabled:true
+```
+
+A `work`-based hive that omits these overrides would inherit the git/release-gate requirements
+from `coding` — which is almost certainly wrong for a research/analysis hive. Do NOT remove
+these overrides when forking `work`.
+
 ## The domain-profile schema (where each field is read)
 
 All additive + **optional** on `BlueprintSchema`

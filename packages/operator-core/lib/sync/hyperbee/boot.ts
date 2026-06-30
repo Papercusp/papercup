@@ -1764,9 +1764,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const resolveJoinedHiveOwnerDevice = async (): Promise<string | null> => {
     const binding = opts.swarmBinding;
     if (!binding) return null;
-    if (binding.kind === 'hive') return ownerDeviceForHive(binding.hive_pubkey).catch(() => null);
-    if (binding.kind === 'topic') return ownerDeviceForTopic(binding.topic_hex).catch(() => null);
-    return null;
+    const resolved =
+      binding.kind === 'hive'
+        ? await ownerDeviceForHive(binding.hive_pubkey).catch(() => null)
+        : binding.kind === 'topic'
+          ? await ownerDeviceForTopic(binding.topic_hex).catch(() => null)
+          : null;
+    // A→B owner-admit diagnostic (PAPERCUSP_A003_TRACE, off by default/in tests): did the
+    // directory cache resolve the joined hive's owner device? `<null>` here is the live A→B
+    // root — the owner-bootstrap admit + the roster member-set both depend on this resolving.
+    if (process.env.PAPERCUSP_A003_TRACE === '1') {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[A-003] owner-resolve ${opts.harnessSlug}: binding.kind=${binding.kind} ` +
+          `${binding.kind === 'hive' ? `hive_pubkey=${binding.hive_pubkey.slice(0, 10)}` : binding.kind === 'topic' ? `topic=${binding.topic_hex.slice(0, 12)}` : ''} ` +
+          `→ ownerDevice=${resolved ? resolved.slice(0, 10) : '<null>'}`,
+      );
+    }
+    return resolved;
   };
 
   /**
@@ -1910,6 +1925,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // or any other device (that would hole the WI-259 membership guard). D-053: BOTH binding kinds
     // (a topic-bound invite/link joiner has no `hive_pubkey` — recover it from the cache by topic).
     const ownerDevice = await resolveJoinedHiveOwnerDevice();
+    // A→B owner-admit diagnostic (PAPERCUSP_A003_TRACE): did the IDENTITY-stage owner-bootstrap
+    // fire + match this frame's device? match=true ⇒ B admits the owner log (the keystone);
+    // match=false with ownerDevice=<null> ⇒ cache didn't resolve the owner (the live A→B root).
+    if (process.env.PAPERCUSP_A003_TRACE === '1') {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[A-003] owner-admit ${opts.harnessSlug}: ownerDevice=${ownerDevice ? ownerDevice.slice(0, 10) : '<null>'} ` +
+          `frame.device=${frame.device_pubkey.slice(0, 10)} match=${!!(ownerDevice && frame.device_pubkey === ownerDevice)}`,
+      );
+    }
     if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
     // Member admission (below) needs the resolved hive-home slug — resolve it AFTER the
     // binding-only owner-bootstrap above, so a home=<none> joiner still bootstrap-admits the owner.

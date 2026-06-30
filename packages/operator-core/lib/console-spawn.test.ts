@@ -6,7 +6,12 @@
  * off to an interactive login shell so the window stays open.
  */
 import { describe, expect, it } from 'vitest';
-import { buildConsoleOneliner, advSessionTitleTag, type AppearanceOpts } from './console-spawn';
+import {
+  buildConsoleOneliner,
+  advSessionTitleTag,
+  macConsoleInvocation,
+  type AppearanceOpts,
+} from './console-spawn';
 
 const APPEARANCE: AppearanceOpts = { mode: 'console', planSlug: null, label: null };
 
@@ -95,5 +100,46 @@ describe('fleet color scheme (AppearanceOpts.scheme)', () => {
     const out = buildConsoleOneliner('/x', {}, 'true', { mode: 'console', planSlug: null, label: null });
     expect(out).not.toContain('\\033]12;'); // no cursor sequence
     expect(out).toContain("printf '\\033]11;#1e1b4b\\007'"); // console null-slug fallback
+  });
+});
+
+describe('macConsoleInvocation (operator-direct macOS spawn — approach C)', () => {
+  const baseOpts = { tmpDir: '/tmp', nowMs: 1234, pid: 999, hasITerm: false };
+
+  it('writes a one-shot .command that self-deletes then execs the login-shell one-liner', () => {
+    const oneliner = buildConsoleOneliner('/proj', {}, 'npm run dev', APPEARANCE);
+    const inv = macConsoleInvocation(oneliner, baseOpts);
+    expect(inv.content).toMatch(/^#!\/bin\/bash\n/);
+    expect(inv.content).toContain('rm -f "$0"'); // self-delete so /tmp doesn't accrete one-shots
+    expect(inv.content).toContain('exec bash -lc');
+    expect(inv.content).toContain('(npm run dev)'); // the full one-liner is carried verbatim
+  });
+
+  it('names a fresh .command per pid+timestamp under tmpDir', () => {
+    const inv = macConsoleInvocation('true', { ...baseOpts, tmpDir: '/var/folders/x', nowMs: 42, pid: 7 });
+    expect(inv.file).toBe('/var/folders/x/papercup-console-7-42.command');
+  });
+
+  it('opens a FRESH instance (open -na) so every call is a new window', () => {
+    const inv = macConsoleInvocation('true', baseOpts);
+    expect(inv.openArgs).toEqual(['-na', 'Terminal.app', inv.file]);
+  });
+
+  it('prefers iTerm when installed, else Terminal.app', () => {
+    expect(macConsoleInvocation('true', { ...baseOpts, hasITerm: true }).term).toBe('iTerm.app');
+    expect(macConsoleInvocation('true', { ...baseOpts, hasITerm: false }).term).toBe('Terminal.app');
+  });
+
+  it('carries the OSC color prelude into the .command (fleet colors work on Mac, no Rust port)', () => {
+    const SCHEME = { name: 'royal-purple', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' };
+    const oneliner = buildConsoleOneliner('/x', {}, 'true', {
+      mode: 'console',
+      planSlug: 'p',
+      label: null,
+      scheme: SCHEME,
+    });
+    const inv = macConsoleInvocation(oneliner, baseOpts);
+    expect(inv.content).toContain('#581c87'); // bg (OSC 11) survives into the .command
+    expect(inv.content).toContain('#d8b4fe'); // cursor (OSC 12) survives
   });
 });

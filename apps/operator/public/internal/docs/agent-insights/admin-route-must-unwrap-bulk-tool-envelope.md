@@ -60,11 +60,13 @@ the CAS hash, so prose-only is not a substitute. Read needs `prose`; edit needs 
 ## The fix (both server-side, in operator-core)
 
 1. **Route: unwrap `results[0]` for the `get` verb.** A dedicated `unwrapBulkGet`
-   (not the generic `unwrap`) pulls the single plan out of the envelope, maps an
-   empty `results` to a clean `{ error: { code: 'not_found' } }`, and passes a
-   bare `{ error }` (trust/validation failure — never the bulk shape) straight
-   through. This restores the route's documented contract: *present clean
-   single-object shapes to client code.*
+   (not the generic `unwrap`) pulls the single plan out of the envelope. When the
+   tool returns `{ ok: false, error: "not_found" }` in `results[0]` (the not-found
+   shape), that object passes through as-is; if `results` is somehow empty, a
+   fallback `{ error: { code: 'not_found', message: 'Plan not found.' } }` is
+   returned. A bare `{ error }` at the top level (trust/validation failure — never
+   the bulk shape) passes through unchanged. This restores the route's documented
+   contract: *present clean single-object shapes to client code.*
 
    ```ts
    // routes/admin/plans.ts
@@ -82,6 +84,13 @@ the CAS hash, so prose-only is not a substitute. Read needs `prose`; edit needs 
    so it MUST join the key — otherwise a slim agent-cached entry (no `raw`) is served
    to a UI caller that asked for raw, and the editor breaks *intermittently* on cache
    state. (Mirror of: any new response-shaping arg belongs in the cache key.)
+
+4. **UI: distinguish `not_found` from a real server error.** `PlanDetail` now checks
+   `data.error === 'not_found'` and renders a calm "Plan not found." message instead
+   of the alarming "Server: not\_found". This matters because `not_found` is a **benign
+   empty state** — the plan lives in a different hive's harness, was deleted, or hasn't
+   synced yet. It surfaces conspicuously in the Create tab when the harness-picker
+   shows a cross-hive plan the current harness doesn't own.
 
 ## The generalizable checklist
 
@@ -102,7 +111,9 @@ When you migrate a `defineTool` that an `/admin` route proxies to the bulk
 * Route fix + `unwrapBulkGet`: `packages/operator-core/lib/endpoint-route/routes/admin/plans.ts`
   (unit-tested in `plans.unwrap.test.ts`).
 * `includeRaw` + cache key: `packages/operator-core/lib/agent-tools/plans/get.ts`.
-* UI consumer: `apps/operator/app/admin/plans/PlanDetail.tsx` (`data.raw ?? data.prose`),
+* UI consumer: `apps/operator/app/admin/plans/PlanDetail.tsx` (`data.raw ?? data.prose` for
+  read/edit; `data.error === 'not_found'` handled as a calm benign state — "Plan not found."
+  instead of "Server: not\_found" — so cross-harness hive plans in the Create tab don't alarm),
   `plans-api.ts` (`fetchPlan`, mode:'full').
 * Related: [bulk-tool-contract-2026-06-22](/internal/docs/agent-insights/bulk-tool-contract-2026-06-22),
   [admin-route-tool-proxy](/internal/docs/agent-insights/admin-route-tool-proxy),

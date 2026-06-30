@@ -28,6 +28,11 @@ import {
   type AgentClaim,
   type OrphanedClaimSummary,
 } from './fleet/assignments';
+// fleet-color-schemes #3: the per-agent fleet label rides on coord_presence
+// (fetchPresenceFleet, a soft label not on PresenceRecord), and the fleet's bound
+// scheme resolves the colored group header the pui Fleet tab draws.
+import { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
+import { getFleetScheme } from './agent-fleets-store';
 // hive-agent-tabs-psu-tui P-001: the shared pane-kind taxonomy (one source of
 // truth) — stamp each roster entry so pui renders/colors per type.
 import { classifyAgentPane, type AgentPaneKind, type DriveMode } from '@papercusp/agent-mcp';
@@ -151,6 +156,14 @@ export interface RosterEntry {
   /** Staged (manual-mode) wakes awaiting owner release — the P-008 badge's
    *  pending COUNT. 0 unless the P-007 gate staged something. */
   pendingWakes: number;
+  // ── fleet membership (fleet-color-schemes #3) ──
+  /** The named fleet this agent belongs to (coord_presence.fleet_slug; null = no
+   *  fleet). The pui Fleet tab groups the roster by this. */
+  fleetSlug: string | null;
+  /** The fleet's bound color-scheme ACCENT (scheme.cursor hex, e.g. "#38bdf8") —
+   *  what the pui paints the fleet's group header in. null when no fleet / the
+   *  scheme didn't resolve (the pui falls back to a neutral header). */
+  fleetColor: string | null;
 }
 
 /**
@@ -307,6 +320,7 @@ export function mergeRosterEntries(
   defaultWakeMode: WakeMode = 'auto',
   pendingWakesByOwner: Map<string, number> = new Map(),
   nurseryByOwner: Map<string, NurseryLiveness> = new Map(),
+  fleetByOwner: Map<string, { fleetSlug: string | null; fleetColor: string | null }> = new Map(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -399,6 +413,8 @@ export function mergeRosterEntries(
       nativeSession,
       wakeMode: resolveWakeModeFrom(wakeModesByOwner.get(p.ownerId) ?? null, defaultWakeMode),
       pendingWakes: pendingWakesByOwner.get(p.ownerId) ?? 0,
+      fleetSlug: fleetByOwner.get(p.ownerId)?.fleetSlug ?? null,
+      fleetColor: fleetByOwner.get(p.ownerId)?.fleetColor ?? null,
     };
   });
 }
@@ -456,6 +472,9 @@ export function pendingLaunchesToRosterEntries(
       nativeSession: null,
       wakeMode: null,
       pendingWakes: 0,
+      // A pending launch hasn't joined a fleet yet — no group, no color.
+      fleetSlug: null,
+      fleetColor: null,
     };
   });
 }
@@ -512,6 +531,42 @@ export interface RosterWithAssignments {
 }
 
 /**
+ * Resolve each presence owner's fleet membership + the fleet's bound color-scheme
+ * ACCENT (scheme.cursor hex), for the pui Fleet-tab roster grouping (#3). The
+ * fleet label rides on coord_presence (fetchPresenceFleet — a soft label NOT on
+ * PresenceRecord); the accent resolves ONCE per distinct (workspace, fleet) via
+ * getFleetScheme. Best-effort: a presence-fleet read failure yields an empty map
+ * (the roster degrades to flat/ungrouped), and an unresolved scheme leaves the
+ * color null (the pui draws a neutral header).
+ */
+async function resolveFleetInfoByOwner(
+  presence: PresenceRecord[],
+): Promise<Map<string, { fleetSlug: string | null; fleetColor: string | null }>> {
+  const out = new Map<string, { fleetSlug: string | null; fleetColor: string | null }>();
+  let fleetByOwner: Awaited<ReturnType<typeof fetchPresenceFleet>>;
+  try {
+    fleetByOwner = await fetchPresenceFleet(presence.map((p) => p.ownerId));
+  } catch {
+    return out; // presence-fleet read failed → no grouping (flat roster)
+  }
+  const colorCache = new Map<string, string | null>(); // `${workspaceId}\0${slug}` → accent
+  for (const p of presence) {
+    const slug = fleetByOwner.get(p.ownerId)?.fleetSlug ?? null;
+    if (!slug) {
+      out.set(p.ownerId, { fleetSlug: null, fleetColor: null });
+      continue;
+    }
+    const key = `${p.workspaceId} ${slug}`;
+    if (!colorCache.has(key)) {
+      const scheme = await getFleetScheme(p.workspaceId, slug).catch(() => null);
+      colorCache.set(key, scheme?.cursor ?? null);
+    }
+    out.set(p.ownerId, { fleetSlug: slug, fleetColor: colorCache.get(key) ?? null });
+  }
+  return out;
+}
+
+/**
  * The live roster for a workspace (or all workspaces when workspaceId is
  * null/omitted): coord_presence primary + adv_sessions enrichment + per-agent
  * claims from the canonical fleet_assignment view, liveness derived from the
@@ -544,6 +599,8 @@ export async function mergeRosterWithAssignments(
   // because it needs the hostname; one indexed query, still cheap.
   const nurseryByOwner = await runningSpawnLivenessByOwner(os.hostname());
   const presence = scopePresenceToWorkspace(presenceAll, workspaceId);
+  // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping.
+  const fleetInfoByOwner = await resolveFleetInfoByOwner(presence);
   const entries = mergeRosterEntries(
     presence,
     advByOwner,
@@ -554,6 +611,7 @@ export async function mergeRosterWithAssignments(
     defaultWakeMode,
     pendingWakesByOwner,
     nurseryByOwner,
+    fleetInfoByOwner,
   );
   return {
     active: enrichPidLiveness(entries, os.hostname()),

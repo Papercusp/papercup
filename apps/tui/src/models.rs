@@ -189,9 +189,28 @@ pub struct RosterEntry {
     /// "active" agent without a claimed lane is visibly different.
     #[serde(default)]
     pub declared_unclaimed: bool,
+    // ── fleet membership (fleet-color-schemes #3) ── stamped by adv-roster.ts.
+    /// The named fleet this agent belongs to (`fleetSlug`; None = no fleet).
+    /// Drives the Fleet-tab roster grouping.
+    #[serde(default)]
+    pub fleet_slug: Option<String>,
+    /// The fleet's bound color-scheme ACCENT (hex, e.g. "#38bdf8") for the colored
+    /// group header; None when no fleet / unresolved (the pui draws it neutral).
+    #[serde(default)]
+    pub fleet_color: Option<String>,
 }
 
 impl RosterEntry {
+    /// Sort key that GROUPS the roster by fleet for the Fleet-tab display (#3):
+    /// fleets alphabetical by slug, agents in NO fleet last. A STABLE sort with
+    /// this key keeps the server's within-fleet (newest-heartbeat) order.
+    pub fn fleet_group_sort_key(&self) -> (u8, String) {
+        match self.fleet_slug.as_deref().filter(|s| !s.is_empty()) {
+            Some(s) => (0, s.to_string()),
+            None => (1, String::new()),
+        }
+    }
+
     /// Is the agent's process running right now? A live/idle heartbeat AND not a
     /// known zombie (`pid_alive == Some(false)` is a fresh heartbeat over a dead
     /// process). Used to decide focus-vs-resume so a resume never double-spawns a
@@ -2322,6 +2341,50 @@ mod tests {
         assert_eq!(e.role, None);
         assert!(e.current_files.is_empty());
         assert!(!e.stale);
+    }
+
+    #[test]
+    fn roster_decodes_fleet_fields() {
+        // #3: the adv-roster DTO now carries fleetSlug + fleetColor; both are
+        // optional, so an entry without them decodes to None (no fleet), and the
+        // whole roster decode never fails on their absence.
+        let j = r##"{"active":[
+            {"ownerId":"su-1","fleetSlug":"atlas-fleet","fleetColor":"#d8b4fe"},
+            {"ownerId":"su-2"}
+        ]}"##;
+        let r: RosterResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.active[0].fleet_slug.as_deref(), Some("atlas-fleet"));
+        assert_eq!(r.active[0].fleet_color.as_deref(), Some("#d8b4fe"));
+        assert_eq!(r.active[1].fleet_slug, None);
+        assert_eq!(r.active[1].fleet_color, None);
+    }
+
+    #[test]
+    fn fleet_group_sort_key_groups_fleets_alphabetically_then_no_fleet_last() {
+        let mk = |slug: Option<&str>| RosterEntry {
+            fleet_slug: slug.map(|s| s.to_string()),
+            ..Default::default()
+        };
+        // fleets sort alphabetically; "no fleet" (None or empty slug) sorts LAST.
+        assert!(mk(Some("atlas")).fleet_group_sort_key() < mk(Some("nimbus")).fleet_group_sort_key());
+        assert!(mk(Some("zzz")).fleet_group_sort_key() < mk(None).fleet_group_sort_key());
+        assert_eq!(mk(Some("")).fleet_group_sort_key(), mk(None).fleet_group_sort_key());
+
+        // A STABLE sort by this key makes same-fleet rows contiguous (so the
+        // draw_agents header interleave emits one header per fleet), no-fleet last.
+        let mut v = vec![
+            mk(None),
+            mk(Some("nimbus")),
+            mk(Some("atlas")),
+            mk(None),
+            mk(Some("atlas")),
+        ];
+        v.sort_by_key(|r| r.fleet_group_sort_key());
+        let order: Vec<Option<&str>> = v.iter().map(|r| r.fleet_slug.as_deref()).collect();
+        assert_eq!(
+            order,
+            vec![Some("atlas"), Some("atlas"), Some("nimbus"), None, None]
+        );
     }
 
     #[test]

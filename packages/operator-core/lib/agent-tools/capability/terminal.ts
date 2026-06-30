@@ -20,10 +20,11 @@
  * in the user's REAL desktop session, so this runs OUTSIDE the bwrap exec-sandbox
  * that contains capability:bash. Recorded on capability-terminal-tool-2026-06-29.
  *
- * Cross-platform: server-side spawn is Linux-only at this tier (matches the
- * console-launch route). On macOS/Windows the desktop "+" button reaches the
- * Tauri console_launch command — a path an agent-invoked tool cannot reach yet,
- * so those return an actionable error.
+ * Cross-platform: server-side spawn works on Linux + macOS at this tier — on
+ * macOS the operator opens Terminal/iTerm directly (see console-spawn.ts). Only
+ * Windows can't (the operator runs inside WSL): there spawnConsole returns 501
+ * and the desktop "+" button reaches the Tauri console_launch command instead,
+ * a path an agent-invoked tool cannot reach, so Windows returns an actionable error.
  *
  * Output is NOT captured — the terminals are interactive and detached. Use
  * capability:bash when you need a command's output / exit code.
@@ -209,7 +210,7 @@ export default defineTool({
       for (const f of failed) lines.push(`  • ${f.command} — ${f.error}`);
       if (failed.some((f) => f.code === 501)) {
         lines.push(
-          '(macOS/Windows desktop-terminal spawn goes through the Tauri console_launch command, which an agent-invoked tool cannot reach yet.)',
+          '(On Windows the operator runs inside WSL and cannot open a Windows GUI terminal; that path goes through the desktop Tauri console_launch command, which an agent-invoked tool cannot reach. macOS + Linux spawn here directly.)',
         );
       }
     }

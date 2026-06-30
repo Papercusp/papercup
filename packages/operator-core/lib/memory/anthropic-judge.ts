@@ -54,7 +54,23 @@ export function createAnthropicJudge(opts?: {
       // this in-process best-effort judge load-balances across the account pool and
       // is paced like every other call, instead of egressing DIRECT to one account on
       // its API key. Absent the env (gateway off) → unchanged direct egress.
-      const baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
+      let baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
+      // su-5e6cc (2026-06-30): SELF-ROUTE through the gateway when the INFERENCE_GATEWAY
+      // flag is on, instead of only inheriting the env another in-process caller (scout/
+      // gym) happened to set — so this judge routes through the Anthropic pool even when
+      // it runs outside bg-host. Best-effort; any failure → unchanged direct egress.
+      if (!baseURL) {
+        try {
+          const { getFlag } = await import('@papercusp/flags/server');
+          const { FLAGS } = await import('@papercusp/flags');
+          if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
+            const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
+            baseURL = gatewayLlmEnv(true).PAPERCUSP_ANTHROPIC_URL;
+          }
+        } catch {
+          /* best-effort — gateway resolution must never break the judge */
+        }
+      }
       client = new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
     } catch {
       return { conflicts: [] };

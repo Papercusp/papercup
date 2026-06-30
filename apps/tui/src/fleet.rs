@@ -768,13 +768,66 @@ fn wake_badge_text(pending: i64) -> String {
     }
 }
 
+/// Parse an `#rrggbb` hex string into a ratatui RGB color; None on any malformed
+/// input (the caller falls back to a neutral header). (fleet-color-schemes #3)
+fn parse_hex_color(hex: &str) -> Option<ratatui::style::Color> {
+    let h = hex.strip_prefix('#').unwrap_or(hex);
+    if h.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some(ratatui::style::Color::Rgb(r, g, b))
+}
+
+/// The fleet a roster row groups under: its non-empty `fleet_slug`, else None
+/// ("No fleet"). (fleet-color-schemes #3)
+fn group_key(r: &crate::models::RosterEntry) -> Option<String> {
+    r.fleet_slug
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// A non-selectable fleet group-header row for the agents roster: the fleet name +
+/// member count, painted in the fleet's bound accent color (the "No fleet" group
+/// stays neutral/dim). (fleet-color-schemes #3)
+fn fleet_header_item(
+    group: &Option<String>,
+    count: usize,
+    color_hex: Option<&str>,
+) -> ListItem<'static> {
+    match group {
+        Some(slug) => {
+            let label = format!("▸ {} ({})", slug, count);
+            let base =
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD);
+            let style = match color_hex.and_then(parse_hex_color) {
+                Some(c) => base.fg(c),
+                None => base,
+            };
+            ListItem::new(Line::from(Span::styled(label, style)))
+        }
+        None => ListItem::new(Line::from(Span::styled(
+            format!("▸ No fleet ({})", count),
+            Theme::dim(),
+        ))),
+    }
+}
+
 /// The agent list — roster joined to each agent's latest activity summary + todo
-/// progress. The navigable spine of the Fleet tab (j/k).
+/// progress. The navigable spine of the Fleet tab (j/k). Grouped by fleet (#3):
+/// a colored header per fleet + a neutral "No fleet" group, with the cursor
+/// mapped past the (non-selectable) headers.
 fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     let latest = app.fleet.latest_by_owner();
     // The plans-filtered roster (D-009) — `fleet.agent_sel` indexes THIS list.
     let roster = app.visible_roster();
-    let items: Vec<ListItem> = roster
+    // Build the agent rows (content unchanged); fleet group headers are
+    // interleaved in a second pass below so the row build + its lifetimes are
+    // untouched. (fleet-color-schemes #3)
+    let agent_items: Vec<ListItem> = roster
         .iter()
         .map(|r| {
             // Liveness dot — coloured by freshness (Brief 27 glyph vocabulary).
@@ -867,11 +920,37 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             ]))
         })
         .collect();
+    // Interleave fleet group headers (#3): visible_roster() already orders the
+    // roster fleet-grouped (alphabetical, "No fleet" last), so same-fleet rows are
+    // contiguous. A colored header opens each fleet; `agent_row_idx` maps the Nth
+    // agent to its flat row so the agent_sel cursor skips headers (the
+    // draw_all_tasklist task_flat_idx pattern).
+    let mut counts: std::collections::HashMap<Option<String>, usize> =
+        std::collections::HashMap::new();
+    for &r in roster.iter() {
+        *counts.entry(group_key(r)).or_insert(0) += 1;
+    }
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut agent_row_idx: Vec<usize> = Vec::new();
+    let mut cur_group: Option<Option<String>> = None;
+    let mut agent_iter = agent_items.into_iter();
+    for &r in roster.iter() {
+        let g = group_key(r);
+        if cur_group.as_ref() != Some(&g) {
+            let n = counts.get(&g).copied().unwrap_or(0);
+            items.push(fleet_header_item(&g, n, r.fleet_color.as_deref()));
+            cur_group = Some(g.clone());
+        }
+        agent_row_idx.push(items.len());
+        if let Some(item) = agent_iter.next() {
+            items.push(item);
+        }
+    }
     let mut state = ListState::default();
-    if !roster.is_empty() {
-        state.select(Some(
-            app.fleet.agent_sel.min(roster.len().saturating_sub(1)),
-        ));
+    if !agent_row_idx.is_empty() {
+        // map agent_sel (an agents-only index) → its flat row (headers interleave)
+        let sel = app.fleet.agent_sel.min(agent_row_idx.len().saturating_sub(1));
+        state.select(Some(agent_row_idx[sel]));
     }
     let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(

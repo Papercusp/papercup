@@ -13,11 +13,13 @@
  * `buildConsoleEnvelope`) and decides whether the superuser `.mcp.json` should
  * be displaced into the cwd.
  *
- * Linux-only at this tier (matches the route's historical boundary): on
- * macOS/Windows the desktop shell spawns the terminal Rust-side via the Tauri
- * `console_launch` command (papercusp-desktop/src-tauri/src/native_console.rs),
- * which a server-side caller cannot reach. {@link spawnConsole} returns a
- * `code:501` error there so a caller can surface an actionable message.
+ * Linux + macOS spawn server-side here; Windows does not. On macOS the operator
+ * (a child of the desktop .app, in the user's GUI session) opens Terminal/iTerm
+ * itself via `open -na` — mirroring the Linux child_process path, so fleet color
+ * schemes + the sentinel lifecycle work identically. On Windows the operator runs
+ * inside WSL and cannot spawn a Windows GUI terminal, so {@link spawnConsole}
+ * returns `code:501` and the desktop shell spawns it Rust-side via the Tauri
+ * `console_launch` command (papercusp-desktop/src-tauri/src/native_console.rs).
  *
  * Server-only.
  */
@@ -243,16 +245,35 @@ export function spawnConsole(opts: SpawnConsoleOpts): SpawnConsoleResult {
     }
   }
 
-  // 2. Platform gate. macOS/Windows go through the Tauri command instead.
+  // 2. Build the one-liner once (appearance/OSC colors + cd + env + sentinel +
+  //    greeting + exec login shell). Same shape on every OS.
+  const oneliner = buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
+    mode: opts.appearanceMode ?? 'console',
+    planSlug: opts.planSlug ?? null,
+    label: opts.label ?? null,
+    scheme: opts.scheme ?? null,
+  });
+
+  // 3. macOS: the operator is a child of the desktop .app in the user's GUI
+  //    session, so it can open a Terminal window itself — mirroring the Linux
+  //    child_process path (no webview/Tauri round-trip). Fleet color schemes
+  //    work here for free because the OSC prelude is already in the one-liner.
+  if (process.platform === 'darwin') {
+    return spawnMacConsole(envelope, oneliner);
+  }
+
+  // 4. Windows has no server-side path: the operator runs inside WSL and can't
+  //    spawn a Windows GUI terminal — the desktop shell does it Rust-side via
+  //    the Tauri `console_launch` command (returns 501 so the caller can defer).
   if (process.platform !== 'linux') {
     return {
       status: 'error',
-      error: 'server-side spawn only implemented for Linux; use the Tauri path on macOS/Windows',
+      error: 'server-side spawn implemented for Linux + macOS; Windows uses the Tauri console_launch path',
       code: 501,
     };
   }
 
-  // 3. Pick a terminal emulator.
+  // 5. Linux: pick a terminal emulator from the cascade.
   const term = findLinuxTerminal();
   if (!term) {
     return {
@@ -263,14 +284,8 @@ export function spawnConsole(opts: SpawnConsoleOpts): SpawnConsoleResult {
     };
   }
 
-  // 4. Spawn a new window running the one-liner; detach so closing the
+  // 6. Spawn a new window running the one-liner; detach so closing the
   //    operator doesn't kill the user's terminal.
-  const oneliner = buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
-    mode: opts.appearanceMode ?? 'console',
-    planSlug: opts.planSlug ?? null,
-    label: opts.label ?? null,
-    scheme: opts.scheme ?? null,
-  });
   const childArgs = [...term.args, 'bash', '-lc', oneliner];
   try {
     const child = spawn(term.bin, childArgs, {
@@ -284,4 +299,52 @@ export function spawnConsole(opts: SpawnConsoleOpts): SpawnConsoleResult {
   } catch (e: any) {
     return { status: 'error', error: `spawn ${term.bin} failed: ${e?.message}`, code: 500 };
   }
+}
+
+/**
+ * macOS spawner — mirrors native_console.rs `spawn_macos_new_window`: write a
+ * one-shot, self-deleting `.command` file (chmod 755) and `open -na <term>` it.
+ * `open -na` forces a FRESH app instance ⇒ a new window every time (Terminal's
+ * AppleScript do-script would reuse the frontmost window). iTerm wins when
+ * installed, else Terminal.app. The `.command` execs the same login-shell
+ * one-liner the Linux path runs, so colors/env/sentinel behave identically.
+ */
+function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): SpawnConsoleResult {
+  try {
+    const inv = macConsoleInvocation(oneliner, {
+      tmpDir: process.env.TMPDIR || '/tmp',
+      nowMs: Date.now(),
+      pid: process.pid,
+      hasITerm: existsSync('/Applications/iTerm.app'),
+    });
+    writeFileSync(inv.file, inv.content, { mode: 0o755 });
+    const child = spawn('open', inv.openArgs, {
+      detached: true,
+      stdio: 'ignore',
+      cwd: envelope.cwd,
+      env: { ...process.env, ...envelope.env },
+    });
+    child.unref();
+    return { status: 'ok', pid: child.pid ?? null, terminal: inv.term, child };
+  } catch (e: any) {
+    return { status: 'error', error: `open Terminal failed: ${e?.message}`, code: 500 };
+  }
+}
+
+/**
+ * Pure builder for the macOS `open` invocation — the one-shot `.command` path,
+ * its contents (self-deleting; execs the login-shell one-liner), the chosen
+ * terminal app, and the `open` argv. Side-effect-free so it can be unit-tested
+ * without spawning. Exported for tests.
+ */
+export function macConsoleInvocation(
+  oneliner: string,
+  opts: { tmpDir: string; nowMs: number; pid: number; hasITerm: boolean },
+): { file: string; content: string; term: string; openArgs: string[] } {
+  const term = opts.hasITerm ? 'iTerm.app' : 'Terminal.app';
+  const file = join(opts.tmpDir, `papercup-console-${opts.pid}-${opts.nowMs}.command`);
+  // `rm -f "$0"` self-deletes the launcher before exec so /tmp doesn't accrete
+  // one-shot files; exec replaces the process with our login-shell one-liner.
+  const content = `#!/bin/bash\nrm -f "$0"\nexec bash -lc ${shellEscape(oneliner)}\n`;
+  return { file, content, term, openArgs: ['-na', term, file] };
 }

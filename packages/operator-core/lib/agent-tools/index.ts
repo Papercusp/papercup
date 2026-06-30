@@ -58,6 +58,8 @@ import './datatypes/publish';
 // D-010 distribution — browse the approved global catalog + install one into your workspace:
 import './datatypes/catalog';
 import './datatypes/install';
+// P-011 — workspace observability over the datatype registry (counts by tier + review-status):
+import './datatypes/summary';
 
 // reflexive-platform-extensibility-datatypes-2026-06-24 P-004 — tools:scaffold:
 // PURE codegen of a reviewable defineTool skeleton (writes/runs/mints nothing).
@@ -310,6 +312,8 @@ import './dev/tool_cooccurrence';
 import './processes/kill';
 import './turn/interrupt';
 import './dev/omp_session';
+// EI-4911 — the Claude-Code analogue of dev:omp_session: find/search/read local Claude transcripts.
+import './dev/claude_session';
 
 import './flags/list';
 import './flags/get';

@@ -30,10 +30,18 @@ real problem (an owner watched a session arm `loop:arm` **4×**, re-trimming its
 The obvious implementation of "truncate instead of reject" is a zod transform
 (`z.string().transform(s => s.slice(0, max))`). **It silently breaks the entire MCP tool catalog.**
 
-`z.toJSONSchema(def.args)` runs — **with no try/catch** — in two hot paths:
+`z.toJSONSchema(def.args)` runs — **with no try/catch** — at the critical point:
 
-1. at `defineTool` registration (`libs/generic/tooldef/src/define-tool.ts`), and
-2. in the HTTP MCP `tools/list` handler (`_mcp-handler.ts`).
+* At `defineTool` registration (`libs/generic/tooldef/src/define-tool.ts`), via `toJsonSchema(def.args)` in
+  `registerLegacyAsProjected` / `registerRoleGatedAsProjected` (the `schema-adapter.ts` pluggable
+  adapter, which defaults to `z.toJSONSchema`).
+
+> **Note (2026-06-26):** A `builtinInputSchema` helper in `_mcp-handler.ts` used to call
+> `z.toJSONSchema` a second time at `tools/list` request time. It is now dead code — the
+> `tools/list` handler uses `listMcpProjections`, which returns the projected registry's
+> **pre-computed** JSON schemas (computed once at registration). The consequence is unchanged:
+> a transform on any tool's `args` schema crashes schema-gen for the **whole module at startup**,
+> not just the offending tool.
 
 A zod `.transform()` is **unrepresentable in JSON Schema**, so `z.toJSONSchema` throws — and because
 it's un-guarded, schema-gen crashes for the **whole catalog**, not just the offending tool. So:

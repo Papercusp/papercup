@@ -29,9 +29,16 @@ same view (per-entry `claims` + top-level `orphanedClaims`).
 
 The view is **claim-primary**: a live lease whose holder crashed still surfaces
 (`orphaned: true`) — the single most important signal (abandoned/stuck work). A
-presence-primary join would silently drop it. It also flags
-`declaredUnclaimed` — an agent whose self-declared plan is backed by no actual
-claim.
+presence-primary join would silently drop it. Two additional signals on each
+row surface actionable states:
+
+* `stalled: true` — the agent holds a live lease but hasn't made visible
+  progress within the staleness window (alive-but-not-advancing). Use
+  `stalledClaims()` to enumerate these; `reclaimableClaims()` returns the
+  subset where a reassign is safe. Different from `orphaned`: the holder is
+  alive but not advancing, not crashed.
+* `declaredUnclaimed` — an agent whose self-declared plan is backed by no
+  actual claim.
 
 ## The change-feed
 

@@ -246,6 +246,40 @@ export async function countDatatypes(sql: postgres.Sql, workspaceId: string): Pr
   return rows[0]?.n ?? 0;
 }
 
+export interface DatatypeSummary {
+  total: number;
+  /** counts per tier (generic-kind / first-class / projection). */
+  byTier: Record<string, number>;
+  /** counts per global review state (none / pending / approved / rejected). */
+  byReviewStatus: Record<string, number>;
+  /** how many are flagged published (any review state). */
+  published: number;
+}
+
+/**
+ * Workspace observability over the datatype registry (P-011): active datatypes broken down by
+ * tier and global review-status — one grouped scan, aggregated in JS. The at-a-glance "what
+ * datatypes does this workspace have, and where are they in the local→shared graduation".
+ */
+export async function datatypesSummary(sql: postgres.Sql, workspaceId: string): Promise<DatatypeSummary> {
+  const rows = await sql<{ tier: string; review_status: string; published: boolean; n: number }[]>`
+    SELECT tier, review_status, published, count(*)::int AS n
+      FROM harness_shared.datatype_registry
+     WHERE workspace_id = ${workspaceId} AND status = 'active'
+     GROUP BY tier, review_status, published`;
+  const byTier: Record<string, number> = {};
+  const byReviewStatus: Record<string, number> = {};
+  let total = 0;
+  let published = 0;
+  for (const r of rows) {
+    total += r.n;
+    byTier[r.tier] = (byTier[r.tier] ?? 0) + r.n;
+    byReviewStatus[r.review_status] = (byReviewStatus[r.review_status] ?? 0) + r.n;
+    if (r.published) published += r.n;
+  }
+  return { total, byTier, byReviewStatus, published };
+}
+
 export interface SimilarDatatype {
   id: string;
   title: string;

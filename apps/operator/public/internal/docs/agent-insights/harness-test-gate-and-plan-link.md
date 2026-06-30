@@ -102,9 +102,9 @@ else it's an invisible orphan); the tab fills through CI, not a dev run.
   pure data — `src/registry/universal.ts`), and the `TestingDataSource`
   interface. The lib↔operator boundary *is* the universal↔Papercusp boundary.
 * **operator** — `packages/operator-core/lib/testing-domains-registry.ts`
-  (`papercuspRegistry`, \~30 Papercusp domains, composed with the lib's universal
-  tier into `adminRegistry`), the harness `/testing/*` routes, and the `/adv`
-  `HarnessTestsView` + `AcceptancePanel`.
+  (`papercuspRegistry`, \~35 Papercusp domains as of 2026-06-30, composed with
+  the lib's universal tier into `adminRegistry`), the harness `/testing/*`
+  routes, and the `/adv` `HarnessTestsView` + `AcceptancePanel`.
 
 The harness Tests tab is an `/adv` dock panel (`adv:tests`), not a
 `HarnessDashboard` tab — that monolith was deleted by the `/adv` migration.

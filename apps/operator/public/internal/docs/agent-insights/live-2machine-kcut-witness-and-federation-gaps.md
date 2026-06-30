@@ -24,6 +24,11 @@ Mechanism map (all gated on `papercusp-hive-rekey`, ON on the rig):
 * **K0 admit/grant** — owner admits a member ⇒ `upsertHiveMember` ⇒
   `grantEpochKeysToMembers` wraps epoch `[0..current]` to the new device (owner-self-gated
   on `loadHivePubkey`). `hive-membership-admission.ts` + `hive-epoch-boundary-wiring.ts`.
+  **Reconnect path (BUG B, D-028 layer 3):** `ownerAdmitOrPend`'s `already_member` branch
+  now also calls `reconcileEpochKeysForCurrentMembers({ refederate: true, onlyDevices: <this
+  member's devices> })` on reconnect — a member that missed its original federated grant
+  (joined-after-grant, forward-only cursor, or re-session) has its keys re-sent automatically.
+  Best-effort (a re-grant hiccup never fails admission).
 * **K1 owner re-key** — a benign boundary that KEEPS everyone: `hive-set-listing.ts`
   go-private ⇒ `advanceEpochOnHiveBoundary` with **no cutOff** ⇒ epoch++ wrapped to ALL
   current members.
@@ -135,15 +140,22 @@ encryption on) the AEAD content read-cut.
 
 A member admitted while `papercusp-hive-rekey` was dark — or admitted after an epoch advanced before they were known to the owner — permanently lacks the epoch keys minted before them unless explicitly healed. `hive-epoch-boundary-wiring.ts` now has two complement paths:
 
-* **`reconcileEpochKeysForCurrentMembers`** — wraps epochs `[0..current]` to every LIVE (non-revoked) member device. Called via the `onMemberApplied` hook to heal the moment a membership op lands. 'no-fresh-members' when the hive has no live device.
+* **`reconcileEpochKeysForCurrentMembers`** — wraps epochs `[0..current]` to every LIVE (non-revoked) member device. Called via the `onMemberApplied` hook (hive-members projection) to heal the moment a membership op lands. 'no-fresh-members' when the hive has no live device. **New params (BUG B, D-028 layer 3):** `refederate?: boolean` re-stamps existing rows so the mig-411 AFTER INSERT OR UPDATE capture trigger re-federates them (vs default write-once gap-fill); `onlyDevices?: readonly string[]` restricts the re-grant to a specific device set (the reconnecting member's devices) rather than the whole hive — used by `ownerAdmitOrPend`'s reconnect path.
 * **`reconcileOwnedHiveEpochKeys`** (WI-887 sweep) — GAP-AWARE: enumerates every hive the box knows (`harness_shared.hives`), checks whether any live device is missing the current epoch key, and only then calls `reconcileEpochKeysForCurrentMembers`. NO crypto on the steady state (the perf-anti-pattern guard). Owner-only (self-gates via `loadHivePubkey` null check), C-001-safe (revoked devices excluded), idempotent. Host on in-process periodic checks or call once at owner boot.
 
 **On the rig:** after seeding `hive_members` via the owner approval path (Gap 1 recipe), call `reconcileOwnedHiveEpochKeys` on fed-a if any member device shows missing epoch rows. It backfills without advancing the epoch — safe to call even mid-witness.
 
-## Adjacent bug observed
+## Adjacent bug observed (historical — fixed 2026-06-26)
 
-`hive:create_from_repo` via the **superuser MCP** fails `member_create_failed /
-hive_not_found` because the MCP session resolves `ctx.workspaceId='*'` while hives live in
-`default`; the HTTP API route (`activeWorkspaceId()='default'`) works. Same EI-3409 class
-the versioned `fed.sh` documents (`FED_MCP_WS=default`). Pass `workspace:"default"` or use
-the route.
+**FIXED by WI-892:** All 11 hive write-tools (`create`, `create_from_repo`, `ban_member`,
+`add_member`, `membership_decide`, `leave`, …) now route through `resolveConcreteWorkspaceId`
+(skips `'*'`/blank, falls back to `activeWorkspaceId()` = `'default'`). The
+`workspace_id='*'` sentinel no longer leaks into hive\_members writes, so the MCP path and
+the HTTP route are now equivalent. No `workspace:"default"` workaround needed for these tools.
+
+*Original finding (2026-06-24):* `hive:create_from_repo` via the **superuser MCP** failed
+`member_create_failed / hive_not_found` because the MCP session resolved
+`ctx.workspaceId='*'` while hives live in `default`; the HTTP route
+(`activeWorkspaceId()='default'`) worked. Same EI-3409 class. The versioned `fed.sh` driver
+sets `FED_MCP_WS=default` as a safety net for any non-hive tools not yet using
+`resolveConcreteWorkspaceId` — keep it in place for non-hive MCP calls.

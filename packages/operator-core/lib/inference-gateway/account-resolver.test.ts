@@ -49,6 +49,23 @@ describe('resolveBoundAccount', () => {
     });
   });
 
+  it('carries the account egressPool through to the resolved account (gateway-per-account-egress-ip-pool-2026-06-30)', async () => {
+    // The resolver must thread egressPool so the gateway can rotate across per-account IPs.
+    process.env.PAPERCUSP_ACCOUNT_ID = 'acct-b';
+    mockedLoad.mockResolvedValue({
+      accounts: [
+        acct('acct-a', 'ref:a'),
+        { id: 'acct-b', credentialRef: 'ref:b', egressPool: [{ proxyUrl: 'http://10.0.0.2:3128' }, {}] },
+      ],
+    } as never);
+    expect(await resolveBoundAccount('ws')).toEqual({
+      accountId: 'acct-b',
+      credentialRef: 'ref:b',
+      egressPool: [{ proxyUrl: 'http://10.0.0.2:3128' }, {}],
+      source: 'env',
+    });
+  });
+
   it('uses the sole pool account when there is no env pin and exactly one account', async () => {
     mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] } as never);
     expect(await resolveBoundAccount('ws')).toEqual({

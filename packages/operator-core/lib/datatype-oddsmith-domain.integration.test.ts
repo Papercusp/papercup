@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { upsertDatatype, getDatatype, getGenericKindDatatype, listDatatypes } from './datatype-registry-store';
+import { upsertDatatype, getDatatype, getGenericKindDatatype, listDatatypes, datatypesSummary } from './datatype-registry-store';
 import { validateDatatypePayload } from './datatype-payload-validation';
 import { frontierPlacementKindClause, HIVE_PLACEMENT_TAG } from './datatype-frontier-placement';
 
@@ -102,5 +102,14 @@ describe('oddsmith domain datatypes (real PG) — Phase 2 framework proof', () =
     ).map((r) => r.item_kind);
     // built-in 'feature' + the placement-tagged 'bet'; 'wager' (untagged) + 'position' (projection) are not placed.
     expect(placeable).toEqual(['bet', 'feature']);
+  });
+
+  it('P-011 observability: datatypesSummary breaks the workspace down by tier + review-status', async () => {
+    const s = await datatypesSummary(db.adminSql, WS);
+    expect(s.total).toBe(8);
+    expect(s.byTier['generic-kind']).toBe(4); // bet/wager/forecast/calibration-record
+    expect(s.byTier['projection']).toBe(4); // position/fill/cash/order
+    expect(s.byReviewStatus['none']).toBe(8); // none published yet
+    expect(s.published).toBe(0);
   });
 });

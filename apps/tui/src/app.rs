@@ -2219,7 +2219,8 @@ impl App {
     /// rule: an unattributed agent must stay visible), so a filter only
     /// narrows plan-attributed rows.
     pub fn visible_roster(&self) -> Vec<&RosterEntry> {
-        self.roster
+        let mut v: Vec<&RosterEntry> = self
+            .roster
             .iter()
             .filter(|r| {
                 self.plan_filter.is_empty()
@@ -2228,7 +2229,13 @@ impl App {
                         .filter(|s| !s.is_empty())
                         .is_none_or(|s| self.plan_filter.contains(s))
             })
-            .collect()
+            .collect();
+        // #3: group by fleet for the Fleet-tab roster — fleets alphabetical, "no
+        // fleet" last. A STABLE sort preserves the server's within-fleet (newest-
+        // heartbeat) order. `agent_sel` indexes THIS order and draw_agents renders
+        // it, so the grouping + cursor + headers stay in lockstep.
+        v.sort_by_key(|r| r.fleet_group_sort_key());
+        v
     }
 
     /// Re-clamp the cursors of the lists the plans filter narrows (D-009) so a

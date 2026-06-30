@@ -99,6 +99,33 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
   return { ok: true, command, cwd };
 }
 
+/**
+ * Filter raw `tsc --noEmit` output to only the error lines referencing one of
+ * `onlyPaths`. A package with PRE-EXISTING errors floods the output, so verifying
+ * "did MY change add a NEW error" otherwise means hand-grepping for your own files.
+ * A tsc error line is `path/to/file.ts(line,col): error TS####: msg`; we match the
+ * path token before "(" against each onlyPath loosely (either string contains the
+ * other) so package-relative and repo-relative spellings both work. Pure +
+ * exported so the (output-only, non-security) filter is unit-tested. `onlyPaths` is
+ * NEVER part of the executed command — purely a post-process of the output.
+ */
+export function filterTscOutputToPaths(
+  output: string,
+  onlyPaths: string[],
+): { matchedErrors: number; totalErrors: number; matchedLines: string[] } {
+  const errRe = /\berror TS\d+\b/;
+  const needles = onlyPaths.map((p) => p.replace(/^\.\//, '').trim()).filter(Boolean);
+  const matchedLines: string[] = [];
+  let totalErrors = 0;
+  for (const ln of output.split('\n')) {
+    if (!errRe.test(ln)) continue;
+    totalErrors += 1;
+    const pathTok = ln.split('(')[0].trim().replace(/^\.\//, '');
+    if (pathTok && needles.some((p) => pathTok.includes(p) || p.includes(pathTok))) matchedLines.push(ln);
+  }
+  return { matchedErrors: matchedLines.length, totalErrors, matchedLines };
+}
+
 export default defineTool({
   name: 'capability:inspect',
   description:
@@ -128,6 +155,13 @@ export default defineTool({
       .string()
       .optional()
       .describe('test only: a package-relative test file/dir to narrow the run (e.g. "lib/foo.test.ts"). Requires package.'),
+    onlyPaths: z
+      .array(z.string().min(1).max(300))
+      .max(50)
+      .optional()
+      .describe(
+        'typecheck only (foreground): post-FILTER the tsc output to error lines referencing these (package- or repo-relative) paths, plus an "N matching of M total" summary. The fix for verifying "did MY change add a NEW error" against a package that has pre-existing errors. Output-filter only — never part of the command.',
+      ),
     run_in_background: z
       .boolean()
       .optional()
@@ -176,6 +210,21 @@ export default defineTool({
       ctx.signal,
       timeoutMs,
     );
+
+    // onlyPaths (typecheck): collapse a noisy package's tsc output to just the
+    // errors in the agent's changed files + an "N matching of M total" summary —
+    // the answer to "did MY change add a NEW error". Output post-process only.
+    if (args.check === 'typecheck' && args.onlyPaths && args.onlyPaths.length > 0) {
+      const f = filterTscOutputToPaths(r.output, args.onlyPaths);
+      const summary =
+        `${args.check} · exit ${r.exitCode ?? 'null'}` +
+        (r.status !== 'completed' ? ` (${r.status})` : '') +
+        ` · ${(r.durationMs / 1000).toFixed(1)}s · onlyPaths(${args.onlyPaths.length}): ` +
+        `${f.matchedErrors} matching error(s) of ${f.totalErrors} total` +
+        (r.truncated ? ` · ⚠ output truncated (${r.totalBytes} bytes) → ${r.logPath}; the filter saw the head only` : '');
+      const body = f.matchedLines.length > 0 ? f.matchedLines.join('\n') : '(no tsc errors in the specified paths)';
+      return { content: [{ type: 'text' as const, text: `${summary}\n${body}` }], isError: false };
+    }
 
     const header =
       `${args.check} · exit ${r.exitCode ?? 'null'}` +

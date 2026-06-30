@@ -133,3 +133,15 @@ export function allocateNextSchemeName(usedNames: readonly string[]): string {
 export function oscRecolorSequence(scheme: ColorScheme): string {
   return `\x1b]10;${scheme.fg}\x07\x1b]11;${scheme.bg}\x07\x1b]12;${scheme.cursor}\x07`;
 }
+
+/**
+ * The RAW OSC escape bytes that RESET a terminal's foreground (OSC 110),
+ * background (OSC 111), and cursor (OSC 112) to its CONFIGURED defaults — the
+ * inverse of {@link oscRecolorSequence}. Written straight to a TTY (the
+ * recolorViaPty 'osc' transport) when a session LEAVES a fleet, so the window
+ * reverts to the user's terminal profile default (e.g. their purple) instead of
+ * keeping the now-stale ex-fleet color. Pure — no IO. Carries no color values.
+ */
+export function oscResetSequence(): string {
+  return '\x1b]110\x07\x1b]111\x07\x1b]112\x07';
+}

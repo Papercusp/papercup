@@ -12,7 +12,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet, setFleetLeader } from '../../agent-fleets-store';
 import { setPresenceFleet } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
-import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+import { json, resetCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
 export default defineTool({
   name: 'fleet:leave',
@@ -34,6 +34,10 @@ export default defineTool({
     const currentFleet = membership?.fleetSlug ?? null;
 
     await setPresenceFleet(workspaceId, ownerId, null, null);
+    // Drop the ex-fleet color from the caller's live window — revert to the
+    // terminal's profile default (the inverse of join's recolor). Best-effort:
+    // a no-op for non-psu-hosted callers, and never fails the leave.
+    await resetCallerTerminal(ownerId);
 
     let clearedLeadershipOf: string | null = null;
     if (currentFleet) {

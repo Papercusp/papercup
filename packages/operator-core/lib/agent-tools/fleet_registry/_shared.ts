@@ -10,7 +10,7 @@
 import { resolveAgentIdentity, type AgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveFleetScheme, type AgentFleetRecord } from '../../agent-fleets-store';
-import { oscRecolorSequence } from '../../console-color-schemes';
+import { oscRecolorSequence, oscResetSequence } from '../../console-color-schemes';
 import { recolorViaPty } from '../../events/await/psu-pty-discovery';
 
 export interface FleetCaller {
@@ -98,5 +98,19 @@ export async function recolorCallerTerminal(
     await recolorViaPty(ownerId, oscRecolorSequence(resolveFleetScheme(fleet)));
   } catch {
     /* best-effort — a recolor must never break fleet membership */
+  }
+}
+
+/**
+ * Best-effort: reset the CALLER's live terminal to its profile default after
+ * LEAVING a fleet — the inverse of {@link recolorCallerTerminal}, so the window
+ * drops the ex-fleet color (back to e.g. the user's purple) rather than keeping a
+ * stale one. No-op for non-psu-hosted callers; never throws.
+ */
+export async function resetCallerTerminal(ownerId: string): Promise<void> {
+  try {
+    await recolorViaPty(ownerId, oscResetSequence());
+  } catch {
+    /* best-effort — a reset must never break leaving a fleet */
   }
 }

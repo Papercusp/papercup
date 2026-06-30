@@ -28,6 +28,10 @@ The proof lives in
    installed-blueprints dir = a second hive's installed tier. Stub only the
    git-clone binary (copy the packaged repo) — the same DI seam
    `install-blueprint-core.test.ts` / `resolve-and-install.e2e.test.ts` use.
+   Note: the install core now calls `registerHarnessOpProxies` on any `ops:`
+   manifest entries BEFORE the resolve+validate step (P-002) — so a blueprint
+   that ships its own harness ops validates clean rather than failing
+   `unknown-op`. The test stubs don't need to wire this; it fires automatically.
 3. **resolve** — `makeComposedResolveExtends({ installedDir, builtin })` now
    returns the **installed** path for the id, not the built-in: the marketplace
    copy *shadows* the bundled built-in (assert the resolver flips pre→post

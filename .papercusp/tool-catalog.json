@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 541,
+  "count": 542,
   "tools": [
     {
       "name": "ablation:report",
@@ -4842,6 +4842,76 @@
         "when": "When a datatype you declared (meta:define-datatype) is worth sharing globally, not just locally — so other workspaces can discover/reuse it.",
         "notWhen": "To declare a datatype (meta:define-datatype). To use one locally — a local datatype needs no publishing. Publishing does NOT distribute it cross-machine by itself (that rides the Comb worker once approved).",
         "chaining": "meta:define-datatype → datatypes:publish { id } → (operator moderates) → globally visible."
+      }
+    },
+    {
+      "name": "datatypes:summary",
+      "http": {
+        "path": "/api/agent-tools/datatypes/summary",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Workspace observability over the datatype registry (P-011): active datatypes counted by TIER (generic-kind / first-class / projection) and by global REVIEW-STATUS (none / pending / approved / rejected), plus how many are published. Read-only — the at-a-glance \"what datatypes does this workspace have\".",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "For a dashboard / status read of a workspace's datatype surface and its local→shared graduation.",
+        "notWhen": "To list the datatypes themselves (datatypes:list) or fetch one (datatypes:get).",
+        "chaining": "datatypes:summary (overview) → datatypes:list (the rows) → datatypes:get (one definition)."
       }
     },
     {

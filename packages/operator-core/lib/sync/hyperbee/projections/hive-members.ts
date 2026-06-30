@@ -101,7 +101,21 @@ async function writeToPg(
   row: HiveMemberRow,
   provenance?: ProvenanceContext,
 ): Promise<void> {
-  if (row.hive_home_slug !== opts.harnessSlug) return; // cross-Hive op — drop
+  if (row.hive_home_slug !== opts.harnessSlug) {
+    // A→B roster diagnostic (PAPERCUSP_A003_TRACE, off by default/in tests): the owner's
+    // hive_members rows drop SILENTLY here when this projection is bound to the MEMBER slug
+    // instead of the hive-home slug (the rekey-rebind didn't engage) → the joiner's roster
+    // stays EMPTY even though B admitted + drained the owner log. This is the apply-side twin
+    // of the owner-LOG bootstrap-admit; a mismatch on the live trace pins the rebind gap.
+    if (process.env.PAPERCUSP_A003_TRACE === '1') {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[A-003] hive-members-drop own=${opts.harnessSlug} row.hive_home=${row.hive_home_slug} ` +
+          `(cross-Hive: projection NOT bound to hive-home → roster row dropped)`,
+      );
+    }
+    return; // cross-Hive op — drop
+  }
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';

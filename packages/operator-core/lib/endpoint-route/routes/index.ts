@@ -128,7 +128,6 @@ import harnessConfigFiles from './harness/config-files';
 import harnessSkillsNotes from './harness/skills-notes';
 import harnessPrompts from './harness/prompts';
 import harnessBrainstorm from './harness/brainstorm';
-import harnessOrchestratorCheckpoint from './harness/orchestrator-checkpoint';
 import harnessCompletionRefRecheck from './harness/completion-ref-recheck';
 import harnessGit from './harness/git';
 import harnessProcessControl from './harness/process-control';
@@ -613,7 +612,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessSkillsNotes as AnyRoute[]),
   ...flatten(harnessPrompts as AnyRoute[]),
   ...flatten(harnessBrainstorm as AnyRoute[]),
-  ...flatten(harnessOrchestratorCheckpoint as AnyRoute[]),
   ...flatten(harnessCompletionRefRecheck as AnyRoute[]),
   ...flatten(harnessGit as AnyRoute[]),
   ...flatten(harnessProcessControl as AnyRoute[]),

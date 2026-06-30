@@ -5,9 +5,21 @@
  * and env-var name normalization. The local-registration path (PG-backed) is
  * exercised by the live arm/verify (P-010).
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { harnessApiBase, harnessEndpointEnvVar } from './transport.js';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { Frame } from '@papercusp/deployment-driver';
+
+// Hermetic isolation (EI-5416): the resolver's step-3 LOCAL-registration lookup
+// reads `loadHarnessRegistry()`. With no workspaceId it falls through to the
+// host's DEFAULT workspace registry — so on a RUNNING dev box `oddsmith-ops` has
+// a live `localEndpoint` advertised and the "no endpoint resolvable" case
+// RESOLVES instead of rejecting (false RED in `test:affected`). Stub the registry
+// so resolution genuinely has nothing to resolve, matching the test's intent.
+vi.mock('../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../harness-registry')>();
+  return { ...actual, loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) };
+});
+
+const { harnessApiBase, harnessEndpointEnvVar } = await import('./transport.js');
 
 describe('harnessEndpointEnvVar', () => {
   it('normalizes a slug to an UPPER_SNAKE env var', () => {

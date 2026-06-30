@@ -88,7 +88,13 @@ all-pages connection-refused outage when workers exhausted their respawn budget 
 `MODULE_NOT_FOUND`). The patch-package re-apply in step 3b still follows this copy.
 Additionally, **step 3d** (native-addon ABI guard) verifies each runtime-critical native
 addon (e.g. `better-sqlite3`) loads under the operator's Node ABI and calls `npm rebuild`
-in place on a mismatch, turning a hard crash-loop into an auto-recovery.
+in place on a mismatch, turning a hard crash-loop into an auto-recovery. **Step 3c**
+(workspace-resolution gate, EI-2118): `need_node_modules()` now also checks for dangling
+workspace-package symlinks via `unresolved_workspace_pkgs()` (`-e` follows symlinks;
+the name-set `diff` does not), forcing a re-copy when any `@papercusp`/`@papercup`
+package resolves in the integration tree but not the release tree; a post-copy gate then
+exits 1 **before any restart** if workspace packages are still unresolved — the class of
+outage that triggered EI-2118 (2026-06-20 `@papercusp/plugin-loader` crash-loop).
 
 ## Verify / where it lands
 

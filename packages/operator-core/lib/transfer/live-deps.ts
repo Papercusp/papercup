@@ -97,7 +97,22 @@ export function anthropicDistillerLlm(opts?: { apiKey?: string; model?: string }
     // pool (gateway sets PAPERCUSP_ANTHROPIC_URL / ANTHROPIC_BASE_URL) so this in-process
     // distiller load-balances across the account pool instead of egressing direct to one
     // account on its API key. Absent the env (gateway off) → unchanged direct egress.
-    const baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
+    let baseURL = process.env.PAPERCUSP_ANTHROPIC_URL ?? process.env.ANTHROPIC_BASE_URL;
+    // su-5e6cc (2026-06-30): SELF-ROUTE through the gateway when the INFERENCE_GATEWAY flag
+    // is on, instead of only inheriting the env another in-process caller set — so the
+    // distiller routes through the Anthropic pool even outside bg-host. Best-effort.
+    if (!baseURL) {
+      try {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
+          const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
+          baseURL = gatewayLlmEnv(true).PAPERCUSP_ANTHROPIC_URL;
+        }
+      } catch {
+        /* best-effort — gateway resolution must never break the distiller */
+      }
+    }
     const client = new mod.default({ apiKey, timeout: DISTILL_TIMEOUT_MS, ...(baseURL ? { baseURL } : {}) });
     const response = (await client.messages.create({
       model,

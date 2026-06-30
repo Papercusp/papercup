@@ -1237,6 +1237,15 @@ async function promptAccount(accounts) {
 }
 
 async function pickAccount(workspace, agent = 'claude') {
+  // Per-account inference-gateway pinning is implemented for claude + codex only;
+  // omp (and any future backend) has no per-account routing yet — the server
+  // ignores a pool pin for it ("account routing is unsupported for <agent>", see
+  // the resume path). So for those agents we KEEP the picker for a consistent
+  // launch flow but offer ONLY the default = system/CLI-login row (no pool), so
+  // the user can't pick a pin that would be silently dropped.
+  if (agent !== 'claude' && agent !== 'codex') {
+    return promptAccount({ pool: [] });
+  }
   const accounts = await fetchAccountChoices(workspace, agent);
   // Always surface the picker (at least the default = system/CLI-login row),
   // even when the gateway is off / the pool is empty / the operator is

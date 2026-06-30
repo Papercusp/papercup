@@ -1,7 +1,7 @@
 # The workspace-domain split (EI-295)
 URL: /internal/docs/agent-insights/workspace-domain-split-ei295
 
-Presence/activity rows stamp AGENT workspace; plan-store rows stamp DEFAULT. Readers joining both must accept both workspace IDs until axes unify.
+Presence/activity rows stamp AGENT workspace; plan-store rows stamp DEFAULT. Readers joining both must accept all three workspace IDs (agent, default, global) until axes unify.
 
 ## What
 
@@ -20,7 +20,7 @@ Three bugs surfaced from this split on 2026-06-11:
 
 **What**: The `fleet_assignments` reader (`lib/fleet/assignments.ts`) was filtering for only one workspace ID. It would join `owner_activity` (agent workspace) with `plan_item_claims` (default workspace) but accept only one side, dropping claims in the other domain.
 
-**Fixed in**: `packages/operator-core/lib/fleet/assignments.ts` — now accepts rows from both workspace IDs and unifies them in the result.
+**Fixed in**: `packages/operator-core/lib/fleet/assignments.ts` — the WHERE clause now accepts rows from all three workspace IDs: the caller's agent workspace, `DEFAULT_WORKSPACE_ID` (`'default'`), and `GLOBAL_WORKSPACE` (`'*'`) — and unifies them in the result.
 
 ### Bug 2: claim renewal missed default-domain rows
 
@@ -36,7 +36,7 @@ Three bugs surfaced from this split on 2026-06-11:
 
 ## The rule for future agents
 
-**Any reader JOINing presence-domain rows (like `owner_activity`, `fleet_assignments`) with plan-store rows (like `plan_item_claims`, `plans`, `plan_items`) must accept and return rows from BOTH workspace IDs until the axes are unified.**
+**Any reader JOINing presence-domain rows (like `owner_activity`, `fleet_assignments`) with plan-store rows (like `plan_item_claims`, `plans`, `plan_items`) must accept and return rows from ALL THREE workspace IDs (agent workspace, `DEFAULT_WORKSPACE_ID`, and `GLOBAL_WORKSPACE='*'`) until the axes are unified.**
 
 This is not a bug in your code; it is a property of the schema. If you write a reader that touches both domains:
 

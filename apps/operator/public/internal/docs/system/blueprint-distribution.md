@@ -1,7 +1,7 @@
 # Blueprint distribution — publish, install, resolve
 URL: /internal/docs/system/blueprint-distribution
 
-How blueprints travel — the local→installed→built-in resolution tiers, the Cupboard publish/install routes, the dependencies model ({tools, packs, plugins, blueprints}), and why the bundled built-ins are both the bootstrap floor AND ordinary published listings.
+How blueprints travel — the local→installed→built-in resolution tiers, the Cupboard publish/install routes, the dependencies model ({tools, packs, plugins, blueprints, datatypes}), and why the bundled built-ins are both the bootstrap floor AND ordinary published listings.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -58,6 +58,7 @@ dependencies:
   packs:      []                                          # curated tool sets (runtime-less)
   plugins:    [repomix]                                   # runtime-bearing units
   blueprints: [coding, research]                          # work-blueprints the roles SPAWN
+  datatypes:  [bet, wager]                               # first-class entity types the roles read/write
 ```
 
 Resolution rules (tool-distribution D-001/D-002 — a *tool* is a pack of n=1, a
@@ -79,12 +80,20 @@ Resolution rules (tool-distribution D-001/D-002 — a *tool* is a pack of n=1, a
   one is **installable** (the install path pulls the closure — see
   Install/fork); neither → hard failure. This is the `memberBlueprints`
   mechanism (blueprint-role-bundling P-007, hive-blueprint-generalization
-  D-004).
+  D-004);
+* a declared **datatype** is a shared entity type (e.g. `bet`, `wager` —
+  minted by `meta:define-datatype`) this blueprint's roles read or write.
+  Resolved like blueprints: a built-in or workspace-registered datatype
+  satisfies it; a Cupboard-published one is **installable**; neither → hard
+  failure ("needs datatype X"). (`reflexive-platform-extensibility-datatypes-2026-06-24`
+  P-012, D-009.)
 
-Like tools/packs/plugins, the `blueprints` category splits into **missing**
-(hard, when the Cupboard is reachable) and **installable** (advisory, pulled
-by the install closure) — `validateBlueprintDependencies` returns both
-`missing.blueprints` and `installable.blueprints`.
+Like tools/packs/plugins, the `blueprints` and `datatypes` categories each
+split into **missing** (hard, when the Cupboard is reachable) and
+**installable** (advisory, pulled by the install closure) —
+`validateBlueprintDependencies` returns both `missing.blueprints`/`missing.datatypes`
+and `installable.blueprints`/`installable.datatypes`. `ok` is false when any of
+the five missing arrays is non-empty.
 
 This validation runs **upfront** — at `harness:create`, `init --from`, and
 blueprint install — closing the old call-time-only `unknown_tool` gap. At
@@ -159,11 +168,14 @@ core: `lib/cupboard/install-blueprint-core.ts`):
 // optional: installPlugins: true — consent to auto-install declared plugin deps
 ```
 
-The flow: shallow-clone → locate `<listing_ref>/blueprint.yaml` → schema +
-semantic validation (under the composed resolver, so `extends: base` resolves
-against the bundled floor) → **import-time dep-validation** → place under
-`~/.papercusp/blueprints/<id>/` (the installed tier, where it shadows a
-same-id built-in). The route's response carries `{ ok, id, version,
+The flow: shallow-clone → locate `<listing_ref>/blueprint.yaml` → **op proxy
+registration** (any `ops:` manifest entries on the blueprint are registered as
+proxy CoordOps BEFORE the schema + semantic validation runs, so a blueprint that
+ships its own harness ops validates clean instead of failing `unknown-op` —
+P-002, `registerHarnessOpProxies`) → schema + semantic validation (under the
+composed resolver, so `extends: base` resolves against the bundled floor) →
+**import-time dep-validation** → place under `~/.papercusp/blueprints/<id>/`
+(the installed tier, where it shadows a same-id built-in). The route's response carries `{ ok, id, version,
 description, abstract, source, installedTo, dependencies, depCheck,
 pluginInstalls, blueprintInstalls }` — `source` is the repo URL, and
 `pluginInstalls` / `blueprintInstalls` are per-unit best-effort result arrays

@@ -111,9 +111,17 @@ auth changes.
 
 * `packages/operator-core/lib/identity/octokit-client.ts` — the canonical
   wrapper in this repo. Uses both `before('request')` for auth and
-  `wrap('request')` for 401-retry. (The repo now pins `@octokit/rest ^22`;
-  the v7 `auth:`-shape break this page documents persists unchanged in v22,
-  so the `before('request')` fix is still the right one.)
+  `wrap('request')` for 401-retry. Also wires a `makeTimeoutFetch` wrapper
+  (default 20 s, tunable via `PAPERCUSP_GITHUB_TIMEOUT_MS` env or the
+  `CreateOctokitOpts { timeoutMs?, fetch? }` arg to `createOctokit()`) into
+  `Octokit`'s `request.fetch` option — the single app-wide guard against a
+  stalled socket blocking the caller indefinitely (root cause: dogfood
+  hive-join froze at 5% because `resolveLocalAnnounceIdentity`'s GitHub
+  calls never resolved or rejected on a hung socket). The `fetch` option
+  also lets tests inject a fake fetch for deterministic timeout coverage.
+  (The repo now pins `@octokit/rest ^22`; the v7 `auth:`-shape break this
+  page documents persists unchanged in v22, so the `before('request')` fix
+  is still the right one.)
 * `packages/operator-core/lib/identity/gh-token.ts` — the token cache the
   Octokit wrapper consumes (see also [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/)
   for the pattern of placing helpers ahead of their primary consumer).
