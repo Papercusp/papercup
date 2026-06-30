@@ -1,0 +1,48 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/yaml/dist/index.js", {"importedNames":["stringify"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/agent-tools/coordination/roles.ts", {"importedNames":["COORD_ROLES"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/agent-tools/blueprint/_resolve.ts", {"importedNames":["resolveAndValidate"]});
+
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_2__.defineTool)({
+  name: "blueprint:extend",
+  description: 'Author a CHILD blueprint extending a parent (e.g. extend "coding"). You supply only the overrides; the tool merges onto the parent, validates the resolved result, and returns {ok, errors, warnings, yaml} — the small child override file for .papercusp/blueprint.yaml. The parent resolves installed (~/.papercusp/blueprints, e.g. Cupboard-installed) → built-in.',
+  guidance: {
+    when: "The usual way to make a new blueprint: inherit shared structure from any resolvable parent (a built-in, or a Cupboard-installed blueprint) and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.",
+    notWhen: "Authoring a wholly new shape with no parent — blueprint:create.",
+    chaining: 'blueprint:extend { parent:"coding", overrides } → (inspect yaml) → harness:create { blueprint }.'
+  },
+  capability: "harness:write",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_3__.COORD_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    id: __vite_ssr_import_0__.z.string().min(1).describe("The child blueprint's id"),
+    parent: __vite_ssr_import_0__.z.string().min(1).describe("Parent blueprint id to extend — resolved installed → built-in (e.g. coding, base, research, or a Cupboard-installed id)"),
+    overrides: __vite_ssr_import_0__.z.record(__vite_ssr_import_0__.z.string(), __vite_ssr_import_0__.z.unknown()).default({}).describe("Fields to override/add on top of the parent (knobs, roles, spine.edges, …)")
+  }),
+  async handler(args) {
+    const child = { id: args.id, extends: args.parent, ...args.overrides };
+    const r = (0,__vite_ssr_import_4__.resolveAndValidate)(child);
+    if (r.parseError) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, parseError: r.parseError }) }] };
+    };
+    const yaml = (0,__vite_ssr_import_1__.stringify)(child, { lineWidth: 100 });
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: r.ok, errors: r.validation.errors, warnings: r.validation.warnings, yaml })
+        }
+      ]
+    };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7Ozs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsVUFBVTtBQUFBLEVBQ1o7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLGlDQUFXO0FBQUEsRUFDM0IsTUFBTSx3QkFBRSxPQUFPO0FBQUEsSUFDYixJQUFJLHdCQUFFLE9BQU8sRUFBRSxJQUFJLENBQUMsRUFBRSxTQUFTLDBCQUEwQjtBQUFBLElBQ3pELFFBQVEsd0JBQUUsT0FBTyxFQUFFLElBQUksQ0FBQyxFQUFFLFNBQVMseUhBQXlIO0FBQUEsSUFDNUosV0FBVyx3QkFDUixPQUFPLHdCQUFFLE9BQU8sR0FBRyx3QkFBRSxRQUFRLENBQUMsRUFDOUIsUUFBUSxDQUFDLENBQUMsRUFDVixTQUFTLDRFQUE0RTtBQUFBLEVBQzFGLENBQUM7QUFBQSxFQUNELE1BQU0sUUFBUSxNQUFNO0FBQ2xCLFVBQU0sUUFBUSxFQUFFLElBQUksS0FBSyxJQUFJLFNBQVMsS0FBSyxRQUFRLEdBQUcsS0FBSyxVQUFVO0FBQ3JFLFVBQU0sT0FBSSwwQ0FBbUIsS0FBSztBQUNsQyxRQUFJLEVBQUUsWUFBWTtBQUNoQixhQUFPLEVBQUUsU0FBUyxDQUFDLEVBQUUsTUFBTSxRQUFpQixNQUFNLEtBQUssVUFBVSxFQUFFLElBQUksT0FBTyxZQUFZLEVBQUUsV0FBVyxDQUFDLEVBQUUsQ0FBQyxFQUFFO0FBQUEsSUFDL0c7QUFDQSxVQUFNLFVBQU8saUNBQWMsT0FBTyxFQUFFLFdBQVcsSUFBSSxDQUFDO0FBQ3BELFdBQU87QUFBQSxNQUNMLFNBQVM7QUFBQSxRQUNQO0FBQUEsVUFDRSxNQUFNO0FBQUEsVUFDTixNQUFNLEtBQUssVUFBVSxFQUFFLElBQUksRUFBRSxJQUFJLFFBQVEsRUFBRSxXQUFZLFFBQVEsVUFBVSxFQUFFLFdBQVksVUFBVSxLQUFLLENBQUM7QUFBQSxRQUN6RztBQUFBLE1BQ0Y7QUFBQSxJQUNGO0FBQUEsRUFDRjtBQUNGLENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImV4dGVuZC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIGJsdWVwcmludDpleHRlbmQg4oCUIGF1dGhvciBhIENISUxEIGJsdWVwcmludCB0aGF0IGluaGVyaXRzIGZyb20gYSBwYXJlbnQgKHRoZVxuICogY2hlYXAsIGNvbW1vbiBwYXRoOiBtb3N0IGJsdWVwcmludHMgZXh0ZW5kIGBjb2RpbmdgL2BiYXNlYC9gcmVzZWFyY2hgKS4gVGhlXG4gKiBhZ2VudCBzdXBwbGllcyBvbmx5IHRoZSBvdmVycmlkZXM7IHRoZSB0b29sIG1lcmdlcyB0aGVtIG9udG8gdGhlIHBhcmVudCxcbiAqIHZhbGlkYXRlcyB0aGUgUkVTT0xWRUQgcmVzdWx0LCBhbmQgcmV0dXJucyB0aGUgY2hpbGQncyBjYW5vbmljYWwgWUFNTCAodGhlXG4gKiBzbWFsbCBvdmVycmlkZSBmaWxlIHRvIHBlcnNpc3QpLiBQdXJlIOKAlCBubyBmaWxlIHdyaXRlLCBubyBoYXJuZXNzIGNyZWF0aW9uLlxuICpcbiAqIGhhcm5lc3MtYmx1ZXByaW50LW9yY2hlc3RyYXRpb24tMjAyNi0wNi0wMyBQLTAwNyAvIEIxIC8gRC0wMDEgKGluaGVyaXRhbmNlIHNvXG4gKiBhZ2VudHMgZG9uJ3QgYXV0aG9yIGZyb20gemVybyAvIGRvbid0IGJ1cm4gdG9rZW5zKS5cbiAqL1xuaW1wb3J0IHsgeiB9IGZyb20gJ3pvZCc7XG5pbXBvcnQgeyBzdHJpbmdpZnkgYXMgc3RyaW5naWZ5WWFtbCB9IGZyb20gJ3lhbWwnO1xuaW1wb3J0IHsgZGVmaW5lVG9vbCB9IGZyb20gJ0BwYXBlcmN1c3AvYWdlbnQtbWNwJztcbmltcG9ydCB7IENPT1JEX1JPTEVTIH0gZnJvbSAnLi4vY29vcmRpbmF0aW9uL3JvbGVzJztcbmltcG9ydCB7IHJlc29sdmVBbmRWYWxpZGF0ZSB9IGZyb20gJy4vX3Jlc29sdmUnO1xuXG5leHBvcnQgZGVmYXVsdCBkZWZpbmVUb29sKHtcbiAgbmFtZTogJ2JsdWVwcmludDpleHRlbmQnLFxuICBkZXNjcmlwdGlvbjpcbiAgICAnQXV0aG9yIGEgQ0hJTEQgYmx1ZXByaW50IGV4dGVuZGluZyBhIHBhcmVudCAoZS5nLiBleHRlbmQgXCJjb2RpbmdcIikuIFlvdSBzdXBwbHkgb25seSB0aGUgb3ZlcnJpZGVzOyB0aGUgdG9vbCBtZXJnZXMgb250byB0aGUgcGFyZW50LCB2YWxpZGF0ZXMgdGhlIHJlc29sdmVkIHJlc3VsdCwgYW5kIHJldHVybnMge29rLCBlcnJvcnMsIHdhcm5pbmdzLCB5YW1sfSDigJQgdGhlIHNtYWxsIGNoaWxkIG92ZXJyaWRlIGZpbGUgZm9yIC5wYXBlcmN1c3AvYmx1ZXByaW50LnlhbWwuIFRoZSBwYXJlbnQgcmVzb2x2ZXMgaW5zdGFsbGVkICh+Ly5wYXBlcmN1c3AvYmx1ZXByaW50cywgZS5nLiBDdXBib2FyZC1pbnN0YWxsZWQpIOKGkiBidWlsdC1pbi4nLFxuICBndWlkYW5jZToge1xuICAgIHdoZW46ICdUaGUgdXN1YWwgd2F5IHRvIG1ha2UgYSBuZXcgYmx1ZXByaW50OiBpbmhlcml0IHNoYXJlZCBzdHJ1Y3R1cmUgZnJvbSBhbnkgcmVzb2x2YWJsZSBwYXJlbnQgKGEgYnVpbHQtaW4sIG9yIGEgQ3VwYm9hcmQtaW5zdGFsbGVkIGJsdWVwcmludCkgYW5kIG92ZXJyaWRlIG9ubHkgd2hhdCBkaWZmZXJzIChrbm9icywgYSBmZXcgcm9sZXMsIGEgc3BpbmUgdHdlYWspLiBDaGVhcCB0byBhdXRob3IuJyxcbiAgICBub3RXaGVuOiAnQXV0aG9yaW5nIGEgd2hvbGx5IG5ldyBzaGFwZSB3aXRoIG5vIHBhcmVudCDigJQgYmx1ZXByaW50OmNyZWF0ZS4nLFxuICAgIGNoYWluaW5nOiAnYmx1ZXByaW50OmV4dGVuZCB7IHBhcmVudDpcImNvZGluZ1wiLCBvdmVycmlkZXMgfSDihpIgKGluc3BlY3QgeWFtbCkg4oaSIGhhcm5lc3M6Y3JlYXRlIHsgYmx1ZXByaW50IH0uJyxcbiAgfSxcbiAgY2FwYWJpbGl0eTogJ2hhcm5lc3M6d3JpdGUnLFxuICByZXF1aXJlUHJpbmNpcGFsOiBmYWxzZSxcbiAgYWdlbnRSb2xlczogWy4uLkNPT1JEX1JPTEVTXSxcbiAgYXJnczogei5vYmplY3Qoe1xuICAgIGlkOiB6LnN0cmluZygpLm1pbigxKS5kZXNjcmliZShcIlRoZSBjaGlsZCBibHVlcHJpbnQncyBpZFwiKSxcbiAgICBwYXJlbnQ6IHouc3RyaW5nKCkubWluKDEpLmRlc2NyaWJlKCdQYXJlbnQgYmx1ZXByaW50IGlkIHRvIGV4dGVuZCDigJQgcmVzb2x2ZWQgaW5zdGFsbGVkIOKGkiBidWlsdC1pbiAoZS5nLiBjb2RpbmcsIGJhc2UsIHJlc2VhcmNoLCBvciBhIEN1cGJvYXJkLWluc3RhbGxlZCBpZCknKSxcbiAgICBvdmVycmlkZXM6IHpcbiAgICAgIC5yZWNvcmQoei5zdHJpbmcoKSwgei51bmtub3duKCkpXG4gICAgICAuZGVmYXVsdCh7fSlcbiAgICAgIC5kZXNjcmliZSgnRmllbGRzIHRvIG92ZXJyaWRlL2FkZCBvbiB0b3Agb2YgdGhlIHBhcmVudCAoa25vYnMsIHJvbGVzLCBzcGluZS5lZGdlcywg4oCmKScpLFxuICB9KSxcbiAgYXN5bmMgaGFuZGxlcihhcmdzKSB7XG4gICAgY29uc3QgY2hpbGQgPSB7IGlkOiBhcmdzLmlkLCBleHRlbmRzOiBhcmdzLnBhcmVudCwgLi4uYXJncy5vdmVycmlkZXMgfTtcbiAgICBjb25zdCByID0gcmVzb2x2ZUFuZFZhbGlkYXRlKGNoaWxkKTtcbiAgICBpZiAoci5wYXJzZUVycm9yKSB7XG4gICAgICByZXR1cm4geyBjb250ZW50OiBbeyB0eXBlOiAndGV4dCcgYXMgY29uc3QsIHRleHQ6IEpTT04uc3RyaW5naWZ5KHsgb2s6IGZhbHNlLCBwYXJzZUVycm9yOiByLnBhcnNlRXJyb3IgfSkgfV0gfTtcbiAgICB9XG4gICAgY29uc3QgeWFtbCA9IHN0cmluZ2lmeVlhbWwoY2hpbGQsIHsgbGluZVdpZHRoOiAxMDAgfSk7XG4gICAgcmV0dXJuIHtcbiAgICAgIGNvbnRlbnQ6IFtcbiAgICAgICAge1xuICAgICAgICAgIHR5cGU6ICd0ZXh0JyBhcyBjb25zdCxcbiAgICAgICAgICB0ZXh0OiBKU09OLnN0cmluZ2lmeSh7IG9rOiByLm9rLCBlcnJvcnM6IHIudmFsaWRhdGlvbiEuZXJyb3JzLCB3YXJuaW5nczogci52YWxpZGF0aW9uIS53YXJuaW5ncywgeWFtbCB9KSxcbiAgICAgICAgfSxcbiAgICAgIF0sXG4gICAgfTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2JsdWVwcmludC9leHRlbmQudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvYmx1ZXByaW50L2V4dGVuZC50cyIsIi9saWIvYWdlbnQtdG9vbHMvYmx1ZXByaW50L2V4dGVuZC50cyIsW11d

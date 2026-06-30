@@ -112,7 +112,11 @@ export default defineTool({
 
     const workspaceId =
       ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
-    const slug = ctx.harnessSlug ?? null;
+    // Treat the unscoped wildcard like "no harness" (workspace-only launch) —
+    // mirrors the workspaceId === '*' guard above. An unscoped su session has
+    // harnessSlug '*', which buildConsoleEnvelope would otherwise reject as an
+    // "unknown harness slug". (capability-terminal-unscoped-slug-fix-2026-06-30)
+    const slug = ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null;
 
     // Build the base envelope ONCE (cwd/env), skipping the superuser .mcp.json —
     // this tool runs commands, it does not host an MCP-connected agent console.

@@ -449,6 +449,48 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
+  // F-A1 (leaks D-4 / clamp D-002): for a WORKSPACE-scoped session, harness:'all'/'*'
+  // on plans:list RE-RESOLVES to a workspace-wide read of the session's OWN workspace
+  // (drop the wildcard + workspaceWide), instead of the harness_forbidden reject — the
+  // global escape (→ PAPERCUSP_WORKSPACE_ID/papercup) is never reached because the
+  // dispatch tx is pinned to ctx.workspaceId. Narrowly scoped: plans:list ONLY, the
+  // workspace tier ONLY; everything else still rejects (proven by the cases below).
+  it('flag ON / F-A1: a workspace-scoped session\'s harness:\'all\' on plans:list is RE-RESOLVED (not harness_forbidden)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('plans:list', { harness: 'all' }, scoped('ws-test'));
+    // The clamp re-resolved to a workspace-wide read instead of rejecting; plans:list
+    // may then return empty/err against the mocked PG, but it is NOT the clamp reject,
+    // and it never took the harness:'all' → global-papercup path.
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON / F-A1: harness:\'*\' on plans:list is likewise re-resolved for a workspace-scoped session', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('plans:list', { harness: '*' }, scoped('ws-test'));
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON / F-A1: the re-resolution is plans:list-ONLY — harness:\'all\' on ANOTHER plans verb (plans:get) still rejects', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('plans:get', { harness: 'all', slug: 'x' }, scoped('ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON / F-A1: a HIVE-pinned session\'s harness:\'all\' on plans:list is NOT re-resolved — still rejected (no sibling-hive plans)', async () => {
+    h.scopedClampFlag.value = true;
+    // hive-pinned = ?harness=hiveA-home (a concrete harness, ctx.harnessSlug != '*').
+    const res = await callTool('plans:list', { harness: 'all' }, superuserExtra('&workspace=ws-test&harness=hiveA-home'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON / F-A1: an UNSCOPED (?workspace=*) superuser\'s harness:\'all\' on plans:list is unchanged (no clamp; global papercup is legitimate)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('plans:list', { harness: 'all' }, scoped('*'));
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
   // P-017: a per-call `harness` arg that resolves to a DIFFERENT workspace must be
   // rejected even for a workspace-only (non-hive) scoped session. The plan/work-item
   // readers resolve a harness→workspace from the REGISTRY (not the clamped ctx.workspaceId),

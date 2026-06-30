@@ -7,8 +7,12 @@ import {
   runTestDesktopReaperOnce,
   policyFromEnv,
   DEFAULT_POLICY,
+  parsePgid,
+  parsePpid,
+  killDesktopProcsWithEndedSessions,
   type ProcSample,
   type ReaperPolicy,
+  type DesktopKillDeps,
 } from './test-desktop-reaper';
 
 function sample(p: Partial<ProcSample> = {}): ProcSample {
@@ -162,5 +166,132 @@ describe('runTestDesktopReaperOnce', () => {
 describe('policyFromEnv', () => {
   it('falls back to defaults when env is unset', () => {
     expect(policyFromEnv()).toEqual(DEFAULT_POLICY);
+  });
+});
+
+// ── Slice 2: adv-session-based kill ──────────────────────────────────────────
+
+// A /proc/<pid>/stat line for pid 1234. comm may contain spaces; split after the
+// last ')'. Fields after ')': state ppid pgrp session tty_nr tpgid …
+const SAMPLE_STAT = '1234 (some comm (with parens)) S 100 1234 1234 0 -1 0 0 0 0 0 100 50';
+
+describe('parsePgid', () => {
+  it('extracts the pgrp from a stat line', () => {
+    expect(parsePgid(SAMPLE_STAT)).toBe(1234);
+  });
+  it('returns null when the stat line has no closing paren', () => {
+    expect(parsePgid('bad line')).toBeNull();
+  });
+  it('returns null for pgrp=0 (kernel thread)', () => {
+    expect(parsePgid('1 (idle) S 0 0 0 0 -1 0 0 0')).toBeNull();
+  });
+});
+
+describe('parsePpid', () => {
+  it('extracts the ppid from a stat line', () => {
+    // ppid is index 1 in the post-')' tokens; SAMPLE_STAT ppid=100
+    expect(parsePpid(SAMPLE_STAT)).toBe(100);
+  });
+  it('returns null when the stat line has no closing paren', () => {
+    expect(parsePpid('bad')).toBeNull();
+  });
+});
+
+// ── killDesktopProcsWithEndedSessions ──────────────────────────────────────────
+
+function makeDeps(overrides: Partial<DesktopKillDeps> = {}): DesktopKillDeps {
+  return {
+    listProc: async () => ['1', '2', '3', '100', '200'],
+    readCmdline: async (pid) => {
+      if (pid === 100) return '/home/marsh-office/.cargo-target/debug/papercusp-desktop\0';
+      if (pid === 200) return '/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitWebProcess 4 42\0';
+      return `process-${pid}`;
+    },
+    readEnviron: async (pid) => {
+      if (pid === 100) return `HOME=/home/u\0PAPERCUSP_ADV_SESSION_ID=42\0SHELL=/bin/bash\0`;
+      return '';
+    },
+    readStat: async (pid) => {
+      // pid 200 has ppid=100 (a webkit child)
+      if (pid === 200) return `200 (WebKitWebProcess) S 100 200 200 0 0 0 0 0 0 0 50 30`;
+      return `${pid} (proc) S 1 ${pid} ${pid} 0 0 0 0 0 0 0 10 5`;
+    },
+    endedAdvSessionIds: async (ids) => new Set(ids.filter((id) => id === 42)),
+    pidCarriesSessionId: async (pid, id) => pid === 100 && id === 42,
+    sigterm: vi.fn(() => true),
+    sigkill: vi.fn(() => true),
+    pidAlive: (pid) => [100, 200].includes(pid),
+    wait: async () => {},
+    ...overrides,
+  };
+}
+
+describe('killDesktopProcsWithEndedSessions', () => {
+  it('kills a desktop process and its webkit child when the session is ended', async () => {
+    const deps = makeDeps();
+    const result = await killDesktopProcsWithEndedSessions({ deps });
+    expect(result.enabled).toBe(true);
+    expect(result.dryRun).toBe(false);
+    expect(result.scanned).toBe(1); // one papercusp-desktop proc found
+    // Both the desktop (100) and its webkit child (200) should be killed
+    expect(result.killed.sort()).toEqual([100, 200].sort());
+    expect(result.skipped).toEqual([]);
+    expect(deps.sigterm).toHaveBeenCalledWith(100);
+  });
+
+  it('dry run reports what would be killed without signalling', async () => {
+    const deps = makeDeps();
+    const result = await killDesktopProcsWithEndedSessions({ dryRun: true, deps });
+    expect(result.dryRun).toBe(true);
+    expect(result.killed.sort()).toEqual([100, 200].sort());
+    expect(deps.sigterm).not.toHaveBeenCalled();
+    expect(deps.sigkill).not.toHaveBeenCalled();
+  });
+
+  it('skips a desktop whose session is NOT ended', async () => {
+    const deps = makeDeps({
+      endedAdvSessionIds: async () => new Set<number>(), // none ended
+    });
+    const result = await killDesktopProcsWithEndedSessions({ deps });
+    expect(result.killed).toEqual([]);
+    expect(result.skipped).toEqual([100]);
+    expect(deps.sigterm).not.toHaveBeenCalled();
+  });
+
+  it('skips a process that fails the pid-recycle guard', async () => {
+    const deps = makeDeps({
+      pidCarriesSessionId: async () => false, // recycle guard fails
+    });
+    const result = await killDesktopProcsWithEndedSessions({ deps });
+    // desktop was targeted but recycle guard prevented signalling
+    expect(deps.sigterm).not.toHaveBeenCalled();
+    expect(result.killed).not.toContain(100);
+  });
+
+  it('returns empty result when no desktop procs exist', async () => {
+    const deps = makeDeps({
+      readCmdline: async () => 'node something-unrelated',
+    });
+    const result = await killDesktopProcsWithEndedSessions({ deps });
+    expect(result.scanned).toBe(0);
+    expect(result.killed).toEqual([]);
+  });
+
+  it('returns gracefully when listProc throws', async () => {
+    const deps = makeDeps({
+      listProc: async () => { throw new Error('no /proc'); },
+    });
+    const result = await killDesktopProcsWithEndedSessions({ deps });
+    expect(result.enabled).toBe(true);
+    expect(result.killed).toEqual([]);
+  });
+
+  it('returns gracefully when endedAdvSessionIds throws', async () => {
+    const deps = makeDeps({
+      endedAdvSessionIds: async () => { throw new Error('pg down'); },
+    });
+    const result = await killDesktopProcsWithEndedSessions({ deps });
+    expect(result.enabled).toBe(true);
+    expect(result.killed).toEqual([]);
   });
 });

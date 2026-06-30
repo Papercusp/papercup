@@ -35,6 +35,7 @@ import {
   _resetHookOwnerIdForTests,
   _resetMidTurnCursorForTests,
   _resetToolCallCacheForTests,
+  _resetDegradedNotifiedForTests,
   type InboxEntry,
 } from '../coord-hook';
 
@@ -335,6 +336,102 @@ describe('register (OMP adapter)', () => {
       }
       await fs.rm(tmpCoordDir, { recursive: true, force: true });
     }
+  });
+});
+
+// WI-1082: when the operator is reachable but a coordination READ is intermittently
+// slow (e.g. a bg-host restart-loop), onTurnStart returns degraded:true. Re-injecting
+// the degraded notice EVERY such turn spams the model + TUI and, in an auto-continuing
+// omp session, drives a self-reinforcing turn loop (one user session logged 79 notices
+// in 170s). The notice is now EDGE-TRIGGERED: surfaced once per slow streak, re-armed
+// only after coordination recovers.
+describe('degraded notice is edge-triggered (WI-1082 — no per-turn spam / loop)', () => {
+  const originalFetch = global.fetch;
+  const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
+  const prevToken = process.env.PAPERCUSP_SUPERUSER_TOKEN;
+  const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
+  let inboxFails = true;
+  function installFetch() {
+    global.fetch = (async (url: unknown, init?: { body?: string }) => {
+      const u = String(url);
+      // probeOperator → reachable (so the turn stays ATTACHED, not DETACHED).
+      if (u.includes('/api/health')) return { ok: true, text: async () => 'ok' };
+      const body = init?.body ? JSON.parse(init.body) : {};
+      const tool = body?.params?.name as string | undefined;
+      // coord:inbox returns null (not ok) → degraded; everything else succeeds.
+      if (tool === 'coord:inbox' && inboxFails) {
+        return { ok: false, text: async () => 'err' };
+      }
+      const payload =
+        tool === 'coord:inbox'
+          ? { ok: true, entries: [] }
+          : { ok: true, entries: [], events: [], active_locks: [], watermark: {} };
+      return {
+        ok: true,
+        text: async () =>
+          `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } })}\n\n`,
+      };
+    }) as unknown as typeof fetch;
+  }
+  beforeEach(() => {
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://operator.test';
+    process.env.PAPERCUSP_SUPERUSER_TOKEN = 'su-token';
+    process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-degr';
+    inboxFails = true;
+    _resetHookOwnerIdForTests();
+    _resetDegradedNotifiedForTests();
+    installFetch();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevOperator === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
+    if (prevToken === undefined) delete process.env.PAPERCUSP_SUPERUSER_TOKEN;
+    else process.env.PAPERCUSP_SUPERUSER_TOKEN = prevToken;
+    if (prevSid === undefined) delete process.env.PAPERCUSP_AUTH_SESSION_ID;
+    else process.env.PAPERCUSP_AUTH_SESSION_ID = prevSid;
+    _resetHookOwnerIdForTests();
+    _resetDegradedNotifiedForTests();
+  });
+
+  it('surfaces the degraded notice ONCE across a streak, and re-arms after recovery', async () => {
+    const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
+    const sent: Array<{ content: string }> = [];
+    const notifications: Array<{ message: string }> = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
+        subs.set(event, handler);
+      },
+      sendMessage: (msg: { content: unknown }) => {
+        sent.push({ content: String(msg.content) });
+      },
+    };
+    const { default: register } = await import('../coord-hook');
+    register(pi as never);
+    const ctx = {
+      hasUI: true,
+      ui: { notify: (message: string) => notifications.push({ message }) },
+    };
+    const degradedNotes = () =>
+      sent.filter((s) => s.content.includes('coordination read was slow')).length;
+
+    // 3 consecutive degraded turns → exactly ONE degraded notice + ONE TUI notification.
+    for (let i = 0; i < 3; i++) {
+      await subs.get('turn_start')!({ type: 'turn_start', turnIndex: i, timestamp: 0 }, ctx);
+    }
+    expect(degradedNotes()).toBe(1);
+    expect(notifications.length).toBe(1);
+
+    // Operator recovers → a healthy turn re-arms the latch (still just one notice).
+    inboxFails = false;
+    await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 3, timestamp: 0 }, ctx);
+    expect(degradedNotes()).toBe(1);
+
+    // Slow again → a fresh streak surfaces exactly one MORE notice (re-armed).
+    inboxFails = true;
+    await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 4, timestamp: 0 }, ctx);
+    expect(degradedNotes()).toBe(2);
+    expect(notifications.length).toBe(2);
   });
 });
 
@@ -998,6 +1095,68 @@ describe('callMcpTool passes ?client=<owner> (file-locking #2)', () => {
         'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n\n',
     })) as unknown as typeof fetch;
     const out = await callMcpTool('coord:inbox', {});
+    expect(out).toEqual({ ok: true });
+  });
+});
+
+// WI-1081: callMcpTool's fetch had NO timeout, so a slow/wedged operator (e.g. a
+// bg-host restart-loop) blocked the OMP extension handler until OMP's framework
+// timeout KILLED it — 30s session_start / 2s turn_start — a launch stall + an
+// "Extension error: handler timed out", with no graceful degrade. callMcpTool now
+// bounds every fetch with an AbortController (default 6s; turn_start passes ~1s) so
+// a hung operator returns null FAST → the hook's normal degraded path.
+describe('callMcpTool fetch timeout (WI-1081 — no-hang guard)', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  beforeEach(() => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    _resetHookOwnerIdForTests();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    _resetHookOwnerIdForTests();
+  });
+
+  it('passes an AbortSignal to fetch so a hung call can be cancelled', async () => {
+    let sawSignal = false;
+    global.fetch = (async (_url: unknown, init?: { signal?: AbortSignal }) => {
+      sawSignal = init?.signal instanceof AbortSignal;
+      return { ok: true, text: async () => '{}' };
+    }) as unknown as typeof fetch;
+    await callMcpTool('coord:inbox', {});
+    expect(sawSignal).toBe(true);
+  });
+
+  it('returns null (not a hang) when the operator never responds and the timeout fires', async () => {
+    // Simulate a wedged operator: fetch resolves ONLY when its AbortSignal fires.
+    global.fetch = ((_url: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        const sig = init?.signal;
+        if (sig)
+          sig.addEventListener('abort', () => {
+            const e = new Error('The operation was aborted');
+            (e as { name: string }).name = 'AbortError';
+            reject(e);
+          });
+        // never resolves on its own — only the abort path completes it
+      })) as unknown as typeof fetch;
+    const started = Date.now();
+    const out = await callMcpTool('coord:inbox', {}, { timeoutMs: 40 });
+    const elapsed = Date.now() - started;
+    expect(out).toBeNull();
+    // bounded by the 40ms budget, NOT a multi-second/30s hang
+    expect(elapsed).toBeLessThan(1500);
+  });
+
+  it('still returns the parsed value when the response arrives within the budget', async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      text: async () =>
+        'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n\n',
+    })) as unknown as typeof fetch;
+    const out = await callMcpTool('coord:inbox', {}, { timeoutMs: 5000 });
     expect(out).toEqual({ ok: true });
   });
 });

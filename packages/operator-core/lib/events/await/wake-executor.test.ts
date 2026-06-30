@@ -542,6 +542,11 @@ describe('executeWake — the liveness ladder', () => {
     expect(args).toContain('-p');
     expect(args[args.length - 1]).toContain('lock:grant:t-1');
     expect(o.env.PAPERCUSP_SID).toBe('su-abc');
+    // Regression: the autonomous resume turn MUST carry the bee's workspace so
+    // omp's user-level MCP (x-papercusp-workspace from `${PAPERCUSP_WORKSPACE:-}`)
+    // resolves a concrete workspace. Without it the clamp rejects the session
+    // and EVERY coord:* tool 404s ("Tool coord:orient not found").
+    expect(o.env.PAPERCUSP_WORKSPACE).toBe('ws');
   });
 
   it('exited omp PTY fallback → readiness-gated prompt injection into the new pty', async () => {

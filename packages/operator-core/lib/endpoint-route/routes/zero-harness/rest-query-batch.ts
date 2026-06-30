@@ -5,11 +5,11 @@
  *
  * Ported from app/api/zero-harness/rest-query-batch/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
-import { gzipSync } from 'node:zlib';
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';
 import { resourceDeltaConfig } from '../../../sync-resolver/resource-delta-config';
 import { negotiateRowsDelta } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
+import { serializeJsonResponse } from '../../../cpu-task-worker';
 
 // P-006: a delta-aware client adds `delta: <cursor>` ('' to opt in cold) per query; absent →
 // today's {rows, version} slot (byte-identical). Inert until the client opts in.
@@ -87,10 +87,15 @@ export default defineTool({
     // WHOLE batch (a sparse-table 500 that hid in userActions for ages). Resolvers SHOULD
     // return clean rows (sync-resolver's jsonSafeRows), but this boundary replacer is the
     // net so no present/future resolver can 500 the sync transport on a stray BigInt.
-    const payload = JSON.stringify({ results }, (_k, v) => (typeof v === 'bigint' ? Number(v) : v));
+    //
+    // infra-perf-reliability-audit-round3 P-011 / round4 P-002: offload
+    // JSON.stringify + gzip to the cpu-task worker so neither blocks the main
+    // event loop. serializeJsonResponse applies the BigInt→Number replacer on
+    // the worker thread (byte-identical to the previous inline replacer).
     const acceptsGzip = (req.headers.get('accept-encoding') ?? '').toLowerCase().includes('gzip');
-    if (acceptsGzip && payload.length >= 1024) {
-      return new Response(gzipSync(payload), {
+    const { body: responseBody, encoding } = await serializeJsonResponse({ results }, acceptsGzip, list.length);
+    if (encoding === 'gzip') {
+      return new Response(responseBody, {
         status: 200,
         headers: {
           'content-type': 'application/json; charset=utf-8',
@@ -99,7 +104,7 @@ export default defineTool({
         },
       });
     }
-    return new Response(payload, {
+    return new Response(responseBody as string, {
       status: 200,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });

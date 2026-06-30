@@ -59,7 +59,10 @@ if ! flock -n 9; then
   fi
 fi
 
-# Record the holder pid (post-exec this pid IS the watcher) — diagnostic only;
-# the kill path above is inode-scoped, not pid-trusting.
-printf '%s\n' "$$" > "$LOCK"
+# Record the holder pid on line 1 (post-exec this pid IS the watcher) —
+# diagnostic only; the kill path above is inode-scoped, not pid-trusting.
+# Line 2 records the ABSOLUTE dist/ this watcher serves so the one-shot-build
+# dist-wipe guard (dist-wipe-guard.ts) can refuse only when a one-shot
+# `vite build` would empty THIS live dist, never a different checkout's.
+printf '%s\n%s\n' "$$" "$(pwd)/dist" > "$LOCK"
 exec bash -c "$CMD"

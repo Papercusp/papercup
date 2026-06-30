@@ -1,0 +1,17 @@
+[Unit]
+Description=Papercusp leaked-webview reaper — kills orphaned WebKitWebProcess instances from crashed/abandoned test Tauri desktops (WI-345 F12)
+# Deliberately a systemd timer, NOT a DBOS scheduled workflow and NOT an
+# in-process operator tick (dbos-scheduler-consolidation-2026-06-03 D-004 /
+# EI-1622): these are dev-box host-level process leaks (infra hygiene, not
+# product), and a per-tick DBOS row is the high-freq bloat that froze the
+# engine. Mirrors papercup-perf-signals-capture.service.
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Reaper should finish in seconds; 30s timeout prevents a stuck ps/proc read
+# from blocking the next timer tick.
+TimeoutStartSec=30
+ExecStart=/home/marsh-office/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh

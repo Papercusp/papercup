@@ -1,0 +1,37 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/coordination/roles.ts", {"importedNames":["COORD_ROLES"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/agent-tools/computer/desktop-lease.ts", {"importedNames":["hiveDesktop","releaseHiveDesktop"]});
+
+
+
+
+const text = (payload) => ({
+  content: [{ type: "text", text: JSON.stringify(payload) }]
+});
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "computer:release_desktop",
+  profile: "engineer",
+  description: "Tear down a hive's sandbox desktop (kill its Xvfb + apps, free the display) without dissolving the hive. Idempotent — a no-op if the hive holds no desktop. (hive:dissolve releases automatically.)",
+  guidance: {
+    when: "A hive is done with GUI work but stays alive — reclaim the Xvfb/display. Also good demo hygiene after computer:provision_desktop.",
+    notWhen: "Tearing down the whole hive — hive:dissolve already releases the desktop. There is nothing to release if the hive never provisioned one.",
+    chaining: "computer:list_desktops to see what is leased → computer:release_desktop { hive }."
+  },
+  capability: "harness:write",
+  requirePrincipal: false,
+  agentRoles: __vite_ssr_import_2__.COORD_ROLES.filter((r) => r !== "bee" && r !== "sentinel" && r !== "overwatch"),
+  args: __vite_ssr_import_0__.z.object({
+    hive: __vite_ssr_import_0__.z.string().min(1).max(120).describe("The hive's home-harness slug whose desktop to release.")
+  }).strict(),
+  async handler(args) {
+    const had = !!(0,__vite_ssr_import_3__.hiveDesktop)(args.hive);
+    await (0,__vite_ssr_import_3__.releaseHiveDesktop)(args.hive);
+    return text({ ok: true, hive: args.hive, released: had, note: had ? "desktop torn down." : "no desktop was leased (no-op)." });
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQU1BO0FBQ0E7QUFDQTtBQUNBOzs7OztBQUVBLE1BQU0sT0FBTyxDQUFDLGFBQXNDO0FBQUEsRUFDbEQsU0FBUyxDQUFDLEVBQUUsTUFBTSxRQUFpQixNQUFNLEtBQUssVUFBVSxPQUFPLEVBQUUsQ0FBQztBQUNwRTtBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsVUFBVTtBQUFBLEVBQ1o7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksa0NBQVksT0FBTyxDQUFDLE1BQU0sTUFBTSxTQUFTLE1BQU0sY0FBYyxNQUFNLFdBQVc7QUFBQSxFQUMxRixNQUFNLHdCQUNILE9BQU87QUFBQSxJQUNOLE1BQU0sd0JBQUUsT0FBTyxFQUFFLElBQUksQ0FBQyxFQUFFLElBQUksR0FBRyxFQUFFLFNBQVMsd0RBQXdEO0FBQUEsRUFDcEcsQ0FBQyxFQUNBLE9BQU87QUFBQSxFQUNWLE1BQU0sUUFBUSxNQUFNO0FBQ2xCLFVBQU0sTUFBTSxDQUFDLElBQUMsbUNBQVksS0FBSyxJQUFJO0FBQ25DLGFBQU0sMENBQW1CLEtBQUssSUFBSTtBQUNsQyxXQUFPLEtBQUssRUFBRSxJQUFJLE1BQU0sTUFBTSxLQUFLLE1BQU0sVUFBVSxLQUFLLE1BQU0sTUFBTSx1QkFBdUIsaUNBQWlDLENBQUM7QUFBQSxFQUMvSDtBQUNGLENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbInJlbGVhc2UtZGVza3RvcC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIGNvbXB1dGVyOnJlbGVhc2VfZGVza3RvcCDigJQgdGVhciBkb3duIGEgaGl2ZSdzIHNhbmRib3ggZGVza3RvcCAoa2lsbCB0aGUgaW4tcHJvY2Vzc1xuICogWHZmYiArIGFwcHMsIGZyZWUgdGhlIGRpc3BsYXkpIHdpdGhvdXQgZGlzc29sdmluZyB0aGUgaGl2ZS4gVGhlIGludmVyc2Ugb2ZcbiAqIGNvbXB1dGVyOnByb3Zpc2lvbl9kZXNrdG9wLiBoaXZlOmRpc3NvbHZlIGFsc28gcmVsZWFzZXMgYXV0b21hdGljYWxseSAoc3RlcCAzLjYpOyB0aGlzXG4gKiBpcyB0aGUgc3RhbmRhbG9uZSB0ZWFyZG93biBmb3IgYSBkZW1vIC8gd2hlbiBhIGhpdmUgbm8gbG9uZ2VyIG5lZWRzIEdVSSB3b3JrLlxuICovXG5pbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wgfSBmcm9tICdAcGFwZXJjdXNwL2FnZW50LW1jcCc7XG5pbXBvcnQgeyBDT09SRF9ST0xFUyB9IGZyb20gJy4uL2Nvb3JkaW5hdGlvbi9yb2xlcyc7XG5pbXBvcnQgeyBoaXZlRGVza3RvcCwgcmVsZWFzZUhpdmVEZXNrdG9wIH0gZnJvbSAnLi9kZXNrdG9wLWxlYXNlJztcblxuY29uc3QgdGV4dCA9IChwYXlsb2FkOiBSZWNvcmQ8c3RyaW5nLCB1bmtub3duPikgPT4gKHtcbiAgY29udGVudDogW3sgdHlwZTogJ3RleHQnIGFzIGNvbnN0LCB0ZXh0OiBKU09OLnN0cmluZ2lmeShwYXlsb2FkKSB9XSxcbn0pO1xuXG5leHBvcnQgZGVmYXVsdCBkZWZpbmVUb29sKHtcbiAgbmFtZTogJ2NvbXB1dGVyOnJlbGVhc2VfZGVza3RvcCcsXG4gIHByb2ZpbGU6ICdlbmdpbmVlcicsXG4gIGRlc2NyaXB0aW9uOlxuICAgIFwiVGVhciBkb3duIGEgaGl2ZSdzIHNhbmRib3ggZGVza3RvcCAoa2lsbCBpdHMgWHZmYiArIGFwcHMsIGZyZWUgdGhlIGRpc3BsYXkpIHdpdGhvdXQgZGlzc29sdmluZyB0aGUgaGl2ZS4gSWRlbXBvdGVudCDigJQgYSBuby1vcCBpZiB0aGUgaGl2ZSBob2xkcyBubyBkZXNrdG9wLiAoaGl2ZTpkaXNzb2x2ZSByZWxlYXNlcyBhdXRvbWF0aWNhbGx5LilcIixcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiAnQSBoaXZlIGlzIGRvbmUgd2l0aCBHVUkgd29yayBidXQgc3RheXMgYWxpdmUg4oCUIHJlY2xhaW0gdGhlIFh2ZmIvZGlzcGxheS4gQWxzbyBnb29kIGRlbW8gaHlnaWVuZSBhZnRlciBjb21wdXRlcjpwcm92aXNpb25fZGVza3RvcC4nLFxuICAgIG5vdFdoZW46ICdUZWFyaW5nIGRvd24gdGhlIHdob2xlIGhpdmUg4oCUIGhpdmU6ZGlzc29sdmUgYWxyZWFkeSByZWxlYXNlcyB0aGUgZGVza3RvcC4gVGhlcmUgaXMgbm90aGluZyB0byByZWxlYXNlIGlmIHRoZSBoaXZlIG5ldmVyIHByb3Zpc2lvbmVkIG9uZS4nLFxuICAgIGNoYWluaW5nOiAnY29tcHV0ZXI6bGlzdF9kZXNrdG9wcyB0byBzZWUgd2hhdCBpcyBsZWFzZWQg4oaSIGNvbXB1dGVyOnJlbGVhc2VfZGVza3RvcCB7IGhpdmUgfS4nLFxuICB9LFxuICBjYXBhYmlsaXR5OiAnaGFybmVzczp3cml0ZScsXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICBhZ2VudFJvbGVzOiBDT09SRF9ST0xFUy5maWx0ZXIoKHIpID0+IHIgIT09ICdiZWUnICYmIHIgIT09ICdzZW50aW5lbCcgJiYgciAhPT0gJ292ZXJ3YXRjaCcpLFxuICBhcmdzOiB6XG4gICAgLm9iamVjdCh7XG4gICAgICBoaXZlOiB6LnN0cmluZygpLm1pbigxKS5tYXgoMTIwKS5kZXNjcmliZShcIlRoZSBoaXZlJ3MgaG9tZS1oYXJuZXNzIHNsdWcgd2hvc2UgZGVza3RvcCB0byByZWxlYXNlLlwiKSxcbiAgICB9KVxuICAgIC5zdHJpY3QoKSxcbiAgYXN5bmMgaGFuZGxlcihhcmdzKSB7XG4gICAgY29uc3QgaGFkID0gISFoaXZlRGVza3RvcChhcmdzLmhpdmUpO1xuICAgIGF3YWl0IHJlbGVhc2VIaXZlRGVza3RvcChhcmdzLmhpdmUpO1xuICAgIHJldHVybiB0ZXh0KHsgb2s6IHRydWUsIGhpdmU6IGFyZ3MuaGl2ZSwgcmVsZWFzZWQ6IGhhZCwgbm90ZTogaGFkID8gJ2Rlc2t0b3AgdG9ybiBkb3duLicgOiAnbm8gZGVza3RvcCB3YXMgbGVhc2VkIChuby1vcCkuJyB9KTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2NvbXB1dGVyL3JlbGVhc2UtZGVza3RvcC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvY29tcHV0ZXIvcmVsZWFzZS1kZXNrdG9wLnRzIiwiL2xpYi9hZ2VudC10b29scy9jb21wdXRlci9yZWxlYXNlLWRlc2t0b3AudHMiLFtdXQ==

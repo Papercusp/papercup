@@ -29,7 +29,15 @@ import { makeFakeBootedHandle } from './fake-booted-handle';
 
 // The DEFAULT discovery path (no discoverHarnessSlugs override) reads the PG
 // registry via loadHarnessRegistry — mocked here so unit tests never touch PG.
-const loadHarnessRegistryMock = vi.fn(async (_ws?: string) => ({ projects: [] as Array<{ slug: string; path: string }> }));
+const loadHarnessRegistryMock = vi.fn(async (_ws?: string) => ({
+  projects: [] as Array<{
+    slug: string;
+    path: string;
+    harness_kind?: string;
+    remote_hive?: boolean;
+    hive_slug?: string;
+  }>,
+}));
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: (ws?: string) => loadHarnessRegistryMock(ws),
 }));
@@ -228,6 +236,58 @@ describe('boot-all — substrate orchestrator', () => {
     } finally {
       warnSpy.mockRestore();
       rmSync(liveDir, { recursive: true, force: true });
+    }
+  });
+
+  it('D-057: a JOINED (remote_hive) hive view boots even when its gist-backed state dir is ABSENT', async () => {
+    // The live spawned-sidecar cross-machine blocker: a joined hive's
+    // `remote_hive` HOME view is gist/PG-backed (no code checkout), so its
+    // `path` (~/.papercusp/remote-hives/<slug>) need not exist on the spawned
+    // sidecar / cloud frame. PRE-FIX harnessSlugsFromPgRegistry filtered it out
+    // via existsSync(path) → the joined-hive substrate never booted → no outbox
+    // drain wired → every cross-machine content/coord probe = 0. POST-FIX the
+    // enumeration aligns with the swarm-join's hive-identity source of truth and
+    // boots it. The genuine code-checkout debris (no hive kind) is STILL filtered
+    // (the WI-779 thundering-herd guard stays intact).
+    const liveClone = mkdtempSync(join(tmpdir(), 'boot-all-member-'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      loadHarnessRegistryMock.mockResolvedValueOnce({
+        projects: [
+          // The joined-hive HOME view — gist-backed; its dir is ABSENT here.
+          {
+            slug: 'joined-hive',
+            path: '/nonexistent/papercusp-remote-hives/joined-hive',
+            harness_kind: 'hive',
+            remote_hive: true,
+          },
+          // A genuinely-dead CODE checkout (no hive kind) — must STILL be skipped.
+          { slug: 'dead-clone', path: '/nonexistent/papercusp-boot-all-dead-clone' },
+          // A live member clone — control (real on-disk checkout).
+          { slug: 'member-h', path: liveClone, hive_slug: 'joined-hive' },
+        ],
+      });
+      const booted: string[] = [];
+      const result = await bootAllHarnessesForActiveWorkspace({
+        workspaceIds: ['ws-joined-hive'],
+        // NO discoverHarnessSlugs override — exercises harnessSlugsFromPgRegistry.
+        resolveSwarmBinding: async () => null,
+        skipSendSideWiring: true,
+        bootHarness: async ({ workspaceId, harnessSlug }) => {
+          booted.push(harnessSlug);
+          return fakeHandle(workspaceId, harnessSlug);
+        },
+      });
+      // PRE-FIX: only 'member-h' enumerated (attempted=1) — the joined hive was
+      // dropped. POST-FIX: the joined hive view + the live member both boot.
+      expect(booted.sort()).toEqual(['joined-hive', 'member-h']);
+      expect(result.attempted).toBe(2);
+      expect(result.booted).toBe(2);
+      // The thundering-herd guard is intact: dead code-checkout debris is skipped.
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dead-clone'));
+    } finally {
+      warnSpy.mockRestore();
+      rmSync(liveClone, { recursive: true, force: true });
     }
   });
 

@@ -1153,6 +1153,16 @@ export const FLAGS = {
   // reversible. OFF ⇒ the hook's nudge branch is inert (no reminder ever emitted); the cheap local
   // edit-marker touch is harmless either way. The owner kill-switch for the backstop.
   WORKITEM_VERIFY_NUDGE: "papercusp-workitem-verify-nudge",
+  // DEFAULT ON (infra-perf-reliability-audit-round3-2026-06-19 P-013 / WI-345 F12):
+  // the KILL leg of the test-webview reaper — actually SIGTERMs then SIGKILLs
+  // papercusp-desktop processes whose PAPERCUSP_ADV_SESSION_ID session is ENDED
+  // (agent-spawned test desktops that leaked after the test run finished). The detection
+  // leg (toast notification) always runs when the routine fires; this flag gates the
+  // OS-level process kill. The routine is SEEDED INACTIVE — the double-gate means this
+  // flag being ON has no effect until an operator activates the routine. OFF ⇒ the action
+  // runs detection-only (toast + log, no kills). The kill-switch if the reaper ever
+  // mis-targets a process.
+  TEST_WEBVIEW_REAPER: "papercusp-test-webview-reaper",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

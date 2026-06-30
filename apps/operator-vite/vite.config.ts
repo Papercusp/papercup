@@ -4,6 +4,7 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
 import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
 import { devDistPrunePlugin } from './dev-dist-prune';
+import { distWipeGuardPlugin } from './dist-wipe-guard';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -177,7 +178,12 @@ export default defineConfig({
       autoCodeSplitting: true,
     }),
     react(),
-    // Watch-build only: prune the chunks that emptyOutDir:false now retains.
-    ...(isWatchBuild ? [devDistPrunePlugin()] : []),
+    // Watch build retains+prunes old chunks (emptyOutDir:false); a one-shot
+    // `vite build` empties dist/ — guard it so it can't wipe a LIVE watcher's
+    // :3170 dist out from under open webviews (the 2026-06-29 blank-page
+    // incident). The guard only fires on a confirmed same-dist live watcher
+    // and fails open otherwise, so it never wedges the deploy pipeline. See
+    // dist-wipe-guard.ts.
+    ...(isWatchBuild ? [devDistPrunePlugin()] : [distWipeGuardPlugin()]),
   ],
 });

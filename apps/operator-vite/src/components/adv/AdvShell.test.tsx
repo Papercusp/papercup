@@ -312,6 +312,18 @@ describe('AdvShell — hive pick resets the member focus (?harness)', () => {
     await waitFor(() => expect(nuqsSetters.harness).toHaveBeenCalledWith(null));
     nuqsState.harness = undefined; // don't leak into other tests
   });
+
+  it('cycling the harness via the keyboard (harness.next) ALSO clears ?harness so the dock follows the newly-cycled hive (same stale-?harness bugfix, keyboard path)', async () => {
+    nuqsState.slug = 'pot-a';
+    nuqsState.harness = 'pot-a-child'; // a sticky within-hive member focus from a prior drill-in
+    await renderShell();
+    act(() => shortcutHandlers.get('harness.next')!());
+    await waitFor(() => expect(nuqsSetters.slug).toHaveBeenCalledWith('pot-b'));
+    // THE FIX (keyboard path, AdvShell cycleHarness): member focus reset to null
+    // so the dock follows the cycled-to hive instead of the stale sub-hive.
+    await waitFor(() => expect(nuqsSetters.harness).toHaveBeenCalledWith(null));
+    nuqsState.harness = undefined; // don't leak into other tests
+  });
 });
 
 describe('AdvShell — selection restore (resolveAdvHarnessSelection wiring)', () => {

@@ -1009,6 +1009,17 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
     ...(dht ? { dht } : opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),
     firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
   });
+  // P-005 (bg-host-freeze-eventloop-stall-2026-06-30): with 25+ harnesses each
+  // adding ONE 'connection' listener (via joinHarnessSwarm) plus the hive-directory
+  // gossip listener (createDirectoryGossip), the process-global shared swarm
+  // accumulates N+1 listeners — all intentional, all permanent for the process
+  // lifetime, none of them leaks. Node.js's default maxListeners=10 fires a
+  // MaxListenersExceededWarning at the 11th harness, a false-positive alarm. Call
+  // setMaxListeners(0) (= unlimited) to silence it. This does NOT hide a genuine
+  // leak: every joinHarnessSwarm returns a SwarmHandle whose close() removes the
+  // listener via swarm.off('connection', handler), and the listener-count test
+  // (swarm-listener-count.test.ts) asserts bounded count after boot + close.
+  (_sharedSwarm as { setMaxListeners?: (n: number) => void })?.setMaxListeners?.(0);
   return _sharedSwarm;
 }
 

@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 // Side-effect import registers the watchdog + implement actions (and exercises every import path).
-import { implementKickoff, implementTimeoutMs, intFromEnv } from './improvement-actions';
+import {
+  implementKickoff,
+  implementTimeoutMs,
+  intFromEnv,
+  drainStopsImprovementClaims,
+  shouldStopClaimingForDrain,
+} from './improvement-actions';
+import { isShuttingDown, markShuttingDown, __resetShutdownStateForTest } from '../../shutdown-state';
 import { listSystemActions } from './system-actions';
 import { DEFAULT_STALE_CLAIM_MS } from '../improvements/plan-implement';
 import { dispatchOverdueAfterMs } from '../improvements/dispatch-ledger';
@@ -110,5 +117,50 @@ describe('intFromEnv — honest env parsing (watchdog-robustness P-005 / D-005)'
   it('clamps a value below min', () => {
     process.env[VAR] = '-4';
     expect(intFromEnv(VAR, 3, { min: 0 })).toBe(0);
+  });
+});
+
+// P-005 (infra round-4): the auto-implement dispatch loop must STOP claiming new
+// minutes-long workers once SIGTERM lands, or a deploy SIGKILLs them mid-fix and
+// orphans the claim (the 2026-06-19 storm: 51/58 workers exited 143). The guard is
+// DEFAULT-OFF — it must not change behavior until armed alongside the lane re-arm.
+describe('P-005 drain-stops-claims guard (default-OFF until armed)', () => {
+  const VAR = 'PAPERCUSP_IMPROVEMENT_DRAIN_STOPS_CLAIMS';
+  afterEach(() => {
+    delete process.env[VAR];
+    __resetShutdownStateForTest();
+  });
+
+  it('drainStopsImprovementClaims is OFF when the env flag is unset', () => {
+    expect(drainStopsImprovementClaims({})).toBe(false);
+  });
+
+  it('arms on 1/true/on (case-insensitive, whitespace-tolerant); stays off otherwise', () => {
+    for (const v of ['1', 'true', 'TRUE', 'on', 'On', ' 1 ']) {
+      expect(drainStopsImprovementClaims({ [VAR]: v })).toBe(true);
+    }
+    for (const v of ['0', 'false', 'off', '', '   ', 'yes', 'enabled']) {
+      expect(drainStopsImprovementClaims({ [VAR]: v })).toBe(false);
+    }
+  });
+
+  it('DEFAULT-OFF: even while draining, an UNARMED flag does not stop claims (zero behavior change until armed)', () => {
+    expect(shouldStopClaimingForDrain({ draining: true, env: {} })).toBe(false);
+  });
+
+  it('armed but NOT draining: does not stop claims (only fires during a real drain)', () => {
+    expect(shouldStopClaimingForDrain({ draining: false, env: { [VAR]: '1' } })).toBe(false);
+  });
+
+  it('armed AND draining: stops claims', () => {
+    expect(shouldStopClaimingForDrain({ draining: true, env: { [VAR]: '1' } })).toBe(true);
+  });
+
+  it('reads the LIVE process drain flag when `draining` is not passed explicitly', () => {
+    process.env[VAR] = '1';
+    expect(isShuttingDown()).toBe(false);
+    expect(shouldStopClaimingForDrain()).toBe(false); // armed, but not draining yet
+    markShuttingDown(); // the SIGTERM handler's call, simulated
+    expect(shouldStopClaimingForDrain()).toBe(true); // armed + draining ⇒ stop
   });
 });

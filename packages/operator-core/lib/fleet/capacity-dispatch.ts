@@ -88,11 +88,14 @@ export function capacityFactor(
   if (!signal.reachable) return 1;
   const tieredSpareCapacity = hasTieredBeeCapacity(signal);
   const accountWindowBlocked = signal.paused === true || signal.rejected === true;
-  const rejectedBoundAccountButPoolHasCapacity = signal.rejected === true && signal.paused !== true && tieredSpareCapacity;
-  // With priority tiers, `/stats.unified` describes the currently-bound account,
-  // not necessarily the pool. If that account is exhausted while the tier oracle
-  // still reports healthy accounts and bee-tier spare slots, pool capacity exists.
-  const util = rejectedBoundAccountButPoolHasCapacity ? 0 : (signal.utilization ?? 0);
+  // With priority tiers, `/stats.{unified,paused,rejected}` describe the currently-BOUND account,
+  // NOT the pool. If that account is paused/exhausted while the tier oracle still reports healthy
+  // accounts AND bee-tier spare slots, pool capacity exists — a bound-account block must not gate
+  // placement. (Originally this covered only `rejected`; a weekly-capped account reports BOTH
+  // paused:true AND rejected:true, which re-armed the false-saturation gate and stalled the whole
+  // autonomous loop — capacity-oracle-false-saturation-2026-06-29.)
+  const boundAccountBlockedButPoolHasCapacity = accountWindowBlocked && tieredSpareCapacity;
+  const util = boundAccountBlockedButPoolHasCapacity ? 0 : (signal.utilization ?? 0);
   const queueDepth = Math.max(0, signal.queueDepth ?? 0);
   // Budget leg: 1 up to utilizationHigh, then linearly to 0 as util → 1.0 (at cap).
   const span = Math.max(1e-6, 1 - config.utilizationHigh);
@@ -100,7 +103,7 @@ export function capacityFactor(
   // Queue leg: 1 at an empty queue, → 0 as queueDepth → queueSoftCap.
   const queueLeg = clamp01(1 - queueDepth / Math.max(1, config.queueSoftCap));
   let factor = Math.min(budgetLeg, queueLeg);
-  if (accountWindowBlocked && !rejectedBoundAccountButPoolHasCapacity) factor = 0; // no fresh capacity at all → throttle to the floor
+  if (accountWindowBlocked && !boundAccountBlockedButPoolHasCapacity) factor = 0; // no fresh capacity at all → throttle to the floor
   return factor;
 }
 
@@ -284,8 +287,11 @@ export function buildCapacityReport(
   signal.dispatchBudget = dispatchBudget;
   const factor = capacityFactor(signal, config);
   const tieredSpareCapacity = hasTieredBeeCapacity(signal);
-  const rejectedBoundAccountButPoolHasCapacity = hr.rejected && !hr.paused && tieredSpareCapacity;
-  const poolBlocked = (hr.paused || hr.rejected) && !rejectedBoundAccountButPoolHasCapacity;
+  // A weekly-capped account reports BOTH paused:true and rejected:true; trust the tier oracle
+  // (healthy accounts + bee-tier spare slots) over the bound-account block — same rationale as
+  // capacityFactor (capacity-oracle-false-saturation-2026-06-29).
+  const boundAccountBlockedButPoolHasCapacity = (hr.rejected || hr.paused) && tieredSpareCapacity;
+  const poolBlocked = (hr.paused || hr.rejected) && !boundAccountBlockedButPoolHasCapacity;
 
   let recommendedHeadroom: number | null = null;
   let throttled: boolean | null = null;

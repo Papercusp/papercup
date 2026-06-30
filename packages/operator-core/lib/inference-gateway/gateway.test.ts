@@ -94,6 +94,49 @@ test('parseRateReset — prefers unified unix-seconds reset; drops a retry-after
   assert.equal(r.retryAfterMs, undefined, 'retry-after 15210s discarded vs a ~600s reset');
 });
 
+test('parseRateReset — a 7d-CAPPED account pauses until the 7d reset, not the fresh 5h reset (WI-1083)', () => {
+  const now = 1_000_000_000_000;
+  const fiveHReset = Math.round(now / 1000) + 600; // fresh 5h window: resets in 10 min
+  const sevenDReset = Math.round(now / 1000) + 3 * 3600; // 7d window: resets in 3h (inside the 6h cap)
+  const r = parseRateReset(
+    {
+      'anthropic-ratelimit-unified-5h-reset': String(fiveHReset),
+      'anthropic-ratelimit-unified-7d-utilization': '1',
+      'anthropic-ratelimit-unified-7d-reset': String(sevenDReset),
+    },
+    now,
+  );
+  assert.equal(r.resetAt, sevenDReset * 1000, 'weekly-capped → pause to the 7d reset, not the minutes-away 5h reset');
+  assert.equal(r.retryAfterMs, undefined);
+});
+
+test('parseRateReset — a huge 7d reset is capped to WEEKLY_CAP_MAX_PAUSE_MS (6h default) to bound a bad header (WI-1083)', () => {
+  const now = 1_000_000_000_000;
+  const r = parseRateReset(
+    {
+      'anthropic-ratelimit-unified-5h-reset': String(Math.round(now / 1000) + 600),
+      'anthropic-ratelimit-unified-7d-utilization': '1.01',
+      'anthropic-ratelimit-unified-7d-reset': String(Math.round(now / 1000) + 59 * 3600), // 59h away
+    },
+    now,
+  );
+  assert.equal(r.resetAt, now + 6 * 60 * 60 * 1000, 'capped at the 6h max so a wrong header cannot strand the account for days');
+});
+
+test('parseRateReset — a NOT-weekly-capped account keeps the 5h reset (no-regression, WI-1083)', () => {
+  const now = 1_000_000_000_000;
+  const fiveHReset = Math.round(now / 1000) + 600;
+  const r = parseRateReset(
+    {
+      'anthropic-ratelimit-unified-5h-reset': String(fiveHReset),
+      'anthropic-ratelimit-unified-7d-utilization': '0.4', // plenty of weekly headroom
+      'anthropic-ratelimit-unified-7d-reset': String(Math.round(now / 1000) + 99999),
+    },
+    now,
+  );
+  assert.equal(r.resetAt, fiveHReset * 1000, 'weekly has headroom → keep the 5h reset');
+});
+
 // classify429Shape — the hard-evidence "is this real capacity?" distinction, made loggable. A bare-burst
 // 429 means CAPACITY EXISTS (transient throttle); usage-cap is a real per-account wall. The precedence
 // (usage-cap > bare > rate-window > unified-rejected) mirrors the gateway's own 429-handling order.

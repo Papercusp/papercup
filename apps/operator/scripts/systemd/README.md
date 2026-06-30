@@ -151,3 +151,60 @@ deploy/restart (`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release
 and confirm an in-flight agent's native MCP tools keep working (no toolless session, no
 relaunch). Leave the default config on `:3070` until that e2e passes — this is a fleet-wide
 cutover, so the owner should green-light + attend it.
+
+---
+
+# Leaked-webview reaper — installation (WI-345 F12)
+
+`papercup-webkit-reaper.{service,timer}` reaps runaway `WebKitWebProcess`
+instances and stale `papercusp-desktop` processes left behind by agents
+that spawned Tauri desktop sessions for UI verification and didn't clean up.
+
+**Root cause:** When a Tauri desktop is killed (SIGKILL from an agent
+finishing a task, a crash, or `tauri dev` watcher rebuilding), its
+WebKitWebProcess children (managed by WebKitGTK) become orphans reparented
+to PID 1. They continue spinning at 99% CPU on dead connections. Five of
+these plus zombies caused visible CPU saturation on the shared dev box.
+
+**Safety:** The reaper protects the NEWEST papercusp-desktop process (the
+active user session). All older instances running > 30 min are stale test
+instances. Orphaned WebKitWebProcess (ppid=1) older than 5 min are always
+safe — their parent is definitively dead.
+
+## Install (one-time)
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+ln -sf "$(pwd)/papercup-webkit-reaper.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/papercup-webkit-reaper.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-webkit-reaper.timer
+```
+
+## Verify
+
+```bash
+systemctl --user list-timers papercup-webkit-reaper.timer
+systemctl --user status papercup-webkit-reaper.service
+```
+
+## Manual run / dry-run
+
+```bash
+# Dry run (logs what it would kill without touching anything):
+WEBKIT_REAPER_DRY_RUN=1 /home/marsh-office/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh
+
+# Live run:
+systemctl --user start papercup-webkit-reaper.service
+journalctl --user -u papercup-webkit-reaper.service --since "1 min ago"
+```
+
+## Tune thresholds
+
+```bash
+# Reap orphans older than 2 min (default 5 min):
+WEBKIT_REAPER_ORPHAN_THRESHOLD=120 ./bin/reap-leaked-webviews.sh
+
+# Protect stale desktops longer (default 30 min):
+WEBKIT_REAPER_DESKTOP_STALE=3600 systemctl --user start papercup-webkit-reaper.service
+```

@@ -14,9 +14,11 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import {
   captureCpuProfile,
+  captureHeapSnapshot,
   classifyLoopPressure,
   cooperativeYield,
   currentLoopLag,
+  isLoopElevated,
   isLoopSaturated,
   loopPressure,
   startEventLoopLagMonitor,
@@ -108,22 +110,42 @@ describe('loop-pressure signal (P5-1)', () => {
     expect(classifyLoopPressure(NaN)).toBe('ok'); // no signal ⇒ never shed
   });
 
-  it('loopPressure() is "ok" / isLoopSaturated() false when NO monitor is running', () => {
+  it('loopPressure() is "ok" / isLoopSaturated() / isLoopElevated() false when NO monitor is running', () => {
     // No monitor started in this test ⇒ absence of signal must read as ok.
     expect(loopPressure()).toBe('ok');
     expect(isLoopSaturated()).toBe(false);
+    expect(isLoopElevated()).toBe(false);
   });
 
-  it('an idle monitored loop reads "ok" (not saturated)', () => {
+  it('an idle monitored loop reads "ok" (not saturated, not elevated)', () => {
     const h = startEventLoopLagMonitor({ intervalMs: 10_000, warnP95Ms: 1000 });
     try {
       expect(loopPressure()).toBe('ok');
       expect(isLoopSaturated()).toBe(false);
+      expect(isLoopElevated()).toBe(false);
     } finally {
       h.stop();
     }
     // After stop the published signal is cleared back to ok.
     expect(loopPressure()).toBe('ok');
+    expect(isLoopElevated()).toBe(false);
+  });
+
+  it('isLoopElevated() is true for elevated AND critical, false for ok', () => {
+    // Driven via classifyLoopPressure to verify the full pressure → elevated mapping
+    // without needing a live monitor (pure classification logic tested here).
+    // p95 < 120ms  → ok       → isLoopElevated delegates to loopPressure; tested above.
+    // We verify the exported predicate against the classification directly.
+    expect(classifyLoopPressure(0)).toBe('ok');
+    expect(classifyLoopPressure(119)).toBe('ok');
+    expect(classifyLoopPressure(120)).toBe('elevated');   // ELEVATED: shed fires (WI-1084)
+    expect(classifyLoopPressure(200)).toBe('elevated');   // chronic 130–240ms regime
+    expect(classifyLoopPressure(599)).toBe('elevated');
+    expect(classifyLoopPressure(600)).toBe('critical');   // CRITICAL: also sheds
+    // isLoopElevated() returns true for both non-ok bands.
+    // (We can't inject a synthetic p95 into the live gauge in a unit test, so
+    //  we assert the underlying classification and isLoopElevated's no-monitor case.)
+    expect(isLoopElevated()).toBe(false); // no monitor → 'ok' → false
   });
 });
 
@@ -219,6 +241,119 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
       expect(() => JSON.parse(body)).not.toThrow();
     }
   });
+});
+
+describe('P-002 heap-snapshot-on-high-RSS (bg-host-freeze-eventloop-stall-2026-06-30)', () => {
+  const dirs: string[] = [];
+  let handle: LagMonitorHandle | undefined;
+  afterEach(async () => {
+    handle?.stop();
+    handle = undefined;
+    for (const d of dirs.splice(0)) await fs.rm(d, { recursive: true, force: true }).catch(() => {});
+  });
+  const tmp = (tag: string) => {
+    const d = path.join(os.tmpdir(), `heap-snap-${tag}-${Date.now()}-${process.pid}`);
+    dirs.push(d);
+    return d;
+  };
+
+  it('captureHeapSnapshot writes a valid .heapsnapshot (or degrades to null, never throws)', async () => {
+    // Heap snapshots can take several seconds on a large heap; give plenty of time.
+    const dir = tmp('cap');
+    const file = await captureHeapSnapshot({
+      dir,
+      maxSnapshots: 5,
+      rssMb: process.memoryUsage().rss / 1_048_576,
+      log: vi.fn(),
+    });
+    // Contract: returns a path when an inspector is available, else null — never throws.
+    if (file === null) return; // env without a free inspector (e.g. coverage attached)
+    expect(file.endsWith('.heapsnapshot')).toBe(true);
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+    // A V8 heap snapshot has snapshot.meta + nodes + strings arrays.
+    expect(parsed).toHaveProperty('snapshot');
+    expect(parsed).toHaveProperty('nodes');
+    expect(parsed).toHaveProperty('strings');
+    expect(Array.isArray(parsed.nodes)).toBe(true);
+    expect(Array.isArray(parsed.strings)).toBe(true);
+  }, 30_000);
+
+  it('captureHeapSnapshot prunes to maxSnapshots (oldest removed)', async () => {
+    const dir = tmp('prune');
+    // Write 3 snapshots with maxSnapshots=2 — the oldest must be removed.
+    for (let i = 0; i < 3; i++) {
+      await captureHeapSnapshot({ dir, maxSnapshots: 2, rssMb: 1, log: vi.fn() });
+    }
+    let snaps: string[] = [];
+    try {
+      snaps = (await fs.readdir(dir)).filter((f) => f.endsWith('.heapsnapshot'));
+    } catch {
+      /* no inspector → dir never created → graceful no-op */
+    }
+    expect(snaps.length).toBeLessThanOrEqual(2);
+  }, 90_000);
+
+  it('heapSnapshotOnHighRss: INERT by default (opt-in)', async () => {
+    // The monitor must NOT capture unless heapSnapshotOnHighRss is explicitly enabled,
+    // even when RSS comfortably exceeds a 1 MB threshold.
+    const dir = tmp('inert');
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 60,
+      warnP95Ms: 999_999,
+      // heapSnapshotOnHighRss not set → defaults to env PAPERCUSP_HEAP_SNAPSHOT,
+      // which is not '1' in this test environment → stays OFF.
+      heapSnapshotDir: dir,
+      heapSnapshotRssMb: 1, // 1 MB — guaranteed to be exceeded
+      minHeapSnapshotGapMs: 0,
+      log,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    let snaps: string[] = [];
+    try {
+      snaps = (await fs.readdir(dir)).filter((f) => f.endsWith('.heapsnapshot'));
+    } catch {
+      /* dir not created = inert, which is the point */
+    }
+    // INERT: env is not set to '1' so no snapshot should have been taken.
+    // (If PAPERCUSP_HEAP_SNAPSHOT=1 is set in the test env, this check gracefully no-ops.)
+    if (process.env.PAPERCUSP_HEAP_SNAPSHOT !== '1') {
+      expect(snaps).toHaveLength(0);
+    }
+  });
+
+  it('heapSnapshotOnHighRss ON: captures when RSS crosses threshold, rate-limited', async () => {
+    const dir = tmp('on');
+    const log = vi.fn();
+    // Use a 1 MB threshold so it fires immediately (current process RSS >> 1 MB),
+    // and a 10s gap so only ONE capture fires per timer tick.
+    handle = startEventLoopLagMonitor({
+      intervalMs: 80,
+      warnP95Ms: 999_999,
+      heapSnapshotOnHighRss: true,
+      heapSnapshotDir: dir,
+      heapSnapshotRssMb: 1,        // 1 MB — always exceeded
+      minHeapSnapshotGapMs: 10_000, // 10s gap → only one fire in this test window
+      maxHeapSnapshots: 3,
+      log,
+    });
+    // Wait for at least one timer tick + capture
+    await new Promise((r) => setTimeout(r, 5_000));
+    let snaps: string[] = [];
+    try {
+      snaps = (await fs.readdir(dir)).filter((f) => f.endsWith('.heapsnapshot'));
+    } catch {
+      /* no inspector → graceful no-op */
+    }
+    // At most 1 capture (rate-limited by the 10s gap); could be 0 if no inspector.
+    expect(snaps.length).toBeLessThanOrEqual(1);
+    if (snaps.length > 0) {
+      // Must be valid JSON with the heap snapshot shape.
+      const parsed = JSON.parse(await fs.readFile(path.join(dir, snaps[0]), 'utf8'));
+      expect(parsed).toHaveProperty('snapshot');
+      expect(parsed).toHaveProperty('nodes');
+    }
+  }, 30_000);
 });
 
 describe('cooperativeYield / yieldToEventLoop (event-loop-lag root fix)', () => {

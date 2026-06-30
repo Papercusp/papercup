@@ -39,6 +39,7 @@ import type { DurableSpawnFireInput } from '../../dbos/durable-spawn';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
 import { readAutoImplementPolicy } from '../../auto-implement-policy';
+import { isShuttingDown } from '../../shutdown-state';
 import { readOwnerFullAutonomyGrant } from '../improvements/full-autonomy-grant';
 import { readRecentDispatches, recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
 import { laneInEnvOutage } from '../improvements/orphaned-dispatch';
@@ -59,6 +60,34 @@ import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type Apply
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
 export const IMPROVEMENT_RUNNER_ASSIGNEE = 'improvement-runner';
+
+/**
+ * P-005 (infra round-4): is the auto-implement loop configured to STOP claiming
+ * new dispatches while this process is draining (SIGTERM/deploy)? Default-OFF —
+ * armed only by PAPERCUSP_IMPROVEMENT_DRAIN_STOPS_CLAIMS=1|true|on. Off ⇒ the
+ * guard is byte-inert (the loop behaves exactly as it did before this landed), so
+ * it ships safe and is flipped on alongside the lane re-arm — the codebase's
+ * default-off-until-validated pattern (PAPERCUSP_SIGTERM_DRAIN,
+ * PAPERCUSP_LAG_SELF_RESTART, PAPERCUSP_CLUSTER_LAG_WATCHDOG). Pure (env
+ * injectable) so it is unit-tested without the flag system.
+ */
+export function drainStopsImprovementClaims(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.PAPERCUSP_IMPROVEMENT_DRAIN_STOPS_CLAIMS ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on';
+}
+
+/**
+ * P-005: the wired guard — true iff the drain-stop is ARMED *and* this process is
+ * draining. Pure + injectable (draining/env) so it is unit-tested without PG, the
+ * flag system, or a real signal; in production both default to live process state
+ * (env + the shutdown-state flag the SIGTERM handlers set via markShuttingDown()).
+ */
+export function shouldStopClaimingForDrain(
+  opts: { draining?: boolean; env?: NodeJS.ProcessEnv } = {},
+): boolean {
+  const draining = opts.draining ?? isShuttingDown();
+  return drainStopsImprovementClaims(opts.env) && draining;
+}
 
 /**
  * Parse a non-negative integer env var, HONORING an explicit `0` (watchdog-robustness
@@ -475,6 +504,20 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     console.log(`[improvement-implement] ${plan.action}: ${plan.message}`);
     return;
   }
+  // P-005 (infra round-4): during a graceful drain (SIGTERM/deploy) do NOT START a
+  // new dispatch batch. A worker spawned now runs for minutes and would be SIGKILL'd
+  // by the drain's hard-exit backstop mid-fix, orphaning its claim and churning
+  // re-dispatch across the deploy (the 2026-06-19 storm: 51/58 workers exited 143).
+  // Items already in-flight stay claimed (stale-claim reclaim handles them); we only
+  // stop ADDING to the doomed set. Default-OFF until armed (see the helper), so it
+  // lands inert and is flipped on with the lane re-arm.
+  if (shouldStopClaimingForDrain()) {
+    console.log(
+      `[improvement-implement] drain in progress (SIGTERM) — declining ${plan.candidates.length} ` +
+        `new dispatch(es); in-flight claims unaffected (P-005)`,
+    );
+    return;
+  }
   console.log(`[improvement-implement] ${plan.message}`);
   const fire = _fire ?? defaultFire;
   const markDispatched = _markDispatched ?? defaultMarkDispatched;
@@ -484,6 +527,13 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
   // the step (where startWorkflow is legal). See routines-workflow.ts → startDurableSpawns.
   const durableSpawns: DurableSpawnFireInput[] = [];
   for (const candidate of plan.candidates) {
+    // P-005: SIGTERM can land MID-batch (maxPerRun > 1). Re-check before claiming the
+    // next item so the already-fired ones drain while the rest wait for the first
+    // post-restart tick — never claimed-then-killed.
+    if (shouldStopClaimingForDrain()) {
+      console.log(`[improvement-implement] drain began mid-batch — stopping before ${candidate.id} (P-005)`);
+      break;
+    }
     // Bookkeeping FIRST (claim + attempt bump) so a fire that crashes mid-loop
     // still leaves the item in-flight rather than double-dispatchable.
     await markDispatched(candidate);

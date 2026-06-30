@@ -1,0 +1,17 @@
+[Unit]
+Description=Run the Papercusp leaked-webview reaper every 5 minutes (WI-345 F12)
+
+[Timer]
+# Fire shortly after boot (give the user desktop a chance to start first),
+# then every 5 min. Five minutes is short enough to clear CPU-saturating
+# orphans before they visibly degrade the dev loop.
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# No catch-up on missed runs — a fresh kill is what matters, not auditing
+# how many there were while the box was asleep.
+Persistent=false
+Unit=papercup-webkit-reaper.service
+
+[Install]
+WantedBy=timers.target

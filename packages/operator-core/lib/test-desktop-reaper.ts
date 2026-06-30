@@ -1,40 +1,45 @@
 /**
- * Runaway / leaked TEST-desktop + zombie detector
- * (infra-perf-reliability-audit-round4-2026-06-19 P-006, carries round-3 P-012/F12).
+ * Runaway / leaked TEST-desktop + zombie detector + KILLER
+ * (infra-perf-reliability-audit-round3-2026-06-19 P-013/F12, round4 P-006).
  *
  * E2E / dev test runs spawn throwaway webviews — Playwright headless Chromium and
- * (less commonly) `tauri dev` WebKitGTK shells. When a test run is SIGKILLed or
+ * `tauri dev`/`npm run dev` WebKitGTK shells. When a test run is SIGKILLed or
  * wedges, those can leak and peg a CPU core for hours. That is a dominant host-CPU
- * drain feeding the per-core saturation this round targets (root cause: the
+ * drain feeding the per-core saturation these rounds target (root cause: the
  * operator's single Node event loop starves under host contention).
  *
- * This is the missing GUARD: a periodic READ-ONLY scan that SURFACES leaked test
- * desktops (and a zombie/defunct-child pile) as a `notifications:recent` toast, so
- * a human/operator can reap them — at minutes, not hours.
+ * ── Slice 1: DETECTION (toast) ─────────────────────────────────────────────────
+ * A periodic scan that SURFACES leaked test desktops (Playwright/headless-marked
+ * browsers) and a zombie/defunct-child pile as a `notifications:recent` toast.
+ * Uses a FAIL-SAFE positive-marker classifier: a browser is only flagged as
+ * test-automation when its cmdline carries an unambiguous test marker (Playwright
+ * browser cache path, --headless, --remote-debugging-pipe/port). Anything without
+ * a marker classifies as LIVE and is never alarmed or killed. `tauri dev` / WebKit
+ * children without markers fail-safe to live-desktop (out of scope for slice 1).
  *
- * ── SAFETY: fail-safe identification ───────────────────────────────────────────
- * A browser/webview process is flagged ONLY when its own cmdline carries a
- * POSITIVE, unambiguous test-automation marker (a Playwright browser cache path, a
- * `--headless` switch, or a remote-debugging pipe/port — none of which a real user
- * desktop ever has). Anything that merely *looks* like a desktop without such a
- * marker classifies as a LIVE desktop and is NEVER flagged. The asymmetry is
- * deliberate: missing a leak is cheap; pointing at the user's real desktop is not.
- * `tauri dev` repo webviews are intentionally OUT of scope — distinguishing them
- * from a user who simply runs `tauri dev` needs parent/cwd context, not the
- * webview's own cmdline, so they fail-safe to LIVE.
+ * ── Slice 2: ADV-SESSION-BASED KILL ────────────────────────────────────────────
+ * Kills papercusp-desktop (and oddsmith-desktop) processes whose
+ * PAPERCUSP_ADV_SESSION_ID environment variable points to an ENDED adv_session
+ * row. These are agent-spawned test desktops that were never cleaned up when the
+ * agent session ended. This covers the dominant live leak: `papercusp-desktop`
+ * processes forked by E2E test agents (which set PAPERCUSP_ADV_SESSION_ID on
+ * spawn) that remain running with their WebKitWebProcess children at 99% CPU.
  *
- * ── DETECTION-ONLY by design ───────────────────────────────────────────────────
- * This ships the ALARM, not an auto-kill. The existing `processes:kill` path is
- * deliberately scoped to agent kinds (run.sh | omp | claude) and STRUCTURALLY
- * cannot signal a chromium/webview (`listProcesses` filters it out as `other`).
- * Auto-reaping a non-agent host process is therefore a NEW privileged surface that
- * needs its own audited kill path + owner sign-off — not an agent default. That is
- * the same posture su-61e7e took for P-017 (ship the alarm; defer the destructive
- * action to owner policy). Surfaced as the gated follow-up.
- *
- * Read-only + never-throws (mirrors the other periodic monitors), so it can never
- * affect the system it watches.
+ * SAFETY model:
+ *  - Only kills a process carrying PAPERCUSP_ADV_SESSION_ID whose row in
+ *    harness_shared.adv_sessions has ended_at set AND at least DESKTOP_GRACE_MS
+ *    has elapsed since it ended (prevents killing a desktop mid-shutdown).
+ *  - Never kills without a PAPERCUSP_ADV_SESSION_ID (ignores user-launched desktops).
+ *  - Kills child WebKitWebProcess/WPEWebDriver children explicitly after the parent,
+ *    so leaked renderers don't survive as orphans.
+ *  - PID-recycle guard (re-reads cmdline immediately before signalling) so a recycled
+ *    pid cannot be hit.
+ *  - SIGTERM → 3-second grace → SIGKILL; per-process errors are isolated.
+ *  - dryRun=true plans+logs, kills nothing.
+ *  - Flag-gated (FLAGS.TEST_WEBVIEW_REAPER, defaults ON) with routine seeded INACTIVE
+ *    (double-gate — routine must be activated before kills fire).
  */
+import { promises as fsp, readFileSync, statSync } from 'node:fs';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { notifySyncInvalidate } from './sync-sse';
@@ -218,10 +223,10 @@ function parseStat(raw: string): { state: string; ticks: number } | null {
 }
 
 async function defaultSample(): Promise<ProcSample[]> {
-  const fs = await import('node:fs');
   let pids: string[];
   try {
-    pids = fs.readdirSync('/proc');
+    // Synchronous enumeration — fast, avoids promise overhead per-pid in the hot path.
+    pids = (await fsp.readdir('/proc'));
   } catch {
     return [];
   }
@@ -241,14 +246,14 @@ async function defaultSample(): Promise<ProcSample[]> {
     if (!/^\d+$/.test(pid)) continue;
     let stat: { state: string; ticks: number } | null = null;
     try {
-      stat = parseStat(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+      stat = parseStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
     } catch {
       continue;
     }
     if (!stat) continue;
     let cmdline = '';
     try {
-      cmdline = fs.readFileSync(`/proc/${pid}/cmdline`).toString('utf8').replace(/\0/g, ' ').trim();
+      cmdline = readFileSync(`/proc/${pid}/cmdline`).toString('utf8').replace(/\0/g, ' ').trim();
     } catch {
       /* zombies have an empty cmdline; keep going on state */
     }
@@ -257,7 +262,7 @@ async function defaultSample(): Promise<ProcSample[]> {
     if (!isZombie && !isBrowser) continue;
     let ageSeconds = 0;
     try {
-      const m = fs.statSync(`/proc/${pid}`).mtimeMs;
+      const m = statSync(`/proc/${pid}`).mtimeMs;
       if (m > 0) ageSeconds = Math.floor((now - m) / 1000);
     } catch {
       /* no stat */
@@ -275,7 +280,7 @@ async function defaultSample(): Promise<ProcSample[]> {
     let cpuPercent = 0;
     if (p.state !== 'Z') {
       try {
-        const s = parseStat(fs.readFileSync(`/proc/${p.pid}/stat`, 'utf8'));
+        const s = parseStat(readFileSync(`/proc/${p.pid}/stat`, 'utf8'));
         if (s) {
           const dTicks = s.ticks - p.ticks0;
           cpuPercent = (dTicks / USER_HZ / (CPU_SAMPLE_MS / 1000)) * 100;
@@ -340,4 +345,346 @@ export async function runTestDesktopReaperOnce(
     }
   }
   return { sampled: samples.length, candidates, alarmed };
+}
+
+// ── Slice 2: adv-session-based kill of leaked papercusp-desktop instances ──────
+//
+// Discovers papercusp-desktop (and oddsmith-desktop) processes that carry a
+// PAPERCUSP_ADV_SESSION_ID env var pointing to an ENDED adv_session row. These
+// are agent-spawned test desktops (E2E / tauri-agent-tools runs) that were never
+// cleaned up. Kills them and their child WebKitWebProcess renderers.
+//
+// The ENDED check uses the session's numeric row id (not the uuid) because that is
+// what the env var carries; every id is unique so a simple `ended_at IS NOT NULL`
+// is correct (no "multiple rows for same uuid" ambiguity). A DESKTOP_GRACE_MS
+// buffer prevents killing a desktop that is mid-shutdown.
+//
+// See the module header for the full safety model.
+// ───────────────────────────────────────────────────────────────────────────────
+
+/** Desktop binary names to scan for (debug AND release Tauri builds). */
+const DESKTOP_BINARY_RE = /papercusp-desktop|oddsmith-desktop/i;
+
+/** Grace after the adv_session.ended_at before we consider the desktop leakable.
+ *  2 minutes is enough for a clean shutdown; a desktop still alive past it is
+ *  confirmed leaked. */
+const DESKTOP_GRACE_MS = 2 * 60 * 1000;
+
+/** SIGTERM → wait this long → SIGKILL. */
+const KILL_GRACE_MS = 3000;
+
+/** A discovered desktop process with its adv_session handle. */
+export interface AdvSessionDesktopProc {
+  pid: number;
+  cmdline: string;
+  advSessionId: number;
+}
+
+/**
+ * PURE: parse the process group id (pgrp) from a /proc/<pid>/stat string.
+ * Post-')' tokens: [0]=state [1]=ppid [2]=pgrp. Returns null on parse failure.
+ */
+export function parsePgid(stat: string): number | null {
+  const close = stat.lastIndexOf(')');
+  if (close < 0) return null;
+  const rest = stat.slice(close + 1).trim().split(/\s+/);
+  // index 2 = pgrp (0-based relative to the post-')' tokens)
+  const pgrp = Number(rest[2]);
+  return Number.isFinite(pgrp) && pgrp > 0 ? pgrp : null;
+}
+
+/**
+ * PURE: parse the parent pid (ppid) from a /proc/<pid>/stat string.
+ * Post-')' tokens: [0]=state [1]=ppid. Returns null on parse failure.
+ */
+export function parsePpid(stat: string): number | null {
+  const close = stat.lastIndexOf(')');
+  if (close < 0) return null;
+  const rest = stat.slice(close + 1).trim().split(/\s+/);
+  const ppid = Number(rest[1]);
+  return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
+}
+
+/**
+ * Check whether the process's cmdline still matches — PID-recycle guard.
+ * Returns false on any read error (gone → safe, do not signal).
+ */
+async function stillHasAdvSessionEnv(pid: number, advSessionId: number): Promise<boolean> {
+  try {
+    const env = await fsp.readFile(`/proc/${pid}/environ`, 'utf8');
+    return env.includes(`PAPERCUSP_ADV_SESSION_ID=${advSessionId}`);
+  } catch {
+    return false;
+  }
+}
+
+export interface DesktopKillDeps {
+  /** Enumerate /proc entries (injectable). */
+  listProc: () => Promise<string[]>;
+  /** Read /proc/<pid>/cmdline (injectable). */
+  readCmdline: (pid: number) => Promise<string>;
+  /** Read /proc/<pid>/environ (injectable). */
+  readEnviron: (pid: number) => Promise<string>;
+  /** Read /proc/<pid>/stat (injectable). */
+  readStat: (pid: number) => Promise<string>;
+  /** Query which numeric adv_session ids have ended AND the grace period elapsed. */
+  endedAdvSessionIds: (ids: number[], graceMs: number) => Promise<Set<number>>;
+  /** Pre-kill safety check: does the process still carry the expected env var? */
+  pidCarriesSessionId: (pid: number, advSessionId: number) => Promise<boolean>;
+  /** Send signal to a pid; returns false on error (gone / permission). */
+  sigterm: (pid: number) => boolean;
+  sigkill: (pid: number) => boolean;
+  /** Is the pid still alive? */
+  pidAlive: (pid: number) => boolean;
+  /** Wait before the SIGKILL pass. */
+  wait: (ms: number) => Promise<void>;
+}
+
+export interface DesktopKillResult {
+  /** False when the flag is off (action is a no-op). */
+  enabled: boolean;
+  dryRun: boolean;
+  /** Desktop procs scanned. */
+  scanned: number;
+  /** Pids of desktops (+ children) killed or WOULD kill. */
+  killed: number[];
+  /** Pids that were found but skipped (session still open / too fresh). */
+  skipped: number[];
+}
+
+// ── Default (production) implementations ──────────────────────────────────────
+
+async function defaultListProc(): Promise<string[]> {
+  try {
+    return await fsp.readdir('/proc');
+  } catch {
+    return [];
+  }
+}
+
+async function defaultReadCmdline(pid: number): Promise<string> {
+  return fsp.readFile(`/proc/${pid}/cmdline`, 'utf8');
+}
+
+async function defaultReadEnviron(pid: number): Promise<string> {
+  return fsp.readFile(`/proc/${pid}/environ`, 'utf8');
+}
+
+async function defaultReadStat(pid: number): Promise<string> {
+  return fsp.readFile(`/proc/${pid}/stat`, 'utf8');
+}
+
+async function defaultEndedAdvSessionIds(ids: number[], graceMs: number): Promise<Set<number>> {
+  if (ids.length === 0) return new Set();
+  const { sql } = getOrgPg();
+  // A numeric adv_session id is "cleanly ended" when the row exists, ended_at is set,
+  // AND ended_at is old enough (grace buffer). Each id is unique, so `ended_at IS NOT NULL`
+  // alone is the right check — no multi-row "did it resume?" concern (unlike the uuid path).
+  const rows = await sql<Array<{ id: number }>>`
+    SELECT id
+      FROM harness_shared.adv_sessions
+     WHERE id = ANY(${ids})
+       AND ended_at IS NOT NULL
+       AND ended_at < NOW() - make_interval(secs => ${Math.ceil(graceMs / 1000)})`;
+  return new Set(rows.map((r) => r.id));
+}
+
+function defaultPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const DEFAULT_KILL_DEPS: DesktopKillDeps = {
+  listProc: defaultListProc,
+  readCmdline: defaultReadCmdline,
+  readEnviron: defaultReadEnviron,
+  readStat: defaultReadStat,
+  endedAdvSessionIds: defaultEndedAdvSessionIds,
+  pidCarriesSessionId: (pid, id) => stillHasAdvSessionEnv(pid, id),
+  sigterm: (pid) => { try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; } },
+  sigkill: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } },
+  pidAlive: defaultPidAlive,
+  wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+// ── Discovery ─────────────────────────────────────────────────────────────────
+
+/**
+ * Enumerate /proc to find papercusp-desktop processes carrying
+ * PAPERCUSP_ADV_SESSION_ID in their environment.
+ * Best-effort: any per-pid read failure is silently skipped.
+ */
+async function discoverDesktopProcs(deps: DesktopKillDeps): Promise<AdvSessionDesktopProc[]> {
+  const pids = await deps.listProc();
+  const candidates: AdvSessionDesktopProc[] = [];
+
+  for (const pidStr of pids) {
+    if (!/^\d+$/.test(pidStr)) continue;
+    const pid = Number(pidStr);
+
+    // Filter by cmdline: must be a desktop binary
+    let cmdline = '';
+    try {
+      cmdline = (await deps.readCmdline(pid)).replace(/\0/g, ' ').trim();
+    } catch {
+      continue;
+    }
+    if (!DESKTOP_BINARY_RE.test(cmdline)) continue;
+
+    // Read PAPERCUSP_ADV_SESSION_ID from environment
+    let advSessionId: number | null = null;
+    try {
+      const env = await deps.readEnviron(pid);
+      for (const part of env.split('\0')) {
+        if (part.startsWith('PAPERCUSP_ADV_SESSION_ID=')) {
+          const v = Number(part.slice('PAPERCUSP_ADV_SESSION_ID='.length));
+          if (Number.isFinite(v) && v > 0) { advSessionId = v; break; }
+        }
+      }
+    } catch {
+      continue; // environ unreadable (process gone / different user)
+    }
+    if (advSessionId == null) continue; // not agent-spawned
+
+    candidates.push({ pid, cmdline: cmdline.slice(0, 200), advSessionId });
+  }
+  return candidates;
+}
+
+/**
+ * Find direct child WebKitWebProcess / WPEWebDriver children of the given desktop
+ * pids. Only examines /proc entries — best-effort.
+ */
+async function discoverWebkitChildren(
+  desktopPids: Set<number>,
+  deps: DesktopKillDeps,
+): Promise<Array<{ pid: number; parentPid: number }>> {
+  if (desktopPids.size === 0) return [];
+  const pids = await deps.listProc();
+  const out: Array<{ pid: number; parentPid: number }> = [];
+  for (const pidStr of pids) {
+    if (!/^\d+$/.test(pidStr)) continue;
+    const pid = Number(pidStr);
+    if (desktopPids.has(pid)) continue; // skip the parent itself
+    try {
+      const stat = await deps.readStat(pid);
+      const ppid = parsePpid(stat);
+      if (ppid != null && desktopPids.has(ppid)) {
+        // Only grab webkit / wpe children; skip unrelated children
+        let cmdline = '';
+        try { cmdline = (await deps.readCmdline(pid)).replace(/\0/g, ' '); } catch { /* ok */ }
+        if (/webkitwebprocess|wpewebdriver|webkitnetworkprocess/i.test(cmdline)) {
+          out.push({ pid, parentPid: ppid });
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+// ── Kill sweep ────────────────────────────────────────────────────────────────
+
+/**
+ * Discover and kill papercusp-desktop / oddsmith-desktop processes whose
+ * PAPERCUSP_ADV_SESSION_ID session is ENDED. Also kills their WebKitWebProcess
+ * children. SIGTERM → 3-second grace → SIGKILL; per-process errors are isolated.
+ *
+ * dryRun=true plans + logs, kills nothing.
+ */
+export async function killDesktopProcsWithEndedSessions(
+  opts: { dryRun?: boolean; graceMs?: number; deps?: Partial<DesktopKillDeps> } = {},
+): Promise<DesktopKillResult> {
+  const dryRun = opts.dryRun ?? false;
+  const graceMs = opts.graceMs ?? DESKTOP_GRACE_MS;
+  const deps: DesktopKillDeps = { ...DEFAULT_KILL_DEPS, ...opts.deps };
+
+  // Discover all desktop processes with a PAPERCUSP_ADV_SESSION_ID
+  let desktopProcs: AdvSessionDesktopProc[] = [];
+  try {
+    desktopProcs = await discoverDesktopProcs(deps);
+  } catch {
+    return { enabled: true, dryRun, scanned: 0, killed: [], skipped: [] };
+  }
+  if (desktopProcs.length === 0) {
+    return { enabled: true, dryRun, scanned: 0, killed: [], skipped: [] };
+  }
+
+  // Which sessions are cleanly ended (with grace buffer)?
+  const uniqueIds = [...new Set(desktopProcs.map((p) => p.advSessionId))];
+  let ended: Set<number>;
+  try {
+    ended = await deps.endedAdvSessionIds(uniqueIds, graceMs);
+  } catch {
+    return { enabled: true, dryRun, scanned: desktopProcs.length, killed: [], skipped: [] };
+  }
+
+  const toKill = desktopProcs.filter((p) => ended.has(p.advSessionId));
+  const skipped = desktopProcs.filter((p) => !ended.has(p.advSessionId)).map((p) => p.pid);
+
+  if (toKill.length === 0) {
+    return { enabled: true, dryRun, scanned: desktopProcs.length, killed: [], skipped };
+  }
+
+  // Discover WebKitWebProcess children of the to-kill set
+  const desktopPidSet = new Set(toKill.map((p) => p.pid));
+  let webkitChildren: Array<{ pid: number; parentPid: number }> = [];
+  try {
+    webkitChildren = await discoverWebkitChildren(desktopPidSet, deps);
+  } catch {
+    webkitChildren = [];
+  }
+
+  const killedPids: number[] = [];
+
+  if (dryRun) {
+    // Dry run: report what would be killed without signalling anything.
+    for (const d of toKill) killedPids.push(d.pid);
+    for (const c of webkitChildren) killedPids.push(c.pid);
+    return { enabled: true, dryRun: true, scanned: desktopProcs.length, killed: killedPids, skipped };
+  }
+
+  // Step 1: SIGTERM the desktop processes; track which ones passed the
+  // recycle guard. Webkit children are ONLY signalled when their parent passed.
+  const confirmedDesktopPids = new Set<number>();
+  for (const d of toKill) {
+    try {
+      if (!(await deps.pidCarriesSessionId(d.pid, d.advSessionId))) continue; // recycle guard
+      deps.sigterm(d.pid);
+      confirmedDesktopPids.add(d.pid);
+    } catch { /* isolated */ }
+  }
+  // SIGTERM webkit children of confirmed desktops only.
+  const confirmedChildren = webkitChildren.filter((c) => confirmedDesktopPids.has(c.parentPid));
+  for (const c of confirmedChildren) {
+    try { deps.sigterm(c.pid); } catch { /* isolated */ }
+  }
+
+  // Step 2: Grace period.
+  await deps.wait(KILL_GRACE_MS);
+
+  // Step 3: SIGKILL survivors.
+  for (const d of toKill) {
+    if (!confirmedDesktopPids.has(d.pid)) continue; // recycle guard already failed in step 1
+    try {
+      if (!deps.pidAlive(d.pid)) { killedPids.push(d.pid); continue; }
+      if (!(await deps.pidCarriesSessionId(d.pid, d.advSessionId))) continue; // post-wait recycle guard
+      deps.sigkill(d.pid);
+      killedPids.push(d.pid);
+    } catch { /* isolated */ }
+  }
+  for (const c of confirmedChildren) {
+    try {
+      if (!deps.pidAlive(c.pid)) { killedPids.push(c.pid); continue; }
+      deps.sigkill(c.pid);
+      killedPids.push(c.pid);
+    } catch { /* isolated */ }
+  }
+
+  return { enabled: true, dryRun: false, scanned: desktopProcs.length, killed: killedPids, skipped };
 }

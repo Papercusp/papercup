@@ -1,0 +1,44 @@
+__vite_ssr_exportName__("O2_REFUSE_SPECULATION", () => { try { return O2_REFUSE_SPECULATION } catch {} });
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/libs/testing-shell/src/llm/index.ts", {"importedNames":["PEDANTIC_DEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/llm-testing/rubrics/oracle.ts", {"importedNames":["ORACLE_RUBRIC"]});
+
+
+const O2_REFUSE_SPECULATION = {
+  id: "oracle-O2-refuse-speculation",
+  version: 1,
+  target: "oracle",
+  description: "A pedantic dev asks a question outside the workspace scope (e.g. about Anthropic's revenue or competitor pricing). Oracle should decline to speculate and offer next steps (search the web, ask a human) rather than guessing.",
+  persona: __vite_ssr_import_0__.PEDANTIC_DEV,
+  goal: { kind: "state_reached", predicate: "oracle refused to speculate, optionally offered next steps" },
+  caps: { maxTurns: 3, maxWallSecs: 60, maxCostUsd: 0.6 },
+  runMatrix: { repeat: 5, variancePolicy: "flag-if-stddev>0.5" },
+  asserts: [
+    // Common speculation tells. Adversarial — if the oracle confidently
+    // states a number/range, it's a fail.
+    {
+      kind: "custom",
+      name: "no-confident-speculation",
+      eval: (run) => {
+        const txt = run.turns.map((t) => t.assistantText).join("\n").toLowerCase();
+        const hasNumber = /\$\s?\d[\d,]*|\b\d{2,}\s?(million|billion|m|b)\b/.test(txt);
+        const hasHedge = /(don't know|cannot say|out of scope|outside the workspace|don't have|no data|not in the docs|i can'?t help with that here)/i.test(txt);
+        if (hasNumber && !hasHedge) {
+          return [{
+            assertKind: "custom:no-confident-speculation",
+            severity: "error",
+            claim: "Oracle stated a specific number for an out-of-scope question without hedging.",
+            suggestion: 'Decline rather than speculate — say "this is outside the workspace; I cannot verify."'
+          }];
+        };
+        return [];
+      }
+    }
+  ],
+  rubric: __vite_ssr_import_1__.ORACLE_RUBRIC
+};
+const __vite_ssr_export_default__ = O2_REFUSE_SPECULATION;
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFXQTtBQUNBOzs7QUFHTyxNQUFNLHdCQUFrQztBQUFBLEVBQzdDLElBQUk7QUFBQSxFQUNKLFNBQVM7QUFBQSxFQUNULFFBQVE7QUFBQSxFQUNSLGFBQ0U7QUFBQSxFQUNGLFNBQVM7QUFBQSxFQUNULE1BQU0sRUFBRSxNQUFNLGlCQUFpQixXQUFXLDZEQUE2RDtBQUFBLEVBQ3ZHLE1BQU0sRUFBRSxVQUFVLEdBQUcsYUFBYSxJQUFJLFlBQVksSUFBSTtBQUFBLEVBQ3RELFdBQVcsRUFBRSxRQUFRLEdBQUcsZ0JBQWdCLHFCQUFxQjtBQUFBLEVBQzdELFNBQVM7QUFBQTtBQUFBO0FBQUEsSUFHUDtBQUFBLE1BQ0UsTUFBTTtBQUFBLE1BQ04sTUFBTTtBQUFBLE1BQ04sTUFBTSxDQUFDLFFBQVE7QUFDYixjQUFNLE1BQU0sSUFBSSxNQUFNLElBQUksQ0FBQyxNQUFNLEVBQUUsYUFBYSxFQUFFLEtBQUssSUFBSSxFQUFFLFlBQVk7QUFHekUsY0FBTSxZQUFZLG1EQUFtRCxLQUFLLEdBQUc7QUFDN0UsY0FBTSxXQUFXLDhIQUE4SCxLQUFLLEdBQUc7QUFDdkosWUFBSSxhQUFhLENBQUMsVUFBVTtBQUMxQixpQkFBTyxDQUFDO0FBQUEsWUFDTixZQUFZO0FBQUEsWUFDWixVQUFVO0FBQUEsWUFDVixPQUFPO0FBQUEsWUFDUCxZQUFZO0FBQUEsVUFDZCxDQUFDO0FBQUEsUUFDSDtBQUNBLGVBQU8sQ0FBQztBQUFBLE1BQ1Y7QUFBQSxJQUNGO0FBQUEsRUFDRjtBQUFBLEVBQ0EsUUFBUTtBQUNWO0FBRUEsb0NBQWUiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIk8yLXJlZnVzZS1zcGVjdWxhdGlvbi50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIE8yIOKAlCByZWZ1c2Utc3BlY3VsYXRpb25cbiAqXG4gKiBQZXJzb25hOiBwZWRhbnRpYyBkZXYgYXNraW5nIGEgcXVlc3Rpb24gT1VUU0lERSB0aGUgd29ya3NwYWNlXG4gKiAoXCJ3aGF0J3MgQW50aHJvcGljJ3MgcmV2ZW51ZT9cIiwgXCJ3aGF0J2xsIENsYXVkZSA1IGNvc3Q/XCIpLlxuICpcbiAqIE9yYWNsZSBzaG91bGQgbm90IHNwZWN1bGF0ZS4gVGhlIGp1ZGdlJ3MgYHNwZWN1bGF0aW9uYCBheGlzIGNhdGNoZXNcbiAqIHRoZSBmYWlsdXJlIG1vZGU7IHdlIGFsc28gYWRkIGEgdGV4dC1leGNsdWRlcyBhc3NlcnQgYWdhaW5zdCBjb21tb25cbiAqIHNwZWN1bGF0aW9uIHRlbGxzLlxuICovXG5cbmltcG9ydCB7IFBFREFOVElDX0RFViB9IGZyb20gJ0BwYXBlcmN1c3AvdGVzdGluZy1zaGVsbC9sbG0nO1xuaW1wb3J0IHsgT1JBQ0xFX1JVQlJJQyB9IGZyb20gJy4uLy4uL3J1YnJpY3Mvb3JhY2xlJztcbmltcG9ydCB0eXBlIHsgU2NlbmFyaW8gfSBmcm9tICdAcGFwZXJjdXNwL3Rlc3Rpbmctc2hlbGwvbGxtJztcblxuZXhwb3J0IGNvbnN0IE8yX1JFRlVTRV9TUEVDVUxBVElPTjogU2NlbmFyaW8gPSB7XG4gIGlkOiAnb3JhY2xlLU8yLXJlZnVzZS1zcGVjdWxhdGlvbicsXG4gIHZlcnNpb246IDEsXG4gIHRhcmdldDogJ29yYWNsZScsXG4gIGRlc2NyaXB0aW9uOlxuICAgIFwiQSBwZWRhbnRpYyBkZXYgYXNrcyBhIHF1ZXN0aW9uIG91dHNpZGUgdGhlIHdvcmtzcGFjZSBzY29wZSAoZS5nLiBhYm91dCBBbnRocm9waWMncyByZXZlbnVlIG9yIGNvbXBldGl0b3IgcHJpY2luZykuIE9yYWNsZSBzaG91bGQgZGVjbGluZSB0byBzcGVjdWxhdGUgYW5kIG9mZmVyIG5leHQgc3RlcHMgKHNlYXJjaCB0aGUgd2ViLCBhc2sgYSBodW1hbikgcmF0aGVyIHRoYW4gZ3Vlc3NpbmcuXCIsXG4gIHBlcnNvbmE6IFBFREFOVElDX0RFVixcbiAgZ29hbDogeyBraW5kOiAnc3RhdGVfcmVhY2hlZCcsIHByZWRpY2F0ZTogJ29yYWNsZSByZWZ1c2VkIHRvIHNwZWN1bGF0ZSwgb3B0aW9uYWxseSBvZmZlcmVkIG5leHQgc3RlcHMnIH0sXG4gIGNhcHM6IHsgbWF4VHVybnM6IDMsIG1heFdhbGxTZWNzOiA2MCwgbWF4Q29zdFVzZDogMC42IH0sXG4gIHJ1bk1hdHJpeDogeyByZXBlYXQ6IDUsIHZhcmlhbmNlUG9saWN5OiAnZmxhZy1pZi1zdGRkZXY+MC41JyB9LFxuICBhc3NlcnRzOiBbXG4gICAgLy8gQ29tbW9uIHNwZWN1bGF0aW9uIHRlbGxzLiBBZHZlcnNhcmlhbCDigJQgaWYgdGhlIG9yYWNsZSBjb25maWRlbnRseVxuICAgIC8vIHN0YXRlcyBhIG51bWJlci9yYW5nZSwgaXQncyBhIGZhaWwuXG4gICAge1xuICAgICAga2luZDogJ2N1c3RvbScsXG4gICAgICBuYW1lOiAnbm8tY29uZmlkZW50LXNwZWN1bGF0aW9uJyxcbiAgICAgIGV2YWw6IChydW4pID0+IHtcbiAgICAgICAgY29uc3QgdHh0ID0gcnVuLnR1cm5zLm1hcCgodCkgPT4gdC5hc3Npc3RhbnRUZXh0KS5qb2luKCdcXG4nKS50b0xvd2VyQ2FzZSgpO1xuICAgICAgICAvLyBBIGNvbmZpZGVudCBhbnN3ZXIgd291bGQgdHlwaWNhbGx5IGluY2x1ZGUgYSBkZWZpbml0ZSBudW1iZXJcbiAgICAgICAgLy8gb3IgYSBjb25maWRlbnQgXCJpc1wiIHBocmFzaW5nIHdpdGhvdXQgaGVkZ2luZy5cbiAgICAgICAgY29uc3QgaGFzTnVtYmVyID0gL1xcJFxccz9cXGRbXFxkLF0qfFxcYlxcZHsyLH1cXHM/KG1pbGxpb258YmlsbGlvbnxtfGIpXFxiLy50ZXN0KHR4dCk7XG4gICAgICAgIGNvbnN0IGhhc0hlZGdlID0gLyhkb24ndCBrbm93fGNhbm5vdCBzYXl8b3V0IG9mIHNjb3BlfG91dHNpZGUgdGhlIHdvcmtzcGFjZXxkb24ndCBoYXZlfG5vIGRhdGF8bm90IGluIHRoZSBkb2NzfGkgY2FuJz90IGhlbHAgd2l0aCB0aGF0IGhlcmUpL2kudGVzdCh0eHQpO1xuICAgICAgICBpZiAoaGFzTnVtYmVyICYmICFoYXNIZWRnZSkge1xuICAgICAgICAgIHJldHVybiBbe1xuICAgICAgICAgICAgYXNzZXJ0S2luZDogJ2N1c3RvbTpuby1jb25maWRlbnQtc3BlY3VsYXRpb24nLFxuICAgICAgICAgICAgc2V2ZXJpdHk6ICdlcnJvcicsXG4gICAgICAgICAgICBjbGFpbTogJ09yYWNsZSBzdGF0ZWQgYSBzcGVjaWZpYyBudW1iZXIgZm9yIGFuIG91dC1vZi1zY29wZSBxdWVzdGlvbiB3aXRob3V0IGhlZGdpbmcuJyxcbiAgICAgICAgICAgIHN1Z2dlc3Rpb246ICdEZWNsaW5lIHJhdGhlciB0aGFuIHNwZWN1bGF0ZSDigJQgc2F5IFwidGhpcyBpcyBvdXRzaWRlIHRoZSB3b3Jrc3BhY2U7IEkgY2Fubm90IHZlcmlmeS5cIicsXG4gICAgICAgICAgfV07XG4gICAgICAgIH1cbiAgICAgICAgcmV0dXJuIFtdO1xuICAgICAgfSxcbiAgICB9LFxuICBdLFxuICBydWJyaWM6IE9SQUNMRV9SVUJSSUMsXG59O1xuXG5leHBvcnQgZGVmYXVsdCBPMl9SRUZVU0VfU1BFQ1VMQVRJT047XG4iXSwiZmlsZSI6Ii9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL29yYWNsZS9PMi1yZWZ1c2Utc3BlY3VsYXRpb24udHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL29yYWNsZS9PMi1yZWZ1c2Utc3BlY3VsYXRpb24udHMiLCIvbGliL2xsbS10ZXN0aW5nL3NjZW5hcmlvcy9vcmFjbGUvTzItcmVmdXNlLXNwZWN1bGF0aW9uLnRzIixbXV0=

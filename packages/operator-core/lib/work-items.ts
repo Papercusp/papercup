@@ -384,6 +384,29 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
   return compareByRecency(a, b);
 }
 
+/**
+ * Feature-family `item_kind` filter that ALSO admits workspace-registered GENERIC-KIND
+ * datatypes (reflexive-platform-extensibility-datatypes-2026-06-24 P-001). A generic-kind
+ * item (e.g. a `bet`) lives in the feature family (`familyOf` → 'feature') but its kind is
+ * not one of the three built-ins, so a bare `IN ('feature','research-task','chunk')` would
+ * HIDE it from list/count/search. This admits the built-ins OR any active generic-kind
+ * registered for `workspaceId`. DARK until a datatype is declared — the subquery is empty
+ * otherwise, so the live fleet's reads are byte-identical.
+ *
+ * SCOPE: this is the user/agent-facing VISIBILITY filter (list/count/search). The Queen's
+ * autonomous PLACEMENT frontier (claimFloorsWhereSql / survey.fetchFrontierRows /
+ * wake-frontier-guard) is deliberately NOT broadened here — whether a generic-kind item
+ * enters autonomous bee placement is an opt-in design decision, tracked as a follow-up.
+ */
+function featureFamilyKindClause(sql: OrgSql, workspaceId: string) {
+  return sql`(item_kind IN ('feature', 'research-task', 'chunk')
+       OR item_kind IN (
+         SELECT work_item_kind FROM harness_shared.datatype_registry
+          WHERE workspace_id = ${workspaceId} AND tier = 'generic-kind' AND status = 'active'
+            AND work_item_kind IS NOT NULL
+       ))`;
+}
+
 /** Cross-kind list. Default = top-level items only (chunks surface under their parent, D-004). */
 export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
@@ -398,7 +421,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
     const rows = await sql<FeatureRowDb[]>`
       SELECT ${sql.unsafe(FEATURE_COLS)}
         FROM harness_shared.harness_features_consolidated
-       WHERE item_kind IN ('feature', 'research-task', 'chunk')
+       WHERE ${featureFamilyKindClause(sql, ws)}
          AND workspace_id = ${ws}
          AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
@@ -455,7 +478,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
     const rows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.harness_features_consolidated
-       WHERE item_kind IN ('feature', 'research-task', 'chunk')
+       WHERE ${featureFamilyKindClause(sql, ws)}
          AND workspace_id = ${ws}
          AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
@@ -549,7 +572,7 @@ export async function searchWorkItems(query: string, opts: { harness?: string; k
     const rows = await sql<FeatureRowDb[]>`
       SELECT ${sql.unsafe(FEATURE_COLS)}
         FROM harness_shared.harness_features_consolidated
-       WHERE item_kind IN ('feature', 'research-task', 'chunk')
+       WHERE ${featureFamilyKindClause(sql, activeWorkspaceId())}
          AND _search @@ websearch_to_tsquery('english', ${query})
          AND workspace_id = ${activeWorkspaceId()}
          AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}

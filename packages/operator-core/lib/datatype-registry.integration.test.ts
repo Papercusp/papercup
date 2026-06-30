@@ -140,4 +140,36 @@ describe('datatype_registry store (real PG)', () => {
     expect(await getDatatype(db.adminSql, 'ws-B', 'order')).toBeNull();
     expect(await hasGenericKind(db.adminSql, 'ws-B', 'order')).toBe(false);
   });
+
+  // The read-filter broadening (P-001): listWorkItems/countWorkItems/searchWorkItems use
+  // featureFamilyKindClause(sql, ws), which admits the 3 built-in feature kinds OR a
+  // registered generic-kind. Verify the exact SQL logic against a seeded feature table:
+  // a registered generic-kind row IS visible, an UNregistered one is NOT (the dark gate).
+  it('feature-family read filter admits a REGISTERED generic-kind but not an unregistered one', async () => {
+    const ws = 'ws-vis';
+    await upsertDatatype(db.adminSql, {
+      id: 'bet', workspaceId: ws, title: 'Bet', description: 'a thesis', tier: 'generic-kind', workItemKind: 'bet', createdBy: 'a',
+    });
+    // a registered generic-kind item + an UNregistered-kind item, both in the workspace
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (harness_slug, feature_id, title, summary, status, item_kind, taken_by, workspace_id,
+         feature_order, metadata, origin, ts, created_ts, updated_ts)
+      VALUES
+        ('oddsmith', 'F-BET', 'a bet', '', 'todo', 'bet',   NULL, ${ws}, 1, '{}'::jsonb, 'local', 1000, 1000, 1000),
+        ('oddsmith', 'F-WAG', 'a wager', '', 'todo', 'wager', NULL, ${ws}, 2, '{}'::jsonb, 'local', 1000, 1000, 1000)`;
+    // the exact predicate featureFamilyKindClause produces
+    const rows = await db.adminSql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.harness_features_consolidated
+       WHERE (item_kind IN ('feature', 'research-task', 'chunk')
+              OR item_kind IN (
+                SELECT work_item_kind FROM harness_shared.datatype_registry
+                 WHERE workspace_id = ${ws} AND tier = 'generic-kind' AND status = 'active'
+                   AND work_item_kind IS NOT NULL))
+         AND workspace_id = ${ws}
+       ORDER BY feature_id`;
+    const ids = rows.map((r) => r.feature_id);
+    expect(ids).toContain('F-BET');   // registered generic-kind → visible
+    expect(ids).not.toContain('F-WAG'); // unregistered kind → hidden (the dark gate)
+  });
 });

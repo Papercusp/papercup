@@ -34,6 +34,7 @@
 
 import { existsSync } from 'node:fs';
 import { workspacesRoot } from '../../workspace-registry';
+import type { ProjectEntry } from '../../harness-registry';
 import { join } from 'node:path';
 import {
   bootHarnessSubstrate,
@@ -273,6 +274,46 @@ function workspaceRootForId(workspaceId: string): string {
 }
 
 /**
+ * Is a registry entry a BOOTABLE substrate harness?
+ *
+ * Two independent bootability signals — a row is bootable if EITHER holds:
+ *
+ *  (1) PATH-LIVENESS — its project `path` is a LIVE on-disk CODE checkout.
+ *      A code harness's substrate needs its checkout, and registry debris
+ *      with deleted paths is real at scale (live DB 2026-06-10: 73 of 99
+ *      entries dead — 72 from a test-clone workspace); booting those ghosts
+ *      re-creates the EI-125 thundering herd. This is the original filter.
+ *
+ *  (2) HIVE HARNESS — `harness_kind:'hive'` (an owned home OR a joined
+ *      `remote_hive` VIEW). A Hive home is repo-LESS: its `path` is the Hive's
+ *      gist/PG-backed STATE dir, NOT a code checkout (see
+ *      `resolveHarnessContentPath`), so an ABSENT dir is NORMAL, not debris,
+ *      and MUST NOT gate boot. THIS IS THE D-057 LIVE BLOCKER: the SWARM-JOIN
+ *      source of truth (`resolveHiveSwarmBinding`) federates a Hive home — an
+ *      owned home unconditionally, a joined `remote_hive` view on the owner's
+ *      Hive-pubkey topic — but the SUBSTRATE-BOOT enumeration here filtered the
+ *      joined view out via `existsSync(path)` (its gist-backed
+ *      `~/.papercusp/remote-hives/<slug>` dir need not exist on the spawned
+ *      sidecar / cloud frame), so the joined-hive substrate NEVER BOOTED →
+ *      no outbox drain wired → no send + no merge/apply → every cross-machine
+ *      content/coord probe = 0. The two sources of truth diverged: the join
+ *      put the peer on the Hive topic, but the boot enumeration omitted the
+ *      Hive. Booting it is SAFE without the dir — the substrate store is
+ *      WORKSPACE-rooted (`bootHarnessSubstrate` uses `workspaceRoot`+slug, not
+ *      `p.path`) and the Hive identity lives in PG, not on disk. Hives are FEW
+ *      (≪ the code-clone debris the path filter targets), so this does not
+ *      re-open the thundering herd; a dissolved Hive removes its registry row.
+ */
+function isBootableHarnessEntry(p: ProjectEntry): boolean {
+  if (p.path && existsSync(p.path)) return true;
+  // A gist/PG-backed Hive home (owned OR a joined remote_hive view) boots
+  // without a code checkout — align with the swarm-join hive-identity source of
+  // truth so a joined hive's substrate actually boots + drains (D-057).
+  if (p.harness_kind === 'hive') return true;
+  return false;
+}
+
+/**
  * Harness slugs for a workspace — from the PG registry (audit P-078).
  * `harness_shared.harness_registry` (loadHarnessRegistry, mig 025) is the
  * single source of truth; the old `readdirSync('.papercusp/harnesses')`
@@ -280,12 +321,9 @@ function workspaceRootForId(workspaceId: string): string {
  * was stale/missing. PG failures here are LOUD: they throw to the per-
  * workspace catch in `bootAllHarnessesForActiveWorkspace`.
  *
- * PATH-LIVENESS FILTER: only entries whose project `path` exists on disk
- * boot — a substrate needs its on-disk home. Registry debris with deleted
- * paths is real at scale (live DB 2026-06-10: 73 of 99 entries were dead —
- * 72 from a test-clone workspace) and booting ghosts would re-create the
- * EI-125-era thundering herd. Skips are logged once per boot pass; the
- * durable cleanup belongs in the registry, not here.
+ * Liveness gate via `isBootableHarnessEntry` (see there): a live on-disk code
+ * checkout OR a gist/PG-backed Hive harness (the D-057 joined-hive fix). Skips
+ * are logged once per boot pass; the durable cleanup belongs in the registry.
  */
 async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]> {
   const { loadHarnessRegistry } = await import('../../harness-registry');
@@ -293,7 +331,7 @@ async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]
   const live: string[] = [];
   const dead: string[] = [];
   for (const p of reg.projects) {
-    if (p.path && existsSync(p.path)) live.push(p.slug);
+    if (isBootableHarnessEntry(p)) live.push(p.slug);
     else dead.push(p.slug);
   }
   if (dead.length > 0) {

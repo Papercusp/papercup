@@ -1091,7 +1091,10 @@ const handler = createMcpHandler(
         extra: unknown,
       ) => {
         const toolName = req.params.name;
-        const args = req.params.arguments ?? {};
+        // `let` (not const): the scoped-superuser clamp may RE-RESOLVE a wildcard
+        // `harness:'all'` on plans:list into a workspace-wide read of the session's
+        // own workspace (F-A1) before dispatch — see the clamp block below.
+        let args = req.params.arguments ?? {};
         const progressToken = req.params._meta?.progressToken;
         // Write idempotency / result replay (audit P-046 / EI-68): a caller
         // that passes `_meta.idempotencyKey` gets its result persisted under
@@ -1216,13 +1219,31 @@ const handler = createMcpHandler(
                 ? ((args as Record<string, unknown>).harness as string).trim()
                 : '';
             if (ah === 'all' || ah === '*') {
-              return {
-                isError: true,
-                content: [{
-                  type: 'text' as const,
-                  text: `harness_forbidden: harness:'${ah}' is the unscoped global escape; this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
-                }],
-              };
+              // F-A1 (leaks D-4 / clamp D-002): for a WORKSPACE-scoped session
+              // (ctx.harnessSlug '*', not pinned to a hive), harness:'all'/'*' on the
+              // plans LIST read must mean "THIS workspace's plans" — NOT the
+              // PAPERCUSP_WORKSPACE_ID papercup global (a cross-scope read). RE-RESOLVE
+              // it to a workspace-wide read of the session's OWN workspace: drop the
+              // wildcard harness + set workspaceWide, so list.ts reads
+              // activeWorkspaceId() plans only (the dispatch tx is pinned to
+              // ctx.workspaceId → it cannot cross out; the resolvePlanScope global
+              // escape is never reached). Scoped narrowly: only plans:list, only the
+              // workspace tier — a HIVE-pinned session's 'all' MUST fall through to the
+              // hive-tier reject below (it cannot see sibling-hive plans), and any
+              // OTHER tool's 'all'/'*' has no safe in-workspace meaning → REJECTED.
+              if (toolName === 'plans:list' && spawnRes.ctx.harnessSlug === '*' && args && typeof args === 'object') {
+                const rest = { ...(args as Record<string, unknown>) };
+                delete rest.harness;
+                args = { ...rest, workspaceWide: true };
+              } else {
+                return {
+                  isError: true,
+                  content: [{
+                    type: 'text' as const,
+                    text: `harness_forbidden: harness:'${ah}' is the unscoped global escape; this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
+                  }],
+                };
+              }
             }
           }
           // scoped-superuser-workspace-clamp (P-017, workspace tier): a concrete per-call

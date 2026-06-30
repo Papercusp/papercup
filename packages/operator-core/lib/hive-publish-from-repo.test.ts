@@ -447,3 +447,37 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
     expect(calls.rekeyed).toEqual([]);
   });
 });
+
+// GA leaked-invite OUTER gate (shared-hive-public-release-readiness, security-review
+// note #1 — the "unguessable" half). The strict PARSER floor is locked in
+// hive-invite-link.test.ts, but the real DEFAULT mint is injectable and STUBBED in
+// every test above (randomSecret: () => INVITE_SECRET), so nothing else asserts the
+// SHIPPED secret is actually 256-bit CSPRNG *and* accepted by that same strict parser.
+// A refactor of the default to randomUUID() (hyphens → fails SECRET_RE → an unparseable
+// invite link) or to a shorter/low-entropy token would silently weaken or break invites,
+// uncaught. Lock the real default here by running publishCreatedHive with `randomSecret`
+// left undefined — `...over` spreads it last, so the deps drop the fake and
+// publishCreatedHive falls through to its `randomBytes(32).toString('hex')` default while
+// every other seam stays faked + hermetic.
+describe('invite-secret mint strength — the real default CSPRNG (GA leaked-invite outer gate)', () => {
+  const realMint = () => fakes({ randomSecret: undefined }); // → randomBytes(32) default
+
+  it('mints a 256-bit (64 hex) secret that the SAME strict parser an invitee runs accepts', async () => {
+    const { deps } = realMint();
+    const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);
+    expect(out.inviteSecret).toMatch(/^[0-9a-f]{64}$/); // exactly 256 bits, lowercase hex
+    // The artifact the owner hands out must round-trip through parseHiveInviteLink
+    // (SECRET_RE 32–128 hex) — proving the mint cannot drift off the accepted format.
+    const parsed = parseHiveInviteLink(out.inviteLink!);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.secret).toBe(out.inviteSecret);
+  });
+
+  it('is unguessable: independent mints are distinct (CSPRNG, not a fixed/low-entropy constant)', async () => {
+    const a = await publishCreatedHive({ ...BASE, visibility: 'invite' }, realMint().deps);
+    const b = await publishCreatedHive({ ...BASE, visibility: 'invite' }, realMint().deps);
+    expect(a.inviteSecret).toMatch(/^[0-9a-f]{64}$/);
+    expect(b.inviteSecret).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.inviteSecret).not.toBe(b.inviteSecret); // a constant/low-entropy mint would collide
+  });
+});

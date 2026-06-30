@@ -59,6 +59,96 @@ export interface JoinLinkDeps {
   seedGitSync: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
   /** Active workspace id for the seed (injectable for hermetic tests). */
   resolveWorkspaceId: () => string;
+  /** D-007 (from-repo-seed receive-side fix): seed hive_directory_cache with the
+   *  VERIFIED owner binding a hive MEMBER link carries, so the joiner's owner-log
+   *  bootstrap-admit fires at boot WITHOUT catching the live announce beacon (the
+   *  run-20 "0 announce → empty roster → drop all owner content" receive failure).
+   *  Channel-2 re-verifies the device against the attestation gist BEFORE seeding —
+   *  the link is transport, not the trust anchor. Best-effort: a failure NEVER fails
+   *  the join (the beacon path still backfills). Injectable for hermetic tests. */
+  seedOwnerBinding: (input: SeedOwnerBindingInput) => Promise<SeedOwnerBindingOutcome>;
+}
+
+/** D-007 input for the verified owner-binding seed (all fields from the member link). */
+export interface SeedOwnerBindingInput {
+  workspaceId: string;
+  /** base64 raw-32 Ed25519 hive pubkey — the hive_directory_cache key. */
+  hivePubkey: string;
+  /** base64 owner device pubkey to channel-2 verify + bind. */
+  ownerDevicePubkey: string;
+  /** owner numeric GitHub user id (channel-2 verify target). */
+  ownerGithubUserId: number;
+  /** owner GitHub login (for the DiscoveredHive entry). */
+  ownerGithubLogin: string;
+  /** owner device-attestation gist id (channel-2 anchor). */
+  attestationGistId: string;
+  /** the hive federation topic (hex) for the synthetic DiscoveredHive's memberTopics. */
+  topic: string;
+  /** best-effort hive id for the cache entry (consumer keys on hivePubkey, not this). */
+  hiveId: string;
+}
+
+export interface SeedOwnerBindingOutcome {
+  /** true when a NEW verified binding was written (false = unverified, or already present). */
+  seeded: boolean;
+  reason?: string;
+}
+
+/**
+ * D-007 default seed: channel-2 re-verify the owner device against its
+ * attestation gist, then ADD-IF-ABSENT a synthetic DiscoveredHive carrying the
+ * verified (hivePubkey → ownerDevicePubkey) binding into hive_directory_cache.
+ * Add-if-absent (keyed on hivePubkey) so a later, richer beacon-sourced entry is
+ * never clobbered. Dynamic imports keep the route module light + avoid PG/identity
+ * pulled into its static graph. Never throws — returns {seeded:false} on any issue.
+ */
+async function defaultSeedOwnerBinding(
+  input: SeedOwnerBindingInput,
+): Promise<SeedOwnerBindingOutcome> {
+  try {
+    const { verifyAttestation } = await import('../../../identity/attest');
+    const res = await verifyAttestation(
+      input.attestationGistId,
+      input.ownerDevicePubkey,
+      input.ownerGithubUserId,
+    ).catch(() => null);
+    if (!res || !res.valid) return { seeded: false, reason: 'attestation_unverified' };
+
+    const { updateOperatorState } = await import('../../../operator-state-pg');
+    type DiscoveredHive = import('../../../hive-directory').DiscoveredHive;
+    const now = Date.now();
+    let didSeed = false;
+    await updateOperatorState<{ hives: DiscoveredHive[] }>(
+      'hive_directory_cache',
+      { hives: [] },
+      (cur) => {
+        const hives = Array.isArray(cur?.hives) ? cur.hives : [];
+        // Add-if-absent by hivePubkey — never clobber a richer beacon entry.
+        if (hives.some((h) => h && h.hivePubkey === input.hivePubkey)) return { hives };
+        didSeed = true;
+        const entry: DiscoveredHive = {
+          hiveId: input.hiveId,
+          title: '',
+          description: '',
+          ownerGithubLogin: input.ownerGithubLogin,
+          ownerGithubUserId: input.ownerGithubUserId,
+          ownerDevicePubkey: input.ownerDevicePubkey,
+          hivePubkey: input.hivePubkey,
+          memberTopics: [input.topic],
+          visibility: 'public',
+          createdAt: now,
+          announcedTs: now,
+          lastSeenMs: now,
+          attested: true,
+        };
+        return { hives: [...hives, entry] };
+      },
+      input.workspaceId,
+    );
+    return { seeded: didSeed };
+  } catch (e) {
+    return { seeded: false, reason: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export const realJoinLinkDeps: JoinLinkDeps = {
@@ -69,6 +159,7 @@ export const realJoinLinkDeps: JoinLinkDeps = {
   scaffold: scaffoldHarnessSchema,
   seedGitSync: (opts) => seedGitSyncRoutineForMember(opts),
   resolveWorkspaceId: activeWorkspaceId,
+  seedOwnerBinding: defaultSeedOwnerBinding,
 };
 
 // ─── core handler (injectable, exported for tests) ────────────────────────────
@@ -188,6 +279,34 @@ export async function handleJoinLink(
       });
     } catch {
       // Non-fatal — the boot reconcile / a manual seed can backfill later.
+    }
+
+    // D-007 (from-repo-seed receive-side fix): if this is a hive MEMBER link
+    // carrying the owner binding, seed hive_directory_cache with the VERIFIED
+    // (hivePubkey → ownerDevicePubkey) so the owner-log bootstrap-admit fires at
+    // boot without waiting to catch the live announce beacon — closing the run-20
+    // "0 announce → empty roster → drop all owner content" receive failure. The
+    // seed channel-2 re-verifies the device; best-effort, NEVER fails the join.
+    if (
+      link.hivePubkey &&
+      link.ownerDevicePubkey &&
+      typeof link.ownerGithubUserId === 'number' &&
+      link.attestationGistId
+    ) {
+      try {
+        await deps.seedOwnerBinding({
+          workspaceId: deps.resolveWorkspaceId(),
+          hivePubkey: link.hivePubkey,
+          ownerDevicePubkey: link.ownerDevicePubkey,
+          ownerGithubUserId: link.ownerGithubUserId,
+          ownerGithubLogin: link.repoOwner,
+          attestationGistId: link.attestationGistId,
+          topic: link.topic,
+          hiveId: `${link.repoName}-hive`,
+        });
+      } catch {
+        // Non-fatal — the announce-beacon ingest can still seed it later.
+      }
     }
   }
 

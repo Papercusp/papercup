@@ -303,7 +303,7 @@ export function resolveHookWorkspace(): string {
 export async function callMcpTool(
   toolName: string,
   args: Record<string, unknown>,
-  env: { mcpUrl?: string; bearer?: string; sessionId?: string; workspace?: string } = {},
+  env: { mcpUrl?: string; bearer?: string; sessionId?: string; workspace?: string; timeoutMs?: number } = {},
 ): Promise<unknown | null> {
   // Append the per-process coordination owner as `?client=` so the
   // operator attributes every coord/locks call to THIS process, not
@@ -347,6 +347,17 @@ export async function callMcpTool(
   // (PAPERCUSP_WORKSPACE if exported, else derived from the .papercusp-workspaces/<ws>/ session path),
   // sent as the `x-papercusp-workspace` header the operator reads FIRST.
   const workspace = env.workspace ?? resolveHookWorkspace();
+  // No-timeout hang guard (WI-1081 / operator-latency-coord-timeout-2026-06-29): a slow or
+  // wedged operator (e.g. during a bg-host restart-loop) used to block this fetch until OMP's
+  // framework handler timeout KILLED the handler — 30s session_start / 2s turn_start — a 30s
+  // launch STALL + an "Extension error: handler timed out", with no graceful degrade. Bound every
+  // coord fetch with an AbortController so a hung operator returns null FAST (→ the hook's normal
+  // degraded path: "coordination call failed, will retry"), never a multi-second handler kill.
+  // Default 6s cleanly separates "slow-but-working" (healthy coord calls are ≤1.1s) from "hung"
+  // (≥30s); turn_start passes a tighter budget so its handler stays under OMP's 2s framework cap.
+  const timeoutMs = env.timeoutMs ?? 6000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(mcpUrl, {
       method: 'POST',
@@ -363,6 +374,7 @@ export async function callMcpTool(
         method: 'tools/call',
         params: { name: toolName, arguments: args },
       }),
+      signal: ctrl.signal,
     });
     if (!res.ok) return null;
     const text = await res.text();
@@ -382,6 +394,8 @@ export async function callMcpTool(
     return JSON.parse(content);
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -395,6 +409,18 @@ export type CoordMode = 'attached' | 'detached';
  * missing session_start probe is not fatal.
  */
 let _mode: CoordMode = 'attached';
+
+/** Edge-trigger for the degraded notice (WI-1082). True once we've surfaced the
+ * "coordination call was slow this turn" notice for the CURRENT degraded streak;
+ * reset when coordination recovers. Re-injecting the notice every turn during a
+ * transient operator-latency window spams the model + TUI and, in an auto-continuing
+ * omp session, drives a self-reinforcing turn loop (each notice → a worried quick turn
+ * → another turn_start → more coord burst → more latency → more notices). Surface it
+ * ONCE per streak instead. Exported reset for tests. */
+let _degradedNotified = false;
+export function _resetDegradedNotifiedForTests(): void {
+  _degradedNotified = false;
+}
 
 /** Epoch ms of the last probe — drives the detached-mode re-probe
  *  throttle so a recovered operator is picked up without paying a
@@ -599,7 +625,11 @@ export interface TurnStartResult {
 async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
   // Read the watermark first — its two pointers scope the inbox and the
   // plan-events feed respectively.
-  const wmResult = await callMcpTool('coord:watermark', {});
+  // Tight per-call budgets (WI-1081): turn_start has only OMP's 2s framework cap. watermark is
+  // sequential-before the batch (500ms), the 4-call batch runs in parallel (1000ms each) → ≤1.5s
+  // worst case, leaving margin under 2s. Healthy coord calls are <100ms so this only bites when
+  // the operator is slow — where aborting to the graceful degraded path is exactly right.
+  const wmResult = await callMcpTool('coord:watermark', {}, { timeoutMs: 500 });
   const wm = (() => {
     const r = wmResult as {
       watermark?: { messages_since_ts?: string; plan_events_since_ts?: string };
@@ -620,14 +650,15 @@ async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
   // the same batch — plan_event lines live in coord/plan-events-*.jsonl,
   // NOT coord/messages/, so coord:inbox never surfaces them (audit NB-2).
   const [inboxResult, locksResult, , planEventsResult] = await Promise.all([
-    callMcpTool('coord:inbox', wm.messages ? { since_ts: wm.messages } : {}),
-    callMcpTool('locks:queue', { owner: ownerId }).catch(() => null),
+    callMcpTool('coord:inbox', wm.messages ? { since_ts: wm.messages } : {}, { timeoutMs: 1000 }),
+    callMcpTool('locks:queue', { owner: ownerId }, { timeoutMs: 1000 }).catch(() => null),
     callMcpTool('coord:declare-intent', {
       intent: '(active — see coord:presence for current work)',
-    }),
+    }, { timeoutMs: 1000 }),
     callMcpTool(
       'coord:plan-events',
       wm.planEvents ? { since_ts: wm.planEvents } : {},
+      { timeoutMs: 1000 },
     ).catch(() => null),
   ]);
 
@@ -1524,21 +1555,24 @@ export default function register(pi: HookApi): void {
         attribution: 'agent',
       });
     }
-    if (degraded) {
-      // Silent-failure surfacing (plan §7.4). `degraded` is the
-      // TRANSIENT case — the operator probe succeeded (it is reachable)
-      // but a specific coordination call errored this turn. A truly
-      // unreachable operator is the separate DETACHED path, whose
-      // header the reminder already carries. Two markers:
-      //  1. To the model — a reliable sendMessage note.
-      //  2. To the human — a best-effort OMP TUI notification. The ctx
-      //     shape is accessed defensively; if the API differs the
-      //     marker simply no-ops (consistent with the hook's
-      //     never-crash-the-session philosophy).
+    if (degraded && !_degradedNotified) {
+      // Edge-triggered (WI-1082): surface the degraded notice ONCE per slow streak,
+      // not every turn. `degraded` is the TRANSIENT case — the operator probe succeeded
+      // (it is reachable) but a coordination READ was slow/errored this turn. Re-injecting
+      // a notice every turn spams the model + TUI and, in an auto-continuing omp session,
+      // drives a self-reinforcing turn loop (notice → a worried quick turn → another
+      // turn_start → more coord burst → more latency → more notices). Notify on the
+      // healthy→degraded edge; stay quiet until coordination recovers (the else branch
+      // re-arms the latch). Two markers:
+      //  1. To the model — a reliable sendMessage note, worded as NON-actionable so the
+      //     agent doesn't derail its task investigating a transient blip.
+      //  2. To the human — a best-effort OMP TUI notification. The ctx shape is accessed
+      //     defensively; if the API differs the marker simply no-ops.
+      _degradedNotified = true;
       pi.sendMessage({
         customType: 'coord-reminder',
         content:
-          '<system-reminder type="coord">A coordination call failed this turn (operator reachable, but the call errored). Held locks, inbox, and changed-plans may be stale — re-check before relying on them.</system-reminder>',
+          '<system-reminder type="coord">A coordination read was slow and was skipped this turn (transient — it retries automatically; NO action needed). Inbox/locks/changed-plans may be momentarily stale; just continue your task.</system-reminder>',
         display: false,
         attribution: 'agent',
       });
@@ -1547,10 +1581,13 @@ export default function register(pi: HookApi): void {
         | undefined;
       if (c?.hasUI && typeof c.ui?.notify === 'function') {
         c.ui.notify(
-          'Papercusp coordination call failed this turn (will retry next turn)',
+          'Papercusp coordination was slow this turn (auto-retrying; no action needed)',
           'warning',
         );
       }
+    } else if (!degraded) {
+      // Recovered — re-arm the edge so the next slow streak surfaces one fresh notice.
+      _degradedNotified = false;
     }
   });
 

@@ -1,0 +1,43 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","SU_ROLES"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/cross-harness-data.ts", {"importedNames":["readSupervisorNotes"]});
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "cross_harness:supervisor_notes",
+  profile: "engineer",
+  description: "Read supervisor notes for a harness (id, body, source, created_at).",
+  guidance: {
+    when: "You need the supervisor's annotations on a harness — context the supervisor logged that's not in audit_log.",
+    notWhen: "For escalation flags + raw notes from the on-disk files, use `harness:escalation`. supervisor_notes is the PG-backed view."
+  },
+  capability: "cross_harness:read",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_1__.SU_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    slug: __vite_ssr_import_0__.z.string().optional(),
+    limit: __vite_ssr_import_0__.z.number().int().positive().max(100).optional()
+  }),
+  // Declarative precondition (adopt-event-rules-engines requires:-half): the
+  // former in-handler `if (!slug) throw` guard, lifted.
+  requires: [
+    {
+      id: "harness-slug",
+      when: {
+        any: [{ "args.slug": { truthy: true } }, { "ctx.harnessSlug": { truthy: true } }]
+      },
+      error: "cross_harness:supervisor_notes — slug required (passed or in spawn ctx)"
+    }
+  ],
+  async handler(args, ctx) {
+    const slug = args.slug ?? ctx.harnessSlug ?? "";
+    const notes = await (0,__vite_ssr_import_2__.readSupervisorNotes)(slug, args.limit);
+    return { content: [{ type: "text", text: JSON.stringify({ slug, notes }) }] };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQU1BO0FBQ0E7QUFDQTs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsYUFBYTtBQUFBLEVBQ2IsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLEVBQ1g7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLDhCQUFRO0FBQUEsRUFDeEIsTUFBTSx3QkFBRSxPQUFPO0FBQUEsSUFDYixNQUFNLHdCQUFFLE9BQU8sRUFBRSxTQUFTO0FBQUEsSUFDMUIsT0FBTyx3QkFBRSxPQUFPLEVBQUUsSUFBSSxFQUFFLFNBQVMsRUFBRSxJQUFJLEdBQUcsRUFBRSxTQUFTO0FBQUEsRUFDdkQsQ0FBQztBQUFBO0FBQUE7QUFBQSxFQUdELFVBQVU7QUFBQSxJQUNSO0FBQUEsTUFDRSxJQUFJO0FBQUEsTUFDSixNQUFNO0FBQUEsUUFDSixLQUFLLENBQUMsRUFBRSxhQUFhLEVBQUUsUUFBUSxLQUFLLEVBQUUsR0FBRyxFQUFFLG1CQUFtQixFQUFFLFFBQVEsS0FBSyxFQUFFLENBQUM7QUFBQSxNQUNsRjtBQUFBLE1BQ0EsT0FBTztBQUFBLElBQ1Q7QUFBQSxFQUNGO0FBQUEsRUFDQSxNQUFNLFFBQVEsTUFBTSxLQUFLO0FBRXZCLFVBQU0sT0FBTyxLQUFLLFFBQVEsSUFBSSxlQUFlO0FBQzdDLFVBQU0sUUFBUSxTQUFNLDJDQUFvQixNQUFNLEtBQUssS0FBSztBQUN4RCxXQUFPLEVBQUUsU0FBUyxDQUFDLEVBQUUsTUFBTSxRQUFRLE1BQU0sS0FBSyxVQUFVLEVBQUUsTUFBTSxNQUFNLENBQUMsRUFBRSxDQUFDLEVBQUU7QUFBQSxFQUM5RTtBQUNGLENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbInN1cGVydmlzb3Jfbm90ZXMudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBjcm9zc19oYXJuZXNzOnN1cGVydmlzb3Jfbm90ZXMg4oCUIHJlYWQgc3VwZXJ2aXNvciBub3RlcyBmb3IgYSBoYXJuZXNzLlxuICpcbiAqIE1pcnJvcnMgR0VUIC9hcGkvaGFybmVzcy86c2x1Zy9zdXBlcnZpc29yLW5vdGVzLlxuICovXG5cbmltcG9ydCB7IHogfSBmcm9tICd6b2QnO1xuaW1wb3J0IHsgZGVmaW5lVG9vbCwgU1VfUk9MRVMgfSBmcm9tICdAcGFwZXJjdXNwL2FnZW50LW1jcCc7XG5pbXBvcnQgeyByZWFkU3VwZXJ2aXNvck5vdGVzIH0gZnJvbSAnLi4vLi4vY3Jvc3MtaGFybmVzcy1kYXRhJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICdjcm9zc19oYXJuZXNzOnN1cGVydmlzb3Jfbm90ZXMnLFxuICBwcm9maWxlOiAnZW5naW5lZXInLFxuICBkZXNjcmlwdGlvbjogJ1JlYWQgc3VwZXJ2aXNvciBub3RlcyBmb3IgYSBoYXJuZXNzIChpZCwgYm9keSwgc291cmNlLCBjcmVhdGVkX2F0KS4nLFxuICBndWlkYW5jZToge1xuICAgIHdoZW46ICdZb3UgbmVlZCB0aGUgc3VwZXJ2aXNvclxcJ3MgYW5ub3RhdGlvbnMgb24gYSBoYXJuZXNzIOKAlCBjb250ZXh0IHRoZSBzdXBlcnZpc29yIGxvZ2dlZCB0aGF0XFwncyBub3QgaW4gYXVkaXRfbG9nLicsXG4gICAgbm90V2hlbjogJ0ZvciBlc2NhbGF0aW9uIGZsYWdzICsgcmF3IG5vdGVzIGZyb20gdGhlIG9uLWRpc2sgZmlsZXMsIHVzZSBgaGFybmVzczplc2NhbGF0aW9uYC4gc3VwZXJ2aXNvcl9ub3RlcyBpcyB0aGUgUEctYmFja2VkIHZpZXcuJyxcbiAgfSxcbiAgY2FwYWJpbGl0eTogJ2Nyb3NzX2hhcm5lc3M6cmVhZCcsXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICBhZ2VudFJvbGVzOiBbLi4uU1VfUk9MRVNdLFxuICBhcmdzOiB6Lm9iamVjdCh7XG4gICAgc2x1Zzogei5zdHJpbmcoKS5vcHRpb25hbCgpLFxuICAgIGxpbWl0OiB6Lm51bWJlcigpLmludCgpLnBvc2l0aXZlKCkubWF4KDEwMCkub3B0aW9uYWwoKSxcbiAgfSksXG4gIC8vIERlY2xhcmF0aXZlIHByZWNvbmRpdGlvbiAoYWRvcHQtZXZlbnQtcnVsZXMtZW5naW5lcyByZXF1aXJlczotaGFsZik6IHRoZVxuICAvLyBmb3JtZXIgaW4taGFuZGxlciBgaWYgKCFzbHVnKSB0aHJvd2AgZ3VhcmQsIGxpZnRlZC5cbiAgcmVxdWlyZXM6IFtcbiAgICB7XG4gICAgICBpZDogJ2hhcm5lc3Mtc2x1ZycsXG4gICAgICB3aGVuOiB7XG4gICAgICAgIGFueTogW3sgJ2FyZ3Muc2x1Zyc6IHsgdHJ1dGh5OiB0cnVlIH0gfSwgeyAnY3R4Lmhhcm5lc3NTbHVnJzogeyB0cnV0aHk6IHRydWUgfSB9XSxcbiAgICAgIH0sXG4gICAgICBlcnJvcjogJ2Nyb3NzX2hhcm5lc3M6c3VwZXJ2aXNvcl9ub3RlcyDigJQgc2x1ZyByZXF1aXJlZCAocGFzc2VkIG9yIGluIHNwYXduIGN0eCknLFxuICAgIH0sXG4gIF0sXG4gIGFzeW5jIGhhbmRsZXIoYXJncywgY3R4KSB7XG4gICAgLy8gTm9uLWVtcHR5IGJ5IHRoZSBgaGFybmVzcy1zbHVnYCBwcmVjb25kaXRpb24gYWJvdmUuXG4gICAgY29uc3Qgc2x1ZyA9IGFyZ3Muc2x1ZyA/PyBjdHguaGFybmVzc1NsdWcgPz8gJyc7XG4gICAgY29uc3Qgbm90ZXMgPSBhd2FpdCByZWFkU3VwZXJ2aXNvck5vdGVzKHNsdWcsIGFyZ3MubGltaXQpO1xuICAgIHJldHVybiB7IGNvbnRlbnQ6IFt7IHR5cGU6ICd0ZXh0JywgdGV4dDogSlNPTi5zdHJpbmdpZnkoeyBzbHVnLCBub3RlcyB9KSB9XSB9O1xuICB9LFxufSk7XG4iXSwiZmlsZSI6Ii9saWIvYWdlbnQtdG9vbHMvY3Jvc3NfaGFybmVzcy9zdXBlcnZpc29yX25vdGVzLnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvY3Jvc3NfaGFybmVzcy9zdXBlcnZpc29yX25vdGVzLnRzIiwiL2xpYi9hZ2VudC10b29scy9jcm9zc19oYXJuZXNzL3N1cGVydmlzb3Jfbm90ZXMudHMiLFtdXQ==

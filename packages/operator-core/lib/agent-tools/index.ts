@@ -54,6 +54,12 @@ import './datatypes/declare';
 import './datatypes/list';
 import './datatypes/get';
 
+// reflexive-platform-extensibility-datatypes-2026-06-24 P-004 — tools:scaffold:
+// PURE codegen of a reviewable defineTool skeleton (writes/runs/mints nothing).
+import './tools/scaffold';
+// P-002 — meta:define-tool: tier router (composed → live recipe; sandboxed/elevated → PR rail).
+import './tools/define';
+
 import './operator/stats';
 import './operator/converse';
 // Sentinel-as-Herald: the sentinel:converse alias (same brain, Herald persona).

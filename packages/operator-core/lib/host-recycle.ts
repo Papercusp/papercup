@@ -14,6 +14,7 @@
  */
 
 import { closeAllBootedHarnesses } from './sync/hyperbee/boot-all';
+import { markShuttingDown } from './shutdown-state';
 
 /** The slice of `@hono/node-server`'s server this helper needs. */
 export interface RecycleServerLike {
@@ -120,6 +121,10 @@ export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
   const drainAndExit = (sig: NodeJS.Signals): void => {
     if (draining) return;
     draining = true;
+    // P-005: announce the drain process-wide BEFORE teardown so background work
+    // that consults isShuttingDown() (the auto-implement dispatch loop) stops
+    // STARTING new minutes-long workers that this drain would SIGKILL mid-fix.
+    markShuttingDown();
     log(`[hono-host] ${sig} — draining in-flight HTTP + substrate, then exiting (pid=${process.pid})`);
     gracefulHostRecycle({
       server: opts.server,

@@ -33,6 +33,7 @@ import {
   slugifyDatatype,
   DATATYPE_TIERS,
 } from '../../datatype-registry-store';
+import { checkSelfImprovementForDeclare } from '../../datatype-self-improvement';
 
 export default defineTool({
   name: 'meta:define-datatype',
@@ -92,7 +93,12 @@ export default defineTool({
     selfImprovement: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe('the self-improvement surface (P-010): { improvements, scorecard, gym } so the datatype is self-improvable by construction'),
+      .describe(
+        'REQUIRED for generic-kind/first-class (P-010): the self-improvement surface ' +
+          '{ improvements:[{id,description}], scorecard:[{metric,description,weight?}], gym:{signals:[…],rubric} } ' +
+          '— so the datatype is self-improvable by construction. Optional for projection (external engine owns it). ' +
+          'On an in-place update you may omit it to keep the stored one.',
+      ),
     tags: z.array(z.string()).max(32).optional(),
     force: z.boolean().optional().describe('bypass the soft semantic-dedup gate (declare even when a similar datatype exists)'),
   }),
@@ -108,8 +114,29 @@ export default defineTool({
     if (!id) {
       return reply({ ok: false, reason: 'invalid_name', message: `"${args.name}" slugifies to empty — give an alphanumeric name` });
     }
+    const tier = args.tier as (typeof DATATYPE_TIERS)[number];
 
     const exists = await getDatatype(sql, workspaceId, id);
+
+    // P-010 — the self-improvement surface. Validate the caller's OWN input completeness
+    // first (before the similarity search): an authoritative datatype must be self-
+    // improvable by construction. On an in-place update the stored surface is preserved
+    // when the call omits it.
+    const siCheck = checkSelfImprovementForDeclare(
+      tier,
+      args.selfImprovement ?? null,
+      exists?.selfImprovement ?? null,
+    );
+    if (!siCheck.ok) {
+      return reply({
+        ok: false,
+        reason: siCheck.reason,
+        message: siCheck.message,
+        expectedShape: siCheck.expectedShape,
+        ...(siCheck.issues ? { issues: siCheck.issues } : {}),
+      });
+    }
+
     // Soft semantic gate (D-010) — only for a genuinely NEW id (re-declaring the same
     // id is an in-place update, not a duplicate). `force` skips the gate.
     if (!exists && !args.force) {
@@ -133,7 +160,6 @@ export default defineTool({
       }
     }
 
-    const tier = args.tier as (typeof DATATYPE_TIERS)[number];
     const row = await upsertDatatype(sql, {
       id,
       workspaceId,
@@ -145,7 +171,8 @@ export default defineTool({
       workItemKind: tier === 'generic-kind' ? (args.workItemKind ?? id) : (args.workItemKind ?? null),
       payloadSchema: args.payloadSchema ?? null,
       authoritativeWriter: args.authoritativeWriter ?? (tier === 'projection' ? null : 'papercusp'),
-      selfImprovement: args.selfImprovement ?? null,
+      // P-010: the validated surface (new), the preserved stored surface (omitted update), or null (projection)
+      selfImprovement: siCheck.value,
       tags: args.tags ?? [],
       // embedding wired in a follow-up; lexical (title_tsv) dedup applies meanwhile
       embedding: null,

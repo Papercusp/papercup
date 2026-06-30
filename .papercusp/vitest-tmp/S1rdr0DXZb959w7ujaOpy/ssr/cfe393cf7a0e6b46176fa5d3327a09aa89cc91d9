@@ -1,0 +1,27 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","SU_ROLES"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/known-hooks.ts", {"importedNames":["getKnownHooks"]});
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "hooks:known",
+  profile: "engineer",
+  guidance: {
+    when: "Static enum of supported hook event names — use to validate an event string before firing or registering for it.",
+    notWhen: "For PENDING events queued up, use `pending_events:list`. For firing an event, use `plugins:fire_event`."
+  },
+  description: "Static well-known hook-event allowlist (kernel set; plugin-registered hooks extend this).",
+  capability: "roles:read",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_1__.SU_ROLES],
+  args: __vite_ssr_import_0__.z.object({}),
+  async handler() {
+    return { content: [{ type: "text", text: JSON.stringify({ hooks: (0,__vite_ssr_import_2__.getKnownHooks)() }) }] };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQUlBO0FBQ0E7QUFDQTs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLEVBQ1g7QUFBQSxFQUNBLGFBQWE7QUFBQSxFQUNiLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLDhCQUFRO0FBQUEsRUFDeEIsTUFBTSx3QkFBRSxPQUFPLENBQUMsQ0FBQztBQUFBLEVBQ2pCLE1BQU0sVUFBVTtBQUNkLFdBQU8sRUFBRSxTQUFTLENBQUMsRUFBRSxNQUFNLFFBQVEsTUFBTSxLQUFLLFVBQVUsRUFBRSxVQUFPLHFDQUFjLEVBQUUsQ0FBQyxFQUFFLENBQUMsRUFBRTtBQUFBLEVBQ3pGO0FBQ0YsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsia25vd24udHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBob29rczprbm93biDigJQgcmV0dXJuIHRoZSBzdGF0aWMgd2VsbC1rbm93biBob29rLWV2ZW50IGFsbG93bGlzdC5cbiAqL1xuXG5pbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wsIFNVX1JPTEVTIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgZ2V0S25vd25Ib29rcyB9IGZyb20gJy4uLy4uL2tub3duLWhvb2tzJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICdob29rczprbm93bicsXG4gIHByb2ZpbGU6ICdlbmdpbmVlcicsXG4gIGd1aWRhbmNlOiB7XG4gICAgd2hlbjogJ1N0YXRpYyBlbnVtIG9mIHN1cHBvcnRlZCBob29rIGV2ZW50IG5hbWVzIOKAlCB1c2UgdG8gdmFsaWRhdGUgYW4gZXZlbnQgc3RyaW5nIGJlZm9yZSBmaXJpbmcgb3IgcmVnaXN0ZXJpbmcgZm9yIGl0LicsXG4gICAgbm90V2hlbjogJ0ZvciBQRU5ESU5HIGV2ZW50cyBxdWV1ZWQgdXAsIHVzZSBgcGVuZGluZ19ldmVudHM6bGlzdGAuIEZvciBmaXJpbmcgYW4gZXZlbnQsIHVzZSBgcGx1Z2luczpmaXJlX2V2ZW50YC4nLFxuICB9LFxuICBkZXNjcmlwdGlvbjogJ1N0YXRpYyB3ZWxsLWtub3duIGhvb2stZXZlbnQgYWxsb3dsaXN0IChrZXJuZWwgc2V0OyBwbHVnaW4tcmVnaXN0ZXJlZCBob29rcyBleHRlbmQgdGhpcykuJyxcbiAgY2FwYWJpbGl0eTogJ3JvbGVzOnJlYWQnLFxuICByZXF1aXJlUHJpbmNpcGFsOiBmYWxzZSxcbiAgYWdlbnRSb2xlczogWy4uLlNVX1JPTEVTXSxcbiAgYXJnczogei5vYmplY3Qoe30pLFxuICBhc3luYyBoYW5kbGVyKCkge1xuICAgIHJldHVybiB7IGNvbnRlbnQ6IFt7IHR5cGU6ICd0ZXh0JywgdGV4dDogSlNPTi5zdHJpbmdpZnkoeyBob29rczogZ2V0S25vd25Ib29rcygpIH0pIH1dIH07XG4gIH0sXG59KTtcbiJdLCJmaWxlIjoiL2xpYi9hZ2VudC10b29scy9ob29rcy9rbm93bi50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvaG9va3Mva25vd24udHMiLCIvbGliL2FnZW50LXRvb2xzL2hvb2tzL2tub3duLnRzIixbXV0=

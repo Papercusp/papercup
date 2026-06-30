@@ -36,6 +36,27 @@ function cacheKey(opts: HarnessStoreOpts): string {
   return `${opts.workspaceRoot}::${opts.harnessSlug}`;
 }
 
+/**
+ * Block cache size (in blocks) for each per-harness Corestore.
+ *
+ * P-005 (bg-host-freeze-eventloop-stall-2026-06-30): the DEFAULT Corestore
+ * block cache is 16 384 blocks per store. With 25+ harnesses each holding
+ * multiple Hypercores, the theoretical in-process RSS ceiling from block data
+ * alone is tens of GB (blocks are typically 32–64 KB each). Reducing the cache
+ * to 256 blocks (≈8–16 MB per store, ≈200–400 MB across 25 harnesses) bounds
+ * the growth while still giving the per-harness merge loop a warm L1 for its
+ * sequential append reads. Override via PAPERCUSP_CORESTORE_CACHE_BLOCKS.
+ *
+ * If the env-override is ≤0 or non-finite, falls back to the 256 default (no
+ * footgun where CACHE=0 disables caching and hammers disk on every read).
+ */
+const DEFAULT_CORESTORE_CACHE_BLOCKS = 256;
+function resolveCacheBlocks(): number {
+  const env = Number(process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS);
+  if (Number.isFinite(env) && env > 0) return Math.floor(env);
+  return DEFAULT_CORESTORE_CACHE_BLOCKS;
+}
+
 export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore> {
   const key = cacheKey(opts);
   const cached = stores.get(key);
@@ -44,7 +65,7 @@ export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore
   const path = storagePath(opts);
   const pending = (async () => {
     await mkdir(path, { recursive: true });
-    const store = new Corestore(path);
+    const store = new Corestore(path, { cache: resolveCacheBlocks() });
     await store.ready();
     return store;
   })();
@@ -65,3 +86,15 @@ export async function closeHarnessStore(opts: HarnessStoreOpts): Promise<void> {
 export function _resetCacheForTests(): void {
   stores.clear();
 }
+
+/**
+ * Test seam: read the current resolved cache-block count (respects
+ * PAPERCUSP_CORESTORE_CACHE_BLOCKS). Exported only for the recurrence-guard
+ * test in corestore-cache.test.ts — never call from production code.
+ */
+export function _resolveCorestoreCacheBlocksForTests(): number {
+  return resolveCacheBlocks();
+}
+
+/** Test seam: read the default block cache constant. */
+export const _DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS = DEFAULT_CORESTORE_CACHE_BLOCKS;

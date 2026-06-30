@@ -1,0 +1,41 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/learning_packs/_shared.ts", {"importedNames":["FLAG_OFF","learningPacksEnabled","text"]});
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "learning_packs:uninstall",
+  capability: "memory:write",
+  description: "Remove a learning pack's rows from a hive's shared memory (provenance-driven). Rows the user edited since seeding are KEPT by default and reported; keepEdited: false removes those too. Organic (hive-learned) rows are never touched.",
+  guidance: {
+    when: "The user wants a pack gone from a hive, or before re-installing a pack from scratch.",
+    notWhen: "To temporarily mute a pack — learning_packs:set_enabled { enabled: false } keeps the rows and just stops injecting them.",
+    chaining: "learning_packs:list { hive } shows what remains; kept edited rows are listed in the response."
+  },
+  crossWorkspace: true,
+  args: __vite_ssr_import_0__.z.object({
+    hive: __vite_ssr_import_0__.z.string().min(1).max(120),
+    pack: __vite_ssr_import_0__.z.string().min(1).max(120),
+    keepEdited: __vite_ssr_import_0__.z.boolean().optional().describe("Default true — edited rows survive the uninstall."),
+    workspace: __vite_ssr_import_0__.z.string().max(120).optional()
+  }),
+  async handler(args) {
+    if (!await (0,__vite_ssr_import_2__.learningPacksEnabled)()) return (0,__vite_ssr_import_2__.text)((0,__vite_ssr_import_2__.FLAG_OFF));
+    const { loadLearningPack } = await __vite_ssr_dynamic_import__("/lib/learning-packs/load-packs.ts");
+    const { uninstallPack } = await __vite_ssr_dynamic_import__("/lib/learning-packs/manage.ts");
+    const loaded = await loadLearningPack(args.pack);
+    const result = await uninstallPack({
+      hiveSlug: args.hive,
+      packId: args.pack,
+      pack: loaded?.pack ?? null,
+      ...args.keepEdited !== void 0 ? { keepEdited: args.keepEdited } : {}
+    });
+    return (0,__vite_ssr_import_2__.text)({ ...result });
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQUtBO0FBQ0E7QUFDQTs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sWUFBWTtBQUFBLEVBQ1osYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FDRTtBQUFBLElBQ0YsVUFBVTtBQUFBLEVBQ1o7QUFBQSxFQUNBLGdCQUFnQjtBQUFBLEVBQ2hCLE1BQU0sd0JBQUUsT0FBTztBQUFBLElBQ2IsTUFBTSx3QkFBRSxPQUFPLEVBQUUsSUFBSSxDQUFDLEVBQUUsSUFBSSxHQUFHO0FBQUEsSUFDL0IsTUFBTSx3QkFBRSxPQUFPLEVBQUUsSUFBSSxDQUFDLEVBQUUsSUFBSSxHQUFHO0FBQUEsSUFDL0IsWUFBWSx3QkFBRSxRQUFRLEVBQUUsU0FBUyxFQUFFLFNBQVMsbURBQW1EO0FBQUEsSUFDL0YsV0FBVyx3QkFBRSxPQUFPLEVBQUUsSUFBSSxHQUFHLEVBQUUsU0FBUztBQUFBLEVBQzFDLENBQUM7QUFBQSxFQUNELE1BQU0sUUFBUSxNQUFNO0FBQ2xCLFFBQUksQ0FBRSxTQUFNLDRDQUFxQixFQUFJLFdBQU8sK0JBQUssK0JBQVE7QUFDekQsVUFBTSxFQUFFLGlCQUFpQixJQUFJLE1BQU0sNEJBQU8sa0NBQWlDO0FBQzNFLFVBQU0sRUFBRSxjQUFjLElBQUksTUFBTSw0QkFBTyw4QkFBNkI7QUFDcEUsVUFBTSxTQUFTLE1BQU0saUJBQWlCLEtBQUssSUFBSTtBQUMvQyxVQUFNLFNBQVMsTUFBTSxjQUFjO0FBQUEsTUFDakMsVUFBVSxLQUFLO0FBQUEsTUFDZixRQUFRLEtBQUs7QUFBQSxNQUNiLE1BQU0sUUFBUSxRQUFRO0FBQUEsTUFDdEIsR0FBSSxLQUFLLGVBQWUsU0FBWSxFQUFFLFlBQVksS0FBSyxXQUFXLElBQUksQ0FBQztBQUFBLElBQ3pFLENBQUM7QUFDRCxjQUFPLDRCQUFLLEVBQUUsR0FBRyxPQUFPLENBQUM7QUFBQSxFQUMzQjtBQUNGLENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbInVuaW5zdGFsbC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIGxlYXJuaW5nX3BhY2tzOnVuaW5zdGFsbCDigJQgcmVtb3ZlIGEgcGFjaydzIHJvd3MgZnJvbSBhIGhpdmUncyBzaGFyZWQgbWVtb3J5XG4gKiAobGVhcm5pbmctcGFja3MtMjAyNi0wNi0xMSBQLTAwOSkuIFByb3ZlbmFuY2UtZHJpdmVuOyB1c2VyLWVkaXRlZCByb3dzIGFyZVxuICoga2VwdCBieSBkZWZhdWx0ICh0aGV5J3JlIHRoZSB1c2VyJ3Mgd29yZHMgbm93KS5cbiAqL1xuaW1wb3J0IHsgeiB9IGZyb20gJ3pvZCc7XG5pbXBvcnQgeyBkZWZpbmVUb29sIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgRkxBR19PRkYsIGxlYXJuaW5nUGFja3NFbmFibGVkLCB0ZXh0IH0gZnJvbSAnLi9fc2hhcmVkJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICdsZWFybmluZ19wYWNrczp1bmluc3RhbGwnLFxuICBjYXBhYmlsaXR5OiAnbWVtb3J5OndyaXRlJyxcbiAgZGVzY3JpcHRpb246XG4gICAgXCJSZW1vdmUgYSBsZWFybmluZyBwYWNrJ3Mgcm93cyBmcm9tIGEgaGl2ZSdzIHNoYXJlZCBtZW1vcnkgKHByb3ZlbmFuY2UtZHJpdmVuKS4gUm93cyB0aGUgdXNlciBlZGl0ZWQgc2luY2Ugc2VlZGluZyBhcmUgS0VQVCBieSBkZWZhdWx0IGFuZCByZXBvcnRlZDsga2VlcEVkaXRlZDogZmFsc2UgcmVtb3ZlcyB0aG9zZSB0b28uIE9yZ2FuaWMgKGhpdmUtbGVhcm5lZCkgcm93cyBhcmUgbmV2ZXIgdG91Y2hlZC5cIixcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiAnVGhlIHVzZXIgd2FudHMgYSBwYWNrIGdvbmUgZnJvbSBhIGhpdmUsIG9yIGJlZm9yZSByZS1pbnN0YWxsaW5nIGEgcGFjayBmcm9tIHNjcmF0Y2guJyxcbiAgICBub3RXaGVuOlxuICAgICAgJ1RvIHRlbXBvcmFyaWx5IG11dGUgYSBwYWNrIOKAlCBsZWFybmluZ19wYWNrczpzZXRfZW5hYmxlZCB7IGVuYWJsZWQ6IGZhbHNlIH0ga2VlcHMgdGhlIHJvd3MgYW5kIGp1c3Qgc3RvcHMgaW5qZWN0aW5nIHRoZW0uJyxcbiAgICBjaGFpbmluZzogJ2xlYXJuaW5nX3BhY2tzOmxpc3QgeyBoaXZlIH0gc2hvd3Mgd2hhdCByZW1haW5zOyBrZXB0IGVkaXRlZCByb3dzIGFyZSBsaXN0ZWQgaW4gdGhlIHJlc3BvbnNlLicsXG4gIH0sXG4gIGNyb3NzV29ya3NwYWNlOiB0cnVlLFxuICBhcmdzOiB6Lm9iamVjdCh7XG4gICAgaGl2ZTogei5zdHJpbmcoKS5taW4oMSkubWF4KDEyMCksXG4gICAgcGFjazogei5zdHJpbmcoKS5taW4oMSkubWF4KDEyMCksXG4gICAga2VlcEVkaXRlZDogei5ib29sZWFuKCkub3B0aW9uYWwoKS5kZXNjcmliZSgnRGVmYXVsdCB0cnVlIOKAlCBlZGl0ZWQgcm93cyBzdXJ2aXZlIHRoZSB1bmluc3RhbGwuJyksXG4gICAgd29ya3NwYWNlOiB6LnN0cmluZygpLm1heCgxMjApLm9wdGlvbmFsKCksXG4gIH0pLFxuICBhc3luYyBoYW5kbGVyKGFyZ3MpIHtcbiAgICBpZiAoIShhd2FpdCBsZWFybmluZ1BhY2tzRW5hYmxlZCgpKSkgcmV0dXJuIHRleHQoRkxBR19PRkYpO1xuICAgIGNvbnN0IHsgbG9hZExlYXJuaW5nUGFjayB9ID0gYXdhaXQgaW1wb3J0KCcuLi8uLi9sZWFybmluZy1wYWNrcy9sb2FkLXBhY2tzJyk7XG4gICAgY29uc3QgeyB1bmluc3RhbGxQYWNrIH0gPSBhd2FpdCBpbXBvcnQoJy4uLy4uL2xlYXJuaW5nLXBhY2tzL21hbmFnZScpO1xuICAgIGNvbnN0IGxvYWRlZCA9IGF3YWl0IGxvYWRMZWFybmluZ1BhY2soYXJncy5wYWNrKTtcbiAgICBjb25zdCByZXN1bHQgPSBhd2FpdCB1bmluc3RhbGxQYWNrKHtcbiAgICAgIGhpdmVTbHVnOiBhcmdzLmhpdmUsXG4gICAgICBwYWNrSWQ6IGFyZ3MucGFjayxcbiAgICAgIHBhY2s6IGxvYWRlZD8ucGFjayA/PyBudWxsLFxuICAgICAgLi4uKGFyZ3Mua2VlcEVkaXRlZCAhPT0gdW5kZWZpbmVkID8geyBrZWVwRWRpdGVkOiBhcmdzLmtlZXBFZGl0ZWQgfSA6IHt9KSxcbiAgICB9KTtcbiAgICByZXR1cm4gdGV4dCh7IC4uLnJlc3VsdCB9KTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2xlYXJuaW5nX3BhY2tzL3VuaW5zdGFsbC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvbGVhcm5pbmdfcGFja3MvdW5pbnN0YWxsLnRzIiwiL2xpYi9hZ2VudC10b29scy9sZWFybmluZ19wYWNrcy91bmluc3RhbGwudHMiLFtdXQ==

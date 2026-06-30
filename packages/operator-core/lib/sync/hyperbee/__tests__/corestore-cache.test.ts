@@ -12,7 +12,7 @@
  *   - closeHarnessStore on an uncached key is a no-op (no throw).
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, afterAll, describe, expect, it } from 'vitest';
 import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,6 +21,8 @@ import {
   getHarnessStore,
   closeHarnessStore,
   _resetCacheForTests,
+  _resolveCorestoreCacheBlocksForTests,
+  _DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS,
 } from '../corestore';
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -94,5 +96,51 @@ describe('getHarnessStore — per-(workspaceRoot, harnessSlug) cache (A5)', () =
     await expect(
       closeHarnessStore({ workspaceRoot: root, harnessSlug: 'never-opened' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ── P-005 recurrence guard: bounded block-cache size ──────────────────────
+//
+// bg-host-freeze-eventloop-stall-2026-06-30 P-005: the default Corestore block
+// cache (16 384 blocks) lets 25+ harnesses accumulate tens of GB of block data
+// in-process. We cap it at 256 blocks (≈8–16 MB/store) with an env override.
+// These tests ensure that default never drifts back above 1 024 blocks (an
+// 8× safety margin above our cap, still far below the original 16 384).
+
+describe('resolveCacheBlocks — bounded block-cache size (P-005)', () => {
+  const ORIG = process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS;
+
+  afterAll(() => {
+    // restore env
+    if (ORIG === undefined) {
+      delete process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS;
+    } else {
+      process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS = ORIG;
+    }
+  });
+
+  it('DEFAULT block cache is ≤ 1 024 (bounded, not the old 16 384)', () => {
+    delete process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS;
+    const blocks = _resolveCorestoreCacheBlocksForTests();
+    expect(blocks).toBe(_DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS);
+    // Hard ceiling: if someone accidentally bumps the constant, this test fails.
+    expect(blocks).toBeLessThanOrEqual(1_024);
+    // Must be a positive integer (≤ 0 disables the cache = disk hammering).
+    expect(blocks).toBeGreaterThan(0);
+    expect(Number.isInteger(blocks)).toBe(true);
+  });
+
+  it('PAPERCUSP_CORESTORE_CACHE_BLOCKS env override is respected', () => {
+    process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS = '512';
+    expect(_resolveCorestoreCacheBlocksForTests()).toBe(512);
+  });
+
+  it('invalid env (0, negative, non-numeric) falls back to the default', () => {
+    for (const bad of ['0', '-1', 'foo', '']) {
+      process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS = bad;
+      expect(_resolveCorestoreCacheBlocksForTests()).toBe(
+        _DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS,
+      );
+    }
   });
 });

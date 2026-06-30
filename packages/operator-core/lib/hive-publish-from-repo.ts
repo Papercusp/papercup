@@ -317,6 +317,23 @@ async function publishListingForMeta(
   );
 
   const hiveTopicHex = hivePubkey ? topicAsHex(deriveHiveFederationTopic(hivePubkey)) : null;
+
+  // D-007 (from-repo-seed receive-side fix): resolve the owner identity ONCE
+  // up-front (best-effort) so each hive MEMBER link can carry the VERIFIED owner
+  // binding (hivePubkey → ownerDevicePubkey + ownerGithubUserId + attestationGistId).
+  // A DIRECT-LINK joiner uses this to seed its hive_directory_cache at join (channel-2
+  // re-verified there) so the owner-log bootstrap-admit fires WITHOUT waiting to catch
+  // the live announce beacon — the run-20 "0 announce → empty roster → drop all owner
+  // content" receive failure. Degrades gracefully: if the owner can't be resolved the
+  // link is emitted without the binding (joiner falls back to the beacon). Reused by
+  // the directory announce below (no double-resolve).
+  let owner: HiveOwnerIdentity | null = null;
+  try {
+    owner = await resolveOwner();
+  } catch {
+    owner = null;
+  }
+
   const memberLinks: string[] = [];
   if (hiveTopicHex) {
     for (const m of members) {
@@ -338,6 +355,18 @@ async function publishListingForMeta(
           repoOwner: parsed.owner,
           repoName: parsed.repo,
           repoId: m.github_repository_id,
+          // D-007: thread the verified owner binding so a direct-link joiner can
+          // seed hive_directory_cache at join (re-verified channel-2 there). hivePubkey
+          // is required (the joiner re-derives the topic from it; the link topic is a
+          // one-way hash). All-or-nothing — formatHarnessLink emits them only together.
+          ...(owner && hivePubkey
+            ? {
+                hivePubkey,
+                ownerDevicePubkey: owner.devicePubkey,
+                ownerGithubUserId: owner.githubUserId,
+                attestationGistId: owner.attestationGistId,
+              }
+            : {}),
         }),
       );
     }
@@ -348,7 +377,9 @@ async function publishListingForMeta(
   let reachablePeers = 0;
   let announceError: string | undefined;
   try {
-    const owner = await resolveOwner();
+    // D-007: reuse the up-front owner (resolved for the member-link binding); only
+    // re-resolve if that failed, preserving the original announce behavior.
+    const ownerForAnnounce = owner ?? (await resolveOwner());
     const res = await publishDirectory(
       getDirectory(),
       {
@@ -357,7 +388,7 @@ async function publishListingForMeta(
         ...(memberRepos.length ? { memberRepos } : {}),
         ...(memberLinks.length ? { memberLinks } : {}),
       },
-      owner,
+      ownerForAnnounce,
     );
     announced = res.announced;
     reachablePeers = res.reachablePeers; // deceptive-publish: real swarm reach

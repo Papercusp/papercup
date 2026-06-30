@@ -49,6 +49,26 @@ export interface LagMonitorOpts {
   minProfileGapMs?: number;
   /** Retain at most this many `.cpuprofile` files (oldest pruned). Default 20. */
   maxProfiles?: number;
+  /**
+   * bg-host-freeze-eventloop-stall-2026-06-30 P-002: heap-snapshot-on-high-RSS.
+   * When true, capture a V8 heap snapshot (.heapsnapshot) whenever process RSS
+   * crosses `heapSnapshotRssMb`. Default OFF; env PAPERCUSP_HEAP_SNAPSHOT=1 enables.
+   * The production bg-host turns this ON so a growing memory leak self-captures on
+   * the live host where a sandboxed session can't reach heap-dump tools.
+   * All inspector use is best-effort: any failure degrades silently.
+   */
+  heapSnapshotOnHighRss?: boolean;
+  /** Dir for `.heapsnapshot` artifacts. Default ~/.papercusp/heap-snapshots. */
+  heapSnapshotDir?: string;
+  /**
+   * RSS threshold in MB that triggers a heap capture. Read from
+   * PAPERCUSP_HEAP_SNAPSHOT_RSS_MB if not passed. Default 8192 (8 GB).
+   */
+  heapSnapshotRssMb?: number;
+  /** Minimum gap between heap captures (ms) — rate-limit. Default 600_000 (10 min). */
+  minHeapSnapshotGapMs?: number;
+  /** Retain at most this many `.heapsnapshot` files (oldest pruned). Default 5. */
+  maxHeapSnapshots?: number;
 }
 
 export interface LagMonitorHandle {
@@ -109,10 +129,17 @@ export function loopPressure(): LoopPressure {
   return classifyLoopPressure(s.p95Ms);
 }
 
-/** True when the request loop is critically saturated — admission gates + heavy
- *  background ticks should back off this cycle. */
+/** True when the request loop is critically saturated — the most severe band;
+ *  kept for callers that specifically distinguish critical from elevated. */
 export function isLoopSaturated(): boolean {
   return loopPressure() === 'critical';
+}
+
+/** True when the loop is at least ELEVATED (elevated OR critical) — heavy background
+ *  ticks should start shedding at this band, before reaching fully critical saturation.
+ *  Returns false when no monitor is running (absence of signal must never cause shedding). */
+export function isLoopElevated(): boolean {
+  return loopPressure() !== 'ok';
 }
 
 /** Yield the macrotask queue once so any pending timer/IO callback — most
@@ -190,6 +217,19 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   let lastProfileAt = 0;
   let stopped = false;
 
+  // P-002: heap-snapshot-on-high-RSS state.
+  const heapSnapshotOnHighRss =
+    opts.heapSnapshotOnHighRss ??
+    (process.env.PAPERCUSP_HEAP_SNAPSHOT === '1' || process.env.PAPERCUSP_HEAP_SNAPSHOT === 'true');
+  const heapSnapshotRssMb =
+    opts.heapSnapshotRssMb ??
+    Math.max(1, Number(process.env.PAPERCUSP_HEAP_SNAPSHOT_RSS_MB) || 8192);
+  const minHeapSnapshotGapMs = opts.minHeapSnapshotGapMs ?? 600_000;
+  const maxHeapSnapshots = opts.maxHeapSnapshots ?? 5;
+  const heapSnapshotDir = opts.heapSnapshotDir;
+  let snapshotting = false;
+  let lastSnapshotAt = 0;
+
   const timer = managedSetInterval('event-loop-lag-monitor', intervalMs, () => {
     const s = read();
     if (s.p95Ms >= warnP95Ms) {
@@ -216,6 +256,29 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         .finally(() => {
           if (!stopped) profiling = false;
         });
+    }
+    // P-002: when RSS is high, capture a heap snapshot so the leak is identifiable.
+    // Checked on each tick (cheap: one memoryUsage() call). Single-flight + rate-limited.
+    if (
+      heapSnapshotOnHighRss &&
+      !snapshotting &&
+      Date.now() - lastSnapshotAt >= minHeapSnapshotGapMs
+    ) {
+      const rssMb = process.memoryUsage().rss / 1_048_576;
+      if (rssMb >= heapSnapshotRssMb) {
+        snapshotting = true;
+        lastSnapshotAt = Date.now();
+        captureHeapSnapshot({
+          dir: heapSnapshotDir,
+          maxSnapshots: maxHeapSnapshots,
+          rssMb,
+          log,
+        })
+          .catch(() => {})
+          .finally(() => {
+            if (!stopped) snapshotting = false;
+          });
+      }
     }
     // Reset so each window is independent (a one-off spike doesn't pin the
     // gauge high forever).
@@ -302,6 +365,95 @@ export async function captureCpuProfile(args: {
   } catch {
     // No inspector available, a debugger already attached, or an fs error —
     // degrade silently to symptom-only logging.
+    return null;
+  }
+}
+
+/**
+ * bg-host-freeze-eventloop-stall-2026-06-30 P-002 — capture a V8 heap snapshot
+ * and persist it as a `.heapsnapshot` (loadable in Chrome DevTools Memory tab or
+ * via `node scripts/analyze-heap-snapshots.mjs`). The snapshot records every live
+ * JS object with its class, self_size, and retainer chain — the authoritative tool
+ * for tracing a memory leak when RSS is growing uncontrollably.
+ *
+ * Entirely best-effort: any failure (no inspector, an attached debugger, OOM
+ * during the snapshot itself, fs error) resolves to null quietly — the gauge must
+ * never break the host it is observing.
+ *
+ * ⚠ Taking a heap snapshot pauses V8 for the duration of the capture. On a large
+ * heap (several GB) this pause can be tens of seconds. This is acceptable only
+ * when the host is already in a degraded state (RSS well above the threshold) and
+ * the tradeoff of a transient pause versus a self-diagnosing artifact is worth it.
+ */
+export async function captureHeapSnapshot(args: {
+  dir?: string;
+  maxSnapshots: number;
+  rssMb: number;
+  log: (line: string, detail: Record<string, number | string>) => void;
+}): Promise<string | null> {
+  const { maxSnapshots, rssMb, log } = args;
+  try {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const fs = await import('node:fs/promises');
+    // Use the callback-based inspector so we can set up the chunk listener BEFORE
+    // posting the takeHeapSnapshot command — the promise-based Session inherits
+    // EventEmitter, but the chunk events arrive synchronously within the post() call
+    // and must be wired before the command is sent.
+    const inspector = await import('node:inspector');
+
+    const dir = args.dir ?? path.join(os.homedir(), '.papercusp', 'heap-snapshots');
+    await fs.mkdir(dir, { recursive: true });
+
+    const session = new inspector.Session();
+    session.connect();
+    const chunks: string[] = [];
+    // Collect streamed snapshot chunks — V8 emits them as HeapProfiler.addHeapSnapshotChunk
+    // events as it serializes the heap; the final response arrives after all chunks.
+    session.on(
+      'HeapProfiler.addHeapSnapshotChunk',
+      (message: { params: { chunk: string } }) => {
+        chunks.push(message.params.chunk);
+      },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        session.post('HeapProfiler.takeHeapSnapshot', { reportProgress: false }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      const stamp = `${Date.now()}-pid${process.pid}-rss_${Math.round(rssMb)}mb`;
+      const file = path.join(dir, `heap-${stamp}.heapsnapshot`);
+      await fs.writeFile(file, chunks.join(''));
+      log(
+        '[heap-snapshot] captured heap snapshot on high RSS — load in Chrome DevTools Memory tab or run analyze-heap-snapshots.mjs',
+        { rssMb: Math.round(rssMb), file },
+      );
+
+      // Prune to maxSnapshots oldest-first to bound disk use.
+      try {
+        const entries = (await fs.readdir(dir))
+          .filter((f) => f.endsWith('.heapsnapshot'))
+          .sort();
+        const excess = entries.length - maxSnapshots;
+        for (let i = 0; i < excess; i++) {
+          await fs.rm(path.join(dir, entries[i]), { force: true }).catch(() => {});
+        }
+      } catch {
+        /* prune is best-effort */
+      }
+      return file;
+    } finally {
+      try {
+        session.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    // No inspector, an attached debugger, OOM during snapshot, or fs error —
+    // degrade silently; the host must never crash because of a capture attempt.
     return null;
   }
 }

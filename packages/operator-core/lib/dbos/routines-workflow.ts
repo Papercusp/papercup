@@ -34,6 +34,7 @@ import { claimDueRoutine } from '../harness/routines/claim';
 import { checkFireGate, recordFire } from '../autoloop';
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import { getSystemAction, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
+import { loopPressure } from '../event-loop-lag-monitor';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
@@ -220,6 +221,21 @@ export const routineFireWorkflow = DBOS.registerWorkflow(routineFireImpl, {
 
 /** The scheduled tick: list due routines, claim + enqueue a deduped fire for each. */
 async function routinesTickImpl(): Promise<void> {
+  // P-001 complement (bg-host-freeze-eventloop-stall-2026-06-30): the per-workflow
+  // shedding in tick-load-shed.ts already sheds OTHER heavy periodic tasks at
+  // ELEVATED (≥120ms p95). Apply the same gate HERE so that, under sustained loop
+  // pressure, the scheduler itself doesn't pile PG work (listDueCronRoutines +
+  // per-routine claimDueRoutine + DBOS.startWorkflow per routine) onto an already-
+  // saturated event loop. DBOS skip-missed semantics mean we never back-fill a
+  // skipped tick — each 30s window is independent. git-sync is on the CRITICAL
+  // queue so a few skipped ticks at most delay a commit by one cadence; the
+  // executor reaper will also clear any PENDING dead-executor wedge during this
+  // window. Only shed when ELEVATED (not just CRITICAL) to match P-001.
+  const pressure = loopPressure();
+  if (pressure !== 'ok') {
+    console.warn(`[routines-tick] SKIPPED — event loop ${pressure}, shedding scheduler tick (P-001)`);
+    return;
+  }
   const { sql } = getOrgPg();
   const due = await DBOS.runStep(() => listDueCronRoutines(sql), { name: 'list-due-routines' });
   for (const r of due) {

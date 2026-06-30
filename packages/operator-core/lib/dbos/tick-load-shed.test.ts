@@ -4,8 +4,13 @@
  * in-process-periodic.test.ts only asserts WHICH ticks are classified heavy; the
  * actual shed DECISION logic here was untested. What this guards:
  *
- *  - shedUnderLoopPressure: sheds iff the event loop is critically saturated (P5-1),
- *    and emits the warn that makes the skip observable.
+ *  - shedUnderLoopPressure: CRITICAL (p95≥600ms) ⇒ FULL shed every cycle; ELEVATED
+ *    (p95≥120ms) ⇒ WIDENED cadence, shed 1 of every N cycles
+ *    (PAPERCUSP_LOOP_ELEVATED_SHED_EVERY, default 2; ≤1 disables the widening). The
+ *    600ms-only trip meant 0 sheds in 2h despite 115 high-lag windows (WI-1084), but
+ *    a FULL elevated shed would starve the heavy tick across the sustained 130–240ms
+ *    band — so the elevated band sheds a deterministic fraction. Never sheds when 'ok'.
+ *    Emits a distinct [loop-shed] warn naming the band so the skip is observable.
  *  - shedUnderPowerSave: the DETERMINISTIC per-tick cadence throttle (P5-3) — no
  *    Math.random; AC (multiplier 1) NEVER sheds; on battery it fires on exactly
  *    every multiplier-th invocation and skips the rest; counters are per-tickName.
@@ -13,16 +18,17 @@
  *    a loop-pressure shed must NOT advance the power-save counter, or the cadence
  *    desyncs under sustained load.
  *
- * Pure: the only two I/O reads (isLoopSaturated, getResourceProfile) are mocked via
+ * Pure: the only two I/O reads (loopPressure, getResourceProfile) are mocked via
  * a vi.hoisted control object; each test uses a UNIQUE tickName so the module-global
  * power-save counter Map can't bleed across cases.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LoopPressure } from '../event-loop-lag-monitor';
 
-const ctl = vi.hoisted(() => ({ saturated: false, cadenceMult: 1 }));
+const ctl = vi.hoisted(() => ({ pressure: 'ok' as LoopPressure, cadenceMult: 1 }));
 
 vi.mock('../event-loop-lag-monitor', () => ({
-  isLoopSaturated: () => ctl.saturated,
+  loopPressure: () => ctl.pressure,
 }));
 vi.mock('../resource-profile', () => ({
   getResourceProfile: () => ({ backgroundCadenceMultiplier: ctl.cadenceMult }),
@@ -33,25 +39,60 @@ import { shedUnderLoopPressure, shedUnderPowerSave, shouldShedHeavyTick } from '
 let warnSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
-  ctl.saturated = false;
+  ctl.pressure = 'ok';
   ctl.cadenceMult = 1;
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('shedUnderLoopPressure (P5-1)', () => {
-  it('sheds and warns when the event loop is critically saturated', () => {
-    ctl.saturated = true;
-    expect(shedUnderLoopPressure('lps-saturated')).toBe(true);
-    expect(warnSpy).toHaveBeenCalledOnce();
-    expect(warnSpy.mock.calls[0]![0]).toContain('lps-saturated');
+  it('sheds a FRACTION of cycles under ELEVATED — default shed 1 of every 2 (the chronic 130–240ms band)', () => {
+    ctl.pressure = 'elevated';
+    // Default PAPERCUSP_LOOP_ELEVATED_SHED_EVERY=2: n=1 run, n=2 shed, n=3 run, n=4 shed.
+    const shed = Array.from({ length: 4 }, () => shedUnderLoopPressure('lps-elevated'));
+    expect(shed).toEqual([false, true, false, true]);
+    // Warns once per actual shed; the first warn fires on the 2nd (shedding) call.
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    const msg: string = warnSpy.mock.calls[0]![0];
+    expect(msg).toContain('[loop-shed]');
+    expect(msg).toContain('lps-elevated');
+    expect(msg.toLowerCase()).toContain('elevated');
   });
 
-  it('does not shed (and does not warn) when the loop is healthy', () => {
-    ctl.saturated = false;
+  it('honors PAPERCUSP_LOOP_ELEVATED_SHED_EVERY (shed 1 of every 3 under ELEVATED)', () => {
+    ctl.pressure = 'elevated';
+    vi.stubEnv('PAPERCUSP_LOOP_ELEVATED_SHED_EVERY', '3');
+    const shed = Array.from({ length: 6 }, () => shedUnderLoopPressure('lps-every3'));
+    expect(shed).toEqual([false, false, true, false, false, true]);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('a SHED_EVERY ≤ 1 DISABLES the elevated widening (heavy ticks then shed only at CRITICAL)', () => {
+    ctl.pressure = 'elevated';
+    vi.stubEnv('PAPERCUSP_LOOP_ELEVATED_SHED_EVERY', '1');
+    const shed = Array.from({ length: 4 }, () => shedUnderLoopPressure('lps-disabled'));
+    expect(shed).toEqual([false, false, false, false]);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('sheds EVERY cycle (FULL shed) and warns when the event loop is CRITICAL (the acute saturation band)', () => {
+    ctl.pressure = 'critical';
+    const shed = Array.from({ length: 3 }, () => shedUnderLoopPressure('lps-critical'));
+    expect(shed).toEqual([true, true, true]);
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+    const msg: string = warnSpy.mock.calls[0]![0];
+    expect(msg).toContain('[loop-shed]');
+    expect(msg).toContain('lps-critical');
+    expect(msg.toLowerCase()).toContain('critical');
+  });
+
+  it('does not shed (and does not warn) when the loop is healthy (ok)', () => {
+    ctl.pressure = 'ok';
+    expect(shedUnderLoopPressure('lps-healthy')).toBe(false);
     expect(shedUnderLoopPressure('lps-healthy')).toBe(false);
     expect(warnSpy).not.toHaveBeenCalled();
   });
@@ -98,35 +139,46 @@ describe('shedUnderPowerSave (P5-3)', () => {
 });
 
 describe('shouldShedHeavyTick (P5-1 || P5-3)', () => {
-  it('sheds when only loop pressure is present', () => {
-    ctl.saturated = true;
-    ctl.cadenceMult = 1; // power-save would not shed
-    expect(shouldShedHeavyTick('heavy-lp-only')).toBe(true);
+  it('sheds on the WIDENED cadence when loop is ELEVATED (the primary fix — chronic 130–240ms regime)', () => {
+    ctl.pressure = 'elevated';
+    ctl.cadenceMult = 1; // power-save would not shed; only the elevated widening fires
+    // Default shed 1 of every 2 ⇒ run, shed, run, shed.
+    const shed = Array.from({ length: 4 }, () => shouldShedHeavyTick('heavy-elevated-only'));
+    expect(shed).toEqual([false, true, false, true]);
   });
 
-  it('sheds when only power-save is present (AC loop healthy)', () => {
-    ctl.saturated = false;
+  it('sheds EVERY cycle when loop is CRITICAL', () => {
+    ctl.pressure = 'critical';
+    ctl.cadenceMult = 1;
+    const shed = Array.from({ length: 3 }, () => shouldShedHeavyTick('heavy-critical-only'));
+    expect(shed).toEqual([true, true, true]);
+  });
+
+  it('sheds when only power-save is present (ok loop)', () => {
+    ctl.pressure = 'ok';
     ctl.cadenceMult = 3;
     expect(shouldShedHeavyTick('heavy-ps-only')).toBe(true); // first invocation skips at mult 3
   });
 
   it('does not shed when neither condition holds', () => {
-    ctl.saturated = false;
+    ctl.pressure = 'ok';
     ctl.cadenceMult = 1;
     expect(shouldShedHeavyTick('heavy-none')).toBe(false);
   });
 
   it('SHORT-CIRCUITS: a loop-pressure shed does NOT advance the power-save counter', () => {
     ctl.cadenceMult = 3;
-    // While saturated, shouldShedHeavyTick returns true via P5-1 and must NOT
-    // consult/advance the power-save counter for this tick.
-    ctl.saturated = true;
+    // While CRITICAL, shouldShedHeavyTick returns true via P5-1 every cycle and must
+    // NOT consult/advance the power-save counter for this tick. (CRITICAL is used here
+    // rather than ELEVATED because the full-shed band sheds on every call, isolating
+    // the short-circuit from the elevated band's own fractional cadence.)
+    ctl.pressure = 'critical';
     expect(shouldShedHeavyTick('heavy-shortcircuit')).toBe(true);
     expect(shouldShedHeavyTick('heavy-shortcircuit')).toBe(true);
     // Loop recovers. The power-save counter must still be at 0, so the NEXT power-save
     // call is the FIRST real invocation (n=1 -> skip at mult 3). If the short-circuit
     // were broken and the counter had advanced to 2, this would instead be n=3 -> fire.
-    ctl.saturated = false;
+    ctl.pressure = 'ok';
     expect(shedUnderPowerSave('heavy-shortcircuit')).toBe(true);
   });
 });

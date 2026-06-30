@@ -116,6 +116,37 @@ test('tiered spare bee capacity overrides a rejected bound account window', () =
   assert.equal(d.throttled, false);
 });
 
+test('tiered spare bee capacity overrides a PAUSED+rejected (weekly-capped) bound account', () => {
+  // capacity-oracle-false-saturation-2026-06-29: a weekly-capped account reports BOTH paused:true
+  // AND rejected:true on /stats. The original escape hatch required paused!==true, so this re-armed
+  // the false-saturation gate (util 100%, resetIn ~16.5h) and stalled the WHOLE autonomous loop —
+  // 0 Queen/bee spawns — even though the tier oracle reported 6 healthy accounts + 20 spare bee slots.
+  const signal = {
+    reachable: true,
+    utilization: 1,
+    paused: true,
+    rejected: true,
+    queueDepth: 0,
+    healthyAccounts: 6,
+    dispatchBudget: 20,
+  };
+  assert.ok(capacityFactor(signal) > 0, 'pool with healthy accounts + spare slots is NOT saturated');
+  const d = computeCapacityHeadroom(13, signal);
+  assert.equal(d.factor, 1);
+  assert.equal(d.headroom, 13);
+  assert.equal(d.throttled, false);
+});
+
+test('a GENUINELY all-paused pool (no healthy accounts) still throttles to the floor', () => {
+  // No-regression: the escape hatch fires ONLY when the tier oracle shows real spare capacity.
+  // With 0 healthy accounts / 0 dispatchBudget a paused+rejected pool is genuinely saturated.
+  const d = computeCapacityHeadroom(13, {
+    reachable: true, paused: true, rejected: true, healthyAccounts: 0, dispatchBudget: 0,
+  });
+  assert.equal(d.headroom, CFG.minHeadroom, 'genuinely saturated → floor');
+  assert.equal(capacityFactor({ reachable: true, paused: true, healthyAccounts: 0, dispatchBudget: 0 }), 0);
+});
+
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {
   const d = computeCapacityHeadroom(0, { reachable: true, paused: true });
   assert.equal(d.headroom, 0, 'no raw headroom → no spawns; the floor lets work flow, it does not invent slots');

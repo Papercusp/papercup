@@ -245,40 +245,79 @@ export async function loadHiveOwnerDevicePubkey(
 }
 
 /**
- * WI-787 / D-053 — the FULL set of VERIFIED `(hivePubkey → ownerDevicePubkey)` bindings from
- * the P2P hive-directory offline cache (`hive_directory_cache`, migration 182).
+ * WI-787 / D-053 — the FULL set of VERIFIED `(hivePubkey → ownerDevicePubkey)` bindings the
+ * P2P hive-directory knows, MERGED from two sources (D-007 — A→B receive-side fix):
+ *
+ *   (1) the LIVE in-process directory (`getHiveDirectory().listDiscoveredHives`) — the
+ *       in-memory set the directory builds the moment it HEARS a peer's announce, and
+ *   (2) the PG offline cache (`hive_directory_cache`, migration 182) — the durable,
+ *       cross-reboot mirror `saveCache` persists.
+ *
+ * Why BOTH (the A→B cross-machine bug): a from-repo / direct-link joiner federates fast on
+ * the HIVE-PUBKEY topic (via the memberLink) but its `hive_directory_cache` ROW may never
+ * land — the PG write is workspace-scoped, best-effort, and races the substrate boot, and
+ * the directory ingest itself rides the SEPARATE, slow global-directory DHT topic (D-007).
+ * When only the in-memory set has the owner→hive binding, reading the PG cache ALONE returns
+ * [] → `ownerDeviceForTopic` is null → the WI-797 owner-log bootstrap-admit never fires → the
+ * joiner applies NOTHING from the owner. Consulting the live directory FIRST closes that gap
+ * the instant the owner's announce is heard (the admission retry loop re-checks per inbound
+ * federation announce). Same cryptographic guarantee from BOTH sources: an entry exists only
+ * after the descriptor passed `verifyHiveAnnounce` (Ed25519 sig + the owner_device↔hive_pubkey
+ * binding) — `listDiscoveredHives` returns only ingest-admitted descriptors, exactly like the
+ * cache it feeds.
  *
  * Returned so a caller that knows only the swarm TOPIC (an invite/link joiner boots on a
  * `kind:'topic'` binding — it learns the Hive's TOPIC HASH, not its pubkey) can recover the
- * owner device by deriving each cached hive's topic and matching it. The single-pubkey
+ * owner device by deriving each known hive's topic and matching it. The single-pubkey
  * `loadHiveOwnerDevicePubkey` above is the by-pubkey lookup; this is the by-topic enabler.
- * Same cryptographic guarantee: the directory only records descriptors that passed
- * `verifyHiveAnnounce`. Fail-closed to [] on any error; never throws.
+ * Fail-closed per-source (a failing source contributes nothing); never throws.
  */
 export async function loadHiveOwnerDeviceBindings(
   workspaceId: string,
 ): Promise<Array<{ hivePubkey: string; ownerDevicePubkey: string }>> {
+  const out: Array<{ hivePubkey: string; ownerDevicePubkey: string }> = [];
+  const seen = new Set<string>();
+  const accept = (hivePubkey?: string, ownerDevicePubkey?: string): void => {
+    if (
+      typeof hivePubkey === 'string' &&
+      hivePubkey.length > 0 &&
+      typeof ownerDevicePubkey === 'string' &&
+      ownerDevicePubkey.length > 0 &&
+      !seen.has(hivePubkey)
+    ) {
+      seen.add(hivePubkey);
+      out.push({ hivePubkey, ownerDevicePubkey });
+    }
+  };
+
+  // (1) LIVE in-process directory — present the instant the owner's fresh announce is heard,
+  // independent of the racy/workspace-scoped PG cache write. This is the leg that unblocks a
+  // direct-link/from-repo joiner whose PG cache row never landed (D-007). Best-effort: a
+  // missing/unwired singleton (or the SPA bundle, where the directory has no transport) just
+  // yields nothing and falls through to the durable cache below.
+  try {
+    const { getHiveDirectory } = await import('./hive-directory-deps');
+    for (const h of getHiveDirectory().listDiscoveredHives({ includeExpired: true })) {
+      accept(h?.hivePubkey, h?.ownerDevicePubkey);
+    }
+  } catch {
+    /* directory unavailable — fall through to the PG offline cache */
+  }
+
+  // (2) PG offline cache (migration 182) — the durable mirror, deduped against the live set.
   try {
     const { readOperatorState } = await import('./operator-state-pg');
     const row = await readOperatorState<{
       hives?: Array<{ hivePubkey?: string; ownerDevicePubkey?: string }>;
     }>('hive_directory_cache', workspaceId).catch(() => null);
-    const out: Array<{ hivePubkey: string; ownerDevicePubkey: string }> = [];
     for (const h of row?.hives ?? []) {
-      if (
-        h &&
-        typeof h.hivePubkey === 'string' &&
-        h.hivePubkey.length > 0 &&
-        typeof h.ownerDevicePubkey === 'string' &&
-        h.ownerDevicePubkey.length > 0
-      ) {
-        out.push({ hivePubkey: h.hivePubkey, ownerDevicePubkey: h.ownerDevicePubkey });
-      }
+      accept(h?.hivePubkey, h?.ownerDevicePubkey);
     }
-    return out;
   } catch {
-    return [];
+    /* cache read failed — return whatever the live directory already contributed */
   }
+
+  return out;
 }
 
 /**

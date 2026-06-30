@@ -219,6 +219,12 @@ import './doc-anchor-reconcile-action';
 // reaper — marks dead-process open adv_sessions ended (reclaims roster +
 // unblocks session-dir-gc). Flag-gated DEFAULT-OFF + seeded INACTIVE.
 import './idle-session-reaper-action';
+// infra-perf-reliability-audit-round3-2026-06-19 P-013 / WI-345 (F12): the
+// test-webview reaper — DETECTION (toast) + KILL of leaked agent-spawned
+// papercusp-desktop/WebKitWebProcess instances whose adv_session is ENDED.
+// Flag-gated (TEST_WEBVIEW_REAPER, DEFAULT ON) + seeded INACTIVE (double-gate).
+// Seed: seed-test-webview-reaper-routine.ts. Core: test-desktop-reaper.ts.
+import './test-webview-reaper-action';
 // bee-context-efficiency-2026-06-14 P-013 (D-007): the bee transcript-cap backstop —
 // recycles a bee whose session transcript grew past the cap (idle-only, D-005) so its
 // next task spawns fresh. Flag-gated DEFAULT-OFF + seeded INACTIVE (double-gated).

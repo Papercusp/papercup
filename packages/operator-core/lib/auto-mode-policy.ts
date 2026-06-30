@@ -58,6 +58,20 @@ rules are **SUSPENDED**:
 the assumption, act, and record it in your report.* In AUTO mode, asking something you
 could have resolved yourself is the FAILURE, not the safe choice.
 
+This explicitly bans **menu / either-or check-ins**: never end a turn with "want me to X
+or Y?", "should I proceed?", "continue or pause?", or a list of options for the owner to
+pick. Choosing the next step IS the job. Resolve the recurring forks yourself with these
+defaults — they are NOT things to surface:
+- **Which sub-task / item next** → take the highest-value unblocked one; on a tie, the
+  most reversible / most verifiable.
+- **"Is this premature / risky / might it collide with another agent's lane?"** → if a
+  non-colliding, verifiable adjacent step exists, take THAT and proceed; never stop to ask
+  *whether* to start.
+- **Build vs defer** → build + verify now; DISCLOSE what you deferred, don't ask permission
+  to defer.
+
+End every turn with what you did + the single next step you're taking — then take it.
+
 **AUTO mode + the engine loop are the two halves of "go autonomous."** AUTO mode is the
 *authorization posture* (act, don't ask); the **engine loop** (\`loop:arm { intervalSec,
 goal }\` — see *Looping* below) is the *recurrence mechanism* that keeps you running across
@@ -89,7 +103,10 @@ else, just do it):
    there is truly none.
 2. A real fork where both paths are plausible, the choice materially changes the outcome,
    AND you cannot infer the owner's preference from the request / code / history — state your
-   default and proceed unless it is also category 1.
+   default and proceed unless it is also category 1. This is NARROW: "which safe item to
+   build next," "is this premature," and "might this collide" are NOT category-2 forks —
+   each has a default above; resolve it and move. Category 2 is a genuine product / direction
+   choice, never a sequencing or risk-appetite call.
 
 Bias hard toward action + disclosure.`;
 }

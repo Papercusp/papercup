@@ -5,11 +5,11 @@
  *
  * Ported from app/api/zero-harness/rest-query/route.ts. `auth: 'public'`.
  */
-import { gzipSync } from 'node:zlib';
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';
 import { resourceDeltaConfig } from '../../../sync-resolver/resource-delta-config';
 import { negotiateRowsDelta } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
+import { serializeJsonResponse } from '../../../cpu-task-worker';
 
 export default defineTool({
   method: 'GET',
@@ -56,9 +56,15 @@ export default defineTool({
       // byte-identical; a resource with no delta config also serves full. The full-view
       // checksum lets the client verify its merge + refetch on any mismatch, so a wrong/stale
       // key can only cost a refetch (no win), never a wrong view. Inert until a client opts in.
+      //
+      // infra-perf-reliability-audit-round3 P-011 / round4 P-002: offload
+      // JSON.stringify + gzip to the cpu-task worker so neither blocks the main
+      // event loop. serializeJsonResponse handles the BigInt replacer on the worker.
       const deltaParam = u.searchParams.get('delta');
       const dcfg = deltaParam !== null ? resourceDeltaConfig(name) : undefined;
-      let body: string;
+      const acceptsGzip = (req.headers.get('accept-encoding') ?? '').toLowerCase().includes('gzip');
+      let responseValue: unknown;
+      let itemCount: number;
       if (dcfg && Array.isArray(rows)) {
         const field = dcfg.itemKeyField;
         const neg = negotiateRowsDelta({
@@ -69,17 +75,20 @@ export default defineTool({
           schemaVersion: dcfg.schemaVersion,
         });
         const meta = { mode: neg.mode, cursor: neg.cursor, checksum: neg.checksum, itemKeyField: neg.itemKeyField };
-        body = JSON.stringify(
-          neg.mode === 'delta'
-            ? { changes: neg.changes, version: String(Date.now()), delta: meta }
-            : { rows: neg.rows, version: String(Date.now()), delta: meta },
-        );
+        if (neg.mode === 'delta') {
+          responseValue = { changes: neg.changes, version: String(Date.now()), delta: meta };
+          itemCount = neg.changes?.length ?? 0;
+        } else {
+          responseValue = { rows: neg.rows, version: String(Date.now()), delta: meta };
+          itemCount = neg.rows?.length ?? 0;
+        }
       } else {
-        body = JSON.stringify({ rows, version: String(Date.now()) });
+        responseValue = { rows, version: String(Date.now()) };
+        itemCount = Array.isArray(rows) ? rows.length : 1;
       }
-      const acceptsGzip = (req.headers.get('accept-encoding') ?? '').toLowerCase().includes('gzip');
-      if (acceptsGzip && body.length >= 1024) {
-        return new Response(gzipSync(body), {
+      const { body, encoding } = await serializeJsonResponse(responseValue, acceptsGzip, itemCount);
+      if (encoding === 'gzip') {
+        return new Response(body, {
           status: 200,
           headers: {
             'content-type': 'application/json; charset=utf-8',
@@ -88,7 +97,7 @@ export default defineTool({
           },
         });
       }
-      return new Response(body, {
+      return new Response(body as string, {
         status: 200,
         headers: { 'content-type': 'application/json; charset=utf-8' },
       });

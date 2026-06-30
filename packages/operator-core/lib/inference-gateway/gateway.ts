@@ -694,6 +694,14 @@ export function estimateTokens(body: unknown): { inTok: number; outTok: number }
   return { inTok, outTok };
 }
 
+/** A unified-7d (weekly) utilization at/over this is the BINDING cap: the account cannot serve until its
+ *  7d window resets, so the pause must use the 7d reset, NOT the (fresh) 5h reset. Env-tunable. */
+const WEEKLY_CAP_BINDING_UTIL = Number(process.env.PAPERCUSP_GATEWAY_WEEKLY_CAP_UTIL) || 0.99;
+/** Cap on the pause applied for a 7d (weekly) cap — bounds a wrong/huge `unified-7d-reset` header so a bad
+ *  value can't strand an account for days. The half-open readmit probe + the drainUtil7d window-reset
+ *  expiry re-admit it earlier if it actually recovers. Default 6h. Env-tunable. */
+const WEEKLY_CAP_MAX_PAUSE_MS = Number(process.env.PAPERCUSP_GATEWAY_WEEKLY_CAP_MAX_PAUSE_MS) || 6 * 60 * 60 * 1000;
+
 /** Parse an upstream rate-limit reset (prefer the unified unix-seconds window) → {resetAt, retryAfterMs}. */
 export function parseRateReset(h: Record<string, string | undefined>, now = Date.now()): { resetAt?: number; retryAfterMs?: number } {
   const out: { resetAt?: number; retryAfterMs?: number } = {};
@@ -710,6 +718,22 @@ export function parseRateReset(h: Record<string, string | undefined>, now = Date
   // (observed: retry-after 15210s vs a 10-min reset). Prefer resetAt when both present.
   if (out.resetAt && out.retryAfterMs && out.resetAt - now > 0 && out.retryAfterMs > out.resetAt - now) {
     out.retryAfterMs = undefined;
+  }
+  // WEEKLY-CAP (7d) BINDING OVERRIDE (capacity-oracle-false-saturation-2026-06-29 / WI-1083): when the
+  // unified-7d (weekly) window is the binding cap, the account CANNOT serve until that window resets — but
+  // it has a FRESH 5h window, so the 5h reset above is only minutes away. Pausing until the 5h reset
+  // re-admits the weekly-capped account within minutes → it 429s again on the 7d cap → every request
+  // storms through it on failover → the proxy IPs get cloudflare bare-429'd. Pause until the 7d reset
+  // instead (capped to WEEKLY_CAP_MAX_PAUSE_MS; the half-open readmit + drainUtil7d expiry clear it early
+  // if it recovers sooner), so a weekly-capped account stays OUT of rotation until it can actually serve.
+  const u7 = Number(h['anthropic-ratelimit-unified-7d-utilization']);
+  const r7 = h['anthropic-ratelimit-unified-7d-reset'];
+  if (Number.isFinite(u7) && u7 >= WEEKLY_CAP_BINDING_UTIL && r7 && /^\d+$/.test(r7)) {
+    const reset7 = Number(r7) * 1000;
+    if (reset7 > (out.resetAt ?? now)) {
+      out.resetAt = Math.min(reset7, now + WEEKLY_CAP_MAX_PAUSE_MS);
+      out.retryAfterMs = undefined; // the 7d reset is the authoritative boundary — don't let a 5h retry-after shorten it
+    }
   }
   return out;
 }

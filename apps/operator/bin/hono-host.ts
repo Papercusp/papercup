@@ -34,6 +34,7 @@ import {
   resolveMemoryWatchdogLimitMb,
 } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle, installGracefulShutdown } from '@papercusp/operator-core/lib/host-recycle';
+import { markShuttingDown } from '@papercusp/operator-core/lib/shutdown-state';
 // infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
 import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
@@ -366,6 +367,11 @@ if (clusterHandle.role === 'primary' && clusterWorkers > 1) {
         })
       : undefined;
   const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
+    // P-005: the true-cluster PRIMARY is the process that runs the auto-implement
+    // dispatch loop (it owns the background machinery). It serves no HTTP, so it
+    // does NOT go through installGracefulShutdown — mark the drain here too, so the
+    // loop stops claiming new minutes-long workers as this primary exits.
+    markShuttingDown();
     console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
     watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
     clusterHandle.drain?.(sig);
