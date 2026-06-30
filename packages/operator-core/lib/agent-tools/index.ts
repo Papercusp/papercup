@@ -551,6 +551,9 @@ import './db/migrate-policy';
 // live-configurability-audit-2026-06-20 P-002 — read/retune/pause the system routines (git-sync, …):
 import './routines/list';
 import './routines/set';
+// git-sync:run — fire git-sync once on demand (WI-1320; the manual lever git-sync lacked,
+// so a force-deploy ships CURRENT staging not stale).
+import './git_sync/run';
 // schedule-inventory-and-ephemeral-tier-2026-06-26 P-002 — central read-only inventory of every cadence:
 import './schedule/inventory';
 // live-configurability-audit-2026-06-20 P-020 — runtime dispatch telemetry-buffer sizing:
