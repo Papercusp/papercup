@@ -1,6 +1,20 @@
 # Tool discovery for weak/local models — curated core, derived capability map, hybrid `tools:find`
 
-**Status:** proposal · **Date:** 2026-06-30 · **Scope:** operator MCP catalog + omp launch wiring + tooldef projections
+**Status:** partially implemented · **Date:** 2026-06-30 · **Scope:** operator MCP catalog + omp launch wiring + tooldef projections
+
+---
+
+## Implementation status (2026-06-30, autonomous pass)
+
+| WS | State | Evidence |
+|----|-------|----------|
+| **WS1** core list | **Done + tested** | `CORE_MCP_TOOL_NAMES`/`CORE_ALLOWED_TOOLS` in `invoke.ts`; `coord:orient` backfilled into `BEE_`/`QUEEN_`; `invoke.test.ts` green. **Correction: catalog-narrowing dropped** (would strand the long tail — see WS1). |
+| **WS2** catalogue summaries | **Done + tested** | `define-group.ts` + `catalogue-projection.ts` (defineGroup / groupRegistry / describeGroupFromMembers / catalogueProjection / renderCapabilityMap) in tooldef, mirroring `defineTool`; 17 tests pass; renders correctly over the live 551-tool catalog (Level-1 derivation). |
+| **WS3** `tools:find` | **Fusion core done + tested; tool wiring remaining** | `cupboard/tool-find.ts` (`findTools` + floored-union fusion + `cosineSimilarity`), 9 tests pass. **Remaining (needs operator deploy):** the `tools:find` defineTool wrapping it, the boot-time embedding index over `collectToolMeta()` via `buildQueryEmbedder` (settings-driven, currently openai), registration in the tool tree. |
+| **WS4** primer | **Done + propagated + VERIFIED LIVE** | Orientation primer injected at `session_start` in the omp coord hook (dev + papercup-release + papercusp-staging + deployed `~/.papercusp/papercusp-coord.ts`). Verified on `ollama/ornith:fast`: **0→5 `search_tool_bm25` calls, reaches real `coord:orient`/`plans:`/`work_items:`, not-found 22→1.** |
+| **WS5** ops | **Investigated; decisions made; commit deferred** | (a) **Default model:** user already set `ollama/maxwell1500/ornith-35b:IQ3_M` deliberately — KEEP it; the primer/map/tools are what make it viable (do NOT swap to a gateway model). (b) **Meridian `:3456`:** no managed systemd service exists for it (it is NOT `papercup-inference-gateway`, which IS running); the working capable path is `papercusp-gateway/*`. Recommend either removing the dead `claude-*-local` entries from `~/.omp/agent/models.json` or standing up the Meridian bridge — not blind-fixed. (c) **Commit:** **deliberately not done** — changes span three git repos (top `papercusp`@`staging`, nested `tooldef`@`main`, `libs/papercusp`@`main`), the top tree is dirty with other agents' in-flight changes, and these are shared branches on a live fleet. Commit the specific files via the team's normal release flow. The pending `wake-executor` `PAPERCUSP_WORKSPACE` fix is in the same boat. |
+
+**Net:** the user-facing problem (weak/local models running blind) is **fixed and verified live** by WS4. WS1/WS2/WS3-core are tested foundations awaiting the WS3 tool-wiring + the (optional) live capability-map-into-primer step.
 
 ---
 
