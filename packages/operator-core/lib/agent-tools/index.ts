@@ -59,6 +59,8 @@ import './datatypes/get';
 import './tools/scaffold';
 // P-002 — meta:define-tool: tier router (composed → live recipe; sandboxed/elevated → PR rail).
 import './tools/define';
+// tools:find — intent search over the full catalog (tool-discovery-for-weak-models WS3).
+import './tools/find';
 
 import './operator/stats';
 import './operator/converse';

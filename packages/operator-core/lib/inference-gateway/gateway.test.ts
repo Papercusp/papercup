@@ -2216,3 +2216,72 @@ test('[429-absorb SU-3650] all-accounts transient-429 under HIGH CONCURRENCY: ab
   assert.equal(inFlight, 0, 'all admission slots drained — no slot-squat even under the all-429 storm');
 }, 60_000);
 
+test('egress-ip-pool: a bare-burst 429 on one egress IP rotates to a SIBLING IP on the SAME account — no account pause, no cross-account failover (gateway-per-account-egress-ip-pool-2026-06-30)', async () => {
+  // THE FIX for the owner-reported "pinned aviynw8 (ample budget) still throws API errors": a bare-burst
+  // 429 is a Cloudflare per-IP EDGE throttle on the egress IP, NOT the account budget. With a per-account
+  // egress IP pool the gateway must cool the throttled IP and retry the SAME account/credential on a sibling
+  // IP (honoring a hard pin) → a 200, WITHOUT pausing the whole account or failing over to a different one.
+  resetGovernorRegistry();
+  const captured: { dispatcher?: unknown }[] = [];
+  let call = 0;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured.push({ dispatcher: init.dispatcher });
+    call += 1;
+    // First attempt's egress IP is Cloudflare-edge-throttled: a BARE 429 (rate_limit_error, NO
+    // anthropic-ratelimit-* / retry-after headers). The sibling IP serves a 200.
+    if (call === 1) {
+      return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+
+  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
+  let failovers = 0;
+  // A single account with TWO egress IPs — the pool the owner is provisioning (3/account); 2 suffices to prove rotation.
+  const acct: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egressPool: [{ proxyUrl: 'http://127.0.0.1:3128' }, { proxyUrl: 'http://127.0.0.1:3129' }],
+  };
+  const pool: AccountPool = {
+    active: () => acct,
+    onExhausted: () => {
+      failovers += 1; // a cross-account failover must NEVER happen here (only one account, and the IP rotated)
+      return null;
+    },
+    select: (id: string) => (id === 'A' ? acct : null),
+  };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => gov,
+    maxQueueWaitMs: 200,
+    bare429FailoverBackoffMs: 50,
+  });
+  port = await gw.listen(0);
+
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+
+  assert.equal(r.status, 200, 'the bare-burst 429 on IP-1 was retried on the sibling IP → 200 (not forwarded, not paused)');
+  assert.equal(captured.length, 2, 'exactly two upstream attempts: the throttled IP, then the sibling IP');
+  assert.notEqual(
+    captured[0].dispatcher,
+    captured[1].dispatcher,
+    'the retry egressed through a DIFFERENT egress IP on the SAME account (per-IP rotation, not a re-hit of the throttled IP)',
+  );
+  assert.equal(failovers, 0, 'no cross-account failover — the throttle was handled by rotating IPs within the account');
+  assert.ok(
+    gov.state.pausedUntil <= Date.now(),
+    'the account governor was NOT paused — a per-IP Cloudflare throttle must not take the whole account out of rotation',
+  );
+  resetGovernorRegistry();
+});
+

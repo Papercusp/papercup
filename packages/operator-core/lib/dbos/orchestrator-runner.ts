@@ -1466,6 +1466,10 @@ export async function spawnInvokeOnceWithFallback(
           onRequestId: (id) => {
             requestId = id;
           },
+          // No client RPC timeout: spawn:invokeOnce resolves only when the bee EXITS
+          // (the whole agent run, minutes). The sidecar's own spawn timeout is the
+          // real bound; a fixed client timeout would spuriously fall back → double-spawn.
+          timeoutMs: 0,
         },
       );
     } finally {

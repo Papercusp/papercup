@@ -10,6 +10,7 @@ import {
   removeAccount,
   getAccount,
   accountByCredentialRef,
+  egressEntries,
   bindAccount,
   unbindAccount,
   recordAccountPenalty,
@@ -609,5 +610,39 @@ describe('decideScaleOut (P-021)', () => {
     p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + MIN });
     const d = decideScaleOut(p, 'a', T0 + 30_000, { requireSustained: false });
     expect(d).toMatchObject({ provision: true, account: { id: 'b' } });
+  });
+});
+
+describe('egressEntries — per-account egress IP pool (gateway-per-account-egress-ip-pool-2026-06-30)', () => {
+  it('returns an explicit egressPool verbatim, INCLUDING a {} entry (= the box-default egress, a valid distinct IP)', () => {
+    expect(egressEntries({ egressPool: [{ proxyUrl: 'http://p1:3128' }, {}] })).toEqual([{ proxyUrl: 'http://p1:3128' }, {}]);
+  });
+  it('treats the singular legacy `egress` as a 1-entry pool when it actually routes (back-compat)', () => {
+    expect(egressEntries({ egress: { proxyUrl: 'http://p1:3128' } })).toEqual([{ proxyUrl: 'http://p1:3128' }]);
+    expect(egressEntries({ egress: { localAddress: '10.0.0.7' } })).toEqual([{ localAddress: '10.0.0.7' }]);
+  });
+  it('a non-empty egressPool SUPERSEDES the singular egress', () => {
+    expect(
+      egressEntries({ egress: { proxyUrl: 'http://legacy:3128' }, egressPool: [{ proxyUrl: 'http://p1:3128' }] }),
+    ).toEqual([{ proxyUrl: 'http://p1:3128' }]);
+  });
+  it('no egress + no pool ⇒ [] (default shared egress), and a bare {} SINGULAR egress is NOT a pool entry', () => {
+    expect(egressEntries({})).toEqual([]);
+    expect(egressEntries({ egress: {} })).toEqual([]);
+    expect(egressEntries({ egressPool: [] })).toEqual([]);
+  });
+});
+
+describe('registerAccount — egressPool round-trips (gateway-per-account-egress-ip-pool-2026-06-30)', () => {
+  it('persists egressPool on create, keeps it on an omitted update, replaces it when provided', () => {
+    let p = emptyPool();
+    p = registerAccount(p, { id: 'a', credentialRef: 'token:/x', egressPool: [{ proxyUrl: 'http://p1:3128' }, {}] }, T0);
+    expect(getAccount(p, 'a')?.egressPool).toEqual([{ proxyUrl: 'http://p1:3128' }, {}]);
+    // an update that omits egressPool preserves the existing pool (idempotent re-register)
+    p = registerAccount(p, { id: 'a', credentialRef: 'token:/x' }, T0 + MIN);
+    expect(getAccount(p, 'a')?.egressPool).toEqual([{ proxyUrl: 'http://p1:3128' }, {}]);
+    // an update that provides egressPool replaces it
+    p = registerAccount(p, { id: 'a', credentialRef: 'token:/x', egressPool: [{ proxyUrl: 'http://p2:3128' }] }, T0 + 2 * MIN);
+    expect(getAccount(p, 'a')?.egressPool).toEqual([{ proxyUrl: 'http://p2:3128' }]);
   });
 });

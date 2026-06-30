@@ -247,7 +247,7 @@ export const BACKEND_PARITY_SMOKE_MATRIX: readonly BackendParitySmokeRow[] = [
     coverage: [
       { kind: 'vitest', path: 'packages/operator-core/lib/agent-tools/plans/__tests__/launch.test.ts' },
       { kind: 'vitest', path: 'packages/operator-core/lib/agent-tools/plans/__tests__/resume.test.ts' },
-      { kind: 'vitest', path: 'packages/operator-core/lib/endpoint-route/__tests__/harness-spawn-routes.test.ts' },
+      { kind: 'vitest', path: 'packages/operator-core/lib/endpoint-route/__tests__/harness-spawn-routes.integration.test.ts' },
     ],
     capabilities: [
       { backend: 'claude', feature: 'role-session', state: 'supported' },

@@ -151,4 +151,12 @@ describe('depHostSetsFromCatalog', () => {
     expect(sets.installableToolProviders?.get('firecrawl.scrape')).toEqual({ kind: 'plugin', name: 'firecrawl' });
     expect(sets.installableToolProviders?.get('audit-pack.scan')).toEqual({ kind: 'pack', name: 'audit-pack' });
   });
+
+  it('P-012↔P-013: threads the workspace registered datatype names into availableDatatypes', () => {
+    const cat = assemblePackCatalog(INPUTS({ legacyCatalogNames: ['plans:list'] }));
+    // Default ⇒ empty (no datatype registered): byte-identical for pure-validation callers.
+    expect(depHostSetsFromCatalog(cat).availableDatatypes).toEqual(new Set());
+    // DB-aware callers pass the registry's names so a blueprint's dependencies.datatypes resolve.
+    expect(depHostSetsFromCatalog(cat, ['bet', 'forecast']).availableDatatypes).toEqual(new Set(['bet', 'forecast']));
+  });
 });

@@ -197,24 +197,38 @@ export default defineTool({
     const declaredTools = validation.blueprint!.dependencies?.tools ?? [];
     const declaredPacks = validation.blueprint!.dependencies?.packs ?? [];
     const declaredPlugins = validation.blueprint!.dependencies?.plugins ?? [];
-    if (declaredTools.length > 0 || declaredPacks.length > 0 || declaredPlugins.length > 0) {
+    // P-012↔P-013: a blueprint may also declare `dependencies.datatypes`, resolved against
+    // the workspace datatype registry. Dark for every blueprint that declares none — the
+    // registry query + the datatype gate below are skipped.
+    const declaredDatatypes = validation.blueprint!.dependencies?.datatypes ?? [];
+    if (
+      declaredTools.length > 0 ||
+      declaredPacks.length > 0 ||
+      declaredPlugins.length > 0 ||
+      declaredDatatypes.length > 0
+    ) {
       const { derivePackCatalog, depHostSetsFromCatalog } = await import('../../cupboard/pack-catalog');
+      const deps = { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins, datatypes: declaredDatatypes };
+      // The workspace's registered datatype ids satisfy `declaredDatatypes` (the loop
+      // closure). Queried only when datatypes are actually declared; failure ⇒ none
+      // registered (the dep then reports missing, which is the correct conservative gate).
+      let datatypeNames: string[] = [];
+      if (declaredDatatypes.length > 0) {
+        const { activeWorkspaceId } = await import('../../workspace-registry');
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { listRegisteredDatatypeNames } = await import('../../datatype-registry-store');
+        datatypeNames = await listRegisteredDatatypeNames(getOrgPg().sql, activeWorkspaceId()).catch(() => []);
+      }
       // Local-only first: when every declared dep resolves in-process, skip
       // the Cupboard round-trip entirely.
       const localCatalog = await derivePackCatalog({ includeCupboard: false });
-      const localCheck = validateBlueprintDependencies(
-        { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
-        depHostSetsFromCatalog(localCatalog),
-      );
+      const localCheck = validateBlueprintDependencies(deps, depHostSetsFromCatalog(localCatalog, datatypeNames));
       let depCheck = localCheck;
       let cupboardReachable = true;
       if (!localCheck.ok) {
         const catalog = await derivePackCatalog({});
         cupboardReachable = catalog.cupboardReachable;
-        depCheck = validateBlueprintDependencies(
-          { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
-          depHostSetsFromCatalog(catalog),
-        );
+        depCheck = validateBlueprintDependencies(deps, depHostSetsFromCatalog(catalog, datatypeNames));
       }
       // Auto-install the installable deps before the gate (tool-distribution-discovery
       // D-002): when opted in, resolve each Cupboard-installable tool/pack/plugin to its
@@ -239,10 +253,7 @@ export default defineTool({
         // if the installs satisfied the previously-installable deps.
         const after = await derivePackCatalog({});
         cupboardReachable = after.cupboardReachable;
-        depCheck = validateBlueprintDependencies(
-          { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
-          depHostSetsFromCatalog(after),
-        );
+        depCheck = validateBlueprintDependencies(deps, depHostSetsFromCatalog(after, datatypeNames));
       }
       // Tools with NO known provider are a hard gate (the in-process catalog is
       // authoritative; a Cupboard-installable provider downgrades to advisory).
@@ -261,6 +272,17 @@ export default defineTool({
         return fail({
           error: 'blueprint pack/plugin dependencies unmet',
           missing: { packs: depCheck.missing.packs, plugins: depCheck.missing.plugins },
+          installable: depCheck.installable,
+          messages: depCheck.messages,
+        });
+      }
+      // Datatypes (P-012↔P-013): a declared datatype must be registered in the workspace
+      // (the local tier has no Cupboard-install path, so a missing one is a hard gate —
+      // declare it first via meta:define-datatype).
+      if (depCheck.missing.datatypes.length > 0) {
+        return fail({
+          error: 'blueprint datatype dependencies unmet',
+          missing: { datatypes: depCheck.missing.datatypes },
           installable: depCheck.installable,
           messages: depCheck.messages,
         });

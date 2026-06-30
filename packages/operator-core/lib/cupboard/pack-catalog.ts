@@ -284,7 +284,17 @@ export async function derivePackCatalog(
  * (`validateBlueprintDependencies`) — the `{tools, packs, plugins}` gate's
  * one-call wiring (D-002/D-003).
  */
-export function depHostSetsFromCatalog(cat: DerivedPackCatalog): DependencyHostSets {
+export function depHostSetsFromCatalog(
+  cat: DerivedPackCatalog,
+  /**
+   * Registered datatype ids for the resolving workspace (P-012↔P-013 loop closure):
+   * `listRegisteredDatatypeNames(sql, ws)`, threaded in by the DB-aware callers (harness
+   * create / blueprint install). A blueprint's `dependencies.datatypes` then resolve as
+   * `ok` against these (else `needs datatype "X"`). Default `[]` ⇒ no datatype is
+   * registered/satisfiable — byte-identical to before, for pure-validation callers.
+   */
+  datatypeNames: readonly string[] = [],
+): DependencyHostSets {
   const installedPlugins = new Set<string>();
   const installedPacks = new Set<string>();
   const cupboardPlugins = new Set<string>();
@@ -308,5 +318,8 @@ export function depHostSetsFromCatalog(cat: DerivedPackCatalog): DependencyHostS
     // (blueprint-role-bundling P-007). Cupboard blueprint listings are pulled by
     // the install route when it resolves the closure.
     availableBlueprints: availableBlueprintIds(),
+    // P-012↔P-013 loop closure: the workspace's registered datatypes satisfy a
+    // blueprint's `dependencies.datatypes`. Empty by default (no datatype registered).
+    availableDatatypes: new Set(datatypeNames),
   };
 }

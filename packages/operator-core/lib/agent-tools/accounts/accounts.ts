@@ -46,7 +46,18 @@ export default defineTool({
         localAddress: z.string().min(1).optional().describe('local source IP to bind this account upstream socket to'),
       })
       .optional()
-      .describe('Per-account egress for per-account IP routing (optional; default = shared egress). Owner-provisioned.'),
+      .describe('Per-account egress for per-account IP routing (optional; default = shared egress). Owner-provisioned. Superseded by egressPool when set.'),
+    egressPool: z
+      .array(
+        z.object({
+          proxyUrl: z.string().min(1).optional().describe('http(s) proxy URL for this egress IP'),
+          localAddress: z.string().min(1).optional().describe('local source IP to bind for this egress IP'),
+        }),
+      )
+      .optional()
+      .describe(
+        'Per-account egress IP POOL (gateway-per-account-egress-ip-pool): an ORDERED list of egress IPs the gateway ROTATES this account across, so a per-IP Cloudflare edge throttle (bare-burst 429) takes ONE IP out of rotation instead of pausing the whole account — and a hard pin rides the pool. An empty {} entry = the box-default outbound IP (a valid distinct IP). SUPERSEDES the singular egress. Owner-provisioned.',
+      ),
     workspace: wsArg,
   }),
   async handler(args) {
@@ -55,7 +66,7 @@ export default defineTool({
     const ws = args.workspace ?? activeWorkspaceId();
     try {
       const pool = await loadAccountPool(ws);
-      const next = registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress }, Date.now());
+      const next = registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool }, Date.now());
       await saveAccountPool(next, ws);
       return ok({ account: getAccount(next, args.id) });
     } catch (e) {

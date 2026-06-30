@@ -38,6 +38,12 @@ export interface SpawnerCallOpts {
   /** Surfaces the assigned request id back to the caller synchronously, BEFORE
    *  the call resolves — so an aborting caller can `call('spawn:cancel',{requestId})`. */
   onRequestId?: (id: number) => void;
+  /** Client-side RPC timeout (ms). Default 30_000 for short CONTROL calls. Pass 0 to
+   *  DISABLE it for a long-running call: `spawn:invokeOnce` carries the ENTIRE agent
+   *  run (minutes) and must NOT be capped by a fixed client timeout — the sidecar's
+   *  own spawn timeout (runChild invokeTimeoutMs) is the real bound. A fixed 30s here
+   *  spuriously timed out every real spawn → fallback → DOUBLE-spawn (WI-344 ③ bug). */
+  timeoutMs?: number;
 }
 
 /**
@@ -145,21 +151,31 @@ export class SpawnerIpcClient {
     };
 
     return new Promise<T>((resolve, reject) => {
-      // Request timeout: 30s
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        this.callbacks.delete(id);
-        reject(new Error(`RPC request timeout: ${method}`));
-      }, 30000);
+      // Request timeout. Default 30s for short control calls; opts.timeoutMs:0
+      // DISABLES it for spawn:invokeOnce (the whole agent run, minutes — the
+      // sidecar's own spawn timeout bounds it). A fixed 30s here spuriously timed
+      // out every real spawn → fallback → double-spawn (WI-344 ③ bug).
+      const timeoutMs = opts?.timeoutMs ?? 30000;
+      const timeout =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              this.pending.delete(id);
+              this.callbacks.delete(id);
+              reject(new Error(`RPC request timeout: ${method}`));
+            }, timeoutMs)
+          : null;
+      const clear = (): void => {
+        if (timeout) clearTimeout(timeout);
+      };
 
       this.pending.set(id, {
         resolve: (value: unknown) => {
-          clearTimeout(timeout);
+          clear();
           this.callbacks.delete(id);
           resolve(value as T);
         },
         reject: (error: Error) => {
-          clearTimeout(timeout);
+          clear();
           this.callbacks.delete(id);
           reject(error);
         },
@@ -167,7 +183,7 @@ export class SpawnerIpcClient {
 
       this.socket!.write(JSON.stringify(request) + '\n', (err) => {
         if (err) {
-          clearTimeout(timeout);
+          clear();
           this.pending.delete(id);
           this.callbacks.delete(id);
           reject(err);

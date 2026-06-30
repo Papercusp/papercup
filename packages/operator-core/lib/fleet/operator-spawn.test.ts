@@ -46,7 +46,7 @@ vi.mock('../owner-steering', () => ({
   effectiveMaxBees: vi.fn((_steering: unknown, base: number) => base),
 }));
 vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: vi.fn(() => 'papercusp') }));
-vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
+vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnceWithFallback: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
 // Per-hive override resolver (P-012/P-013) is a PG-backed spawn dep like its siblings —
@@ -79,7 +79,7 @@ import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
-import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
+import { spawnInvokeOnceWithFallback } from '../dbos/orchestrator-runner';
 import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
@@ -137,7 +137,7 @@ beforeEach(() => {
   vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
   vi.mocked(resolveProject).mockResolvedValue(PROJECT as never);
   vi.mocked(loadHarnessRegistry).mockResolvedValue({ projects: [PROJECT] } as never);
-  vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: 'done!', exitCode: 0, stderr: '' });
+  vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({ output: 'done!', exitCode: 0, stderr: '' });
   vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({});
   vi.mocked(recordSpawn).mockResolvedValue(undefined);
   vi.mocked(finishSpawn).mockResolvedValue(undefined);
@@ -189,8 +189,8 @@ describe('spawnAgentInHarness — happy path', () => {
 
     // The child launches in the harness's REAL project dir with the registry
     // slug pinned in env (schema resolution) + the feature extra.
-    expect(spawnInvokeOnce).toHaveBeenCalledTimes(1);
-    const [dir, role, extras, env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(spawnInvokeOnceWithFallback).toHaveBeenCalledTimes(1);
+    const [dir, role, extras, env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(dir).toBe('/tmp');
     expect(role).toBe('validator');
     expect(extras).toContain('FEATURE_ID=F-1');
@@ -215,7 +215,7 @@ describe('spawnAgentInHarness — happy path', () => {
       vi.mocked(recordSpawnPid).mock.invocationCallOrder[0],
     );
     expect(vi.mocked(recordSpawnPid).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(spawnInvokeOnce).mock.invocationCallOrder[0],
+      vi.mocked(spawnInvokeOnceWithFallback).mock.invocationCallOrder[0],
     );
   });
 
@@ -223,7 +223,7 @@ describe('spawnAgentInHarness — happy path', () => {
     vi.useFakeTimers();
     vi.stubEnv('PAPERCUSP_SPAWN_CHILD_START_TIMEOUT_MS', '1000');
     let captured: AbortSignal | undefined;
-    vi.mocked(spawnInvokeOnce).mockImplementation(((
+    vi.mocked(spawnInvokeOnceWithFallback).mockImplementation(((
       _d: string,
       _r: string,
       _e: string[],
@@ -265,7 +265,7 @@ describe('spawnAgentInHarness — happy path', () => {
   });
 
   it('a non-zero child exit finishes the row failed with the stderr tail', async () => {
-    vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: '', exitCode: 1, stderr: 'boom' });
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({ output: '', exitCode: 1, stderr: 'boom' });
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     await flush();
@@ -283,7 +283,7 @@ describe('spawnAgentInHarness — happy path', () => {
     // path dropped it (`exitCode === 0 ? null`), leaving error_message blank and the
     // cause invisible in fleet:tree / the Brew tab.
     const sessionMsg = "You've hit your session limit · resets 7:30pm (America/New_York)";
-    vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: '', exitCode: 0, stderr: sessionMsg });
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({ output: '', exitCode: 0, stderr: sessionMsg });
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     await flush();
@@ -310,7 +310,7 @@ describe('spawnAgentInHarness — overwatch flag gate (overwatch-role-2026-06-15
     expect(res.error).toContain('papercusp-overwatch');
     expect(res.error).not.toContain('unknown role');
     // gated BEFORE any child process launches
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 
   it('lets role="overwatch" past the gate when the flag is ON', async () => {
@@ -322,7 +322,7 @@ describe('spawnAgentInHarness — overwatch flag gate (overwatch-role-2026-06-15
     // the gate passed → the spawn proceeds (happy-path mocks launch + finish it)
     expect(res.ok).toBe(true);
     expect(res.error).toBeFalsy(); // no rejection (success returns error: null)
-    expect(spawnInvokeOnce).toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).toHaveBeenCalled();
   });
 });
 
@@ -337,7 +337,7 @@ describe('spawnAgentInHarness — coding-factory role needs a pushed FEATURE_ID 
     expect(res.error).toContain('role="bee"');
     expect(res.error).not.toContain('unknown role');
     // refused BEFORE any child process launches
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 
   it('allows a coding-FACTORY pipeline role WHEN a FEATURE_ID is pushed (the legit factory path)', async () => {
@@ -351,7 +351,7 @@ describe('spawnAgentInHarness — coding-factory role needs a pushed FEATURE_ID 
     // the guard passed → the spawn proceeds (happy-path mocks launch + finish it)
     expect(res.ok).toBe(true);
     expect(res.error).toBeFalsy();
-    expect(spawnInvokeOnce).toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).toHaveBeenCalled();
   });
 
   it('also accepts a FEATURE_ID= extra as pushed-feature context (the spine pushes it via extras)', async () => {
@@ -364,7 +364,7 @@ describe('spawnAgentInHarness — coding-factory role needs a pushed FEATURE_ID 
     await flush();
     expect(res.ok).toBe(true);
     expect(res.error).toBeFalsy();
-    expect(spawnInvokeOnce).toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).toHaveBeenCalled();
   });
 
   it('a bee with no feature context is unaffected by the factory guard (the self-pulling unit)', async () => {
@@ -372,7 +372,7 @@ describe('spawnAgentInHarness — coding-factory role needs a pushed FEATURE_ID 
     await flush();
     expect(res.ok).toBe(true);
     expect(res.error).toBeFalsy();
-    expect(spawnInvokeOnce).toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).toHaveBeenCalled();
   });
 });
 
@@ -391,7 +391,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
       expect(res.ok).toBe(true);
 
       // forceSessionId (a uuid) is threaded to the launcher so buildInvokeOnce bakes --session-id.
-      const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
+      const opts = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0][4] as { forceSessionId?: string } | undefined;
       expect(opts?.forceSessionId).toMatch(/[0-9a-f-]{36}/);
 
       // ...and recorded on the nursery row via the best-effort UPDATE — same id.
@@ -411,7 +411,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
     try {
       const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
       expect(res.ok).toBe(true);
-      const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
+      const opts = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0][4] as { forceSessionId?: string } | undefined;
       expect(opts?.forceSessionId).toBeUndefined();
       expect(findUpdate()).toBeUndefined();
     } finally {
@@ -424,7 +424,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
     try {
       const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
       expect(res.ok).toBe(true);
-      const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
+      const opts = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0][4] as { forceSessionId?: string } | undefined;
       expect(opts?.forceSessionId).toBeUndefined();
       expect(findUpdate()).toBeUndefined();
     } finally {
@@ -451,7 +451,7 @@ describe('spawnAgentInHarness — backend-aware gateway account routing', () => 
         role: 'bee',
       });
       expect(res.ok).toBe(true);
-      const [, , , env, opts] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+      const [, , , env, opts] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
       expect(env.PAPERCUSP_SPAWN_MODEL).toBe('chatgpt:5.5');
       expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
       expect((opts as { forceSessionId?: string } | undefined)?.forceSessionId).toBeUndefined();
@@ -479,7 +479,7 @@ describe('spawnAgentInHarness — backend-aware gateway account routing', () => 
         modelSpec: 'chatgpt:5.5',
       });
       expect(res.ok).toBe(true);
-      const [, , , env, opts] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+      const [, , , env, opts] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
       expect(env.PAPERCUSP_SPAWN_MODEL).toBe('chatgpt:5.5');
       expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
       expect((opts as { forceSessionId?: string } | undefined)?.forceSessionId).toBeUndefined();
@@ -505,7 +505,7 @@ describe('spawnAgentInHarness — backend-aware gateway account routing', () => 
         ownerId: res.spawnId,
         backend: 'codex',
       }));
-      const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+      const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
       expect(env.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
       expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
       expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
@@ -516,12 +516,12 @@ describe('spawnAgentInHarness — backend-aware gateway account routing', () => 
 });
 
 describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', () => {
-  it('passes an AbortSignal to spawnInvokeOnce and abortLocalSpawn fires it', async () => {
+  it('passes an AbortSignal to spawnInvokeOnceWithFallback and abortLocalSpawn fires it', async () => {
     // Hold the child open so the spawn stays "live" (registered in the abort map)
-    // until we abort it. Capture the signal handed to spawnInvokeOnce.
+    // until we abort it. Capture the signal handed to spawnInvokeOnceWithFallback.
     let captured: AbortSignal | undefined;
     let resolveChild: (v: { output: string; exitCode: number; stderr: string }) => void;
-    vi.mocked(spawnInvokeOnce).mockImplementation(((
+    vi.mocked(spawnInvokeOnceWithFallback).mockImplementation(((
       _d: string, _r: string, _e: string[], _env: Record<string, string>, opts?: { signal?: AbortSignal },
     ) => {
       captured = opts?.signal;
@@ -573,7 +573,7 @@ describe('spawnAgentInHarness — harness resolution', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain('2 are registered');
     expect(res.error).toContain('demo');
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 
   it('rejects an unregistered harness, naming the registered ones, and records the failed attempt', async () => {
@@ -588,7 +588,7 @@ describe('spawnAgentInHarness — harness resolution', () => {
       status: 'failed',
       errorMessage: expect.stringContaining('nope'),
     }));
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 });
 
@@ -614,7 +614,7 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
     // the nursery row + child env carry the REMAPPED project slug, not the -su MCP slug
     expect(res.harness).toBe('papercup');
     expect(vi.mocked(recordSpawn).mock.calls[0][1]).toMatchObject({ harnessSlug: 'papercup' });
-    const [dir, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [dir, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(dir).toBe('/tmp');
     expect(env.HARNESS_SLUG).toBe('papercup');
   });
@@ -640,7 +640,7 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'paprcup', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('"paprcup" is not a registered project');
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 
   it('rejects a "<base>-su" slug whose stripped base is also unregistered (remap only when the project exists)', async () => {
@@ -649,7 +649,7 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'foo-su', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('"foo-su" is not a registered project');
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 });
 
@@ -658,7 +658,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'wizard' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('unknown role "wizard"');
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 
   it('accepts a plugin-namespaced role (contains a colon)', async () => {
@@ -677,7 +677,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
       workspaceId: 'ws-1', harness: 'demo', role: 'worker', chunkId: 'F-1.c2',
     });
     expect(res.ok).toBe(true);
-    const [, , extras] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , extras] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(extras).toContain('CHUNK_ID=F-1.c2');
   });
 
@@ -687,7 +687,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
     expect(res.error).toBeNull();
-    const [, role] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, role] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(role).toBe('bee');
   });
 
@@ -700,7 +700,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
       workspaceId: 'ws-1', harness: 'demo', role: 'bee', brief,
     });
     expect(res.ok).toBe(true);
-    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.QUEEN_BRIEF).toBe(brief);
   });
 
@@ -711,7 +711,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     // to it instead of throwing "no attributable identity".
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
-    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.PAPERCUSP_SPAWN_ID).toBe(res.spawnId);
     expect(env.PAPERCUSP_SPAWN_ID).toMatch(/^s-\d+-/);
   });
@@ -722,7 +722,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain(`ceiling ${ceiling}`);
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 });
 
@@ -753,7 +753,7 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
     delete process.env[MODEL]; // default → opus:xhigh
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
-    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:xhigh');
   });
 
@@ -762,7 +762,7 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
     process.env[MODEL] = 'opus:high';
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
-    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:high');
   });
 
@@ -770,7 +770,7 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
     delete process.env[KEY];
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);
-    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();
   });
 
@@ -780,7 +780,7 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
     // coding-factory pushed-feature guard while staying a factory pipeline role.
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper', featureId: 'F-1' });
     expect(res.ok).toBe(true);
-    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();
   });
 });
@@ -813,7 +813,7 @@ describe('un-substituted brief placeholder guard (EI-249 — dispatch-pack stamp
     expect(res.error).toContain('un-substituted placeholder "brief-NN"');
     expect(res.error).toContain('EI-249');
     // refused BEFORE any child process launches — no claim-race stampede
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
     // the rejection is DURABLE (a failed nursery row), not a silent drop
     expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       status: 'failed',
@@ -827,7 +827,7 @@ describe('un-substituted brief placeholder guard (EI-249 — dispatch-pack stamp
     });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('un-substituted placeholder "{item}"');
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 
   it('a fully-substituted brief spawns normally — the guard never false-positives', async () => {
@@ -835,7 +835,7 @@ describe('un-substituted brief placeholder guard (EI-249 — dispatch-pack stamp
       workspaceId: 'ws-1', harness: 'demo', role: 'bee', brief: 'Implement the reviews handler',
     });
     expect(res.ok).toBe(true);
-    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.QUEEN_BRIEF).toBe('Implement the reviews handler');
   });
 });
@@ -850,7 +850,7 @@ describe('spawnAgentInHarness — idempotency dedupe (P-017 / EI-73)', () => {
     expect(res.spawnId).toBe('s-original-123');
     expect(res.deduped).toBe(true);
     expect(recordSpawn).not.toHaveBeenCalled();
-    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
   });
 
   it('an unmatched idempotencyKey spawns normally and stamps the key on the row', async () => {
