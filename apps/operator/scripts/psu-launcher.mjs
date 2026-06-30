@@ -87,7 +87,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -156,6 +156,9 @@ export function parseArgs(argv) {
     else if (a.startsWith('--model=')) out.model = a.slice('--model='.length);
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
+    // su-context-size-variants: 'full' | 'trimmed' — the initial-context size variant
+    // (orthogonal to --agent). Forwarded to bootstrap-su; applied per-client at launch.
+    else if (a.startsWith('--context-size=')) out.contextSize = a.slice('--context-size='.length);
     // P-023: su playbook profile (engineer|power) — assembled per-launch now,
     // so it's a launch flag, not a per-install choice. Default (server-side) engineer.
     else if (a.startsWith('--profile=')) out.profile = a.slice('--profile='.length);
@@ -717,6 +720,40 @@ export function parkRoleScopedMcpJson(cwd) {
  * left untouched (their "use my default" steer); this only surfaces the gotcha. Reads
  * config.yml; side-effects fs read only; exported for tests.
  */
+/** su-context-size-variants: materialize a per-session OMP config dir for the 'full'
+ *  context variant. OMP's tool discovery (search_tool_bm25) is a GLOBAL config knob
+ *  (~/.omp/agent/config.yml discoveryMode), NOT a per-launch flag — so to load the whole
+ *  catalog up-front for ONE session we copy the global agent config with discoveryMode
+ *  flipped OFF (preserving modelRoles/etc.) into a per-session dir and carry auth so the
+ *  session still authenticates. Returns the dir to export as PI_CONFIG_DIR, or null on any
+ *  failure (caller falls back to OMP's native trimmed default — no regression). For tests. */
+export function writeOmpFullConfigDir(sessionId, home = homedir()) {
+  try {
+    if (!sessionId) return null;
+    const srcAgent = join(home, '.omp', 'agent');
+    const srcCfg = join(srcAgent, 'config.yml');
+    if (!existsSync(srcCfg)) return null;
+    const dstRoot = join(home, '.papercusp', 'su-omp-homes', `session-${sessionId}`);
+    const dstAgent = join(dstRoot, 'agent');
+    mkdirSync(dstAgent, { recursive: true });
+    // Flip discovery off on the stable config keys (string surgery — the format is
+    // installer-managed + stable; a YAML parse/emit would risk reordering the owner's file).
+    const cfg = readFileSync(srcCfg, 'utf8')
+      .replace(/^(\s*discoveryMode:\s*)(?:mcp-only|all|auto)\s*$/gm, '$1off')
+      .replace(/^(\s*discoveryMode:\s*)true\s*$/gm, '$1false');
+    writeFileSync(join(dstAgent, 'config.yml'), cfg, { mode: 0o600 });
+    // Carry auth + the claude bridge so the relocated config dir still authenticates.
+    for (const f of ['auth.json', 'claude-bridge.json']) {
+      const s = join(srcAgent, f);
+      if (existsSync(s)) cpSync(s, join(dstAgent, f));
+    }
+    return dstRoot;
+  } catch (e) {
+    console.error(`psu: omp full-config setup failed (${e?.message ?? e}); falling back to OMP default.`);
+    return null;
+  }
+}
+
 export function ompDefaultModelAdvisory(home = homedir()) {
   try {
     const text = readFileSync(join(home, '.omp', 'agent', 'config.yml'), 'utf8');
@@ -1297,18 +1334,38 @@ export function fleetSlugFromName(name) {
   return slug || 'fleet';
 }
 
+/** Parse a `#rrggbb` hex into `[r,g,b]`, or null when malformed. Pure — exported
+ *  for tests. */
+export function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex ?? '').trim());
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
+}
+
+/** A 2-cell ANSI truecolor swatch in the scheme's background (trailing space), or
+ *  '' when there is no/invalid color — so a picker row degrades cleanly to plain
+ *  text for a fleet with no bound color. `color` is the `{ bg, fg, cursor }` the
+ *  /options endpoint resolves per fleet (fleet-color-schemes). Pure — for tests. */
+export function colorSwatch(color) {
+  const rgb = color && hexToRgb(color.bg);
+  if (!rgb) return '';
+  const [r, g, b] = rgb;
+  return `\x1b[48;2;${r};${g};${b}m  \x1b[0m `;
+}
+
 /** The durable named fleets the workspace offers (agent_fleets rows — they persist
- *  even with zero live members, D-003). Same live `/options` endpoint the account
- *  picker reads. null on any error (fail-soft → the picker shows just the two
- *  default rows). */
+ *  even with zero live members, D-003), plus `nextScheme` (the color a NEW fleet
+ *  would be allocated, for the create-row preview). Same live `/options` endpoint
+ *  the account picker reads. Fail-soft → `{ fleets: [], nextScheme: null }` so the
+ *  picker still shows its two default rows. */
 async function fetchFleetChoices(workspace) {
   try {
     const params = new URLSearchParams();
     if (workspace) params.set('workspace', workspace);
     const q = params.toString() ? `?${params.toString()}` : '';
-    return (await api(`/api/agent-mcp/console/bootstrap-su/options${q}`)).fleets ?? null;
+    const resp = await api(`/api/agent-mcp/console/bootstrap-su/options${q}`);
+    return { fleets: Array.isArray(resp.fleets) ? resp.fleets : [], nextScheme: resp.nextScheme ?? null };
   } catch {
-    return null;
+    return { fleets: [], nextScheme: null };
   }
 }
 
@@ -1322,14 +1379,16 @@ async function fetchFleetChoices(workspace) {
  * server, which creates the agent_fleets row + re-derives the slug authoritatively).
  */
 async function pickFleet(workspace) {
-  const fleets = await fetchFleetChoices(workspace);
+  const { fleets, nextScheme } = await fetchFleetChoices(workspace);
   const existing = Array.isArray(fleets) ? fleets : [];
   const NEW = '__new__';
   const { select, input } = await import('@inquirer/prompts');
+  // fleet-color-schemes: prefix each existing fleet with a swatch in its bound
+  // color, and the create-row with the color a new fleet would get (nextScheme).
   const choices = [
     { name: '· no fleet — default (no name)', value: null },
-    { name: '+ create a new fleet…', value: NEW },
-    ...existing.map((f) => ({ name: f.title || f.slug, value: f.slug })),
+    { name: `${colorSwatch(nextScheme)}+ create a new fleet…`, value: NEW },
+    ...existing.map((f) => ({ name: `${colorSwatch(f.color)}${f.title || f.slug}`, value: f.slug })),
   ];
   const chosen = await select({ message: 'Fleet', default: null, choices });
   if (chosen === null) return { slug: null, role: null, name: null };
@@ -1813,6 +1872,7 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     harness_slug: selections.harness,
     plan_slug: selections.plan,
     ...(args.profile ? { profile: args.profile } : {}),
+    ...(args.contextSize ? { context_size: args.contextSize } : {}),
     ...(brain ? { brain: true } : {}),
     ...(args.account ? { account: args.account } : {}),
     // named-su-agent-fleets P-006: `fleet` = the slug to JOIN (member); `fleet_name`
@@ -2348,11 +2408,20 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // out"). Park it — the SU session needs only the user-level papercusp-su, and role
   // launchers recreate .mcp.json fresh, so parking is safe + needs no restore.
   // omp-only: claude uses --strict-mcp-config, codex uses CODEX_HOME.
+  // su-context-size-variants: OMP 'full' disables native tool-discovery so the whole
+  // catalog loads up-front (inverse of its trimmed default) via a per-session PI_CONFIG_DIR.
+  // Fail-safe: null ⇒ OMP keeps its native (trimmed) default.
+  let ompFullPiConfigDir = null;
   if (res.agent === 'omp') {
     const parked = parkRoleScopedMcpJson(res.cwd);
     if (parked) console.error(`psu: parked a stale role-scoped ${res.cwd}/.mcp.json (would hang omp MCP startup; role launches recreate it)`);
     const advisory = ompDefaultModelAdvisory();
     if (advisory) console.error(advisory);
+    if (args.contextSize === 'full') {
+      ompFullPiConfigDir = writeOmpFullConfigDir(res.sessionId);
+      if (ompFullPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompFullPiConfigDir}`);
+      else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default (trimmed).');
+    }
   }
 
   // codex's superuser bearer is baked into its per-session config.toml
@@ -2364,7 +2433,18 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // The brain (Queen) is an agent: arm the hook-level scheduler guard. A
     // plain human su launch never sets the marker (native-scheduler-lockout
     // D-003).
-    envelopeEnv: { ...res.envelopeEnv, ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}) },
+    envelopeEnv: {
+      ...res.envelopeEnv,
+      ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+      // su-context-size-variants: Claude soft-trims its MCP surface natively via
+      // ToolSearch (default-on = the trimmed variant). 'full' forces every tool
+      // schema loaded up-front by disabling ToolSearch deferral. (codex/omp levers
+      // live server-side / in their native config; claude's is just this env var.)
+      ...(res.agent === 'claude' && args.contextSize === 'full' ? { ENABLE_TOOL_SEARCH: 'false' } : {}),
+      // su-context-size-variants: OMP 'full' runs against a per-session config dir with
+      // discoveryMode off (materialized above; null for omp-trimmed / non-omp / on failure).
+      ...(ompFullPiConfigDir ? { PI_CONFIG_DIR: ompFullPiConfigDir } : {}),
+    },
   });
 }
 

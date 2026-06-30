@@ -108,4 +108,17 @@ describe('findTools', () => {
     });
     expect(hits[0].tool).toBe('coord:orient');
   });
+
+  it('carries argSchema through to the hit (null when absent)', async () => {
+    const withSchema = {
+      ...entry('flags:set', 'feature flag set'),
+      argSchema: 'key:string the flag key; enabled?:boolean on or off',
+    } as ToolDiscoveryEntry;
+    const hits = await findTools([withSchema], 'flags:set');
+    expect(hits[0].argSchema).toBe('key:string the flag key; enabled?:boolean on or off');
+
+    // The base corpus entries have no argSchema → null, never undefined.
+    const plain = await findTools(corpus, 'orient');
+    expect(plain[0].argSchema).toBeNull();
+  });
 });

@@ -41,13 +41,16 @@ interface WeightedField {
   weight: number;
 }
 
-/** name ≫ category/capability ≫ provider ≫ description (see file head). */
+/** name ≫ category/capability ≫ provider ≫ description ≫ argSchema (see file head). */
 export const FIELD_WEIGHTS = {
   name: 10,
   category: 5,
   capability: 4,
   provider: 3,
   description: 2,
+  // Lowest signal: arg names/docs are a weak last-resort match (a query word
+  // that only appears in a parameter name shouldn't outrank a description hit).
+  argSchema: 1,
 } as const;
 
 function fieldsOf(e: ToolDiscoveryEntry): WeightedField[] {
@@ -66,6 +69,7 @@ function fieldsOf(e: ToolDiscoveryEntry): WeightedField[] {
   if (e.unit?.description && e.unit.description !== e.description) {
     push(e.unit.description, FIELD_WEIGHTS.description);
   }
+  push(e.argSchema, FIELD_WEIGHTS.argSchema);
   return fields;
 }
 

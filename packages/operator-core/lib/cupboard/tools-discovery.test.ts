@@ -18,6 +18,7 @@ import {
   buildToolsDiscovery,
   buildToolProvenance,
   resolveToolEntries,
+  schemaToText,
   type ToolMetaIndex,
 } from './tools-discovery';
 
@@ -172,6 +173,16 @@ describe('buildToolsDiscovery — capability search over descriptions (P-005)', 
     expect(coord?.capability).toBe('coord:write');
   });
 
+  it('carries argSchema text from the meta index onto the entry (null when absent)', () => {
+    const m: ToolMetaIndex = new Map([
+      ['coord:send', { description: 'd', capability: null, argSchema: 'to:string recipient; body?:string text' }],
+    ]);
+    const entries = resolveToolEntries(assemblePackCatalog(makeInputs()), m);
+    expect(entries.find((e) => e.tool === 'coord:send')?.argSchema).toBe('to:string recipient; body?:string text');
+    // A tool with no meta argSchema resolves to null, never undefined.
+    expect(entries.find((e) => e.tool === 'repomix.pack')?.argSchema).toBeNull();
+  });
+
   it('finds a tool by a capability word only present in its description', () => {
     const payload = buildToolsDiscovery(assemblePackCatalog(makeInputs()), { q: 'message' }, meta);
     expect(payload.tools.map((t) => t.tool)).toEqual(['coord:send']);
@@ -206,5 +217,30 @@ describe('buildToolProvenance — "what provides X" (P-006)', () => {
     const payload = buildToolProvenance(assemblePackCatalog(makeInputs()), { tool: 'zzz.qqq' });
     expect(payload.resolved).toBeNull();
     expect(payload.matches).toEqual([]);
+  });
+});
+
+describe('schemaToText — compact arg-schema text (tools:find searchable params)', () => {
+  it('renders properties as key:type description, marking optionals with ?', () => {
+    const txt = schemaToText({
+      type: 'object',
+      required: ['key'],
+      properties: {
+        key: { type: 'string', description: 'the flag key' },
+        enabled: { type: 'boolean', description: 'on or off' },
+      },
+    });
+    expect(txt).toBe('key:string the flag key; enabled?:boolean on or off');
+  });
+
+  it('uses "enum" as the type for an enum property and tolerates a missing description', () => {
+    expect(schemaToText({ properties: { mode: { enum: ['a', 'b'] } } })).toBe('mode?:enum');
+  });
+
+  it('returns null for a no-arg / absent / non-object schema', () => {
+    expect(schemaToText({ type: 'object', properties: {} })).toBeNull();
+    expect(schemaToText({ type: 'object' })).toBeNull();
+    expect(schemaToText(null)).toBeNull();
+    expect(schemaToText('nope')).toBeNull();
   });
 });

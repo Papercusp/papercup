@@ -23,6 +23,13 @@ authority for presence, handoffs, escalations, and file claims. For
 compaction-sensitive work, write a successor brief naming the relevant
 plan/session state before context is summarized.
 
+**Finding a capability:** the superuser MCP catalog is large (~550 tools).
+To locate the right tool for an intent when you don't already know its
+name, call `tools:find("<what you need>")` — a hybrid semantic+lexical
+search that returns the exact tool names by intent — then call the
+returned tool directly. (You load the full catalog, so there's no
+`search_tool_bm25` activation step — that's OMP-only.)
+
 File-lock enforcement is **NOT automatic on Codex** (unlike Claude, whose
 edits a `PreToolUse` hook locks for it). Current Codex builds don't fire
 hooks on `apply_patch` (upstream openai/codex #20204), so **nothing claims

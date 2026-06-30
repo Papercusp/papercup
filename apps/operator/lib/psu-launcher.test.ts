@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,6 +7,7 @@ import {
   planValue,
   parkRoleScopedMcpJson,
   ompDefaultModelAdvisory,
+  writeOmpFullConfigDir,
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
@@ -48,9 +49,13 @@ import {
   applyDefaultClaudeOAuthToken,
   applyGithubTokenEnv,
   storeClaudeOAuthToken,
+  fleetSlugFromName as launcherFleetSlugFromName,
+  hexToRgb,
+  colorSwatch,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
+import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 
 describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
   const KICK =
@@ -138,6 +143,72 @@ describe('ompDefaultModelAdvisory (P-004 first-turn overflow guard)', () => {
   });
 });
 
+describe('writeOmpFullConfigDir (WI-1282 su-context-size-variants — OMP full-catalog config)', () => {
+  let home: string;
+  const AGENT_CFG = [
+    'agent:',
+    '  discoveryMode: mcp-only',
+    'tools:',
+    '  discoveryMode: true',
+    'modelRoles:',
+    '  default: papercusp-gateway/claude-sonnet-4-6',
+    '',
+  ].join('\n');
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'psu-ompfull-'));
+    mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), AGENT_CFG);
+    writeFileSync(join(home, '.omp', 'agent', 'auth.json'), '{"token":"AUTHSECRET"}');
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  const sessionDir = (id: string) => join(home, '.papercusp', 'su-omp-homes', `session-${id}`);
+
+  it('copies the global config into a per-session dir with discoveryMode flipped OFF', () => {
+    const dir = writeOmpFullConfigDir('sess1', home);
+    expect(dir).toBe(sessionDir('sess1'));
+    const written = readFileSync(join(dir!, 'agent', 'config.yml'), 'utf8');
+    // mcp-only/all/auto → off; true → false.
+    expect(written).toContain('discoveryMode: off');
+    expect(written).toContain('discoveryMode: false');
+    expect(written).not.toContain('discoveryMode: mcp-only');
+    expect(written).not.toContain('discoveryMode: true');
+    // The owner's other keys (modelRoles) survive the string surgery untouched.
+    expect(written).toContain('default: papercusp-gateway/claude-sonnet-4-6');
+  });
+
+  it('carries auth.json into the relocated config dir so the session still authenticates', () => {
+    const dir = writeOmpFullConfigDir('sess1', home);
+    const auth = join(dir!, 'agent', 'auth.json');
+    expect(existsSync(auth)).toBe(true);
+    expect(readFileSync(auth, 'utf8')).toBe('{"token":"AUTHSECRET"}');
+    // claude-bridge.json wasn't present in the source → not fabricated in the copy.
+    expect(existsSync(join(dir!, 'agent', 'claude-bridge.json'))).toBe(false);
+  });
+
+  it('also carries claude-bridge.json when present', () => {
+    writeFileSync(join(home, '.omp', 'agent', 'claude-bridge.json'), '{"bridge":1}');
+    const dir = writeOmpFullConfigDir('sess2', home);
+    expect(readFileSync(join(dir!, 'agent', 'claude-bridge.json'), 'utf8')).toBe('{"bridge":1}');
+  });
+
+  it('returns null for a falsy sessionId (no dir written)', () => {
+    expect(writeOmpFullConfigDir('', home)).toBeNull();
+    expect(writeOmpFullConfigDir(null, home)).toBeNull();
+    expect(writeOmpFullConfigDir(undefined, home)).toBeNull();
+  });
+
+  it('returns null when the global OMP config is missing (falls back to native default)', () => {
+    const emptyHome = mkdtempSync(join(tmpdir(), 'psu-noomp-'));
+    try {
+      expect(writeOmpFullConfigDir('sess3', emptyHome)).toBeNull();
+      expect(existsSync(join(emptyHome, '.papercusp', 'su-omp-homes'))).toBe(false);
+    } finally {
+      rmSync(emptyHome, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('applyGithubTokenEnv (GitHub MCP plugin token)', () => {
   it('exports the gh token into env when unset', () => {
     const env: Record<string, string> = {};
@@ -176,6 +247,8 @@ describe('psu-launcher arg parsing', () => {
       resumeSession: null,
       launchContext: null,
       profile: null,
+      // su-context-size-variants (WI-1282): defaults to null (each client's native default).
+      contextSize: null,
       yes: false,
       brain: false,
       account: null,
@@ -218,6 +291,7 @@ describe('psu-launcher arg parsing', () => {
       resumeSession: null,
       launchContext: null,
       profile: null,
+      contextSize: null,
       yes: false,
       brain: false,
       account: null,
@@ -268,6 +342,12 @@ describe('psu-launcher arg parsing', () => {
   it('parses --profile (P-023); defaults to null', () => {
     expect(parseArgs(['--profile=power']).profile).toBe('power');
     expect(parseArgs(['--agent=claude']).profile).toBeNull();
+  });
+
+  it('parses --context-size (WI-1282 su-context-size-variants); defaults to null', () => {
+    expect(parseArgs(['--context-size=trimmed']).contextSize).toBe('trimmed');
+    expect(parseArgs(['--context-size=full']).contextSize).toBe('full');
+    expect(parseArgs(['--agent=claude']).contextSize).toBeNull();
   });
 
   it('parses --yes / -y (untracked-resume confirm bypass); defaults false', () => {
@@ -1439,5 +1519,57 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
     it('parses --clear-claude-token', () => {
       expect(parseArgs(['--clear-claude-token']).clearClaudeToken).toBe(true);
     });
+  });
+});
+
+// fleet-recolor-and-color-hardening P-005: the launcher derives a fleet slug
+// CLIENT-side (psu-launcher.mjs — a plain-node script that can't import the TS
+// store) and the server RE-DERIVES it authoritatively (agent-fleets-store.ts).
+// The two carry a "MIRRORS … keep in sync" comment but no guard, so a divergence
+// would silently mislabel the picker's new-fleet preview. Pin them identical.
+describe('fleetSlugFromName client/server parity', () => {
+  const NAMES = [
+    'Ops Team',
+    'k-epochs',
+    '  Trailing/Leading  ',
+    'UPPER CASE NAME',
+    'weird!!!chars@@@here',
+    'émoji ✨ and àccents',
+    '---only-dashes---',
+    '!!!',
+    'a'.repeat(80),
+    'mixed_Under-scores and.dots',
+    'single',
+  ];
+  it.each(NAMES)('derives the same slug for %j on client + server', (name) => {
+    expect(launcherFleetSlugFromName(name)).toBe(storeFleetSlugFromName(name));
+  });
+});
+
+// fleet-recolor-and-color-hardening P-004: the psu picker shows a color swatch
+// per fleet (from /options' resolved scheme). hexToRgb + colorSwatch are the pure
+// rendering helpers.
+describe('picker color swatch (fleet-color-schemes)', () => {
+  it('hexToRgb parses #rrggbb (with or without #), case-insensitively', () => {
+    expect(hexToRgb('#166534')).toEqual([22, 101, 52]);
+    expect(hexToRgb('166534')).toEqual([22, 101, 52]);
+    expect(hexToRgb('#FFFFFF')).toEqual([255, 255, 255]);
+    expect(hexToRgb('#000000')).toEqual([0, 0, 0]);
+  });
+  it('hexToRgb returns null for malformed input', () => {
+    expect(hexToRgb('')).toBeNull();
+    expect(hexToRgb('#fff')).toBeNull();
+    expect(hexToRgb('nope')).toBeNull();
+    expect(hexToRgb(null)).toBeNull();
+    expect(hexToRgb(undefined)).toBeNull();
+  });
+  it('colorSwatch builds a truecolor 48;2 background cell from a scheme bg', () => {
+    expect(colorSwatch({ bg: '#166534', fg: '#dcfce7', cursor: '#86efac' })).toBe('\x1b[48;2;22;101;52m  \x1b[0m ');
+  });
+  it('colorSwatch is empty (graceful) when there is no/invalid color', () => {
+    expect(colorSwatch(null)).toBe('');
+    expect(colorSwatch(undefined)).toBe('');
+    expect(colorSwatch({ bg: 'not-a-hex' })).toBe('');
+    expect(colorSwatch({})).toBe('');
   });
 });

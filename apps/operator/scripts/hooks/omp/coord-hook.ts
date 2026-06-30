@@ -1578,12 +1578,22 @@ interface HookApi {
  * things they get wrong — observed with `ollama/qwen3.5` and `ornith` running
  * blind: (1) plans/work-items/inbox live in the coordination SYSTEM, not files
  * (they `ls`/`find` for them and find nothing); (2) Papercusp MCP tools are
- * hidden behind discovery, so a tool must be loaded via `search_tool_bm25`
+ * hidden behind discovery, so the right tool must be DISCOVERED then loaded
  * before it can be called (they hallucinate names → "Tool X not found").
+ *
+ * Discovery design (WS2 + WS4): `tools:find` is the discovery BRAIN — a hybrid
+ * semantic+lexical search over the full catalog that understands intent, so it
+ * works even when the model doesn't know the exact tool name. omp's native
+ * `search_tool_bm25` is demoted to the LOADER: an exact-name keyword match that
+ * ACTIVATES a hidden tool so it becomes callable. Flow: tools:find("<intent>")
+ * → exact name → search_tool_bm25("<exact name>") → call it. The capability map
+ * below (a static mirror of catalogueProjection / renderCapabilityMap — the
+ * hook ships standalone to omp and can't read the live catalog) tells the model
+ * WHAT namespaces exist + the vocabulary to search.
  *
  * The core list mirrors CORE_MCP_TOOL_NAMES (orchestrator/invoke.ts). omp-only:
  * this hook is omp's `-e` coordination module; claude/codex load the full
- * catalog directly and need none of this.
+ * catalog directly and reach for `tools:find` only (native ToolSearch, no bm25).
  */
 const ORIENTATION_PRIMER = [
   '<system-reminder type="papercusp-orientation">',
@@ -1591,16 +1601,32 @@ const ORIENTATION_PRIMER = [
   '',
   'WHERE THINGS LIVE: plans, work-items, inbox, assignments, and coordination state live in the Papercusp COORDINATION SYSTEM (a database), NOT as files on disk. Do NOT ls/find/read the filesystem to find them — use the coordination tools below.',
   '',
-  'HOW TOOLS WORK HERE: Papercusp tools are MCP tools and most are HIDDEN behind tool-discovery to save context, so calling one by name can fail "not found". To use a hidden tool, FIRST call search_tool_bm25 with its name or your intent to load it, THEN call it. Example: search_tool_bm25("coord:orient"), then call coord:orient.',
+  'FINDING ANY CAPABILITY: to find the right tool for ANYTHING, call tools:find("<what you need>"). It is a hybrid semantic+lexical search over the full ~550-tool catalog and is the discovery BRAIN — it understands intent, not just keywords, so it works even when you do not know the exact tool name. It returns the exact tool names that match.',
+  '',
+  'LOADING A NAMED TOOL (omp only): most Papercusp tools are HIDDEN behind tool-discovery to save context, so calling one by an exact name can fail "not found" until it is loaded. Once you have an exact name (from tools:find, the core list, or the map below), call search_tool_bm25("<exact name>") to ACTIVATE that tool, THEN call it. search_tool_bm25 is just the LOADER — an exact-name keyword match — NOT the discovery brain; when you do not already know the exact name, reach for tools:find first.',
   '',
   'START HERE: search_tool_bm25("coord:orient"), then call coord:orient — one call returns your assignments, the claimable backlog, your unread inbox, recent plan changes, and a memory recall.',
   '',
-  'YOUR CORE TOOLSET (load each with search_tool_bm25 as needed):',
+  'YOUR CORE TOOLSET (already your spine — load each with search_tool_bm25 if hidden):',
   '  coord:orient · coord:inbox · coord:ack · coord:send · coord:glance · coord:ask',
   '  plans:get · plans:set-status · plans:items · work_items:list · work_items:claim · work_items:set_state · work_items:update',
   '  locks:acquire_granular · locks:release_granular · docs:search · memory:search · memory:remember · tools:find',
   '',
-  'FINDING OTHER TOOLS: the catalog has ~550 tools in namespaces like coord, plans, work_items, hive, fleet, flags, deploy, docs, memory, locks, harness, capability, accounts. To find one by intent call tools:find("<what you need>"), or search_tool_bm25("<keywords>") directly, then call it.',
+  'CAPABILITY MAP — namespaces in the ~550-tool catalog (call tools:find("<intent>") to get exact names in any of these):',
+  '  coord       talk to peers / the Queen — orient, inbox, send, ack, ask, handoff, escalate',
+  '  plans       work-plan store — get, items, set-status, set-now, add-item, decisions',
+  '  work_items  the work backlog — list, claim, update, set_state, complete, comment',
+  '  locks       file/resource claims before editing — acquire_granular, release_granular',
+  '  hive        spawn / steer sub-agent hives — create, start, wake, status, report',
+  '  fleet       worker fleet — spawn, assignments, capacity, supervise, tree',
+  '  flags       feature flags — get, set, list',
+  '  deploy      ship / teardown harnesses + hives — harness, hive, status, teardown',
+  '  docs        knowledge base — search, get, outline, author',
+  '  memory      durable facts (mem0) — search, remember, forget, update',
+  '  harness     harness / repo management — get, list, status, health, overview',
+  '  capability  host capabilities — bash, edit, write, read, git, fetch, computer',
+  '  accounts    model / account pool — list, status, register, pin',
+  '  (and more — tools:find reaches every namespace, not just these.)',
   '</system-reminder>',
 ].join('\n');
 

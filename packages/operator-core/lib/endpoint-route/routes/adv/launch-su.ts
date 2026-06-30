@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { isSuAgent, type SuAgent } from '../../../su-agents';
+import { isSuAgent, isSuContextSize, type SuAgent, type SuContextSize } from '../../../su-agents';
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
@@ -52,6 +52,8 @@ const launchSu = defineTool({
       // P-032: omp-parity passthroughs (the features the retired
       // buildEngineerOmpLaunchCommand used to provide).
       model?: string | null;
+      // su-context-size-variants: 'full' | 'trimmed' — initial-context size.
+      context_size?: string | null;
       resume_session_id?: string | null;
       kickoff?: { kind?: string } | null;
       // pui-reactive-session-panes D-006: record a pending workbench launch
@@ -89,6 +91,17 @@ const launchSu = defineTool({
     const resumeSessionId = body.resume_session_id?.trim() || null;
     if (model && !MODEL_RE.test(model)) return json({ status: 'error', error: 'invalid model' }, 400);
     if (resumeSessionId && !SESSION_ID_RE.test(resumeSessionId)) return json({ status: 'error', error: 'invalid resume session id' }, 400);
+
+    // su-context-size-variants: 'full' loads the whole superuser catalog;
+    // 'trimmed' uses each client's native soft-trim. Omitted ⇒ the launcher
+    // leaves each client at its native default (no --context-size flag passed).
+    let contextSize: SuContextSize | null = null;
+    if (body.context_size != null && body.context_size !== '') {
+      if (!isSuContextSize(body.context_size)) {
+        return json({ status: 'error', error: 'context_size must be full|trimmed' }, 400);
+      }
+      contextSize = body.context_size;
+    }
     const kickoffV = validateKickoffKind(body.kickoff ?? null);
     if (kickoffV.kind === 'error') {
       return json({ status: 'error', error: kickoffV.error }, 400);
@@ -142,6 +155,7 @@ const launchSu = defineTool({
     if (harness) psuArgs.push(`--harness=${harness}`);
     psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
     if (model) psuArgs.push(`--model=${model}`);
+    if (contextSize) psuArgs.push(`--context-size=${contextSize}`);
     if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
     if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
     // hive-agent-tabs P-006: a New-plan launch IS the Planner — launch the

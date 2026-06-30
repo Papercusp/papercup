@@ -188,6 +188,37 @@ describe('launch-su', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  // su-context-size-variants (WI-1282): context_size is validated (full|trimmed)
+  // and, when valid, threaded into the psu argv as --context-size=<v>.
+  it('threads a valid context_size=trimmed into the psu oneliner', async () => {
+    const res = await callPost({ agent: 'codex', harness_slug: 'papercup', context_size: 'trimmed' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('ok');
+    expect(lastOneliner()).toContain('--context-size=trimmed');
+  });
+
+  it('threads a valid context_size=full into the psu oneliner', async () => {
+    await callPost({ agent: 'claude', harness_slug: 'papercup', context_size: 'full' });
+    expect(lastOneliner()).toContain('--context-size=full');
+  });
+
+  it('omits --context-size when context_size is absent or empty (native default)', async () => {
+    await callPost({ agent: 'claude', harness_slug: 'papercup' });
+    expect(lastOneliner()).not.toContain('--context-size');
+    spawnMock.mockClear();
+    await callPost({ agent: 'claude', harness_slug: 'papercup', context_size: '' });
+    expect(lastOneliner()).not.toContain('--context-size');
+  });
+
+  it('rejects a context_size typo with 400 (no spawn)', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', context_size: 'trimed' });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.status).toBe('error');
+    expect(body.error).toContain('context_size');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   // P-012 (unify-agent-spawn-chokepoint): the psu web launch passes the SAME
   // interactive safety floor as the native console launch — admission waived,
   // ceiling enforced.

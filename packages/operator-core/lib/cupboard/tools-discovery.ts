@@ -37,6 +37,14 @@ export interface ToolDiscoveryEntry {
    * providing unit's. Drives capability search + the UI's description line.
    */
   description?: string | null;
+  /**
+   * Compact, human-readable arg-schema text derived from the tool's JSON
+   * inputSchema (`key:type description; …`). Makes argument names + their docs
+   * searchable (lexical + embedding legs) and returnable by `tools:find`, so an
+   * intent query can match on what a tool's PARAMETERS are, not just its name.
+   * Null when the tool takes no args or the schema is absent.
+   */
+  argSchema?: string | null;
   /** The capability gate string (e.g. `tasks:read`), for built-ins. */
   capability?: string | null;
   /** Who provides it (the resolver's answer). */
@@ -91,7 +99,40 @@ export interface ToolsDiscoveryFilters {
  * stay unit-testable. Cupboard-only tools (names with no local registration)
  * are absent — they fall back to the providing unit's description.
  */
-export type ToolMetaIndex = Map<string, { description?: string | null; capability?: string | null }>;
+export type ToolMetaIndex = Map<
+  string,
+  { description?: string | null; capability?: string | null; argSchema?: string | null }
+>;
+
+/**
+ * Render a tool's JSON inputSchema into one compact searchable/embeddable line:
+ * `key:type description; otherKey?:enum …` (a `?` marks an optional property).
+ * Pulls only the model-facing surface — property names, their `type` (or `enum`),
+ * and their `description` — so the arg vocabulary feeds both search legs without
+ * dragging the raw JSON Schema into the corpus. Null for a no-arg / absent /
+ * non-object schema.
+ */
+export function schemaToText(inputSchema: unknown): string | null {
+  if (!inputSchema || typeof inputSchema !== 'object') return null;
+  const props = (inputSchema as { properties?: unknown }).properties;
+  if (!props || typeof props !== 'object') return null;
+  const requiredRaw = (inputSchema as { required?: unknown }).required;
+  const required = new Set<string>(Array.isArray(requiredRaw) ? (requiredRaw as string[]) : []);
+  const parts: string[] = [];
+  for (const [name, raw] of Object.entries(props as Record<string, unknown>)) {
+    const p = (raw && typeof raw === 'object' ? raw : {}) as {
+      description?: unknown;
+      type?: unknown;
+      enum?: unknown;
+    };
+    const type =
+      typeof p.type === 'string' ? p.type : Array.isArray(p.enum) ? 'enum' : '';
+    const desc = typeof p.description === 'string' ? p.description.trim() : '';
+    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}` : ''}`;
+    parts.push(desc ? `${head} ${desc}` : head);
+  }
+  return parts.length > 0 ? parts.join('; ') : null;
+}
 
 function unitOf(pack: PackDescriptor): ToolDiscoveryEntry['unit'] {
   return {
@@ -136,6 +177,7 @@ export function resolveToolEntries(
     const m = meta?.get(tool);
     entry.description = m?.description ?? entry.unit?.description ?? null;
     entry.capability = m?.capability ?? null;
+    entry.argSchema = m?.argSchema ?? null;
     entries.push(entry);
   }
   return entries;
@@ -234,11 +276,17 @@ export function collectToolMeta(): ToolMetaIndex {
   for (const t of getCatalog()) {
     meta.set(t.name, { description: t.description ?? null, capability: t.capability ?? null });
   }
+  // The projected mirror carries the ready-made JSON `inputSchema` (the legacy
+  // catalog only holds the un-rendered zod validator), so arg-schema text is
+  // sourced here — ENRICHING the built-in entries above with their `argSchema`
+  // AND adding projected-only (installed plugin) tools.
   for (const t of listAllProjectedTools()) {
     const name = t.expose?.mcp?.name;
-    if (typeof name === 'string' && name.length > 0 && !meta.has(name)) {
-      meta.set(name, { description: t.description ?? null, capability: null });
-    }
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const argSchema = schemaToText(t.inputSchema);
+    const existing = meta.get(name);
+    if (existing) existing.argSchema = argSchema; // built-in: keep its capability gate
+    else meta.set(name, { description: t.description ?? null, capability: null, argSchema });
   }
   return meta;
 }

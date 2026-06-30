@@ -46,6 +46,10 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
+
+// su-context-size-variants: the always-loaded core spine the codex 'trimmed' variant
+// advertises via ?tools= (the only trim lever codex has — it has no native discovery).
+import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
@@ -406,6 +410,9 @@ export interface BuildSuLaunchSpecInput {
   harnessSlug?: string | null;
   /** Playbook profile: 'engineer' (default) | 'power' | 'generic'. */
   profile?: string;
+  /** su-context-size-variants: 'full' | 'trimmed' — initial-context size. Codex
+   *  hard-trims via the ?tools= allowlist baked here; claude/omp soft-trim at launch. */
+  contextSize?: 'full' | 'trimmed' | null;
   /** Plan binding for the launch-context addendum (optional). */
   planSlug?: string | null;
   planTitle?: string | null;
@@ -584,6 +591,15 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const mcpUrl = new URL(`${resolveAgentMcpBaseUrl(input.operatorBaseUrl)}/api/mcp`);
   mcpUrl.searchParams.set('superuser', '1');
   mcpUrl.searchParams.set('workspace', input.workspaceId);
+  // su-context-size-variants — Codex has NO native tool discovery (it loads the whole
+  // tools/list up-front), so a 'trimmed' codex session is hard-trimmed SERVER-SIDE:
+  // advertise only the core spine via the ?tools= allowlist (filterListingsByAllowlist
+  // in the MCP handler). claude/omp soft-trim natively, so this is gated to codex;
+  // 'full'/omitted leaves the whole superuser catalog advertised. URLSearchParams
+  // encodes the colon/comma tool names; parseToolsAllowlist decodes them server-side.
+  if (input.agent === 'codex' && input.contextSize === 'trimmed') {
+    mcpUrl.searchParams.set('tools', CORE_MCP_TOOL_NAMES.join(','));
+  }
   const mcpUrlStr = mcpUrl.toString();
   const mcpJsonContents = JSON.stringify(
     {

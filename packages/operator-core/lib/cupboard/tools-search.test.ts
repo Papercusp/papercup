@@ -51,6 +51,29 @@ describe('contentTokens', () => {
   });
 });
 
+describe('argSchema field (searchable parameters)', () => {
+  it('FIELD_WEIGHTS ranks argSchema lowest (below description)', () => {
+    expect(FIELD_WEIGHTS.argSchema).toBe(1);
+    expect(FIELD_WEIGHTS.argSchema).toBeLessThan(FIELD_WEIGHTS.description);
+  });
+
+  it('matches a query word that only appears in a parameter name/doc', () => {
+    const e = entry({
+      tool: 'flags:set',
+      description: 'flip a flag',
+      argSchema: 'key:string the flag key; enabled:boolean on or off',
+    });
+    // "enabled" is absent from the name + description; only the arg schema has it.
+    expect(scoreTool(e, 'enabled')).toBeGreaterThan(0);
+  });
+
+  it('an argSchema-only hit ranks below a description hit for the same word', () => {
+    const descHit = entry({ tool: 'b:two', description: 'the thing matters', argSchema: null });
+    const argHit = entry({ tool: 'a:one', description: 'unrelated', argSchema: 'thing:string the thing' });
+    expect(scoreTool(descHit, 'thing')).toBeGreaterThan(scoreTool(argHit, 'thing'));
+  });
+});
+
 describe('scoreTool', () => {
   it('OR across content tokens — one hit is enough; a no-hit query scores 0', () => {
     const e = entry({ tool: 'coord:send', description: 'send a message to a peer' });

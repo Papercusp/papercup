@@ -48,6 +48,8 @@ export interface ToolFindHit {
   /** Tool MCP name, e.g. `flags:set`. */
   tool: string;
   description: string | null;
+  /** Compact arg-schema text (`key:type description; …`); null for a no-arg tool. */
+  argSchema: string | null;
   category: string;
   /** Which leg(s) surfaced it. */
   via: 'lexical' | 'semantic' | 'both';
@@ -70,7 +72,14 @@ const DEFAULT_LIMIT = 10;
 const DEFAULT_MIN_COSINE = 0.35;
 
 function entryHit(e: ToolDiscoveryEntry, via: ToolFindHit['via'], cosine: number | null): ToolFindHit {
-  return { tool: e.tool, description: e.description ?? null, category: e.category, via, cosine };
+  return {
+    tool: e.tool,
+    description: e.description ?? null,
+    argSchema: e.argSchema ?? null,
+    category: e.category,
+    via,
+    cosine,
+  };
 }
 
 /**

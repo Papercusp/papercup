@@ -69,6 +69,10 @@ import { join } from 'node:path';
 import { buildRoleLaunchSpec, buildLaunchSpec } from './role-launch-spec';
 import { resolveProjectDir } from './spawn-config';
 import { readSuperuserToken } from './superuser-token';
+// su-context-size-variants (WI-1282): the always-loaded core spine the codex
+// 'trimmed' variant advertises via ?tools=. NOT mocked — the test pins the
+// URL's tools= param to the REAL exported list so the two can't drift.
+import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 // The SHARED launch-mechanics keying helper — the SAME module invoke.ts
 // (orchestrator launch) + wake-executor (resume) import. Asserting the spec's
 // dirs equal these proves "one HOW" across launch paths (P-005). NOT mocked.
@@ -329,5 +333,56 @@ describe('buildLaunchSpec — kind dispatch', () => {
     });
     const mcp = JSON.parse(spec.mcpJsonContents);
     expect(mcp.mcpServers.papercusp.headers).toEqual({});
+  });
+});
+
+// su-context-size-variants (WI-1282): codex has NO native tool discovery, so a
+// 'trimmed' codex SU session is hard-trimmed SERVER-SIDE by baking the core-spine
+// allowlist into the superuser MCP URL as `?tools=`. claude/omp soft-trim natively,
+// so the lever is gated to codex; 'full'/omitted advertise the whole catalog.
+describe("buildSuLaunchSpec — codex 'trimmed' ?tools= allowlist lever", () => {
+  async function suMcpUrl(
+    agent: 'claude' | 'omp' | 'codex',
+    contextSize?: 'full' | 'trimmed' | null,
+  ): Promise<URL> {
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent,
+      workspaceId: 'default',
+      operatorBaseUrl: 'http://localhost:3070',
+      contextSize,
+    });
+    return new URL(spec.mcpUrl);
+  }
+
+  it('codex + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES (URL-decoded)', async () => {
+    const u = await suMcpUrl('codex', 'trimmed');
+    // URLSearchParams.get decodes the %3A/%2C-encoded colon/comma tool names.
+    expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    // …and that round-trips back to the exact list the server allowlist decodes.
+    expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES]);
+    // The superuser door is otherwise unchanged.
+    expect(u.searchParams.get('superuser')).toBe('1');
+    expect(u.searchParams.get('workspace')).toBe('default');
+  });
+
+  it('codex + full ⇒ NO tools= param (whole catalog advertised)', async () => {
+    const u = await suMcpUrl('codex', 'full');
+    expect(u.searchParams.has('tools')).toBe(false);
+  });
+
+  it('codex + omitted/null ⇒ NO tools= param (native default)', async () => {
+    expect((await suMcpUrl('codex')).searchParams.has('tools')).toBe(false);
+    expect((await suMcpUrl('codex', null)).searchParams.has('tools')).toBe(false);
+  });
+
+  it('claude + trimmed ⇒ NO tools= param (claude soft-trims natively)', async () => {
+    const u = await suMcpUrl('claude', 'trimmed');
+    expect(u.searchParams.has('tools')).toBe(false);
+  });
+
+  it('omp + trimmed ⇒ NO tools= param (omp soft-trims natively)', async () => {
+    const u = await suMcpUrl('omp', 'trimmed');
+    expect(u.searchParams.has('tools')).toBe(false);
   });
 });

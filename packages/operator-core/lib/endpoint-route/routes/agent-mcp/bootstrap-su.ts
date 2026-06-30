@@ -432,14 +432,30 @@ const optionsGet = defineTool({
     // for the psu fleet picker. Persist even with zero live members (D-003), so
     // this is the "pick existing fleet" list. Fail-soft: any error ⇒ [] (the picker
     // still shows its "no fleet" / "create new" rows).
-    let fleets: Array<{ slug: string; title: string | null }> = [];
+    // fleet-color-schemes: carry each fleet's resolved color so the picker can
+    // show a swatch, plus `nextScheme` — the color a NEW fleet would be allocated
+    // — so the "create a new fleet" row previews its eventual color too.
+    type SchemeColor = { name: string; bg: string; fg: string; cursor: string };
+    let fleets: Array<{ slug: string; title: string | null; scheme: string | null; color: SchemeColor }> = [];
+    let nextScheme: SchemeColor | null = null;
     try {
-      const { listFleets } = await import('../../../agent-fleets-store');
-      fleets = (await listFleets(workspace)).map((f) => ({ slug: f.fleetSlug, title: f.title }));
+      const { listFleets, resolveFleetScheme } = await import('../../../agent-fleets-store');
+      const { allocateNextSchemeName, schemeByName } = await import('../../../console-color-schemes');
+      const rows = await listFleets(workspace);
+      fleets = rows.map((f) => ({
+        slug: f.fleetSlug,
+        title: f.title,
+        scheme: f.colorScheme,
+        color: resolveFleetScheme(f),
+      }));
+      // Deterministic given the current in-use set — the create path re-derives
+      // the same one, so this preview matches what the new fleet actually gets.
+      const used = rows.map((f) => f.colorScheme).filter((n): n is string => !!n);
+      nextScheme = schemeByName(allocateNextSchemeName(used)) ?? null;
     } catch {
       /* fleet listing is optional — proceed without it */
     }
-    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts, fleets });
+    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts, fleets, nextScheme });
   },
 });
 
@@ -484,6 +500,8 @@ const post = defineTool({
        * Claude/OMP receive this as an extra system prompt from the launcher;
        * Codex has no such flag, so bootstrap folds it into AGENTS.md. */
       launch_context?: string | null;
+      /** su-context-size-variants: 'full' | 'trimmed' — the initial-context size. */
+      context_size?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -516,6 +534,18 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: `profile must be engineer|power|generic (got ${profileRaw.slice(0, 24)})` }, 400);
     }
     const profile = profileRaw ?? 'engineer';
+
+    // su-context-size-variants: 'full' loads the whole superuser catalog up-front;
+    // 'trimmed' uses each client's native soft-trim. Omitted ⇒ each client's native
+    // default (no lever applied). Validated here so a typo 400s, never silently falls back.
+    const contextSizeRaw = body.context_size?.trim() || null;
+    if (contextSizeRaw && contextSizeRaw !== 'full' && contextSizeRaw !== 'trimmed') {
+      return jsonRes(
+        { status: 'error', error: `context_size must be full|trimmed (got ${contextSizeRaw.slice(0, 24)})` },
+        400,
+      );
+    }
+    const contextSize = contextSizeRaw as 'full' | 'trimmed' | null;
 
     const brain = body.brain === true;
     if (brain) {
@@ -580,6 +610,7 @@ const post = defineTool({
         operatorBaseUrl: new URL(req.url).origin,
         harnessSlug,
         profile,
+        contextSize,
         planSlug,
         planTitle,
         planNow,

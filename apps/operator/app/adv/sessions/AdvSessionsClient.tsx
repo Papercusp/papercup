@@ -237,6 +237,32 @@ const SU_AGENT_OPTIONS = [
   { value: 'codex', label: 'codex' },
 ];
 
+// su-context-size-variants: a context-size toggle ORTHOGONAL to the agent.
+// 'default' omits the flag so each client keeps its native default; 'full'
+// loads the whole superuser catalog up-front; 'trimmed' uses the client's
+// native soft-trim (small core up-front, the rest on demand).
+//
+// SU_CONTEXT_TOKEN_ESTIMATES — the per-variant ~Nk figures shown in the picker.
+// STATIC by deliberate choice (WI-1282): these are MEASURED estimates from the
+// token-usage-reduction-audit + tool-discovery-for-weak-models passes —
+//   full    ≈ ~141k MCP catalog + ~38k static prefix ≈ ~180k
+//   trimmed ≈ ~9k core (CORE_MCP_TOOL_NAMES) + ~38k static prefix ≈ ~50k
+// They are NOT computed live: js-tiktoken is a dep but there is no server seam
+// that serializes the full-vs-core-filtered tools/list catalog for tokenizing,
+// and the headline totals fold in the ~38k system-prompt prefix (not catalog-
+// derived). Wire these to a real /api token-count endpoint if/when that catalog
+// seam lands; until then this single constant is the one place to update.
+const SU_CONTEXT_TOKEN_ESTIMATES = {
+  full: '~180k',
+  trimmed: '~50k',
+} as const;
+const CONTEXT_SELECT_DEFAULT = '__default_context__';
+const SU_CONTEXT_OPTIONS = [
+  { value: CONTEXT_SELECT_DEFAULT, label: 'Context: default' },
+  { value: 'full', label: `Full · ${SU_CONTEXT_TOKEN_ESTIMATES.full}` },
+  { value: 'trimmed', label: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}` },
+];
+
 export default function AdvSessionsClient() {
   const t = useLexicon();
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
@@ -259,6 +285,11 @@ export default function AdvSessionsClient() {
   const [suAgent, setSuAgent] = useQueryState(
     'suAgent',
     parseAsStringEnum<'claude' | 'omp' | 'codex'>(['claude', 'omp', 'codex']).withDefault('claude'),
+  );
+  // su-context-size-variants: null ⇒ each client's native default (no flag).
+  const [suContext, setSuContext] = useQueryState(
+    'suContext',
+    parseAsStringEnum<'full' | 'trimmed'>(['full', 'trimmed']),
   );
   const [launchingSu, setLaunchingSu] = useState(false);
   const [stateData, setStateData] = useState<SessionStateResponse | null>(null);
@@ -475,6 +506,7 @@ export default function AdvSessionsClient() {
           agent: suAgent,
           harness_slug: advActiveSlug ?? null,
           plan_slug: launchPlanSlug ?? null,
+          context_size: suContext ?? null,
         }),
       });
       const data = (await r.json()) as { status?: string; code?: string; error?: string };
@@ -493,7 +525,7 @@ export default function AdvSessionsClient() {
     } finally {
       setLaunchingSu(false);
     }
-  }, [launchingSu, suAgent, advActiveSlug, launchPlanSlug]);
+  }, [launchingSu, suAgent, suContext, advActiveSlug, launchPlanSlug]);
 
   const focusRow = useCallback(async (row: SessionRow) => {
     if (!row.pid && !row.windowId) {
@@ -705,6 +737,15 @@ export default function AdvSessionsClient() {
               onChange={(value) => void setSuAgent(value as 'claude' | 'omp' | 'codex')}
               ariaLabel="Agent for Launch SU"
               options={SU_AGENT_OPTIONS}
+            />
+            <Select
+              triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--context"
+              value={suContext ?? CONTEXT_SELECT_DEFAULT}
+              onChange={(value) =>
+                void setSuContext(value === CONTEXT_SELECT_DEFAULT ? null : (value as 'full' | 'trimmed'))
+              }
+              ariaLabel="Context size for Launch SU"
+              options={SU_CONTEXT_OPTIONS}
             />
             <Button
               variant="ghost"

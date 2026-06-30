@@ -12,7 +12,7 @@
  * so there's a single launch implementation instead of two).
  */
 import type { LaunchOpts } from './native-console';
-import type { SuAgent } from './su-agents';
+import type { SuAgent, SuContextSize } from './su-agents';
 
 export interface LaunchAgentOpts extends LaunchOpts {
   /** Which backend to launch. Omitted → the configured backend
@@ -25,6 +25,13 @@ export interface LaunchAgentOpts extends LaunchOpts {
    * Returns `advSessionId` of the recorded row.
    */
   deferSpawn?: boolean;
+  /**
+   * su-context-size-variants: initial-context size variant, orthogonal to
+   * `agent`. 'full' loads the whole superuser catalog; 'trimmed' uses the
+   * client's native soft-trim (small core up-front, rest on demand). Omitted →
+   * the client's native default.
+   */
+  contextSize?: SuContextSize;
 }
 
 export interface LaunchAgentResult {
@@ -64,6 +71,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     harness_slug: opts.slug ?? null,
     plan_slug: opts.planSlug ?? null,
     model: opts.model ?? null,
+    context_size: opts.contextSize ?? null,
     resume_session_id: opts.resumeSessionId ?? null,
     kickoff: opts.kickoff ?? null,
     defer_spawn: opts.deferSpawn ?? false,
