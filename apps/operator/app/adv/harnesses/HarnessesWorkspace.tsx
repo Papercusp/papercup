@@ -14,7 +14,7 @@ import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { useSyncQuery } from '@papercusp/sync';
-import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
+import { hiveMembers, resolveFocusedMember, resolveDockSlug, isHarnessParamStale } from './harness-axis';
 import { groupByHive } from './harness-hive-groups';
 import './adv-dock.css';
 import './adv-panel-chrome.css';
@@ -101,10 +101,21 @@ export default function HarnessesWorkspace() {
     () => resolveFocusedMember({ members, urlHarness: harness }),
     [members, harness],
   );
-  // The harness the dock + meta line target: the focused member, falling back
-  // to the hive root while projects/lite is still loading (members empty) so
-  // the common solo case mounts instantly with no flash.
-  const dockSlug = focusedMember ?? (slug || null);
+  // The harness the dock + meta line + work-items panel target. A FORMAL hive
+  // home (harness_kind:'hive') is excluded from its own member list, so without
+  // resolveDockSlug a hive-home selection with no explicit ?harness= would
+  // auto-focus members[0] (its first child) and the work-items panel would query
+  // the wrong harness — the "papercusp parent still shows hive-canary items"
+  // bug. resolveDockSlug shows the selected hive's OWN content instead. (Still
+  // falls back to the focused member for a drill-in / ghost root, and to the raw
+  // slug while projects/lite loads so the solo case mounts with no flash.)
+  const dockSlug = resolveDockSlug({
+    slug: slug || null,
+    urlHarness: harness,
+    members,
+    projects,
+    focusedMember,
+  });
 
   // Zero-new-poller liveness hint for the rail (P-002): `hasState` from the
   // already-fetched projects/lite payload (the harness has been set up).

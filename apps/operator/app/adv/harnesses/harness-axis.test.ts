@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import {
   hiveMembers,
   isHarnessParamStale,
+  resolveDockSlug,
   resolveFocusedMember,
   type HarnessProjectLite,
   type HiveMember,
@@ -133,5 +134,93 @@ describe('isHarnessParamStale', () => {
 
   it('false while members have not loaded yet (deep-link protection)', () => {
     expect(isHarnessParamStale([], 'alpha')).toBe(false);
+  });
+});
+
+describe('resolveDockSlug (hive home shows ITS OWN content)', () => {
+  // A formal hive home owns work items but is excluded from its own member
+  // list, so members[0] is its first child. The dock must target the home, not
+  // the child.
+  const hiveHomeProjects = [
+    p('papercusp', { harness_kind: 'hive' }),
+    p('hive-canary', { hive_slug: 'papercusp' }),
+  ];
+  const hiveHomeMembers = [member('hive-canary')]; // rootless: the home is excluded
+  // resolveFocusedMember would auto-focus the first child for this rootless list.
+  const focusedChild = resolveFocusedMember({ members: hiveHomeMembers, urlHarness: null });
+
+  it('THE BUG FIX: selecting the papercusp hive home (no ?harness) targets papercusp, NOT hive-canary', () => {
+    expect(focusedChild).toBe('hive-canary'); // the pre-fix dockSlug would have been this
+    expect(
+      resolveDockSlug({
+        slug: 'papercusp',
+        urlHarness: null,
+        members: hiveHomeMembers,
+        projects: hiveHomeProjects,
+        focusedMember: focusedChild,
+      }),
+    ).toBe('papercusp');
+  });
+
+  it('an explicit ?harness= drill-in to a current member still wins (focus the child)', () => {
+    expect(
+      resolveDockSlug({
+        slug: 'papercusp',
+        urlHarness: 'hive-canary',
+        members: hiveHomeMembers,
+        projects: hiveHomeProjects,
+        focusedMember: 'hive-canary',
+      }),
+    ).toBe('hive-canary');
+  });
+
+  it('a STALE ?harness= (not a current member) is ignored → the home shows its own content', () => {
+    expect(
+      resolveDockSlug({
+        slug: 'papercusp',
+        urlHarness: 'removed-member',
+        members: hiveHomeMembers,
+        projects: hiveHomeProjects,
+        focusedMember: 'hive-canary',
+      }),
+    ).toBe('papercusp');
+  });
+
+  it('a ghost/unregistered root falls back to the focused member (first child) — unchanged', () => {
+    const ghostMembers = [member('child-a'), member('child-b')];
+    expect(
+      resolveDockSlug({
+        slug: 'ghost', // NOT in projects
+        urlHarness: null,
+        members: ghostMembers,
+        projects: [p('child-a'), p('child-b')],
+        focusedMember: resolveFocusedMember({ members: ghostMembers, urlHarness: null }),
+      }),
+    ).toBe('child-a');
+  });
+
+  it('a legacy hive (registered non-hive root) still targets its own slug — byte-identical to before', () => {
+    const legacyMembers = [member('legacy', true), member('kid')];
+    expect(
+      resolveDockSlug({
+        slug: 'legacy',
+        urlHarness: null,
+        members: legacyMembers,
+        projects: [p('legacy', { harness_kind: 'coding' }), p('kid', { parent_slug: 'legacy' })],
+        focusedMember: 'legacy',
+      }),
+    ).toBe('legacy');
+  });
+
+  it('while projects/lite is still loading (members empty) it falls back to the raw slug (no flash)', () => {
+    expect(
+      resolveDockSlug({
+        slug: 'papercusp',
+        urlHarness: null,
+        members: [],
+        projects: [],
+        focusedMember: null,
+      }),
+    ).toBe('papercusp');
   });
 });

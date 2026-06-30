@@ -128,6 +128,39 @@ export function resolveFocusedMember(opts: {
 }
 
 /**
+ * Which harness the Harnesses dock + work-items panel actually target for the
+ * current selection — distinct from resolveFocusedMember because it must also
+ * honor the SELECTED hive's OWN content.
+ *
+ * A FORMAL hive home (`harness_kind:'hive'`) is excluded from its own member
+ * list by hiveMembers (it is the group, not a member). But such a home can
+ * still OWN work items (e.g. `papercusp` owns ~317). Without this, selecting a
+ * hive home with no explicit `?harness=` falls through resolveFocusedMember to
+ * members[0] — its first child (e.g. `hive-canary`) — so the work-items panel
+ * queries the WRONG harness ("papercusp parent still shows hive-canary items").
+ *
+ * Precedence:
+ *   1. An explicit `?harness=` that names a CURRENT member (deep-link / drill-in).
+ *   2. The selected `slug` itself when it is a registered project — a hive home
+ *      or harness shows ITS OWN content (the fix for the parent-select case).
+ *   3. The resolved focused member (a ghost/unregistered root → its first child).
+ *   4. The raw `slug` (projects/lite still loading: members empty) so the common
+ *      solo case mounts instantly with no flash.
+ */
+export function resolveDockSlug(opts: {
+  slug: string | null;
+  urlHarness: string | null;
+  members: readonly HiveMember[];
+  projects: readonly HarnessProjectLite[];
+  focusedMember: string | null;
+}): string | null {
+  const { slug, urlHarness, members, projects, focusedMember } = opts;
+  if (urlHarness && members.some((m) => m.slug === urlHarness)) return urlHarness;
+  if (slug && projects.some((proj) => proj.slug === slug)) return slug;
+  return focusedMember ?? (slug || null);
+}
+
+/**
  * Whether a URL `?harness=` value is stale for the current hive — set but
  * not a member (e.g. the shell selector just switched `?slug=` to a
  * different hive). The tab drops it so the dock falls back to the new
