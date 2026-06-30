@@ -26,8 +26,9 @@
  * `fireLaunchBlueprint`.
  */
 import { randomUUID } from 'node:crypto';
-import { loadBuiltinBlueprint, assertNotNestedHive, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { loadBuiltinBlueprint, loadBlueprintFromFile, assertNotNestedHive, type Blueprint, type ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
 import { getOrgPg } from '@papercusp/db-org';
+import { operatorResolveExtends } from './installed-blueprints';
 import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
@@ -69,6 +70,33 @@ const builtinResolver: LaunchResolverFn = (id) => loadBuiltinBlueprint(id).bluep
 let _resolver: LaunchResolverFn = builtinResolver;
 export function setLaunchBlueprintResolver(fn: LaunchResolverFn | null): void {
   _resolver = fn ?? builtinResolver;
+}
+
+/**
+ * A launch resolver that spans the operator's distribution tiers — installed
+ * (`~/.papercusp/blueprints`) → built-in — the SAME resolution `blueprint:validate`
+ * and `blueprint:catalog` already use (`operatorResolveExtends` + `loadBlueprintFromFile`).
+ *
+ * Without this the DEFAULT resolver (`builtinResolver`) is built-in-ONLY, so a
+ * HARNESS-provided cadence blueprint installed under the installed tier
+ * (e.g. `oddsmith-prospector`) fired by a `system:blueprint-run` routine throws
+ * `no built-in blueprint "…"` instead of resolving — the missing integration that
+ * blocked the harness-provided-cadence live-arm (harness-provided-cadence-ops-2026-06-26
+ * D-007 / WI-1146). Built-in ids resolve identically (the composed resolver includes
+ * the built-in tier), so this is purely additive. Wire it once at operator boot via
+ * `setLaunchBlueprintResolver(installedAwareLaunchResolver())`. `resolve` is injectable
+ * for tests.
+ */
+export function installedAwareLaunchResolver(
+  resolve: ResolveExtendsPath = operatorResolveExtends(),
+): LaunchResolverFn {
+  return (id) => {
+    const file = resolve(id);
+    if (file) return loadBlueprintFromFile(file, resolve).blueprint;
+    // Truly-unknown id: fall back to the built-in loader so the error message
+    // (`no built-in blueprint "…"`) is preserved for genuinely-missing ids.
+    return loadBuiltinBlueprint(id).blueprint;
+  };
 }
 
 /** Build the invoke-route URL for a role launch. */

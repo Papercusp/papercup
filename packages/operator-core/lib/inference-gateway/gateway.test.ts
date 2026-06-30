@@ -2285,3 +2285,63 @@ test('egress-ip-pool: a bare-burst 429 on one egress IP rotates to a SIBLING IP 
   resetGovernorRegistry();
 });
 
+test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs is down-ranked so soft-pin overflow steers to a FRESH sibling account (P-005, gateway-per-account-egress-ip-pool-2026-06-30)', async () => {
+  // Account A has a 3-IP pool; B is a fresh 1-IP account. Request 1 (pinned to A) bare-429s on A's
+  // first two IPs (each cools + rotates to the next), then 200 on the third — so A ends with 2/3 IPs
+  // cooled but is NOT account-paused (the per-IP rotation skips the account circuit). Request 2 (pinned
+  // to A) must yield to the fresh account B: keyOf adds +1 per cooled IP, so A scores ~2 vs B's 0 — well
+  // past the 0.5 cache-affinity credit. WITHOUT the de-concentration penalty, request 2 would re-pile
+  // onto A (pin honored, A unpaused) — the exact amplifier that throttled aviynw8.
+  resetGovernorRegistry();
+  const aCalls = { n: 0 };
+  const fetchImpl = (async (_url: string, init: { headers: Record<string, string> }) => {
+    if (init.headers.authorization === 'Bearer A-tok') {
+      aCalls.n += 1;
+      if (aCalls.n <= 2) {
+        return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+
+  const A: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egressPool: [{ proxyUrl: 'http://127.0.0.1:3128' }, { proxyUrl: 'http://127.0.0.1:3129' }, { proxyUrl: 'http://127.0.0.1:3130' }],
+  };
+  const B: ActiveAccount = { accountId: 'B', token: async () => 'B-tok', egress: { proxyUrl: 'http://127.0.0.1:3200' } };
+  const pool = createFailoverPool([A, B]);
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 200,
+    bare429FailoverBackoffMs: 60_000, // keep A's cooled IPs cooled across both requests
+  });
+  port = await gw.listen(0);
+
+  const pinA = () =>
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+
+  const r1 = await pinA();
+  assert.equal(r1.status, 200, "request 1 rode A's IP pool to a 200 (rotated past the two throttled IPs)");
+  assert.ok(aCalls.n >= 3, 'A took ≥3 attempts: IP-1 (429) → IP-2 (429) → IP-3 (200) — per-IP rotation within the account');
+
+  const r2 = await pinA();
+  assert.equal(r2.status, 200, 'request 2 served a 200');
+  assert.equal(
+    r2.headers.get('x-papercusp-routed-account'),
+    'B',
+    'request 2 steered to the FRESH account B — A was down-ranked because 2/3 of its egress IPs are cooled (de-concentration)',
+  );
+  resetGovernorRegistry();
+});
+

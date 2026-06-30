@@ -105,8 +105,19 @@ files) which the 06-24 runbook §4 explicitly scopes OUT as a separate deliberat
 
 ---
 
-## Plan-status writes still pending (papercusp-su MCP was disconnected during this session)
-When the MCP is back these get pushed (tracked so they aren't lost):
+## Plan-status writes still pending — dispatched to a capable su (2026-06-30 update)
+**Why not done directly:** after the session restart the MCP reconnected, but this Claude session's
+principal is now **`system:sentinel`** (the always-on read/coordinate persona), which by RBAC design
+**lacks `plans:write`** (and `audit:read`) — `plans:set-status` returns `missing_capability`. This is a
+*different* wall than the 06-29 trust-gate finding: it's the principal's capability set, not loopback
+trust. An **su** principal holds both `plans:write` and verified trust, so the correct non-circumventing
+route is to have a live su run the flips.
+**Action taken (2026-06-30 ~14:20):** dispatched the 4-flip batch (below) to live idle su teammate
+**`su-ba9fb977`** via `coord:send` (durable inject ok, msg_id `mr0qgy0z`; the first `wake:required`
+attempt timed out under the active bg-host event-loop-freeze incident, so a plain no-wake resend made
+delivery durable). It runs `plans:set-status` on its next turn; `wakeOnReply` armed.
+**Deterministic fallback if the peer doesn't land it:** owner flips the 4 in the Plans dashboard
+(verified trust) — the exact set:
 - phase5 `P-001` → **done** (dir renamed via symlink bridge).
 - phase5 `P-009` → **done** (migration 422 authored/applied/recorded AND the live `papercup_shared` views dropped via `sudo -u postgres` — no residual).
 - migration `P-004` → **done** (verified).

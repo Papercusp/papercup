@@ -23,6 +23,7 @@ import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loo
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
+import { setLaunchBlueprintResolver, installedAwareLaunchResolver } from '@papercusp/operator-core/lib/blueprint/launch-blueprint';
 import { backgroundWorkersEnabled, utilityHostEnabled } from '@papercusp/operator-core/lib/background-workers';
 import { startClaudeCredentialSync } from '@papercusp/operator-core/lib/claude-credential-sync';
 import { FLAGS } from '@papercusp/flags';

@@ -299,6 +299,46 @@ from a safety device into a **stuck-open latch** — it false-keeps healthy capa
 starves the pool exactly when load is highest. Size recovery-probe timeouts off the *slow-healthy*
 p99, not the fast path.
 
+## Egress IP POOL — rotate WITHIN an account (the per-IP-throttle fix)
+
+> Added 2026-06-30 (`gateway-per-account-egress-ip-pool-2026-06-30`). The singular `egress`
+> above gives each account ONE outbound IP. That is not enough when the throttle is a
+> **Cloudflare per-IP EDGE throttle** (a `bare-burst` 429 — `429-shape=bare-burst`,
+> `server=cloudflare`, `util5h=- util7d=-`, i.e. NO Anthropic ratelimit headers): the IP is
+> rate-limited even though the **account budget is fine**. With one IP per account, a
+> **hard-pinned** agent has nowhere to go — it waits/429s on its single throttled IP and the
+> caller sees "constant API errors on an account with plenty of headroom" (owner-reported for
+> a pin to `aviynw8`, util7d 0.18).
+
+**The pool.** An account can carry `egressPool: AccountEgress[]` — an ordered list of egress
+IPs the gateway **round-robins** the account's upstream across (a per-account cursor). Resolve
+the effective list with `egressEntries(account)`: a non-empty `egressPool` wins; otherwise the
+singular `egress` is treated as a 1-entry pool; a `{}` entry is a **valid distinct egress** = the
+box's default outbound IP (this is how an account gets a second IP for free).
+
+**Per-IP cooldown, not account pause.** When the IP used for an attempt hits a bare-burst 429
+or a transport failure, the gateway **cools only that IP** (`ipCooldownUntil`, keyed by the
+`egressCacheKey` = `accountId|proxyUrl|localAddress`) and **retries the SAME account/credential
+on a sibling IP** — so a hard pin rides its own pool and cache-affinity (which is per-credential,
+not per-IP) is preserved. The pre-existing account-level circuit (`gov.pausedUntil` — bare-429
+persistence + transport circuit) now fires **only when ALL of an account's IPs are cooled**, so a
+0/1-IP account is byte-identical to before. A bare-429 IP-rotate is a routing event
+(`internalRetry.ipRotate` → `routedAround`), so it does **not** shrink global AIMD admission.
+
+**Configure it** (same restart-to-apply rule — the gateway resolves the pool at startup + on its
+poll):
+
+```
+accounts:register { id: "aviynw8", credentialRef: "<ref>",
+                    egressPool: [ { proxyUrl: "http://216.213.24.64:3128" }, {} ] }   // proxy + box-direct
+systemctl --user restart papercup-inference-gateway.service
+```
+
+Give each account **a few** IPs (the owner provisions clean ones; 3/account is the target) so a
+single IP tripping Cloudflare's per-IP burst ceiling never takes the account out of rotation. Watch
+it work: `journalctl --user -u papercup-inference-gateway.service | grep egress-ip-pool` shows the
+`rotating to a sibling IP on the SAME account` lines.
+
 ## Rollback
 
 Remove an account's egress and restart — it reverts to the default shared egress with no

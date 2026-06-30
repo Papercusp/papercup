@@ -22,7 +22,7 @@
  * Styling mirrors DogfoodBootstrapBanner (opaque --bg-1 bar, fixed top, overlays —
  * routes scroll underneath, no layout reservation).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 interface ResolvedDevOperator {
   id: string;
@@ -43,19 +43,46 @@ interface DevOperatorsResponse {
   selfPort: number | null;
 }
 
+/** A `deploy.*` commit ref (git-pipeline-stats.ts `CommitRef`). */
+interface CommitRef {
+  sha?: string | null;
+  committedAtMs?: number | null;
+}
+
 /** The subset of GET /api/desktop/git-pipeline this bar renders — the SAME pipeline stats
- *  the native dev-wrapper bar showed (dev_wrapper.rs status line): the staging (mainHead) /
- *  green-pin (ready) / deployed SHAs + the green-checkpoint gate health. */
+ *  the native dev-wrapper bar showed (dev_wrapper.rs `StatusSnapshot`): the staging (mainHead) /
+ *  green-pin (ready) / deployed SHAs + tip age, behind-count, and the green-checkpoint gate
+ *  health WITH time-since-last-green / red-streak / wedged-ticker (the fields the native bar
+ *  surfaced that the first port of this bar dropped). Shapes from git-pipeline-stats.ts. */
 interface PipelineStats {
   deploy?: {
-    mainHead?: { sha?: string | null } | null; // the integration branch == "staging" (field name predates the rename)
-    ready?: { sha?: string | null } | null; // the green pin == the `main` release branch
-    deployed?: { sha?: string | null } | null; // what the :3070 release checkout runs
+    mainHead?: CommitRef | null; // the integration branch == "staging" (field name predates the rename)
+    ready?: CommitRef | null; // the green pin == the `main` release branch
+    deployed?: CommitRef | null; // what the :3070 release checkout runs
+    deployedBehindReady?: number | null; // green & deployable but not yet deployed
+    readyBehindMain?: number | null; // staging buffer: main tip not yet green-checkpointed
   } | null;
-  gate?: { stalled?: boolean } | null;
+  gate?: {
+    stalled?: boolean;
+    consecutiveReds?: number | null;
+    lastGreenAtMs?: number | null; // time the gate last went green (the user's "time since last green")
+    fireStale?: boolean; // the green-checkpoint ticker is wedged / non-firing (WI-282)
+  } | null;
 }
 
 const sha7 = (s: string | null | undefined): string => (typeof s === 'string' && s ? s.slice(0, 7) : '—');
+
+/** Compact "23s / 14m / 3h / 2d" age from an epoch-ms timestamp (— when absent). */
+function ago(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—';
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 90) return `${Math.round(s)}s`;
+  const m = s / 60;
+  if (m < 90) return `${Math.round(m)}m`;
+  const h = m / 60;
+  if (h < 36) return `${Math.round(h)}h`;
+  return `${Math.round(h / 24)}d`;
+}
 
 // Matches the native bar's status cadence (dev_wrapper.rs POLL_INTERVAL / VersionBadge).
 const REFRESH_MS = 30_000;
@@ -64,6 +91,7 @@ export function EnvSwitcherBar() {
   const [data, setData] = useState<DevOperatorsResponse | null>(null);
   const [pipeline, setPipeline] = useState<PipelineStats | null>(null);
   const mounted = useRef(true);
+  const navRef = useRef<HTMLElement | null>(null);
   useEffect(() => () => { mounted.current = false; }, []);
 
   const load = useCallback(async () => {
@@ -126,6 +154,35 @@ export function EnvSwitcherBar() {
   const operators = data?.operators ?? [];
   const envOps = operators.filter((o) => o.kind === 'env');
   const releaseOp = operators.find((o) => o.kind === 'release');
+
+  // Reserve layout space so this FIXED bar never overlays the app's top chrome.
+  // Pad #root by the bar's measured height while it's shown; clear on hide. A
+  // ResizeObserver re-measures if the bar wraps on a narrow window. (The
+  // transient DogfoodBootstrapBanner still overlays — it's brief; this
+  // persistent bar must not.)
+  const barVisible = !!data && envOps.length > 0;
+  useLayoutEffect(() => {
+    const root = document.getElementById('root');
+    if (!root) return;
+    if (!barVisible) {
+      root.style.removeProperty('padding-top');
+      return;
+    }
+    const el = navRef.current;
+    if (!el) return;
+    const apply = () => {
+      root.style.paddingTop = `${el.offsetHeight}px`;
+    };
+    apply();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', apply);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', apply);
+      root.style.removeProperty('padding-top');
+    };
+  }, [barVisible]);
   // (The old native GTK dev-wrapper bar is RETIRED — D-019 — so there is no longer a native bar
   // to defer to; this in-webview bar is the single env bar on every platform.)
   // ALWAYS VISIBLE (owner request): show the bar whenever the desktop dev-operators endpoint
@@ -208,6 +265,7 @@ export function EnvSwitcherBar() {
 
   return (
     <nav
+      ref={navRef}
       data-testid="env-switcher-bar"
       aria-label="Environment switcher"
       style={{
@@ -240,7 +298,7 @@ export function EnvSwitcherBar() {
       {pipeline?.deploy && (
         <span
           data-testid="env-pipeline-stats"
-          title="git pipeline — staging (integration) / green (the release pin) / deployed (:3070) SHAs + green-checkpoint gate"
+          title="git pipeline — staging (integration tip + age) / green (release pin) / deployed (:3070) SHAs · green-checkpoint gate: time since last green, red streak, wedged-ticker"
           style={{
             marginLeft: 14,
             fontSize: 10,
@@ -249,13 +307,32 @@ export function EnvSwitcherBar() {
             color: 'var(--fg-mute, #888)',
           }}
         >
-          staging {sha7(pipeline.deploy.mainHead?.sha)} · green {sha7(pipeline.deploy.ready?.sha)} ·
-          deployed {sha7(pipeline.deploy.deployed?.sha)}
-          <span
-            style={{ marginLeft: 6, color: pipeline.gate?.stalled ? 'var(--bad, #ef4444)' : 'var(--good, #22c55e)' }}
-          >
-            {pipeline.gate?.stalled ? '⚠ gate' : '✓ gate'}
-          </span>
+          staging {sha7(pipeline.deploy.mainHead?.sha)}·{ago(pipeline.deploy.mainHead?.committedAtMs)} · green{' '}
+          {sha7(pipeline.deploy.ready?.sha)} · deployed {sha7(pipeline.deploy.deployed?.sha)}
+          {typeof pipeline.deploy.deployedBehindReady === 'number' && pipeline.deploy.deployedBehindReady > 0
+            ? ` (↓${pipeline.deploy.deployedBehindReady})`
+            : ''}
+          {pipeline.gate && (
+            <>
+              <span
+                style={{
+                  marginLeft: 6,
+                  color:
+                    pipeline.gate.stalled || pipeline.gate.fireStale
+                      ? 'var(--bad, #ef4444)'
+                      : 'var(--good, #22c55e)',
+                }}
+              >
+                {pipeline.gate.stalled || pipeline.gate.fireStale ? '⚠ gate' : '✓ gate'}
+              </span>
+              <span style={{ marginLeft: 4 }}>
+                {' · last green '}
+                {ago(pipeline.gate.lastGreenAtMs)} ago
+                {(pipeline.gate.consecutiveReds ?? 0) > 0 ? ` · ${pipeline.gate.consecutiveReds} red` : ''}
+                {pipeline.gate.fireStale ? ' · ticker wedged' : ''}
+              </span>
+            </>
+          )}
         </span>
       )}
       {releaseOp && renderButton(releaseOp, true)}
