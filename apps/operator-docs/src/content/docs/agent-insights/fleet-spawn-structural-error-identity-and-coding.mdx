@@ -38,7 +38,7 @@ curl-able admin trigger advertised in the tool's own docstring — failed with a
    the client-less superuser HTTP path. Fix: an admitted superuser (the host
    validator already proved loopback + the on-disk bearer = the machine
    admin) with no `?client=`/`x-papercusp-client` now defaults to the stable
-   `su-http-loopback` id — same stability class as a `?client=` machine UUID.
+   `su-loopback` id (`SUPERUSER_FALLBACK_CLIENT_ID`) — same stability class as a `?client=` machine UUID.
    An explicit client id still wins; non-superuser callers get NO default
    (unattributable writes stay rejected — EI-318's forgery concern is about
    *trusting caller-supplied* ids, not about assigning a fixed one post-proof).
