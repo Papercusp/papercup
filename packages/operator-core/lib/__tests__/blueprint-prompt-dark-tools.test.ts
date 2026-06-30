@@ -216,6 +216,12 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   //   hive:status    — "invisible to Pause/hive:status" (describing the Queen's visibility surface).
   'bee/bee/turn:interrupt',
   'bee/bee/hive:status',
+  // base/bee.base.md + base/queen.base.md — fleet:leave is NAMED, not called: the bee is
+  // "told to drop the work" and the Queen tells a PEER to `fleet:leave` (a routed action).
+  // Neither role calls it itself; their concrete fleet-membership tools are in deps.
+  // (gate-greening 2026-06-30)
+  'bee/bee/fleet:leave',
+  'coding/queen/fleet:leave',
 ]);
 
 // ─── 5. The blueprints under guard ──────────────────────────────────────────
