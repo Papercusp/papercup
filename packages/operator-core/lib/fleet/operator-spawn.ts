@@ -380,6 +380,11 @@ export interface OperatorSpawnInput {
   chunkId?: string | null;
   /** Queen-authored brief: the situational overlay the bee is MISSING. P-060. */
   brief?: string | null;
+  /** Named-fleet placement (fleet-color-schemes): when set, the bee launches INTO
+   *  this fleet — its env carries PAPERCUSP_FLEET_SLUG/ROLE + the scheme colors so
+   *  it auto-joins (the presence fleet label) + recolors its terminal at launch,
+   *  with no brief directive. */
+  fleet?: { slug: string; role: string; bg?: string; fg?: string; cursor?: string } | null;
   /**
    * Per-spawn model escalation (queen-model-tier-selection-2026-06-11).
    * `tier` names an entry in the user-defined tier menu (AgentConfig.tiers,
@@ -1127,6 +1132,23 @@ export async function spawnAgentInHarness(
   // comment naming assembleRolePrompt was the mis-wiring the plan flagged.)
   if (input.brief) {
     extraEnv.QUEEN_BRIEF = input.brief;
+  }
+  // Named-fleet placement (fleet-color-schemes): thread the fleet label + scheme
+  // colors so the bee auto-joins (PAPERCUSP_FLEET_SLUG/ROLE → its presence fold)
+  // and recolors its terminal at launch (PAPERCUSP_FLEET_BG/FG/CURSOR → the psu
+  // host's fleetOscFromEnv write), with no brief directive.
+  if (input.fleet?.slug) {
+    extraEnv.PAPERCUSP_FLEET_SLUG = input.fleet.slug;
+    extraEnv.PAPERCUSP_FLEET_ROLE = input.fleet.role || 'member';
+    if (input.fleet.bg) extraEnv.PAPERCUSP_FLEET_BG = input.fleet.bg;
+    if (input.fleet.fg) extraEnv.PAPERCUSP_FLEET_FG = input.fleet.fg;
+    if (input.fleet.cursor) extraEnv.PAPERCUSP_FLEET_CURSOR = input.fleet.cursor;
+    // The env above only COLORS the bee's terminal at launch (its OWN process reads
+    // PAPERCUSP_FLEET_*). The JOIN can't ride env — writePresence's fold runs in the
+    // operator, not the bee — so register a PENDING placement keyed by the spawnId;
+    // writePresence applies it on the bee's first presence write (same operator process).
+    const { setPendingFleet } = await import('../agent-tools/coordination/presence');
+    setPendingFleet(spawnId, input.fleet.slug, input.fleet.role || 'member');
   }
 
   // directed-wake-honesty-and-spawn-handoff P-021/P-012: assemble the ONE bounded

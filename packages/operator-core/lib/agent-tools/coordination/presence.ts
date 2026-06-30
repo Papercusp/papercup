@@ -76,6 +76,24 @@ export async function writePresence(
     `;
   }
 
+  // Spawned-bee fleet placement (fleet-color-schemes): a headless operator-spawn
+  // bee's fleet can't ride the env-fold above (that reads the OPERATOR's env, not
+  // the bee's), so fleet:spawn { fleet } registered a PENDING placement keyed by
+  // the bee's spawnId. The row now exists (store.write above created/updated it),
+  // so apply it as an authoritative hard-set, then it's cleared (one-shot). Only a
+  // spawned bee with a pending placement pays anything.
+  const pendingFleet = takePendingFleet(identity.ownerId);
+  if (pendingFleet) {
+    await setPresenceFleet(
+      identity.workspaceId ?? 'default',
+      identity.ownerId,
+      pendingFleet.slug,
+      pendingFleet.role,
+    ).catch(() => {
+      /* best-effort — a failed fleet stamp must never break the presence write */
+    });
+  }
+
   // WI-573 (honest-presence): a declared presence write is GENUINE activity — so if this owner's
   // adv_sessions row still carries a stale `ended_at` from a PRIOR incarnation (resumed via a path
   // that never re-POSTed bootstrap-su, e.g. harness compaction), clear it now so a LIVE agent never
@@ -127,6 +145,30 @@ export async function setPresenceFleet(
        SET fleet_slug = ${fleetSlug}, fleet_role = ${fleetRole}
      WHERE workspace_id = ${workspaceId} AND owner_id = ${ownerId}
   `;
+}
+
+// ── Spawned-bee pending fleet placement (fleet-color-schemes) ────────────────
+// `fleet:spawn { fleet }` cannot deliver a HEADLESS bee's fleet via env: the
+// env-fold above (deriveFleetMembership) reads the OPERATOR's process.env, but the
+// bee's PAPERCUSP_FLEET_SLUG lands on the BEE's process. operator-spawn instead
+// registers the placement HERE — keyed by the bee's spawnId/ownerId, in the SAME
+// operator process — and `writePresence` applies it on the bee's FIRST presence
+// write (when its coord_presence row exists, so the hard-set sticks), then clears
+// it. In-memory + one-shot: an operator restart in the (seconds-long) window before
+// the bee's first heartbeat drops the placement — the bee stays ungrouped, a
+// cosmetic miss, never a correctness bug.
+const pendingFleetByOwner = new Map<string, { slug: string; role: string }>();
+
+/** Register a pending fleet placement for a spawned bee (operator-spawn → here). */
+export function setPendingFleet(ownerId: string, slug: string, role: string): void {
+  if (ownerId && slug) pendingFleetByOwner.set(ownerId, { slug, role: role || 'member' });
+}
+
+/** Take (read + remove) a bee's pending fleet placement. One-shot. Exported for tests. */
+export function takePendingFleet(ownerId: string): { slug: string; role: string } | null {
+  const p = pendingFleetByOwner.get(ownerId);
+  if (p) pendingFleetByOwner.delete(ownerId);
+  return p ?? null;
 }
 
 /** Bump heartbeat_at ONLY — the keepalive path (the 60s supervisor beat). No-op

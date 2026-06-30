@@ -25,6 +25,10 @@ import {
   type SubstrateSidecarHost,
 } from './substrate-sidecar-host';
 import { resolveSubstrateSocketPath } from './substrate-socket-path';
+import {
+  startEventLoopLagMonitor,
+  type LagMonitorHandle,
+} from '../../event-loop-lag-monitor';
 
 // JSON-RPC 2.0 response builders
 function rpcResponse(result: unknown, id: number | string | null): object {
@@ -82,12 +86,74 @@ function registerHandleListener(host: SubstrateSidecarHost): void {
 }
 
 /**
+ * bg-host-freeze-eventloop-stall-2026-06-30 P-005 — start the substrate sidecar's
+ * OWN event-loop-lag + leak instrumentation, and return its handle.
+ *
+ * ROOT-CAUSE DETECTOR FAILURE this closes. With the `papercusp-substrate-sidecar`
+ * flag ON, the WHOLE harness substrate — every harness's corestore, merge loop,
+ * Hyperswarm join + replication — runs in THIS sidecar process, not the main
+ * bg-host. The freeze's +1GB/min RSS leak therefore lives in the SIDECAR. But
+ * `startEventLoopLagMonitor` (the loop-lag gauge + cpu-profile-on-saturation +
+ * heap-snapshot-on-high-RSS, P-002/WI-1085) was only ever started in the MAIN
+ * process (host-bootstrap.ts) — so the sidecar ran completely BLIND: no heap
+ * snapshot ever captured the leaking heap (the exact gap WI-1088 flagged —
+ * "WI-1085's heap-snapshot keys on the MAIN process … a sidecar-side snapshot
+ * would be needed"), no cpuprofile named its synchronous culprits, and
+ * `loopPressure()` was permanently 'ok' in this process (so any shed-aware tick
+ * here could never shed). Starting the SAME shipped monitor here makes the sidecar
+ * leak SELF-PINPOINT a `.heapsnapshot` on the live host — load it with
+ * `scripts/analyze-heap-snapshots.mjs` to name the top retainer, the missing
+ * evidence every prior leak-hunt pass lacked.
+ *
+ * Process-isolated: `startEventLoopLagMonitor`'s one-per-process guard is a module
+ * global, fresh in this child process — so this is the sidecar's own monitor, never
+ * a duplicate of the main host's.
+ *
+ * Thresholds default LOWER than the main host's 8 GB. Recent sidecar instances peak
+ * at ~6-10 GB and recycle (cgroup MemoryMax=18G, WI-1086) BEFORE 8 GB, so an 8 GB
+ * trigger would routinely miss the capture; 4 GB sits above a healthy ~25-harness
+ * baseline yet below the recycle, capturing a clearly-leaking heap. Each knob is
+ * independently env-tunable (a `PAPERCUSP_SIDECAR_*` override that falls back to the
+ * shared `PAPERCUSP_*` the main host uses, since the sidecar inherits the host env).
+ * Best-effort + never throws — observability must never wedge the process it watches.
+ */
+export function startSidecarObservability(): LagMonitorHandle | null {
+  try {
+    return startEventLoopLagMonitor({
+      // cpu-profile-on-saturation: names the synchronous frames eating the sidecar
+      // loop. PAPERCUSP_SIDECAR_LOOP_PROFILER / PAPERCUSP_LOOP_PROFILER = '0' disables.
+      profileOnSaturation:
+        (process.env.PAPERCUSP_SIDECAR_LOOP_PROFILER ?? process.env.PAPERCUSP_LOOP_PROFILER) !==
+        '0',
+      // heap-snapshot-on-high-RSS: the authoritative leak-pinpoint.
+      // PAPERCUSP_SIDECAR_HEAP_SNAPSHOT / PAPERCUSP_HEAP_SNAPSHOT = '0' disables.
+      heapSnapshotOnHighRss:
+        (process.env.PAPERCUSP_SIDECAR_HEAP_SNAPSHOT ?? process.env.PAPERCUSP_HEAP_SNAPSHOT) !==
+        '0',
+      heapSnapshotRssMb:
+        Number(
+          process.env.PAPERCUSP_SIDECAR_HEAP_SNAPSHOT_RSS_MB ??
+            process.env.PAPERCUSP_HEAP_SNAPSHOT_RSS_MB,
+        ) || 4096,
+    });
+  } catch {
+    // Observability must NEVER wedge the sidecar it observes.
+    return null;
+  }
+}
+
+/**
  * Start the substrate sidecar JSON-RPC server (control socket + IPC handle
  * channel) and own the process lifecycle (SIGTERM/SIGINT → host.closeAll). The
  * socket path is ABSOLUTE (resolveSubstrateSocketPath()) — never CWD-relative.
  */
 export function runSubstrateSidecarServer(): void {
   const host = createSubstrateSidecarHost();
+  // P-005: give the sidecar its OWN leak/saturation instrumentation. The substrate
+  // (and thus the +1GB/min leak) runs in THIS process under the sidecar flag, so
+  // this is the process whose RSS leak must self-capture a heap snapshot. Stopped
+  // on shutdown below. See startSidecarObservability for the full rationale.
+  const lagMonitor = startSidecarObservability();
   const socketPath = resolveSubstrateSocketPath();
   const socketDir = path.dirname(socketPath);
 
@@ -129,6 +195,13 @@ export function runSubstrateSidecarServer(): void {
 
   const shutdown = (signal: string): void => {
     console.log(`[substrate-sidecar] ${signal} received, shutting down gracefully`);
+    // P-005: stop the lag/leak monitor first so its timer + histogram don't keep
+    // ticking against an about-to-exit loop (best-effort — never block shutdown).
+    try {
+      lagMonitor?.stop();
+    } catch {
+      /* best-effort */
+    }
     void host.closeAll().finally(() => server.close(() => process.exit(0)));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

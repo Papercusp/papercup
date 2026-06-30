@@ -141,7 +141,11 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       version       BIGINT NOT NULL DEFAULT 0,
       archived      BOOLEAN NOT NULL DEFAULT false,
       is_legacy     BOOLEAN NOT NULL DEFAULT false,
+      template      TEXT,            -- mig 329 (plan-template-mechanism)
+      template_data JSONB,           -- mig 329 (plan-template-mechanism)
+      promote_policy JSONB,          -- mig 331 (promote-policy-column)
       author_pubkey TEXT,
+      owner_author_pubkey TEXT,      -- P-018/D-012 author-scoped write authority
       origin        TEXT NOT NULL DEFAULT 'local',
       fed_ts        BIGINT,
       fed_hlc       TEXT,

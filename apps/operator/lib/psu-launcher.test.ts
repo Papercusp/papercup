@@ -31,6 +31,7 @@ import {
   reportSessionResumed,
   roleLaunchArgs,
   suLaunchArgs,
+  kickoffPositionalArgs,
   agentInvalidForRole,
   suWrapperExtraArgs,
   usePtyHost,
@@ -50,6 +51,34 @@ import {
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
+
+describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
+  const KICK =
+    'Begin: advance this plan. Read the `## Now` block, pick up the next actionable item, and work it.';
+  it('seeds the kickoff for a scripted (--no-picker) plan launch', () => {
+    const res = { kickoffPrompt: KICK, planSlug: 'p' };
+    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=x', '--plan=p']);
+    expect(kickoffPositionalArgs(res, args)).toEqual([KICK]);
+  });
+  it('is empty for an interactive picker launch (picker !== false)', () => {
+    const res = { kickoffPrompt: KICK, planSlug: 'p' };
+    expect(kickoffPositionalArgs(res, parseArgs([]))).toEqual([]);
+  });
+  it('is empty when --no-kickoff opts out', () => {
+    const res = { kickoffPrompt: KICK, planSlug: 'p' };
+    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=x', '--plan=p', '--no-kickoff']);
+    expect(args.kickoff).toBe(false);
+    expect(kickoffPositionalArgs(res, args)).toEqual([]);
+  });
+  it('is empty when the server supplied no kickoff (no plan bound)', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=x']);
+    expect(kickoffPositionalArgs({ kickoffPrompt: null }, args)).toEqual([]);
+    expect(kickoffPositionalArgs({}, args)).toEqual([]);
+  });
+  it('default parse has no kickoff key (so the gate treats it as enabled)', () => {
+    expect(parseArgs([]).kickoff).toBeUndefined();
+  });
+});
 
 describe('parkRoleScopedMcpJson (P-002 SU-omp role-MCP leak guard)', () => {
   let dir: string;

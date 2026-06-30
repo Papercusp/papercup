@@ -245,6 +245,17 @@ describe('bootstrap-su', () => {
     expect(json.coordExtPath).toBe(COORD_EXT);
   });
 
+  it('EI-5503: returns the canonical kickoffPrompt for a plan-bound launch, null without a plan', async () => {
+    const withPlan = await (await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' })).json();
+    // The same string headless plans:launch seeds (deriveLaunchPromptText) — the
+    // launcher delivers it as the scripted member's first turn so it auto-starts.
+    expect(withPlan.kickoffPrompt).toBe(
+      'Begin: advance this plan. Read the `## Now` block, pick up the next actionable item, and work it.',
+    );
+    const noPlan = await (await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null })).json();
+    expect(noPlan.kickoffPrompt).toBeNull();
+  });
+
   it('EI-155: claude gets a per-session CLAUDE_CONFIG_DIR keyed by the minted sid', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     const sid = json.envelopeEnv.PAPERCUSP_SID;

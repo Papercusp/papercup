@@ -29,6 +29,7 @@ import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
+import { deriveLaunchPromptText } from '../../../agent-tools/plans/launch-prompt';
 import { writeSuCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import { resolveSuLaunchCwd } from '../../../su-launch-cwd';
@@ -124,6 +125,16 @@ export interface BootstrapSuResult {
    * no fleet was chosen. The launcher prints it so the membership is never silent.
    */
   fleetNotice?: string | null;
+  /**
+   * improve-fleet-launch-autokickoff (EI-5503): the FIRST USER TURN a plan-bound
+   * launch should submit so the agent immediately starts working the plan instead
+   * of orienting once and parking idle. Present only when a plan is bound (else
+   * null). The canonical kickoff text (deriveLaunchPromptText — the same string
+   * headless plans:launch seeds), so it never drifts. The launcher GATES delivery
+   * to scripted launches (--no-picker + --plan, unless --no-kickoff) so an
+   * interactive human picker launch still opens at an empty prompt.
+   */
+  kickoffPrompt?: string | null;
 }
 
 const options = defineTool({
@@ -769,6 +780,13 @@ const post = defineTool({
     // reads those exact var names. Empty when no fleet was chosen (byte-identical).
     Object.assign(envelopeEnv, fleetPin.env);
 
+    // improve-fleet-launch-autokickoff (EI-5503): a plan-bound launch returns the
+    // first user turn the launcher seeds, so a scripted/fleet member STARTS working
+    // instead of parking idle. The launcher GATES delivery (--no-picker + --plan,
+    // unless --no-kickoff); the server just supplies the canonical text — shared with
+    // plans:launch's headless kickoff via ./launch-prompt, so the two never drift.
+    const kickoffPrompt: string | null = planSlug ? deriveLaunchPromptText(null) : null;
+
     const result: BootstrapSuResult = {
       status: 'ok',
       sessionId,
@@ -784,6 +802,7 @@ const post = defineTool({
       envelopeEnv,
       accountNotice: accountPin.notice,
       fleetNotice: fleetPin.notice,
+      kickoffPrompt,
     };
     return jsonRes(result);
   },

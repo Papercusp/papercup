@@ -1157,6 +1157,124 @@ test('per-account egress isolation: each pinned account routes via its OWN dispa
   assert.equal(dP, undefined, 'an account with no egress falls back to the default shared egress (no dispatcher)');
 });
 
+test('per-account egress IP POOL: ONE account ROUND-ROBINS its upstream across BOTH egress IPs — proxy + box-direct (gateway-per-account-egress-ip-pool-2026-06-30 P-006 / WI-1141)', async () => {
+  // The aviynw8 config (P-006 "zero-cost immediate relief"): egressPool = [its Rayobyte HTTP proxy, the
+  // box-direct IP]. A bare `{}` entry is the box-default outbound IP — a VALID, distinct second egress
+  // (how an account gets a second free IP). The gateway must ROTATE successive requests across BOTH
+  // entries (pickEgress round-robin), so a per-IP Cloudflare edge throttle on ONE IP takes only THAT IP
+  // out of rotation while the SAME account keeps serving on its sibling IP (and a hard pin rides the
+  // pool). Ground truth: the undici `dispatcher` handed to fetch — a ProxyAgent for the proxy IP, and NO
+  // dispatcher (undefined = default shared egress) for the box-direct `{}` IP. Over 4 sequential requests
+  // the dispatcher must ALTERNATE proxy <-> box-direct (BOTH IPs used), and the proxy IP must reuse ONE
+  // cached dispatcher (a stable egress IP across its turns).
+  const captured: { dispatcher?: unknown }[] = [];
+  const fetchImpl = (async (_url: string, init: { headers: Record<string, string>; dispatcher?: unknown }) => {
+    captured.push({ dispatcher: init.dispatcher });
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+
+  // ONE account, pooled across its proxy IP + the box-direct IP ({} = box-default outbound).
+  const A: ActiveAccount = {
+    accountId: 'aviynw8',
+    token: async () => 'A-tok',
+    egressPool: [{ proxyUrl: 'http://127.0.0.1:3128' }, {}],
+  };
+  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'aviynw8' ? A : null) };
+
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+
+  // Pin to the account so `active()` is deterministic; the egress-IP rotation is WITHIN the pinned account.
+  const hit = () =>
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-account': 'aviynw8' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+
+  // Sequential so the per-account round-robin cursor advances one egress-pick per request (deterministic).
+  await hit();
+  await hit();
+  await hit();
+  await hit();
+
+  const dispatchers = captured.map((c) => c.dispatcher);
+  assert.equal(dispatchers.length, 4, 'all four requests reached the egress dial');
+  const viaProxy = dispatchers.filter((d) => d !== undefined); // the proxy IP built a ProxyAgent dispatcher
+  const viaDirect = dispatchers.filter((d) => d === undefined); // the box-direct {} IP -> default egress (no dispatcher)
+  assert.equal(viaProxy.length, 2, 'the proxy egress IP served 2 of 4 requests (rotation used it)');
+  assert.equal(viaDirect.length, 2, 'the box-direct egress IP ({}) served 2 of 4 requests — BOTH IPs are in rotation');
+  // Round-robin ALTERNATION: each request egresses through the OTHER IP than the one before it.
+  for (let i = 1; i < dispatchers.length; i++) {
+    assert.notEqual(
+      dispatchers[i] === undefined,
+      dispatchers[i - 1] === undefined,
+      `request ${i} rotated to the other egress IP than request ${i - 1} (round-robin across the pool)`,
+    );
+  }
+  // The proxy IP reuses ONE cached dispatcher each time it's picked (a stable egress IP per pool entry).
+  assert.equal(new Set(viaProxy).size, 1, 'the proxy egress IP reuses a single cached dispatcher across its turns');
+});
+
+test('per-account egress IP POOL: ONE account ROUND-ROBINS its upstream across BOTH egress IPs — proxy + box-direct (gateway-per-account-egress-ip-pool-2026-06-30 P-006 / WI-1141)', async () => {
+  // The aviynw8 config (P-006 "zero-cost immediate relief"): egressPool = [its Rayobyte HTTP proxy, the
+  // box-direct IP]. A bare `{}` entry is the box-default outbound IP — a VALID, distinct second egress
+  // (how an account gets a second free IP). The gateway must ROTATE successive requests across BOTH
+  // entries (pickEgress round-robin), so a per-IP Cloudflare edge throttle on ONE IP takes only THAT IP
+  // out of rotation while the SAME account keeps serving on its sibling IP (and a hard pin rides the
+  // pool). Ground truth: the undici `dispatcher` handed to fetch — a ProxyAgent for the proxy IP, and NO
+  // dispatcher (undefined = default shared egress) for the box-direct `{}` IP. Over 4 sequential requests
+  // the dispatcher must ALTERNATE proxy <-> box-direct (BOTH IPs used), and the proxy IP must reuse ONE
+  // cached dispatcher (a stable egress IP across its turns).
+  const captured: { dispatcher?: unknown }[] = [];
+  const fetchImpl = (async (_url: string, init: { headers: Record<string, string>; dispatcher?: unknown }) => {
+    captured.push({ dispatcher: init.dispatcher });
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+
+  // ONE account, pooled across its proxy IP + the box-direct IP ({} = box-default outbound).
+  const A: ActiveAccount = {
+    accountId: 'aviynw8',
+    token: async () => 'A-tok',
+    egressPool: [{ proxyUrl: 'http://127.0.0.1:3128' }, {}],
+  };
+  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'aviynw8' ? A : null) };
+
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+
+  // Pin to the account so `active()` is deterministic; the egress-IP rotation is WITHIN the pinned account.
+  const hit = () =>
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-account': 'aviynw8' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+
+  // Sequential so the per-account round-robin cursor advances one egress-pick per request (deterministic).
+  await hit();
+  await hit();
+  await hit();
+  await hit();
+
+  const dispatchers = captured.map((c) => c.dispatcher);
+  assert.equal(dispatchers.length, 4, 'all four requests reached the egress dial');
+  const viaProxy = dispatchers.filter((d) => d !== undefined); // the proxy IP built a ProxyAgent dispatcher
+  const viaDirect = dispatchers.filter((d) => d === undefined); // the box-direct {} IP -> default egress (no dispatcher)
+  assert.equal(viaProxy.length, 2, 'the proxy egress IP served 2 of 4 requests (rotation used it)');
+  assert.equal(viaDirect.length, 2, 'the box-direct egress IP ({}) served 2 of 4 requests — BOTH IPs are in rotation');
+  // Round-robin ALTERNATION: each request egresses through the OTHER IP than the one before it.
+  for (let i = 1; i < dispatchers.length; i++) {
+    assert.notEqual(
+      dispatchers[i] === undefined,
+      dispatchers[i - 1] === undefined,
+      `request ${i} rotated to the other egress IP than request ${i - 1} (round-robin across the pool)`,
+    );
+  }
+  // The proxy IP reuses ONE cached dispatcher each time it's picked (a stable egress IP per pool entry).
+  assert.equal(new Set(viaProxy).size, 1, 'the proxy egress IP reuses a single cached dispatcher across its turns');
+});
+
 // The cache is keyed `<accountId>|<httpProxy>|<localAddress>` — so it must MISS (rebuild) when an account's
 // egress binding changes, not keep handing back the stale dispatcher (a re-pointed proxy IP / re-bound source
 // IP, e.g. after a pool hot-reload). The isolation test above proves the HIT side (same binding → same

@@ -52,12 +52,18 @@ export function composeLaunchContext(input: LaunchContextInput): string {
   ];
 
   if (harnessSlug) {
+    // improve-fleet-launch-autokickoff P-004: this used to claim harness-scoped tools
+    // "serve this harness automatically — you don't pass its slug", but the SU model
+    // (role-launch-spec) is per-call: `docs:*`/`features:*`/`issues:*`/`plans:*` answer
+    // `harness_required` until a harness is named on the call. The old over-promise made
+    // agents omit `harness` and eat a wasted round-trip. State the per-call model truthfully.
     lines.push(
-      `You launched **scoped to harness \`${harnessSlug}\`**. Your ` +
-        '`docs:*`, `features:*`, `issues:*`, and `plans:*` calls serve this ' +
-        "harness automatically — you don't pass its slug. To read a " +
-        '*different* harness, use `cross_harness:docs_*` / `cross_harness:plans_*` ' +
-        '(read-only) rather than switching scope.',
+      `You picked **harness \`${harnessSlug}\`** as this launch's working context (its repo ` +
+        'cwd + the plan/docs you were launched on). Per the SU model, harness-scoped tools ' +
+        'are **not** auto-scoped: pass ' +
+        `\`harness: '${harnessSlug}'\` on each \`docs:*\` / \`features:*\` / \`issues:*\` / ` +
+        "`plans:*` call (or `harness: 'all'` for Papercusp's own plans/docs). To read a " +
+        '*different* harness, use `cross_harness:docs_*` / `cross_harness:plans_*` (read-only).',
       '',
     );
   } else {
@@ -90,6 +96,18 @@ export function composeLaunchContext(input: LaunchContextInput): string {
           '`## Now` focus.',
       );
     }
+    // improve-fleet-launch-autokickoff (EI-5503) stopgap: a scripted/fleet plan
+    // launch now seeds a kickoff first-turn, but belt-and-suspenders — if any launch
+    // path leaves a plan-bound agent idle with no kickoff (a backend without a
+    // positional-prompt seam, a server kickoff-derive miss, a future launcher), it
+    // must START ON ITS OWN rather than park waiting to be told.
+    lines.push(
+      '',
+      '**If you were launched to work this plan and find yourself otherwise idle ' +
+        'with no kickoff instruction, do not wait — begin now:** read `## Now`, claim ' +
+        'the next actionable item, and work it. A plan-bound launch means the work is ' +
+        'yours to start.',
+    );
     lines.push('');
   }
 

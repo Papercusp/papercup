@@ -17,7 +17,11 @@ describe('composeLaunchContext', () => {
 
   it('harness only → scoped block, no plan block', () => {
     const out = composeLaunchContext({ harnessSlug: 'papercup', planSlug: null });
-    expect(out).toContain('scoped to harness `papercup`');
+    expect(out).toContain('harness `papercup`');
+    // SU per-call model (P-004): the banner tells you to PASS the slug, not that it
+    // is auto-scoped — and must NOT claim auto-scoping.
+    expect(out).toContain("pass `harness: 'papercup'`");
+    expect(out).not.toContain("you don't pass its slug");
     expect(out).toContain('cross_harness:docs_*');
     expect(out).not.toContain('bound to plan');
     expect(out.endsWith('\n')).toBe(true);
@@ -37,7 +41,7 @@ describe('composeLaunchContext', () => {
       planTitle: 'Coord PG port',
       planNow: { state: 'Phase 3 cutover live', next: 'verify round-trip' },
     });
-    expect(out).toContain('scoped to harness `papercup`');
+    expect(out).toContain('harness `papercup`');
     expect(out).toContain('bound to plan `coord-port`');
     expect(out).toContain('— Coord PG port');
     expect(out).toContain('> **Now:** Phase 3 cutover live');

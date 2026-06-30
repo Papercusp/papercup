@@ -431,6 +431,7 @@ import './fleet_registry/status';
 import './fleet_registry/join';
 import './fleet_registry/leave';
 import './fleet_registry/take-leadership';
+import './fleet_registry/launch-on-plan';
 
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md

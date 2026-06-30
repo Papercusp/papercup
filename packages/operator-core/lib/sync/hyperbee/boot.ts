@@ -1210,6 +1210,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // at 0; lwwPick's total order makes fold order irrelevant) — no reset.
   let mergeCursor = createMergeCursor();
 
+  // A-003 apply-side determinism (su-81f2e): set by rekey() after a hive-home
+  // projection rebind to force ONE full re-fold of all admitted logs through the
+  // freshly-rebound scopedApply. The owner's hive_members op may have been admitted
+  // AND folded (cursor-marked done) during the home=<none> boot window — when the
+  // hive_members projection was still bound to the MEMBER slug, so the op dropped at
+  // hive-members.ts (row.hive_home_slug !== member slug) and never re-applied (the
+  // cursor says done; the log SET didn't change so the log-removal reset never fires).
+  // Re-folding from index 0 re-applies it through the now-hive-home-bound projection
+  // → roster row lands → the pendingMemberContent drain fires. Checked + cleared UNDER
+  // the merge gate (top of mergeOnePass), so it never races an in-flight pass.
+  let forceReFold = false;
+
   // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED, dark.
   // When on: (a) seed a fresh/reset cursor at each log's latest `__snapshot__`
   // index so a new joiner folds from the snapshot instead of replaying full
@@ -1458,6 +1470,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           mergeCursor = createMergeCursor();
           break;
         }
+      }
+
+      // A-003 apply-side: a rekey rebind asked for a full re-fold (re-apply every
+      // admitted log through the newly-bound projections). Reset HERE, under the merge
+      // gate, mirroring the log-removal reset above — one-shot, cleared immediately so
+      // steady-state passes are unaffected. Placed before snapshot seeding (below) so a
+      // re-fold behaves identically to the log-removal reset path.
+      if (forceReFold) {
+        mergeCursor = createMergeCursor();
+        forceReFold = false;
       }
 
       // P-007 (design A, flag-gated): seed a FRESH/reset cursor at each log's
@@ -2599,6 +2621,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             // (a mid-session join makes this harness a hive member — content may now defer/drain).
             pendingMemberContent,
           });
+          // A-003 apply-side determinism: the hive_members/hive_settings projections just
+          // rebound from the member slug to the hive-home slug. An owner log admitted +
+          // folded during the prior home=<none> window applied its hive_members op against
+          // the OLD (member-slug) binding → it was dropped → empty roster → A's content
+          // defers forever. Force the next merge pass to re-fold all admitted logs through
+          // the NEW binding so that op re-applies and lands. Driven by the mergeNow() below.
+          forceReFold = true;
         }
       } else if (process.env.PAPERCUSP_A003_TRACE === '1') {
         // eslint-disable-next-line no-console
@@ -2618,6 +2647,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // log. Idempotent + re-entrancy-safe (retryPendingOnce no-ops on an empty set;
       // mergeNow serializes internally), so racing the periodic tick is harmless.
       await retryPendingOnce();
+      // A-003 apply-side determinism (su-81f2e): drive the re-fold requested by the
+      // rebind block above. retryPendingOnce only re-ADMITS still-pending peers — but
+      // the live A→B failure is an owner log that was ALREADY admitted (bootstrap-admit
+      // at home=<none>) and folded BEFORE the rebind, so its hive_members op dropped
+      // against the member-slug binding and the cursor marked it done. This mergeNow
+      // consumes forceReFold (set on rebind) → resets the cursor → re-folds every admitted
+      // log through the now-hive-home-bound scopedApply → A's roster row re-applies →
+      // hive-members.ts drains the deferred member content → A's content lands. Idempotent
+      // (LWW upserts), one-shot (flag cleared under the gate), coalesces with the periodic
+      // merge. This is the deterministic replacement for the scheduling-dependent behaviour
+      // that PAPERCUSP_A003_TRACE's stderr delay accidentally flipped green (run31 vs run32).
+      await mergeNow();
     },
     registerCloseHook(hook: () => void | Promise<void>): () => void {
       closeHooks.add(hook);

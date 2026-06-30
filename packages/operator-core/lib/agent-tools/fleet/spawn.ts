@@ -61,6 +61,8 @@ export default defineTool({
     chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
     brief: softText(LIMITS.BRIEF).optional()
       .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060. Auto-truncated to 16000 chars if longer.'),
+    fleet: z.string().min(1).max(120).optional()
+      .describe('Place this bee in a NAMED fleet (the durable, color-coded group). Pass the fleet NAME or slug — it is created if absent (you become its leader) and the bee joins as a member at launch: grouped under that fleet in the roster + its terminal recolored to the fleet scheme, with NO brief directive needed. Use ONE fleet per plan/initiative, reused across waves. Omit for an ungrouped bee.'),
     tier: z.string().max(40).optional()
       .describe('Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user\'s per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role\'s standing default. An unknown name fails loud listing the valid menu.'),
     model: z.string().max(80).optional()
@@ -139,6 +141,39 @@ export default defineTool({
       }
       reservedWorkItemId = workItemId;
     }
+    // Named-fleet placement (fleet-color-schemes): resolve the fleet (create-if-
+    // absent, so the Queen need not fleet:create first — she becomes its leader)
+    // + its bound scheme, and thread it so the bee auto-joins (presence label) +
+    // recolors its terminal at launch, with NO brief directive. Best-effort: a
+    // resolve error just spawns the bee ungrouped.
+    let fleetPlacement:
+      | { slug: string; role: string; bg: string; fg: string; cursor: string }
+      | null = null;
+    if (args.fleet) {
+      try {
+        const { fleetSlugFromName, createFleetIfAbsent, resolveFleetScheme } = await import(
+          '../../agent-fleets-store'
+        );
+        const fleetSlug = fleetSlugFromName(args.fleet);
+        const { record } = await createFleetIfAbsent({
+          workspaceId,
+          fleetSlug,
+          title: args.fleet,
+          owner: ownerId || null,
+          leaderOwnerId: ownerId || null,
+        });
+        const scheme = resolveFleetScheme(record);
+        fleetPlacement = {
+          slug: fleetSlug,
+          role: 'member',
+          bg: scheme.bg,
+          fg: scheme.fg,
+          cursor: scheme.cursor,
+        };
+      } catch {
+        fleetPlacement = null; // fleet resolve failed → spawn ungrouped (best-effort)
+      }
+    }
     const res = await spawnAgentInHarness({
       workspaceId,
       harness: args.harness ?? null,
@@ -160,6 +195,7 @@ export default defineTool({
       // because it was placed by a coordinating agent (the Queen / operator) — a
       // coordination trigger. Stamps turn_trigger on the run's usage sample.
       turnTrigger: 'coord-wake',
+      fleet: fleetPlacement,
     });
     if (!res.ok && reservedWorkItemId) {
       const { releaseWorkItem } = await import('../../work-items');

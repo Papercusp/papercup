@@ -139,6 +139,11 @@ export function parseArgs(argv) {
     // native branch command.
     else if (a === '--fork' || a === '--fork-session') out.fork = true;
     else if (a === '--no-plan') out.noPlan = true;
+    // improve-fleet-launch-autokickoff (EI-5503): opt OUT of the auto-kickoff first
+    // user turn that a scripted plan launch (`--no-picker --plan=…`) otherwise seeds.
+    // Default ON for scripted plan launches; this flag restores the old open-at-an-
+    // empty-prompt behavior. (Interactive picker launches never auto-kickoff.)
+    else if (a === '--no-kickoff') out.kickoff = false;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
     else if (a.startsWith('--role=')) out.role = a.slice('--role='.length);
     else if (a.startsWith('--feature=')) out.feature = a.slice('--feature='.length);
@@ -391,6 +396,27 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
     return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox'] };
   }
   throw new Error(`suLaunchArgs: backend '${backend}' has no interactive su launch`);
+}
+
+/**
+ * improve-fleet-launch-autokickoff (EI-5503): the TRAILING POSITIONAL kickoff arg(s)
+ * to append to the backend CLI argv — the first user turn that makes a SCRIPTED plan
+ * launch (a fleet/automation member) start working the plan immediately instead of
+ * orienting once and parking idle. All three backends take a positional prompt that
+ * keeps the session interactive (claude `[prompt]`, omp `… "prompt"`, codex `[PROMPT]`),
+ * so this is the same for every agent.
+ *
+ * Empty (today's behavior) unless ALL hold: the server supplied `res.kickoffPrompt`
+ * (a plan is bound) · this is a `--no-picker` launch (`args.picker === false`) so an
+ * interactive human picker launch still opens at an empty prompt · `--no-kickoff` was
+ * not passed (`args.kickoff !== false`). Pure — exported for tests.
+ */
+export function kickoffPositionalArgs(res, args) {
+  const text = res?.kickoffPrompt;
+  if (!text) return [];
+  if (args?.picker !== false) return []; // interactive picker launch → empty prompt
+  if (args?.kickoff === false) return []; // explicit --no-kickoff opt-out
+  return [text];
 }
 
 /**
@@ -2294,6 +2320,25 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // folds the same file into CODEX_HOME/AGENTS.md before returning.
   if (args.launchContext && res.agent !== 'codex') {
     launchArgs.push(res.agent === 'claude' ? '--append-system-prompt-file' : '--append-system-prompt', args.launchContext);
+  }
+
+  // improve-fleet-launch-autokickoff (EI-5503): seed the FIRST USER TURN for a
+  // SCRIPTED plan launch so a fleet/automation member immediately starts working
+  // the plan instead of orienting once (reading the plan + brief as system prompt)
+  // and then parking idle on its inbox-wake — the gap a leader previously closed by
+  // hand with a coord:send wake. All three backends accept a TRAILING POSITIONAL
+  // prompt that keeps the session INTERACTIVE while submitting it as the first turn
+  // (claude `[prompt]`, omp `… "prompt"`, codex `[PROMPT]` — their -p/--print and
+  // `codex exec` non-interactive modes are NOT used here), so the kickoff is one
+  // positional appended AFTER every flag (incl. the launch-context flag's value).
+  // Gated to --no-picker launches (an interactive human picker launch still opens at
+  // an empty prompt) + an explicit --no-kickoff opt-out. Text is server-supplied
+  // (res.kickoffPrompt = the canonical deriveLaunchPromptText, present iff a plan is
+  // bound) so it never drifts from headless plans:launch's kickoff.
+  const kickoffArgs = kickoffPositionalArgs(res, args);
+  if (kickoffArgs.length) {
+    launchArgs.push(...kickoffArgs);
+    console.error(`psu: kickoff — seeding first turn to advance plan ${res.planSlug ?? '?'} (suppress with --no-kickoff)`);
   }
 
   // P-002 (omp-psu-interactive-parity-hardening-2026-06-29): an SU omp session

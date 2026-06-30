@@ -33,6 +33,7 @@ import { insertPlanRun } from './runs';
 import { executePlanAgentTurn } from './turn';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
+import { deriveLaunchPromptText } from './launch-prompt';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -75,17 +76,10 @@ const EVENTS = {
   error: z.object({ message: z.string() }),
 } as const;
 
-/**
- * The first user turn for a launch — the supplied note, or a default
- * kickoff when the launch carried none. Exported + pure for unit test.
- */
-export function deriveLaunchPromptText(note: string | null | undefined): string {
-  const trimmed = (note ?? '').trim();
-  return trimmed.length > 0
-    ? trimmed
-    : 'Begin: advance this plan. Read the `## Now` block, pick up the ' +
-        'next actionable item, and work it.';
-}
+// deriveLaunchPromptText now lives in ./launch-prompt — a dependency-free module the
+// psu bootstrap-su route imports without pulling this file's heavy graph (runner/turn/
+// DB). Re-exported here so existing importers (incl. launch.test.ts) are unchanged.
+export { deriveLaunchPromptText };
 
 /**
  * The runs-list label for a launch — the note's first line (truncated),
