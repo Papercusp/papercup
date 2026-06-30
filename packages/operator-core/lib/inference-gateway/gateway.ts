@@ -40,7 +40,7 @@ import {
   type TierAdmissionConfig,
   type PriorityTierMap,
 } from '@papercusp/papercusp-shared/agent';
-import { accountLoadKey, SOFT_PIN_AFFINITY_CREDIT } from './account-failover';
+import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, SOFT_PIN_AFFINITY_CREDIT } from './account-failover';
 import { withOAuthBeta } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
@@ -1613,7 +1613,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // lowest unified utilization (most residual budget). u ∈ [0,1] keeps the flaky bucket disjoint; a clean,
     // idle, fresh-proxy account scores 0. SHARED by the unpinned proactive pick AND the soft-pin failover.
     const now0 = Date.now();
-    const keyOf = (cgov: RateLimitGovernor, accountId: string): number => {
+    const keyOf = (cgov: RateLimitGovernor, account: ActiveAccount): number => {
+      const accountId = account.accountId;
       if (cgov.state.pausedUntil > now0) return Infinity;
       if ((egressPauseUntil.get(accountId) ?? 0) > now0) return Infinity;
       // COLD-START fallback: the live governor is blank right after a gateway restart, so consult the durable
@@ -1643,12 +1644,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // utilization the residual-budget tiebreak. An idle, clean, fresh-proxy account still scores 0 (the
       // happy path), so the `bestKey > 0` gates below skip the walk exactly as before — the change only
       // bites once an account actually carries concurrent load, which is precisely when we want to spread.
-      return accountLoadKey({
+      const base = accountLoadKey({
         exhausted: !!unified?.rejected || u >= 0.99,
         flaky: (egressFailStreak.get(accountId) ?? 0) > 0,
         inFlight: cgov.state.inFlight,
         utilization: u,
       });
+      if (base === Infinity) return base;
+      // egress-ip-pool DE-CONCENTRATION (P-005, gateway-per-account-egress-ip-pool): when an account has a
+      // multi-IP pool, penalize it in proportion to how many of its egress IPs are currently COOLED (a per-IP
+      // Cloudflare/transport throttle). This steers soft-pin-failover + the unpinned proactive pick AWAY from
+      // an account whose IPs are getting throttled toward one with FRESH IPs — so overflow stops re-piling onto
+      // the very account whose IP just tripped Cloudflare (the amplifier behind the owner-reported throttle),
+      // and a busy account's remaining IPs stay fresh for whoever pinned it. ALL IPs cooled ⇒ Infinity (out of
+      // the race; the per-account circuit also covers that). A 0/1-IP account is unaffected (today's behavior).
+      const poolEntries = egressEntries(account);
+      if (poolEntries.length > 1) {
+        let cooled = 0;
+        for (const e of poolEntries) if ((ipCooldownUntil.get(egressCacheKey(accountId, e)) ?? 0) > now0) cooled++;
+        if (cooled >= poolEntries.length) return Infinity;
+        if (cooled > 0) return base + cooled * ACCOUNT_INFLIGHT_LOAD_WEIGHT; // each cooled IP ≈ one in-flight unit of "prefer someone else"
+      }
+      return base;
     };
     if (pinned === null) {
       // SEED with the round-robin pick so a healthy active() is KEPT — round-robin fairness is preserved and
@@ -1658,12 +1675,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // paused-walk + fail-fast shed below still handle the genuinely all-throttled case exactly as before.
       let bestCand = active;
       let bestGov = gov;
-      let bestKey = keyOf(gov, active.accountId);
+      let bestKey = keyOf(gov, active);
       for (let walk = 0; bestKey > 0 && walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
         const cand = pool.active();
         if (cand.accountId === bestCand.accountId) continue;
         const cgov = governorForAccount(model, cand.accountId);
-        const key = keyOf(cgov, cand.accountId);
+        const key = keyOf(cgov, cand);
         if (key < bestKey) {
           bestKey = key;
           bestCand = cand;
@@ -1685,7 +1702,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // it is meaningfully (beyond the cache-affinity CREDIT) less loaded than the pin: a sequential /
       // single-session request (pin in-flight 0-1, sibling no better than the credit) KEEPS its warm
       // per-credential cache; a concurrent pile-up or a climbing-utilization pin spreads PROACTIVELY.
-      const pinKey = keyOf(gov, active.accountId);
+      const pinKey = keyOf(gov, active);
       if (pinKey > 0) {
         let bestCand: ActiveAccount | null = null;
         let bestGov: RateLimitGovernor | null = null;
@@ -1694,7 +1711,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const cand = pool.active();
           if (cand.accountId === pinned!.accountId) continue;
           const cgov = governorForAccount(model, cand.accountId);
-          const key = keyOf(cgov, cand.accountId);
+          const key = keyOf(cgov, cand);
           if (key < bestKey) {
             bestKey = key;
             bestCand = cand;
