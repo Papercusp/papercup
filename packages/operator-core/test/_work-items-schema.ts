@@ -167,7 +167,25 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   END;
   $ei_dml$;
   DROP TRIGGER IF EXISTS engineer_issues_view_dml_trg ON harness_shared.engineer_issues;
-  CREATE TRIGGER engineer_issues_view_dml_trg INSTEAD OF INSERT OR UPDATE OR DELETE ON harness_shared.engineer_issues FOR EACH ROW EXECUTE FUNCTION harness_shared.engineer_issues_view_dml();`;
+  CREATE TRIGGER engineer_issues_view_dml_trg INSTEAD OF INSERT OR UPDATE OR DELETE ON harness_shared.engineer_issues FOR EACH ROW EXECUTE FUNCTION harness_shared.engineer_issues_view_dml();
+
+  -- Minimal datatype_registry (migration 421). The work-item VISIBILITY clause
+  -- (featureFamilyKindClause: listWorkItems/count/search) AND the PLACEMENT clause
+  -- (frontierPlacementKindClause: claim floors / survey / wake-frontier) reference this table
+  -- via a subquery, so EVERY work-items integration test must have it present — same D-014
+  -- read-path-completeness rationale as work_item_deps / user_trust_list above. Just the 5
+  -- columns those subqueries read; the full 421 (VECTOR(384) embedding + generated title_tsv)
+  -- is not needed and would require the pgvector extension. Empty by default ⇒ the subquery
+  -- matches nothing, so the clauses behave exactly as the built-in-kinds-only form did before.
+  CREATE TABLE IF NOT EXISTS harness_shared.datatype_registry (
+    id              text NOT NULL,
+    workspace_id    text NOT NULL,
+    work_item_kind  text,
+    tier            text NOT NULL DEFAULT 'generic-kind',
+    status          text NOT NULL DEFAULT 'active',
+    tags            text[] NOT NULL DEFAULT '{}',
+    PRIMARY KEY (workspace_id, id)
+  );`;
 
 /**
  * `user_trust_list` DDL — the owner's trusted github user ids (migration 276,
