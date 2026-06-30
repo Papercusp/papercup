@@ -2047,11 +2047,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
           //   it keeps the existing fast-502 — the bee's CLI retries, the next request lands on the
           //   failover-rotated active(), and AIMD shrinks concurrency under a sustained Anthropic stall —
           //   and its healthy account is NOT penalized. (Mirrors dispatcherFor's http(s)-proxy check.)
-          const hasEgressProxy = !!active.egress?.proxyUrl && /^https?:\/\//i.test(active.egress.proxyUrl);
+          const usedEg = curEgressEntry ?? active.egress;
+          const hasEgressProxy = !!usedEg?.proxyUrl && /^https?:\/\//i.test(usedEg.proxyUrl);
           if (hasEgressProxy) {
+            egressFailsByAccount.set(active.accountId, (egressFailsByAccount.get(active.accountId) ?? 0) + 1);
+            // PER-IP egress rotation (egress-ip-pool): cool the IP that just transport-failed; if the SAME
+            // account still has another off-cooldown egress IP, retry on it (same credential — honors hard
+            // pins) instead of opening the whole-account circuit. Falls through to the account-level circuit
+            // below only when ALL of the account's IPs are cooled (the 0/1-IP case → byte-identical).
+            coolIp(curEgressKey, IP_TRANSPORT_COOLDOWN_MS);
+            if (
+              siblingEgressAvailable(active, Date.now(), curEgressKey) &&
+              attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 &&
+              Date.now() < retryDeadlineAt
+            ) {
+              attempt++;
+              log('warn', `inference-gateway: egress IP ${egDesc(usedEg)} for '${active.accountId}' transport-${stalled ? 'stalled' : 'failed'} — cooled ${Math.round(IP_TRANSPORT_COOLDOWN_MS / 1000)}s; rotating to a sibling IP on the SAME account (egress-ip-pool)`);
+              continue;
+            }
             const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;
             egressFailStreak.set(active.accountId, streak);
-            egressFailsByAccount.set(active.accountId, (egressFailsByAccount.get(active.accountId) ?? 0) + 1);
             const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
             // FLAPPING BACKOFF: a proxy that reopens within EGRESS_FLAP_RESET_MS of its last open is chronic —
             // double its open each time (capped) so we stop thrashing it; one stable for longer resets to base.
@@ -2182,7 +2197,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         let peekedRest: Readable | null = null;
         // When set, the gateway re-attempts (usually on a rotated account) before responding — absorbing
         // a transient throttle / routing past a usage cap so the bee never sees the error.
-        let internalRetry: { rotate: boolean; backoffMs: number; exhaustResetAt: number } | null = null;
+        let internalRetry: { rotate: boolean; backoffMs: number; exhaustResetAt: number; ipRotate?: boolean } | null = null;
         // G1 (WI-649): set in the bare-429 branch when ≥half the pool is out of rotation — suppresses the
         // cross-account rotate-retry below so a fleet-wide storm doesn't fan out ~2.4 upstream calls/request.
         let suppressBareBurstRotate = false;
@@ -2295,35 +2310,58 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // → $0 rc=1). NB: a unified rolling-window rejection already had its BOUNDED re-probe pause set
             // by recordResponse — do NOT penalize to the full multi-hour reset (the stale-pause bug).
             let exhaustResetAt: number;
+            let bareIpRotate = false; // egress-ip-pool: retry the SAME account on a sibling egress IP (bare-burst 429)
             if (!unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
               // rateLimited:true — this is a per-minute/burst RATE 429 → AIMD-decrease this account's learned rpm
               // (predict→wait→learn→retry, 2026-06-22) so decideRate paces future requests under its real rate.
               gov.penalize({ ...reset, rateLimited: true });
               exhaustResetAt = reset.resetAt ?? Date.now() + Math.min(reset.retryAfterMs ?? bare429FailoverBackoffMs, 5 * 60 * 1000);
             } else if (bare429) {
-              // BARE-429 PERSISTENCE CIRCUIT (auto-route-around): a brief burst is paced 15s, but a SUSTAINED
-              // streak = a per-IP edge throttle that isn't clearing → escalate the pause (double per step, capped)
-              // so the pool routes AROUND this IP to healthy accounts instead of re-hammering it every 15s forever.
-              const streak = (bare429Streak.get(active.accountId) ?? 0) + 1;
-              bare429Streak.set(active.accountId, streak);
-              const circuitOn = BARE429_CIRCUIT_THRESHOLD > 0 && streak >= BARE429_CIRCUIT_THRESHOLD;
-              const pauseMs = circuitOn
-                ? Math.min(bare429FailoverBackoffMs * 2 ** (streak - BARE429_CIRCUIT_THRESHOLD + 1), BARE429_CIRCUIT_MAX_MS)
-                : bare429FailoverBackoffMs;
-              gov.penalize({ retryAfterMs: pauseMs, resetAt: Date.now() + pauseMs, rateLimited: true });
-              exhaustResetAt = Date.now() + pauseMs;
-              if (circuitOn) {
-                log('warn', `inference-gateway: BARE-429 CIRCUIT for '${active.accountId}' (${streak} consecutive bare-429s — persistent per-IP edge throttle, not a brief burst) → pausing ${Math.round(pauseMs / 1000)}s so the pool routes around this IP`);
+              // PER-IP egress rotation (egress-ip-pool): a bare-burst 429 is a Cloudflare per-IP EDGE throttle on
+              // the egress IP (util5h/7d headers absent), NOT the account budget. If the SAME account has another
+              // off-cooldown egress IP, cool THIS IP (escalating with its per-IP streak) + retry the same account
+              // /credential on the sibling IP — honoring hard pins, with NO whole-account pause. Only when the
+              // account has no other usable IP do we fall through to the per-account BARE-429 circuit (today's path).
+              const usedEg = curEgressEntry ?? active.egress;
+              const ipHasProxy = !!usedEg?.proxyUrl && /^https?:\/\//i.test(usedEg.proxyUrl);
+              if (ipHasProxy && siblingEgressAvailable(active, Date.now(), curEgressKey)) {
+                const ipStreak = (ipBare429Streak.get(curEgressKey) ?? 0) + 1;
+                ipBare429Streak.set(curEgressKey, ipStreak);
+                const ipCoolMs = Math.min(bare429FailoverBackoffMs * 2 ** (ipStreak - 1), IP_COOLDOWN_MAX_MS);
+                coolIp(curEgressKey, ipCoolMs);
+                bareIpRotate = true;
+                exhaustResetAt = Date.now() + bare429FailoverBackoffMs;
+                log('warn', `inference-gateway: bare-burst 429 on egress IP ${egDesc(usedEg)} for '${active.accountId}' (cloudflare per-IP throttle) — cooling that IP ${Math.round(ipCoolMs / 1000)}s + rotating to a sibling IP on the SAME account (egress-ip-pool)`);
+              } else {
+                // BARE-429 PERSISTENCE CIRCUIT (auto-route-around): a brief burst is paced 15s, but a SUSTAINED
+                // streak = a per-IP edge throttle that isn't clearing → escalate the pause (double per step, capped)
+                // so the pool routes AROUND this IP to healthy accounts instead of re-hammering it every 15s forever.
+                const streak = (bare429Streak.get(active.accountId) ?? 0) + 1;
+                bare429Streak.set(active.accountId, streak);
+                const circuitOn = BARE429_CIRCUIT_THRESHOLD > 0 && streak >= BARE429_CIRCUIT_THRESHOLD;
+                const pauseMs = circuitOn
+                  ? Math.min(bare429FailoverBackoffMs * 2 ** (streak - BARE429_CIRCUIT_THRESHOLD + 1), BARE429_CIRCUIT_MAX_MS)
+                  : bare429FailoverBackoffMs;
+                gov.penalize({ retryAfterMs: pauseMs, resetAt: Date.now() + pauseMs, rateLimited: true });
+                exhaustResetAt = Date.now() + pauseMs;
+                if (circuitOn) {
+                  log('warn', `inference-gateway: BARE-429 CIRCUIT for '${active.accountId}' (${streak} consecutive bare-429s — persistent per-IP edge throttle, not a brief burst) → pausing ${Math.round(pauseMs / 1000)}s so the pool routes around this IP`);
+                }
+                // G1 (WI-649): a bare-burst is a TRANSIENT throttle (capacity exists) — distinct from the usage-cap
+                // wall handled above. If ≥half the pool is already out of rotation, rotating onto "another" account
+                // finds no capacity and just sustains the storm → suppress the rotate-retry so this request falls
+                // through to the bounded transient-wait / absorb / fail-fast-shed (≈1 upstream call, not ~2.4).
+                suppressBareBurstRotate = isFleetWideBareBurst() || noteRecentBareBurstCluster(active.accountId);
               }
-              // G1 (WI-649): a bare-burst is a TRANSIENT throttle (capacity exists) — distinct from the usage-cap
-              // wall handled above. If ≥half the pool is already out of rotation, rotating onto "another" account
-              // finds no capacity and just sustains the storm → suppress the rotate-retry so this request falls
-              // through to the bounded transient-wait / absorb / fail-fast-shed (≈1 upstream call, not ~2.4).
-              suppressBareBurstRotate = isFleetWideBareBurst() || noteRecentBareBurstCluster(active.accountId);
             } else {
               exhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000; // unifiedRejected: bounded pause already set
             }
-            internalRetry = { rotate: true, backoffMs: TRANSIENT_429_BACKOFF_MS, exhaustResetAt };
+            internalRetry = {
+              rotate: !bareIpRotate,
+              backoffMs: bareIpRotate ? 0 : TRANSIENT_429_BACKOFF_MS,
+              exhaustResetAt,
+              ipRotate: bareIpRotate,
+            };
           }
         } else if (up.status === 403) {
           // Account-level org/subscription DISQUALIFICATION (not a transient throttle): the account's
@@ -2420,6 +2458,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 proceed = true;
                 routedAround = true; // routed a per-account quota-429 to a healthy account → NOT global pressure
               }
+            } else if (internalRetry.ipRotate) {
+              // egress-ip-pool: retry the SAME account on a sibling egress IP — the bare-burst was a per-IP
+              // Cloudflare throttle, not pool saturation. A ROUTING event, so AIMD must NOT shrink admission.
+              attempt++;
+              proceed = true;
+              routedAround = true;
             } else {
               // 529 server-overload: back off + retry the SAME account (no penalty/rotation).
               attempt++;
@@ -2526,6 +2570,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // BARE-429 PERSISTENCE CIRCUIT: a 2xx means this account's egress IP is serving again → clear its
           // bare-429 streak so a recovered IP rejoins rotation at the base 15s pace (no stale escalation).
           if (bare429Streak.has(active.accountId)) bare429Streak.delete(active.accountId);
+          // egress-ip-pool: the EXACT egress IP this attempt used just served a 2xx → clear its per-IP bare-429
+          // streak + cooldown so a recovered IP rejoins the account's rotation immediately at the base pace.
+          ipBare429Streak.delete(curEgressKey);
+          ipCooldownUntil.delete(curEgressKey);
         }
         // P-002 autowake-coverage (2026-06-22): a FORWARDED retryable rate-limit (a 429/529 the gateway could not
         // retry away) to an IDENTIFIED bee → record a stall so the stall-waker re-wakes it when this account
