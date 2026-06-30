@@ -1142,9 +1142,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const coolIp = (key: string, ms: number): void => {
     ipCooldownUntil.set(key, Math.max(ipCooldownUntil.get(key) ?? 0, Date.now() + ms)); // take-MAX: never shorten
   };
+  // Dynamic egress mode (egress-proxy-toggle-2026-06-30): operator-flippable kill-switch for the datacenter
+  // PROXY egress IPs. When DISABLED, every account DROPS its proxyUrl pool entries so all upstream egresses
+  // through the BOX's own outbound IP(s) — the stopgap for a Cloudflare per-IP EDGE throttle (bare-burst 429s,
+  // cf-ray, no retry-after) hammering the shared datacenter proxy IPs while the box IP carries different edge
+  // reputation. Seeded from PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS; live-flippable (no restart) via
+  // POST /admin/egress-mode?proxy=on|off (GET to read). An account left with no entry falls back to the
+  // default box egress, so box-IP-only is always reachable.
+  let proxyEgressDisabled =
+    process.env.PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS === '1' ||
+    process.env.PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS?.toLowerCase() === 'true';
+  /** egressEntries(account) with proxy (proxyUrl) entries dropped when proxy egress is disabled. */
+  const effectiveEgressEntries = (account: ActiveAccount): AccountEgress[] => {
+    const entries = egressEntries(account);
+    return proxyEgressDisabled ? entries.filter((e) => !e.proxyUrl) : entries;
+  };
   /** Does `account` have an egress IP OTHER than `currentKey` that is off cooldown right now? */
   const siblingEgressAvailable = (account: ActiveAccount, now: number, currentKey: string): boolean => {
-    const entries = egressEntries(account);
+    const entries = effectiveEgressEntries(account);
     if (entries.length <= 1) return false;
     return entries.some((e) => {
       const k = egressCacheKey(account.accountId, e);
@@ -1155,7 +1170,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  off-cooldown IP; if every IP is cooled, return the cursor IP (last resort — the account-level circuit
    *  fallback handles all-IPs-down). 0 entries ⇒ default egress; 1 entry ⇒ that entry (no cursor churn). */
   const pickEgress = (account: ActiveAccount, now: number): { entry: AccountEgress | undefined; key: string } => {
-    const entries = egressEntries(account);
+    const entries = effectiveEgressEntries(account);
     if (entries.length === 0) return { entry: undefined, key: egressCacheKey(account.accountId, undefined) };
     if (entries.length === 1) return { entry: entries[0], key: egressCacheKey(account.accountId, entries[0]) };
     const start = (egressCursor.get(account.accountId) ?? 0) % entries.length;
@@ -1658,7 +1673,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // the very account whose IP just tripped Cloudflare (the amplifier behind the owner-reported throttle),
       // and a busy account's remaining IPs stay fresh for whoever pinned it. ALL IPs cooled ⇒ Infinity (out of
       // the race; the per-account circuit also covers that). A 0/1-IP account is unaffected (today's behavior).
-      const poolEntries = egressEntries(account);
+      const poolEntries = effectiveEgressEntries(account);
       if (poolEntries.length > 1) {
         let cooled = 0;
         for (const e of poolEntries) if ((ipCooldownUntil.get(egressCacheKey(accountId, e)) ?? 0) > now0) cooled++;
@@ -2563,6 +2578,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 t.unref?.();
               });
             }
+            // GRACEFUL RE-ROUTING (absorb-retry-restuck-on-throttled-account 2026-06-30): pick the NEXT
+            // round-robin account (`pool.active()` skips out-of-rotation ones) for the re-acquire instead of
+            // re-holding the SAME account we were just throttled on. Under a FLEET-WIDE bare-burst the inner
+            // rotate is suppressed (above), so without this the held caller stays pinned to one throttled
+            // account for the whole absorb and never lands — even when a SIBLING account has budget right now
+            // (the Scout's opus ideator: $0/0-ideas/180s-timeout while bees land ~50% by happening to route to
+            // a healthy account). O(1) and adds NO upstream attempts (the absorb already retries N times) — it
+            // just spreads them across accounts, so each absorb iteration cycles toward a working one. Honors
+            // hard pins (never routes off the pin); a same-account pick (single-account pool) is a no-op =
+            // unchanged wait-it-out behavior.
+            if (!hardPin) {
+              const reCand = pool.active();
+              if (reCand.accountId !== active.accountId) {
+                everRotated = true;
+                active = reCand;
+                gov = governorForAccount(model, active.accountId);
+                log('warn', `inference-gateway: absorb-retry re-routed to '${active.accountId}' instead of re-holding the throttled account`);
+              }
+            }
             const reacq = await gov.acquire(est, { maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()), allowSoftPaused: serveSoft, signal: reqAbort.signal }); // H12: reclaim/ceiling cancels this parked re-acquire
             if (reacq) {
               release = reacq;
@@ -2989,6 +3023,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
         .onAdminReload()
         .then((r) => sendJson(res, 200, { ok: true, ...r }))
         .catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `inference-gateway: reload failed: ${(e as Error).message}` }, gateway: true }));
+      return;
+    }
+    if ((req.method === 'POST' || req.method === 'GET') && url.startsWith('/admin/egress-mode')) {
+      // Dynamic egress kill-switch (egress-proxy-toggle-2026-06-30): `?proxy=off` ⇒ box-IP-only (drop the
+      // datacenter proxy egress, route all upstream through the box's own IP); `?proxy=on` ⇒ restore each
+      // account's proxy pool; no arg ⇒ just read the current mode. LIVE — no restart. The BOOT default is
+      // PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS, so set that (gateway service env) to make a flip survive a restart.
+      req.resume(); // drain any body so the socket releases cleanly
+      const q = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
+      const proxy = new URLSearchParams(q).get('proxy');
+      if (proxy === 'off') proxyEgressDisabled = true;
+      else if (proxy === 'on') proxyEgressDisabled = false;
+      sendJson(res, 200, { ok: true, proxyEgressDisabled, mode: proxyEgressDisabled ? 'box-ip-only' : 'proxy-pool' });
       return;
     }
     if (req.method === 'POST' && url === '/admin/owner-pin') {
