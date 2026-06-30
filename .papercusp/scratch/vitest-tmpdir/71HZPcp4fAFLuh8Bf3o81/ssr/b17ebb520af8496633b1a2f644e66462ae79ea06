@@ -1,0 +1,39 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","AGENT_ROLES"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/locks/identity.ts", {"importedNames":["readIdentity"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/agent-tools/locks/resource-command-match.ts", {"importedNames":["checkBashCommand"]});
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "locks:check_command",
+  description: "Check a raw shell command against the named-lock registry: does it touch a resource with an exclusive (restart/migration) in flight? Returns decision (allow | warn | block) + the matched resources. The verdict a raw-Bash gate consumes.",
+  guidance: {
+    when: "A hook (or you) wants to know if a destructive command would collide with an in-flight exclusive hold before running it.",
+    notWhen: "Acquiring a named-resource lock — use locks:acquire_resource. File edits — use locks:acquire.",
+    chaining: "block → wait / coordinate; warn → proceed with care; allow → run."
+  },
+  capability: "locks:read",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_1__.AGENT_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    command: __vite_ssr_import_0__.z.string().min(1).max(32e3)
+  }),
+  async handler(args, ctx) {
+    const { ownerId, coordinationDomain } = (0,__vite_ssr_import_2__.readIdentity)(ctx);
+    const verdict = await (0,__vite_ssr_import_3__.checkBashCommand)({
+      command: args.command,
+      coordinationDomain,
+      ownerId
+    });
+    return {
+      content: [{ type: "text", text: JSON.stringify({ ok: true, ...verdict }) }]
+    };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVdBO0FBQ0E7QUFDQTtBQUNBOzs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsVUFBVTtBQUFBLEVBQ1o7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLGlDQUFXO0FBQUEsRUFDM0IsTUFBTSx3QkFBRSxPQUFPO0FBQUEsSUFDYixTQUFTLHdCQUFFLE9BQU8sRUFBRSxJQUFJLENBQUMsRUFBRSxJQUFJLElBQUs7QUFBQSxFQUN0QyxDQUFDO0FBQUEsRUFDRCxNQUFNLFFBQVEsTUFBTSxLQUFLO0FBQ3ZCLFVBQU0sRUFBRSxTQUFTLG1CQUFtQixPQUFJLG9DQUFhLEdBQUc7QUFDeEQsVUFBTSxVQUFVLFNBQU0sd0NBQWlCO0FBQUEsTUFDckMsU0FBUyxLQUFLO0FBQUEsTUFDZDtBQUFBLE1BQ0E7QUFBQSxJQUNGLENBQUM7QUFDRCxXQUFPO0FBQUEsTUFDTCxTQUFTLENBQUMsRUFBRSxNQUFNLFFBQWlCLE1BQU0sS0FBSyxVQUFVLEVBQUUsSUFBSSxNQUFNLEdBQUcsUUFBUSxDQUFDLEVBQUUsQ0FBQztBQUFBLElBQ3JGO0FBQUEsRUFDRjtBQUNGLENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImNoZWNrX2NvbW1hbmQudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBsb2NrczpjaGVja19jb21tYW5kIOKAlCB2ZXJkaWN0IGZvciBhIHJhdyBzaGVsbCBjb21tYW5kIGFnYWluc3QgdGhlIG5hbWVkLWxvY2tcbiAqIHJlZ2lzdHJ5IChQaGFzZSA4LCBQLTAyNikuIFRoZSByZWFjaGFibGUgc3VyZmFjZSBhIFByZVRvb2xVc2UgQmFzaCBob29rXG4gKiAob3IgYW4gYWdlbnQpIHF1ZXJpZXMgdG8gbGVhcm4gd2hldGhlciBhIGNvbW1hbmQgdG91Y2hlcyBhIHJlc291cmNlIHRoYXQgaXNcbiAqIG1pZC1yZXN0YXJ0L21pZ3JhdGlvbi4gUmV0dXJucyB7IGRlY2lzaW9uOiBhbGxvd3x3YXJufGJsb2NrLCBtYXRjaGVkOiBbLi4uXSB9LlxuICpcbiAqIEFjdGl2YXRpb24gKE5PVCBlbmFibGVkIGJ5IGRlZmF1bHQg4oCUIGEgQmFzaCBob29rIGdhdGVzIEVWRVJZIGFnZW50IG9uIHRoZVxuICogYm94KTogYWRkIGEgUHJlVG9vbFVzZSBgQmFzaGAgaG9vayB0aGF0IFBPU1RzIHRoZSBjb21tYW5kIHRvXG4gKiAvYXBpL2FnZW50LXRvb2xzL2xvY2tzL2NoZWNrX2NvbW1hbmQgYW5kIGRlbmllcyBvbiBkZWNpc2lvbiA9PT0gJ2Jsb2NrJy5cbiAqL1xuXG5pbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wsIEFHRU5UX1JPTEVTIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgcmVhZElkZW50aXR5IH0gZnJvbSAnLi9pZGVudGl0eSc7XG5pbXBvcnQgeyBjaGVja0Jhc2hDb21tYW5kIH0gZnJvbSAnLi9yZXNvdXJjZS1jb21tYW5kLW1hdGNoJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICdsb2NrczpjaGVja19jb21tYW5kJyxcbiAgZGVzY3JpcHRpb246XG4gICAgJ0NoZWNrIGEgcmF3IHNoZWxsIGNvbW1hbmQgYWdhaW5zdCB0aGUgbmFtZWQtbG9jayByZWdpc3RyeTogZG9lcyBpdCB0b3VjaCBhIHJlc291cmNlIHdpdGggYW4gZXhjbHVzaXZlIChyZXN0YXJ0L21pZ3JhdGlvbikgaW4gZmxpZ2h0PyBSZXR1cm5zIGRlY2lzaW9uIChhbGxvdyB8IHdhcm4gfCBibG9jaykgKyB0aGUgbWF0Y2hlZCByZXNvdXJjZXMuIFRoZSB2ZXJkaWN0IGEgcmF3LUJhc2ggZ2F0ZSBjb25zdW1lcy4nLFxuICBndWlkYW5jZToge1xuICAgIHdoZW46ICdBIGhvb2sgKG9yIHlvdSkgd2FudHMgdG8ga25vdyBpZiBhIGRlc3RydWN0aXZlIGNvbW1hbmQgd291bGQgY29sbGlkZSB3aXRoIGFuIGluLWZsaWdodCBleGNsdXNpdmUgaG9sZCBiZWZvcmUgcnVubmluZyBpdC4nLFxuICAgIG5vdFdoZW46ICdBY3F1aXJpbmcgYSBuYW1lZC1yZXNvdXJjZSBsb2NrIOKAlCB1c2UgbG9ja3M6YWNxdWlyZV9yZXNvdXJjZS4gRmlsZSBlZGl0cyDigJQgdXNlIGxvY2tzOmFjcXVpcmUuJyxcbiAgICBjaGFpbmluZzogJ2Jsb2NrIOKGkiB3YWl0IC8gY29vcmRpbmF0ZTsgd2FybiDihpIgcHJvY2VlZCB3aXRoIGNhcmU7IGFsbG93IOKGkiBydW4uJyxcbiAgfSxcbiAgY2FwYWJpbGl0eTogJ2xvY2tzOnJlYWQnLFxuICByZXF1aXJlUHJpbmNpcGFsOiBmYWxzZSxcbiAgYWdlbnRSb2xlczogWy4uLkFHRU5UX1JPTEVTXSxcbiAgYXJnczogei5vYmplY3Qoe1xuICAgIGNvbW1hbmQ6IHouc3RyaW5nKCkubWluKDEpLm1heCgzMjAwMCksXG4gIH0pLFxuICBhc3luYyBoYW5kbGVyKGFyZ3MsIGN0eCkge1xuICAgIGNvbnN0IHsgb3duZXJJZCwgY29vcmRpbmF0aW9uRG9tYWluIH0gPSByZWFkSWRlbnRpdHkoY3R4KTtcbiAgICBjb25zdCB2ZXJkaWN0ID0gYXdhaXQgY2hlY2tCYXNoQ29tbWFuZCh7XG4gICAgICBjb21tYW5kOiBhcmdzLmNvbW1hbmQsXG4gICAgICBjb29yZGluYXRpb25Eb21haW4sXG4gICAgICBvd25lcklkLFxuICAgIH0pO1xuICAgIHJldHVybiB7XG4gICAgICBjb250ZW50OiBbeyB0eXBlOiAndGV4dCcgYXMgY29uc3QsIHRleHQ6IEpTT04uc3RyaW5naWZ5KHsgb2s6IHRydWUsIC4uLnZlcmRpY3QgfSkgfV0sXG4gICAgfTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2xvY2tzL2NoZWNrX2NvbW1hbmQudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvbG9ja3MvY2hlY2tfY29tbWFuZC50cyIsIi9saWIvYWdlbnQtdG9vbHMvbG9ja3MvY2hlY2tfY29tbWFuZC50cyIsW11d

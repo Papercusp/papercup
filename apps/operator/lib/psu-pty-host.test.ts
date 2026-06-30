@@ -18,6 +18,7 @@ import {
   turnSubmitCrDelayForAgent,
   makeIdleGate,
   makeActivityTracker,
+  makeAgentBusyGate,
   ACTIVITY_PERSIST_MS,
   PSU_PTY_DIR,
 } from '../scripts/psu-pty-host.mjs';
@@ -254,5 +255,56 @@ describe('makeActivityTracker (P-006 mid-turn activity)', () => {
 
   it('persist cadence is coarse (≥5s) so the pty bridge never becomes an fs hot loop', () => {
     expect(ACTIVITY_PERSIST_MS).toBeGreaterThanOrEqual(5_000);
+  });
+});
+
+/**
+ * makeAgentBusyGate (coord-wake-mid-turn-2026-06-30): the mid-turn inject gate —
+ * the OUTPUT-side sibling of makeIdleGate. A wake `turn` (text + CR) written into
+ * a TUI that is still GENERATING wedges the turn (needs ESC) — the multi-recipient
+ * `coord:send {wake:'required'}` broadcast hang. This gate holds the inject until
+ * the agent is back at its prompt (its pty output has been quiet for quietMs), and
+ * DROPS the live inject if the agent stays busy past capMs (the durable inbox
+ * message stands for the next turn). The pty output stream is the mid-turn signal.
+ */
+describe('makeAgentBusyGate (mid-turn inject safety)', () => {
+  it('quietForMs reports how long the agent output has been quiet', () => {
+    let lastOut = 1000;
+    const g = makeAgentBusyGate({ lastOutputAt: () => lastOut, now: () => lastOut });
+    expect(g.quietForMs(1000)).toBe(0); // just emitted
+    expect(g.quietForMs(1300)).toBe(300); // 300ms of quiet since
+  });
+
+  it('treats "never emitted" (lastOutputAt 0) as quiet/at-prompt', () => {
+    // A fresh idle session that has produced no output yet is at its prompt —
+    // quietForMs is the full epoch, far past any quietMs, so a wake injects now.
+    const g = makeAgentBusyGate({ lastOutputAt: () => 0, now: () => 5000, quietMs: 100 });
+    expect(g.quietForMs()).toBe(5000);
+  });
+
+  it('waitAtPrompt resolves immediately (not deferred) when output is already quiet', async () => {
+    // Output last seen at t=0, clock at t=5000, quiet window 100 → 5000ms of quiet
+    // ≫ 100 → inject now, no deferral.
+    const g = makeAgentBusyGate({ lastOutputAt: () => 0, now: () => 5000, quietMs: 100, capMs: 1000 });
+    const r = await g.waitAtPrompt();
+    expect(r.deferred).toBe(false);
+  });
+
+  it('waitAtPrompt DEFERS (drops the live inject) when the agent stays busy past capMs', async () => {
+    // The agent is perpetually "emitting" (lastOutputAt tracks the advancing clock,
+    // so quietForMs stays ~0 < quietMs) → it never reaches the prompt → cap fires.
+    // Mirrors the makeIdleGate cap test: an advancing clock + the real min-10ms
+    // setTimeout pace the loop to the deadline. This is the anti-wedge guarantee —
+    // a busy turn is NEVER written into; the wake falls back to the durable inbox.
+    let t = 0;
+    const g = makeAgentBusyGate({
+      lastOutputAt: () => t, // last output is always "now" → never quiet
+      quietMs: 1_000_000,
+      capMs: 30,
+      now: () => (t += 10),
+    });
+    const r = await g.waitAtPrompt();
+    expect(r.deferred).toBe(true);
+    expect(r.reason).toBe('agent-busy');
   });
 });

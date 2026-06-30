@@ -1,0 +1,83 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","SU_ROLES","isOperatorConfigWriteRole"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/libs/flags/src/server.ts", {"importedNames":["getFlag"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/libs/flags/src/index.ts", {"importedNames":["FLAGS"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/workspace-registry.ts", {"importedNames":["activeWorkspaceId"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/lib/gateway-control/control-harness.ts", {"importedNames":["runControlMutation"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/lib/role-capability-grants.ts", {"importedNames":["readGrants","revokeCaps","writeGrants"]});
+
+
+
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "capability:revoke_role",
+  profile: "engineer",
+  description: "Remove runtime-granted capabilities from a role (the inverse of capability:grant_role). Only affects the runtime grant store, never code-level role caps. Operator-authority, audited + one-call-revertible. Dark until papercusp-capability-grant-tool is enabled.",
+  capability: "operator:write",
+  guidance: {
+    when: "Walk back a runtime capability grant — confine a role after a grant proves too broad, or clean up grants. Reducing privilege, so always safe.",
+    notWhen: "To GRANT a cap, use capability:grant_role. To wipe ALL runtime grants at once (incident), use config:reset-overrides on the role-capability-grants concern.",
+    chaining: "config:list-overrides shows the active grants before/after."
+  },
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_1__.SU_ROLES],
+  rolesQuota: { operator: { perRun: 20 } },
+  args: __vite_ssr_import_0__.z.object({
+    role: __vite_ssr_import_0__.z.string().min(1).max(80).describe("The role to revoke capabilities from."),
+    capabilities: __vite_ssr_import_0__.z.array(__vite_ssr_import_0__.z.string().min(1).max(120)).min(1).describe("Capability strings to remove."),
+    dryRun: __vite_ssr_import_0__.z.boolean().optional()
+  }),
+  async handler(args, ctx) {
+    const ws = (0,__vite_ssr_import_4__.activeWorkspaceId)();
+    if (!await (0,__vite_ssr_import_2__.getFlag)(__vite_ssr_import_3__.FLAGS.CAPABILITY_GRANT_TOOL, ws)) {
+      throw new Error("capability:revoke_role is dark — enable papercusp-capability-grant-tool to use it.");
+    };
+    if (!(0,__vite_ssr_import_1__.isOperatorConfigWriteRole)(ctx.role)) {
+      throw new Error("capability:revoke_role requires operator, architect, or queen role");
+    };
+    const caps = [...new Set(args.capabilities)];
+    const outcome = await (0,__vite_ssr_import_5__.runControlMutation)(
+      {
+        action: "capability:revoke_role",
+        subject: `role:${args.role}`,
+        actor: `role:${ctx.role}`,
+        capturePrev: () => (0,__vite_ssr_import_6__.readGrants)(args.role),
+        apply: () => (0,__vite_ssr_import_6__.revokeCaps)(args.role, caps),
+        revertTo: (prev) => (0,__vite_ssr_import_6__.writeGrants)(args.role, prev).then(() => {
+        }),
+        verify: async (next) => {
+          const ok = caps.every((c) => !next.includes(c));
+          return { ok, detail: ok ? void 0 : "grant set still contains revoked capabilities" };
+        },
+        describe: (prev) => ({ role: args.role, current: prev, removing: caps })
+      },
+      { dryRun: args.dryRun }
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            role: args.role,
+            dryRun: outcome.dryRun,
+            applied: outcome.applied,
+            reverted: outcome.reverted,
+            preview: outcome.preview,
+            verify: outcome.verify,
+            auditId: outcome.auditId,
+            grants: outcome.next ?? outcome.prev
+          })
+        }
+      ]
+    };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOzs7Ozs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsYUFDRTtBQUFBLEVBQ0YsWUFBWTtBQUFBLEVBQ1osVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsVUFBVTtBQUFBLEVBQ1o7QUFBQSxFQUNBLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLDhCQUFRO0FBQUEsRUFDeEIsWUFBWSxFQUFFLFVBQVUsRUFBRSxRQUFRLEdBQUcsRUFBRTtBQUFBLEVBQ3ZDLE1BQU0sd0JBQUUsT0FBTztBQUFBLElBQ2IsTUFBTSx3QkFBRSxPQUFPLEVBQUUsSUFBSSxDQUFDLEVBQUUsSUFBSSxFQUFFLEVBQUUsU0FBUyx1Q0FBdUM7QUFBQSxJQUNoRixjQUFjLHdCQUFFLE1BQU0sd0JBQUUsT0FBTyxFQUFFLElBQUksQ0FBQyxFQUFFLElBQUksR0FBRyxDQUFDLEVBQUUsSUFBSSxDQUFDLEVBQUUsU0FBUywrQkFBK0I7QUFBQSxJQUNqRyxRQUFRLHdCQUFFLFFBQVEsRUFBRSxTQUFTO0FBQUEsRUFDL0IsQ0FBQztBQUFBLEVBQ0QsTUFBTSxRQUFRLE1BQU0sS0FBSztBQUN2QixVQUFNLFFBQUsseUNBQWtCO0FBQzdCLFFBQUksQ0FBRSxTQUFNLCtCQUFRLDRCQUFNLHVCQUF1QixFQUFFLEdBQUk7QUFDckQsWUFBTSxJQUFJLE1BQU0sb0ZBQW9GO0FBQUEsSUFDdEc7QUFDQSxRQUFJLElBQUMsaURBQTBCLElBQUksSUFBSSxHQUFHO0FBQ3hDLFlBQU0sSUFBSSxNQUFNLG9FQUFvRTtBQUFBLElBQ3RGO0FBQ0EsVUFBTSxPQUFPLENBQUMsR0FBRyxJQUFJLElBQUksS0FBSyxZQUFZLENBQUM7QUFFM0MsVUFBTSxVQUFVLFNBQU07QUFBQSxNQUNwQjtBQUFBLFFBQ0UsUUFBUTtBQUFBLFFBQ1IsU0FBUyxRQUFRLEtBQUssSUFBSTtBQUFBLFFBQzFCLE9BQU8sUUFBUSxJQUFJLElBQUk7QUFBQSxRQUN2QixhQUFhLFNBQU0sa0NBQVcsS0FBSyxJQUFJO0FBQUEsUUFDdkMsT0FBTyxTQUFNLGtDQUFXLEtBQUssTUFBTSxJQUFJO0FBQUEsUUFDdkMsVUFBVSxDQUFDLFlBQVMsbUNBQVksS0FBSyxNQUFNLElBQUksRUFBRSxLQUFLLE1BQU07QUFBQSxRQUFDLENBQUM7QUFBQSxRQUM5RCxRQUFRLE9BQU8sU0FBUztBQUN0QixnQkFBTSxLQUFLLEtBQUssTUFBTSxDQUFDLE1BQU0sQ0FBQyxLQUFLLFNBQVMsQ0FBQyxDQUFDO0FBQzlDLGlCQUFPLEVBQUUsSUFBSSxRQUFRLEtBQUssU0FBWSxnREFBZ0Q7QUFBQSxRQUN4RjtBQUFBLFFBQ0EsVUFBVSxDQUFDLFVBQVUsRUFBRSxNQUFNLEtBQUssTUFBTSxTQUFTLE1BQU0sVUFBVSxLQUFLO0FBQUEsTUFDeEU7QUFBQSxNQUNBLEVBQUUsUUFBUSxLQUFLLE9BQU87QUFBQSxJQUN4QjtBQUVBLFdBQU87QUFBQSxNQUNMLFNBQVM7QUFBQSxRQUNQO0FBQUEsVUFDRSxNQUFNO0FBQUEsVUFDTixNQUFNLEtBQUssVUFBVTtBQUFBLFlBQ25CLElBQUk7QUFBQSxZQUNKLE1BQU0sS0FBSztBQUFBLFlBQ1gsUUFBUSxRQUFRO0FBQUEsWUFDaEIsU0FBUyxRQUFRO0FBQUEsWUFDakIsVUFBVSxRQUFRO0FBQUEsWUFDbEIsU0FBUyxRQUFRO0FBQUEsWUFDakIsUUFBUSxRQUFRO0FBQUEsWUFDaEIsU0FBUyxRQUFRO0FBQUEsWUFDakIsUUFBUSxRQUFRLFFBQVEsUUFBUTtBQUFBLFVBQ2xDLENBQUM7QUFBQSxRQUNIO0FBQUEsTUFDRjtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQ0YsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsicmV2b2tlLXJvbGUudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBjYXBhYmlsaXR5OnJldm9rZV9yb2xlIOKAlCByZW1vdmUgcnVudGltZS1ncmFudGVkIGNhcGFiaWxpdGllcyBmcm9tIGEgcm9sZVxuICogKGxpdmUtY29uZmlndXJhYmlsaXR5LWF1ZGl0IFAtMDA4OyB0aGUgaW52ZXJzZSBvZiBjYXBhYmlsaXR5OmdyYW50X3JvbGUpLlxuICpcbiAqIE9ubHkgcmVtb3ZlcyBjYXBzIGZyb20gdGhlIHJ1bnRpbWUgR1JBTlQgc3RvcmUgKHJvbGVfY2FwYWJpbGl0eV9ncmFudHMpIOKAlCBpdCBjYW5ub3QgdG91Y2ggdGhlXG4gKiBjb2RlLWxldmVsIEJMVUVQUklOVF9ST0xFX0NBUFMgb3IgYSBwcm92aXNpb25lZCBzeXN0ZW1fcHJpbmNpcGFscyByb3cgKHRob3NlIGFyZSBub3QgcnVudGltZVxuICogc3VyZmFjZXMpLiBSZXZva2luZyBvbmx5IFJFRFVDRVMgcHJpdmlsZWdlLCBzbyBpdCBuZWVkcyBubyBmbG9vci9lbnZlbG9wZSBjaGVja3M7IHN0aWxsXG4gKiBvcGVyYXRvci1hdXRob3JpdHkgKyBmbGFnLWdhdGVkICsgYXVkaXRlZC9yZXZlcnRpYmxlIChhIHdyb25nIHJldm9rZSBpcyBvbmUgY2FsbCBiYWNrKS5cbiAqL1xuaW1wb3J0IHsgeiB9IGZyb20gJ3pvZCc7XG5pbXBvcnQgeyBkZWZpbmVUb29sLCBTVV9ST0xFUywgaXNPcGVyYXRvckNvbmZpZ1dyaXRlUm9sZSB9IGZyb20gJ0BwYXBlcmN1c3AvYWdlbnQtbWNwJztcbmltcG9ydCB7IGdldEZsYWcgfSBmcm9tICdAcGFwZXJjdXNwL2ZsYWdzL3NlcnZlcic7XG5pbXBvcnQgeyBGTEFHUyB9IGZyb20gJ0BwYXBlcmN1c3AvZmxhZ3MnO1xuaW1wb3J0IHsgYWN0aXZlV29ya3NwYWNlSWQgfSBmcm9tICcuLi8uLi93b3Jrc3BhY2UtcmVnaXN0cnknO1xuaW1wb3J0IHsgcnVuQ29udHJvbE11dGF0aW9uIH0gZnJvbSAnLi4vLi4vZ2F0ZXdheS1jb250cm9sL2NvbnRyb2wtaGFybmVzcyc7XG5pbXBvcnQgeyByZWFkR3JhbnRzLCByZXZva2VDYXBzLCB3cml0ZUdyYW50cyB9IGZyb20gJy4uLy4uL3JvbGUtY2FwYWJpbGl0eS1ncmFudHMnO1xuXG5leHBvcnQgZGVmYXVsdCBkZWZpbmVUb29sKHtcbiAgbmFtZTogJ2NhcGFiaWxpdHk6cmV2b2tlX3JvbGUnLFxuICBwcm9maWxlOiAnZW5naW5lZXInLFxuICBkZXNjcmlwdGlvbjpcbiAgICAnUmVtb3ZlIHJ1bnRpbWUtZ3JhbnRlZCBjYXBhYmlsaXRpZXMgZnJvbSBhIHJvbGUgKHRoZSBpbnZlcnNlIG9mIGNhcGFiaWxpdHk6Z3JhbnRfcm9sZSkuIE9ubHkgYWZmZWN0cyB0aGUgcnVudGltZSBncmFudCBzdG9yZSwgbmV2ZXIgY29kZS1sZXZlbCByb2xlIGNhcHMuIE9wZXJhdG9yLWF1dGhvcml0eSwgYXVkaXRlZCArIG9uZS1jYWxsLXJldmVydGlibGUuIERhcmsgdW50aWwgcGFwZXJjdXNwLWNhcGFiaWxpdHktZ3JhbnQtdG9vbCBpcyBlbmFibGVkLicsXG4gIGNhcGFiaWxpdHk6ICdvcGVyYXRvcjp3cml0ZScsXG4gIGd1aWRhbmNlOiB7XG4gICAgd2hlbjogJ1dhbGsgYmFjayBhIHJ1bnRpbWUgY2FwYWJpbGl0eSBncmFudCDigJQgY29uZmluZSBhIHJvbGUgYWZ0ZXIgYSBncmFudCBwcm92ZXMgdG9vIGJyb2FkLCBvciBjbGVhbiB1cCBncmFudHMuIFJlZHVjaW5nIHByaXZpbGVnZSwgc28gYWx3YXlzIHNhZmUuJyxcbiAgICBub3RXaGVuOiAnVG8gR1JBTlQgYSBjYXAsIHVzZSBjYXBhYmlsaXR5OmdyYW50X3JvbGUuIFRvIHdpcGUgQUxMIHJ1bnRpbWUgZ3JhbnRzIGF0IG9uY2UgKGluY2lkZW50KSwgdXNlIGNvbmZpZzpyZXNldC1vdmVycmlkZXMgb24gdGhlIHJvbGUtY2FwYWJpbGl0eS1ncmFudHMgY29uY2Vybi4nLFxuICAgIGNoYWluaW5nOiAnY29uZmlnOmxpc3Qtb3ZlcnJpZGVzIHNob3dzIHRoZSBhY3RpdmUgZ3JhbnRzIGJlZm9yZS9hZnRlci4nLFxuICB9LFxuICByZXF1aXJlUHJpbmNpcGFsOiBmYWxzZSxcbiAgYWdlbnRSb2xlczogWy4uLlNVX1JPTEVTXSxcbiAgcm9sZXNRdW90YTogeyBvcGVyYXRvcjogeyBwZXJSdW46IDIwIH0gfSxcbiAgYXJnczogei5vYmplY3Qoe1xuICAgIHJvbGU6IHouc3RyaW5nKCkubWluKDEpLm1heCg4MCkuZGVzY3JpYmUoJ1RoZSByb2xlIHRvIHJldm9rZSBjYXBhYmlsaXRpZXMgZnJvbS4nKSxcbiAgICBjYXBhYmlsaXRpZXM6IHouYXJyYXkoei5zdHJpbmcoKS5taW4oMSkubWF4KDEyMCkpLm1pbigxKS5kZXNjcmliZSgnQ2FwYWJpbGl0eSBzdHJpbmdzIHRvIHJlbW92ZS4nKSxcbiAgICBkcnlSdW46IHouYm9vbGVhbigpLm9wdGlvbmFsKCksXG4gIH0pLFxuICBhc3luYyBoYW5kbGVyKGFyZ3MsIGN0eCkge1xuICAgIGNvbnN0IHdzID0gYWN0aXZlV29ya3NwYWNlSWQoKTtcbiAgICBpZiAoIShhd2FpdCBnZXRGbGFnKEZMQUdTLkNBUEFCSUxJVFlfR1JBTlRfVE9PTCwgd3MpKSkge1xuICAgICAgdGhyb3cgbmV3IEVycm9yKCdjYXBhYmlsaXR5OnJldm9rZV9yb2xlIGlzIGRhcmsg4oCUIGVuYWJsZSBwYXBlcmN1c3AtY2FwYWJpbGl0eS1ncmFudC10b29sIHRvIHVzZSBpdC4nKTtcbiAgICB9XG4gICAgaWYgKCFpc09wZXJhdG9yQ29uZmlnV3JpdGVSb2xlKGN0eC5yb2xlKSkge1xuICAgICAgdGhyb3cgbmV3IEVycm9yKCdjYXBhYmlsaXR5OnJldm9rZV9yb2xlIHJlcXVpcmVzIG9wZXJhdG9yLCBhcmNoaXRlY3QsIG9yIHF1ZWVuIHJvbGUnKTtcbiAgICB9XG4gICAgY29uc3QgY2FwcyA9IFsuLi5uZXcgU2V0KGFyZ3MuY2FwYWJpbGl0aWVzKV07XG5cbiAgICBjb25zdCBvdXRjb21lID0gYXdhaXQgcnVuQ29udHJvbE11dGF0aW9uPHN0cmluZ1tdPihcbiAgICAgIHtcbiAgICAgICAgYWN0aW9uOiAnY2FwYWJpbGl0eTpyZXZva2Vfcm9sZScsXG4gICAgICAgIHN1YmplY3Q6IGByb2xlOiR7YXJncy5yb2xlfWAsXG4gICAgICAgIGFjdG9yOiBgcm9sZToke2N0eC5yb2xlfWAsXG4gICAgICAgIGNhcHR1cmVQcmV2OiAoKSA9PiByZWFkR3JhbnRzKGFyZ3Mucm9sZSksXG4gICAgICAgIGFwcGx5OiAoKSA9PiByZXZva2VDYXBzKGFyZ3Mucm9sZSwgY2FwcyksXG4gICAgICAgIHJldmVydFRvOiAocHJldikgPT4gd3JpdGVHcmFudHMoYXJncy5yb2xlLCBwcmV2KS50aGVuKCgpID0+IHt9KSxcbiAgICAgICAgdmVyaWZ5OiBhc3luYyAobmV4dCkgPT4ge1xuICAgICAgICAgIGNvbnN0IG9rID0gY2Fwcy5ldmVyeSgoYykgPT4gIW5leHQuaW5jbHVkZXMoYykpO1xuICAgICAgICAgIHJldHVybiB7IG9rLCBkZXRhaWw6IG9rID8gdW5kZWZpbmVkIDogJ2dyYW50IHNldCBzdGlsbCBjb250YWlucyByZXZva2VkIGNhcGFiaWxpdGllcycgfTtcbiAgICAgICAgfSxcbiAgICAgICAgZGVzY3JpYmU6IChwcmV2KSA9PiAoeyByb2xlOiBhcmdzLnJvbGUsIGN1cnJlbnQ6IHByZXYsIHJlbW92aW5nOiBjYXBzIH0pLFxuICAgICAgfSxcbiAgICAgIHsgZHJ5UnVuOiBhcmdzLmRyeVJ1biB9LFxuICAgICk7XG5cbiAgICByZXR1cm4ge1xuICAgICAgY29udGVudDogW1xuICAgICAgICB7XG4gICAgICAgICAgdHlwZTogJ3RleHQnLFxuICAgICAgICAgIHRleHQ6IEpTT04uc3RyaW5naWZ5KHtcbiAgICAgICAgICAgIG9rOiB0cnVlLFxuICAgICAgICAgICAgcm9sZTogYXJncy5yb2xlLFxuICAgICAgICAgICAgZHJ5UnVuOiBvdXRjb21lLmRyeVJ1bixcbiAgICAgICAgICAgIGFwcGxpZWQ6IG91dGNvbWUuYXBwbGllZCxcbiAgICAgICAgICAgIHJldmVydGVkOiBvdXRjb21lLnJldmVydGVkLFxuICAgICAgICAgICAgcHJldmlldzogb3V0Y29tZS5wcmV2aWV3LFxuICAgICAgICAgICAgdmVyaWZ5OiBvdXRjb21lLnZlcmlmeSxcbiAgICAgICAgICAgIGF1ZGl0SWQ6IG91dGNvbWUuYXVkaXRJZCxcbiAgICAgICAgICAgIGdyYW50czogb3V0Y29tZS5uZXh0ID8/IG91dGNvbWUucHJldixcbiAgICAgICAgICB9KSxcbiAgICAgICAgfSxcbiAgICAgIF0sXG4gICAgfTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2NhcGFiaWxpdHkvcmV2b2tlLXJvbGUudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvY2FwYWJpbGl0eS9yZXZva2Utcm9sZS50cyIsIi9saWIvYWdlbnQtdG9vbHMvY2FwYWJpbGl0eS9yZXZva2Utcm9sZS50cyIsW11d

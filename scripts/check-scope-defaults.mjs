@@ -12,11 +12,14 @@
  * a single bucket silently reads/writes the WRONG partition.
  *
  * What this flags: a nullish/or default whose IMMEDIATE left-hand identifier names a
- * workspace / harness / hive / scope value AND defaults to one of the scope literals
- * `'default'` / `DEFAULT_WORKSPACE_ID` / `'operator'` (incl. the `"…"` forms), in source
- * `.ts` (not `.tsx` UI, not tests). A genuinely-global default ("operator/all is the
- * explicit documented scope here") is allowed — mark it with an inline `allow-scope-default`
- * comment (reason at the site), or add an inherently-exempt file to FILE_ALLOW.
+ * workspace / harness / hive / scope value AND defaults to one of the scope sentinels
+ * `'default'` / `DEFAULT_WORKSPACE_ID` / `'operator'` (incl. the `"…"` forms) OR the
+ * home-harness resolver call `operatorHomeHarnessSlug()` (a NAMED silent default — the
+ * function-call form this lint was blind to, which is exactly how the WI-374 plan-attribution
+ * mis-attribution slipped past it), in source `.ts` (not `.tsx` UI, not tests). A
+ * genuinely-global default ("operator/home/all is the explicit documented scope here") is
+ * allowed — mark it with an inline `allow-scope-default` comment (reason at the site), or add
+ * an inherently-exempt file to FILE_ALLOW.
  *
  * What it deliberately does NOT flag: a bare `?? ''` / `?? ""`. The empty-string default is
  * too ambiguous for a static lint (a controlled-input value, a copy-text fallback, and a
@@ -56,8 +59,13 @@ const FILE_ALLOW = new Set([
   'packages/operator-core/lib/llm-testing/targets/operator.ts', // LLM-test target's test-workspace header
 ]);
 
-// The scope literals a `??`/`||` may default to (the unambiguous ones).
-const LITERAL = "(?:DEFAULT_WORKSPACE_ID\\b|'default'|\"default\"|'operator'|\"operator\")";
+// The scope sentinels a `??`/`||` may silently default to (the unambiguous ones): the
+// literal workspace/scope strings AND the home-harness RESOLVER CALL. `operatorHomeHarnessSlug()`
+// is a named silent default exactly like `'default'`/`DEFAULT_WORKSPACE_ID` — an omitted harness
+// collapsed to the operator home mis-attributes data across harnesses (WI-374, the function-call
+// form this lint was previously BLIND to — the detector failure behind the plan-attribution leak).
+const LITERAL =
+  "(?:DEFAULT_WORKSPACE_ID\\b|operatorHomeHarnessSlug\\(\\)|'default'|\"default\"|'operator'|\"operator\")";
 const OP_LITERAL_RE = new RegExp(`(\\?\\?|\\|\\|)\\s*${LITERAL}`);
 // The IMMEDIATE left-hand identifier chain (the token run just before the operator).
 const LHS_TOKEN_RE = /([\w.$?![\]'"]+)\s*$/;
@@ -92,7 +100,7 @@ try {
     [
       'grep',
       '-nE',
-      `(\\?\\?|\\|\\|)\\s*(DEFAULT_WORKSPACE_ID|'default'|\"default\"|'operator'|\"operator\")`,
+      `(\\?\\?|\\|\\|)\\s*(DEFAULT_WORKSPACE_ID|operatorHomeHarnessSlug\\(\\)|'default'|\"default\"|'operator'|\"operator\")`,
       '--',
       'packages/',
       'apps/',

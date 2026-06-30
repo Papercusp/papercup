@@ -361,13 +361,19 @@ function resolveOptions(opts: NeologismFilingOptions): Required<NeologismFilingO
  * timestamps, so insight mentions never enter the growth math — they rank
  * (score) and they evidence (the proposal body names the slugs).
  */
-export function aggregateNeologisms(
+/** Yield control to the event loop so a large synchronous scan cannot block
+ *  routinesTick / the DBOS scheduler (the 2026-06-30 6h-slot freeze cascade). */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((r) => setImmediate(r));
+}
+
+export async function aggregateNeologisms(
   rows: readonly CoordTextRow[],
   insights: readonly InsightDoc[],
   namespaceIndex: ReadonlySet<string>,
   asOf: string,
   opts: NeologismFilingOptions = {},
-): NeologismEntry[] {
+): Promise<NeologismEntry[]> {
   const o = resolveOptions(opts);
   const asOfMs = Date.parse(asOf);
   const recentStartMs = asOfMs - o.recentDays * 86_400_000;
@@ -387,13 +393,17 @@ export function aggregateNeologisms(
   // coinage events (the live corpus' worst offender: resource-lock drain
   // notices — one template, dozens of synthetic senders). Keep the freshest.
   const byText = new Map<string, CoordTextRow>();
+  let _dedupN = 0;
   for (const row of rows) {
+    if ((++_dedupN & 0x1ff) === 0) await yieldToEventLoop();
     const key = sanitizeCoordText(row.text).toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
     const prev = byText.get(key);
     if (!prev || row.at > prev.at) byText.set(key, row);
   }
 
+  let _scanN = 0;
   for (const row of byText.values()) {
+    if ((++_scanN & 0xff) === 0) await yieldToEventLoop();
     const atMs = Date.parse(row.at);
     if (!Number.isFinite(atMs) || atMs > asOfMs) continue;
     const isRecent = atMs >= recentStartMs;
@@ -423,12 +433,19 @@ export function aggregateNeologisms(
   }
 
   const priorDays = o.windowDays - o.recentDays;
+  // Pre-lowercase each insight ONCE. Was re-lowercasing every doc for every
+  // term — O(terms · insights · textLen) of synchronous toLowerCase, the block
+  // that pegged bg-host's event loop at the 6h neologism slot (2026-06-30).
+  const insightsLc = insights.map((d) => ({ slug: d.slug, lc: d.text.toLowerCase() }));
   const entries: NeologismEntry[] = [];
+  let _termN = 0;
   for (const [term, acc] of byTerm) {
+    if ((++_termN & 0xff) === 0) await yieldToEventLoop();
     const recentRate = acc.recent / o.recentDays;
     const priorRate = (acc.prior + 1) / priorDays;
-    const insightSlugs = insights
-      .filter((d) => d.text.toLowerCase().includes(term) || d.text.toLowerCase().includes(term.replace(/ /g, '-')))
+    const termDash = term.replace(/ /g, '-');
+    const insightSlugs = insightsLc
+      .filter((d) => d.lc.includes(term) || d.lc.includes(termDash))
       .map((d) => d.slug);
     entries.push({
       term,

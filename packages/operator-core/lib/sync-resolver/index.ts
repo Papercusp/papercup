@@ -46,7 +46,6 @@
 
 import { z } from 'zod';
 import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
-import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 // Flat-row sync reads carry page metadata (e.g. the true total) on row[0]._meta;
 // attachListMeta is the one place that convention lives. See ./list-meta.
 import { attachListMeta } from './list-meta';
@@ -2221,17 +2220,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
       const r = await callPlansRead('get', (args ?? {}) as Record<string, unknown>);
-      if (!r) return [];
+      // plans:get is a BULK tool — even a single-slug read returns the runBulk envelope
+      // `{ ok, results:[plan], counts }` (get.ts → bulkContent). Unwrap `results[0]` to the
+      // single plan so this resolver honors its documented `[PlanGetResult]` contract — the
+      // SAME shape the REST `fetchPlan` path gets via `unwrapBulkGet` (routes/admin/plans.ts).
+      // Without this the live consumer (PlanItemPreview) renders the envelope, not the plan,
+      // AND enrichPlanDetail (below) early-returns on the envelope's missing `frontmatter`, so
+      // attribution silently no-ops. A non-envelope shape (a bare `{ error }`, or a test mock)
+      // passes through unchanged.
+      const plan =
+        r && typeof r === 'object' && Array.isArray((r as { results?: unknown }).results)
+          ? (r as { results: unknown[] }).results[0]
+          : r;
+      if (!plan) return [];
       // B1 (shared-hive-collaboration P-001): enrich plan-level owner/last-editor
       // + per-item author for the badges. Additive + best-effort.
       const { getFlag } = await import('@papercusp/flags/server');
       const { FLAGS } = await import('@papercusp/flags');
-      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return [r];
-      const a = (args ?? {}) as Record<string, unknown>;
-      const harnessSlug =
-        typeof a.harness === 'string' && a.harness && a.harness !== 'all' ? a.harness : operatorHomeHarnessSlug();
+      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return [plan];
+      // enrichPlanDetail derives the attribution harness from the plan payload's own stamped
+      // `harness` (plans:get → row.harnessSlug) — no caller-side operator-home default (WI-374).
       const { enrichPlanDetail } = await import('./plan-attribution');
-      return [await enrichPlanDetail(r, { harnessSlug })];
+      return [await enrichPlanDetail(plan)];
     },
   },
 

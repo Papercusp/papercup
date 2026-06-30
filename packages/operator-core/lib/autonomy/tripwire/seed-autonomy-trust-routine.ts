@@ -22,7 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
-const SLUG = process.env.AUTONOMY_TRUST_HARNESS ?? operatorHomeHarnessSlug();
+const SLUG = process.env.AUTONOMY_TRUST_HARNESS ?? operatorHomeHarnessSlug(); // allow-scope-default: env-overridable operator-home routine install (no env ⇒ home hive, by design)
 // Daily at 04:15 — OFFSET from the deploy rhythm (release-trigger :00/:15/:30/:45
 // is minute-of-hour; this is HOUR 04, minute 15 — and from the other learning
 // cadences: graduation 04:05, gym :10/:40, iq-battery/change-ledger :20,

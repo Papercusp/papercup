@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getRole, roleConsumes } from '../../role-registry';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'roles:get',
@@ -22,7 +23,10 @@ export default defineTool({
     harnessSlug: z.string().optional(),
   }),
   async handler(args, ctx) {
-    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    // Empty slug = the GLOBAL role registry (documented: "global when slug omitted").
+    // Normalize the operator `'*'` auto-default / explicit `all` to that global scope
+    // — never a literal `'*'` slug. allow-scope-default: intended global registry.
+    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx) ?? '';
     const role = getRole(args.id, slug);
     // `consumes` is resolved for ANY role id (kernel roles aren't
     // manifests but still have launch-context needs) so callers — esp.

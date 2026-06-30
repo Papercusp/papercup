@@ -131,3 +131,49 @@ export function harnessScopedCtx<T extends { harnessSlug?: string | null }>(
   if (scope.kind === 'none') throw new HarnessRequiredError(HARNESS_REQUIRED_DETAIL);
   return { ...ctx, harnessSlug: scope.kind === 'all' ? HARNESS_ALL : scope.slug };
 }
+
+/**
+ * Resolve a single CONCRETE harness slug for a tool that operates on exactly ONE
+ * harness — routed through the fail-loud {@link resolveHarnessScope}. Returns the
+ * slug, or `null` when no single harness is resolvable: a bare/unset ctx, the
+ * operator/superuser `'*'` auto-default, OR an explicit `all`/`'*'` arg (a
+ * cross-harness scope is meaningless for a single-harness op).
+ *
+ * This is the durable fix for the `args.x ?? ctx.harnessSlug ?? ''` band-aid
+ * family (workspace-data-isolation-leaks-2026-06-17 P-004): a `?? ''` guarded by
+ * `if (!slug)` — or a `truthy:` requires-precondition — rejects the empty string
+ * but NOT the `'*'` wildcard, so under operator scope those tools silently
+ * read/wrote a nonexistent `'*'` bucket (empty results / no-op success) instead
+ * of failing. Callers turn a `null` into {@link harnessRequiredResult}.
+ */
+export function resolveConcreteHarnessSlug(
+  argHarness: string | null | undefined,
+  ctx: { harnessSlug?: string | null } | null | undefined,
+): string | null {
+  const scope = resolveHarnessScope(argHarness, ctx);
+  return scope.kind === 'harness' ? scope.slug : null;
+}
+
+/**
+ * The standard MCP `harness_required` error result a harness-scoped tool returns
+ * when no concrete harness can be resolved (mirrors `docs:get`). Fail LOUD — the
+ * caller gets a clear, actionable error instead of an empty/wrong-scope success.
+ */
+export function harnessRequiredResult(toolName?: string): {
+  isError: true;
+  content: { type: 'text'; text: string }[];
+} {
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          error: 'harness_required',
+          ...(toolName ? { tool: toolName } : {}),
+          detail: HARNESS_REQUIRED_DETAIL,
+        }),
+      },
+    ],
+  };
+}

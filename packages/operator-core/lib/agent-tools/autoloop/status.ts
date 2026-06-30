@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { evaluateFireGate, getAutoLoopState } from '../../autoloop';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'autoloop:status',
@@ -42,8 +43,14 @@ export default defineTool({
     },
   ],
   async handler(args, ctx) {
-    // Non-empty by the `harness-slug` precondition above.
-    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    // The `harness-slug` precondition guarantees a slug arrived (arg or ctx), but
+    // the operator/superuser `'*'` auto-default is truthy and slips past it —
+    // route through the fail-loud resolver so `'*'`/all is rejected instead of
+    // querying a nonexistent `'*'` install_slug bucket (P-004).
+    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
+    if (!slug) {
+      return harnessRequiredResult('autoloop:status');
+    }
     const rows = await getAutoLoopState(slug);
     // P-009: surface the backoff verdict per fire-state row so "is the circuit
     // open?" is answerable here (autoloop:control reset-errors closes it).

@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { phasePath } from '../../harness-phases';
 import { loadHarnessRegistry } from '../../harness-registry';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'harness:phase_path',
@@ -26,9 +27,11 @@ export default defineTool({
     phase: z.enum(['staging', 'testing', 'production']),
   }),
   async handler(args, ctx) {
-    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    // Route through the fail-loud resolver: a bare/operator `'*'` ctx (or no slug)
+    // must NOT silently resolve a bogus `'*'`/empty registry lookup (P-004).
+    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
     if (!slug) {
-      throw new Error('harness:phase_path — harness slug required (passed or in spawn ctx)');
+      return harnessRequiredResult('harness:phase_path');
     }
     const reg = await loadHarnessRegistry();
     const project = (reg.projects ?? []).find((p) => p.slug === slug);

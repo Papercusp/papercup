@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { rolesFiringOn } from '../../role-registry';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'roles:firing_on',
@@ -22,7 +23,10 @@ export default defineTool({
     harnessSlug: z.string().optional(),
   }),
   async handler(args, ctx) {
-    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    // Empty slug = the GLOBAL role registry (documented). Normalize the operator
+    // `'*'` auto-default / explicit `all` to that global scope — never a literal
+    // `'*'` slug. allow-scope-default: intended global registry, not a leak.
+    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx) ?? '';
     const roles = rolesFiringOn(args.event, slug);
     return {
       content: [{ type: 'text', text: JSON.stringify({ event: args.event, harnessSlug: slug || null, roles }) }],

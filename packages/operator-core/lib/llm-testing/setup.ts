@@ -37,7 +37,7 @@ export function defaultSeedScope(): string {
   // Generalized: fall back to the configured operator-home pointer
   // (PAPERCUSP_HIVE_HOME_SLUG via operatorHomeHarnessSlug()), not a baked
   // 'papercup' literal — papercup→papercusp is an env switch, not a code edit.
-  return `harness:${process.env.PAPERCUSP_LLM_TEST_HARNESS ?? operatorHomeHarnessSlug()}`;
+  return `harness:${process.env.PAPERCUSP_LLM_TEST_HARNESS ?? operatorHomeHarnessSlug()}`; // allow-scope-default: LLM-test target harness; env-overridable, defaults to operator home
 }
 
 export async function applyScenarioSetup(

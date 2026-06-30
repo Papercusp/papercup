@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { appendOperatorNote, readOperatorNotes } from '../../operator-notes';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'operator:notes',
@@ -42,9 +43,11 @@ export default defineTool({
     }),
   ]),
   async handler(args, ctx) {
-    const slug = args.slug ?? ctx.harnessSlug ?? '';
+    // Route through the fail-loud resolver so a bare/operator `'*'` ctx (or no
+    // slug) is rejected, not read/written as a bogus `'*'` harness's notes (P-004).
+    const slug = resolveConcreteHarnessSlug(args.slug, ctx);
     if (!slug) {
-      throw new Error('operator:notes — slug required (passed or in spawn ctx)');
+      return harnessRequiredResult('operator:notes');
     }
     if (args.op === 'read') {
       const result = await readOperatorNotes(slug, args.featureId);

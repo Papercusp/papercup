@@ -16,6 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resetFireErrors } from '../../autoloop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { isWorkspaceCoordinationOn, workspaceBrainReadKeys } from '../../workspace-brain-scope';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 /** The blueprint-schedule routine-name prefix `materializeBlueprintTriggers` seeds. */
 const BP_SCHEDULE_PREFIX = 'bp-schedule-';
@@ -53,7 +54,13 @@ export default defineTool({
     },
   ],
   async handler(args, ctx) {
-    const slug = args.harness ?? ctx.harnessSlug ?? '';
+    // The `harness-slug` precondition guarantees a slug arrived, but the operator
+    // `'*'` auto-default is truthy and slips past it — route through the fail-loud
+    // resolver so a `'*'`/all scope can't silently no-op the routine UPDATE (P-004).
+    const slug = resolveConcreteHarnessSlug(args.harness, ctx);
+    if (!slug) {
+      return harnessRequiredResult('autoloop:control');
+    }
     const { sql } = getOrgPg();
 
     if (args.op === 'reset-errors') {

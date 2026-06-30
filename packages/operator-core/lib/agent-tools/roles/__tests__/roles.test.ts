@@ -65,6 +65,15 @@ describe('roles:list', () => {
     await tool.handler({}, MAKE_CTX({ harnessSlug: undefined }));
     expect(listRoles).toHaveBeenCalledWith('');
   });
+
+  it("normalizes the operator '*' auto-default to the global registry, not a literal '*' slug (P-004)", async () => {
+    const listRoles = vi.fn(() => []);
+    vi.doMock('../../../role-registry', () => ({ listRoles, getRole: vi.fn(), rolesFiringOn: vi.fn() }));
+    const { default: tool } = await import('../list');
+    await tool.handler({}, MAKE_CTX({ harnessSlug: '*' }));
+    expect(listRoles).toHaveBeenCalledWith('');
+    expect(listRoles).not.toHaveBeenCalledWith('*');
+  });
 });
 
 describe('roles:get', () => {

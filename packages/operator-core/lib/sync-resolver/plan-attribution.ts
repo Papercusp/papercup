@@ -32,13 +32,28 @@ import {
   type PlanAuthorInput,
   type ResolvedAuthor,
 } from '../identity/resolve-plan-author-identity';
-import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** Part authors that carry no real identity (single-box origin sentinels). */
 const SENTINEL_AUTHORS = new Set(['', 'local', 'remote']);
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
+}
+
+/**
+ * A plan row/payload's REAL harness (its origin stamp), trimmed — or '' when absent.
+ *
+ * NEVER falls back to `operatorHomeHarnessSlug()`. Attribution reads are keyed
+ * (harnessSlug, plan_slug); collapsing an omitted harness to the operator home silently
+ * re-keys the lookup to a same-slug plan in the WRONG harness/workspace and mis-attributes
+ * (or drops) its badges — the named-default twin of the WI-148 silent `'default'` workspace
+ * leak (WI-374, detector-failure class, D-003). A missing harness ⇒ no harness-keyed badge
+ * (graceful no-badge), never a home-harness guess. The harness is a PROPERTY OF THE PLAN
+ * (plans:get stamps it as `harness` = row.harnessSlug), so callers pass the real plan and we
+ * read it here — they don't (and must not) supply a default.
+ */
+function planHarnessSlug(h: unknown): string {
+  return typeof h === 'string' && h.trim() ? h.trim() : '';
 }
 
 interface LatestRevisionRow {
@@ -127,7 +142,7 @@ export async function enrichPlanListRows(
   const inputs: PlanAuthorInput[] = [];
   for (const r of list) {
     if (typeof r.owner === 'string' && r.owner.trim()) inputs.push({ kind: 'email', value: r.owner.trim() });
-    const harness = typeof r.harness === 'string' ? r.harness : operatorHomeHarnessSlug();
+    const harness = planHarnessSlug(r.harness); // origin stamp, never a home-harness default (WI-374)
     const slug = typeof r.slug === 'string' ? r.slug : '';
     const le = latest.get(`${harness}:${slug}`);
     if (le) inputs.push({ kind: 'authorId', value: le.authorId, authorKind: le.authorKind });
@@ -135,7 +150,7 @@ export async function enrichPlanListRows(
   const resolved = await resolvePlanAuthorIdentities(workspaceId, inputs, { sql });
 
   return list.map((r) => {
-    const harness = typeof r.harness === 'string' ? r.harness : operatorHomeHarnessSlug();
+    const harness = planHarnessSlug(r.harness); // origin stamp, never a home-harness default (WI-374)
     const slug = typeof r.slug === 'string' ? r.slug : '';
     const ownerIdentity =
       typeof r.owner === 'string' && r.owner.trim()
@@ -210,6 +225,10 @@ export async function enrichPlanItemsRows(
 }
 
 interface PlanDetailLike {
+  /** The plan's REAL harness, stamped by plans:get (`harness` = row.harnessSlug). The
+   *  authoritative attribution scope — read here so a caller never has to (and never
+   *  silently defaults it to the operator home). */
+  harness?: unknown;
   frontmatter?: { slug?: unknown; owner?: unknown; [k: string]: unknown };
   items?: Array<{ id?: unknown; [k: string]: unknown }>;
   [k: string]: unknown;
@@ -228,8 +247,14 @@ export async function enrichPlanDetail(
   if (!p || typeof p !== 'object' || !p.frontmatter) return plan;
   const sql = pg(opts?.sql);
   const slug = typeof p.frontmatter.slug === 'string' ? p.frontmatter.slug : '';
-  const harnessSlug = opts?.harnessSlug ?? operatorHomeHarnessSlug();
-  if (!slug) return plan;
+  // The attribution harness is the plan's REAL harness: an explicit caller override
+  // (`opts.harnessSlug`), else the plan payload's own stamped `harness` (plans:get →
+  // row.harnessSlug — the authoritative origin). NEVER a silent `?? operatorHomeHarnessSlug()`
+  // (the WI-374 mis-attribution: an omitted harness collapsed to the operator home reads a
+  // same-slug plan's badges from the wrong harness/workspace). No harness from either source
+  // ⇒ leave the payload un-enriched (graceful no-badge), never a home-harness guess.
+  const harnessSlug = planHarnessSlug(opts?.harnessSlug) || planHarnessSlug(p.harness);
+  if (!slug || !harnessSlug) return plan;
   // Derive the workspace from THIS plan's harness (P-005) — best-effort: if the harness
   // can't be resolved to a workspace, leave the payload un-enriched (graceful no-badge),
   // never a silent cross-workspace 'default' read (D-003).

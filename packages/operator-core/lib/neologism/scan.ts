@@ -253,7 +253,7 @@ export async function runNeologismTick(
     deps.readNamespaces(),
   ]);
   const index = buildNamespaceIndex(namespaceNames);
-  const entries = aggregateNeologisms(rows, insights, index, asOf, { ...opts, windowDays });
+  const entries = await aggregateNeologisms(rows, insights, index, asOf, { ...opts, windowDays });
 
   const overBars = selectNeologismCandidates(entries, { ...opts, windowDays, maxPerTick: Number.MAX_SAFE_INTEGER });
   const candidates = selectNeologismCandidates(entries, { ...opts, windowDays });

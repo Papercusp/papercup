@@ -131,6 +131,21 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
   );
 }
 
+/** A child that models a MID-TURN agent: it writes a '.' to stdout every
+ *  `intervalMs` (a generating TUI repaints constantly) for `busyMs`, then goes
+ *  QUIET (back at its prompt). It also echoes 'ECHO:<line>' per newline-terminated
+ *  stdin line, so a CR-submitted wake turn is observable. Self-exits after ttlMs.
+ *  The output stream is what the host's mid-turn gate watches. */
+function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number): string {
+  return (
+    "process.stdin.setEncoding('utf8');let b='';" +
+    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
+    `const iv=setInterval(()=>process.stdout.write('.'),${intervalMs});` +
+    `setTimeout(()=>clearInterval(iv),${busyMs});` +
+    `setTimeout(()=>process.exit(0),${ttlMs});`
+  );
+}
+
 describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)', () => {
   it(
     'discovers the live host by ownerId, injects a turn, and the child reads it as a SUBMITTED line',
@@ -222,6 +237,11 @@ describe('psu-pty-host idle gate defers a turn while busy, submits once idle (C2
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: String(idleMs),
           PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '8000',
+          // Keep the NEW mid-turn (output-quiescence) gate short here — this test
+          // exercises the HUMAN-keystroke gate; the echo child is output-quiet once
+          // typing stops, so a tiny window lets the turn land within the window
+          // this test already waits (coord-wake-mid-turn-2026-06-30).
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
         },
         ownerId,
         advSessionId: 9999,
@@ -274,6 +294,128 @@ describe('psu-pty-host idle gate defers a turn while busy, submits once idle (C2
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+});
+
+describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is at its prompt (coord-wake-mid-turn-2026-06-30)', () => {
+  it(
+    'a wake turn injected while the agent is MID-TURN (emitting) does NOT land until output goes quiet (back at prompt)',
+    async () => {
+      // The exact multi-recipient-broadcast hang: a wake landing on a busy TUI
+      // wedges the turn (needs ESC). The fix holds the inject until the agent's pty
+      // output has been quiet (it returned to its prompt). bridgeTty:true arms the
+      // gates; we never type, so the HUMAN idle gate is instantly satisfied and the
+      // AGENT-busy gate is the only thing holding the inject.
+      const ownerId = uniqueOwner('MIDTURN');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
+        args: ['-e', busyThenIdleChildCode(900, 50, 4000)],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60', // human gate satisfied fast (we don't type)
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200', // inject once output quiet 200ms
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the agent DOES go quiet
+        },
+        ownerId,
+        advSessionId: 8881,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      await sleep(300); // host up; child still busy emitting
+      const host = findLiveHost(ownerId);
+      expect(host).not.toBeNull();
+
+      // Inject the wake turn WHILE the agent is mid-turn (still emitting '.').
+      const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'midturn-wake' });
+      expect(ok).toBe(true);
+
+      // Still within the busy window (child emits until ~900ms) → the turn is HELD,
+      // never written into the busy TUI. No ECHO of the wake line yet.
+      await sleep(350);
+      expect(captured()).not.toContain('ECHO:midturn-wake');
+
+      // After the agent goes quiet (≥900ms) + the 200ms output-quiet window, the
+      // gate releases and the turn is CR-submitted — a CLEAN re-invoke once the
+      // turn ended, with no wedge / no ESC.
+      await sleep(900);
+      expect(captured()).toContain('ECHO:midturn-wake');
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
+    'an agent that stays busy past the cap DROPS the live inject (never wedges the turn) — the durable inbox stands',
+    async () => {
+      // The anti-wedge guarantee: if the agent never returns to its prompt within
+      // the cap, the host DROPS the live inject rather than write into the busy
+      // turn. The wake message is already durably in the inbox (seen next turn).
+      const ownerId = uniqueOwner('CAPDROP');
+      const sock = socketPathFor(ownerId);
+      const { captured, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        // Busy for the WHOLE life of the child (emits until it exits at 2500ms).
+        args: ['-e', busyThenIdleChildCode(2500, 50, 2500)],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '150', // never reached (emits every 50ms)
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300', // short cap → defer/drop fast
+        },
+        ownerId,
+        advSessionId: 8882,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      await sleep(300);
+      const host = findLiveHost(ownerId);
+      expect(host).not.toBeNull();
+
+      const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'dropped-wake' });
+      expect(ok).toBe(true);
+
+      // Well past the 300ms cap: the inject was DROPPED (agent never went quiet) —
+      // the wake line was NEVER written into the busy turn, so the child never
+      // echoes it. No wedge could occur because nothing was injected.
+      await sleep(1200);
+      expect(captured()).not.toContain('ECHO:dropped-wake');
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
     },
     20_000,
   );

@@ -1,0 +1,40 @@
+__vite_ssr_exportName__("getQueryClient", () => { try { return getQueryClient } catch {} });
+__vite_ssr_exportName__("clearPollingCache", () => { try { return clearPollingCache } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/@tanstack/react-query/build/modern/index.js", {"importedNames":["QueryClient"]});
+
+let queryClient = null;
+function getQueryClient() {
+  if (!queryClient) {
+    queryClient = new __vite_ssr_import_0__.QueryClient({
+      defaultOptions: {
+        queries: {
+          staleTime: 5e3,
+          // gcTime: 1 hour. Queries survive subscriber unmount so navigating
+          // away and back in polling/SSE mode shows cached data instantly.
+          gcTime: 60 * 60 * 1e3,
+          refetchOnWindowFocus: false,
+          structuralSharing: true,
+          // preserves unchanged refs across refetches
+          // Skip re-renders triggered by metadata-only flips (dataUpdatedAt,
+          // fetchStatus, failureCount, isStale). Consumers care about data,
+          // error, and the loading/fetching flags exposed via SyncQueryResult.
+          // Without this, a background refetch that returns structurally-equal
+          // data still flips dataUpdatedAt and fans out a render to every
+          // subscriber. Listed flags must include every property usePollingQuery
+          // reads from useQuery's return.
+          notifyOnChangeProps: ["data", "error", "isLoading", "isFetching", "isPlaceholderData"]
+        }
+      }
+    });
+  };
+  return queryClient;
+};
+function clearPollingCache() {
+  if (!queryClient) return;
+  queryClient.cancelQueries();
+  queryClient.clear();
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFBQTs7QUFFQSxJQUFJLGNBQWtDO0FBRS9CLFNBQVMsaUJBQThCO0FBQzVDLE1BQUksQ0FBQyxhQUFhO0FBQ2hCLGtCQUFjLElBQUksa0NBQVk7QUFBQSxNQUM1QixnQkFBZ0I7QUFBQSxRQUNkLFNBQVM7QUFBQSxVQUNQLFdBQVc7QUFBQTtBQUFBO0FBQUEsVUFHWCxRQUFRLEtBQUssS0FBSztBQUFBLFVBQ2xCLHNCQUFzQjtBQUFBLFVBQ3RCLG1CQUFtQjtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQSxVQVFuQixxQkFBcUIsQ0FBQyxRQUFRLFNBQVMsYUFBYSxjQUFjLG1CQUFtQjtBQUFBLFFBQ3ZGO0FBQUEsTUFDRjtBQUFBLElBQ0YsQ0FBQztBQUFBLEVBQ0g7QUFDQSxTQUFPO0FBQ1Q7QUFPTyxTQUFTLG9CQUEwQjtBQUN4QyxNQUFJLENBQUMsWUFBYTtBQUNsQixjQUFZLGNBQWM7QUFDMUIsY0FBWSxNQUFNO0FBQ3BCIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJxdWVyeUNsaWVudC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBRdWVyeUNsaWVudCB9IGZyb20gJ0B0YW5zdGFjay9yZWFjdC1xdWVyeSc7XG5cbmxldCBxdWVyeUNsaWVudDogUXVlcnlDbGllbnQgfCBudWxsID0gbnVsbDtcblxuZXhwb3J0IGZ1bmN0aW9uIGdldFF1ZXJ5Q2xpZW50KCk6IFF1ZXJ5Q2xpZW50IHtcbiAgaWYgKCFxdWVyeUNsaWVudCkge1xuICAgIHF1ZXJ5Q2xpZW50ID0gbmV3IFF1ZXJ5Q2xpZW50KHtcbiAgICAgIGRlZmF1bHRPcHRpb25zOiB7XG4gICAgICAgIHF1ZXJpZXM6IHtcbiAgICAgICAgICBzdGFsZVRpbWU6IDVfMDAwLFxuICAgICAgICAgIC8vIGdjVGltZTogMSBob3VyLiBRdWVyaWVzIHN1cnZpdmUgc3Vic2NyaWJlciB1bm1vdW50IHNvIG5hdmlnYXRpbmdcbiAgICAgICAgICAvLyBhd2F5IGFuZCBiYWNrIGluIHBvbGxpbmcvU1NFIG1vZGUgc2hvd3MgY2FjaGVkIGRhdGEgaW5zdGFudGx5LlxuICAgICAgICAgIGdjVGltZTogNjAgKiA2MCAqIDEwMDAsXG4gICAgICAgICAgcmVmZXRjaE9uV2luZG93Rm9jdXM6IGZhbHNlLFxuICAgICAgICAgIHN0cnVjdHVyYWxTaGFyaW5nOiB0cnVlLCAvLyBwcmVzZXJ2ZXMgdW5jaGFuZ2VkIHJlZnMgYWNyb3NzIHJlZmV0Y2hlc1xuICAgICAgICAgIC8vIFNraXAgcmUtcmVuZGVycyB0cmlnZ2VyZWQgYnkgbWV0YWRhdGEtb25seSBmbGlwcyAoZGF0YVVwZGF0ZWRBdCxcbiAgICAgICAgICAvLyBmZXRjaFN0YXR1cywgZmFpbHVyZUNvdW50LCBpc1N0YWxlKS4gQ29uc3VtZXJzIGNhcmUgYWJvdXQgZGF0YSxcbiAgICAgICAgICAvLyBlcnJvciwgYW5kIHRoZSBsb2FkaW5nL2ZldGNoaW5nIGZsYWdzIGV4cG9zZWQgdmlhIFN5bmNRdWVyeVJlc3VsdC5cbiAgICAgICAgICAvLyBXaXRob3V0IHRoaXMsIGEgYmFja2dyb3VuZCByZWZldGNoIHRoYXQgcmV0dXJucyBzdHJ1Y3R1cmFsbHktZXF1YWxcbiAgICAgICAgICAvLyBkYXRhIHN0aWxsIGZsaXBzIGRhdGFVcGRhdGVkQXQgYW5kIGZhbnMgb3V0IGEgcmVuZGVyIHRvIGV2ZXJ5XG4gICAgICAgICAgLy8gc3Vic2NyaWJlci4gTGlzdGVkIGZsYWdzIG11c3QgaW5jbHVkZSBldmVyeSBwcm9wZXJ0eSB1c2VQb2xsaW5nUXVlcnlcbiAgICAgICAgICAvLyByZWFkcyBmcm9tIHVzZVF1ZXJ5J3MgcmV0dXJuLlxuICAgICAgICAgIG5vdGlmeU9uQ2hhbmdlUHJvcHM6IFsnZGF0YScsICdlcnJvcicsICdpc0xvYWRpbmcnLCAnaXNGZXRjaGluZycsICdpc1BsYWNlaG9sZGVyRGF0YSddLFxuICAgICAgICB9LFxuICAgICAgfSxcbiAgICB9KTtcbiAgfVxuICByZXR1cm4gcXVlcnlDbGllbnQ7XG59XG5cbi8qKlxuICogSW1tZWRpYXRlbHkgY2FuY2VscyBhbGwgaW4tZmxpZ2h0IHF1ZXJpZXMgYW5kIHJlbW92ZXMgdGhlbSBmcm9tIGNhY2hlLlxuICogKFdhcyBjYWxsZWQgYnkgdGhlIG5vdy1yZW1vdmVkIFdlYlNvY2tldCB0cmFuc3BvcnQgb24gbW91bnQgdG8gZHJvcFxuICogcHJvYmUtd2luZG93IHBvbGxzOyBjdXJyZW50bHkgdW51c2VkLCByZXRhaW5lZCBhcyBhIGNhY2hlLXJlc2V0IHV0aWxpdHkuKVxuICovXG5leHBvcnQgZnVuY3Rpb24gY2xlYXJQb2xsaW5nQ2FjaGUoKTogdm9pZCB7XG4gIGlmICghcXVlcnlDbGllbnQpIHJldHVybjtcbiAgcXVlcnlDbGllbnQuY2FuY2VsUXVlcmllcygpO1xuICBxdWVyeUNsaWVudC5jbGVhcigpO1xufSJdLCJmaWxlIjoiL0Bmcy9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvbGlicy9nZW5lcmljL3N5bmMvc3JjL3RyYW5zcG9ydHMvcG9sbGluZy9xdWVyeUNsaWVudC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvbGlicy9nZW5lcmljL3N5bmMvc3JjL3RyYW5zcG9ydHMvcG9sbGluZy9xdWVyeUNsaWVudC50cyIsIi9AZnMvaG9tZS9tYXJzaC1vZmZpY2UvcGFwZXJjdXBhaS13b3Jrc3BhY2UvcGFwZXJjdXNwL2xpYnMvZ2VuZXJpYy9zeW5jL3NyYy90cmFuc3BvcnRzL3BvbGxpbmcvcXVlcnlDbGllbnQudHMiLFtdXQ==

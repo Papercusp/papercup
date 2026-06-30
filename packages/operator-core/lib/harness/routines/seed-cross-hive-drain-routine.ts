@@ -24,7 +24,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { armHiveCrossHiveDrainRoutine } from './arm-hive-cross-hive-drain';
 
-const SLUG = process.env.CROSS_HIVE_DRAIN_SLUG ?? operatorHomeHarnessSlug();
+const SLUG = process.env.CROSS_HIVE_DRAIN_SLUG ?? operatorHomeHarnessSlug(); // allow-scope-default: env-overridable operator-home routine install (no env ⇒ home hive, by design)
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');

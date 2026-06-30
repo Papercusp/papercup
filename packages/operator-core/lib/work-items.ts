@@ -52,6 +52,7 @@ import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { autoPickableWhereSql } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
+import { hasGenericKind } from './datatype-registry-store';
 import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
 import {
   ISSUE_KIND,
@@ -677,7 +678,17 @@ function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
 export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
-  if (!isWorkItemKind(input.kind)) throw new Error(`unknown work_item kind '${input.kind}'`);
+  // P-001 generic-kind: accept a built-in kind OR a workspace-registered generic-kind
+  // datatype (familyOf maps it to the feature family → the feature table). The
+  // work_items:create gate (_create-core) already validated this, but createWorkItem is
+  // also a direct entry point, so it re-checks the registry rather than hard-rejecting —
+  // the live gap that let the gate pass an instance the insert then refused.
+  if (!isWorkItemKind(input.kind)) {
+    const registered = input.workspaceId
+      ? await hasGenericKind(getOrgPg().sql, input.workspaceId, input.kind).catch(() => false)
+      : false;
+    if (!registered) throw new Error(`unknown work_item kind '${input.kind}'`);
+  }
   const id = await nextWorkItemId();
 
   // ATOMIC create+claim (loop-routines P-007 / D-008, B-LOOP-4): a non-empty

@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readSupervisorNotes } from '../../cross-harness-data';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'cross_harness:supervisor_notes',
@@ -35,8 +36,13 @@ export default defineTool({
     },
   ],
   async handler(args, ctx) {
-    // Non-empty by the `harness-slug` precondition above.
-    const slug = args.slug ?? ctx.harnessSlug ?? '';
+    // Precondition guarantees a slug arrived, but the operator `'*'` auto-default
+    // is truthy and slips past it — route through the fail-loud resolver so `'*'`
+    // is rejected, not read as a bogus `'*'` target harness (P-004).
+    const slug = resolveConcreteHarnessSlug(args.slug, ctx);
+    if (!slug) {
+      return harnessRequiredResult('cross_harness:supervisor_notes');
+    }
     const notes = await readSupervisorNotes(slug, args.limit);
     return { content: [{ type: 'text', text: JSON.stringify({ slug, notes }) }] };
   },

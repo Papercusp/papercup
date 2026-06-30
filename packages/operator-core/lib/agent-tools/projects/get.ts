@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getProjectDetail } from '../../projects-data';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'projects:get',
@@ -26,9 +27,11 @@ export default defineTool({
     id: z.string().min(1),
   }),
   async handler(args, ctx) {
-    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    // Route through the fail-loud resolver so a bare/operator `'*'` ctx (or no
+    // slug) is rejected, not read as a bogus `'*'` harness schema (P-004).
+    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
     if (!slug) {
-      throw new Error('projects:get — harness slug required (passed or in spawn ctx)');
+      return harnessRequiredResult('projects:get');
     }
     const project = await getProjectDetail(slug, args.id);
     return {

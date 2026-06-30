@@ -84,6 +84,30 @@ const CODEX_TURN_SUBMIT_CR_DELAY_MS =
 const CODEX_TURN_RESUBMIT_CR_DELAY_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS) || 300;
 
+/** Mid-turn inject safety (coord-wake-mid-turn-2026-06-30). A wake `turn` (text +
+ *  CR) written into a TUI that is MID-TURN — the agent is generating / mid
+ *  tool-call — wedges the turn: the line lands as queued/garbled input and the
+ *  session needs a manual ESC to recover. THIS was the multi-recipient
+ *  `coord:send {wake:'required'}` broadcast hang — a broadcast wakes/keeps-busy
+ *  many sessions at once, so a wake is far more likely to land on a mid-turn
+ *  recipient (and the always-armed inbox-wake await is re-armed on every tool
+ *  call, so a working agent is still wakeable). The host's existing idle gate only
+ *  defers on the HUMAN's keystrokes (makeIdleGate) — it never sees the agent's
+ *  turn state. The pty OUTPUT stream IS that state: a generating agent repaints
+ *  its TUI constantly (spinner / elapsed-time counter), an idle-at-prompt agent is
+ *  silent (agent-liveness-heartbeat-hardening P-006). So the host ALSO defers a
+ *  `turn` inject until the agent's output has been quiet this long — i.e. it is
+ *  back at its prompt. Must exceed the agent's busy repaint cadence (Claude Code's
+ *  elapsed counter repaints ~1/s) so a working agent never reads as idle. */
+const OUTPUT_QUIET_MS = Number(process.env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS) || 1500;
+/** Cap on how long a `turn` inject waits for the agent to return to its prompt.
+ *  On cap we DO NOT write into the still-busy turn (that is the wedge) — we DROP
+ *  the live inject: the wake message is already durably in the recipient's inbox
+ *  and is seen on its next natural turn ("queue to next-turn", the sanctioned safe
+ *  default). Generous by default so a normal multi-minute turn still gets a clean
+ *  live re-invoke the moment it ends; only a pathologically long turn drops. */
+const TURN_INJECT_BUSY_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_BUSY_CAP_MS) || 180_000;
+
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId) {
@@ -216,6 +240,55 @@ export function makeActivityTracker({ now = Date.now } = {}) {
         lastOutputAt: lastOutputAt || null,
         lastActivityAt: Math.max(lastInputAt, lastOutputAt) || null,
       };
+    },
+  };
+}
+
+/**
+ * Agent-busy (mid-turn) inject gate (coord-wake-mid-turn-2026-06-30). The
+ * OUTPUT-side sibling of makeIdleGate: makeIdleGate defers a `turn` while the
+ * HUMAN is mid-keystroke; THIS gate defers it while the AGENT is mid-turn. A
+ * `turn` (text + CR) written into a generating TUI wedges it (needs ESC) — so we
+ * hold the inject until the agent is back at its prompt, read off the pty output
+ * stream (the established mid-turn signal — makeActivityTracker, P-006).
+ *
+ *   lastOutputAt() → ms epoch of the agent's most recent pty output (0 = none yet,
+ *                    treated as "quiet"/at-prompt).
+ *   waitAtPrompt() → resolves { deferred:false } once output has been quiet for
+ *                    quietMs (agent at prompt → safe to inject), or
+ *                    { deferred:true, reason:'agent-busy' } if the agent stays busy
+ *                    past capMs (caller SKIPS the live inject; the durable inbox
+ *                    message stands for the next natural turn).
+ *
+ * Pure (injectable clock + getter); exported for tests.
+ */
+export function makeAgentBusyGate({
+  lastOutputAt,
+  quietMs = OUTPUT_QUIET_MS,
+  capMs = TURN_INJECT_BUSY_CAP_MS,
+  now = Date.now,
+} = {}) {
+  const getLast = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
+  return {
+    /** ms the agent output has been quiet (huge when never seen ⇒ at-prompt).
+     *  Pure helper, exported for tests. */
+    quietForMs(t = now()) {
+      return t - (getLast() || 0);
+    },
+    /** Resolve once output has been quiet for quietMs (agent at its prompt), or
+     *  defer after capMs (agent still mid-turn — drop the live inject). */
+    async waitAtPrompt() {
+      const deadline = now() + capMs;
+      // Re-check in case the agent keeps emitting during the wait.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const quietFor = this.quietForMs();
+        if (quietFor >= quietMs) return { deferred: false };
+        if (now() >= deadline) return { deferred: true, reason: 'agent-busy' };
+        const need = quietMs - quietFor;
+        const wait = Math.min(need, Math.max(0, deadline - now()));
+        await new Promise((r) => setTimeout(r, Math.max(10, wait)));
+      }
     },
   };
 }
@@ -480,6 +553,18 @@ export function hostThroughPty(o) {
   if (typeof activityTimer.unref === 'function') activityTimer.unref();
 
   const idleGate = makeIdleGate();
+  // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
+  // lastOutputAt the activity tracker records on every `child.onData` below, so a
+  // wake `turn` is held until the agent is back at its prompt (output quiescent)
+  // — never written into a live, mid-turn TUI (which wedges it, needs ESC). The
+  // windows are read from the SESSION env (per-call, like turnSubmitCrDelayForAgent)
+  // with the module-level defaults as fallback, so a launch can tune them.
+  const turnInjectBusyCapMs = positiveNumber(env.PAPERCUSP_PSU_PTY_BUSY_CAP_MS, TURN_INJECT_BUSY_CAP_MS);
+  const agentBusyGate = makeAgentBusyGate({
+    lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
+    quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
+    capMs: turnInjectBusyCapMs,
+  });
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).
@@ -495,7 +580,29 @@ export function hostThroughPty(o) {
       if (!payload.length) return;
       const msg = decodeControl(payload);
       try {
-        if (bridgeTty && msg.gated) await idleGate.waitIdle();
+        if (bridgeTty && msg.gated) {
+          // (1) Human keystroke gate (P-013): don't corrupt a line the user is
+          // mid-typing. (2) Agent mid-turn gate (coord-wake-mid-turn-2026-06-30):
+          // don't write a wake `turn` into a TUI that is still generating — that
+          // wedges the turn (needs ESC), the multi-recipient broadcast hang.
+          await idleGate.waitIdle();
+          const atPrompt = await agentBusyGate.waitAtPrompt();
+          if (atPrompt.deferred) {
+            // Agent stayed mid-turn past the cap. DROP the live inject rather than
+            // wedge the turn — the wake is already durably in the recipient's
+            // inbox and is seen on its next natural turn (queue-to-next-turn).
+            try {
+              process.stderr.write(
+                `psu-pty-host: wake turn DEFERRED for ${ownerId} ` +
+                  `(agent mid-turn > ${turnInjectBusyCapMs}ms cap); ` +
+                  `left in inbox for the next natural turn\n`,
+              );
+            } catch {
+              /* never let a diagnostic write break the session */
+            }
+            return;
+          }
+        }
         // mode:'osc' targets the terminal DISPLAY — the host's stdout IS the
         // visible window — so a fleet:join recolors the LIVE window. Every other
         // mode targets the agent's stdin (a wake turn / a force-interrupt byte).

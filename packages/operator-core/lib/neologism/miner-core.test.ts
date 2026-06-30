@@ -141,14 +141,14 @@ describe('findPrimitiveNearMiss (kind fidelity — frontier P-044 / FB-18)', () 
 describe('aggregateNeologisms', () => {
   const emptyIndex = new Set<string>();
 
-  it('counts row-mentions, distinct speakers, and recent/prior window split', () => {
+  it('counts row-mentions, distinct speakers, and recent/prior window split', async () => {
     const rows = [
       row('a', 'the wake-storm again', 1),
       row('b', 'another wake-storm here', 2),
       row('c', 'wow wake-storm wake-storm', 3),
       row('a', 'early wake-storm sighting', 20),
     ];
-    const [e] = aggregateNeologisms(rows, [], emptyIndex, AS_OF).filter((x) => x.term === 'wake storm');
+    const [e] = (await aggregateNeologisms(rows, [], emptyIndex, AS_OF)).filter((x) => x.term === 'wake storm');
     expect(e.recentMentions).toBe(3);
     expect(e.priorMentions).toBe(1);
     expect(e.distinctSpeakers).toBe(3);
@@ -156,7 +156,7 @@ describe('aggregateNeologisms', () => {
     expect(e.lastSeenAt).toBe(daysAgo(1));
   });
 
-  it('a burst with no prior history scores high growth; steady usage scores ≈1', () => {
+  it('a burst with no prior history scores high growth; steady usage scores ≈1', async () => {
     // Distinct prose per row — identical texts would (correctly) collapse as
     // template re-broadcasts.
     const vary = (i: number) => String.fromCharCode(97 + (i % 26)) + String.fromCharCode(97 + ((i / 26) | 0));
@@ -165,16 +165,16 @@ describe('aggregateNeologisms', () => {
       ...Array.from({ length: 7 }, (_, i) => row(`s${i}`, `the deploy train ${vary(i)}`, i + 0.5)),
       ...Array.from({ length: 20 }, (_, i) => row(`s${i}`, `the deploy train z${vary(i)}`, 8 + i)),
     ];
-    const entries = aggregateNeologisms([...burst, ...steady], [], emptyIndex, AS_OF);
+    const entries = await aggregateNeologisms([...burst, ...steady], [], emptyIndex, AS_OF);
     const ws = entries.find((e) => e.term === 'wake storm')!;
     const dt = entries.find((e) => e.term === 'deploy train')!;
     expect(ws.growth).toBeGreaterThan(10);
     expect(dt.growth).toBeLessThan(1.5);
   });
 
-  it('drops namespace-covered terms and rows after asOf', () => {
+  it('drops namespace-covered terms and rows after asOf', async () => {
     const index = buildNamespaceIndex(['wake-storm-monitor']);
-    const entries = aggregateNeologisms(
+    const entries = await aggregateNeologisms(
       [row('a', 'wake-storm', 1), { speaker: 'b', text: 'future-term here', at: daysAgo(-1) }],
       [],
       index,
@@ -184,10 +184,10 @@ describe('aggregateNeologisms', () => {
     expect(entries.find((e) => e.term === 'future term')).toBeUndefined();
   });
 
-  it('collapses template re-broadcasts (identical digit-normalized text) to one utterance', () => {
+  it('collapses template re-broadcasts (identical digit-normalized text) to one utterance', async () => {
     const template = (n: number, d: number) =>
       ({ speaker: `drain-X-${n}`, text: `"dev-server" is draining for an exclusive hold by res:${n}`, at: daysAgo(d) });
-    const entries = aggregateNeologisms(
+    const entries = await aggregateNeologisms(
       [template(111, 1), template(222, 2), template(333, 3), row('human', 'a real wake-storm', 1)],
       [],
       emptyIndex,
@@ -199,8 +199,8 @@ describe('aggregateNeologisms', () => {
     expect(entries.find((e) => e.term === 'wake storm')).toBeDefined();
   });
 
-  it('matches insight corroboration in both spaced and hyphenated spellings', () => {
-    const entries = aggregateNeologisms(
+  it('matches insight corroboration in both spaced and hyphenated spellings', async () => {
+    const entries = await aggregateNeologisms(
       [row('a', 'a wake-storm', 1)],
       [
         { slug: 'wake-storm-runbook', text: 'When a wake-storm hits…' },

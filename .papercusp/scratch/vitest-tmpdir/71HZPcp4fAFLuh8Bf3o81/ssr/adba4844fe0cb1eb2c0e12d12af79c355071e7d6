@@ -1,0 +1,77 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/vitest/dist/index.js", {"importedNames":["describe","expect","it"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/endpoint-route/routes/misc/updates-manifest.ts", {"importedNames":["pickAssetUrl"]});
+
+
+const release = {
+  tag_name: "desktop-v0.0.2-alpha",
+  published_at: "2026-06-11T00:00:00Z",
+  prerelease: true,
+  draft: false,
+  assets: [
+    "Papercusp_universal.app.tar.gz",
+    "Papercusp_universal.app.tar.gz.sig",
+    "Papercusp_0.0.2_universal.dmg",
+    "Papercusp_0.0.2_amd64.AppImage.tar.gz",
+    "Papercusp_0.0.2_amd64.AppImage.tar.gz.sig",
+    "Papercusp_0.0.2_x64_en-US.msi.zip",
+    "latest.json"
+  ].map((name) => ({ name, browser_download_url: `https://gh.test/${name}` }))
+};
+(0,__vite_ssr_import_0__.describe)("pickAssetUrl", () => {
+  (0,__vite_ssr_import_0__.it)("serves a darwin universal bundle to BOTH mac arches", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(release, "darwin", "x86_64")).toBe(
+      "https://gh.test/Papercusp_universal.app.tar.gz"
+    );
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(release, "darwin", "aarch64")).toBe(
+      "https://gh.test/Papercusp_universal.app.tar.gz"
+    );
+  });
+  (0,__vite_ssr_import_0__.it)("never serves the .dmg as an update payload (tar.gz/zip only)", () => {
+    const dmgOnly = {
+      ...release,
+      assets: release.assets.filter((a) => a.name.endsWith(".dmg"))
+    };
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(dmgOnly, "darwin", "x86_64")).toBeNull();
+  });
+  (0,__vite_ssr_import_0__.it)("keeps linux/windows arch matching unchanged", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(release, "linux", "x86_64")).toBe(
+      "https://gh.test/Papercusp_0.0.2_amd64.AppImage.tar.gz"
+    );
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(release, "windows", "x86_64")).toBe(
+      "https://gh.test/Papercusp_0.0.2_x64_en-US.msi.zip"
+    );
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(release, "linux", "aarch64")).toBeNull();
+  });
+  (0,__vite_ssr_import_0__.it)("does not leak the universal wildcard to non-darwin targets", () => {
+    const weird = {
+      ...release,
+      assets: [{ name: "Papercusp_universal.tar.gz", browser_download_url: "https://gh.test/u" }]
+    };
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(weird, "linux", "x86_64")).toBeNull();
+  });
+  (0,__vite_ssr_import_0__.it)("picks the Tauri v2 NSIS -setup.exe for windows (the real published shape), never its .sig", () => {
+    const v2 = {
+      ...release,
+      assets: [
+        "Papercusp_universal.app.tar.gz",
+        "Papercusp_universal.app.tar.gz.sig",
+        "Papercusp_0.0.2_universal.dmg",
+        "Papercusp_0.0.2_amd64.deb",
+        "Papercusp_0.0.2_x64-setup.exe",
+        "Papercusp_0.0.2_x64-setup.exe.sig",
+        "papercusp-latest-desktop-v0.0.2-alpha.json"
+      ].map((name) => ({ name, browser_download_url: `https://gh.test/${name}` }))
+    };
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(v2, "windows", "x86_64")).toBe(
+      "https://gh.test/Papercusp_0.0.2_x64-setup.exe"
+    );
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(v2, "linux", "x86_64")).toBeNull();
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.pickAssetUrl)(v2, "darwin", "x86_64")).toBe(
+      "https://gh.test/Papercusp_universal.app.tar.gz"
+    );
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTs7O0FBRUEsTUFBTSxVQUFVO0FBQUEsRUFDZCxVQUFVO0FBQUEsRUFDVixjQUFjO0FBQUEsRUFDZCxZQUFZO0FBQUEsRUFDWixPQUFPO0FBQUEsRUFDUCxRQUFRO0FBQUEsSUFDTjtBQUFBLElBQ0E7QUFBQSxJQUNBO0FBQUEsSUFDQTtBQUFBLElBQ0E7QUFBQSxJQUNBO0FBQUEsSUFDQTtBQUFBLEVBQ0YsRUFBRSxJQUFJLENBQUMsVUFBVSxFQUFFLE1BQU0sc0JBQXNCLG1CQUFtQixJQUFJLEdBQUcsRUFBRTtBQUM3RTtHQUVBLGdDQUFTLGdCQUFnQixNQUFNO0FBQzdCLCtCQUFHLHVEQUF1RCxNQUFNO0FBQzlELHdDQUFPLG9DQUFhLFNBQVMsVUFBVSxRQUFRLENBQUMsRUFBRTtBQUFBLE1BQ2hEO0FBQUEsSUFDRjtBQUNBLHdDQUFPLG9DQUFhLFNBQVMsVUFBVSxTQUFTLENBQUMsRUFBRTtBQUFBLE1BQ2pEO0FBQUEsSUFDRjtBQUFBLEVBQ0YsQ0FBQztBQUVELCtCQUFHLGdFQUFnRSxNQUFNO0FBQ3ZFLFVBQU0sVUFBVTtBQUFBLE1BQ2QsR0FBRztBQUFBLE1BQ0gsUUFBUSxRQUFRLE9BQU8sT0FBTyxDQUFDLE1BQU0sRUFBRSxLQUFLLFNBQVMsTUFBTSxDQUFDO0FBQUEsSUFDOUQ7QUFDQSx3Q0FBTyxvQ0FBYSxTQUFTLFVBQVUsUUFBUSxDQUFDLEVBQUUsU0FBUztBQUFBLEVBQzdELENBQUM7QUFFRCwrQkFBRywrQ0FBK0MsTUFBTTtBQUN0RCx3Q0FBTyxvQ0FBYSxTQUFTLFNBQVMsUUFBUSxDQUFDLEVBQUU7QUFBQSxNQUMvQztBQUFBLElBQ0Y7QUFDQSx3Q0FBTyxvQ0FBYSxTQUFTLFdBQVcsUUFBUSxDQUFDLEVBQUU7QUFBQSxNQUNqRDtBQUFBLElBQ0Y7QUFDQSx3Q0FBTyxvQ0FBYSxTQUFTLFNBQVMsU0FBUyxDQUFDLEVBQUUsU0FBUztBQUFBLEVBQzdELENBQUM7QUFFRCwrQkFBRyw4REFBOEQsTUFBTTtBQUNyRSxVQUFNLFFBQVE7QUFBQSxNQUNaLEdBQUc7QUFBQSxNQUNILFFBQVEsQ0FBQyxFQUFFLE1BQU0sOEJBQThCLHNCQUFzQixvQkFBb0IsQ0FBQztBQUFBLElBQzVGO0FBQ0Esd0NBQU8sb0NBQWEsT0FBTyxTQUFTLFFBQVEsQ0FBQyxFQUFFLFNBQVM7QUFBQSxFQUMxRCxDQUFDO0FBRUQsK0JBQUcsNkZBQTZGLE1BQU07QUFDcEcsVUFBTSxLQUFLO0FBQUEsTUFDVCxHQUFHO0FBQUEsTUFDSCxRQUFRO0FBQUEsUUFDTjtBQUFBLFFBQ0E7QUFBQSxRQUNBO0FBQUEsUUFDQTtBQUFBLFFBQ0E7QUFBQSxRQUNBO0FBQUEsUUFDQTtBQUFBLE1BQ0YsRUFBRSxJQUFJLENBQUMsVUFBVSxFQUFFLE1BQU0sc0JBQXNCLG1CQUFtQixJQUFJLEdBQUcsRUFBRTtBQUFBLElBQzdFO0FBQ0Esd0NBQU8sb0NBQWEsSUFBSSxXQUFXLFFBQVEsQ0FBQyxFQUFFO0FBQUEsTUFDNUM7QUFBQSxJQUNGO0FBRUEsd0NBQU8sb0NBQWEsSUFBSSxTQUFTLFFBQVEsQ0FBQyxFQUFFLFNBQVM7QUFDckQsd0NBQU8sb0NBQWEsSUFBSSxVQUFVLFFBQVEsQ0FBQyxFQUFFO0FBQUEsTUFDM0M7QUFBQSxJQUNGO0FBQUEsRUFDRixDQUFDO0FBQ0gsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsidXBkYXRlcy1tYW5pZmVzdC50ZXN0LnRzIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IGRlc2NyaWJlLCBleHBlY3QsIGl0IH0gZnJvbSAndml0ZXN0JztcbmltcG9ydCB7IHBpY2tBc3NldFVybCB9IGZyb20gJy4vdXBkYXRlcy1tYW5pZmVzdCc7XG5cbmNvbnN0IHJlbGVhc2UgPSB7XG4gIHRhZ19uYW1lOiAnZGVza3RvcC12MC4wLjItYWxwaGEnLFxuICBwdWJsaXNoZWRfYXQ6ICcyMDI2LTA2LTExVDAwOjAwOjAwWicsXG4gIHByZXJlbGVhc2U6IHRydWUsXG4gIGRyYWZ0OiBmYWxzZSxcbiAgYXNzZXRzOiBbXG4gICAgJ1BhcGVyY3VzcF91bml2ZXJzYWwuYXBwLnRhci5neicsXG4gICAgJ1BhcGVyY3VzcF91bml2ZXJzYWwuYXBwLnRhci5nei5zaWcnLFxuICAgICdQYXBlcmN1c3BfMC4wLjJfdW5pdmVyc2FsLmRtZycsXG4gICAgJ1BhcGVyY3VzcF8wLjAuMl9hbWQ2NC5BcHBJbWFnZS50YXIuZ3onLFxuICAgICdQYXBlcmN1c3BfMC4wLjJfYW1kNjQuQXBwSW1hZ2UudGFyLmd6LnNpZycsXG4gICAgJ1BhcGVyY3VzcF8wLjAuMl94NjRfZW4tVVMubXNpLnppcCcsXG4gICAgJ2xhdGVzdC5qc29uJyxcbiAgXS5tYXAoKG5hbWUpID0+ICh7IG5hbWUsIGJyb3dzZXJfZG93bmxvYWRfdXJsOiBgaHR0cHM6Ly9naC50ZXN0LyR7bmFtZX1gIH0pKSxcbn07XG5cbmRlc2NyaWJlKCdwaWNrQXNzZXRVcmwnLCAoKSA9PiB7XG4gIGl0KCdzZXJ2ZXMgYSBkYXJ3aW4gdW5pdmVyc2FsIGJ1bmRsZSB0byBCT1RIIG1hYyBhcmNoZXMnLCAoKSA9PiB7XG4gICAgZXhwZWN0KHBpY2tBc3NldFVybChyZWxlYXNlLCAnZGFyd2luJywgJ3g4Nl82NCcpKS50b0JlKFxuICAgICAgJ2h0dHBzOi8vZ2gudGVzdC9QYXBlcmN1c3BfdW5pdmVyc2FsLmFwcC50YXIuZ3onLFxuICAgICk7XG4gICAgZXhwZWN0KHBpY2tBc3NldFVybChyZWxlYXNlLCAnZGFyd2luJywgJ2FhcmNoNjQnKSkudG9CZShcbiAgICAgICdodHRwczovL2doLnRlc3QvUGFwZXJjdXNwX3VuaXZlcnNhbC5hcHAudGFyLmd6JyxcbiAgICApO1xuICB9KTtcblxuICBpdCgnbmV2ZXIgc2VydmVzIHRoZSAuZG1nIGFzIGFuIHVwZGF0ZSBwYXlsb2FkICh0YXIuZ3ovemlwIG9ubHkpJywgKCkgPT4ge1xuICAgIGNvbnN0IGRtZ09ubHkgPSB7XG4gICAgICAuLi5yZWxlYXNlLFxuICAgICAgYXNzZXRzOiByZWxlYXNlLmFzc2V0cy5maWx0ZXIoKGEpID0+IGEubmFtZS5lbmRzV2l0aCgnLmRtZycpKSxcbiAgICB9O1xuICAgIGV4cGVjdChwaWNrQXNzZXRVcmwoZG1nT25seSwgJ2RhcndpbicsICd4ODZfNjQnKSkudG9CZU51bGwoKTtcbiAgfSk7XG5cbiAgaXQoJ2tlZXBzIGxpbnV4L3dpbmRvd3MgYXJjaCBtYXRjaGluZyB1bmNoYW5nZWQnLCAoKSA9PiB7XG4gICAgZXhwZWN0KHBpY2tBc3NldFVybChyZWxlYXNlLCAnbGludXgnLCAneDg2XzY0JykpLnRvQmUoXG4gICAgICAnaHR0cHM6Ly9naC50ZXN0L1BhcGVyY3VzcF8wLjAuMl9hbWQ2NC5BcHBJbWFnZS50YXIuZ3onLFxuICAgICk7XG4gICAgZXhwZWN0KHBpY2tBc3NldFVybChyZWxlYXNlLCAnd2luZG93cycsICd4ODZfNjQnKSkudG9CZShcbiAgICAgICdodHRwczovL2doLnRlc3QvUGFwZXJjdXNwXzAuMC4yX3g2NF9lbi1VUy5tc2kuemlwJyxcbiAgICApO1xuICAgIGV4cGVjdChwaWNrQXNzZXRVcmwocmVsZWFzZSwgJ2xpbnV4JywgJ2FhcmNoNjQnKSkudG9CZU51bGwoKTtcbiAgfSk7XG5cbiAgaXQoJ2RvZXMgbm90IGxlYWsgdGhlIHVuaXZlcnNhbCB3aWxkY2FyZCB0byBub24tZGFyd2luIHRhcmdldHMnLCAoKSA9PiB7XG4gICAgY29uc3Qgd2VpcmQgPSB7XG4gICAgICAuLi5yZWxlYXNlLFxuICAgICAgYXNzZXRzOiBbeyBuYW1lOiAnUGFwZXJjdXNwX3VuaXZlcnNhbC50YXIuZ3onLCBicm93c2VyX2Rvd25sb2FkX3VybDogJ2h0dHBzOi8vZ2gudGVzdC91JyB9XSxcbiAgICB9O1xuICAgIGV4cGVjdChwaWNrQXNzZXRVcmwod2VpcmQsICdsaW51eCcsICd4ODZfNjQnKSkudG9CZU51bGwoKTtcbiAgfSk7XG5cbiAgaXQoJ3BpY2tzIHRoZSBUYXVyaSB2MiBOU0lTIC1zZXR1cC5leGUgZm9yIHdpbmRvd3MgKHRoZSByZWFsIHB1Ymxpc2hlZCBzaGFwZSksIG5ldmVyIGl0cyAuc2lnJywgKCkgPT4ge1xuICAgIGNvbnN0IHYyID0ge1xuICAgICAgLi4ucmVsZWFzZSxcbiAgICAgIGFzc2V0czogW1xuICAgICAgICAnUGFwZXJjdXNwX3VuaXZlcnNhbC5hcHAudGFyLmd6JyxcbiAgICAgICAgJ1BhcGVyY3VzcF91bml2ZXJzYWwuYXBwLnRhci5nei5zaWcnLFxuICAgICAgICAnUGFwZXJjdXNwXzAuMC4yX3VuaXZlcnNhbC5kbWcnLFxuICAgICAgICAnUGFwZXJjdXNwXzAuMC4yX2FtZDY0LmRlYicsXG4gICAgICAgICdQYXBlcmN1c3BfMC4wLjJfeDY0LXNldHVwLmV4ZScsXG4gICAgICAgICdQYXBlcmN1c3BfMC4wLjJfeDY0LXNldHVwLmV4ZS5zaWcnLFxuICAgICAgICAncGFwZXJjdXNwLWxhdGVzdC1kZXNrdG9wLXYwLjAuMi1hbHBoYS5qc29uJyxcbiAgICAgIF0ubWFwKChuYW1lKSA9PiAoeyBuYW1lLCBicm93c2VyX2Rvd25sb2FkX3VybDogYGh0dHBzOi8vZ2gudGVzdC8ke25hbWV9YCB9KSksXG4gICAgfTtcbiAgICBleHBlY3QocGlja0Fzc2V0VXJsKHYyLCAnd2luZG93cycsICd4ODZfNjQnKSkudG9CZShcbiAgICAgICdodHRwczovL2doLnRlc3QvUGFwZXJjdXNwXzAuMC4yX3g2NC1zZXR1cC5leGUnLFxuICAgICk7XG4gICAgLy8gdGhlIGJhcmUgZXhlIG5ldmVyIGxlYWtzIHRvIG90aGVyIHRhcmdldHNcbiAgICBleHBlY3QocGlja0Fzc2V0VXJsKHYyLCAnbGludXgnLCAneDg2XzY0JykpLnRvQmVOdWxsKCk7XG4gICAgZXhwZWN0KHBpY2tBc3NldFVybCh2MiwgJ2RhcndpbicsICd4ODZfNjQnKSkudG9CZShcbiAgICAgICdodHRwczovL2doLnRlc3QvUGFwZXJjdXNwX3VuaXZlcnNhbC5hcHAudGFyLmd6JyxcbiAgICApO1xuICB9KTtcbn0pO1xuIl0sImZpbGUiOiIvbGliL2VuZHBvaW50LXJvdXRlL3JvdXRlcy9taXNjL3VwZGF0ZXMtbWFuaWZlc3QudGVzdC50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvZW5kcG9pbnQtcm91dGUvcm91dGVzL21pc2MvdXBkYXRlcy1tYW5pZmVzdC50ZXN0LnRzIiwiL2xpYi9lbmRwb2ludC1yb3V0ZS9yb3V0ZXMvbWlzYy91cGRhdGVzLW1hbmlmZXN0LnRlc3QudHMiLFtdXQ==

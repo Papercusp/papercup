@@ -57,6 +57,26 @@ describe('plans.* resolvers — verb dispatch + envelope unwrap', () => {
     expect(await resolveNamedQueryV2('plans.get', { slug: 'x' })).toEqual([]);
   });
 
+  // plans:get is a BULK tool — even a single-slug read returns the runBulk envelope
+  // { ok, results:[plan], counts }. The resolver MUST unwrap results[0] to the single plan
+  // (its documented [PlanGetResult] contract); without it the live consumer gets the envelope
+  // and enrichPlanDetail no-ops on the missing frontmatter (WI-374 audit finding).
+  it('plans.get unwraps the runBulk envelope { results:[plan] } → [plan]', async () => {
+    callPlansRead.mockResolvedValue({
+      ok: true,
+      results: [{ slug: 'a', harness: 'member-x', raw: '# plan' }],
+      counts: { ok: 1, failed: 0 },
+    });
+    expect(await resolveNamedQueryV2('plans.get', { slug: 'a' })).toEqual([
+      { slug: 'a', harness: 'member-x', raw: '# plan' },
+    ]);
+  });
+
+  it('plans.get returns [] when the bulk envelope has no result row', async () => {
+    callPlansRead.mockResolvedValue({ ok: true, results: [], counts: { ok: 0, failed: 0 } });
+    expect(await resolveNamedQueryV2('plans.get', { slug: 'x' })).toEqual([]);
+  });
+
   it('plans.revisions / plans.runs / plans.lint unwrap their fields', async () => {
     callPlansRead.mockResolvedValueOnce({ revisions: [{ seq: 1 }] });
     expect(await resolveNamedQueryV2('plans.revisions', { slug: 'a' })).toEqual([{ seq: 1 }]);

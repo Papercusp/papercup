@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Sql } from 'postgres';
 import { enrichPlanListRows, enrichPlanDetail } from './plan-attribution';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /**
  * A fake postgres-js `sql` whose `.unsafe(query, params)` dispatches on the
@@ -99,6 +100,36 @@ describe('enrichPlanDetail', () => {
   it('returns the plan untouched when it has no frontmatter', async () => {
     const sql = fakeSql({});
     const plan = { items: [] };
+    expect(await enrichPlanDetail(plan, { sql })).toBe(plan);
+  });
+
+  it('derives the attribution harness from the plan payload, not the operator home (WI-374)', async () => {
+    const member = 'member-harness-x';
+    const sql = fakeSql({
+      revisions: [{ harness_slug: member, plan_slug: 'a', author_id: 'su-88991fc5-dd92', author_kind: 'agent' }],
+    });
+    // The plan carries its OWN harness stamp; NO opts.harnessSlug is passed. The revision is
+    // keyed under the member harness — it only resolves if enrichPlanDetail keys on the plan's
+    // real harness rather than a silent operator-home fallback.
+    const plan = { harness: member, frontmatter: { slug: 'a', owner: 'aviynw2@gmail.com' }, items: [] };
+    const out = (await enrichPlanDetail(plan, { sql, workspaceId: 'default' })) as {
+      ownerIdentity: unknown;
+      lastEditor: unknown;
+    };
+    expect(out.lastEditor).toMatchObject({ handle: 'su-88991fc5', kind: 'agent' });
+    expect(out.ownerIdentity).toMatchObject({ handle: 'aviynw2', kind: 'human' });
+  });
+
+  it('does NOT silently attribute to the operator-home harness when no harness is given (WI-374)', async () => {
+    const home = operatorHomeHarnessSlug();
+    const sql = fakeSql({
+      // A revision EXISTS under the HOME harness: the OLD silent `?? operatorHomeHarnessSlug()`
+      // would have keyed on it and mis-attributed a lastEditor. The fixed code has no harness to
+      // key on (neither opts.harnessSlug nor the plan's own `harness`), so it must NOT enrich —
+      // never a home-harness guess.
+      revisions: [{ harness_slug: home, plan_slug: 'a', author_id: 'su-88991fc5-dd92', author_kind: 'agent' }],
+    });
+    const plan = { frontmatter: { slug: 'a', owner: 'aviynw2@gmail.com' }, items: [] };
     expect(await enrichPlanDetail(plan, { sql })).toBe(plan);
   });
 });

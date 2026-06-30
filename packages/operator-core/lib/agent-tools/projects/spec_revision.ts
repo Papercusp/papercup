@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getProjectSpecRevision } from '../../projects-data';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'projects:spec_revision',
@@ -37,8 +38,13 @@ export default defineTool({
     },
   ],
   async handler(args, ctx) {
-    // Non-empty by the `harness-slug` precondition above.
-    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    // Precondition guarantees a slug arrived, but the operator `'*'` auto-default
+    // is truthy and slips past it — route through the fail-loud resolver so `'*'`
+    // is rejected, not read as a bogus `'*'` harness schema (P-004).
+    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
+    if (!slug) {
+      return harnessRequiredResult('projects:spec_revision');
+    }
     const revision = await getProjectSpecRevision(slug, args.projectId, args.revId);
     return {
       content: [{
