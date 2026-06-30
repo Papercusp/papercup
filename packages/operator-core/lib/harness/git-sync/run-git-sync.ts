@@ -421,7 +421,17 @@ async function syncOneRepo(
     if (o.attribution && o.attribution.size > 0) {
       const res = await commitAttributedGroups(runGit, repoPath, o.attribution, excludePaths, message);
       if (res.error) {
-        return { status: 'error', message: res.error, oversized, contentErrors };
+        // STRANDING GUARD (2026-06-30): a failed per-agent attributed commit — e.g. an
+        // index.lock race under heavy fleet contention — must NEVER short-circuit the
+        // catch-all `git add -A` sweep below. Returning here strands the unattributed
+        // REMAINDER: untracked NEW files (a new tool/module) whose `import` was already
+        // committed in an earlier tick. The result is an UNBUILDABLE tree — "the agent's
+        // code went missing", and every deploy preflight dies on `Cannot find module`.
+        // Log it and FALL THROUGH; the catch-all commits everything still dirty (the
+        // failed group's files + the remainder), so no file is ever left behind.
+        o.log(
+          `[git-sync] ${repoPath}: attributed-commit phase errored (${res.error}); falling through to the catch-all 'git add -A' sweep so no file strands`,
+        );
       }
       committedAny = res.committedAny;
     }

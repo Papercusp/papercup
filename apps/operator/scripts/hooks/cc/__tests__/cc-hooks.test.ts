@@ -44,6 +44,13 @@ function run(input: string, extraEnv: Record<string, string> = {}) {
       HOME: home,
       PAPERCUSP_LOCKS_CACHE_DIR: cache,
       PAPERCUSP_WORKSPACE_ROOT: ws,
+      // The worktree guard (pretooluse-locks-acquire.sh, worktree-discipline-2026-06-30)
+      // denies edits in a workspace-child tree that is NOT the canonical staging tree.
+      // This fixture's repo is `<ws>/papercup-test` (a non-canonical sibling), so without
+      // this the guard denies every in-workspace edit. Point the guard at the fixture so
+      // the operator-independent paths under test (fail-open / scoping) are exercised, not
+      // the guard's deny. (The guard's own deny path is covered by pretooluse-locks-decision.)
+      PAPERCUSP_CANONICAL_TREE: repo,
       ...extraEnv,
     },
   });
