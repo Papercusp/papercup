@@ -46,6 +46,18 @@ export function runBootstrap(): void {
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
 
+  // [harness-provided-cadence-ops-2026-06-26 D-007 / WI-1146] Make the launch-blueprint
+  // resolver installed-aware (installed `~/.papercusp/blueprints` → built-in) — the same
+  // resolution blueprint:validate/catalog use. Without this the default resolver is
+  // built-in-ONLY, so a HARNESS-provided cadence blueprint (e.g. oddsmith-prospector)
+  // fired by a `system:blueprint-run` routine throws `no built-in blueprint`. Purely
+  // additive (built-in ids resolve identically). try/catch so it can never wedge boot.
+  try {
+    setLaunchBlueprintResolver(installedAwareLaunchResolver());
+  } catch (e) {
+    console.warn('[launch-resolver] installed-aware wiring failed (non-fatal):', (e as Error)?.message ?? e);
+  }
+
   // Autonomous launchers (Queen/Overwatch/fleet) resolve backend + model from
   // process.env. The settings page persists those knobs in PG, so hydrate them
   // on boot before background wake machinery starts.

@@ -24,7 +24,8 @@ import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
-import { hasGenericKind } from '../../datatype-registry-store';
+import { getGenericKindDatatype } from '../../datatype-registry-store';
+import { validateDatatypePayload } from '../../datatype-payload-validation';
 
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
@@ -114,10 +115,10 @@ export async function createOneWorkItem(
     // there is no behavior change until meta:define-datatype registers a kind. This is the
     // platform-side registration path the oddsmith F1 gap needed (oddsmith D-017/P-021).
     if (!isWorkItemKind(args.kind)) {
-      const registered = workspaceId
-        ? await hasGenericKind(getOrgPg().sql, workspaceId, args.kind).catch(() => false)
-        : false;
-      if (!registered) {
+      const datatype = workspaceId
+        ? await getGenericKindDatatype(getOrgPg().sql, workspaceId, args.kind).catch(() => null)
+        : null;
+      if (!datatype) {
         return {
           ok: false,
           error: 'unknown_kind',
@@ -125,6 +126,18 @@ export async function createOneWorkItem(
             `unknown work-item kind "${args.kind}" — use a built-in kind ` +
             `(feature, research-task, chunk, bug, change, task), or first declare it via ` +
             `meta:define-datatype (generic-kind tier) in this workspace, then create instances with that kind.`,
+        };
+      }
+      // P-001 payload validation — the core reason a datatype exists: an instance must
+      // satisfy the datatype's declared payload_schema (a malformed `bet` is rejected, not
+      // stored as an untyped blob). No schema ⇒ no constraint; declare-time compilation
+      // guarantees the schema is well-formed so this never fail-opens in practice.
+      const pv = validateDatatypePayload(datatype.payloadSchema, args.payload);
+      if (!pv.ok) {
+        return {
+          ok: false,
+          error: 'invalid_payload',
+          message: `payload does not match datatype "${args.kind}": ${pv.errors.join('; ')}`,
         };
       }
     }

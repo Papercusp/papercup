@@ -10,10 +10,32 @@ import {
   fireLaunchBlueprintForEvent,
   setLaunchBlueprintFire,
   setLaunchBlueprintResolver,
+  installedAwareLaunchResolver,
   buildLaunchSpawnRequest,
   QUEEN_INVOKE_TIMEOUT_MS,
   type LaunchFireFn,
 } from './launch-blueprint';
+import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
+
+describe('installedAwareLaunchResolver (D-007 / WI-1146)', () => {
+  it('resolves a built-in id identically to the default resolver', async () => {
+    const bp = await installedAwareLaunchResolver()('coding');
+    expect(bp.id).toBe('coding');
+  });
+
+  it('loads a blueprint from a resolved (installed-tier) path', async () => {
+    // Simulate an installed-tier hit: an injected resolve returns a real blueprint
+    // file path for an id the built-in loader would NOT find by id.
+    // The id maps to coding's blueprint file; parents (e.g. `base`) fall through to built-in.
+    const resolve = (id: string) => (id === 'pretend-installed' ? builtinBlueprintPath('coding') : builtinBlueprintPath(id));
+    const bp = await installedAwareLaunchResolver(resolve)('pretend-installed');
+    expect(bp.id).toBe('coding');
+  });
+
+  it('falls back to the built-in loader (preserves the throw) for a truly-unknown id', () => {
+    expect(() => installedAwareLaunchResolver(() => null)('no-such-blueprint-xyz')).toThrow(/no built-in blueprint/);
+  });
+});
 
 // queen-brief-cache-assembly B-03: stub the Queen wake-brief builder so the
 // queen-launch path is deterministic (no real survey/PG) and the injection is

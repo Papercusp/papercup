@@ -59,6 +59,9 @@ export interface DatatypeRow {
   selfImprovement: Record<string, unknown> | null;
   status: string;
   published: boolean;
+  /** Global/shared-tier moderation state (migration 425, D-010): 'none' (local only) |
+   *  'pending' | 'approved' | 'rejected'. Distinct from `status` (local usability). */
+  reviewStatus: string;
   tags: string[];
   /** True when an embedding is stored; the raw vector itself is not mapped back. */
   hasEmbedding: boolean;
@@ -99,6 +102,7 @@ type DbRow = {
   self_improvement: Record<string, unknown> | null;
   status: string;
   published: boolean;
+  review_status: string;
   tags: string[] | null;
   has_embedding: boolean;
   created_by: string | null;
@@ -137,6 +141,7 @@ function mapRow(r: DbRow): DatatypeRow {
     selfImprovement: parseJsonbMaybe(r.self_improvement),
     status: r.status,
     published: r.published,
+    reviewStatus: r.review_status,
     tags: r.tags ?? [],
     hasEmbedding: r.has_embedding,
     createdBy: r.created_by,
@@ -148,7 +153,7 @@ function mapRow(r: DbRow): DatatypeRow {
 /** SELECT-list shared by every read (the raw VECTOR is never serialized back — only its presence). */
 const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
   id, workspace_id, hive_slug, title, description, tier, work_item_kind,
-  payload_schema, authoritative_writer, self_improvement, status, published, tags,
+  payload_schema, authoritative_writer, self_improvement, status, published, review_status, tags,
   (embedding IS NOT NULL) AS has_embedding, created_by, created_at, updated_at
 `;
 
@@ -327,6 +332,26 @@ export async function hasGenericKind(
        AND tier = 'generic-kind' AND work_item_kind = ${kind}
      LIMIT 1`;
   return Boolean(rows[0]?.ok);
+}
+
+/**
+ * Fetch the active generic-kind datatype registered under `kind` (its `work_item_kind`)
+ * in this workspace — the row work_items:create needs to VALIDATE an instance payload
+ * against `payloadSchema` (P-001). Null when the kind is not a registered generic-kind.
+ * A superset of {@link hasGenericKind} (presence) that also returns the schema.
+ */
+export async function getGenericKindDatatype(
+  sql: postgres.Sql,
+  workspaceId: string,
+  kind: string,
+): Promise<DatatypeRow | null> {
+  if (!kind) return null;
+  const rows = await sql<DbRow[]>`
+    SELECT ${SELECT_COLS(sql)} FROM harness_shared.datatype_registry
+     WHERE workspace_id = ${workspaceId} AND status = 'active'
+       AND tier = 'generic-kind' AND work_item_kind = ${kind}
+     LIMIT 1`;
+  return rows[0] ? mapRow(rows[0]) : null;
 }
 
 /**

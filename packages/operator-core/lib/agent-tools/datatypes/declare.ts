@@ -34,6 +34,7 @@ import {
   DATATYPE_TIERS,
 } from '../../datatype-registry-store';
 import { checkSelfImprovementForDeclare } from '../../datatype-self-improvement';
+import { isCompilableSchema } from '../../datatype-payload-validation';
 import { buildQueryEmbedder } from '../search/embedder';
 
 export default defineTool({
@@ -143,6 +144,17 @@ export default defineTool({
         message: siCheck.message,
         expectedShape: siCheck.expectedShape,
         ...(siCheck.issues ? { issues: siCheck.issues } : {}),
+      });
+    }
+
+    // P-001: a provided payload_schema must be a COMPILABLE JSON Schema, so every later
+    // work_items:create can validate an instance against it (the create path never has to
+    // fail-open on a malformed schema — it's caught here, at declaration).
+    if (args.payloadSchema && !isCompilableSchema(args.payloadSchema)) {
+      return reply({
+        ok: false,
+        reason: 'invalid_payload_schema',
+        message: 'payloadSchema is not a valid JSON Schema (it must compile) — fix it so instances of this datatype can be validated',
       });
     }
 
