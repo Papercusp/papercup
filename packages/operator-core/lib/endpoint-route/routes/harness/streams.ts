@@ -551,11 +551,22 @@ const logStream = defineTool({
  * that by sessionId (findSessionTranscript), parse the tail with the SAME timeline
  * parser bees use, and emit it as one `backfill` then `done` — a snapshot (no live
  * follow yet). Empty backfill when the session id is unknown/unreadable.
+ *
+ * SECURITY (auth: 'loopback'): an interactive session's transcript carries the
+ * FULL agent reasoning + tool inputs/results (which can hold file contents +
+ * secrets) and is resolved by a raw caller-supplied sessionId with NO
+ * workspace/ownership scoping — a cross-session IDOR if network-reachable. The
+ * sole consumer is the loopback desktop webview (AgentInspectorModal's
+ * streamUrl), so gate it loopback-only: a non-loopback caller gets 403 instead
+ * of an arbitrary session's transcript. (Enforced when ENDPOINT_AUTH_TIERS is
+ * on / fail-closed if the flag layer is down; PAPERCUSP_ALLOW_REMOTE_ADMIN=1 is
+ * the deliberate remote opt-out.) A per-principal + workspace-scoped check is
+ * the follow-up for a multi-tenant/exposed deployment.
  */
 const sessionThinkingStream = defineTool({
   method: 'GET',
   path: '/adv/session/thinking',
-  auth: 'public',
+  auth: 'loopback',
   sampleRate: 0,
   async handler(req) {
     const url = new URL(req.url);
