@@ -321,8 +321,13 @@ export async function executeDeploy(
       // await-event-primitive-2026-06-05 P-015: deploy-landed is awaitable —
       // the standard "my change reaches GREEN :3070 on the next deploy"
       // deferral can now SLEEP on `release:deployed` instead of being a
-      // hand-tracked re-verify chore. Fire-and-forget.
-      void import('@papercusp/operator-core/lib/events/await/engine')
+      // hand-tracked re-verify chore.
+      // AWAITED (not void, EI-5993 fix): deploy-cli process.exit()s right after
+      // main() resolves, same as recordEvent below — a fire-and-forget emit here
+      // raced that exit and was almost always killed before it fired, so every
+      // caller `events:await`-ing `release:deployed` timed out despite the deploy
+      // succeeding.
+      await import('@papercusp/operator-core/lib/events/await/engine')
         .then(({ emitAwaitedEvent }) =>
           emitAwaitedEvent({
             key: 'release:deployed',
@@ -394,7 +399,8 @@ export async function executeDeploy(
         .catch(() => {});
       // P-015: a failure is as awaitable as a success — a deploy-blocked
       // agent learns the bad news now, not at its timeout.
-      void import('@papercusp/operator-core/lib/events/await/engine')
+      // AWAITED (not void, EI-5993): same process.exit() race as the success path.
+      await import('@papercusp/operator-core/lib/events/await/engine')
         .then(({ emitAwaitedEvent }) =>
           emitAwaitedEvent({
             key: 'release:deploy-failed',
