@@ -2,7 +2,8 @@
 title: The gym is a blueprint (gym-as-blueprint port)
 description: How the self-improving "gym" became the third built-in Harness Blueprint (D-022). A gym is a harness whose work is "improve another harness's blueprint"; the target declares its own rubric/signals/collectTrace; the lib/gym primitives are re-exposed as engine-primitives + gym:* tools; live-edit = commit→reproject.
 discovered: 2026-06-04
-tags: [blueprint, gym, orchestration, self-improving, collectTrace, commit-reproject]
+updated: 2026-07-01
+tags: [blueprint, gym, orchestration, self-improving, collectTrace, commit-reproject, drill-ground-truth]
 status: active
 documents:
   - libs/papercusp/packages/harness/blueprints/gym/blueprint.yaml
@@ -13,8 +14,11 @@ documents:
   - packages/operator-core/lib/gym/collect-strategies.ts
   - packages/operator-core/lib/blueprint/commit-reproject.ts
   - packages/operator-core/lib/gym/control-plane.ts
+  - packages/operator-core/lib/gym/learning-targets.ts
+  - packages/operator-core/lib/gym/seed-learning-gym-targets.ts
 plans:
   - harness-blueprint-orchestration-2026-06-03
+  - self-learning-frontier-2026-06-12
 sidebar:
   order: 60
 ---
@@ -51,7 +55,7 @@ The split that makes this work:
 |---|---|---|
 | The `gym` blueprint | `harness/blueprints/gym/blueprint.yaml` + role prompts at the package-level `harness/prompts/{gym-director,task-generator,variant-runner,judge,proposer,committer}.md` (NOT a per-blueprint `gym/prompts/` dir) | Validates clean (engine `loadBuiltinBlueprint('gym')`). |
 | Re-exposed primitives | `packages/operator-core/lib/gym/primitives.ts` | One import surface: the **signal registry** (`resolveSignals`/`evaluateSignals` over `GYM_SIGNAL_REGISTRY`) + the **rubric mapper** (`rubricFromBlueprintGym` → a concrete `GymJudgeRubric`, falling back to `GYM_JUDGE_RUBRIC_V1`) + re-exports of `judgeGymRun`/`runAbEvaluation`/`collectTrace`. |
-| Gym tools | `packages/operator-core/lib/agent-tools/gym/{judge,signals}.ts` | `gym:judge` (frozen Opus judge, target's rubric — testable inner `runGymJudge`) + `gym:signals` (resolve a target's declared signals by name). The judge/proposer roles call these. |
+| Gym tools | `packages/operator-core/lib/agent-tools/gym/{judge,signals}.ts` | `gym:judge` (frozen Opus judge, target's rubric — testable inner `runGymJudge`) + `gym:signals` (resolve a target's declared signals by name). The judge/proposer roles call these. `gym:signals` also resolves **drill-ground-truth signals** (`drillResolveRate` / `drillTriageAccuracy` / `drillMttsh`, FB-23/P-048) over red-queen drill rows (`lib/red-queen/store.ts`) — pass `drillOutcomes` explicitly, or set `loadDrillOutcomes` to pull the live sandbox corpus from PG (`drillSource` in the response reports which). |
 | A/B eval-matrix | `packages/operator-core/lib/gym/ab-matrix.ts` | The matrix `variants × tasks × repeats` as a **Level-2 runtime DAG** (cells = wave 0, all parallel; `aggregate` = wave 1) — maps onto the planner's wave + `blocked_by` model. `aggregateAbMatrix` / `compareVariantsFromOutcomes` are the pure comparison/aggregation primitive (mean-based, excludes non-scored cells). |
 | collectTrace seam (D-015) | `packages/operator-core/lib/gym/collect-strategies.ts` | `collectTraceByStrategy('git-diff' \| 'work-item-output' \| <custom>)` breaks the gym's repo-coupling: `git-diff` diffs the clone (coding); `work-item-output` collects the work-item output + transcripts with **NO git** (research/gym). Wired into `ab-runner-real.ts` `collectAndDistill`, dispatching on the target's `gym.collectTrace`. |
 | Live-edit = commit→reproject (D-007/D-021) | `packages/operator-core/lib/blueprint/commit-reproject{,-real}.ts` | An accepted edit writes the target's `.papercusp/blueprint.yaml` / `.papercusp/prompts/<role>.md`, **commits it** (the target's own git tree), then **reloads + re-projects** via `projectBlueprintToPg`. Order is the contract: file → commit → project (the cache is never ahead of the committed file). `acceptProposalViaCommit` is the gym-accept path that replaces the ungated `PUT /harness/:slug/prompts/:role`. |
@@ -93,6 +97,15 @@ code. Two extension points:
 - **A failed commit or reprojection leaves the proposal PENDING.** Never mark a
   proposal accepted on a half-applied edit — that discipline is what the old ungated
   PUT lacked.
+- **A gym target need not be a repo at all — the learning system can be its own
+  target.** `lib/gym/learning-targets.ts` + `lib/gym/seed-learning-gym-targets.ts`
+  (self-learning-frontier P-048/FB-23) register the learning system's own roles
+  (currently the auto-implement worker, the only one with a gym-native
+  `harness_prompt_overrides` surface) as a gym autoloop target judged on
+  vaccination's planted-drill ground truth instead of a code diff. Registration is
+  DARK by construction (D-001): the created autoloop row is `enabled:false` with a
+  null budget, doubly refused by the gym-cycle tick until an owner arms it
+  (enable + set the governor budget).
 
 ## See also
 
@@ -100,3 +113,6 @@ code. Two extension points:
   D-015 / D-007 / D-021). Absorbs `harness-gym-eval-optimizer-2026-06-02`.
 - The engine: `@papercusp/orchestrator/blueprint` (`GymSchema`, `RecursionSchema`,
   `deriveNext`, the loader) — **frozen**; the gym needed no schema change.
+- Plan `self-learning-frontier-2026-06-12` (P-031 vaccination / FB-20 red-queen
+  drill corpus, P-048 / FB-23 drills-as-gym-corpus) — the drill-ground-truth
+  signals and the learning-system-as-gym-target extension.

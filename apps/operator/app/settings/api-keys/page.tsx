@@ -253,7 +253,7 @@ function VoiceKeyRow({
   label, field, state, placeholder, helpUrl, note, onChange,
 }: {
   label: string;
-  field: 'elevenlabsApiKey' | 'openaiApiKey' | 'cartesiaApiKey' | 'deepgramApiKey' | 'picovoiceApiKey' | 'googleApiKey';
+  field: 'elevenlabsApiKey' | 'openaiApiKey' | 'cartesiaApiKey' | 'deepgramApiKey' | 'picovoiceApiKey';
   state: VoiceCredsState;
   placeholder: string;
   helpUrl: string;
