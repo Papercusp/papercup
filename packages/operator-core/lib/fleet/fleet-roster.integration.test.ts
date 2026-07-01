@@ -84,6 +84,21 @@ function memberIdentity(ownerId: string): AgentIdentity {
   };
 }
 
+async function withFleetEnvCleared<T>(run: () => Promise<T>): Promise<T> {
+  const prevSlug = process.env.PAPERCUSP_FLEET_SLUG;
+  const prevRole = process.env.PAPERCUSP_FLEET_ROLE;
+  delete process.env.PAPERCUSP_FLEET_SLUG;
+  delete process.env.PAPERCUSP_FLEET_ROLE;
+  try {
+    return await run();
+  } finally {
+    if (prevSlug === undefined) delete process.env.PAPERCUSP_FLEET_SLUG;
+    else process.env.PAPERCUSP_FLEET_SLUG = prevSlug;
+    if (prevRole === undefined) delete process.env.PAPERCUSP_FLEET_ROLE;
+    else process.env.PAPERCUSP_FLEET_ROLE = prevRole;
+  }
+}
+
 describe('--fleet launch registration → real fleetSlug + roster grouping (WI-1408)', () => {
   it('a member launched with --fleet (fleet:launch-on-plan path) registers with a non-null fleetSlug and shows grouped under that fleet in listFleetRoster + fleet:assignments', async () => {
     const ownerId = 'fr-test-member';
@@ -154,7 +169,9 @@ describe('--fleet launch registration → real fleetSlug + roster grouping (WI-1
     const ownerId = 'fr-test-member-unfleeted';
     const identity = memberIdentity(ownerId);
 
-    await writePresence(identity, { intent: 'idle' }, null);
+    await withFleetEnvCleared(async () => {
+      await writePresence(identity, { intent: 'idle' }, null);
+    });
 
     const rows = await admin`
       SELECT fleet_slug FROM harness_shared.coord_presence

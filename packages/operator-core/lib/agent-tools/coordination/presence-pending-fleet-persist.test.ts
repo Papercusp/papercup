@@ -30,18 +30,18 @@ vi.mock('@papercusp/coordination/presence', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/coordination/presence')>();
   return {
     ...actual,
-    PgPresenceStore: vi.fn().mockImplementation(() => ({
-      write: storeWriteMock,
-      touchHeartbeat: vi.fn(async () => {}),
-      touchActivity: vi.fn(async () => {}),
-      setCompactionLimit: vi.fn(async () => {}),
-      setContextEstimate: vi.fn(async () => {}),
-      heartbeat: vi.fn(async () => {}),
-      clear: vi.fn(async () => {}),
-      list: vi.fn(async () => []),
-      get: vi.fn(async () => null),
-      sweepStale: vi.fn(async () => 0),
-    })),
+    PgPresenceStore: class MockPgPresenceStore {
+      write = storeWriteMock;
+      touchHeartbeat = vi.fn(async () => {});
+      touchActivity = vi.fn(async () => {});
+      setCompactionLimit = vi.fn(async () => {});
+      setContextEstimate = vi.fn(async () => {});
+      heartbeat = vi.fn(async () => {});
+      clear = vi.fn(async () => {});
+      list = vi.fn(async () => []);
+      get = vi.fn(async () => null);
+      sweepStale = vi.fn(async () => 0);
+    },
   };
 });
 

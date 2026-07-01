@@ -12,7 +12,7 @@
  * EventEmitter spawn-fake. pipeline-events is mocked so no PG is touched. No
  * subprocess, no network.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 
 // --- mocks (hoisted) ---------------------------------------------------------
@@ -389,5 +389,97 @@ describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', 
 
   it('the 2h dedup window is the documented default', () => {
     expect(RELEASE_FIXER_DEDUP_MS).toBe(2 * 60 * 60_000);
+  });
+});
+
+describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)', () => {
+  const GREEN_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+  const okStdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'up-to-date', green: true })}\n`;
+
+  /** fakeSpawn with stderr + configurable exit code (scope-launch-failure shape). */
+  function fakeSpawnFail(stderr: string, code = 1): ReturnType<typeof fakeSpawn> {
+    const child = new EventEmitter() as ReturnType<typeof fakeSpawn>;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    process.nextTick(() => {
+      if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+      child.emit('close', code);
+    });
+    return child;
+  }
+
+  const savedScopeEnv = process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+  afterEach(() => {
+    if (savedScopeEnv === undefined) delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+    else process.env.PAPERCUSP_CHECKPOINT_SCOPE = savedScopeEnv;
+  });
+
+  it('buildIsolatedScopeArgv wraps the payload in a memory-capped transient user SCOPE', () => {
+    const argv = buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16);
+    expect(argv[0]).toBe('systemd-run');
+    expect(argv).toContain('--user');
+    expect(argv).toContain('--scope'); // scope (child stays OURS: stdio/env/pgid) — never --unit
+    expect(argv).toContain('--collect');
+    expect(argv).toContain('--property=MemoryMax=16G');
+    expect(argv).toContain('--property=MemorySwapMax=0'); // mirror the bg-host swap policy
+    // Payload appended verbatim, in order, at the end.
+    expect(argv.slice(-2)).toEqual(['/x/tsx', '/x/suite.ts']);
+  });
+
+  it('the PERIODIC gate launches the suite under systemd-run --scope (own cgroup, stdout marker still parsed)', async () => {
+    delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('systemd-run');
+    expect(args).toContain('--scope');
+    expect(args.some((a) => /^--property=MemoryMax=\d+G$/.test(a))).toBe(true);
+    expect(args.join(' ')).toContain('green-checkpoint.ts');
+    // The verdict still lands as a pipeline event (stdout was piped through the scope).
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),
+    );
+  });
+
+  it('falls back to a DIRECT spawn when the scope cannot launch (no user bus) — the gate never red-pins on infra', async () => {
+    delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+    spawnMock
+      .mockImplementationOnce(() => fakeSpawnFail('Failed to connect to bus: No such file or directory', 1))
+      .mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    const [cmd2, args2] = spawnMock.mock.calls[1] as [string, string[]];
+    expect(cmd2).not.toBe('systemd-run'); // direct tsx payload
+    expect(cmd2).toContain('tsx');
+    expect(args2.join(' ')).toContain('green-checkpoint.ts');
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),
+    );
+  });
+
+  it('a PAYLOAD failure inside a healthy scope does NOT retry (one suite run per tick)', async () => {
+    delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+    // Non-zero exit but no scope-launch-shaped stderr → the suite itself failed; no fallback.
+    spawnMock.mockImplementationOnce(() => fakeSpawnFail('vitest: 3 tests failed', 1));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exited 1'));
+    warn.mockRestore();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'green_checkpoint', status: 'error' }),
+    );
+  });
+
+  it('PAPERCUSP_CHECKPOINT_SCOPE=0 kill-switch runs the pre-isolation direct spawn', async () => {
+    process.env.PAPERCUSP_CHECKPOINT_SCOPE = '0';
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [cmd] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(cmd).not.toBe('systemd-run');
+    expect(cmd).toContain('tsx');
   });
 });
