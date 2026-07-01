@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
-import { useAgentThinkingStream, Entry } from './AgentThinkingPopover';
+import { useAgentThinkingStream, Entry, waitingMessage } from './AgentThinkingPopover';
 
 /**
  * AgentInspectorModal — the pinned, full-height view of a run's live thinking
@@ -13,6 +13,12 @@ import { useAgentThinkingStream, Entry } from './AgentThinkingPopover';
  * renderer so the timeline is identical to the popover, just larger and pinned.
  * Before this the "Open full inspector" button was a dead stub (it only closed
  * the popover) — there was no inspector in operator-vite to open.
+ *
+ * Empty-timeline state reuses the shared `waitingMessage` helper (WI-1325): a
+ * live run producing ZERO output for STALL_AFTER_MS escalates from a hopeful
+ * "Waiting…" to a "⚠ no output for {elapsed} — stalled/rate-limited" warning +
+ * a "stalled?" header, so a wedged agent stops reading as an eternal green
+ * "live · No output yet". Mirrors the hover popover's behavior.
  */
 export default function AgentInspectorModal({
   slug,
@@ -21,6 +27,7 @@ export default function AgentInspectorModal({
   role,
   open,
   onClose,
+  startedAtMs,
 }: {
   slug: string;
   phase: string;
@@ -28,9 +35,24 @@ export default function AgentInspectorModal({
   role: string;
   open: boolean;
   onClose: () => void;
+  /** Run start (epoch-ms). Drives the elapsed counter + stall detection while
+   *  the timeline is still empty. Optional — defaults to when the inspector was
+   *  opened, so a wedged run still escalates from "waiting" to "stalled?". */
+  startedAtMs?: number;
 }) {
   const { events, status } = useAgentThinkingStream(slug, phase, runId);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Elapsed baseline: the run start when known, else when this inspector opened
+  // (captured once). Feeds the stall escalation while the timeline is empty.
+  const openedAtRef = useRef<number>(Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  // Tick a 1s clock ONLY while still waiting on the first output (empty timeline,
+  // not terminal) so the elapsed counter + stall escalation update live.
+  useEffect(() => {
+    if (events.length > 0 || status === 'done') return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [events.length, status]);
 
   // Follow the tail as new events stream in (unless the user scrolled up).
   const pinnedRef = useRef(true);

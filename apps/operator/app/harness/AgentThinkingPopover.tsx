@@ -99,14 +99,16 @@ const VIEWPORT_PAD = 12;
  * from one code path. Opens an EventSource on mount, replays `backfill` once,
  * appends `event` deltas, and flips to done/error on the terminal events.
  */
-export function useAgentThinkingStream(slug: string, phase: string, runId: string) {
+export function useAgentThinkingStream(slug: string, phase: string, runId: string, streamUrl?: string) {
   const [events, setEvents] = useState<TimelineEntry[]>([]);
   const [status, setStatus] = useState<'connecting' | 'live' | 'done' | 'error'>('connecting');
   useEffect(() => {
     setStatus('connecting');
     setEvents([]);
     const source = createResilientEventSource({
-      url: `/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`,
+      // A caller can pass an explicit stream URL (e.g. the interactive-session
+      // transcript endpoint); default is the bee run-log stream.
+      url: streamUrl ?? `/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`,
       handlers: {
         backfill: (data) => {
           try { setEvents(JSON.parse(data) as TimelineEntry[]); setStatus('live'); } catch { /* ignore */ }
@@ -119,7 +121,7 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
       onError: () => setStatus('error'),
     });
     return () => { source.close(); };
-  }, [slug, phase, runId]);
+  }, [slug, phase, runId, streamUrl]);
   return { events, status };
 }
 

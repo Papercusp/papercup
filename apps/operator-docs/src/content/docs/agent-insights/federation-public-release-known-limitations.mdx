@@ -251,16 +251,31 @@ rekey**. This is consistent with Brief 5 (restart) PASSING (the restart re-folds
 and means the earlier "proven live" runs (run33/34/35) may have included a
 restart/rekey rather than exercising the pure no-restart path.
 
-**Status:** NOT yet fully confirmed — su-e7698 is re-running with a
-roster-populated GATE to rule out a Phase-2 test artifact; the code analysis says
-it is a real `forceReFold` coverage gap. Two candidates: (1) a timing race where
-the post-rekey op is dropped at `projections/hive-members.ts` `writeToPg` on a
-`hive_home_slug` mismatch, vs (2) the rebind never firing in the pure no-restart
-join so `forceReFold` stays `false`. **If confirmed this BLOCKS the minimum bar** —
-owner→joiner is the core guarantee, and it gates live briefs 2/3/6/7. Fix tracked
-as **WI-1378** (owner su-2c799 — the no-restart admit-path re-fold); a
-deterministic in-process no-restart repro is the fastest confirmation (avoids
-another paid live run).
+**Root cause (confirmed, su-2c799):** cross-process `opStateCache` staleness under
+`SUBSTRATE_SIDECAR`. `join-hive.ts` (MAIN process) commits the registry
+(`remote_hive:true` + `hive_slug`) and invalidates its OWN cache; but `rekey()`
+runs in the substrate SIDECAR process, whose warm `harness_registry` cache (2s
+TTL, kept hot by the sidecar's constant reads) never saw that invalidation → it
+serves the STALE pre-join value → `joinerHiveHomeSlug` returns null →
+`resolveHiveHomeProjectionSlug` returns null → `next===prev(null)` → the rekey
+rebind block (boot.ts ~2599) SKIPS → `forceReFold` never fires → the
+member-slug projection binding latches → the owner's `hive_members` rows drop
+forever → roster EMPTY. A restart cold-reads fresh at boot → binds correctly
+(why Brief 5 restart PASSED). Neither original candidate — it was a third
+mechanism (stale cross-process cache read at the resolve, not a
+re-fold-coverage or rebind-timing bug).
+
+**Status: FIX LANDED (su-2c799, WI-1378).** `resolveHiveHomeProjectionSlug` now
+calls `joinerHiveHomeSlug(ws, slug, { fresh: true })`, threaded through
+`loadHarnessRegistry({fresh})` → `readOperatorState({fresh})` to BYPASS the 2s
+cache on this one rare resolve path (hot-path callers keep the cache, so the
+seqscan perf win is preserved). A fresh PG read is guaranteed to see the
+committed write (join-hive awaits the `mutateRegistry` commit before the rekey
+RPC). **Still pending before the min bar is truly green:** (a) an in-process
+regression test (WI-1383, su-c25e5 — seed a stale cache + out-of-band registry
+write → assert the fresh resolve sees it), and (b) a LIVE owner→joiner
+no-restart re-verify (e7698, Brief 6). Until (b) passes live, the base-row
+"proven live" stays caveated.
 
 ---
 

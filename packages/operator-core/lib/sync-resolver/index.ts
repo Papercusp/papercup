@@ -4125,10 +4125,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // alongside codeRecipes on every recipe write (a sweep/merge/capture shifts the
   // candidate set), so the dashboard's worklist stays live.
   recipeCandidates: {
+    // CLAMP, don't `.max()`-REJECT (clamp-not-reject, P-001/D-002): a newer UI
+    // bundle sending minRunCount/limit above an older deployed resolver's cap must
+    // not 400 the /admin/recipes Candidates section on a client/server skew. Both
+    // stay optional (absent → the downstream recipeCandidates() defaults apply).
     argsSchema: z
       .object({
-        minRunCount: z.number().int().min(1).max(1000).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        minRunCount: clampedLimitOpt(1000),
+        limit: clampedLimitOpt(100),
       })
       .optional(),
     resolve: async (args) => {
