@@ -12,24 +12,14 @@ vi.mock('../dev-data', async (orig) => ({
 vi.mock('../hive/started', async (orig) => ({
   ...(await orig<typeof import('../hive/started')>()),
   listStartedHives: vi.fn(),
-  getHiveStarted: vi.fn(),
-}));
-// K1 (workspace-scoped-coordination P-003): stub the flag read; the OFF default
-// (the dark default) is what every legacy test below relies on.
-vi.mock('../workspace-brain-scope', async (orig) => ({
-  ...(await orig<typeof import('../workspace-brain-scope')>()),
-  isWorkspaceCoordinationOn: vi.fn(async () => false),
 }));
 
 import { resolveTickHarnesses } from './orchestrator-loop';
 import { listAllHarnesses } from '../dev-data';
-import { listStartedHives, getHiveStarted } from '../hive/started';
-import { isWorkspaceCoordinationOn } from '../workspace-brain-scope';
+import { listStartedHives } from '../hive/started';
 
 const mockAll = vi.mocked(listAllHarnesses);
 const mockStarted = vi.mocked(listStartedHives);
-const mockGetStarted = vi.mocked(getHiveStarted);
-const mockWsCoord = vi.mocked(isWorkspaceCoordinationOn);
 
 afterEach(() => {
   vi.clearAllMocks();

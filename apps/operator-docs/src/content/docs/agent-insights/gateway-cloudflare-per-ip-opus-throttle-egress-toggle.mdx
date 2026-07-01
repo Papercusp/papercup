@@ -33,6 +33,19 @@ egress IPs. This doc's original "Cloudflare per-IP edge throttle on the egress I
 The Cloudflare `bare-burst` 429 shape is REAL, but it's how the **stricter Max-OAuth bucket** rejects an
 un-framed request — not a per-IP egress throttle.
 
+> **⚠ Scope of the "red herring" (added 2026-06-30 pm — do not over-read it):** that conclusion is only for
+> the **UN-framed** case tested here (the Scout in-process opus path). It does **NOT** mean the per-IP egress
+> throttle is fictional. For **already-framed** callers (the `claude`-CLI / psu bees, framed since the
+> `buildSystemParam` fix) a bare-burst 429 under concentrated opus load **IS** a genuine Cloudflare per-IP
+> edge throttle: an account with a single egress IP and no `egressPool` then whole-account-pauses (the
+> `BARE-429 CIRCUIT`) because there is no sibling IP to rotate to — the exact reason a heavily-pinned account
+> with 18% budget still throws API errors. That is a DISTINCT mode with its own shipped fix (the per-account
+> egress-IP pool). The `box-IP-only didn't fix it` test above only disproves the IP theory **for the
+> un-framed case** (framing is IP-independent, so of course box-IP still 429'd). Full discriminator (framing
+> vs edge-IP): the top callout of
+> [max-oauth-first-system-block](./max-oauth-first-system-block-must-be-claude-code-identity) +
+> [rate-limit…not-capacity Fault #6](./rate-limit-is-usually-account-routing-not-capacity).
+
 ## What's still valid here: the dynamic egress-proxy toggle
 
 This work added a runtime kill-switch in `gateway.ts` to flip between the per-account datacenter proxy
