@@ -230,6 +230,14 @@ for event, cmd in (('PreToolUse', pre_cmd), ('PostToolUse', post_cmd)):
                 'hooks': [{'type': 'command', 'command': cmd}]})
     hooks[event] = arr
 
+# Claude Code: auto-approve project-scoped .mcp.json servers (the operator-SIGNED papercusp MCP)
+# so a :3070 restart that re-mints .mcp.json never drops the session to "pending approval" and go
+# dark (2026-07-01 MCP auto-reconnect fix). Approval keys to the server NAME, not the URL, so a
+# URL re-mint is transparent — the client's own reconnect re-attaches with no human /mcp. Claude-
+# only key; skip codex homes.
+if path.rstrip('/').endswith('.claude/settings.json'):
+    cfg['enableAllProjectMcpServers'] = True
+
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)

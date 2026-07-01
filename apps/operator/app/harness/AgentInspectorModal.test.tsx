@@ -20,7 +20,7 @@ vi.mock('@papercusp/sse', () => ({
 
 import AgentInspectorModal from './AgentInspectorModal';
 
-function renderModal(open = true) {
+function renderModal(over: Partial<React.ComponentProps<typeof AgentInspectorModal>> = {}) {
   const onClose = vi.fn();
   const utils = render(
     <AgentInspectorModal
@@ -28,8 +28,9 @@ function renderModal(open = true) {
       phase="production"
       runId="run-abcdef0123456789-tail"
       role="worker"
-      open={open}
+      open
       onClose={onClose}
+      {...over}
     />,
   );
   return { ...utils, onClose };
