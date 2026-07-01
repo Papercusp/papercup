@@ -598,6 +598,8 @@ import './exec_sandbox/set-policy';
 import './capability/set-tier';
 // release-pipeline-resilience-2026-06-09 P-015 — the manual deploy lever + gate-unblock diagnosis:
 import './release/deploy';
+// WI-1320 follow-up — the manual GATE-run lever (fire the green-checkpoint suite on demand):
+import './release/checkpoint-run';
 
 // Engineer issues (bug/change): the agent-facing issues:* TOOL surface was RETIRED onto the
 // unified work_items:* surface (coordination-unification-2026-06-23 P-015 / D-011). The
