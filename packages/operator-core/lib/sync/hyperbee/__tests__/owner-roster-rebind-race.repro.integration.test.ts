@@ -79,6 +79,12 @@ import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discove
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
 import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
+// Brief 11 review follow-up (snapshot-ON variant): compact the owner log so the roster/content
+// ops are SUMMARIZED into a `__snapshot__` op, then prove the rekey forceReFold re-fold still
+// re-applies the dropped roster op through the seedCursorFromSnapshots seed path.
+import { produceLogSnapshot } from '../log-snapshot';
+import { findLatestSnapshotIndex } from '../read-merge';
+import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 
 const WORKSPACE_ID = 'ws-roster-rebind-race';
 
