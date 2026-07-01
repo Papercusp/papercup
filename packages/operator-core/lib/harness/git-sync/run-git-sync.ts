@@ -537,8 +537,8 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       }
       if (addRes.code !== 0) {
         return {
-          status: 'error',
-          message: `git add -A failed — the tree would strand uncommitted: ${(addRes.stderr || addRes.stdout).trim().slice(0, 300)}`,
+          committedLocal: false,
+          error: `git add -A failed — the tree would strand uncommitted: ${(addRes.stderr || addRes.stdout).trim().slice(0, 300)}`,
           oversized,
           contentErrors,
         };
@@ -549,18 +549,60 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       committedAny = true;
     } else if (!nothingToCommit(c)) {
       // P-002: a real commit failure (index.lock race, corrupt index, a hook) is NOT
-      // a merge conflict. If the still-dirty tree fell through to the merge below it
+      // a merge conflict. If the still-dirty tree fell through to the merge phase it
       // would abort as a phantom 'conflict' with zero conflicted files and dispatch a
       // merge-resolver at nothing, while the true failure (agents' work not landing)
       // stayed invisible. Surface it as an error.
       return {
-        status: 'error',
-        message: `commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
+        committedLocal: false,
+        error: `commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
         oversized,
         contentErrors,
       };
     }
     committedLocal = committedAny;
+  }
+  return { committedLocal, oversized, contentErrors };
+}
+
+/** JSON-serializable — checkpointed as the superproject `git-sync:push` step output. */
+type ReconcilePushResult =
+  | { status: 'nothing' }
+  | { status: 'synced'; pushed: boolean; merged: boolean }
+  | { status: 'conflict'; conflictedFiles: string[] }
+  | { status: 'error'; message: string };
+
+/**
+ * WI-1416: the RECONCILE+PUSH half of one repo's sync — resolve branch → fetch →
+ * merge (handles diverged/behind) → push (one non-FF retry). Replay-safe: a re-run
+ * re-fetches and an already-pushed HEAD is `Everything up-to-date`.
+ */
+async function reconcileAndPushOneRepo(
+  runGit: RunGit,
+  repoPath: string,
+  o: { remote: string; defaultBranch: string; doPush: boolean; log: (m: string) => void },
+  /** whether the commit half made a local commit this pass (drives the fetch-failure
+   *  classification + the final nothing/synced verdict). */
+  committedLocal: boolean,
+): Promise<ReconcilePushResult> {
+  const { remote, doPush } = o;
+  // P-004: a detached HEAD (a fresh `git submodule update` leaves submodules detached)
+  // must sync to the repo's OWN remote default branch (origin/HEAD → e.g. 'main'), NOT
+  // the superproject's configured branch — o.defaultBranch carries 'staging' for the
+  // live superproject, and using it for a detached submodule would push that submodule's
+  // commits to the wrong branch and fail every tick with no clear cause. origin/HEAD
+  // resolves the right branch; o.defaultBranch is only the last resort when even that is
+  // unknown (and is now passed per-repo: 'main' for submodules, cfg.branch for the super).
+  // P-011: HEAD's branch → the remote default (origin/HEAD) → the per-repo last-resort
+  // default. If we reach the last resort the branch is a GUESS — make it LOUD (a wrong
+  // guess would otherwise surface only as an opaque "push failed" escalation).
+  const resolvedBranch =
+    (await currentBranch(runGit, repoPath)) ?? (await remoteDefaultBranch(runGit, repoPath, remote));
+  const branch = resolvedBranch ?? o.defaultBranch;
+  if (!resolvedBranch) {
+    o.log(
+      `[git-sync] ${repoPath}: could not resolve a branch from HEAD or ${remote}/HEAD — falling back to '${o.defaultBranch}' (a wrong guess will fail the push; P-011)`,
+    );
   }
 
   const fetch = await runGit(['fetch', remote, branch], repoPath);
@@ -575,11 +617,11 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       const rl = await runGit(['rev-list', '--count', `${remote}/${branch}..HEAD`], repoPath);
       const aheadCount = rl.code === 0 ? Number.parseInt(rl.stdout.trim(), 10) || 0 : 1; // ref missing → assume unpushed
       if (committedLocal || aheadCount > 0) {
-        return { status: 'error', message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)`, oversized, contentErrors };
+        return { status: 'error', message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)` };
       }
-      return { status: 'nothing', oversized, contentErrors };
+      return { status: 'nothing' };
     }
-    return committedLocal ? { status: 'synced', pushed: false, merged: false, oversized, contentErrors } : { status: 'nothing', oversized, contentErrors };
+    return committedLocal ? { status: 'synced', pushed: false, merged: false } : { status: 'nothing' };
   }
 
   const merge = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
@@ -591,9 +633,9 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // merge-resolver can fix (e.g. "local changes would be overwritten", "not
     // something we can merge") — surface as error, don't dispatch a resolver at it.
     if (conflicted.length === 0) {
-      return { status: 'error', message: `merge failed (no conflicted paths): ${mergeOut.slice(0, 300)}`, oversized, contentErrors };
+      return { status: 'error', message: `merge failed (no conflicted paths): ${mergeOut.slice(0, 300)}` };
     }
-    return { status: 'conflict', conflictedFiles: conflicted, oversized, contentErrors };
+    return { status: 'conflict', conflictedFiles: conflicted };
   }
   let mergedNew = !/Already up to date/i.test(merge.stdout);
 
@@ -609,21 +651,40 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         const m2Out = `${m2.stdout}\n${m2.stderr}`.trim();
         await runGit(['merge', '--abort'], repoPath);
         if (conflicted.length === 0) {
-          return { status: 'error', message: `merge failed (no conflicted paths): ${m2Out.slice(0, 300)}`, oversized, contentErrors };
+          return { status: 'error', message: `merge failed (no conflicted paths): ${m2Out.slice(0, 300)}` };
         }
-        return { status: 'conflict', conflictedFiles: conflicted, oversized, contentErrors };
+        return { status: 'conflict', conflictedFiles: conflicted };
       }
       mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
       push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
     }
     if (push.code !== 0) {
-      return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}`, oversized, contentErrors };
+      return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
     }
     pushed = !/Everything up-to-date/i.test(`${push.stdout}\n${push.stderr}`);
   }
 
-  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing', oversized, contentErrors };
-  return { status: 'synced', pushed, merged: mergedNew, oversized, contentErrors };
+  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing' };
+  return { status: 'synced', pushed, merged: mergedNew };
+}
+
+/**
+ * Sync ONE repo (superproject or a single submodule) to origin: commit dirty →
+ * fetch → merge (reconciling a diverged/behind remote) → push. Never throws.
+ * Composed from the two halves above (each independently checkpointable for the
+ * superproject; submodules run both halves inside one phase step).
+ */
+async function syncOneRepo(
+  runGit: RunGit,
+  repoPath: string,
+  o: CommitRepoOpts & { remote: string; defaultBranch: string; doPush: boolean },
+): Promise<RepoSyncResult> {
+  const c = await commitOneRepo(runGit, repoPath, o);
+  if (c.error) {
+    return { status: 'error', message: c.error, oversized: c.oversized, contentErrors: c.contentErrors };
+  }
+  const r = await reconcileAndPushOneRepo(runGit, repoPath, o, c.committedLocal);
+  return { ...r, oversized: c.oversized, contentErrors: c.contentErrors };
 }
 
 /**
@@ -649,6 +710,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
   const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   const log = opts.log ?? (() => {});
+  // WI-1416: the checkpoint seam — each phase below runs under `step` so a durable
+  // caller records one operation_output per phase (see GitSyncStepRunner).
+  const step: GitSyncStepRunner = opts.step ?? (async (_name, fn) => fn());
   // EI-438 content guard seams (default registry + fs reader; injectable for tests).
   const contentDetectors = opts.contentDetectors ?? DEFAULT_CONTENT_DETECTORS;
   const readText = opts.readText ?? defaultReadText;
@@ -664,17 +728,23 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // single-commit behavior. Read ONCE; per-repo maps are derived below (super + each submodule).
   const roster = opts.loadRoster ? await opts.loadRoster() : [];
 
-  const conflicts: RepoConflict[] = [];
-  const errors: RepoError[] = [];
-  const pushed: string[] = [];
-  const merged: string[] = [];
-  const oversized: ScopedOversized[] = [];
-  const contentErrors: ScopedContentError[] = [];
-  let didSomething = false;
+  /** One phase's collected results — JSON-serializable so it checkpoints as a step output. */
+  interface PhaseCollect {
+    conflicts: RepoConflict[];
+    errors: RepoError[];
+    pushed: string[];
+    merged: string[];
+    oversized: ScopedOversized[];
+    contentErrors: ScopedContentError[];
+    didSomething: boolean;
+  }
+  const emptyPhase = (): PhaseCollect => ({
+    conflicts: [], errors: [], pushed: [], merged: [], oversized: [], contentErrors: [], didSomething: false,
+  });
 
-  const absorb = (scope: string, r: RepoSyncResult): void => {
+  const absorb = (into: PhaseCollect, scope: string, r: RepoSyncResult): void => {
     if (r.oversized.length > 0) {
-      oversized.push(...r.oversized.map((f) => ({ scope, ...f })));
+      into.oversized.push(...r.oversized.map((f) => ({ scope, ...f })));
       log(`[git-sync] ${scope}: EXCLUDED ${r.oversized.length} oversized file(s) from the auto-commit (${r.oversized.map((f) => `${f.path} ${(f.sizeBytes / 1048576).toFixed(1)}MB`).join(', ')}) — gitignore or remove them (${slug})`);
     }
     if (r.contentErrors.length > 0) {
@@ -682,49 +752,83 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       // content-fixer; the rest of the tree still committed. Like oversized, this does
       // NOT defer the superproject (the (sub)repo's commit WITHOUT the broken file IS on
       // its origin, so the parent gitlink resolves).
-      contentErrors.push(...r.contentErrors.map((c) => ({ scope, ...c })));
+      into.contentErrors.push(...r.contentErrors.map((c) => ({ scope, ...c })));
       log(`[git-sync] ${scope}: QUARANTINED ${r.contentErrors.length} broken file(s) from the auto-commit (${r.contentErrors.map((c) => `${c.file} [${c.detectorKey}]`).join(', ')}) — content-fixer dispatched (${slug})`);
     }
     if (r.status === 'conflict') {
-      conflicts.push({ scope, conflictedFiles: r.conflictedFiles });
+      into.conflicts.push({ scope, conflictedFiles: r.conflictedFiles });
       log(`[git-sync] ${scope}: merge conflict (${r.conflictedFiles.join(', ')}) — aborted clean, continuing (${slug})`);
     } else if (r.status === 'error') {
-      errors.push({ scope, message: r.message });
+      into.errors.push({ scope, message: r.message });
       log(`[git-sync] ${scope}: ${r.message} — continuing (${slug})`);
     } else if (r.status === 'synced') {
-      didSomething = true;
-      if (r.pushed) pushed.push(scope);
-      if (r.merged) merged.push(scope);
+      into.didSomething = true;
+      if (r.pushed) into.pushed.push(scope);
+      if (r.merged) into.merged.push(scope);
     }
   };
 
-  // Submodules first, deepest-first (dynamic recursive discovery). Each is independent —
-  // a conflict/error in one is collected; the rest still sync.
-  let subPaths: string[] = [];
-  if (doSub) {
-    subPaths = opts.submodulePaths
-      ? [...opts.submodulePaths].sort((a, b) => b.split('/').length - a.split('/').length)
-      : await discoverSubmodulesRecursive(runGit, repo);
-  }
-  for (const sub of subPaths) {
-    // P-004: a submodule's last-resort default is its own 'main' (resolved via
-    // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
-    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { ...repoO, defaultBranch: 'main', attribution: attributionMapForRepo(roster, sub, repo) }));
-  }
+  // PHASE `git-sync:submodules` — every submodule, deepest-first (dynamic recursive
+  // discovery). Each is independent: a conflict/error in one is collected; the rest
+  // still sync. Runs as ONE checkpointed step: the expensive multi-repo half of the
+  // pass, after which a resumed fire never re-commits/re-pushes the submodules.
+  const sub = await step('git-sync:submodules', async (): Promise<PhaseCollect> => {
+    const out = emptyPhase();
+    let subPaths: string[] = [];
+    if (doSub) {
+      subPaths = opts.submodulePaths
+        ? [...opts.submodulePaths].sort((a, b) => b.split('/').length - a.split('/').length)
+        : await discoverSubmodulesRecursive(runGit, repo);
+    }
+    for (const s of subPaths) {
+      // P-004: a submodule's last-resort default is its own 'main' (resolved via
+      // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
+      absorb(out, s, await syncOneRepo(runGit, join(repo, s), { ...repoO, defaultBranch: 'main', attribution: attributionMapForRepo(roster, s, repo) }));
+    }
+    return out;
+  });
 
   // Superproject last — ONLY when every submodule reconciled (else its bumped pointers
   // would reference unpushed submodule commits). One unreconciled submodule defers it.
   // (Oversized exclusions do NOT defer it: the submodule's commit — without the big
   // file — IS on its origin, so the parent gitlink resolves fine.)
-  const blocked = conflicts.length > 0 || errors.length > 0;
+  const supr = emptyPhase();
+  let superHeadSha: string | undefined;
+  const blocked = sub.conflicts.length > 0 || sub.errors.length > 0;
   if (!blocked) {
-    absorb('superproject', await syncOneRepo(runGit, repo, { ...repoO, defaultBranch: branch, attribution: attributionMapForRepo(roster, '', repo) }));
+    // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit
+    // (this commit is what bakes the bumped submodule pointers in).
+    const commitRes = await step('git-sync:pointer-bump', () =>
+      commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) }));
+    let repoResult: RepoSyncResult;
+    if (commitRes.error) {
+      repoResult = { status: 'error', message: commitRes.error, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+    } else {
+      // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
+      const pushRes = await step('git-sync:push', async () => ({
+        ...(await reconcileAndPushOneRepo(runGit, repo, { ...repoO, defaultBranch: branch }, commitRes.committedLocal)),
+        headSha: await headSha(runGit, repo),
+      }));
+      superHeadSha = pushRes.headSha;
+      repoResult = { ...pushRes, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+    }
+    absorb(supr, 'superproject', repoResult);
   } else {
-    log(`[git-sync] ${conflicts.length} conflict(s) + ${errors.length} error(s) in submodules — deferring superproject push (${slug})`);
+    log(`[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — deferring superproject push (${slug})`);
   }
+
+  const conflicts = [...sub.conflicts, ...supr.conflicts];
+  const errors = [...sub.errors, ...supr.errors];
+  const pushed = [...sub.pushed, ...supr.pushed];
+  const merged = [...sub.merged, ...supr.merged];
+  const oversized = [...sub.oversized, ...supr.oversized];
+  const contentErrors = [...sub.contentErrors, ...supr.contentErrors];
+  const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0) return { status: 'conflict', conflicts, errors, pushed, merged, oversized, contentErrors };
   if (errors.length > 0) return { status: 'error', errors, pushed, merged, oversized, contentErrors };
   if (!didSomething) return { status: 'nothing', oversized, contentErrors };
-  return { status: 'synced', headSha: await headSha(runGit, repo), pushed, merged, oversized, contentErrors };
+  // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
+  // step ran (blocked/commit-error passes return above). Fallback read for safety only.
+  return { status: 'synced', headSha: superHeadSha ?? (await headSha(runGit, repo)), pushed, merged, oversized, contentErrors };
 }

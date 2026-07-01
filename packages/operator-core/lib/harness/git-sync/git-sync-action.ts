@@ -36,6 +36,7 @@ import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
+import { runCheckpointedStep } from '../../dbos/checkpointed-step';
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
@@ -690,6 +691,11 @@ async function recordOutcome(
     // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
     consecutive_content_error_ticks: consecutiveContentErrorTicks,
     last_content_errors: outcome.contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`),
+    // WI-1416: a COMPLETED fire resets the consecutive-reap counter the executor
+    // reaper increments on each cancel+requeue — so `reaped_count` reads as "reaps
+    // since the last completed fire" (the git-sync-stall-watchdog's persistent-reap
+    // signal), never a forever-growing total.
+    reaped_count: 0,
     ...(outcome.status === 'synced' ? { head_sha: outcome.headSha } : {}),
   });
 }
@@ -910,26 +916,55 @@ async function computeConflictAuthorship(
   }
 }
 
-/** The registered `system:git-sync` handler. */
+/**
+ * The registered `system:git-sync` handler.
+ *
+ * WI-1416 (bg-host-freeze-eventloop-stall P-006): registered with `ownSteps`, so the
+ * routine engine runs this at the WORKFLOW layer and the phases below checkpoint as
+ * DBOS sub-steps (`git-sync:eligibility` → `git-sync:submodules` →
+ * `git-sync:pointer-bump` → `git-sync:push` → `git-sync:record`). Before, the whole
+ * handler was ONE opaque step recording no operation_output until it fully completed —
+ * on the big tree that routinely takes >90s, so the executor reaper's orphan heuristic
+ * cancelled+requeued every fire mid-flight (restart-from-scratch loop, ~1 commit/40min,
+ * WI-1415). Checkpointed, the reaper sees genuine progress within seconds, and a
+ * stalled/killed fire RESUMES from its last checkpoint. Every git phase is replay-safe
+ * (see GitSyncStepRunner in run-git-sync.ts): a re-run commit is `nothing to commit`,
+ * a re-run push is `Everything up-to-date` — no double-commit.
+ */
 async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   const { installSlug: slug, workspaceId } = ctx;
   const { config: cfg, extraLockResources } = configFromTrigger(ctx.triggerConfig);
   const cd = workspaceId || '*';
 
-  // P-008 runtime gate: ineligible rows no-op (logged + recorded), never escalate.
-  const gate = await gitSyncRuntimeGate(slug);
+  // STEP `git-sync:eligibility` — checkpoints within seconds of the fire starting, so
+  // even a fire stalled in the lock/git phases below already shows function_id > 0.
+  // Also stamps the `fire_started_at` breadcrumb: paired with `reaped_count` (stamped
+  // by the executor reaper on each cancel, cleared by recordOutcome on completion) it
+  // makes a persistent reap-loop a durable, queryable signal for the
+  // git-sync-stall-watchdog. P-008 runtime gate: ineligible rows no-op (logged +
+  // recorded), never escalate.
+  const gate = await runCheckpointedStep('git-sync:eligibility', async (): Promise<GitSyncEligibility> => {
+    await patchRoutineMetadata(slug, { fire_started_at: Date.now() });
+    const g = await gitSyncRuntimeGate(slug);
+    if (!g.eligible) {
+      await patchRoutineMetadata(slug, {
+        last_status: 'skipped',
+        last_skip_reason: g.reason,
+        last_skipped_at: Date.now(),
+      });
+    }
+    return g;
+  });
   if (!gate.eligible) {
     console.log(`[git-sync] ${slug}: ineligible (${gate.reason}) — skipping this tick`);
-    await patchRoutineMetadata(slug, {
-      last_status: 'skipped',
-      last_skip_reason: gate.reason,
-      last_skipped_at: Date.now(),
-    });
     return;
   }
 
   // P-006: per-slug resource first (auto-registered), then the routine's extras
   // (papercup: legacy 'git-sync' + 'libs-papercusp-submodule' — the back-off protocol).
+  // Locks stay at the WORKFLOW layer — deliberately NOT a checkpointed step, so a
+  // resumed/replayed fire RE-acquires them (a same-owner exclusive acquire refreshes
+  // the TTL) instead of trusting a checkpoint whose lease may have expired mid-stall.
   const resources = [...new Set([gitSyncResourceName(slug), ...extraLockResources])];
   const acquired: string[] = [];
   const lock = await acquireLocks(cd, slug, resources, acquired);

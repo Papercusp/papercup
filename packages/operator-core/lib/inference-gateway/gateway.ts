@@ -995,6 +995,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // ChatGPT-subscription bridge (codex-cli-bridge.ts): CLI-served codex accounts + the runner.
   const codexCliAccounts = () => deps.codexCliAccounts?.() ?? [];
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
+  const isCodexCliAccountId = (accountId: string) => codexCliAccounts().some((a) => a.accountId === accountId);
   const codexQueue = new PriorityAdmissionQueue({
     maxConcurrent: codexConcurrency,
     agingIntervalMs: deps.agingIntervalMs,
@@ -3326,7 +3327,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // synthesized locally in proxyOpenAi, so it must not wait behind the shared
     // LLM admission queue; an Anthropic storm can otherwise starve metadata and
     // make healthy Codex agents fail before their first token.
-    if (req.method === 'GET' && url.startsWith('/v1/models') && providerForGatewayRequest(url, req.headers, providerAdapters).id === 'codex') {
+    if (req.method === 'GET' && url.startsWith('/v1/models') && providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id === 'codex') {
       void proxyOpenAi(req, res, url).catch((e) => {
         codexUpstreamErrors++;
         log('error', `codex models handler crashed: ${(e as Error).message}`);
@@ -3345,7 +3346,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // is unambiguously Codex; `/v1/models` is shared, so the request-aware
     // router uses a Codex account pin to keep Codex model discovery off the
     // Anthropic proxy while preserving Claude model probes.
-    const providerId = providerForGatewayRequest(url, req.headers, providerAdapters).id;
+    const providerId = providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id;
     const handler = providerId === 'codex' ? proxyOpenAi : proxy;
     const admissionQueue = providerId === 'codex' ? codexQueue : queue;
     admissionQueue.run(pri, () => handler(req, res, url), tier !== undefined ? { tier } : undefined).catch((e) => {

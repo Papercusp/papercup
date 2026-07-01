@@ -87,6 +87,10 @@ export function providerForGatewayRequest(
   path: string,
   headers: GatewayRequestHeaders,
   adapters: GatewayProviderAdapters,
+  /** Extra codex account ids OUTSIDE the bearer pool — the ChatGPT-subscription
+   *  CLI accounts (codex-cli-bridge.ts) — so a `/v1/models` probe pinned to one
+   *  still routes to the codex adapter. */
+  isExtraCodexAccount?: (accountId: string) => boolean,
 ): GatewayProviderAdapter {
   const pathProvider = providerForGatewayPath(path, adapters);
   if (pathProvider.id === 'codex') return pathProvider;
@@ -96,7 +100,9 @@ export function providerForGatewayRequest(
   // account when one is present instead of globally stealing the path.
   if (path.startsWith('/v1/models')) {
     const pinnedAccount = headerValue(headers, ACCOUNT_HEADER);
-    if (pinnedAccount && adapters.codex.pool?.select(pinnedAccount)) return adapters.codex;
+    if (pinnedAccount && (adapters.codex.pool?.select(pinnedAccount) || isExtraCodexAccount?.(pinnedAccount))) {
+      return adapters.codex;
+    }
   }
 
   return pathProvider;

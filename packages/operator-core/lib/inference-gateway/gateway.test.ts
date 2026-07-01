@@ -2646,6 +2646,13 @@ test('[codex-cli] bearer pool keeps PRIORITY when both exist and no pin names th
     },
     {
       codexPool: createFailoverPool([bearer]),
+      // The bearer path egresses via the codex adapter's OWN upstream (default
+      // api.openai.com) — intercept it (same pattern as the codex failover test).
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ servedBy: 'bearer' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })) as unknown as typeof fetch,
       codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
       codexCliRun: async () => {
         cliRuns++;
