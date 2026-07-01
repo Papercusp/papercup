@@ -52,6 +52,15 @@ describe('memberLaunchCommand', () => {
     expect(cmd).toContain('--add-dir=/b');
   });
 
+  it('threads --context-size=<variant> (full|trimmed) for every backend', () => {
+    expect(
+      memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', contextSize: 'trimmed' }),
+    ).toContain('--context-size=trimmed');
+    expect(
+      memberLaunchCommand({ fleetSlug: 'f', agent: 'omp', harness: 'h', plan: 'p', contextSize: 'full' }),
+    ).toContain('--context-size=full');
+  });
+
   it('shell-quotes a launch-context path with spaces (injection-safe)', () => {
     const cmd = memberLaunchCommand({
       fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', launchContext: '/home/x/brief one.md',
