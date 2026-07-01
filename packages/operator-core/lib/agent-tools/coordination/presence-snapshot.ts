@@ -138,6 +138,22 @@ export function matchesOwner(r: RosterRow, needle: string): boolean {
 }
 
 /**
+ * PURE selection of the RETURNED roster from the full enriched set (extracted so
+ * the DEFECT-1 contract unit-tests without PG):
+ *   - `owner` set → the matched row(s), INCLUDING an `ended` one (the targeted
+ *     "inspect / wake one dead agent" lookup that replaced `include_stale`).
+ *   - `owner` absent → every ACTIONABLE row (live | parked | recorded | a
+ *     federated/unknown peer), NEVER an `ended` row (the payload-ballooning dead
+ *     pile). Sorted by ownerId so the emitted list is byte-stable (D-006).
+ */
+export function selectRosterRows(rows: RosterRow[], owner?: string): RosterRow[] {
+  const picked = owner
+    ? rows.filter((r) => matchesOwner(r, owner))
+    : rows.filter((r) => r.sessionState !== 'ended');
+  return picked.sort((a, b) => String(a.ownerId).localeCompare(String(b.ownerId)));
+}
+
+/**
  * Assemble the roster snapshot for a resolved scope. The federated roster
  * (cross-machine peers) is merged in (best-effort — [] on a single box). The
  * GC sweep runs concurrently so it adds no latency and never breaks the read.
@@ -290,11 +306,7 @@ export async function assemblePresenceSnapshot(
   //     ballooned the payload; its count still surfaces in summary.byState.ended).
   // Ordered by ownerId so the emitted list stays byte-stable (D-006).
   const fullEnriched = [...activeEnriched, ...staleEnriched];
-  const selected = (
-    opts.owner
-      ? fullEnriched.filter((r) => matchesOwner(r, opts.owner!))
-      : fullEnriched.filter((r) => r.sessionState !== 'ended')
-  ).sort((a, b) => String(a.ownerId).localeCompare(String(b.ownerId)));
+  const selected = selectRosterRows(fullEnriched, opts.owner);
   let activeRows = selected.map(toStableRosterRow);
 
   // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the

@@ -10,7 +10,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const setHiveStarted = vi.fn();
-vi.mock('../../hive/started', () => ({ setHiveStarted: (...a: unknown[]) => setHiveStarted(...a) }));
+const setHivePlacementStarted = vi.fn();
+const anyHivePlacementStarted = vi.fn();
+vi.mock('../../hive/started', () => ({
+  setHiveStarted: (...a: unknown[]) => setHiveStarted(...a),
+  setHivePlacementStarted: (...a: unknown[]) => setHivePlacementStarted(...a),
+  anyHivePlacementStarted: (...a: unknown[]) => anyHivePlacementStarted(...a),
+}));
 
 const armDefaults = vi.fn();
 vi.mock('../../hive/wake-defaults', () => ({
@@ -68,6 +74,8 @@ beforeEach(() => {
   beeRows = [];
   armDefaults.mockResolvedValue({ rules: 3, added: 0 });
   requestUrgentHiveWake.mockResolvedValue({ fired: true, coalesced: false });
+  // Default: pausing THIS hive leaves none started → the workspace loop idles.
+  anyHivePlacementStarted.mockResolvedValue(false);
 });
 
 describe('hive:start (P-005 / D-006)', () => {
