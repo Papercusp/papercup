@@ -24,6 +24,11 @@ export default defineTool({
   guidance: {
     when: 'Soft-hide a message you\'ve handled — "ignore that note", "dismiss the comment on X". Reversible (status→archived, not deleted).',
     notWhen: 'For deleting a message, this isn\'t it — dismiss is reversible. For archiving a CHAT (multi-turn), use `agent_chats:archive`.',
+    seeAlso: [
+      'messages:inbox (the durable inbox)',
+      'messages:send (send a durable note)',
+      'agent_chats:archive (archive a multi-turn CHAT instead)',
+    ],
   },
   capability: 'messages:write',
   args: z.object({

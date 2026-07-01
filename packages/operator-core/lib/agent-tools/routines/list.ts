@@ -20,6 +20,10 @@ export default defineTool({
     when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule).',
     notWhen: 'To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status.',
     chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug).',
+    seeAlso: [
+      'routines:set (retune / pause a routine)',
+      'autoloop:status (a harness blueprint autoloop instead)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

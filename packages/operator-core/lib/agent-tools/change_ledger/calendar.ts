@@ -21,6 +21,9 @@ export default defineTool({
     when: 'Before starting/scheduling a prompt-layer mutator (gym autoloop bring-up, an ablation run) — is another mutation class already live? Also the EKG\'s "what could explain this shift window" first read.',
     notWhen: 'You want the individual mutation rows — change_ledger:list.',
     chaining: 'change_ledger:calendar → on overlap, serialize with the other class\'s owner → change_ledger:list { mutationClass } for the specific rows.',
+    seeAlso: [
+      'change_ledger:list (the individual mutation rows)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

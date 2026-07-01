@@ -31,6 +31,10 @@ export default defineTool({
     when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), or patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
     notWhen: 'For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. (These routine rows are their own store; they do not appear in config:list-overrides.)',
     chaining: 'routines:list first to get the exact name + installSlug; routines:list after to confirm the change.',
+    seeAlso: [
+      'routines:list (get the exact name + installSlug first)',
+      'autoloop:control (a harness blueprint autoloop instead)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

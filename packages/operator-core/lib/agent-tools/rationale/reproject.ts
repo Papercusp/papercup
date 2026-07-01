@@ -37,6 +37,9 @@ export default defineTool({
   guidance: {
     when: 'To backfill the rationale index (kind:"all") on a fresh DB, or force-resync one source after an out-of-band change. Routine maintenance is automatic.',
     notWhen: 'To READ the projection — that is rationale:feed.',
+    seeAlso: [
+      'rationale:feed (READ the projection)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

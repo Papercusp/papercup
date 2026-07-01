@@ -59,6 +59,10 @@ export default defineTool({
   guidance: {
     when: 'Almost never call this by hand — the per-CLI hooks (posttooluse-activity-report.sh / the OMP coord-hook port) call it automatically to mirror each worker\'s native tool stream into the fleet view. Call directly only to inject a synthetic activity marker (e.g. a custom lifecycle note).',
     notWhen: 'To READ the activity stream use `activity:recent` (or the /api/activity/stream SSE). To coordinate with peers use `coord:send`. To drive a pui use `tui:dispatch`.',
+    seeAlso: [
+      'activity:recent (READ the activity stream)',
+      'coord:send (coordinate with peers)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

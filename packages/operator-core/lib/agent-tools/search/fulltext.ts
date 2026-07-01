@@ -38,6 +38,11 @@ export default defineTool({
       'For STRUCTURED queries on harness state, features, tasks, issues, or messages — use the dedicated tools (harness:status, tasks:list, etc). They are faster and more precise when the schema matches the query. For CODE recall, use `gitnexus:query`. For tasks/goals/projects text, use `search:query`.',
     chaining:
       'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a returned hit. The result `excerpt` is just the first 200 chars for ranking display.',
+    seeAlso: [
+      'search:semantic (embedding-based recall)',
+      'search:query (structured tasks / goals / projects rows)',
+      'gitnexus:query (code recall)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],

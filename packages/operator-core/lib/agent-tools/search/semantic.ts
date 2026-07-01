@@ -42,6 +42,10 @@ export default defineTool({
       'When the user knows the exact keyword they want. `search:fulltext` is faster + cheaper there (no embedding API call). For structured queries (tasks/goals/projects rows by title), use `search:query`.',
     chaining:
       'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a hit.',
+    seeAlso: [
+      'search:fulltext (faster + cheaper keyword recall)',
+      'search:query (structured rows by title)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],

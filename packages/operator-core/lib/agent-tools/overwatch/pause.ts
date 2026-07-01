@@ -33,6 +33,11 @@ export default defineTool({
     notWhen:
       'To pause the Queen / colony — hive:pause (distinct loop). To pause one plan — plans:pause. Pausing does not kill a running overwatch turn; it finishes and nothing re-arms.',
     chaining: 'overwatch:pause { drain:true } for the harder stop → overwatch:start to resume.',
+    seeAlso: [
+      'overwatch:start (resume the overwatch)',
+      'hive:pause (pause the Queen / colony — distinct loop)',
+      'plans:pause (pause one plan)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

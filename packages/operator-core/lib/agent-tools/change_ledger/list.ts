@@ -20,6 +20,10 @@ export default defineTool({
     when: 'Attributing a behavior shift: "what changed in the prompt layer recently?" — after a fleet anomaly, before/after a gym promotion, or when auditing who mutated which role prompt and when.',
     notWhen: 'You want the overlap advisory / per-class liveness rollup — change_ledger:calendar. You want prompt CONTENT — read the prompt source or harness_prompt_overrides.',
     chaining: 'change_ledger:calendar (which classes are live) → change_ledger:list { mutationClass } for the rows → the diff_ref (gym proposal id / git sha) for the change content.',
+    seeAlso: [
+      'change_ledger:calendar (per-class liveness / overlap advisory)',
+      'decision_ledger:list (Queen auto-decide vs gate rows)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

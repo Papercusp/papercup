@@ -40,6 +40,10 @@ export default defineTool({
       'To start the Queen / colony — hive:start (distinct loop). To start one plan — plans:start. The overwatch nudges + observes; it never places work.',
     chaining:
       'overwatch:pause to suspend. The papercusp-overwatch flag (/admin/features) must be ON for the loop to actually run (B-04 gate).',
+    seeAlso: [
+      'overwatch:pause (suspend the overwatch)',
+      'hive:start (start the Queen / colony — distinct loop)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

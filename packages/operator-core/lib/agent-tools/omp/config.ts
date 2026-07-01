@@ -20,6 +20,10 @@ export default defineTool({
   guidance: {
     when: 'Read or set an OMP CLI config key (model, paths, env tweaks). Used during installation / first-run flows.',
     notWhen: 'For OPERATOR runtime preferences (voice, scanner), use `operator:preferences`. omp:config is the CLI tool\'s config.',
+    seeAlso: [
+      'operator:preferences (OPERATOR runtime prefs, not the CLI)',
+      'omp:sessions (OMP session history)',
+    ],
   },
   description: 'Read or update the local omp CLI config tree (get / set { key, value } / unset { key }).',
   capability: 'omp:write',

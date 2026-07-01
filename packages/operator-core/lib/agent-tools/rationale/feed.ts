@@ -23,6 +23,11 @@ export default defineTool({
     notWhen:
       'You want the cross-object work-stream / status of an area (topics:feed), the list of topics (topics:list), or messages waiting for you (coord:inbox).',
     chaining: 'topics:list → rationale:feed { topic } → plans:get / docs:get on an entry’s `ref` for the full text.',
+    seeAlso: [
+      'topics:list (list topics to feed from)',
+      'topics:feed (the cross-object work-stream of an area)',
+      'rationale:reproject (rebuild the projection)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

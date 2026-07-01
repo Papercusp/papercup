@@ -28,6 +28,10 @@ export default defineTool({
     when: 'User says "pause the autoloop", "turn autopilot back on", or a circuit-open harness needs its error counter reset after a fix. Per-harness, durable.',
     notWhen: 'For PAUSING all of the operator (silence-mode-style), use the operator-pause flag — autoloop is per-harness. For pausing git-sync or another non-schedule routine, flip that routine directly.',
     chaining: 'autoloop:status first to see the schedule routines + circuit state; reset-errors after fixing whatever made the fires fail.',
+    seeAlso: [
+      'autoloop:status (see schedule routines + circuit state first)',
+      'operator:paused (pause ALL of the operator, not just one harness)',
+    ],
   },
   description:
     "Pause/resume a harness's blueprint-scheduled autoloop (flips its bp-schedule-* routine rows — durable) or reset its error circuit (zeroes consecutive_errors so backoff stops withholding fires).",

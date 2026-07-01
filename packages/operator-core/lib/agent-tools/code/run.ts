@@ -53,6 +53,10 @@ export default defineTool({
       'write the script → code:run { dryRun:true } → inspect plannedMutations → code:run. ' +
       '(Optional pre-check: code:tools { namespaces } for typed signatures — NOT required, a bad ' +
       'name returns them inline.)',
+    seeAlso: [
+      'code:tools (typed signatures for a namespace — optional pre-check)',
+      'recipes:run (run a saved composed recipe instead)',
+    ],
   },
   // Role-gated tools gate on agentRoles (not capability); capability sets tier + write-effect.
   // code:run is as powerful as the shell capability — it can call any of the agent's write tools.

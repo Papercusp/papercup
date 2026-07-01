@@ -41,6 +41,9 @@ export default defineTool({
       'rather just write the code:run script and let a bad name return signatures inline. This is ' +
       'a lookup — it executes nothing.',
     chaining: 'OPTIONAL: code:tools {} → pick namespaces → code:tools { namespaces } → code:run { script }',
+    seeAlso: [
+      'code:run (write + run the script)',
+    ],
   },
   // Read-only signature rendering over the tool catalog — same capability as agent_tools:list (its
   // code-mode sibling). The `:read` suffix infers effect:'read' (never dry-run-gated); agentRoles

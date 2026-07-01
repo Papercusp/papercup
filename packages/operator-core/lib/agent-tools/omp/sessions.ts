@@ -29,6 +29,10 @@ export default defineTool({
     when: `Search or inspect local OMP session history. Use this when a successor agent needs context from an earlier compacted/handed-off session, when debugging what an overnight OMP agent did, or when answering "what happened in that session?"`,
     notWhen: `For Papercusp harness runs stored in Postgres, use the harness/agent_chats/plans tools first. omp:sessions is specifically the local OMP JSONL transcript archive on this workstation.`,
     chaining: `Use op='list' to find a session id, op='search' to locate decisions or errors, then op='state' for compact structured state or op='get' for bounded raw entries.`,
+    seeAlso: [
+      'dev:omp_session (inspect a live OMP session state)',
+      'omp:config (OMP CLI config)',
+    ],
   },
   description: 'List, search, read, and summarize local OMP session JSONL files.',
   capability: 'omp:read',

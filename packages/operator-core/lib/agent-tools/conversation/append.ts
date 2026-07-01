@@ -22,6 +22,10 @@ export default defineTool({
   guidance: {
     when: `You (the voice-first Sentinel) just heard the user or spoke a reply — append BOTH sides so the webview chat reflects the live conversation: the user's words as role:'user' (source 'voice_stt'), your spoken reply as role:'assistant' (source 'voice_tts').`,
     notWhen: `Don't append internal tool noise, code, or unspoken scratch — only the user-visible conversation turns.`,
+    seeAlso: [
+      'conversation:recent (read the shared thread first)',
+      'voice:say (speak the reply aloud)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['sentinel', 'operator'],

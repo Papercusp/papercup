@@ -51,6 +51,10 @@ export default defineTool({
     when: "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the queen, a UI 'run this on that agent' action, a queen placing a precise command (not prose) onto a bee.",
     notWhen:
       'Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue.',
+    seeAlso: [
+      'coord:send (free-form coordination prose)',
+      'coord:wake-queue (review what a manual-mode target staged)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

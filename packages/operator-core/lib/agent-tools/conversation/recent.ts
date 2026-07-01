@@ -18,6 +18,9 @@ export default defineTool({
   guidance: {
     when: `You want the recent context of the shared app conversation — what the user typed or said in the webview chat — e.g. at the start of a voice exchange to continue where the app left off.`,
     notWhen: `For YOUR own scrollback just read your TUI; this is the SHARED webview thread, not your session history.`,
+    seeAlso: [
+      'conversation:append (append a turn to the thread)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['sentinel', 'operator'],

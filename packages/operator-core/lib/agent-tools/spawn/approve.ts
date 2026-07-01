@@ -22,6 +22,10 @@ export default defineTool({
   guidance: {
     when: 'You are the brain and a new_subagent:request is pending; you have judged whether the spawn is worth it given open work + the live spawn headroom.',
     notWhen: 'You are a pipeline/worker agent — you cannot approve spawns (the gate denies you). To ASK for a spawn, use new_subagent:request.',
+    seeAlso: [
+      'new_subagent:request (ASK for a spawn — the counterpart)',
+      'fleet:spawn (spawn after approval)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

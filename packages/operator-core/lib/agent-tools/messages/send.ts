@@ -36,6 +36,11 @@ export default defineTool({
     when: 'Forward a DURABLE note/directive to another agent (operator → "tell the worker to retry"). Feature-scoped: pass `to_feature_id` (+`from_feature_id`) to post on a feature\'s pipeline thread.',
     notWhen: 'A transient agent↔agent ping/handoff → `coord:send` (the live coord inbox); messages:send is the DURABLE supervisor→agent path (supervisor_notes), a SEPARATE inbox — don\'t cross-wire (coordination-unification-2026-06-23 P-010). Dispatch WORK via a `<spawn>` tag, not a message.',
     chaining: 'Read replies with `messages:inbox`; soft-hide a handled one with `messages:dismiss`.',
+    seeAlso: [
+      'coord:send (transient agent↔agent ping / handoff)',
+      'messages:inbox (read replies)',
+      'messages:dismiss (soft-hide a handled one)',
+    ],
   },
   args: z.object({
     to: z.array(z.string().min(1)).min(1),

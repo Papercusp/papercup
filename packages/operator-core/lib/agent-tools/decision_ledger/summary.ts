@@ -20,6 +20,10 @@ export default defineTool({
     when: "Getting oriented: 'how much is the Queen auto-deciding vs gating?', 'which categories see the most gated actions?', 'what's the disposition mix this week?'. Then decision_ledger:list for the rows.",
     notWhen: 'You want the actual rows — decision_ledger:list. Live ceilings — autonomy:policy_get.',
     chaining: 'decision_ledger:summary → decision_ledger:list { the posture/category that stands out }.',
+    seeAlso: [
+      'decision_ledger:list (the actual rows)',
+      'autonomy:policy_get (live ceilings)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

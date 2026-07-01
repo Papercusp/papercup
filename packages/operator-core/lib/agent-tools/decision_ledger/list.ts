@@ -24,6 +24,11 @@ export default defineTool({
       'A roll-up of counts by posture/category — decision_ledger:summary. Prompt/rule mutations specifically — change_ledger:list. The live policy ceilings — autonomy:policy_get.',
     chaining:
       'decision_ledger:summary (the shape) → decision_ledger:list { layer, category, posture } for the rows → a row.links (runId/spawnId/itemRef) to drill to the transcript / item.',
+    seeAlso: [
+      'decision_ledger:summary (the roll-up shape)',
+      'autonomy:policy_get (the live policy ceilings)',
+      'change_ledger:list (prompt / rule mutations specifically)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,
