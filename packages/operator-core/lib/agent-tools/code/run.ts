@@ -129,7 +129,9 @@ export default defineTool({
     // similarRecipes is ADVISORY/SOFT: the run STILL ran + STILL captured. It tells the agent
     // "recipes X/Y already do this — next time recipes:run(X) instead of re-authoring".
     let similarRecipes: SimilarRecipe[] = [];
-    if (result.ok && !(args.dryRun ?? false)) {
+    // Don't SAVE a recipe that references an unknown tool (F8): the run may have limped through by
+    // isolating the bad ref, but a captured recipe with a known-bad name is a poor thing to reuse.
+    if (result.ok && !(args.dryRun ?? false) && !result.unknownRefs?.length) {
       similarRecipes = await maybeCaptureRecipe(args, ctx, all, allowed);
     }
 
@@ -139,8 +141,10 @@ export default defineTool({
     // verb or wrong namespace) hand back the typed signatures for the namespaces it touched IN THIS
     // SAME RESULT, so you fix the name + re-run rather than paying a separate code:tools round-trip.
     // dryRun safety is untouched: write-effect mutations still require the dryRun preview as before.
+    // Surface the self-service fix whenever the script referenced an unknown tool — even if the run
+    // limped through by isolating it (F8): the agent still wants the correct name for next time.
     const facadeHelp =
-      !result.ok && result.unknownRefs?.length
+      result.unknownRefs?.length
         ? buildFacadeHelp(result.unknownRefs, all, allowed)
         : undefined;
 
