@@ -39,6 +39,10 @@ export default defineTool({
       'Revoking your OWN device — use `substrate:revoke_self_device` instead. For harness scope, not when the token lacks GitHub admin on the shared repo. For Hive scope, not when this Swarm does not hold the Hive private key (only the owning Swarm may revoke Hive-wide).',
     chaining:
       "Resolve the contributor's githubUserId from the Contributors tab, `dev:dogfood_substrate_status`, `harness:membership`, or `hive:get` first — githubUserId is the stable numeric GitHub user id, not the login.",
+    seeAlso: [
+      'substrate:revoke_self_device (revoke your OWN device)',
+      'dev:dogfood_substrate_status (resolve the contributor githubUserId)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'debugger', 'architect'],

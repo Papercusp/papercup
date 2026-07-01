@@ -21,6 +21,9 @@ export default defineTool({
     when: 'The owner (or the Storage settings page) deliberately trims a local-only category — telemetry tables, the drained federation outbox, or on-disk session/scratch/flight-recorder stores.',
     notWhen: 'To read sizes use storage:usage. Federated categories (plans/features/issues/coord) are refused — trimming would change what peers see.',
     chaining: 'storage:usage → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }.',
+    seeAlso: [
+      'storage:usage (read sizes before trimming)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],

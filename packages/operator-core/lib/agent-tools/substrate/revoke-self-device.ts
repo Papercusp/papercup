@@ -28,6 +28,10 @@ export default defineTool({
     notWhen: "Revoking ANOTHER contributor's key / kicking out a bad actor — not supported (self-revocation only, v2 for owner-revocation).",
     chaining:
       "Resolve the device pubkey from the contributor's own device_attestations first (e.g. via dev:dogfood_substrate_status or the Contributors tab).",
+    seeAlso: [
+      'substrate:revoke_contributor (revoke ANOTHER contributor — owner scope)',
+      'dev:dogfood_substrate_status (resolve the device pubkey)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'debugger', 'architect'],

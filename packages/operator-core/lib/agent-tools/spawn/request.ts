@@ -25,6 +25,11 @@ export default defineTool({
       'You ARE the brain/operator (you allocate directly) OR this is already-decided pipeline work (the pipeline admits its own role progression) OR a human-initiated psu session (no request needed).',
     chaining:
       'new_subagent:request → events:await { event: <await_event> } (end your turn) → on wake, if choice="approve", fleet:spawn { role, harness, feature }.',
+    seeAlso: [
+      'new_subagent:approve (the brain approves the request)',
+      'fleet:spawn (spawn once approved)',
+      'events:await (wait for the approval decision)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

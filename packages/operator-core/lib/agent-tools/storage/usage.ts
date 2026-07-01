@@ -17,6 +17,9 @@ export default defineTool({
     when: 'Inspecting what is consuming local storage, or before a trim, to see per-category size + the age distribution and which categories are federated (read-only).',
     notWhen: 'To actually delete, use storage:prune (with dryRun first). This never deletes.',
     chaining: 'storage:usage → storage:prune { category, olderThanDays, dryRun: true } → storage:prune { category, olderThanDays }.',
+    seeAlso: [
+      'storage:prune (actually delete a category — dryRun first)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],
