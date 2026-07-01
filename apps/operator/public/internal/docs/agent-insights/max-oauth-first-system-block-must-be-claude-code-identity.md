@@ -1,7 +1,35 @@
 # Max OAuth 429s: the first system block must be EXACTLY the Claude Code identity
 URL: /internal/docs/agent-insights/max-oauth-first-system-block-must-be-claude-code-identity
 
-The precise mechanism behind 'raw-OAuth 429s but the claude CLI works': the oauth-2025-04-20 beta grants the normal rate limiter ONLY when the first system block is exactly 'You are Claude Code, Anthropic's official CLI for Claude.' as its OWN block. Concatenate it into a larger system string (or omit it) and the request is shunted to a strict limiter that returns a BOGUS rate_limit_error (body: 'Error', no anthropic-ratelimit-* headers) even at 0.0 budget utilization. Fix: send system as an array with the CC identity as its own first block.
+>
+
+> **STATUS 2026-06-30 — the gateway/caller-level fix flagged below as an open follow-up is now SHIPPED**,
+> and this exact trap recurred (and cost a full session) because the autonomous loop's in-process Scout
+> path was never framed. `chat-stream.ts` `buildSystemParam()` now ALWAYS prepends the CC identity as the
+> first `system` block, and `statelessAgentChat` always sets `params.system` — so every `anthropic-direct`
+> caller (Scout ideators, gym judge, sim-user, transfer, memory) is framed automatically. Re-confirmed
+> live: opus **200 in 2.6s** WITH the block vs **20s timeout / bogus 429** WITHOUT, and the Scout then ran
+> with `ideas_generated=3`. **If you add a NEW in-process LLM path that bypasses `buildSystemParam`, you
+> must prepend `CLAUDE_CODE_IDENTIFIER` yourself or it WILL opus-429.**
+
+> **⚠ LOOK-ALIKE — is it framing, or a Cloudflare per-IP EGRESS throttle? They produce a NEARLY IDENTICAL
+> header-less 429** (`{"type":"rate_limit_error","message":"Error"}`, `x-should-retry:true`, NO
+> `anthropic-ratelimit-*`, NO `retry-after`, low utilization). Landing on the wrong one is why gateway
+> fixers keep failing (this exact confusion recurred 2026-06-30). The reliable discriminator is
+> **behavioral, NOT the provenance headers** — both can carry `server=cloudflare`/`cf-ray` (Anthropic sits
+> behind Cloudflare) and both can carry a `request-id`, so the tags alone do not decide it:
+>
+> |                             | **Framing** (missing CC block — THIS doc)                                 | **Cloudflare per-IP edge throttle** ([Fault #6](/internal/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity))                                                     |
+> | --------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+> | Failure rate                | **deterministic, \~100%** of that caller's requests, uniform over time    | **bursty**, low overall (e.g. 5/491 ≈ 1%), clusters under concurrency, escalates a consecutive-count circuit                                                                           |
+> | Load / egress-IP dependent? | **No** — fires at 1 request, 0 load, on any IP                            | **Yes** — per-IP; rotating to a cool IP or dropping opus concurrency helps                                                                                                             |
+> | Who hits it                 | raw-SDK / litellm / **un-framed** in-process callers                      | **any** caller incl. the framed `claude`-CLI / psu bees, under concentrated load                                                                                                       |
+> | Decisive test               | one **framed** vs one **un-framed** request → framed 200s, un-framed 429s | the SAME framed request 200s when slow / 429s under burst; failure rate tracks per-IP volume                                                                                           |
+> | Fix                         | frame the first `system` block (below)                                    | egress pool / rotate-cool the IP / more distinct egress IPs / less opus concurrency ([per-account egress IPs](/internal/docs/agent-insights/inference-gateway-per-account-egress-ips)) |
+>
+> **Rule of thumb: \~100% and instant → framing. A few % and bursty under load → the edge/egress throttle.**
+> A one-account whole-account pause (`BARE-429 CIRCUIT … pausing`) on an account with a SINGLE egress IP and
+> no `egressPool`, at util≪1, is the edge/egress mode — not framing.
 
 ## The mistake this prevents
 
@@ -78,17 +106,33 @@ first system block.
   *first*. The symptom (persistent 429 with `$0`/low utilization) has a written
   runbook — I burned hours not checking it.
 
-## Open follow-up (gateway-level fix)
+## RESOLVED 2026-06-30 (caller-level fix at the chokepoint)
 
-The inference gateway already injects the OAuth Bearer + the `oauth-2025-04-20`
-beta, so it is the natural place to **guarantee** the invariant the beta requires:
-normalize each `/v1/messages` request so the first `system` block is the CC
-identity (prepend a CC block unless it's already there; leave the `claude` CLI's
-already-correct framing untouched). That would fix this for *every* caller
-(mini-swe, the `anthropic-direct` raw path in `chat-stream.ts`, any future SDK
-caller) instead of each one re-discovering it. Cost: it makes the hot proxy path
-parse + re-serialize every request body, so it needs care + a test. Not yet done
-— flagged for owner decision.
+The follow-up below was done — but at the **caller chokepoint**, not the gateway hot path (cheaper, no
+body parse/re-serialize). `libs/papercusp-shared/src/agent/chat-stream.ts`:
+
+* `export const CLAUDE_CODE_IDENTIFIER = "You are Claude Code, Anthropic's official CLI for Claude.";`
+* `buildSystemParam()` ALWAYS returns a block array whose **first block is the identifier**, then the
+  caller's prompt — so every `anthropic-direct` request (the raw path ALL in-process callers funnel
+  through: `llm-client.ts` `llmCall` → `runAgentChat`) is framed. `statelessAgentChat` always sets
+  `params.system` (even with no caller prompt).
+
+This fixed the recurrence that motivated this update: the autonomous-loop **Scout's** in-process ideator
+was never framed → 180s opus timeouts / 0 ideas. After the fix the Scout ran with `ideas_generated=3`.
+
+A gateway-level normalization (inject the CC block on any un-framed upstream request) is still the most
+bulletproof option for callers that bypass `buildSystemParam` (e.g. a future direct-SDK or litellm path)
+— but it costs a per-request body parse/re-serialize on the hot proxy path, so it stays deferred unless
+such a caller appears. The CC-identity string is ALSO duplicated in `su.ts` + the external-bench live arms
+(`metr-hcast-live.ts`, `gaia/agent-live.ts`, `gdpval/judge-live.ts`); consolidating to one shared export
+would prevent drift.
+
+### The original follow-up note (kept for context)
+
+The inference gateway already injects the OAuth Bearer + the `oauth-2025-04-20` beta, so it is the natural
+place to guarantee the invariant the beta requires: normalize each `/v1/messages` request so the first
+`system` block is the CC identity. Cost: it makes the hot proxy path parse + re-serialize every request
+body. (Done at the caller level instead — see above.)
 
 ## Source
 

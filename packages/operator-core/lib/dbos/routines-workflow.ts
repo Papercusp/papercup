@@ -34,6 +34,7 @@ import { claimDueRoutine } from '../harness/routines/claim';
 import { checkFireGate, recordFire } from '../autoloop';
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import { getSystemAction, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
+import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import { loopPressure } from '../event-loop-lag-monitor';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
@@ -114,9 +115,7 @@ async function routineFireImpl(
         },
         { name: 'loop:wake' },
       );
-      return;
-    }
-    if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
+    } else if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
       const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
       const actionResult = await DBOS.runStep(
         async (): Promise<SystemActionResult | undefined> => {
@@ -211,6 +210,25 @@ async function routineFireImpl(
           .catch(() => {});
       }, { name: `spawn:${targetRole}` });
     }
+
+    // A completed dispatch (loop:wake / system:<action> / spawn:<role>) produced DBOS
+    // operation output, which DISPROVES any prior reaper verdict of "produced no DBOS
+    // operation output" for THIS routine. Clear a stale reaper-sourced last_error so the
+    // improvement-watchdog's routine-failure collector stops re-filing "routine is
+    // failing" bugs for a routine that has already self-healed (EI-5938 + 25+ phantom
+    // routines: loop-su-* + system routines leaked the reaper marker forever — the loop
+    // branch returned before any metadata clear, and the system success-clear was scoped
+    // to last_error_source='runner'). Source-scoped in the helper, so a runner-sourced
+    // action error and git-sync's own no-source error are preserved, and a genuinely
+    // wedged routine (fire keeps getting reaped, never completing this step) still
+    // surfaces. Rides its own durable step so a mid-fire crash replays it; fail-soft.
+    await DBOS.runStep(
+      async () => {
+        const { sql } = getOrgPg();
+        await clearStaleReaperLastError(sql, routineId);
+      },
+      { name: 'clear-reaper-last-error' },
+    );
   });
 }
 

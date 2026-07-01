@@ -84,3 +84,25 @@ The runtime PEP wiring of this into dispatch is a **capability-TCB** edit (`capa
 * Unit: `cd packages/operator-core && npx vitest run lib/datatype-registry-store.test.ts lib/datatype-self-improvement.test.ts lib/datatype-payload-validation.test.ts lib/define-tool-router.test.ts lib/tool-scaffold.test.ts lib/dynamic-tool-confinement.test.ts`
 * Integration (real PG): `npx vitest run --config vitest.integration.config.ts lib/datatype-registry.integration.test.ts lib/datatype-frontier-placement.integration.test.ts lib/datatype-instance-loop.integration.test.ts`
 * The end-to-end proof is `datatype-instance-loop.integration.test.ts` (declare → fetch-by-kind → payload validate → placeable).
+
+## Live-verified end-to-end (2026-06-30, running operator)
+
+Exercised against the live operator via loopback MCP (scratch workspaces, cleaned up):
+
+* **Datatype loop:** `meta:define-datatype {tier:'generic-kind'}` → `work_items:create {kind}` with a VALID payload returns `ok:true`
+  (the instance lands in `harness_features_consolidated` as a feature-family row); an INVALID payload is rejected `invalid_payload`
+  with the ajv message. A generic-kind create requires an in-scope **harness** (by design — the feature table is harness-keyed).
+* **The `createWorkItem` re-check.** `work_items:create`'s gate validated the generic kind, but `createWorkItem` (a second entry point)
+  re-checked `isWorkItemKind` and refused the insert — fixed (`work-items.ts` now re-checks the registry via `hasGenericKind`).
+* **Observability spans new datatypes (P-011).** `curation:state-of-hive` and an UNFILTERED `work_items:list` both surface a generic-kind
+  instance. The **kind-FILTER** path was the gap: `work_items:list`/`work_items:search` locked `kind` to a `z.enum` of built-ins, so you
+  could not filter the queue by a declared datatype — relaxed to a free string (built-in OR registered generic-kind); `familyOf()` already
+  routes it to the feature family. Unknown kind simply lists empty.
+* **Tool loop:** `meta:define-tool {tier:'composed'}` registers a `code_recipe` LIVE; `recipes:run` then executes it (the system gains AND
+  uses a tool from inside). `meta:define-tool {tier:'elevated'}` emits a review-gated scaffold file (NOT registered at runtime).
+* **Dogfood witness:** `platform:dogfood_verify {prUrl}` is read-only and wired — it returns the 5-stage round-trip assertion
+  (prTracked / reviewed / merged / shipped / linked) with precise gaps.
+* **Gap on the outward PR path (WI-1293):** `platform:enable` on an install that already has a legacy shared harness returns
+  `selfHive.status:'already_standing' detail:'legacy_shared_harness'` and does NOT stand up the dedicated `papercusp-platform-hive`
+  member checkout, so `platform:contribute {kind:'pr'}` fails `self_hive_not_found`. Only blocks the owner-gated/cred-gated live
+  fork→PR step; the internal loop + dogfood verifier are proven.

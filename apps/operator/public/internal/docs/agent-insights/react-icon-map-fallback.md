@@ -44,9 +44,10 @@ return <Icon />;
 (`FallbackIcon` is illustrative — use whatever neutral lucide glyph the
 surface already imports. Live examples: `iconFor()` in
 `apps/operator/app/harness/dock/AddPanelCatalog.tsx` falls through
-`ICON_MAP[type]` → `Puzzle` (plugin) → `SquareDashed`; `pluginIcon()` in
+`ICON_MAP[type]` → `Puzzle` (plugin) → `SquareDashed`; `PluginIcon` in
 `apps/operator/app/harness/plugin-utils.tsx` does
-`PLUGIN_ICON_MAP[name] || Puzzle`.)
+`(name && PLUGIN_ICON_MAP[name]) || Puzzle` — the leading `name &&` also
+guards against a null/undefined icon name before the map lookup.)
 
 **Every** map-based component lookup needs `?? FallbackIcon`. Grep
 for `ICON_MAP[` / `_MAP[` patterns when reviewing panels — anywhere

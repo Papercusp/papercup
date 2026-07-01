@@ -137,6 +137,16 @@ flaky proxy, and/or a per-egress-IP rate cap. Reproduce + measure any fix with t
 (`inference-gateway/load-test-rig.ts` → `runGatewayBurstRig`, reports `upstream429`/`failovers`/
 `bareBurstRotateSuppressed`/`upstreamCallsPerRequest`).
 
+> **⚠ Before you treat a header-less bare-burst as the egress-IP throttle, rule out its LOOK-ALIKE: missing
+> Claude-Code framing** ([max-oauth-first-system-block-must-be-claude-code-identity](/internal/docs/agent-insights/max-oauth-first-system-block-must-be-claude-code-identity)).
+> A raw-SDK / litellm / un-framed in-process caller gets the SAME header-less 429 (and `server=cloudflare` +
+> `cf-ray` do NOT decide it — both modes can carry them). **Discriminator: framing is DETERMINISTIC** (\~100%
+> of that caller's requests, on any IP, even a 1-token call at 0 load) — **the edge/egress throttle is BURSTY
+> and load-correlated** (low overall rate, clusters under concurrency, its rate tracks per-IP volume; a
+> whole-account `BARE-429 CIRCUIT` pause on a single-egress-IP account at util≪1 is THIS fault). Fastest
+> test: flip an un-framed caller to framed — if that fixes it, it was framing; if a single framed request
+> 200s while the fleet 429s under burst, it's the egress IP (this fault).
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 * **`dev:rate_governor_status`** — is the paused bucket the **global** `anthropic:opus`

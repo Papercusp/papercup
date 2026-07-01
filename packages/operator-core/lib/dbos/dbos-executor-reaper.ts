@@ -272,6 +272,49 @@ export async function reapDeadExecutorWorkflows(
   }
 }
 
+/**
+ * The `last_error_source` this reaper stamps onto `harness_shared.routines.metadata`
+ * when it cancels+REQUEUES a stuck fire (see the requeue UPDATE above, ~line 250).
+ * The marker is a SELF-HEAL note ("I recovered this routine"), NOT a wedge — but the
+ * improvement-watchdog's `routine-failure` collector (watchdog.ts) alarms on ANY
+ * non-empty `last_error`, so the marker MUST be cleared once the routine actually
+ * fires successfully again, else it re-files phantom "routine is failing" bugs forever.
+ */
+export const REAPER_LAST_ERROR_SOURCE = 'dbos-executor-reaper';
+
+/**
+ * Clear a STALE reaper-sourced `last_error` off a routine after it fires successfully.
+ *
+ * WHY: `reapDeadExecutorWorkflows` stamps `metadata.last_error` (source
+ * `${REAPER_LAST_ERROR_SOURCE}`) with "produced no DBOS operation output; …requeued
+ * the routine" as its self-heal marker. A routineFire that later COMPLETES a dispatch
+ * step DID produce DBOS operation output — which directly DISPROVES that verdict — so
+ * the marker is now stale and must be removed. Otherwise `collectRoutineFailureSignals`
+ * keeps minting `routine-failure` bugs (EI-5938 and 25+ others: loop-su-* + system
+ * routines that don't manage their own last_error leaked the marker permanently,
+ * because the loop-wake branch returns before any metadata clear and the system
+ * success-clear was scoped to `last_error_source='runner'`).
+ *
+ * SOURCE-SCOPED ON PURPOSE — this is the safety property that lets it run on every
+ * successful fire without masking a real problem:
+ *   - `runner`-sourced errors (a system action that THREW) are LEFT for the action's
+ *     own success-path clear, so a genuinely-throwing action stays visible.
+ *   - git-sync records `last_error` with NO source key (recordOutcome) and is UNTOUCHED.
+ *   - A GENUINELY wedged routine whose fire keeps getting reaped never completes a
+ *     dispatch step, so it never reaches this clear — the reaper re-stamps the marker
+ *     each reap and the alarm still fires.
+ *
+ * Fail-soft: a clear failure must never fail the fire it rides.
+ */
+export async function clearStaleReaperLastError(sql: Sql, routineId: string): Promise<void> {
+  await sql`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
+           updated_at = now()
+     WHERE id = ${routineId}
+       AND metadata->>'last_error_source' = ${REAPER_LAST_ERROR_SOURCE}`.catch(() => {});
+}
+
 let reaperTimer: ManagedHandle | null = null;
 
 /**
