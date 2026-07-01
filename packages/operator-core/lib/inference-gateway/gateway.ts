@@ -2645,6 +2645,40 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
             // re-acquire timed out within the absorb budget → fall through to forward (release is the no-op → finally safe)
           }
+          // LAST-RESORT OPUS→SONNET DOWNGRADE (WI-1073). Rotation + transient-wait + absorb all failed
+          // (`proceed` is false here) on a HARD opus wall: `!transient` = a usage cap / org-disallow 403 /
+          // unified-window rejection we cannot wait out, and (403|429) excludes a 529 server-overload
+          // (sonnet is overloaded server-side too — downgrading wouldn't help). So opus is exhausted
+          // POOL-WIDE. The opus-budget governor sheds background/normal opus proactively, but an opus-
+          // FLOORED critical role (Queen/su/reviewer — never shed, EI-7/EI-286) lands here and hard-fails
+          // ("Queen can't run"). Sonnet-vs-nothing: rewrite the model to the fleet sonnet id + retry ONCE
+          // on a fresh account. An opus-SPECIFIC cap (403 opus-disallow, or the 7d opus weekly cap) leaves
+          // sonnet room so this succeeds; a shared 5h exhaustion makes the sonnet try futile-but-harmless
+          // (it forwards as today). At-most-once (`opusDowngraded`) + reuses the same bounded rotation
+          // machinery (reset budgets = one more bounded pass, exactly a fresh request's bound), so a
+          // failure of this net degrades to today's forward — it cannot wedge. The fleet's recurring loops
+          // then always run on available capacity instead of dying when opus is gone.
+          if (!opusDowngraded && !transient && (up.status === 403 || up.status === 429) && model.includes('opus')) {
+            const sonnetBody = rewriteRequestModel(bodyBuf, LAST_RESORT_SONNET_MODEL);
+            if (sonnetBody) {
+              opusDowngraded = true;
+              opusToSonnetDowngrades++;
+              bodyBuf = sonnetBody;
+              model = LAST_RESORT_SONNET_MODEL;
+              if (!hardPin) active = pool.active(); // spread the sonnet retry (a hard pin stays on its own credential)
+              gov = governorForAccount(model, active.accountId); // rebind pacing to the sonnet bucket
+              attempt = 0;
+              transientWaitedMs = 0;
+              retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the one downgraded pass
+              clearStall();
+              peekedRest?.destroy(); // discard the walled opus attempt's body (peekedHead resets next iteration)
+              log(
+                'warn',
+                `inference-gateway: opus exhausted pool-wide (hard wall, status ${up.status}) → LAST-RESORT downgrade opus→${LAST_RESORT_SONNET_MODEL} for '${wantOwner ?? 'unpinned'}' on '${active.accountId}' (WI-1073) so the loop runs on available capacity`,
+              );
+              continue;
+            }
+          }
         }
 
         // AIMD clean signal (B-GW-1): a forwarded 2xx means this account had real capacity — drain the
