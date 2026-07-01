@@ -28,6 +28,7 @@ export default function AgentInspectorModal({
   open,
   onClose,
   startedAtMs,
+  streamUrl,
 }: {
   slug: string;
   phase: string;
@@ -39,8 +40,11 @@ export default function AgentInspectorModal({
    *  the timeline is still empty. Optional — defaults to when the inspector was
    *  opened, so a wedged run still escalates from "waiting" to "stalled?". */
   startedAtMs?: number;
+  /** Explicit stream URL — set for interactive-session transcripts; omit to use
+   *  the bee run-log stream keyed by slug/runId. */
+  streamUrl?: string;
 }) {
-  const { events, status } = useAgentThinkingStream(slug, phase, runId);
+  const { events, status } = useAgentThinkingStream(slug, phase, runId, streamUrl);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Elapsed baseline: the run start when known, else when this inspector opened
   // (captured once). Feeds the stall escalation while the timeline is empty.

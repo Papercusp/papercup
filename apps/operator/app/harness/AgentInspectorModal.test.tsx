@@ -62,7 +62,31 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
   });
 
   it('is not mounted when open=false', () => {
-    renderModal(false);
+    renderModal({ open: false });
     expect(screen.queryByText('worker')).toBeNull();
+  });
+
+  it('escalates a live run with zero output past the stall threshold', () => {
+    // Run started 60s ago (> STALL_AFTER_MS) with an empty backfill → the live
+    // modal must flag it as stalled instead of an eternal "No output yet".
+    renderModal({ startedAtMs: Date.now() - 60_000 });
+    act(() => { captured!.handlers.backfill!(JSON.stringify([])); });
+    expect(screen.getByText('stalled?')).toBeTruthy();
+    expect(screen.getByText(/No output for/)).toBeTruthy();
+  });
+
+  it('shows a live elapsed counter before the stall threshold (not stalled)', () => {
+    renderModal({ startedAtMs: Date.now() - 5_000 });
+    act(() => { captured!.handlers.backfill!(JSON.stringify([])); });
+    expect(screen.getByText('live')).toBeTruthy();
+    expect(screen.getByText(/Waiting for first output/)).toBeTruthy();
+    expect(screen.queryByText('stalled?')).toBeNull();
+  });
+
+  it('shows the terminal empty message when a run ends with no output', () => {
+    renderModal();
+    act(() => { captured!.handlers.done!(''); });
+    expect(screen.getByText('done')).toBeTruthy();
+    expect(screen.getByText(/Run ended without producing any output/)).toBeTruthy();
   });
 });
