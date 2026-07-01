@@ -11,7 +11,11 @@ description: >
   (oauth-2025-04-20) routes to the normal limiter ONLY when the FIRST `system` block is EXACTLY
   "You are Claude Code, Anthropic's official CLI for Claude." as its OWN block; omit/concatenate it and
   the request is shunted to a strict limiter returning a BOGUS rate_limit_error even at 0.0 utilization.
-  It is NOT the egress IP, NOT volume/fleet-size, NOT account quota, NOT headers/User-Agent/TLS. FIXED
+  For THIS (framing) cause it is NOT the egress IP/volume/quota/headers — BUT the identical header-less 429
+  ALSO appears as a genuine Cloudflare per-IP EGRESS throttle for ALREADY-FRAMED callers under concentrated
+  opus load (a DISTINCT mode; see rate-limit-is-usually-account-routing-not-capacity Fault #6). Discriminator:
+  framing = deterministic (~100% of that caller's requests, any IP, even 1 token); edge throttle = bursty +
+  load-correlated (low overall rate, clusters, tracks per-IP volume). FIXED
   2026-06-30 at the chat-stream buildSystemParam chokepoint (always prepends it) — every anthropic-direct
   caller is now framed. Re-confirmed live: opus 200/2.6s with the block, 20s-timeout/429 without; Scout
   then ran with ideas_generated=3. Search: opus 429, scout timeout, transport death, in-process 429,
