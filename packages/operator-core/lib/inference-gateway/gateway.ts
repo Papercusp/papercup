@@ -2714,6 +2714,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // Detectability: name the account this request ACTUALLY egressed on, so a silent fallback
         // off a pin (unknown id / paced-account failover) is visible to the caller, not invisible.
         outHeaders[ROUTED_ACCOUNT_HEADER] = active.accountId;
+        // WI-1073: surface a last-resort opus→sonnet downgrade to the caller (silent model substitution
+        // is otherwise invisible). Set on ANY forwarded response after a downgrade — a 2xx means sonnet
+        // served the walled-opus request; a non-2xx means even the sonnet retry failed.
+        if (opusDowngraded) outHeaders[MODEL_DOWNGRADED_HEADER] = 'opus->sonnet';
         recordRoute(wantOwner, active.accountId, model); // per-owner last-routed → GET /admin/route (statusline)
         res.writeHead(up.status, outHeaders);
         if (peekedHead !== null) {
