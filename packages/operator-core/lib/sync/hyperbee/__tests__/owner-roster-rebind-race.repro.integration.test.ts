@@ -549,3 +549,346 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
     180_000,
   );
 });
+
+/**
+ * SNAPSHOT-ON variant (Brief 11 review follow-up — the ONE explicit gate before the
+ * log-compaction/snapshot flag ships). Identical scenario as the sibling above, but with
+ * `FLAGS.SUBSTRATE_LOG_SNAPSHOT` forced ON and the owner's log COMPACTED (a `__snapshot__`
+ * op summarizing the roster + content ops) BEFORE the joiner merges.
+ *
+ * ## Why this is a distinct guard
+ * With snapshots ON, boot.ts reads `snapshotEnabled=true`, so EVERY merge pass — INCLUDING the
+ * `forceReFold` re-fold driven by rekey() — runs `seedCursorFromSnapshots(logs, cursor)` right
+ * after the forceReFold cursor reset (boot.ts ~1480-1492):
+ *     if (forceReFold) { mergeCursor = createMergeCursor(); forceReFold = false; }
+ *     if (snapshotEnabled) await seedCursorFromSnapshots(logs, mergeCursor);
+ * So the re-fold does NOT re-read the RAW roster op (index 0) — the seed advances the cursor to
+ * the snapshot index and the fold reads the `__snapshot__` op FIRST, EXPANDING its summarized
+ * rows (proven equivalent to a full fold-from-0 by snapshot-fold.test.ts). The owner's roster row
+ * therefore re-applies through the newly-hive-home-bound projection VIA THE SNAPSHOT EXPANSION.
+ *
+ * Pre-rekey the drop STILL happens through the same snapshot path (the expanded roster row is
+ * applied against the MEMBER-slug binding → dropped at hive-members.ts, cursor marks the snapshot
+ * op done) → B's roster is EMPTY. Post-rekey the forceReFold re-seed+re-expand lands it.
+ *
+ * ## Teeth
+ * Reverting EITHER the `forceReFold` cursor reset OR the snapshot re-seed on the re-fold path
+ * (boot.ts) leaves the summarized roster op un-re-applied AFTER rekey → B's roster stays EMPTY
+ * and A's content count stays 0 under snapshots ON, flipping the step-(f) assertions RED — WHILE
+ * the flag-OFF sibling above stays green. That divergence pins a regression to the
+ * snapshot × re-fold interaction specifically (the exact "does the re-fold skip the dropped op
+ * when snapshots are on?" concern).
+ */
+describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the rekey forceReFold re-fold re-applies the DROPPED owner roster op even when it is SUMMARIZED inside a log snapshot (real boot apply + snapshot seed, NO stub)', () => {
+  it(
+    'snapshots ON: owner authors roster+content then COMPACTS its log → B merges home=<none> (roster EMPTY via the snapshot expansion) → rekey() re-seeds at the snapshot + re-folds → roster has A AND A content lands',
+    async () => {
+      const HIVE_HOME = 'rrs-owner-hive'; // the OWNER's harness slug IS the hive home
+      const JOINER_SLUG = 'rrs-joined-owner-hive'; // B's fresh-joiner MEMBER slug (≠ the home)
+      const FEATURE_ID = 'F-owner-rrs';
+
+      // ── SUBSTRATE_LOG_SNAPSHOT ON for this process (env override; precedence over the flag
+      //    default, no PG needed). boot.ts reads `snapshotEnabled` ONCE at boot, so this MUST be
+      //    set before either boot below. Restored in cleanup. ──
+      const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT';
+      const prevFlag = process.env[FLAG_ENV];
+      process.env[FLAG_ENV] = '1';
+      cleanups.push(() => {
+        if (prevFlag === undefined) delete process.env[FLAG_ENV];
+        else process.env[FLAG_ENV] = prevFlag;
+      });
+
+      // ── A-003 trace ON so the member-guard + roster-drop decisions print (redirected off
+      //    console.error to survive fail-on-console; mirrors the sibling). ──
+      const a003Lines: string[] = [];
+      const errSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+        const line = args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ');
+        if (line.includes('[A-003]')) a003Lines.push(line);
+        process.stdout.write(line + '\n');
+      });
+      cleanups.push(() => {
+        process.stdout.write(`\n===== [A-003] SNAPSHOT-ON TRACE (${a003Lines.length} lines) =====\n`);
+        for (const l of a003Lines) process.stdout.write(l + '\n');
+        process.stdout.write('===== END [A-003] TRACE =====\n');
+        errSpy.mockRestore();
+      });
+
+      const prevA003 = process.env.PAPERCUSP_A003_TRACE;
+      process.env.PAPERCUSP_A003_TRACE = '1';
+      cleanups.push(() => {
+        if (prevA003 === undefined) delete process.env.PAPERCUSP_A003_TRACE;
+        else process.env.PAPERCUSP_A003_TRACE = prevA003;
+      });
+
+      // ── Env-route getOrgPg() at a migrated org DB (B's REAL scopedApply writes + B's boot reads
+      //    resolve here). Mirrors the sibling. ──
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
+      const prevAppUrl = process.env.HARNESS_DATABASE_URL;
+      const prevWs = process.env.PAPERCUSP_WORKSPACE_ID;
+      const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+        else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
+        if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
+        else process.env.HARNESS_DATABASE_URL = prevAppUrl;
+        if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+        else process.env.PAPERCUSP_WORKSPACE_ID = prevWs;
+        if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+        else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+        if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+        else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      const idOwner = makeIdentityOverride('owner', 99, 'kc-owner-rrs');
+      const idJoiner = makeIdentityOverride('joiner', 7, 'kc-joiner-rrs');
+
+      // ── Seed ONLY the hive identity row (EMPTY-roster fresh-join state; owner-device binding is
+      //    injected via ownerDeviceForHiveOverride below). ──
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.hives
+          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-owner-home-rrs', 'Owner Home', null, 1, 1)
+      `;
+
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/rrs-owner-hive', harness_kind: 'hive', remote_hive: true },
+            { slug: JOINER_SLUG, path: '/tmp/rrs-joiner', hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+      _clearHiveMemberDeviceSetCacheForTest();
+
+      const authorDb: OrgTestDb = await createOrgTestDb();
+      cleanups.push(async () => {
+        await authorDb.cleanup();
+      });
+      await authorDb.adminSql`
+        INSERT INTO harness_shared.hives
+          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-owner-home-rrs', 'Owner Home', null, 1, 1)
+      `;
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const swarmOwner = makeSwarm(testnet.bootstrap);
+      const swarmJoiner = makeSwarm(testnet.bootstrap);
+      const rootOwner = makeWorkspaceRoot('rrs-owner-');
+      const rootJoiner = makeWorkspaceRoot('rrs-joiner-');
+
+      let handleOwner: BootedHarnessHandle | undefined;
+      let handleJoiner: BootedHarnessHandle | undefined;
+      let applyOwner: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+
+      let joinerHomeResolves = false;
+      const joinerHiveHomeSlugOverride = async (): Promise<string | null> =>
+        joinerHomeResolves ? HIVE_HOME : null;
+
+      handleOwner = await bootHarnessSubstrate({
+        workspaceRoot: rootOwner,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: HIVE_HOME,
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
+        swarmOverride: swarmOwner,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idJoiner.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyOwner ??= buildAuthorApply(authorDb.adminSql, HIVE_HOME, handleOwner!.ownLog.keyHex);
+          return applyOwner(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idOwner.override,
+      });
+      cleanups.push(async () => {
+        await handleOwner?.close();
+        await closeHarnessStore({ workspaceRoot: rootOwner, harnessSlug: HIVE_HOME });
+      });
+
+      handleJoiner = await bootHarnessSubstrate({
+        workspaceRoot: rootJoiner,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: JOINER_SLUG,
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
+        swarmOverride: swarmJoiner,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idOwner.userId ? 'verified' : 'fail',
+        joinerHiveHomeSlugOverride,
+        ownerDeviceForHiveOverride: async (hivePubkey) =>
+          hivePubkey === hivePubkeyB64 ? idOwner.devicePubkey : null,
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idJoiner.override,
+      });
+      cleanups.push(async () => {
+        await handleJoiner?.close();
+        await closeHarnessStore({ workspaceRoot: rootJoiner, harnessSlug: JOINER_SLUG });
+      });
+
+      expect(handleOwner.swarm).not.toBeNull();
+      expect(handleJoiner.swarm).not.toBeNull();
+      expect(handleOwner.swarm!.topicHex).toBe(handleJoiner.swarm!.topicHex);
+
+      // ── (c) OWNER authors its roster row + one content op → capture → outbox → drain → own log. ──
+      await authorDb.adminSql`
+        INSERT INTO harness_shared.hive_members
+          (workspace_id, hive_home_slug, github_user_id, github_username,
+           device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner',
+                ${JSON.stringify([
+                  {
+                    device_pubkey: idOwner.devicePubkey,
+                    gist_id: 'gist-owner',
+                    gist_url: 'https://gist.github.com/owner',
+                    device_label: 'owner-dev',
+                    created_at: 1,
+                    signature_by_device: 'sig',
+                  },
+                ])}::text::jsonb,
+                '{}'::text[], 'verified')
+      `;
+      await authorDb.adminSql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (workspace_id, harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${FEATURE_ID}, 'Owner→joiner feature (snapshot)', 'from owner', 'todo', 0, 'local', 7001, 7001, 7001)
+      `;
+      expect(await countOutbox(authorDb.adminSql, 'hive_members', String(idOwner.userId))).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'harness_features_consolidated', FEATURE_ID)).toBe(1);
+      const drained = await drainOutboxOnce(handleOwner, authorDb.adminSql);
+      expect(drained, "the owner's roster + content ops were not drained to its log").toBeGreaterThanOrEqual(2);
+
+      // ── COMPACT the owner's log: append a `__snapshot__` op summarizing ALL current ops (the
+      //    roster + content rows land inside it). NOW the owner's log tail IS a snapshot, so the
+      //    joiner's snapshot-ON merge SEEDS at it and folds the roster row via the EXPANSION —
+      //    not the raw index-0 op — which is exactly the path the re-fold must survive. ──
+      const snap = await produceLogSnapshot(handleOwner.ownLog, {
+        now: 8000,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+      });
+      expect(snap.appended, 'produceLogSnapshot must append a __snapshot__ op summarizing the owner log').toBe(true);
+      expect(
+        snap.rowCount,
+        'the snapshot must summarize at least the roster + content rows',
+      ).toBeGreaterThanOrEqual(2);
+      const snapIdx = await findLatestSnapshotIndex(handleOwner.ownLog, 10_000, 0);
+      expect(
+        snapIdx,
+        'the owner log must carry a latest snapshot for the joiner to seed at (seedCursorFromSnapshots)',
+      ).not.toBeNull();
+      expect(snapIdx!).toBeGreaterThan(0);
+
+      // ── Precondition: B ADMITS the owner's log (STEP-1 owner-bootstrap, EMPTY roster). ──
+      const joinerAdmittedOwner =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleOwner!.mergeNow(), handleJoiner!.mergeNow()]);
+            return handleJoiner!.admitted.has(handleOwner!.ownLog.keyHex) ? true : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? false;
+      expect(
+        joinerAdmittedOwner,
+        "B did NOT admit the owner's log — STEP-1 owner-bootstrap admission (ownerDeviceForHive) did not fire",
+      ).toBe(true);
+
+      // ── (d) FORCE THE BAD ORDERING: several FULL merge passes BEFORE the rekey. With snapshots
+      //    ON, each pass seeds at the owner snapshot and expands it → A's roster row is applied
+      //    against the MEMBER-slug binding → DROPPED, the cursor marks the snapshot op done, the log
+      //    SET doesn't change → never re-folded. A's content op drops at the member-guard. ──
+      for (let i = 0; i < 6; i++) {
+        await Promise.all([handleOwner.mergeNow(), handleJoiner.mergeNow()]);
+      }
+      _clearHiveMemberDeviceSetCacheForTest();
+
+      // ── ASSERT THE BUG STATE (pre-rekey): B's roster is EMPTY and A's content count is 0. ──
+      const rosterBefore = await rosterUserIds(orgDb.adminSql, HIVE_HOME);
+      expect(
+        rosterBefore.size,
+        'pre-rekey (snapshots ON): B booted home=<none>, so the owner roster row summarized in the ' +
+          `snapshot MUST drop against the member-slug binding → an EMPTY roster. Got ${rosterBefore.size}: ${[...rosterBefore].join(',')}`,
+      ).toBe(0);
+      const contentBefore = await contentRowCount(orgDb.adminSql, HIVE_HOME, FEATURE_ID);
+      expect(
+        contentBefore,
+        'pre-rekey (snapshots ON): with an empty roster + home=<none>, A’s content op MUST NOT materialize on B',
+      ).toBe(0);
+
+      // ── (e) Resolve the hive-home slug + REKEY. The rebind block re-binds hive_members/hive_settings
+      //    to HIVE_HOME, sets forceReFold, and the `await mergeNow()` at the END of rekey() consumes it →
+      //    the cursor resets → `seedCursorFromSnapshots` RE-seeds at the owner snapshot → the fold
+      //    RE-EXPANDS the snapshot through the now-hive-home-bound projection → A's roster op re-applies →
+      //    the pendingMemberContent drain fires → A's content op re-applies and lands. ──
+      joinerHomeResolves = true;
+      await handleJoiner.rekey({ kind: 'hive', hive_pubkey: hivePubkeyB64 });
+
+      await Promise.all([handleOwner.mergeNow(), handleJoiner.mergeNow()]);
+
+      // ── (f) ASSERT THE FIXED STATE: B's roster now contains A, AND A's content row count > 0. ──
+      const rosterAfter =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleOwner.mergeNow(), handleJoiner.mergeNow()]);
+            const ids = await rosterUserIds(orgDb.adminSql, HIVE_HOME);
+            return ids.has(idOwner.userId) ? ids : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? new Set<number>();
+      expect(
+        rosterAfter.has(idOwner.userId),
+        'post-rekey (snapshots ON): the forceReFold re-fold must RE-SEED at the owner snapshot and ' +
+          're-apply the summarized roster op through the rebound projection → B’s roster MUST contain A. ' +
+          'If RED here, the forceReFold reset OR the snapshot re-seed on the re-fold path was reverted — ' +
+          'the re-fold skipped the dropped op when snapshots are on.',
+      ).toBe(true);
+
+      const contentAfter =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleOwner.mergeNow(), handleJoiner.mergeNow()]);
+            const n = await contentRowCount(orgDb.adminSql, HIVE_HOME, FEATURE_ID);
+            return n > 0 ? n : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? 0;
+      expect(
+        contentAfter,
+        'post-rekey (snapshots ON): once the owner roster row re-applies from the snapshot, the ' +
+          'pendingMemberContent drain must land A’s content op → row count > 0.',
+      ).toBeGreaterThan(0);
+    },
+    180_000,
+  );
+});
