@@ -42,6 +42,25 @@ plans:
 > with `ideas_generated=3`. **If you add a NEW in-process LLM path that bypasses `buildSystemParam`, you
 > must prepend `CLAUDE_CODE_IDENTIFIER` yourself or it WILL opus-429.**
 
+> **⚠ LOOK-ALIKE — is it framing, or a Cloudflare per-IP EGRESS throttle? They produce a NEARLY IDENTICAL
+> header-less 429** (`{"type":"rate_limit_error","message":"Error"}`, `x-should-retry:true`, NO
+> `anthropic-ratelimit-*`, NO `retry-after`, low utilization). Landing on the wrong one is why gateway
+> fixers keep failing (this exact confusion recurred 2026-06-30). The reliable discriminator is
+> **behavioral, NOT the provenance headers** — both can carry `server=cloudflare`/`cf-ray` (Anthropic sits
+> behind Cloudflare) and both can carry a `request-id`, so the tags alone do not decide it:
+>
+> | | **Framing** (missing CC block — THIS doc) | **Cloudflare per-IP edge throttle** ([Fault #6](/internal/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity)) |
+> | --- | --- | --- |
+> | Failure rate | **deterministic, ~100%** of that caller's requests, uniform over time | **bursty**, low overall (e.g. 5/491 ≈ 1%), clusters under concurrency, escalates a consecutive-count circuit |
+> | Load / egress-IP dependent? | **No** — fires at 1 request, 0 load, on any IP | **Yes** — per-IP; rotating to a cool IP or dropping opus concurrency helps |
+> | Who hits it | raw-SDK / litellm / **un-framed** in-process callers | **any** caller incl. the framed `claude`-CLI / psu bees, under concentrated load |
+> | Decisive test | one **framed** vs one **un-framed** request → framed 200s, un-framed 429s | the SAME framed request 200s when slow / 429s under burst; failure rate tracks per-IP volume |
+> | Fix | frame the first `system` block (below) | egress pool / rotate-cool the IP / more distinct egress IPs / less opus concurrency ([per-account egress IPs](/internal/docs/agent-insights/inference-gateway-per-account-egress-ips)) |
+>
+> **Rule of thumb: ~100% and instant → framing. A few % and bursty under load → the edge/egress throttle.**
+> A one-account whole-account pause (`BARE-429 CIRCUIT … pausing`) on an account with a SINGLE egress IP and
+> no `egressPool`, at util≪1, is the edge/egress mode — not framing.
+
 ## The mistake this prevents
 
 Chasing a "Max account opus rate limit" that does not exist. While running the
