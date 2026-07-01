@@ -181,6 +181,16 @@ export default defineTool({
       },
       { keyOf: (it) => ({ workItem: it.workItem }) },
     );
-    return bulkContent(env);
+    // WI-1376 bulk-level truth. A steering-lease PROPOSAL (this Swarm isn't the
+    // holder) and an inapplicable issue-family set BOTH return ok:true yet write
+    // NOTHING, so a caller gating on `counts.ok` over a large bulk run (the exact
+    // failure the report hit: a 648-item re-prioritization where 84 feature-family
+    // items silently no-op'd) is fooled — the per-item `written:false` is easy to
+    // miss across hundreds of rows. Roll `written` (feature_order actually persisted)
+    // and `proposed` (recorded for the lease-holding Queen, NOT committed) up onto
+    // `counts` so a bulk re-prioritizer sees the miss at a glance.
+    const written = env.results.filter((r) => (r as { written?: boolean }).written === true).length;
+    const proposed = env.results.filter((r) => (r as { proposed?: boolean }).proposed === true).length;
+    return bulkContent({ ...env, counts: { ...env.counts, written, proposed } });
   },
 });

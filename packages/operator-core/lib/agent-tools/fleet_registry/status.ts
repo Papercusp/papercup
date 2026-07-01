@@ -20,11 +20,31 @@ export default defineTool({
     when: 'Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.',
     notWhen: 'For the catalog of ALL fleets with availability, use fleet:list.',
     chaining: ROUTING_LADDER,
-    seeAlso: [
-      'fleet:list (the catalog of ALL fleets with availability)',
-      'fleet:assignments (what this fleet\'s members are working on)',
-      'coord:roster { view:"members" } (membership across hive + fleet)',
-    ],
+    // Result-aware (D-003): fill the CONCRETE `@fleet:<slug>` history selector from
+    // the result — the "coord:catch-up @fleet:X for who-was-ever-here" pointer WI-1348
+    // asks for — carrying the real ended-member count when the fleet has dead sessions.
+    // The adjacent-lens pointers are always relevant, so they stay static.
+    seeAlso: (result) => {
+      const j = readJsonResult<{
+        ok?: boolean;
+        slug?: string;
+        members?: Array<{ sessionState?: string }>;
+      }>(result);
+      const out: SeeAlsoEntry[] = [
+        'fleet:list (the catalog of ALL fleets with availability)',
+        'fleet:assignments (what this fleet\'s members are working on)',
+        'coord:roster { view:"members" } (membership across hive + fleet)',
+      ];
+      if (j?.ok && j.slug) {
+        const ended = (j.members ?? []).filter((m) => m.sessionState === 'ended').length;
+        out.push({
+          tool: 'coord:catch-up',
+          selector: `@fleet:${j.slug}`,
+          reason: ended > 0 ? `${ended} ended — who-was-ever-here` : 'who-was-ever-here',
+        });
+      }
+      return out;
+    },
   },
   capability: 'fleet:status',
   requirePrincipal: false,

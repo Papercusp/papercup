@@ -1,6 +1,6 @@
 # Dynamic tool surface — a per-session mutable MCP catalog for all agent clients
 
-**Status:** proposed · **Date:** 2026-07-01 · **Scope:** operator MCP transport
+**Status:** ✅ IMPLEMENTED + live-verified (2026-07-01) · **Date:** 2026-07-01 · **Scope:** operator MCP transport
 (`_mcp-handler.ts`) + tool-allowlist + `tools:find` + psu launch wiring
 (omp/codex). Successor to the static-trim approach; folds in
 `tool-discovery-for-weak-models-plan-2026-06-30.md` and the

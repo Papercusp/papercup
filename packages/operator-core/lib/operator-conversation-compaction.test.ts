@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_COMPACTION_PRIORITIES,
   MAX_SUMMARY_CHARS,
   MIN_NEW_TOKENS,
   MIN_NEW_TURNS,
@@ -42,6 +43,21 @@ describe('buildCompactionPrompt', () => {
     // 2000-char per-turn cap — the prompt must not embed all 10k chars.
     expect(p).not.toContain('x'.repeat(2_001));
     expect(p).toContain('x'.repeat(2_000));
+  });
+
+  // agent-managed-compaction-2026-07-01: priorities are a canonical projection
+  // (papercusp-compaction.base.md via loadCompactionPriorities), passed in so the
+  // pure builder stays projection-agnostic.
+  it('embeds the caller-supplied priorities and drops the default block', () => {
+    const p = buildCompactionPrompt('S', [{ role: 'user', text: 'hi' }], 'PRESERVE_THE_XYZ_MARKER');
+    expect(p).toContain('PRESERVE_THE_XYZ_MARKER');
+    expect(p).not.toContain('decisions made, and why'); // default block replaced
+  });
+
+  it('falls back to DEFAULT_COMPACTION_PRIORITIES when priorities omitted', () => {
+    const p = buildCompactionPrompt('S', [{ role: 'user', text: 'hi' }]);
+    expect(p).toContain(DEFAULT_COMPACTION_PRIORITIES);
+    expect(p).toContain('decisions made, and why');
   });
 });
 

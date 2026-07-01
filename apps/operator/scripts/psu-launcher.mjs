@@ -2762,23 +2762,24 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
     } else if (args.contextSize === 'trimmed') {
-      // OPT-IN trim (weak-model-tool-tier). ⚠ TRADE-OFF — verified 2026-07-01: OMP's
-      // search_tool_bm25 can only activate tools it RECEIVED in tools/list, so narrowing to
-      // the core spine makes the ~530 non-core tools UNREACHABLE for this session (a trimmed
-      // session's search returns ONLY core tools). Great for a focused weak-model run over the
-      // common spine; do NOT use it for work that needs the long tail. The weak DEFAULT (below)
-      // keeps the full catalog + the discovery primer — the verified-working, tail-reachable path.
-      // Deliberately NOT auto-applied on weak-model tier: silently stranding the tail is worse
-      // than a heavy-but-complete catalog. Flip to focus-by-default only on an explicit owner call.
+      // Seed the core spine (dynamic-tool-surface-2026-07-01). This is NO LONGER a hard
+      // trim: the server treats ?tools= as a growable FLOOR — tools:find surfaces the tail
+      // on demand (→ notifications/tools/list_changed → OMP re-fetches its tools/list,
+      // VERIFIED live 2026-07-01), and tools:invoke (also in the spine) calls anything by
+      // name without listing it. So the ~530-tool long tail stays fully reachable while the
+      // model boots on a focused ~21-tool surface.
       ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
-      if (ompPiConfigDir) console.error(`psu: omp --context-size=trimmed — MCP surface trimmed to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (⚠ the ~530-tool long tail is NOT reachable via search this session) via per-session config ${ompPiConfigDir}`);
+      if (ompPiConfigDir) console.error(`psu: omp --context-size=trimmed — MCP surface seeded to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (long tail reachable on demand via tools:find/tools:invoke) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=trimmed could not materialize a per-session config; using OMP default (full catalog).');
     } else if (isWeakOmpModel(effectiveModel)) {
-      // Weak/local model on the DEFAULT path: full catalog + the session-start discovery primer
-      // (the verified-working weak setup — the long tail stays reachable via search_tool_bm25).
-      // The 400 that plagued weak models is fixed independently (the sanitizing proxy); the trim
-      // is a separate, OPT-IN focus lever, not needed to make a weak model functional.
-      console.error(`psu: omp weak/local model (${effectiveModel}) — full catalog + discovery primer (long tail stays reachable). For a focused ${OMP_CORE_MCP_TOOL_NAMES.length}-tool surface, add --context-size=trimmed (⚠ that strands the long tail).`);
+      // Weak/local model DEFAULT → SEED the core spine (dynamic-tool-surface D-009 flip,
+      // 2026-07-01). A small model can't wield ~580 tools, and the tail is now reachable on
+      // demand (tools:find → list_changed re-fetch, VERIFIED; + tools:invoke), so seeding is
+      // the strict win over the old full-catalog+primer stopgap: focused surface, low tokens,
+      // AND full reachability. `--context-size=full` opts back into the whole catalog up-front.
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
+      if (ompPiConfigDir) console.error(`psu: omp weak/local model (${effectiveModel}) — MCP surface seeded to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools; long tail reachable on demand (tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
+      else console.error(`psu: omp weak/local model (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }
   }
 
