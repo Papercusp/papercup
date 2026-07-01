@@ -52,6 +52,9 @@ const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
   // Layout rails measure themselves in JS and write the current width on <html>.
   '--left-sidebar-w',
   '--dev-rail-w',
+  // EnvSwitcherBar measures its own height and publishes it on <html> (docEl)
+  // so the app's top-anchored chrome can offset below the fixed bar.
+  '--pc-env-bar-h',
   // Sonner writes these per-toast; globals.css uses them to keep stacked toasts compact.
   '--toasts-before',
   '--lift-amount',
