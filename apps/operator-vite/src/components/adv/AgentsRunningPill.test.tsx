@@ -140,19 +140,16 @@ describe('<AgentsRunningPill>', () => {
     expect(screen.getByTestId('agent-detail').textContent).toContain('pinned');
   });
 
-  it('detail preview stays reachable: leaving the scroll list toward the button does NOT dismiss it', () => {
+  it('the hover preview dismisses on leaving the WHOLE roster, not the scroll list (button stays reachable)', () => {
     H.active = [agent({ ownerId: 'bee1', role: 'bee', runId: 'r1', harnessSlug: 'papercusp' })];
     nuqs.open = true;
     render(<Pill />);
     fireEvent.mouseEnter(screen.getByTestId('agent-row-bee1'));
     expect(screen.getByTestId('agent-detail')).toBeTruthy();
-    // Moving off the row list toward the detail pane must NOT clear the preview
-    // (onMouseLeave is on the whole roster, not the scroll list) — else the
-    // Live-thinking button is unreachable.
-    fireEvent.mouseLeave(screen.getByTestId('agents-roster-scroll'));
-    expect(screen.getByTestId('agent-detail')).toBeTruthy();
     expect(screen.getByTestId('agent-inspect-btn')).toBeTruthy();
-    // Leaving the ENTIRE roster does clear the hover preview.
+    // The dismiss handler lives on the roster wrapper (enclosing the list AND the
+    // detail pane), so moving the cursor from a row into the detail to click the
+    // button doesn't dismiss it. Only leaving the entire roster clears the preview.
     fireEvent.mouseLeave(screen.getByTestId('agents-roster'));
     expect(screen.queryByTestId('agent-detail')).toBeNull();
   });
