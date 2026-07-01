@@ -23,6 +23,9 @@ export default defineTool({
   guidance: {
     when: `Promote a backup to active (roll forward to it without rolling back). Used after testing a restore.`,
     notWhen: `For UNDOING to an earlier state, use \`backup:rollback\`. promote moves forward; rollback moves back.`,
+    seeAlso: [
+      'backup:rollback (undo to an earlier state — promote moves forward)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...PROMOTE_ROLES],

@@ -22,6 +22,10 @@ export default defineTool({
     when: 'The owner rejects a recent auto-decision in the settings feed — undo the action + tell the graduation engine this category was too aggressive (demote one step).',
     notWhen:
       'To just LIST auto-decisions use autonomy:tripwire_list. To change a ceiling directly use autonomy:policy_set.',
+    seeAlso: [
+      'autonomy:tripwire_list (list the auto-decisions to revert)',
+      'autonomy:policy_set (change a ceiling directly instead)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],

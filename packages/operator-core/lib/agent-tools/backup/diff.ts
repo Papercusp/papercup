@@ -21,6 +21,9 @@ export default defineTool({
   guidance: {
     when: `Diff current state vs a backup snapshot — what would change if we restored. Read-only.`,
     notWhen: `For applying the diff, use \`backup:restore\`. diff is the dry-run view.`,
+    seeAlso: [
+      'backup:restore (apply the diff — this is the dry-run view)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

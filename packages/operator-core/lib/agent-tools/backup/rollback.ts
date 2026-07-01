@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: `Roll back to the immediately-prior backup. Reversible only by re-applying via restore.`,
     notWhen: `For applying a SPECIFIC backup, use \`backup:restore\` with the id.`,
+    seeAlso: [
+      'backup:restore (apply a SPECIFIC backup by id)',
+      'backup:promote (move forward instead of back)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...ROLLBACK_ROLES],

@@ -36,6 +36,10 @@ export default defineTool({
       "Just QUERYING whether you may auto-handle something (no commitment yet) → autonomy:decide. Changing a category ceiling → autonomy:policy_set.",
     chaining:
       'autonomy:decide (or the same inputs) → act on the item → autonomy:record_disposition to log what you did. The worked example: a plan that "needs more research" → record_disposition { action:"plans:add-item", disposition:"route-to-research", researchTaskId } → a plan-governance disposition linked to the spawned research task.',
+    seeAlso: [
+      'autonomy:decide (the decision this logs the outcome of)',
+      'autonomy:tripwire_list (audit the auto-decisions recorded)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],

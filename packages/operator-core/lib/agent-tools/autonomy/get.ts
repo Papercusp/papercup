@@ -24,6 +24,10 @@ export default defineTool({
   guidance: {
     when: "Inspecting the Queen's per-category autonomy ceilings — the decider checking whether a category may auto-decide, or the owner settings surface rendering the policy. Pass `category` for one row; omit for all 13.",
     notWhen: 'To CHANGE a ceiling use autonomy:policy_set. For feature flags use flags:get.',
+    seeAlso: [
+      'autonomy:policy_set (change a ceiling — owner authority)',
+      'autonomy:graduation_status (current graduated levels vs ceilings)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

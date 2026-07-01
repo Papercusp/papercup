@@ -23,6 +23,11 @@ export default defineTool({
     when: 'Rendering the owner recent-auto-decisions feed, or inspecting which auto-decisions are under watch / tripped. Filter by status (armed|cleared|tripped|reverted) or category.',
     notWhen:
       'To UNDO one use autonomy:tripwire_revert. To see graduation standings use autonomy:graduation_status. To read ceilings use autonomy:policy_get.',
+    seeAlso: [
+      'autonomy:tripwire_revert (undo an auto-decision)',
+      'autonomy:graduation_status (graduation standings)',
+      'autonomy:policy_get (read the ceilings)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

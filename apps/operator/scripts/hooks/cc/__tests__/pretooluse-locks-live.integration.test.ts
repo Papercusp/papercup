@@ -185,6 +185,12 @@ beforeAll(() => {
     PAPERCUSP_OPERATOR_URL: BASE,
     PAPERCUSP_LOCKS_CACHE_DIR: cache,
     PAPERCUSP_WORKSPACE_ROOT: ws,
+    // The worktree-discipline guard (worktree-discipline-single-tree-enforcement-
+    // 2026-06-30) defaults the canonical tree to `<workspace_root>/papercusp`; this
+    // fixture's repo is deliberately named `papercup-test` (a fake "worktree"), so
+    // without this override the guard denies every edit as a stray sibling before
+    // the lock-contention path under test ever runs.
+    PAPERCUSP_CANONICAL_TREE: repo,
     PAPERCUSP_SID: OWNER_B,
   };
 

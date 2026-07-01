@@ -173,6 +173,11 @@ export interface RosterEntry {
   /** The harness the run's log lives under (the stream's `:slug`). Paired with
    *  runId; null when runId is null. */
   harnessSlug: string | null;
+  /** Whether this agent appears to be ACTIVELY THINKING right now — its session
+   *  transcript was appended within SESSION_THINKING_ACTIVE_MS (the roster's
+   *  "in the middle of thinking" indicator). Best-effort proxy; false for agents
+   *  with no resolvable transcript. */
+  thinking: boolean;
 }
 
 /**
@@ -427,6 +432,7 @@ export function mergeRosterEntries(
       fleetColor: fleetByOwner.get(p.ownerId)?.fleetColor ?? null,
       runId: runInfoByOwner.get(p.ownerId)?.runId ?? null,
       harnessSlug: runInfoByOwner.get(p.ownerId)?.harness ?? null,
+      thinking: false, // annotated by mergeRosterWithAssignments (transcript mtime)
     };
   });
 }
@@ -490,6 +496,7 @@ export function pendingLaunchesToRosterEntries(
       // Not yet running → no thinking stream.
       runId: null,
       harnessSlug: null,
+      thinking: false,
     };
   });
 }
@@ -660,8 +667,21 @@ export async function mergeRosterWithAssignments(
     fleetInfoByOwner,
     runInfoByOwner,
   );
+  const active = enrichPidLiveness(entries, os.hostname());
+  // "In the middle of thinking" (roster indicator): a session whose transcript was
+  // appended within SESSION_THINKING_ACTIVE_MS reads as actively thinking. Resolved
+  // in PARALLEL (never a serial fs loop, per the perf docs) and best-effort — the
+  // transcript path is cached + owner-fast-pathed, so this is one cheap stat/agent.
+  const { isSessionThinking } = await import('./claude-sessions');
+  const nowMs = Date.now();
+  await Promise.all(
+    active.map(async (e) => {
+      if (!e.sessionId) return;
+      e.thinking = await isSessionThinking(e.sessionId, { owner: e.ownerId, nowMs }).catch(() => false);
+    }),
+  );
   return {
-    active: enrichPidLiveness(entries, os.hostname()),
+    active,
     orphanedClaims: orphanedClaims(assignmentRows).map(summarizeOrphan),
   };
 }

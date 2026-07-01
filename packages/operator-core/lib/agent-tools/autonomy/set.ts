@@ -28,6 +28,10 @@ export default defineTool({
     when: "The owner (or the owner control surface) deliberately changes a category's autonomy — lower/raise the risk ceiling, lock/unlock (protected = never-auto), or the graduation engine records an earned level (clamped ≤ the ceiling).",
     notWhen:
       'To read the policy use autonomy:policy_get. This does not arm autonomy — categories ship never-auto and widen only after the owner lowers a ceiling AND the arming gate (P-092).',
+    seeAlso: [
+      'autonomy:policy_get (read the policy first)',
+      'autonomy:graduation_status (graduation standings the ceiling gates)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],

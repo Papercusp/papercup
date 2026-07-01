@@ -23,6 +23,10 @@ export default defineTool({
   guidance: {
     when: `Restore a backup snapshot — replay PG dump + filesystem into the workspace. Destructive: replaces current state.`,
     notWhen: `For ROLLING BACK without changing the snapshot list, use \`backup:rollback\`. restore is the full apply.`,
+    seeAlso: [
+      'backup:diff (preview the change before applying)',
+      'backup:rollback (roll back without changing the snapshot list)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...RESTORE_ROLES],

@@ -82,6 +82,11 @@ export default defineTool({
       'Never force as a reflex to "get my change out" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.',
     chaining:
       'dev:pipeline_position{path} → release:deploy{op:status} → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds.',
+    seeAlso: [
+      'release:checkpoint-run (re-run the gate verdict before deploying)',
+      'dev:pipeline_position (locate your commit in the pipeline first)',
+      'release:checkpoint-config (the gate config)',
+    ],
   },
   capability: 'operator:write',
   requirePrincipal: false,

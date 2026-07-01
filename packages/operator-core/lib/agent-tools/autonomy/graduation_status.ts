@@ -22,6 +22,10 @@ export default defineTool({
     when: 'Rendering the owner graduation surface, or checking how close a category is to earning more autonomy. Pairs with autonomy:policy_get (ceilings) + autonomy:tripwire_list (the underlying passes).',
     notWhen:
       'To raise a ceiling use autonomy:policy_set (owner authority). The graduated_level itself is written by the autonomy-trust-scan routine, not here.',
+    seeAlso: [
+      'autonomy:policy_set (raise a ceiling — owner authority)',
+      'autonomy:policy_get (read the current policy)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],
