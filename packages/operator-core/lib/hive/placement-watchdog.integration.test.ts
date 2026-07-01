@@ -304,7 +304,12 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     const p = await readPlacement('F-DORMANT');
     expect(p?.status).toBe('recovering'); // NOT cursed
     expect(p?.fail_count).toBe(2); // pathology count HELD — the dormancy-window loss did not climb to 3
-    expect(p?.infra_loss_count).toBe(1); // routed to the BOUNDED infra counter instead
+    // WI-677 — a post-dormancy (item-INDEPENDENT) loss is FULLY EXEMPT: BOTH counters stay flat,
+    // so infra_loss_count holds at 0 (its pre-seeded value). The earlier F-FIX-041 behavior routed
+    // it to the bounded infra counter, but that cursed the whole frontier in lockstep on a host
+    // restart (all rows climbing to the bound together), so WI-677 exempts it entirely. The bounded
+    // infra breaker is now driven ONLY by the per-item zombie signal (see the contrast tests below).
+    expect(p?.infra_loss_count).toBe(0); // fully exempt — never accrues toward any breaker
     expect(out.find((r) => r.workItemId === 'F-DORMANT')?.decision).toBe('recover');
     expect(mocks.openEscalation).not.toHaveBeenCalled(); // no curse → no escalation
     // EI-3216 — a dormancy loss is item-independent INFRA: it re-places silently (the recovering

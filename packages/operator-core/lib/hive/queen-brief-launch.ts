@@ -182,23 +182,31 @@ async function gatherOwnerSteering(
 }
 
 /**
- * The STOPPED registered hives in a workspace — those whose per-hive placement
- * bit is NOT set (per-hive start-stop 2026-06-30). Feeds the survey's stop-list
- * so a Stopped hive's frontier + plan work is withheld from the Queen. Fail-open
- * per hive (a read error ⇒ treat as started/not-stopped, so we never
- * over-withhold on a DB hiccup). A hive born with no started row reads stopped —
- * consistent with "a hive is born paused" + the orchestrator placement gate.
+ * The registered hives split by their per-hive placement bit (per-hive
+ * start-stop 2026-06-30). `stopped` feeds the survey's stop-list so a Stopped
+ * hive's frontier + plan work is withheld from the Queen; `started` is her
+ * POSITIVE scope (owner model 2026-07-01: "the workspace Queen works ANY
+ * started hive") — unioned into the survey scope so a members-wired home hive
+ * cannot hide other started hives from her. Fail-open per hive (a read error ⇒
+ * treat as started/not-stopped, so we never over-withhold on a DB hiccup). A
+ * hive born with no started row reads stopped — consistent with "a hive is
+ * born paused" + the orchestrator placement gate.
  */
-async function computeStoppedHiveSlugs(workspaceId: string): Promise<string[]> {
+async function computeHivePlacementSplit(
+  workspaceId: string,
+): Promise<{ started: string[]; stopped: string[] }> {
   const [{ listHives }, { getHivePlacementStarted }] = await Promise.all([
     import('../agent-tools/hive/_resolve'),
     import('./started'),
   ]);
   const hives = await listHives(workspaceId).catch(() => [] as Array<{ slug: string }>);
-  const started = await Promise.all(
+  const bits = await Promise.all(
     hives.map((h) => getHivePlacementStarted(workspaceId, h.slug).catch(() => true)),
   );
-  return hives.filter((_, i) => !started[i]).map((h) => h.slug);
+  return {
+    started: hives.filter((_, i) => bits[i]).map((h) => h.slug),
+    stopped: hives.filter((_, i) => !bits[i]).map((h) => h.slug),
+  };
 }
 
 export async function computeQueenWakeBrief(
@@ -220,7 +228,10 @@ export async function computeQueenWakeBrief(
     // allow-list) so standalone / unhived / started work is never regressed.
     // Fail-open ([] on error). Independent of steering, so a Stop gates even when
     // no other steering is active.
-    const stoppedHarnesses = await computeStoppedHiveSlugs(workspaceId).catch(() => [] as string[]);
+    const placementSplit = await computeHivePlacementSplit(workspaceId).catch(
+      () => ({ started: [] as string[], stopped: [] as string[] }),
+    );
+    const stoppedHarnesses = placementSplit.stopped;
     const steeringActive = !!ownerSteering && (
       ownerSteering.pauseNewWork ||
       ownerSteering.pausedUntil != null ||
@@ -252,7 +263,13 @@ export async function computeQueenWakeBrief(
     //  - carryNote / escalations — wrapped here.
     const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive, capacity] =
       await Promise.all([
-        scopeFilter ? surveyHive(workspaceId, installSlug, { scopeFilter }) : surveyHive(workspaceId, installSlug),
+        // extraSurveySlugs = the STARTED hives (owner model 2026-07-01): the
+        // workspace Queen's survey covers EVERY started hive, not just the home
+        // hive's membership — the start/stop popup is the scope control.
+        surveyHive(workspaceId, installSlug, {
+          ...(scopeFilter ? { scopeFilter } : {}),
+          ...(placementSplit.started.length > 0 ? { extraSurveySlugs: placementSplit.started } : {}),
+        }),
         getHiveCarryNote(workspaceId).catch(() => null),
         summarizeOpenPlacements(workspaceId, installSlug),
         gatherEscalations(),
