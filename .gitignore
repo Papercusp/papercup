@@ -83,7 +83,17 @@ apps/operator/docs/plans/**/*.md
 .papercusp/openapi.json
 .papercusp/lib-api/
 
-# git-sync-embedded-repo-strand fix: transient dirs that get a nested .git (no commit) and
-# fatal `git add -A` (exit 128 → stages nothing → the whole tree strands uncommitted).
-.papercusp/.vitest-tmpdir/
+# git-sync-embedded-repo-strand fix (2026-06-30, joint w/ 2b1a8 / WI-1354): transient test-scratch
+# dirs that get a nested .git (an embedded repo). When ANY has NO commit checked out, `git add -A`
+# FATALs (exit 128) → stages nothing → the whole tree strands uncommitted silently. Ignore ALL the
+# tmp roots the lockdom/flg-repo/green-checkpoint/commit-reproject tests use in-repo. (git-sync also
+# now excludes-and-retries on the fatal — run-git-sync.ts — so this is defense-in-depth.)
+.vitest-tmp/
+.vitest-tmpdir/
+**/.vitest-tmp/
+**/.vitest-tmpdir/
+**/vitest-tmp/
+.papercusp/vitest-tmp/
 .papercusp/scratch/
+**/scratch/relgit-*/
+**/scratch/lockdom-*/
