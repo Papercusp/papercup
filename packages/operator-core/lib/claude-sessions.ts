@@ -66,6 +66,52 @@ export async function claudeProjectsRoots(
 const transcriptPathCache = new Map<string, string>();
 
 /**
+ * NEGATIVE-resolution cache (sessionId → miss-expiry ms). A sessionId that does NOT
+ * resolve — a dead/ephemeral id, or a transcript not yet written — must NOT re-run the
+ * full `claudeProjectsRoots()` sweep (readdir of 12k+ isolation-owner dirs) on EVERY
+ * call. The compaction-usage watchdog polls `estimateContextTokensForOwner` on a cadence
+ * for MANY owners, and before this each miss re-swept every root — ~13 MB/s of `path.join`
+ * churn that outpaced GC and bloated the background host to tens of GB (+ pinned the event
+ * loop "CPU-bound on main thread"). SHORT TTL so a not-yet-written transcript is re-resolved
+ * once it appears; lightly pruned so a stream of unique ids can't grow it unbounded.
+ */
+const transcriptMissCache = new Map<string, number>();
+const TRANSCRIPT_MISS_TTL_MS = 30_000;
+const TRANSCRIPT_MISS_MAX = 20_000;
+function rememberTranscriptMiss(sessionId: string, now: number): void {
+  if (transcriptMissCache.size >= TRANSCRIPT_MISS_MAX) {
+    for (const [k, exp] of transcriptMissCache) if (exp <= now) transcriptMissCache.delete(k);
+    if (transcriptMissCache.size >= TRANSCRIPT_MISS_MAX) transcriptMissCache.clear();
+  }
+  transcriptMissCache.set(sessionId, now + TRANSCRIPT_MISS_TTL_MS);
+}
+
+/**
+ * TTL-cached default roots. `claudeProjectsRoots()` readdir's the isolation base (12k+
+ * owner dirs on a long-lived box) — far too expensive to redo per lookup. The roots list
+ * changes rarely (a new isolation-owner dir appears occasionally), so a short TTL turns a
+ * per-call 12k-dir readdir into ~one readdir per window. ONLY the default-args hot path is
+ * cached; callers that inject explicit roots/args (tests, targeted scans) bypass it.
+ */
+let defaultRootsCache: { at: number; roots: string[] } | null = null;
+const DEFAULT_ROOTS_TTL_MS = 15_000;
+async function defaultProjectsRootsCached(now: number): Promise<string[]> {
+  if (defaultRootsCache && now - defaultRootsCache.at < DEFAULT_ROOTS_TTL_MS) {
+    return defaultRootsCache.roots;
+  }
+  const roots = await claudeProjectsRoots();
+  defaultRootsCache = { at: now, roots };
+  return roots;
+}
+
+/** Test seam: clear the module-scoped resolution caches so a soak/unit test starts clean. */
+export function __resetClaudeSessionCaches(): void {
+  transcriptPathCache.clear();
+  transcriptMissCache.clear();
+  defaultRootsCache = null;
+}
+
+/**
  * Resolve the transcript jsonl for a Claude session by its id — the
  * `<session-id>.jsonl` handle. Returns the first match's absolute path, or null.
  *
@@ -83,10 +129,24 @@ const transcriptPathCache = new Map<string, string>();
  */
 export async function findSessionTranscript(
   sessionId: string,
-  opts: { owner?: string | null; roots?: string[]; isolationBase?: string } = {},
+  opts: { owner?: string | null; roots?: string[]; isolationBase?: string; nowMs?: number } = {},
 ): Promise<string | null> {
   if (!/^[A-Za-z0-9_.-]{6,}$/.test(sessionId)) return null;
   const file = `${sessionId}.jsonl`;
+  const now = opts.nowMs ?? Date.now();
+  // Resolution caches apply only to the production default-roots path; explicit-roots
+  // callers (tests / targeted scans) bypass them so their scan is always deterministic.
+  const useResolutionCaches = !opts.roots;
+
+  // NEGATIVE cache: an id known-missing within the TTL short-circuits the whole
+  // (potentially 12k-dir) sweep — the fix for the compaction-watchdog fs-churn bloat.
+  if (useResolutionCaches) {
+    const missUntil = transcriptMissCache.get(sessionId);
+    if (missUntil !== undefined) {
+      if (now < missUntil) return null;
+      transcriptMissCache.delete(sessionId);
+    }
+  }
 
   // Validated cache hit → skip the walk. Re-resolve if the cached file vanished
   // (rotated/deleted), so a stale entry never wedges the lookup.
@@ -130,13 +190,18 @@ export async function findSessionTranscript(
   }
 
   // FALLBACK: the full sweep (global + every isolation root) — correct but O(roots).
-  for (const root of opts.roots ?? (await claudeProjectsRoots())) {
+  // The default path uses the TTL-cached roots so a hot miss can't re-readdir 12k+ dirs
+  // every call (the compaction-watchdog churn fix).
+  for (const root of opts.roots ?? (await defaultProjectsRootsCached(now))) {
     const hit = await scan(root);
     if (hit) {
       transcriptPathCache.set(sessionId, hit);
       return hit;
     }
   }
+  // Genuine miss → remember it briefly so a hot caller polling for a dead/not-yet-written
+  // session doesn't re-sweep every isolation root on every tick.
+  if (useResolutionCaches) rememberTranscriptMiss(sessionId, now);
   return null;
 }
 

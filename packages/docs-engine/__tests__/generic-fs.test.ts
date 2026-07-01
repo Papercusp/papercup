@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { genericFsAdapter } from '../src/adapters/generic-fs';
+import { searchDocs } from '../src/search';
 
 let tmpDir: string;
 
@@ -115,5 +116,66 @@ describe('genericFsAdapter', () => {
   it('getSectionMeta returns empty (generic-fs has no section concept)', async () => {
     const adapter = genericFsAdapter(tmpDir);
     expect(await adapter.getSectionMeta?.('guides')).toEqual({});
+  });
+});
+
+// EI-5856 / EI-5860 / EI-5861: docs:search returned a structural MDX error
+// ("Expected a closing tag for `<owner>` (3:103-3:110)") because a real doc's
+// frontmatter description held a BARE `<owner>` placeholder. genericFsAdapter
+// renders the WHOLE raw .mdx (frontmatter NOT pre-stripped) through remark-mdx,
+// which parses that description line as a paragraph with an unclosed JSX tag and
+// THROWS — and because searchDocs renders every page in one Promise.all, a single
+// bad doc unwound the entire search/outline for the corpus. This guards the FULL
+// docs:search path (adapter → searchDocs), not just the render function: a
+// malformed doc must degrade to a raw-text fallback so search still works.
+describe('genericFsAdapter × searchDocs — EI-5856 malformed-doc resilience', () => {
+  let badDir: string;
+
+  beforeAll(async () => {
+    badDir = await fs.mkdtemp(path.join(os.tmpdir(), 'generic-fs-bad-'));
+    // A well-formed sibling so the corpus isn't a single doc.
+    await fs.writeFile(
+      path.join(badDir, 'ok.mdx'),
+      '# OK doc\n\nA perfectly ordinary quokka page.\n',
+      'utf-8',
+    );
+    // The exact repro: a bare `<owner>` in the frontmatter description at line 3,
+    // matching the reported (3:103) parse position. Body carries a unique keyword.
+    await fs.writeFile(
+      path.join(badDir, 'broken.mdx'),
+      [
+        '---',
+        'title: Owner cursor doc',
+        'description: Resume the coordination session keyed by the <owner> id so the fleet can find the persisted transcript later',
+        '---',
+        '',
+        '# Owner cursor',
+        '',
+        'The coordination cursor lives in a per-owner marmoset file the fleet reads.',
+      ].join('\n') + '\n',
+      'utf-8',
+    );
+  });
+
+  afterAll(async () => {
+    await fs.rm(badDir, { recursive: true, force: true });
+  });
+
+  it('does not throw when a doc has a bare <owner> frontmatter placeholder', async () => {
+    const adapter = genericFsAdapter(badDir);
+    await expect(searchDocs(adapter, { query: 'quokka' })).resolves.toBeDefined();
+  });
+
+  it('keeps the malformed doc keyword-searchable via the raw-text fallback', async () => {
+    const adapter = genericFsAdapter(badDir);
+    const res = await searchDocs(adapter, { query: 'marmoset' });
+    // The body keyword survived the fallback → the broken doc is still a hit.
+    expect(res.hits.map((h) => h.slug)).toContain('broken');
+  });
+
+  it('still finds well-formed sibling docs despite the malformed one', async () => {
+    const adapter = genericFsAdapter(badDir);
+    const res = await searchDocs(adapter, { query: 'quokka' });
+    expect(res.hits.map((h) => h.slug)).toContain('ok');
   });
 });

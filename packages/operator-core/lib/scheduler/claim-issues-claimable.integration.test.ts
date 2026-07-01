@@ -284,12 +284,12 @@ describe('claimNextWorkItem fallback ladder — a kind-narrowed caller still wid
     expect(await claimOneKind('w-t3-off', 'feature')).toBeNull();
   });
 
-  it('tier 3: a BLOCKED issue is still skipped even after the feature family widens dry (readiness applies at every tier)', async () => {
+  it('tier 3: a BLOCKED issue is skipped, but the widened issue tier still claims other READY issue work', async () => {
     h.issuesClaimable = true;
     await seedIssue('EI-t3-blocker', { state: 'open', createdTs: 40, kind: 'change' });
     await seedIssue('EI-t3-blocked', { state: 'open', createdTs: 100 });
     await blockEdge('EI-t3-blocked', 'EI-t3-blocker', 'issue', 'issue');
-    expect(await claimOneKind('w-t3d', 'feature')).toBeNull();
+    expect(await claimOneKind('w-t3d', 'feature')).toBe('EI-t3-blocker');
     await db.sql`UPDATE harness_shared.work_items SET status='resolved' WHERE feature_id='EI-t3-blocker'`;
     expect(await claimOneKind('w-t3e', 'feature')).toBe('EI-t3-blocked');
   });

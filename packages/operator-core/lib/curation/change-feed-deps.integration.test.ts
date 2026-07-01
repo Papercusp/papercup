@@ -34,7 +34,8 @@ const WS = 'ws-change-feed-test';
 
 // Deterministic completion clocks (epoch ms), newest → oldest:
 const T_ISSUE = Date.parse('2026-06-06T09:00:00Z'); // resolved engineer issue
-const T_FEATURE = Date.parse('2026-06-05T10:00:00Z'); // done feature
+const T_FEATURE = Date.parse('2026-06-05T10:00:00Z'); // genuine feature completion
+const T_DEDUP = Date.parse('2026-06-05T09:30:00Z'); // terminal, but no completion_ref
 const T_GYM = Date.parse('2026-06-04T08:00:00Z'); // accepted gym proposal
 const T_PLAN = Date.parse('2026-06-03T07:00:00Z'); // finished plan run
 
@@ -46,21 +47,33 @@ describe('change-feed production readers (real PG)', () => {
     h.sql = db.adminSql;
     const sql = db.adminSql;
 
-    // — work_items, feature family: one completed, one in-flight (excluded) —
+    // — work_items, feature family: one genuine completion, one dedup terminal flip,
+    //   one in-flight (excluded) —
     await sql`
       INSERT INTO harness_shared.harness_features_consolidated
-        (workspace_id, harness_slug, feature_id, title, status, updated_ts)
+        (workspace_id, harness_slug, feature_id, title, status, updated_ts,
+         created_by_github_user_id, terminal_owner, terminal_completion_ref)
       VALUES
-        (${WS}, 'papercup', 'F-DONE', 'Shipped the dock workbench', 'done', ${T_FEATURE}),
-        (${WS}, 'papercup', 'F-WIP', 'Half-built thing', 'in_progress', ${T_FEATURE})`;
+        (${WS}, 'papercup', 'F-DONE', 'Shipped the dock workbench', 'passed', ${T_FEATURE},
+         123, 'bee-1', 'merged PR #1'),
+        (${WS}, 'papercup', 'F-DEDUP', 'Auto-closed duplicate work', 'passed', ${T_DEDUP},
+         NULL, 'watchdog-auto-close', NULL),
+        (${WS}, 'papercup', 'F-WIP', 'Half-built thing', 'in_progress', ${T_FEATURE},
+         123, NULL, NULL)`;
 
-    // — work_items, issue family: one resolved, one still open (excluded) —
+    // — work_items, issue family: one genuine resolved completion, one dedup
+    //   resolved row, one still open (excluded) —
     await sql`
       INSERT INTO harness_shared.engineer_issues
-        (workspace_id, issue_id, scope, title, state, updated_at)
+        (workspace_id, issue_id, scope, title, state, updated_at,
+         terminal_owner, terminal_completion_ref)
       VALUES
-        (${WS}, 'EI-5', 'harness:papercup', 'Fixed the flaky watchdog tick', 'resolved', ${new Date(T_ISSUE)}),
-        (${WS}, 'EI-6', 'operator', 'Still-open friction', 'open', ${new Date(T_ISSUE)})`;
+        (${WS}, 'EI-5', 'harness:papercup', 'Fixed the flaky watchdog tick', 'resolved',
+         ${new Date(T_ISSUE)}, 'bee-2', 'fixed in PR #2'),
+        (${WS}, 'EI-6', 'harness:papercup', 'Dedup-only closure', 'resolved',
+         ${new Date(T_DEDUP)}, 'improvement-hygiene', NULL),
+        (${WS}, 'EI-7', 'operator', 'Still-open friction', 'open', ${new Date(T_ISSUE)},
+         NULL, NULL)`;
 
     // — gym proposals: one decided, one pending (excluded) —
     await sql`
@@ -84,7 +97,7 @@ describe('change-feed production readers (real PG)', () => {
     await db?.cleanup();
   });
 
-  it('derives the feed from all three completion sources — terminal records only', async () => {
+  it('derives the feed from all three completion sources — GENUINE completion records only', async () => {
     const feed = await gatherCompletions(buildChangeFeedReaders());
     const ids = feed.map((e) => e.id);
 
@@ -95,8 +108,10 @@ describe('change-feed production readers (real PG)', () => {
     expect(ids).toContain('plan:plan-done'); // op_status done
 
     // …and the in-flight records are NOT.
+    expect(ids).not.toContain('wi:F-DEDUP');
     expect(ids).not.toContain('wi:F-WIP');
     expect(ids).not.toContain('wi:EI-6');
+    expect(ids).not.toContain('wi:EI-7');
     expect(ids).not.toContain('gym:gp-2');
     expect(ids).not.toContain('plan:plan-started');
   });
@@ -127,12 +142,14 @@ describe('change-feed production readers (real PG)', () => {
       harness: 'papercup',
       workItemId: 'F-DONE',
       ref: 'wi:F-DONE',
+      userRequested: true,
     });
     // The issue family's harness derives from its scope ('harness:papercup').
     expect(byId.get('wi:EI-5')).toMatchObject({
       kind: 'completion',
       harness: 'papercup',
       workItemId: 'EI-5',
+      userRequested: false,
     });
     expect(byId.get('gym:gp-1')).toMatchObject({
       kind: 'proposal',
@@ -152,10 +169,14 @@ describe('change-feed production readers (real PG)', () => {
     const sql = db.adminSql;
 
     // The open issue resolves → the next regeneration includes it.
-    await sql`UPDATE harness_shared.engineer_issues SET state = 'resolved'
-               WHERE workspace_id = ${WS} AND issue_id = 'EI-6'`;
+    await sql`
+      UPDATE harness_shared.engineer_issues
+         SET state = 'resolved',
+             terminal_owner = 'bee-3',
+             terminal_completion_ref = 'closed in PR #3'
+       WHERE workspace_id = ${WS} AND issue_id = 'EI-7'`;
     let ids = (await gatherCompletions(buildChangeFeedReaders())).map((e) => e.id);
-    expect(ids).toContain('wi:EI-6');
+    expect(ids).toContain('wi:EI-7');
 
     // A source record disappears → the feed forgets it. A parallel log would
     // still carry the dead entry; a derived view cannot.

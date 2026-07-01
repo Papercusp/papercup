@@ -20,6 +20,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveHiveHomeSlug } from '../../hive/wake';
 import { requestUrgentHiveWake } from '../../hive/urgent-wake';
 import { setOwnerSteering, type OwnerSteeringPatch } from '../../owner-steering';
+import { LIMITS } from '../limits';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
@@ -51,10 +52,10 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     directive: z
       .string()
-      .max(4000)
+      .max(LIMITS.BRIEF)
       .nullable()
       .optional()
-      .describe('Free-text directive surfaced in the Queen wake brief. null or "" clears it.'),
+      .describe(`Free-text directive surfaced in the Queen wake brief. null or "" clears it. Max ${LIMITS.BRIEF} chars.`),
     eligiblePlans: z
       .array(z.string().min(1).max(200))
       .max(200)

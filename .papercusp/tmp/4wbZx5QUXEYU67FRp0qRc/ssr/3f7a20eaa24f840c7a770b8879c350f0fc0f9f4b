@@ -1,0 +1,36 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/voice-node/manager.ts", {"importedNames":["joinVoiceChannel"]});
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "voice:join",
+  profile: "engineer",
+  description: "Join a P2P voice channel by id or name — starts the voice swarm, announces the topic, connects to peers.",
+  capability: "operator:write",
+  guidance: {
+    when: `Enter a voice channel (by id or name from \`voice:channels\`). One active channel at a time; joining another leaves the current one.`,
+    notWhen: `Don't poll this — \`voice:status\` reads the live state; the local voice socket pushes status events to UI clients.`,
+    chaining: `voice:channels {op:'list'} → voice:join → speak via the local voice socket (pui/desktop) → voice:leave.`,
+    seeAlso: [
+      "voice:channels (list / create channels)",
+      "voice:leave (leave the channel)",
+      "voice:status (live channel presence)"
+    ]
+  },
+  requirePrincipal: false,
+  // Sentinel-as-Herald: the voice-first Herald drives the voice channel.
+  agentRoles: ["operator", "architect", "sentinel"],
+  rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 100 } },
+  args: __vite_ssr_import_0__.z.object({ channel: __vite_ssr_import_0__.z.string().min(1).describe("Channel id (vc-…) or name") }),
+  async handler(args) {
+    const status = await (0,__vite_ssr_import_2__.joinVoiceChannel)(args.channel);
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true, status }) }] };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQUFBO0FBQ0E7QUFDQTs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsYUFBYTtBQUFBLEVBQ2IsWUFBWTtBQUFBLEVBQ1osVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsVUFBVTtBQUFBLElBQ1YsU0FBUztBQUFBLE1BQ1A7QUFBQSxNQUNBO0FBQUEsTUFDQTtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQUEsRUFDQSxrQkFBa0I7QUFBQTtBQUFBLEVBRWxCLFlBQVksQ0FBQyxZQUFZLGFBQWEsVUFBVTtBQUFBLEVBQ2hELFlBQVksRUFBRSxXQUFXLEVBQUUsUUFBUSxHQUFHLEdBQUcsVUFBVSxFQUFFLFFBQVEsSUFBSSxFQUFFO0FBQUEsRUFDbkUsTUFBTSx3QkFBRSxPQUFPLEVBQUUsU0FBUyx3QkFBRSxPQUFPLEVBQUUsSUFBSSxDQUFDLEVBQUUsU0FBUywyQkFBMkIsRUFBRSxDQUFDO0FBQUEsRUFDbkYsTUFBTSxRQUFRLE1BQU07QUFDbEIsVUFBTSxTQUFTLFNBQU0sd0NBQWlCLEtBQUssT0FBTztBQUNsRCxXQUFPLEVBQUUsU0FBUyxDQUFDLEVBQUUsTUFBTSxRQUFRLE1BQU0sS0FBSyxVQUFVLEVBQUUsSUFBSSxNQUFNLE9BQU8sQ0FBQyxFQUFFLENBQUMsRUFBRTtBQUFBLEVBQ25GO0FBQ0YsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiam9pbi50cyJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wgfSBmcm9tICdAcGFwZXJjdXNwL2FnZW50LW1jcCc7XG5pbXBvcnQgeyBqb2luVm9pY2VDaGFubmVsIH0gZnJvbSAnLi4vLi4vdm9pY2Utbm9kZS9tYW5hZ2VyJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICd2b2ljZTpqb2luJyxcbiAgcHJvZmlsZTogJ2VuZ2luZWVyJyxcbiAgZGVzY3JpcHRpb246ICdKb2luIGEgUDJQIHZvaWNlIGNoYW5uZWwgYnkgaWQgb3IgbmFtZSDigJQgc3RhcnRzIHRoZSB2b2ljZSBzd2FybSwgYW5ub3VuY2VzIHRoZSB0b3BpYywgY29ubmVjdHMgdG8gcGVlcnMuJyxcbiAgY2FwYWJpbGl0eTogJ29wZXJhdG9yOndyaXRlJyxcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiBgRW50ZXIgYSB2b2ljZSBjaGFubmVsIChieSBpZCBvciBuYW1lIGZyb20gXFxgdm9pY2U6Y2hhbm5lbHNcXGApLiBPbmUgYWN0aXZlIGNoYW5uZWwgYXQgYSB0aW1lOyBqb2luaW5nIGFub3RoZXIgbGVhdmVzIHRoZSBjdXJyZW50IG9uZS5gLFxuICAgIG5vdFdoZW46IGBEb24ndCBwb2xsIHRoaXMg4oCUIFxcYHZvaWNlOnN0YXR1c1xcYCByZWFkcyB0aGUgbGl2ZSBzdGF0ZTsgdGhlIGxvY2FsIHZvaWNlIHNvY2tldCBwdXNoZXMgc3RhdHVzIGV2ZW50cyB0byBVSSBjbGllbnRzLmAsXG4gICAgY2hhaW5pbmc6IGB2b2ljZTpjaGFubmVscyB7b3A6J2xpc3QnfSDihpIgdm9pY2U6am9pbiDihpIgc3BlYWsgdmlhIHRoZSBsb2NhbCB2b2ljZSBzb2NrZXQgKHB1aS9kZXNrdG9wKSDihpIgdm9pY2U6bGVhdmUuYCxcbiAgICBzZWVBbHNvOiBbXG4gICAgICAndm9pY2U6Y2hhbm5lbHMgKGxpc3QgLyBjcmVhdGUgY2hhbm5lbHMpJyxcbiAgICAgICd2b2ljZTpsZWF2ZSAobGVhdmUgdGhlIGNoYW5uZWwpJyxcbiAgICAgICd2b2ljZTpzdGF0dXMgKGxpdmUgY2hhbm5lbCBwcmVzZW5jZSknLFxuICAgIF0sXG4gIH0sXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICAvLyBTZW50aW5lbC1hcy1IZXJhbGQ6IHRoZSB2b2ljZS1maXJzdCBIZXJhbGQgZHJpdmVzIHRoZSB2b2ljZSBjaGFubmVsLlxuICBhZ2VudFJvbGVzOiBbJ29wZXJhdG9yJywgJ2FyY2hpdGVjdCcsICdzZW50aW5lbCddLFxuICByb2xlc1F1b3RhOiB7IGFyY2hpdGVjdDogeyBwZXJSdW46IDIwIH0sIG9wZXJhdG9yOiB7IHBlclJ1bjogMTAwIH0gfSxcbiAgYXJnczogei5vYmplY3QoeyBjaGFubmVsOiB6LnN0cmluZygpLm1pbigxKS5kZXNjcmliZSgnQ2hhbm5lbCBpZCAodmMt4oCmKSBvciBuYW1lJykgfSksXG4gIGFzeW5jIGhhbmRsZXIoYXJncykge1xuICAgIGNvbnN0IHN0YXR1cyA9IGF3YWl0IGpvaW5Wb2ljZUNoYW5uZWwoYXJncy5jaGFubmVsKTtcbiAgICByZXR1cm4geyBjb250ZW50OiBbeyB0eXBlOiAndGV4dCcsIHRleHQ6IEpTT04uc3RyaW5naWZ5KHsgb2s6IHRydWUsIHN0YXR1cyB9KSB9XSB9O1xuICB9LFxufSk7XG4iXSwiZmlsZSI6Ii9saWIvYWdlbnQtdG9vbHMvdm9pY2Uvam9pbi50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvdm9pY2Uvam9pbi50cyIsIi9saWIvYWdlbnQtdG9vbHMvdm9pY2Uvam9pbi50cyIsW11d

@@ -1,0 +1,48 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/coordination/escalations.ts", {"importedNames":["listEscalationsPaginated"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/agent-tools/coordination/roles.ts", {"importedNames":["COORD_ROLES"]});
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "coord:escalations",
+  description: "List escalations addressed to the human — NEWEST-FIRST and bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. `truncated:true` means older escalations exist beyond the window — raise maxRecords or narrow by status.",
+  guidance: {
+    when: "Showing the human inbox; diagnostics; checking your own past escalations.",
+    notWhen: "A specific msg_id you already have — there is no escalation read-by-id tool yet; coord:escalations + filter is enough at current volumes."
+  },
+  capability: "coord:read",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_3__.COORD_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    status: __vite_ssr_import_0__.z.enum(["open", "resolved"]).optional(),
+    maxRecords: __vite_ssr_import_0__.z.number().int().min(1).max(500).optional().describe("Max records per call (default 50, max 500)")
+  }),
+  async handler(args) {
+    const result = await (0,__vite_ssr_import_2__.listEscalationsPaginated)({
+      status: args.status,
+      maxRecords: args.maxRecords
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            escalations: result.escalations,
+            count: result.escalations.length,
+            total: result.total,
+            truncated: result.truncated,
+            note: result.truncated ? `Bounded to the ${result.total} most-recent escalation events (older exist beyond this window). Raise maxRecords (max 500) or filter by status to page further.` : void 0
+          })
+        }
+      ]
+    };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQUlBO0FBQ0E7QUFDQTtBQUNBOzs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLEVBQ1g7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLGlDQUFXO0FBQUEsRUFDM0IsTUFBTSx3QkFBRSxPQUFPO0FBQUEsSUFDYixRQUFRLHdCQUFFLEtBQUssQ0FBQyxRQUFRLFVBQVUsQ0FBQyxFQUFFLFNBQVM7QUFBQSxJQUM5QyxZQUFZLHdCQUFFLE9BQU8sRUFBRSxJQUFJLEVBQUUsSUFBSSxDQUFDLEVBQUUsSUFBSSxHQUFHLEVBQUUsU0FBUyxFQUFFLFNBQVMsNENBQTRDO0FBQUEsRUFDL0csQ0FBQztBQUFBLEVBQ0QsTUFBTSxRQUFRLE1BQU07QUFDbEIsVUFBTSxTQUFTLFNBQU0sZ0RBQXlCO0FBQUEsTUFDNUMsUUFBUSxLQUFLO0FBQUEsTUFDYixZQUFZLEtBQUs7QUFBQSxJQUNuQixDQUFDO0FBRUQsV0FBTztBQUFBLE1BQ0wsU0FBUztBQUFBLFFBQ1A7QUFBQSxVQUNFLE1BQU07QUFBQSxVQUNOLE1BQU0sS0FBSyxVQUFVO0FBQUEsWUFDbkIsYUFBYSxPQUFPO0FBQUEsWUFDcEIsT0FBTyxPQUFPLFlBQVk7QUFBQSxZQUMxQixPQUFPLE9BQU87QUFBQSxZQUNkLFdBQVcsT0FBTztBQUFBLFlBQ2xCLE1BQU0sT0FBTyxZQUFZLGtCQUFrQixPQUFPLEtBQUsscUlBQXFJO0FBQUEsVUFDOUwsQ0FBQztBQUFBLFFBQ0g7QUFBQSxNQUNGO0FBQUEsSUFDRjtBQUFBLEVBQ0Y7QUFDRixDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJlc2NhbGF0aW9ucy50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIGNvb3JkOmVzY2FsYXRpb25zIOKAlCBsaXN0IG9wZW4gLyByZXNvbHZlZCBlc2NhbGF0aW9uIHJlY29yZHMuXG4gKi9cblxuaW1wb3J0IHsgeiB9IGZyb20gJ3pvZCc7XG5pbXBvcnQgeyBkZWZpbmVUb29sIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgbGlzdEVzY2FsYXRpb25zUGFnaW5hdGVkIH0gZnJvbSAnLi4vZXNjYWxhdGlvbnMnO1xuaW1wb3J0IHsgQ09PUkRfUk9MRVMgfSBmcm9tICcuLi9yb2xlcyc7XG5cbmV4cG9ydCBkZWZhdWx0IGRlZmluZVRvb2woe1xuICBuYW1lOiAnY29vcmQ6ZXNjYWxhdGlvbnMnLFxuICBkZXNjcmlwdGlvbjpcbiAgICAnTGlzdCBlc2NhbGF0aW9ucyBhZGRyZXNzZWQgdG8gdGhlIGh1bWFuIOKAlCBORVdFU1QtRklSU1QgYW5kIGJvdW5kZWQgYXQgdGhlIHN0b3JhZ2UgbGF5ZXIgKEVJLTE1NDg6IG5ldmVyIGxvYWRzIHRoZSB3aG9sZSBiYWNrbG9nIGludG8gbWVtb3J5KS4gRGVmYXVsdCBwYWdlIDUwLCBtYXggNTAwLiBGaWx0ZXIgYnkgc3RhdHVzPW9wZW4gLyBzdGF0dXM9cmVzb2x2ZWQuIGB0cnVuY2F0ZWQ6dHJ1ZWAgbWVhbnMgb2xkZXIgZXNjYWxhdGlvbnMgZXhpc3QgYmV5b25kIHRoZSB3aW5kb3cg4oCUIHJhaXNlIG1heFJlY29yZHMgb3IgbmFycm93IGJ5IHN0YXR1cy4nLFxuICBndWlkYW5jZToge1xuICAgIHdoZW46ICdTaG93aW5nIHRoZSBodW1hbiBpbmJveDsgZGlhZ25vc3RpY3M7IGNoZWNraW5nIHlvdXIgb3duIHBhc3QgZXNjYWxhdGlvbnMuJyxcbiAgICBub3RXaGVuOiAnQSBzcGVjaWZpYyBtc2dfaWQgeW91IGFscmVhZHkgaGF2ZSDigJQgdGhlcmUgaXMgbm8gZXNjYWxhdGlvbiByZWFkLWJ5LWlkIHRvb2wgeWV0OyBjb29yZDplc2NhbGF0aW9ucyArIGZpbHRlciBpcyBlbm91Z2ggYXQgY3VycmVudCB2b2x1bWVzLicsXG4gIH0sXG4gIGNhcGFiaWxpdHk6ICdjb29yZDpyZWFkJyxcbiAgcmVxdWlyZVByaW5jaXBhbDogZmFsc2UsXG4gIGFnZW50Um9sZXM6IFsuLi5DT09SRF9ST0xFU10sXG4gIGFyZ3M6IHoub2JqZWN0KHtcbiAgICBzdGF0dXM6IHouZW51bShbJ29wZW4nLCAncmVzb2x2ZWQnXSkub3B0aW9uYWwoKSxcbiAgICBtYXhSZWNvcmRzOiB6Lm51bWJlcigpLmludCgpLm1pbigxKS5tYXgoNTAwKS5vcHRpb25hbCgpLmRlc2NyaWJlKCdNYXggcmVjb3JkcyBwZXIgY2FsbCAoZGVmYXVsdCA1MCwgbWF4IDUwMCknKSxcbiAgfSksXG4gIGFzeW5jIGhhbmRsZXIoYXJncykge1xuICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IGxpc3RFc2NhbGF0aW9uc1BhZ2luYXRlZCh7IFxuICAgICAgc3RhdHVzOiBhcmdzLnN0YXR1cyxcbiAgICAgIG1heFJlY29yZHM6IGFyZ3MubWF4UmVjb3JkcyxcbiAgICB9KTtcbiAgICBcbiAgICByZXR1cm4ge1xuICAgICAgY29udGVudDogW1xuICAgICAgICB7IFxuICAgICAgICAgIHR5cGU6ICd0ZXh0JyBhcyBjb25zdCwgXG4gICAgICAgICAgdGV4dDogSlNPTi5zdHJpbmdpZnkoeyBcbiAgICAgICAgICAgIGVzY2FsYXRpb25zOiByZXN1bHQuZXNjYWxhdGlvbnMsXG4gICAgICAgICAgICBjb3VudDogcmVzdWx0LmVzY2FsYXRpb25zLmxlbmd0aCxcbiAgICAgICAgICAgIHRvdGFsOiByZXN1bHQudG90YWwsXG4gICAgICAgICAgICB0cnVuY2F0ZWQ6IHJlc3VsdC50cnVuY2F0ZWQsXG4gICAgICAgICAgICBub3RlOiByZXN1bHQudHJ1bmNhdGVkID8gYEJvdW5kZWQgdG8gdGhlICR7cmVzdWx0LnRvdGFsfSBtb3N0LXJlY2VudCBlc2NhbGF0aW9uIGV2ZW50cyAob2xkZXIgZXhpc3QgYmV5b25kIHRoaXMgd2luZG93KS4gUmFpc2UgbWF4UmVjb3JkcyAobWF4IDUwMCkgb3IgZmlsdGVyIGJ5IHN0YXR1cyB0byBwYWdlIGZ1cnRoZXIuYCA6IHVuZGVmaW5lZCxcbiAgICAgICAgICB9KSxcbiAgICAgICAgfSxcbiAgICAgIF0sXG4gICAgfTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2Nvb3JkaW5hdGlvbi90b29scy9lc2NhbGF0aW9ucy50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvY29vcmRpbmF0aW9uL3Rvb2xzL2VzY2FsYXRpb25zLnRzIiwiL2xpYi9hZ2VudC10b29scy9jb29yZGluYXRpb24vdG9vbHMvZXNjYWxhdGlvbnMudHMiLFtdXQ==

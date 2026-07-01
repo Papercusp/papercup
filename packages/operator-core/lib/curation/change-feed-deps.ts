@@ -31,13 +31,16 @@ function epochMsToIso(v: string | number | null): string {
   return new Date(Number.isFinite(n) ? n : 0).toISOString();
 }
 
+const CHANGE_FEED_COMPLETION_STATUSES = ['done', 'passed', 'resolved', 'closed'] as const;
+
 /**
  * Work-item completions: rows of the unified `work_items` view (features ∪
- * engineer issues, migrations 159/178) that reached a terminal COMPLETED
- * status — done/passed (feature family) ∪ resolved/closed (issue family);
- * deprecated/dropped are terminal but not completions. The view's id column
- * is `feature_id`; `updated_ts` (epoch ms) is the lifecycle write that took
- * the item terminal — the completion clock.
+ * engineer issues, migrations 159/178) that reached a COMPLETION status AND
+ * carry the WI-1403/WI-1405 completion-integrity pair (`terminal_owner` +
+ * `terminal_completion_ref`). That excludes watchdog/hygiene/revert dedup
+ * flips, which are terminal but are not genuine shipped work. The view's id
+ * column is `feature_id`; `updated_ts` (epoch ms) is the lifecycle write that
+ * took the item terminal — the completion clock.
  */
 async function fetchWorkItemCompletions(): Promise<ChangeFeedEntry[]> {
   const { sql } = getOrgPg();
@@ -48,11 +51,14 @@ async function fetchWorkItemCompletions(): Promise<ChangeFeedEntry[]> {
       title: string | null;
       status: string | null;
       updated_ts: string | null;
+      created_by_github_user_id: string | null;
     }[]
   >`
-    SELECT feature_id, harness_slug, title, status, updated_ts
+    SELECT feature_id, harness_slug, title, status, updated_ts, created_by_github_user_id::text
       FROM harness_shared.work_items
-     WHERE status IN ('done', 'passed', 'resolved', 'closed')
+     WHERE status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES]}::text[])
+       AND terminal_owner IS NOT NULL AND terminal_owner <> ''
+       AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
      ORDER BY updated_ts DESC NULLS LAST
      LIMIT 500`;
 
@@ -65,7 +71,7 @@ async function fetchWorkItemCompletions(): Promise<ChangeFeedEntry[]> {
     workItemId: r.feature_id,
     ref: `wi:${r.feature_id}`,
     ts: epochMsToIso(r.updated_ts),
-    userRequested: false,
+    userRequested: r.created_by_github_user_id != null,
   }));
 }
 

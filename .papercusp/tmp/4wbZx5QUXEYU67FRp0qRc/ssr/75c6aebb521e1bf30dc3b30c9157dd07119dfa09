@@ -1,0 +1,79 @@
+__vite_ssr_exportName__("accountsSetSessionOverrideTool", () => { try { return accountsSetSessionOverrideTool } catch {} });
+__vite_ssr_exportName__("accountsGetSessionOverrideTool", () => { try { return accountsGetSessionOverrideTool } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/coordination/roles.ts", {"importedNames":["COORD_ROLES"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/workspace-registry.ts", {"importedNames":["activeWorkspaceId"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/deployment/account-session-override.ts", {"importedNames":["getAccountOverride","setAccountOverride"]});
+
+
+
+
+
+const json = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
+const accountsSetSessionOverrideTool = (0,__vite_ssr_import_1__.defineTool)({
+  name: "accounts:set-session-override",
+  profile: "engineer",
+  description: "Set the owner's session-now account override the fleet honours when picking a pool account to spawn/deploy on (accounts-pool-tab P-004): `forcedAccounts` (allow-list — use ONLY these), `excludeAccounts` (skip these, e.g. a flaky/rate-limited account). Both empty ⇒ no restriction (today's behaviour). Applied as a fail-soft precedence layer BEFORE the headroom/drain selectors; an over-restrictive set falls back to the frame-default credential. `clear:true` wipes both. Returns {ok, override}.",
+  guidance: {
+    when: "Steering account selection for the current session — focus the fleet on one account, or route around a flaky/limited one — without removing it from the pool.",
+    notWhen: "Permanently removing an account — accounts:remove. Clearing a rate-limit penalty — accounts:reset-rate. Pausing the hive — hive:pause.",
+    chaining: 'accounts:set-session-override { excludeAccounts:["acct-b"] } → bees stop spawning on acct-b this session. clear:true resets.',
+    seeAlso: [
+      "accounts:get-session-override (read the current steering before changing it)",
+      "accounts:remove (permanently drop an account instead of session-excluding)",
+      "accounts:reset-rate (clear a rate-limit penalty instead of routing around it)"
+    ]
+  },
+  capability: "harness:write",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_2__.COORD_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    workspace: __vite_ssr_import_0__.z.string().max(120).optional().describe("Workspace id (default: ctx / active workspace)."),
+    forcedAccounts: __vite_ssr_import_0__.z.array(__vite_ssr_import_0__.z.string().min(1).max(200)).max(200).optional().describe("Allow-list — the fleet may use ONLY these account ids. [] = no restriction."),
+    excludeAccounts: __vite_ssr_import_0__.z.array(__vite_ssr_import_0__.z.string().min(1).max(200)).max(200).optional().describe("Account ids to skip this session (e.g. a flaky/limited account). [] = skip none."),
+    clear: __vite_ssr_import_0__.z.boolean().optional().describe("Wipe both axes back to no-restriction.")
+  }),
+  async handler(args, ctx) {
+    const ws = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? (0,__vite_ssr_import_3__.activeWorkspaceId)();
+    const patch = {};
+    if (args.forcedAccounts !== void 0) patch.forcedAccounts = args.forcedAccounts;
+    if (args.excludeAccounts !== void 0) patch.excludeAccounts = args.excludeAccounts;
+    if (args.clear !== void 0) patch.clear = args.clear;
+    try {
+      const override = await (0,__vite_ssr_import_4__.setAccountOverride)(ws, patch);
+      void __vite_ssr_dynamic_import__("/lib/sync-sse.ts").then(({ notifySyncInvalidate }) => notifySyncInvalidate("accounts.pool", {})).catch(() => {
+      });
+      return json({ ok: true, override });
+    } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+});
+const accountsGetSessionOverrideTool = (0,__vite_ssr_import_1__.defineTool)({
+  name: "accounts:get-session-override",
+  profile: "engineer",
+  description: "Read the current owner session-now account override (forcedAccounts allow-list + excludeAccounts) the fleet honours when picking a pool account. An un-steered workspace returns both empty (no restriction). The READ twin of accounts:set-session-override. Returns {ok, override}.",
+  guidance: {
+    when: "Checking how account selection is currently steered, before changing it.",
+    notWhen: "Per-account rate/status — accounts:status. The whole pool — accounts:list.",
+    seeAlso: [
+      "accounts:set-session-override (change the steering)",
+      "accounts:status (per-account health the override steers around)"
+    ]
+  },
+  capability: "harness:read",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_2__.COORD_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    workspace: __vite_ssr_import_0__.z.string().max(120).optional().describe("Workspace id (default: ctx / active workspace).")
+  }),
+  async handler(args, ctx) {
+    const ws = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? (0,__vite_ssr_import_3__.activeWorkspaceId)();
+    return json({ ok: true, override: await (0,__vite_ssr_import_4__.getAccountOverride)(ws) });
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,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QUFXLGtCQUFlLHlDQUFrQjtBQUNoRyxXQUFPLEtBQUssRUFBRSxJQUFJLE1BQU0sVUFBVSxTQUFNLDBDQUFtQixFQUFFLEVBQUUsQ0FBQztBQUFBLEVBQ2xFO0FBQ0YsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsic2Vzc2lvbi1vdmVycmlkZS50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIGFjY291bnRzOnNldC1zZXNzaW9uLW92ZXJyaWRlIC8gYWNjb3VudHM6Z2V0LXNlc3Npb24tb3ZlcnJpZGUg4oCUIHRoZSBvd25lcidzIHNlc3Npb24tbm93XG4gKiBzdGVlciBvdmVyIFdISUNIIHBvb2wgYWNjb3VudHMgdGhlIGZsZWV0IG1heSBzcGF3bi9kZXBsb3kgb24gKGFjY291bnRzLXBvb2wtdGFiLTIwMjYtMDYtMTVcbiAqIFAtMDA0OyBvd25lciBncmVlbmxpdCBcImFsbG93LWxpc3QgKyBleGNsdWRlXCIpLiBUaGUgYWdlbnQtc3VyZmFjZSB0d2luIG9mIHRoZVxuICogL2FwaS9hZG1pbi9kZXBsb3ktYWNjb3VudHMvc2Vzc2lvbi1vdmVycmlkZSByb3V0ZS4gVGhpbiB3cmFwcGVycyBvdmVyXG4gKiBkZXBsb3ltZW50L2FjY291bnQtc2Vzc2lvbi1vdmVycmlkZTsgV09SS1NQQUNFLUxFVkVMIChELTAxNSDigJQgbm8gaG9tZSBoaXZlIHJlcXVpcmVkKSxcbiAqIGhpdmVfc2V0dGluZ3MtYmFja2VkIChubyBtaWdyYXRpb24pLCBmYWlsLXNvZnQsIGFwcGxpZWQgQkVGT1JFIHRoZSBoZWFkcm9vbS9kcmFpbiBzZWxlY3RvcnMuXG4gKi9cbmltcG9ydCB7IHogfSBmcm9tICd6b2QnO1xuaW1wb3J0IHsgZGVmaW5lVG9vbCB9IGZyb20gJ0BwYXBlcmN1c3AvYWdlbnQtbWNwJztcbmltcG9ydCB7IENPT1JEX1JPTEVTIH0gZnJvbSAnLi4vY29vcmRpbmF0aW9uL3JvbGVzJztcbmltcG9ydCB7IGFjdGl2ZVdvcmtzcGFjZUlkIH0gZnJvbSAnLi4vLi4vd29ya3NwYWNlLXJlZ2lzdHJ5JztcbmltcG9ydCB7XG4gIGdldEFjY291bnRPdmVycmlkZSxcbiAgc2V0QWNjb3VudE92ZXJyaWRlLFxuICB0eXBlIEFjY291bnRTZXNzaW9uT3ZlcnJpZGVQYXRjaCxcbn0gZnJvbSAnLi4vLi4vZGVwbG95bWVudC9hY2NvdW50LXNlc3Npb24tb3ZlcnJpZGUnO1xuXG5jb25zdCBqc29uID0gKG86IHVua25vd24pID0+ICh7IGNvbnRlbnQ6IFt7IHR5cGU6ICd0ZXh0JyBhcyBjb25zdCwgdGV4dDogSlNPTi5zdHJpbmdpZnkobykgfV0gfSk7XG5cbmV4cG9ydCBjb25zdCBhY2NvdW50c1NldFNlc3Npb25PdmVycmlkZVRvb2wgPSBkZWZpbmVUb29sKHtcbiAgbmFtZTogJ2FjY291bnRzOnNldC1zZXNzaW9uLW92ZXJyaWRlJyxcbiAgcHJvZmlsZTogJ2VuZ2luZWVyJyxcbiAgZGVzY3JpcHRpb246XG4gICAgXCJTZXQgdGhlIG93bmVyJ3Mgc2Vzc2lvbi1ub3cgYWNjb3VudCBvdmVycmlkZSB0aGUgZmxlZXQgaG9ub3VycyB3aGVuIHBpY2tpbmcgYSBwb29sIGFjY291bnQgdG8gc3Bhd24vZGVwbG95IG9uIChhY2NvdW50cy1wb29sLXRhYiBQLTAwNCk6IGBmb3JjZWRBY2NvdW50c2AgKGFsbG93LWxpc3Qg4oCUIHVzZSBPTkxZIHRoZXNlKSwgYGV4Y2x1ZGVBY2NvdW50c2AgKHNraXAgdGhlc2UsIGUuZy4gYSBmbGFreS9yYXRlLWxpbWl0ZWQgYWNjb3VudCkuIEJvdGggZW1wdHkg4oeSIG5vIHJlc3RyaWN0aW9uICh0b2RheSdzIGJlaGF2aW91cikuIEFwcGxpZWQgYXMgYSBmYWlsLXNvZnQgcHJlY2VkZW5jZSBsYXllciBCRUZPUkUgdGhlIGhlYWRyb29tL2RyYWluIHNlbGVjdG9yczsgYW4gb3Zlci1yZXN0cmljdGl2ZSBzZXQgZmFsbHMgYmFjayB0byB0aGUgZnJhbWUtZGVmYXVsdCBjcmVkZW50aWFsLiBgY2xlYXI6dHJ1ZWAgd2lwZXMgYm90aC4gUmV0dXJucyB7b2ssIG92ZXJyaWRlfS5cIixcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiAnU3RlZXJpbmcgYWNjb3VudCBzZWxlY3Rpb24gZm9yIHRoZSBjdXJyZW50IHNlc3Npb24g4oCUIGZvY3VzIHRoZSBmbGVldCBvbiBvbmUgYWNjb3VudCwgb3Igcm91dGUgYXJvdW5kIGEgZmxha3kvbGltaXRlZCBvbmUg4oCUIHdpdGhvdXQgcmVtb3ZpbmcgaXQgZnJvbSB0aGUgcG9vbC4nLFxuICAgIG5vdFdoZW46IFwiUGVybWFuZW50bHkgcmVtb3ZpbmcgYW4gYWNjb3VudCDigJQgYWNjb3VudHM6cmVtb3ZlLiBDbGVhcmluZyBhIHJhdGUtbGltaXQgcGVuYWx0eSDigJQgYWNjb3VudHM6cmVzZXQtcmF0ZS4gUGF1c2luZyB0aGUgaGl2ZSDigJQgaGl2ZTpwYXVzZS5cIixcbiAgICBjaGFpbmluZzogJ2FjY291bnRzOnNldC1zZXNzaW9uLW92ZXJyaWRlIHsgZXhjbHVkZUFjY291bnRzOltcImFjY3QtYlwiXSB9IOKGkiBiZWVzIHN0b3Agc3Bhd25pbmcgb24gYWNjdC1iIHRoaXMgc2Vzc2lvbi4gY2xlYXI6dHJ1ZSByZXNldHMuJyxcbiAgICBzZWVBbHNvOiBbXG4gICAgICAnYWNjb3VudHM6Z2V0LXNlc3Npb24tb3ZlcnJpZGUgKHJlYWQgdGhlIGN1cnJlbnQgc3RlZXJpbmcgYmVmb3JlIGNoYW5naW5nIGl0KScsXG4gICAgICAnYWNjb3VudHM6cmVtb3ZlIChwZXJtYW5lbnRseSBkcm9wIGFuIGFjY291bnQgaW5zdGVhZCBvZiBzZXNzaW9uLWV4Y2x1ZGluZyknLFxuICAgICAgJ2FjY291bnRzOnJlc2V0LXJhdGUgKGNsZWFyIGEgcmF0ZS1saW1pdCBwZW5hbHR5IGluc3RlYWQgb2Ygcm91dGluZyBhcm91bmQgaXQpJyxcbiAgICBdLFxuICB9LFxuICBjYXBhYmlsaXR5OiAnaGFybmVzczp3cml0ZScsXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICBhZ2VudFJvbGVzOiBbLi4uQ09PUkRfUk9MRVNdLFxuICBhcmdzOiB6Lm9iamVjdCh7XG4gICAgd29ya3NwYWNlOiB6LnN0cmluZygpLm1heCgxMjApLm9wdGlvbmFsKCkuZGVzY3JpYmUoJ1dvcmtzcGFjZSBpZCAoZGVmYXVsdDogY3R4IC8gYWN0aXZlIHdvcmtzcGFjZSkuJyksXG4gICAgZm9yY2VkQWNjb3VudHM6IHouYXJyYXkoei5zdHJpbmcoKS5taW4oMSkubWF4KDIwMCkpLm1heCgyMDApLm9wdGlvbmFsKCkuZGVzY3JpYmUoJ0FsbG93LWxpc3Qg4oCUIHRoZSBmbGVldCBtYXkgdXNlIE9OTFkgdGhlc2UgYWNjb3VudCBpZHMuIFtdID0gbm8gcmVzdHJpY3Rpb24uJyksXG4gICAgZXhjbHVkZUFjY291bnRzOiB6LmFycmF5KHouc3RyaW5nKCkubWluKDEpLm1heCgyMDApKS5tYXgoMjAwKS5vcHRpb25hbCgpLmRlc2NyaWJlKCdBY2NvdW50IGlkcyB0byBza2lwIHRoaXMgc2Vzc2lvbiAoZS5nLiBhIGZsYWt5L2xpbWl0ZWQgYWNjb3VudCkuIFtdID0gc2tpcCBub25lLicpLFxuICAgIGNsZWFyOiB6LmJvb2xlYW4oKS5vcHRpb25hbCgpLmRlc2NyaWJlKCdXaXBlIGJvdGggYXhlcyBiYWNrIHRvIG5vLXJlc3RyaWN0aW9uLicpLFxuICB9KSxcbiAgYXN5bmMgaGFuZGxlcihhcmdzLCBjdHgpIHtcbiAgICBjb25zdCB3cyA9IGFyZ3Mud29ya3NwYWNlID8/IGN0eC53b3Jrc3BhY2VJZCA/PyBjdHgucHJpbmNpcGFsPy53b3Jrc3BhY2VJZCA/PyBhY3RpdmVXb3Jrc3BhY2VJZCgpO1xuICAgIGNvbnN0IHBhdGNoOiBBY2NvdW50U2Vzc2lvbk92ZXJyaWRlUGF0Y2ggPSB7fTtcbiAgICBpZiAoYXJncy5mb3JjZWRBY2NvdW50cyAhPT0gdW5kZWZpbmVkKSBwYXRjaC5mb3JjZWRBY2NvdW50cyA9IGFyZ3MuZm9yY2VkQWNjb3VudHM7XG4gICAgaWYgKGFyZ3MuZXhjbHVkZUFjY291bnRzICE9PSB1bmRlZmluZWQpIHBhdGNoLmV4Y2x1ZGVBY2NvdW50cyA9IGFyZ3MuZXhjbHVkZUFjY291bnRzO1xuICAgIGlmIChhcmdzLmNsZWFyICE9PSB1bmRlZmluZWQpIHBhdGNoLmNsZWFyID0gYXJncy5jbGVhcjtcbiAgICB0cnkge1xuICAgICAgY29uc3Qgb3ZlcnJpZGUgPSBhd2FpdCBzZXRBY2NvdW50T3ZlcnJpZGUod3MsIHBhdGNoKTtcbiAgICAgIC8vIExpdmUgVUkgcmVmbGVjdGlvbiDigJQgdGhlIEFjY291bnRzIHRhYiByZS1yZWFkcyBvbiBhIHN0ZWVyLlxuICAgICAgdm9pZCBpbXBvcnQoJy4uLy4uL3N5bmMtc3NlJykudGhlbigoeyBub3RpZnlTeW5jSW52YWxpZGF0ZSB9KSA9PiBub3RpZnlTeW5jSW52YWxpZGF0ZSgnYWNjb3VudHMucG9vbCcsIHt9KSkuY2F0Y2goKCkgPT4ge30pO1xuICAgICAgcmV0dXJuIGpzb24oeyBvazogdHJ1ZSwgb3ZlcnJpZGUgfSk7XG4gICAgfSBjYXRjaCAoZSkge1xuICAgICAgcmV0dXJuIGpzb24oeyBvazogZmFsc2UsIGVycm9yOiBlIGluc3RhbmNlb2YgRXJyb3IgPyBlLm1lc3NhZ2UgOiBTdHJpbmcoZSkgfSk7XG4gICAgfVxuICB9LFxufSk7XG5cbmV4cG9ydCBjb25zdCBhY2NvdW50c0dldFNlc3Npb25PdmVycmlkZVRvb2wgPSBkZWZpbmVUb29sKHtcbiAgbmFtZTogJ2FjY291bnRzOmdldC1zZXNzaW9uLW92ZXJyaWRlJyxcbiAgcHJvZmlsZTogJ2VuZ2luZWVyJyxcbiAgZGVzY3JpcHRpb246XG4gICAgJ1JlYWQgdGhlIGN1cnJlbnQgb3duZXIgc2Vzc2lvbi1ub3cgYWNjb3VudCBvdmVycmlkZSAoZm9yY2VkQWNjb3VudHMgYWxsb3ctbGlzdCArIGV4Y2x1ZGVBY2NvdW50cykgdGhlIGZsZWV0IGhvbm91cnMgd2hlbiBwaWNraW5nIGEgcG9vbCBhY2NvdW50LiBBbiB1bi1zdGVlcmVkIHdvcmtzcGFjZSByZXR1cm5zIGJvdGggZW1wdHkgKG5vIHJlc3RyaWN0aW9uKS4gVGhlIFJFQUQgdHdpbiBvZiBhY2NvdW50czpzZXQtc2Vzc2lvbi1vdmVycmlkZS4gUmV0dXJucyB7b2ssIG92ZXJyaWRlfS4nLFxuICBndWlkYW5jZToge1xuICAgIHdoZW46ICdDaGVja2luZyBob3cgYWNjb3VudCBzZWxlY3Rpb24gaXMgY3VycmVudGx5IHN0ZWVyZWQsIGJlZm9yZSBjaGFuZ2luZyBpdC4nLFxuICAgIG5vdFdoZW46ICdQZXItYWNjb3VudCByYXRlL3N0YXR1cyDigJQgYWNjb3VudHM6c3RhdHVzLiBUaGUgd2hvbGUgcG9vbCDigJQgYWNjb3VudHM6bGlzdC4nLFxuICAgIHNlZUFsc286IFtcbiAgICAgICdhY2NvdW50czpzZXQtc2Vzc2lvbi1vdmVycmlkZSAoY2hhbmdlIHRoZSBzdGVlcmluZyknLFxuICAgICAgJ2FjY291bnRzOnN0YXR1cyAocGVyLWFjY291bnQgaGVhbHRoIHRoZSBvdmVycmlkZSBzdGVlcnMgYXJvdW5kKScsXG4gICAgXSxcbiAgfSxcbiAgY2FwYWJpbGl0eTogJ2hhcm5lc3M6cmVhZCcsXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICBhZ2VudFJvbGVzOiBbLi4uQ09PUkRfUk9MRVNdLFxuICBhcmdzOiB6Lm9iamVjdCh7XG4gICAgd29ya3NwYWNlOiB6LnN0cmluZygpLm1heCgxMjApLm9wdGlvbmFsKCkuZGVzY3JpYmUoJ1dvcmtzcGFjZSBpZCAoZGVmYXVsdDogY3R4IC8gYWN0aXZlIHdvcmtzcGFjZSkuJyksXG4gIH0pLFxuICBhc3luYyBoYW5kbGVyKGFyZ3MsIGN0eCkge1xuICAgIGNvbnN0IHdzID0gYXJncy53b3Jrc3BhY2UgPz8gY3R4LndvcmtzcGFjZUlkID8/IGN0eC5wcmluY2lwYWw/LndvcmtzcGFjZUlkID8/IGFjdGl2ZVdvcmtzcGFjZUlkKCk7XG4gICAgcmV0dXJuIGpzb24oeyBvazogdHJ1ZSwgb3ZlcnJpZGU6IGF3YWl0IGdldEFjY291bnRPdmVycmlkZSh3cykgfSk7XG4gIH0sXG59KTtcbiJdLCJmaWxlIjoiL2xpYi9hZ2VudC10b29scy9hY2NvdW50cy9zZXNzaW9uLW92ZXJyaWRlLnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvYWNjb3VudHMvc2Vzc2lvbi1vdmVycmlkZS50cyIsIi9saWIvYWdlbnQtdG9vbHMvYWNjb3VudHMvc2Vzc2lvbi1vdmVycmlkZS50cyIsW11d

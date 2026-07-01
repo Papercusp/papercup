@@ -6,10 +6,66 @@
  * Importing the module also validates its whole import chain compiles + loads (the
  * tool self-registers via defineTool on import).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const spawnConsoleMock = vi.fn();
+const fetchGatewayHeadroomMock = vi.fn();
+
+vi.mock('../../../console-launcher', () => ({
+  buildConsoleEnvelope: vi.fn(async () => ({ cwd: '/tmp/fleet', env: {} })),
+}));
+
+vi.mock('../../../console-spawn', () => ({
+  spawnConsole: (...args: unknown[]) => spawnConsoleMock(...args),
+}));
+
+vi.mock('../../../workspace-registry', () => ({
+  activeWorkspaceId: () => 'ws-1',
+}));
+
+vi.mock('../../../agent-fleets-store', () => ({
+  createFleetIfAbsent: vi.fn(async () => ({
+    record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
+  })),
+  fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
+  getFleetScheme: vi.fn(async () => ({ name: 'Ocean' })),
+}));
+
+vi.mock('../../coordination/presence', () => ({
+  heartbeatPresence: vi.fn(async () => undefined),
+  setPresenceFleet: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../plans/source', () => ({
+  resolveHarnessPlansDir: vi.fn(async (slug: string) => ({ harnessSlug: slug, workspaceId: 'ws-1' })),
+  readPlanBySlug: vi.fn(async () => ({ slug: 'my-plan' })),
+}));
+
+vi.mock('../_shared', () => ({
+  fleetRoleFor: () => 'leader',
+  json: (payload: Record<string, unknown>, isError = false) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    isError,
+  }),
+  resolveFleetCaller: () => ({
+    identity: { ownerId: 'owner-1' },
+    ownerId: 'owner-1',
+    workspaceId: 'ws-1',
+  }),
+}));
+
+vi.mock('../../../inference-gateway/observability', () => ({
+  fetchGatewayHeadroom: (...args: unknown[]) => fetchGatewayHeadroomMock(...args),
+}));
+
 import tool, { memberLaunchCommand } from '../launch-on-plan';
 
 describe('memberLaunchCommand', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+  });
+
   it('builds the scripted psu launch that triggers the auto-kickoff', () => {
     expect(
       memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'my-plan' }),
@@ -84,5 +140,60 @@ describe('memberLaunchCommand', () => {
 
   it('loads + self-registers the tool module without error', () => {
     expect(tool).toBeTruthy();
+  });
+
+  it('surfaces a sizing advisory only when requested members exceed healthy account headroom', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    fetchGatewayHeadroomMock.mockResolvedValue({
+      reachable: true,
+      utilization: 0.1,
+      utilizationPct: 10,
+      paused: false,
+      rejected: false,
+      inFlight: 0,
+      queueDepth: 0,
+      priorityTiers: {
+        healthyAccounts: 1,
+        tier1Reserve: 0,
+        tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+      },
+    });
+
+    const warned = await tool.handler(
+      { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const warnedPayload = JSON.parse((warned as any).content[0].text);
+    expect(warnedPayload.ok).toBe(true);
+    expect(warnedPayload.sizingAdvisory).toMatchObject({
+      requestedMembers: 2,
+      healthyHeadroom: 1,
+      extraMembers: 1,
+    });
+    expect(warnedPayload.message).toMatch(/Sizing advisory:/);
+
+    fetchGatewayHeadroomMock.mockResolvedValue({
+      reachable: true,
+      utilization: 0.1,
+      utilizationPct: 10,
+      paused: false,
+      rejected: false,
+      inFlight: 0,
+      queueDepth: 0,
+      priorityTiers: {
+        healthyAccounts: 2,
+        tier1Reserve: 0,
+        tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+      },
+    });
+
+    const notWarned = await tool.handler(
+      { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const notWarnedPayload = JSON.parse((notWarned as any).content[0].text);
+    expect(notWarnedPayload.ok).toBe(true);
+    expect(notWarnedPayload.sizingAdvisory).toBeNull();
+    expect(notWarnedPayload.message).not.toMatch(/Sizing advisory:/);
   });
 });

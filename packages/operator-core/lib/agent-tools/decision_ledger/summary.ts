@@ -9,13 +9,14 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { summarizeDecisionLedger } from '../../decision-ledger/read';
+import { getCompletionIntegrityStats } from '../../work-items';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'decision_ledger:summary',
   profile: 'engineer',
   description:
-    "Roll-up of the Queen decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. The cheap shape-read before decision_ledger:list. Read-only.",
+    "Roll-up of the Queen decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The cheap shape-read before decision_ledger:list. Read-only.",
   guidance: {
     when: "Getting oriented: 'how much is the Queen auto-deciding vs gating?', 'which categories see the most gated actions?', 'what's the disposition mix this week?'. Then decision_ledger:list for the rows.",
     notWhen: 'You want the actual rows — decision_ledger:list. Live ceilings — autonomy:policy_get.',
@@ -23,10 +24,7 @@ export default defineTool({
     seeAlso: [
       'decision_ledger:list (the actual rows)',
       'autonomy:policy_get (live ceilings)',
-      // WI-1405 (work-item-completion-integrity-2026-07-01, contract C-1): this ledger is
-      // Queen autonomy decisions, NOT work-item completions — the genuine-vs-dedup
-      // completion split is a different metric, over in work_items:completion_stats.
-      'work_items:completion_stats (genuine completions vs dedup flips, a different metric)',
+      'work_items:completion_stats (the standalone completion-integrity read)',
     ],
   },
   capability: 'intel:read',
@@ -35,18 +33,42 @@ export default defineTool({
   args: z.object({
     layer: z.enum(['action', 'disposition']).optional(),
     sinceHours: z.number().positive().max(24 * 90).optional().describe('window (default: all retained rows)'),
+    harness: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe(
+        'Optional harness slug for progress reporting. When provided, the result includes `completionStats` so genuine completions are separated from dedup/unverified terminal rows.',
+      ),
     workspace: z.string().min(1).max(120).optional(),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     const workspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const summary = await summarizeDecisionLedger(workspaceId, {
-      ...(args.layer ? { layer: args.layer } : {}),
-      ...(args.sinceHours != null ? { sinceMs: Date.now() - args.sinceHours * 3_600_000 } : {}),
-    });
+    const [summary, completionStats] = await Promise.all([
+      summarizeDecisionLedger(workspaceId, {
+        ...(args.layer ? { layer: args.layer } : {}),
+        ...(args.sinceHours != null ? { sinceMs: Date.now() - args.sinceHours * 3_600_000 } : {}),
+      }),
+      args.harness ? getCompletionIntegrityStats(args.harness) : Promise.resolve(null),
+    ]);
     return {
-      content: [{ type: 'text', text: JSON.stringify({ workspaceId, summary }, null, 2) }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              workspaceId,
+              summary,
+              ...(completionStats ? { completionStats } : {}),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
     };
   },
 });

@@ -76,7 +76,7 @@ const itemSpec = z.object({
   harness: z.string().max(120).optional().describe('per-item harness (else the batch `harness` default)'),
   kind: KIND.optional().describe("work_item kind to mint (default 'task')"),
   title: hardText(LIMITS.SHORT_TITLE).optional().describe('override the work-item title'),
-  brief: softText(LIMITS.ANNOTATION).optional().describe("per-lane situational overlay persisted on the work-item's payload.brief. Auto-truncated to 2000 chars if longer."),
+  brief: softText(LIMITS.BRIEF).optional().describe(`per-lane situational overlay persisted on the work-item's payload.brief. Auto-truncated to ${LIMITS.BRIEF} chars if longer.`),
   intent: hardText(LIMITS.SHORT_TITLE).optional().describe('one line on what you are doing'),
   mode: z.enum(['availability', 'activity']).optional().describe('force the lease liveness mode'),
   ttl_sec: z.number().int().positive().max(7200).optional().describe('lease TTL seconds'),
@@ -157,10 +157,10 @@ export default defineTool({
         "work_item kind to mint (default 'task' — the generic execution record; pick feature/bug/… when the item warrants a pipeline-shaped unit); the inline item / every id in `itemIds`",
       ),
       title: hardText(LIMITS.SHORT_TITLE).optional().describe('override the work-item title (default: the plan-item text); the inline item / itemIds'),
-      brief: softText(LIMITS.ANNOTATION)
+      brief: softText(LIMITS.BRIEF)
         .optional()
         .describe(
-          "per-lane situational overlay persisted on the work-item's payload.brief — the context the placed bee is MISSING, not a restatement of the item (queen-wave-dispatch P-021; carried from a `## Promote` lane's brief: field); the inline item / itemIds. Auto-truncated to 2000 chars if longer.",
+          `per-lane situational overlay persisted on the work-item's payload.brief — the context the placed bee is MISSING, not a restatement of the item (queen-wave-dispatch P-021; carried from a \`## Promote\` lane's brief: field); the inline item / itemIds. Auto-truncated to ${LIMITS.BRIEF} chars if longer.`,
         ),
       intent: hardText(LIMITS.SHORT_TITLE).optional().describe('one line on what you are doing (the inline item / itemIds)'),
       mode: z

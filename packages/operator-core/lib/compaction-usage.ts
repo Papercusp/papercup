@@ -37,11 +37,16 @@ function tokensFromFileSize(pathStr: string): number | null {
  * Estimate a session's current context tokens from a resolved SessionRef.
  * Claude (+ unknown) → transcript bytes/4; OMP/Codex → null in v1.
  */
-export async function estimateContextTokens(ref: SessionRef): Promise<number | null> {
+export async function estimateContextTokens(ref: SessionRef, owner?: string | null): Promise<number | null> {
   if (!ref.sessionId) return null;
   if (ref.agent === 'omp' || ref.agent === 'codex') return null;
   try {
-    const p = await findSessionTranscript(ref.sessionId);
+    // Pass the coord `owner` hint: an interactive/spawned session's transcript lives under
+    // ~/.papercusp/session-claude/<owner>/projects, so the hint takes findSessionTranscript's
+    // FAST PATH (one owner-root readdir) instead of the full 12k-owner-dir sweep. Without it,
+    // the compaction watchdog polling many owners on a cadence re-swept every isolation root
+    // per call — the fs-churn that bloated the background host to tens of GB.
+    const p = await findSessionTranscript(ref.sessionId, { owner: owner ?? null });
     return p ? tokensFromFileSize(p) : null;
   } catch {
     return null;
@@ -68,5 +73,5 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
 /** Best-effort context-token estimate for a session by its coord ownerId. */
 export async function estimateContextTokensForOwner(ownerId: string): Promise<number | null> {
   const ref = await resolveSessionRef(ownerId);
-  return ref ? estimateContextTokens(ref) : null;
+  return ref ? estimateContextTokens(ref, ownerId) : null;
 }

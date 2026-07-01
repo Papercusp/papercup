@@ -1,0 +1,44 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/voice-prefs.ts", {"importedNames":["loadVoicePrefs","saveVoicePrefs"]});
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "operator:voice_prefs",
+  profile: "engineer",
+  description: "Read or partial-update operator voice prefs (engine selectors, feature toggles, agent ids).",
+  capability: "operator:write",
+  guidance: {
+    when: `Read/set voice preferences — engine, wake word, autostart, persona name.`,
+    notWhen: `For runtime state of an active session, use \`operator:conv_voice\`. voice_prefs is user-set config.`,
+    seeAlso: [
+      "operator:conv_voice (runtime state of an active session)",
+      "operator:voice_debug (voice engine debug snapshot)",
+      "operator:preferences (non-voice operator prefs)"
+    ]
+  },
+  requirePrincipal: false,
+  agentRoles: ["operator", "architect"],
+  rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
+  args: __vite_ssr_import_0__.z.discriminatedUnion("op", [
+    __vite_ssr_import_0__.z.object({ op: __vite_ssr_import_0__.z.literal("get") }),
+    __vite_ssr_import_0__.z.object({
+      op: __vite_ssr_import_0__.z.literal("set"),
+      patch: __vite_ssr_import_0__.z.record(__vite_ssr_import_0__.z.string(), __vite_ssr_import_0__.z.unknown())
+    })
+  ]),
+  async handler(args) {
+    if (args.op === "get") {
+      const prefs = await (0,__vite_ssr_import_2__.loadVoicePrefs)();
+      return { content: [{ type: "text", text: JSON.stringify(prefs ?? null) }] };
+    };
+    const next = await (0,__vite_ssr_import_2__.saveVoicePrefs)(args.patch);
+    return { content: [{ type: "text", text: JSON.stringify(next) }] };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQU9BO0FBQ0E7QUFDQTs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsYUFBYTtBQUFBLEVBQ2IsWUFBWTtBQUFBLEVBQ1osVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsU0FBUztBQUFBLE1BQ1A7QUFBQSxNQUNBO0FBQUEsTUFDQTtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQUEsRUFDQSxrQkFBa0I7QUFBQSxFQUNsQixZQUFZLENBQUMsWUFBWSxXQUFXO0FBQUEsRUFDcEMsWUFBWSxFQUFFLFdBQVcsRUFBRSxRQUFRLEdBQUcsR0FBRyxVQUFVLEVBQUUsUUFBUSxJQUFJLEVBQUU7QUFBQSxFQUNuRSxNQUFNLHdCQUFFLG1CQUFtQixNQUFNO0FBQUEsSUFDL0Isd0JBQUUsT0FBTyxFQUFFLElBQUksd0JBQUUsUUFBUSxLQUFLLEVBQUUsQ0FBQztBQUFBLElBQ2pDLHdCQUFFLE9BQU87QUFBQSxNQUNQLElBQUksd0JBQUUsUUFBUSxLQUFLO0FBQUEsTUFDbkIsT0FBTyx3QkFBRSxPQUFPLHdCQUFFLE9BQU8sR0FBRyx3QkFBRSxRQUFRLENBQUM7QUFBQSxJQUN6QyxDQUFDO0FBQUEsRUFDSCxDQUFDO0FBQUEsRUFDRCxNQUFNLFFBQVEsTUFBTTtBQUNsQixRQUFJLEtBQUssT0FBTyxPQUFPO0FBQ3JCLFlBQU0sUUFBUSxTQUFNLHNDQUFlO0FBQ25DLGFBQU8sRUFBRSxTQUFTLENBQUMsRUFBRSxNQUFNLFFBQVEsTUFBTSxLQUFLLFVBQVUsU0FBUyxJQUFJLEVBQUUsQ0FBQyxFQUFFO0FBQUEsSUFDNUU7QUFDQSxVQUFNLE9BQU8sU0FBTSxzQ0FBZSxLQUFLLEtBQTRCO0FBQ25FLFdBQU8sRUFBRSxTQUFTLENBQUMsRUFBRSxNQUFNLFFBQVEsTUFBTSxLQUFLLFVBQVUsSUFBSSxFQUFFLENBQUMsRUFBRTtBQUFBLEVBQ25FO0FBQ0YsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsidm9pY2VfcHJlZnMudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBvcGVyYXRvcjp2b2ljZV9wcmVmcyDigJQgcmVhZCBvciBwYXJ0aWFsbHkgdXBkYXRlIG9wZXJhdG9yIHZvaWNlIHByZWZzLlxuICpcbiAqIE1pcnJvcnMgR0VUIC8gUFVUIC9hcGkvYWdlbnQtbWNwL29wZXJhdG9yLXZvaWNlLXByZWZzLiBUaGUgZnVsbCBzY2hlbWFcbiAqIGxpdmVzIGluIGBhcHBzL29wZXJhdG9yL2xpYi92b2ljZS1wcmVmcy50c2AgKFZvaWNlUHJlZnMgaW50ZXJmYWNlKS5cbiAqL1xuXG5pbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wgfSBmcm9tICdAcGFwZXJjdXNwL2FnZW50LW1jcCc7XG5pbXBvcnQgeyBsb2FkVm9pY2VQcmVmcywgc2F2ZVZvaWNlUHJlZnMsIHR5cGUgVm9pY2VQcmVmcyB9IGZyb20gJy4uLy4uL3ZvaWNlLXByZWZzJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICdvcGVyYXRvcjp2b2ljZV9wcmVmcycsXG4gIHByb2ZpbGU6ICdlbmdpbmVlcicsXG4gIGRlc2NyaXB0aW9uOiAnUmVhZCBvciBwYXJ0aWFsLXVwZGF0ZSBvcGVyYXRvciB2b2ljZSBwcmVmcyAoZW5naW5lIHNlbGVjdG9ycywgZmVhdHVyZSB0b2dnbGVzLCBhZ2VudCBpZHMpLicsXG4gIGNhcGFiaWxpdHk6ICdvcGVyYXRvcjp3cml0ZScsXG4gIGd1aWRhbmNlOiB7XG4gICAgd2hlbjogYFJlYWQvc2V0IHZvaWNlIHByZWZlcmVuY2VzIOKAlCBlbmdpbmUsIHdha2Ugd29yZCwgYXV0b3N0YXJ0LCBwZXJzb25hIG5hbWUuYCxcbiAgICBub3RXaGVuOiBgRm9yIHJ1bnRpbWUgc3RhdGUgb2YgYW4gYWN0aXZlIHNlc3Npb24sIHVzZSBcXGBvcGVyYXRvcjpjb252X3ZvaWNlXFxgLiB2b2ljZV9wcmVmcyBpcyB1c2VyLXNldCBjb25maWcuYCxcbiAgICBzZWVBbHNvOiBbXG4gICAgICAnb3BlcmF0b3I6Y29udl92b2ljZSAocnVudGltZSBzdGF0ZSBvZiBhbiBhY3RpdmUgc2Vzc2lvbiknLFxuICAgICAgJ29wZXJhdG9yOnZvaWNlX2RlYnVnICh2b2ljZSBlbmdpbmUgZGVidWcgc25hcHNob3QpJyxcbiAgICAgICdvcGVyYXRvcjpwcmVmZXJlbmNlcyAobm9uLXZvaWNlIG9wZXJhdG9yIHByZWZzKScsXG4gICAgXSxcbiAgfSxcbiAgcmVxdWlyZVByaW5jaXBhbDogZmFsc2UsXG4gIGFnZW50Um9sZXM6IFsnb3BlcmF0b3InLCAnYXJjaGl0ZWN0J10sXG4gIHJvbGVzUXVvdGE6IHsgYXJjaGl0ZWN0OiB7IHBlclJ1bjogNTAgfSwgb3BlcmF0b3I6IHsgcGVyUnVuOiAyMDAgfSB9LFxuICBhcmdzOiB6LmRpc2NyaW1pbmF0ZWRVbmlvbignb3AnLCBbXG4gICAgei5vYmplY3QoeyBvcDogei5saXRlcmFsKCdnZXQnKSB9KSxcbiAgICB6Lm9iamVjdCh7XG4gICAgICBvcDogei5saXRlcmFsKCdzZXQnKSxcbiAgICAgIHBhdGNoOiB6LnJlY29yZCh6LnN0cmluZygpLCB6LnVua25vd24oKSksXG4gICAgfSksXG4gIF0pLFxuICBhc3luYyBoYW5kbGVyKGFyZ3MpIHtcbiAgICBpZiAoYXJncy5vcCA9PT0gJ2dldCcpIHtcbiAgICAgIGNvbnN0IHByZWZzID0gYXdhaXQgbG9hZFZvaWNlUHJlZnMoKTtcbiAgICAgIHJldHVybiB7IGNvbnRlbnQ6IFt7IHR5cGU6ICd0ZXh0JywgdGV4dDogSlNPTi5zdHJpbmdpZnkocHJlZnMgPz8gbnVsbCkgfV0gfTtcbiAgICB9XG4gICAgY29uc3QgbmV4dCA9IGF3YWl0IHNhdmVWb2ljZVByZWZzKGFyZ3MucGF0Y2ggYXMgUGFydGlhbDxWb2ljZVByZWZzPik7XG4gICAgcmV0dXJuIHsgY29udGVudDogW3sgdHlwZTogJ3RleHQnLCB0ZXh0OiBKU09OLnN0cmluZ2lmeShuZXh0KSB9XSB9O1xuICB9LFxufSk7XG4iXSwiZmlsZSI6Ii9saWIvYWdlbnQtdG9vbHMvb3BlcmF0b3Ivdm9pY2VfcHJlZnMudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvb3BlcmF0b3Ivdm9pY2VfcHJlZnMudHMiLCIvbGliL2FnZW50LXRvb2xzL29wZXJhdG9yL3ZvaWNlX3ByZWZzLnRzIixbXV0=

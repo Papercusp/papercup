@@ -34,6 +34,7 @@ import {
   freshSuBootstrapBody,
   psuLaunchArgvRecord,
   effectiveAutoMode,
+  assertFleetJoined,
   roleBootstrapBody,
   forkSeedPaths,
   findUntrackedSession,
@@ -1756,6 +1757,33 @@ describe('effectiveAutoMode (WI-1356 fleet-auto-mode)', () => {
   it('--auto forces it on even without a fleet; --no-auto forces it off even with a fleet', () => {
     expect(effectiveAutoMode(parseArgs(['--auto']))).toBe(true);
     expect(effectiveAutoMode(parseArgs(['--fleet=x', '--no-auto']))).toBe(false);
+  });
+});
+
+// WI-1408 (fleet-join-startup-assertion): the direct-member-launch client path
+// (`psu --fleet=<slug>`) — bootstrap-su/-role already hard-fail (409) a fleet
+// join that failed to resolve server-side, which `api()` surfaces as a thrown
+// Error before `assertFleetJoined` even runs. This is the defense-in-depth
+// guard for the OTHER failure mode: a response that comes back `status: 'ok'`
+// but with `fleetSlug` still null — the exact "recolours the terminal but
+// never persists membership" bug the fix exists to prevent.
+describe('assertFleetJoined (WI-1408 fleet-join-startup-assertion)', () => {
+  it('no fleet requested ⇒ never throws, whatever the response carries', () => {
+    expect(() => assertFleetJoined(null, {})).not.toThrow();
+    expect(() => assertFleetJoined(undefined, { fleetSlug: null })).not.toThrow();
+  });
+
+  it('fleet requested + response carries a non-null fleetSlug ⇒ passes silently', () => {
+    expect(() => assertFleetJoined('shared-hive-testing', { fleetSlug: 'shared-hive-testing', fleetRole: 'member' })).not.toThrow();
+  });
+
+  it('fleet requested (join) but response fleetSlug is null ⇒ throws — never a silent unfleeted launch', () => {
+    expect(() => assertFleetJoined('shared-hive-testing', { fleetSlug: null })).toThrow(/shared-hive-testing/);
+    expect(() => assertFleetJoined('shared-hive-testing', {})).toThrow(/did not register a fleetSlug/);
+  });
+
+  it('fleet requested via a fresh --fleet-name create but response fleetSlug is null ⇒ throws', () => {
+    expect(() => assertFleetJoined('My New Fleet', { fleetSlug: null })).toThrow(/My New Fleet/);
   });
 });
 

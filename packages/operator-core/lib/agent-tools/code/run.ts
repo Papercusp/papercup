@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { withWorkspace, getOrgPg } from '@papercusp/db-org';
 import {
   defineTool,
   listAllProjectedTools,
@@ -8,10 +9,17 @@ import {
   listFacadeNamespaces,
   AGENT_ROLES,
   type UnifiedToolContext,
+  type WrapDispatch,
 } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { captureRecipe } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import {
+  dispatchNeedsTx,
+  effectiveDispatchWorkspace,
+  synthesizeDispatchPrincipal,
+} from '../../endpoint-route/routes/transport/role-principal-caps';
 
 /**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
@@ -121,6 +129,7 @@ export default defineTool({
       allowed,
       dryRun: args.dryRun ?? false,
       timeoutMs: args.timeoutSec ? args.timeoutSec * 1000 : undefined,
+      wrapDispatch: bindInnerDispatch,
     });
 
     // CAPTURE + DEDUP (code-recipes-2026-06-21 P-003/P-004): every SUCCESSFUL, non-dry-run
@@ -171,6 +180,77 @@ export default defineTool({
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });
+
+/**
+ * WI-1411: per-inner-call workspace/identity rebinding.
+ *
+ * `dispatch-binding.ts`'s `realDispatch(ctx, deps)` closes over ONE fixed `ctx`
+ * for every call a `code:run` script makes — so a batch never gets the
+ * per-call binding a DIRECT (non-batch) MCP dispatch of the same tool
+ * receives from `_mcp-handler.ts`: the EI-30 superuser-per-call-`workspace`
+ * hop (`effectiveDispatchWorkspace`), the workspace tx + synthesized
+ * principal (`dispatchNeedsTx`/`synthesizeDispatchPrincipal`/`withWorkspace`),
+ * and the ALS pin (`runWithWorkspaceIfConcrete`) so `activeWorkspaceId()`
+ * resolves correctly inside the tool's own handler. Concretely: an unscoped
+ * superuser session (`ctx.isSuperuser === true`, `ctx.workspaceId === '*'`)
+ * running a `code:run` script that calls e.g. `tools.fleet.assignments({
+ * workspace: 'X', ... })` intending the EI-30 hop had that per-call
+ * `workspace` silently ignored — `resolveAgentIdentity(ctx)` (and any
+ * `activeWorkspaceId()` fallback) saw the OUTER ctx's `'*'` — so the read
+ * matched no real workspace and came back EMPTY (the reported "pgQuery /
+ * fleet:assignments return EMPTY inside a code:run batch" symptom).
+ *
+ * This mirrors `_mcp-handler.ts`'s exact branch structure
+ * (`crossWorkspace` → `needsTx` → plain) PER inner call, with a fast path:
+ * when the effective workspace for THIS call is unchanged from the ctx
+ * already bound (the common case — every non-superuser caller, and any
+ * superuser call without a per-call `workspace` override), the outer
+ * code:run dispatch already bound `ctx.tx`/`ctx.principal` correctly, so we
+ * dispatch under the SAME ctx unchanged — no extra transaction per call.
+ */
+export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx, next) => {
+  const spawnCtxLike = {
+    workspaceId: ctx.workspaceId ?? '',
+    role: ctx.role ?? '',
+    isSuperuser: ctx.isSuperuser,
+  };
+  const effectiveWs = effectiveDispatchWorkspace(spawnCtxLike, args);
+
+  if (tool.crossWorkspace === true) {
+    const { sql: adminTx } = getOrgPg();
+    const callCtx: UnifiedToolContext = {
+      ...ctx,
+      workspaceId: effectiveWs,
+      tx: adminTx,
+      principal: await synthesizeDispatchPrincipal(adminTx, { ...spawnCtxLike, workspaceId: effectiveWs }),
+    };
+    return runWithWorkspaceIfConcrete(effectiveWs, () => next(callCtx));
+  }
+
+  if (effectiveWs === spawnCtxLike.workspaceId) {
+    // Already correctly bound by the outer code:run dispatch — reuse ctx as-is.
+    return next(ctx);
+  }
+
+  // EI-30 hop fired: an unscoped superuser passed a concrete per-call
+  // `workspace` that differs from the outer ctx. Re-derive the binding for
+  // THIS call exactly as a direct (non-batch) MCP call would.
+  const callSpawnCtx = { ...spawnCtxLike, workspaceId: effectiveWs };
+  if (!dispatchNeedsTx(callSpawnCtx)) {
+    return runWithWorkspaceIfConcrete(effectiveWs, () => next({ ...ctx, workspaceId: effectiveWs }));
+  }
+  return runWithWorkspaceIfConcrete(effectiveWs, () =>
+    withWorkspace(effectiveWs, async (tx) => {
+      const callCtx: UnifiedToolContext = {
+        ...ctx,
+        workspaceId: effectiveWs,
+        tx,
+        principal: await synthesizeDispatchPrincipal(tx, callSpawnCtx),
+      };
+      return next(callCtx);
+    }),
+  );
+};
 
 type OrchestrationRunResult = Awaited<ReturnType<typeof runToolOrchestration>>;
 
@@ -249,9 +329,10 @@ function buildFacadeHelp(
 
 /**
  * Resolve the capture deps (PG handle, embedder, hive resolver) + the acting
- * agent's identity from ctx, then upsert the recipe + run dedup. Lazy imports
- * keep projected-tool-deps' early load free of db-org / embedder / hive-federation
- * cycles, and every step is best-effort (captureRecipe itself try/catches).
+ * agent's identity from ctx, then upsert the recipe + run dedup. `getOrgPg` is
+ * now a module-level import (WI-1411 needs it eagerly for `bindInnerDispatch`),
+ * so only the embedder/hive-federation imports stay lazy; every step is
+ * best-effort (captureRecipe itself try/catches).
  *
  * Returns the top similar PRIOR recipes (P-004 dedup) so the caller can surface
  * them SOFT in the code:run result. Returns [] on any wiring failure — capture +
@@ -267,7 +348,6 @@ async function maybeCaptureRecipe(
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) return []; // no workspace ⇒ nothing to scope a recipe to
 
-    const { getOrgPg } = await import('@papercusp/db-org');
     const { buildQueryEmbedder } = await import('../search/embedder');
     const { hiveHomeSlugForHarness } = await import('../../hive-federation');
     const { resolveAgentIdentity } = await import('../coordination/identity');

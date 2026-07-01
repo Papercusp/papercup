@@ -55,7 +55,12 @@ describe('built-in reverters', () => {
       helpers,
     );
     expect(out.reverted).toBe(true);
-    expect(calls.state).toEqual([{ id: 'WI-9', state: 'todo', opts: { harness: 'h1', by: 'autonomy-revert', allowNonCanonical: true } }]);
+    // skipCompletionGate:true (WI-1403/WI-1404, contract C-1): a revert-to-prior-state is
+    // a dedup/system-sweep flip, not a genuine completion — it must carry the bypass so it
+    // never writes a terminal_owner/terminal_completion_ref pair.
+    expect(calls.state).toEqual([
+      { id: 'WI-9', state: 'todo', opts: { harness: 'h1', by: 'autonomy-revert', allowNonCanonical: true, skipCompletionGate: true } },
+    ]);
   });
 
   it('work-item-priority restores the prior priority (null allowed)', async () => {

@@ -1,0 +1,54 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/coordination/identity.ts", {"importedNames":["resolveAgentIdentity"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/agent-tools/coordination/roles.ts", {"importedNames":["COORD_ROLES"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/rubrics.ts", {"importedNames":["getRubric"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/lib/agent-tools/_bulk.ts", {"importedNames":["mergeIds","runBulk","bulkContent"]});
+
+
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "rubrics:get",
+  profile: "engineer",
+  description: "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass `rubricId` for one or `rubricIds` for several. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing id never fails the rest.",
+  guidance: {
+    when: "You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Overwatch emitting the hive-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.",
+    notWhen: "Scanning many — rubrics:list (summary rows).",
+    chaining: "rubrics:list → rubrics:get { rubricIds:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.",
+    seeAlso: [
+      "rubrics:list (scan summary rows to find an id)",
+      "rubrics:search (keyword lookup)",
+      "rubrics:trend (how this rubric's criteria trend over time)"
+    ]
+  },
+  capability: "coord:read",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_3__.COORD_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    rubricId: __vite_ssr_import_0__.z.string().min(1).optional().describe('a single rubric slug, e.g. "hive-coordination-health" (n=1 shorthand for rubricIds:[id])'),
+    rubricIds: __vite_ssr_import_0__.z.array(__vite_ssr_import_0__.z.string().min(1)).min(1).max(100).optional().describe("rubric slugs to fetch (1–100)")
+  }).refine((a) => Boolean(a.rubricId) || (a.rubricIds?.length ?? 0) > 0, {
+    message: "pass `rubricId` (one) or `rubricIds` (many)"
+  }),
+  async handler(args, ctx) {
+    (0,__vite_ssr_import_2__.resolveAgentIdentity)(ctx);
+    const ids = (0,__vite_ssr_import_5__.mergeIds)(args.rubricId, args.rubricIds);
+    const env = await (0,__vite_ssr_import_5__.runBulk)(
+      ids,
+      async (rubricId) => {
+        const rubric = await (0,__vite_ssr_import_4__.getRubric)(rubricId);
+        return rubric ? { ok: true, rubricId, rubric } : { ok: false, rubricId, error: "rubric not found" };
+      },
+      { keyOf: (rubricId) => ({ rubricId }) }
+    );
+    return (0,__vite_ssr_import_5__.bulkContent)(env);
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVlBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7Ozs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsVUFBVTtBQUFBLElBQ1YsU0FBUztBQUFBLE1BQ1A7QUFBQSxNQUNBO0FBQUEsTUFDQTtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQUEsRUFDQSxZQUFZO0FBQUEsRUFDWixrQkFBa0I7QUFBQSxFQUNsQixZQUFZLENBQUMsR0FBRyxpQ0FBVztBQUFBLEVBQzNCLE1BQU0sd0JBQ0gsT0FBTztBQUFBLElBQ04sVUFBVSx3QkFBRSxPQUFPLEVBQUUsSUFBSSxDQUFDLEVBQUUsU0FBUyxFQUFFLFNBQVMsMEZBQTBGO0FBQUEsSUFDMUksV0FBVyx3QkFBRSxNQUFNLHdCQUFFLE9BQU8sRUFBRSxJQUFJLENBQUMsQ0FBQyxFQUFFLElBQUksQ0FBQyxFQUFFLElBQUksR0FBRyxFQUFFLFNBQVMsRUFBRSxTQUFTLCtCQUErQjtBQUFBLEVBQzNHLENBQUMsRUFDQSxPQUFPLENBQUMsTUFBTSxRQUFRLEVBQUUsUUFBUSxNQUFNLEVBQUUsV0FBVyxVQUFVLEtBQUssR0FBRztBQUFBLElBQ3BFLFNBQVM7QUFBQSxFQUNYLENBQUM7QUFBQSxFQUNILE1BQU0sUUFBUSxNQUFNLEtBQUs7QUFDdkIsbURBQXFCLEdBQUc7QUFDeEIsVUFBTSxTQUFNLGdDQUFTLEtBQUssVUFBVSxLQUFLLFNBQVM7QUFDbEQsVUFBTSxNQUFNLFNBQU07QUFBQSxNQUNoQjtBQUFBLE1BQ0EsT0FBTyxhQUFhO0FBQ2xCLGNBQU0sU0FBUyxTQUFNLGlDQUFVLFFBQVE7QUFDdkMsZUFBTyxTQUNILEVBQUUsSUFBSSxNQUFlLFVBQVUsT0FBTyxJQUN0QyxFQUFFLElBQUksT0FBZ0IsVUFBVSxPQUFPLG1CQUFtQjtBQUFBLE1BQ2hFO0FBQUEsTUFDQSxFQUFFLE9BQU8sQ0FBQyxjQUFjLEVBQUUsU0FBUyxHQUFHO0FBQUEsSUFDeEM7QUFDQSxjQUFPLG1DQUFZLEdBQUc7QUFBQSxFQUN4QjtBQUNGLENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImdldC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIHJ1YnJpY3M6Z2V0IOKAlCBvbmUgT1IgbWFueSBydWJyaWNzIGluIGZ1bGwsIGluY2x1ZGluZyBldmVyeSBjcml0ZXJpb24gKG1vZGVsICtcbiAqIG1ldGhvZCArIGRyaWZ0IG1hcmtlcnMgKyByYXRpbmcgc2NhbGUpLiBUaGUgT3ZlcndhdGNoIHNjb3JlY2FyZCBhbmQgYVxuICogc3RydWN0dXJlZCBvYnNlcnZhdGlvbiBncmFkZSBhZ2FpbnN0IHRoZXNlIGNyaXRlcmlhXG4gKiAocnVicmljLWRyaXZlbi1vYnNlcnZhdGlvbnMtMjAyNi0wNi0yMCBQLTAwMjsgYnVsay1zdGFuZGFyZGl6ZWQgcGVyXG4gKiBidWxrLWVuZHBvaW50LXN0YW5kYXJkaXphdGlvbi0yMDI2LTA2LTIxKS5cbiAqXG4gKiBCdWxrIGJ5IGRlZmF1bHQgKHRoZSBob3VzZSBrZXllZC1hcnJheSBjb250cmFjdCk6IHBhc3MgYHJ1YnJpY0lkYCBmb3Igb25lIG9yXG4gKiBgcnVicmljSWRzYCBmb3Igc2V2ZXJhbCDihpIgeyBvaywgcmVzdWx0czpbeyBvaywgcnVicmljSWQsIHJ1YnJpYz8gfCBlcnJvciB9XSxcbiAqIGNvdW50cyB9IOKAlCBlYWNoIHJlc3VsdCBzZWxmLWRlc2NyaWJlcyBpdHMgcnVicmljSWQsIHNvIGEgbm90LWZvdW5kIGlkIG5ldmVyXG4gKiBwb2lzb25zIHRoZSByZXN0IGFuZCB0aGUgYWdlbnQgY29ycmVsYXRlcyBieSBpZCAobm90IGFycmF5IHBvc2l0aW9uKS5cbiAqL1xuaW1wb3J0IHsgeiB9IGZyb20gJ3pvZCc7XG5pbXBvcnQgeyBkZWZpbmVUb29sIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgcmVzb2x2ZUFnZW50SWRlbnRpdHkgfSBmcm9tICcuLi9jb29yZGluYXRpb24vaWRlbnRpdHknO1xuaW1wb3J0IHsgQ09PUkRfUk9MRVMgfSBmcm9tICcuLi9jb29yZGluYXRpb24vcm9sZXMnO1xuaW1wb3J0IHsgZ2V0UnVicmljIH0gZnJvbSAnLi4vLi4vcnVicmljcyc7XG5pbXBvcnQgeyBtZXJnZUlkcywgcnVuQnVsaywgYnVsa0NvbnRlbnQgfSBmcm9tICcuLi9fYnVsayc7XG5cbmV4cG9ydCBkZWZhdWx0IGRlZmluZVRvb2woe1xuICBuYW1lOiAncnVicmljczpnZXQnLFxuICBwcm9maWxlOiAnZW5naW5lZXInLFxuICBkZXNjcmlwdGlvbjpcbiAgICBcIlJlYWQgb25lIE9SIG1hbnkgcnVicmljcyBpbiBmdWxsIOKAlCBlYWNoIHJ1YnJpYydzIGNyaXRlcmlhIChrZXkgKyBtb2RlbCArIG1ldGhvZCArIGRyaWZ0IG1hcmtlcnMgKyBvcHRpb25hbCByYXRpbmcgc2NhbGUpLCBkZWZhdWx0IHJhdGluZyBzY2FsZSwgYW5kIG1ldGhvZF9yZWYgcnVuYm9vay4gUGFzcyBgcnVicmljSWRgIGZvciBvbmUgb3IgYHJ1YnJpY0lkc2AgZm9yIHNldmVyYWwuIEdyYWRlIGFnYWluc3QgdGhlc2U6IGEgc3RydWN0dXJlZCBvYnNlcnZhdGlvbidzIGByYXRpbmdzYCBpcyBhIFJlY29yZCBrZXllZCBieSBjcml0ZXJpYVtdLmtleSBoZXJlIChyYXRpbmdzW2NyaXRlcmlhS2V5XSA9IHsgcmF0aW5nLCBldmlkZW5jZSB9KS4gUmV0dXJucyB7IG9rLCByZXN1bHRzOlt7IG9rLCBydWJyaWNJZCwgcnVicmljPyB8IGVycm9yIH1dLCBjb3VudHMgfSDigJQgY29ycmVsYXRlIGJ5IHJ1YnJpY0lkLCBub3QgYnkgcG9zaXRpb247IGEgbWlzc2luZyBpZCBuZXZlciBmYWlscyB0aGUgcmVzdC5cIixcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiAnWW91IGhhdmUgb25lIG9yIG1vcmUgcnVicmljX2lkcyAoZnJvbSBydWJyaWNzOmxpc3Qvc2VhcmNoKSBhbmQgbmVlZCB0aGVpciBmdWxsIGNyaXRlcmlhIHRvIGdyYWRlIGFnYWluc3Qg4oCUIGUuZy4gT3ZlcndhdGNoIGVtaXR0aW5nIHRoZSBoaXZlLWNvb3JkaW5hdGlvbi1oZWFsdGggc2NvcmVjYXJkLCBvciBmaWxpbmcgYSBzdHJ1Y3R1cmVkIG9ic2VydmF0aW9uLiBQYXNzIGV2ZXJ5IGlkIGF0IG9uY2UgdmlhIGBydWJyaWNJZHNgLicsXG4gICAgbm90V2hlbjogJ1NjYW5uaW5nIG1hbnkg4oCUIHJ1YnJpY3M6bGlzdCAoc3VtbWFyeSByb3dzKS4nLFxuICAgIGNoYWluaW5nOiBcInJ1YnJpY3M6bGlzdCDihpIgcnVicmljczpnZXQgeyBydWJyaWNJZHM6W+KApl0gfSDihpIgZ3JhZGUgZWFjaCBjcml0ZXJpb24gKG9ic2VydmF0aW9uIGByYXRpbmdzYCBpcyBhIFJlY29yZCBrZXllZCBieSBjcml0ZXJpYVtdLmtleSkgaW4geW91ciBvYnNlcnZhdGlvbi4gQnVsazogc2luZ2xlIHwgcnVicmljSWRzW10g4oaSIHsgb2ssIHJlc3VsdHMsIGNvdW50cyB9OyBjb3JyZWxhdGUgYnkgcnVicmljSWQgbm90IHBvc2l0aW9uOyBvbmUgZmFpbHVyZSBuZXZlciBmYWlscyB0aGUgcmVzdC5cIixcbiAgICBzZWVBbHNvOiBbXG4gICAgICAncnVicmljczpsaXN0IChzY2FuIHN1bW1hcnkgcm93cyB0byBmaW5kIGFuIGlkKScsXG4gICAgICAncnVicmljczpzZWFyY2ggKGtleXdvcmQgbG9va3VwKScsXG4gICAgICAncnVicmljczp0cmVuZCAoaG93IHRoaXMgcnVicmljXFwncyBjcml0ZXJpYSB0cmVuZCBvdmVyIHRpbWUpJyxcbiAgICBdLFxuICB9LFxuICBjYXBhYmlsaXR5OiAnY29vcmQ6cmVhZCcsXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICBhZ2VudFJvbGVzOiBbLi4uQ09PUkRfUk9MRVNdLFxuICBhcmdzOiB6XG4gICAgLm9iamVjdCh7XG4gICAgICBydWJyaWNJZDogei5zdHJpbmcoKS5taW4oMSkub3B0aW9uYWwoKS5kZXNjcmliZSgnYSBzaW5nbGUgcnVicmljIHNsdWcsIGUuZy4gXCJoaXZlLWNvb3JkaW5hdGlvbi1oZWFsdGhcIiAobj0xIHNob3J0aGFuZCBmb3IgcnVicmljSWRzOltpZF0pJyksXG4gICAgICBydWJyaWNJZHM6IHouYXJyYXkoei5zdHJpbmcoKS5taW4oMSkpLm1pbigxKS5tYXgoMTAwKS5vcHRpb25hbCgpLmRlc2NyaWJlKCdydWJyaWMgc2x1Z3MgdG8gZmV0Y2ggKDHigJMxMDApJyksXG4gICAgfSlcbiAgICAucmVmaW5lKChhKSA9PiBCb29sZWFuKGEucnVicmljSWQpIHx8IChhLnJ1YnJpY0lkcz8ubGVuZ3RoID8/IDApID4gMCwge1xuICAgICAgbWVzc2FnZTogJ3Bhc3MgYHJ1YnJpY0lkYCAob25lKSBvciBgcnVicmljSWRzYCAobWFueSknLFxuICAgIH0pLFxuICBhc3luYyBoYW5kbGVyKGFyZ3MsIGN0eCkge1xuICAgIHJlc29sdmVBZ2VudElkZW50aXR5KGN0eCk7XG4gICAgY29uc3QgaWRzID0gbWVyZ2VJZHMoYXJncy5ydWJyaWNJZCwgYXJncy5ydWJyaWNJZHMpO1xuICAgIGNvbnN0IGVudiA9IGF3YWl0IHJ1bkJ1bGsoXG4gICAgICBpZHMsXG4gICAgICBhc3luYyAocnVicmljSWQpID0+IHtcbiAgICAgICAgY29uc3QgcnVicmljID0gYXdhaXQgZ2V0UnVicmljKHJ1YnJpY0lkKTtcbiAgICAgICAgcmV0dXJuIHJ1YnJpY1xuICAgICAgICAgID8geyBvazogdHJ1ZSBhcyBjb25zdCwgcnVicmljSWQsIHJ1YnJpYyB9XG4gICAgICAgICAgOiB7IG9rOiBmYWxzZSBhcyBjb25zdCwgcnVicmljSWQsIGVycm9yOiAncnVicmljIG5vdCBmb3VuZCcgfTtcbiAgICAgIH0sXG4gICAgICB7IGtleU9mOiAocnVicmljSWQpID0+ICh7IHJ1YnJpY0lkIH0pIH0sXG4gICAgKTtcbiAgICByZXR1cm4gYnVsa0NvbnRlbnQoZW52KTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL3J1YnJpY3MvZ2V0LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvcnVicmljcy9nZXQudHMiLCIvbGliL2FnZW50LXRvb2xzL3J1YnJpY3MvZ2V0LnRzIixbXV0=

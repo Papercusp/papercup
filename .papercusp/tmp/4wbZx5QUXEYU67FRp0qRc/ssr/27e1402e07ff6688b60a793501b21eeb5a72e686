@@ -1,0 +1,46 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/coordination/identity.ts", {"importedNames":["resolveAgentIdentity"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/agent-tools/coordination/roles.ts", {"importedNames":["COORD_ROLES"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/agent-tools/coordination/topics.ts", {"importedNames":["mergeTopics"]});
+
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "topics:merge",
+  description: "Merge topic `from` into `into`: aliases the slug (tags resolve to the target) and re-points the merged topic’s subscribers onto the target. The dedup for accidental near-duplicate topics.",
+  guidance: {
+    when: "topics:list shows two topics that mean the same thing — fold the lesser-used into the better one.",
+    notWhen: "The two topics are genuinely distinct areas — keep both.",
+    seeAlso: [
+      "topics:list (review both topics before merging)",
+      "topics:tag (retag objects instead of merging topics)"
+    ]
+  },
+  capability: "coord:write",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_3__.COORD_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    from: __vite_ssr_import_0__.z.string().min(1),
+    into: __vite_ssr_import_0__.z.string().min(1)
+  }),
+  async handler(args, ctx) {
+    const identity = (0,__vite_ssr_import_2__.resolveAgentIdentity)(ctx);
+    const res = await (0,__vite_ssr_import_4__.mergeTopics)(identity, args.from, args.into);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: true, from: args.from, into: args.into, subscribers_moved: res.moved })
+        }
+      ]
+    };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7Ozs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsU0FBUztBQUFBLE1BQ1A7QUFBQSxNQUNBO0FBQUEsSUFDRjtBQUFBLEVBQ0Y7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLGlDQUFXO0FBQUEsRUFDM0IsTUFBTSx3QkFBRSxPQUFPO0FBQUEsSUFDYixNQUFNLHdCQUFFLE9BQU8sRUFBRSxJQUFJLENBQUM7QUFBQSxJQUN0QixNQUFNLHdCQUFFLE9BQU8sRUFBRSxJQUFJLENBQUM7QUFBQSxFQUN4QixDQUFDO0FBQUEsRUFDRCxNQUFNLFFBQVEsTUFBTSxLQUFLO0FBQ3ZCLFVBQU0sY0FBVyw0Q0FBcUIsR0FBRztBQUN6QyxVQUFNLE1BQU0sU0FBTSxtQ0FBWSxVQUFVLEtBQUssTUFBTSxLQUFLLElBQUk7QUFDNUQsV0FBTztBQUFBLE1BQ0wsU0FBUztBQUFBLFFBQ1A7QUFBQSxVQUNFLE1BQU07QUFBQSxVQUNOLE1BQU0sS0FBSyxVQUFVLEVBQUUsSUFBSSxNQUFNLE1BQU0sS0FBSyxNQUFNLE1BQU0sS0FBSyxNQUFNLG1CQUFtQixJQUFJLE1BQU0sQ0FBQztBQUFBLFFBQ25HO0FBQUEsTUFDRjtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQ0YsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsidG9waWNzLW1lcmdlLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogdG9waWNzOm1lcmdlIOKAlCBhbGlhcyBhIG5lYXItZHVwbGljYXRlIHRvcGljIGludG8gdGhlIGNhbm9uaWNhbCBvbmUuXG4gKlxuICogRC0wMDQncyBjaGVhcCBkZWR1cCBpbiBwbGFjZSBvZiBhIGNyZWF0aW9uLXRpbWUgZ2F0ZTogd2hlbiB0d28gYWdlbnRzIGNyZWF0ZVxuICogbmVhci1kdXBsaWNhdGUgdG9waWNzLCBtZXJnZSBgZnJvbWAg4oaSIGBpbnRvYC4gVGFncyBvbiB0aGUgb2xkIHNsdWcgcmVzb2x2ZSB0b1xuICogdGhlIG5ldyBvbmUsIGFuZCB0aGUgb2xkIHNsdWcncyBzdWJzY3JpYmVycyBhcmUgcmUtcG9pbnRlZCBvbnRvIHRoZSB0YXJnZXQgc29cbiAqIHRoZXkga2VlcCByZWNlaXZpbmcgaXRzIHVwZGF0ZXMuXG4gKi9cblxuaW1wb3J0IHsgeiB9IGZyb20gJ3pvZCc7XG5pbXBvcnQgeyBkZWZpbmVUb29sIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgcmVzb2x2ZUFnZW50SWRlbnRpdHkgfSBmcm9tICcuLi9pZGVudGl0eSc7XG5pbXBvcnQgeyBDT09SRF9ST0xFUyB9IGZyb20gJy4uL3JvbGVzJztcbmltcG9ydCB7IG1lcmdlVG9waWNzIH0gZnJvbSAnLi4vdG9waWNzJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICd0b3BpY3M6bWVyZ2UnLFxuICBkZXNjcmlwdGlvbjpcbiAgICAnTWVyZ2UgdG9waWMgYGZyb21gIGludG8gYGludG9gOiBhbGlhc2VzIHRoZSBzbHVnICh0YWdzIHJlc29sdmUgdG8gdGhlIHRhcmdldCkgYW5kIHJlLXBvaW50cyB0aGUgbWVyZ2VkIHRvcGlj4oCZcyBzdWJzY3JpYmVycyBvbnRvIHRoZSB0YXJnZXQuIFRoZSBkZWR1cCBmb3IgYWNjaWRlbnRhbCBuZWFyLWR1cGxpY2F0ZSB0b3BpY3MuJyxcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiAndG9waWNzOmxpc3Qgc2hvd3MgdHdvIHRvcGljcyB0aGF0IG1lYW4gdGhlIHNhbWUgdGhpbmcg4oCUIGZvbGQgdGhlIGxlc3Nlci11c2VkIGludG8gdGhlIGJldHRlciBvbmUuJyxcbiAgICBub3RXaGVuOiAnVGhlIHR3byB0b3BpY3MgYXJlIGdlbnVpbmVseSBkaXN0aW5jdCBhcmVhcyDigJQga2VlcCBib3RoLicsXG4gICAgc2VlQWxzbzogW1xuICAgICAgJ3RvcGljczpsaXN0IChyZXZpZXcgYm90aCB0b3BpY3MgYmVmb3JlIG1lcmdpbmcpJyxcbiAgICAgICd0b3BpY3M6dGFnIChyZXRhZyBvYmplY3RzIGluc3RlYWQgb2YgbWVyZ2luZyB0b3BpY3MpJyxcbiAgICBdLFxuICB9LFxuICBjYXBhYmlsaXR5OiAnY29vcmQ6d3JpdGUnLFxuICByZXF1aXJlUHJpbmNpcGFsOiBmYWxzZSxcbiAgYWdlbnRSb2xlczogWy4uLkNPT1JEX1JPTEVTXSxcbiAgYXJnczogei5vYmplY3Qoe1xuICAgIGZyb206IHouc3RyaW5nKCkubWluKDEpLFxuICAgIGludG86IHouc3RyaW5nKCkubWluKDEpLFxuICB9KSxcbiAgYXN5bmMgaGFuZGxlcihhcmdzLCBjdHgpIHtcbiAgICBjb25zdCBpZGVudGl0eSA9IHJlc29sdmVBZ2VudElkZW50aXR5KGN0eCk7XG4gICAgY29uc3QgcmVzID0gYXdhaXQgbWVyZ2VUb3BpY3MoaWRlbnRpdHksIGFyZ3MuZnJvbSwgYXJncy5pbnRvKTtcbiAgICByZXR1cm4ge1xuICAgICAgY29udGVudDogW1xuICAgICAgICB7XG4gICAgICAgICAgdHlwZTogJ3RleHQnIGFzIGNvbnN0LFxuICAgICAgICAgIHRleHQ6IEpTT04uc3RyaW5naWZ5KHsgb2s6IHRydWUsIGZyb206IGFyZ3MuZnJvbSwgaW50bzogYXJncy5pbnRvLCBzdWJzY3JpYmVyc19tb3ZlZDogcmVzLm1vdmVkIH0pLFxuICAgICAgICB9LFxuICAgICAgXSxcbiAgICB9O1xuICB9LFxufSk7XG4iXSwiZmlsZSI6Ii9saWIvYWdlbnQtdG9vbHMvY29vcmRpbmF0aW9uL3Rvb2xzL3RvcGljcy1tZXJnZS50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvY29vcmRpbmF0aW9uL3Rvb2xzL3RvcGljcy1tZXJnZS50cyIsIi9saWIvYWdlbnQtdG9vbHMvY29vcmRpbmF0aW9uL3Rvb2xzL3RvcGljcy1tZXJnZS50cyIsW11d

@@ -2144,6 +2144,27 @@ export function effectiveAutoMode(args) {
 }
 
 /**
+ * WI-1408 (fleet-join-startup-assertion): hard client-side guard mirroring the
+ * server's own invariant — when this launch explicitly requested a fleet (an
+ * existing `--fleet=<slug>` join, or a fresh `--fleet-name` create), the
+ * bootstrap response's `fleetSlug` must come back non-null. bootstrap-su and
+ * bootstrap-role already refuse (409, surfaced by `api()` as a thrown Error) a
+ * fleet join that failed server-side, so this never fires in the happy path —
+ * it's the last line of defense against a FUTURE regression that silently
+ * returns `status: 'ok'` with `fleetSlug: null`: exactly the "colour-only,
+ * membership forgotten" bug this whole feature exists to prevent. Pure —
+ * exported for tests.
+ */
+export function assertFleetJoined(requestedFleet, res) {
+  if (!requestedFleet) return;
+  if (!res?.fleetSlug) {
+    throw new Error(
+      `psu: --fleet was requested (${requestedFleet}) but the launch did not register a fleetSlug — refusing to start an unfleeted member. This should never happen (bootstrap-su/-role hard-fail server-side); if you see this, it's a regression.`,
+    );
+  }
+}
+
+/**
  * launch-path-argv-reconstruction (WI-1343): the literal `psu …` invocation this
  * fresh-SU launch reduces to — recorded on adv_sessions.launch_argv (via the
  * bootstrap-su body) so a killed batch (e.g. a 14-agent fleet) can be reconstructed
@@ -2486,6 +2507,9 @@ async function roleFlow(args, role, rolesMeta) {
     method: 'POST',
     body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet: args.fleet, fleetRole: args.fleetRole, fleetName: args.fleetName, fleetScheme: args.fleetScheme })),
   });
+  // WI-1408 (fleet-join-startup-assertion): a requested fleet must have actually
+  // registered — see assertFleetJoined's doc comment.
+  assertFleetJoined(args.fleet || args.fleetName, res);
 
   // omp role sessions load the coordination extension (lock enforcement + coord +
   // the activity-bridge port) via -e, the same stable module the su omp launch +
@@ -2658,6 +2682,9 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     method: 'POST',
     body: JSON.stringify(freshSuBootstrapBody(selections, args, { brain })),
   });
+  // WI-1408 (fleet-join-startup-assertion): a requested fleet must have actually
+  // registered — see assertFleetJoined's doc comment.
+  assertFleetJoined(args.fleet || args.fleetName, res);
 
   // res.cwd is server-decided: the harness repo for a harness launch, or
   // our cwd (above) for a no-harness one. Agents scope resumable sessions

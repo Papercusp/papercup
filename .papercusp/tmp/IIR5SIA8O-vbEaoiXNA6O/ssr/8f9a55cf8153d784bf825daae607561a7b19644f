@@ -1,0 +1,37 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","SU_ROLES"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/workspace-registry.ts", {"importedNames":["activeWorkspaceId"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/operator-multi-workspace.ts", {"importedNames":["readMultiWorkspaceSnapshot"]});
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "operator:multi_workspace",
+  profile: "engineer",
+  // P-062 Phase 4: aggregates every OTHER workspace's snapshot — inherently
+  // cross-workspace, so it must never be RLS-scoped to the caller's workspace.
+  crossWorkspace: true,
+  description: "Aggregation of every other workspace's last-scan snapshot (active workspace omitted).",
+  capability: "operator:read",
+  guidance: {
+    when: `List workspaces the operator can switch between — used by the workspace switcher.`,
+    notWhen: `For the CURRENT workspace's harnesses, use \`harness:list\`. multi_workspace is the workspace enumerator.`,
+    seeAlso: [
+      "harness:list (the current workspace's harnesses)",
+      "operator:preferences (operator-level prefs)"
+    ]
+  },
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_1__.SU_ROLES],
+  args: __vite_ssr_import_0__.z.object({}),
+  async handler() {
+    const snapshot = await (0,__vite_ssr_import_3__.readMultiWorkspaceSnapshot)((0,__vite_ssr_import_2__.activeWorkspaceId)());
+    return { content: [{ type: "text", text: JSON.stringify(snapshot) }] };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQU9BO0FBQ0E7QUFDQTtBQUNBOzs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBO0FBQUE7QUFBQSxFQUdULGdCQUFnQjtBQUFBLEVBQ2hCLGFBQWE7QUFBQSxFQUNiLFlBQVk7QUFBQSxFQUNaLFVBQVU7QUFBQSxJQUNSLE1BQU07QUFBQSxJQUNOLFNBQVM7QUFBQSxJQUNULFNBQVM7QUFBQSxNQUNQO0FBQUEsTUFDQTtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQUEsRUFDQSxrQkFBa0I7QUFBQSxFQUNsQixZQUFZLENBQUMsR0FBRyw4QkFBUTtBQUFBLEVBQ3hCLE1BQU0sd0JBQUUsT0FBTyxDQUFDLENBQUM7QUFBQSxFQUNqQixNQUFNLFVBQVU7QUFDZCxVQUFNLFdBQVcsU0FBTSxxREFBMkIseUNBQWtCLENBQUM7QUFDckUsV0FBTyxFQUFFLFNBQVMsQ0FBQyxFQUFFLE1BQU0sUUFBUSxNQUFNLEtBQUssVUFBVSxRQUFRLEVBQUUsQ0FBQyxFQUFFO0FBQUEsRUFDdkU7QUFDRixDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJtdWx0aV93b3Jrc3BhY2UudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBvcGVyYXRvcjptdWx0aV93b3Jrc3BhY2Ug4oCUIHJlYWQtb25seSBhZ2dyZWdhdGlvbiBvZiBldmVyeSBvdGhlclxuICogd29ya3NwYWNlJ3MgbGFzdC1zY2FuIHNuYXBzaG90LiBUaGUgYWN0aXZlIHdvcmtzcGFjZSBpcyBvbWl0dGVkLlxuICogQ2FyZHMgYXJyaXZlIHdpdGggd29ya3NwYWNlSWQgKyB3b3Jrc3BhY2VOYW1lIHNvIGEgcGFuZWwgY2FuIHJvdXRlXG4gKiBhIGNsaWNrIGludG8gdGhlIGNvcnJlY3Qgd29ya3NwYWNlIHN3aXRjaC5cbiAqL1xuXG5pbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wsIFNVX1JPTEVTIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgYWN0aXZlV29ya3NwYWNlSWQgfSBmcm9tICcuLi8uLi93b3Jrc3BhY2UtcmVnaXN0cnknO1xuaW1wb3J0IHsgcmVhZE11bHRpV29ya3NwYWNlU25hcHNob3QgfSBmcm9tICcuLi8uLi9vcGVyYXRvci1tdWx0aS13b3Jrc3BhY2UnO1xuXG5leHBvcnQgZGVmYXVsdCBkZWZpbmVUb29sKHtcbiAgbmFtZTogJ29wZXJhdG9yOm11bHRpX3dvcmtzcGFjZScsXG4gIHByb2ZpbGU6ICdlbmdpbmVlcicsXG4gIC8vIFAtMDYyIFBoYXNlIDQ6IGFnZ3JlZ2F0ZXMgZXZlcnkgT1RIRVIgd29ya3NwYWNlJ3Mgc25hcHNob3Qg4oCUIGluaGVyZW50bHlcbiAgLy8gY3Jvc3Mtd29ya3NwYWNlLCBzbyBpdCBtdXN0IG5ldmVyIGJlIFJMUy1zY29wZWQgdG8gdGhlIGNhbGxlcidzIHdvcmtzcGFjZS5cbiAgY3Jvc3NXb3Jrc3BhY2U6IHRydWUsXG4gIGRlc2NyaXB0aW9uOiAnQWdncmVnYXRpb24gb2YgZXZlcnkgb3RoZXIgd29ya3NwYWNlXFwncyBsYXN0LXNjYW4gc25hcHNob3QgKGFjdGl2ZSB3b3Jrc3BhY2Ugb21pdHRlZCkuJyxcbiAgY2FwYWJpbGl0eTogJ29wZXJhdG9yOnJlYWQnLFxuICBndWlkYW5jZToge1xuICAgIHdoZW46IGBMaXN0IHdvcmtzcGFjZXMgdGhlIG9wZXJhdG9yIGNhbiBzd2l0Y2ggYmV0d2VlbiDigJQgdXNlZCBieSB0aGUgd29ya3NwYWNlIHN3aXRjaGVyLmAsXG4gICAgbm90V2hlbjogYEZvciB0aGUgQ1VSUkVOVCB3b3Jrc3BhY2UncyBoYXJuZXNzZXMsIHVzZSBcXGBoYXJuZXNzOmxpc3RcXGAuIG11bHRpX3dvcmtzcGFjZSBpcyB0aGUgd29ya3NwYWNlIGVudW1lcmF0b3IuYCxcbiAgICBzZWVBbHNvOiBbXG4gICAgICAnaGFybmVzczpsaXN0ICh0aGUgY3VycmVudCB3b3Jrc3BhY2VcXCdzIGhhcm5lc3NlcyknLFxuICAgICAgJ29wZXJhdG9yOnByZWZlcmVuY2VzIChvcGVyYXRvci1sZXZlbCBwcmVmcyknLFxuICAgIF0sXG4gIH0sXG4gIHJlcXVpcmVQcmluY2lwYWw6IGZhbHNlLFxuICBhZ2VudFJvbGVzOiBbLi4uU1VfUk9MRVNdLFxuICBhcmdzOiB6Lm9iamVjdCh7fSksXG4gIGFzeW5jIGhhbmRsZXIoKSB7XG4gICAgY29uc3Qgc25hcHNob3QgPSBhd2FpdCByZWFkTXVsdGlXb3Jrc3BhY2VTbmFwc2hvdChhY3RpdmVXb3Jrc3BhY2VJZCgpKTtcbiAgICByZXR1cm4geyBjb250ZW50OiBbeyB0eXBlOiAndGV4dCcsIHRleHQ6IEpTT04uc3RyaW5naWZ5KHNuYXBzaG90KSB9XSB9O1xuICB9LFxufSk7XG4iXSwiZmlsZSI6Ii9saWIvYWdlbnQtdG9vbHMvb3BlcmF0b3IvbXVsdGlfd29ya3NwYWNlLnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvb3BlcmF0b3IvbXVsdGlfd29ya3NwYWNlLnRzIiwiL2xpYi9hZ2VudC10b29scy9vcGVyYXRvci9tdWx0aV93b3Jrc3BhY2UudHMiLFtdXQ==

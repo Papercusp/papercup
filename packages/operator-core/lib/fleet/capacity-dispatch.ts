@@ -242,6 +242,13 @@ export interface CapacityReport {
   advice: string;
 }
 
+export interface FleetSizingAdvisory {
+  requestedMembers: number;
+  healthyHeadroom: number;
+  extraMembers: number;
+  message: string;
+}
+
 /**
  * PURE: project a gateway headroom snapshot into the Queen's capacity decision read-model. Testable with a
  * fabricated `GatewayHeadroom` (no I/O). `headroom` is an optional proposed fresh-spawn count to clamp.
@@ -329,5 +336,34 @@ export function buildCapacityReport(
     recommendedHeadroom,
     throttled,
     advice,
+  };
+}
+
+/**
+ * PURE: warn when a requested fleet member count exceeds the pool's CURRENT healthy-account
+ * headroom. This is a sizing advisory only — not an admission gate — because extra members can
+ * still launch, but they'll likely thrash rotation against the same few healthy accounts.
+ */
+export function buildFleetSizingAdvisory(
+  requestedMembers: number,
+  report: Pick<CapacityReport, 'reachable' | 'healthyAccounts'>,
+): FleetSizingAdvisory | null {
+  const requested = Math.max(0, Math.floor(requestedMembers));
+  const healthyHeadroom =
+    report.reachable && Number.isFinite(report.healthyAccounts)
+      ? Math.max(0, Math.floor(report.healthyAccounts ?? 0))
+      : null;
+  if (healthyHeadroom == null || requested <= healthyHeadroom) return null;
+  const extraMembers = requested - healthyHeadroom;
+  const accountLabel = healthyHeadroom === 1 ? 'healthy account' : 'healthy accounts';
+  const memberLabel = extraMembers === 1 ? 'member' : 'members';
+  return {
+    requestedMembers: requested,
+    healthyHeadroom,
+    extraMembers,
+    message:
+      `Sizing advisory: requested ${requested} fleet members, but only ${healthyHeadroom} ${accountLabel} ` +
+      `are currently routable. Launch will continue, but the extra ${extraMembers} ${memberLabel} will likely ` +
+      `thrash account rotation / rate-limit churn. Prefer <=${healthyHeadroom} members or add healthy accounts.`,
   };
 }

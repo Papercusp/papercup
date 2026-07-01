@@ -1,0 +1,33 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","SU_ROLES"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/plugin-host-runtime.ts", {"importedNames":["pluginHostStatus"]});
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "plugins:runtime_status",
+  profile: "engineer",
+  guidance: {
+    when: "You need to know which plugins are loaded + healthy in the current operator process (per-harness or workspace-level).",
+    notWhen: "For the plugin CATALOG (everything installable), use the marketplace endpoints. plugins:runtime_status is the runtime view.",
+    seeAlso: [
+      "plugins:invoke_action (invoke an action a plugin exposes)",
+      "plugins:tui_panes (the plugin's TUI pane contributions)",
+      "plugins:fire_event (replay a hook event)"
+    ]
+  },
+  description: "Read the plugin host runtime status (loaded plugins, registered actions, mounted api routes).",
+  capability: "plugins:read",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_1__.SU_ROLES],
+  args: __vite_ssr_import_0__.z.object({}),
+  async handler() {
+    const status = await (0,__vite_ssr_import_2__.pluginHostStatus)();
+    return { content: [{ type: "text", text: JSON.stringify(status) }] };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVNBO0FBQ0E7QUFDQTs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sU0FBUztBQUFBLEVBQ1QsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsU0FBUztBQUFBLE1BQ1A7QUFBQSxNQUNBO0FBQUEsTUFDQTtBQUFBLElBQ0Y7QUFBQSxFQUNGO0FBQUEsRUFDQSxhQUFhO0FBQUEsRUFDYixZQUFZO0FBQUEsRUFDWixrQkFBa0I7QUFBQSxFQUNsQixZQUFZLENBQUMsR0FBRyw4QkFBUTtBQUFBLEVBQ3hCLE1BQU0sd0JBQUUsT0FBTyxDQUFDLENBQUM7QUFBQSxFQUNqQixNQUFNLFVBQVU7QUFDZCxVQUFNLFNBQVMsU0FBTSx3Q0FBaUI7QUFDdEMsV0FBTyxFQUFFLFNBQVMsQ0FBQyxFQUFFLE1BQU0sUUFBUSxNQUFNLEtBQUssVUFBVSxNQUFNLEVBQUUsQ0FBQyxFQUFFO0FBQUEsRUFDckU7QUFDRixDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJydW50aW1lX3N0YXR1cy50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIHBsdWdpbnM6cnVudGltZV9zdGF0dXMg4oCUIHJlYWQgdGhlIGluLXByb2Nlc3MgcGx1Z2luIGhvc3QncyBzdGF0dXNcbiAqIChsb2FkZWQgcGx1Z2lucywgcmVnaXN0ZXJlZCBhY3Rpb25zLCBtb3VudGVkIGFwaSByb3V0ZXMsIGV0Yy4pLlxuICpcbiAqIE1pcnJvcnMgR0VUIC9hcGkvcGx1Z2lucy9ydW50aW1lL3N0YXR1cyAod2l0aG91dCB0aGUgYD9yZXNldD0xYFxuICogdGVzdC1tb2RlIHNpZGUgZWZmZWN0IOKAlCB0aGF0J3MgVUktb25seSBkaWFnbm9zdGljIGFuZCBzaG91bGRuJ3RcbiAqIGxlYWsgdG8gYWdlbnRzKS5cbiAqL1xuXG5pbXBvcnQgeyB6IH0gZnJvbSAnem9kJztcbmltcG9ydCB7IGRlZmluZVRvb2wsIFNVX1JPTEVTIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgcGx1Z2luSG9zdFN0YXR1cyB9IGZyb20gJy4uLy4uL3BsdWdpbi1ob3N0LXJ1bnRpbWUnO1xuXG5leHBvcnQgZGVmYXVsdCBkZWZpbmVUb29sKHtcbiAgbmFtZTogJ3BsdWdpbnM6cnVudGltZV9zdGF0dXMnLFxuICBwcm9maWxlOiAnZW5naW5lZXInLFxuICBndWlkYW5jZToge1xuICAgIHdoZW46ICdZb3UgbmVlZCB0byBrbm93IHdoaWNoIHBsdWdpbnMgYXJlIGxvYWRlZCArIGhlYWx0aHkgaW4gdGhlIGN1cnJlbnQgb3BlcmF0b3IgcHJvY2VzcyAocGVyLWhhcm5lc3Mgb3Igd29ya3NwYWNlLWxldmVsKS4nLFxuICAgIG5vdFdoZW46ICdGb3IgdGhlIHBsdWdpbiBDQVRBTE9HIChldmVyeXRoaW5nIGluc3RhbGxhYmxlKSwgdXNlIHRoZSBtYXJrZXRwbGFjZSBlbmRwb2ludHMuIHBsdWdpbnM6cnVudGltZV9zdGF0dXMgaXMgdGhlIHJ1bnRpbWUgdmlldy4nLFxuICAgIHNlZUFsc286IFtcbiAgICAgICdwbHVnaW5zOmludm9rZV9hY3Rpb24gKGludm9rZSBhbiBhY3Rpb24gYSBwbHVnaW4gZXhwb3NlcyknLFxuICAgICAgJ3BsdWdpbnM6dHVpX3BhbmVzICh0aGUgcGx1Z2luXFwncyBUVUkgcGFuZSBjb250cmlidXRpb25zKScsXG4gICAgICAncGx1Z2luczpmaXJlX2V2ZW50IChyZXBsYXkgYSBob29rIGV2ZW50KScsXG4gICAgXSxcbiAgfSxcbiAgZGVzY3JpcHRpb246ICdSZWFkIHRoZSBwbHVnaW4gaG9zdCBydW50aW1lIHN0YXR1cyAobG9hZGVkIHBsdWdpbnMsIHJlZ2lzdGVyZWQgYWN0aW9ucywgbW91bnRlZCBhcGkgcm91dGVzKS4nLFxuICBjYXBhYmlsaXR5OiAncGx1Z2luczpyZWFkJyxcbiAgcmVxdWlyZVByaW5jaXBhbDogZmFsc2UsXG4gIGFnZW50Um9sZXM6IFsuLi5TVV9ST0xFU10sXG4gIGFyZ3M6IHoub2JqZWN0KHt9KSxcbiAgYXN5bmMgaGFuZGxlcigpIHtcbiAgICBjb25zdCBzdGF0dXMgPSBhd2FpdCBwbHVnaW5Ib3N0U3RhdHVzKCk7XG4gICAgcmV0dXJuIHsgY29udGVudDogW3sgdHlwZTogJ3RleHQnLCB0ZXh0OiBKU09OLnN0cmluZ2lmeShzdGF0dXMpIH1dIH07XG4gIH0sXG59KTtcbiJdLCJmaWxlIjoiL2xpYi9hZ2VudC10b29scy9wbHVnaW5zL3J1bnRpbWVfc3RhdHVzLnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvcGx1Z2lucy9ydW50aW1lX3N0YXR1cy50cyIsIi9saWIvYWdlbnQtdG9vbHMvcGx1Z2lucy9ydW50aW1lX3N0YXR1cy50cyIsW11d

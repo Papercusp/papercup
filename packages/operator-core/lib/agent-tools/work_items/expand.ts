@@ -42,7 +42,7 @@ export default defineTool({
           title: hardText(LIMITS.SHORT_TITLE),
           summary: hardText(LIMITS.ANNOTATION).optional(),
           files: z.array(z.string()).max(50).optional().describe('declared file touch-set (feeds P-002 exclusion)'),
-          brief: hardText(LIMITS.ANNOTATION).optional(),
+          brief: hardText(LIMITS.BRIEF).optional(),
         }),
       )
       .min(1)

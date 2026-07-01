@@ -7,6 +7,7 @@ import {
   resolveCapacityConfig,
   queenCapacityHeadroom,
   DEFAULT_CAPACITY_DISPATCH_CONFIG as CFG,
+  buildFleetSizingAdvisory,
 } from './capacity-dispatch';
 import { planBatchPlacement } from './batch-placement';
 import type { PlacementTask } from './placement-affinity';
@@ -187,4 +188,21 @@ test('queenCapacityHeadroom — flagOverride:true + injected idle signal ⇒ no 
   const d = await queenCapacityHeadroom(20, { flagOverride: true, signal: { reachable: true, utilization: 0.2, queueDepth: 0 } });
   assert.equal(d.headroom, 20);
   assert.equal(d.throttled, false);
+});
+
+test('buildFleetSizingAdvisory — warns only when requested members exceed healthy account headroom', () => {
+  assert.equal(buildFleetSizingAdvisory(3, { reachable: true, healthyAccounts: 3 }), null);
+  assert.equal(buildFleetSizingAdvisory(2, { reachable: true, healthyAccounts: 3 }), null);
+
+  const advisory = buildFleetSizingAdvisory(5, { reachable: true, healthyAccounts: 3 });
+  assert.ok(advisory);
+  assert.equal(advisory?.requestedMembers, 5);
+  assert.equal(advisory?.healthyHeadroom, 3);
+  assert.equal(advisory?.extraMembers, 2);
+  assert.match(advisory?.message ?? '', /requested 5 fleet members, but only 3 healthy accounts/);
+});
+
+test('buildFleetSizingAdvisory — fail-soft when the gateway/headroom signal is unavailable', () => {
+  assert.equal(buildFleetSizingAdvisory(5, { reachable: false, healthyAccounts: 3 }), null);
+  assert.equal(buildFleetSizingAdvisory(5, { reachable: true, healthyAccounts: null }), null);
 });

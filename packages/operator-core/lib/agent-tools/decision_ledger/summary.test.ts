@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import summaryTool from './summary';
 import { summarizeDecisionLedger } from '../../decision-ledger/read';
+import { getCompletionIntegrityStats } from '../../work-items';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 
@@ -8,10 +9,12 @@ import { resolveAgentIdentity } from '../coordination/identity';
 // workspace precedence, the optional layer + sinceHours→sinceMs spread, and the
 // { workspaceId, summary } envelope (B-13 / P-113).
 vi.mock('../../decision-ledger/read', () => ({ readDecisionLedger: vi.fn(), summarizeDecisionLedger: vi.fn() }));
+vi.mock('../../work-items', () => ({ getCompletionIntegrityStats: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
 const mockSummarize = vi.mocked(summarizeDecisionLedger);
+const mockCompletionStats = vi.mocked(getCompletionIntegrityStats);
 const mockActiveWs = vi.mocked(activeWorkspaceId);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
 
@@ -34,6 +37,12 @@ describe('decision_ledger:summary tool', () => {
     mockIdentity.mockReturnValue({ ownerId: 'su-test' } as ReturnType<typeof resolveAgentIdentity>);
     mockActiveWs.mockReturnValue('ws-active');
     mockSummarize.mockResolvedValue(SUMMARY as unknown as Awaited<ReturnType<typeof summarizeDecisionLedger>>);
+    mockCompletionStats.mockResolvedValue({
+      harness: 'papercusp',
+      terminalTotal: 9,
+      genuineCompletions: 6,
+      dedupOrUnverified: 3,
+    });
   });
   afterEach(() => vi.useRealTimers());
 
@@ -50,5 +59,20 @@ describe('decision_ledger:summary tool', () => {
   it('returns { workspaceId, summary }', async () => {
     const res = await callTool({ workspace: 'ws-x' });
     expect(JSON.parse(res.content[0].text)).toEqual({ workspaceId: 'ws-x', summary: SUMMARY });
+  });
+
+  it('includes completionStats when `harness` is provided', async () => {
+    const res = await callTool({ workspace: 'ws-x', harness: 'papercusp' });
+    expect(mockCompletionStats).toHaveBeenCalledWith('papercusp');
+    expect(JSON.parse(res.content[0].text)).toEqual({
+      workspaceId: 'ws-x',
+      summary: SUMMARY,
+      completionStats: {
+        harness: 'papercusp',
+        terminalTotal: 9,
+        genuineCompletions: 6,
+        dedupOrUnverified: 3,
+      },
+    });
   });
 });

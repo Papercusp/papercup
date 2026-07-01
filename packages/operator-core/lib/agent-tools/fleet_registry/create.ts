@@ -15,11 +15,13 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { createFleetIfAbsent, fleetSlugFromName } from '../../agent-fleets-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
+import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 
 export default defineTool({
   name: 'fleet:create',
   description:
-    'Create a NEW named, persistent fleet (or get an existing one by name) and become its leader. The fleet is a durable registry row that survives all members being killed, so it stays selectable in psu. You are recorded as owner + leader and your presence is labeled this fleet\'s leader. Use this to stand up a fresh fleet before launching member terminals (capability:terminal).',
+    'Create a NEW named, persistent fleet (or get an existing one by name) and become its leader. The fleet is a durable registry row that survives all members being killed, so it stays selectable in psu. You are recorded as owner + leader and your presence is labeled this fleet\'s leader. Use this to stand up a fresh fleet before launching member terminals (capability:terminal). Pass `count` when you want a non-blocking sizing advisory for a planned multi-member launch.',
   guidance: {
     when: 'Standing up a NEW named fleet — e.g. routing option (3), a new desktop fleet: fleet:create then capability:terminal { terminals: [...] } to launch the member windows.',
     notWhen:
@@ -38,6 +40,15 @@ export default defineTool({
       .string()
       .optional()
       .describe('Optional one-line description of what this fleet is for.'),
+    count: z
+      .number()
+      .int()
+      .min(1)
+      .max(12)
+      .optional()
+      .describe(
+        'Optional planned member count for the FOLLOW-ON desktop launch. `fleet:create` itself does not open terminals; this only returns a non-blocking sizing advisory when the requested member count exceeds healthy account-pool headroom.',
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
@@ -63,6 +74,16 @@ export default defineTool({
     // call (fleet-color-schemes). Best-effort: a no-op for non-psu-hosted callers.
     await recolorCallerTerminal(ownerId, record);
 
+    let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
+    if (args.count != null) {
+      try {
+        const capacity = buildCapacityReport(await fetchGatewayHeadroom({ timeoutMs: 1200 }), { clampArmed: false });
+        sizingAdvisory = buildFleetSizingAdvisory(args.count, capacity);
+      } catch {
+        sizingAdvisory = null;
+      }
+    }
+
     return json({
       ok: true,
       slug: fleetSlug,
@@ -71,6 +92,9 @@ export default defineTool({
       leader: record.leaderOwnerId,
       role,
       scheme: record.colorScheme,
+      requested: args.count ?? null,
+      sizingAdvisory,
+      ...(sizingAdvisory ? { message: sizingAdvisory.message } : {}),
       ...(role === 'member'
         ? { note: 'fleet already existed under another leader — call fleet:take-leadership to drive it' }
         : {}),

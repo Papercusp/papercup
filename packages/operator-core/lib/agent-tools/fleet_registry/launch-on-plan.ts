@@ -40,6 +40,8 @@ import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, resolveFleetCaller } from './_shared';
 import type { ColorScheme } from '../../console-color-schemes';
+import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
+import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 
 /** Opening more than this many desktop windows in one call is heavy + almost always
  *  a mistake — mirrors capability:terminal's MAX_TERMINALS. */
@@ -304,7 +306,16 @@ export default defineTool({
       else failed.push({ error: result.error, code: result.code });
     }
 
+    let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
+    try {
+      const capacity = buildCapacityReport(await fetchGatewayHeadroom({ timeoutMs: 1200 }), { clampArmed: false });
+      sizingAdvisory = buildFleetSizingAdvisory(count, capacity);
+    } catch {
+      sizingAdvisory = null;
+    }
+
     const lines: string[] = [];
+    if (sizingAdvisory) lines.push(sizingAdvisory.message);
     lines.push(
       opened.length
         ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${count} member${count > 1 ? 's' : ''} opened${scheme ? ` (scheme: ${scheme.name})` : ''}:`
@@ -336,6 +347,7 @@ export default defineTool({
         agent,
         account: args.account?.trim() || null,
         requested: count,
+        sizingAdvisory,
         opened,
         failed,
         message: lines.join('\n'),

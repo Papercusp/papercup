@@ -1,0 +1,67 @@
+__vite_ssr_exportName__("registerTarget", () => { try { return registerTarget } catch {} });
+__vite_ssr_exportName__("getTarget", () => { try { return getTarget } catch {} });
+__vite_ssr_exportName__("listTargets", () => { try { return listTargets } catch {} });
+__vite_ssr_exportName__("OperatorTarget", () => { try { return __vite_ssr_import_1__.OperatorTarget } catch {} });
+__vite_ssr_exportName__("OracleTarget", () => { try { return __vite_ssr_import_2__.OracleTarget } catch {} });
+__vite_ssr_exportName__("ArchitectTarget", () => { try { return __vite_ssr_import_0__.ArchitectTarget } catch {} });
+__vite_ssr_exportName__("SuTarget", () => { try { return __vite_ssr_import_3__.SuTarget } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/lib/llm-testing/targets/architect.ts", {"importedNames":["ArchitectTarget"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/llm-testing/targets/operator.ts", {"importedNames":["OperatorTarget"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/llm-testing/targets/oracle.ts", {"importedNames":["OracleTarget"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/llm-testing/targets/su.ts", {"importedNames":["SuTarget"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/llm-testing/targets/queen.ts", {"importedNames":["makeQueenTarget"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/lib/llm-testing/targets/bee.ts", {"importedNames":["makeBeeTarget"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/lib/llm-testing/targets/overwatch.ts", {"importedNames":["makeOverwatchTarget"]});
+
+
+
+
+
+
+
+const TARGETS = {
+  operator: () => new __vite_ssr_import_1__.OperatorTarget(),
+  // sentinel — the SAME converse brain loaded with role='sentinel' (the
+  // Sentinel-as-Herald persona). The agent-mcp/operator-converse route honors
+  // the explicit body.role, so this exercises Sentinel-only behavior the
+  // operator role can't reach — notably the `<handoff_to_queen>` routing
+  // (sentinel-as-claude-tui-2026-06-22; converse.ts only honors handoffs for
+  // role==='sentinel'). Same HTTP transport as `operator`.
+  sentinel: () => new __vite_ssr_import_1__.OperatorTarget({ role: "sentinel" }),
+  oracle: () => new __vite_ssr_import_2__.OracleTarget(),
+  // Architect is harness-scoped; the chat route returns a 400 without
+  // a harnessSlug in the body. Default to 'sheets' (the long-standing
+  // dev harness present in harness_shared.projects). Scenarios can
+  // override per-turn via input.meta.harnessSlug.
+  architect: () => new __vite_ssr_import_0__.ArchitectTarget({ defaultHarnessSlug: "sheets" }),
+  // su — in-process behavioral SUT for the engineer-collaborator playbook
+  // (su-scenario-suite-2026-05-31). Unlike the HTTP-chat targets above it
+  // runs a hand-rolled Anthropic tool loop in-process (playbook-as-system-
+  // prompt + the papercusp-su catalog); see ./su.
+  su: () => new __vite_ssr_import_3__.SuTarget(),
+  // queen — the hive Queen's blueprint prompt on the same in-process loop
+  // (scout-idea-grading B-06/B-08: does she GRADE routed drafts while triaging?).
+  queen: () => (0,__vite_ssr_import_4__.makeQueenTarget)(),
+  // bee — the hive bee's base prompt on the same in-process loop
+  // (hybrid-bee-scheduler P-003: does the bee PULL its next item via scheduler:get_next
+  // rather than self-scanning work_items:list and picking itself?).
+  bee: () => (0,__vite_ssr_import_5__.makeBeeTarget)(),
+  // overwatch — the system-health supervisor's blueprint persona on the same loop
+  // (overwatch-role-2026-06-15 B-11: does it NUDGE-not-replace + OBSERVE-not-idea?).
+  overwatch: () => (0,__vite_ssr_import_6__.makeOverwatchTarget)()
+};
+function registerTarget(id, factory) {
+  TARGETS[id] = factory;
+};
+function getTarget(id) {
+  const factory = TARGETS[id];
+  if (!factory) throw new Error(`Unknown target '${id}'. Registered: ${Object.keys(TARGETS).join(", ")}`);
+  return factory();
+};
+function listTargets() {
+  return Object.keys(TARGETS);
+};
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7Ozs7OztBQU1BO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOzs7Ozs7OztBQUlBLE1BQU0sVUFBeUM7QUFBQSxFQUM3QyxVQUFVLE1BQU0sSUFBSSxxQ0FBZTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBT25DLFVBQVUsTUFBTSxJQUFJLHFDQUFlLEVBQUUsTUFBTSxXQUFXLENBQUM7QUFBQSxFQUN2RCxRQUFRLE1BQU0sSUFBSSxtQ0FBYTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsRUFLL0IsV0FBVyxNQUFNLElBQUksc0NBQWdCLEVBQUUsb0JBQW9CLFNBQVMsQ0FBQztBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsRUFLckUsSUFBSSxNQUFNLElBQUksK0JBQVM7QUFBQTtBQUFBO0FBQUEsRUFHdkIsT0FBTyxTQUFNLHVDQUFnQjtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBSTdCLEtBQUssU0FBTSxxQ0FBYztBQUFBO0FBQUE7QUFBQSxFQUd6QixXQUFXLFNBQU0sMkNBQW9CO0FBQ3ZDO0FBRU8sU0FBUyxlQUFlLElBQVksU0FBOEI7QUFDdkUsVUFBUSxFQUFFLElBQUk7QUFDaEI7QUFFTyxTQUFTLFVBQVUsSUFBd0I7QUFDaEQsUUFBTSxVQUFVLFFBQVEsRUFBRTtBQUMxQixNQUFJLENBQUMsUUFBUyxPQUFNLElBQUksTUFBTSxtQkFBbUIsRUFBRSxrQkFBa0IsT0FBTyxLQUFLLE9BQU8sRUFBRSxLQUFLLElBQUksQ0FBQyxFQUFFO0FBQ3RHLFNBQU8sUUFBUTtBQUNqQjtBQUVPLFNBQVMsY0FBd0I7QUFDdEMsU0FBTyxPQUFPLEtBQUssT0FBTztBQUM1QiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiaW5kZXgudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBUYXJnZXQgcmVnaXN0cnkg4oCUIG1hcHMgYFNjZW5hcmlvLnRhcmdldGAgc3RyaW5ncyB0byBgQ2hhdFRhcmdldGBcbiAqIGZhY3Rvcmllcy4gQWRkIGEgdGFyZ2V0IGJ5IGV4cG9ydGluZyBpdCBoZXJlLlxuICovXG5cbmltcG9ydCB0eXBlIHsgQ2hhdFRhcmdldCB9IGZyb20gJ0BwYXBlcmN1c3AvdGVzdGluZy1zaGVsbC9sbG0nO1xuaW1wb3J0IHsgQXJjaGl0ZWN0VGFyZ2V0IH0gZnJvbSAnLi9hcmNoaXRlY3QnO1xuaW1wb3J0IHsgT3BlcmF0b3JUYXJnZXQgfSBmcm9tICcuL29wZXJhdG9yJztcbmltcG9ydCB7IE9yYWNsZVRhcmdldCB9IGZyb20gJy4vb3JhY2xlJztcbmltcG9ydCB7IFN1VGFyZ2V0IH0gZnJvbSAnLi9zdSc7XG5pbXBvcnQgeyBtYWtlUXVlZW5UYXJnZXQgfSBmcm9tICcuL3F1ZWVuJztcbmltcG9ydCB7IG1ha2VCZWVUYXJnZXQgfSBmcm9tICcuL2JlZSc7XG5pbXBvcnQgeyBtYWtlT3ZlcndhdGNoVGFyZ2V0IH0gZnJvbSAnLi9vdmVyd2F0Y2gnO1xuXG5leHBvcnQgdHlwZSBUYXJnZXRGYWN0b3J5ID0gKCkgPT4gQ2hhdFRhcmdldDtcblxuY29uc3QgVEFSR0VUUzogUmVjb3JkPHN0cmluZywgVGFyZ2V0RmFjdG9yeT4gPSB7XG4gIG9wZXJhdG9yOiAoKSA9PiBuZXcgT3BlcmF0b3JUYXJnZXQoKSxcbiAgLy8gc2VudGluZWwg4oCUIHRoZSBTQU1FIGNvbnZlcnNlIGJyYWluIGxvYWRlZCB3aXRoIHJvbGU9J3NlbnRpbmVsJyAodGhlXG4gIC8vIFNlbnRpbmVsLWFzLUhlcmFsZCBwZXJzb25hKS4gVGhlIGFnZW50LW1jcC9vcGVyYXRvci1jb252ZXJzZSByb3V0ZSBob25vcnNcbiAgLy8gdGhlIGV4cGxpY2l0IGJvZHkucm9sZSwgc28gdGhpcyBleGVyY2lzZXMgU2VudGluZWwtb25seSBiZWhhdmlvciB0aGVcbiAgLy8gb3BlcmF0b3Igcm9sZSBjYW4ndCByZWFjaCDigJQgbm90YWJseSB0aGUgYDxoYW5kb2ZmX3RvX3F1ZWVuPmAgcm91dGluZ1xuICAvLyAoc2VudGluZWwtYXMtY2xhdWRlLXR1aS0yMDI2LTA2LTIyOyBjb252ZXJzZS50cyBvbmx5IGhvbm9ycyBoYW5kb2ZmcyBmb3JcbiAgLy8gcm9sZT09PSdzZW50aW5lbCcpLiBTYW1lIEhUVFAgdHJhbnNwb3J0IGFzIGBvcGVyYXRvcmAuXG4gIHNlbnRpbmVsOiAoKSA9PiBuZXcgT3BlcmF0b3JUYXJnZXQoeyByb2xlOiAnc2VudGluZWwnIH0pLFxuICBvcmFjbGU6ICgpID0+IG5ldyBPcmFjbGVUYXJnZXQoKSxcbiAgLy8gQXJjaGl0ZWN0IGlzIGhhcm5lc3Mtc2NvcGVkOyB0aGUgY2hhdCByb3V0ZSByZXR1cm5zIGEgNDAwIHdpdGhvdXRcbiAgLy8gYSBoYXJuZXNzU2x1ZyBpbiB0aGUgYm9keS4gRGVmYXVsdCB0byAnc2hlZXRzJyAodGhlIGxvbmctc3RhbmRpbmdcbiAgLy8gZGV2IGhhcm5lc3MgcHJlc2VudCBpbiBoYXJuZXNzX3NoYXJlZC5wcm9qZWN0cykuIFNjZW5hcmlvcyBjYW5cbiAgLy8gb3ZlcnJpZGUgcGVyLXR1cm4gdmlhIGlucHV0Lm1ldGEuaGFybmVzc1NsdWcuXG4gIGFyY2hpdGVjdDogKCkgPT4gbmV3IEFyY2hpdGVjdFRhcmdldCh7IGRlZmF1bHRIYXJuZXNzU2x1ZzogJ3NoZWV0cycgfSksXG4gIC8vIHN1IOKAlCBpbi1wcm9jZXNzIGJlaGF2aW9yYWwgU1VUIGZvciB0aGUgZW5naW5lZXItY29sbGFib3JhdG9yIHBsYXlib29rXG4gIC8vIChzdS1zY2VuYXJpby1zdWl0ZS0yMDI2LTA1LTMxKS4gVW5saWtlIHRoZSBIVFRQLWNoYXQgdGFyZ2V0cyBhYm92ZSBpdFxuICAvLyBydW5zIGEgaGFuZC1yb2xsZWQgQW50aHJvcGljIHRvb2wgbG9vcCBpbi1wcm9jZXNzIChwbGF5Ym9vay1hcy1zeXN0ZW0tXG4gIC8vIHByb21wdCArIHRoZSBwYXBlcmN1c3Atc3UgY2F0YWxvZyk7IHNlZSAuL3N1LlxuICBzdTogKCkgPT4gbmV3IFN1VGFyZ2V0KCksXG4gIC8vIHF1ZWVuIOKAlCB0aGUgaGl2ZSBRdWVlbidzIGJsdWVwcmludCBwcm9tcHQgb24gdGhlIHNhbWUgaW4tcHJvY2VzcyBsb29wXG4gIC8vIChzY291dC1pZGVhLWdyYWRpbmcgQi0wNi9CLTA4OiBkb2VzIHNoZSBHUkFERSByb3V0ZWQgZHJhZnRzIHdoaWxlIHRyaWFnaW5nPykuXG4gIHF1ZWVuOiAoKSA9PiBtYWtlUXVlZW5UYXJnZXQoKSxcbiAgLy8gYmVlIOKAlCB0aGUgaGl2ZSBiZWUncyBiYXNlIHByb21wdCBvbiB0aGUgc2FtZSBpbi1wcm9jZXNzIGxvb3BcbiAgLy8gKGh5YnJpZC1iZWUtc2NoZWR1bGVyIFAtMDAzOiBkb2VzIHRoZSBiZWUgUFVMTCBpdHMgbmV4dCBpdGVtIHZpYSBzY2hlZHVsZXI6Z2V0X25leHRcbiAgLy8gcmF0aGVyIHRoYW4gc2VsZi1zY2FubmluZyB3b3JrX2l0ZW1zOmxpc3QgYW5kIHBpY2tpbmcgaXRzZWxmPykuXG4gIGJlZTogKCkgPT4gbWFrZUJlZVRhcmdldCgpLFxuICAvLyBvdmVyd2F0Y2gg4oCUIHRoZSBzeXN0ZW0taGVhbHRoIHN1cGVydmlzb3IncyBibHVlcHJpbnQgcGVyc29uYSBvbiB0aGUgc2FtZSBsb29wXG4gIC8vIChvdmVyd2F0Y2gtcm9sZS0yMDI2LTA2LTE1IEItMTE6IGRvZXMgaXQgTlVER0Utbm90LXJlcGxhY2UgKyBPQlNFUlZFLW5vdC1pZGVhPykuXG4gIG92ZXJ3YXRjaDogKCkgPT4gbWFrZU92ZXJ3YXRjaFRhcmdldCgpLFxufTtcblxuZXhwb3J0IGZ1bmN0aW9uIHJlZ2lzdGVyVGFyZ2V0KGlkOiBzdHJpbmcsIGZhY3Rvcnk6IFRhcmdldEZhY3RvcnkpOiB2b2lkIHtcbiAgVEFSR0VUU1tpZF0gPSBmYWN0b3J5O1xufVxuXG5leHBvcnQgZnVuY3Rpb24gZ2V0VGFyZ2V0KGlkOiBzdHJpbmcpOiBDaGF0VGFyZ2V0IHtcbiAgY29uc3QgZmFjdG9yeSA9IFRBUkdFVFNbaWRdO1xuICBpZiAoIWZhY3RvcnkpIHRocm93IG5ldyBFcnJvcihgVW5rbm93biB0YXJnZXQgJyR7aWR9Jy4gUmVnaXN0ZXJlZDogJHtPYmplY3Qua2V5cyhUQVJHRVRTKS5qb2luKCcsICcpfWApO1xuICByZXR1cm4gZmFjdG9yeSgpO1xufVxuXG5leHBvcnQgZnVuY3Rpb24gbGlzdFRhcmdldHMoKTogc3RyaW5nW10ge1xuICByZXR1cm4gT2JqZWN0LmtleXMoVEFSR0VUUyk7XG59XG5cbmV4cG9ydCB7IE9wZXJhdG9yVGFyZ2V0LCBPcmFjbGVUYXJnZXQsIEFyY2hpdGVjdFRhcmdldCwgU3VUYXJnZXQgfTtcbiJdLCJmaWxlIjoiL2xpYi9sbG0tdGVzdGluZy90YXJnZXRzL2luZGV4LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvbGxtLXRlc3RpbmcvdGFyZ2V0cy9pbmRleC50cyIsIi9saWIvbGxtLXRlc3RpbmcvdGFyZ2V0cy9pbmRleC50cyIsW11d

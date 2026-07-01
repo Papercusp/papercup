@@ -1,0 +1,75 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("node:child_process", {"importedNames":["execFile"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("node:util", {"importedNames":["promisify"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","SU_ROLES","isOperatorConfigWriteRole"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/workspace-registry.ts", {"importedNames":["activeWorkspaceId"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/lib/harness/operator-home-harness.ts", {"importedNames":["operatorHomeHarnessSlug"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/lib/operator-notes.ts", {"importedNames":["projectDirForSlug"]});
+const __vite_ssr_import_7__ = await __vite_ssr_import__("/lib/harness/git-sync/git-sync-action.ts", {"importedNames":["fireGitSyncNow"]});
+
+
+
+
+
+
+
+
+const execFileP = (0,__vite_ssr_import_2__.promisify)((0,__vite_ssr_import_1__.execFile));
+async function headSha(repoDir) {
+  try {
+    const { stdout } = await execFileP("git", ["rev-parse", "HEAD"], { cwd: repoDir });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_3__.defineTool)({
+  name: "git-sync:run",
+  profile: "engineer",
+  description: "FIRE git-sync NOW — run the git-sync routine action once on demand (commit + push the current install's dirty tree) instead of waiting for the ≤3-min cron tick. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists): makes a (force-)deploy ship CURRENT staging, not stale. Same action a cron tick runs (lock, content-guard, attribution). release:deploy now fires this FIRST so it ships the latest agents' work.",
+  capability: "operator:write",
+  guidance: {
+    when: "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.)",
+    notWhen: "To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
+    chaining: "git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
+  },
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_3__.SU_ROLES],
+  rolesQuota: { operator: { perRun: 20 } },
+  args: __vite_ssr_import_0__.z.object({
+    installSlug: __vite_ssr_import_0__.z.string().max(120).optional().describe("Install slug whose git-sync to fire (default: the operator home harness).")
+  }),
+  async handler(args, ctx) {
+    if (!(0,__vite_ssr_import_3__.isOperatorConfigWriteRole)(ctx.role)) {
+      throw new Error("git-sync:run requires operator, architect, or queen role");
+    };
+    const slug = args.installSlug ?? (0,__vite_ssr_import_5__.operatorHomeHarnessSlug)();
+    const workspaceId = (0,__vite_ssr_import_4__.activeWorkspaceId)();
+    const repoDir = await (0,__vite_ssr_import_6__.projectDirForSlug)(slug);
+    const before = repoDir ? await headSha(repoDir) : null;
+    await (0,__vite_ssr_import_7__.fireGitSyncNow)(slug, workspaceId);
+    const after = repoDir ? await headSha(repoDir) : null;
+    const committed = !!(before && after && before !== after);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            fired: true,
+            slug,
+            committed,
+            head_before: before,
+            head_after: after,
+            note: committed ? "git-sync fired — new commit(s) on staging (pushed if the push leg succeeded)." : "git-sync fired — nothing to commit (clean tree), OR this tick skipped (ineligible / lock held by a concurrent tick). See the operator log."
+          })
+        }
+      ]
+    };
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVlBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7Ozs7Ozs7OztBQUVBLE1BQU0sZUFBWSxvQ0FBVSwrQkFBUTtBQUVwQyxlQUFlLFFBQVEsU0FBeUM7QUFDOUQsTUFBSTtBQUNGLFVBQU0sRUFBRSxPQUFPLElBQUksTUFBTSxVQUFVLE9BQU8sQ0FBQyxhQUFhLE1BQU0sR0FBRyxFQUFFLEtBQUssUUFBUSxDQUFDO0FBQ2pGLFdBQU8sT0FBTyxLQUFLO0FBQUEsRUFDckIsUUFBUTtBQUNOLFdBQU87QUFBQSxFQUNUO0FBQ0Y7QUFFQSx1Q0FBZSxrQ0FBVztBQUFBLEVBQ3hCLE1BQU07QUFBQSxFQUNOLFNBQVM7QUFBQSxFQUNULGFBQ0U7QUFBQSxFQUNGLFlBQVk7QUFBQSxFQUNaLFVBQVU7QUFBQSxJQUNSLE1BQU07QUFBQSxJQUNOLFNBQVM7QUFBQSxJQUNULFVBQVU7QUFBQSxFQUNaO0FBQUEsRUFDQSxrQkFBa0I7QUFBQSxFQUNsQixZQUFZLENBQUMsR0FBRyw4QkFBUTtBQUFBLEVBQ3hCLFlBQVksRUFBRSxVQUFVLEVBQUUsUUFBUSxHQUFHLEVBQUU7QUFBQSxFQUN2QyxNQUFNLHdCQUFFLE9BQU87QUFBQSxJQUNiLGFBQWEsd0JBQ1YsT0FBTyxFQUNQLElBQUksR0FBRyxFQUNQLFNBQVMsRUFDVCxTQUFTLDJFQUEyRTtBQUFBLEVBQ3pGLENBQUM7QUFBQSxFQUNELE1BQU0sUUFBUSxNQUFNLEtBQUs7QUFDdkIsUUFBSSxJQUFDLGlEQUEwQixJQUFJLElBQUksR0FBRztBQUN4QyxZQUFNLElBQUksTUFBTSwwREFBMEQ7QUFBQSxJQUM1RTtBQUNBLFVBQU0sT0FBTyxLQUFLLGtCQUFlLCtDQUF3QjtBQUN6RCxVQUFNLGlCQUFjLHlDQUFrQjtBQUV0QyxVQUFNLFVBQVUsU0FBTSx5Q0FBa0IsSUFBSTtBQUM1QyxVQUFNLFNBQVMsVUFBVSxNQUFNLFFBQVEsT0FBTyxJQUFJO0FBRWxELGFBQU0sc0NBQWUsTUFBTSxXQUFXO0FBRXRDLFVBQU0sUUFBUSxVQUFVLE1BQU0sUUFBUSxPQUFPLElBQUk7QUFDakQsVUFBTSxZQUFZLENBQUMsRUFBRSxVQUFVLFNBQVMsV0FBVztBQUVuRCxXQUFPO0FBQUEsTUFDTCxTQUFTO0FBQUEsUUFDUDtBQUFBLFVBQ0UsTUFBTTtBQUFBLFVBQ04sTUFBTSxLQUFLLFVBQVU7QUFBQSxZQUNuQixJQUFJO0FBQUEsWUFDSixPQUFPO0FBQUEsWUFDUDtBQUFBLFlBQ0E7QUFBQSxZQUNBLGFBQWE7QUFBQSxZQUNiLFlBQVk7QUFBQSxZQUNaLE1BQU0sWUFDRixrRkFDQTtBQUFBLFVBQ04sQ0FBQztBQUFBLFFBQ0g7QUFBQSxNQUNGO0FBQUEsSUFDRjtBQUFBLEVBQ0Y7QUFDRixDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJydW4udHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBnaXQtc3luYzpydW4g4oCUIGZpcmUgdGhlIGdpdC1zeW5jIHJvdXRpbmUgYWN0aW9uIE9OQ0UsIG9uIGRlbWFuZCAoV0ktMTMyMCkuXG4gKlxuICogQ2xvc2VzIHRoZSBmb3JjZS1kZXBsb3ktc2hpcHMtc3RhbGUtc3RhZ2luZyBhc3ltbWV0cnk6IGEgKGZvcmNlLSlkZXBsb3kgc2hpcHNcbiAqIHdoYXRldmVyIGlzIENPTU1JVFRFRCBvbiBzdGFnaW5nLCBzbyBpZiBnaXQtc3luYyBpcyBsYWdnaW5nIG9yIHdlZGdlZCwgdGhlIGRlcGxveVxuICogc2hpcHMgYSBTVEFMRSB0cmVlICh0aGUgMjAyNi0wNi0zMCBpbmNpZGVudCDigJQgSSBoYWQgdG8gaGFuZC1jb21taXQgdG8gbGFuZCB3b3JrKS5cbiAqIGdpdC1zeW5jIG90aGVyd2lzZSBoYXMgTk8gbWFudWFsIGxldmVyIChvbmx5IHJvdXRpbmVzOnNldCBjcm9uL3BhdXNlKSwgdW5saWtlIHRoZVxuICogZGVwbG95IChyZWxlYXNlOmRlcGxveSBvcDp0cmlnZ2VyL2ZvcmNlKS4gVGhpcyBpbnZva2VzIHRoZSBTQU1FIGBzeXN0ZW06Z2l0LXN5bmNgXG4gKiBhY3Rpb24gYSBjcm9uIHRpY2sgcnVucyAobG9jaywgY29udGVudC1ndWFyZCwgYXR0cmlidXRpb24sIGNvbW1pdCArIHB1c2gpIHZpYSB0aGVcbiAqIHNoYXJlZCBmaXJlR2l0U3luY05vdywgc28gYW4gYWdlbnQgT1IgdGhlIGRlcGxveS9nYXRlIHByb2Nlc3MgY2FuIG1ha2Ugc3RhZ2luZ1xuICogY3VycmVudCBpbW1lZGlhdGVseSByYXRoZXIgdGhhbiB3YWl0aW5nIGZvciB0aGUgbmV4dCAo4omkMy1taW4pIHRpY2suXG4gKi9cbmltcG9ydCB7IHogfSBmcm9tICd6b2QnO1xuaW1wb3J0IHsgZXhlY0ZpbGUgfSBmcm9tICdub2RlOmNoaWxkX3Byb2Nlc3MnO1xuaW1wb3J0IHsgcHJvbWlzaWZ5IH0gZnJvbSAnbm9kZTp1dGlsJztcbmltcG9ydCB7IGRlZmluZVRvb2wsIFNVX1JPTEVTLCBpc09wZXJhdG9yQ29uZmlnV3JpdGVSb2xlIH0gZnJvbSAnQHBhcGVyY3VzcC9hZ2VudC1tY3AnO1xuaW1wb3J0IHsgYWN0aXZlV29ya3NwYWNlSWQgfSBmcm9tICcuLi8uLi93b3Jrc3BhY2UtcmVnaXN0cnknO1xuaW1wb3J0IHsgb3BlcmF0b3JIb21lSGFybmVzc1NsdWcgfSBmcm9tICcuLi8uLi9oYXJuZXNzL29wZXJhdG9yLWhvbWUtaGFybmVzcyc7XG5pbXBvcnQgeyBwcm9qZWN0RGlyRm9yU2x1ZyB9IGZyb20gJy4uLy4uL29wZXJhdG9yLW5vdGVzJztcbmltcG9ydCB7IGZpcmVHaXRTeW5jTm93IH0gZnJvbSAnLi4vLi4vaGFybmVzcy9naXQtc3luYy9naXQtc3luYy1hY3Rpb24nO1xuXG5jb25zdCBleGVjRmlsZVAgPSBwcm9taXNpZnkoZXhlY0ZpbGUpO1xuXG5hc3luYyBmdW5jdGlvbiBoZWFkU2hhKHJlcG9EaXI6IHN0cmluZyk6IFByb21pc2U8c3RyaW5nIHwgbnVsbD4ge1xuICB0cnkge1xuICAgIGNvbnN0IHsgc3Rkb3V0IH0gPSBhd2FpdCBleGVjRmlsZVAoJ2dpdCcsIFsncmV2LXBhcnNlJywgJ0hFQUQnXSwgeyBjd2Q6IHJlcG9EaXIgfSk7XG4gICAgcmV0dXJuIHN0ZG91dC50cmltKCk7XG4gIH0gY2F0Y2gge1xuICAgIHJldHVybiBudWxsO1xuICB9XG59XG5cbmV4cG9ydCBkZWZhdWx0IGRlZmluZVRvb2woe1xuICBuYW1lOiAnZ2l0LXN5bmM6cnVuJyxcbiAgcHJvZmlsZTogJ2VuZ2luZWVyJyxcbiAgZGVzY3JpcHRpb246XG4gICAgXCJGSVJFIGdpdC1zeW5jIE5PVyDigJQgcnVuIHRoZSBnaXQtc3luYyByb3V0aW5lIGFjdGlvbiBvbmNlIG9uIGRlbWFuZCAoY29tbWl0ICsgcHVzaCB0aGUgY3VycmVudCBpbnN0YWxsJ3MgZGlydHkgdHJlZSkgaW5zdGVhZCBvZiB3YWl0aW5nIGZvciB0aGUg4omkMy1taW4gY3JvbiB0aWNrLiBUaGUgbWFudWFsIGxldmVyIGdpdC1zeW5jIG90aGVyd2lzZSBsYWNrcyAob25seSByb3V0aW5lczpzZXQgY3Jvbi9wYXVzZSBleGlzdHMpOiBtYWtlcyBhIChmb3JjZS0pZGVwbG95IHNoaXAgQ1VSUkVOVCBzdGFnaW5nLCBub3Qgc3RhbGUuIFNhbWUgYWN0aW9uIGEgY3JvbiB0aWNrIHJ1bnMgKGxvY2ssIGNvbnRlbnQtZ3VhcmQsIGF0dHJpYnV0aW9uKS4gcmVsZWFzZTpkZXBsb3kgbm93IGZpcmVzIHRoaXMgRklSU1Qgc28gaXQgc2hpcHMgdGhlIGxhdGVzdCBhZ2VudHMnIHdvcmsuXCIsXG4gIGNhcGFiaWxpdHk6ICdvcGVyYXRvcjp3cml0ZScsXG4gIGd1aWRhbmNlOiB7XG4gICAgd2hlbjogJ1lvdSBuZWVkIHRoZSBsYXRlc3Qgd29yayBDT01NSVRURUQgcmlnaHQgbm93IOKAlCBiZWZvcmUgYSAoZm9yY2UtKWRlcGxveSBvciBnYXRlIHJ1biwgb3IgdG8gcmVjb3ZlciB3aGVuIGdpdC1zeW5jIGlzIGxhZ2dpbmcvd2VkZ2VkLiAoZ2l0LXN5bmMgYWxzbyBhdXRvLXJ1bnMgZXZlcnkgfjMgbWluOyB0aGlzIGp1c3QgZmlyZXMgaXQgb24gZGVtYW5kLiknLFxuICAgIG5vdFdoZW46ICdUbyByZXR1bmUgdGhlIGNhZGVuY2Ugb3IgcGF1c2UgZ2l0LXN5bmMsIHVzZSByb3V0aW5lczpzZXQuIFRvIGRlcGxveSwgcmVsZWFzZTpkZXBsb3kgKHdoaWNoIGFscmVhZHkgZmlyZXMgZ2l0LXN5bmMgZmlyc3QpLicsXG4gICAgY2hhaW5pbmc6ICdnaXQtc3luYzpydW4g4oaSIHJlbGVhc2U6ZGVwbG95IHsgb3A6c3RhdHVzIH0g4oaSIG9wOnRyaWdnZXIgLyBvcDpmb3JjZSAobm93IHNoaXBwaW5nIGN1cnJlbnQgc3RhZ2luZykuJyxcbiAgfSxcbiAgcmVxdWlyZVByaW5jaXBhbDogZmFsc2UsXG4gIGFnZW50Um9sZXM6IFsuLi5TVV9ST0xFU10sXG4gIHJvbGVzUXVvdGE6IHsgb3BlcmF0b3I6IHsgcGVyUnVuOiAyMCB9IH0sXG4gIGFyZ3M6IHoub2JqZWN0KHtcbiAgICBpbnN0YWxsU2x1ZzogelxuICAgICAgLnN0cmluZygpXG4gICAgICAubWF4KDEyMClcbiAgICAgIC5vcHRpb25hbCgpXG4gICAgICAuZGVzY3JpYmUoJ0luc3RhbGwgc2x1ZyB3aG9zZSBnaXQtc3luYyB0byBmaXJlIChkZWZhdWx0OiB0aGUgb3BlcmF0b3IgaG9tZSBoYXJuZXNzKS4nKSxcbiAgfSksXG4gIGFzeW5jIGhhbmRsZXIoYXJncywgY3R4KSB7XG4gICAgaWYgKCFpc09wZXJhdG9yQ29uZmlnV3JpdGVSb2xlKGN0eC5yb2xlKSkge1xuICAgICAgdGhyb3cgbmV3IEVycm9yKCdnaXQtc3luYzpydW4gcmVxdWlyZXMgb3BlcmF0b3IsIGFyY2hpdGVjdCwgb3IgcXVlZW4gcm9sZScpO1xuICAgIH1cbiAgICBjb25zdCBzbHVnID0gYXJncy5pbnN0YWxsU2x1ZyA/PyBvcGVyYXRvckhvbWVIYXJuZXNzU2x1ZygpO1xuICAgIGNvbnN0IHdvcmtzcGFjZUlkID0gYWN0aXZlV29ya3NwYWNlSWQoKTtcblxuICAgIGNvbnN0IHJlcG9EaXIgPSBhd2FpdCBwcm9qZWN0RGlyRm9yU2x1ZyhzbHVnKTtcbiAgICBjb25zdCBiZWZvcmUgPSByZXBvRGlyID8gYXdhaXQgaGVhZFNoYShyZXBvRGlyKSA6IG51bGw7XG5cbiAgICBhd2FpdCBmaXJlR2l0U3luY05vdyhzbHVnLCB3b3Jrc3BhY2VJZCk7XG5cbiAgICBjb25zdCBhZnRlciA9IHJlcG9EaXIgPyBhd2FpdCBoZWFkU2hhKHJlcG9EaXIpIDogbnVsbDtcbiAgICBjb25zdCBjb21taXR0ZWQgPSAhIShiZWZvcmUgJiYgYWZ0ZXIgJiYgYmVmb3JlICE9PSBhZnRlcik7XG5cbiAgICByZXR1cm4ge1xuICAgICAgY29udGVudDogW1xuICAgICAgICB7XG4gICAgICAgICAgdHlwZTogJ3RleHQnLFxuICAgICAgICAgIHRleHQ6IEpTT04uc3RyaW5naWZ5KHtcbiAgICAgICAgICAgIG9rOiB0cnVlLFxuICAgICAgICAgICAgZmlyZWQ6IHRydWUsXG4gICAgICAgICAgICBzbHVnLFxuICAgICAgICAgICAgY29tbWl0dGVkLFxuICAgICAgICAgICAgaGVhZF9iZWZvcmU6IGJlZm9yZSxcbiAgICAgICAgICAgIGhlYWRfYWZ0ZXI6IGFmdGVyLFxuICAgICAgICAgICAgbm90ZTogY29tbWl0dGVkXG4gICAgICAgICAgICAgID8gJ2dpdC1zeW5jIGZpcmVkIOKAlCBuZXcgY29tbWl0KHMpIG9uIHN0YWdpbmcgKHB1c2hlZCBpZiB0aGUgcHVzaCBsZWcgc3VjY2VlZGVkKS4nXG4gICAgICAgICAgICAgIDogJ2dpdC1zeW5jIGZpcmVkIOKAlCBub3RoaW5nIHRvIGNvbW1pdCAoY2xlYW4gdHJlZSksIE9SIHRoaXMgdGljayBza2lwcGVkIChpbmVsaWdpYmxlIC8gbG9jayBoZWxkIGJ5IGEgY29uY3VycmVudCB0aWNrKS4gU2VlIHRoZSBvcGVyYXRvciBsb2cuJyxcbiAgICAgICAgICB9KSxcbiAgICAgICAgfSxcbiAgICAgIF0sXG4gICAgfTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2dpdF9zeW5jL3J1bi50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvZ2l0X3N5bmMvcnVuLnRzIiwiL2xpYi9hZ2VudC10b29scy9naXRfc3luYy9ydW4udHMiLFtdXQ==

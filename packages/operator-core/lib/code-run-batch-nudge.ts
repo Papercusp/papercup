@@ -130,8 +130,12 @@ function normalize(toolName: string): string {
 }
 
 /** `wake-queue` / `set_status` → `wakeQueue` / `setStatus` (the code:run facade's JS-identifier keys). */
+function camelSegment(segment: string): string {
+  return segment.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase());
+}
+
 function camelVerb(verb: string): string {
-  return verb.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase());
+  return camelSegment(verb);
 }
 
 /** Render a `tools.…` facade call for `toolName(<argExpr>)`. Prefers the typed `tools.ns.verb(arg)`
@@ -144,7 +148,8 @@ function facadeCall(toolName: string, argExpr: string): string {
     const ns = toolName.slice(0, ci);
     const verb = camelVerb(toolName.slice(ci + 1));
     const ident = /^[A-Za-z_$][\w$]*$/;
-    if (ident.test(ns) && ident.test(verb)) return `tools.${ns}.${verb}(${argExpr})`;
+    const camelNs = camelSegment(ns);
+    if (ident.test(camelNs) && ident.test(verb)) return `tools.${camelNs}.${verb}(${argExpr})`;
   }
   return `tools.call(${JSON.stringify(toolName)}, ${argExpr})`;
 }

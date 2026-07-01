@@ -74,7 +74,7 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
       hit = maybeBatchNudge({ ...cap, toolName: 'work_items:get', now: t });
     }
     expect(hit?.text).toContain('code:run { script:');
-    expect(hit?.text).toContain('tools.work_items.get(a)'); // ns.camelVerb form, loop var
+    expect(hit?.text).toContain('tools.workItems.get(a)'); // camelNamespace.camelVerb form, loop var
     expect(hit?.text).toMatch(/for \(const a of inputs\) out\.push\(await /);
     expect(hit?.text).toContain('return out;');
   });
@@ -118,7 +118,7 @@ describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', 
     expect(firstFire?.text).toContain('Promise.all');
     // first-seen order, capped at the distinct threshold — the trailing tool fires later, in cooldown
     expect(firstFire?.text).toContain('tools.plans.get(');
-    expect(firstFire?.text).toContain('tools.work_items.get(');
+    expect(firstFire?.text).toContain('tools.workItems.get(');
     expect(firstFire?.text).toContain('tools.docs.search(');
     expect(firstFire?.text).toMatch(/return \{ r0, r1, r2 \}/);
   });

@@ -40,6 +40,7 @@ import type { CurationDeps } from './curation-loop';
 /** Completions/decisions are only "fresh" within this window (older ones the
  *  curation-log already remembers surfacing, but this bounds the scan). */
 const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
+const COMPLETION_SIGNAL_STATUSES = ['done', 'passed', 'resolved', 'closed'] as const;
 
 async function readEscalations(): Promise<RawEscalation[]> {
   const open = await listEscalations({ status: 'open' });
@@ -118,9 +119,11 @@ async function readCompletions(): Promise<RawCompletion[]> {
     { harness_slug: string; feature_id: string; title: string | null; created_by_github_user_id: string | null; updated_ts: string | null }[]
   >`
     SELECT harness_slug, feature_id, title, created_by_github_user_id::text, updated_ts::text
-      FROM harness_shared.harness_features_consolidated
+      FROM harness_shared.work_items
      WHERE workspace_id = ${ws}
-       AND status = 'done'
+       AND status = ANY(${[...COMPLETION_SIGNAL_STATUSES]}::text[])
+       AND terminal_owner IS NOT NULL AND terminal_owner <> ''
+       AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
        AND updated_ts IS NOT NULL
        AND updated_ts > ${cutoff}
      ORDER BY updated_ts DESC
@@ -130,8 +133,9 @@ async function readCompletions(): Promise<RawCompletion[]> {
     workItemId: `${r.harness_slug}#${r.feature_id}`,
     harness: r.harness_slug,
     title: r.title ?? r.feature_id,
-    // Provenance heuristic (best landed signal): a human github id on the row
-    // ⇒ user-requested. Fleet-internal features have none.
+    // Completion-integrity gate (WI-1403/WI-1405): only evidence-backed terminal
+    // rows count as "work landed" here. The human-provenance heuristic still rides
+    // created_by_github_user_id on the unified row.
     userRequested: r.created_by_github_user_id != null,
     ref: `wi:${r.harness_slug}#${r.feature_id}`,
     ts: r.updated_ts ? new Date(Number(r.updated_ts)).toISOString() : new Date().toISOString(),

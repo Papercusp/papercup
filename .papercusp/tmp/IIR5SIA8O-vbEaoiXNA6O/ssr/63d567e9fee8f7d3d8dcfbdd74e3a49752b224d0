@@ -1,0 +1,53 @@
+__vite_ssr_exportName__("S09_GENERATE_IDEAS", () => { try { return S09_GENERATE_IDEAS } catch {} });
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/libs/testing-shell/src/llm/index.ts", {"importedNames":["BRIEF_ADMIN"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/llm-testing/rubrics/operator.ts", {"importedNames":["OPERATOR_RUBRIC"]});
+
+
+const S09_GENERATE_IDEAS = {
+  id: "op-S09-generate-ideas",
+  version: 1,
+  target: "operator",
+  description: `Admin clicks the Generate Ideas button (or fires Cmd+Shift+I) with no prior context. The operator should produce a useful proactive suggestion: scan the harness, surface 2-3 things to look at, do not say "I don't know" or repeat the user back.`,
+  persona: __vite_ssr_import_0__.BRIEF_ADMIN,
+  goal: { kind: "user_satisfied", declaredBy: "sim_user" },
+  caps: { maxTurns: 4, maxWallSecs: 90, maxCostUsd: 1 },
+  runMatrix: { repeat: 3, variancePolicy: "flag-if-disagreement" },
+  // Production `generateIdeas` (OperatorConversationProvider) fires
+  // runGeneration('user_says_ready') — there's no distinct wire
+  // trigger. We mirror that here so the operator receives exactly
+  // what the Generate Ideas button sends.
+  triggers: [{ on: "after_turn", fire: "user_says_ready", param: 0 }],
+  asserts: [
+    // Must NOT say "I don't know" / "I can't help" type refusals.
+    { kind: "text_excludes", pattern: /i (don'?t know|can'?t help)/i, turnIdx: 0 },
+    // Must produce substantive first turn (≥ 60 chars of assistant text).
+    {
+      kind: "custom",
+      name: "substantive-first-turn",
+      eval: (run) => {
+        const t0 = run.turns[0];
+        if (!t0) return [{
+          assertKind: "custom:substantive-first-turn",
+          severity: "error",
+          claim: "No first turn was produced for the generate_ideas trigger."
+        }];
+        if (t0.assistantText.trim().length < 60) {
+          return [{
+            assertKind: "custom:substantive-first-turn",
+            severity: "error",
+            evidenceTurnIdx: 0,
+            claim: `Generate-ideas response was too short (${t0.assistantText.trim().length} chars) — likely a refusal or stub.`
+          }];
+        };
+        return [];
+      }
+    }
+  ],
+  rubric: __vite_ssr_import_1__.OPERATOR_RUBRIC
+};
+const __vite_ssr_export_default__ = S09_GENERATE_IDEAS;
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7QUFtQkE7QUFDQTs7O0FBR08sTUFBTSxxQkFBK0I7QUFBQSxFQUMxQyxJQUFJO0FBQUEsRUFDSixTQUFTO0FBQUEsRUFDVCxRQUFRO0FBQUEsRUFDUixhQUNFO0FBQUEsRUFDRixTQUFTO0FBQUEsRUFDVCxNQUFNLEVBQUUsTUFBTSxrQkFBa0IsWUFBWSxXQUFXO0FBQUEsRUFDdkQsTUFBTSxFQUFFLFVBQVUsR0FBRyxhQUFhLElBQUksWUFBWSxFQUFJO0FBQUEsRUFDdEQsV0FBVyxFQUFFLFFBQVEsR0FBRyxnQkFBZ0IsdUJBQXVCO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQSxFQUsvRCxVQUFVLENBQUMsRUFBRSxJQUFJLGNBQWMsTUFBTSxtQkFBbUIsT0FBTyxFQUFFLENBQUM7QUFBQSxFQUNsRSxTQUFTO0FBQUE7QUFBQSxJQUVQLEVBQUUsTUFBTSxpQkFBaUIsU0FBUyxnQ0FBZ0MsU0FBUyxFQUFFO0FBQUE7QUFBQSxJQUU3RTtBQUFBLE1BQ0UsTUFBTTtBQUFBLE1BQ04sTUFBTTtBQUFBLE1BQ04sTUFBTSxDQUFDLFFBQVE7QUFDYixjQUFNLEtBQUssSUFBSSxNQUFNLENBQUM7QUFDdEIsWUFBSSxDQUFDLEdBQUksUUFBTyxDQUFDO0FBQUEsVUFDZixZQUFZO0FBQUEsVUFDWixVQUFVO0FBQUEsVUFDVixPQUFPO0FBQUEsUUFDVCxDQUFDO0FBQ0QsWUFBSSxHQUFHLGNBQWMsS0FBSyxFQUFFLFNBQVMsSUFBSTtBQUN2QyxpQkFBTyxDQUFDO0FBQUEsWUFDTixZQUFZO0FBQUEsWUFDWixVQUFVO0FBQUEsWUFDVixpQkFBaUI7QUFBQSxZQUNqQixPQUFPLDBDQUEwQyxHQUFHLGNBQWMsS0FBSyxFQUFFLE1BQU07QUFBQSxVQUNqRixDQUFDO0FBQUEsUUFDSDtBQUNBLGVBQU8sQ0FBQztBQUFBLE1BQ1Y7QUFBQSxJQUNGO0FBQUEsRUFDRjtBQUFBLEVBQ0EsUUFBUTtBQUNWO0FBRUEsb0NBQWUiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIlMwOS1nZW5lcmF0ZS1pZGVhcy50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIFMwOSDigJQgZ2VuZXJhdGUtaWRlYXNcbiAqXG4gKiBQZXJzb25hOiBpZGxlIGFkbWluIHdobyBjbGlja3MgdGhlIFwiR2VuZXJhdGUgSWRlYXNcIiBidXR0b24gKG9yXG4gKiBoaXRzIENtZCtTaGlmdCtJKS5cbiAqXG4gKiBUaGUgcnVubmVyIGZpcmVzIGEgYGdlbmVyYXRlX2lkZWFzYCB0cmlnZ2VyIGFzIHRoZSBGSVJTVCB0dXJuIOKAlFxuICogbm8gcHJpb3IgdXNlciBtZXNzYWdlLiBPcGVyYXRvciBzaG91bGQgcmVzcG9uZCB3aXRoIGEgcHJvZHVjdGl2ZVxuICogc2Nhbi1hbmQtc3VnZ2VzdCBvdXRwdXQ6IGF0IGxlYXN0IG9uZSB0b29sIGNhbGwgKGRvY3M6KiAvIHNlYXJjaDoqXG4gKiAvIGhhcm5lc3M6KiAvIGlzc3VlczoqKSBhbmQgc3Vic3RhbnRpdmUgdGV4dC5cbiAqXG4gKiBDb3ZlcnM6IEIxMCAoZ2VuZXJhdGUtaWRlYXMgdHJpZ2dlcikuXG4gKlxuICogSW1wbGVtZW50YXRpb24gbm90ZTogdGhlIGZyYW1ld29yaydzIHJ1bm5lciBleHBvc2VzIGBwZW5kaW5nVHJpZ2dlcmBcbiAqIHdoaWNoIHRoZSBPcGVyYXRvclRhcmdldCB0aHJlYWRzIGFzIHRoZSBmaXJzdCB0dXJuJ3MgdHJpZ2dlci4gVGhlXG4gKiBzY2VuYXJpbydzIGB0cmlnZ2Vyc2AgZmllbGQgZGVjbGFyZXMgYG9uOiAnYWZ0ZXJfdHVybicsIHBhcmFtOiAwYFxuICogc28gdGhlIHJ1bm5lciBmaXJlcyBpdCBiZWZvcmUgc2ltLXVzZXIgZ2V0cyBhIHNheS5cbiAqL1xuXG5pbXBvcnQgeyBCUklFRl9BRE1JTiB9IGZyb20gJ0BwYXBlcmN1c3AvdGVzdGluZy1zaGVsbC9sbG0nO1xuaW1wb3J0IHsgT1BFUkFUT1JfUlVCUklDIH0gZnJvbSAnLi4vLi4vcnVicmljcy9vcGVyYXRvcic7XG5pbXBvcnQgdHlwZSB7IFNjZW5hcmlvIH0gZnJvbSAnQHBhcGVyY3VzcC90ZXN0aW5nLXNoZWxsL2xsbSc7XG5cbmV4cG9ydCBjb25zdCBTMDlfR0VORVJBVEVfSURFQVM6IFNjZW5hcmlvID0ge1xuICBpZDogJ29wLVMwOS1nZW5lcmF0ZS1pZGVhcycsXG4gIHZlcnNpb246IDEsXG4gIHRhcmdldDogJ29wZXJhdG9yJyxcbiAgZGVzY3JpcHRpb246XG4gICAgJ0FkbWluIGNsaWNrcyB0aGUgR2VuZXJhdGUgSWRlYXMgYnV0dG9uIChvciBmaXJlcyBDbWQrU2hpZnQrSSkgd2l0aCBubyBwcmlvciBjb250ZXh0LiBUaGUgb3BlcmF0b3Igc2hvdWxkIHByb2R1Y2UgYSB1c2VmdWwgcHJvYWN0aXZlIHN1Z2dlc3Rpb246IHNjYW4gdGhlIGhhcm5lc3MsIHN1cmZhY2UgMi0zIHRoaW5ncyB0byBsb29rIGF0LCBkbyBub3Qgc2F5IFwiSSBkb25cXCd0IGtub3dcIiBvciByZXBlYXQgdGhlIHVzZXIgYmFjay4nLFxuICBwZXJzb25hOiBCUklFRl9BRE1JTixcbiAgZ29hbDogeyBraW5kOiAndXNlcl9zYXRpc2ZpZWQnLCBkZWNsYXJlZEJ5OiAnc2ltX3VzZXInIH0sXG4gIGNhcHM6IHsgbWF4VHVybnM6IDQsIG1heFdhbGxTZWNzOiA5MCwgbWF4Q29zdFVzZDogMS4wIH0sXG4gIHJ1bk1hdHJpeDogeyByZXBlYXQ6IDMsIHZhcmlhbmNlUG9saWN5OiAnZmxhZy1pZi1kaXNhZ3JlZW1lbnQnIH0sXG4gIC8vIFByb2R1Y3Rpb24gYGdlbmVyYXRlSWRlYXNgIChPcGVyYXRvckNvbnZlcnNhdGlvblByb3ZpZGVyKSBmaXJlc1xuICAvLyBydW5HZW5lcmF0aW9uKCd1c2VyX3NheXNfcmVhZHknKSDigJQgdGhlcmUncyBubyBkaXN0aW5jdCB3aXJlXG4gIC8vIHRyaWdnZXIuIFdlIG1pcnJvciB0aGF0IGhlcmUgc28gdGhlIG9wZXJhdG9yIHJlY2VpdmVzIGV4YWN0bHlcbiAgLy8gd2hhdCB0aGUgR2VuZXJhdGUgSWRlYXMgYnV0dG9uIHNlbmRzLlxuICB0cmlnZ2VyczogW3sgb246ICdhZnRlcl90dXJuJywgZmlyZTogJ3VzZXJfc2F5c19yZWFkeScsIHBhcmFtOiAwIH1dLFxuICBhc3NlcnRzOiBbXG4gICAgLy8gTXVzdCBOT1Qgc2F5IFwiSSBkb24ndCBrbm93XCIgLyBcIkkgY2FuJ3QgaGVscFwiIHR5cGUgcmVmdXNhbHMuXG4gICAgeyBraW5kOiAndGV4dF9leGNsdWRlcycsIHBhdHRlcm46IC9pIChkb24nP3Qga25vd3xjYW4nP3QgaGVscCkvaSwgdHVybklkeDogMCB9LFxuICAgIC8vIE11c3QgcHJvZHVjZSBzdWJzdGFudGl2ZSBmaXJzdCB0dXJuICjiiaUgNjAgY2hhcnMgb2YgYXNzaXN0YW50IHRleHQpLlxuICAgIHtcbiAgICAgIGtpbmQ6ICdjdXN0b20nLFxuICAgICAgbmFtZTogJ3N1YnN0YW50aXZlLWZpcnN0LXR1cm4nLFxuICAgICAgZXZhbDogKHJ1bikgPT4ge1xuICAgICAgICBjb25zdCB0MCA9IHJ1bi50dXJuc1swXTtcbiAgICAgICAgaWYgKCF0MCkgcmV0dXJuIFt7XG4gICAgICAgICAgYXNzZXJ0S2luZDogJ2N1c3RvbTpzdWJzdGFudGl2ZS1maXJzdC10dXJuJyxcbiAgICAgICAgICBzZXZlcml0eTogJ2Vycm9yJyxcbiAgICAgICAgICBjbGFpbTogJ05vIGZpcnN0IHR1cm4gd2FzIHByb2R1Y2VkIGZvciB0aGUgZ2VuZXJhdGVfaWRlYXMgdHJpZ2dlci4nLFxuICAgICAgICB9XTtcbiAgICAgICAgaWYgKHQwLmFzc2lzdGFudFRleHQudHJpbSgpLmxlbmd0aCA8IDYwKSB7XG4gICAgICAgICAgcmV0dXJuIFt7XG4gICAgICAgICAgICBhc3NlcnRLaW5kOiAnY3VzdG9tOnN1YnN0YW50aXZlLWZpcnN0LXR1cm4nLFxuICAgICAgICAgICAgc2V2ZXJpdHk6ICdlcnJvcicsXG4gICAgICAgICAgICBldmlkZW5jZVR1cm5JZHg6IDAsXG4gICAgICAgICAgICBjbGFpbTogYEdlbmVyYXRlLWlkZWFzIHJlc3BvbnNlIHdhcyB0b28gc2hvcnQgKCR7dDAuYXNzaXN0YW50VGV4dC50cmltKCkubGVuZ3RofSBjaGFycykg4oCUIGxpa2VseSBhIHJlZnVzYWwgb3Igc3R1Yi5gLFxuICAgICAgICAgIH1dO1xuICAgICAgICB9XG4gICAgICAgIHJldHVybiBbXTtcbiAgICAgIH0sXG4gICAgfSxcbiAgXSxcbiAgcnVicmljOiBPUEVSQVRPUl9SVUJSSUMsXG59O1xuXG5leHBvcnQgZGVmYXVsdCBTMDlfR0VORVJBVEVfSURFQVM7XG4iXSwiZmlsZSI6Ii9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL29wZXJhdG9yL1MwOS1nZW5lcmF0ZS1pZGVhcy50cyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL29wZXJhdG9yL1MwOS1nZW5lcmF0ZS1pZGVhcy50cyIsIi9saWIvbGxtLXRlc3Rpbmcvc2NlbmFyaW9zL29wZXJhdG9yL1MwOS1nZW5lcmF0ZS1pZGVhcy50cyIsW11d
