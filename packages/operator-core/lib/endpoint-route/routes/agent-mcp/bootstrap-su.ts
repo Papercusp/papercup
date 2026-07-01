@@ -127,6 +127,15 @@ export interface BootstrapSuResult {
    */
   fleetNotice?: string | null;
   /**
+   * WI-1408 (fleet-join-startup-assertion): the resolved fleet slug/role, or null when
+   * no fleet was requested. When a fleet WAS requested (`--fleet`/`--fleet-name`), this
+   * route never returns `status: 'ok'` with a null `fleetSlug` — resolution failure is a
+   * hard error (see the `fleetRequested` guard above) — so a caller (e.g. the launcher,
+   * or a test) can assert `!body.fleet || result.fleetSlug != null` and it will hold.
+   */
+  fleetSlug?: string | null;
+  fleetRole?: string | null;
+  /**
    * improve-fleet-launch-autokickoff (EI-5503): the FIRST USER TURN a plan-bound
    * launch should submit so the agent immediately starts working the plan instead
    * of orienting once and parking idle. Present only when a plan is bound (else
@@ -367,7 +376,22 @@ export async function resolveFleet(
       };
     }
     // An existing fleet → join it. Default member; honor an explicit leader request.
+    // WI-1408 (fleet-join-startup-assertion): validate the slug is a REAL fleet before
+    // handing back membership env. Without this, a typo'd/stale `--fleet=<slug>` "succeeded"
+    // silently — the agent registered PAPERCUSP_FLEET_SLUG for a fleet row that never
+    // existed (a phantom membership, invisible to fleet:assignments' roster of real
+    // agent_fleets rows even though the env var itself was non-null).
     const fleetSlug = requested as string;
+    const { getFleet } = await import('../../../agent-fleets-store');
+    const record = await getFleet(workspaceId, fleetSlug);
+    if (!record) {
+      return {
+        env: {},
+        notice: `fleet \`${fleetSlug}\` does not exist in this workspace — join skipped (check the slug, or create it first).`,
+        fleetSlug: null,
+        fleetRole: null,
+      };
+    }
     const role = opts.fleetRole?.trim() === 'leader' ? 'leader' : 'member';
     const scheme = await getFleetScheme(workspaceId, fleetSlug);
     return {
@@ -789,6 +813,37 @@ const post = defineTool({
         fleet: body.fleet?.trim() || body.fleet_name?.trim() || null,
       });
 
+    // named-su-agent-fleets P-006: resolve the chosen fleet (create-on-new-name +
+    // membership env). sid is this session's coord owner id → the fleet's owner +
+    // leader when it creates a new fleet (D-002).
+    //
+    // WI-1408 (fleet-join-startup-assertion): resolved + hard-asserted HERE, BEFORE
+    // recordAdvSession/armInboxWake below, so a launch that explicitly asked to
+    // join/create a fleet (`--fleet=<slug>` / a new fleet name) never leaves behind a
+    // "ghost" adv_sessions row + an armed inbox-wake for a session that's about to be
+    // rejected. A resolution hiccup (unknown slug, transient DB error) must never
+    // silently degrade to an UNFLEETED member either — that's exactly the "colour-only,
+    // membership forgotten" ghost the fleet tooling exists to prevent (a member invisible
+    // to fleet:assignments despite the operator having asked for a named fleet). Fail
+    // LOUD here, before ANY bookkeeping, instead of fail-soft + a notice nobody reads.
+    const fleetPin = await resolveFleet(workspace, {
+      fleet: body.fleet,
+      fleetRole: body.fleet_role,
+      fleetName: body.fleet_name,
+      fleetScheme: body.fleet_scheme,
+      ownerId: sid,
+    });
+    const fleetRequested = Boolean(body.fleet?.trim() || body.fleet_name?.trim());
+    if (fleetRequested && !fleetPin.fleetSlug) {
+      return jsonRes(
+        {
+          status: 'error',
+          error: `fleet join failed: ${fleetPin.notice ?? 'unknown reason'} — refusing to launch an unfleeted member when a fleet was explicitly requested.`,
+        },
+        409,
+      );
+    }
+
     // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({
       planSlug,
@@ -825,16 +880,6 @@ const post = defineTool({
     // HARD pin (account-hard-pin-2026-06-29): the interactive PSU launcher pins are STRICT — the operator
     // explicitly chose this account, so route there with no failover (stricter than the bees' soft pins).
     const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
-    // named-su-agent-fleets P-006: resolve the chosen fleet (create-on-new-name +
-    // membership env). sid is this session's coord owner id → the fleet's owner +
-    // leader when it creates a new fleet (D-002).
-    const fleetPin = await resolveFleet(workspace, {
-      fleet: body.fleet,
-      fleetRole: body.fleet_role,
-      fleetName: body.fleet_name,
-      fleetScheme: body.fleet_scheme,
-      ownerId: sid,
-    });
 
     // WI-1343 (psu-fleet-presence): STAMP the fleet membership onto coord_presence
     // at boot. The env-fold in writePresence (deriveFleetMembership) reads the
@@ -1023,6 +1068,8 @@ const post = defineTool({
       envelopeEnv,
       accountNotice: accountPin.notice,
       fleetNotice: fleetPin.notice,
+      fleetSlug: fleetPin.fleetSlug,
+      fleetRole: fleetPin.fleetRole,
       kickoffPrompt,
     };
     return jsonRes(result);

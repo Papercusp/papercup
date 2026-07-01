@@ -42,6 +42,17 @@ export function watchdogFallbackSleepSec(): number {
   return Number.isFinite(n) && n >= 60 ? n : 1800;
 }
 
+/** The fallback sleep when the Queen didn't self-arm BUT there is STANDING DEMAND (todo work / started plans).
+ *  Much shorter than the idle fallback so a crashed / non-self-arming Queen re-wakes FAST to drain the backlog
+ *  (or retry a mid-turn crash) instead of stranding hundreds of open items for up to 30 min (2026-07-01: the
+ *  Queen `infra_loss`/`usage_limit`-crashed mid-turn and the fixed 1800s fallback left ~395 open items idle
+ *  ~30 min per gap; there was no fast crash re-wake). Floored at the wake floor (60s). The demand GATE (never
+ *  wake an empty frontier) still applies, so an IDLE hive keeps the long sleep and isn't hammered. */
+export function watchdogDemandSleepSec(): number {
+  const n = Number(process.env.PAPERCUSP_HIVE_WATCHDOG_DEMAND_SLEEP_SEC ?? 120);
+  return Number.isFinite(n) && n >= 60 ? n : 120;
+}
+
 /** How long a started, unarmed, demand-bearing hive must be quiet before the
  *  routinesTick sweep fires (OQ-3: default 15 min). The turn-end + boot seams
  *  don't wait this out — they KNOW the turn just ended / the host just booted. */
@@ -249,7 +260,12 @@ export async function armFallbackHiveWake(opts: {
       return { outcome: 'staged', reason };
     }
 
-    const at = new Date((opts.now ?? Date.now()) + watchdogFallbackSleepSec() * 1_000);
+    // Demand-adaptive fallback (2026-07-01): a crashed / non-self-arming Queen WITH standing demand re-wakes
+    // FAST (drain the backlog / retry the crash) instead of idling the full 1800s; an IDLE hive keeps the long
+    // sleep (and the demand gate means the watchdog never wakes an empty frontier at all). `opts.demand` is the
+    // deterministic demand snapshot the caller already computed for the fire record.
+    const fallbackSleepSec = opts.demand?.demand ? watchdogDemandSleepSec() : watchdogFallbackSleepSec();
+    const at = new Date((opts.now ?? Date.now()) + fallbackSleepSec * 1_000);
     const armed = await declareHiveTimeWake(sql, {
       workspaceId,
       installSlug,
@@ -286,10 +302,15 @@ export async function hiveTurnEndCheck(opts: {
   workspaceId: string;
   installSlug: string;
 }): Promise<FallbackArmResult> {
+  // Thread the standing demand so the fallback sleep is DEMAND-ADAPTIVE (a crashed / non-self-arming Queen with
+  // a backlog re-wakes in ~2 min, not 30). This is NOT a gate — the turn-end seam still arms unconditionally
+  // (D-002); demand only sizes the SLEEP. Fail-soft: a read error → null → the long idle sleep, unchanged.
+  const demand = await hiveDemandCheck(opts.workspaceId).catch(() => null);
   return armFallbackHiveWake({
     ...opts,
     source: 'turn-end',
     reason: 'hive turn finished with no next wake armed',
+    demand,
   });
 }
 
@@ -305,12 +326,15 @@ export async function hiveBootCheck(): Promise<FallbackArmResult[]> {
     // loop per workspace when WORKSPACE_COORDINATION is ON, the raw per-hive set
     // (byte-identical) when OFF.
     for (const { workspaceId, installSlug } of await listStartedWorkspaceLoops()) {
+      // Demand-adaptive: a host that booted mid-crash with a backlog re-wakes the Queen fast, not in 30 min.
+      const demand = await hiveDemandCheck(workspaceId).catch(() => null);
       results.push(
         await armFallbackHiveWake({
           workspaceId,
           installSlug,
           source: 'boot',
           reason: 'host booted; started hive had no wake armed',
+          demand,
         }),
       );
     }

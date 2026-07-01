@@ -31,6 +31,8 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import type { ClaimSpec } from './claim-spec';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');

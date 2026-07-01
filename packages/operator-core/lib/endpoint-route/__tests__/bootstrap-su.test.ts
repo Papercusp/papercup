@@ -166,6 +166,22 @@ vi.mock('../../deployment/account-session-override', () => ({
 const createFleetIfAbsentMock = vi.fn();
 const getFleetSchemeMock = vi.fn();
 const listFleetsMock = vi.fn(async () => [] as unknown[]);
+// WI-1408 (fleet-join-startup-assertion): resolveFleet's join branch now checks the
+// slug is a REAL fleet via getFleet before handing back membership env. Default to a
+// truthy record so every PRE-EXISTING "join an existing fleet" test (which never set
+// this up) keeps its current, already-asserted behavior; the new existence-check
+// tests below override it to null per-case.
+const getFleetMock = vi.fn(async (_ws: string, slug: string) => ({
+  workspaceId: 'default',
+  fleetSlug: slug,
+  title: slug,
+  description: null,
+  owner: 'su-1',
+  leaderOwnerId: 'su-1',
+  colorScheme: null,
+  createdAt: 0,
+  updatedAt: 0,
+}));
 vi.mock('../../agent-fleets-store', async (orig) => {
   const actual = (await orig()) as Record<string, unknown>;
   return {
@@ -173,6 +189,7 @@ vi.mock('../../agent-fleets-store', async (orig) => {
     createFleetIfAbsent: createFleetIfAbsentMock,
     getFleetScheme: getFleetSchemeMock,
     listFleets: listFleetsMock,
+    getFleet: getFleetMock,
   };
 });
 
@@ -829,5 +846,57 @@ describe('resolveFleet — terminal color env (fleet-color-schemes)', () => {
     const { env } = await resolveFleet('default', { fleet: 'ghost' });
     expect(env.PAPERCUSP_FLEET_SLUG).toBe('ghost');
     expect(env.PAPERCUSP_FLEET_BG).toBeUndefined();
+  });
+});
+
+// WI-1408 (fleet-join-startup-assertion): a --fleet=<slug> join must validate the slug
+// is a REAL agent_fleets row before handing back membership env — otherwise a
+// typo'd/stale slug "succeeds" silently: PAPERCUSP_FLEET_SLUG gets set to a fleet that
+// never existed, a phantom membership invisible to fleet:assignments' roster of real
+// rows even though the env var itself is non-null.
+describe('resolveFleet — nonexistent-slug rejection (WI-1408)', () => {
+  // Same dynamic-import helper as the sibling describe block above (each `describe`
+  // is its own closure — the other block's local `resolveFleet` isn't in scope here).
+  async function resolveFleet(
+    workspaceId: string,
+    opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; fleetScheme?: string | null; ownerId?: string },
+  ) {
+    const mod = await import('../routes/agent-mcp/bootstrap-su');
+    return mod.resolveFleet(workspaceId, opts);
+  }
+
+  it('joining an unknown slug ⇒ empty env, null slug/role, an explanatory notice', async () => {
+    getFleetMock.mockResolvedValueOnce(null);
+    const { env, fleetSlug, fleetRole, notice } = await resolveFleet('default', { fleet: 'ghost-fleet' });
+    expect(env).toEqual({});
+    expect(fleetSlug).toBeNull();
+    expect(fleetRole).toBeNull();
+    expect(notice).toMatch(/ghost-fleet.*does not exist/i);
+  });
+
+  it('POST { fleet } for an unknown slug is a hard 409 — never a silent unfleeted launch', async () => {
+    getFleetMock.mockResolvedValueOnce(null);
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', fleet: 'ghost-fleet' });
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.status).toBe('error');
+    expect(json.error).toMatch(/fleet join failed/i);
+    expect(json.error).toMatch(/ghost-fleet/i);
+    // The launch must never have been recorded — the hard-fail is BEFORE session bookkeeping.
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('POST { fleet } for a real slug still returns 200 with fleetSlug/fleetRole in the result', async () => {
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup', fleet: 'real-fleet' })).json();
+    expect(json.status).toBe('ok');
+    expect(json.fleetSlug).toBe('real-fleet');
+    expect(json.fleetRole).toBe('member');
+  });
+
+  it('no fleet requested at all ⇒ still 200, fleetSlug/fleetRole both null (no assertion fires)', async () => {
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
+    expect(json.status).toBe('ok');
+    expect(json.fleetSlug).toBeNull();
+    expect(json.fleetRole).toBeNull();
   });
 });

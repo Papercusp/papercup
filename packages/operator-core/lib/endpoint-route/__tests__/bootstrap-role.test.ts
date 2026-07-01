@@ -18,6 +18,11 @@ const buildRoleLaunchSpecMock = vi.fn();
 const roleConsumesMock = vi.fn();
 const writeRoleCodexHomeMock = vi.fn();
 const resolveAccountPinMock = vi.fn();
+// WI-1408 (fleet-join-startup-assertion): a spy (not a fixed stub) so per-test cases
+// can override the resolution outcome — the no-fleet default mirrors the prior fixed
+// stub so every PRE-EXISTING test (none of which pass `fleet`/`fleet_name`) is unaffected.
+const resolveFleetMock = vi.fn(async () => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null }));
+const setPendingFleetMock = vi.fn();
 // EI-155: mock the interactive-claude config-dir materializer so this unit test
 // never symlinks the dev box's real ~/.claude into a session dir.
 const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
@@ -40,7 +45,7 @@ vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) 
 // CODEX_HOME unit cases pass no fleet, so stub the no-fleet default (empty env).
 vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
   resolveAccountPin: (...a: unknown[]) => resolveAccountPinMock(...a),
-  resolveFleet: async () => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null }),
+  resolveFleet: (...a: unknown[]) => resolveFleetMock(...a),
   // WI-1347 added reconstructPsuLaunchArgv (a PURE argv builder) + a call site in
   // bootstrap-role; this fully-mocked module must export it or the handler throws
   // at the call. The tests don't assert argv content (it flows downstream), so a
@@ -48,6 +53,17 @@ vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
   reconstructPsuLaunchArgv: (o: { agent?: string; role?: string | null }) =>
     ['psu', '--no-picker', `--agent=${o?.agent ?? ''}`, ...(o?.role ? [`--role=${o.role}`] : [])],
 }));
+// WI-1408 (psu-fleet-presence, extended to the role path): bootstrap-role now calls
+// setPendingFleet directly (mirroring bootstrap-su's WI-1343 fix, which this route was
+// missing entirely). Mock it so tests assert the call without touching real presence.ts
+// (PG-backed) machinery.
+vi.mock('../../agent-tools/coordination/presence', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return {
+    ...actual,
+    setPendingFleet: (...a: unknown[]) => setPendingFleetMock(...a),
+  };
+});
 vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (opts: { sid: string }) => writeInteractiveClaudeConfigMock(opts) }));
 // No-op the best-effort saved-prompts materialize side effect — this unit test
 // isn't exercising it (the materialize integration test is), and running it for
@@ -77,6 +93,7 @@ beforeEach(() => {
   recordAdvSessionMock.mockResolvedValue(7);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
   resolveAccountPinMock.mockResolvedValue({ env: {}, notice: null, accountId: null, provider: null });
+  resolveFleetMock.mockResolvedValue({ env: {}, notice: null, fleetSlug: null, fleetRole: null });
   getPlanContextBySlugMock.mockResolvedValue('## Source Plan Context\n\n**Plan:** `p1`');
   writeRoleCodexHomeMock.mockReturnValue({
     codexHome: '/tmp/role-codex-homes/session-7',
@@ -266,5 +283,58 @@ describe('bootstrap-role', () => {
   it('rejects an invalid role id', async () => {
     const res = await callPost({ role: 'Bad Role!', agent: 'claude', harness_slug: 'papercup' });
     expect(res.status).toBe(400);
+  });
+});
+
+// WI-1408 (fleet-join-startup-assertion + psu-fleet-presence extended to the role
+// path): bootstrap-role previously resolved a `--fleet=<slug>` join into env vars on
+// the AGENT's own process — useless to writePresence's env-fold, which reads the
+// OPERATOR's process.env — and NEVER registered a setPendingFleet placement (the
+// WI-1343 fix bootstrap-su already had). A role+fleet launch therefore silently
+// registered presence with fleet_slug=null, invisible to fleet:assignments. These
+// tests guard both halves of the fix: the hard startup assertion, and the pending
+// placement now actually being registered.
+describe('bootstrap-role — fleet join (WI-1408)', () => {
+  it('a successful --fleet join registers a pending placement (setPendingFleet) keyed by spec.sid', async () => {
+    resolveFleetMock.mockResolvedValue({
+      env: { PAPERCUSP_FLEET_SLUG: 'real-fleet', PAPERCUSP_FLEET_ROLE: 'member' },
+      notice: 'joined fleet real-fleet as member.',
+      fleetSlug: 'real-fleet',
+      fleetRole: 'member',
+    });
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', fleet: 'real-fleet' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.fleetSlug).toBe('real-fleet');
+    expect(json.fleetRole).toBe('member');
+    // The pending placement is keyed by spec.sid (== coord_owner_id == PAPERCUSP_SID),
+    // the same identity the agent's first presence write looks itself up by.
+    expect(setPendingFleetMock).toHaveBeenCalledWith('role-abc', 'real-fleet', 'member');
+  });
+
+  it('a --fleet join that fails to resolve is a hard 409 — never a silent unfleeted launch, no pending placement, no recorded session', async () => {
+    resolveFleetMock.mockResolvedValue({
+      env: {},
+      notice: 'fleet `ghost-fleet` does not exist in this workspace — join skipped (check the slug, or create it first).',
+      fleetSlug: null,
+      fleetRole: null,
+    });
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', fleet: 'ghost-fleet' });
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.status).toBe('error');
+    expect(json.error).toMatch(/fleet join failed/i);
+    expect(json.error).toMatch(/ghost-fleet/i);
+    expect(setPendingFleetMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('no fleet requested ⇒ no assertion fires, no pending placement, fleetSlug/fleetRole both null', async () => {
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.fleetSlug).toBeNull();
+    expect(json.fleetRole).toBeNull();
+    expect(setPendingFleetMock).not.toHaveBeenCalled();
   });
 });

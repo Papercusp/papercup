@@ -265,6 +265,68 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
   });
 });
 
+// WI-1405 — genuine-completions metric (work-item-completion-integrity-2026-07-01,
+// contract C-1 consumer): getCompletionIntegrityStats must count ONLY terminal
+// work-items carrying BOTH terminal_owner + terminal_completion_ref as
+// `genuineCompletions`, separately from the raw `terminalTotal` — so a WI-1404
+// skipCompletionGate dedup flip is visibly excluded from "real work done", across
+// BOTH families, scoped to the one harness asked about.
+describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)', () => {
+  it('an empty harness reads all-zero', async () => {
+    const stats = await wi.getCompletionIntegrityStats('empty-harness');
+    expect(stats).toEqual({
+      harness: 'empty-harness',
+      terminalTotal: 0,
+      genuineCompletions: 0,
+      dedupOrUnverified: 0,
+    });
+  });
+
+  it('separates genuine completions (owner+completionRef) from dedup flips (skipCompletionGate) across BOTH families, and ignores non-terminal rows', async () => {
+    const harness = 'papercup';
+
+    // Genuine: a feature landed with a real owner + completion evidence.
+    const genuineFeat = await wi.createWorkItem({ kind: 'feature', title: 'genuine feat', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(genuineFeat.id, 'passed', { harness, by: 'agA', completionRef: 'shipped in PR #1' });
+
+    // Genuine: a bug resolved with a real owner + completion evidence.
+    const genuineBug = await wi.createWorkItem({ kind: 'bug', title: 'genuine bug', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(genuineBug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #2' });
+
+    // Dedup: a feature auto-dropped via skipCompletionGate (no completionRef) — must NOT
+    // be counted as genuine even though it carries a `by`.
+    const dedupFeat = await wi.createWorkItem({ kind: 'feature', title: 'dedup feat', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(dedupFeat.id, 'deprecated', { harness, by: 'watchdog-auto-close', skipCompletionGate: true });
+
+    // Dedup: a bug auto-resolved by the hygiene sweep via skipCompletionGate.
+    const dedupBug = await wi.createWorkItem({ kind: 'bug', title: 'dedup bug', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(dedupBug.id, 'resolved', { by: 'improvement-hygiene', skipCompletionGate: true });
+
+    // Non-terminal — must not be counted at all, either total or genuine.
+    const midFlight = await wi.createWorkItem({ kind: 'feature', title: 'still going', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(midFlight.id, 'in_progress', { harness });
+
+    const stats = await wi.getCompletionIntegrityStats(harness);
+    expect(stats).toEqual({
+      harness,
+      terminalTotal: 4,
+      genuineCompletions: 2,
+      dedupOrUnverified: 2,
+    });
+  });
+
+  it('is scoped to the one harness asked about — a genuine completion in a DIFFERENT harness never leaks in', async () => {
+    const other = await wi.createWorkItem({ kind: 'feature', title: 'other-harness feat', harness: 'other-harness', createdBy: 'agA' });
+    await wi.setWorkItemState(other.id, 'passed', { harness: 'other-harness', by: 'agA', completionRef: 'shipped' });
+
+    const stats = await wi.getCompletionIntegrityStats('papercup');
+    expect(stats).toEqual({ harness: 'papercup', terminalTotal: 0, genuineCompletions: 0, dedupOrUnverified: 0 });
+
+    const otherStats = await wi.getCompletionIntegrityStats('other-harness');
+    expect(otherStats).toEqual({ harness: 'other-harness', terminalTotal: 1, genuineCompletions: 1, dedupOrUnverified: 0 });
+  });
+});
+
 // C3 [P2] — link cycles / cross-kind direction / duplicate-edge idempotency (work-items.ts:1145).
 // The lifecycle test covers non-blocks rels; this covers the structural edge cases the link
 // store must tolerate: a mutual blocks pair, a feature→issue blocks direction, and a repeated

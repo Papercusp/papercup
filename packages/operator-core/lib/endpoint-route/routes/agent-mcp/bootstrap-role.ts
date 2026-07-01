@@ -48,6 +48,7 @@ import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { resolveAccountPin, resolveFleet, reconstructPsuLaunchArgv } from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
+import { setPendingFleet } from '../../../agent-tools/coordination/presence';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -114,6 +115,12 @@ export interface BootstrapRoleResult {
    * was chosen.
    */
   fleetNotice?: string | null;
+  /** WI-1408: the resolved fleet slug/role, or null when no fleet was requested. When
+   *  a fleet WAS requested this route never returns `status: 'ok'` with a null
+   *  `fleetSlug` (see the `fleetRequested` guard above) — resolution failure is a
+   *  hard error instead. */
+  fleetSlug?: string | null;
+  fleetRole?: string | null;
   /** Non-secret env the launcher exports into the child. */
   envelopeEnv: Record<string, string>;
 }
@@ -288,6 +295,30 @@ const post = defineTool({
       fleetName: body.fleet_name,
       ownerId: sid,
     });
+    // WI-1408 (fleet-join-startup-assertion): mirrors bootstrap-su's guard — a role
+    // launch that explicitly asked to join/create a fleet must never silently degrade
+    // to an unfleeted member on a resolution hiccup. Fail loud instead of fail-soft.
+    const fleetRequested = Boolean(body.fleet?.trim() || body.fleet_name?.trim());
+    if (fleetRequested && !fleetPin.fleetSlug) {
+      return jsonRes(
+        {
+          status: 'error',
+          error: `fleet join failed: ${fleetPin.notice ?? 'unknown reason'} — refusing to launch an unfleeted member when a fleet was explicitly requested.`,
+        },
+        409,
+      );
+    }
+    // WI-1408 (psu-fleet-presence, extended to the role path — bootstrap-su's WI-1343
+    // fix was never mirrored here): the env-fold in writePresence (deriveFleetMembership)
+    // reads the OPERATOR's process.env, not this launched agent's — so a role session's
+    // `PAPERCUSP_FLEET_SLUG` (folded into envelopeEnv below, on the AGENT's process) never
+    // reaches it, and the agent would register presence with fleet_slug=null — INVISIBLE
+    // to fleet:assignments (the exact "colour-only, membership forgotten" bug). Register a
+    // PENDING placement keyed by this session's coord owner id (sid); the agent's first
+    // presence write applies it as an authoritative hard-set (writePresence → takePendingFleet).
+    if (fleetPin.fleetSlug) {
+      setPendingFleet(sid, fleetPin.fleetSlug, fleetPin.fleetRole ?? 'member');
+    }
 
     // Forced native session UUID for EXACT resumability (claude --session-id;
     // unify-launch-mechanics P-003 invariant d). Recording it as the adv row's
@@ -468,6 +499,8 @@ const post = defineTool({
       codexHome,
       accountNotice: accountPin.notice,
       fleetNotice: fleetPin.notice,
+      fleetSlug: fleetPin.fleetSlug,
+      fleetRole: fleetPin.fleetRole,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
         PAPERCUSP_ROLE: role,

@@ -48,6 +48,8 @@ import { activeWorkspaceId } from '../workspace-registry';
 import {
   claimFloorsWhereSql,
   schedulerMaintainedReadyEnabled,
+  schedulerIssuesClaimableEnabled,
+  claimNextIssueWorkItem,
   featureRowToWorkItem,
   FEATURE_COLS,
   type FeatureRowDb,
@@ -264,6 +266,37 @@ function globToLike(glob: string): string {
 }
 
 /**
+ * fleet-backlog-lessons-2026-07-01 P-005 (WI-1407): strip a top-level `kind` leaf (or one
+ * inside a top-level `all`) out of a filter tree, returning the WIDENED filter — used by
+ * the resolver's tier-2 fallback so a spec narrowed to one feature-family `kind` widens to
+ * the rest of the family before giving up, instead of exiting on that tier alone. Returns
+ * `undefined` when there is nothing left to widen from (no `kind` leaf found at a shape this
+ * can safely simplify), which the caller reads as "tier 2 is not applicable here" — a `kind`
+ * leaf buried inside an `any`/`not` combinator changes OR/NOT semantics if dropped, so this
+ * deliberately does NOT attempt to rewrite those shapes (conservative: no widening rather than
+ * a wrong widening).
+ */
+function widenPastKind(filter: FilterNode | undefined): FilterNode | undefined {
+  if (!filter) return undefined;
+  if (isLeaf(filter)) {
+    return filter.field === 'kind' ? undefined : filter;
+  }
+  if ('all' in filter) {
+    let changed = false;
+    const kept = filter.all.filter((node) => {
+      const isKindLeaf = isLeaf(node) && node.field === 'kind';
+      if (isKindLeaf) changed = true;
+      return !isKindLeaf;
+    });
+    if (!changed) return filter; // no top-level kind leaf inside this `all` — nothing to widen
+    if (kept.length === 0) return undefined;
+    return kept.length === 1 ? kept[0] : { all: kept };
+  }
+  // `any` / `not` — leave unrewritten (see doc comment above).
+  return filter;
+}
+
+/**
  * Recursively compile the filter combinator tree to ONE parameterized `sql` fragment.
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
  * filter ⇒ `TRUE` (the empty view — every floor-eligible item).
@@ -426,28 +459,64 @@ export async function getNextWorkItem(
     excludeRedundant: opts.excludeRedundant,
     useMaintainedReady,
   });
-  const filter = compileFilter(sql, spec.view.filter);
   const order = compileRank(sql, spec, bee);
 
-  const rows = await sql<FeatureRowDb[]>`
-    UPDATE harness_shared.harness_features_consolidated
-       SET taken_by = ${bee.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
-     WHERE (harness_slug, feature_id) = (
-       SELECT harness_slug, feature_id
-         FROM harness_shared.harness_features_consolidated
-        WHERE ${floors}
-          AND ${filter}
-        ORDER BY ${order}
-        LIMIT 1
-        FOR UPDATE SKIP LOCKED
-     )
-    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  /** One attempt at the compiled query under a given (possibly widened) filter node. */
+  const attempt = async (filterNode: FilterNode | undefined): Promise<WorkItem | null> => {
+    const filter = compileFilter(sql, filterNode);
+    const rows = await sql<FeatureRowDb[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET taken_by = ${bee.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
+       WHERE (harness_slug, feature_id) = (
+         SELECT harness_slug, feature_id
+           FROM harness_shared.harness_features_consolidated
+          WHERE ${floors}
+            AND ${filter}
+          ORDER BY ${order}
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+       )
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  };
 
-  const claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  // Tier 1: the spec's view exactly as authored.
+  let claimed = await attempt(spec.view.filter);
+
+  // Tier 2 (fallback-ladder P-005, fleet-backlog-lessons-2026-07-01, WI-1407): a spec that
+  // narrowed to one feature-family `kind` and drained it must not exit — widen to the REST
+  // of the feature family (dropping just the `kind` leaf, keeping every other narrowing —
+  // plan/tags/risk_tier/etc — intact) before reporting a miss. `widenPastKind` only rewrites
+  // shapes it can simplify safely (a bare leaf or one inside a top-level `all`); when it can't
+  // (kind nested in an `any`/`not`), it hands back the SAME node and this tier is a no-op.
+  const widened = widenPastKind(spec.view.filter);
+  if (!claimed && widened !== spec.view.filter) {
+    claimed = await attempt(widened);
+  }
+
+  // Tier 3 (SCHEDULER_ISSUES_CLAIMABLE, owner-authority-gated): the whole feature family the
+  // spec can see is exhausted — widen to the adjacent ISSUE family too, the SAME additive
+  // fallback `claimNextWorkItem` (work-items.ts) applies, so the two claim paths never drift
+  // on WHERE the ladder bottoms out. A claim spec has no vocabulary over issue-family fields,
+  // so there is nothing spec-specific to carry across — this tier is the shared, unconditional
+  // "any open, unblocked bug/change/task" claim.
+  if (!claimed && (await schedulerIssuesClaimableEnabled())) {
+    claimed = await claimNextIssueWorkItem(
+      {
+        harness: opts.harness,
+        assignee: bee.assignee,
+        states: opts.states,
+        swarmId: opts.swarmId,
+        excludeRedundant: opts.excludeRedundant,
+      },
+      ws,
+    );
+  }
+
   if (!claimed) return null;
   // Same claimed-event as the legacy claim path (best-effort fanout).
   void import('../work-items-events')
-    .then((m) => m.emitWorkItemClaimedEvent(claimed, bee.assignee))
+    .then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee))
     .catch(() => {});
   return { workItem: claimed, claimedUnder: { specId: spec.specId, revision: spec.revision } };
 }

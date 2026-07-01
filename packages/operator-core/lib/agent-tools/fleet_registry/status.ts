@@ -34,6 +34,10 @@ export default defineTool({
         'fleet:list (the catalog of ALL fleets with availability)',
         'fleet:assignments (what this fleet\'s members are working on)',
         'coord:roster { view:"members" } (membership across hive + fleet)',
+        // WI-1405 (work-item-completion-integrity-2026-07-01, contract C-1): this roster
+        // is per-fleet agent presence, not work-item completions — pass the harness this
+        // fleet is working to get the genuine-vs-dedup completion split.
+        'work_items:completion_stats { harness } (genuine completions vs dedup flips for a harness)',
       ];
       if (j?.ok && j.slug) {
         const ended = (j.members ?? []).filter((m) => m.sessionState === 'ended').length;

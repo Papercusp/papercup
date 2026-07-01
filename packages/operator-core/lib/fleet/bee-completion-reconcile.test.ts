@@ -55,7 +55,11 @@ describe('reconcileBeeCompletion (the conservative flip)', () => {
       { getWorkItem, setWorkItemState, audit, log: () => {} },
     );
     expect(flipped).toBe(true);
-    expect(setWorkItemState).toHaveBeenCalledWith('F-1', 'passed', { harness: 'h', by: 'hive-bee-exit' });
+    expect(setWorkItemState).toHaveBeenCalledWith('F-1', 'passed', {
+      harness: 'h',
+      by: 'hive-bee-exit',
+      skipCompletionGate: true,
+    });
     expect(audit).toHaveBeenCalledWith('h', 'F-1', 'in_progress');
   });
 
@@ -138,6 +142,10 @@ describe('maybeReconcileBeeCompletion (gate + best-effort)', () => {
       { getWorkItem, setWorkItemState, audit: () => {}, log: () => {} },
     );
     expect(flipped).toBe(true);
-    expect(setWorkItemState).toHaveBeenCalledWith('F-1', 'passed', { harness: 'h', by: 'hive-bee-exit' });
+    expect(setWorkItemState).toHaveBeenCalledWith('F-1', 'passed', {
+      harness: 'h',
+      by: 'hive-bee-exit',
+      skipCompletionGate: true,
+    });
   });
 });

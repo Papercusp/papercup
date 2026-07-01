@@ -72,6 +72,7 @@ import {
   hiveTurnEndCheck,
   hiveWatchdogSweep,
   watchdogFallbackSleepSec,
+  watchdogDemandSleepSec,
   watchdogStaleSec,
 } from './watchdog';
 
@@ -159,6 +160,21 @@ describe('armFallbackHiveWake (D-004: a default sleep, never an immediate re-inv
     expect(call.kickoff).toMatch(/[Ww]atchdog/);
     expect(call.kickoff).toMatch(/declare/i);
     expect(fires).toHaveLength(1);
+  });
+
+  it('with STANDING DEMAND arms a SHORT (demand-adaptive) sleep — a crashed/non-self-arming Queen with a backlog re-wakes FAST, not in 30 min (2026-07-01)', async () => {
+    const res = await armFallbackHiveWake({
+      workspaceId: WS,
+      installSlug: SLUG,
+      source: 'turn-end',
+      reason: 'turn ended unarmed with a backlog queued',
+      demand: { demand: true, todoItems: 395, startedPlans: 0 },
+      now: NOW,
+    });
+    expect(res.outcome).toBe('armed');
+    const call = declareHiveTimeWake.mock.calls[0][1] as { at: Date };
+    expect(call.at.getTime()).toBe(NOW + watchdogDemandSleepSec() * 1_000);
+    expect(watchdogDemandSleepSec()).toBeLessThan(watchdogFallbackSleepSec()); // ~120s ≪ 1800s
   });
 
   it('manual wake-mode → routed through wakeRecipients to the brain (the gate stages it), no time wake (P-013)', async () => {

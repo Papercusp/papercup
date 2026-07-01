@@ -54,6 +54,7 @@ import { autoPickableWhereSql } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind } from './datatype-registry-store';
 import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
+import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import {
   ISSUE_KIND,
   type IssueKind,
@@ -825,6 +826,11 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     title: input.title,
     summary: input.summary ?? '',
     state: 'todo',
+    // work-item-completion-integrity-2026-07-01 WI-1403: a freshly-inserted row has
+    // never taken a terminal transition, so both are unset (the INSERT above doesn't
+    // write them — they default to SQL NULL).
+    terminalOwner: null,
+    terminalCompletionRef: null,
     assignee: assignTo, // B-LOOP-4: created already-claimed when `assignee` was given
     // P-001: an atomic create+claim stamps taken_at=now() (the grace anchor); a fresh
     // row has no item-scoped progress yet, so last_progress_at stays null.
@@ -1065,6 +1071,67 @@ export async function setWorkItemState(
       .catch(() => {});
   }
   return result;
+}
+
+// ── completion-integrity metric (work-item-completion-integrity-2026-07-01 WI-1405,
+// contract C-1 consumer) ─────────────────────────────────────────────────────────
+//
+// setWorkItemState/setIssueState (above) enforce that a terminal transition carries
+// BOTH terminal_owner AND terminal_completion_ref UNLESS the caller explicitly passed
+// skipCompletionGate (the watchdog/hygiene/revert dedup-marker paths — WI-1404). That
+// means the RAW terminal-state count silently blends genuine completions with dedup
+// flips; this read separates them so fleet-facing status never counts a dedup flip as
+// real work.
+
+export interface CompletionIntegrityStats {
+  harness: string;
+  /** Every work-item (both families) currently sitting in a terminal state. */
+  terminalTotal: number;
+  /** Terminal AND carrying both terminal_owner + terminal_completion_ref — the ONLY
+   *  rows the completion-integrity gate would have accepted without skipCompletionGate. */
+  genuineCompletions: number;
+  /** terminalTotal - genuineCompletions — watchdog/hygiene/revert dedup flips (or any
+   *  other skipCompletionGate write, or a pre-migration-432 historical row with the
+   *  columns still null). */
+  dedupOrUnverified: number;
+}
+
+/**
+ * Read the genuine-vs-dedup completion split for one harness. Feature-family rows are
+ * scoped by activeWorkspaceId() + harness_slug (mirrors setWorkItemState's own scope);
+ * issue-family rows by issuesScopeWorkspace() (mirrors setIssueState's own scope) — the
+ * two families use different workspace conventions today (F-B2 / ISSUES_PER_WORKSPACE),
+ * so a single workspace_id filter would silently miss or leak rows for one family.
+ */
+export async function getCompletionIntegrityStats(harness: string): Promise<CompletionIntegrityStats> {
+  const { sql } = getOrgPg();
+  const [featureRows, issueRows] = await Promise.all([
+    sql<{ terminal_total: string; genuine: string }[]>`
+      SELECT
+        count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])) AS terminal_total,
+        count(*) FILTER (
+          WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
+            AND terminal_owner IS NOT NULL AND terminal_owner <> ''
+            AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+        ) AS genuine
+      FROM harness_shared.harness_features_consolidated
+      WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness}`,
+    sql<{ terminal_total: string; genuine: string }[]>`
+      SELECT
+        count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])) AS terminal_total,
+        count(*) FILTER (
+          WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
+            AND terminal_owner IS NOT NULL AND terminal_owner <> ''
+            AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+        ) AS genuine
+      FROM harness_shared.engineer_issues
+      WHERE workspace_id = ${issuesScopeWorkspace()} AND scope = ${`harness:${harness}`}`,
+  ]);
+  const terminalTotal =
+    Number(featureRows[0]?.terminal_total ?? 0) + Number(issueRows[0]?.terminal_total ?? 0);
+  const genuineCompletions =
+    Number(featureRows[0]?.genuine ?? 0) + Number(issueRows[0]?.genuine ?? 0);
+  return { harness, terminalTotal, genuineCompletions, dedupOrUnverified: terminalTotal - genuineCompletions };
 }
 
 // ── live-verified marker (release-pipeline-resilience-2026-06-09 P-013) ──────────
@@ -1418,51 +1485,89 @@ export async function schedulerIssuesClaimableEnabled(): Promise<boolean> {
  */
 export const ISSUE_FAMILY_CLAIMABLE_STATES: readonly string[] = ['open'];
 
+/**
+ * fleet-backlog-lessons-2026-07-01 P-005 (WI-1407): the claim-next FALLBACK LADDER. A
+ * member's claim loop used to EXIT the moment its first tier read empty — most visibly
+ * when a caller NARROWED to one feature-family `kind` (e.g. `kind:'feature'`): the
+ * `!filter.kind` gate below used to skip the issue-family fallback ENTIRELY for that
+ * caller, even when the flag was on and an issue sat there claimable. That killed members
+ * while lower-tier work remained. The ladder now widens through THREE tiers, in order,
+ * and only reports a genuine miss once ALL of them are dry:
+ *
+ *   1. the caller's exact request — `filter.kind` if narrowed, else the whole feature family.
+ *   2. (only when tier 1 narrowed by kind) the REST of the feature family — the other
+ *      placeable kinds `claimFloorsWhereSql` already admits (feature/research-task/chunk,
+ *      or an opted-in generic kind). A `kind` is a caller NARROWING, never a floor, so
+ *      draining it must widen back out before giving up.
+ *   3. the ISSUE family (bug/change/task) — unconditional on `filter.kind` now (it never
+ *      applied there anyway: `claimNextIssueWorkItem` doesn't read `filter.kind`), still
+ *      gated behind `SCHEDULER_ISSUES_CLAIMABLE` (owner-authority — a brand-new work
+ *      SOURCE, the owner ratifies turning it on).
+ *
+ * Each tier only runs its query when the previous tier came up empty (SKIP LOCKED means a
+ * hit ends the ladder immediately), so the OFF-path / kindless / feature-hit cases stay
+ * exactly as cheap as before (one UPDATE, zero extra queries).
+ */
 export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
-  // Co-location affinity (P-002): only when the caller passes its Swarm id (it does so
-  // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
-  // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
-  // byte-identical to the pre-P-002 claim.
-  const rows = await sql<FeatureRowDb[]>`
-    UPDATE harness_shared.harness_features_consolidated
-       -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
-       -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
-       SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
-     WHERE (harness_slug, feature_id) = (
-       SELECT harness_slug, feature_id
-         FROM harness_shared.harness_features_consolidated
-        WHERE ${claimFloorsWhereSql(sql, {
-          harness: filter.harness,
-          workspaceId: ws,
-          states: filter.states,
-          swarmId: filter.swarmId,
-          excludeRedundant: filter.excludeRedundant,
-          useMaintainedReady,
-        })}
-          -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
-          AND ${filter.kind ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
-        -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
-        -- RESPECTS the Queen's priority — affinity match first, then lower feature_order (the
-        -- per-harness wave/plan order the Queen steers, D-003/D-009), then oldest-first
-        -- (anti-starvation). Flag OFF ⇒ plain oldest-first, byte-identical to before.
-        ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
-        LIMIT 1
-        FOR UPDATE SKIP LOCKED
-     )
-    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
-  let claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
-  // work-item-deps-and-readiness P-007 (SCHEDULER_ISSUES_CLAIMABLE): when a feature-family
-  // candidate is exhausted (no feature claimable), ADDITIVELY fall through to the issue
-  // family — an UNBLOCKED, unclaimed, open bug/change/task becomes self-pickable too.
-  // The gate is checked AFTER the feature path, so the feature UPDATE above is wholly
-  // untouched and the OFF path is byte-identical (no flag read, no second query when a
-  // feature was claimed). A caller-supplied feature-family `kind` NARROWING means "features
-  // only" → never try issues. The issue branch lives in claimNextIssueWorkItem so the
-  // feature claim stays a single, unmodified statement.
-  if (!claimed && !filter.kind && (await schedulerIssuesClaimableEnabled())) {
+
+  // One feature-family claim attempt, optionally narrowed to `kind` — the shared shape
+  // for tier 1 (as the caller asked) and tier 2 (widened, kind stripped).
+  const claimFeatureRow = async (kind: FeatureFamilyKind | undefined): Promise<WorkItem | null> => {
+    // Co-location affinity (P-002): only when the caller passes its Swarm id (it does so
+    // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
+    // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
+    // byte-identical to the pre-P-002 claim.
+    const rows = await sql<FeatureRowDb[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
+         -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
+         SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
+       WHERE (harness_slug, feature_id) = (
+         SELECT harness_slug, feature_id
+           FROM harness_shared.harness_features_consolidated
+          WHERE ${claimFloorsWhereSql(sql, {
+            harness: filter.harness,
+            workspaceId: ws,
+            states: filter.states,
+            swarmId: filter.swarmId,
+            excludeRedundant: filter.excludeRedundant,
+            useMaintainedReady,
+          })}
+            -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
+            AND ${kind ? sql`item_kind = ${kind}` : sql`TRUE`}
+          -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
+          -- RESPECTS the Queen's priority — affinity match first, then lower feature_order (the
+          -- per-harness wave/plan order the Queen steers, D-003/D-009), then oldest-first
+          -- (anti-starvation). Flag OFF ⇒ plain oldest-first, byte-identical to before.
+          ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+       )
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  };
+
+  // Tier 1: exactly what the caller asked for.
+  let claimed = await claimFeatureRow(filter.kind);
+
+  // Tier 2: the caller narrowed to one kind and it's dry — widen to the rest of the
+  // feature family before giving up (a member asking only for 'feature' work must not
+  // exit while a claimable research-task/chunk sits right there).
+  if (!claimed && filter.kind) {
+    claimed = await claimFeatureRow(undefined);
+  }
+
+  // Tier 3 — work-item-deps-and-readiness P-007 (SCHEDULER_ISSUES_CLAIMABLE): the whole
+  // feature family is exhausted — ADDITIVELY fall through to the issue family too, an
+  // UNBLOCKED, unclaimed, open bug/change/task. Previously gated behind `!filter.kind`,
+  // which meant a kind-narrowed caller NEVER reached this tier even when otherwise
+  // eligible — the same premature-exit bug as tier 2, one family further out (`filter.kind`
+  // is a feature-family type and was never read by `claimNextIssueWorkItem` anyway, so
+  // dropping the gate changes nothing about WHICH issues are eligible).
+  if (!claimed && (await schedulerIssuesClaimableEnabled())) {
     claimed = await claimNextIssueWorkItem(filter, ws);
   }
   // plugin-system-hive-port P-004: same claimed-event as claimWorkItem.
@@ -1499,6 +1604,15 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
  *     SAME `claimFloorsWhereSql`, incl. readiness). >0 on a miss ⇒ a race / lost lease
  *     (transient — retry); 0 with pendingUnclaimed>0 ⇒ the rest is genuinely blocked/gated
  *     (don't idle, but don't hot-retry either).
+ *
+ * fleet-backlog-lessons-2026-07-01 P-005 (WI-1407): `claimNextWorkItem` no longer exits on
+ * an empty kind-narrowed tier — it widens through the fallback LADDER (rest of the feature
+ * family, then the issue family) before truly missing, so this diagnosis is only ever run
+ * once ALL tiers are dry. It mirrors that ladder rather than narrowing by `filter.kind` (a
+ * kind-narrowed pool alone would misreport `drained:true` while the wider family still had
+ * work claim_next would have widened into) and folds in the issue-family pool whenever the
+ * `SCHEDULER_ISSUES_CLAIMABLE` gate is on, so `drained` means "every tier claim_next would
+ * try is empty", never just the caller's first, narrowest ask.
  */
 export interface ClaimMissDiagnosis {
   drained: boolean;
@@ -1511,10 +1625,11 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
   const ws = activeWorkspaceId();
   const states = filter.states ?? ['todo'];
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
-  // A caller-supplied feature-family kind NARROWING (never a floor) applies to both counts.
-  const kindNarrow = filter.kind ? sql`AND item_kind = ${filter.kind}` : sql``;
   // POOL: admissible + unclaimed + claimable-status + placeable-kind, WITHOUT the
   // readiness / affinity / redundancy floors — "is there work here a bee shouldn't idle on".
+  // NOT narrowed by `filter.kind`: a kind is claim_next's tier-1 NARROWING, and the ladder
+  // above widens past it before actually missing, so the diagnosis must look at the same
+  // full family a genuine miss already exhausted.
   const poolRows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
       FROM harness_shared.harness_features_consolidated
@@ -1523,8 +1638,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        AND ${frontierPlacementKindClause(sql, ws)}
        AND ${autoPickableWhereSql(sql, ws)}
        AND (taken_by IS NULL OR taken_by = '')
-       AND status = ANY(${states}::text[])
-       ${kindNarrow}`;
+       AND status = ANY(${states}::text[])`;
   // READY: passes ALL the floors claim_next enforces (the SAME source of truth — no drift).
   const readyRows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
@@ -1536,10 +1650,27 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        swarmId: filter.swarmId,
        excludeRedundant: filter.excludeRedundant,
        useMaintainedReady,
-     })}
-       ${kindNarrow}`;
-  const pendingUnclaimed = poolRows[0]?.n ?? 0;
+     })}`;
+  let pendingUnclaimed = poolRows[0]?.n ?? 0;
   const readyUnclaimed = readyRows[0]?.n ?? 0;
+
+  // Tier 3 of the same ladder: fold in the issue-family POOL when the gate is on, so an
+  // issue-only backlog is never reported as a drained queue (claim_next would have widened
+  // into it too before missing).
+  if (await schedulerIssuesClaimableEnabled()) {
+    const issueWs = issuesScopeWorkspace();
+    const operatorScopeSlug = `operator:${issueWs}`;
+    const issuePoolRows = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.work_items wi
+       WHERE wi.item_kind IN ('bug', 'change', 'task')
+         AND wi.workspace_id = ${issueWs}
+         AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
+         AND (wi.taken_by IS NULL OR wi.taken_by = '')
+         AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])`;
+    pendingUnclaimed += issuePoolRows[0]?.n ?? 0;
+  }
+
   return { drained: pendingUnclaimed === 0, pendingUnclaimed, readyUnclaimed };
 }
 
@@ -1550,13 +1681,15 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
  * BASE for issue-family kinds (the engineer_issues VIEW doesn't expose feature_order, and the
  * feature view excludes these rows). KEPT SEPARATE from the feature claim so that path is never
  * rewritten — this runs ONLY when the flag is on AND no feature was claimable (callers guard).
+ * EXPORTED (fleet-backlog-lessons-2026-07-01 P-005) so the spec-driven `scheduler/get-next.ts`
+ * resolver can reuse it as ITS ladder's tier 3 too — one issue-claim implementation, never two.
  *
  * Readiness uses the SAME work_item_deps predicate as the feature floor, with the issue's
  * blocked_ref being its BARE id (issues:link), and a blocker SATISFIED iff TERMINAL/ABSENT
  * (feature terminal = passed|deprecated; issue terminal = resolved|closed). Priority honors
  * feature_order (the Queen can now steer issues too, P-007), then oldest-first.
  */
-async function claimNextIssueWorkItem(
+export async function claimNextIssueWorkItem(
   filter: ClaimNextFilter,
   _ws: string,
 ): Promise<WorkItem | null> {

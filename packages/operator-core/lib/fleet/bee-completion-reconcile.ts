@@ -96,6 +96,17 @@ export interface BeeReconcileDeps {
  * pipeline's captured workspace scope so `getWorkItem`'s active-workspace read
  * resolves the right row (the finalizer is fire-and-forget; the active workspace
  * may have moved on).
+ *
+ * `skipCompletionGate` (work-item-completion-integrity-2026-07-01 WI-1403, contract
+ * C-1): this flip is an INFERENCE from "the bee's process exited rc=0", not a
+ * genuine completion record — there is no completion body, no commit ref, and
+ * `by: 'hive-bee-exit'` names the reconciler, not the claiming principal that did
+ * the work. Passing a fabricated completionRef here would let a bee that silently
+ * forgot to call `work_items:complete` masquerade as a verified completion — the
+ * exact failure mode C-1 exists to prevent (WI-1405's genuine-completions metric
+ * must NOT count this bucket). So this stays a best-effort safety net (avoiding the
+ * cursed re-placement loop) that is explicitly excluded from "genuine", the same
+ * bucket as the watchdog/hygiene dedup markers.
  */
 export async function reconcileBeeCompletion(
   input: { harnessSlug: string; featureId: string; workspaceId: string },
@@ -110,7 +121,11 @@ export async function reconcileBeeCompletion(
     if (!wi) return false;
     if (!RECONCILABLE_IN_FLIGHT.has(wi.state)) return false;
     const prior = wi.state;
-    const updated = await set(featureId, 'passed', { harness: harnessSlug, by: 'hive-bee-exit' });
+    const updated = await set(featureId, 'passed', {
+      harness: harnessSlug,
+      by: 'hive-bee-exit',
+      skipCompletionGate: true,
+    });
     const flipped = updated?.state === 'passed';
     if (flipped) {
       log(

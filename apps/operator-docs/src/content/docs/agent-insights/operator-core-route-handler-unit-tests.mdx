@@ -63,7 +63,9 @@ PG, Hono, or telemetry.
 
 - **Auth posture for a route family** is pinned in `auth-posture.test.ts` via
   a `RULES` prefix entry (e.g. `{ prefix: '/tui/', expect: 'public' }`); the
-  walk runs over `ALL_ROUTES`.
+  walk runs over `ALL_ROUTES`. The test also enforces specific loopback-gated
+  routes (e.g., harness SSE stream endpoints per WI-1388) via `it.each()`
+  parametrized tests.
 
 ## Provenance
 

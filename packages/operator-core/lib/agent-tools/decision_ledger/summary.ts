@@ -23,6 +23,10 @@ export default defineTool({
     seeAlso: [
       'decision_ledger:list (the actual rows)',
       'autonomy:policy_get (live ceilings)',
+      // WI-1405 (work-item-completion-integrity-2026-07-01, contract C-1): this ledger is
+      // Queen autonomy decisions, NOT work-item completions — the genuine-vs-dedup
+      // completion split is a different metric, over in work_items:completion_stats.
+      'work_items:completion_stats (genuine completions vs dedup flips, a different metric)',
     ],
   },
   capability: 'intel:read',

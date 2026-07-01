@@ -715,6 +715,9 @@ import './work_items/claim_replica';
 import './work_items/record_replica_result';
 import './work_items/judge_redundancy';
 import './work_items/redundancy_status';
+// work_items:completion_stats — the genuine-completions-vs-dedup metric
+// (work-item-completion-integrity-2026-07-01 WI-1405, contract C-1 consumer).
+import './work_items/completion_stats';
 
 // Fleet — structured concurrency / supervision over the spawn tree
 // (fleet-as-supervised-blackboard-2026-06-04). fleet:cancel is the transitive

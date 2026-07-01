@@ -70,7 +70,10 @@ vi.mock('../presence-snapshot', () => ({
   }),
 }));
 
-vi.mock('../../fleet/assignments', () => ({
+// roster.ts imports from '../../../fleet/assignments' (lib/fleet/assignments) — the
+// mock path must match it or it never intercepts (the import move left this stale,
+// so claims-view hit the real empty-in-unit fn → agents/claims:0).
+vi.mock('../../../fleet/assignments', () => ({
   listFleetAssignments: vi.fn(async (opts) => [
     {
       source: 'work_item',
