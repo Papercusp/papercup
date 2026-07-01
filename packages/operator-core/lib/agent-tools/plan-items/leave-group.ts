@@ -15,6 +15,10 @@ export default defineTool({
     when: 'You are done helping on a shared plan.',
     notWhen: 'You still hold claims there — release them first (plan_items:release).',
     chaining: 'plan_items:leave_group { harness, plan }.',
+    seeAlso: [
+      'plan_items:join_group (rejoin the group)',
+      'plan_items:status (the group\'s current state)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

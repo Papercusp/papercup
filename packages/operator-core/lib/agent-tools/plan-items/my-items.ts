@@ -16,6 +16,11 @@ export default defineTool({
     when: 'You were told to work on your assigned items — read them here, then claim the next idle one.',
     notWhen: 'You want unassigned pool items — those are not "yours"; see plan_items:status for the pool.',
     chaining: 'plan_items:adopt_name → plan_items:my_items → plan_items:claim { the next assigned-idle item }.',
+    seeAlso: [
+      'plan_items:adopt_name (adopt the name whose items you want)',
+      'plan_items:claim (claim the next assigned-idle item)',
+      'plan_items:status (the whole group view)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

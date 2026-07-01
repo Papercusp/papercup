@@ -55,6 +55,11 @@ export default defineTool({
     when: 'You are about to begin work on item(s) (yours via assignment, or pulled from the pool). Claim several at once via itemIds:[…] or items:[…].',
     notWhen: 'You only want to mark intent for later without starting — that is assignment, not a claim. Renewing an existing claim — that is plan_items:heartbeat.',
     chaining: 'plan_items:claim { harness, plan, item } → work → plan_items:heartbeat (per turn) → plan_items:release when done.',
+    seeAlso: [
+      'plan_items:heartbeat (keep the claim alive per turn)',
+      'plan_items:release (release when done)',
+      'plan_items:status (find a claimable item)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

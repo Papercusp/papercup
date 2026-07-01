@@ -31,6 +31,10 @@ export default defineTool({
     when: 'Pausing a scheduled plan so it stops firing, without discarding its schedule.',
     notWhen: 'Permanently removing the schedule — use plans:set-schedule { schedule: null }.',
     chaining: 'plans:disarm-schedule (pause) ↔ plans:arm-schedule (resume).',
+    seeAlso: [
+      'plans:arm-schedule (resume the schedule)',
+      'plans:set-schedule (edit the schedule)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

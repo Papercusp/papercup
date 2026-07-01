@@ -55,6 +55,11 @@ export default defineTool({
     notWhen:
       'Arming a saved schedule so it starts firing — that is the autonomy-gated arm step, not authoring. Flipping plan/item status uses plans:set-plan-status / plans:set-status.',
     chaining: 'plans:set-schedule → (arm, autonomy-gated) → the routines engine fires system:plan-run; plans:run-now to fire one manually.',
+    seeAlso: [
+      'plans:arm-schedule (arm it after authoring — autonomy-gated)',
+      'plans:run-now (fire one run now)',
+      'plans:disarm-schedule (pause the schedule)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

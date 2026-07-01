@@ -16,6 +16,10 @@ export default defineTool({
     when: 'At the start of a session that should act as a named agent — e.g. you were told "you are builder-1, go to your items". Adopt the name, then plan_items:my_items.',
     notWhen: 'Ad-hoc one-off work you are not coordinating by name — you can still claim unassigned pool items without a name.',
     chaining: 'plan_items:adopt_name { name } → plan_items:my_items → plan_items:claim.',
+    seeAlso: [
+      'plan_items:my_items (items assigned to your adopted name)',
+      'plan_items:claim (claim an assigned-idle item)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

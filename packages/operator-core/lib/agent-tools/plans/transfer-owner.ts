@@ -97,6 +97,10 @@ export default defineTool({
     notWhen:
       'Converting a legacy (no-frontmatter) plan — plans:set-frontmatter. A whole-document raw edit — plans:set-content. Flipping an item status — plans:set-status.',
     chaining: 'plans:get { slug } to see the current owner first; plans:list to confirm the transfer landed on the rail.',
+    seeAlso: [
+      'plans:get (see the current owner first)',
+      'plans:set-initiative (regroup plans rather than reassign ownership)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

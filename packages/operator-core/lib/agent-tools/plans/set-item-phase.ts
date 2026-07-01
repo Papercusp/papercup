@@ -229,6 +229,10 @@ export default defineTool({
     notWhen:
       'Adding a NEW item (plans:add-item — it takes the phase directly). Changing status/importance/blockers (their dedicated setters). Renaming a phase heading itself (plans:edit / plans:set-content).',
     chaining: 'plans:get-item { slug, itemId } to see the current phase → plans:set-item-phase.',
+    seeAlso: [
+      'plans:get-item (see the current phase first)',
+      'plans:add-item (add to a phase instead of moving an existing item)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

@@ -48,6 +48,11 @@ export default defineTool({
     when: 'You are dividing your own plan work across your named agents — "builder-1 takes P-001..P-003". Assign several at once via itemIds:[…] or items:[…].',
     notWhen: 'You want to start working on an item right now — that is plan_items:claim (the live grip). Handing work to another USER\'s agents — they pull it (you cannot push onto their machine).',
     chaining: 'plan_items:assign { harness, plan, item, assignee } → the named agent: plan_items:my_items → plan_items:claim.',
+    seeAlso: [
+      'plan_items:unassign (undo an assignment)',
+      'plan_items:status (see current assignments)',
+      'plan_items:my_items (what the assignee sees)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

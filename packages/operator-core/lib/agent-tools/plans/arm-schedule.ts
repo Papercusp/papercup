@@ -36,6 +36,11 @@ export default defineTool({
     when: 'Activating a plan you already scheduled (plans:set-schedule) so it begins firing runs.',
     notWhen: 'Authoring/editing the cadence (plans:set-schedule). Firing one run by hand (plans:run-now).',
     chaining: 'plans:set-schedule → plans:arm-schedule → the routine fires system:plan-run on cadence. plans:disarm-schedule stops it.',
+    seeAlso: [
+      'plans:set-schedule (author the schedule to arm)',
+      'plans:disarm-schedule (pause the armed schedule)',
+      'plans:run-now (fire one run immediately)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

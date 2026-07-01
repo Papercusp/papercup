@@ -16,6 +16,11 @@ export default defineTool({
     when: 'Deciding what to pick up, or auditing who holds what on a plan.',
     notWhen: 'You only want YOUR assigned items — plan_items:my_items is narrower.',
     chaining: 'plan_items:status { harness, plan } → claim a "pooled"/"assigned-idle"(yours) item.',
+    seeAlso: [
+      'plan_items:claim (claim a pooled / assigned-idle item)',
+      'plan_items:assign (assign an item to a peer)',
+      'plan_items:my_items (just your own items)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

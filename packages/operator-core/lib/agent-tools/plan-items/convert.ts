@@ -92,6 +92,11 @@ export default defineTool({
       'You only want the lease without an execution record (rare; plan_items:claim). The item is already converted and you hold it — just keep working; re-converting is a harmless resume.',
     chaining:
       'plans:items { actionable:true } → plan_items:convert { plan, item } → work → work_items:complete { id, completion } (reflects the plan item to done) or work_items:release (returns it to todo).',
+    seeAlso: [
+      'work_items:complete (reflect the converted item to done)',
+      'work_items:release (return it to todo)',
+      'plans:set-status (flip the plan item directly instead of converting)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

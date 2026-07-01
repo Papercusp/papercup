@@ -213,6 +213,10 @@ export default defineTool({
     notWhen:
       'Flipping lifecycle status (plans:set-status) or importance (plans:set-importance). Moving an item to another phase (plans:set-item-phase).',
     chaining: 'plans:get-item { slug, itemId } to see current blockers → plans:set-item-blocked-by.',
+    seeAlso: [
+      'plans:get-item (see the current blockers first)',
+      'plans:set-status (mark the item blocked)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

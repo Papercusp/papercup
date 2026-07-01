@@ -49,6 +49,10 @@ export default defineTool({
     when: 'Periodically while holding a claim — ideally once per completed turn (kind="activity"), or kind="extend" before a long uninterrupted op. Pulse several held items at once via itemIds:[…] or items:[…].',
     notWhen: 'You are done — that is plan_items:release. The claim has already lapsed — re-acquire with plan_items:claim (a lapsed claim cannot be heartbeated back to life).',
     chaining: 'plan_items:claim → plan_items:heartbeat { kind: "activity" } per turn → plan_items:release.',
+    seeAlso: [
+      'plan_items:claim (what you are keeping alive)',
+      'plan_items:release (stop and hand it back)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

@@ -17,6 +17,11 @@ export default defineTool({
     when: 'You want to help on a shared plan owned by another user — join, then pull unassigned items.',
     notWhen: 'It is your own plan / single-user — pool pulls are already open.',
     chaining: 'plan_items:join_group { harness, plan } → plan_items:status → plan_items:claim an unassigned item.',
+    seeAlso: [
+      'plan_items:status (see the group\'s items after joining)',
+      'plan_items:claim (claim an unassigned item)',
+      'plan_items:leave_group (leave the group)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

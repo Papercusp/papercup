@@ -34,6 +34,10 @@ export default defineTool({
     when: 'An assignment is no longer wanted — reassigning to nobody, or freeing item(s) back to the pool. Unassign several at once via itemIds:[…] or items:[…].',
     notWhen: 'You just want to stop actively working but keep the item assigned to you — that is plan_items:release (drops the live claim, keeps the assignment).',
     chaining: 'plan_items:status to see assignments → plan_items:unassign { harness, plan, item }.',
+    seeAlso: [
+      'plan_items:status (see assignments first)',
+      'plan_items:assign (re-assign to someone else)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

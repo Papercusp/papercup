@@ -38,6 +38,10 @@ export default defineTool({
     when: 'You finished (or are pausing) work on item(s) you claimed and want to free the live grip. Release several at once via itemIds:[…] or items:[…].',
     notWhen: 'You want to give up the item entirely — also plan_items:unassign it.',
     chaining: 'plan_items:claim → … → plan_items:release { harness, plan, item }.',
+    seeAlso: [
+      'plan_items:claim (claim another item next)',
+      'plan_items:status (see what is left)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,
