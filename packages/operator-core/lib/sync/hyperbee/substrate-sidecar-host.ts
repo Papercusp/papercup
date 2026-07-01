@@ -176,12 +176,25 @@ interface BootHarnessRequest {
 }
 
 /**
+ * The sidecar's DEFAULT store factory — MUST carry the same bounded block cache as
+ * getHarnessStore (corestore.ts P-005). This seam previously opened `new Corestore(path)`
+ * bare → the DEFAULT 16 384-block cache per store filled as a peer synced ~25 topics and
+ * grew the sidecar to 27.4 GB in ~12 min (WI-1088; the bg-host 40 G cgroup OOM crash-loop
+ * that kept orphaning the queen/bees + wedging git-sync, observed live 2026-07-01).
+ * 256 blocks ≈ 8-16 MB per store bounds it; PAPERCUSP_CORESTORE_CACHE_BLOCKS overrides.
+ * Exported for the regression test.
+ */
+export function defaultSidecarCreateStore(storagePath: string): Corestore {
+  return new Corestore(storagePath, { cache: resolveCacheBlocks() });
+}
+
+/**
  * Build a substrate sidecar host. Owns the relocated stores + the handoff table;
  * returns the JSON-RPC method map + the out-of-band handle receiver. Pure over
  * its deps so it unit-tests without a process/socket.
  */
 export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}): SubstrateSidecarHost {
-  const createStore = deps.createStore ?? ((storagePath: string) => new Corestore(storagePath));
+  const createStore = deps.createStore ?? defaultSidecarCreateStore;
   const openOwnLogImpl = deps.openOwnLogImpl ?? openOwnLog;
   const hlcClock = deps.hlcClock;
   const bootHarnessImpl = deps.bootHarnessImpl ?? bootHarnessSubstrate;

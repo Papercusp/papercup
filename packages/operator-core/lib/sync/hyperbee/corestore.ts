@@ -51,7 +51,11 @@ function cacheKey(opts: HarnessStoreOpts): string {
  * footgun where CACHE=0 disables caching and hammers disk on every read).
  */
 const DEFAULT_CORESTORE_CACHE_BLOCKS = 256;
-function resolveCacheBlocks(): number {
+/** Exported so EVERY Corestore-opening seam applies the same bound — the sidecar's
+ *  store factory missed it (substrate-sidecar-host.ts) and its default 16 384-block
+ *  caches grew the sidecar to 27.4 GB in ~12 min under peer sync (WI-1088, observed
+ *  live 2026-07-01: ≈16 384 × 64 KB × 25 stores ≈ 26 GB — the arithmetic matches). */
+export function resolveCacheBlocks(): number {
   const env = Number(process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS);
   if (Number.isFinite(env) && env > 0) return Math.floor(env);
   return DEFAULT_CORESTORE_CACHE_BLOCKS;

@@ -22,6 +22,7 @@ import { sendMessage, getMessageById } from '../messages';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
+import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkItemResult } from '../../_bulk';
@@ -44,6 +45,12 @@ interface SendMsg {
   wake?: boolean | 'required' | 'optimistic';
   wakeOnReply?: boolean;
   endTurn?: boolean;
+  /** P-001 (cross-machine-coord-parity-and-trust): federation-scope override.
+   *  'hive' forces the workspace's shared-Hive scope (loud error naming the
+   *  candidates when none/ambiguous); 'local' keeps this message machine-local
+   *  even for a harness-scoped sender. Omitted = auto (ctx harness, else the
+   *  workspace's single shared Hive, else local). */
+  scope?: 'hive' | 'local';
   /** FF#1: name the DURABLE BACKSTOP that will re-dispatch a wake:'optimistic' miss
    *  (e.g. 'queen-survey re-dispatches'). Optimistic is silent-on-miss ONLY when a
    *  backstop is declared; WITHOUT one, an optimistic miss is reported as loudly as a
@@ -101,6 +108,13 @@ const backstopArg = z
     "FF#1: name the DURABLE BACKSTOP that re-dispatches a wake:'optimistic' miss (e.g. 'queen-survey re-dispatches'). Optimistic stays silent-on-miss ONLY when you declare one; WITHOUT a backstop an optimistic miss is reported as loudly as a required miss (recipient_absent). Do NOT pass a fake backstop to silence the warning — that re-creates the dead-drop trap. No effect on wake:'required' / inject.",
   );
 
+const scopeArg = z
+  .enum(['hive', 'local'])
+  .optional()
+  .describe(
+    "Federation scope of THIS message (cross-machine-coord-parity P-001). Omitted = auto: a harness-scoped sender stamps its harness; an un-scoped (SU/operator) sender in a workspace with EXACTLY ONE shared Hive stamps that Hive's home (the message federates to the Hive's other machines); otherwise the message stays machine-local. 'hive' FORCES the shared-Hive scope — errors loudly (no_hive_scope / ambiguous_hive_scope + candidates) instead of silently staying local. 'local' keeps the message on this machine only. Every result reports `federated:` so a local-only send is never mistaken for cross-machine delivery.",
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -112,6 +126,7 @@ const itemSpec = z.object({
   wakeOnReply: wakeOnReplyArg,
   endTurn: endTurnArg,
   backstop: backstopArg,
+  scope: scopeArg,
 });
 
 /**
@@ -377,11 +392,68 @@ async function sendOne(
     to: env.to,
     msg_id: env.msg_id,
     ts: env.ts,
+    // P-001: whether this message rides a federation scope (harness-stamped ⇒ the
+    // mig-150 capture gate federates it to the Hive's other machines). `false` =
+    // machine-local only — never mistake it for cross-machine delivery.
+    federated: Boolean(harnessSlug),
+    ...(harnessSlug ? { federationScope: harnessSlug } : {}),
     ...(endTurn ? { endTurn } : {}),
     ...(wake ? { wake } : {}),
     ...(replyWake ? { replyWake } : {}),
     ...(notWoken ? { notWoken } : {}),
   };
+}
+
+/**
+ * P-001 (cross-machine-coord-parity-and-trust-2026-07-01): the EFFECTIVE
+ * federation scope for one message. Precedence:
+ *   scope:'local'  → none (explicit machine-local, wins over everything);
+ *   ctx harness    → the sender's own harness (pipeline roles — unchanged);
+ *   scope:'hive'   → the workspace's single shared Hive, LOUD error when
+ *                    none/ambiguous (never a silent local fallback);
+ *   omitted        → auto: the single shared Hive when exactly one, else none.
+ * Returns either the slug to stamp (undefined = stay local) or the per-message
+ * error result.
+ */
+async function effectiveFederationScope(
+  msgScope: 'hive' | 'local' | undefined,
+  ctxHarness: string | undefined,
+  workspaceId: string | null | undefined,
+  to: string[],
+): Promise<{ harnessSlug: string | undefined } | { error: BulkItemResult }> {
+  if (msgScope === 'local') return { harnessSlug: undefined };
+  if (ctxHarness) return { harnessSlug: ctxHarness };
+  if (!workspaceId || workspaceId === '*') {
+    if (msgScope === 'hive') {
+      return {
+        error: {
+          ok: false,
+          to,
+          error: 'no_hive_scope',
+          message:
+            "scope:'hive' needs a concrete workspace to resolve the shared Hive from, and this session has none — nothing was sent.",
+        },
+      };
+    }
+    return { harnessSlug: undefined };
+  }
+  const resolved = await resolveWorkspaceHiveScope(workspaceId);
+  if (resolved.kind === 'one') return { harnessSlug: resolved.homeSlug };
+  if (msgScope === 'hive') {
+    return {
+      error: {
+        ok: false,
+        to,
+        error: resolved.kind === 'many' ? 'ambiguous_hive_scope' : 'no_hive_scope',
+        message:
+          resolved.kind === 'many'
+            ? `scope:'hive' is ambiguous — this workspace has ${resolved.candidates.length} shared Hives; nothing was sent. There is no per-message hive picker yet: pick the right hive's home and re-send from a session scoped to it.`
+            : "scope:'hive' found no shared Hive in this workspace (a hive federates only when published public/invite or joined) — nothing was sent. Publish the hive (discovery:set_hive) or drop scope:'hive' to send machine-local.",
+        ...(resolved.kind === 'many' ? { candidates: resolved.candidates } : {}),
+      },
+    };
+  }
+  return { harnessSlug: undefined }; // auto: none/ambiguous → today's local behavior
 }
 
 export default defineTool({
@@ -415,6 +487,7 @@ export default defineTool({
       wakeOnReply: wakeOnReplyArg,
       endTurn: endTurnArg,
       backstop: backstopArg,
+      scope: scopeArg,
       items: z
         .array(itemSpec)
         .min(1)
@@ -427,12 +500,16 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    // Record the sender's harness when it's a real, harness-scoped agent
-    // (pipeline roles carry ctx.harnessSlug). '*'/empty = operator/SU/oracle
-    // wildcard ⇒ workspace-level (broadcast); leave harness unset there.
-    const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
-    const harnessSlug =
-      typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+    // The sender's own harness when it's a real, harness-scoped agent (pipeline
+    // roles carry ctx.harnessSlug); '*'/empty = SU/operator/oracle wildcard.
+    // P-001: an un-scoped sender no longer silently stays local — in a workspace
+    // with exactly one SHARED Hive its sends default to that Hive's home scope
+    // (so they federate), resolved per message by effectiveFederationScope.
+    const rawCtxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const ctxHarness =
+      typeof rawCtxHarness === 'string' && rawCtxHarness && rawCtxHarness !== '*'
+        ? rawCtxHarness
+        : undefined;
 
     const list: SendMsg[] = args.items?.length
       ? args.items.map((it) => ({ ...it }))
@@ -448,11 +525,25 @@ export default defineTool({
             wakeOnReply: args.wakeOnReply,
             endTurn: args.endTurn,
             backstop: args.backstop,
+            scope: args.scope,
           },
         ];
-    const env = await runBulk(list, (msg) => sendOne(msg, identity, harnessSlug), {
-      keyOf: (msg) => ({ to: msg.to }),
-    });
+    const env = await runBulk(
+      list,
+      async (msg) => {
+        const scoped = await effectiveFederationScope(
+          msg.scope,
+          ctxHarness,
+          identity.workspaceId,
+          msg.to,
+        );
+        if ('error' in scoped) return scoped.error;
+        return sendOne(msg, identity, scoped.harnessSlug);
+      },
+      {
+        keyOf: (msg) => ({ to: msg.to }),
+      },
+    );
     return bulkContent(env);
   },
 });

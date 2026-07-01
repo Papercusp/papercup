@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentTimelineChunks } from '../routes/harness/streams';
+import { parseAgentTimelineChunks, capEntryText, THINKING_ENTRY_TEXT_CAP } from '../routes/harness/streams';
+
+describe('capEntryText (UI-bound thinking entry cap)', () => {
+  it('leaves short/absent text untouched (same object, no copy)', () => {
+    const short = { kind: 'text' as const, text: 'hi' };
+    expect(capEntryText(short)).toBe(short);
+    const noText = { kind: 'status' as const };
+    expect(capEntryText(noText)).toBe(noText);
+  });
+
+  it('caps oversized text with an explicit truncation marker', () => {
+    const big = { kind: 'tool_result' as const, text: 'x'.repeat(THINKING_ENTRY_TEXT_CAP + 500), ts: 't1' };
+    const capped = capEntryText(big);
+    expect(capped).not.toBe(big);
+    expect(capped.text!.length).toBeLessThan(big.text.length);
+    expect(capped.text).toContain('[truncated 500 chars]');
+    expect(capped.ts).toBe('t1'); // other fields preserved
+    expect(big.text.length).toBe(THINKING_ENTRY_TEXT_CAP + 500); // input not mutated
+  });
+});
 
 describe('harness agent thinking stream parsing', () => {
   it('parses durable run chunks into an initial live-thinking timeline', () => {
