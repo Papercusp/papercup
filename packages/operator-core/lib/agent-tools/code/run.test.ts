@@ -26,7 +26,7 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
   resolveAgentIdentity: () => ({ ownerId: 'owner-x' }),
 }));
 
-import './run'; // side-effect: registers code:run (AFTER the mocks are hoisted)
+import { shapeMutationEcho } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
  * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
@@ -129,5 +129,52 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     expect(Array.isArray(payload.facadeHelp.namespaces)).toBe(true);
     // nothing captured on a failed run
     expect(captureRecipeMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-1377: on a REAL (non-dryRun) code:run the effect:write calls already executed, so the full
+ * `plannedMutations` args-echo is pure waste that overflows the 100k result cap on a large batch.
+ * shapeMutationEcho swaps it for a compact { count, byTool } summary on a committing run, while
+ * keeping the full preview under dryRun.
+ */
+describe('code:run → mutation echo shaping (WI-1377)', () => {
+  const base = { ok: true as const, summary: { done: true }, logs: [] as string[] };
+
+  it('summarizes plannedMutations on a committing run (no full-args echo, so a big batch fits the cap)', () => {
+    const shaped = shapeMutationEcho({
+      ...base,
+      dryRun: false,
+      plannedMutations: [
+        { tool: 'work_items:set_priority', args: { id: 'WI-1', priority: 1 } },
+        { tool: 'work_items:set_priority', args: { id: 'WI-2', priority: 2 } },
+        { tool: 'plans:set-now', args: { slug: 's', state: 'x' } },
+      ],
+    }) as Record<string, unknown>;
+    // the full args echo is GONE (it is what overflowed the result cap)
+    expect(shaped.plannedMutations).toBeUndefined();
+    // replaced by a compact, bounded summary
+    expect(shaped.mutations).toEqual({
+      count: 3,
+      byTool: { 'work_items:set_priority': 2, 'plans:set-now': 1 },
+      note: expect.stringContaining('dryRun:true'),
+    });
+    // the script's own return value + ok survive untouched
+    expect(shaped.ok).toBe(true);
+    expect(shaped.summary).toEqual({ done: true });
+  });
+
+  it('keeps the full plannedMutations echo under dryRun (it IS the preview the agent inspects)', () => {
+    const pm = [{ tool: 'plans:set-now', args: { slug: 's', state: 'x' } }];
+    const shaped = shapeMutationEcho({ ...base, dryRun: true, plannedMutations: pm }) as Record<string, unknown>;
+    expect(shaped.plannedMutations).toEqual(pm);
+    expect(shaped.mutations).toBeUndefined();
+  });
+
+  it('leaves a read-only (no-write) committing run unchanged (already tiny)', () => {
+    const r = { ...base, dryRun: false, plannedMutations: [] as { tool: string; args: unknown }[] };
+    const shaped = shapeMutationEcho(r);
+    expect(shaped).toBe(r); // same reference — nothing to summarize
+    expect((shaped as Record<string, unknown>).mutations).toBeUndefined();
   });
 });

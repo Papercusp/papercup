@@ -164,6 +164,35 @@ export default defineTool({
   },
 });
 
+type OrchestrationRunResult = Awaited<ReturnType<typeof runToolOrchestration>>;
+
+/**
+ * WI-1377: shape the mutation echo for the agent-facing result envelope. The full
+ * `plannedMutations` array (every effect:write call's tool + FULL args) is the decision-useful
+ * PREVIEW under dryRun — but on a REAL (committing) run those calls already executed, so echoing
+ * their args back is pure waste that overflows the 100k result cap on a large batch (e.g. 600+
+ * set_priority calls) even when the script's own `summary` is tiny. So: a dryRun result, or a run
+ * that made no writes (empty array — already tiny), is returned UNCHANGED; a committing run with
+ * ≥1 write drops `plannedMutations` for a compact `{ count, byTool }` summary. Pure + exported for
+ * tests.
+ */
+export function shapeMutationEcho(
+  result: OrchestrationRunResult,
+): OrchestrationRunResult | Record<string, unknown> {
+  if (result.dryRun || result.plannedMutations.length === 0) return result;
+  const { plannedMutations, ...rest } = result;
+  const byTool: Record<string, number> = {};
+  for (const m of plannedMutations) byTool[m.tool] = (byTool[m.tool] ?? 0) + 1;
+  return {
+    ...rest,
+    mutations: {
+      count: plannedMutations.length,
+      byTool,
+      note: 'effect:write calls executed; per-call args omitted to keep the result bounded — re-run with dryRun:true to preview them',
+    },
+  };
+}
+
 /**
  * P-007: turn a parse-check failure into a self-service fix. From the unknown `ns.verb` (or
  * `ns:verb`) refs the script used, render the typed `tools.ns.verb(args)` signatures for the
