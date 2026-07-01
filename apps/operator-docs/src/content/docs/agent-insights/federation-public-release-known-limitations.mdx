@@ -183,14 +183,19 @@ overwrite) is *obsolete* — admission is now keyed by the stable numeric
 `github_user_id` + a device-signed announce/attestation
 ([phase1b-federation-limitations](/internal/docs/agent-insights/phase1b-federation-limitations)).
 
-### 3. Revocation is WRITE + DISCOVERY-plane only (read cut-off needs re-key)
+### 3. Revocation is WRITE + DISCOVERY-plane only (hard read cut-off rides the re-key)
 A revoked/banned member stops being *aggregated* and stops *discovering* new
 content, but `swarm.ts`'s `store.replicate(socket)` serves cores to any topic
 peer, so a removed member (or anyone who got the link while the hive was public)
-keeps **reading** future content until the hive **re-keys** (C-001, behind
-`papercusp-hive-rekey`, default OFF/dark, attended cutover) or is **dissolved**.
-This is a conscious product decision, not a silent hole; the hard read-cut rides
-the re-key K-CUT. ([substrate-revocation-model](/internal/docs/agent-insights/substrate-revocation-model).)
+keeps **reading** future content until the hive **re-keys** (C-001) or is
+**dissolved**. The in-place re-key epoch **K-cut** that closes the read plane is
+now **enabled by default in production** (`papercusp-hive-rekey` — no longer dark;
+built in `hive-epoch-boot-deps.ts` / `buildHiveRekeyBootDeps`, consumed on the
+in-place `rekey()` rebind, never a reboot). But its **cross-machine LIVE proof is
+still pending (Brief 3)** — today only the in-process
+`federation-revocation-kcut-sidecar` + `hive-late-join-epoch-decrypt-federation`
+tests cover the K-cut. This is a conscious product decision, not a silent hole.
+([substrate-revocation-model](/internal/docs/agent-insights/substrate-revocation-model).)
 
 ### 4. LWW convergence can diverge under clock skew (S0)
 Federated LWW can silently diverge: the merge winners-fold orders by **HLC**
