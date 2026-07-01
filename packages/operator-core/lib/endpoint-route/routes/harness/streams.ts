@@ -591,6 +591,11 @@ const sessionThinkingStream = defineTool({
   async handler(req) {
     const url = new URL(req.url);
     const sessionId = (url.searchParams.get('sessionId') ?? '').replace(/[^A-Za-z0-9_.-]/g, '');
+    // The agent's coord owner id — the per-session isolation dir key. Lets
+    // findSessionTranscript jump straight to `session-claude/<owner>/projects`
+    // (1 readdir) instead of sweeping every isolation root (~3s). Sanitized;
+    // absent/wrong ⇒ the full-scan fallback still resolves it.
+    const owner = (url.searchParams.get('owner') ?? '').replace(/[^A-Za-z0-9_.-]/g, '') || undefined;
     return sseResponse({
       signal: req.signal,
       heartbeatMs: 15_000,
@@ -599,7 +604,7 @@ const sessionThinkingStream = defineTool({
         const entries: AgentTimelineEntry[] = [];
         try {
           const { findSessionTranscript } = await import('../../../claude-sessions');
-          const path = sessionId ? await findSessionTranscript(sessionId) : null;
+          const path = sessionId ? await findSessionTranscript(sessionId, { owner }) : null;
           if (path) {
             const stat = statSync(path);
             // Tail the last 1 MiB so a long session doesn't blow the response.
