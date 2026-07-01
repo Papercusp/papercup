@@ -41,18 +41,28 @@ export type AgentTimelineEntry = {
   inputTokens?: number;
   outputTokens?: number;
   durationMs?: number;
+  /** ISO timestamp of the source record (when it carries one — transcript
+   *  records do; some live stream deltas don't). Rendered as the per-entry
+   *  header time in the thinking pane. For accumulated text/thinking it's the
+   *  START of that span (the first delta's time). */
+  ts?: string;
 };
 
 export function createAgentTimelineParser() {
   let pendingText = '';
   let pendingThinking = '';
+  // The timestamp of the FIRST delta of the current pending span, so a flushed
+  // text/thinking entry reports when the agent STARTED saying it (not flush time).
+  let pendingTextTs: string | undefined;
+  let pendingThinkingTs: string | undefined;
   const flushText = (out: AgentTimelineEntry[]) => {
-    if (pendingText) { out.push({ kind: 'text', text: pendingText }); pendingText = ''; }
+    if (pendingText) { out.push({ kind: 'text', text: pendingText, ts: pendingTextTs }); pendingText = ''; pendingTextTs = undefined; }
   };
   const flushThinking = (out: AgentTimelineEntry[]) => {
     if (pendingThinking) {
-      out.push({ kind: 'status', text: `[thinking] ${pendingThinking}` });
+      out.push({ kind: 'status', text: `[thinking] ${pendingThinking}`, ts: pendingThinkingTs });
       pendingThinking = '';
+      pendingThinkingTs = undefined;
     }
   };
   return {
@@ -61,17 +71,21 @@ export function createAgentTimelineParser() {
       let obj: any;
       try { obj = JSON.parse(raw); } catch { return out; }
       const type = obj.type;
+      // Source-record ISO timestamp, when present — stamped onto every entry this
+      // line emits (drives the per-entry header time in the thinking pane).
+      const ts: string | undefined = typeof obj.timestamp === 'string' ? obj.timestamp : undefined;
 
       if (type === 'stream_event' && obj.event?.type === 'content_block_delta') {
         const delta = obj.event?.delta;
         if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+          if (!pendingText) pendingTextTs = ts;
           pendingText += delta.text;
         }
       } else if (type === 'assistant' && obj.message?.content) {
         flushText(out);
         for (const block of obj.message.content) {
-          if (block.type === 'text') out.push({ kind: 'text', text: block.text });
-          else if (block.type === 'tool_use') out.push({ kind: 'tool_use', toolName: block.name, toolInput: block.input, toolId: block.id });
+          if (block.type === 'text') out.push({ kind: 'text', text: block.text, ts });
+          else if (block.type === 'tool_use') out.push({ kind: 'tool_use', toolName: block.name, toolInput: block.input, toolId: block.id, ts });
         }
       } else if (type === 'user' && obj.message?.content) {
         for (const block of obj.message.content) {
@@ -81,7 +95,7 @@ export function createAgentTimelineParser() {
               : Array.isArray(block.content)
                 ? block.content.map((p: any) => p.text ?? '').join('')
                 : '';
-            out.push({ kind: 'tool_result', toolId: block.tool_use_id, text: contentStr });
+            out.push({ kind: 'tool_result', toolId: block.tool_use_id, text: contentStr, ts });
           }
         }
       } else if (type === 'result') {
@@ -93,17 +107,20 @@ export function createAgentTimelineParser() {
           inputTokens: obj.usage?.input_tokens,
           outputTokens: obj.usage?.output_tokens,
           durationMs: obj.duration_ms,
+          ts,
         });
       } else if (type === 'system' && obj.subtype === 'status') {
-        out.push({ kind: 'status', text: obj.status });
+        out.push({ kind: 'status', text: obj.status, ts });
       }
       // ── omp (oh-my-pi) format ────────────────────────────────
       else if (type === 'message_update' && obj.assistantMessageEvent) {
         const ev = obj.assistantMessageEvent;
         if (ev.type === 'text_delta' && typeof ev.delta === 'string') {
           flushThinking(out);
+          if (!pendingText) pendingTextTs = ts;
           pendingText += ev.delta;
         } else if (ev.type === 'thinking_delta' && typeof ev.delta === 'string') {
+          if (!pendingThinking) pendingThinkingTs = ts;
           pendingThinking += ev.delta;
         } else if (ev.type === 'thinking_end') {
           flushThinking(out);
@@ -116,6 +133,7 @@ export function createAgentTimelineParser() {
           toolName: obj.toolName ?? 'tool',
           toolInput: obj.args,
           toolId: obj.toolCallId,
+          ts,
         });
       } else if (type === 'tool_execution_end') {
         const result = obj.result;
@@ -126,7 +144,7 @@ export function createAgentTimelineParser() {
             : result != null
               ? JSON.stringify(result)
               : '';
-        out.push({ kind: 'tool_result', toolId: obj.toolCallId, text });
+        out.push({ kind: 'tool_result', toolId: obj.toolCallId, text, ts });
       } else if (type === 'turn_end' && obj.message?.content) {
         flushText(out);
         flushThinking(out);
@@ -137,7 +155,7 @@ export function createAgentTimelineParser() {
           }
         }
         if (lastText.length > 0) {
-          out.push({ kind: 'result', text: lastText.join('\n').slice(0, 500) });
+          out.push({ kind: 'result', text: lastText.join('\n').slice(0, 500), ts });
         }
       } else if (type === 'message_end') {
         flushText(out);

@@ -221,6 +221,13 @@ export async function startDbos(): Promise<void> {
     // reaping stuck fires). Same process-level rationale; reads git-sync routine health.
     const { startGitSyncStallWatchdog } = await import('../release/git-sync-stall-watchdog');
     startGitSyncStallWatchdog(getOrgPg().sql);
+    // Sibling (Layer 4, mcp-host-availability-resilience): a spawned bee working DARK (tool-less)
+    // after a :3070 deploy restart — alive + generating output, but its tool-call-coupled presence
+    // beat predates the restart, so it never re-attached its papercusp MCP. Same process-level
+    // rationale. The safety net under Layers 1–3 (permanent URLs · sticky approval · the :9071
+    // proxy). Kill-switch: PAPERCUSP_MCP_DARK_WATCHDOG='0'.
+    const { startMcpDarkWatchdog } = await import('../system-health/mcp-dark-watchdog');
+    startMcpDarkWatchdog(getOrgPg().sql);
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
