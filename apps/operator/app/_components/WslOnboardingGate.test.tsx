@@ -73,10 +73,15 @@ describe('WslOnboardingGate', () => {
     // Switching to prod/staging/local lands on a remote origin where Tauri
     // denies the app command ("wsl_status not allowed. Plugin not found"). The
     // gate must render the app, NOT the un-dismissable "Papercup setup" wizard.
+    // The fail-safe path logs a warn (WslOnboardingGate.tsx) — expected here, so
+    // silence it for vitest-fail-on-console and assert it fired.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     wslStatus.mockRejectedValue(new Error('wsl_status not allowed. Plugin not found'));
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
     await waitFor(() => expect(screen.getByText('app body')).toBeTruthy());
     expect(screen.queryByText(/Papercup setup/i)).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('passes through to children on NotSupported', async () => {
