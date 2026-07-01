@@ -18,6 +18,7 @@ import {
   allClaudeSessionMetas,
   claudeProjectsRoots,
   findSessionTranscript,
+  isSessionThinking,
 } from './claude-sessions';
 
 describe('pure helpers', () => {
@@ -197,6 +198,25 @@ describe('isolation-dir scanning (EI-5790)', () => {
       // ...so a second lookup with NO way to re-resolve (bad owner + empty roots)
       // still returns it — the cache bypassed the walk entirely.
       expect(await findSessionTranscript(sid, { owner: 'nope', isolationBase: '/tmp/dne-xyz', roots: [] })).toBe(target);
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('isSessionThinking: true within the append window, false when stale or missing', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'sess-think-'));
+    const isoBase = join(base, 'session-claude');
+    const projDir = join(isoBase, 'su-o', 'projects', '-p');
+    await fs.mkdir(projDir, { recursive: true });
+    const sid = 'think-abc123';
+    const f = join(projDir, `${sid}.jsonl`);
+    await fs.writeFile(f, '{}\n');
+    const mtime = (await fs.stat(f)).mtimeMs;
+    try {
+      // appended ~1s "ago" → thinking; ~60s ago → not; unknown id → not.
+      expect(await isSessionThinking(sid, { owner: 'su-o', isolationBase: isoBase, roots: [], nowMs: mtime + 1_000 })).toBe(true);
+      expect(await isSessionThinking(sid, { owner: 'su-o', isolationBase: isoBase, roots: [], nowMs: mtime + 60_000 })).toBe(false);
+      expect(await isSessionThinking('nope-999999', { roots: [], nowMs: mtime })).toBe(false);
     } finally {
       await fs.rm(base, { recursive: true, force: true });
     }
