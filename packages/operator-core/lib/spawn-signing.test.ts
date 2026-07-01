@@ -79,6 +79,27 @@ describe('exp handling', () => {
       reason: 'invalid_exp',
     });
   });
+
+  // 2026-07-01: no time-based re-minting — the default is a PERMANENT (exp=0) URL.
+  it('PERMANENT by default (exp=0): mints exp=0 and never expires', async () => {
+    const p = new URLSearchParams({ harness: 'h', workspace: 'w', role: 'sentinel', spawn: 's1' });
+    const { exp } = await signSpawnParams(p); // no ttlSec ⇒ permanent
+    expect(exp).toBe(0);
+    expect(await verifySpawnParams(urlFrom(p))).toEqual({ ok: true });
+  });
+
+  it('a permanent (exp=0) URL STILL blocks role escalation (sig covers exp=0)', async () => {
+    const p = new URLSearchParams({ harness: 'h', role: 'worker', spawn: 's1' });
+    await signSpawnParams(p); // permanent
+    p.set('role', 'operator');
+    expect(await verifySpawnParams(urlFrom(p))).toEqual({ ok: false, reason: 'invalid_signature' });
+  });
+
+  it('a positive ttlSec still mints a bounded, expirable URL', async () => {
+    const p = new URLSearchParams({ harness: 'h', role: 'worker' });
+    const { exp } = await signSpawnParams(p, { nowMs: 1_000_000_000_000, ttlSec: 3600 });
+    expect(exp).toBe(Math.floor(1_000_000_000_000 / 1000) + 3600);
+  });
 });
 
 describe('structural rejection', () => {
