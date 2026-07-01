@@ -185,6 +185,16 @@ describe('MCP emit → notifications', () => {
     });
   });
 
+  describe('ctx.dispatchTool (tools:invoke engine, dynamic-tool-surface P-006)', () => {
+    it('is present on an MCP ctx and returns unknown_tool for a bogus name', async () => {
+      const ctx = await __buildMcpToolContext_forTests(fakeSpawn, undefined, undefined);
+      expect(typeof ctx.dispatchTool).toBe('function');
+      const r = await ctx.dispatchTool!('no:such_tool_xyz', {});
+      expect(r.isError).toBe(true);
+      expect((r.content[0] as { text: string }).text).toContain('unknown_tool');
+    });
+  });
+
   it('ctx.progress(pct, msg) routes through emit("progress", …) — alias parity', async () => {
     const { sent, sendNotification } = recordingSendNotification();
     const ctx = await __buildMcpToolContext_forTests(fakeSpawn, 'tok-progress-alias', sendNotification);

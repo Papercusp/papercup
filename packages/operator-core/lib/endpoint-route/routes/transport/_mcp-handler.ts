@@ -814,8 +814,29 @@ async function buildMcpToolContext(
     }
     return added;
   };
-  return {
+  // dispatchTool — the engine behind the tools:invoke meta-tool
+  // (dynamic-tool-surface-2026-07-01). Routes a call to ANY projected tool
+  // server-side under THIS caller's context (via the ctxRef holder, so the
+  // target is gated EXACTLY as a direct call — dispatchProjectedToolToMcp
+  // applies the role-allowlist + quota + profile gates against `ctx`). The
+  // universal reachability path for a client that can't grow its own tool list.
+  const ctxRef: { current: UnifiedToolContext | undefined } = { current: undefined };
+  const dispatchTool: UnifiedToolContext['dispatchTool'] = async (toolName, toolArgs) => {
+    const target = lookupByMcpName(toolName);
+    if (!target?.expose?.mcp) {
+      return { isError: true, content: [{ type: 'text' as const, text: `unknown_tool: ${toolName}` }] };
+    }
+    return (await dispatchProjectedToolToMcp(
+      target,
+      toolName,
+      toolArgs ?? {},
+      ctxRef.current!,
+      PROJECTED_DEPS,
+    )) as Awaited<ReturnType<NonNullable<UnifiedToolContext['dispatchTool']>>>;
+  };
+  const builtCtx: UnifiedToolContext = {
     activateTools,
+    dispatchTool,
     workspaceId: spawn.workspaceId,
     harnessSlug: spawn.harnessSlug,
     projectDir: paths.projectDir,
@@ -862,6 +883,9 @@ async function buildMcpToolContext(
         : secretImpl,
     signal: new AbortController().signal,
   };
+  // Close the ctxRef loop so dispatchTool routes the target through THIS ctx.
+  ctxRef.current = builtCtx;
+  return builtCtx;
 }
 
 /* ─── MCP handler ────────────────────────────────────────────────────── */

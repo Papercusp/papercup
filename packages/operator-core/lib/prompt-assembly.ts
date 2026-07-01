@@ -286,6 +286,32 @@ export function loadRoleConverse(role: Role): string {
   return text;
 }
 
+/**
+ * Load the canonical compaction priorities — the preserve/drop body of
+ * apps/operator/prompts/papercusp-compaction.base.md (agent-managed-compaction).
+ * The operator converse-brain summarizer folds this into buildCompactionPrompt so
+ * a prompt edit goes live without a code release (like the other prompt loaders).
+ * Missing file ⇒ null (caller falls back to the built-in default). The leading
+ * HTML comment and the trailing CLIENT-OVERLAY marker are stripped.
+ */
+let compactionPrioritiesCache: string | null | undefined;
+export function loadCompactionPriorities(): string | null {
+  if (!shouldBypassCache() && compactionPrioritiesCache !== undefined) {
+    return compactionPrioritiesCache;
+  }
+  const path = join(promptsDir(), 'papercusp-compaction.base.md');
+  let text: string | null = null;
+  if (existsSync(path)) {
+    text =
+      readFileSync(path, 'utf8')
+        .replace(/^<!--[\s\S]*?-->\s*/, '') // strip leading HTML comment
+        .replace(/<!--\s*PAPERCUSP-COMPACTION:CLIENT-OVERLAY\s*-->\s*$/, '') // trailing marker
+        .trim() || null;
+  }
+  compactionPrioritiesCache = text;
+  return text;
+}
+
 /* ─── Catalog rendering ───────────────────────────────────────────────── */
 
 /**

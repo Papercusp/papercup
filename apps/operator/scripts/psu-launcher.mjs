@@ -743,7 +743,7 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   'work_items:list', 'work_items:claim', 'work_items:set_state', 'work_items:update',
   'locks:acquire_granular', 'locks:release_granular',
   'docs:search', 'memory:search', 'memory:remember',
-  'tools:find',
+  'tools:find', 'tools:invoke',
 ];
 
 // weak-model-tool-tier: a model that runs LOCALLY (ollama/local provider prefix) is small

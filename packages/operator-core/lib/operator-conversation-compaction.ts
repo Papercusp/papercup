@@ -33,6 +33,7 @@ import {
 } from './operator-conversations';
 import { runHaikuTurn, type HaikuTurnResult } from './haiku';
 import { checkBudget, recordSpend } from './operator-budget';
+import { loadCompactionPriorities } from './prompt-assembly';
 
 /**
  * How many newest turns stay OUT of the summary (the uncompacted tail).
@@ -81,11 +82,28 @@ export interface CompactionResult {
 export type SummarizeFn = (prompt: string) => Promise<HaikuTurnResult | null>;
 
 /**
+ * The default preserve/drop priorities. The canonical source is
+ * apps/operator/prompts/papercusp-compaction.base.md (loaded via
+ * loadCompactionPriorities); this literal is the built-in fallback + the unit
+ * test default, so buildCompactionPrompt stays pure. agent-managed-compaction-2026-07-01.
+ */
+export const DEFAULT_COMPACTION_PRIORITIES =
+  `Preserve with highest priority:\n` +
+  `- decisions made, and why\n` +
+  `- preferences / standing instructions the user stated\n` +
+  `- named artifacts: plans, features (F-NNN), work items, files, harnesses, URLs\n` +
+  `- open questions, commitments, unfinished work\n` +
+  `Compress or drop: greetings, transient status chatter, superseded states.`;
+
+/**
  * Build the incremental summarizer prompt. Pure + exported for unit test.
+ * `priorities` defaults to the built-in literal; the caller passes the canonical
+ * file body (loadCompactionPriorities) so it stays purely a projection consumer.
  */
 export function buildCompactionPrompt(
   existingSummary: string | null,
   turns: ReadonlyArray<Pick<TurnRow, 'role' | 'text'>>,
+  priorities: string = DEFAULT_COMPACTION_PRIORITIES,
 ): string {
   const formatted = turns
     .map((t) => `[${t.role}] ${t.text.slice(0, PROMPT_TURN_CHARS)}`)
@@ -95,12 +113,7 @@ export function buildCompactionPrompt(
     `and their operator assistant. Merge the EXISTING SUMMARY (older context) ` +
     `with the NEW TURNS (which just aged out of the verbatim window) into ONE ` +
     `updated summary.\n\n` +
-    `Preserve with highest priority:\n` +
-    `- decisions made, and why\n` +
-    `- preferences / standing instructions the user stated\n` +
-    `- named artifacts: plans, features (F-NNN), work items, files, harnesses, URLs\n` +
-    `- open questions, commitments, unfinished work\n` +
-    `Compress or drop: greetings, transient status chatter, superseded states.\n\n` +
+    `${priorities}\n\n` +
     `HARD LIMIT: at most ${MAX_SUMMARY_CHARS} characters. Plain text, short ` +
     `bullets allowed. No preamble, no headings — output the summary only.\n\n` +
     `EXISTING SUMMARY:\n${existingSummary?.trim() || '(none — conversation start)'}\n\n` +
@@ -176,7 +189,9 @@ export async function compactConversation(
   const throughSeq = batch[batch.length - 1].seq;
 
   const summarize = opts.summarize ?? defaultSummarize;
-  const result = await summarize(buildCompactionPrompt(summary.summaryText, batch));
+  const result = await summarize(
+    buildCompactionPrompt(summary.summaryText, batch, loadCompactionPriorities() ?? undefined),
+  );
   if (!result) return { outcome: 'llm_unavailable' };
   const text = sanitizeSummary(result.text);
   if (!text) return { outcome: 'llm_unavailable' };
