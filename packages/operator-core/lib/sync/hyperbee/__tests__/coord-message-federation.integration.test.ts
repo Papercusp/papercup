@@ -46,6 +46,15 @@ vi.mock('../../../events/await/engine', () => ({
   emitAwaitedEvent: vi.fn(async () => ({ key: '', woken: 0, notified: [], msgId: null })),
 }));
 import { emitAwaitedEvent } from '../../../events/await/engine';
+// P-008: the projection's receipt leg dynamically imports sendMessage +
+// machineFingerprint — mock both so receipts are asserted without the coord seam.
+vi.mock('../../../agent-tools/coordination/messages', () => ({
+  sendMessage: vi.fn(async () => ({ msg_id: 'receipt-1', to: [], ts: 't' })),
+}));
+import { sendMessage } from '../../../agent-tools/coordination/messages';
+vi.mock('../../../identity/device-keychain-id', () => ({
+  machineFingerprint: vi.fn(() => 'test-machine'),
+}));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -445,6 +454,32 @@ describe('coord_event_log federation (real PG)', () => {
       }
     });
 
+    it('a reply carrying BOTH wake:true and related_msg_id fires both fans independently', async () => {
+      await insertRow({
+        msgId: 'orig-6',
+        body: envelope('orig-6', { from: 'su-LOCAL', to: ['su-A'], wakeOnReply: true }),
+      });
+      vi.mocked(wakeRecipients).mockClear();
+      const both: CoordMessageRow = {
+        harness_slug: HARNESS,
+        msg_id: 'reply-6',
+        surface: 'messages',
+        writer_key: 'peer-A',
+        body: envelope('reply-6', {
+          from: 'su-A',
+          to: ['su-B'],
+          wake: true,
+          summary: 'urgent reply',
+          related_msg_id: 'orig-6',
+        }),
+        ts: 1_700_000_000_000,
+      };
+      await proj().writeToPg(both, { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(wakeRecipients).mock.calls[0][0]).toEqual(['su-B']); // EI-279 addressee fan
+      expect(vi.mocked(wakeRecipients).mock.calls[1][0]).toEqual(['su-LOCAL']); // P-002 reply-wake
+    });
+  });
   describe('P-009 — federated event keys (fed_event re-fire)', () => {
     beforeEach(() => {
       resetFederatedWakeRate();
@@ -491,7 +526,7 @@ describe('coord_event_log federation (real PG)', () => {
       expect(emitAwaitedEvent).not.toHaveBeenCalled();
     });
 
-    it('the P-003 author budget bounds fed-event re-fires too', async () => {
+    it('the P-003 author budget bounds fed-event re-fires too (row still applies)', async () => {
       process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '1';
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
@@ -499,7 +534,6 @@ describe('coord_event_log federation (real PG)', () => {
         await p.writeToPg(fedEventRow('fe-3', 'k3'), { authorPubkey: 'flooder-fe', origin: 'remote' });
         await p.writeToPg(fedEventRow('fe-4', 'k4'), { authorPubkey: 'flooder-fe', origin: 'remote' });
         expect(emitAwaitedEvent).toHaveBeenCalledTimes(1); // second suppressed
-        // …but the row itself still applied (delivery never dropped).
         expect(
           await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='fe-4'`,
         ).toHaveLength(1);
@@ -510,43 +544,78 @@ describe('coord_event_log federation (real PG)', () => {
     });
   });
 
-  describe('P-002+ — reply/fan interplay continued', () => {
-    beforeEach(() => resetFederatedWakeRate());
+  describe('P-008 — delivery receipts on apply', () => {
+    beforeEach(() => {
+      resetFederatedWakeRate();
+      vi.mocked(sendMessage).mockClear();
+      vi.mocked(wakeRecipients).mockClear();
+    });
     const proj = () => buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
-    const remoteReplyRowB = (msgId: string, relatedMsgId: string, from = 'su-A'): CoordMessageRow => ({
+    const receiptRow = (msgId: string): CoordMessageRow => ({
       harness_slug: HARNESS,
       msg_id: msgId,
       surface: 'messages',
       writer_key: 'peer-A',
-      body: envelope(msgId, { from, summary: 'the reply', related_msg_id: relatedMsgId }),
+      body: envelope(msgId, { wake: true, receipt: true, summary: 'need ack', to: ['su-B'] }),
       ts: 1_700_000_000_000,
     });
-    void remoteReplyRowB;
 
-    it('a reply carrying BOTH wake:true and related_msg_id fires both fans independently', async () => {
-      await insertRow({
-        msgId: 'orig-6',
-        body: envelope('orig-6', { from: 'su-LOCAL', to: ['su-A'], wakeOnReply: true }),
+    it('applying a receipt-requesting row emits coord:receipt:<msg_id> back with the woken count', async () => {
+      await proj().writeToPg(receiptRow('rcpt-1'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const [identity, opts] = vi.mocked(sendMessage).mock.calls[0] as [
+        { ownerId: string },
+        { to: string[]; harnessSlug?: string; extra?: { fed_event?: { key: string; payload: Record<string, unknown> } } },
+      ];
+      expect(identity.ownerId).toBe('fed-receipt');
+      expect(opts.to).toEqual([]); // no inbox noise
+      expect(opts.harnessSlug).toBe(HARNESS); // rides back over the same hive scope
+      expect(opts.extra?.fed_event?.key).toBe('coord:receipt:rcpt-1');
+      expect(opts.extra?.fed_event?.payload).toMatchObject({
+        msg_id: 'rcpt-1',
+        delivered: true,
+        woken: 1, // the mocked fan woke 1
+        machine: 'test-machine',
       });
-      vi.mocked(wakeRecipients).mockClear();
-      const both: CoordMessageRow = {
-        harness_slug: HARNESS,
-        msg_id: 'reply-6',
-        surface: 'messages',
-        writer_key: 'peer-A',
-        body: envelope('reply-6', {
-          from: 'su-A',
-          to: ['su-B'],
-          wake: true,
-          summary: 'urgent reply',
-          related_msg_id: 'orig-6',
-        }),
-        ts: 1_700_000_000_000,
-      };
-      await proj().writeToPg(both, { authorPubkey: 'peerPubA', origin: 'remote' });
-      expect(wakeRecipients).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(wakeRecipients).mock.calls[0][0]).toEqual(['su-B']); // EI-279 addressee fan
-      expect(vi.mocked(wakeRecipients).mock.calls[1][0]).toEqual(['su-LOCAL']); // P-002 reply-wake
+    });
+
+    it('re-applies never re-emit the receipt (once per msg_id)', async () => {
+      const p = proj();
+      await p.writeToPg(receiptRow('rcpt-2'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      await p.writeToPg(receiptRow('rcpt-2'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('no receipt without the request flag; local-origin rows never emit receipts', async () => {
+      const p = proj();
+      await p.writeToPg(
+        {
+          ...receiptRow('rcpt-3'),
+          body: envelope('rcpt-3', { wake: true, to: ['su-B'] }), // no receipt flag
+        },
+        { authorPubkey: 'peerPubA', origin: 'remote' },
+      );
+      await p.writeToPg(receiptRow('rcpt-4'), { authorPubkey: 'peerPubA', origin: 'local' });
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('a budget-suppressed wake still delivers + receipts with woken:0 (truthful)', async () => {
+      process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '1';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const p = proj();
+        await p.writeToPg(receiptRow('rcpt-5'), { authorPubkey: 'spender', origin: 'remote' });
+        await p.writeToPg(receiptRow('rcpt-6'), { authorPubkey: 'spender', origin: 'remote' });
+        expect(sendMessage).toHaveBeenCalledTimes(2);
+        const second = vi.mocked(sendMessage).mock.calls[1][1] as {
+          extra?: { fed_event?: { payload: Record<string, unknown> } };
+        };
+        expect(second.extra?.fed_event?.payload).toMatchObject({ delivered: true, woken: 0 });
+      } finally {
+        warnSpy.mockRestore();
+        delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+      }
     });
   });
+
 });

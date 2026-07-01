@@ -43,24 +43,6 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 /// overhead; the host re-bases the bytes into EL's `user_audio_chunk`s.
 pub const MIC_CHUNK_MS: u32 = 250;
 
-// ───────────────────────── ws-init payload (legacy) ─────────────────────────
-
-/// The `operator-elevenlabs-ws-init` route's 200 body. Retained because
-/// `client.rs`'s `elevenlabs_ws_init` still names it as its return type; the pui
-/// no longer mints EL URLs itself (the host does), so this is dormant.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // legacy compat: client.rs names it as a return type; fields are dormant
-pub struct WsInitPayload {
-    pub signed_url: String,
-    #[serde(default)]
-    pub agent_id: String,
-    #[serde(default)]
-    pub overrides: Option<serde_json::Value>,
-    #[serde(default)]
-    pub dynamic_variables: serde_json::Value,
-}
-
 // ───────────────────────── utterance tags ─────────────────────────
 
 /// `<set_mode>…</set_mode>` from an agent utterance — the one voice side effect
@@ -82,6 +64,13 @@ pub fn utterance_set_mode(raw: &str) -> Option<String> {
 pub enum ConvAiUpdate {
     /// The shared session is live (EL connected) — the badge flips to Live.
     Connected { conversation_id: String },
+    /// Host-broadcast shared-session state.
+    SessionState {
+        muted: bool,
+        mode: String,
+        is_player: bool,
+        player_id: Option<String>,
+    },
     /// A finished user turn (EL's STT), shown in the shared chat.
     UserTranscript(String),
     /// The agent's utterance text (raw — may carry tags; reducer strips).
@@ -95,12 +84,31 @@ pub enum ConvAiUpdate {
 /// Run-loop handle (main.rs owns it; `stop()` detaches this surface).
 pub struct ConvAiHandle {
     stop_tx: UnboundedSender<()>,
+    writer: Arc<Mutex<Option<UnixStream>>>,
 }
 
 impl ConvAiHandle {
     pub fn stop(&self) {
         let _ = self.stop_tx.send(());
     }
+
+    pub fn control(&self, control: ConvAiControl) {
+        let frame = match control {
+            ConvAiControl::Mute(muted) => crate::operator_voice_bus::control_mute(muted),
+            ConvAiControl::Ptt(down) => crate::operator_voice_bus::control_ptt(down),
+            ConvAiControl::SetMode(mode) => crate::operator_voice_bus::control_set_mode(mode),
+            ConvAiControl::ForceHost => crate::operator_voice_bus::control_force_host(),
+        };
+        let _ = write_frame(&self.writer, &frame);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvAiControl {
+    Mute(bool),
+    Ptt(bool),
+    SetMode(&'static str),
+    ForceHost,
 }
 
 /// Spawn the session client. `owner` is the pui's coordination identity (the
@@ -108,13 +116,21 @@ impl ConvAiHandle {
 /// playback handle.
 pub fn start_session(owner: String, player: Player, tx: UnboundedSender<Event>) -> ConvAiHandle {
     let (stop_tx, stop_rx) = unbounded_channel::<()>();
-    tokio::spawn(session_task(owner, player, tx, stop_rx));
-    ConvAiHandle { stop_tx }
+    let writer = Arc::new(Mutex::new(None));
+    let task_writer = writer.clone();
+    tokio::spawn(session_task(owner, player, tx, stop_rx, task_writer));
+    ConvAiHandle { stop_tx, writer }
 }
 
-fn write_frame(writer: &Arc<Mutex<UnixStream>>, frame: &[u8]) -> std::io::Result<()> {
+fn write_frame(writer: &Arc<Mutex<Option<UnixStream>>>, frame: &[u8]) -> std::io::Result<()> {
     match writer.lock() {
-        Ok(mut w) => w.write_all(frame),
+        Ok(mut w) => match w.as_mut() {
+            Some(sock) => sock.write_all(frame),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "voice session not connected",
+            )),
+        },
         Err(_) => Err(std::io::Error::other("voice writer poisoned")),
     }
 }
@@ -124,6 +140,7 @@ async fn session_task(
     player: Player,
     tx: UnboundedSender<Event>,
     mut stop_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    writer: Arc<Mutex<Option<UnixStream>>>,
 ) {
     let fail = |msg: String| {
         let _ = tx.send(Event::ConvAi(ConvAiUpdate::Error(msg)));
@@ -143,7 +160,11 @@ async fn session_task(
         Ok(s) => s,
         Err(e) => return fail(format!("voice clone: {e}")),
     };
-    let writer = Arc::new(Mutex::new(stream));
+    if let Ok(mut slot) = writer.lock() {
+        *slot = Some(stream);
+    } else {
+        return fail("voice writer poisoned".into());
+    }
 
     let elected = Arc::new(AtomicBool::new(false));
     let muted = Arc::new(AtomicBool::new(false));
@@ -311,6 +332,12 @@ fn reader_loop(
                     if was && !is_player {
                         player.stop(); // lost the player role → cut local playout
                     }
+                    let _ = tx.send(Event::ConvAi(ConvAiUpdate::SessionState {
+                        muted: m,
+                        mode,
+                        is_player,
+                        player_id,
+                    }));
                     match status.as_str() {
                         "idle" | "listening" | "speaking" => {
                             if !connected {

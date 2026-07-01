@@ -317,6 +317,33 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
   });
 });
 
+describe('coord:send delivery receipts (P-008)', () => {
+  it('a FEDERATED directed required-wake send persists receipt:true and returns receiptEvent', async () => {
+    fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-r'], keys: [], woken: 0, staged: 0 } as never);
+    const b = await body({ to: ['su-r'], summary: 'do it now', wake: 'required' });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.receipt).toBe(true);
+    expect(b.results[0].receiptEvent).toBe('coord:receipt:m1');
+  });
+
+  it('no receipt on: local-only send, broadcast, or inject-only', async () => {
+    // local-only (no hive scope): required wake but federated:false
+    wakeM.mockResolvedValueOnce({ targets: ['su-r'], keys: [], woken: 1, staged: 0 } as never);
+    let b = await body({ to: ['su-r'], summary: 'x', wake: 'required' });
+    expect((sendM.mock.calls[0][1] as { extra?: Record<string, unknown> }).extra?.receipt).toBeUndefined();
+    expect(b.results[0].receiptEvent).toBeUndefined();
+    // federated broadcast: no receipt (receipt is directed-only — a broadcast
+    // receipt storm would be its own amplification bomb)
+    fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    b = await body({ to: ['*'], summary: 'x', wake: true });
+    expect((sendM.mock.calls[1][1] as { extra?: Record<string, unknown> }).extra?.receipt).toBeUndefined();
+    // federated directed INJECT (no wake): no receipt
+    b = await body({ to: ['su-r'], summary: 'x' });
+    expect((sendM.mock.calls[2][1] as { extra?: Record<string, unknown> }).extra?.receipt).toBeUndefined();
+  });
+});
+
 describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a required-wake miss on a REMOTE-homed recipient reports recipient_remote (not dead) with the federation note', async () => {
     fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);

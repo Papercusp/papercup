@@ -68,24 +68,41 @@ export function canFocusWindow(a: Pick<RosterAgent, 'windowId'>): boolean {
   return Boolean(a.windowId);
 }
 
-/** Whether an agent has a viewable thinking stream — a spawned bee's run-log, or
- *  an interactive session's transcript. Pure — exported for tests. */
-export function hasThinking(a: Pick<RosterAgent, 'runId' | 'harnessSlug' | 'sessionId'>): boolean {
-  return Boolean((a.runId && a.harnessSlug) || a.sessionId);
+/** Whether an agent has a viewable thinking stream — a spawned bee's run-log, a
+ *  claude session's transcript, a codex session's rollout (keyed by its adv row
+ *  id), or an omp session's thread jsonl. Pure — exported for tests. */
+export function hasThinking(
+  a: Pick<RosterAgent, 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId'>,
+): boolean {
+  return Boolean(
+    (a.runId && a.harnessSlug)
+    || a.sessionId
+    || (a.agent === 'codex' && a.advSessionId != null)
+    || a.ompThreadId,
+  );
 }
 
 /** The stream URL for an agent's thinking: the bee run-log stream when it has a
- *  run, else the interactive-session transcript endpoint; null when neither. Pure.
- *  The session endpoint gets the agent's `ownerId` as a hint so the backend jumps
+ *  run, else the interactive-session transcript endpoint keyed per backend
+ *  (claude sessionId · codex adv-row id · omp thread id); null when none. Pure.
+ *  The claude leg gets the agent's `ownerId` as a hint so the backend jumps
  *  straight to that session's isolation dir instead of sweeping all of them (the
  *  ~3s → ms fix). */
-export function thinkingStreamUrl(a: Pick<RosterAgent, 'ownerId' | 'runId' | 'harnessSlug' | 'sessionId'>): string | null {
+export function thinkingStreamUrl(
+  a: Pick<RosterAgent, 'ownerId' | 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId'>,
+): string | null {
   if (a.runId && a.harnessSlug) {
     return `/api/harness/${encodeURIComponent(a.harnessSlug)}/agents/${encodeURIComponent(a.runId)}/stream?phase=staging`;
   }
   if (a.sessionId) {
     const owner = a.ownerId ? `&owner=${encodeURIComponent(a.ownerId)}` : '';
     return `/api/adv/session/thinking?sessionId=${encodeURIComponent(a.sessionId)}${owner}`;
+  }
+  if (a.agent === 'codex' && a.advSessionId != null) {
+    return `/api/adv/session/thinking?codexSessionKey=${encodeURIComponent(String(a.advSessionId))}`;
+  }
+  if (a.ompThreadId) {
+    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(a.ompThreadId)}`;
   }
   return null;
 }
@@ -400,11 +417,12 @@ function AgentDetailStrip({
         <dt>Work item</dt><dd>{agent.feature ?? '—'}</dd>
         <dt>Doing</dt><dd>{agent.intent || '(no declared intent)'}</dd>
       </dl>
-      {/* Guarded: only an agent with a resolvable thinking source (bee run-log or
-          session transcript) gets the action — no dead button otherwise. Agents
-          WITHOUT one (codex/omp sessions don't record a transcript handle yet)
-          get an explicit note instead of a silently-inert row, so "clicking does
-          nothing" reads as a known limitation, not a broken pane. */}
+      {/* Guarded: only an agent with a resolvable thinking source (bee run-log,
+          or a claude/codex/omp transcript handle) gets the action — no dead
+          button otherwise. The rare row WITHOUT one (a presence-only process
+          that never recorded a launch/session handle) gets an explicit note
+          instead of a silently-inert row, so "clicking does nothing" reads as a
+          known limitation, not a broken pane. */}
       {hasThinking(agent) ? (
         <button
           type="button"
@@ -416,8 +434,8 @@ function AgentDetailStrip({
         </button>
       ) : (
         <div className="pc-agents-roster__nothinking" data-testid="agent-no-thinking-note">
-          Live thinking unavailable — this {agent.agent ?? 'session'} session has no
-          recorded transcript handle{agent.agent && agent.agent !== 'claude' ? ` (${agent.agent} sessions aren't wired for transcript streaming yet)` : ''}.
+          Live thinking unavailable — this {agent.agent ?? 'session'} process recorded no
+          transcript handle (no session row, run-log, or thread id) to stream from.
         </div>
       )}
     </div>

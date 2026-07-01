@@ -215,8 +215,8 @@ describe('<AgentsRunningPill>', () => {
     expect(screen.queryByTestId('agent-inspect-btn')).toBeNull();
   });
 
-  it('an agent WITHOUT a thinking source shows an explicit unavailable note (not a silently-inert row)', () => {
-    // A codex queen has no session_id on its adv row and no spawned run — the
+  it('an agent WITHOUT any thinking source shows an explicit unavailable note (not a silently-inert row)', () => {
+    // A presence-only process with no session row / run-log / thread id — the
     // pane can't stream it. The detail strip must SAY so, so "clicking does
     // nothing" reads as a known limitation, not a broken pane.
     H.active = [agent({ ownerId: 'qx1', role: 'queen', agent: 'codex', runId: null, harnessSlug: null, sessionId: null })];
@@ -227,6 +227,24 @@ describe('<AgentsRunningPill>', () => {
     expect(note.textContent).toContain('Live thinking unavailable');
     expect(note.textContent).toContain('codex');
     expect(screen.queryByTestId('agent-inspect-btn')).toBeNull();
+  });
+
+  it('a CODEX session (adv row id, no claude sessionId) streams via codexSessionKey', () => {
+    H.active = [agent({ ownerId: 'cq1', role: 'queen', agent: 'codex', advSessionId: 9444, runId: null, harnessSlug: null, sessionId: null })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-row-cq1'));
+    const modal = screen.getByTestId('inspector-modal');
+    expect(modal.getAttribute('data-url')).toBe('/api/adv/session/thinking?codexSessionKey=9444');
+  });
+
+  it('an OMP session (thread id) streams via ompThreadId', () => {
+    H.active = [agent({ ownerId: 'om1', role: 'su', agent: 'omp', ompThreadId: '019f1de3-19b8-7000-90a3-a36f8c343ac6', runId: null, harnessSlug: null, sessionId: null })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-row-om1'));
+    const modal = screen.getByTestId('inspector-modal');
+    expect(modal.getAttribute('data-url')).toBe('/api/adv/session/thinking?ompThreadId=019f1de3-19b8-7000-90a3-a36f8c343ac6');
   });
 
   it('clicking Live thinking opens the inspector for that run', () => {

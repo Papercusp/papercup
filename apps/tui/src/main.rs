@@ -991,6 +991,12 @@ async fn run<B: Backend>(
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::VoiceSessionControl(control) => {
+                if let Some(h) = convai_session.as_ref() {
+                    h.control(control);
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::VoiceChan(cmd) => {
                 use crate::voice_ui::{VoiceCmd as VC, VoiceUiEvent as VE};
                 match cmd {

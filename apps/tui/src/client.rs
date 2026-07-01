@@ -504,49 +504,6 @@ impl OperatorClient {
         Ok(())
     }
 
-    // ─── Realtime operator voice (voice-realtime-tui-2026-06-05) ───
-
-    /// Init a raw-WS EL Conv-AI session: mints the signed URL server-side and
-    /// claims the fleet voice lease (kind 'tui'). `force` = the user explicitly
-    /// toggled (pre-empts another surface's lease — the desktop/mobile
-    /// claim-on-tap contract). Non-2xx (409 lease-held / 429 cooldown / 404
-    /// not-enabled) surfaces as an error carrying the route's JSON hint.
-    pub async fn elevenlabs_ws_init(
-        &self,
-        owner: &str,
-        force: bool,
-    ) -> Result<crate::voice_convai::WsInitPayload> {
-        let v = self
-            .get_json(&format!(
-                "/api/agent-mcp/operator-elevenlabs-ws-init?owner={}{}",
-                urlencode(owner),
-                if force { "&force=1" } else { "" },
-            ))
-            .await?;
-        serde_json::from_value(v).context("decode ws-init payload")
-    }
-
-    /// Refresh the tui voice lease. `Ok(false)` = LOST it (another surface
-    /// force-claimed) — the session must tear down.
-    pub async fn voice_lease_heartbeat(&self, owner: &str) -> Result<bool> {
-        let v = self
-            .post_json(
-                "/api/agent-mcp/operator-voice-lease/heartbeat",
-                serde_json::json!({ "owner": owner }),
-            )
-            .await?;
-        Ok(v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false))
-    }
-
-    pub async fn voice_lease_release(&self, owner: &str) -> Result<()> {
-        self.delete_json(&format!(
-            "/api/agent-mcp/operator-voice-lease?owner={}",
-            urlencode(owner)
-        ))
-        .await?;
-        Ok(())
-    }
-
     /// Features via the `list_features` agent-tool (MCP envelope unwrapped).
     pub async fn features_for(&self, slug: &str) -> Result<Vec<HarnessFeature>> {
         let env = self

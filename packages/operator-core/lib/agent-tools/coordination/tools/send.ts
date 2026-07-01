@@ -198,6 +198,13 @@ async function sendOne(
   const extra: Record<string, unknown> = {};
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
+  // P-008 (cross-machine-coord-parity): a FEDERATED, DIRECTED, required-wake
+  // send requests a DELIVERY RECEIPT — the receiving machine's projection sends
+  // back a fed-event `coord:receipt:<msg_id>` when it applies the row (payload:
+  // woken count + machine). The result carries `receiptEvent`; await it
+  // (events:await) to close the cross-machine wake-honesty loop.
+  const wantReceipt = wakeMode === 'required' && isDirected(msg.to) && Boolean(harnessSlug);
+  if (wantReceipt) extra.receipt = true;
   const env = await sendMessage(identity, {
     to: toSend,
     summary: msg.summary,
@@ -418,6 +425,9 @@ async function sendOne(
     // machine-local only — never mistake it for cross-machine delivery.
     federated: Boolean(harnessSlug),
     ...(harnessSlug ? { federationScope: harnessSlug } : {}),
+    // P-008: await this key to confirm cross-machine delivery+wake (the
+    // receiving machine emits it back as a fed event when the row applies).
+    ...(wantReceipt ? { receiptEvent: `coord:receipt:${env.msg_id}` } : {}),
     ...(endTurn ? { endTurn } : {}),
     ...(wake ? { wake } : {}),
     ...(replyWake ? { replyWake } : {}),

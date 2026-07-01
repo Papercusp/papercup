@@ -1206,9 +1206,37 @@ function debugLog(event: string, detail?: unknown): void {
 // broadcasts (with an optimistic flip on toggle so rapid presses behave).
 let operatorVoiceRuntime: OperatorVoiceRuntime | null = null;
 let operatorVoiceMuted = false;
+let operatorVoiceMode: VoiceMode = 'off';
+
+export interface OperatorVoiceSessionUiState {
+  active: boolean;
+  muted: boolean;
+  deafened: boolean;
+  mode: VoiceMode;
+  elected: boolean;
+}
+
+function emitOperatorVoiceSessionStateChanged(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent('papercusp:operatorVoiceSessionStateChanged', {
+      detail: getOperatorVoiceSessionUiState(),
+    }),
+  );
+}
 
 export function getOperatorVoiceRuntime(): OperatorVoiceRuntime | null {
   return operatorVoiceRuntime;
+}
+
+export function getOperatorVoiceSessionUiState(): OperatorVoiceSessionUiState {
+  return {
+    active: operatorVoiceRuntime !== null,
+    muted: operatorVoiceMuted,
+    deafened: operatorVoiceRuntime?.isDeafened() ?? false,
+    mode: operatorVoiceMode,
+    elected: operatorVoiceRuntime?.isElected() ?? false,
+  };
 }
 
 /**
@@ -1221,6 +1249,7 @@ export function toggleOperatorVoiceMute(): boolean {
   if (!operatorVoiceRuntime) return false;
   operatorVoiceRuntime.control({ op: 'mute', muted: !operatorVoiceMuted });
   operatorVoiceMuted = !operatorVoiceMuted; // host broadcast reconciles
+  emitOperatorVoiceSessionStateChanged();
   return true;
 }
 
@@ -1231,6 +1260,31 @@ export function toggleOperatorVoiceMute(): boolean {
 export function toggleOperatorVoiceDeafen(): boolean {
   if (!operatorVoiceRuntime) return false;
   operatorVoiceRuntime.setDeafened(!operatorVoiceRuntime.isDeafened());
+  emitOperatorVoiceSessionStateChanged();
+  return true;
+}
+
+export function setOperatorVoiceBusMode(mode: Exclude<VoiceMode, 'off'>): boolean {
+  if (!operatorVoiceRuntime) return false;
+  operatorVoiceMode = mode;
+  operatorVoiceRuntime.control({ op: 'set-mode', mode });
+  emitOperatorVoiceSessionStateChanged();
+  return true;
+}
+
+export function forceOperatorVoiceHost(): boolean {
+  if (!operatorVoiceRuntime) return false;
+  operatorVoiceRuntime.control({ op: 'force-host' });
+  return true;
+}
+
+export function setOperatorVoicePtt(down: boolean): boolean {
+  if (!operatorVoiceRuntime) return false;
+  operatorVoiceRuntime.control({ op: 'ptt', down });
+  if (!down && operatorVoiceMode != 'push-to-talk') {
+    return true;
+  }
+  emitOperatorVoiceSessionStateChanged();
   return true;
 }
 
@@ -1283,6 +1337,8 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
       onState: (s) => {
         // Mirror the host's authoritative mute flag for the toggle shortcut.
         operatorVoiceMuted = !!s.muted;
+        operatorVoiceMode = s.mode === 'push-to-talk' ? 'push-to-talk' : 'always-on';
+        emitOperatorVoiceSessionStateChanged();
         switch (s.status) {
           case 'connecting':
             setState({ status: 'connecting' });
@@ -1301,6 +1357,8 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
             void activeRuntime?.stop();
             activeRuntime = null;
             operatorVoiceRuntime = null;
+            operatorVoiceMode = 'off';
+            emitOperatorVoiceSessionStateChanged();
             realtimeSession = null;
             setState({ status: state.mode === 'off' ? 'off' : 'idle', micOwnedByFullAgent: false });
             if (s.reason) {
@@ -1318,12 +1376,15 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
     });
     activeRuntime = runtime;
     operatorVoiceRuntime = runtime;
+    emitOperatorVoiceSessionStateChanged();
     realtimeSession = {
       async stop() {
         disposeObserver();
         await activeRuntime?.stop();
         activeRuntime = null;
         operatorVoiceRuntime = null;
+        operatorVoiceMode = 'off';
+        emitOperatorVoiceSessionStateChanged();
       },
     };
     setState({ status: 'connecting', micOwnedByFullAgent: true });
@@ -1341,6 +1402,8 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
     void activeRuntime?.stop();
     activeRuntime = null;
     operatorVoiceRuntime = null;
+    operatorVoiceMode = 'off';
+    emitOperatorVoiceSessionStateChanged();
     const errName = err?.name ?? '';
     const errMsg = err?.message ?? String(err);
     debugLog('el-conv:start-failed', { msg: errMsg });

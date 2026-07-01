@@ -178,8 +178,12 @@ async function writeToPg(
       from?: unknown;
       related_msg_id?: unknown;
       fed_event?: unknown;
+      receipt?: unknown;
     };
     const to = Array.isArray(b.to) ? b.to.filter((x): x is string => typeof x === 'string') : [];
+    // P-008: the receipt (emitted below) reports whether the wake fan actually
+    // re-invoked anyone here — woken stays null when the fan didn't run.
+    let fanWoken: number | null = null;
     // P-003: both fans below spend from the author DEVICE's hourly wake budget
     // (provenance authorPubkey — the verified source-log identity, never the
     // spoofable body.from). Over budget ⇒ the wake is suppressed but the message
@@ -188,11 +192,12 @@ async function writeToPg(
     if (b.wake === true && to.length > 0 && tryConsumeFederatedWake(authorPubkey ?? 'unknown', to.length)) {
       try {
         const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
-        await wakeRecipients(to, {
+        const fan = await wakeRecipients(to, {
           ...(typeof b.summary === 'string' ? { summary: b.summary } : {}),
           ...(typeof b.from === 'string' ? { source: b.from } : {}),
           workspaceId: opts.workspaceId,
         });
+        fanWoken = typeof (fan as { woken?: unknown })?.woken === 'number' ? (fan as { woken: number }).woken : 0;
       } catch (e) {
         // eslint-disable-next-line no-console
         console.warn(
@@ -277,6 +282,54 @@ async function writeToPg(
         // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] federated event re-fire failed for ${row.msg_id} (row persisted; local watchers miss this firing):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+
+    // ── P-008 (cross-machine-coord-parity-and-trust-2026-07-01): DELIVERY
+    // RECEIPT. The sender persisted body.receipt on a federated, directed,
+    // required-wake message; this machine just APPLIED it, so answer with a
+    // fed-event row `coord:receipt:<msg_id>` (payload: delivered + woken +
+    // machine). It rides the P-009 rail back: the ORIGIN machine's projection
+    // re-fires the key into its await store, waking the sender's events:await —
+    // the cross-machine wake-honesty loop closes. The receipt row itself is
+    // no-recipient, no-wake, no-receipt: it can trigger nothing further.
+    // Exactly-once via the same fresh-insert gate; fully best-effort.
+    if (b.receipt === true && to.length > 0) {
+      try {
+        const { sendMessage } = await import('../../../agent-tools/coordination/messages');
+        const { machineFingerprint } = await import('../../../identity/device-keychain-id');
+        await sendMessage(
+          {
+            ownerId: 'fed-receipt',
+            ownerLabel: 'fed-receipt',
+            source: 'system',
+            workspaceId: opts.workspaceId,
+            userId: null,
+          } as never,
+          {
+            to: [],
+            summary: `[receipt] ${row.msg_id}`,
+            harnessSlug: row.harness_slug,
+            extra: {
+              fed_event: {
+                key: `coord:receipt:${row.msg_id}`,
+                payload: {
+                  msg_id: row.msg_id,
+                  delivered: true,
+                  woken: fanWoken ?? 0,
+                  machine: machineFingerprint(),
+                },
+                source: 'fed-receipt',
+              },
+            },
+          },
+        );
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[coord-message] delivery receipt failed for ${row.msg_id} (message applied; sender falls back to reply/inbox confirmation):`,
           e instanceof Error ? e.message : String(e),
         );
       }
