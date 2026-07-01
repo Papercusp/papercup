@@ -1,31 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Square, Play, AlertTriangle } from 'lucide-react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
-import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
-import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { type PlanListRow } from '@/app/admin/plans/plans-api';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-
-interface AgentRun {
-  runId: string;
-  role: string;
-  featureId: string | null;
-  ts: number;
-}
-
-/** The subset of an `agentRunsConsolidated.recent` row the run pills use. */
-interface RunConsolidatedRow {
-  runId: string;
-  role: string;
-  featureId: string | null;
-  /** epoch-ms (resolver coalesces consolidated.ts / spawn.started_at). */
-  ts: number;
-  running: boolean;
-}
 
 interface Props {
   slug: string | null;
@@ -36,8 +17,6 @@ interface HiveControlRow {
   slug: string;
   started: boolean;
 }
-
-const PHASE = 'staging';
 
 /**
  * Fire a hive control tool (start-hive-wake-orchestration P-005/P-006)
@@ -86,78 +65,51 @@ export function waitingLabel(n: number): string {
 }
 
 /**
- * Full-width harness status bar rendered above the tab strip in AdvShell.
- * Shows hive started/paused state, the Start/Pause hive control, and one
- * pill per in-flight agent run. Ported from ActiveAgentsBar in HarnessDashboard.
+ * Harness status bar above the tab strip — now purely the hive Start/Stop
+ * control + the "N plans waiting" nudge.
  *
- * The Start/Stop button here IS the hive control (it replaced the global
- * header's HiveStartPauseButton, start-hive-wake-orchestration P-006):
- * Start boots the brain (`hive:start` — persisted started bit, Queen wake
- * subscriptions, wake-mode auto, immediate Queen wake); Stop pauses it
- * (`hive:pause { drainBees:true }` — wake-mode manual, time wake cleared,
- * live bees asked to wrap up). The legacy whole-loop subprocess launch
- * (`POST /harness/:slug/launch` → the archived orchestrator run-loop) is
- * GONE — feature work is driven by the durable DBOS pipeline + the Queen,
- * so "running" = the persisted `hive_started` bit + live agent runs, not a
- * driver-process scan. Hidden when no hive is registered.
+ * The per-agent run pills + the "Active — N agents running" label USED to live
+ * here; they were removed once the unified, workspace-wide agent roster shipped
+ * (AgentsRunningPill in the header) — that is now the single place agents are
+ * listed, so per-Pot pills here were redundant.
  *
- * Run pills + the "N plans waiting" nudge are push-driven (SSE sync), not
- * polled (data-sync-push-completion P-004/P-005).
+ * The Start/Stop button IS the hive control (replaced the retired global-header
+ * HiveStartPauseButton): Start boots the brain (`hive:start`); Stop pauses it
+ * (`hive:pause { drainBees:true }`). "Active" = the persisted per-hive
+ * `started` bit (live via the hive.controlState invalidation) or a just-clicked
+ * Start. Hidden when no hive is registered.
  */
 export default function AdvNowRunning({ slug }: Props) {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
-  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [starting, setStarting] = useState(false);
-  // Optimistic post-launch state: the Queen's first spawn lands a beat after
-  // hive:start. While true we show the "waiting" label; the push from the
-  // first spawned_agents write clears it (effect below).
+  // Optimistic post-launch state: the started bit arrives a beat after
+  // hive:start (via the hive.controlState invalidation); a 20s safety net clears
+  // this flag if it doesn't.
   const [awaitingAgent, setAwaitingAgent] = useState(false);
 
   // Navigation targets for the nudge — jump to the Plans tab filtered to the
-  // Running bucket (= started plans). We only WRITE these; PlansClient and
-  // AdvShell own the canonical enum parsers (serialized output is identical).
+  // Running bucket (= started plans).
   const [, setAdvTab] = useQueryState('tab', parseAsString);
   const [, setPlansView] = useQueryState('view', parseAsString);
   const [, setPlanBuckets] = useQueryState('pBuckets', parseAsArrayOf(parseAsString));
 
-  // The registered hive (N=1 build — local-hive scope). The hive control
-  // tools key on the HIVE's home slug, not the selected harness, so we read
-  // it from the same sync query the old header button used. Invalidated live
-  // by hive:start / hive:pause — `started` is the bar's active/paused state.
+  // The registered hive. The hive control tools key on the HIVE's home slug, not
+  // the selected harness; `started` is the bar's active/paused state, live via
+  // the hive:start / hive:pause invalidation.
   const { data: hiveData } = useSyncQuery({ queryName: 'hive.controlState', args: {} });
   const hive = (hiveData as HiveControlRow[] | undefined)?.[0];
   const started = hive?.started === true;
 
-  // Run pills — push-driven via agentRunsConsolidated.recent (P-004). The spawn
-  // engine writes spawned_agents on spawn/heartbeat/exit, and the table→query
-  // bridge maps those writes to this query, so pills appear/disappear on the real
-  // run lifecycle. No /api/harness/:slug/agents fs-scan poll.
-  const { data: runsData } = useSyncQuery({
-    queryName: 'agentRunsConsolidated.recent',
-    args: { harnessSlug: slug ?? '' },
-    enabled: !!slug,
-  });
-  const runs: AgentRun[] = useMemo(() => {
-    const rows = (runsData as RunConsolidatedRow[] | undefined) ?? [];
-    return rows
-      .filter((r) => r.running === true)
-      .map((r) => ({
-        runId: r.runId,
-        role: r.role,
-        featureId: r.featureId ?? null,
-        // resolver ts is epoch-ms; the duration timer subtracts `now`
-        // (epoch-seconds), so normalize to seconds here.
-        ts: Math.floor(Number(r.ts) / 1000),
-      }))
-      .sort((a, b) => a.ts - b.ts);
-  }, [runsData]);
+  // Active = the persisted per-hive started bit, or a just-clicked Start. Per-
+  // agent liveness now lives in the unified header roster, not here.
+  const effectivelyAlive = started || awaitingAgent;
+  const stopped = !effectivelyAlive;
 
-  // While the hive is paused, count started-but-unpicked plans for the
-  // "N plans waiting" nudge — push-driven via plans.list (P-005). A started hive
-  // is already working them, so the query is disabled in that state (no fetch).
-  const stopped = !(started || awaitingAgent || runs.length > 0);
+  // While the hive is paused, count started-but-unpicked plans for the "N plans
+  // waiting" nudge — push-driven via plans.list. A started hive is already
+  // working them, so the query is disabled in that state (no fetch).
   const { data: waitingPlansData } = useSyncQuery({
     queryName: 'plans.list',
     args: { harness_slugs: slug ? [slug] : [] },
@@ -168,53 +120,23 @@ export default function AdvNowRunning({ slug }: Props) {
     [waitingPlansData, stopped],
   );
 
-  const [hovered, setHovered] = useState<{ run: AgentRun; rect: DOMRect } | null>(null);
-  // The run pinned open in the full inspector modal (null = closed).
-  const [inspecting, setInspecting] = useState<AgentRun | null>(null);
-  const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cancelClose = () => {
-    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
-  };
-  const scheduleClose = () => {
-    cancelClose();
-    closeTimer.current = setTimeout(() => setHovered(null), 150);
-  };
-
-  // First real run arrived (via push) — drop the optimistic "waiting" state.
-  useEffect(() => {
-    if (runs.length > 0) setAwaitingAgent(false);
-  }, [runs.length]);
-
-  useEffect(() => {
-    if (runs.length === 0) return;
-    const id = window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
-    return () => window.clearInterval(id);
-  }, [runs.length]);
-
-  // Safety net: if no agent appears within 20s of launch (e.g. a harness with
-  // no started plan has nothing eligible to pick), stop "waiting" and fall
-  // back to "Active — idle".
+  // Safety net: clear the optimistic "just started" flag after 20s (by then the
+  // real started bit has arrived via the hive.controlState invalidation, or the
+  // hive genuinely had nothing to start).
   useEffect(() => {
     if (!awaitingAgent) return;
     const id = window.setTimeout(() => setAwaitingAgent(false), 20_000);
     return () => window.clearTimeout(id);
   }, [awaitingAgent]);
 
-  // START = boot the brain: hive:start persists the started bit, re-affirms
-  // the Queen's event-wake subscriptions, flips wake-mode to auto, and wakes
-  // her now. (The old first half — POST /harness/:slug/launch, the legacy
-  // whole-loop subprocess — is retired; its orchestrator bin was archived
-  // 2026-06-06, so that call could only ever 500 "orchestrator bin missing".)
+  // START = boot the brain: hive:start persists the started bit, re-affirms the
+  // Queen's event-wake subscriptions, flips wake-mode to auto, and wakes her now.
   const startHive = useCallback(async () => {
     if (!hive || starting) return;
     setStarting(true);
     try {
       await runHiveControl('hive:start', hive.slug);
       toast.success('Hive started', { description: 'Queen woken — autonomous wakes enabled' });
-      // Optimistic "waiting for agent…" until the Queen's run shows up; the
-      // faster poll (driven by the awaitingAgent dep) takes over from here.
-      // The started bit itself arrives via the hive.controlState invalidation.
       setAwaitingAgent(true);
     } catch (e) {
       toast.error('Start failed', { description: String(e) });
@@ -222,10 +144,8 @@ export default function AdvNowRunning({ slug }: Props) {
     setStarting(false);
   }, [hive, starting]);
 
-  // STOP = pause the brain: wake-mode manual stages every autonomous wake,
-  // the Queen's time wake is cleared, and live bees get the graceful drain
-  // cue. Running turns finish — there is no process SIGTERM anymore (the
-  // legacy /stop route only ever matched the retired run.sh driver).
+  // STOP = pause the brain: wake-mode manual stages every autonomous wake, the
+  // Queen's time wake is cleared, and live bees get the graceful drain cue.
   const stopHive = useCallback(async () => {
     if (!hive) return;
     const ok = await askConfirm({
@@ -252,68 +172,13 @@ export default function AdvNowRunning({ slug }: Props) {
 
   if (!slug) return null;
 
-  const fmt = (sec: number) => {
-    const s = Math.max(0, sec);
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return m > 0 ? `${m}:${String(r).padStart(2, '0')}` : `0:${String(r).padStart(2, '0')}`;
-  };
-
-  // Active = the persisted hive started bit (live via hive.controlState
-  // invalidation), a just-clicked Start (awaitingAgent), or visible runs.
-  const effectivelyAlive = started || awaitingAgent || runs.length > 0;
-  const isLoading = hiveData === undefined && !awaitingAgent && runs.length === 0;
+  const isLoading = hiveData === undefined && !awaitingAgent;
   const stateClass = isLoading ? 'is-checking' : effectivelyAlive ? 'is-active' : 'is-stopped';
 
   return (
     <>
     {confirmEl}
     <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label={`${t('pot')} status`}>
-      {/* Active status indicator — only shown when running */}
-      {effectivelyAlive && (
-        <div className="pc-advshell__harness-status">
-          <span className="pc-advshell__harness-dot" aria-hidden />
-          <span className="pc-advshell__harness-label">
-            {runs.length > 0
-              ? `Active — ${runs.length} agent${runs.length === 1 ? '' : 's'} running`
-              : awaitingAgent
-                ? 'Active — waiting for agent…'
-                : 'Active — idle'}
-          </span>
-        </div>
-      )}
-
-      {/* Agent pills */}
-      {runs.length > 0 && (
-        <div className="pc-advshell__pills" data-count={runs.length}>
-          {runs.map((r) => {
-            const dur = now - r.ts;
-            const label = `${r.role}${r.featureId ? ` · ${r.featureId}` : ''} · ${fmt(dur)}`;
-            return (
-              <Tooltip key={r.runId} label="Hover for live thinking">
-                <button
-                  type="button"
-                  className="pc-advshell__pill"
-                  onMouseEnter={(e) => {
-                    cancelClose();
-                    if (enterTimer.current) clearTimeout(enterTimer.current);
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    enterTimer.current = setTimeout(() => setHovered({ run: r, rect }), 250);
-                  }}
-                  onMouseLeave={() => {
-                    if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
-                    scheduleClose();
-                  }}
-                >
-                  <span className="pc-advshell__pill-dot" aria-hidden />
-                  <span>{label}</span>
-                </button>
-              </Tooltip>
-            );
-          })}
-        </div>
-      )}
-
       {/* Nudge: started plans exist but the harness isn't running to pick
           them up. Click → Plans tab, Running filter. */}
       {!effectivelyAlive && waitingCount > 0 && (
@@ -330,8 +195,7 @@ export default function AdvNowRunning({ slug }: Props) {
       )}
 
       {/* Start (when paused) / Stop (when started) — THE hive control.
-          Hidden when no hive is registered (nothing to start: feature work
-          is event/routine-driven, the legacy run-loop launch is retired). */}
+          Hidden when no hive is registered. */}
       {hive && !effectivelyAlive && (
         <Tooltip label={`Start hive (${hive.slug}) — wake the Queen and enable autonomous wakes`}>
           <button
@@ -356,31 +220,6 @@ export default function AdvNowRunning({ slug }: Props) {
             Stop hive
           </button>
         </Tooltip>
-      )}
-
-      {hovered && (
-        <AgentThinkingPopover
-          slug={slug}
-          phase={PHASE}
-          runId={hovered.run.runId}
-          role={hovered.run.role}
-          anchorRect={hovered.rect}
-          startedAtMs={hovered.run.ts * 1000}
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
-          onOpenInspector={() => { if (hovered) setInspecting(hovered.run); setHovered(null); }}
-        />
-      )}
-
-      {inspecting && (
-        <AgentInspectorModal
-          slug={slug}
-          phase={PHASE}
-          runId={inspecting.runId}
-          role={inspecting.role}
-          open
-          onClose={() => setInspecting(null)}
-        />
       )}
     </div>
     </>
