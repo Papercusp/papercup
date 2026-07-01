@@ -15,13 +15,14 @@
  * Owns its schema (the 000-baseline coord_event_log + the real 102 outbox/capture
  * fn + migration 147 verbatim); does not touch the dev DB.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
 import { buildCoordMessageProjection, type CoordMessageRow } from '../projections/coord-message';
+import { resetFederatedWakeRate } from '../federated-wake-rate';
 
 // EI-279: the projection's federated deliver-and-wake fan dynamically imports
 // wakeRecipients — mock it so these tests assert the fan contract without the
@@ -262,6 +263,7 @@ describe('coord_event_log federation (real PG)', () => {
   });
 
   describe('EI-279 — federated deliver-and-wake fan', () => {
+    beforeEach(() => resetFederatedWakeRate()); // P-003: isolate each test's wake budget
     const proj = () => buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
     const remoteWakeRow = (msgId: string): CoordMessageRow => ({
       harness_slug: HARNESS,
@@ -330,6 +332,7 @@ describe('coord_event_log federation (real PG)', () => {
   });
 
   describe('P-002 — federated wake-on-reply (cross-machine-coord-parity-and-trust-2026-07-01)', () => {
+    beforeEach(() => resetFederatedWakeRate()); // P-003: isolate each test's wake budget
     const proj = () => buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
     // A remote peer's REPLY: no wake intent of its own — only the reply correlation.
     const remoteReplyRow = (msgId: string, relatedMsgId: string, from = 'su-A'): CoordMessageRow => ({
@@ -397,6 +400,43 @@ describe('coord_event_log federation (real PG)', () => {
       expect(
         await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='reply-5'`,
       ).toHaveLength(1);
+    });
+
+    it('P-003: an author device over its hourly wake budget gets messages APPLIED but wakes SUPPRESSED', async () => {
+      process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '2';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        vi.mocked(wakeRecipients).mockClear();
+        const p = proj();
+        const wakeRow = (id: string): CoordMessageRow => ({
+          harness_slug: HARNESS,
+          msg_id: id,
+          surface: 'messages',
+          writer_key: 'peer-A',
+          body: envelope(id, { wake: true, summary: 'spend', to: ['su-B'] }),
+          ts: 1_700_000_000_000,
+        });
+        await p.writeToPg(wakeRow('cap-1'), { authorPubkey: 'flooder', origin: 'remote' });
+        await p.writeToPg(wakeRow('cap-2'), { authorPubkey: 'flooder', origin: 'remote' });
+        await p.writeToPg(wakeRow('cap-3'), { authorPubkey: 'flooder', origin: 'remote' });
+        expect(wakeRecipients).toHaveBeenCalledTimes(2); // third wake suppressed
+        // …but the third MESSAGE still applied — delivery is never dropped.
+        expect(
+          await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='cap-3'`,
+        ).toHaveLength(1);
+        // a DIFFERENT author device is unaffected by the flooder's exhausted budget
+        await p.writeToPg(
+          {
+            ...wakeRow('cap-4'),
+            body: envelope('cap-4', { wake: true, summary: 'legit', to: ['su-B'] }),
+          },
+          { authorPubkey: 'honest-peer', origin: 'remote' },
+        );
+        expect(wakeRecipients).toHaveBeenCalledTimes(3);
+      } finally {
+        warnSpy.mockRestore();
+        delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+      }
     });
 
     it('a reply carrying BOTH wake:true and related_msg_id fires both fans independently', async () => {
