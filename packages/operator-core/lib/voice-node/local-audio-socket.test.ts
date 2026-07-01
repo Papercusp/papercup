@@ -4,6 +4,9 @@
  * client chunking, MIX frames fan out to clients.
  */
 import { connect } from 'node:net';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FrameDecoder, encodeFrame } from '@papercusp/p2p-voice';
 import { VOICE_FRAME_SAMPLES } from './codec';
@@ -45,7 +48,7 @@ vi.mock('./manager', () => ({
   onVoiceStatusChanged: () => () => {},
 }));
 
-import { startLocalVoiceSocket, stopLocalVoiceSocket } from './local-audio-socket';
+import { gcDeadVoiceSockets, startLocalVoiceSocket, stopLocalVoiceSocket } from './local-audio-socket';
 
 const CTRL = 0x01;
 const MIC = 0x02;
@@ -231,5 +234,34 @@ describe('local voice socket', () => {
     await settle();
     expect(setVideoCameraOn).toHaveBeenCalledWith(true);
     c.sock.destroy();
+  });
+});
+
+describe('gcDeadVoiceSockets (EI-3290)', () => {
+  it('reaps only dead-pid voice-*.sock files; keeps live, own, and non-matching', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'voice-gc-'));
+    try {
+      writeFileSync(join(dir, 'voice-100.sock'), ''); // dead pid → reap
+      writeFileSync(join(dir, 'voice-200.sock'), ''); // live pid → keep
+      writeFileSync(join(dir, `voice-${process.pid}.sock`), ''); // our own → keep
+      writeFileSync(join(dir, 'voice-abc.sock'), ''); // non-numeric → ignore
+      writeFileSync(join(dir, 'other.txt'), ''); // unrelated → ignore
+
+      const reaped = gcDeadVoiceSockets(dir, (pid) => pid === 200);
+
+      expect(reaped).toBe(1);
+      expect(existsSync(join(dir, 'voice-100.sock'))).toBe(false);
+      expect(existsSync(join(dir, 'voice-200.sock'))).toBe(true);
+      expect(existsSync(join(dir, `voice-${process.pid}.sock`))).toBe(true);
+      expect(existsSync(join(dir, 'voice-abc.sock'))).toBe(true);
+      expect(existsSync(join(dir, 'other.txt'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 0 when the sockets dir is absent', () => {
+    const missing = join(tmpdir(), `voice-gc-missing-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    expect(gcDeadVoiceSockets(missing, () => false)).toBe(0);
   });
 });

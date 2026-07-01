@@ -221,7 +221,16 @@ async function readRunChunkBackfill(harnessSlug: string, runId: string): Promise
 const agentRunStream = defineTool({
   method: 'GET',
   path: '/harness/:slug/agents/:runId/stream',
-  auth: 'public',
+  // SECURITY (auth: 'loopback', WI-1388): reads a harness run's "thinking" timeline
+  // (tool inputs/RESULTS, which can hold file contents + secrets) by raw caller-supplied
+  // slug/runId with NO workspace/ownership scoping — unauthenticated data exposure on a
+  // network-exposed bind. The only consumer is the loopback desktop webview via a relative
+  // /api URL (AgentThinkingPopover); the mobile path has its own device-JWT endpoint
+  // (/device/harnesses/:slug/log/stream) and does not touch this one. Gate loopback-only:
+  // non-loopback → 403 (enforced under ENDPOINT_AUTH_TIERS / fail-closed if the flag layer
+  // is down; PAPERCUSP_ALLOW_REMOTE_ADMIN=1 is the deliberate remote opt-out). A per-principal
+  // + workspace-scoped check is the follow-up for a genuine multi-tenant/exposed deployment.
+  auth: 'loopback',
   sampleRate: 0,
   async handler(req, ctx) {
     const url = new URL(req.url);
@@ -371,7 +380,12 @@ const agentRunStream = defineTool({
 const slugStream = defineTool({
   method: 'GET',
   path: '/harness/:slug/stream',
-  auth: 'public',
+  // SECURITY (auth: 'loopback', WI-1388): tails a harness run.log (can hold tool
+  // outputs + secrets) by raw caller-supplied slug with NO ownership scoping. The only
+  // consumer is the loopback desktop webview via a relative /api URL (the Run-view);
+  // the mobile path uses its own device-JWT endpoint. Gate loopback-only (non-loopback
+  // → 403; PAPERCUSP_ALLOW_REMOTE_ADMIN=1 is the deliberate remote opt-out).
+  auth: 'loopback',
   sampleRate: 0,
   async handler(req, ctx) {
     const url = new URL(req.url);
@@ -454,7 +468,13 @@ const slugStream = defineTool({
 const logStream = defineTool({
   method: 'GET',
   path: '/harness/:slug/log/stream',
-  auth: 'public',
+  // SECURITY (auth: 'loopback', WI-1388): tails a harness run.log.jsonl (structured
+  // log; can hold tool outputs + secrets) by raw caller-supplied slug with NO ownership
+  // scoping. The only consumer is the loopback desktop webview via a relative /api URL
+  // (RealLogsPanel); the mobile path has its OWN device-JWT /device/harnesses/:slug/log/stream
+  // (which re-implements the tail, not a proxy to this one). Gate loopback-only (non-loopback
+  // → 403; PAPERCUSP_ALLOW_REMOTE_ADMIN=1 is the deliberate remote opt-out).
+  auth: 'loopback',
   sampleRate: 0,
   async handler(req, ctx) {
     const url = new URL(req.url);

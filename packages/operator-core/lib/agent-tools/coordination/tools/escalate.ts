@@ -83,7 +83,12 @@ export default defineTool({
       body: args.body,
       plan_slug: args.plan_slug,
       options: args.options,
-      ...(harnessSlug ? { meta: { harnessSlug } } : {}),
+      // harnessSlug (a concrete harness, never '*') does double duty: meta.harnessSlug
+      // scopes the human-inbox chat (existing), and harness_slug FEDERATES the record
+      // so a peer-machine harness-scoped escalation reaches the hub where the human's
+      // inbox lives (WI-1375; mirrors messages.ts + coord:handoff). Operator/SU
+      // ('*'/unset) escalations stay workspace-local.
+      ...(harnessSlug ? { meta: { harnessSlug }, harness_slug: harnessSlug } : {}),
     });
     return {
       content: [

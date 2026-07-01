@@ -31,7 +31,7 @@
  * (A bootstrap discovery file — the sanctioned file-not-PG case.)
  */
 import { createServer, type Server, type Socket } from 'node:net';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { FrameDecoder, encodeFrame, type VoiceFrame } from '@papercusp/p2p-voice';
@@ -274,6 +274,54 @@ function handleClient(sock: Socket): void {
   sendCtrl(sock, { ev: 'status', status: voiceStatus() });
 }
 
+/** Is `pid` a live process? `process.kill(pid,0)` succeeds ⇒ alive; ESRCH ⇒ dead;
+ *  EPERM ⇒ exists-but-owned-by-another-user ⇒ treat as ALIVE (never reap a live
+ *  process's socket). */
+function ownerPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * GC orphaned `voice-<pid>.sock` files left by dead operators (EI-3290). A crashed
+ * or SIGKILLed operator never runs {@link stopLocalVoiceSocket}, so its socket file
+ * lingers forever — hundreds accumulate in ~/.papercusp/sockets/ and "which socket is
+ * live" degrades into an O(hundreds) connect-probe. On start we reap files whose owning
+ * pid (encoded in the filename) is dead. Skips our own pid and any file whose pid is
+ * still alive. Best-effort + isolated: a readdir/unlink failure never blocks startup.
+ * `isAlive` is injectable for tests. Returns the number of files reaped.
+ */
+export function gcDeadVoiceSockets(
+  dir: string = join(homedir(), '.papercusp', 'sockets'),
+  isAlive: (pid: number) => boolean = ownerPidAlive,
+): number {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0; // dir absent — nothing to GC
+  }
+  let reaped = 0;
+  for (const name of entries) {
+    const m = /^voice-(\d+)\.sock$/.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    if (isAlive(pid)) continue; // a live operator owns it — keep
+    try {
+      rmSync(join(dir, name), { force: true });
+      reaped++;
+    } catch {
+      /* raced with another reaper / perms — skip */
+    }
+  }
+  return reaped;
+}
+
 export interface VoiceSocketInfo {
   socketPath: string;
   discoveryPath: string;
@@ -285,6 +333,14 @@ export function startLocalVoiceSocket(): VoiceSocketInfo {
   }
   const dir = join(homedir(), '.papercusp', 'sockets');
   mkdirSync(dir, { recursive: true });
+  // EI-3290: reap orphaned voice-<pid>.sock files from dead operators before adding
+  // ours, so ~/.papercusp/sockets/ doesn't grow unbounded across restarts/crashes.
+  try {
+    const reaped = gcDeadVoiceSockets(dir);
+    if (reaped > 0) console.error(`[voice-socket] GC'd ${reaped} orphaned voice socket(s) from dead pids`);
+  } catch {
+    /* GC is best-effort — never block voice startup */
+  }
   socketPath = join(dir, `voice-${process.pid}.sock`);
   try {
     rmSync(socketPath, { force: true });

@@ -48,6 +48,21 @@ describe('openHandoff', () => {
     expect('body' in rec).toBe(false); // omitted optionals stay absent
     expect('files_modified' in rec).toBe(false);
     expect('commit' in rec).toBe(false);
+    expect('harness_slug' in rec).toBe(false); // WI-1375: no scope ⇒ stays LOCAL (unfederated)
+    expect(log.coordLog.putEvent).toHaveBeenCalledWith('handoffs', rec.msg_id, rec);
+  });
+
+  it('WI-1375: stamps harness_slug on the record when the scope is provided (cross-machine federation)', async () => {
+    const rec = await openHandoff(identity, {
+      to: ['peer-a'],
+      summary: 'do X',
+      plan_slug: 'p',
+      harness_slug: 'shared-hive',
+    });
+    // The record carries the federation scope PgCoordLog projects to
+    // coord_event_log.harness_slug (NOT NULL ⇒ the capture trigger enqueues it to peers).
+    expect(rec.harness_slug).toBe('shared-hive');
+    // and it is the SAME record handed to the log (so the projected column is non-null).
     expect(log.coordLog.putEvent).toHaveBeenCalledWith('handoffs', rec.msg_id, rec);
   });
 });

@@ -62,7 +62,8 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
     setM.mockResolvedValue({ id: 'F-1', priority: 5, applicable: true } as never);
     const out = await env({ workItem: 'F-1', priority: 5 });
     expect(out).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(out.results[0]).toMatchObject({ ok: true, workItem: 'F-1', mode: 'set', priority: 5, action: 'set' });
+    // WI-1376: a committed write reports written:true (the truthful persist signal).
+    expect(out.results[0]).toMatchObject({ ok: true, workItem: 'F-1', mode: 'set', priority: 5, action: 'set', written: true });
     expect(setM).toHaveBeenCalledWith('F-1', 5, { harness: undefined });
     expect(commitArmM).toHaveBeenCalledTimes(1);
   });
@@ -95,7 +96,20 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
   it('a steering-lease proposal does NOT commit the arm and surfaces proposed/steeringHolder', async () => {
     setM.mockResolvedValue({ id: 'F-1', priority: 2, applicable: true, proposed: true, steeringHolder: 'queen-A' } as never);
     const r = await one({ workItem: 'F-1', priority: 2 });
-    expect(r).toMatchObject({ ok: true, mode: 'set', proposed: true, steeringHolder: 'queen-A' });
+    // WI-1376: a proposal returns ok:true BUT written:false — the feature_order was NOT
+    // committed (this Swarm isn't the steering-lease holder). Callers must gate on written.
+    expect(r).toMatchObject({ ok: true, mode: 'set', proposed: true, steeringHolder: 'queen-A', written: false });
+    expect(commitArmM).not.toHaveBeenCalled();
+  });
+
+  it('WI-1376: an inapplicable (issue-family, scheduler-issues OFF) set returns ok:true, written:false', async () => {
+    // setWorkItemPriority returns { applicable:false } with no proposed — no feature_order
+    // was written, yet ok:true. The written flag is the only signal that distinguishes this
+    // silent no-op from a real write (the report's core defect).
+    setM.mockResolvedValue({ id: 'WI-9', priority: null, applicable: false } as never);
+    const r = await one({ workItem: 'WI-9', priority: 3 });
+    expect(r).toMatchObject({ ok: true, mode: 'set', applicable: false, written: false });
+    // an uncommitted write must not commit the auto-revert arm.
     expect(commitArmM).not.toHaveBeenCalled();
   });
 

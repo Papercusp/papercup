@@ -46,7 +46,15 @@ export async function openEscalation(
   // unification Phase D (P-033) stashes `{ cardCorrelationId, cardWorkspaceId }`
   // here to link a durable escalation to a live ctx.askUser card. The generic
   // coordination lib is untouched (the field lives only in this adapter input).
-  input: OpenEscalationInput & { meta?: Record<string, unknown> },
+  // WI-1375: `harness_slug` FEDERATES the escalation. A harness-scoped agent on a
+  // PEER machine escalating "to human" needs its record to reach the hub where the
+  // human's inbox lives — PgCoordLog projects env.harness_slug to the
+  // coord_event_log.harness_slug column the capture trigger federates on
+  // (distributed-coordination-shared-harness Track A). The coord:escalate tool sets it
+  // ONLY for a concrete harness (never the operator/SU '*' wildcard), so an
+  // operator-scope escalation correctly stays workspace-local. Distinct from
+  // `meta.harnessSlug` (camelCase, body-only — the human-inbox chat-scoping key).
+  input: OpenEscalationInput & { meta?: Record<string, unknown>; harness_slug?: string },
 ): Promise<EscalationRecord> {
   const env: EscalationRecord = {
     ts: new Date().toISOString(),
@@ -61,6 +69,7 @@ export async function openEscalation(
   if (input.body !== undefined) env.body = input.body;
   if (input.plan_slug !== undefined) env.plan_slug = input.plan_slug;
   if (input.options !== undefined) env.options = input.options;
+  if (input.harness_slug !== undefined) env.harness_slug = input.harness_slug;
   if (input.meta) Object.assign(env, input.meta);
   await coordLog.putEvent('escalations', env.msg_id, env);
   return env;

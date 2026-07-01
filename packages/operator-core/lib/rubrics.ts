@@ -27,7 +27,7 @@
  * migration. Versioning falls out of the plan revision spine (no separate machinery).
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { activeWorkspaceId } from './workspace-registry';
 import {
   rubricTemplateDataSchema,
   RUBRIC_TEMPLATE_NAME,
@@ -77,16 +77,28 @@ export interface Rubric {
 }
 
 /**
- * Rubrics live in the single coordination workspace (the same constant the coordination
- * layer uses), so a ratified rubric is visible to Overwatch/Scout wherever they run.
- * The re-pointed store reads/writes rubric-template PLANS in this workspace
- * (harness_plans.workspace_id = this); the seeded hive-coordination-health rubric plan
- * (mig 338) lives here. NOTE: only workspace + template gate the read — harness_slug is
- * NOT read (the plans leg, listRubricPlans), so a rubric plan in any harness within this
- * workspace resolves.
+ * The workspace the rubric-template PLANS are homed in — the ACTIVE workspace, resolved
+ * the same way every other workspace-scoped operator-core store resolves it
+ * (activeWorkspaceId(): request-scoped ALS → PAPERCUSP_WORKSPACE_ID → registry current →
+ * DEFAULT_WORKSPACE_ID='default'). So a ratified rubric is visible to Overwatch/Scout,
+ * who run in that same active workspace.
+ *
+ * WHY NOT the hardcoded DEFAULT_COORD_WORKSPACE='default' (WI-976): the coordination
+ * layer, harness_plans, and every sibling store (notes/audit/telemetry/grants) resolve
+ * the REAL workspace at request/write time — on this install that is 'papercusp-workspace'
+ * (97k coord rows, all 643 plans), NOT the literal 'default' (327 legacy coord rows, 0
+ * plans). The old code used the 'default' FALLBACK constant as the PRIMARY scope, so the
+ * read looked in a near-dead workspace and missed the active `hive-coordination-health`
+ * rubric plan that actually lives in the active workspace — rubrics:list returned 0 and
+ * the Overwatch could not emit its required scorecard. Reads AND writes both call this,
+ * so they stay consistent. On a fresh/test DB with no active-workspace pin this resolves
+ * 'default', matching mig 338's seed — so the seeded rubric still resolves there.
+ *
+ * NOTE: only workspace + template gate the read — harness_slug is NOT read (the plans leg,
+ * loadAllRubrics), so a rubric plan in any harness within this workspace resolves.
  */
 function rubricsScopeWorkspace(): string {
-  return DEFAULT_COORD_WORKSPACE;
+  return activeWorkspaceId();
 }
 
 /**

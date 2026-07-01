@@ -6,7 +6,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog, coordLog } from './log';
-import { listEscalationsPaginated, resolveEscalationsBatch } from './escalations';
+import { listEscalationsPaginated, resolveEscalationsBatch, openEscalation } from './escalations';
+import type { AgentIdentity } from './identity';
 
 afterEach(() => resetCoordLog());
 
@@ -168,5 +169,47 @@ describe('resolveEscalationsBatch — single-load drain (EI-1490)', () => {
     const r = await resolveEscalationsBatch([]);
     expect(r).toEqual({ resolved: 0, notFound: 0, alreadyResolved: 0, requiresSpawnApprove: 0 });
     expect(log.readEventsCalls).toBe(0);
+  });
+});
+
+describe('openEscalation — harness_slug federation (WI-1375)', () => {
+  const identity = { ownerId: 'bee-7' } as AgentIdentity;
+
+  it('stamps harness_slug on the record when a harness-scoped agent escalates (federates to the hub)', async () => {
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    const rec = await openEscalation(identity, {
+      severity: 'blocker',
+      summary: 'need a human',
+      harness_slug: 'shared-hive',
+    });
+    // Federation column PgCoordLog projects to coord_event_log.harness_slug: a
+    // peer-machine escalation "to human" now reaches the hub inbox (NOT NULL ⇒ capture enqueues).
+    expect(rec.harness_slug).toBe('shared-hive');
+    expect(rec.to).toEqual(['human']); // still addressed to the human — the scope only routes it there
+    const persisted = await log.getEvent('escalations', rec.msg_id);
+    expect((persisted as { harness_slug?: string }).harness_slug).toBe('shared-hive');
+  });
+
+  it('leaves harness_slug unset for an operator/SU escalation (stays workspace-local)', async () => {
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    // The coord:escalate tool passes NO harness_slug for a '*'/unset scope; the adapter
+    // must not invent one, so the record stays LOCAL (unfederated).
+    const rec = await openEscalation(identity, { severity: 'advisory', summary: 'fyi' });
+    expect('harness_slug' in rec).toBe(false);
+  });
+
+  it('keeps meta.harnessSlug (inbox chat-scoping) distinct from the top-level harness_slug (federation)', async () => {
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    const rec = await openEscalation(identity, {
+      severity: 'question',
+      summary: 'which way?',
+      harness_slug: 'shared-hive',
+      meta: { harnessSlug: 'shared-hive' },
+    });
+    expect(rec.harness_slug).toBe('shared-hive'); // federation column (snake_case)
+    expect((rec as { harnessSlug?: string }).harnessSlug).toBe('shared-hive'); // human-inbox chat scope (camelCase, via meta)
   });
 });

@@ -11,7 +11,7 @@
  * The `matches` predicate mirrors each CI lint's EXACT scope so the guard never
  * quarantines a file the lint wouldn't flag (and vice-versa).
  */
-import { findMdxCompileError } from './mdx';
+import { findMdxCompileError, autoFixMdxAngles } from './mdx';
 import { findCodePositionCurlyQuotes, curlyLabel } from './smart-quotes';
 
 /** A registered content check. */
@@ -29,6 +29,17 @@ export interface ContentDetector {
   detect: (file: string, text: string) => Promise<string | null> | string | null;
   /** The agent role git-sync dispatches to fix this class of content error. */
   fixerRole: string;
+  /**
+   * Optional DETERMINISTIC repair (WI-276), applied by the git-sync content guard
+   * as a pre-pass BEFORE quarantining + dispatching the LLM `fixerRole`. The guard
+   * invokes it ONLY on a file that already failed `detect`, then RE-RUNS `detect`
+   * on the result: if the repair makes the file clean it is written back so it
+   * commits on this tick (no LLM, no human, no 5-tick build block); if it does not
+   * fully resolve the error the file is quarantined for the LLM fixer exactly as
+   * before. Must be PURE + idempotent (given the same text twice it returns the
+   * same fix). Omit for detectors with no safe deterministic repair (smart-quotes).
+   */
+  autoFix?: (text: string) => { fixed: string; changed: boolean };
 }
 
 /** Shared exclusions — retired trees, vendored code, build output (mirror the lint scripts). */

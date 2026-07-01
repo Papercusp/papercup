@@ -26,7 +26,16 @@ export type { OpenHandoffInput, HandoffRecord, HandoffWithAcceptance };
 /** Open a new handoff — writes the per-event record. */
 export async function openHandoff(
   identity: AgentIdentity,
-  input: OpenHandoffInput,
+  // WI-1375: `harness_slug` FEDERATES the handoff. A handoff is peer-agent-directed
+  // (`to` = peer ownerIds), so a cross-machine handoff must reach the recipient's
+  // machine — PgCoordLog projects env.harness_slug to the coord_event_log.harness_slug
+  // column the capture trigger federates on (distributed-coordination-shared-harness
+  // Track A). Without it the row lands harness_slug NULL, the capture gate short-circuits,
+  // and the handoff stays LOCAL (never reaches a peer-machine recipient). Set by the
+  // coord:handoff tool from ctx.harnessSlug (a concrete harness, never '*'/operator-scope).
+  // Extended inline here (not on the pure OpenHandoffInput) to keep the generic lib
+  // untouched, mirroring openEscalation's `& { meta?: ... }`.
+  input: OpenHandoffInput & { harness_slug?: string },
 ): Promise<HandoffRecord> {
   const env: HandoffRecord = {
     ts: new Date().toISOString(),
@@ -41,6 +50,7 @@ export async function openHandoff(
   if (input.next_action !== undefined) env.next_action = input.next_action;
   if (input.files_modified !== undefined) env.files_modified = input.files_modified;
   if (input.commit !== undefined) env.commit = input.commit;
+  if (input.harness_slug !== undefined) env.harness_slug = input.harness_slug;
   await coordLog.putEvent('handoffs', env.msg_id, env);
   return env;
 }

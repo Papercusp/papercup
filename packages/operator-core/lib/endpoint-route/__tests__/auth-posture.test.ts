@@ -264,3 +264,30 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     expect(loopback.length).toBeGreaterThan(200);
   });
 });
+
+/**
+ * WI-1388 (security): the harness SSE stream endpoints (routes/harness/streams.ts)
+ * read harness run logs / an agent run's "thinking" timeline — tool inputs/RESULTS
+ * that can hold file contents + secrets — by raw caller-supplied slug/runId with NO
+ * workspace or ownership scoping. Every consumer is the loopback desktop webview via
+ * a relative /api URL; the mobile path uses its OWN device-JWT endpoint
+ * (/device/harnesses/:slug/log/stream, which re-implements the tail — not a proxy to
+ * these). So gate them loopback-only: a network-exposed bind (PAPERCUSP_BIND_HOST=
+ * 0.0.0.0) or a cloud-deployed frame can no longer serve these unauthenticated
+ * (non-loopback → 403; PAPERCUSP_ALLOW_REMOTE_ADMIN=1 is the deliberate remote opt-out).
+ * This pins the tier so none drifts back to 'public'; the /adv/session/thinking sibling
+ * was hardened first (the same file's prior pass).
+ */
+describe('harness SSE stream endpoints are loopback-gated (WI-1388)', () => {
+  const STREAMS: ReadonlyArray<[string, string]> = [
+    ['GET', '/harness/:slug/agents/:runId/stream'],
+    ['GET', '/harness/:slug/stream'],
+    ['GET', '/harness/:slug/log/stream'],
+    ['GET', '/adv/session/thinking'],
+  ];
+  it.each(STREAMS)('%s %s is auth: loopback (never public)', (method, path) => {
+    const def = ALL_ROUTES.find((r) => r.method === method && r.path === path);
+    expect(def, `${method} ${path} not registered`).toBeDefined();
+    expect(def!.auth).toBe('loopback');
+  });
+});

@@ -45,6 +45,13 @@ import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-
 
 const completionSpec = CompletionRecordSchema.extend({ workItem: z.string().min(1).optional() });
 
+/**
+ * EI-5269: the canonical terminal states across BOTH families (feature: passed/deprecated;
+ * issue: resolved/closed — see work-items.ts). A completion that leaves the item in ANY other
+ * state has NOT closed it, so the row stays claimable + reclaimable.
+ */
+const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'deprecated', 'resolved', 'closed']);
+
 const itemSpec = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
@@ -101,6 +108,21 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     }
   }
 
+  // EI-5269: `completion.status` (defaults to 'done') is NOT the state transition — only the
+  // top-level `state` arg moves the row terminal. Completing WITHOUT a terminal `state` records
+  // the completion (so it READS as done) but leaves the item non-terminal → still claimable, and
+  // the stale-reclaim sweep re-places work on it (real duplicate bee spawns the reporter hit). We
+  // deliberately do NOT auto-close (that would step on the validator/reviewer pipeline's own status
+  // semantics — state is optional BY DESIGN, D-004). Instead we make the silent footgun LOUD: warn
+  // whenever the item is non-terminal after this completion, so the caller re-calls with a terminal
+  // `state` (exactly the fix the reporter applied). Also fires when an explicit `state` write failed
+  // (stateError) or landed on a non-terminal state — in every case the item is still claimable.
+  const finalState = (workItem?.state ?? existing.state ?? '').toLowerCase();
+  const stateWarning =
+    finalState && !TERMINAL_WORK_ITEM_STATES.has(finalState)
+      ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', so it stays claimable and the auto-loop may re-place work on it. Pass top-level \`state\` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') to close it.`
+      : undefined;
+
   // Fill provenance defaults so the rendered notification is complete (D-006).
   const completion = {
     ...it.completion,
@@ -120,6 +142,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     reflect,
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
     ...(stateError ? { stateError } : {}),
+    ...(stateWarning ? { stateWarning } : {}),
   };
 }
 
@@ -129,7 +152,7 @@ export default defineTool({
   description:
     'Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect, stateError? } | error], counts } — act on each returned `reflect` step once, now.',
   guidance: {
-    when: 'You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. Finish several at once via items:[…].',
+    when: 'You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Finish several at once via items:[…].',
     notWhen: 'For a contextual aside that is not a completion (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed. Then read each returned `reflect` step (self-learning loop): if any friction marker bit you, file it once via improvements:capture — else capture nothing.',
   },

@@ -571,7 +571,7 @@ async function resolveFleetInfoByOwner(
       out.set(p.ownerId, { fleetSlug: null, fleetColor: null });
       continue;
     }
-    const key = `${p.workspaceId} ${slug}`;
+    const key = `${p.workspaceId}\0${slug}`;
     if (!colorCache.has(key)) {
       const scheme = await getFleetScheme(p.workspaceId, slug).catch(() => null);
       colorCache.set(key, scheme?.cursor ?? null);

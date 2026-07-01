@@ -20,6 +20,15 @@ const endSpy = vi.fn(async () => {});
 let postgresCallCount = 0;
 
 beforeEach(() => {
+  // Hermeticity: this file exercises the DIRECT per-bus `postgres()` LISTEN path
+  // (it mocks `postgres` and asserts on its ref-counted open/close). The runner's
+  // ambient env may set PAPERCUSP_LISTEN_HUB=1 (and listenHubEnabled() also
+  // DEFAULTS ON for server-class hosts), which diverts ensureStarted() onto the
+  // shared pg-listen-hub connection whose ref-counting lives elsewhere — breaking
+  // this file's assumptions (the green-checkpoint runner has the flag set live).
+  // Force the kill-switch ('0', since '' still defaults ON) so the intended path
+  // is exercised deterministically regardless of host env.
+  vi.stubEnv('PAPERCUSP_LISTEN_HUB', '0');
   vi.resetModules();
   capturedChannel = null;
   capturedListen = null;
@@ -30,6 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   vi.doUnmock('postgres');
   vi.doUnmock('./embedded-pg-discovery');
 });

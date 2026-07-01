@@ -133,6 +133,23 @@ describe('GET /adv/roster', () => {
     await callRoster('?endedLimit=-3');
     expect(listEndedMock).toHaveBeenLastCalledWith({ workspaceId: null, limit: 50 });
   });
+
+  it('round-trips per-agent fleetSlug + fleetColor on active roster rows (WI-1294)', async () => {
+    // The merge stamps fleetSlug + the fleet's accent color from fleetByOwner
+    // (unit-tested in adv-roster.test.ts). This asserts the route serializes
+    // both fields through GET /api/adv/roster to the pui without stripping them,
+    // so the fleet-tab agent-row coloring has the data it consumes.
+    mergeRosterMock.mockResolvedValue({
+      active: [
+        { ownerId: 'su-1', label: 'a', fleetSlug: 'atlas', fleetColor: '#86efac' },
+        { ownerId: 'su-2', label: 'b', fleetSlug: null, fleetColor: null },
+      ],
+      orphanedClaims: [],
+    });
+    const json = await (await callRoster()).json();
+    expect(json.active[0]).toMatchObject({ fleetSlug: 'atlas', fleetColor: '#86efac' });
+    expect(json.active[1]).toMatchObject({ fleetSlug: null, fleetColor: null });
+  });
 });
 
 describe('GET /adv/roster/agent', () => {

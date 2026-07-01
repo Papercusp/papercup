@@ -96,6 +96,13 @@ export default defineTool({
     // owner-2026-06-17: resolve short ownerId prefixes to full ids so the handoff
     // records + reaches the right agent. Best-effort + fail-soft.
     const handoffTo = await resolveBestEffortAgainstRoster(args.to, identity.workspaceId);
+    // WI-1375: stamp the harness scope so a cross-machine handoff FEDERATES to the
+    // recipient's machine (openHandoff → coord_event_log.harness_slug → capture
+    // trigger). A concrete harness only — '*'/empty = operator/SU/oracle wildcard ⇒
+    // workspace-local (leave unset), mirroring coord:escalate's resolution.
+    const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const harnessSlug =
+      typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
     const rec = await openHandoff(identity, {
       to: handoffTo,
       plan_slug: args.plan_slug,
@@ -104,6 +111,7 @@ export default defineTool({
       next_action: args.next_action,
       files_modified: args.files_modified,
       commit: args.commit,
+      ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
     });
 
     // coord-dispatch-reliability P-003 (wake-on-open): opening a handoff previously

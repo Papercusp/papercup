@@ -163,3 +163,38 @@ describe('coord:handoff — wake-on-open (P-003)', () => {
     expect(keys.every((k) => !k.startsWith('coord:inbox-wake:'))).toBe(true);
   });
 });
+
+describe('coord:handoff — harness_slug federation (WI-1375)', () => {
+  let log: InMemoryCoordLog;
+  beforeEach(() => {
+    log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    listPresence.mockReset();
+    listPresence.mockResolvedValue([{ ownerId: 'su-bee-1' }]);
+    emitAwaitedEvent.mockClear();
+    emitAwaitedEvent.mockResolvedValue({ ok: true, key: 'k', woken: 1, notified: [], msgId: null });
+  });
+  afterEach(() => resetCoordLog());
+
+  // A ctx carrying an explicit harness scope — the write-path input that decides
+  // whether the handoff record federates (openHandoff → coord_event_log.harness_slug).
+  const harnessCtx = (harnessSlug: unknown) =>
+    ({ uiClientId: 'su-offerer', isSuperuser: true, workspaceId: 'ws', harnessSlug }) as never;
+  const openedHandoff = async () =>
+    (await log.readEvents('handoffs')).find((r) => r.kind === 'handoff')!;
+
+  it('a harness-scoped handoff stamps the record harness_slug → coord_event_log.harness_slug NOT NULL (capture enqueues)', async () => {
+    await handoff.handler(parse(handoff, openArgs()), harnessCtx('shared-hive'));
+    expect((await openedHandoff()).harness_slug).toBe('shared-hive');
+  });
+
+  it("does NOT stamp harness_slug for the '*' operator/SU wildcard (stays workspace-local)", async () => {
+    await handoff.handler(parse(handoff, openArgs()), harnessCtx('*'));
+    expect('harness_slug' in (await openedHandoff())).toBe(false);
+  });
+
+  it('does NOT stamp harness_slug when the session has no harness scope (operator)', async () => {
+    await handoff.handler(parse(handoff, openArgs()), harnessCtx(undefined));
+    expect('harness_slug' in (await openedHandoff())).toBe(false);
+  });
+});

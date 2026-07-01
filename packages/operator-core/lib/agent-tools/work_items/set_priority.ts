@@ -57,7 +57,7 @@ export default defineTool({
   name: 'work_items:set_priority',
   profile: 'engineer',
   description:
-    "The Queen's steer-don't-dispatch lever: set one OR many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }. Many: items:[{ workItem, priority?, position?, harness?, decision? }]. Each item: set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder (one bee's already-claimed work-list). Returns { ok, results:[{ ok, workItem, mode, … | error }], counts } — correlate by workItem.",
+    "The Queen's steer-don't-dispatch lever: set one OR many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }. Many: items:[{ workItem, priority?, position?, harness?, decision? }]. Each item: set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder (one bee's already-claimed work-list). Returns { ok, results:[{ ok, workItem, mode, written, … | error }], counts } — correlate by workItem. IMPORTANT for bulk re-prioritizers: `ok:true` only means the request was processed; check the `written` boolean to confirm feature_order actually PERSISTED — it is false for a steering-lease proposal (proposed:true; this Swarm isn't the lease holder) and for an inapplicable issue-family item, both of which return ok:true yet write nothing.",
   guidance: {
     when: "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next — position:'top'/'bottom' for most/least urgent, or an explicit integer; reprioritize several at once via items:[…]. In a multi-Swarm Hive only the steering-lease holder commits; a non-holder's set returns proposed:true (recorded for the holding Queen to dispose; local placement is unaffected).",
     notWhen:
@@ -128,17 +128,28 @@ export default defineTool({
           decision,
         ).catch(() => null);
 
+        // WI-1376: the TRUTHFUL "did feature_order actually persist?" signal. `ok:true` only
+        // means the request was processed without error — a steering-lease PROPOSAL (proposed:
+        // this Swarm isn't the lease holder) and an inapplicable issue-family item (applicable:
+        // false, scheduler-issues-claimable OFF) BOTH return ok:true yet write NOTHING. Callers
+        // / bulk re-prioritizers must gate on `written`, not `ok`, or they silently miss the
+        // no-op (the exact failure the report hit). `written` also gates the auto-revert arm —
+        // never arm a revert for a write that never landed.
+        const wroteResult = (r: { applicable: boolean; proposed?: boolean }) => r.applicable === true && !r.proposed;
+
         // Explicit mode — caller named the order (or null to clear); overrides position.
         if (it.priority !== undefined) {
           const set = await setWorkItemPriority(it.workItem, it.priority, opt);
           if (!set) return { ok: false, workItem: it.workItem, error: `work-item ${it.workItem} not found` };
-          if (armPlan && !set.proposed) await commitWorkItemArm(armPlan).catch(() => {});
+          const written = wroteResult(set);
+          if (armPlan && written) await commitWorkItemArm(armPlan).catch(() => {});
           return {
             ok: true,
             workItem: set.id,
             mode: 'set',
             priority: set.priority,
             applicable: set.applicable,
+            written,
             action: it.priority === null ? 'clear' : 'set',
             // P-011 steering lease (D-004): proposed=true ⇒ this Swarm is not the
             // lease holder — the write was NOT committed; a proposal was recorded
@@ -150,13 +161,15 @@ export default defineTool({
         // Bump mode — move to the head/tail of the backlog relative to the current extreme.
         const set = await bumpWorkItemPriority(it.workItem, it.position!, opt);
         if (!set) return { ok: false, workItem: it.workItem, error: `work-item ${it.workItem} not found` };
-        if (armPlan && !set.proposed) await commitWorkItemArm(armPlan).catch(() => {});
+        const written = wroteResult(set);
+        if (armPlan && written) await commitWorkItemArm(armPlan).catch(() => {});
         return {
           ok: true,
           workItem: set.id,
           mode: 'bump',
           priority: set.priority,
           applicable: set.applicable,
+          written,
           action: it.position,
           ...(set.proposed ? { proposed: true, steeringHolder: set.steeringHolder } : {}),
         };

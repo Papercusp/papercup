@@ -202,4 +202,56 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.ok).toBe(true);
     });
   });
+
+  // ── stateWarning: complete-without-terminal-state footgun (EI-5269) ──────────────────────
+  // `completion.status` (defaults to 'done') does NOT close the item — only a terminal top-level
+  // `state` does. Completing without one records the completion but leaves the row claimable +
+  // reclaimable → the auto-loop re-places bees on landed work. We surface that LOUDLY (do not
+  // auto-close: state is optional by design, D-004).
+  describe('stateWarning — recorded-but-not-closed footgun (EI-5269)', () => {
+    it('warns when a completion leaves a feature non-terminal (no `state`)', async () => {
+      getWorkItem.mockResolvedValue(item); // state: 'in_progress'
+      const r = await one({ id: 'F-12', completion: { summary: 'all done', status: 'done' } });
+      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(r.completion.status).toBe('done'); // reads as done…
+      expect(r.stateWarning).toMatch(/NOT closed/); // …but the item is not closed
+      expect(r.stateWarning).toContain('F-12');
+      expect(r.stateWarning).toMatch(/passed'\|'deprecated'/); // points at the terminal states
+    });
+
+    it('does NOT warn when a terminal `state` closed the item', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(r.workItem.state).toBe('passed');
+      expect(r.stateWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when the item was already terminal (re-complete a passed item)', async () => {
+      getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
+      const r = await one({ id: 'F-12', completion: { summary: 'noting it again' } });
+      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(r.stateWarning).toBeUndefined();
+    });
+
+    it('warns for an issue-family item left open (no `state`), not when resolved', async () => {
+      const issue = { ...item, id: 'WI-7', kind: 'bug', family: 'issue', state: 'open' };
+      getWorkItem.mockResolvedValue(issue);
+      const open = await one({ id: 'WI-7', completion: { summary: 'fixed in tree' } });
+      expect(open.stateWarning).toMatch(/resolved'\|'closed'/);
+
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemState.mockResolvedValue({ ...issue, state: 'resolved' });
+      const resolved = await one({ id: 'WI-7', state: 'resolved', completion: { summary: 'fixed in tree' } });
+      expect(resolved.stateWarning).toBeUndefined();
+    });
+
+    it('still warns (item stays claimable) when an explicit `state` write FAILED', async () => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-8', kind: 'task', family: 'issue', state: 'open' });
+      setWorkItemState.mockRejectedValue(new Error("cannot take state 'bogus'"));
+      const r = await one({ id: 'WI-8', state: 'bogus', completion: { summary: 'landed; bad vocab' } });
+      expect(r.stateError).toBeTruthy();
+      expect(r.stateWarning).toMatch(/NOT closed/); // the failed transition left it claimable
+    });
+  });
 });

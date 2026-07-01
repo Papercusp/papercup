@@ -20,6 +20,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
+import { runWithWorkspace } from './workspace-als';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
@@ -84,13 +85,13 @@ const rubricData = {
  *  instance plan, a specific status). Provides the NOT-NULL plan columns minimally. */
 async function insertRubricPlan(
   slug: string,
-  opts: { status?: string; data?: unknown; title?: string; templateSlug?: string | null; archived?: boolean } = {},
+  opts: { status?: string; data?: unknown; title?: string; templateSlug?: string | null; archived?: boolean; workspaceId?: string } = {},
 ) {
   await db.adminSql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
        created, updated, owner, archived, template, template_data, template_slug, origin)
-    VALUES ('default', 'papercusp', ${slug}, '', md5(${slug}), 1, ${opts.title ?? slug},
+    VALUES (${opts.workspaceId ?? 'default'}, 'papercusp', ${slug}, '', md5(${slug}), 1, ${opts.title ?? slug},
             ${opts.status ?? 'active'}, '2026-06-20', '2026-06-20', 'queen-1', ${opts.archived ?? false},
             'rubric', ${JSON.stringify(opts.data ?? rubricData)}::text::jsonb, ${opts.templateSlug ?? null}, 'local')`;
 }
@@ -244,5 +245,32 @@ describe('list / get / search over written rubrics', () => {
     expect((await rubrics.searchRubrics('coordination')).map((r) => r.rubricId)).toContain('active-a');
     expect((await rubrics.searchRubrics('memory')).map((r) => r.rubricId)).toContain('proposed-b');
     expect(await rubrics.searchRubrics('zzzznotarubric')).toEqual([]);
+  });
+});
+
+// WI-976 regression — the store must scope reads/writes to the ACTIVE workspace
+// (activeWorkspaceId()), NOT a hardcoded literal. The live bug (rubrics:list returned 0 so
+// the Overwatch could not emit its required scorecard) was INVISIBLE to every other case
+// in this suite: the test env's activeWorkspaceId() is 'default' — the same literal the
+// buggy rubricsScopeWorkspace() hardcoded — so the read scope + the seed workspace always
+// coincided and no mismatch could arise. In production the active workspace is
+// 'papercusp-workspace' (where all plans + coord live), so the hardcoded 'default' scope
+// missed the real rubric plan. This case pins a NON-'default' workspace to prove the scope
+// FOLLOWS activeWorkspaceId(): a regression back to a hardcoded scope makes the reads below
+// return [] / null and fails here.
+describe('workspace scope follows activeWorkspaceId (WI-976 regression)', () => {
+  it('resolves the rubric from the active workspace and isolates other workspaces', async () => {
+    await insertRubricPlan('alpha-rubric', { workspaceId: 'ws-alpha' });
+    await insertRubricPlan('beta-rubric', { workspaceId: 'ws-beta' });
+    // Read pinned to ws-alpha → only ws-alpha's rubric (never ws-beta's; never []).
+    const alpha = await runWithWorkspace('ws-alpha', () => rubrics.listRubrics({}));
+    expect(alpha.map((r) => r.rubricId)).toEqual(['alpha-rubric']);
+    const beta = await runWithWorkspace('ws-beta', () => rubrics.listRubrics({}));
+    expect(beta.map((r) => r.rubricId)).toEqual(['beta-rubric']);
+    // getRubric follows the same scope — ws-alpha cannot see ws-beta's rubric.
+    expect(await runWithWorkspace('ws-alpha', () => rubrics.getRubric('beta-rubric'))).toBeNull();
+    expect((await runWithWorkspace('ws-alpha', () => rubrics.getRubric('alpha-rubric')))?.rubricId).toBe(
+      'alpha-rubric',
+    );
   });
 });

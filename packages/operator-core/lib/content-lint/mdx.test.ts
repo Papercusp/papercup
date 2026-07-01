@@ -125,7 +125,7 @@ describe('findFrontmatterYamlError', () => {
   });
 });
 
-describe('autoFixMdxAngles (WI-276 — deterministic safe repair of `<`+digit)', () => {
+describe('autoFixMdxAngles (WI-276 — deterministic safe repair of `<`+digit and bare `<word>`)', () => {
   it('escapes a bare `<`+digit in prose (the exact 5-tick-block offender) and the result compiles', async () => {
     const text = '# Doc\n\nthe send lands in <1s in a good window.\n';
     const { fixed, changed } = autoFixMdxAngles(text);
@@ -154,13 +154,52 @@ describe('autoFixMdxAngles (WI-276 — deterministic safe repair of `<`+digit)',
     expect(autoFixMdxAngles(text).changed).toBe(false);
   });
 
-  it('does NOT touch `<word>` (could be a real JSX component — left to the LLM fixer)', () => {
+  it('is idempotent — never double-escapes an already-escaped `\\<1`', () => {
+    const once = autoFixMdxAngles('lands in <1s\n').fixed;
+    expect(autoFixMdxAngles(once)).toEqual({ fixed: once, changed: false });
+  });
+
+  // WI-276 branch (2): the bare lowercase-`<word>` placeholder offender.
+  it('escapes a bare lowercase placeholder `<slug>`/`<date>` in prose and the result compiles', async () => {
+    const text = '# Doc\n\nName the file `<slug>.md`; use the <date> placeholder and an <id> value.\n';
+    const { fixed, changed } = autoFixMdxAngles(text);
+    expect(changed).toBe(true);
+    expect(fixed).toContain('use the \\<date> placeholder and an \\<id> value');
+    expect(fixed).toContain('`<slug>.md`'); // inline-code `<slug>` stays literal
+    expect(await findMdxCompileError('x.mdx', fixed)).toBeNull(); // round-trip: now valid
+  });
+
+  it('escapes a hyphenated placeholder token `<my-flag>`', () => {
+    const { fixed, changed } = autoFixMdxAngles('pass the <my-flag> option\n');
+    expect(changed).toBe(true);
+    expect(fixed).toBe('pass the \\<my-flag> option\n');
+  });
+
+  it('does NOT touch a Capitalized component tag (`<Card>`, `<Steps>` — left to the LLM fixer)', () => {
     const text = 'a `<Card>` and a bare <Steps> stay as-is\n';
     expect(autoFixMdxAngles(text).changed).toBe(false);
   });
 
-  it('is idempotent — never double-escapes an already-escaped `\\<1`', () => {
-    const once = autoFixMdxAngles('lands in <1s\n').fixed;
+  it('does NOT touch a real lowercase HTML/SVG tag (`<br>`, `<kbd>`, `<div>`, `<path>`)', () => {
+    const text = 'press <kbd> keys, a <br> break, a <div> and an svg <path> element\n';
+    expect(autoFixMdxAngles(text).changed).toBe(false);
+  });
+
+  it('does NOT touch a PROPERLY PAIRED unknown element (`<foo>…</foo>` compiles, so leave it)', async () => {
+    const text = 'a paired <foo>value</foo> element stays\n';
+    expect(autoFixMdxAngles(text).changed).toBe(false);
+    // and it genuinely compiles (undefined lowercase element with a matching close)
+    expect(await findMdxCompileError('x.mdx', text)).toBeNull();
+  });
+
+  it('does NOT touch a tag with attributes or a self-closing tag (`<name x=…>`, `<name/>`)', () => {
+    const text = 'an <input type="text"> and a self-closing <line/> stay as-is\n';
+    expect(autoFixMdxAngles(text).changed).toBe(false);
+  });
+
+  it('is idempotent on the `<word>` branch too', () => {
+    const once = autoFixMdxAngles('the <slug> token\n').fixed;
+    expect(once).toBe('the \\<slug> token\n');
     expect(autoFixMdxAngles(once)).toEqual({ fixed: once, changed: false });
   });
 });

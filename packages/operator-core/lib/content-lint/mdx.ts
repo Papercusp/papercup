@@ -93,40 +93,116 @@ export async function findFrontmatterYamlError(text: string): Promise<MdxCompile
 }
 
 /**
- * Deterministically repair the SINGLE most common MDX offender (WI-276): a bare
- * `<` immediately followed by a DIGIT in prose — `<1s`, `<5min`, `responds in
- * <100ms` — which MDX parses as an unclosed JSX tag and which broke the whole
- * docs build (the 2026-06-20 5-tick quarantine). Escapes it to `\<` (which MDX
- * renders as a literal `<`).
+ * The HTML/SVG intrinsic tag names a docs author legitimately writes as elements
+ * (`<br>`, `<kbd>`, `<div>`, `<details>`, `<svg>`/`<path>`, …). `autoFixMdxAngles`
+ * NEVER escapes these bare `<name>` tokens — they are real markup, not the
+ * placeholder-token offender — so an ambiguous name is always left to the LLM
+ * content-fixer (conservative-by-default). Comprehensive on purpose: a name IN
+ * this set is skipped even if it looks like a placeholder (`<path>`, `<summary>`,
+ * `<time>`), because escaping a real tag would be the worse outcome.
+ */
+const KNOWN_HTML_TAGS = new Set<string>([
+  // HTML5 flow/inline/section elements
+  'a', 'abbr', 'address', 'area', 'article', 'aside', 'audio', 'b', 'base', 'bdi',
+  'bdo', 'blockquote', 'body', 'br', 'button', 'canvas', 'caption', 'cite', 'code',
+  'col', 'colgroup', 'data', 'datalist', 'dd', 'del', 'details', 'dfn', 'dialog',
+  'div', 'dl', 'dt', 'em', 'embed', 'fieldset', 'figcaption', 'figure', 'footer',
+  'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'header', 'hgroup', 'hr',
+  'html', 'i', 'iframe', 'img', 'input', 'ins', 'kbd', 'label', 'legend', 'li',
+  'link', 'main', 'map', 'mark', 'menu', 'meta', 'meter', 'nav', 'noscript',
+  'object', 'ol', 'optgroup', 'option', 'output', 'p', 'param', 'picture', 'pre',
+  'progress', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'script', 'search', 'section',
+  'select', 'slot', 'small', 'source', 'span', 'strong', 'style', 'sub', 'summary',
+  'sup', 'table', 'tbody', 'td', 'template', 'textarea', 'tfoot', 'th', 'thead',
+  'time', 'title', 'tr', 'track', 'u', 'ul', 'var', 'video', 'wbr',
+  // SVG (Starlight docs occasionally inline icons)
+  'svg', 'path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'g', 'defs',
+  'use', 'symbol', 'marker', 'text', 'tspan', 'ellipse',
+]);
+
+/**
+ * Deterministically repair the two most common MDX offenders (WI-276) — a bare
+ * angle-bracket token in prose that MDX parses as an unclosed JSX tag and that
+ * hard-fails `astro build`, blocking the WHOLE apps/operator-docs build (every
+ * agent's doc regen; the 2026-06-20 5-tick quarantine). Escapes the leading `<`
+ * to `\<` (which MDX renders as a literal `<`, so `<date>` reads as `<date>`):
  *
- * SAFE BY CONSTRUCTION — scoped to `<`+digit ONLY: a JSX tag name can never start
- * with a digit, so this can't mangle a real component (`<Card>`), and it skips
- * frontmatter, fenced code blocks, and inline-code spans (where `<1` is literal
- * and must stay). The riskier `<word>` case (could be a component) is left to the
- * LLM content-fixer. Idempotent (won't double-escape `\<`).
+ *   1. `<`+DIGIT   — `<1s`, `<5min`, `responds in <100ms`. A JSX tag name can
+ *      never start with a digit, so this branch is unconditionally safe.
+ *   2. `<word>`    — a bare lowercase placeholder token: `<date>`, `<id>`,
+ *      `<slug>`, `<n>`, `<my-flag>`. Escaped ONLY when the name (a) starts
+ *      lowercase (real components are Capitalized → skipped: `<Card>`), (b) is
+ *      NOT a real HTML/SVG tag (KNOWN_HTML_TAGS → skipped: `<div>`, `<br>`), and
+ *      (c) has NO matching `</name>` close tag anywhere in the prose (a properly
+ *      PAIRED `<foo>…</foo>` compiles even for an undefined name → skipped). A
+ *      token with attributes (`<name x=…>`) or a slash (`<name/>`) never matches
+ *      the bare-token regex, so those real-markup shapes are left alone too.
  *
- * Shared so `check-mdx.mjs --fix` (agent-facing) and the git-sync content-fixer
+ * SAFE BY CONSTRUCTION: skips frontmatter, fenced code blocks, and inline-code
+ * spans (where `<1`/`<date>` are literal and must stay); idempotent (the `(?<!\\)`
+ * lookbehind never double-escapes `\<`). Anything ambiguous (a Capitalized
+ * component, a known tag, a paired element) is deliberately left to the LLM
+ * content-fixer. And note the ONE call-site invariant that makes even branch (2)
+ * safe: both callers apply this ONLY to a file that ALREADY fails to compile — a
+ * valid, compiling doc is never touched — so the worst case for a mis-targeted
+ * `<word>` is a literal render in an already-broken file, strictly better than a
+ * fleet-wide build block.
+ *
+ * Shared so `check-mdx.mjs --fix` (agent-facing) and the git-sync content guard
  * (the deterministic pre-pass before the LLM role) apply the IDENTICAL repair.
  */
 export function autoFixMdxAngles(text: string): { fixed: string; changed: boolean } {
   const lines = text.split('\n');
-  // Skip a leading YAML frontmatter block — `<1s` there is a YAML string, not MDX.
+  // Skip a leading YAML frontmatter block — `<1s`/`<date>` there is a YAML string, not MDX.
   let fmEnd = -1;
   if (lines[0]?.trim() === '---') {
     for (let i = 1; i < lines.length; i++) {
       if (lines[i].trim() === '---') { fmEnd = i; break; }
     }
   }
+  const isFence = (line: string): boolean => /^\s*(```|~~~)/.test(line);
+  const proseSegments = (line: string): string[] => line.split(/(`[^`]*`)/g); // odd idx = inline code
+
+  // PASS 1: collect close-tag names present in prose (outside frontmatter/fences/inline-code)
+  // so a properly PAIRED element (`<foo>…</foo>`, which compiles even for an undefined name)
+  // is never escaped — only genuinely UNCLOSED placeholder tokens are.
+  const closedNames = new Set<string>();
+  {
+    let inFence = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (i <= fmEnd) continue;
+      const line = lines[i];
+      if (isFence(line)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      const parts = proseSegments(line);
+      for (let idx = 0; idx < parts.length; idx++) {
+        if (idx % 2 === 1) continue; // inline code
+        for (const m of parts[idx].matchAll(/<\/([a-zA-Z][\w-]*)>/g)) closedNames.add(m[1]);
+      }
+    }
+  }
+
+  // PASS 2: escape the offenders line-by-line, only outside inline-code spans.
   let inFence = false;
   let changed = false;
   for (let i = 0; i < lines.length; i++) {
     if (i <= fmEnd) continue;
     const line = lines[i];
-    if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; } // fence open/close — leave code literal
+    if (isFence(line)) { inFence = !inFence; continue; } // fence open/close — leave code literal
     if (inFence) continue;
-    // Prose line: escape `<`+digit only OUTSIDE inline-code spans (odd segments).
-    const parts = line.split(/(`[^`]*`)/g);
-    const next = parts.map((p, idx) => (idx % 2 === 1 ? p : p.replace(/(?<!\\)<(?=\d)/g, '\\<'))).join('');
+    const parts = proseSegments(line);
+    const next = parts
+      .map((p, idx) => {
+        if (idx % 2 === 1) return p; // inline code — literal, untouched
+        // (1) `<`+digit — a JSX tag name can never start with a digit.
+        let out = p.replace(/(?<!\\)<(?=\d)/g, '\\<');
+        // (2) bare lowercase placeholder `<name>` that is not a real tag and is unclosed.
+        out = out.replace(/(?<!\\)<([a-z][a-z0-9_-]*)>/g, (full, name: string) =>
+          KNOWN_HTML_TAGS.has(name) || closedNames.has(name) ? full : `\\<${name}>`,
+        );
+        return out;
+      })
+      .join('');
     if (next !== line) { lines[i] = next; changed = true; }
   }
   return { fixed: changed ? lines.join('\n') : text, changed };
