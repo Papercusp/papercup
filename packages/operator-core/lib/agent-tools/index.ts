@@ -68,6 +68,7 @@ import './tools/scaffold';
 import './tools/define';
 // tools:find — intent search over the full catalog (tool-discovery-for-weak-models WS3).
 import './tools/find';
+import './tools/invoke';
 
 import './operator/stats';
 import './operator/converse';
