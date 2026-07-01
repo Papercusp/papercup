@@ -220,15 +220,43 @@ export async function joinCanonicalPapercuspHive(
       return { state: 'skipped', slug: null, reason: 'canonical hive not announcing yet (owner offline)' };
     }
 
-    // 4. Resolve the announced member-links (the per-member join targets).
-    let memberLinks = confirm.hive?.memberLinks ?? [];
-    let hiveId = confirm.hive?.hiveId ?? PAPERCUSP_HIVE_SLUG;
+    // 4. PIN to the committed pubkey (P-003 trust anchor). The invite topic is a
+    //    DISCOVERY channel — ANYONE with the (committed) invite secret can announce
+    //    on it, including a DIFFERENT / divergent / stale hive that happens to share
+    //    the `papercusp` hiveId. So the baked canonical pubkey is the authority: only
+    //    an announce whose `hivePubkey` matches it may be joined. Matching by hiveId
+    //    (the previous `find(h => h.hiveId === hiveId)` fallback) is exactly the
+    //    hijack vector — the owner's own divergent ef77075a key was announced under
+    //    the same `papercusp` hiveId and a fresh install joined that EMPTY hive
+    //    instead of canonical 76dee8ea (the slug-rename key-divergence bug,
+    //    2026-07-01). Never match on hiveId; never trust the announced pubkey over
+    //    the baked one.
+    let memberLinks: string[] = [];
+    let hiveId = PAPERCUSP_HIVE_SLUG;
+    if (confirm.hive?.hivePubkey === invite.pubkeyBase64) {
+      memberLinks = confirm.hive.memberLinks ?? [];
+      hiveId = confirm.hive.hiveId ?? PAPERCUSP_HIVE_SLUG;
+    }
     if (memberLinks.length === 0) {
       const hives = await listDiscovered().catch(() => []);
-      const match = hives.find((h) => h.hivePubkey === invite.pubkeyBase64) ?? hives.find((h) => h.hiveId === hiveId);
+      const match = hives.find((h) => h.hivePubkey === invite.pubkeyBase64);
       if (match) {
         hiveId = match.hiveId;
         memberLinks = match.memberLinks ?? [];
+      } else if (confirm.hive && confirm.hive.hivePubkey !== invite.pubkeyBase64) {
+        // A NON-canonical hive is announcing on our invite topic (pubkey mismatch).
+        // Do NOT join it — wait for the canonical owner's announce (retry next boot).
+        record('clone', 'running', {
+          percent: 10,
+          detail: 'waiting for the Papercusp hive to come online',
+        });
+        return {
+          state: 'skipped',
+          slug: null,
+          reason: `ignoring non-canonical invite-topic announce (pubkey ${String(
+            confirm.hive.hivePubkey ?? '?',
+          ).slice(0, 12)}… != committed ${invite.pubkeyBase64.slice(0, 12)}…)`,
+        };
       }
     }
     if (memberLinks.length === 0) {
@@ -241,10 +269,11 @@ export async function joinCanonicalPapercuspHive(
     const res = await joinHive({
       hiveId,
       title: 'Papercusp',
-      // The canonical hive's identity == the baked pubkey (P-003 invariant); prefer the
-      // announced pubkey when present. This keys the joiner's hives-row identity so the
-      // P-005 fire-once latch (getHiveByPubkey on the baked pubkey) finds it next boot.
-      hivePubkey: confirm.hive?.hivePubkey ?? invite.pubkeyBase64,
+      // P-003 invariant: the joiner's hives-row identity is ALWAYS the committed
+      // canonical pubkey (never a possibly-divergent announced one) — this is what
+      // memberLinks above were pinned to, and it keys the P-005 fire-once latch
+      // (getHiveByPubkey on the baked pubkey) so the next boot finds the join.
+      hivePubkey: invite.pubkeyBase64,
       memberLinks,
       workspaceId: PAPERCUSP_WORKSPACE_ID,
     });

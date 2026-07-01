@@ -23,7 +23,7 @@ vi.mock('@papercusp/sse', () => ({
   },
 }));
 
-import AgentThinkingPopover, { waitingMessage, STALL_AFTER_MS } from './AgentThinkingPopover';
+import AgentThinkingPopover, { waitingMessage, STALL_AFTER_MS, fmtEntryTime } from './AgentThinkingPopover';
 
 function anchor(): DOMRect {
   // A rect well below the viewport top so the popover places "above".
@@ -141,6 +141,19 @@ describe('AgentThinkingPopover (live agent thinking stream)', () => {
     expect(screen.getByText(/2\.0s/)).toBeTruthy();
   });
 
+  it('renders a per-entry header timestamp when the entry carries one', () => {
+    renderPopover();
+    const ts = '2026-07-01T02:14:43.029Z';
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([
+        { kind: 'tool_use', toolName: 'Bash', toolInput: { command: 'ls' }, ts },
+      ]));
+    });
+    const expected = fmtEntryTime(ts)!;
+    expect(expected).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect(screen.getByText(expected)).toBeTruthy();
+  });
+
   it('flips status to done when the done handler fires', () => {
     renderPopover();
     act(() => { captured!.handlers.done!(''); });
@@ -175,6 +188,19 @@ describe('AgentThinkingPopover (live agent thinking stream)', () => {
     const { unmount } = renderPopover();
     unmount();
     expect(closeSpy).toHaveBeenCalled();
+  });
+});
+
+describe('fmtEntryTime (per-entry header time)', () => {
+  it('formats an ISO timestamp as local HH:MM:SS', () => {
+    const ts = '2026-07-01T02:14:43.029Z';
+    const d = new Date(ts);
+    const p = (n: number) => String(n).padStart(2, '0');
+    expect(fmtEntryTime(ts)).toBe(`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`);
+  });
+  it('returns null for a missing or unparseable timestamp', () => {
+    expect(fmtEntryTime(undefined)).toBeNull();
+    expect(fmtEntryTime('not a date')).toBeNull();
   });
 });
 

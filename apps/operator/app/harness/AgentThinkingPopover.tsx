@@ -32,6 +32,8 @@ export interface TimelineEntry {
   inputTokens?: number;
   outputTokens?: number;
   durationMs?: number;
+  /** ISO timestamp of the source record — rendered as the per-entry header time. */
+  ts?: string;
 }
 
 interface Props {
@@ -302,23 +304,53 @@ export default function AgentThinkingPopover({
   );
 }
 
+/** Format an entry's ISO timestamp as a compact local `HH:MM:SS`, or null when
+ *  absent/unparseable. Pure — exported for tests. */
+export function fmtEntryTime(ts?: string): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** A small, right-aligned muted timestamp for an entry header. Renders nothing
+ *  when the entry carries no (valid) timestamp — so timestamp-less live deltas
+ *  don't get an empty chip. */
+function EntryTime({ ts }: { ts?: string }) {
+  const t = fmtEntryTime(ts);
+  if (!t) return null;
+  return (
+    <time
+      dateTime={ts}
+      style={{ float: 'right', marginLeft: 8, fontSize: 9.5, fontWeight: 400, color: 'var(--fg-mute)', fontVariantNumeric: 'tabular-nums', opacity: 0.8 }}
+    >
+      {t}
+    </time>
+  );
+}
+
 export function Entry({ entry }: { entry: TimelineEntry }) {
   if (entry.kind === 'text') {
     return (
-      <pre style={{
-        margin: '0 0 8px',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        fontFamily: 'inherit',
-      }}>
-        {entry.text}
-      </pre>
+      <div style={{ margin: '0 0 8px' }}>
+        <EntryTime ts={entry.ts} />
+        <pre style={{
+          margin: 0,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          fontFamily: 'inherit',
+        }}>
+          {entry.text}
+        </pre>
+      </div>
     );
   }
   if (entry.kind === 'tool_use') {
     return (
       <div style={{ margin: '0 0 8px', padding: '4px 6px', background: 'color-mix(in srgb, var(--accent), transparent 92%)', border: '1px solid color-mix(in srgb, var(--accent), transparent 82%)', borderRadius: 3 }}>
         <div style={{ color: 'var(--accent-strong, #7dd3fc)', fontSize: 10.5, marginBottom: 2 }}>
+          <EntryTime ts={entry.ts} />
           ▸ tool_use: <strong>{entry.toolName}</strong>
         </div>
         <pre style={{ margin: 0, fontSize: 10.5, color: 'var(--fg-mute)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
@@ -331,6 +363,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
     return (
       <div style={{ margin: '0 0 8px', padding: '4px 6px', background: 'rgba(106, 168, 79, 0.06)', border: '1px solid rgba(106, 168, 79, 0.16)', borderRadius: 3 }}>
         <div style={{ color: '#6aa84f', fontSize: 10.5, marginBottom: 2 }}>
+          <EntryTime ts={entry.ts} />
           ◂ tool_result
         </div>
         <pre style={{ margin: 0, fontSize: 10.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 120, overflow: 'auto' }}>
@@ -342,6 +375,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
   if (entry.kind === 'status') {
     return (
       <div style={{ margin: '0 0 8px', fontSize: 10.5, color: 'var(--fg-mute)', fontStyle: 'italic' }}>
+        <EntryTime ts={entry.ts} />
         ⌘ {entry.text}
       </div>
     );
@@ -352,11 +386,13 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
       ? `${entry.inputTokens ?? 0}/${entry.outputTokens ?? 0} tok`
       : '';
     const dur = entry.durationMs ? `${(entry.durationMs / 1000).toFixed(1)}s` : '';
-    const meta = [cost, tokens, dur].filter(Boolean).join(' · ');
+    const time = fmtEntryTime(entry.ts);
+    // The time + cost/tokens/duration share the right side of the header.
+    const right = [time, cost, tokens, dur].filter(Boolean).join(' · ');
     return (
       <div style={{ margin: '0 0 4px', padding: '4px 6px', background: 'var(--bg-2)', borderTop: '1px solid var(--border)' }}>
         <div style={{ color: '#9a9a9a', fontSize: 10.5, marginBottom: 2 }}>
-          ✓ result {meta && <span style={{ float: 'right' }}>{meta}</span>}
+          ✓ result {right && <span style={{ float: 'right' }}>{right}</span>}
         </div>
         {entry.text && (
           <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit' }}>

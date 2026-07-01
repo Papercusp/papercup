@@ -28,4 +28,31 @@ describe('harness agent thinking stream parsing', () => {
 
     expect(parsed.entries).toEqual([{ kind: 'text', text: 'partial text' }]);
   });
+
+  it('stamps each entry with its source-record timestamp (transcript records)', () => {
+    const T1 = '2026-07-01T02:14:43.029Z';
+    const T2 = '2026-07-01T02:14:50.100Z';
+    const parsed = parseAgentTimelineChunks([
+      `{"type":"assistant","timestamp":"${T1}","message":{"content":[{"type":"text","text":"Working on it."},{"type":"tool_use","name":"Bash","input":{"command":"ls"},"id":"tu1"}]}}\n`,
+      `{"type":"user","timestamp":"${T2}","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"ok"}]}}\n`,
+    ]);
+    expect(parsed.entries).toEqual([
+      { kind: 'text', text: 'Working on it.', ts: T1 },
+      { kind: 'tool_use', toolName: 'Bash', toolInput: { command: 'ls' }, toolId: 'tu1', ts: T1 },
+      { kind: 'tool_result', toolId: 'tu1', text: 'ok', ts: T2 },
+    ]);
+  });
+
+  it('stamps accumulated text with the START-of-span timestamp, not the flush time', () => {
+    const T = '2026-07-01T03:00:00.000Z';
+    const parsed = parseAgentTimelineChunks([
+      `{"type":"stream_event","timestamp":"${T}","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}\n`,
+      '{"type":"stream_event","timestamp":"2026-07-01T03:00:05.000Z","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"world"}}}\n',
+      '{"type":"assistant","timestamp":"2026-07-01T03:00:06.000Z","message":{"content":[{"type":"text","text":"done"}]}}\n',
+    ]);
+    expect(parsed.entries).toEqual([
+      { kind: 'text', text: 'hello world', ts: T }, // first delta's time, not the flush
+      { kind: 'text', text: 'done', ts: '2026-07-01T03:00:06.000Z' },
+    ]);
+  });
 });
