@@ -42,7 +42,7 @@ function payloadOf(result: HandlerResult): Record<string, unknown> {
 /** Every tool that requires a single CONCRETE harness (operator `'*'` is rejected). */
 const CONCRETE_HARNESS_TOOLS: Array<{
   name: string;
-  importTool: () => Promise<{ default: { handler: (a: never, c: never) => Promise<HandlerResult> } }>;
+  importTool: () => Promise<{ default: { handler: (a: never, c: never) => Promise<unknown> } }>;
   args: Record<string, unknown>;
 }> = [
   { name: 'harness:phase_path', importTool: () => import('../harness/phase_path'), args: { phase: 'staging' } },
