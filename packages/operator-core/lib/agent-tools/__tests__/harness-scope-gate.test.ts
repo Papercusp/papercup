@@ -62,14 +62,14 @@ describe('harness-scope gate — operator "*" / no scope fails loud, never silen
   for (const tool of CONCRETE_HARNESS_TOOLS) {
     it(`${tool.name} returns harness_required for the operator '*' auto-default`, async () => {
       const { default: def } = await tool.importTool();
-      const result = await def.handler(tool.args as never, MAKE_CTX({ harnessSlug: '*' }));
+      const result = (await def.handler(tool.args as never, MAKE_CTX({ harnessSlug: '*' }))) as HandlerResult;
       expect(result.isError).toBe(true);
       expect(payloadOf(result).error).toBe('harness_required');
     });
 
     it(`${tool.name} returns harness_required when neither arg nor ctx carries a slug`, async () => {
       const { default: def } = await tool.importTool();
-      const result = await def.handler(tool.args as never, MAKE_CTX({ harnessSlug: undefined }));
+      const result = (await def.handler(tool.args as never, MAKE_CTX({ harnessSlug: undefined }))) as HandlerResult;
       expect(result.isError).toBe(true);
       expect(payloadOf(result).error).toBe('harness_required');
     });
@@ -78,10 +78,10 @@ describe('harness-scope gate — operator "*" / no scope fails loud, never silen
       const { default: def } = await tool.importTool();
       // The arg name differs per tool (harnessSlug | harness | slug); set all the
       // ones any of these tools read so 'all' is the effective scope everywhere.
-      const result = await def.handler(
+      const result = (await def.handler(
         { ...tool.args, harnessSlug: 'all', harness: 'all', slug: 'all' } as never,
         MAKE_CTX({ harnessSlug: '*' }),
-      );
+      )) as HandlerResult;
       expect(result.isError).toBe(true);
       expect(payloadOf(result).error).toBe('harness_required');
     });

@@ -1,20 +1,18 @@
 // @vitest-environment jsdom
 //
-// AdvNowRunning render coverage — the AdvShell header harness status bar +
-// THE hive Start/Pause control (start-hive-wake-orchestration P-005/P-006).
-// Mounts the bar against mocked sync queries (hive.controlState +
-// agentRunsConsolidated.recent + plans.list — all push-driven after
-// data-sync-push-completion P-004/P-005) and a stubbed run-tool dispatch
-// (useSyncQuery + nuqs mocked, the pinned sibling pattern). Asserts:
+// AdvNowRunning render coverage — the AdvShell header harness status bar,
+// now purely THE hive Start/Pause control + the "N plans waiting" nudge. The
+// per-agent run pills + "Active — N running" label were removed once the
+// unified header roster (AgentsRunningPill) shipped. Mounts the bar against
+// mocked sync queries (hive.controlState + plans.list) and a stubbed run-tool
+// dispatch. Asserts:
 //   - the null-slug blank state and the is-checking loading state,
-//   - stopped → Start hive, started → Active — idle + Stop hive,
-//   - live agent runs become pills (role · featureId · m:ss),
+//   - stopped → Start hive, started → Stop hive (no per-agent label),
 //   - Start fires hive:start through the loopback palette bridge and flips to
-//     the optimistic "waiting for agent…" state (errors → toast.error),
+//     the optimistic active state (errors → toast.error),
 //   - Stop confirms, then fires hive:pause { drainBees: true },
 //   - the "N plans waiting" nudge (push-driven plans.list) + its click-through
-//     to the Plans tab's Running bucket (the countWaitingPlans/waitingLabel
-//     pure layer is pinned in __tests__/adv-now-running-logic.test.ts).
+//     to the Plans tab's Running bucket.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -65,11 +63,6 @@ vi.mock('@papercusp/sync', () => ({
         return { data: undefined };
     }
   },
-}));
-
-// The hover popover is its own surface — stub it out.
-vi.mock('@/app/harness/AgentThinkingPopover', () => ({
-  default: ({ runId }: { runId: string }) => <div data-testid="thinking-popover" data-run={runId} />,
 }));
 
 import { toast } from 'sonner';
@@ -139,31 +132,12 @@ describe('AdvNowRunning', () => {
     expect(screen.queryByText(/Active —/)).toBeNull();
   });
 
-  it('started hive with no runs → "Active — idle" + Stop button', async () => {
+  it('started hive → Stop button, no per-agent status label (moved to the unified roster)', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
-    expect(await screen.findByText('Active — idle')).toBeTruthy();
-    expect(screen.getByText('Stop hive')).toBeTruthy();
+    expect(await screen.findByText('Stop hive')).toBeTruthy();
     expect(screen.queryByText('Start hive')).toBeNull();
-  });
-
-  it('renders one pill per RUNNING agent with the resolved featureId + duration', async () => {
-    hiveRows = [{ slug: 'hive-1', started: true }];
-    const nowSec = Math.floor(Date.now() / 1000);
-    // agentRunsConsolidated.recent rows: featureId is a resolved column; ts is epoch-ms.
-    runRows = [
-      { runId: 'r1-worker-F-042', role: 'worker', featureId: 'F-042', ts: (nowSec - 65) * 1000, running: true },
-      { runId: 'r2-queen', role: 'queen', featureId: null, ts: (nowSec - 5) * 1000, running: true },
-      { runId: 'r3-oracle-F-001', role: 'oracle', featureId: 'F-001', ts: (nowSec - 9) * 1000, running: false },
-    ];
-    render(<AdvNowRunning slug="pot-a" />);
-    expect(await screen.findByText('Active — 2 agents running')).toBeTruthy();
-    // worker run · featureId F-042 · ~65s; oldest first
-    expect(screen.getByText(/worker · F-042 · 1:0[4-7]/)).toBeTruthy();
-    // queen run · no featureId remainder
-    expect(screen.getByText(/^queen · 0:0[4-7]$/)).toBeTruthy();
-    // non-running runs are filtered out
-    expect(screen.queryByText(/oracle/)).toBeNull();
+    expect(screen.queryByText(/Active —/)).toBeNull(); // the "Active — N running" label is gone
   });
 
   it('Start fires hive:start via the palette bridge and flips to waiting-for-agent', async () => {
@@ -175,7 +149,8 @@ describe('AdvNowRunning', () => {
       ]),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Hive started', expect.anything()));
-    expect(await screen.findByText('Active — waiting for agent…')).toBeTruthy();
+    // Optimistic active → the Stop control replaces Start (no per-agent label anymore).
+    expect(await screen.findByText('Stop hive')).toBeTruthy();
     expect(screen.queryByText('Start hive')).toBeNull();
   });
 
@@ -227,7 +202,7 @@ describe('AdvNowRunning', () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     planRows = [{ startStatus: 'started' }, { startStatus: 'started' }];
     render(<AdvNowRunning slug="pot-a" />);
-    await screen.findByText('Active — idle');
+    await screen.findByText('Stop hive');
     // started hive → stopped=false → plans.list disabled (no fetch) → no nudge
     expect(syncEnabled['plans.list']).toBe(false);
     expect(screen.queryByText(/plans? waiting/)).toBeNull();
