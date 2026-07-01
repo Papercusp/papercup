@@ -550,6 +550,45 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(mocks.resolveEscalation).not.toHaveBeenCalled();
   });
 
+  it('EI-6109: a stale WORKING placement (no escalation, no live bee) whose unit went terminal converges to completed', async () => {
+    // The exact reported drift: hive_placements kept a WORKING lane whose work-item had
+    // long since completed, because the per-candidate sweep never revisits a row once its
+    // serving bee dies / ages out (nothing re-anchors it) AND the EI-1524 escalation-only
+    // GC skipped it (escalation_msg_id IS NULL). NO bee + NO escalation here — only the
+    // EI-6109 completion-reconcile GC can converge it.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-DRIFT-WORKING', ${HIVE}, ${QUEEN},
+              'working', 0, NULL, now(), now(), now())`;
+    await seedUnit({ id: 'F-DRIFT-WORKING', status: 'passed' }); // terminal, dead-holder gone
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    // Durable row leaves the OPEN set (hive:status / summarizeOpenPlacements stop counting it).
+    expect((await readPlacement('F-DRIFT-WORKING'))?.status).toBe('completed');
+    expect(out.find((r) => r.workItemId === 'F-DRIFT-WORKING')?.decision).toBe('completed');
+    // A working row carries no advisory, so nothing is resolved (only the status converges).
+    expect(mocks.resolveEscalation).not.toHaveBeenCalled();
+  });
+
+  it('EI-6109: a stale RECOVERING placement (no escalation, no live bee) whose unit was retired converges to abandoned', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-DRIFT-GONE', ${HIVE}, ${QUEEN},
+              'recovering', 1, NULL, now(), now(), now())`;
+    // No unit row seeded — the work-item was hard-retired while the lane still read recovering.
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-DRIFT-GONE'))?.status).toBe('abandoned');
+    expect(out.find((r) => r.workItemId === 'F-DRIFT-GONE')?.decision).toBe('abandon');
+    expect(mocks.resolveEscalation).not.toHaveBeenCalled();
+  });
+
   it('P-022: a stuck failing blocker gating a non-terminal downstream → stranded + one escalation', async () => {
     await seedUnit({ id: 'F-300', status: 'failing' }); // the stuck blocker
     await seedUnit({ id: 'F-301', status: 'todo' }); // the gated downstream
