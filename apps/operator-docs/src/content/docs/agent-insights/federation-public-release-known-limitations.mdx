@@ -238,6 +238,30 @@ True 3-machine member↔member fanout (owner + 2 members, Brief 2) is therefore
 matrix. Document multi-member fanout as **gated on a >2-server quota**, not as
 live-proven.
 
+### 9. Owner→joiner federation can stay broken in the pure NO-RESTART join path (suspected live blocker, under confirmation)
+A live run (Brief 6 attempt-1, su-e7698: 2-frame, shared forceReFold `.deb`, real
+DHT) surfaced **owner(a)→joiner(b) content federation FAILING** in the plain
+join→write path with **no restart**: b's `hive_members` roster stayed EMPTY for
+270s+, so `decideMemberContentOp` dropped every owner op (b→a was fine). Code
+root-cause (su-0f0a4): `forceReFold` (`boot.ts`) fires **exactly once**, on the
+`rekey()`→hive-home rebind, then resets. If the owner's `hive_members` op arrives
+at the joiner **after** that single re-fold (during drain), it is never
+re-applied — it stays dropped-in-the-home-window until a **restart or a later
+rekey**. This is consistent with Brief 5 (restart) PASSING (the restart re-folds)
+and means the earlier "proven live" runs (run33/34/35) may have included a
+restart/rekey rather than exercising the pure no-restart path.
+
+**Status:** NOT yet fully confirmed — su-e7698 is re-running with a
+roster-populated GATE to rule out a Phase-2 test artifact; the code analysis says
+it is a real `forceReFold` coverage gap. Two candidates: (1) a timing race where
+the post-rekey op is dropped at `projections/hive-members.ts` `writeToPg` on a
+`hive_home_slug` mismatch, vs (2) the rebind never firing in the pure no-restart
+join so `forceReFold` stays `false`. **If confirmed this BLOCKS the minimum bar** —
+owner→joiner is the core guarantee, and it gates live briefs 2/3/6/7. Fix tracked
+as **WI-1378** (owner su-2c799 — the no-restart admit-path re-fold); a
+deterministic in-process no-restart repro is the fastest confirmation (avoids
+another paid live run).
+
 ---
 
 ## Public-release checklist
