@@ -42,11 +42,13 @@ describe('code:tools registration + wiring (B-CX-API)', () => {
 
     const dts = generateToolFacadeTypes(tools, { allowed: new Set(['work_items:list']) });
     expect(dts).toContain('declare const tools: {');
-    expect(dts).toContain('work_items: {');
+    // tooldef b7e2b32: facade namespaces render camelCased (`camelNamespace`) — the script
+    // surface is `tools.workItems.list(...)`; the raw snake name survives only in toolNames.
+    expect(dts).toContain('workItems: {');
     expect(dts).toContain('list(args?: { status?: "open" | "closed" }): Promise<unknown>;');
     expect(dts).toContain('call(toolName: string, args?: unknown): Promise<unknown>;');
 
     const idx = listFacadeNamespaces(tools, new Set(['work_items:list']));
-    expect(idx).toEqual([{ ns: 'work_items', verbs: ['list'], toolNames: ['work_items:list'] }]);
+    expect(idx).toEqual([{ ns: 'workItems', verbs: ['list'], toolNames: ['work_items:list'] }]);
   });
 });

@@ -215,6 +215,20 @@ describe('<AgentsRunningPill>', () => {
     expect(screen.queryByTestId('agent-inspect-btn')).toBeNull();
   });
 
+  it('an agent WITHOUT a thinking source shows an explicit unavailable note (not a silently-inert row)', () => {
+    // A codex queen has no session_id on its adv row and no spawned run — the
+    // pane can't stream it. The detail strip must SAY so, so "clicking does
+    // nothing" reads as a known limitation, not a broken pane.
+    H.active = [agent({ ownerId: 'qx1', role: 'queen', agent: 'codex', runId: null, harnessSlug: null, sessionId: null })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-qx1'));
+    const note = screen.getByTestId('agent-no-thinking-note');
+    expect(note.textContent).toContain('Live thinking unavailable');
+    expect(note.textContent).toContain('codex');
+    expect(screen.queryByTestId('agent-inspect-btn')).toBeNull();
+  });
+
   it('clicking Live thinking opens the inspector for that run', () => {
     H.active = [agent({ ownerId: 'bee1', role: 'bee', runId: 'launch-xyz', harnessSlug: 'papercusp' })];
     nuqs.open = true;
