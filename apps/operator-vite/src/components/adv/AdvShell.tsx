@@ -884,42 +884,6 @@ export default function AdvShell({
           background: rgba(245, 158, 11, 0.24);
           color: #fde68a;
         }
-        .pc-advshell__pills {
-          display: flex;
-          gap: 4px;
-          min-width: 0;
-          overflow: hidden;
-        }
-        .pc-advshell__pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 8px;
-          font-size: 11px;
-          color: rgba(220, 214, 248, 0.86);
-          background: rgba(20, 18, 38, 0.7);
-          border: 1px solid rgba(167, 139, 250, 0.28);
-          border-radius: 999px;
-          cursor: default;
-          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          max-width: 200px;
-        }
-        .pc-advshell__pill:hover {
-          background: rgba(31, 23, 56, 0.96);
-          border-color: rgba(167, 139, 250, 0.5);
-        }
-        .pc-advshell__pill-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: #86efac;
-          box-shadow: 0 0 8px rgba(134, 239, 172, 0.6);
-          flex-shrink: 0;
-          animation: pc-advshell-pulse 1.6s ease-in-out infinite;
-        }
         @keyframes pc-advshell-pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.4; }
@@ -942,34 +906,6 @@ export default function AdvShell({
           margin-left: 2px;
           border-left: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         }
-        .pc-advshell__harness-status {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          flex-shrink: 0;
-        }
-        .pc-advshell__harness-dot {
-          width: 7px;
-          height: 7px;
-          border-radius: 50%;
-          flex-shrink: 0;
-          background: #475569;
-        }
-        .pc-advshell__harness-bar--is-active .pc-advshell__harness-dot {
-          background: #4ade80;
-          box-shadow: 0 0 7px rgba(74, 222, 128, 0.5);
-          animation: pc-advshell-pulse 2s ease-in-out infinite;
-        }
-        .pc-advshell__harness-label {
-          font-size: 11px;
-          font-weight: 650;
-          color: var(--fg-mute, #7f9bb4);
-          white-space: nowrap;
-        }
-        .pc-advshell__harness-bar--is-active .pc-advshell__harness-label {
-          color: #86efac;
-        }
-
         .pc-advshell__tabs { position: relative; min-width: 0; display: flex; align-items: flex-end; padding: 0 12px; }
         .pc-advshell__tab-label { display: inline; }
         .pc-advshell__tablist {

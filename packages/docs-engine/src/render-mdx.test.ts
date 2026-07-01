@@ -67,6 +67,34 @@ describe('renderMdxToMarkdown — unwrapping', () => {
   });
 });
 
+describe('renderMdxToMarkdown — EI-5860 resilience (a malformed doc must not throw / blind the corpus)', () => {
+  it('does not throw on a raw <lowercase> placeholder (unclosed JSX tag); keeps prose searchable', async () => {
+    // The real EI-5860 repro: a `<owner>` placeholder in prose parses as an
+    // unclosed JSX tag → "Expected a closing tag for `<owner>`". Must degrade, not throw.
+    const mdx = 'Resume via ~/.papercusp/session-claude/<owner>/projects keyed by the owner id.\n';
+    const out = await render(mdx);
+    expect(out).toContain('session-claude');
+    expect(out).toContain('projects');
+  });
+
+  it('does not throw on an unparseable {expression} (acorn); keeps prose searchable', async () => {
+    // `{not valid js}` → "Could not parse expression with acorn". Must degrade, not throw.
+    const out = await render('Set the value {not valid js here} and continue inline.\n');
+    expect(out).toContain('continue inline');
+  });
+
+  it('fallback strips a leading frontmatter block + ESM import/export lines, keeping prose', async () => {
+    const mdx =
+      ['---', 'title: Broken doc', '---', "import Foo from './foo';", '', 'The <owner> placeholder fails to parse but the prose survives.'].join(
+        '\n',
+      ) + '\n';
+    const out = await render(mdx);
+    expect(out).not.toContain('title: Broken doc'); // frontmatter stripped
+    expect(out).not.toMatch(/^import /m); // import wiring stripped
+    expect(out).toContain('prose survives'); // prose kept → keyword-searchable
+  });
+});
+
 describe('withPreamble', () => {
   it('prepends the title / URL / description block', () => {
     expect(withPreamble('BODY', { title: 'T', url: 'https://x/y', description: 'D' })).toBe(
