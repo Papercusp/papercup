@@ -22,10 +22,15 @@ vi.mock('../../adv-roster', async (importActual) => ({
   ...(await importActual<typeof import('../../adv-roster')>()),
   mergeRosterWithAssignments: (...a: unknown[]) => mergeRosterMock(...a),
 }));
-// Override only listEndedAdvSessions; the handler uses no other adv-sessions fn.
+// Override the adv-sessions data sources the /adv/roster handler calls:
+// listEndedAdvSessions AND listPendingWorkbenchLaunches (the handler Promise.all's
+// both). Mocking both keeps this a pure UNIT test — without the listPending mock the
+// handler opens a real PG connection (ECONNREFUSED off the dev box), so the suite
+// silently depended on a live Postgres.
 vi.mock('../../adv-sessions', async (importActual) => ({
   ...(await importActual<typeof import('../../adv-sessions')>()),
   listEndedAdvSessions: (...a: unknown[]) => listEndedMock(...a),
+  listPendingWorkbenchLaunches: (...a: unknown[]) => listPendingMock(...a),
 }));
 // The /adv/roster/agent handler delegates wholesale to getAgentDetail; its
 // locks + coord internals are unit-tested in adv-agent-detail.test.ts.

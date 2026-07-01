@@ -1255,6 +1255,11 @@ export const SU_CONTEXT_CHOICES = [
   { name: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}  (core spine, native soft-trim) (default)`, value: 'trimmed' },
 ];
 
+// su-context-size-variants: the picker's default SELECTION (highlighted row when the
+// prompt opens; Enter with no arrow keys picks this). Trimmed keeps initial context
+// small without giving up on-demand discovery. Native/Full remain one keypress away.
+export const SU_CONTEXT_DEFAULT = 'trimmed';
+
 /** su-context-size-variants: choose the initial-context size for the SU session —
  *  the terminal-picker twin of the operator UI's Full/Trimmed toggle. Defaults to
  *  'trimmed' (core spine + the client's native soft-trim) — Native (null) skips the
@@ -1264,7 +1269,7 @@ export const SU_CONTEXT_CHOICES = [
  *  omp PI_CONFIG_DIR, codex/server via the bootstrap body's context_size). */
 async function pickContextSize() {
   const { select } = await import('@inquirer/prompts');
-  return select({ message: 'Context size', default: 'trimmed', choices: SU_CONTEXT_CHOICES });
+  return select({ message: 'Context size', default: SU_CONTEXT_DEFAULT, choices: SU_CONTEXT_CHOICES });
 }
 
 /** Pick a workspace. Harnesses are workspace-scoped, so this comes

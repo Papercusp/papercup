@@ -9,6 +9,7 @@ import {
   ompDefaultModelAdvisory,
   writeOmpFullConfigDir,
   SU_CONTEXT_CHOICES,
+  SU_CONTEXT_DEFAULT,
   SU_CONTEXT_TOKEN_ESTIMATES,
   selectionsFromArgs,
   presetsFromArgs,
@@ -176,6 +177,17 @@ describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
       if (c.value === null) continue;
       expect(parseArgs([`--context-size=${c.value}`]).contextSize).toBe(c.value);
     }
+  });
+
+  it('defaults the picker selection to Trimmed, not Native or Full', () => {
+    // The tool catalogue the picker highlights by default: neither the full
+    // up-front catalog nor each client's native (no-flag) behavior, but the
+    // trimmed core-spine + native-soft-trim variant.
+    expect(SU_CONTEXT_DEFAULT).toBe('trimmed');
+    expect(SU_CONTEXT_CHOICES.some((c) => c.value === SU_CONTEXT_DEFAULT)).toBe(true);
+    const defaultChoice = SU_CONTEXT_CHOICES.find((c) => c.value === SU_CONTEXT_DEFAULT)!;
+    expect(defaultChoice.name).toMatch(/trimmed/i);
+    expect(defaultChoice.name).toMatch(/default/i);
   });
 });
 
