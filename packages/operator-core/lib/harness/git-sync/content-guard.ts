@@ -36,6 +36,14 @@ export interface ContentGuardDeps {
   repoPath: string;
   /** Read a repo-relative file's working-tree text; null when unreadable/gone. */
   readText: (relPath: string) => Promise<string | null>;
+  /**
+   * Write a repo-relative file's working-tree text (WI-276 deterministic pre-pass).
+   * When provided, an offender whose detector declares an `autoFix` that FULLY
+   * resolves the error is repaired in place — written back so it commits this tick
+   * instead of being quarantined for the LLM fixer. Omit to disable auto-repair
+   * (the guard then only detects + quarantines, exactly as before).
+   */
+  writeText?: (relPath: string, text: string) => Promise<void>;
   /** The registered content detectors to run (default registry in production). */
   detectors: ContentDetector[];
   log?: (m: string) => void;
@@ -84,7 +92,7 @@ const MAX_READ_CONCURRENCY = 16;
  * offender.
  */
 export async function detectContentOffenders(deps: ContentGuardDeps): Promise<ContentOffender[]> {
-  const { runGit, repoPath, readText, detectors, log } = deps;
+  const { runGit, repoPath, readText, writeText, detectors, log } = deps;
   if (detectors.length === 0) return [];
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
   if (r.code !== 0) return []; // can't list — fail open (the commit proceeds as today)
@@ -113,10 +121,26 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
       return;
     }
     if (text == null) return; // gone/unreadable — nothing to check
+    // The working-tree text we detected on — the CAS baseline for a deterministic
+    // auto-repair write, so we never clobber a concurrent editor's newer content.
+    let baseline = text;
     for (const d of dets) {
       try {
         const error = await d.detect(file, text);
-        if (error) offenders.push({ file, detectorKey: d.key, error, fixerRole: d.fixerRole });
+        if (!error) continue;
+        // WI-276 deterministic pre-pass: try the detector's own safe repair BEFORE
+        // quarantining + dispatching the LLM fixer. Applied only to an ALREADY-failing
+        // file, and kept only when it FULLY resolves the error (re-detect clean).
+        if (d.autoFix && writeText) {
+          const repaired = await tryAutoFix(d, file, text, baseline, { readText, writeText, log });
+          if (repaired != null) {
+            text = repaired; // subsequent detectors see the repaired text
+            baseline = repaired; // and future writes CAS against the just-written content
+            continue; // no offender recorded — the file commits normally this tick
+          }
+        }
+        // Not (fully) auto-repairable — quarantine + dispatch the LLM fixer, as before.
+        offenders.push({ file, detectorKey: d.key, error, fixerRole: d.fixerRole });
       } catch (e) {
         // FAIL OPEN — a content-check bug must never block the whole tree's commit.
         log?.(`[content-guard] detector "${d.key}" threw on ${file} — skipping (not blocking): ${errMsg(e)}`);
@@ -124,6 +148,69 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
     }
   });
   return offenders;
+}
+
+/**
+ * Attempt the detector's deterministic `autoFix` on an already-failing file (WI-276).
+ * Returns the repaired text (already written to the working tree) when the fix FULLY
+ * resolves the error, or null to fall through to quarantine + the LLM fixer. Never
+ * throws (a write/read failure logs + returns null so the file is quarantined instead).
+ *
+ * CAS-guarded: re-reads the file right before writing and only writes when it still
+ * equals `baseline` — so a concurrent editor's newer content is never clobbered (the
+ * broken file is simply re-evaluated on the next tick). FAIL-SAFE by construction: the
+ * write happens only when the repaired text passes the SAME `detect`, so the guard can
+ * never commit a file it would otherwise have quarantined.
+ */
+async function tryAutoFix(
+  d: ContentDetector,
+  file: string,
+  text: string,
+  baseline: string,
+  io: {
+    readText: (relPath: string) => Promise<string | null>;
+    writeText: (relPath: string, text: string) => Promise<void>;
+    log?: (m: string) => void;
+  },
+): Promise<string | null> {
+  if (!d.autoFix) return null;
+  let fixed: string;
+  let changed: boolean;
+  try {
+    ({ fixed, changed } = d.autoFix(text));
+  } catch (e) {
+    io.log?.(`[content-guard] "${d.key}" autoFix threw on ${file} — quarantining instead: ${errMsg(e)}`);
+    return null;
+  }
+  if (!changed) return null; // nothing the deterministic fixer could repair
+  // Keep the repair ONLY if it fully clears the error — else the LLM fixer must look.
+  let stillErr: string | null;
+  try {
+    stillErr = await d.detect(file, fixed);
+  } catch (e) {
+    io.log?.(`[content-guard] "${d.key}" re-detect threw on ${file} — quarantining instead: ${errMsg(e)}`);
+    return null;
+  }
+  if (stillErr) return null; // partial fix — leave the whole file for the LLM fixer
+  // CAS: never clobber a concurrent edit — only write if the file is unchanged since we read it.
+  let onDisk: string | null;
+  try {
+    onDisk = await io.readText(file);
+  } catch {
+    onDisk = null;
+  }
+  if (onDisk !== baseline) {
+    io.log?.(`[content-guard] ${file} changed under us mid-tick — skipping auto-repair (re-evaluated next tick)`);
+    return null;
+  }
+  try {
+    await io.writeText(file, fixed);
+  } catch (e) {
+    io.log?.(`[content-guard] auto-repair write failed for ${file} — quarantining instead: ${errMsg(e)}`);
+    return null;
+  }
+  io.log?.(`[content-guard] auto-repaired ${file} [${d.key}] deterministically — committing this tick (no LLM fixer / no build block)`);
+  return fixed;
 }
 
 function errMsg(e: unknown): string {

@@ -13,6 +13,7 @@ import type { RouteContext } from '../define-route';
 
 const mergeRosterMock = vi.fn();
 const listEndedMock = vi.fn();
+const listPendingMock = vi.fn();
 const getAgentDetailMock = vi.fn();
 
 // Keep the REAL dedupeEndedAgainstActive (we want to exercise it through the
