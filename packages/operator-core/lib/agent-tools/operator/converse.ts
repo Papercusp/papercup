@@ -501,12 +501,11 @@ export default defineTool({
     // failures as failed nursery rows instead of dropping them.
     try {
       const parsed = parseOperatorTurn(assembled);
-      // Sentinel handoff: the
-      // SENTINEL never places work itself — instead of `<spawn>` it emits
-      // `<handoff_to_queen>`, which we dispatch THROUGH the file-and-nudge seam
-      // (tier-gate → file high-priority user-requested work_item → nudge the Queen
-      // → subscribe for hindsight). Honored ONLY for role==='sentinel'; the
-      // operator path below ignores handoffs entirely (and the sentinel ignores
+      // Sentinel control tags: the
+      // SENTINEL never places work itself. It can emit `<handoff_to_queen>` for
+      // buildable work (file-and-nudge to the Queen) and `<delegate_deep>` for
+      // hard thinking (deep-analysis lane). Honored ONLY for role==='sentinel';
+      // the operator path below ignores both entirely (and the sentinel ignores
       // spawns — the two can't cross). The Sentinel must NOT fleet:spawn.
       const isSentinel = input.role === 'sentinel';
       if (isSentinel && parsed.handoffs.length > 0) {
@@ -524,6 +523,32 @@ export default defineTool({
             })
             .catch((err) => {
               console.warn('[sentinel-converse] handoff dispatch error', err);
+            });
+        }
+      }
+      if (isSentinel && parsed.deepDelegations.length > 0) {
+        const [{ delegateDeep }, { defaultDeepDelegateDeps }] = await Promise.all([
+          import('../../sentinel/sentinel-deep-delegate'),
+          import('../../sentinel/sentinel-deep-delegate-deps'),
+        ]);
+        const deps = defaultDeepDelegateDeps();
+        for (const deep of parsed.deepDelegations) {
+          void delegateDeep(
+            {
+              question: deep.summary,
+              brief: deep.brief,
+              harness: deep.harness,
+              workspaceId,
+            },
+            deps,
+          )
+            .then((r) => {
+              if (!r.ok) {
+                console.warn(`[sentinel-converse] deep delegation rejected: ${r.error}`);
+              }
+            })
+            .catch((err) => {
+              console.warn('[sentinel-converse] deep delegation dispatch error', err);
             });
         }
       }

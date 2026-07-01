@@ -11,8 +11,8 @@
  *   1. Render the say-text (if any) into the chat transcript + TTS.
  *   2. Flip operator mode (if a set_mode tag was emitted).
  *   3. Set the sleep-until clock (if a sleep tag was emitted).
- *   4. Dispatch each spawn tag through the durable nursery spawn
- *      (fleet/operator-spawn → harness_shared.spawned_agents).
+ *   4. Dispatch each spawn / handoff / delegate_deep tag through the
+ *      correct server-side lane.
  *
  * Pure parsing only — no DOM, no fetch, no state writes. Callers
  * thread the parsed result into the OperatorConversation reducer.
@@ -90,6 +90,24 @@ export interface HandoffRequest {
   urgent: boolean;
 }
 
+/**
+ * `<delegate_deep>` — the SENTINEL'S hard-thinking seam
+ * (voice-unified-sentinel-pipeline-2026-07-01, P-005/P-006). The Sentinel stays
+ * conversationally responsive; sustained analysis is delegated to the deep lane
+ * and the answer is routed back into the conversation later. Honored ONLY for
+ * role==='sentinel' — the operator path ignores it.
+ *
+ *   <delegate_deep summary="…" brief="…" harness="…">
+ */
+export interface DeepDelegateRequest {
+  /** The question to answer. Required. */
+  summary: string;
+  /** Extra context for the delegated analysis agent. Optional. */
+  brief: string | null;
+  /** Harness slug the question is about. null → default resolution. */
+  harness: string | null;
+}
+
 export interface ParsedOperatorTurn {
   /** The user-visible utterance, or null when the operator went silent (sleep tag only). */
   say: string | null;
@@ -106,6 +124,13 @@ export interface ParsedOperatorTurn {
    * directly via `spawns`). Parallel handoffs in one turn are allowed.
    */
   handoffs: HandoffRequest[];
+  /**
+   * `<delegate_deep>` requests emitted this turn. Empty array when none. The
+   * converse dispatch honors these ONLY when the turn's role is 'sentinel' —
+   * the operator path ignores them. Parallel deep delegations in one turn are
+   * allowed (bounded later by the deep-delegate lane itself).
+   */
+  deepDelegations: DeepDelegateRequest[];
   /**
    * True when the brain emitted `<continue/>` — it has more user-visible
    * progress to make in the same conversation thread, no user input
@@ -145,6 +170,10 @@ const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
 // per turn allowed (the Sentinel can hand off a small batch). Same attr-bag shape
 // as <spawn>. (sentinel-herald P-014.)
 const HANDOFF_RE = /<handoff_to_queen\s+([^>]+?)\s*\/?>/gi;
+// <delegate_deep summary="…" brief="…" harness="…"> — self-closing. summary
+// required; the rest optional. Multiple per turn allowed; the dispatch lane caps
+// actual concurrency.
+const DELEGATE_DEEP_RE = /<delegate_deep\s+([^>]+?)\s*\/?>/gi;
 // <report>{json}</report> — a single JSON object of per-plan/per-item status
 // blocks (D-001). Non-greedy body; we JSON-parse + validate it via
 // parseReportBody. Paired with <say> per the prompt (D-004). The whole span
@@ -154,7 +183,7 @@ const REPORT_RE = /<report>([\s\S]*?)<\/report>/i;
 const REPORT_STRIP_RE = /<report>[\s\S]*?<\/report>/gi;
 // Strip a self-closing <spawn …>/<handoff_to_queen …> from the no-<say> prose
 // fallback so a stray control tag never leaks as raw text into the chat bubble.
-const CONTROL_TAG_STRIP_RE = /<(?:spawn|handoff_to_queen)\s+[^>]*?\/?>/gi;
+const CONTROL_TAG_STRIP_RE = /<(?:spawn|handoff_to_queen|delegate_deep)\s+[^>]*?\/?>/gi;
 
 /**
  * Validate a raw `<report>` JSON body into a `ParsedReport`, or null when
@@ -270,6 +299,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     sleep: null,
     spawns: [],
     handoffs: [],
+    deepDelegations: [],
     continue: false,
     report: null,
     raw,
@@ -384,6 +414,29 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
       tier,
       capability: attrs['capability'] ? attrs['capability'] : null,
       urgent,
+    });
+  }
+
+  // <delegate_deep …> — the Sentinel's hard-thinking delegation seam. Collect
+  // every tag in the turn. Like the other control tags, a missing required attr
+  // drops the tag with a warn; `brief` and `harness` are optional.
+  let deepMatch: RegExpExecArray | null;
+  DELEGATE_DEEP_RE.lastIndex = 0;
+  while ((deepMatch = DELEGATE_DEEP_RE.exec(raw)) !== null) {
+    const attrs = parseAttrs(deepMatch[1]);
+    const summary = (attrs['summary'] ?? '').trim();
+    if (!summary) {
+      // eslint-disable-next-line no-console
+      console.warn('[operator-converse] dropped malformed <delegate_deep>: missing summary', {
+        attrs,
+      });
+      continue;
+    }
+    const brief = (attrs['brief'] ?? '').trim();
+    result.deepDelegations.push({
+      summary,
+      brief: brief.length > 0 ? brief : null,
+      harness: attrs['harness'] ? attrs['harness'] : null,
     });
   }
 

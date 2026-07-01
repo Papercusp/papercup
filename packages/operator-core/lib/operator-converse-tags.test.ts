@@ -449,6 +449,72 @@ describe('handoff_to_queen tags', () => {
   });
 });
 
+// ── <delegate_deep> tag (voice-unified-sentinel-pipeline-2026-07-01) ────────
+describe('delegate_deep tags', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('parses a full delegate_deep tag (summary + brief + harness)', () => {
+    const r = parseOperatorTurn(
+      '<say>This needs a proper pass.</say>\n' +
+        '<delegate_deep summary="compare the migration options" brief="Focus on rollback safety and hidden costs." harness="papercup">',
+    );
+    expect(r.say).toBe('This needs a proper pass.');
+    expect(r.deepDelegations).toEqual([
+      {
+        summary: 'compare the migration options',
+        brief: 'Focus on rollback safety and hidden costs.',
+        harness: 'papercup',
+      },
+    ]);
+  });
+
+  it('brief defaults to null when omitted', () => {
+    const r = parseOperatorTurn('<delegate_deep summary="why is the CPU spiking?">');
+    expect(r.deepDelegations).toEqual([
+      {
+        summary: 'why is the CPU spiking?',
+        brief: null,
+        harness: null,
+      },
+    ]);
+  });
+
+  it('drops a delegate_deep tag with no summary (warn emitted)', () => {
+    const r = parseOperatorTurn('<delegate_deep brief="ctx">');
+    expect(r.deepDelegations).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('dropped malformed <delegate_deep>'),
+      expect.any(Object),
+    );
+  });
+
+  it('collects multiple delegate_deep tags in one turn', () => {
+    const r = parseOperatorTurn(
+      '<say>I will look at both.</say>\n' +
+        '<delegate_deep summary="first question" harness="a">\n' +
+        '<delegate_deep summary="second question" harness="b">',
+    );
+    expect(r.deepDelegations.map((d) => d.summary)).toEqual(['first question', 'second question']);
+    expect(r.deepDelegations.map((d) => d.harness)).toEqual(['a', 'b']);
+  });
+
+  it('deep delegations default to [] when no tag present', () => {
+    expect(parseOperatorTurn('<say>just chatting</say>').deepDelegations).toEqual([]);
+  });
+
+  it('strips a stray <delegate_deep> (no <say>) from the prose fallback', () => {
+    const r = parseOperatorTurn('<delegate_deep summary="do the analysis">');
+    expect(r.say).toBeNull();
+    expect(r.deepDelegations[0].summary).toBe('do the analysis');
+  });
+});
+
 describe('parseReportBody', () => {
   it('validates a minimal plan block', () => {
     const r = parseReportBody('{"plans":[{"title":"Alpha"}]}');
