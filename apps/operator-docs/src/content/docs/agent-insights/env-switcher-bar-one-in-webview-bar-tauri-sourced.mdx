@@ -115,11 +115,16 @@ throws. Consequences + how they're handled:
   are the real backstop: they're Rust-level, so `CmdOrCtrl+Alt+1` recovers from a remote origin
   even when its IPC (and the dev bridge's `eval`) is wedged — verified against the stuck staging
   build.
-- **Deeper root fix (not yet done):** granting app commands to the `remote.urls` origins so all
-  four envs get full IPC. Tauri v2's `remote` capability is designed for *plugin* permissions;
-  allowing arbitrary *app* commands on remote origins is murky + security-sensitive (localhost
-  operator builds are trusted, but it widens the surface), so it was left as a follow-up behind
-  the fail-safe + shortcut backstop.
+- **Why you can't just "grant app commands to the remote origins" (investigated + ruled out):**
+  the generated ACL (`src-tauri/gen/schemas/acl-manifests.json`) has manifests for `core:*` and
+  every *plugin* (`os`, `fs`, `global-shortcut`, …) — but **NONE for the app's own commands**.
+  `list_envs` / `wsl_status` / `retarget_*` have no permission identifier, so there is nothing to
+  list in a capability's `permissions` to expose them to a `remote.urls` origin. App
+  (non-plugin) commands are a **local-content-only** surface in Tauri v2; the `remote` capability
+  only ever grants *plugin/core* permissions. So the mitigations above ARE the fix, not a
+  stopgap: fail-safe gate + HTTP fallback for `list_envs` + Rust-level global shortcuts. Exposing
+  a desktop command to non-dev envs would mean converting it to a real Tauri *plugin* (with its
+  own ACL) — only worth it per-command if one genuinely must run cross-env.
 
 ## Gotchas
 
