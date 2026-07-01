@@ -391,6 +391,11 @@ export default defineTool({
   guidance: {
     when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it.',
     notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1.',
+    seeAlso: [
+      'coord:handoff (transfer WORK, not just a message)',
+      'coord:inbox (read replies to what you sent)',
+      'coord:roster { view:"live" } (confirm a recipient is awake before wake:required)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

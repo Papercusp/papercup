@@ -109,6 +109,8 @@ describe('WorkItemsPanel', () => {
     expect(screen.getByTestId('row-WI-1')).toBeTruthy();
     expect(screen.getByTestId('row-F-2')).toBeTruthy();
     expect(setTitle).toHaveBeenCalledWith('Work items · alpha (2)');
+    // In-pane badge: not capped, not filtered → the plain total.
+    expect(screen.getByTestId('wi-count').textContent).toContain('2 items');
   });
 
   it('shows "N of TOTAL" when the read was capped (true total on row[0]._meta)', () => {
@@ -120,6 +122,14 @@ describe('WorkItemsPanel', () => {
     };
     renderPanel();
     expect(setTitle).toHaveBeenCalledWith('Work items · alpha (2 of 57)');
+    // The badge spells out what the "of" means + flags the capped read.
+    expect(screen.getByTestId('wi-count').textContent).toContain('2 loaded of 57 total');
+  });
+
+  it('reflects the filter in the title + badge (shown of loaded), not the stale loaded count', () => {
+    renderPanel('alpha', '?wq=login'); // matches WI-1 only → 1 of 2 loaded
+    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (1 of 2)');
+    expect(screen.getByTestId('wi-count').textContent).toContain('1 of 2 match');
   });
 
   it('applies the quick-search substring filter (wq)', () => {
@@ -146,5 +156,29 @@ describe('WorkItemsPanel', () => {
     await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
     const ev = onUrlUpdate.mock.calls.at(-1)![0] as { searchParams: URLSearchParams };
     expect(ev.searchParams.get('sel')).toBe('WI-1');
+  });
+});
+
+describe('workItemCountLabel (pure — the shown/loaded/total disambiguation)', () => {
+  it('unfiltered, not capped → just the total', () => {
+    expect(workItemCountLabel(12, 12, 12, false)).toEqual({ title: '12', summary: '12 items', capped: false });
+  });
+  it('unfiltered, capped → loaded of total, flagged capped', () => {
+    expect(workItemCountLabel(905, 905, 1674, false)).toEqual({
+      title: '905 of 1674', summary: '905 loaded of 1674 total', capped: true,
+    });
+  });
+  it('filtered, not capped → shown of total match', () => {
+    expect(workItemCountLabel(42, 905, 905, true)).toEqual({
+      title: '42 of 905', summary: '42 of 905 match', capped: false,
+    });
+  });
+  it('filtered AND capped → shown match of loaded, with total called out', () => {
+    expect(workItemCountLabel(42, 905, 1674, true)).toEqual({
+      title: '42 of 905', summary: '42 match · 905 loaded of 1674 total', capped: true,
+    });
+  });
+  it('singular item reads "1 item"', () => {
+    expect(workItemCountLabel(1, 1, 1, false).summary).toBe('1 item');
   });
 });

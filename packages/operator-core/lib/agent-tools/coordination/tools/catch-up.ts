@@ -48,6 +48,11 @@ export default defineTool({
       'You just joined a fleet/topic, or woke after being paused/offline, and want what was said to that audience while you were away. The pull counterpart to an @fleet:/@topic: broadcast.',
     notWhen:
       'For messages addressed to YOU personally use coord:inbox; for the all-agent firehose use coord:feed (audit:read). This is scoped to ONE audience you belong to.',
+    seeAlso: [
+      'coord:inbox (messages addressed to you personally)',
+      'coord:roster { view:"history" } (who-was-ever-here for this audience)',
+      'coord:feed (the all-agent firehose)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

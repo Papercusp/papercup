@@ -64,6 +64,11 @@ export default defineTool({
       "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
     chaining:
       "curation:change-feed + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
+    seeAlso: [
+      'work_items:reorder (a single bee\'s already-claimed work-list order, post-claim)',
+      'work_items:co_locate (pin work to a Swarm)',
+      'work_items:set_state (change lifecycle state, not backlog order)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

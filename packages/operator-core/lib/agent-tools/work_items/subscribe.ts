@@ -20,6 +20,10 @@ export default defineTool({
   guidance: {
     when: 'You want to follow one or more work-items you do not own (e.g. ones that block yours). Subscribe to several at once via `ids`.',
     chaining: 'work_items:get → work_items:subscribe.',
+    seeAlso: [
+      'work_items:comment (post to the thread you are following)',
+      'work_items:link (record that this item blocks yours)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

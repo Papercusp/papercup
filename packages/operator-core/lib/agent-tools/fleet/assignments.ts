@@ -39,6 +39,11 @@ export default defineTool({
       'You want to be notified of future changes (subscribe the fleet_assignment change-feed) or you need full message history (coord:inbox).',
     chaining:
       'fleet:assignments { plan } → an orphaned/stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release, or pick it up yourself; never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging an agent about its work.',
+    seeAlso: [
+      'coord:roster { view:"claims" } (the unified who-on-what-item lens)',
+      'work_items:release (free an orphaned/stalled claim you find)',
+      'fleet:status (the fleet\'s leader + live members)',
+    ],
   },
   capability: 'work_items:read',
   requirePrincipal: false,

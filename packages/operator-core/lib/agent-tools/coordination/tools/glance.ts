@@ -51,6 +51,11 @@ export default defineTool({
     when: "A status surface (statusline, TUI bar, dashboard widget) needs the fleet's headline state in one round-trip, or you want the current contextual tips for an audience.",
     notWhen:
       'Deep rate-limit telemetry (usage %, $spend) — dev:rate_governor_status. Full presence roster — coord:presence. Reviewing/releasing the staged wakes themselves — coord:wake-queue.',
+    seeAlso: [
+      'coord:roster (full presence with view lenses)',
+      'dev:rate_governor_status (deep rate-limit / spend telemetry)',
+      'coord:wake-queue (review or release the staged wakes)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

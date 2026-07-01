@@ -28,6 +28,11 @@ export default defineTool({
     notWhen: 'A specific file\'s freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion. The full ended-agent list is not returned (use `owner:<id>`, or `summary.byState.ended` for the count).',
     chaining:
       'Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions.',
+    seeAlso: [
+      'coord:roster { view:"live" } (the unified presence/roster door with lenses)',
+      'coord:glance (one-line fleet headline for a status surface)',
+      'coord:dispatch (wake/dispatch a parked agent you spotted)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

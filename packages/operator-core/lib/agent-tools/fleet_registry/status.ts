@@ -20,6 +20,11 @@ export default defineTool({
     when: 'Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.',
     notWhen: 'For the catalog of ALL fleets with availability, use fleet:list.',
     chaining: ROUTING_LADDER,
+    seeAlso: [
+      'fleet:list (the catalog of ALL fleets with availability)',
+      'fleet:assignments (what this fleet\'s members are working on)',
+      'coord:roster { view:"members" } (membership across hive + fleet)',
+    ],
   },
   capability: 'fleet:status',
   requirePrincipal: false,

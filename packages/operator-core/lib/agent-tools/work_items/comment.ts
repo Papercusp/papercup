@@ -32,6 +32,11 @@ export default defineTool({
     when: 'You have an update, finding, or question to post on one or more work-items. Comment on several at once via items:[…] instead of one call each.',
     notWhen: 'A contextual aside not tied to a work-item → coord:send. A structured completion → work_items:complete.',
     chaining: 'work_items:get → work_items:comment; work_items:subscribe to follow the thread.',
+    seeAlso: [
+      'work_items:subscribe (follow the thread you just posted on)',
+      'work_items:complete (a structured completion, not a prose note)',
+      'coord:send (an aside not tied to any work-item)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

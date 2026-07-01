@@ -37,6 +37,10 @@ export default defineTool({
   guidance: {
     when: 'You discovered one or more dependencies/relationships: a work-item blocks/relates-to/duplicates/fixes other work-items or plan items. Create several edges at once via items:[…].',
     chaining: 'work_items:get both sides → work_items:link { rel:"blocks", target_id } (or items:[…]).',
+    seeAlso: [
+      'work_items:get (inspect both endpoints before linking)',
+      'work_items:subscribe (follow an item a dependency now points at)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,
