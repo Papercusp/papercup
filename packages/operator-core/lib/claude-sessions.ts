@@ -57,27 +57,55 @@ export async function claudeProjectsRoots(
   return roots;
 }
 
+/** sessionId → resolved transcript path. A session's transcript path is STABLE
+ *  once written (the file never moves), so a validated cached hit skips the walk
+ *  entirely — repeat opens of the same agent cost one stat, not a full sweep.
+ *  Only POSITIVE resolutions are cached (a not-yet-written transcript must be
+ *  re-resolved once it appears). Module-scoped + unbounded is fine: the key space
+ *  is the set of session ids the loopback inspector has opened this process. */
+const transcriptPathCache = new Map<string, string>();
+
 /**
  * Resolve the transcript jsonl for a Claude session by its id — the
- * `<session-id>.jsonl` handle, searched across every projects root (global +
- * per-session isolation). Returns the first match's absolute path, or null.
- * A targeted stat-only walk (readdir the project dirs, stat the one target file),
- * so it stays cheap even with thousands of transcripts. Powers the agents-roster
- * live-thinking view for INTERACTIVE (non-bee) sessions, which — unlike a
- * spawned bee's harness run-log — keep their timeline in this transcript.
+ * `<session-id>.jsonl` handle. Returns the first match's absolute path, or null.
+ *
+ * FAST PATH (`owner` hint): interactive sessions live under a per-owner isolation
+ * root `~/.papercusp/session-claude/<owner>/projects/…`, and the caller (the
+ * agents-roster) already knows the agent's coord `owner`. Given it, we scan ONLY
+ * that ONE root (1 readdir + a stat per project dir) instead of the FULL
+ * `claudeProjectsRoots()` sweep — which readdir's EVERY isolation owner dir
+ * (12k+ on a long-lived box ⇒ ~3s per click). A path cache + a global-scan
+ * fallback keep it CORRECT when the hint is absent, wrong, or the file has moved.
+ *
+ * A targeted stat-only walk (readdir the project dirs, stat the one target file).
+ * Powers the agents-roster live-thinking view for INTERACTIVE (non-bee) sessions,
+ * which — unlike a spawned bee's harness run-log — keep their timeline here.
  */
 export async function findSessionTranscript(
   sessionId: string,
-  roots?: string[],
+  opts: { owner?: string | null; roots?: string[]; isolationBase?: string } = {},
 ): Promise<string | null> {
   if (!/^[A-Za-z0-9_.-]{6,}$/.test(sessionId)) return null;
   const file = `${sessionId}.jsonl`;
-  for (const root of roots ?? (await claudeProjectsRoots())) {
+
+  // Validated cache hit → skip the walk. Re-resolve if the cached file vanished
+  // (rotated/deleted), so a stale entry never wedges the lookup.
+  const cached = transcriptPathCache.get(sessionId);
+  if (cached) {
+    try {
+      await fs.access(cached);
+      return cached;
+    } catch {
+      transcriptPathCache.delete(sessionId);
+    }
+  }
+
+  const scan = async (root: string): Promise<string | null> => {
     let projectDirs: string[];
     try {
       projectDirs = await fs.readdir(root);
     } catch {
-      continue; // root unreadable
+      return null; // root unreadable
     }
     for (const projDir of projectDirs) {
       const p = join(root, projDir, file);
@@ -87,6 +115,26 @@ export async function findSessionTranscript(
       } catch {
         /* not in this project dir */
       }
+    }
+    return null;
+  };
+
+  // FAST PATH: the owner's single isolation root, when the caller supplied a hint.
+  if (opts.owner && /^[A-Za-z0-9_.-]+$/.test(opts.owner)) {
+    const ownerRoot = join(opts.isolationBase ?? papercuspSessionClaudeBase(), opts.owner, 'projects');
+    const hit = await scan(ownerRoot);
+    if (hit) {
+      transcriptPathCache.set(sessionId, hit);
+      return hit;
+    }
+  }
+
+  // FALLBACK: the full sweep (global + every isolation root) — correct but O(roots).
+  for (const root of opts.roots ?? (await claudeProjectsRoots())) {
+    const hit = await scan(root);
+    if (hit) {
+      transcriptPathCache.set(sessionId, hit);
+      return hit;
     }
   }
   return null;
