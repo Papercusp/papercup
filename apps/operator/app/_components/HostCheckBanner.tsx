@@ -8,6 +8,28 @@
  * vanishes for the lifetime of the host signature.
  *
  * Spec: /docs/snapshots/build-scripts#single-user-host-detection.
+ *
+ * Auth-bootstrap race (found investigating a spurious 403 on this route
+ * while a non-default env, e.g. staging :3170, was freshly selected):
+ * `/provision/host-check` requires `trust: ['verified','trusted']` (D3
+ * auth-tightening, 621bdb713 — deliberate; CSRF/DNS-rebinding protection).
+ * For a passwordless single-user desktop install, that trust is normally
+ * satisfied by the auto-established session cookie GET `/api/auth/me`
+ * mints on first paint (see auth/me.ts's "auto-establish a real session
+ * for passwordless users"). But that mint is fired independently by
+ * SIBLING components (UserPicker, AutoLoginWelcomeToast) with no
+ * ordering guarantee against this component's own effect — and each
+ * physical operator backend (dev/prod/staging) validates a session
+ * cookie against ITS OWN session store, so switching the env-switcher's
+ * `/api` target to a backend that has never seen this cookie leaves the
+ * request with no valid session until *something* re-primes it for that
+ * backend. Either way, firing this GET before that priming lands means
+ * the request resolves via the loopback fallback (`unverified-loopback`)
+ * and 403s — a benign, cosmetic race (this banner just doesn't show),
+ * but real console noise. Fix: prime the session for whichever backend
+ * is currently active by awaiting `/api/auth/me` first — cheap (each
+ * sibling already fires the same call; the browser dedupes nothing here
+ * but the endpoint is trivial) and fully order-independent.
  */
 'use client';
 
@@ -23,10 +45,22 @@ export function HostCheckBanner() {
   const [acking, setAcking] = useState(false);
 
   useEffect(() => {
-    fetch('/api/provision/host-check', { cache: 'no-store' })
-      .then((r) => r.ok ? r.json() : null)
-      .then((d) => d?.ok && setResult(d))
+    let cancelled = false;
+    // Ensure the passwordless auto-session is established (and, crucially,
+    // established against whichever backend the env-switcher currently
+    // targets) BEFORE the trust-gated host-check fetch — see the race
+    // explained in the docstring above. Best-effort: a failure here just
+    // means host-check falls back to its own silent-catch below.
+    fetch('/api/auth/me', { cache: 'no-store' })
+      .catch(() => { /* best-effort priming — host-check below still runs */ })
+      .then(() => {
+        if (cancelled) return undefined;
+        return fetch('/api/provision/host-check', { cache: 'no-store' });
+      })
+      .then((r) => (r?.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d?.ok) setResult(d); })
       .catch(() => { /* endpoint may not be available — silent */ });
+    return () => { cancelled = true; };
   }, []);
 
   if (!result || result.decision !== 'gate') return null;

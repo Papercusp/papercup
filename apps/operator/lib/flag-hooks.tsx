@@ -18,10 +18,19 @@ import {
   subscribe,
   subscribeToFlagStream,
 } from '@papercusp/flags/client';
+import { reportSyncReachable, reportSyncUnreachable } from '@papercusp/sync';
 
 let bootstrapStarted = false;
 let streamSub: { close(): void } | null = null;
 
+// The flags stream is always-on, app-wide infrastructure (mounted once for
+// the whole session via `useFlag`'s bootstrap) — a sustained failure to
+// reach it is a real "operator unreachable" signal, not a per-component
+// concern. Feed the SAME shared connectivity store `@papercusp/sync`'s own
+// SSE transport reports to (SSEAdapter.tsx), so a down operator surfaces as
+// ONE consolidated "operator connection lost" toast (OfflineIndicator)
+// instead of each independent stream silently reconnect-looping on its own
+// with no user-visible signal beyond raw console network-error spam.
 function ensureBootstrap(): void {
   if (bootstrapStarted) return;
   bootstrapStarted = true;
@@ -29,7 +38,12 @@ function ensureBootstrap(): void {
   void loadFlags().catch(() => {
     // network failures fall back to FLAG_DEFAULTS via getFlagSnapshot
   });
-  streamSub = subscribeToFlagStream();
+  streamSub = subscribeToFlagStream(undefined, {
+    onOpen: () => reportSyncReachable(),
+    onStatusChange: (status) => {
+      if (status === 'failing') reportSyncUnreachable();
+    },
+  });
 }
 
 export function useFlag(key: FlagKey): boolean {

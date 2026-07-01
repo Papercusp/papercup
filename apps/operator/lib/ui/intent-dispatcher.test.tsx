@@ -12,13 +12,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 
-let captured: { url: string; messageHandler?: (data: string) => void } | null = null;
+let captured: {
+  url: string;
+  messageHandler?: (data: string) => void;
+  onOpen?: () => void;
+  onStatusChange?: (status: string) => void;
+} | null = null;
 const closeSpy = vi.fn();
 vi.mock('@papercusp/sse', () => ({
-  createResilientEventSource: (opts: { url: string; handlers: Record<string, (data: string) => void> }) => {
-    captured = { url: opts.url, messageHandler: opts.handlers.message };
+  createResilientEventSource: (opts: {
+    url: string;
+    handlers: Record<string, (data: string) => void>;
+    onOpen?: () => void;
+    onStatusChange?: (status: string) => void;
+  }) => {
+    captured = {
+      url: opts.url,
+      messageHandler: opts.handlers.message,
+      onOpen: opts.onOpen,
+      onStatusChange: opts.onStatusChange,
+    };
     return { close: closeSpy };
   },
+}));
+
+const reportReachable = vi.fn();
+const reportUnreachable = vi.fn();
+vi.mock('@papercusp/sync', () => ({
+  reportSyncReachable: () => reportReachable(),
+  reportSyncUnreachable: () => reportUnreachable(),
 }));
 
 let clientId: string;
@@ -54,6 +76,8 @@ beforeEach(() => {
   captured = null;
   closeSpy.mockReset();
   registerBuiltInIntents.mockReset();
+  reportReachable.mockReset();
+  reportUnreachable.mockReset();
   clientId = 'client-xyz';
   handler = null;
   installFetch();
@@ -129,5 +153,22 @@ describe('UiIntentDispatcher', () => {
     const { unmount } = render(<UiIntentDispatcher />);
     unmount();
     expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('feeds the shared sync connectivity store: onOpen reports reachable, a "failing" status reports unreachable', () => {
+    render(<UiIntentDispatcher />);
+    expect(captured!.onOpen).toBeTypeOf('function');
+    expect(captured!.onStatusChange).toBeTypeOf('function');
+
+    captured!.onOpen!();
+    expect(reportReachable).toHaveBeenCalledTimes(1);
+
+    captured!.onStatusChange!('failing');
+    expect(reportUnreachable).toHaveBeenCalledTimes(1);
+
+    // Other statuses don't report unreachable.
+    captured!.onStatusChange!('open');
+    captured!.onStatusChange!('connecting');
+    expect(reportUnreachable).toHaveBeenCalledTimes(1);
   });
 });

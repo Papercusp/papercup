@@ -5,8 +5,9 @@ import assert from 'node:assert/strict';
 import { StallWaker, type StallEvent, type StallWakerDeps, type StallWakerOptions } from './stall-waker';
 
 function harness(opts: StallWakerOptions = {}) {
-  const state = { t: 1_000_000, beeIdle: true, capBack: true, woken: 1 };
+  const state = { t: 1_000_000, beeIdle: true, capBack: true, woken: 1, unwedgeOk: true };
   const queue: StallEvent[] = [];
+  const logs: Array<{ level: 'info' | 'warn'; msg: string }> = [];
   const calls = { wake: [] as string[], cap: 0, unwedge: [] as string[] };
   const deps: StallWakerDeps = {
     fetchStalls: async (since) => ({ now: state.t, stalls: queue.filter((s) => s.at > since) }),
@@ -21,15 +22,17 @@ function harness(opts: StallWakerOptions = {}) {
     },
     unwedge: async (ownerId) => {
       calls.unwedge.push(ownerId);
+      return state.unwedgeOk;
     },
     now: () => state.t,
-    log: () => {},
+    log: (level, msg) => logs.push({ level, msg }),
   };
   const w = new StallWaker(deps, opts);
   return {
     w,
     calls,
     state,
+    logs,
     advance: (ms: number) => {
       state.t += ms;
     },
@@ -143,6 +146,25 @@ test('FAST UN-WEDGE — not ESC-stormed within the cooldown, retried after it (s
   h.advance(31_000); // past cooldown
   await h.w.tick();
   assert.equal(h.calls.unwedge.length, 2, 're-ESC allowed after the cooldown');
+});
+
+test('FAST UN-WEDGE — a REFUSED/failed ESC (e.g. storm-guard rate_limited) is NOT reported as success (root-cause fix, gateway-mass-outage-storm-guard-2026-07-01)', async () => {
+  // Regression for the exact bug the user hit: `unwedge` used to be `Promise<void>` and
+  // `performInterrupt` never throws on a refusal (rate_limited / no-live-session come back as a
+  // normal `{ok:false}` value) — so tick() logged "un-wedged … reachable again" and reported
+  // success even when NOTHING was delivered. `unwedge` now returns a boolean; tick() must honor it.
+  const h = harness();
+  h.state.capBack = false;
+  h.state.unwedgeOk = false; // the ESC was refused (e.g. storm-guard) or found no live session
+  h.pushStall({ soonestResetAt: h.state.t + 60_000 });
+  const r = await h.w.tick();
+  assert.deepEqual(h.calls.unwedge, ['bee-1'], 'the attempt still happens every cooldown window');
+  assert.deepEqual(r.unwedged, [], 'a refused/failed ESC must NOT be reported as unwedged');
+  assert.ok(
+    h.logs.some((l) => l.level === 'warn' && /did NOT land/.test(l.msg)),
+    'a failed ESC is logged as a warning, not silently swallowed',
+  );
+  assert.equal(h.w.pendingCount, 1, 'still pending — not dropped just because the ESC failed');
 });
 
 test('FAST UN-WEDGE — a self-recovered (never-idle) owner is NEVER force-ESC\'d', async () => {

@@ -70,8 +70,19 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
     unwedge: async (ownerId) => {
       // FAST UN-WEDGE (owner-requested 2026-06-23): ESC ONLY (no wake) — end the turn that died on a gateway
       // error so the wedged CLI re-arms its inbox-wake watch and can receive messages again immediately,
-      // without waiting for the account's capacity to return. Best-effort: a no-op if there's no live turn.
-      await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: 'gateway error — ESC to re-arm (un-wedge)' });
+      // without waiting for the account's capacity to return.
+      //
+      // Root-cause fix (2026-07-01, gateway-mass-outage-storm-guard): forceEndTurn NEVER throws — a refusal
+      // (storm-guard rate_limited) or a missing live session comes back as `{ok:false, error:...}`, a normal
+      // return value. This used to be discarded (`await forceEndTurn(...)` with no result check), so
+      // StallWaker.tick() always treated the attempt as a success even when NOTHING was delivered — exactly
+      // what happened to every owner past the storm guard's per-actor cap during a correlated gateway outage.
+      // Surface the real outcome so tick() can tell the difference and log it instead of lying about it.
+      const r = await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: 'gateway error — ESC to re-arm (un-wedge)' });
+      if (!r.ok) {
+        console.warn(`[stall-waker] unwedge(${ownerId}) refused/failed: ${r.error ?? 'unknown'}${r.reason ? ` — ${r.reason}` : ''}`);
+      }
+      return r.ok;
     },
     wake: async (ownerId, summary) => {
       // ESC-THEN-WAKE (coord-end-turn P-003): a bee whose turn DIED on a rate limit is stuck mid-errored —

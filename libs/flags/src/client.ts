@@ -5,7 +5,10 @@
 // SSR pages may inject the initial payload via window.__PAPERCUSP_FLAGS__.
 // Live updates arrive on /api/flags/stream (SSE).
 
-import { createResilientEventSource } from "@papercusp/sse";
+import {
+  createResilientEventSource,
+  type ResilientEventSourceStatus,
+} from "@papercusp/sse";
 import {
   FLAG_DEFAULTS,
   type FlagKey,
@@ -74,8 +77,21 @@ export function subscribe(listener: Listener): () => void {
 
 type StreamSubscription = { close(): void };
 
+export interface SubscribeToFlagStreamHooks {
+  /** Called when the flag stream proves the origin reachable (SSE opened). */
+  onOpen?: () => void;
+  /**
+   * Called on every resilient-event-source status change, including
+   * transient reconnect blips ('failing'). App-level callers use this to
+   * feed a shared connectivity signal — kept optional/pass-through so this
+   * package stays framework- and app-agnostic.
+   */
+  onStatusChange?: (status: ResilientEventSourceStatus) => void;
+}
+
 export function subscribeToFlagStream(
   endpoint = "/api/flags/stream",
+  hooks?: SubscribeToFlagStreamHooks,
 ): StreamSubscription {
   if (typeof EventSource === "undefined") {
     return { close: () => {} };
@@ -83,6 +99,8 @@ export function subscribeToFlagStream(
   const source = createResilientEventSource({
     url: endpoint,
     withCredentials: true,
+    onOpen: hooks?.onOpen,
+    onStatusChange: hooks?.onStatusChange,
     handlers: {
       flag_changed: () => {
         void loadFlags().catch(() => {

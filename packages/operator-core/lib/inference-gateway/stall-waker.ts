@@ -154,13 +154,28 @@ export class StallWaker {
       // throttled pool); the capacity-gated wake below does the actual resume once budget returns. Cooldowned
       // so a session that keeps erroring isn't ESC-stormed.
       if (this.deps.unwedge && now - (this.lastUnwedgeAt.get(ownerId) ?? 0) >= this.opt.unwedgeCooldownMs) {
+        // Attempt cadence unconditional (keeps the existing unwedgeCooldownMs pacing regardless of
+        // outcome — a permanently-unreachable owner, e.g. a headless bee with no live pty, must not
+        // be retried every tick). What changed (root-cause fix, 2026-07-01): the OUTCOME is now
+        // actually checked — `unwedge` returns false on a refused/failed ESC (it never throws for
+        // that), so we must NOT report success (push to `unwedged` / log "reachable again") when it
+        // didn't land. Silently treating a refusal as success was exactly why a mass gateway-outage
+        // burst (>~10 distinct owners/60s trips the storm guard) left owners past the cap wedged with
+        // no visible failure and no urgency to retry.
+        this.lastUnwedgeAt.set(ownerId, now);
         try {
-          await this.deps.unwedge(ownerId);
-          this.lastUnwedgeAt.set(ownerId, now);
-          unwedged.push(ownerId);
-          this.deps.log('info', `stall-waker: fast-ESC un-wedged ${ownerId} (turn died on a gateway error) — reachable again`);
+          const ok = await this.deps.unwedge(ownerId);
+          if (ok) {
+            unwedged.push(ownerId);
+            this.deps.log('info', `stall-waker: fast-ESC un-wedged ${ownerId} (turn died on a gateway error) — reachable again`);
+          } else {
+            this.deps.log(
+              'warn',
+              `stall-waker: unwedge(${ownerId}) did NOT land (refused or no live interruptible session) — owner stays wedged, retrying after the ${this.opt.unwedgeCooldownMs}ms cooldown`,
+            );
+          }
         } catch (e) {
-          this.deps.log('warn', `stall-waker: unwedge(${ownerId}) failed: ${(e as Error).message}`);
+          this.deps.log('warn', `stall-waker: unwedge(${ownerId}) threw: ${(e as Error).message}`);
         }
       }
 

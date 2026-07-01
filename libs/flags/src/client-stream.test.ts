@@ -111,6 +111,26 @@ describe('subscribeToFlagStream — wired transport', () => {
     sub.close();
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  it('forwards optional onOpen/onStatusChange hooks straight through to the resilient source', () => {
+    vi.stubGlobal('EventSource', class FakeEventSource {});
+    const close = vi.fn();
+    vi.mocked(createResilientEventSource).mockReturnValue({ close } as unknown as ReturnType<
+      typeof createResilientEventSource
+    >);
+    const onOpen = vi.fn();
+    const onStatusChange = vi.fn();
+    subscribeToFlagStream('/api/flags/stream', { onOpen, onStatusChange });
+    const call = vi.mocked(createResilientEventSource).mock.calls[0][0];
+    expect(call.onOpen).toBe(onOpen);
+    expect(call.onStatusChange).toBe(onStatusChange);
+  });
+
+  it('passes onOpen/onStatusChange as undefined when no hooks are given (no crash)', () => {
+    const { call } = arrange();
+    expect(call.onOpen).toBeUndefined();
+    expect(call.onStatusChange).toBeUndefined();
+  });
 });
 
 describe('readInitialPayload — seed from globalThis.__PAPERCUSP_FLAGS__', () => {

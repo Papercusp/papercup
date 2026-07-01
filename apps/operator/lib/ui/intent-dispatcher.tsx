@@ -17,6 +17,7 @@
 
 import { useEffect } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
+import { reportSyncReachable, reportSyncUnreachable } from '@papercusp/sync';
 import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
 import { lookupIntent } from '@papercusp/operator-core/lib/ui/intent-registry';
 import { registerBuiltInIntents } from '@papercusp/operator-core/lib/ui/built-in-intents';
@@ -60,6 +61,14 @@ export function UiIntentDispatcher(): null {
 
     const source = createResilientEventSource({
       url: `/api/ui/intents/stream?client_id=${encodeURIComponent(clientId)}`,
+      // Always-on, app-wide stream (mounted once per tab) — feed the same
+      // shared connectivity signal @papercusp/sync's own SSE transport
+      // reports to, so a down operator surfaces as ONE consolidated
+      // "operator connection lost" toast instead of silent reconnect churn.
+      onOpen: () => reportSyncReachable(),
+      onStatusChange: (status) => {
+        if (status === 'failing') reportSyncUnreachable();
+      },
       handlers: {
         message: (data) => {
           try {

@@ -19,6 +19,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
+import { reportSyncReachable, reportSyncUnreachable } from '@papercusp/sync';
 
 import type { OpenCardSnapshot, SnapshotDelta } from '@papercusp/agent-mcp';
 import { reduceSnapshotEvent } from './snapshot-reducer';
@@ -85,8 +86,12 @@ export function useStateSnapshots(): {
       // deltas (gated by the papercusp-state-snapshot-deltas flag, default OFF). The
       // delta handler below applies them; full snapshots remain the fallback.
       url: '/api/operator/state-snapshot?delta=1',
-      onOpen: () => setConnected(true),
-      onError: () => setConnected(false),
+      // Always-on, app-wide stream (eagerly mounted via OperatorChatSidebar) —
+      // feed the same shared connectivity signal @papercusp/sync's own SSE
+      // transport reports to, so a down operator surfaces as ONE consolidated
+      // "operator connection lost" toast instead of silent reconnect churn.
+      onOpen: () => { setConnected(true); reportSyncReachable(); },
+      onError: () => { setConnected(false); reportSyncUnreachable(); },
       handlers: {
         snapshot: (raw) => {
           // @papercusp/sse hands handlers the raw event data string; parse here.

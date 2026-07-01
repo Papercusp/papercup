@@ -105,6 +105,26 @@ describe('turn:interrupt — performInterrupt (P-016/P-018; headless P-020)', ()
     expect(actions(calls)).toContain('turn.interrupt_rate_limited');
   });
 
+  it('storm guard: a trusted SYSTEM actor (stall-waker) is NOT refused at the ordinary cap (root-cause fix, gateway-mass-outage-storm-guard-2026-07-01)', async () => {
+    // stall-waker pools ALL its fleet-wide ESCs under one actor identity, so during a correlated
+    // gateway outage it legitimately force-ESCs many DISTINCT owners within one 60s window — the
+    // ordinary per-agent STORM_MAX=10 used to refuse the 11th+ owner outright. A system-recovery
+    // actor gets a much higher ceiling; only an ordinary agent identity stays capped at 10.
+    const { d, calls } = makeDeps({ recentInterrupts: async () => 10, ptyForce: async () => true });
+    const r = await performInterrupt(baseInput({ actor: 'stall-waker', mode: 'force', key: 'esc' }), d);
+    expect(r.ok).toBe(true);
+    expect(r.channel).toBe('pty-esc');
+    expect(actions(calls)).not.toContain('turn.interrupt_rate_limited');
+  });
+
+  it('storm guard: the SYSTEM actor ceiling is still bounded — trips well above the ordinary cap', async () => {
+    const { d, calls } = makeDeps({ recentInterrupts: async () => 200, ptyForce: async () => true });
+    const r = await performInterrupt(baseInput({ actor: 'stall-waker', mode: 'force', key: 'esc' }), d);
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('rate_limited');
+    expect(actions(calls)).toContain('turn.interrupt_rate_limited');
+  });
+
   it('refuses to interrupt your own turn', async () => {
     const { d, calls } = makeDeps();
     const r = await performInterrupt(baseInput({ owner: 'su-actor', actor: 'su-actor' }), d);
