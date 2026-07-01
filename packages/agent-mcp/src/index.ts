@@ -128,6 +128,11 @@ export { diffSnapshot, applySnapshotDelta, chooseSnapshotEmission } from '@paper
 export type { SnapshotDelta, SnapshotEmission } from '@papercusp/tooldef';
 export { DeltaToolClient, dispatchWithDelta, dispatchWithConveyedDelta } from '@papercusp/tooldef';
 export type { DeltaResponse, DeltaIngestResult, DeltaDispatch, DeltaDispatchResult } from '@papercusp/tooldef';
+// Result-aware guidance.seeAlso cross-links (presence-coord-unification-2026-07-01
+// D-003): the dispatch layer applies these; adopters using the callback form read
+// their content-encoded result with readJsonResult.
+export { applySeeAlso, resolveSeeAlso, renderSeeAlsoText, readJsonResult } from '@papercusp/tooldef';
+export type { SeeAlso, SeeAlsoEntry, SeeAlsoPointer } from '@papercusp/tooldef';
 // Tool-result SEMANTIC-delta flag seam (agent-tool-delta-protocol-2026-06-22, the
 // flag-bite): tooldef gates the `mode:'delta'` upgrade behind this resolver, the
 // host wires it to FLAGS.TOOL_DELTA_PROTOCOL (see operator-core's
