@@ -43,6 +43,11 @@ export default defineTool({
       'recipes:candidates → (for a promote candidate) work_items:create "implement <id> as a defineTool" ' +
       '→ (for a merge cluster) recipes:get each id to inspect, then consolidate. recipes:get { id } to ' +
       'read any candidate\'s script first.',
+    seeAlso: [
+      'recipes:merge (collapse a near-duplicate merge cluster)',
+      'recipes:sweep (retire stale one-off recipes)',
+      'recipes:get (read a candidate\'s script before acting)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

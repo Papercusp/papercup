@@ -32,6 +32,11 @@ export default defineTool({
       'this is the BEFORE-you-author check.',
     chaining:
       'recipes:search { query } → recipes:get { id } (inspect the top hit) → recipes:run { id } (reuse).',
+    seeAlso: [
+      'recipes:list (browse all recipes most-run-first)',
+      'recipes:get (full detail on a hit)',
+      'recipes:run (execute the matched recipe)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

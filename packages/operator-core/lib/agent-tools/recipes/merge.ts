@@ -41,6 +41,11 @@ export default defineTool({
     chaining:
       'recipes:candidates (mergeClusters) → recipes:get { id } per member to confirm they\'re truly ' +
       'duplicates → recipes:merge { survivorId, duplicateIds }.',
+    seeAlso: [
+      'recipes:candidates (the merge clusters this collapses)',
+      'recipes:get (inspect each member before merging)',
+      'recipes:sweep (retire a stale one-off instead of merging)',
+    ],
   },
   capability: 'intel:write',
   requirePrincipal: false,

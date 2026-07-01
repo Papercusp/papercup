@@ -37,6 +37,11 @@ export default defineTool({
     chaining:
       'recipes:search / recipes:list → recipes:get { ids:[…] } (inspect) → recipes:run { id } (reuse). ' +
       'Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+    seeAlso: [
+      'recipes:run (EXECUTE the recipe under your role-scoped envelope)',
+      'recipes:search (discover recipes by intent)',
+      'recipes:list (browse the recipe library)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

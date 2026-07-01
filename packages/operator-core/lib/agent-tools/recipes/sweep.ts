@@ -40,6 +40,11 @@ export default defineTool({
     chaining:
       'recipes:sweep { dryRun: true } (review the would-retire list) → recipes:sweep { dryRun: false } ' +
       '(commit). recipes:get { id } to inspect any candidate before committing.',
+    seeAlso: [
+      'recipes:merge (collapse near-duplicates instead of retiring)',
+      'recipes:candidates (find promote candidates in the same pass)',
+      'recipes:get (inspect a would-retire recipe first)',
+    ],
   },
   // Mutates the recipe corpus on a real run; dryRun is a preview WITHIN the write
   // tool (the same dryRun-on-a-write-capability shape recipes:run uses).

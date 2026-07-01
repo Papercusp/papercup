@@ -123,3 +123,36 @@ describe('recordFire outcome semantics (P-009)', () => {
     expect((await checkFireGate('nope', 'nobody')).allow).toBe(true);
   });
 });
+
+describe('pruneStaleFireState hygiene (autonomous-loop-hardening F6)', () => {
+  it('retires stale zero-error rows but PRESERVES error-carrying and recent rows', async () => {
+    const PW = 'ws-prune';
+    await rootSql`INSERT INTO harness_shared.autoloop_state
+        (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+        ('dead-old',      'director', now() - interval '30 days', 'ok',       0, ${PW}),
+        ('dead-erroring', 'director', now() - interval '30 days', 'error: x', 3, ${PW}),
+        ('fresh',         'director', now() - interval '1 hour',  'ok',       0, ${PW})`;
+
+    // Global prune (>=1: only this workspace's rows are stale-0-error at this point).
+    const n = await pruneStaleFireState({ maxAgeDays: 7 });
+    expect(n).toBeGreaterThanOrEqual(1);
+
+    // The precise proof: the stale zero-error row is gone; the erroring + recent ones remain.
+    const remaining = await rootSql<{ harness_slug: string }[]>`
+      SELECT harness_slug FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${PW} ORDER BY harness_slug`;
+    expect(remaining.map((r) => r.harness_slug)).toEqual(['dead-erroring', 'fresh']);
+  });
+
+  it('is GLOBAL across workspaces, not scoped to the active one', async () => {
+    const OTHER = 'ws-prune-other';
+    await rootSql`INSERT INTO harness_shared.autoloop_state
+        (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+        ('other-dead', 'director', now() - interval '60 days', 'ok', 0, ${OTHER})`;
+    // activeWorkspaceId() is mocked to WS ('ws-altest'), yet the row in OTHER is still retired.
+    const n = await pruneStaleFireState({ maxAgeDays: 7 });
+    expect(n).toBeGreaterThanOrEqual(1);
+    const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state WHERE workspace_id = ${OTHER}`;
+    expect(left.length).toBe(0);
+  });
+});

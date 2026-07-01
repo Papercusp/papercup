@@ -67,6 +67,11 @@ export default defineTool({
     chaining:
       'recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, dryRun:true } → ' +
       'recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+    seeAlso: [
+      'recipes:get (inspect the recipe\'s script before running)',
+      'recipes:search (find the right recipe to run)',
+      'code:run (author a fresh script when no recipe fits)',
+    ],
   },
   // Same gate as code:run: as powerful as the shell capability (it can call any of
   // the REUSER's write tools), open to ALL ROLES (owner directive 2026-06-25 — in lockstep

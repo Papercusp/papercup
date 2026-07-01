@@ -29,6 +29,11 @@ export default defineTool({
       'ranks by semantic + tool-set similarity). This is the plain most-run-first browse.',
     chaining:
       'recipes:list → recipes:get { id } to inspect the script → recipes:run { id } to reuse it.',
+    seeAlso: [
+      'recipes:search (find a recipe by intent instead of browsing)',
+      'recipes:get (inspect a recipe\'s script)',
+      'recipes:run (reuse a recipe instead of re-authoring a code:run)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,
