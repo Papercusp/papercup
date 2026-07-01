@@ -31,6 +31,7 @@ import { refreshAll as refreshPushCredentials } from '../device-push-credentials
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
+import { reapEndedPresenceRows } from '../agent-tools/coordination/presence-reaper';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
@@ -493,3 +494,33 @@ const recipeHygieneWorkflow = DBOS.registerWorkflow(recipeHygieneTick, {
   name: 'recipeHygiene', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(recipeHygieneWorkflow, { name: 'recipeHygiene', crontab: '0 30 5 * * 0' });
+
+// Hourly at :12 (off the daily 03:00-05:00 GC/prune cluster + no collision with any
+// other slot above): the coord_presence RETENTION reaper (presence-coord-unification-
+// 2026-07-01 P-004, WI-1347). Evicts coord_presence rows that are BOTH (a) `ended`
+// (no live coord:inbox-wake await — presence-wakeability.ts's exact wakeable
+// predicate; a `parked` row is NEVER reaped, however stale its heartbeat) AND (b)
+// past the TTL since their last heartbeat (presenceReaperTtlMs override, default 4h —
+// coord-liveness-config.ts). History is not lost: named-fleet membership survives via
+// the append-only fleet_membership_events ledger (WI-1345 / migration 430) and session
+// lifecycle survives via adv_sessions — only the live-roster row is removed. Gated by
+// the standard retention flag (default ON — finished, additive hygiene); the flag-read
+// fail-safe means a hiccup NEVER silently stops the reap. Never throws (mirrors the
+// other retention ticks): a thrown step would mark the workflow permanently dead.
+async function coordPresenceReaperTick(): Promise<void> {
+  if (!(await retentionEnabled(FLAGS.COORD_PRESENCE_REAPER))) return;
+  await DBOS.runStep(async () => {
+    try {
+      const r = await reapEndedPresenceRows({});
+      if (r.reaped > 0) {
+        console.log(`[coord-presence-reaper] reaped ${r.reaped} ended coord_presence row(s) (${r.skipped} skipped)`);
+      }
+    } catch (err) {
+      console.warn(`[coord-presence-reaper] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'coord-presence-reaper' });
+}
+const coordPresenceReaperWorkflow = DBOS.registerWorkflow(coordPresenceReaperTick, {
+  name: 'coordPresenceReaper', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(coordPresenceReaperWorkflow, { name: 'coordPresenceReaper', crontab: '0 12 * * * *' });

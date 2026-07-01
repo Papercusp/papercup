@@ -46,7 +46,7 @@ import {
 } from '../../../saved-prompts-materialize';
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
-import { resolveAccountPin, resolveFleet } from './bootstrap-su';
+import { resolveAccountPin, resolveFleet, reconstructPsuLaunchArgv } from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
 
 const CORS_HEADERS: Record<string, string> = {
@@ -299,6 +299,20 @@ const post = defineTool({
       ? spec.nativeSessionId
       : null;
 
+    // launch-path-argv-reconstruction (WI-1343), extended to the role path (WI-1347):
+    // this route has no `launch_argv` field in its body yet (the psu launcher's role
+    // flow predates WI-1343 — roleBootstrapBody doesn't send one), so it's always a
+    // server-side reconstruction from the resolved fields. `role` (not `profile`)
+    // is what a role-scoped `psu --role=<role>` invocation actually carries.
+    const launchArgv = reconstructPsuLaunchArgv({
+      agent,
+      role,
+      harnessSlug,
+      planSlug: planContext ? plan : null,
+      account: body.account?.trim() || null,
+      fleet: body.fleet?.trim() || body.fleet_name?.trim() || null,
+    });
+
     // Record the tracked session first so the prompt/mcp files key off its id.
     const sessionId = await recordAdvSession({
       workspaceId: workspace,
@@ -310,6 +324,7 @@ const post = defineTool({
       cwd: spec.cwd,
       label: feature ? `${role} · ${feature}` : (planContext ? `${role} · ${plan}` : role),
       coordOwnerId: sid,
+      launchArgv,
       ...(nativeSessionId ? { sessionId: nativeSessionId } : {}),
     });
 

@@ -431,11 +431,17 @@ export function reconstructPsuLaunchArgv(o: {
   contextSize?: string | null;
   account?: string | null;
   fleet?: string | null;
+  /** WI-1347: a role-scoped launch (`psu --role=<role>`, bootstrap-role's path)
+   *  reduces to `--role=` instead of `--profile=` — mutually exclusive with
+   *  `profile` at the call site. Omitted ⇒ byte-identical to the pre-WI-1347
+   *  plain-SU/engineer reconstruction below. */
+  role?: string | null;
 }): string[] {
   const argv = ['psu', '--no-picker', `--agent=${o.agent}`];
+  if (o.role) argv.push(`--role=${o.role}`);
   if (o.harnessSlug) argv.push(`--harness=${o.harnessSlug}`);
   argv.push(o.planSlug ? `--plan=${o.planSlug}` : '--no-plan');
-  if (o.profile && o.profile !== 'engineer') argv.push(`--profile=${o.profile}`);
+  if (!o.role && o.profile && o.profile !== 'engineer') argv.push(`--profile=${o.profile}`);
   if (o.contextSize) argv.push(`--context-size=${o.contextSize}`);
   if (o.account) argv.push(`--account=${o.account}`);
   if (o.fleet) argv.push(`--fleet=${o.fleet}`);

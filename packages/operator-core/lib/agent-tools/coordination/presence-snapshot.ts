@@ -178,11 +178,16 @@ export async function assemblePresenceSnapshot(
     hiveId == null
       ? listRecordedLiveSessions({ workspaceId: wsId })
       : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
-    // Blunt 24h GC of long-dead rows (the pre-existing backstop). NOTE: ended-row
-    // retention is otherwise handled READ-SIDE only — `selectRosterRows` excludes
-    // `ended` rows from the default payload WITHOUT deleting them, so their history
-    // survives for the presence-coord-unification append-only log (P-002). No new
-    // short-TTL deletion is added here until that log preserves the history first.
+    // Blunt 24h GC of long-dead rows (the pre-existing backstop, still here as a
+    // final safety net). NOTE: the READ side additionally excludes `ended` rows from
+    // the default payload (`selectRosterRows`) WITHOUT deleting them — that's a
+    // display filter, not retention. Actual short-TTL retention is now a SEPARATE
+    // scheduled reaper (presence-coord-unification-2026-07-01 P-004, WI-1347 —
+    // coordPresenceReaperTick / reapEndedPresenceRows in presence-reaper.ts, hourly),
+    // which is wakeability-aware (never reaps a `parked` row, only a genuinely
+    // `ended` one past its TTL) and was cleared to ship once the append-only
+    // fleet_membership_events ledger (P-002 / WI-1345 / migration 430) landed —
+    // fleet-membership history now survives a coord_presence row's deletion.
     sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
   ]);
   // Reconcile the two liveness sources: a fresh presence row wins; a live

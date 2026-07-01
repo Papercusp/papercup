@@ -42,6 +42,32 @@ import {
   interactiveBackendFromSpawnBackend,
 } from '../../../backend-feature-capabilities';
 
+/**
+ * launch-path-argv-reconstruction (WI-1343), extended to the hive/overwatch invoke
+ * path (WI-1347): this route is the loopback invoke chokepoint for the HTTP-based
+ * autonomous spawns (Queen hive launches, overwatch) — there is no `psu …` CLI
+ * invocation to reconstruct (unlike bootstrap-su/bootstrap-role), so this records
+ * the resolved invoke-chokepoint call as a forensic descriptor instead: which
+ * backend, role, harness, and launch kind were requested. Pure — exported for tests.
+ */
+export function reconstructHiveLaunchArgv(o: {
+  backend: string;
+  role: string;
+  harnessSlug: string;
+  isOverwatchLaunch: boolean;
+  modelPin?: string | null;
+}): string[] {
+  const argv = [
+    'invoke',
+    `--agent=${o.backend}`,
+    `--role=${o.role}`,
+    `--harness=${o.harnessSlug}`,
+    `--kind=${o.isOverwatchLaunch ? 'overwatch' : 'hive'}`,
+  ];
+  if (o.modelPin) argv.push(`--model=${o.modelPin}`);
+  return argv;
+}
+
 const launch = defineTool({
   method: 'POST',
   path: '/harness/:slug/launch',
@@ -300,6 +326,15 @@ const invoke = defineTool({
         cwd: project.path,
         mode: 'console',
         label: `${isOverwatchLaunch ? 'overwatch' : 'hive'} · ${project.slug}/${role}`,
+        // WI-1347: forensic reconstruction of this invoke-chokepoint call (no literal
+        // CLI invocation exists for a hive/overwatch spawn to record verbatim).
+        launchArgv: reconstructHiveLaunchArgv({
+          backend: trackedInteractiveBackend,
+          role,
+          harnessSlug: project.slug,
+          isOverwatchLaunch,
+          modelPin: spawnModelPin || null,
+        }),
       });
     }
 
