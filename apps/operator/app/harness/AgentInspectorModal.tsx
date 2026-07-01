@@ -61,8 +61,16 @@ export default function AgentInspectorModal({
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [events]);
 
-  const statusLabel = status === 'connecting' ? 'connecting…' : status;
-  const statusColor = status === 'live' ? '#6aa84f' : status === 'error' ? '#d97757' : '#9a9a9a';
+  const elapsedMs = Math.max(0, now - (startedAtMs ?? openedAtRef.current));
+  const waiting = waitingMessage(status, elapsedMs);
+  // A live run sitting on zero output past the stall threshold reads as
+  // "stalled?" instead of a reassuring green "live" (mirrors the hover popover).
+  const stalledNow = events.length === 0 && status === 'live' && waiting.stalled;
+  const statusLabel = stalledNow ? 'stalled?' : status === 'connecting' ? 'connecting…' : status;
+  const statusColor = stalledNow ? '#d97757'
+    : status === 'live' ? '#6aa84f'
+    : status === 'error' ? '#d97757'
+    : '#9a9a9a';
 
   return (
     <Modal
@@ -118,8 +126,8 @@ export default function AgentInspectorModal({
         }}
       >
         {events.length === 0 ? (
-          <div style={{ color: 'var(--fg-mute)', fontStyle: 'italic' }}>
-            {status === 'connecting' ? 'Connecting…' : 'No output from the agent yet.'}
+          <div style={{ color: waiting.stalled ? '#d97757' : 'var(--fg-mute)', fontStyle: 'italic' }}>
+            {waiting.text}
           </div>
         ) : (
           events.map((e, i) => <Entry key={i} entry={e} />)
