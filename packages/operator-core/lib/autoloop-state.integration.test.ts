@@ -35,7 +35,8 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => WS };
 });
 
-const { recordFire, readFireState, checkFireGate, resetFireErrors, getAutoLoopState } = await import('./autoloop');
+const { recordFire, readFireState, checkFireGate, resetFireErrors, getAutoLoopState, pruneStaleFireState } =
+  await import('./autoloop');
 
 let rootSql: postgres.Sql;
 let dbName: string;

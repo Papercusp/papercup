@@ -205,6 +205,80 @@ export async function recordFire(
         workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
+  // Health-signal hygiene (autonomous-loop-hardening F6): piggyback a throttled prune of
+  // long-dead fire-state rows on the existing fire path, so the table self-maintains without a
+  // new scheduler. Fire-and-forget + time-gated, so it adds no per-fire cost in the common case
+  // and never blocks or fails a fire.
+  maybePruneStaleFireState(Date.now());
+}
+
+/** How stale a zero-error fire-state row must be before the hygiene prune retires it. A live
+ *  autoloop role fires every minutes–hours, so a row untouched this long belongs to a
+ *  since-deleted harness/role — never an active one. Env-overridable, floored at 1 day. */
+export function pruneMaxAgeDays(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_PRUNE_MAX_AGE_DAYS ?? 14);
+  return Number.isFinite(n) && n >= 1 ? n : 14;
+}
+
+/**
+ * Retire long-dead fire-state rows (autonomous-loop-hardening F6 — health-signal hygiene).
+ * DELETEs rows that have not fired for `maxAgeDays` AND carry no error signal
+ * (`consecutive_errors = 0`) — a role that fired once for a since-deleted harness and went
+ * quiet, leaving cruft that clutters `autoloop:status` and any health read. GLOBAL (every
+ * workspace): the accumulation is old dead harnesses across workspaces, and a ≥14-day-stale
+ * zero-error row cannot belong to a live role. Rows with a non-zero error counter are
+ * PRESERVED (real circuit signal for reset-errors / investigation), and recently-fired rows
+ * are untouched — so this can never disturb an active or a legitimately-failing circuit.
+ * Returns the number of rows retired.
+ */
+export async function pruneStaleFireState(opts: { maxAgeDays?: number } = {}): Promise<number> {
+  const maxAgeDays = opts.maxAgeDays && opts.maxAgeDays > 0 ? opts.maxAgeDays : pruneMaxAgeDays();
+  const { db } = getOrgPg();
+  const res = await db
+    .delete(at)
+    .where(
+      and(
+        dsql`${at.lastFiredAt} IS NOT NULL`,
+        dsql`${at.lastFiredAt} < now() - (${maxAgeDays}::int * interval '1 day')`,
+        eq(at.consecutiveErrors, 0),
+      ),
+    );
+  return Number((res as unknown as { count?: number }).count ?? 0);
+}
+
+/** Hygiene-prune cadence (per process): at most one prune per this window. */
+export const PRUNE_THROTTLE_MS = 6 * 3600_000;
+
+/** Pure throttle gate — a prune is due when it has never run (lastPruneAtMs ≤ 0, the sentinel)
+ *  or the window has elapsed. The never-run case is explicit so it holds for any clock, not
+ *  only real epoch-ms. Extracted so the cadence is unit-testable without a DB or a clock. */
+export function isPruneDue(
+  nowMs: number,
+  lastPruneAtMs: number,
+  throttleMs: number = PRUNE_THROTTLE_MS,
+): boolean {
+  if (lastPruneAtMs <= 0) return true; // never pruned this process — always due
+  return nowMs - lastPruneAtMs >= throttleMs;
+}
+
+let lastPruneAtMs = 0;
+
+/** Fire-and-forget, time-gated hygiene prune (F6). Called from the fire path; runs the DELETE
+ *  at most once per `PRUNE_THROTTLE_MS` per process, swallowing errors so it never affects a
+ *  fire. The first call after process start runs it, clearing accumulated cruft on startup. */
+export function maybePruneStaleFireState(nowMs: number): void {
+  if (!isPruneDue(nowMs, lastPruneAtMs)) return;
+  lastPruneAtMs = nowMs;
+  void pruneStaleFireState().then(
+    (n) => {
+      if (n > 0) {
+        console.log(
+          `[autoloop] hygiene: retired ${n} stale fire-state row(s) (≥${pruneMaxAgeDays()}d idle, no errors)`,
+        );
+      }
+    },
+    (e) => console.warn('[autoloop] hygiene prune failed (non-fatal):', e instanceof Error ? e.message : e),
+  );
 }
 
 /**

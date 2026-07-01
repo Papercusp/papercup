@@ -18,6 +18,11 @@ export default defineTool({
     when: 'Before proposing a rubric (dedup), or to find a standard covering a characteristic by keyword.',
     notWhen: 'You want a filtered list by status/characteristic — rubrics:list. You have the id — rubrics:get.',
     chaining: 'rubrics:search → rubrics:get (use the existing one) / rubrics:propose (if none fits).',
+    seeAlso: [
+      'rubrics:list (filtered list by status/characteristic)',
+      'rubrics:get (you already have the id)',
+      'rubrics:propose (author one if none fits)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

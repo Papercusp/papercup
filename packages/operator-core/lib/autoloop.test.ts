@@ -5,7 +5,16 @@
  * autoloop-state.integration.test.ts against a real Postgres.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { evaluateFireGate, backoffBaseSec, backoffCapSec, circuitThreshold, recoverySec } from './autoloop';
+import {
+  evaluateFireGate,
+  backoffBaseSec,
+  backoffCapSec,
+  circuitThreshold,
+  recoverySec,
+  isPruneDue,
+  PRUNE_THROTTLE_MS,
+  pruneMaxAgeDays,
+} from './autoloop';
 
 const ENV = [
   'PAPERCUSP_AUTOLOOP_BACKOFF_BASE_SEC',
@@ -138,5 +147,33 @@ describe('evaluateFireGate — recovery-debounce auto-heal (B7/F3)', () => {
     // Garbage env falls back to cap*6.
     process.env.PAPERCUSP_AUTOLOOP_RECOVERY_SEC = 'nope';
     expect(recoverySec()).toBe(50 * 6);
+  });
+});
+
+describe('stale fire-state hygiene prune throttle (autonomous-loop-hardening F6)', () => {
+  test('is due when never pruned (lastPruneAtMs = 0)', () => {
+    expect(isPruneDue(1_000_000, 0)).toBe(true);
+  });
+  test('is NOT due within the throttle window', () => {
+    const now = 10 * PRUNE_THROTTLE_MS;
+    expect(isPruneDue(now, now - (PRUNE_THROTTLE_MS - 1))).toBe(false);
+  });
+  test('is due once the throttle window has elapsed', () => {
+    const now = 10 * PRUNE_THROTTLE_MS;
+    expect(isPruneDue(now, now - PRUNE_THROTTLE_MS)).toBe(true);
+    expect(isPruneDue(now, now - (PRUNE_THROTTLE_MS + 1))).toBe(true);
+  });
+  test('respects a custom throttle window', () => {
+    expect(isPruneDue(500, 200, 100)).toBe(true);
+    expect(isPruneDue(250, 200, 100)).toBe(false);
+  });
+  test('pruneMaxAgeDays defaults to a safe 14d window and honours a valid override', () => {
+    delete process.env.PAPERCUSP_AUTOLOOP_PRUNE_MAX_AGE_DAYS;
+    expect(pruneMaxAgeDays()).toBe(14);
+    process.env.PAPERCUSP_AUTOLOOP_PRUNE_MAX_AGE_DAYS = '30';
+    expect(pruneMaxAgeDays()).toBe(30);
+    process.env.PAPERCUSP_AUTOLOOP_PRUNE_MAX_AGE_DAYS = 'garbage';
+    expect(pruneMaxAgeDays()).toBe(14);
+    delete process.env.PAPERCUSP_AUTOLOOP_PRUNE_MAX_AGE_DAYS;
   });
 });

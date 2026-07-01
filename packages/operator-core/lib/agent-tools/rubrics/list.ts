@@ -18,6 +18,11 @@ export default defineTool({
     when: 'Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Scout: discover the rubric set to grade against.',
     notWhen: 'You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search.',
     chaining: 'rubrics:list { status: "active" } → rubrics:get { rubricId } → file a structured observation.',
+    seeAlso: [
+      'rubrics:get (full criteria for an id)',
+      'rubrics:search (free-text keyword lookup)',
+      'rubrics:propose (author one when none fits)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

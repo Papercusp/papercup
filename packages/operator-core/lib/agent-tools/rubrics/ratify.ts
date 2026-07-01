@@ -30,6 +30,10 @@ export default defineTool({
     when: 'You are the Queen/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricIds:[…].',
     notWhen: 'Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Queen.',
     chaining: 'rubrics:list { status: "proposed" } → rubrics:get → rubrics:ratify { rubricIds:[…] }. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.',
+    seeAlso: [
+      'rubrics:propose (author or revise content, not activate)',
+      'rubrics:list { status:"proposed" } (find rubrics awaiting ratification)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

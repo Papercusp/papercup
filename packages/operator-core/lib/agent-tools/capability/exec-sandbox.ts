@@ -223,9 +223,15 @@ export function buildCapabilitySandboxCommand(
   const argv: string[] = [
     // Read-only view of the whole host fs (builds/tools must READ it)…
     '--ro-bind', '/', '/',
-    // …then carve out the writable surfaces: the project cwd (real path) + /tmp.
-    '--bind', input.cwd, input.cwd,
+    // …then carve out the writable surfaces. ORDER MATTERS: `--tmpfs /tmp` (a fresh
+    // writable /tmp) must come BEFORE the cwd bind. When the cwd is itself under /tmp
+    // (e.g. TMPDIR=/tmp/pcv → a mkdtemp working dir), a `--tmpfs /tmp` applied AFTER
+    // the cwd bind mounts an empty tmpfs OVER it, so the bind vanishes and `--chdir`
+    // fails ("Can't chdir … No such file or directory"). Binding the cwd on TOP of
+    // the tmpfs makes bwrap create the mount point inside the writable tmpfs, so the
+    // real cwd survives at its path and `--chdir` succeeds.
     '--tmpfs', '/tmp',
+    '--bind', input.cwd, input.cwd,
     '--proc', '/proc',
     '--dev', '/dev',
     '--unshare-pid',

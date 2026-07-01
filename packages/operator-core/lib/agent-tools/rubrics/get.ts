@@ -26,6 +26,11 @@ export default defineTool({
     when: 'You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Overwatch emitting the hive-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
     chaining: "rubrics:list → rubrics:get { rubricIds:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.",
+    seeAlso: [
+      'rubrics:list (scan summary rows to find an id)',
+      'rubrics:search (keyword lookup)',
+      'rubrics:trend (how this rubric\'s criteria trend over time)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

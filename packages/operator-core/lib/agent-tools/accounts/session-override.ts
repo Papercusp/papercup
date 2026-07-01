@@ -67,6 +67,10 @@ export const accountsGetSessionOverrideTool = defineTool({
   guidance: {
     when: 'Checking how account selection is currently steered, before changing it.',
     notWhen: 'Per-account rate/status — accounts:status. The whole pool — accounts:list.',
+    seeAlso: [
+      'accounts:set-session-override (change the steering)',
+      'accounts:status (per-account health the override steers around)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

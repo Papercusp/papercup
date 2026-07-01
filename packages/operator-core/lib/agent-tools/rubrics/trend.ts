@@ -26,6 +26,11 @@ export default defineTool({
       'You want the raw recent scorecards (point-in-time standing + completeness via missingKeys) — scorecards:list. You want the rubric DEFINITION (criteria/model/method) — rubrics:get. You want the cross-corpus ideation rollup — curation:state-of-hive.',
     chaining:
       'rubrics:list { status: "active" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId. If `staleness.stale`, re-ratify the rubric via the queen↔scout loop (revise template_data → plans:set-plan-status).',
+    seeAlso: [
+      'scorecards:list (raw point-in-time scores vs this over-time view)',
+      'rubrics:get (the rubric DEFINITION — criteria/model/method)',
+      'curation:state-of-hive (the cross-corpus ideation rollup)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,
