@@ -71,13 +71,19 @@ export async function writePresence(
   // Only runs when the process actually carries a fleet, so non-fleet agents pay nothing.
   const { fleetSlug, fleetRole } = deriveFleetMembership();
   if (fleetSlug) {
-    const { sql } = getOrgPg();
-    await sql`
-      UPDATE harness_shared.coord_presence
-         SET fleet_slug = COALESCE(fleet_slug, ${fleetSlug}),
-             fleet_role = COALESCE(fleet_role, ${fleetRole})
-       WHERE owner_id = ${identity.ownerId}
-    `;
+    // WI-1345: membership is an APPEND-ONLY fact, never a direct coord_presence UPDATE
+    // (a DB guard now rejects that). Populate-once: append the env-declared fleet fact
+    // ONLY if this agent has no membership fact yet — the durable analog of the old
+    // COALESCE(fleet_slug, env) "first write populates, later ones preserve" fill. A DB
+    // projection trigger mirrors the fact onto the presence row (created by store.write
+    // above), so the live fleet_slug label lands exactly as before.
+    await appendFleetMembershipIfAbsent({
+      workspaceId: identity.workspaceId ?? 'default',
+      ownerId: identity.ownerId,
+      ownerLabel: identity.ownerLabel,
+      fleetSlug,
+      fleetRole,
+    });
   }
 
   // Spawned-bee fleet placement (fleet-color-schemes): a headless operator-spawn
