@@ -33,6 +33,7 @@ import {
   lstatSync,
   readlinkSync,
   readdirSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
