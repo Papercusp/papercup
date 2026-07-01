@@ -434,49 +434,38 @@ export async function commitAttributedGroups(
   return { committedAny };
 }
 
-/**
- * Sync ONE repo (superproject or a single submodule) to origin: commit dirty →
- * fetch → merge (reconciling a diverged/behind remote) → push. Never throws.
- */
-async function syncOneRepo(
-  runGit: RunGit,
-  repoPath: string,
-  o: {
-    remote: string;
-    defaultBranch: string;
-    message: string;
-    doPush: boolean;
-    maxBlobBytes: number;
-    contentDetectors: ContentDetector[];
-    readText: (repoPath: string, relPath: string) => Promise<string | null>;
-    log: (m: string) => void;
-    /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
-     *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
-     *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
-     *  to today's single commit. */
-    attribution?: Map<string, FileAttribution>;
-  },
-): Promise<RepoSyncResult> {
-  const { remote, message, doPush } = o;
-  // P-004: a detached HEAD (a fresh `git submodule update` leaves submodules detached)
-  // must sync to the repo's OWN remote default branch (origin/HEAD → e.g. 'main'), NOT
-  // the superproject's configured branch — o.defaultBranch carries 'staging' for the
-  // live superproject, and using it for a detached submodule would push that submodule's
-  // commits to the wrong branch and fail every tick with no clear cause. origin/HEAD
-  // resolves the right branch; o.defaultBranch is only the last resort when even that is
-  // unknown (and is now passed per-repo: 'main' for submodules, cfg.branch for the super).
-  // P-011: HEAD's branch → the remote default (origin/HEAD) → the per-repo last-resort
-  // default. If we reach the last resort the branch is a GUESS — make it LOUD (a wrong
-  // guess would otherwise surface only as an opaque "push failed" escalation).
-  const resolvedBranch =
-    (await currentBranch(runGit, repoPath)) ?? (await remoteDefaultBranch(runGit, repoPath, remote));
-  const branch = resolvedBranch ?? o.defaultBranch;
-  if (!resolvedBranch) {
-    o.log(
-      `[git-sync] ${repoPath}: could not resolve a branch from HEAD or ${remote}/HEAD — falling back to '${o.defaultBranch}' (a wrong guess will fail the push; P-011)`,
-    );
-  }
+/** The knobs the COMMIT half of one repo's sync needs (stage + content-guard + commit). */
+interface CommitRepoOpts {
+  message: string;
+  maxBlobBytes: number;
+  contentDetectors: ContentDetector[];
+  readText: (repoPath: string, relPath: string) => Promise<string | null>;
+  log: (m: string) => void;
+  /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
+   *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
+   *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
+   *  to today's single commit. */
+  attribution?: Map<string, FileAttribution>;
+}
 
+/** JSON-serializable — checkpointed as the superproject `git-sync:pointer-bump` step output. */
+interface CommitRepoResult {
+  committedLocal: boolean;
+  oversized: OversizedFile[];
+  contentErrors: ContentOffender[];
+  /** A REAL add/commit failure (index.lock race, corrupt index, embedded-repo fatal) —
+   *  surfaced by the caller as a repo error. `nothing to commit` is NOT an error. */
+  error?: string;
+}
+
+/**
+ * WI-1416: the COMMIT half of one repo's sync — stage (`add -A` with oversized +
+ * content-guard excludes) + commit. Replay-safe by construction: on an
+ * already-committed (clean) tree it is a no-op (`nothing to commit` is benign), so
+ * a durable-step re-run or a reaped-and-requeued fire cannot double-commit.
+ */
+async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts): Promise<CommitRepoResult> {
+  const { message } = o;
   let committedLocal = false;
   let oversized: OversizedFile[] = [];
   let contentErrors: ContentOffender[] = [];
