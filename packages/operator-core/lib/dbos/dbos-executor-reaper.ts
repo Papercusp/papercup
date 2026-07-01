@@ -50,11 +50,19 @@ const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
  *      <  CHECKPOINT_LOCK_STALE_MS (65m, green-checkpoint.ts)
  *  so a checkpoint is SIGTERM-killed by its own suite timeout (recording its result
  *  → a terminal, non-reapable workflow) before this reaper window elapses, yet still
- *  before its run-lock is stale-reclaimable. Whoever retunes one must retune these.
- *  (The fast orphan path below — no live queue row — still reaps a genuinely-stuck
- *  fire in ~90s, so this longer window only delays the rare has-queue-row-but-no-
- *  output case, never the common dead-executor / orphaned-fire wedge.) */
+ *  before its run-lock is stale-reclaimable. Whoever retunes one must retune these. */
 const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 60 * 60 * 1000;
+/** WI-1416: the FAST-orphan window for a routineFire in the genuinely anomalous
+ *  ENQUEUED-with-no-live-queue-row state (see the corrected queue-row semantics on
+ *  the stale query below). This path used to fire at `staleSchedulerMs` (90s) for ANY
+ *  no-queue-row fire — a false-positive machine once we verified queue rows vanish at
+ *  DEQUEUE (every healthy executing fire has none), which reaped+requeued every
+ *  git-sync fire whose first step ran >90s (the WI-1415 ~1-commit/40min loop).
+ *  Env-tunable: PAPERCUSP_DBOS_REAPER_FIRE_ORPHAN_MS. */
+const DEFAULT_STALE_ROUTINE_FIRE_ORPHAN_MS = (() => {
+  const v = Number(process.env.PAPERCUSP_DBOS_REAPER_FIRE_ORPHAN_MS);
+  return Number.isFinite(v) && v > 0 ? v : 10 * 60 * 1000;
+})();
 /** How often the recurring sweep runs. */
 const DEFAULT_REAP_INTERVAL_MS = 2 * 60 * 1000; // 2 min
 
@@ -81,6 +89,7 @@ export async function reapDeadExecutorWorkflows(
   livenessThresholdMs: number = DEFAULT_LIVENESS_THRESHOLD_MS,
   staleSchedulerMs: number = DEFAULT_STALE_SCHEDULER_MS,
   staleRoutineFireNoOutputMs: number = DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS,
+  staleRoutineFireOrphanMs: number = DEFAULT_STALE_ROUTINE_FIRE_ORPHAN_MS,
 ): Promise<ExecutorReaperResult> {
   const empty: ExecutorReaperResult = {
     cancelled: 0,
@@ -94,6 +103,7 @@ export async function reapDeadExecutorWorkflows(
     const deadAt = now - livenessThresholdMs;
     const staleSchedulerAt = now - staleSchedulerMs;
     const staleRoutineFireNoOutputAt = now - staleRoutineFireNoOutputMs;
+    const staleRoutineFireOrphanAt = now - staleRoutineFireOrphanMs;
     let cancelled = 0;
     let queuePurged = 0;
 

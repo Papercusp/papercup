@@ -53,18 +53,43 @@ export interface SystemActionResult {
 
 export type SystemAction = (ctx: SystemActionCtx) => Promise<void | SystemActionResult>;
 
+/** Per-action registration options. */
+export interface SystemActionOptions {
+  /**
+   * WI-1416 (bg-host-freeze-eventloop-stall P-006): the handler manages its OWN
+   * `DBOS.runStep` checkpoints (a multi-step action — git-sync is the first). The
+   * routine engine must then run it at the WORKFLOW layer, NOT wrapped in the
+   * engine's single `system:<action>` step: nested inside a step, `DBOS.runStep`
+   * silently degrades to a plain call (isInStep() → direct execution, no
+   * operation_output), so the executor reaper would still see an opaque no-progress
+   * fire. Such handlers MUST make every sub-step replay-safe — the engine no longer
+   * provides the one-big-step "re-run from the top" recovery semantics.
+   */
+  ownSteps?: boolean;
+}
+
+export interface SystemActionEntry {
+  fn: SystemAction;
+  ownSteps: boolean;
+}
+
 /** The reserved `target_role` prefix that routes a routine to a system action. */
 export const SYSTEM_TARGET_PREFIX = 'system:';
 
-const REGISTRY = new Map<string, SystemAction>();
+const REGISTRY = new Map<string, SystemActionEntry>();
 
 /** Register a `system:<name>` action handler. Idempotent (last registration wins). */
-export function registerSystemAction(name: string, fn: SystemAction): void {
-  REGISTRY.set(name, fn);
+export function registerSystemAction(name: string, fn: SystemAction, opts: SystemActionOptions = {}): void {
+  REGISTRY.set(name, { fn, ownSteps: opts.ownSteps === true });
 }
 
 /** Look up a registered system action by name (the part after `system:`). */
 export function getSystemAction(name: string): SystemAction | undefined {
+  return REGISTRY.get(name)?.fn;
+}
+
+/** Look up the full registry entry (handler + dispatch options). */
+export function getSystemActionEntry(name: string): SystemActionEntry | undefined {
   return REGISTRY.get(name);
 }
 

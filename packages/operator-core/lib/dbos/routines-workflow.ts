@@ -33,7 +33,7 @@ import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine } from '../harness/routines/claim';
 import { checkFireGate, recordFire } from '../autoloop';
 import { fireLoopWake } from '../harness/routines/loop-fire';
-import { getSystemAction, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
+import { getSystemAction, getSystemActionEntry, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import { loopPressure } from '../event-loop-lag-monitor';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
@@ -117,43 +117,85 @@ async function routineFireImpl(
       );
     } else if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
       const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
-      const actionResult = await DBOS.runStep(
-        async (): Promise<SystemActionResult | undefined> => {
-          const fn = getSystemAction(action);
-          if (!fn) {
-            console.warn(`[routines] no handler registered for system:${action} (routine ${routineId}) — skipping`);
-            return undefined;
-          }
-          // Record a throw in `routines.metadata.last_error` so a silently-wedged
-          // system action is visible (the improvement-watchdog's `routine-failure`
-          // collector reads exactly this key — before, only git-sync wrote it).
-          // Tagged `last_error_source:'runner'` so the success-path clear never
-          // wipes an error an action manages ITSELF (git-sync records its own).
-          const { sql } = getOrgPg();
-          try {
-            const result = await fn({ installSlug, workspaceId, triggerConfig, payloadTemplate });
-            await sql`
-              UPDATE harness_shared.routines
-                 SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
-                     updated_at = now()
-               WHERE id = ${routineId} AND metadata->>'last_error_source' = 'runner'`.catch(() => {});
-            // Carry the action's durable-spawn requests out of the step so the
-            // workflow layer can start them (EI-403-A) — a child workflow cannot
-            // start from inside this step. Checkpointed return ⇒ replay-safe.
-            return result ?? undefined;
-          } catch (e) {
-            const msg = (e instanceof Error ? e.message : String(e)).slice(0, 600);
-            await sql`
-              UPDATE harness_shared.routines
-                 SET metadata = COALESCE(metadata, '{}'::jsonb)
-                       || jsonb_build_object('last_error', ${msg}::text, 'last_error_at', now()::text, 'last_error_source', 'runner'),
-                     updated_at = now()
-               WHERE id = ${routineId}`.catch(() => {});
-            throw e;
-          }
-        },
-        { name: `system:${action}`, retriesAllowed: true, maxAttempts: 2, intervalSeconds: 15 },
-      );
+      const entry = getSystemActionEntry(action);
+      let actionResult: SystemActionResult | undefined;
+      if (entry?.ownSteps) {
+        // WI-1416 (bg-host-freeze-eventloop-stall P-006): a multi-step action (git-sync)
+        // runs at the WORKFLOW layer so its internal DBOS.runStep sub-steps each record
+        // an operation_output — the executor reaper sees genuine progress (function_id
+        // > 0) instead of one opaque long step, and a crashed/reaped fire resumes from
+        // its last checkpoint instead of redoing the whole action. (Wrapped in the
+        // single step below, DBOS.runStep silently degrades to a plain call — isInStep()
+        // → direct execution, no checkpoint — which was exactly the WI-1415 stall.)
+        // Same last_error bookkeeping as the single-step path, each half its own step
+        // so a replay never re-runs the SQL.
+        const { sql } = getOrgPg();
+        try {
+          actionResult = (await entry.fn({ installSlug, workspaceId, triggerConfig, payloadTemplate })) ?? undefined;
+          await DBOS.runStep(
+            async () => {
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
+                       updated_at = now()
+                 WHERE id = ${routineId} AND metadata->>'last_error_source' = 'runner'`.catch(() => {});
+            },
+            { name: `system:${action}:settle` },
+          );
+        } catch (e) {
+          const msg = (e instanceof Error ? e.message : String(e)).slice(0, 600);
+          await DBOS.runStep(
+            async () => {
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = COALESCE(metadata, '{}'::jsonb)
+                         || jsonb_build_object('last_error', ${msg}::text, 'last_error_at', now()::text, 'last_error_source', 'runner'),
+                       updated_at = now()
+                 WHERE id = ${routineId}`.catch(() => {});
+            },
+            { name: `system:${action}:settle` },
+          );
+          throw e;
+        }
+      } else {
+        actionResult = await DBOS.runStep(
+          async (): Promise<SystemActionResult | undefined> => {
+            const fn = getSystemAction(action);
+            if (!fn) {
+              console.warn(`[routines] no handler registered for system:${action} (routine ${routineId}) — skipping`);
+              return undefined;
+            }
+            // Record a throw in `routines.metadata.last_error` so a silently-wedged
+            // system action is visible (the improvement-watchdog's `routine-failure`
+            // collector reads exactly this key — before, only git-sync wrote it).
+            // Tagged `last_error_source:'runner'` so the success-path clear never
+            // wipes an error an action manages ITSELF (git-sync records its own).
+            const { sql } = getOrgPg();
+            try {
+              const result = await fn({ installSlug, workspaceId, triggerConfig, payloadTemplate });
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
+                       updated_at = now()
+                 WHERE id = ${routineId} AND metadata->>'last_error_source' = 'runner'`.catch(() => {});
+              // Carry the action's durable-spawn requests out of the step so the
+              // workflow layer can start them (EI-403-A) — a child workflow cannot
+              // start from inside this step. Checkpointed return ⇒ replay-safe.
+              return result ?? undefined;
+            } catch (e) {
+              const msg = (e instanceof Error ? e.message : String(e)).slice(0, 600);
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = COALESCE(metadata, '{}'::jsonb)
+                         || jsonb_build_object('last_error', ${msg}::text, 'last_error_at', now()::text, 'last_error_source', 'runner'),
+                       updated_at = now()
+                 WHERE id = ${routineId}`.catch(() => {});
+              throw e;
+            }
+          },
+          { name: `system:${action}`, retriesAllowed: true, maxAttempts: 2, intervalSeconds: 15 },
+        );
+      }
 
       // EI-403-A: start any durable child fires the action requested, AT THE
       // WORKFLOW LAYER (we are back in routineFireImpl's body, NOT inside a step —

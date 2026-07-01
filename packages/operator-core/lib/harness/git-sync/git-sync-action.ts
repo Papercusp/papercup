@@ -1008,6 +1008,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
       loadRoster: attributionOn ? () => loadAttributionRosterMerged(slug, workspaceId) : undefined,
+      // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
+      // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
+      step: runCheckpointedStep,
     });
   } finally {
     if (lock.state === 'acquired') await releaseAll(cd, acquired);
@@ -1021,6 +1024,41 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   const errTicks = tickErrors.length > 0 ? prev.errTicks + 1 : 0;
   // EI-438: consecutive ticks with a file still quarantined (drives P-005 escalate-to-human).
   const contentTicks = outcome.contentErrors.length > 0 ? prev.contentTicks + 1 : 0;
+
+  // STEP `git-sync:record` — outcome recording + the whole escalation/dispatch tail as
+  // ONE checkpoint: a resumed fire that already recorded never re-appends the pipeline
+  // event or re-decides escalations (the resolver/fixer dispatches inside are further
+  // deduped by their own in-flight markers).
+  await runCheckpointedStep('git-sync:record', () =>
+    recordAndEscalateTick({
+      slug,
+      workspaceId,
+      outcome,
+      errTicks,
+      contentTicks,
+      prevContentTicks: prev.contentTicks,
+      prevOversizedKeys: prev.oversizedKeys,
+      cfgBranch: cfg.branch,
+      prevHeadSha,
+      attributionOn,
+    }));
+}
+
+/** WI-1416: the outcome-recording + escalation/dispatch tail of one tick — runs as the
+ *  `git-sync:record` checkpoint (see handleGitSync). */
+async function recordAndEscalateTick(a: {
+  slug: string;
+  workspaceId: string;
+  outcome: GitSyncOutcome;
+  errTicks: number;
+  contentTicks: number;
+  prevContentTicks: number;
+  prevOversizedKeys: string[];
+  cfgBranch: string | undefined;
+  prevHeadSha: string | null;
+  attributionOn: boolean;
+}): Promise<void> {
+  const { slug, workspaceId, outcome, errTicks, contentTicks } = a;
   await recordOutcome(slug, outcome, errTicks, contentTicks);
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
@@ -1052,7 +1090,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     if (!(await resolverInFlight(slug))) {
       const scopes = outcome.conflicts.map((c) => c.scope).join(', ');
       console.warn(`[git-sync] ${slug}: merge conflict(s) in ${scopes} — dispatching merge-resolver`);
-      await spawnMergeResolver(slug, workspaceId, outcome.conflicts, cfg.branch ?? 'main');
+      await spawnMergeResolver(slug, workspaceId, outcome.conflicts, a.cfgBranch ?? 'main');
     }
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.
@@ -1061,7 +1099,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     // from the attributed commits git-sync just made (their trailers). Same flag-gate as the
     // attribution roster; best-effort + deterministic (no LLM). Only on 'synced' — a 'nothing'
     // tick made no new commits.
-    if (attributionOn && outcome.status === 'synced') {
+    if (a.attributionOn && outcome.status === 'synced') {
       await recordSyncedCommitAttribution(slug, workspaceId);
     }
   }
@@ -1081,7 +1119,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       // broken — STOP auto-dispatching (no infinite silent loop) and surface to a human
       // ONCE, on the transition. The file stays quarantined (never reaches staging), so
       // nothing is at risk while it waits for a human.
-      if (prev.contentTicks < MAX_CONTENT_FIXER_ATTEMPTS) {
+      if (a.prevContentTicks < MAX_CONTENT_FIXER_ATTEMPTS) {
         const summary =
           `git-sync: ${contentErrors.length} broken file(s) STILL failing their content check after ${contentTicks} ticks — ` +
           `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
@@ -1096,7 +1134,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       console.warn(`[git-sync] ${slug}: ${contentErrors.length} content error(s) quarantined — dispatching content-fixer`);
       await spawnContentFixer(slug, workspaceId, contentErrors);
     }
-  } else if (prev.contentTicks > 0) {
+  } else if (a.prevContentTicks > 0) {
     // Clean re-check after a quarantine — the previously-broken files now pass: clear the
     // content-error escalation (mirror the merge-resolver's clean-pass clear). Gated on the
     // prior counter so a no-content tick doesn't issue a pointless UPDATE every 10 min.
@@ -1112,7 +1150,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       await runDocFreshnessSweepAfterSync({
         harnessSlug: slug,
         workspaceId,
-        prevSha: prevHeadSha ?? undefined,
+        prevSha: a.prevHeadSha ?? undefined,
         headSha: outcome.headSha,
       });
     } catch {
@@ -1131,7 +1169,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     consecutiveErrorTicks: errTicks,
     errors: 'errors' in outcome ? outcome.errors : [],
     oversized: outcome.oversized,
-    prevOversizedKeys: prev.oversizedKeys,
+    prevOversizedKeys: a.prevOversizedKeys,
   });
   if (decision.escalate) {
     await writeGitSyncErrorEscalation(slug, workspaceId, {
@@ -1166,4 +1204,7 @@ export async function fireGitSyncNow(installSlug: string, workspaceId: string): 
   await handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null });
 }
 
-registerSystemAction('git-sync', handleGitSync);
+// WI-1416: ownSteps — the handler checkpoints its OWN DBOS sub-steps, so the routine
+// engine must run it at the WORKFLOW layer (nested inside the engine's single step,
+// DBOS.runStep silently degrades to a plain call and nothing checkpoints).
+registerSystemAction('git-sync', handleGitSync, { ownSteps: true });
