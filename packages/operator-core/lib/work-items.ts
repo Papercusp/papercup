@@ -1015,11 +1015,14 @@ export async function setWorkItemState(
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
              requeue_count = 0,
+             taken_by = NULL,
+             taken_at = NULL,
              -- agent-activity-liveness-truth P-001 (D-001/D-004): a state transition is
              -- REAL item-scoped progress — bump last_progress_at so a held item reads as
-             -- progressing, not stalled. Only for HELD rows (an unclaimed-row flip has
-             -- no holder to credit, and a later claim resets the signal anyway).
-             last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
+             -- progressing, not stalled. A TERMINAL row also releases its claim immediately,
+             -- so the progress signal must clear with the holder instead of lingering until a
+             -- later stale-claim/placement sweep.
+             last_progress_at = NULL,
              updated_ts = ${Date.now()},
              terminal_owner = ${opts.by ?? null},
              terminal_completion_ref = ${opts.completionRef ?? null}

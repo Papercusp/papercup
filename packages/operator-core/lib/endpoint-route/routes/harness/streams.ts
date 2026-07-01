@@ -51,6 +51,19 @@ export type AgentTimelineEntry = {
   ts?: string;
 };
 
+/** Per-entry text cap for UI-bound thinking entries. A single tool_result can
+ *  carry a whole file (hundreds of KB); the pane renders it in a ~120px scroll
+ *  box, so ship a bounded excerpt — this also keeps the one-shot `backfill`
+ *  lean over the desktop IPC hop. Pure — exported for tests. */
+export const THINKING_ENTRY_TEXT_CAP = 8_000;
+export function capEntryText(e: AgentTimelineEntry): AgentTimelineEntry {
+  if (typeof e.text !== 'string' || e.text.length <= THINKING_ENTRY_TEXT_CAP) return e;
+  return {
+    ...e,
+    text: `${e.text.slice(0, THINKING_ENTRY_TEXT_CAP)}… [truncated ${e.text.length - THINKING_ENTRY_TEXT_CAP} chars]`,
+  };
+}
+
 export function createAgentTimelineParser() {
   let pendingText = '';
   let pendingThinking = '';
@@ -669,7 +682,7 @@ const sessionThinkingStream = defineTool({
             for (const e of parser.parseLine(line)) entries.push(e);
           }
           entries.push(...parser.flush());
-          const capped = entries.length > 200 ? entries.slice(-200) : entries;
+          const capped = (entries.length > 200 ? entries.slice(-200) : entries).map(capEntryText);
           sink.event('backfill', capped);
           pos = stat.size;
           initialActive = Date.now() - stat.mtimeMs < SESSION_THINKING_ACTIVE_MS;
@@ -706,7 +719,7 @@ const sessionThinkingStream = defineTool({
               const line = lineBuf.slice(0, nl).trim();
               lineBuf = lineBuf.slice(nl + 1);
               if (!line) continue;
-              for (const e of followParser.parseLine(line)) sink.event('event', e);
+              for (const e of followParser.parseLine(line)) sink.event('event', capEntryText(e));
             }
             lastAppendMs = Date.now();
             emitThinking(true);

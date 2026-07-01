@@ -555,6 +555,7 @@ export async function setIssueState(
     ? await sql<IssueRowDb[]>`
         UPDATE harness_shared.engineer_issues
            SET state = ${state}, origin = 'local', updated_at = now(),
+               assignee = NULL, assigned_at = NULL,
                terminal_owner = ${by ?? null}, terminal_completion_ref = ${completionRef ?? null}
          WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
         RETURNING ${sql.unsafe(ISSUE_COLS)}`

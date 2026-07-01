@@ -112,13 +112,27 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
     setStatus('connecting');
     setEvents([]);
     setThinking(false);
+    // The one-shot `backfill` is sent ONCE per connection — if it arrives
+    // corrupted (e.g. the stream dropped mid-event and resumed), nothing in-band
+    // ever re-sends it and the pane would wedge on "connecting…" while small
+    // follow events still flow. Self-heal with a bounded clean reconnect (a new
+    // connection re-sends the backfill); after the cap, surface 'error' instead
+    // of an eternal spinner.
+    let backfillRetries = 0;
     const source = createResilientEventSource({
       // A caller can pass an explicit stream URL (e.g. the interactive-session
       // transcript endpoint); default is the bee run-log stream.
       url: streamUrl ?? `/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`,
       handlers: {
         backfill: (data) => {
-          try { setEvents(JSON.parse(data) as TimelineEntry[]); setStatus('live'); } catch { /* ignore */ }
+          try {
+            setEvents(JSON.parse(data) as TimelineEntry[]);
+            setStatus('live');
+            backfillRetries = 0;
+          } catch {
+            if (backfillRetries < 3) { backfillRetries += 1; source.reconnect(); }
+            else setStatus('error');
+          }
         },
         event: (data) => {
           try { const e = JSON.parse(data) as TimelineEntry; setEvents((prev) => [...prev, e]); } catch { /* ignore */ }

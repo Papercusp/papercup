@@ -213,18 +213,29 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
 
   it('feature-family ACCEPTS a terminal transition with both, and persists them readable via the unified WorkItem', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await wi.claimWorkItem(feat.id, 'agA', { harness: 'papercup' });
+    await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' });
     const after = await wi.setWorkItemState(feat.id, 'passed', {
       harness: 'papercup',
       by: 'agA',
       completionRef: 'shipped in migration 432',
     });
     expect(after?.state).toBe('passed');
+    expect(after?.assignee).toBeNull();
     expect(after?.terminalOwner).toBe('agA');
     expect(after?.terminalCompletionRef).toBe('shipped in migration 432');
     // Re-fetch through the plain read path (not just the write's return value).
     const refetched = await wi.getWorkItem(feat.id, 'papercup');
+    expect(refetched?.assignee).toBeNull();
     expect(refetched?.terminalOwner).toBe('agA');
     expect(refetched?.terminalCompletionRef).toBe('shipped in migration 432');
+    const [dbRow] = await db.sql<{ taken_by: string | null; taken_at: Date | null; last_progress_at: Date | null }[]>`
+      SELECT taken_by, taken_at, last_progress_at
+        FROM harness_shared.harness_features_consolidated
+       WHERE feature_id = ${feat.id}`;
+    expect(dbRow.taken_by).toBeNull();
+    expect(dbRow.taken_at).toBeNull();
+    expect(dbRow.last_progress_at).toBeNull();
   });
 
   it('issue-family REJECTS a terminal transition missing both owner and completionRef', async () => {
@@ -241,10 +252,20 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
 
   it('issue-family ACCEPTS a terminal transition with both, and persists them readable via the unified WorkItem', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.claimWorkItem(bug.id, 'agA');
     const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
     expect(after?.state).toBe('resolved');
+    expect(after?.assignee).toBeNull();
     expect(after?.terminalOwner).toBe('agA');
     expect(after?.terminalCompletionRef).toBe('fixed in PR #42');
+    const refetched = await wi.getWorkItem(bug.id);
+    expect(refetched?.assignee).toBeNull();
+    const [dbRow] = await db.sql<{ assignee: string | null; assigned_at: Date | null }[]>`
+      SELECT assignee, assigned_at
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${bug.id}`;
+    expect(dbRow.assignee).toBeNull();
+    expect(dbRow.assigned_at).toBeNull();
   });
 
   it('a non-terminal transition is UNAFFECTED by the gate — no owner/completionRef required', async () => {
