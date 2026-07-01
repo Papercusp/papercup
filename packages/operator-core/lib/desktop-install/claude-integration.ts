@@ -21,6 +21,7 @@
  *         &client=${PAPERCUSP_SID:-<agentId>}
  *         &workspace=${PAPERCUSP_WORKSPACE:-}
  *         &profile=${PAPERCUSP_PROFILE:-<profileDefault>}
+ *         &tools=${PAPERCUSP_TOOLS:-}      (su-context-size-variants: CORE spine when trimmed)
  *     and psu EXPORTS `PAPERCUSP_OPERATOR_URL` (the live operator url it already
  *     resolves) on the claude child. Registration is then ONE-TIME and the url
  *     self-heals across the dynamic port — no per-boot rewrite, idempotent. The
@@ -126,7 +127,15 @@ export function buildClaudeMcpEntry(
       `\${PAPERCUSP_OPERATOR_URL:-${operatorUrlFallback}}/api/mcp?superuser=1` +
       `&client=\${PAPERCUSP_SID:-${agentId}}` +
       `&workspace=\${PAPERCUSP_WORKSPACE:-}` +
-      `&profile=\${PAPERCUSP_PROFILE:-${prof}}`,
+      `&profile=\${PAPERCUSP_PROFILE:-${prof}}` +
+      // su-context-size-variants (claude trim): the ?tools= LISTING allowlist. psu exports
+      // PAPERCUSP_TOOLS = the ~19-tool CORE SPINE for a `--context-size=trimmed` claude, so the
+      // superuser MCP advertises ONLY the spine (~9k vs the full ~165k catalog) — the fix for
+      // claude-sonnet dying "Prompt is too long" on its 200k window (claude's native ToolSearch
+      // defers only SCHEMAS, leaving all ~581 names+descriptions inline). Unset/empty ⇒ full
+      // catalog (parseToolsAllowlist treats empty as no-filter — zero regression for a bare claude
+      // or a full/omitted session). The long tail stays reachable via `tools:find` (in the spine).
+      `&tools=\${PAPERCUSP_TOOLS:-}`,
     headers: { Authorization: `Bearer ${token}` },
   };
 }

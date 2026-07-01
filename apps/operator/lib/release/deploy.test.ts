@@ -4,7 +4,7 @@
  * fails health without rolling back, would wedge the fleet). Stub deps so we
  * test pure orchestration; real wiring is exercised in the e2e integration test.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,23 @@ import {
 } from './deploy';
 import { git, revParse } from './git-ops';
 import { releaseConfig } from './release-config';
+
+// EI-5993: emitAwaitedEvent must be AWAITED, not fire-and-forget — deploy-cli
+// process.exit()s right after executeDeploy resolves, so a `void`'d emit races
+// the exit and (in production) almost never fires. Mocked with a real async
+// delay so a regression back to fire-and-forget makes this test fail instead
+// of passing by scheduling luck.
+const { emittedKeys, emitAwaitedEventMock } = vi.hoisted(() => {
+  const emittedKeys: string[] = [];
+  const emitAwaitedEventMock = vi.fn(async (opts: { key: string }) => {
+    await new Promise((r) => setTimeout(r, 20));
+    emittedKeys.push(opts.key);
+  });
+  return { emittedKeys, emitAwaitedEventMock };
+});
+vi.mock('@papercusp/operator-core/lib/events/await/engine', () => ({
+  emitAwaitedEvent: emitAwaitedEventMock,
+}));
 
 function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: DeployDeps; calls: string[] } {
   const calls: string[] = [];
@@ -121,6 +138,13 @@ describe('executeDeploy — happy path', () => {
     expect(calls).toContain('recordEvent:ok'); // the deploy reports its own outcome
     expect(calls[calls.length - 1]).toBe('drain:release');
   });
+
+  it('EI-5993: awaits emitAwaitedEvent(release:deployed) before resolving', async () => {
+    emittedKeys.length = 0;
+    const { deps } = makeDeps();
+    await executeDeploy(cfg, plan, deps);
+    expect(emittedKeys).toContain('release:deployed');
+  });
 });
 
 describe('executeDeploy — rollback on failure', () => {
@@ -146,6 +170,23 @@ describe('executeDeploy — rollback on failure', () => {
     expect(calls).toContain('broadcast:fail');
     expect(calls).toContain('recordEvent:rolled-back');
     expect(calls[calls.length - 1]).toBe('drain:release');
+  });
+
+  it('EI-5993: awaits emitAwaitedEvent(release:deploy-failed) before resolving', async () => {
+    emittedKeys.length = 0;
+    let healthCalls = 0;
+    const { deps } = makeDeps({
+      health: () => {
+        healthCalls++;
+        return Promise.resolve(
+          healthCalls === 1
+            ? { healthy: false, attempts: 3, elapsedMs: 90, error: 'never came up' }
+            : { healthy: true, attempts: 1, elapsedMs: 10 },
+        );
+      },
+    });
+    await executeDeploy(cfg, plan, deps);
+    expect(emittedKeys).toContain('release:deploy-failed');
   });
 
   it('skips DB restore on code-only failures (no migrations)', async () => {

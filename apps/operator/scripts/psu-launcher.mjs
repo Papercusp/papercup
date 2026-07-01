@@ -2798,11 +2798,19 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // hooks read it at runtime (the durable prompt directive + turn-1 kickoff come
       // from bootstrap-su via the `auto` body field). Default on for `--fleet`.
       ...(effectiveAutoMode(args) ? { PAPERCUSP_AUTO_MODE: '1' } : {}),
-      // su-context-size-variants: Claude soft-trims its MCP surface natively via
-      // ToolSearch (default-on = the trimmed variant). 'full' forces every tool
-      // schema loaded up-front by disabling ToolSearch deferral. (codex/omp levers
-      // live server-side / in their native config; claude's is just this env var.)
+      // su-context-size-variants: 'full' forces every tool schema loaded up-front by
+      // disabling ToolSearch deferral (fine on a 1M-window model; the whole point of full).
       ...(res.agent === 'claude' && args.contextSize === 'full' ? { ENABLE_TOOL_SEARCH: 'false' } : {}),
+      // su-context-size-variants (claude trim FIX, 2026-07-01): claude does NOT usefully
+      // self-trim — native ToolSearch defers only tool SCHEMAS, leaving all ~581 tool
+      // names+descriptions (~165k, MEASURED) inline, which fills a 200k-window model (sonnet)
+      // on boot → "Prompt is too long" DOA. So a trimmed claude gets the SAME server-side
+      // ?tools= hard-trim codex/omp use: claude's user-level papercusp-su MCP url env-expands
+      // ${PAPERCUSP_TOOLS} (see buildClaudeMcpEntry), so exporting the ~19-tool CORE SPINE here
+      // makes the superuser MCP advertise ONLY the spine (~9k). The long tail stays reachable
+      // via tools:find (in the spine). Empty/unset ⇒ full catalog (no regression for full/omitted).
+      ...(res.agent === 'claude' && args.contextSize === 'trimmed'
+        ? { PAPERCUSP_TOOLS: OMP_CORE_MCP_TOOL_NAMES.join(',') } : {}),
       // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
       // dir (home-relative) — 'full' with discovery off, or a WEAK model with the MCP surface
       // trimmed to the core spine (materialized above; null for non-omp / frontier-model / failure).
