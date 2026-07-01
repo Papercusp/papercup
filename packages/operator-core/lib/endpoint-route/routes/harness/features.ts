@@ -25,6 +25,7 @@ import { auditFeatureChange } from '../../../feature-audit';
 import { firePluginLifecycle } from '../../../plugin-host-runtime';
 import { syncFeatureBlockEdges } from '../../../dbos/feature-blockers-edges';
 import { defaultBlockingStore } from '../../../work-item-blocking';
+import { normalizeFeatureStateInput } from '../../../work-item-dispatch-states';
 import {
   resolveBlockedByRefs,
   detectDependencyCycle,
@@ -295,7 +296,14 @@ const updateFeature = defineTool({
     const updates: Record<string, any> = {};
     if (body.status !== undefined) {
       if (typeof body.status !== 'string' || !body.status) return Response.json({ error: 'invalid status' }, { status: 400 });
-      updates.status = body.status;
+      // WI-195 C2: reject an arbitrary/typo feature status at the HTTP edge + fold
+      // aliases (the engine setWorkItemState path already guards; this endpoint
+      // bypassed it, so a raw PATCH status:'banana' persisted un-rejected).
+      const norm = normalizeFeatureStateInput(body.status);
+      if (!norm.ok) {
+        return Response.json({ error: `invalid status '${body.status}' — valid: ${norm.valid.join(', ')}` }, { status: 400 });
+      }
+      updates.status = norm.state;
     }
     if (body.title !== undefined) {
       if (typeof body.title !== 'string' || body.title.trim() === '') return Response.json({ error: 'title must be a non-empty string' }, { status: 400 });
@@ -733,7 +741,14 @@ const createFeature = defineTool({
       }
     }
 
-    const status = body.status || 'todo';
+    // WI-195 C2: validate/normalize the caller-supplied feature status (typo guard,
+    // mirroring the engine + PATCH path). The out_of_budget branch above returns
+    // before this, so its internal status write is unaffected.
+    const statusNorm = normalizeFeatureStateInput(body.status || 'todo');
+    if (!statusNorm.ok) {
+      return Response.json({ error: `invalid status '${body.status}' — valid: ${statusNorm.valid.join(', ')}` }, { status: 400 });
+    }
+    const status = statusNorm.state;
     const claims = Array.isArray(body.claims) ? body.claims.map((s) => String(s).trim()).filter(Boolean) : [];
     const now = Date.now();
 

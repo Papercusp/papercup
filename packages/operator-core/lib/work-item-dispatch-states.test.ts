@@ -80,6 +80,17 @@ describe('normalizeFeatureStateInput', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.valid).toEqual(FEATURE_FAMILY_STATES);
   });
+
+  it('accepts every status the features UI can submit, so the /harness/:slug/features guard (WI-195 C2) can never 400 a real save', () => {
+    // Mirror of apps/operator/app/harness/FeatureEditor.tsx VALID_STATUSES. The POST
+    // /features + PATCH /features/:id endpoints now validate body.status through
+    // normalizeFeatureStateInput; if a UI-selectable status were NOT in the family
+    // vocab this guard would reject a legitimate human save. Fails loudly on divergence.
+    const UI_VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'];
+    for (const s of UI_VALID_STATUSES) {
+      expect(normalizeFeatureStateInput(s)).toEqual({ ok: true, state: s });
+    }
+  });
 });
 
 describe('staleReclaimRequeueCap', () => {
