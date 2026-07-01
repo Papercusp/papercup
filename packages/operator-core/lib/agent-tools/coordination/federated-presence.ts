@@ -131,6 +131,43 @@ export async function queryFederatedPresenceRows(
 }
 
 /**
+ * Map one shared_session_presence row (P-006) to a unified record carrying the
+ * session's REAL ownerId — the row P-007's recipient resolver admits, so a
+ * remote su-<uuid>/bee is addressable exactly like a local one. Pure.
+ */
+export function mapSessionPresenceRow(
+  row: SessionPresenceRowOut,
+  ctx: { now: number; staleMs: number },
+): UnifiedPresenceRecord {
+  const iso = new Date(row.last_seen_ms).toISOString();
+  return {
+    ownerId: row.owner_id,
+    ownerLabel: `${row.kind} · ${row.owner_id.slice(0, 8)} @ ${row.machine_label}`,
+    workspaceId: row.workspace_id,
+    source: 'federated',
+    intent: row.intent ?? '',
+    currentPlanSlug: row.plan_slug,
+    currentFiles: [],
+    host: row.machine_label,
+    pid: null,
+    startedAt: iso,
+    heartbeatAt: iso,
+    lastActiveAt: iso,
+    agentRole: row.kind,
+    hiveSlug: row.hive_slug,
+    stale: row.last_seen_ms < ctx.now - ctx.staleMs,
+    userId: String(row.github_user_id),
+    revoked: false,
+    federated: true,
+    remoteSession: true,
+    machineLabel: row.machine_label,
+    devicePubkey: row.device_pubkey,
+    harnessSlug: row.harness_slug,
+    currentView: null,
+  };
+}
+
+/**
  * List the federated (cross-machine) presence peers as unified records. Returns
  * [] when shared_presence is empty (single box). Best-effort — a query error
  * yields [] so the local roster always renders.
@@ -148,5 +185,25 @@ export async function listFederatedPresence(
     return [];
   }
   const nowMs = now();
-  return rows.map((r) => mapSharedPresenceRow(r, { now: nowMs, staleMs }));
+  const machineRows = rows.map((r) => mapSharedPresenceRow(r, { now: nowMs, staleMs }));
+  // P-006: the SESSION-GRAIN leg — remote agents as first-class rows with their
+  // real ownerIds (shared_session_presence, gossip-fed). Best-effort: a query
+  // error (e.g. mig 434 not yet applied) degrades to machine rows only. A wide
+  // read window (4x stale) keeps rows visible-but-stale rather than vanishing
+  // at the exact staleness boundary the flag/badge logic uses.
+  let sessionRows: UnifiedPresenceRecord[] = [];
+  if (opts.workspaceId) {
+    try {
+      const sessions = await listLiveSessionPresence({
+        workspaceId: opts.workspaceId,
+        hiveSlug: opts.hiveSlug ?? null,
+        staleMs: staleMs * 4,
+        nowMs,
+      });
+      sessionRows = sessions.map((s) => mapSessionPresenceRow(s, { now: nowMs, staleMs }));
+    } catch {
+      sessionRows = [];
+    }
+  }
+  return [...machineRows, ...sessionRows];
 }
