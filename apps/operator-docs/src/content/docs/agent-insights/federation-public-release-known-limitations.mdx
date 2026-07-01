@@ -46,7 +46,7 @@ federation is done.
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
-| Base federation (content/features + per-part plans + coord **data**), A→B **and** B→A | ✅ **Proven LIVE** | 3 consecutive green runs (run33/34/35), 2 separate Hetzner cpx31 VMs, production config, real public DHT; controlled before/after (run32 no-fix FAIL → run33 fix PASS) |
+| Base federation (content/features + per-part plans + coord **data**), A→B **and** B→A | ✅ **Proven LIVE** — with a no-restart caveat (↓ open blocker #9) | 3 consecutive green runs (run33/34/35), 2 Hetzner cpx31 VMs, prod config, real public DHT; controlled before/after (run32 no-fix FAIL → run33 fix PASS). ⚠ A later live run (Brief 6 attempt-1) surfaced owner→joiner roster-EMPTY in the **pure no-restart** join path — the earlier green runs may have included a restart/rekey. See blocker #9. |
 | `forceReFold` A→B owner-admit race fix | ✅ In + adversarially reviewed **SAFE-TO-SHIP** | `boot.ts`; repro test `owner-roster-rebind-race.repro`; review record memory `4d1db206` |
 | Extended matrix: revocation/K-cut, multi-member, reconnect, restart, concurrent/LWW, security-drops | 🟡 **Proven IN-PROCESS only** | 28-test in-process matrix green — but in-process ≠ live (see the rule above) |
 | Coordination **control plane** cross-machine (wake / push / presence) | 🔴 **Local-only by architecture** | Brief 7 finding — data federates, real-time wakes do not |

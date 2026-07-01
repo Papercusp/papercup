@@ -394,8 +394,12 @@ export async function resolveFleet(
  */
 export const AUTO_MODE_DIRECTIVE =
   'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
-  'loop continuously until the work is done. (The persona\'s AUTO-mode section governs; ' +
-  'the narrow irreversible-high-stakes brakes still apply.)';
+  'loop continuously until the work is done. You are a fleet member with no human at your ' +
+  'keyboard, so to persist across turns instead of PARKING after turn 1 you MUST ARM A ' +
+  'SELF-SUSTAINING LOOP: call loop:arm { intervalSec, goal } toward your assigned work; each ' +
+  'wake self-assign + advance a work_item; loop:end ONLY when the goal is done or you are ' +
+  'blocked. (The persona\'s AUTO-mode section governs; the narrow irreversible-high-stakes ' +
+  'brakes still apply.)';
 
 /**
  * launch-path-argv-reconstruction (WI-1343): normalize a caller-supplied

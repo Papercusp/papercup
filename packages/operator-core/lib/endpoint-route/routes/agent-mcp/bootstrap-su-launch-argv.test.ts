@@ -80,4 +80,9 @@ describe('AUTO_MODE_DIRECTIVE (WI-1356)', () => {
     expect(AUTO_MODE_DIRECTIVE).toMatch(/do not stop to ask/i);
     expect(AUTO_MODE_DIRECTIVE).toMatch(/loop continuously/i);
   });
+  it('tells a fleet agent to arm a self-sustaining loop (not park after turn 1)', () => {
+    expect(AUTO_MODE_DIRECTIVE).toMatch(/loop:arm/i);
+    expect(AUTO_MODE_DIRECTIVE).toMatch(/loop:end/i);
+    expect(AUTO_MODE_DIRECTIVE).toMatch(/park/i);
+  });
 });

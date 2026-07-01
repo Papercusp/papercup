@@ -164,6 +164,15 @@ export interface RosterEntry {
    *  what the pui paints the fleet's group header in. null when no fleet / the
    *  scheme didn't resolve (the pui falls back to a neutral header). */
   fleetColor: string | null;
+  // ── live-thinking handle (agents-roster inspector) ──
+  /** The agent's latest RUNNING spawned run-id — the `<runId>.jsonl` handle the
+   *  live thinking stream (`/api/harness/:slug/agents/:runId/stream`) reads. null
+   *  for interactive sessions / no running spawn. Drives the roster's
+   *  live-thinking action (guarded — null ⇒ no action, never a dead button). */
+  runId: string | null;
+  /** The harness the run's log lives under (the stream's `:slug`). Paired with
+   *  runId; null when runId is null. */
+  harnessSlug: string | null;
 }
 
 /**
@@ -321,6 +330,7 @@ export function mergeRosterEntries(
   pendingWakesByOwner: Map<string, number> = new Map(),
   nurseryByOwner: Map<string, NurseryLiveness> = new Map(),
   fleetByOwner: Map<string, { fleetSlug: string | null; fleetColor: string | null }> = new Map(),
+  runInfoByOwner: Map<string, { runId: string; harness: string }> = new Map(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -415,6 +425,8 @@ export function mergeRosterEntries(
       pendingWakes: pendingWakesByOwner.get(p.ownerId) ?? 0,
       fleetSlug: fleetByOwner.get(p.ownerId)?.fleetSlug ?? null,
       fleetColor: fleetByOwner.get(p.ownerId)?.fleetColor ?? null,
+      runId: runInfoByOwner.get(p.ownerId)?.runId ?? null,
+      harnessSlug: runInfoByOwner.get(p.ownerId)?.harness ?? null,
     };
   });
 }
@@ -475,6 +487,9 @@ export function pendingLaunchesToRosterEntries(
       // A pending launch hasn't joined a fleet yet — no group, no color.
       fleetSlug: null,
       fleetColor: null,
+      // Not yet running → no thinking stream.
+      runId: null,
+      harnessSlug: null,
     };
   });
 }
@@ -567,6 +582,35 @@ async function resolveFleetInfoByOwner(
 }
 
 /**
+ * The latest RUNNING spawned run per agent (session_owner) → its run-id + harness.
+ * The run-id is the `<runId>.jsonl` handle the live "thinking" stream reads
+ * (`/api/harness/:slug/agents/:runId/stream`), and harness_slug is its logs dir.
+ * Only running/restarting spawns (a finished run's thinking is history). Feeds the
+ * roster's live-thinking action. Best-effort: empty map on any read error (⇒ no
+ * action shown — never a dead button).
+ */
+async function spawnedAgentRunInfoByOwner(): Promise<Map<string, { runId: string; harness: string }>> {
+  const out = new Map<string, { runId: string; harness: string }>();
+  try {
+    const { sql } = getOrgPg();
+    const rows = (await sql`
+      SELECT DISTINCT ON (session_owner) session_owner, run_id, harness_slug
+        FROM harness_shared.spawned_agents
+       WHERE session_owner IS NOT NULL AND status IN ('running', 'restarting')
+       ORDER BY session_owner, started_at DESC
+    `) as unknown as Array<{ session_owner: string | null; run_id: string | null; harness_slug: string | null }>;
+    for (const r of rows) {
+      if (r.session_owner && r.run_id && r.harness_slug) {
+        out.set(r.session_owner, { runId: r.run_id, harness: r.harness_slug });
+      }
+    }
+  } catch {
+    /* best-effort — no thinking action if this read fails */
+  }
+  return out;
+}
+
+/**
  * The live roster for a workspace (or all workspaces when workspaceId is
  * null/omitted): coord_presence primary + adv_sessions enrichment + per-agent
  * claims from the canonical fleet_assignment view, liveness derived from the
@@ -586,6 +630,7 @@ export async function mergeRosterWithAssignments(
     wakeModesByOwner,
     defaultWakeMode,
     pendingWakesByOwner,
+    runInfoByOwner,
   ] = await Promise.all([
     listPresence(),
     advSessionsByCoordOwner(),
@@ -594,6 +639,7 @@ export async function mergeRosterWithAssignments(
     getAllWakeModeOverrides().catch(() => new Map<string, WakeMode>()),
     getDefaultWakeMode().catch(() => 'auto' as WakeMode),
     countAllPendingWakes().catch(() => new Map<string, number>()),
+    spawnedAgentRunInfoByOwner(),
   ]);
   // EI-348: nursery liveness join — sequential (not in the Promise.all) only
   // because it needs the hostname; one indexed query, still cheap.
@@ -612,6 +658,7 @@ export async function mergeRosterWithAssignments(
     pendingWakesByOwner,
     nurseryByOwner,
     fleetInfoByOwner,
+    runInfoByOwner,
   );
   return {
     active: enrichPidLiveness(entries, os.hostname()),

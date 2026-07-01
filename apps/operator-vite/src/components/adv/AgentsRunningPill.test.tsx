@@ -159,4 +159,19 @@ describe('<AgentsRunningPill>', () => {
     fireEvent.click(screen.getByTestId('agent-inspect-btn'));
     expect(screen.getByTestId('inspector-modal').getAttribute('data-run')).toBe('launch-xyz');
   });
+
+  it('clicking the ROW opens thinking for an agent with a run; pins for one without', () => {
+    H.active = [
+      agent({ ownerId: 'bee1', role: 'bee', runId: 'launch-row', harnessSlug: 'papercusp' }),
+      agent({ ownerId: 'su1', role: 'su' }), // no run → pin, no inspector
+    ];
+    nuqs.open = true;
+    render(<Pill />);
+    // Clicking the bee row opens the inspector directly (the user's "click → thinking").
+    fireEvent.click(screen.getByTestId('agent-row-bee1'));
+    expect(screen.getByTestId('inspector-modal').getAttribute('data-run')).toBe('launch-row');
+    // Clicking a run-less agent pins its detail instead (no inspector).
+    fireEvent.click(screen.getByTestId('agent-row-su1'));
+    expect(screen.getByTestId('agent-detail').textContent).toContain('pinned');
+  });
 });
