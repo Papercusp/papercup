@@ -27,6 +27,11 @@ export default defineTool({
       'You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-hive. You are FILING a scorecard — improvements:capture { lane: "observation", observation: { rubricRef, ratings } }.',
     chaining:
       'scorecards:list { rubricRef: "hive-coordination-health", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricId: rubricRef } for the criterion definitions.',
+    seeAlso: [
+      'scorecards:freshness (staleness / partial-emit summary)',
+      'rubrics:trend (criteria trend over time)',
+      'rubrics:get (the rubric criterion definitions)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

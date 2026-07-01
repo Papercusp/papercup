@@ -119,6 +119,10 @@ export default defineTool({
     notWhen:
       'A reserved/managed key — use its dedicated setter (status→plans:set-plan-status, owner/co_owners→plans:transfer-owner, initiative→plans:set-initiative, slug/title/created→plans:set-frontmatter). A whole-document edit — plans:set-content. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter.',
     chaining: 'plans:get (mode:meta) to see current frontmatter → plans:set-frontmatter-field → plans:get to confirm.',
+    seeAlso: [
+      'plans:set-frontmatter (rewrite the whole frontmatter block)',
+      'plans:get (mode:meta — see current frontmatter)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

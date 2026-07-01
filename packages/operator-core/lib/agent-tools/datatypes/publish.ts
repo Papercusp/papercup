@@ -27,6 +27,10 @@ export default defineTool({
     notWhen:
       'To declare a datatype (meta:define-datatype). To use one locally — a local datatype needs no publishing. Publishing does NOT distribute it cross-machine by itself (that rides the Comb worker once approved).',
     chaining: 'meta:define-datatype → datatypes:publish { id } → (operator moderates) → globally visible.',
+    seeAlso: [
+      'meta:define-datatype (define the datatype before publishing)',
+      'datatypes:catalog (where the published datatype appears)',
+    ],
   },
   capability: 'intel:write',
   requirePrincipal: false,

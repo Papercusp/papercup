@@ -58,6 +58,10 @@ export default defineTool({
     chaining:
       'meta:define-datatype { name, description, tier } → (generic-kind) work_items:create { kind } → search/plans/gym ' +
       'inherit it for free. A blueprint references it via dependencies.datatypes [name].',
+    seeAlso: [
+      'datatypes:publish (publish the datatype you defined)',
+      'datatypes:catalog (browse existing datatypes before defining)',
+    ],
   },
   capability: 'intel:write',
   requirePrincipal: false,

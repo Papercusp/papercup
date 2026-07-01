@@ -22,6 +22,11 @@ export default defineTool({
     when: 'The usual way to make a new blueprint: inherit shared structure from any resolvable parent (a built-in, or a Cupboard-installed blueprint) and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.',
     notWhen: 'Authoring a wholly new shape with no parent — blueprint:create.',
     chaining: 'blueprint:extend { parent:"coding", overrides } → (inspect yaml) → harness:create { blueprint }.',
+    seeAlso: [
+      'blueprint:catalog (browse parent blueprints to extend)',
+      'blueprint:validate (validate the extension)',
+      'harness:create (create a harness from it)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

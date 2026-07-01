@@ -90,6 +90,10 @@ export default defineTool({
     notWhen:
       'Recording a NEW decision (plans:add-decision). Changing a decision title (plans:edit — title lives on the head line). A whole-document rewrite (plans:set-content).',
     chaining: 'plans:get (the decision body) → plans:set-decision-body → plans:get to confirm.',
+    seeAlso: [
+      'plans:add-decision (add a NEW decision, not edit an existing body)',
+      'plans:get (read the decision body first)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

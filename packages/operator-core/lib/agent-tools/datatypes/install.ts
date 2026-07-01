@@ -24,6 +24,10 @@ export default defineTool({
     when: 'After finding a useful approved datatype via datatypes:catalog — install it so this workspace can create instances / reference it.',
     notWhen: 'To declare a NEW datatype (meta:define-datatype). To publish one (datatypes:publish).',
     chaining: 'datatypes:catalog → datatypes:install { id } → work_items:create { kind } / dependencies.datatypes.',
+    seeAlso: [
+      'datatypes:catalog (browse the global catalog to install from)',
+      'datatypes:list (what is already installed)',
+    ],
   },
   capability: 'intel:write',
   requirePrincipal: false,

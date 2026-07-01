@@ -25,6 +25,11 @@ export default defineTool({
       'in a blueprint\'s dependencies.datatypes, or the generic-kind to pass to work_items:create.',
     notWhen: 'To read one datatype\'s full definition — use datatypes:get. To declare one — meta:define-datatype.',
     chaining: 'datatypes:list → datatypes:get { id } (inspect) → work_items:create { kind } / blueprint dependencies.datatypes.',
+    seeAlso: [
+      'datatypes:get (full detail on one)',
+      'datatypes:summary (the overview)',
+      'datatypes:catalog (installable datatypes)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

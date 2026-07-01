@@ -23,6 +23,9 @@ vi.mock('@/app/harness/AgentInspectorModal', () => ({
     <div data-testid="inspector-modal" data-run={runId} data-url={streamUrl} />
   ),
 }));
+vi.mock('@/app/harness/AgentThinkingPopover', () => ({
+  ThinkingDot: ({ title }: { title?: string }) => <span data-testid="thinking-dot" aria-label={title ?? 'thinking'} />,
+}));
 
 const nuqs = vi.hoisted(() => ({ open: false, set: vi.fn() }));
 vi.mock('nuqs', () => ({
@@ -102,6 +105,19 @@ describe('<AgentsRunningPill>', () => {
     H.active = [agent({ liveness: 'stale' })];
     const { container } = render(<Pill />);
     expect(container.innerHTML).toBe('');
+  });
+
+  it('shows a "thinking" count in the pill when agents are actively thinking', () => {
+    H.active = [agent({ ownerId: 'a1', thinking: true }), agent({ ownerId: 'a2', thinking: false })];
+    render(<Pill />);
+    expect(screen.getByTestId('agents-thinking-count').textContent).toContain('1 thinking');
+  });
+
+  it('renders a pulsing thinking dot on an actively-thinking row', () => {
+    H.active = [agent({ ownerId: 'a1', thinking: true })];
+    nuqs.open = true;
+    render(<Pill />);
+    expect(screen.getAllByTestId('thinking-dot').length).toBeGreaterThan(0);
   });
 
   it('shows the running count excluding stale rows', () => {

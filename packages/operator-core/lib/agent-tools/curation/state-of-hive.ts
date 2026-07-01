@@ -31,6 +31,11 @@ export default defineTool({
       'For the raw stream of recent completions use curation:change-feed. For salience-ranked live fleet signals (escalations/blockers) use curation:feed. For the captured-improvement triage queue (auto vs human lanes) use improvements:digest.',
     chaining:
       'curation:state-of-hive → drill into a pattern via its refs (work_items:get on wi:<id>, plans:get on plan:<slug>, curation:change-feed) → feed the digest to the Scout ideators.',
+    seeAlso: [
+      'curation:change-feed (the change feed it rolls up)',
+      'work_items:get (drill into a surfaced pattern)',
+      'rubrics:trend (per-rubric health over time)',
+    ],
   },
   requirePrincipal: false,
   args: z.object({

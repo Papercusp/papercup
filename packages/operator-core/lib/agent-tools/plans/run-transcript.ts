@@ -49,6 +49,10 @@ export default defineTool({
       'You want the run launches list (plans:runs), the conversation behind a plan revision (plans:revision-transcript), or to continue the run (plans:resume).',
     chaining:
       'plans:runs → plans:run-transcript { runId } → page with cursor.',
+    seeAlso: [
+      'plans:runs (find the runId)',
+      'plans:resume (continue the run)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

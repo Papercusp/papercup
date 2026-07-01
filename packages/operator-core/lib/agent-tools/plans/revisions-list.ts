@@ -39,6 +39,11 @@ export default defineTool({
       'You want raw git commit history of the file — that is plans:history. The current plan body — plans:get.',
     chaining:
       'plans:revisions → plans:diff for a coarse git patch, or (Phase 2) the per-revision transcript verb for the conversation behind a revision.',
+    seeAlso: [
+      'plans:revision-diff (the patch for one revision)',
+      'plans:revision-transcript (the authoring conversation)',
+      'plans:summarize-revision (backfill a rationale)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

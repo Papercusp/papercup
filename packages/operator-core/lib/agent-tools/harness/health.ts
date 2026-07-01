@@ -21,6 +21,11 @@ export default defineTool({
   guidance: {
     when: 'User asks "is sheets healthy?", "is the harness running?". Single fast snapshot — alive, escalated flag, feature-status counts.',
     notWhen: 'For LIVE phase + activity (recent audit events), use `harness:status`. For open issues, use `work_items:list`.',
+    seeAlso: [
+      'harness:status (LIVE phase + recent activity)',
+      'harness:overview (the consolidated read)',
+      'work_items:list (open issues)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],

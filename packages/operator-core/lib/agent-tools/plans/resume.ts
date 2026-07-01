@@ -240,6 +240,10 @@ export default defineTool({
       'Starting a fresh agent on a plan is plans:launch. Only reading a run’s past turns needs no agent at all.',
     chaining:
       'plans:runs → plans:resume { runId, message } → the run streams further turns.',
+    seeAlso: [
+      'plans:runs (list the runs to resume)',
+      'plans:run-transcript (watch the resumed run)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

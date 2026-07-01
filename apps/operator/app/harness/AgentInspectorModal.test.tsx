@@ -66,6 +66,31 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     expect(screen.queryByText('worker')).toBeNull();
   });
 
+  it('groups the timeline into turns (newest-first) with a Live turn on top while thinking', () => {
+    renderModal();
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([
+        { kind: 'prompt', text: 'wake one', ts: '2026-07-01T10:00:00Z' },
+        { kind: 'tool_use', toolName: 'Bash' },
+        { kind: 'prompt', text: 'wake two', ts: '2026-07-01T10:05:00Z' },
+        { kind: 'text', text: 'answer two' },
+      ]));
+    });
+    // Two turns, both prompts rendered.
+    expect(screen.getByText(/2 turns/)).toBeTruthy();
+    expect(screen.getByText('wake one')).toBeTruthy();
+    expect(screen.getByText('wake two')).toBeTruthy();
+    // Active thinking → the NEWEST turn (wake two) becomes the Live turn at the top.
+    act(() => { captured!.handlers.thinking!(JSON.stringify({ active: true })); });
+    const live = screen.getByTestId('turn-live');
+    expect(live.textContent).toContain('Live turn');
+    expect(live.textContent).toContain('wake two');
+    // Newest-first: the live turn (wake two) precedes the older "Turn 1" (wake one) in the DOM.
+    const older = screen.getByTestId('turn-0');
+    expect(older.textContent).toContain('wake one');
+    expect(live.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('escalates a live run with zero output past the stall threshold', () => {
     // Run started 60s ago (> STALL_AFTER_MS) with an empty backfill → the live
     // modal must flag it as stalled instead of an eternal "No output yet".

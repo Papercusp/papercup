@@ -18,6 +18,10 @@ export default defineTool({
   guidance: {
     when: 'User asks "anything pending review?", "what needs my approval?". The dedicated tool for plan-review state.',
     notWhen: 'For open ISSUES (problems, bugs), use `work_items:list`. For all pending hook events, use `pending_events:list`.',
+    seeAlso: [
+      'work_items:list (open issues — problems / bugs)',
+      'pending_events:list (all pending hook events)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

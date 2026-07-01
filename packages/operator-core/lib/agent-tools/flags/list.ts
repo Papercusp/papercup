@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: 'Before recommending or executing work that lives behind a feature flag (snapshots, templates, marketplace, oracle, harness phases, cloudflare publish).',
     notWhen: 'For runtime user-facing flag reads, use the /api/flags/bootstrap endpoint from the client.',
+    seeAlso: [
+      'flags:get (read one flag in detail)',
+      'flags:set (flip a flag)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

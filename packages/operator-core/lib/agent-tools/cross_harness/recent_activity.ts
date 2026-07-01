@@ -15,6 +15,10 @@ export default defineTool({
   guidance: {
     when: 'User asks "what\'s been happening across all my harnesses?", "any cross-harness activity?". The workspace-level activity feed.',
     notWhen: 'For ONE harness\'s activity, use `harness:status`. For your own audit trail, use `audit:list`.',
+    seeAlso: [
+      'harness:status (ONE harness\'s live activity)',
+      'cross_harness:supervisor_notes (supervisor annotations across harnesses)',
+    ],
   },
   capability: 'cross_harness:read',
   requirePrincipal: false,

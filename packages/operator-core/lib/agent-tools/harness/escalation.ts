@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: 'User asks "what\'s flagged?", "what got escalated to the supervisor?", or you need to see the supervisor\'s notes on a harness.',
     notWhen: 'For general "what\'s wrong with X" (open issues), use `work_items:list`. Escalation files are a specific, narrower view than the issue list.',
+    seeAlso: [
+      'work_items:list (general open issues — the broader view)',
+      'cross_harness:supervisor_notes (the PG-backed supervisor view)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

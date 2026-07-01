@@ -18,7 +18,10 @@ import {
  *
  * Unlike the hover popover it does NOT dismiss on mouse-leave, so the whole
  * transcript can be read + scrolled. It reuses the shared stream hook + Entry
- * renderer so the timeline is identical to the popover, just larger and pinned.
+ * renderer, but presents the timeline grouped into TURNS, NEWEST-FIRST: the turn
+ * the agent is currently working streams live at the TOP as "● Live turn" (with a
+ * pulsing thinking indicator), and when it completes it becomes the top of the
+ * completed-turns list below it — each older turn beneath, latest highest.
  * Before this the "Open full inspector" button was a dead stub (it only closed
  * the popover) — there was no inspector in operator-vite to open.
  *
@@ -52,7 +55,7 @@ export default function AgentInspectorModal({
    *  the bee run-log stream keyed by slug/runId. */
   streamUrl?: string;
 }) {
-  const { events, status } = useAgentThinkingStream(slug, phase, runId, streamUrl);
+  const { events, status, thinking } = useAgentThinkingStream(slug, phase, runId, streamUrl);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Elapsed baseline: the run start when known, else when this inspector opened
   // (captured once). Feeds the stall escalation while the timeline is empty.
@@ -66,11 +69,18 @@ export default function AgentInspectorModal({
     return () => clearInterval(id);
   }, [events.length, status]);
 
-  // Follow the tail as new events stream in (unless the user scrolled up).
-  const pinnedRef = useRef(true);
+  // Group the flat timeline into turns and show them NEWEST-FIRST (latest highest).
+  // The newest turn is the "live" one while the agent is actively thinking; when a
+  // turn completes it just becomes the top of the completed list below.
+  const turns = useMemo(() => groupEntriesIntoTurns(events), [events]);
+  const ordered = useMemo(() => [...turns].reverse(), [turns]);
+
+  // Newest turn is at the TOP, so keep the scroll pinned to the top as new turns /
+  // entries stream in — unless the user scrolled DOWN to read history.
+  const atTopRef = useRef(true);
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+    if (el && atTopRef.current) el.scrollTop = 0;
   }, [events]);
 
   const elapsedMs = Math.max(0, now - (startedAtMs ?? openedAtRef.current));
@@ -117,16 +127,18 @@ export default function AgentInspectorModal({
           {' · '}<code style={{ fontSize: 11 }}>{runId}</code>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor }} />
-          <span style={{ color: statusColor }}>{statusLabel}</span>
-          <span style={{ color: 'var(--fg-mute)' }}>· {events.length} event{events.length === 1 ? '' : 's'}</span>
+          {thinking ? <ThinkingDot size={7} /> : (
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor }} />
+          )}
+          <span style={{ color: thinking ? '#6aa84f' : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
+          <span style={{ color: 'var(--fg-mute)' }}>· {turns.length} turn{turns.length === 1 ? '' : 's'} · {events.length} event{events.length === 1 ? '' : 's'}</span>
         </span>
       </div>
       <div
         ref={scrollRef}
         onScroll={() => {
           const el = scrollRef.current;
-          if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+          if (el) atTopRef.current = el.scrollTop < 40;
         }}
         style={{
           flex: 1,
@@ -142,9 +154,51 @@ export default function AgentInspectorModal({
             {waiting.text}
           </div>
         ) : (
-          events.map((e, i) => <Entry key={i} entry={e} />)
+          ordered.map((turn, i) => (
+            <TurnBlock key={turn.seq} turn={turn} live={thinking && i === 0} />
+          ))
         )}
       </div>
     </Modal>
+  );
+}
+
+/**
+ * One turn rendered as a bordered block: a header (● Live turn while streaming,
+ * else "Turn N" + its time) over the turn's prompt + activity. The live turn sits
+ * at the TOP of the pane (newest-first) and is accented + pulsing.
+ */
+function TurnBlock({ turn, live }: { turn: Turn; live: boolean }) {
+  const time = fmtEntryTime(turn.startTs);
+  const accent = live ? 'var(--accent, #38bdf8)' : 'var(--border)';
+  return (
+    <div
+      data-testid={live ? 'turn-live' : `turn-${turn.seq}`}
+      style={{
+        marginBottom: 12,
+        border: `1px solid ${accent}`,
+        borderRadius: 6,
+        overflow: 'hidden',
+        background: live ? 'color-mix(in srgb, var(--accent), transparent 94%)' : 'transparent',
+      }}
+    >
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px',
+        background: live ? 'color-mix(in srgb, var(--accent), transparent 88%)' : 'var(--bg-2)',
+        borderBottom: '1px solid var(--border)', fontSize: 11,
+      }}>
+        {live ? <ThinkingDot size={7} /> : (
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--fg-mute)', display: 'inline-block' }} />
+        )}
+        <strong style={{ color: live ? 'var(--accent-strong, #7dd3fc)' : 'var(--fg)' }}>
+          {live ? 'Live turn' : `Turn ${turn.seq + 1}`}
+        </strong>
+        {time ? <span style={{ color: 'var(--fg-mute)', marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{time}</span> : null}
+      </div>
+      <div style={{ padding: 8 }}>
+        {turn.prompt ? <Entry entry={turn.prompt} /> : null}
+        {turn.entries.map((e, i) => <Entry key={i} entry={e} />)}
+      </div>
+    </div>
   );
 }

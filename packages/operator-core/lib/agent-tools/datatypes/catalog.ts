@@ -22,6 +22,11 @@ export default defineTool({
     when: 'Before declaring a new datatype — check whether an approved global one already fits, to reuse instead of re-inventing.',
     notWhen: 'To browse YOUR workspace\'s datatypes (datatypes:list). To declare one (meta:define-datatype).',
     chaining: 'datatypes:catalog → datatypes:install { id } → work_items:create { kind } / blueprint dependencies.datatypes.',
+    seeAlso: [
+      'datatypes:install (install one from the catalog)',
+      'datatypes:list (what is already installed)',
+      'datatypes:get (inspect one before installing)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

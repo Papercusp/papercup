@@ -75,6 +75,11 @@ export default defineTool({
     when: 'Inspecting one or more specific P-NNN (their status / blockers / phase / importance) without pulling the whole plan. The targeted read between plans:items (many by status) and plans:get (the whole plan). Read several at once via itemIds:[…] (one plan) or items:[…] (cross-plan).',
     notWhen: 'You need the whole plan (Now / decisions / prose) — plans:get. Many items by status — plans:items.',
     chaining: 'plans:get-item { slug, itemId } → plans:set-status / plans:set-item-blocked-by / plans:set-item-phase to act on it.',
+    seeAlso: [
+      'plans:set-status (advance the item)',
+      'plans:set-item-phase (move it to another phase)',
+      'plans:set-item-blocked-by (record its blockers)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

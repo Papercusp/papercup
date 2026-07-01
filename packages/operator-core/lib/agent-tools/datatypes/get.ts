@@ -25,6 +25,10 @@ export default defineTool({
     when: 'When you have datatype id(s) (from datatypes:list) and want the full definition before referencing or instantiating it.',
     notWhen: 'To browse the registry — datatypes:list. To declare — meta:define-datatype.',
     chaining: 'datatypes:list → datatypes:get { ids:[…] } (inspect) → work_items:create { kind } / blueprint dependencies.datatypes.',
+    seeAlso: [
+      'datatypes:list (find ids to inspect)',
+      'datatypes:install (install one after inspecting)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

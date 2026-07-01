@@ -66,6 +66,10 @@ export default defineTool({
     notWhen:
       'You want a coarse git patch — that is plans:diff. The revision chain — plans:revisions. The current plan body — plans:get.',
     chaining: 'plans:revisions → plans:revision-diff { revisionId } for any revision.',
+    seeAlso: [
+      'plans:revisions (list revisions)',
+      'plans:revision-transcript (the authoring transcript for context)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

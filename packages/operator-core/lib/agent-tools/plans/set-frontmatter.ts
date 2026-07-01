@@ -109,6 +109,10 @@ export default defineTool({
     notWhen:
       'Editing a plan that already has valid frontmatter — that would clobber keys this verb does not model; use plans:set-content for a deliberate raw edit. Routine status flips on items use plans:set-status.',
     chaining: 'plans:list (isLegacy: true rows) → plans:set-frontmatter per plan → plans:get to confirm.',
+    seeAlso: [
+      'plans:set-frontmatter-field (change ONE field, not the whole block)',
+      'plans:get (mode:meta — read current frontmatter)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

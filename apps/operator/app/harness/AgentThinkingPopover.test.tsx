@@ -23,7 +23,7 @@ vi.mock('@papercusp/sse', () => ({
   },
 }));
 
-import AgentThinkingPopover, { waitingMessage, STALL_AFTER_MS, fmtEntryTime } from './AgentThinkingPopover';
+import AgentThinkingPopover, { waitingMessage, STALL_AFTER_MS, fmtEntryTime, groupEntriesIntoTurns, type TimelineEntry } from './AgentThinkingPopover';
 
 function anchor(): DOMRect {
   // A rect well below the viewport top so the popover places "above".
@@ -154,6 +154,17 @@ describe('AgentThinkingPopover (live agent thinking stream)', () => {
     expect(screen.getByText(expected)).toBeTruthy();
   });
 
+  it('shows a pulsing "thinking…" header while the thinking status is active', () => {
+    renderPopover();
+    act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'x' }])); });
+    act(() => { captured!.handlers.thinking!(JSON.stringify({ active: true })); });
+    expect(screen.getByText('thinking…')).toBeTruthy();
+    // stops → back to the plain live label.
+    act(() => { captured!.handlers.thinking!(JSON.stringify({ active: false })); });
+    expect(screen.queryByText('thinking…')).toBeNull();
+    expect(screen.getByText('live')).toBeTruthy();
+  });
+
   it('flips status to done when the done handler fires', () => {
     renderPopover();
     act(() => { captured!.handlers.done!(''); });
@@ -188,6 +199,30 @@ describe('AgentThinkingPopover (live agent thinking stream)', () => {
     const { unmount } = renderPopover();
     unmount();
     expect(closeSpy).toHaveBeenCalled();
+  });
+});
+
+describe('groupEntriesIntoTurns (pure — turn boundaries)', () => {
+  const E = (o: Partial<TimelineEntry>): TimelineEntry => ({ kind: 'text', ...o }) as TimelineEntry;
+  it('splits on prompt boundaries; leading entries form a partial (prompt-less) turn', () => {
+    const turns = groupEntriesIntoTurns([
+      E({ kind: 'text', text: 'leftover' }),
+      E({ kind: 'prompt', text: 'wake A', ts: 't1' }),
+      E({ kind: 'tool_use', toolName: 'Bash' }),
+      E({ kind: 'prompt', text: 'wake B', ts: 't2' }),
+      E({ kind: 'text', text: 'working on B' }),
+    ]);
+    expect(turns).toHaveLength(3);
+    expect(turns[0].prompt).toBeNull();
+    expect(turns[0].entries.map((e) => e.text)).toEqual(['leftover']);
+    expect(turns[1].prompt?.text).toBe('wake A');
+    expect(turns[1].entries).toHaveLength(1);
+    expect(turns[2].prompt?.text).toBe('wake B');
+    expect(turns[2].entries.map((e) => e.text)).toEqual(['working on B']);
+    expect(turns[2].seq).toBe(2); // higher seq = later turn (UI shows highest at top)
+  });
+  it('empty timeline → no turns', () => {
+    expect(groupEntriesIntoTurns([])).toEqual([]);
   });
 });
 

@@ -25,6 +25,11 @@ export default defineTool({
     when: "Tune a harness's gym accept strictness — raise epsilon/delta to demand a bigger measured win before a champion is flagged promotable, or raise costCeiling to tolerate a costlier champion.",
     notWhen: 'To accept/reject a specific proposal use gym:accept (human gate). Judge WEIGHTS live in the blueprint gym rubric, not here. To arm the gym loop itself, see the gym autoloop config.',
     chaining: 'config:list-overrides shows active per-harness gate overrides; config:reset-overrides reverts them.',
+    seeAlso: [
+      'config:list-overrides (active per-harness gate overrides)',
+      'config:reset-overrides (revert a gate override)',
+      'gym:judge (evaluated against these gates)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

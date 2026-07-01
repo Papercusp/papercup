@@ -25,6 +25,9 @@ export default defineTool({
     when: 'Roll back runtime-config changes to baked defaults — a single concern after a bad tune, or everything at once during an incident ("reset all overrides").',
     notWhen: "To SEE what's overridden first, use config:list-overrides. To change one value, use that concern's set tool.",
     chaining: 'config:list-overrides before to see what will reset, and after to confirm it cleared.',
+    seeAlso: [
+      'config:list-overrides (see what will reset before, confirm cleared after)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

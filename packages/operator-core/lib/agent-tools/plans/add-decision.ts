@@ -293,6 +293,10 @@ export default defineTool({
       'Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.',
     chaining:
       'plans:add-decision → optionally plans:set-now referencing the new D-NNN in **State:**.',
+    seeAlso: [
+      'plans:set-decision-body (edit an existing decision\'s body)',
+      'plans:set-now (reference the new D-NNN in the Now)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

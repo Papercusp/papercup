@@ -729,36 +729,134 @@ export function parkRoleScopedMcpJson(cwd) {
  * left untouched (their "use my default" steer); this only surfaces the gotcha. Reads
  * config.yml; side-effects fs read only; exported for tests.
  */
-/** su-context-size-variants: materialize a per-session OMP config dir for the 'full'
- *  context variant. OMP's tool discovery (search_tool_bm25) is a GLOBAL config knob
- *  (~/.omp/agent/config.yml discoveryMode), NOT a per-launch flag — so to load the whole
- *  catalog up-front for ONE session we copy the global agent config with discoveryMode
- *  flipped OFF (preserving modelRoles/etc.) into a per-session dir and carry auth so the
- *  session still authenticates. Returns the dir to export as PI_CONFIG_DIR, or null on any
- *  failure (caller falls back to OMP's native trimmed default — no regression). For tests. */
-export function writeOmpFullConfigDir(sessionId, home = homedir()) {
+// weak-model-tool-tier-2026-07-01: the UNIVERSAL core MCP spine handed to a weak/local
+// OMP model up-front (bootstrap + coordination + work + discovery — ~19 tools) instead of
+// the full ~580-tool superuser surface it cannot wield. The server honors `?tools=` as a
+// LISTING allowlist only, so everything omitted stays REACHABLE via `tools:find` (intent
+// search) → OMP's native `search_tool_bm25` activation. MIRROR of the orchestrator's
+// CORE_MCP_TOOL_NAMES (libs/papercusp/packages/orchestrator/src/invoke.ts) — kept in
+// lockstep by the drift guard in apps/operator/lib/psu-launcher.test.ts (psu-launcher.mjs
+// is a plain node script with no TS imports, so the list is inlined, not imported).
+export const OMP_CORE_MCP_TOOL_NAMES = [
+  'coord:orient', 'coord:inbox', 'coord:ack', 'coord:send', 'coord:glance', 'coord:ask',
+  'plans:get', 'plans:set-status', 'plans:items',
+  'work_items:list', 'work_items:claim', 'work_items:set_state', 'work_items:update',
+  'locks:acquire_granular', 'locks:release_granular',
+  'docs:search', 'memory:search', 'memory:remember',
+  'tools:find',
+];
+
+// weak-model-tool-tier: a model that runs LOCALLY (ollama/local provider prefix) is small
+// and weak for tool-use relative to a hosted frontier model. Mirror of the canonical
+// packages/operator-core/lib/model-tier.ts modelCapabilityTier heuristic (kept simple here
+// — no TS import). Unknown/empty ⇒ NOT weak (safe default: never accidentally trim a strong
+// model). OMP runs weak AND strong models, so the tier comes from the MODEL, not the client.
+const OMP_LOCAL_MODEL_PREFIXES = ['ollama/', 'local/', 'llamacpp/', 'llama.cpp/', 'lmstudio/', 'localai/'];
+export function isWeakOmpModel(modelId) {
+  if (!modelId) return false;
+  const id = String(modelId).trim().toLowerCase();
+  if (!id) return false;
+  return OMP_LOCAL_MODEL_PREFIXES.some((p) => id.startsWith(p));
+}
+
+/** The OMP session's DEFAULT model id (config.yml `modelRoles.default`), or null. Used to
+ *  compute the model tier when the launch didn't pass an explicit --model. Exported for tests. */
+export function ompDefaultModel(home = homedir()) {
+  try {
+    const text = readFileSync(join(home, '.omp', 'agent', 'config.yml'), 'utf8');
+    const m = text.match(/modelRoles:[\s\S]*?\n[ \t]+default:[ \t]*([^\s#]+)/);
+    return m?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Append `?tools=<names>` to every papercusp `/api/mcp` server URL in an OMP mcp.json that
+ *  doesn't already carry one, so the superuser MCP advertises ONLY the core spine (weak-model
+ *  trim). Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the
+ *  way the server's parseToolsAllowlist decodes them); returns the input unchanged on any parse
+ *  failure. Exported for tests. */
+export function applyOmpToolsAllowlist(mcpJsonText, toolNames) {
+  try {
+    const obj = JSON.parse(mcpJsonText);
+    const servers = obj?.mcpServers;
+    if (servers && typeof servers === 'object' && Array.isArray(toolNames) && toolNames.length) {
+      for (const key of Object.keys(servers)) {
+        const srv = servers[key];
+        if (srv && typeof srv.url === 'string' && /\/api\/mcp(\?|$)/.test(srv.url) && !/[?&]tools=/.test(srv.url)) {
+          const u = new URL(srv.url);
+          u.searchParams.set('tools', toolNames.join(','));
+          srv.url = u.toString();
+        }
+      }
+    }
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return mcpJsonText;
+  }
+}
+
+/**
+ * su-context-size-variants + weak-model-tool-tier: materialize a per-session OMP config dir
+ * and return the value to export as PI_CONFIG_DIR.
+ *
+ * ⚠ RETURNS A HOME-RELATIVE PATH (e.g. `.papercusp/su-omp-homes/session-<id>`), NOT absolute.
+ * OMP resolves PI_CONFIG_DIR as `path.join(os.homedir(), process.env.PI_CONFIG_DIR || '.omp')`,
+ * so an ABSOLUTE value gets doubled onto home (`/home/u/home/u/…`) → a non-existent dir. (Root-
+ * caused 2026-07-01 from the OMP bundle; the prior absolute-returning writeOmpFullConfigDir
+ * silently broke full-mode — the relocated dir was never read.)
+ *
+ * Because PI_CONFIG_DIR fully RELOCATES OMP's config+data root (no overlay fallback; with no
+ * XDG_*_HOME the data root collapses onto configRoot), the per-session dir must carry a FAITHFUL
+ * copy of the model registry (config.yml + models.yml/json/db + auth) AND the mcp.json — else the
+ * session loses model resolution AND the papercusp-su MCP server. We copy the small config+registry
+ * files (not the multi-MB session/history dbs, which a fresh session recreates).
+ *
+ *   opts.discoveryOff   → flip OMP tool-discovery OFF (contextSize:'full' — whole catalog up-front
+ *                         for a capable model).
+ *   opts.toolsAllowlist → advertise ONLY these MCP tools (weak-model trim; listing-only, the rest
+ *                         stay callable via tools:find).
+ *
+ * Returns the home-relative dir, or null on any failure (caller falls back to OMP's native default
+ * — no regression). Exported for tests.
+ */
+export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir()) {
+  const { discoveryOff = false, toolsAllowlist = null } = opts;
   try {
     if (!sessionId) return null;
     const srcAgent = join(home, '.omp', 'agent');
     const srcCfg = join(srcAgent, 'config.yml');
     if (!existsSync(srcCfg)) return null;
-    const dstRoot = join(home, '.papercusp', 'su-omp-homes', `session-${sessionId}`);
-    const dstAgent = join(dstRoot, 'agent');
+    const rel = join('.papercusp', 'su-omp-homes', `session-${sessionId}`);
+    const dstAgent = join(home, rel, 'agent');
     mkdirSync(dstAgent, { recursive: true });
-    // Flip discovery off on the stable config keys (string surgery — the format is
-    // installer-managed + stable; a YAML parse/emit would risk reordering the owner's file).
-    const cfg = readFileSync(srcCfg, 'utf8')
-      .replace(/^(\s*discoveryMode:\s*)(?:mcp-only|all|auto)\s*$/gm, '$1off')
-      .replace(/^(\s*discoveryMode:\s*)true\s*$/gm, '$1false');
+    // config.yml — copy verbatim, optionally flipping discoveryMode off (full mode). String
+    // surgery on the stable installer-managed keys (a YAML parse/emit would risk reordering).
+    let cfg = readFileSync(srcCfg, 'utf8');
+    if (discoveryOff) {
+      cfg = cfg
+        .replace(/^(\s*discoveryMode:\s*)(?:mcp-only|all|auto)\s*$/gm, '$1off')
+        .replace(/^(\s*discoveryMode:\s*)true\s*$/gm, '$1false');
+    }
     writeFileSync(join(dstAgent, 'config.yml'), cfg, { mode: 0o600 });
-    // Carry auth + the claude bridge so the relocated config dir still authenticates.
-    for (const f of ['auth.json', 'claude-bridge.json']) {
+    // Faithful model registry + auth so model resolution + provider baseUrls survive the
+    // relocation (the data root collapses onto the relocated configRoot; missing registry ⇒
+    // "model not found"). Skip the big session/history dbs — a fresh session recreates them.
+    for (const f of ['models.yml', 'models.json', 'models.db', 'auth.json', 'claude-bridge.json', 'config.json', 'SYSTEM.md']) {
       const s = join(srcAgent, f);
       if (existsSync(s)) cpSync(s, join(dstAgent, f));
     }
-    return dstRoot;
+    // mcp.json — carry the papercusp-su server (else the relocated session has NO MCP at all),
+    // optionally trimming its advertised surface to the core spine for a weak model.
+    const srcMcp = join(srcAgent, 'mcp.json');
+    if (existsSync(srcMcp)) {
+      let mcpText = readFileSync(srcMcp, 'utf8');
+      if (toolsAllowlist && toolsAllowlist.length) mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
+      writeFileSync(join(dstAgent, 'mcp.json'), mcpText, { mode: 0o600 });
+    }
+    return rel;
   } catch (e) {
-    console.error(`psu: omp full-config setup failed (${e?.message ?? e}); falling back to OMP default.`);
+    console.error(`psu: omp per-session config setup failed (${e?.message ?? e}); falling back to OMP default.`);
     return null;
   }
 }
@@ -2086,6 +2184,10 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     ...(effectiveAutoMode(args) ? { auto: true } : {}),
     ...(args.profile ? { profile: args.profile } : {}),
     ...(args.contextSize ? { context_size: args.contextSize } : {}),
+    // weak-model-tool-tier: forward the launch model so the server's tool-tier gate
+    // (buildLaunchSpec) can hard-trim a WEAK/local model's catalog for the codex path
+    // (omp trims client-side above; claude self-trims). Frontier ⇒ no trim (safe default).
+    ...(args.model ? { model: args.model } : {}),
     ...(brain ? { brain: true } : {}),
     ...(args.account ? { account: args.account } : {}),
     // named-su-agent-fleets P-006: `fleet` = the slug to JOIN (member); `fleet_name`
@@ -2637,10 +2739,16 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // claude in a cwd where a role spawn left a stale role-scoped .mcp.json inherits that role's
   // principal, e.g. system:sentinel. su-resume-inherits-role-mcp-json, 2026-06-30.) codex uses
   // CODEX_HOME, exempt.
-  // su-context-size-variants: OMP 'full' disables native tool-discovery so the whole
-  // catalog loads up-front (inverse of its trimmed default) via a per-session PI_CONFIG_DIR.
-  // Fail-safe: null ⇒ OMP keeps its native (trimmed) default.
-  let ompFullPiConfigDir = null;
+  // su-context-size-variants + weak-model-tool-tier: OMP's per-session PI_CONFIG_DIR carries
+  // a faithful copy of the config+model-registry with a rewritten mcp.json (home-relative —
+  // see writeOmpSessionConfigDir). Two triggers, mutually exclusive:
+  //   • contextSize:'full'  → discovery OFF, whole catalog up-front (a capable model that wants
+  //     no discovery dance).
+  //   • WEAK/local model (or explicit contextSize:'trimmed') → advertise ONLY the ~19-tool core
+  //     spine (the rest via tools:find), so a small model isn't handed ~580 tools it can't wield.
+  // The tier comes from the MODEL (explicit --model, else the config.yml default), NOT the client
+  // — OMP runs weak AND strong models. Fail-safe: null ⇒ OMP keeps its native default (no regression).
+  let ompPiConfigDir = null;
   if (res.agent === 'omp' || res.agent === 'claude') {
     const parked = parkRoleScopedMcpJson(res.cwd);
     if (parked) console.error(`psu: parked a stale role-scoped ${res.cwd}/.mcp.json (an SU session uses user-level papercusp-su, not a co-located role server; role launches recreate it)`);
@@ -2648,10 +2756,15 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   if (res.agent === 'omp') {
     const advisory = ompDefaultModelAdvisory();
     if (advisory) console.error(advisory);
+    const effectiveModel = args.model || ompDefaultModel();
     if (args.contextSize === 'full') {
-      ompFullPiConfigDir = writeOmpFullConfigDir(res.sessionId);
-      if (ompFullPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompFullPiConfigDir}`);
-      else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default (trimmed).');
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true });
+      if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
+      else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
+    } else if (isWeakOmpModel(effectiveModel) || args.contextSize === 'trimmed') {
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
+      if (ompPiConfigDir) console.error(`psu: omp weak/local model (${effectiveModel ?? 'default'}) — MCP surface trimmed to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (rest via tools:find) via per-session config ${ompPiConfigDir}`);
+      else console.error(`psu: omp weak-model trim could not materialize a per-session config; using OMP default (full ~580-tool surface).`);
     }
   }
 
@@ -2676,9 +2789,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // schema loaded up-front by disabling ToolSearch deferral. (codex/omp levers
       // live server-side / in their native config; claude's is just this env var.)
       ...(res.agent === 'claude' && args.contextSize === 'full' ? { ENABLE_TOOL_SEARCH: 'false' } : {}),
-      // su-context-size-variants: OMP 'full' runs against a per-session config dir with
-      // discoveryMode off (materialized above; null for omp-trimmed / non-omp / on failure).
-      ...(ompFullPiConfigDir ? { PI_CONFIG_DIR: ompFullPiConfigDir } : {}),
+      // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
+      // dir (home-relative) — 'full' with discovery off, or a WEAK model with the MCP surface
+      // trimmed to the core spine (materialized above; null for non-omp / frontier-model / failure).
+      ...(ompPiConfigDir ? { PI_CONFIG_DIR: ompPiConfigDir } : {}),
     },
   });
 }

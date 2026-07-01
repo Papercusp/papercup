@@ -30,6 +30,11 @@ export default defineTool({
     notWhen:
       'Changing the cadence (plans:set-schedule). Launching a plan as an interactive chat session (plans:launch).',
     chaining: 'plans:set-schedule (author) → plans:run-now (fire one) → plans:runs (inspect the runs).',
+    seeAlso: [
+      'plans:runs (list past / active runs)',
+      'plans:set-schedule (author the schedule this fires from)',
+      'plans:run-transcript (watch the fired run)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

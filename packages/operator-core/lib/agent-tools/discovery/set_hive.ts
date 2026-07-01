@@ -27,6 +27,11 @@ export default defineTool({
     when: 'You want to publish a hive to the P2P directory so other peers can discover + join it, or edit an existing listing (title/description/visibility).',
     notWhen:
       'To deploy a hive’s execution frames use deploy:hive. To browse OTHERS’ hives use discovery:hives. Setting visibility:private withdraws a hive from the directory (it stops being re-announced; peers age it out via TTL).',
+    seeAlso: [
+      'discovery:hives (browse OTHERS\' hives)',
+      'deploy:hive (deploy the hive\'s execution frames)',
+      'hive:get (the hive whose listing you are editing)',
+    ],
   },
   requirePrincipal: false,
   args: z

@@ -22,6 +22,11 @@ export default defineTool({
     when: 'User asks "what features does sheets have?" or you need a feature id before calling `features:get`. Pass a phase to scope (staging = upcoming, testing = in-flight, production = done).',
     notWhen: 'For ONE feature\'s detail, use `features:get`. For the harness as a whole, use `harness:list`/`harness:get`.',
     chaining: 'Pair with `features:get` for body, `features:history` for change log.',
+    seeAlso: [
+      'features:get (a feature\'s body)',
+      'features:history (a feature\'s change log)',
+      'harness:phase_path (the phase directory path)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

@@ -62,6 +62,11 @@ export default defineTool({
     when: 'Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.',
     notWhen: 'The repo already has a .papercusp/blueprint.yaml (it is skipped — edit the file instead). Creating a repo-less / research harness, or one whose blueprint you author explicitly — harness:create with blueprintId/blueprint. Generate-from-plan (kinds #2/#3) is out of scope.',
     chaining: 'harness:generate-from-repo { slug, path, dryRun:true } → (inspect override) → harness:generate-from-repo { slug, path } (creates). Or blueprint:validate the returned override.',
+    seeAlso: [
+      'harness:create (create from a folder/blueprint instead of a repo)',
+      'blueprint:validate (validate the returned override)',
+      'harness:overview (inspect the generated harness)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

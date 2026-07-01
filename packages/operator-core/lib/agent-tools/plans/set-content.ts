@@ -288,6 +288,11 @@ export default defineTool({
       'A structured edit — flipping an item, replacing the Now block, appending a decision/item — use the assisted verb. Converting a legacy plan — use plans:set-frontmatter. Writing a large plan body — use plans:set-content-chunk begin → append* → commit.',
     chaining:
       'plans:get { slug } → carry `contentHash` → plans:set-content { slug, content, expectedHash: contentHash }. For large bodies: plans:set-content-chunk begin → append* → commit.',
+    seeAlso: [
+      'plans:get (carry the contentHash first)',
+      'plans:set-content-chunk (large / streamed body edits)',
+      'plans:set-frontmatter (edit frontmatter, not the body)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

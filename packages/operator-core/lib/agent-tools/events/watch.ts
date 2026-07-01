@@ -47,6 +47,11 @@ export default defineTool({
       'A sub-minute wait inside one turn — just do the bounded blocking call. A recurring TIME schedule — the pot/routines own time-based wakes. Ambient interest where a wake would burn turns — use wake:false.',
     chaining:
       'wake:true → end your turn; on wake the turn text carries the event + payload. events:cancel (wake) / topics:unsubscribe (inject) to stop; events:status to inspect your active wake watches + recent wakes.',
+    seeAlso: [
+      'events:await (a one-shot wait vs this standing watch)',
+      'events:cancel (retract the watch)',
+      'events:status (inspect your active watches)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

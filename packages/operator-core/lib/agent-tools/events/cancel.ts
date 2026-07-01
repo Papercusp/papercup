@@ -40,6 +40,10 @@ export default defineTool({
     when: 'The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you).',
     notWhen: 'A fired await needs no cancel (one-shot — it already cleared). You cannot cancel or ack a peer’s.',
     chaining: 'events:status to find the await_id / delivery_id → events:cancel.',
+    seeAlso: [
+      'events:status (find the await_id / delivery_id to cancel)',
+      'events:await (re-arm a wait after cancelling)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

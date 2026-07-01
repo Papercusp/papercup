@@ -16,6 +16,10 @@ export default defineTool({
   guidance: {
     when: 'You need the supervisor\'s annotations on a harness — context the supervisor logged that\'s not in audit_log.',
     notWhen: 'For escalation flags + raw notes from the on-disk files, use `harness:escalation`. supervisor_notes is the PG-backed view.',
+    seeAlso: [
+      'harness:escalation (escalation flags + raw notes from disk)',
+      'cross_harness:recent_activity (cross-harness activity)',
+    ],
   },
   capability: 'cross_harness:read',
   requirePrincipal: false,

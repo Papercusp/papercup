@@ -7,7 +7,11 @@ import {
   planValue,
   parkRoleScopedMcpJson,
   ompDefaultModelAdvisory,
-  writeOmpFullConfigDir,
+  ompDefaultModel,
+  writeOmpSessionConfigDir,
+  applyOmpToolsAllowlist,
+  isWeakOmpModel,
+  OMP_CORE_MCP_TOOL_NAMES,
   SU_CONTEXT_CHOICES,
   SU_CONTEXT_DEFAULT,
   SU_CONTEXT_TOKEN_ESTIMATES,
@@ -64,6 +68,9 @@ import {
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
+// weak-model-tool-tier: the canonical core spine — the psu-launcher.mjs inlined copy
+// (OMP_CORE_MCP_TOOL_NAMES) must stay byte-identical to it (drift guard below).
+import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 
 describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
   const KICK =
@@ -191,7 +198,7 @@ describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
   });
 });
 
-describe('writeOmpFullConfigDir (WI-1282 su-context-size-variants — OMP full-catalog config)', () => {
+describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-session config)', () => {
   let home: string;
   const AGENT_CFG = [
     'agent:',
@@ -202,58 +209,150 @@ describe('writeOmpFullConfigDir (WI-1282 su-context-size-variants — OMP full-c
     '  default: papercusp-gateway/claude-sonnet-4-6',
     '',
   ].join('\n');
+  const MCP_JSON = JSON.stringify({
+    mcpServers: {
+      'papercusp-su': {
+        type: 'http',
+        url: 'http://localhost:3070/api/mcp?superuser=1&client=abc',
+        headers: { Authorization: 'Bearer SECRET' },
+      },
+    },
+  });
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'psu-ompfull-'));
+    home = mkdtempSync(join(tmpdir(), 'psu-ompcfg-'));
     mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
     writeFileSync(join(home, '.omp', 'agent', 'config.yml'), AGENT_CFG);
     writeFileSync(join(home, '.omp', 'agent', 'auth.json'), '{"token":"AUTHSECRET"}');
+    writeFileSync(join(home, '.omp', 'agent', 'models.yml'), 'providers:\n  ollama:\n    baseUrl: http://127.0.0.1:11435/v1\n');
+    writeFileSync(join(home, '.omp', 'agent', 'models.db'), 'BINARYREGISTRY');
+    writeFileSync(join(home, '.omp', 'agent', 'mcp.json'), MCP_JSON);
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  const sessionDir = (id: string) => join(home, '.papercusp', 'su-omp-homes', `session-${id}`);
+  // ⚠ HOME-RELATIVE — OMP joins PI_CONFIG_DIR onto homedir(); an absolute value would double.
+  const relDir = (id: string) => join('.papercusp', 'su-omp-homes', `session-${id}`);
+  const agentPath = (id: string, f: string) => join(home, relDir(id), 'agent', f);
 
-  it('copies the global config into a per-session dir with discoveryMode flipped OFF', () => {
-    const dir = writeOmpFullConfigDir('sess1', home);
-    expect(dir).toBe(sessionDir('sess1'));
-    const written = readFileSync(join(dir!, 'agent', 'config.yml'), 'utf8');
-    // mcp-only/all/auto → off; true → false.
+  it('returns a HOME-RELATIVE path (not absolute — OMP joins PI_CONFIG_DIR onto $HOME)', () => {
+    const dir = writeOmpSessionConfigDir('sess1', {}, home);
+    expect(dir).toBe(relDir('sess1'));
+    expect(dir!.startsWith('/')).toBe(false); // relative, so join(home, dir) resolves correctly
+  });
+
+  it("full mode (discoveryOff) flips discoveryMode OFF, preserving modelRoles", () => {
+    const dir = writeOmpSessionConfigDir('sess1', { discoveryOff: true }, home);
+    const written = readFileSync(join(home, dir!, 'agent', 'config.yml'), 'utf8');
     expect(written).toContain('discoveryMode: off');
     expect(written).toContain('discoveryMode: false');
     expect(written).not.toContain('discoveryMode: mcp-only');
-    expect(written).not.toContain('discoveryMode: true');
-    // The owner's other keys (modelRoles) survive the string surgery untouched.
     expect(written).toContain('default: papercusp-gateway/claude-sonnet-4-6');
   });
 
-  it('carries auth.json into the relocated config dir so the session still authenticates', () => {
-    const dir = writeOmpFullConfigDir('sess1', home);
-    const auth = join(dir!, 'agent', 'auth.json');
-    expect(existsSync(auth)).toBe(true);
-    expect(readFileSync(auth, 'utf8')).toBe('{"token":"AUTHSECRET"}');
-    // claude-bridge.json wasn't present in the source → not fabricated in the copy.
-    expect(existsSync(join(dir!, 'agent', 'claude-bridge.json'))).toBe(false);
+  it('default (no opts) copies config.yml VERBATIM (discovery untouched)', () => {
+    writeOmpSessionConfigDir('sess1', {}, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toContain('discoveryMode: mcp-only'); // unchanged
+    expect(written).toContain('discoveryMode: true');
   });
 
-  it('also carries claude-bridge.json when present', () => {
-    writeFileSync(join(home, '.omp', 'agent', 'claude-bridge.json'), '{"bridge":1}');
-    const dir = writeOmpFullConfigDir('sess2', home);
-    expect(readFileSync(join(dir!, 'agent', 'claude-bridge.json'), 'utf8')).toBe('{"bridge":1}');
+  it('carries the faithful model registry + auth so model resolution survives relocation', () => {
+    writeOmpSessionConfigDir('sess1', {}, home);
+    expect(readFileSync(agentPath('sess1', 'auth.json'), 'utf8')).toBe('{"token":"AUTHSECRET"}');
+    expect(existsSync(agentPath('sess1', 'models.yml'))).toBe(true);
+    expect(readFileSync(agentPath('sess1', 'models.db'), 'utf8')).toBe('BINARYREGISTRY');
+  });
+
+  it('carries mcp.json so the relocated session keeps papercusp-su (the old full-mode bug)', () => {
+    writeOmpSessionConfigDir('sess1', {}, home);
+    const mcp = JSON.parse(readFileSync(agentPath('sess1', 'mcp.json'), 'utf8'));
+    expect(mcp.mcpServers['papercusp-su'].url).toContain('/api/mcp?superuser=1');
+    expect(mcp.mcpServers['papercusp-su'].url).not.toContain('tools='); // no trim without the opt
+  });
+
+  it('weak trim (toolsAllowlist) rewrites the papercusp-su URL with ?tools=<core>', () => {
+    const dir = writeOmpSessionConfigDir('sess1', { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES }, home);
+    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
+    const url = new URL(mcp.mcpServers['papercusp-su'].url);
+    // The server decodes the param and splits on comma → the exact core list.
+    expect(url.searchParams.get('tools')!.split(',')).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    // Existing params + auth header survive untouched.
+    expect(url.searchParams.get('superuser')).toBe('1');
+    expect(mcp.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer SECRET');
   });
 
   it('returns null for a falsy sessionId (no dir written)', () => {
-    expect(writeOmpFullConfigDir('', home)).toBeNull();
-    expect(writeOmpFullConfigDir(null, home)).toBeNull();
-    expect(writeOmpFullConfigDir(undefined, home)).toBeNull();
+    expect(writeOmpSessionConfigDir('', {}, home)).toBeNull();
+    expect(writeOmpSessionConfigDir(null, {}, home)).toBeNull();
+    expect(writeOmpSessionConfigDir(undefined, {}, home)).toBeNull();
   });
 
   it('returns null when the global OMP config is missing (falls back to native default)', () => {
     const emptyHome = mkdtempSync(join(tmpdir(), 'psu-noomp-'));
     try {
-      expect(writeOmpFullConfigDir('sess3', emptyHome)).toBeNull();
+      expect(writeOmpSessionConfigDir('sess3', {}, emptyHome)).toBeNull();
       expect(existsSync(join(emptyHome, '.papercusp', 'su-omp-homes'))).toBe(false);
     } finally {
       rmSync(emptyHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe('applyOmpToolsAllowlist (weak-model-tool-tier — mcp.json URL trim)', () => {
+  it('appends ?tools= to a papercusp /api/mcp url, encoded so the server decodes it back', () => {
+    const src = JSON.stringify({ mcpServers: { 'papercusp-su': { url: 'http://localhost:3070/api/mcp?superuser=1&client=x' } } });
+    const out = JSON.parse(applyOmpToolsAllowlist(src, ['coord:orient', 'tools:find']));
+    const url = new URL(out.mcpServers['papercusp-su'].url);
+    expect(url.searchParams.get('tools')!.split(',')).toEqual(['coord:orient', 'tools:find']);
+  });
+
+  it('is idempotent — never double-appends tools= if one is already present', () => {
+    const src = JSON.stringify({ mcpServers: { p: { url: 'http://localhost:3070/api/mcp?tools=a:b' } } });
+    const out = JSON.parse(applyOmpToolsAllowlist(src, ['coord:orient']));
+    expect(out.mcpServers.p.url).toBe('http://localhost:3070/api/mcp?tools=a:b'); // untouched
+  });
+
+  it('leaves a non-papercusp server URL untouched', () => {
+    const src = JSON.stringify({ mcpServers: { other: { url: 'http://example.com/mcp' } } });
+    const out = JSON.parse(applyOmpToolsAllowlist(src, ['coord:orient']));
+    expect(out.mcpServers.other.url).toBe('http://example.com/mcp');
+  });
+
+  it('returns the input unchanged on unparseable JSON', () => {
+    expect(applyOmpToolsAllowlist('not json{', ['coord:orient'])).toBe('not json{');
+  });
+});
+
+describe('isWeakOmpModel / ompDefaultModel (weak-model-tool-tier — tier gate)', () => {
+  it('classifies local-provider models as weak, hosted as not-weak, unknown as not-weak (safe)', () => {
+    expect(isWeakOmpModel('ollama/maxwell1500/ornith-35b:IQ3_M:xhigh')).toBe(true);
+    expect(isWeakOmpModel('OLLAMA/ornith')).toBe(true); // case-insensitive
+    expect(isWeakOmpModel('lmstudio/foo')).toBe(true);
+    expect(isWeakOmpModel('anthropic/claude-opus-4-8')).toBe(false);
+    expect(isWeakOmpModel('papercusp-gateway/claude-sonnet-4-6')).toBe(false);
+    expect(isWeakOmpModel('')).toBe(false);
+    expect(isWeakOmpModel(null)).toBe(false);
+    expect(isWeakOmpModel(undefined)).toBe(false);
+  });
+
+  it('ompDefaultModel reads config.yml modelRoles.default (or null)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-ompdef-'));
+    try {
+      mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+      writeFileSync(join(home, '.omp', 'agent', 'config.yml'), 'modelRoles:\n  default: ollama/ornith:fast\n');
+      expect(ompDefaultModel(home)).toBe('ollama/ornith:fast');
+      expect(isWeakOmpModel(ompDefaultModel(home))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+    expect(ompDefaultModel(mkdtempSync(join(tmpdir(), 'psu-noomp2-')))).toBeNull();
+  });
+});
+
+describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
+  it('is byte-identical to the canonical orchestrator CORE_MCP_TOOL_NAMES (psu-launcher inlines it)', () => {
+    // psu-launcher.mjs is a plain node script with no TS imports, so it inlines the core spine.
+    // This fails the build if the two ever drift — edit the orchestrator source, then mirror here.
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toEqual([...CORE_MCP_TOOL_NAMES]);
   });
 });
 

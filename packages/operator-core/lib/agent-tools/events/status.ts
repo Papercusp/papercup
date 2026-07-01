@@ -19,6 +19,11 @@ export default defineTool({
   guidance: {
     when: 'Checking what you are (still) waiting on, whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
     notWhen: 'Reading your message stream — that is coord:inbox. Following an area — topics:feed.',
+    seeAlso: [
+      'events:cancel (cancel an await you found here)',
+      'events:await (arm a new wait)',
+      'coord:inbox (your message stream, not the event registry)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

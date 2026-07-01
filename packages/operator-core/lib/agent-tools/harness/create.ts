@@ -61,6 +61,11 @@ export default defineTool({
     when: 'Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness.',
     notWhen: 'Running an existing harness (orchestrator). Authoring a blueprint without creating a harness — blueprint:create/extend.',
     chaining: 'blueprint:extend/validate → harness:create { slug, path|parentDir+folderName, blueprintId|blueprint }.',
+    seeAlso: [
+      'harness:generate-from-repo (create from an existing repo instead of a blueprint)',
+      'blueprint:validate (validate the blueprint first)',
+      'harness:overview (inspect the new harness)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

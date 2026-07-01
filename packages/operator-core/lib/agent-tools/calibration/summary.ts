@@ -28,6 +28,10 @@ export default defineTool({
       'You want the queue order itself — improvements:digest (the ranker already folds calibration in as a feature). You want raw bet rows — they are deliberately not exposed; the scores are the consumption surface.',
     chaining:
       "improvements:digest (rank.features shows a 'calibration' contribution) → calibration:summary { predictor } for that bettor's record → weigh their claim accordingly.",
+    seeAlso: [
+      'improvements:digest (the rank breakdown that surfaces a calibration contribution)',
+      'improvements:triage (weigh a bettor\'s claim when triaging)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

@@ -44,6 +44,10 @@ export default defineTool({
       'You are inside a harness — use docs:get, which auto-targets your harness.',
     chaining:
       'cross_harness:docs_outline { harnessSlug } → cross_harness:docs_get { harnessSlug, slugs } → optionally re-fetch with { harnessSlug, slugs: [picked], heading } for surgical reads.',
+    seeAlso: [
+      'cross_harness:docs_outline (find slugs in that harness to read)',
+      'cross_harness:docs_search (locate the right page by term)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

@@ -200,6 +200,10 @@ export default defineTool({
       'The revision already has a rationale. The revision is a direct editor save or a git backfill (no conversation to summarise).',
     chaining:
       'plans:revisions (spot a rationale-less row) → plans:summarize-revision { revisionId }.',
+    seeAlso: [
+      'plans:revisions (spot rationale-less rows)',
+      'plans:revision-transcript (the source transcript)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

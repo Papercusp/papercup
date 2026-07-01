@@ -44,6 +44,11 @@ export default defineTool({
     when: "Deciding WHICH blueprint shape fits a piece of work before creating a harness — the Pot operator's first stop (decomposable features → coding, investigation → research, parallel codemod → migration, a decision → vote/deliberate). Also the discovery surface for what launch blueprints exist.",
     notWhen: 'Deep-inspecting one blueprint (validation errors/warnings) — blueprint:validate {id}. Authoring — blueprint:create/extend.',
     chaining: 'blueprint:catalog → blueprint:validate {id} → harness:create {blueprintId} (pipelines) or fire the launchable ones via their trigger/system:blueprint-run.',
+    seeAlso: [
+      'blueprint:validate (validate a catalog blueprint)',
+      'blueprint:extend (fork a catalog blueprint with overrides)',
+      'harness:create (create a harness from a blueprint)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

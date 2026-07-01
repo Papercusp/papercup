@@ -43,6 +43,10 @@ export default defineTool({
       'You are already inside a harness (ctx.harnessSlug is set) — use docs:outline instead, which auto-targets your harness.',
     chaining:
       'cross_harness:docs_outline { harnessSlug } → cross_harness:docs_get { harnessSlug, slugs }.',
+    seeAlso: [
+      'cross_harness:docs_get (read the slugs the outline lists)',
+      'cross_harness:docs_search (find a page by term)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

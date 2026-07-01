@@ -79,6 +79,11 @@ export default defineTool({
       'You want the revision list with rationales — plans:revisions. You want the plan body — plans:get. Never pull a whole transcript unscoped.',
     chaining:
       'plans:revisions → plans:revision-transcript { revisionId, query } → page with cursor.',
+    seeAlso: [
+      'plans:revisions (list revisions)',
+      'plans:revision-diff (the code patch)',
+      'plans:summarize-revision (distill the transcript to a rationale)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

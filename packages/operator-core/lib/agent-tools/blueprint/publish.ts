@@ -41,6 +41,10 @@ export default defineTool({
       "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
     chaining:
       'Run after the blueprint files are committed + pushed via the project\'s normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing.',
+    seeAlso: [
+      'blueprint:validate (validate before publishing)',
+      'blueprint:catalog (where the published blueprint appears)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({

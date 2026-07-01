@@ -94,6 +94,10 @@ export default defineTool({
       'You are inside the target harness — use plans:search, which auto-targets your harness.',
     chaining:
       'cross_harness:plans_search { harnessSlug, query } → cross_harness:plans_get { harnessSlug, slug } on the top hit.',
+    seeAlso: [
+      'cross_harness:plans_get (read a matched plan)',
+      'cross_harness:plans_list (browse all plans in the harness)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

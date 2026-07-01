@@ -43,6 +43,10 @@ export default defineTool({
   guidance: {
     when: 'User explicitly asks to enable / disable feature(s), OR Papercusp is being prepared for a release and the V1 ship state needs to be set. Flipping several at once? Pass them all via `items:[{ key, enabled }]`.',
     notWhen: 'For ad-hoc testing of UI behavior, prefer the PostHog dashboard so changes are visible to other agents and humans.',
+    seeAlso: [
+      'flags:get (read the current value first)',
+      'flags:list (all flags + defaults)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect'],

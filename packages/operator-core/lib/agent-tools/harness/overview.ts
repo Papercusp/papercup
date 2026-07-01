@@ -141,6 +141,11 @@ export default defineTool({
     chaining:
       'Bundles: harness:status + harness:escalation [+ harness:list] + work_items:list — prefer this ' +
       'over calling them separately. → work_items:get / work_items:claim a problem it surfaces.',
+    seeAlso: [
+      'work_items:claim (take a problem the overview surfaces)',
+      'harness:status (live phase + activity)',
+      'harness:health (the harness health rollup)',
+    ],
   },
   capability: 'coord:read',
   // tool-call-batching-wrappers P-010 — composite marker (drives composition + the

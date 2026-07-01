@@ -84,6 +84,10 @@ export default defineTool({
     when: "Scoring a gym run's deterministic guardrails — the optimizer can't game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's gym.signals by name; set loadDrillOutcomes to pull the live red-queen sandbox corpus for the drill signals.",
     notWhen: 'Subjective quality scoring — that is the frozen judge (gym:judge). Running the pipeline — the gym runner.',
     chaining: 'gym runner → collect run inputs (tests/output) → gym:signals (loadDrillOutcomes for drill targets) → proposer + trace summary.',
+    seeAlso: [
+      'gym:judge (judge a run from these signals)',
+      'gym:set-gates (the gates a judged run is measured against)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

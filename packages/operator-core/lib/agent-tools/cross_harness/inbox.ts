@@ -18,6 +18,10 @@ export default defineTool({
   guidance: {
     when: 'You need to see messages addressed TO a specific harness across senders. The cross-harness analog of `messages:inbox`.',
     notWhen: 'For YOUR (the calling principal\'s) inbox, use `messages:inbox`. For sent items, use `cross_harness:outbox`.',
+    seeAlso: [
+      'cross_harness:outbox (sent items)',
+      'messages:inbox (YOUR own principal inbox)',
+    ],
   },
   capability: 'cross_harness:read',
   requirePrincipal: false,

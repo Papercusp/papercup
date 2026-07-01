@@ -21,6 +21,11 @@ export default defineTool({
     when: 'Authoring a brand-new blueprint shape from scratch (rare — usually you extend `coding`/`base`/`research`). Returns validated canonical YAML.',
     notWhen: 'Inheriting from an existing blueprint — use blueprint:extend (cheaper, less to author). Creating the harness itself — harness:create.',
     chaining: 'blueprint:create → (inspect yaml) → harness:create { blueprint } or write .papercusp/blueprint.yaml.',
+    seeAlso: [
+      'blueprint:validate (validate before creating a harness)',
+      'blueprint:extend (extend an existing blueprint instead of authoring)',
+      'harness:create (create a harness from it)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -43,6 +43,26 @@ describe('harness agent thinking stream parsing', () => {
     ]);
   });
 
+  it('emits a `prompt` entry for a real user/wake message (a turn boundary), not for tool_result', () => {
+    const parsed = parseAgentTimelineChunks([
+      '{"type":"user","timestamp":"2026-07-01T10:00:00Z","message":{"content":"do the thing"}}\n',
+      '{"type":"assistant","timestamp":"2026-07-01T10:00:01Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"c":"ls"},"id":"t1"}]}}\n',
+      '{"type":"user","timestamp":"2026-07-01T10:00:02Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}\n',
+    ]);
+    expect(parsed.entries).toEqual([
+      { kind: 'prompt', text: 'do the thing', ts: '2026-07-01T10:00:00Z' },
+      { kind: 'tool_use', toolName: 'Bash', toolInput: { c: 'ls' }, toolId: 't1', ts: '2026-07-01T10:00:01Z' },
+      { kind: 'tool_result', toolId: 't1', text: 'ok', ts: '2026-07-01T10:00:02Z' },
+    ]);
+  });
+
+  it('treats a text-block-only user record as a prompt too', () => {
+    const parsed = parseAgentTimelineChunks([
+      '{"type":"user","message":{"content":[{"type":"text","text":"hello wake"}]}}\n',
+    ]);
+    expect(parsed.entries).toEqual([{ kind: 'prompt', text: 'hello wake' }]);
+  });
+
   it('stamps accumulated text with the START-of-span timestamp, not the flush time', () => {
     const T = '2026-07-01T03:00:00.000Z';
     const parsed = parseAgentTimelineChunks([

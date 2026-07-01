@@ -36,6 +36,10 @@ export default defineTool({
       'You are inside a harness — use docs:search, which auto-targets your harness. You do not know which harness to query — list with `harness:list` or `cross_harness:docs_outline` per slug first.',
     chaining:
       'cross_harness:docs_search { harnessSlug, query } → cross_harness:docs_get { harnessSlug, slugs: [top-hit] }.',
+    seeAlso: [
+      'cross_harness:docs_get (read a matched page)',
+      'cross_harness:docs_outline (browse the harness doc tree)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

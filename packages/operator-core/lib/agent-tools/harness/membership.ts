@@ -34,6 +34,10 @@ export default defineTool({
   guidance: {
     when: 'User asks to move a harness to another workspace, share/link a harness into a second workspace, see which workspaces a harness is in, or remove a harness from a workspace. op=list reads; op=add/remove/move mutate.',
     notWhen: 'To CREATE a brand-new harness from a folder/repo, use the harness create flow (POST /api/harness/projects), not this — membership only links/moves harnesses that already exist somewhere.',
+    seeAlso: [
+      'harness:create (create a brand-new harness instead of linking/moving)',
+      'harness:overview (inspect the harness being linked/moved)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

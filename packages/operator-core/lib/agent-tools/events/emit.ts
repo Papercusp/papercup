@@ -26,6 +26,10 @@ export default defineTool({
     notWhen:
       'General status narration — lifecycle auto-emits + work_items:complete already cover it. Conversation — coord:send. Waking a specific agent — use coord:wake / coord:dispatch (they fire the inbox-wake key for you + report woken/dead). If nobody could plausibly be awaiting the key and you have no `to`, the emit reaches no one (it is not a log).',
     chaining: 'Peer: events:await { event: K } → you: do the work → events:emit { event: K, summary } → peer wakes.',
+    seeAlso: [
+      'events:await (a peer waits with this before you emit)',
+      'events:status (see pending awaits for the event)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

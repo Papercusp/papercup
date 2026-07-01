@@ -58,6 +58,11 @@ export default defineTool({
     when: 'You want to see recent changes across the fleet (what work finished, what proposals landed) without a replicated log. Pass userRequestedOnly to see only user-facing changes; harness to scope to one project.',
     notWhen:
       'For the raw fleet signals use curation:feed. For historical audit of all changes use the underlying work-items / coord-event-log directly.',
+    seeAlso: [
+      'curation:feed (the raw fleet signals)',
+      'curation:state-of-hive (the cross-corpus ideation rollup)',
+      'work_items:set_priority (steer the backlog after reading the feed)',
+    ],
   },
   requirePrincipal: false,
   args: z.object({

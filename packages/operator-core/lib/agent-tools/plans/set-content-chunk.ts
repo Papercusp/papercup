@@ -283,6 +283,10 @@ export default defineTool({
       'Small raw-prose edits — plans:set-content is simpler. Structured edits — use plans:set-now / plans:set-status / plans:add-decision / plans:add-item.',
     chaining:
       'plans:get { slug } → plans:set-content-chunk { op:"begin", slug, expectedHash: contentHash, chunk:firstPart, rationale } → append remaining chunks → commit. If commit returns stale, plans:get again and restart the draft.',
+    seeAlso: [
+      'plans:get (get the expectedHash first)',
+      'plans:set-content (a single-shot whole-doc edit)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

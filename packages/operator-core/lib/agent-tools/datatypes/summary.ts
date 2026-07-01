@@ -23,6 +23,10 @@ export default defineTool({
     when: 'For a dashboard / status read of a workspace\'s datatype surface and its local→shared graduation.',
     notWhen: 'To list the datatypes themselves (datatypes:list) or fetch one (datatypes:get).',
     chaining: 'datatypes:summary (overview) → datatypes:list (the rows) → datatypes:get (one definition).',
+    seeAlso: [
+      'datatypes:list (the rows behind the summary)',
+      'datatypes:get (one datatype in detail)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

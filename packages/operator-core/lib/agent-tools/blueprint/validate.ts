@@ -42,6 +42,11 @@ export default defineTool({
     when: 'Before persisting a blueprint you authored (with blueprint:create/extend) or to inspect a built-in. Always validate before writing .papercusp/blueprint.yaml or calling harness:create.',
     notWhen: 'To run a blueprint — that is the orchestrator. To create a harness — harness:create.',
     chaining: 'blueprint:create/extend → blueprint:validate → (write .papercusp/blueprint.yaml or harness:create).',
+    seeAlso: [
+      'blueprint:create (author a blueprint to validate)',
+      'blueprint:extend (extend one)',
+      'harness:create (create a harness from the validated blueprint)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

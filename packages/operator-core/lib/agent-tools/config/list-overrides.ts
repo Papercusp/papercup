@@ -26,6 +26,9 @@ export default defineTool({
     when: 'You (or an operator debugging odd fleet behavior) need to see what runtime config has been changed away from its baked defaults — every override across all concerns, in one place, with who/when.',
     notWhen: "To CHANGE a value, use that concern's set tool (e.g. improvements:set-watchdog-tunables). To revert overrides to defaults, use config:reset-overrides.",
     chaining: 'config:reset-overrides to revert a concern (or all) back to baked defaults.',
+    seeAlso: [
+      'config:reset-overrides (revert a concern back to baked defaults)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

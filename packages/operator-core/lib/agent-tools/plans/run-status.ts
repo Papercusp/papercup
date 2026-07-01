@@ -51,6 +51,10 @@ export default defineTool({
     notWhen:
       'The run is mid-turn (let it settle, or resume it). Flipping a plan *item* status is plans:set-status. Continuing a run is plans:resume.',
     chaining: 'plans:runs → plans:set-run-status { runId, status }.',
+    seeAlso: [
+      'plans:runs (find the runId)',
+      'plans:run-transcript (inspect the run before changing status)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

@@ -38,6 +38,10 @@ export default defineTool({
     notWhen:
       'The plan is done — use plans:set-run-status for run lifecycle. To mark the whole plan complete, update the frontmatter status to shipped.',
     chaining: 'plans:list to find the slug, then plans:pause { slug }. Resume with plans:start.',
+    seeAlso: [
+      'plans:start (resume / start a paused plan)',
+      'plans:set-priority (reorder instead of pausing)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

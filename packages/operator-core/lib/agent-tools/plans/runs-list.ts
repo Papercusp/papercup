@@ -43,6 +43,11 @@ export default defineTool({
       'You want to launch a fresh agent — plans:launch. You want to read the plan body — plans:get. The plan’s edit history — plans:revisions.',
     chaining:
       'plans:runs → plans:resume { runId, message } to continue a run.',
+    seeAlso: [
+      'plans:run-transcript (read one run\'s transcript)',
+      'plans:resume (continue a run)',
+      'plans:set-run-status (change a run\'s status)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

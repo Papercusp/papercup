@@ -37,6 +37,10 @@ export default defineTool({
       'You are inside the target harness (ctx.harnessSlug is set) — use plans:get, which auto-targets your harness.',
     chaining:
       'cross_harness:plans_list → cross_harness:plans_get { harnessSlug, slug }.',
+    seeAlso: [
+      'cross_harness:plans_list (find the plan slug in that harness)',
+      'cross_harness:plans_search (find a plan by term)',
+    ],
   },
   capability: 'plans:read',
   requirePrincipal: false,

@@ -25,6 +25,10 @@ export default defineTool({
       'You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion\'s rating TREND over time — rubrics:trend. You are FILING a scorecard — improvements:capture { lane: "observation", observation: { rubricRef, ratings } }.',
     chaining:
       'scorecards:freshness { rubricRef: "hive-coordination-health", since } → status stale/partial-only ⇒ the Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped.',
+    seeAlso: [
+      'scorecards:list (the raw scorecards behind the freshness view)',
+      'rubrics:trend (per-criterion trend over time)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

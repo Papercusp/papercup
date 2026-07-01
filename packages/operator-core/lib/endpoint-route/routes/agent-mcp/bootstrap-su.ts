@@ -610,6 +610,12 @@ const post = defineTool({
       launch_context?: string | null;
       /** su-context-size-variants: 'full' | 'trimmed' — the initial-context size. */
       context_size?: string | null;
+      /** weak-model-tool-tier: the model id the session launches with (e.g.
+       *  `ollama/ornith-35b`, `anthropic/claude-opus-4-8`). Drives the tool-tier
+       *  gate in buildLaunchSpec — a WEAK/local model is hard-trimmed to the core
+       *  spine (codex path; omp trims client-side in psu-launcher; claude self-trims).
+       *  Absent ⇒ 'frontier' tier (no trim) — the safe default. */
+      model?: string | null;
       /** launch-path-argv-reconstruction (WI-1343): the literal `psu …` argv the
        *  launcher built, recorded on adv_sessions.launch_argv so a killed batch is
        *  reconstructible. Validated + capped server-side (normalizeLaunchArgv);
@@ -664,6 +670,8 @@ const post = defineTool({
       );
     }
     const contextSize = contextSizeRaw as 'full' | 'trimmed' | null;
+    // weak-model-tool-tier: the launch model drives the tool-tier gate in buildLaunchSpec.
+    const model = body.model?.trim() || null;
 
     const brain = body.brain === true;
     if (brain) {
@@ -729,6 +737,7 @@ const post = defineTool({
         harnessSlug,
         profile,
         contextSize,
+        model,
         planSlug,
         planTitle,
         planNow,

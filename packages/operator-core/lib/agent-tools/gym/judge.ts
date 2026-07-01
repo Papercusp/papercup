@@ -61,6 +61,10 @@ export default defineTool({
     when: "Scoring a completed gym run for the optimizer — the subjective reward the proposer optimizes. Use the TARGET blueprint's gym.rubric so a coding vs research target is judged on its own dimensions.",
     notWhen: 'Deterministic guardrails (regressions, planted-bug) — that is gym:signals, which the optimizer cannot game. Literal spec conformance — that is the target harness\'s own validator.',
     chaining: 'gym runner → collect+distill trace → gym:judge (rubric from target) → proposer reflects on the rationale.',
+    seeAlso: [
+      'gym:signals (raw run signals feeding the judgment)',
+      'gym:set-gates (the per-harness gates the judgment is measured against)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

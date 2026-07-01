@@ -18,6 +18,10 @@ export default defineTool({
   guidance: {
     when: 'You need the absolute filesystem path for a harness phase before reading files inside it.',
     notWhen: 'For listing files INSIDE the phase dir, use `harness:markdown_index` or `harness:list_features`. This tool only resolves the dir path.',
+    seeAlso: [
+      'harness:markdown_index (list files inside the phase dir)',
+      'harness:list_features (features in the phase)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

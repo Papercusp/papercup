@@ -30,6 +30,11 @@ export default defineTool({
       'Ambient interest in an area — that is topics:subscribe (notify; never wakes). Sub-minute waits inside one turn — just do the bounded blocking call. Recurring schedules — the pot/routines own time-based wakes; an await is ONE-shot.',
     chaining:
       'events:await { event } → end your turn. On wake, the turn text carries the event + payload — continue the blocked work. events:cancel to retract; events:status to inspect your active awaits + recent wakes.',
+    seeAlso: [
+      'events:emit (the counterpart — fire the event a peer awaits)',
+      'events:cancel (retract a pending await)',
+      'watch:create (a standing watch instead of a one-shot await)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

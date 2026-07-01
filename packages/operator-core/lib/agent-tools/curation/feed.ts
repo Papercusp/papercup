@@ -104,6 +104,10 @@ export default defineTool({
     when: "You want the curator's view of what matters across the fleet right now — the salience-ranked signals (escalations, blockers, decisions owed, recent completions) for a dashboard or status read. Pass surfaceOnly to get just the always-surface signals; harness to scope to one project.",
     notWhen:
       "For the raw tool-call firehose use activity:recent / the activity stream. To make the operator SURFACE a message into the chat, that's the curation loop (flag-gated), not this read.",
+    seeAlso: [
+      'curation:change-feed (the rolled-up steering view)',
+      'activity:recent (the raw tool-call firehose)',
+    ],
   },
   requirePrincipal: false,
   args: z.object({
