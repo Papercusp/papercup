@@ -5,7 +5,14 @@
  * which is what these cover — proving the agent can never inject a shell command.
  */
 import { describe, expect, it } from 'vitest';
-import { resolveInspectCommand, filterTscOutputToPaths } from './inspect';
+import {
+  resolveInspectCommand,
+  filterTscOutputToPaths,
+  clampForegroundTimeoutMs,
+  foregroundTimeoutHint,
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  MCP_TRANSPORT_CAP_MS,
+} from './inspect';
 
 const BASE = '/repo';
 
@@ -120,5 +127,39 @@ describe('filterTscOutputToPaths — "did MY change add a NEW error" (WI-1255)',
 
   it('empty output → zeros', () => {
     expect(filterTscOutputToPaths('', ['x'])).toEqual({ matchedErrors: 0, totalErrors: 0, matchedLines: [] });
+  });
+});
+
+// EI-6073: a FOREGROUND typecheck/test on a large package (operator-core's tsc ~60-90s) was
+// hard-killed by the ~55s MCP transport cap with an opaque request_timeout — the handler never
+// got to hint "use run_in_background". These pin the clamp (self-time-out below the cap) + the hint.
+describe('clampForegroundTimeoutMs — keep a foreground run under the MCP transport cap (EI-6073)', () => {
+  it('caps the ceiling below the transport cap (with serialize headroom)', () => {
+    expect(FOREGROUND_TIMEOUT_CEILING_MS).toBeLessThan(MCP_TRANSPORT_CAP_MS);
+  });
+
+  it('clamps a request ABOVE the ceiling down to it (the operator-core 120s default case)', () => {
+    expect(clampForegroundTimeoutMs(120_000)).toBe(FOREGROUND_TIMEOUT_CEILING_MS);
+    expect(clampForegroundTimeoutMs(600_000)).toBe(FOREGROUND_TIMEOUT_CEILING_MS);
+  });
+
+  it('leaves a request BELOW the ceiling untouched (a fast package is unaffected)', () => {
+    expect(clampForegroundTimeoutMs(5_000)).toBe(5_000);
+    expect(clampForegroundTimeoutMs(FOREGROUND_TIMEOUT_CEILING_MS)).toBe(FOREGROUND_TIMEOUT_CEILING_MS);
+  });
+});
+
+describe('foregroundTimeoutHint — actionable hint on a clamped timeout (EI-6073)', () => {
+  it('on a timed_out status → points to run_in_background + bash_output', () => {
+    const h = foregroundTimeoutHint('timed_out', FOREGROUND_TIMEOUT_CEILING_MS);
+    expect(h).toMatch(/run_in_background/);
+    expect(h).toMatch(/capability:bash_output/);
+    expect(h).toContain('50s'); // the clamped ceiling, human-readable
+  });
+
+  it('is EMPTY for any non-timeout status (completed / failed) — no false hint', () => {
+    expect(foregroundTimeoutHint('completed', FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
+    expect(foregroundTimeoutHint('failed', FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
+    expect(foregroundTimeoutHint('killed', FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
   });
 });

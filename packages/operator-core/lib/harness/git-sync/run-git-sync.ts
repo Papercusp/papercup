@@ -19,6 +19,12 @@
  * git-sync DELIBERATELY `git add -A`s each repo (unlike the SCOPED git-export
  * committer in `git-committer.ts`) — owning the whole-tree commit is its entire
  * purpose (it's why agents stop committing).
+ *
+ * WI-1416: the pass is CHECKPOINTABLE — three phases (`git-sync:submodules` →
+ * `git-sync:pointer-bump` → `git-sync:push`) run under the injectable
+ * `RunGitSyncOpts.step` seam so a durable caller records one DBOS
+ * operation_output per phase, and every git subprocess is time-bounded (the hang
+ * guard below). See GitSyncStepRunner for the replay-safety contract.
  */
 import { spawn } from 'node:child_process';
 import { lstat, readFile } from 'node:fs/promises';
