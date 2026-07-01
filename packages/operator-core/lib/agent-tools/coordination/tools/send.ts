@@ -21,7 +21,7 @@ import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { sendMessage, getMessageById } from '../messages';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
-import { resolveRecipients, isSelectorOrWildcard, remoteSessionOwnerIds } from '../recipient-resolve';
+import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
@@ -297,6 +297,9 @@ async function sendOne(
          *  machine of this hive — not dead, elsewhere. Delivery + wake continue
          *  via federation when the send is hive-scoped (federated:true). */
         recipient_remote?: string[];
+        /** P-010: the subset of recipient_remote whose presence beat is STALE —
+         *  probably gone; treat like dead unless the receipt arrives. */
+        recipient_remote_stale?: string[];
         /** FF#3: each missed addressee's FRESH session state (ended/parked/…) at the
          *  transfer moment — the un-ignorable "this agent ended" fact in the result. */
         recipient_liveness?: MissedRecipientLiveness[];
@@ -337,28 +340,44 @@ async function sendOne(
         // local watcher by definition — it is not dead, it is elsewhere. Split
         // it out of the dead set and report it truthfully (below).
         let remoteHomed: string[] = [];
+        let staleRemote: string[] = [];
         try {
           const report = await reportIdleRecipients(fan.targets, {
             workspaceId: identity.workspaceId ?? undefined,
           });
           dead = report.idle;
-          const remote = await remoteSessionOwnerIds(identity.workspaceId);
+          const remote = await remoteSessionsByOwnerId(identity.workspaceId);
           remoteHomed = fan.targets.filter((t) => remote.has(t));
           dead = dead.filter((d) => !remote.has(d));
+          // P-010: classify freshness — a remote beat older than the staleness
+          // window means the session is probably gone; say so instead of
+          // implying the wake will land on arrival.
+          const nowMs = Date.now();
+          staleRemote = remoteHomed.filter((t) => {
+            const seen = remote.get(t);
+            return typeof seen === 'number' && nowMs - seen > 10 * 60 * 1000;
+          });
         } catch {
           /* fail-soft: keep the generic miss note below */
         }
         const optimisticNoBackstop = wakeMode === 'optimistic';
         if (remoteHomed.length > 0 && dead.length === 0) {
           wake.recipient_remote = remoteHomed;
-          wake.note = harnessSlug
-            ? `recipient(s) ${remoteHomed.join(', ')} are homed on a REMOTE machine of this hive — no local ` +
-              'session to wake here. The message FEDERATES (federated:true) and the remote machine fires ' +
-              'the wake fan when it arrives (EI-279). Confirm pickup via their reply (wakeOnReply) or ' +
-              'coord:inbox — cross-machine delivery receipts land with P-008.'
-            : `recipient(s) ${remoteHomed.join(', ')} are homed on a REMOTE machine, but this send did NOT ` +
+          if (staleRemote.length > 0) wake.recipient_remote_stale = staleRemote;
+          const freshRemote = remoteHomed.filter((t) => !staleRemote.includes(t));
+          wake.note = !harnessSlug
+            ? `recipient(s) ${remoteHomed.join(', ')} are homed on a REMOTE machine, but this send did NOT ` +
               "federate (federated:false — no hive scope). It will NEVER reach them: re-send with scope:'hive' " +
-              'so the message rides the hive topic.';
+              'so the message rides the hive topic.'
+            : freshRemote.length > 0
+              ? `recipient(s) ${freshRemote.join(', ')} are homed on a REMOTE machine of this hive (fresh beat) — ` +
+                'the message FEDERATES and the remote machine fires the wake fan on arrival. CONFIRM pickup: ' +
+                `events:await the receiptEvent key returned on this result (coord:receipt:<msg_id> — the remote ` +
+                'machine acks with delivered+woken), or rely on wakeOnReply.' +
+                (staleRemote.length > 0 ? ` STALE remote beat (probably gone): ${staleRemote.join(', ')}.` : '')
+              : `recipient(s) ${staleRemote.join(', ')} are remote-homed but their presence beat is STALE — the ` +
+                'session is probably gone. The message still federates (seen if it resumes), but do NOT assume ' +
+                'pickup: treat this like recipient_dead and re-dispatch to a live agent unless the receipt arrives.';
         } else if (dead.length > 0) {
           wake.recipient_dead = dead;
           wake.note =

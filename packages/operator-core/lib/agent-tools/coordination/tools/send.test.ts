@@ -24,6 +24,7 @@ vi.mock('../recipient-resolve', () => ({
   resolveRecipients: vi.fn(),
   // P-007: remote session ids empty by default (single-box behavior unchanged)
   remoteSessionOwnerIds: vi.fn(async () => new Set<string>()),
+  remoteSessionsByOwnerId: vi.fn(async () => new Map<string, number>()),
 }));
 vi.mock('../../turn/interrupt', () => ({ forceEndTurn: vi.fn(async () => ({ ok: true })) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
@@ -34,7 +35,7 @@ vi.mock('../federation-scope', () => ({
 }));
 
 import { sendMessage, getMessageById } from '../messages';
-import { resolveRecipients, remoteSessionOwnerIds } from '../recipient-resolve';
+import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
@@ -43,6 +44,7 @@ const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
 const resolveM = vi.mocked(resolveRecipients);
 const remoteIdsM = vi.mocked(remoteSessionOwnerIds);
+const remoteMapM = vi.mocked(remoteSessionsByOwnerId);
 const wakeM = vi.mocked(wakeRecipients);
 const idleM = vi.mocked(reportIdleRecipients);
 const livenessM = vi.mocked(describeMissedRecipients);
@@ -70,6 +72,7 @@ beforeEach(() => {
   fedScopeM.mockResolvedValue({ kind: 'none' } as never);
   // P-007: no remote sessions by default
   remoteIdsM.mockResolvedValue(new Set<string>() as never);
+  remoteMapM.mockResolvedValue(new Map<string, number>() as never);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
@@ -347,23 +350,33 @@ describe('coord:send delivery receipts (P-008)', () => {
 describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a required-wake miss on a REMOTE-homed recipient reports recipient_remote (not dead) with the federation note', async () => {
     fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
-    remoteIdsM.mockResolvedValue(new Set(['su-remote-1']) as never);
+    remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now()]]) as never);
     wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never); // no local watcher — but it is REMOTE
     const b = await body({ to: ['su-remote-1'], summary: 'cross-machine ping', wake: 'required' });
     expect(b.results[0].wake.recipient_remote).toEqual(['su-remote-1']);
     expect(b.results[0].wake.recipient_dead).toBeUndefined();
-    expect(b.results[0].wake.note).toMatch(/REMOTE machine|federates|EI-279/i);
+    expect(b.results[0].wake.note).toMatch(/REMOTE machine|FEDERATES|receiptEvent|coord:receipt/i);
     expect(b.results[0].federated).toBe(true);
   });
 
   it('a remote-homed recipient on a NON-federated send gets the loud scope hint (it will never arrive)', async () => {
     // no shared hive → the send stays local, but the recipient is remote-only
-    remoteIdsM.mockResolvedValue(new Set(['su-remote-1']) as never);
+    remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now()]]) as never);
     wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never);
     const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
     expect(b.results[0].federated).toBe(false);
     expect(b.results[0].wake.note).toMatch(/did NOT federate|scope:'hive'/i);
+  });
+
+  it('a STALE remote beat is reported as probably-gone (P-010) — treat like dead unless the receipt arrives', async () => {
+    fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now() - 30 * 60 * 1000]]) as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
+    idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never);
+    const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
+    expect(b.results[0].wake.recipient_remote_stale).toEqual(['su-remote-1']);
+    expect(b.results[0].wake.note).toMatch(/STALE|probably gone|re-dispatch/i);
   });
 });

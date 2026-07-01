@@ -28,7 +28,24 @@ import { useLexicon } from '@/lib/useLexicon';
 import { AudienceModeSelector } from '@/app/_components/AudienceModeSelector';
 import { OperatorActiveToggle } from '@/app/_components/OperatorActiveToggle';
 import { VoiceButton } from '@/app/_components/voice/VoiceButton';
-import { isVoiceOutputMuted, setVoiceOutputMuted } from '@/app/_components/voice/voice-mode';
+import {
+  forceOperatorVoiceHost,
+  getOperatorVoiceSessionUiState,
+  isVoiceOutputMuted,
+  setOperatorVoiceBusMode,
+  setOperatorVoicePtt,
+  setVoiceOutputMuted,
+  toggleOperatorVoiceMute,
+  type OperatorVoiceSessionUiState,
+} from '@/app/_components/voice/voice-mode';
+
+const EMPTY_SESSION: OperatorVoiceSessionUiState = {
+  active: false,
+  muted: false,
+  deafened: false,
+  mode: 'off',
+  elected: false,
+};
 
 export default function SentinelVoiceBar({ onCollapse }: { onCollapse?: () => void }) {
   const t = useLexicon();
@@ -37,6 +54,7 @@ export default function SentinelVoiceBar({ onCollapse }: { onCollapse?: () => vo
   // 2026-06-23). Hydrate from the persisted flag; re-sync on changes from
   // other tabs / the settings page (the broadcast event).
   const [muted, setMuted] = useState(false);
+  const [session, setSession] = useState<OperatorVoiceSessionUiState>(EMPTY_SESSION);
   useEffect(() => {
     setMuted(isVoiceOutputMuted());
     const onChange = (e: Event) => {
@@ -46,11 +64,21 @@ export default function SentinelVoiceBar({ onCollapse }: { onCollapse?: () => vo
     window.addEventListener('papercusp:voiceOutputMutedChanged', onChange);
     return () => window.removeEventListener('papercusp:voiceOutputMutedChanged', onChange);
   }, []);
+  useEffect(() => {
+    const sync = (e?: Event) => {
+      const detail = (e as CustomEvent<OperatorVoiceSessionUiState> | undefined)?.detail;
+      setSession(detail ?? getOperatorVoiceSessionUiState());
+    };
+    sync();
+    window.addEventListener('papercusp:operatorVoiceSessionStateChanged', sync);
+    return () => window.removeEventListener('papercusp:operatorVoiceSessionStateChanged', sync);
+  }, []);
   const toggleMuted = () => {
     const next = !muted;
     setMuted(next);
     setVoiceOutputMuted(next);
   };
+  const nextSessionMode = session.mode === 'push-to-talk' ? 'always-on' : 'push-to-talk';
   return (
     <div className="pc-voice-bar" role="region" aria-label={`${persona} voice controls`}>
       <style>{VOICE_BAR_CSS}</style>
@@ -62,6 +90,53 @@ export default function SentinelVoiceBar({ onCollapse }: { onCollapse?: () => vo
         <AudienceModeSelector />
         <OperatorActiveToggle />
         <VoiceButton />
+        {session.active && (
+          <>
+            <button
+              type="button"
+              className={`pc-voice-bar__session${session.muted ? ' is-muted' : ''}`}
+              onClick={() => toggleOperatorVoiceMute()}
+              aria-pressed={!session.muted}
+              aria-label={session.muted ? 'Unmute shared microphone' : 'Mute shared microphone'}
+              title={session.muted ? 'Shared microphone is muted' : 'Shared microphone is live'}
+            >
+              Mic
+            </button>
+            <button
+              type="button"
+              className="pc-voice-bar__session pc-voice-bar__mode"
+              onClick={() => setOperatorVoiceBusMode(nextSessionMode)}
+              aria-label={`Set shared voice mode to ${nextSessionMode}`}
+              title={`Shared session mode: ${session.mode}`}
+            >
+              {session.mode === 'push-to-talk' ? 'PTT' : 'On'}
+            </button>
+            {session.mode === 'push-to-talk' && (
+              <button
+                type="button"
+                className="pc-voice-bar__session pc-voice-bar__hold"
+                onMouseDown={() => setOperatorVoicePtt(true)}
+                onMouseUp={() => setOperatorVoicePtt(false)}
+                onMouseLeave={() => setOperatorVoicePtt(false)}
+                onTouchStart={() => setOperatorVoicePtt(true)}
+                onTouchEnd={() => setOperatorVoicePtt(false)}
+                aria-label="Hold shared push-to-talk"
+                title="Hold to talk on the shared voice session"
+              >
+                Talk
+              </button>
+            )}
+            <button
+              type="button"
+              className={`pc-voice-bar__session pc-voice-bar__host${session.elected ? ' is-elected' : ''}`}
+              onClick={() => forceOperatorVoiceHost()}
+              aria-label={session.elected ? 'This rail currently hosts shared voice' : 'Force this rail to host shared voice'}
+              title={session.elected ? 'This rail currently owns mic and playout' : 'Take over mic and playout on this rail'}
+            >
+              Host
+            </button>
+          </>
+        )}
         {/* Speak-responses toggle (owner ask 2026-06-23): enable/disable TTS of
             the Sentinel's replies, beside the mic. Muting silences spoken output
             but keeps voice mode + PTT live. */}
@@ -137,11 +212,12 @@ const VOICE_BAR_CSS = `
 .pc-voice-bar__title { font-size: 12px; font-weight: 800; color: var(--fg, #e7f7ff); white-space: nowrap; }
 .pc-voice-bar__subtitle { font-size: 10px; font-weight: 600; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
 .pc-voice-bar__controls { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-.pc-voice-bar__tts {
+.pc-voice-bar__tts,
+.pc-voice-bar__session {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
+  min-width: 30px;
   height: 28px;
   flex-shrink: 0;
   border-radius: 6px;
@@ -149,7 +225,18 @@ const VOICE_BAR_CSS = `
   background: color-mix(in srgb, var(--accent, #8b5cf6) 14%, transparent);
   color: var(--fg, #e7f7ff);
   cursor: pointer;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
 }
-.pc-voice-bar__tts:hover { background: color-mix(in srgb, var(--accent, #8b5cf6) 24%, transparent); }
+.pc-voice-bar__tts:hover,
+.pc-voice-bar__session:hover { background: color-mix(in srgb, var(--accent, #8b5cf6) 24%, transparent); }
 .pc-voice-bar__tts.is-muted { color: var(--fg-mute, #7f9bb4); background: transparent; }
+.pc-voice-bar__session.is-muted { color: var(--fg-mute, #7f9bb4); background: transparent; }
+.pc-voice-bar__mode { min-width: 38px; }
+.pc-voice-bar__hold { min-width: 42px; }
+.pc-voice-bar__host.is-elected {
+  border-color: var(--accent, #8b5cf6);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 26%, transparent);
+}
 `;

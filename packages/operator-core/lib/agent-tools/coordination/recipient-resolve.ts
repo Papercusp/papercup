@@ -75,15 +75,24 @@ export function resolveRecipientsAgainst(
  *  injects; wake honesty is the receipts leg, P-008). Best-effort: empty on
  *  error / no workspace (mig 434 not applied, single box). */
 export async function remoteSessionOwnerIds(workspaceId?: string | null): Promise<Set<string>> {
-  if (!workspaceId) return new Set();
+  return new Set((await remoteSessionsByOwnerId(workspaceId)).keys());
+}
+
+/** P-010: remote sessions with their last-seen beat (epoch ms), so a caller can
+ *  classify FRESH (likely wakeable on arrival) vs STALE (probably gone — an
+ *  honest miss without a round-trip). Same wide addressability window. */
+export async function remoteSessionsByOwnerId(
+  workspaceId?: string | null,
+): Promise<Map<string, number>> {
+  if (!workspaceId) return new Map();
   try {
     const rows = await listLiveSessionPresence({
       workspaceId,
       staleMs: PRESENCE_STALE_MS * 4,
     });
-    return new Set(rows.map((r) => r.owner_id));
+    return new Map(rows.map((r) => [r.owner_id, r.last_seen_ms]));
   } catch {
-    return new Set();
+    return new Map();
   }
 }
 

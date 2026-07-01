@@ -12,7 +12,18 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 const H = vi.hoisted(() => ({
   muted: false,
+  session: {
+    active: false,
+    muted: false,
+    deafened: false,
+    mode: 'off' as 'off' | 'push-to-talk' | 'always-on',
+    elected: false,
+  },
   setVoiceOutputMuted: vi.fn(),
+  toggleOperatorVoiceMute: vi.fn(),
+  setOperatorVoiceBusMode: vi.fn(),
+  setOperatorVoicePtt: vi.fn(),
+  forceOperatorVoiceHost: vi.fn(),
 }));
 
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => () => 'Sentinel' }));
@@ -28,6 +39,11 @@ vi.mock('@/app/_components/voice/VoiceButton', () => ({
 vi.mock('@/app/_components/voice/voice-mode', () => ({
   isVoiceOutputMuted: () => H.muted,
   setVoiceOutputMuted: (v: boolean) => H.setVoiceOutputMuted(v),
+  getOperatorVoiceSessionUiState: () => H.session,
+  toggleOperatorVoiceMute: () => H.toggleOperatorVoiceMute(),
+  setOperatorVoiceBusMode: (mode: 'push-to-talk' | 'always-on') => H.setOperatorVoiceBusMode(mode),
+  setOperatorVoicePtt: (down: boolean) => H.setOperatorVoicePtt(down),
+  forceOperatorVoiceHost: () => H.forceOperatorVoiceHost(),
 }));
 
 import SentinelVoiceBar from './SentinelVoiceBar';
@@ -35,7 +51,12 @@ import SentinelVoiceBar from './SentinelVoiceBar';
 afterEach(() => {
   cleanup();
   H.muted = false;
+  H.session = { active: false, muted: false, deafened: false, mode: 'off', elected: false };
   H.setVoiceOutputMuted.mockReset();
+  H.toggleOperatorVoiceMute.mockReset();
+  H.setOperatorVoiceBusMode.mockReset();
+  H.setOperatorVoicePtt.mockReset();
+  H.forceOperatorVoiceHost.mockReset();
 });
 
 describe('SentinelVoiceBar', () => {
@@ -70,6 +91,49 @@ describe('SentinelVoiceBar', () => {
       new CustomEvent('papercusp:voiceOutputMutedChanged', { detail: { muted: true } }),
     );
     expect(screen.getByRole('button', { name: 'Unmute Sentinel spoken responses' })).toBeTruthy();
+  });
+
+  it('renders shared-session controls only while the shared voice session is active', () => {
+    const { rerender } = render(<SentinelVoiceBar />);
+    expect(screen.queryByRole('button', { name: 'Mute shared microphone' })).toBeNull();
+
+    H.session = { active: true, muted: false, deafened: false, mode: 'always-on', elected: false };
+    rerender(<SentinelVoiceBar />);
+    expect(screen.getByRole('button', { name: 'Mute shared microphone' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Set shared voice mode to push-to-talk' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Force this rail to host shared voice' })).toBeTruthy();
+  });
+
+  it('drives the shared-session affordances through the voice bus helpers', () => {
+    H.session = { active: true, muted: false, deafened: false, mode: 'push-to-talk', elected: false };
+    render(<SentinelVoiceBar />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mute shared microphone' }));
+    expect(H.toggleOperatorVoiceMute).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set shared voice mode to always-on' }));
+    expect(H.setOperatorVoiceBusMode).toHaveBeenCalledWith('always-on');
+
+    const talk = screen.getByRole('button', { name: 'Hold shared push-to-talk' });
+    fireEvent.mouseDown(talk);
+    fireEvent.mouseUp(talk);
+    expect(H.setOperatorVoicePtt).toHaveBeenNthCalledWith(1, true);
+    expect(H.setOperatorVoicePtt).toHaveBeenNthCalledWith(2, false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Force this rail to host shared voice' }));
+    expect(H.forceOperatorVoiceHost).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-syncs the shared-session controls from the runtime event', () => {
+    render(<SentinelVoiceBar />);
+    fireEvent(
+      window,
+      new CustomEvent('papercusp:operatorVoiceSessionStateChanged', {
+        detail: { active: true, muted: true, deafened: false, mode: 'always-on', elected: true },
+      }),
+    );
+    expect(screen.getByRole('button', { name: 'Unmute shared microphone' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'This rail currently hosts shared voice' })).toBeTruthy();
   });
 
   it('renders the collapse control only when onCollapse is provided, and fires it', () => {
