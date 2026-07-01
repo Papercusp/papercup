@@ -37,6 +37,31 @@ import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 const STORM_WINDOW_MS = 60_000;
 const STORM_MAX = 10;
 
+/**
+ * Trusted SYSTEM recovery actors get a much higher storm ceiling than an
+ * ordinary agent (gateway-mass-outage-storm-guard-2026-07-01, root-cause of
+ * "the auto-ESC un-wedge didn't fire in ~50 of ~50 recent gateway-outage
+ * cases" — su-b399e5ea's finding, confirmed via `turn.interrupt_rate_limited`
+ * audit rows with `recent:10` during a correlated gateway-error burst).
+ *
+ * D-009's STORM_MAX=10/60s was sized for "a confused or looping AGENT
+ * hammering ONE target" — but `stall-waker` is a single, code-reviewed,
+ * fleet-wide recovery LOOP that legitimately force-ESCs MANY DISTINCT owners
+ * within the same tick when a gateway error correlates across the fleet (the
+ * exact scenario it exists to recover from). `recentInterruptCount` counts
+ * ONLY by actor (not actor+target), so that single shared actor identity hit
+ * the 10/60s cap after ~10 DIFFERENT owners in one burst — every 11th+ owner's
+ * ESC was silently refused (`rate_limited`) and never retried promptly,
+ * leaving it wedged until a human noticed. A regular agent-invoked
+ * `turn:interrupt` call is unaffected — it keeps the tight per-actor cap
+ * (still catches a genuinely confused/looping single agent).
+ */
+const STORM_MAX_SYSTEM_ACTOR = Number(process.env.PAPERCUSP_INTERRUPT_STORM_MAX_SYSTEM) || 200;
+const SYSTEM_STORM_EXEMPT_ACTORS = new Set<string>(['stall-waker']);
+function stormMaxFor(actor: string): number {
+  return SYSTEM_STORM_EXEMPT_ACTORS.has(actor) ? STORM_MAX_SYSTEM_ACTOR : STORM_MAX;
+}
+
 export interface InterruptInput {
   actor: string;
   workspaceId: string;
@@ -100,14 +125,17 @@ export async function performInterrupt(input: InterruptInput, deps: InterruptDep
   }
 
   // Storm guard (D-009): cap interrupts/min/actor so a looping agent can't halt the fleet.
+  // Trusted system recovery actors (stall-waker) get a much higher ceiling — see
+  // stormMaxFor's doc comment for why a per-actor (not per actor+target) count needs it.
+  const max = stormMaxFor(input.actor);
   const recent = (await deps.recentInterrupts?.(input.actor).catch(() => 0)) ?? 0;
-  if (recent >= STORM_MAX) {
-    await audit('turn.interrupt_rate_limited', input.owner, { mode: input.mode, reason: input.reason, recent }, input.workspaceId, input.actor);
+  if (recent >= max) {
+    await audit('turn.interrupt_rate_limited', input.owner, { mode: input.mode, reason: input.reason, recent, max }, input.workspaceId, input.actor);
     return {
       ok: false,
       mode: input.mode,
       error: 'rate_limited',
-      reason: `more than ${STORM_MAX} interrupts in the last ${STORM_WINDOW_MS / 1000}s — refusing (storm guard)`,
+      reason: `more than ${max} interrupts in the last ${STORM_WINDOW_MS / 1000}s — refusing (storm guard)`,
     };
   }
 

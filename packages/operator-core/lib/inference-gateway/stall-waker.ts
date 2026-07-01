@@ -38,8 +38,15 @@ export interface StallWakerDeps {
    *  capacity gate. A turn that DIED on a gateway error is WEDGED — its CLI can't receive ANY message (not even
    *  a wake) until the dead turn is ESC'd. This re-arms it immediately so it's reachable again, WITHOUT shoving
    *  it back into a still-throttled pool (the capacity-gated `wake` below does the resume once budget returns).
-   *  Optional — omit to keep only the legacy capacity-gated ESC+wake. */
-  unwedge?: (ownerId: string) => Promise<void>;
+   *  Optional — omit to keep only the legacy capacity-gated ESC+wake.
+   *
+   *  MUST resolve `true` only when the ESC genuinely landed, `false` on ANY refusal/failure (storm-guard
+   *  rate-limit, no live interruptible session, etc.) — never throw to signal failure (root-cause fix,
+   *  2026-07-01, gateway-mass-outage-storm-guard: the underlying `turn:interrupt` core never throws, it
+   *  returns `{ok:false, error:...}` as a normal value, so a `Promise<void>` shape here silently swallowed
+   *  every refused/failed ESC — `tick()` logged "un-wedged … reachable again" and armed the cooldown even
+   *  though nothing was delivered, masking the exact failures a correlated gateway outage produces). */
+  unwedge?: (ownerId: string) => Promise<boolean>;
   now: () => number;
   log: (level: 'info' | 'warn', msg: string) => void;
 }
