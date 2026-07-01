@@ -1246,21 +1246,25 @@ export const SU_CONTEXT_TOKEN_ESTIMATES = { full: '~180k', trimmed: '~50k' };
 // su-context-size-variants: the terminal-picker choices — the twin of the UI's
 // SU_CONTEXT_OPTIONS. Native maps to null (⇒ no --context-size flag ⇒ byte-identical
 // to the pre-feature launch); 'full'/'trimmed' match the flag values + the UI enum.
+// 'trimmed' is the picker's DEFAULT selection (core spine + native soft-trim keeps
+// initial context small without giving up on-demand discovery) — Native and Full are
+// still one keypress away for whoever wants the whole catalog or the pre-feature launch.
 export const SU_CONTEXT_CHOICES = [
-  { name: 'Native (default)', value: null },
+  { name: 'Native', value: null },
   { name: `Full · ${SU_CONTEXT_TOKEN_ESTIMATES.full}  (whole tool catalog up-front)`, value: 'full' },
-  { name: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}  (core spine, native soft-trim)`, value: 'trimmed' },
+  { name: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}  (core spine, native soft-trim) (default)`, value: 'trimmed' },
 ];
 
 /** su-context-size-variants: choose the initial-context size for the SU session —
- *  the terminal-picker twin of the operator UI's Full/Trimmed toggle. Native (null) ⇒
- *  each client keeps its native default (byte-identical launch); 'full' loads the whole
- *  tool catalog up-front; 'trimmed' uses the client's native soft-trim. Threads into
+ *  the terminal-picker twin of the operator UI's Full/Trimmed toggle. Defaults to
+ *  'trimmed' (core spine + the client's native soft-trim) — Native (null) skips the
+ *  flag entirely (byte-identical to the pre-feature launch) and 'full' loads the whole
+ *  tool catalog up-front; both remain explicit picker choices. Threads into
  *  args.contextSize, honored per-agent in the launch tail (claude ENABLE_TOOL_SEARCH,
  *  omp PI_CONFIG_DIR, codex/server via the bootstrap body's context_size). */
 async function pickContextSize() {
   const { select } = await import('@inquirer/prompts');
-  return select({ message: 'Context size', default: null, choices: SU_CONTEXT_CHOICES });
+  return select({ message: 'Context size', default: 'trimmed', choices: SU_CONTEXT_CHOICES });
 }
 
 /** Pick a workspace. Harnesses are workspace-scoped, so this comes
@@ -2508,8 +2512,9 @@ async function main() {
     const agent = p.needAgent ? await pickAgent() : p.agent;
     // su-context-size-variants: prompt for the context-size variant right after the
     // agent (the terminal twin of the UI's Full/Trimmed toggle). A --context-size=
-    // flag preselects + skips this, mirroring --fleet/--account. Native (null) ⇒ no
-    // flag ⇒ byte-identical to the pre-feature launch.
+    // flag preselects + skips this, mirroring --fleet/--account. Defaults to 'trimmed';
+    // Native (null) ⇒ no flag ⇒ byte-identical to the pre-feature launch, still one
+    // keypress away.
     if (!args.contextSize) args.contextSize = await pickContextSize();
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;

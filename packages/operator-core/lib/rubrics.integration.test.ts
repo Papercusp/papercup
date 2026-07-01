@@ -83,7 +83,11 @@ const rubricData = {
 
 /** Insert a rubric-template plan row directly (admin/bypass) — the read leg's input,
  *  for read-path edge cases that the write path can't author (malformed data, an
- *  instance plan, a specific status). Provides the NOT-NULL plan columns minimally. */
+ *  instance plan, a specific status). Provides the NOT-NULL plan columns minimally.
+ *  Defaults the workspace to activeWorkspaceId() — the SAME scope the store reads from
+ *  (rubricsScopeWorkspace, WI-976) — so seed + read stay symmetric on any env (a
+ *  hardcoded 'default' here would mismatch the store's active-workspace scope). Pass an
+ *  explicit workspaceId to exercise cross-workspace scoping. */
 async function insertRubricPlan(
   slug: string,
   opts: { status?: string; data?: unknown; title?: string; templateSlug?: string | null; archived?: boolean; workspaceId?: string } = {},
@@ -92,7 +96,7 @@ async function insertRubricPlan(
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
        created, updated, owner, archived, template, template_data, template_slug, origin)
-    VALUES (${opts.workspaceId ?? 'default'}, 'papercusp', ${slug}, '', md5(${slug}), 1, ${opts.title ?? slug},
+    VALUES (${opts.workspaceId ?? activeWorkspaceId()}, 'papercusp', ${slug}, '', md5(${slug}), 1, ${opts.title ?? slug},
             ${opts.status ?? 'active'}, '2026-06-20', '2026-06-20', 'queen-1', ${opts.archived ?? false},
             'rubric', ${JSON.stringify(opts.data ?? rubricData)}::text::jsonb, ${opts.templateSlug ?? null}, 'local')`;
 }
