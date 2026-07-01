@@ -54,7 +54,12 @@ export default defineTool({
         label: m.ownerLabel ?? m.label,
         fleetRole: m.fleetRole,
         intent: m.intent,
+        // EI-5858: `alive` is now gated on wakeability (an `ended` session no longer
+        // reads alive:true off a still-warm heartbeat); `sessionState` surfaces the
+        // full live | parked | ended truth so a leader isn't fooled by a warm-but-idle
+        // or dead session. Read sessionState, not a bare `alive`, for "is X working".
         alive: m.alive,
+        sessionState: m.sessionState,
         lastActiveSecAgo: m.lastActiveSecAgo,
         doing: m.doing,
         load: m.load,

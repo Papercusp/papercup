@@ -14,6 +14,7 @@ import {
 } from './fleet-roster';
 import type { AgentAssignment, WorkListItem } from './assignments';
 import type { PresenceTier1Joins } from '../agent-tools/coordination/presence-tier1';
+import type { WakeabilitySignals } from '../agent-tools/coordination/presence-wakeability';
 import type { AgentFleetRecord } from '../agent-fleets-store';
 
 const NOW = Date.parse('2026-06-29T04:00:00Z');
@@ -68,6 +69,12 @@ function asg(p: Partial<AgentAssignment> & { agentId: string }): AgentAssignment
     ...p,
   };
 }
+
+const wake = (m: Record<string, Partial<WakeabilitySignals>>): Map<string, WakeabilitySignals> => {
+  const out = new Map<string, WakeabilitySignals>();
+  for (const [k, v] of Object.entries(m)) out.set(k, { wakeable: false, liveTurn: false, ...v });
+  return out;
+};
 
 const tier1 = (m: Record<string, Partial<PresenceTier1Joins>>): Map<string, PresenceTier1Joins> => {
   const out = new Map<string, PresenceTier1Joins>();
@@ -150,6 +157,47 @@ describe('foldFleetRoster', () => {
     expect(e.fleetRole).toBe('member');
     expect(e.intent).toBe('thinking');
     expect(e.claimedItems).toEqual([]); // EMPTY_TIER1 default
+  });
+
+  // EI-5858: fleet:status reported a stale `live` boolean that masked `ended`.
+  it('gates `alive` to false + reports sessionState:ended for a warm-heartbeat but NOT-wakeable (dead) session', () => {
+    // The reported repro: a session whose process ended but whose heartbeat is still
+    // fresh within PRESENCE_STALE_MS. Presence/assignment liveness (heartbeat-only)
+    // reads alive:true; wakeability says it is NOT wakeable → ended.
+    const p = pres({ ownerId: 'su-dead', stale: false, fleetSlug: 'f' });
+    const a = asg({ agentId: 'su-dead', alive: true, doing: WI('WI-9', 0), load: 1 });
+    const [e] = foldFleetRoster([p], [a], tier1({}), NOW, wake({ 'su-dead': { wakeable: false } }));
+    expect(e.sessionState).toBe('ended');
+    expect(e.alive).toBe(false); // ← the fix: was `true` (masked the dead session)
+  });
+
+  it('reports sessionState live | parked and keeps alive for wakeable sessions', () => {
+    const live = pres({ ownerId: 'su-live', stale: false, fleetSlug: 'f' });
+    const parked = pres({ ownerId: 'su-parked', stale: false, fleetSlug: 'f' });
+    const out = foldFleetRoster(
+      [live, parked],
+      [asg({ agentId: 'su-live', alive: true }), asg({ agentId: 'su-parked', alive: true })],
+      tier1({}),
+      NOW,
+      wake({
+        'su-live': { wakeable: true, liveTurn: true },
+        'su-parked': { wakeable: true, liveTurn: false },
+      }),
+    );
+    const byId = new Map(out.map((e) => [e.agentId, e]));
+    expect(byId.get('su-live')?.sessionState).toBe('live');
+    expect(byId.get('su-live')?.alive).toBe(true);
+    expect(byId.get('su-parked')?.sessionState).toBe('parked');
+    expect(byId.get('su-parked')?.alive).toBe(true);
+  });
+
+  it('leaves alive heartbeat-derived + sessionState null when wakeability is absent (federated/unknown)', () => {
+    // No wakeability entry (a federated peer, or the read was unavailable) → behavior
+    // unchanged: alive stays heartbeat-derived and sessionState is null (state unknown).
+    const p = pres({ ownerId: 'fed:peer', stale: false, fleetSlug: 'f', federated: true });
+    const [e] = foldFleetRoster([p], [asg({ agentId: 'fed:peer', alive: true })], tier1({}), NOW, wake({}));
+    expect(e.sessionState).toBeNull();
+    expect(e.alive).toBe(true);
   });
 
   it('sorts live first, then orphan-holders, then newest heartbeat', () => {
