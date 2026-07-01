@@ -21,6 +21,11 @@ export default defineTool({
   guidance: {
     when: 'No existing topic fits a relevance area you (and likely others) will want to follow. Keep the slug to a word or two; the description to one sentence.',
     notWhen: 'A close-enough topic already exists in topics:list — subscribe/tag to that instead. Near-duplicates get merged with topics:merge.',
+    seeAlso: [
+      'topics:list (a close-enough topic may already exist)',
+      'topics:subscribe (follow the new topic)',
+      'topics:merge (fold a near-duplicate into an existing topic)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

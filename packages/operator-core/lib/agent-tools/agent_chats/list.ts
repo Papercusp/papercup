@@ -18,6 +18,11 @@ export default defineTool({
     when: 'User asks "what chats have I had with X?", "show me the conversations on sheets", or you need a chatId before resuming via ui:dispatch.',
     notWhen: 'For agents (who exists), use `agents:list`. For the transcript of a SPECIFIC chat, use `agent_chats:get`.',
     chaining: 'Pair with `agent_chats:get` for detail on one chat, or `ui:dispatch` with `/harness/<slug>?chat=<chatId>` to take the user to it.',
+    seeAlso: [
+      'agent_chats:get (full detail on one chat)',
+      'agent_chats:create (start a new chat)',
+      'agent_chats:archive (archive a chat)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

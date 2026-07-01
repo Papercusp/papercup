@@ -33,7 +33,9 @@ function remoteIpFrom(req: Request): string {
 }
 
 export type AgentTimelineEntry = {
-  kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result';
+  // 'prompt' = a real user/wake message (the input that STARTS a turn) — the
+  // frontend groups the timeline into turns on these boundaries.
+  kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result' | 'prompt';
   text?: string;
   toolName?: string;
   toolInput?: unknown;
@@ -88,15 +90,31 @@ export function createAgentTimelineParser() {
           if (block.type === 'text') out.push({ kind: 'text', text: block.text, ts });
           else if (block.type === 'tool_use') out.push({ kind: 'tool_use', toolName: block.name, toolInput: block.input, toolId: block.id, ts });
         }
-      } else if (type === 'user' && obj.message?.content) {
-        for (const block of obj.message.content) {
-          if (block.type === 'tool_result') {
-            const contentStr = typeof block.content === 'string'
-              ? block.content
-              : Array.isArray(block.content)
-                ? block.content.map((p: any) => p.text ?? '').join('')
-                : '';
-            out.push({ kind: 'tool_result', toolId: block.tool_use_id, text: contentStr, ts });
+      } else if (type === 'user' && obj.message?.content != null) {
+        const content = obj.message.content;
+        if (typeof content === 'string') {
+          // A real user/wake message (plain text) → a turn boundary.
+          const t = content.trim();
+          if (t) out.push({ kind: 'prompt', text: t.slice(0, 2000), ts });
+        } else if (Array.isArray(content)) {
+          const promptTexts: string[] = [];
+          let hadToolResult = false;
+          for (const block of content) {
+            if (block.type === 'tool_result') {
+              hadToolResult = true;
+              const contentStr = typeof block.content === 'string'
+                ? block.content
+                : Array.isArray(block.content)
+                  ? block.content.map((p: any) => p.text ?? '').join('')
+                  : '';
+              out.push({ kind: 'tool_result', toolId: block.tool_use_id, text: contentStr, ts });
+            } else if (block.type === 'text' && typeof block.text === 'string') {
+              promptTexts.push(block.text);
+            }
+          }
+          // Text-only user record (no tool_result) = a wake/prompt → turn boundary.
+          if (!hadToolResult && promptTexts.length > 0) {
+            out.push({ kind: 'prompt', text: promptTexts.join('\n').slice(0, 2000), ts });
           }
         }
       } else if (type === 'result') {

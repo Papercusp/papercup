@@ -18,6 +18,10 @@ export default defineTool({
     when: 'User names a specific chat ("the architect conversation about auth") and wants the full transcript or feature_lock state.',
     notWhen: 'For a list of chats in a harness, use `agent_chats:list` first to find the id. Don\'t fetch full transcripts speculatively.',
     chaining: 'Follow `agent_chats:list` to find the id.',
+    seeAlso: [
+      'agent_chats:list (find the chat id)',
+      'agent_chats:send_message (post to the chat)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

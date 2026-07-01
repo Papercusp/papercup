@@ -37,6 +37,11 @@ export default defineTool({
     when: 'A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet. Subscribe to several at once via topics:[…] or items:[…].',
     notWhen: 'You only need a one-time look — just topics:list. To follow a specific object (one thread/issue), that is the object’s own subscribe, not a topic.',
     chaining: 'topics:list → topics:subscribe; topics:unsubscribe to stop.',
+    seeAlso: [
+      'topics:unsubscribe (stop following)',
+      'topics:feed (read the topic you subscribed to)',
+      'topics:list (find topics to follow)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

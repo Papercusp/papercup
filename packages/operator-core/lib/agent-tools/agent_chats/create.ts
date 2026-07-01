@@ -20,6 +20,10 @@ export default defineTool({
     when: 'User says "ask the architect to ...", "have the worker do ...", or you\'re routing a request to a role-scoped agent. Step 1 of the two-step dispatch flow.',
     notWhen: 'For replying in the user\'s direct chat, just speak — don\'t spin up a new agent chat. For talking to ANOTHER user, use `messages:send`. For spawning a one-shot agent process (not a long-running chat), use `<spawn>` / `orchestrator.spawn`.',
     chaining: 'Pair with `agent_chats:send_message` immediately (step 2 of the dispatch flow), then `ui:dispatch` with `/harness/<slug>?chat=<chatId>` so the user can watch the conversation.',
+    seeAlso: [
+      'agent_chats:send_message (step 2 — send the first message)',
+      'agent_chats:list (resume an existing chat instead of creating)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

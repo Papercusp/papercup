@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: 'A topic you followed is no longer relevant and its updates are noise. Drop several at once via topics:[…].',
     notWhen: 'You want to mute briefly — set the subscription to mention mode via topics:subscribe instead of dropping it.',
+    seeAlso: [
+      'topics:subscribe (set mention-mode to mute briefly instead of dropping)',
+      'topics:list (your current subscriptions)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

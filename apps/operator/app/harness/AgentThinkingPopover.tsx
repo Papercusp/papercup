@@ -23,7 +23,7 @@ import { createResilientEventSource } from '@papercusp/sse';
  */
 
 export interface TimelineEntry {
-  kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result';
+  kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result' | 'prompt';
   text?: string;
   toolName?: string;
   toolInput?: unknown;
@@ -104,9 +104,14 @@ const VIEWPORT_PAD = 12;
 export function useAgentThinkingStream(slug: string, phase: string, runId: string, streamUrl?: string) {
   const [events, setEvents] = useState<TimelineEntry[]>([]);
   const [status, setStatus] = useState<'connecting' | 'live' | 'done' | 'error'>('connecting');
+  // Whether the agent is ACTIVELY writing right now (its transcript is being
+  // appended) — driven by the session stream's `thinking` status event. The
+  // live-turn section + the "● thinking" header badge key off this.
+  const [thinking, setThinking] = useState(false);
   useEffect(() => {
     setStatus('connecting');
     setEvents([]);
+    setThinking(false);
     const source = createResilientEventSource({
       // A caller can pass an explicit stream URL (e.g. the interactive-session
       // transcript endpoint); default is the bee run-log stream.
@@ -118,13 +123,17 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
         event: (data) => {
           try { const e = JSON.parse(data) as TimelineEntry; setEvents((prev) => [...prev, e]); } catch { /* ignore */ }
         },
-        done: () => setStatus('done'),
+        // Session live-follow: the agent started/stopped writing the current turn.
+        thinking: (data) => {
+          try { setThinking(Boolean((JSON.parse(data) as { active?: boolean }).active)); } catch { /* ignore */ }
+        },
+        done: () => { setStatus('done'); setThinking(false); },
       },
-      onError: () => setStatus('error'),
+      onError: () => { setStatus('error'); setThinking(false); },
     });
     return () => { source.close(); };
   }, [slug, phase, runId, streamUrl]);
-  return { events, status };
+  return { events, status, thinking };
 }
 
 export default function AgentThinkingPopover({
