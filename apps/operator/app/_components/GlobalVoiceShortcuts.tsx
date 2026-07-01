@@ -15,7 +15,12 @@
  * nothing.
  */
 import { useShortcutAction } from '../../lib/hotkeys';
-import { toggleOperatorVoiceDeafen, toggleOperatorVoiceMute } from './voice/voice-mode';
+import {
+  forceOperatorVoiceHost,
+  toggleOperatorVoiceBusMode,
+  toggleOperatorVoiceDeafen,
+  toggleOperatorVoiceMute,
+} from './voice/voice-mode';
 
 export default function GlobalVoiceShortcuts() {
   // enableOnFormTags mirrors Discord — mute/deafen work while typing.
@@ -27,6 +32,14 @@ export default function GlobalVoiceShortcuts() {
 
   useShortcutAction('voice.toggleDeafen', () => {
     toggleOperatorVoiceDeafen();
+  }, opts);
+
+  useShortcutAction('voice.toggleMode', () => {
+    toggleOperatorVoiceBusMode();
+  }, opts);
+
+  useShortcutAction('voice.forceHost', () => {
+    forceOperatorVoiceHost();
   }, opts);
 
   return null;

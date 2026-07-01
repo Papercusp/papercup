@@ -69,7 +69,6 @@ pub enum ConvAiUpdate {
         muted: bool,
         mode: String,
         is_player: bool,
-        player_id: Option<String>,
     },
     /// A finished user turn (EL's STT), shown in the shared chat.
     UserTranscript(String),
@@ -338,7 +337,6 @@ fn reader_loop(
                         muted: m,
                         mode,
                         is_player,
-                        player_id,
                     }));
                     match status.as_str() {
                         "idle" | "listening" | "speaking" => {

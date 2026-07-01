@@ -16,10 +16,21 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 const h = vi.hoisted(() => ({
   startPushToTalk: vi.fn(),
   stopPushToTalk: vi.fn(),
+  setOperatorVoicePtt: vi.fn(),
+  toggleOperatorVoiceMute: vi.fn(),
+  toggleOperatorVoiceBusMode: vi.fn(),
+  forceOperatorVoiceHost: vi.fn(),
   setVoiceMode: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),
   navigateClient: vi.fn(),
+  sessionUi: {
+    active: false,
+    muted: false,
+    deafened: false,
+    mode: 'off',
+    elected: false,
+  },
   state: {
     mode: 'off', status: 'off', supported: true,
     hasWebSpeechSTT: true, hasWebSpeechTTS: true,
@@ -31,10 +42,15 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./voice-mode', () => ({
   getVoiceConfig: () => ({ wakeWord: 'hey papercup' }),
+  getOperatorVoiceSessionUiState: () => h.sessionUi,
   getVoiceState: () => h.state,
   initVoiceMode: vi.fn(),
   setAudioReceiving: vi.fn(),
   setMicCaptureError: vi.fn(),
+  setOperatorVoicePtt: h.setOperatorVoicePtt,
+  toggleOperatorVoiceMute: h.toggleOperatorVoiceMute,
+  toggleOperatorVoiceBusMode: h.toggleOperatorVoiceBusMode,
+  forceOperatorVoiceHost: h.forceOperatorVoiceHost,
   setVoiceMode: h.setVoiceMode,
   startPushToTalk: h.startPushToTalk,
   stopPushToTalk: h.stopPushToTalk,
@@ -59,6 +75,11 @@ beforeEach(() => {
   h.state.audioReceiving = false;
   h.state.processingTranscript = false;
   h.state.awaitingResponse = false;
+  h.sessionUi.active = false;
+  h.sessionUi.muted = false;
+  h.sessionUi.deafened = false;
+  h.sessionUi.mode = 'off';
+  h.sessionUi.elected = false;
   // jsdom's localStorage is shadowed by Node's broken `--localstorage-file`
   // built-in in this runner; install a working in-memory one.
   const store = new Map<string, string>();
@@ -80,7 +101,7 @@ afterEach(() => {
 
 function renderButton() {
   render(<VoiceButton />);
-  return screen.getByRole('button', { name: /voice mode/i });
+  return screen.getByRole('button', { name: 'Voice mode' });
 }
 
 describe('VoiceButton — push-to-talk hold threshold', () => {
@@ -108,6 +129,18 @@ describe('VoiceButton — keyboard PTT (Backquote)', () => {
     expect(h.startPushToTalk).toHaveBeenCalledTimes(1);
     fireEvent.keyUp(window, { code: 'Backquote' });
     expect(h.stopPushToTalk).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes keyboard PTT through the shared voice bus when the live session is in push-to-talk mode', () => {
+    h.sessionUi.active = true;
+    h.sessionUi.mode = 'push-to-talk';
+    renderButton();
+    fireEvent.keyDown(window, { code: 'Backquote' });
+    expect(h.setOperatorVoicePtt).toHaveBeenCalledWith(true);
+    expect(h.startPushToTalk).not.toHaveBeenCalled();
+    fireEvent.keyUp(window, { code: 'Backquote' });
+    expect(h.setOperatorVoicePtt).toHaveBeenCalledWith(false);
+    expect(h.stopPushToTalk).not.toHaveBeenCalled();
   });
 
   it('reserves the backtick for PTT even inside a normal text input (swallows the char)', () => {
@@ -187,6 +220,29 @@ describe('VoiceButton — compact status display', () => {
     renderButton();
     expect(screen.getByRole('status', { name: 'Thinking' })).toBeTruthy();
     expect(screen.queryByText(/thinking/i)).toBeNull();
+  });
+});
+
+describe('VoiceButton — shared-session controls', () => {
+  it('renders mute/mode/host controls while the shared session is active', () => {
+    h.sessionUi.active = true;
+    h.sessionUi.mode = 'push-to-talk';
+    renderButton();
+    expect(screen.getByRole('button', { name: /mute shared voice session/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /shared voice mode: push-to-talk/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /force this surface to become the shared voice host\/player/i })).toBeTruthy();
+  });
+
+  it('wires the shared-session mute/mode/host controls', () => {
+    h.sessionUi.active = true;
+    h.sessionUi.mode = 'push-to-talk';
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: /mute shared voice session/i }));
+    fireEvent.click(screen.getByRole('button', { name: /shared voice mode: push-to-talk/i }));
+    fireEvent.click(screen.getByRole('button', { name: /force this surface to become the shared voice host\/player/i }));
+    expect(h.toggleOperatorVoiceMute).toHaveBeenCalledTimes(1);
+    expect(h.toggleOperatorVoiceBusMode).toHaveBeenCalledTimes(1);
+    expect(h.forceOperatorVoiceHost).toHaveBeenCalledTimes(1);
   });
 });
 

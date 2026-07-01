@@ -66,8 +66,10 @@ test('computeQueenWakeBrief — renders the survey floor + carry-note (B-03/B-04
   assert.match(out!, /Woke by:.*timer/);
   assert.match(out!, /### Your carry-note/);
   assert.match(out!, /revisit the staging deploy/);
-  // Surveys the Queen's home (workspace + install slug).
-  assert.deepEqual(surveyHive.mock.calls[0], ['ws-1', 'papercup']);
+  // Surveys the Queen's home (workspace + install slug). The third arg is the
+  // options object (scopeFilter / extraSurveySlugs — owner model 2026-07-01);
+  // empty here: no scope filter and no started placements in this scenario.
+  assert.deepEqual(surveyHive.mock.calls[0], ['ws-1', 'papercup', {}]);
 });
 
 test('computeQueenWakeBrief — owner steering directive flows into the brief (B-02 / P-002)', async () => {

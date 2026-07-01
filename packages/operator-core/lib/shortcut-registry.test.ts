@@ -120,6 +120,8 @@ describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
       expect(getShortcutDef(id)?.defaultCombo, id).toBe(combo);
     expectCombo('voice.toggleMute', 'mod+shift+m');
     expectCombo('voice.toggleDeafen', 'mod+shift+d');
+    expectCombo('voice.toggleMode', 'mod+shift+a');
+    expectCombo('voice.forceHost', 'mod+shift+h');
     expectCombo('video.toggleCamera', 'mod+shift+v');
     expectCombo('goto.prevTab', 'alt+ArrowUp');
     expectCombo('goto.nextTab', 'alt+ArrowDown');

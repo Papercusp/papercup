@@ -128,6 +128,20 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
   },
   {
+    id: 'voice.toggleMode',
+    description: 'Toggle shared voice mode (push-to-talk / always-on)',
+    defaultCombo: 'mod+shift+a',
+    category: 'voice',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+  {
+    id: 'voice.forceHost',
+    description: 'Force this surface to become the shared voice host/player',
+    defaultCombo: 'mod+shift+h',
+    category: 'voice',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+  {
     id: 'video.toggleCamera',
     description: 'Toggle camera (video pane)',
     defaultCombo: 'mod+shift+v', // Discord: Ctrl+Shift+V

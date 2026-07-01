@@ -1272,6 +1272,11 @@ export function setOperatorVoiceBusMode(mode: Exclude<VoiceMode, 'off'>): boolea
   return true;
 }
 
+export function toggleOperatorVoiceBusMode(): boolean {
+  const nextMode = operatorVoiceMode === 'push-to-talk' ? 'always-on' : 'push-to-talk';
+  return setOperatorVoiceBusMode(nextMode);
+}
+
 export function forceOperatorVoiceHost(): boolean {
   if (!operatorVoiceRuntime) return false;
   operatorVoiceRuntime.control({ op: 'force-host' });

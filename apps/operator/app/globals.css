@@ -6955,6 +6955,51 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 11.5px;
 }
 
+.pc-voice-session-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pc-voice-session-btn {
+  min-height: 36px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(from var(--accent-strong) r g b / 0.20);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: color-mix(in oklab, var(--fg-dim), white 26%);
+  font-size: 10.5px;
+  font-weight: 760;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease, transform 140ms ease, opacity 140ms ease;
+}
+
+.pc-voice-session-btn:hover,
+.pc-voice-session-btn:focus-visible {
+  color: #f4fdff;
+  border-color: rgb(from var(--accent-strong) r g b / 0.44);
+  background: rgb(from var(--accent-strong) r g b / 0.10);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.pc-voice-session-btn.is-active {
+  color: #f4fdff;
+  border-color: rgb(from var(--accent-strong) r g b / 0.52);
+  background: rgb(from var(--accent-strong) r g b / 0.14);
+}
+
+.pc-voice-session-btn:disabled {
+  opacity: 0.62;
+  cursor: default;
+  transform: none;
+}
+
 .pc-voice-wake-hint {
   position: absolute;
   top: calc(100% + 9px);

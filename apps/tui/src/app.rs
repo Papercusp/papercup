@@ -4154,7 +4154,6 @@ impl App {
                         muted,
                         mode,
                         is_player,
-                        ..
                     } => {
                         self.convai_phase = ConvAiPhase::Live;
                         self.convai_muted = muted;
@@ -9989,12 +9988,12 @@ mod tests {
     fn realtime_voice_controls_follow_host_state_and_keys() {
         use crate::voice_convai::{ConvAiControl as C, ConvAiUpdate as U};
         let mut a = App::new();
+        a.tab = Tab::Operator;
         a.convai_phase = ConvAiPhase::Live;
         a.update(Event::ConvAi(U::SessionState {
             muted: false,
             mode: "push-to-talk".into(),
             is_player: false,
-            player_id: Some("desktop-1".into()),
         }));
         assert_eq!(a.convai_mode, "push-to-talk");
         assert!(!a.convai_muted);
@@ -10021,7 +10020,6 @@ mod tests {
             muted: true,
             mode: "push-to-talk".into(),
             is_player: true,
-            player_id: Some("tui-1".into()),
         }));
         assert_eq!(
             a.update(key('v', KeyModifiers::NONE)),

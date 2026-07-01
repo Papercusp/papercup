@@ -15,15 +15,20 @@ import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Tooltip } from '../../harness/Tooltip';
 import {
+  forceOperatorVoiceHost,
   getVoiceConfig,
+  getOperatorVoiceSessionUiState,
   getVoiceState,
   initVoiceMode,
   setAudioReceiving,
   setMicCaptureError,
+  setOperatorVoicePtt,
   setVoiceMode,
   startPushToTalk,
   stopPushToTalk,
   subscribeVoiceState,
+  toggleOperatorVoiceBusMode,
+  toggleOperatorVoiceMute,
   type VoiceState,
   type VoiceMode,
 } from './voice-mode';
@@ -127,6 +132,7 @@ function VoiceThinking(): ReactElement {
 
 export function VoiceButton(): ReactElement {
   const [vs, setVs] = useState<VoiceState>(() => getVoiceState());
+  const [sessionUi, setSessionUi] = useState(() => getOperatorVoiceSessionUiState());
   const [wakeWord, setWakeWord] = useState(() => getVoiceConfig().wakeWord);
   const [wakeHintSeen, setWakeHintSeen] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -142,6 +148,16 @@ export function VoiceButton(): ReactElement {
     initVoiceMode();
     const unsub = subscribeVoiceState(setVs);
     return unsub;
+  }, []);
+
+  useEffect(() => {
+    const syncSessionUi = () => setSessionUi(getOperatorVoiceSessionUiState());
+    syncSessionUi();
+    const onSessionChanged = () => syncSessionUi();
+    window.addEventListener('papercusp:operatorVoiceSessionStateChanged', onSessionChanged as EventListener);
+    return () => {
+      window.removeEventListener('papercusp:operatorVoiceSessionStateChanged', onSessionChanged as EventListener);
+    };
   }, []);
 
   // Surface phase-stall failures as toasts so the user can tell a
@@ -205,6 +221,8 @@ export function VoiceButton(): ReactElement {
     }
   }, [pttHintSeen]);
 
+  const busPttActive = sessionUi.active && sessionUi.mode === 'push-to-talk';
+
   const onClick = useCallback(() => {
     if (!vs.supported) {
       toast.error('Voice mode is not available in this environment.');
@@ -228,9 +246,10 @@ export function VoiceButton(): ReactElement {
     pttHoldTimerRef.current = setTimeout(() => {
       pttHoldTimerRef.current = null;
       setPttHeld(true);
-      startPushToTalk();
+      if (busPttActive) setOperatorVoicePtt(true);
+      else startPushToTalk();
     }, 250);
-  }, [vs.supported]);
+  }, [busPttActive, vs.supported]);
 
   const onPttUp = useCallback(() => {
     // Held shorter than the threshold? Cancel the pending PTT start so
@@ -242,8 +261,9 @@ export function VoiceButton(): ReactElement {
     }
     if (!pttHeld) return;
     setPttHeld(false);
-    stopPushToTalk();
-  }, [pttHeld]);
+    if (busPttActive) setOperatorVoicePtt(false);
+    else stopPushToTalk();
+  }, [busPttActive, pttHeld]);
 
   // Hold-to-talk keyboard shortcut. Listener is mounted whenever voice
   // mode is "supported" (i.e. any voice path is viable), regardless of
@@ -266,21 +286,24 @@ export function VoiceButton(): ReactElement {
       markPttHintSeen();
       if (pttHeld) return;
       setPttHeld(true);
-      startPushToTalk();
+      if (busPttActive) setOperatorVoicePtt(true);
+      else startPushToTalk();
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== PTT_SHORTCUT_CODE) return;
       if (!pttHeld) return;
       e.preventDefault();
       setPttHeld(false);
-      stopPushToTalk();
+      if (busPttActive) setOperatorVoicePtt(false);
+      else stopPushToTalk();
     };
     // Defensive: if the user releases the key while the window doesn't have
     // focus (alt-tab while held), keyup never fires. Treat blur as release.
     const onBlur = () => {
       if (!pttHeld) return;
       setPttHeld(false);
-      stopPushToTalk();
+      if (busPttActive) setOperatorVoicePtt(false);
+      else stopPushToTalk();
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -290,7 +313,7 @@ export function VoiceButton(): ReactElement {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [markPttHintSeen, pttHeld, vs.supported]);
+  }, [busPttActive, markPttHintSeen, pttHeld, vs.supported]);
 
   // Live mic level — sampled whenever the mic is open. 'micActive' is
   // the CSS-class signal ("mic is hot, please show feedback") and the
@@ -336,7 +359,9 @@ export function VoiceButton(): ReactElement {
   const title = vs.status === 'connecting'
     ? 'Voice mode: connecting to agent (waiting for WebRTC negotiation)…'
     : vs.supported
-    ? `Voice mode: ${MODE_TITLE[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
+    ? sessionUi.active
+      ? `Voice mode: ${MODE_TITLE[vs.mode]} (shared session live; hold button or ${PTT_SHORTCUT_LABEL} for PTT, use mute/mode/host controls alongside)`
+      : `Voice mode: ${MODE_TITLE[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
     : 'Voice mode unsupported in this browser';
   // The hint bubbles ("Say <wakeWord>" / "Hold ` to talk") are persistent
   // affordances — keep them visible whenever the matching mode is active.
@@ -389,6 +414,43 @@ export function VoiceButton(): ReactElement {
           <Settings2 size={14} aria-hidden="true" />
         </a>
       </Tooltip>
+      {sessionUi.active && (
+        <div className="pc-voice-session-controls" aria-label="Shared voice session controls">
+          <button
+            type="button"
+            className={`pc-voice-session-btn${sessionUi.muted ? ' is-active' : ''}`}
+            aria-pressed={sessionUi.muted}
+            aria-label={sessionUi.muted ? 'Unmute shared voice session' : 'Mute shared voice session'}
+            onClick={() => {
+              toggleOperatorVoiceMute();
+            }}
+          >
+            {sessionUi.muted ? 'Muted' : 'Mute'}
+          </button>
+          <button
+            type="button"
+            className={`pc-voice-session-btn${sessionUi.mode === 'always-on' ? ' is-active' : ''}`}
+            aria-pressed={sessionUi.mode === 'always-on'}
+            aria-label={`Shared voice mode: ${sessionUi.mode === 'push-to-talk' ? 'push-to-talk' : 'always-on'}. Toggle mode.`}
+            onClick={() => {
+              toggleOperatorVoiceBusMode();
+            }}
+          >
+            {sessionUi.mode === 'push-to-talk' ? 'PTT' : 'Live'}
+          </button>
+          <button
+            type="button"
+            className="pc-voice-session-btn"
+            aria-label={sessionUi.elected ? 'This surface is already the shared voice host/player' : 'Force this surface to become the shared voice host/player'}
+            disabled={sessionUi.elected}
+            onClick={() => {
+              if (!sessionUi.elected) forceOperatorVoiceHost();
+            }}
+          >
+            {sessionUi.elected ? 'Host' : 'Take host'}
+          </button>
+        </div>
+      )}
       {(showWakeHint || showPttHint) && (
         <div className="pc-voice-wake-hint" aria-live="polite">
           {showWakeHint ? (

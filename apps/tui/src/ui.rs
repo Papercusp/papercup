@@ -3599,7 +3599,7 @@ mod tests {
         let mut app = App::new();
         app.tab = Tab::Operator;
         app.convai_phase = ConvAiPhase::Live;
-        let text = render(&app, 100, 16);
+        let text = render(&app, 140, 16);
         assert!(text.contains("● voice"), "live badge missing");
         assert!(text.contains("V stops"), "stop hint missing");
         app.convai_phase = ConvAiPhase::Connecting;
