@@ -140,6 +140,37 @@ export async function findSessionTranscript(
   return null;
 }
 
+/** A session reads as "actively thinking" if its transcript was appended within
+ *  this window. It's the best available proxy — the transcript writes COMPLETE
+ *  records (no token-level signal), so a long model generation between writes can
+ *  briefly read as idle. Shared by the roster indicator + the live thinking pane
+ *  so both agree. */
+export const SESSION_THINKING_ACTIVE_MS = 10_000;
+
+/**
+ * Whether an interactive session appears to be actively thinking right now — its
+ * transcript jsonl was appended within {@link SESSION_THINKING_ACTIVE_MS}. Takes
+ * the coord `owner` hint so the transcript resolves via the fast path. Fail-soft
+ * false (no transcript / stat error ⇒ not thinking). `nowMs` is injectable for tests.
+ */
+export async function isSessionThinking(
+  sessionId: string,
+  opts: { owner?: string | null; nowMs?: number; roots?: string[]; isolationBase?: string } = {},
+): Promise<boolean> {
+  const path = await findSessionTranscript(sessionId, {
+    owner: opts.owner,
+    roots: opts.roots,
+    isolationBase: opts.isolationBase,
+  });
+  if (!path) return false;
+  try {
+    const st = await fs.stat(path);
+    return (opts.nowMs ?? Date.now()) - st.mtimeMs < SESSION_THINKING_ACTIVE_MS;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Decode a Claude project dir name to a cwd hint. Claude encodes the cwd by
  * replacing '/' with '-', which is NOT invertible when a real path segment
