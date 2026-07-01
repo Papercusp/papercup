@@ -272,11 +272,11 @@ another paid live run).
 | --- | --- | --- |
 | **1** | Rig foundation (reusable lib, 3-frame, scenario drivers) | ✅ DONE + live-validated (run35) |
 | **2** | LIVE multi-member (3+) fanout | ⛔ Not live-coverable under the 2-server cap → 2-VM proxy + in-process; **re-scope** to "gated on >2 servers" |
-| **3** | LIVE revocation + epoch K-cut | 🟡 In progress (scenario fn for the Brief 13 combined run) |
-| **5** | LIVE restart durability | 🟡 In progress (Brief 13 combined run) |
-| **6** | LIVE concurrent writes / LWW convergence | 🟡 In progress (Brief 13 combined run) |
-| **7** | LIVE coordination control-plane | 🟡 In progress — **finding: control plane is local-only by architecture** (limitation #1) |
-| **11** | `forceReFold` release-grade + CI | ✅ peer_cap_near + CI-wiring + commit DONE; 🟡 snapshot+re-fold test in progress |
+| **3** | LIVE revocation + epoch K-cut | 🟡 Driven live by su-ec09e (`deb-hetzner-revocation.sh` + `rig_ban_member`); live run queued behind the quota mutex — **gated on the WI-1378 no-restart fix** (see blocker #9) |
+| **5** | LIVE restart durability | ✅ **DONE** — LIVE PASS over 2 Hetzner VMs (su-8f1ad, WI-1331): member + owner cold-restart both prove no content/roster loss, exactly-1-row, no re-emit; exit 0, servers=0 |
+| **6** | LIVE concurrent writes / LWW convergence | 🟡 In progress — attempt-1 (su-e7698) **surfaced blocker #9** (no-restart owner→joiner roster-empty); re-run with a roster-populated gate, **gated on WI-1378** |
+| **7** | LIVE coordination control-plane | 🟡 In progress (su-358bc) — **finding: control plane is local-only by architecture** (limitation #1) |
+| **11** | `forceReFold` release-grade + CI | ✅ **DONE** — `peer_cap_near` in `BootHistoryKind` + CI-wiring + commit + the snapshot+re-fold integration test all landed (su-43e13, WI-1337) |
 
 **Strongly recommended (durability):** Brief **4** (LIVE reconnect/catch-up),
 Brief **8** (NAT/geo), Brief **9** (scale + `forceReFold` cost), Brief **10**
@@ -293,9 +293,16 @@ Brief **8** (NAT/geo), Brief **9** (scale + `forceReFold` cost), Brief **10**
 > proxy as equivalent to true 3-machine live coverage.
 
 **Also gating, outside the federation product code:** Brief **14** — operator-core
-`lint:tsc` is RED (+29 over baseline, from other lanes' churn, **not**
-federation). CI stays red until it's back to green, which blocks cleanly merging
-anything (the federation fix included).
+`lint:tsc` — ✅ **DONE** (su-337c2, committed `f42d55681`): the gate is GREEN again
+(310→244 errors, all type-only test-typing fixes, ratcheted, `npm run lint:tsc`
+exits 0). CI is no longer red on this.
+
+> **⚠ Current release-critical blocker (as of this update):** the **no-restart
+> owner→joiner roster gap (blocker #9 above)** gates the remaining live min-bar
+> briefs (2, 3, 6, 7) — running them before the fix lands just reproduces the
+> empty-roster failure. Fix owned by su-2c799 under **WI-1378**; e7698 is
+> live-confirming. The min bar cannot go green until WI-1378 lands + a live
+> owner→joiner run passes in the pure no-restart path.
 
 ---
 
