@@ -41,6 +41,12 @@ vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) 
 vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
   resolveAccountPin: (...a: unknown[]) => resolveAccountPinMock(...a),
   resolveFleet: async () => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null }),
+  // WI-1347 added reconstructPsuLaunchArgv (a PURE argv builder) + a call site in
+  // bootstrap-role; this fully-mocked module must export it or the handler throws
+  // at the call. The tests don't assert argv content (it flows downstream), so a
+  // faithful minimal stub suffices.
+  reconstructPsuLaunchArgv: (o: { agent?: string; role?: string | null }) =>
+    ['psu', '--no-picker', `--agent=${o?.agent ?? ''}`, ...(o?.role ? [`--role=${o.role}`] : [])],
 }));
 vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (opts: { sid: string }) => writeInteractiveClaudeConfigMock(opts) }));
 // No-op the best-effort saved-prompts materialize side effect — this unit test
