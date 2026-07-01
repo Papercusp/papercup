@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import {
   useAgentThinkingStream,
@@ -40,6 +40,7 @@ export default function AgentInspectorModal({
   onClose,
   startedAtMs,
   streamUrl,
+  focusTarget,
 }: {
   slug: string;
   phase: string;
@@ -54,6 +55,10 @@ export default function AgentInspectorModal({
   /** Explicit stream URL — set for interactive-session transcripts; omit to use
    *  the bee run-log stream keyed by slug/runId. */
   streamUrl?: string;
+  /** The agent's OS terminal-window handle — passed ONLY when focus will work (a
+   *  stored X11 `windowId`). Present ⇒ a "Focus window" button that raises the
+   *  agent's terminal via `POST /api/adv/sessions/focus`; absent ⇒ no button. */
+  focusTarget?: { advSessionId?: number | null; windowId?: string | null; pid?: number | null };
 }) {
   const { events, status, thinking } = useAgentThinkingStream(slug, phase, runId, streamUrl);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -82,6 +87,28 @@ export default function AgentInspectorModal({
     const el = scrollRef.current;
     if (el && atTopRef.current) el.scrollTop = 0;
   }, [events]);
+
+  // "Focus window" — raise the agent's OS terminal via the existing wmctrl-backed
+  // endpoint. Only wired when the caller passed a focusTarget (i.e. focus will work).
+  const [focusState, setFocusState] = useState<'idle' | 'busy' | 'err'>('idle');
+  const focusWindow = useCallback(async () => {
+    if (!focusTarget) return;
+    setFocusState('busy');
+    try {
+      const res = await fetch('/api/adv/sessions/focus', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: focusTarget.advSessionId ?? undefined,
+          windowId: focusTarget.windowId ?? undefined,
+          pid: focusTarget.pid ?? undefined,
+        }),
+      });
+      setFocusState(res.ok ? 'idle' : 'err');
+    } catch {
+      setFocusState('err');
+    }
+  }, [focusTarget]);
 
   const elapsedMs = Math.max(0, now - (startedAtMs ?? openedAtRef.current));
   const waiting = waitingMessage(status, elapsedMs);
