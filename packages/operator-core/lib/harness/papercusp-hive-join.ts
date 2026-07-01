@@ -232,7 +232,7 @@ export async function joinCanonicalPapercuspHive(
     //    2026-07-01). Never match on hiveId; never trust the announced pubkey over
     //    the baked one.
     let memberLinks: string[] = [];
-    let hiveId = PAPERCUSP_HIVE_SLUG;
+    let hiveId: string = PAPERCUSP_HIVE_SLUG;
     if (confirm.hive?.hivePubkey === invite.pubkeyBase64) {
       memberLinks = confirm.hive.memberLinks ?? [];
       hiveId = confirm.hive.hiveId ?? PAPERCUSP_HIVE_SLUG;

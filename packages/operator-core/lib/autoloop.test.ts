@@ -5,12 +5,13 @@
  * autoloop-state.integration.test.ts against a real Postgres.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { evaluateFireGate, backoffBaseSec, backoffCapSec, circuitThreshold } from './autoloop';
+import { evaluateFireGate, backoffBaseSec, backoffCapSec, circuitThreshold, recoverySec } from './autoloop';
 
 const ENV = [
   'PAPERCUSP_AUTOLOOP_BACKOFF_BASE_SEC',
   'PAPERCUSP_AUTOLOOP_BACKOFF_CAP_SEC',
   'PAPERCUSP_AUTOLOOP_CIRCUIT_THRESHOLD',
+  'PAPERCUSP_AUTOLOOP_RECOVERY_SEC',
 ] as const;
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -87,5 +88,55 @@ describe('evaluateFireGate — exponential backoff + circuit-break (D-009)', () 
     // Garbage env falls back.
     process.env.PAPERCUSP_AUTOLOOP_BACKOFF_BASE_SEC = 'nope';
     expect(backoffBaseSec()).toBe(60);
+  });
+});
+
+// B7 / autonomous-loop-hardening F3 — a scout/overwatch circuit that opened and then WEDGED
+// (next_fire_at stuck in the past, no half-open probe, last_fired_at goes stale) used to stay
+// gated forever until a human ran `autoloop:control reset-errors`. The recovery-debounce
+// auto-closes a circuit that has been open past the recovery window with no fire, so the
+// feedback half self-heals — while a circuit that is STILL probing (recent last_fired_at) is
+// left open (correctly-failing circuits are not force-reset).
+describe('evaluateFireGate — recovery-debounce auto-heal (B7/F3)', () => {
+  test('recoverySec default is 6× the cap (~6h)', () => {
+    expect(recoverySec()).toBe(backoffCapSec() * 6); // 3600 * 6 = 21600
+  });
+
+  test('open circuit still probing (recent fire) ⇒ NOT auto-reset — left open/probing', () => {
+    // ago(3601): past the cap (probe allowed) but far inside the 21600s recovery window.
+    const v = evaluateFireGate({ lastFiredAt: ago(3601), consecutiveErrors: 8 }, NOW);
+    expect(v.allow).toBe(true);        // half-open probe
+    expect(v.autoReset).toBeUndefined(); // but NOT a recovery reset
+  });
+
+  test('open circuit wedged past the recovery window ⇒ auto-reset (allow + autoReset)', () => {
+    const v = evaluateFireGate({ lastFiredAt: ago(21601), consecutiveErrors: 8 }, NOW);
+    expect(v.allow).toBe(true);
+    expect(v.autoReset).toBe(true);
+    expect(v.consecutiveErrors).toBe(8); // the pre-reset count (checkFireGate zeroes it)
+  });
+
+  test('BELOW-threshold errors never auto-reset, even long-elapsed (circuit not open)', () => {
+    const v = evaluateFireGate({ lastFiredAt: ago(999999), consecutiveErrors: 5 }, NOW);
+    expect(v.allow).toBe(true);
+    expect(v.autoReset).toBeUndefined();
+  });
+
+  test('PAPERCUSP_AUTOLOOP_RECOVERY_SEC overrides the window', () => {
+    process.env.PAPERCUSP_AUTOLOOP_BACKOFF_CAP_SEC = '50';
+    process.env.PAPERCUSP_AUTOLOOP_CIRCUIT_THRESHOLD = '3';
+    process.env.PAPERCUSP_AUTOLOOP_RECOVERY_SEC = '100';
+    expect(recoverySec()).toBe(100);
+    // open (3 errors ≥ threshold 3), fired 40s ago (< cap 50) ⇒ still circuit-open, withheld.
+    expect(evaluateFireGate({ lastFiredAt: ago(40), consecutiveErrors: 3 }, NOW).reason).toBe('circuit-open');
+    // 60s ago (past cap 50, inside recovery 100) ⇒ probe, NOT auto-reset.
+    const probe = evaluateFireGate({ lastFiredAt: ago(60), consecutiveErrors: 3 }, NOW);
+    expect(probe.allow).toBe(true);
+    expect(probe.autoReset).toBeUndefined();
+    // 101s ago (past recovery 100) ⇒ auto-reset.
+    expect(evaluateFireGate({ lastFiredAt: ago(101), consecutiveErrors: 3 }, NOW).autoReset).toBe(true);
+    // Garbage env falls back to cap*6.
+    process.env.PAPERCUSP_AUTOLOOP_RECOVERY_SEC = 'nope';
+    expect(recoverySec()).toBe(50 * 6);
   });
 });

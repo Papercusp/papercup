@@ -48,6 +48,21 @@ export function circuitThreshold(): number {
   return Number.isFinite(n) && n >= 1 ? n : 8;
 }
 
+/**
+ * The recovery-debounce window (B7 / autonomous-loop-hardening F3). An OPEN circuit that
+ * has not fired AT ALL for this long is genuinely WEDGED — its next_fire_at got stuck in
+ * the past and routinesTick keeps withholding, so it is no longer even taking its half-open
+ * probe (last_fired_at goes stale). Past this window the circuit AUTO-CLOSES so the role
+ * resumes cadence, instead of staying gated until a human runs `autoloop:control
+ * reset-errors`. Default 6× the cap (~6h) — far beyond the ~hourly probe cadence, so a
+ * circuit that IS still probing (recent last_fired_at) never trips it; only a stalled one
+ * self-heals. A correctly-failing circuit is thus left open, a stuck one recovers.
+ */
+export function recoverySec(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_RECOVERY_SEC ?? backoffCapSec() * 6);
+  return Number.isFinite(n) && n > 0 ? n : backoffCapSec() * 6;
+}
+
 export interface FireState {
   lastFiredAt: Date | null;
   consecutiveErrors: number;
@@ -60,6 +75,10 @@ export interface FireGateVerdict {
   consecutiveErrors: number;
   /** Seconds until the next allowed attempt (when withheld). */
   retryAfterSec?: number;
+  /** The circuit was open past the recovery window with no fire — the caller should
+   *  ZERO consecutive_errors so the role returns to full cadence (self-heal, B7/F3).
+   *  `checkFireGate` performs the reset; `evaluateFireGate` only flags it (stays pure). */
+  autoReset?: boolean;
 }
 
 /**
@@ -73,11 +92,20 @@ export function evaluateFireGate(state: FireState | null, now: Date = new Date()
   const errors = state?.consecutiveErrors ?? 0;
   if (!state || errors <= 0) return { allow: true, consecutiveErrors: errors };
   const open = errors >= circuitThreshold();
+  const lastMs = state.lastFiredAt ? state.lastFiredAt.getTime() : 0;
+  const elapsedSec = (now.getTime() - lastMs) / 1000;
+  // Recovery-debounce auto-heal (B7 / F3): an OPEN circuit that has not fired for the whole
+  // recovery window is WEDGED (stuck next_fire_at, no half-open probe, stale last_fired_at).
+  // Auto-close it — signal `autoReset` so checkFireGate zeroes the counter and the role
+  // resumes cadence, rather than needing a manual `autoloop:control reset-errors`. A circuit
+  // that is still probing keeps a recent last_fired_at, so it never trips this: only a
+  // stalled circuit heals; a correctly-failing one stays open.
+  if (open && elapsedSec >= recoverySec()) {
+    return { allow: true, consecutiveErrors: errors, autoReset: true };
+  }
   const requiredSec = open
     ? backoffCapSec()
     : Math.min(backoffBaseSec() * 2 ** (errors - 1), backoffCapSec());
-  const lastMs = state.lastFiredAt ? state.lastFiredAt.getTime() : 0;
-  const elapsedSec = (now.getTime() - lastMs) / 1000;
   if (elapsedSec >= requiredSec) return { allow: true, consecutiveErrors: errors };
   return {
     allow: false,
@@ -105,7 +133,26 @@ export async function readFireState(slug: string, role: string): Promise<FireSta
 /** Read + evaluate in one call — the gate the live fire paths consult. */
 export async function checkFireGate(slug: string, role: string, now: Date = new Date()): Promise<FireGateVerdict> {
   try {
-    return evaluateFireGate(await readFireState(slug, role), now);
+    const state = await readFireState(slug, role);
+    const verdict = evaluateFireGate(state, now);
+    if (verdict.autoReset) {
+      // Recovery-debounce: the circuit was open past the recovery window with no fire (a
+      // wedged routine, not a probing one) — self-heal by zeroing the counter so the role
+      // resumes cadence (B7 / F3). Best-effort: on a write failure we still allow this fire
+      // (fail-open, matching the gate's protection-not-dependency contract below).
+      const openForSec = Math.round((now.getTime() - (state?.lastFiredAt?.getTime() ?? 0)) / 1000);
+      await resetFireErrors(slug, role).catch((e) =>
+        console.warn(
+          `[autoloop] auto-recovery reset failed (${slug}/${role}):`,
+          e instanceof Error ? e.message : e,
+        ),
+      );
+      console.log(
+        `[autoloop] ${slug}/${role}: circuit AUTO-RECOVERED (was open ~${openForSec}s with no fire, past the ${recoverySec()}s recovery window) — resuming cadence`,
+      );
+      return { allow: true, consecutiveErrors: 0 };
+    }
+    return verdict;
   } catch (e) {
     // Fail OPEN (allow): the gate is a protection, not a dependency — a PG
     // hiccup must not stop the fleet's scheduled fires.
