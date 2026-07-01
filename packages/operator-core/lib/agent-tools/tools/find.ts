@@ -169,6 +169,10 @@ export default defineTool({
       'For a full permission-annotated dump use agent_tools:list.',
     chaining:
       'tools:find("<intent>") → take the top tool name → (omp) search_tool_bm25("<name>") to load it → call it.',
+    seeAlso: [
+      'agent_tools:list (full permission-annotated dump)',
+      'meta:define-tool (define a new tool if none exists)',
+    ],
   },
   capability: 'agent_tools:read',
   requirePrincipal: false,

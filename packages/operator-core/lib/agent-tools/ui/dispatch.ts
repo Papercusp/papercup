@@ -39,6 +39,11 @@ export default defineTool({
   guidance: {
     when: 'You need to make something happen in the user\'s browser tab — open the panel, navigate, focus a card, etc. Side-effect tool: writes a ui_intents row the tab consumes via SSE.',
     notWhen: 'For showing a question + choices in the chat, use `chat:ask_choice` (renders inline buttons). For asking the operator brain to delegate work, use `<spawn>` — `ui:dispatch` is for UI side effects, not work delegation.',
+    seeAlso: [
+      'ui:get_state (read current UI state before acting)',
+      'ui:list_clients (choose which tab to target)',
+      'chat:ask_choice (inline question + choices instead of a UI side effect)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

@@ -48,6 +48,11 @@ export default defineTool({
   guidance: {
     when: 'You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner to scope to one pane, harness to scope to one project, since_id to page forward.',
     notWhen: 'For a LIVE feed subscribe to the /api/activity/stream SSE (the pui does this). To report activity (you almost never need to) use `activity:report`. For coord messages use `coord:inbox`.',
+    seeAlso: [
+      'activity:report (inject a synthetic activity marker)',
+      'coord:inbox (peer coord messages, not the tool stream)',
+      'dev:telemetry (aggregate tool observability)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],

@@ -30,6 +30,10 @@ export default defineTool({
     notWhen:
       'To see who is trusted use trust:list; to revoke use trust:remove. This grants auto-run privilege — only the owner grants trust (an unverified or self-claimed author is never auto-admitted regardless).',
     chaining: 'trust:list (who is trusted) → trust:add { githubUserId, note? } | { githubUserIds:[…] }. Bulk: correlate by githubUserId, not position; one failure never fails the rest.',
+    seeAlso: [
+      'trust:list (who is trusted)',
+      'trust:remove (revoke trust)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],

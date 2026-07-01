@@ -31,6 +31,10 @@ export default defineTool({
   guidance: {
     when: 'User asks "what am I looking at?", "what page am I on?", or you need to verify a panel state before acting ("is the panel already open?").',
     notWhen: 'Tool calls ARE idempotent — `panel_open` when already open is fine. Don\'t pre-check just to skip a call; the persona rule is "always call". Use `ui:get_state` only when you need to BRANCH on what the user is looking at.',
+    seeAlso: [
+      'ui:dispatch (act on the UI)',
+      'ui:list_clients (which tabs are open)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

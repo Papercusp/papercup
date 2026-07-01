@@ -21,6 +21,10 @@ export default defineTool({
     when: 'You need to know which browser tab(s) the user has open before calling `ui:dispatch`. Returns client ids the operator can target.',
     notWhen: 'In the operator-converse path, ctx.uiClientId is already populated — you can target the user\'s current tab directly via `ui:dispatch`. Only list when you need to choose between multiple tabs.',
     chaining: 'Pair with `ui:get_state` to see what each tab is on, then `ui:dispatch` to act.',
+    seeAlso: [
+      'ui:get_state (what each tab is on)',
+      'ui:dispatch (act on a chosen tab)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

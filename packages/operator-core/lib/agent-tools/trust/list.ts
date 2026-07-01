@@ -19,6 +19,10 @@ export default defineTool({
     when: "Show who the owner trusts to auto-run foreign/federated work — the owner-scoped, local-only trust list (shared-hive-trust-admission).",
     notWhen: 'To grant or revoke trust use trust:add / trust:remove. This is read-only.',
     chaining: 'trust:list → trust:add { githubUserId } / trust:remove { githubUserId }.',
+    seeAlso: [
+      'trust:add (grant trust)',
+      'trust:remove (revoke trust)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

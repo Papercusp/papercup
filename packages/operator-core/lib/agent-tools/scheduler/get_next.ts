@@ -30,6 +30,11 @@ export default defineTool({
       'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-bee spec — work_items:claim_next.',
     chaining:
       'scheduler:get_next → work_items:set_state (progress) → work_items:release. Your Queen re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next).',
+    seeAlso: [
+      'work_items:claim_next (plain oldest-first self-select, no spec)',
+      'work_items:claim (claim a SPECIFIC item by id)',
+      'scheduler:set_claim_spec (the spec your Queen steers you with)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

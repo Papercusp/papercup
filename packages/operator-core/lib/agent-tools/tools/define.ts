@@ -35,6 +35,11 @@ export default defineTool({
     chaining:
       'meta:define-tool { tier:"composed", script } → recipes:run. meta:define-tool { tier:"elevated", group, verb, capability } ' +
       '→ implement the emitted skeleton → PR + platform:contribute.',
+    seeAlso: [
+      'tools:scaffold (generate a skeleton without tier routing)',
+      'recipes:run (run a composed-tier tool)',
+      'tools:find (find an existing tool first)',
+    ],
   },
   capability: 'intel:write',
   requirePrincipal: false,

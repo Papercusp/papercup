@@ -57,6 +57,11 @@ export default defineTool({
     notWhen:
       "A coding-FACTORY role (scoper/architect/worker/validator) — PUSHED a FEATURE_ID, never calls get_next, so a spec is INERT; push the FEATURE_ID. Micro-dispatching hand-picked items, or selecting on `id` ALONE for a STANDING lane (hand-listing in disguise) — write a property filter. Global floors (blocked/ready/dedup/cursed) are always resolver-enforced, not set here.",
     chaining: "scheduler:set_claim_spec (you) → the bee's scheduler:get_next pulls per the spec.",
+    seeAlso: [
+      'scheduler:get_next (the bee pulls per this spec)',
+      'scheduler:running (what is executing now)',
+      'fleet:assignments (drill into a bee)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

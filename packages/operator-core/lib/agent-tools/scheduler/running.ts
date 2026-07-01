@@ -32,6 +32,11 @@ export default defineTool({
       'Full fleet roster / bee load / orphaned-claim detection across ALL claim kinds (plan-item leases, assignments, presence) — use fleet:assignments. Claiming work — scheduler:get_next. Steering a bee — scheduler:set_claim_spec.',
     chaining:
       'scheduler:running (what is executing) → fleet:assignments { agent } (drill into a bee) → scheduler:set_claim_spec (re-steer it).',
+    seeAlso: [
+      'fleet:assignments (full fleet roster / orphaned-claim detection)',
+      'scheduler:get_next (claim work)',
+      'scheduler:set_claim_spec (re-steer a bee)',
+    ],
   },
   capability: 'work_items:read',
   requirePrincipal: false,

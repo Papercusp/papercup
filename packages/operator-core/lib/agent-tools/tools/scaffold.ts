@@ -32,6 +32,10 @@ export default defineTool({
     chaining:
       'tools:scaffold { group, verb, name, tier } → implement the handler → add the import to agent-tools/index.ts ' +
       '→ npm run gen:tool-catalog → (review-gated tiers) PR + platform:contribute.',
+    seeAlso: [
+      'meta:define-tool (define + register with tier routing)',
+      'tools:find (check for an existing tool first)',
+    ],
   },
   capability: 'intel:write',
   requirePrincipal: false,

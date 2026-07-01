@@ -24,6 +24,11 @@ export default defineTool({
     when: 'Check whether your loop is still armed + when it next fires, or inspect another agent\'s loop.',
     notWhen: 'See the WORK a loop is producing — that is fleet:assignments (the self-assigned work_items). Whole-engine health — autoloop:status.',
     chaining: 'loop:arm to start; loop:end to stop.',
+    seeAlso: [
+      'loop:arm (start a loop)',
+      'loop:end (stop it)',
+      'fleet:assignments (the work the loop is producing)',
+    ],
   },
   capability: 'routines:write',
   requirePrincipal: false,

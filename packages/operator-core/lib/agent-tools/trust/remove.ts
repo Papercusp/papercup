@@ -26,6 +26,10 @@ export default defineTool({
     when: 'The owner revokes trust in GitHub user(s) (their remote work should no longer auto-run). Revoking several at once? Pass them all via `githubUserIds`.',
     notWhen: 'To grant trust use trust:add; to view the list use trust:list.',
     chaining: 'trust:list → trust:remove { githubUserId } | { githubUserIds:[…] }. Bulk: correlate by githubUserId, not position; one failure never fails the rest.',
+    seeAlso: [
+      'trust:add (grant trust)',
+      'trust:list (view the trust list)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],
