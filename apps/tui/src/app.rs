@@ -4132,8 +4132,8 @@ impl App {
             }
             Event::ConvAi(u) => {
                 use crate::voice_convai::ConvAiUpdate as U;
-	                match u {
-	                    U::Connected { conversation_id } => {
+                match u {
+                    U::Connected { conversation_id } => {
                         // The shared operator thread id (universal-voice D-005):
                         // backfill the app's conversation pointer when chat
                         // history hasn't loaded yet, so history paging + the
@@ -4143,28 +4143,28 @@ impl App {
                             self.conversation_id = Some(conversation_id);
                         }
                         self.convai_phase = ConvAiPhase::Live;
-	                        self.push_notif(Notif {
-	                            level: "info".into(),
-	                            message: "voice live — talk to the operator (V stops)".into(),
-	                            harness: None,
-	                            ts: None,
-	                        });
-	                    }
-	                    U::SessionState {
-	                        muted,
-	                        mode,
-	                        is_player,
-	                        ..
-	                    } => {
-	                        self.convai_phase = ConvAiPhase::Live;
-	                        self.convai_muted = muted;
-	                        self.convai_mode = mode;
-	                        self.convai_is_player = is_player;
-	                        if self.convai_mode != "push-to-talk" {
-	                            self.convai_ptt_active = false;
-	                        }
-	                    }
-	                    U::UserTranscript(t) => {
+                        self.push_notif(Notif {
+                            level: "info".into(),
+                            message: "voice live — talk to the operator (V stops)".into(),
+                            harness: None,
+                            ts: None,
+                        });
+                    }
+                    U::SessionState {
+                        muted,
+                        mode,
+                        is_player,
+                        ..
+                    } => {
+                        self.convai_phase = ConvAiPhase::Live;
+                        self.convai_muted = muted;
+                        self.convai_mode = mode;
+                        self.convai_is_player = is_player;
+                        if self.convai_mode != "push-to-talk" {
+                            self.convai_ptt_active = false;
+                        }
+                    }
+                    U::UserTranscript(t) => {
                         self.chat_messages.push(ChatMessage::user(&t));
                         self.chat_scroll = 0; // snap to latest
                     }
@@ -4187,22 +4187,22 @@ impl App {
                             self.chat_scroll = 0;
                         }
                     }
-	                    U::Ended { reason } => {
-	                        self.convai_phase = ConvAiPhase::Off;
-	                        self.convai_is_player = false;
-	                        self.convai_ptt_active = false;
-	                        self.push_notif(Notif {
-	                            level: "attention".into(),
-	                            message: reason,
-	                            harness: None,
+                    U::Ended { reason } => {
+                        self.convai_phase = ConvAiPhase::Off;
+                        self.convai_is_player = false;
+                        self.convai_ptt_active = false;
+                        self.push_notif(Notif {
+                            level: "attention".into(),
+                            message: reason,
+                            harness: None,
                             ts: None,
                         });
                     }
-	                    U::Error(e) => {
-	                        self.convai_phase = ConvAiPhase::Off;
-	                        self.convai_is_player = false;
-	                        self.convai_ptt_active = false;
-	                        // Toast AND status line: the poller's success events
+                    U::Error(e) => {
+                        self.convai_phase = ConvAiPhase::Off;
+                        self.convai_is_player = false;
+                        self.convai_ptt_active = false;
+                        // Toast AND status line: the poller's success events
                         // wipe last_error within ms, so a one-shot session
                         // error must also land somewhere durable (the toast +
                         // notifs history).
@@ -5400,14 +5400,14 @@ impl App {
             // pipeline is transcribing/thinking/speaking `v` is ignored so a new
             // capture can't stomp an in-flight turn.
             KeyCode::Char('v') if self.voice_key_active() => match self.voice_phase {
-                _ if self.convai_phase != ConvAiPhase::Off && self.convai_mode == "push-to-talk" => {
+                _ if self.convai_phase != ConvAiPhase::Off
+                    && self.convai_mode == "push-to-talk" =>
+                {
                     if self.convai_ptt_active {
                         Action::None
                     } else {
                         self.convai_ptt_active = true;
-                        Action::VoiceSessionControl(crate::voice_convai::ConvAiControl::Ptt(
-                            true,
-                        ))
+                        Action::VoiceSessionControl(crate::voice_convai::ConvAiControl::Ptt(true))
                     }
                 }
                 VoicePhase::Idle => {
@@ -5569,7 +5569,7 @@ impl App {
                     self.convai_muted,
                 ))
             }
-            KeyCode::Char('T') if self.convai_phase != ConvAiPhase::Off => {
+            KeyCode::Char('A') if self.convai_phase != ConvAiPhase::Off => {
                 self.convai_mode = if self.convai_mode == "push-to-talk" {
                     "always-on".into()
                 } else {
@@ -10007,7 +10007,7 @@ mod tests {
         assert!(a.convai_muted);
 
         assert_eq!(
-            a.update(key('T', KeyModifiers::SHIFT)),
+            a.update(key('A', KeyModifiers::SHIFT)),
             Action::VoiceSessionControl(C::SetMode("always-on"))
         );
         assert_eq!(a.convai_mode, "always-on");

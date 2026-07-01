@@ -2366,9 +2366,14 @@ mod tests {
             ..Default::default()
         };
         // fleets sort alphabetically; "no fleet" (None or empty slug) sorts LAST.
-        assert!(mk(Some("atlas")).fleet_group_sort_key() < mk(Some("nimbus")).fleet_group_sort_key());
+        assert!(
+            mk(Some("atlas")).fleet_group_sort_key() < mk(Some("nimbus")).fleet_group_sort_key()
+        );
         assert!(mk(Some("zzz")).fleet_group_sort_key() < mk(None).fleet_group_sort_key());
-        assert_eq!(mk(Some("")).fleet_group_sort_key(), mk(None).fleet_group_sort_key());
+        assert_eq!(
+            mk(Some("")).fleet_group_sort_key(),
+            mk(None).fleet_group_sort_key()
+        );
 
         // A STABLE sort by this key makes same-fleet rows contiguous (so the
         // draw_agents header interleave emits one header per fleet), no-fleet last.

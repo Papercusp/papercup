@@ -255,8 +255,10 @@ async fn session_task(
     // (handleClientGone → re-elect or teardown). The reader emits the terminal
     // ConvAiUpdate (Ended/Error) — on a user stop it sees `stopping` and reports
     // "voice off".
-    if let Ok(w) = writer.lock() {
-        let _ = w.shutdown(Shutdown::Both);
+    if let Ok(mut w) = writer.lock() {
+        if let Some(sock) = w.as_mut() {
+            let _ = sock.shutdown(Shutdown::Both);
+        }
     }
     if let Some(h) = reader_thread {
         let _ = h.join();
@@ -320,11 +322,11 @@ fn reader_loop(
                 }
                 OpVoiceIn::SessionState {
                     status,
+                    mode,
                     player_id,
                     muted: m,
                     conversation_id,
                     reason,
-                    ..
                 } => {
                     let is_player = player_id.as_deref() == Some(owner.as_str());
                     let was = elected.swap(is_player, Ordering::Relaxed);

@@ -1014,7 +1014,10 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     let mut state = ListState::default();
     if !agent_row_idx.is_empty() {
         // map agent_sel (an agents-only index) → its flat row (headers interleave)
-        let sel = app.fleet.agent_sel.min(agent_row_idx.len().saturating_sub(1));
+        let sel = app
+            .fleet
+            .agent_sel
+            .min(agent_row_idx.len().saturating_sub(1));
         state.select(Some(agent_row_idx[sel]));
     }
     let body = if items.is_empty() {
@@ -1329,7 +1332,7 @@ mod tests {
         use crate::agent_pane_kind::AgentPaneKind;
         use ratatui::style::Color;
         let fleet = Color::Rgb(0x86, 0xef, 0xac); // a fleet's bound accent
-        // In a fleet → the fleet accent wins, regardless of type or the tint flag.
+                                                  // In a fleet → the fleet accent wins, regardless of type or the tint flag.
         assert_eq!(
             agent_name_color(Some(fleet), true, Some(AgentPaneKind::Bee)),
             Some(fleet)
@@ -1345,15 +1348,24 @@ mod tests {
             Some(AgentPaneKind::Bee.color())
         );
         // No fleet, tint flag OFF → plain (None); no kind + flag on → plain.
-        assert_eq!(agent_name_color(None, false, Some(AgentPaneKind::Bee)), None);
+        assert_eq!(
+            agent_name_color(None, false, Some(AgentPaneKind::Bee)),
+            None
+        );
         assert_eq!(agent_name_color(None, true, None), None);
     }
 
     #[test]
     fn parse_hex_color_parses_rrggbb_and_rejects_malformed() {
         use ratatui::style::Color;
-        assert_eq!(parse_hex_color("#86efac"), Some(Color::Rgb(0x86, 0xef, 0xac)));
-        assert_eq!(parse_hex_color("86efac"), Some(Color::Rgb(0x86, 0xef, 0xac)));
+        assert_eq!(
+            parse_hex_color("#86efac"),
+            Some(Color::Rgb(0x86, 0xef, 0xac))
+        );
+        assert_eq!(
+            parse_hex_color("86efac"),
+            Some(Color::Rgb(0x86, 0xef, 0xac))
+        );
         assert_eq!(parse_hex_color("#fff"), None);
         assert_eq!(parse_hex_color("nope!!"), None);
     }

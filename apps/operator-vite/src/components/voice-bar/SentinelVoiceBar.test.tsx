@@ -94,11 +94,12 @@ describe('SentinelVoiceBar', () => {
   });
 
   it('renders shared-session controls only while the shared voice session is active', () => {
-    const { rerender } = render(<SentinelVoiceBar />);
+    const { unmount } = render(<SentinelVoiceBar />);
     expect(screen.queryByRole('button', { name: 'Mute shared microphone' })).toBeNull();
 
+    unmount();
     H.session = { active: true, muted: false, deafened: false, mode: 'always-on', elected: false };
-    rerender(<SentinelVoiceBar />);
+    render(<SentinelVoiceBar />);
     expect(screen.getByRole('button', { name: 'Mute shared microphone' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Set shared voice mode to push-to-talk' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Force this rail to host shared voice' })).toBeTruthy();

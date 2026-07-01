@@ -1865,7 +1865,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         (
             " Voice — realtime ",
             format!(
-                "{} · {owner} · {mode} · mic {mic}{ptt_hint} · T mode · M mute · H host · V stops",
+                "{} · {owner} · {mode} · mic {mic}{ptt_hint} · A mode · M mute · H host · V stops",
                 app.convai_phase.badge()
             ),
             Theme::notify(),
@@ -2653,7 +2653,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  M / T / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
