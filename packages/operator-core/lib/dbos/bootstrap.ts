@@ -217,8 +217,12 @@ export async function startDbos(): Promise<void> {
       import('@papercusp/db-org'),
     ]);
     startGreenStallWatchdog(getOrgPg().sql);
+    // Sibling: git-sync FIRING-but-not-COMMITTING (the 2026-06-30 ~6h silent strand — DBOS
+    // reaping stuck fires). Same process-level rationale; reads git-sync routine health.
+    const { startGitSyncStallWatchdog } = await import('../release/git-sync-stall-watchdog');
+    startGitSyncStallWatchdog(getOrgPg().sql);
   } catch (e) {
-    console.warn('[green-stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
+    console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
 
   // EI-1747 — structural-error verifier: a process-level sweep (NOT a DBOS routine, same

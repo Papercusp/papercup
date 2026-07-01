@@ -1,0 +1,98 @@
+/**
+ * git-sync-stall-watchdog — the PURE stall verdict (evaluateGitSyncStall). The DB wiring +
+ * head-movement tracking (checkGitSyncStall / flag-flip / broadcast) is integration-covered.
+ *
+ * Run: cd packages/operator-core && npx vitest run lib/release/git-sync-stall-watchdog.test.ts
+ */
+import { describe, it, expect } from 'vitest';
+import { evaluateGitSyncStall, gitSyncStallEscalationBody, type GitSyncStallSnapshot } from './git-sync-stall-watchdog';
+
+const NOW = 1_800_000_000_000;
+const H = 3_600_000;
+const M = 60_000;
+
+const base: GitSyncStallSnapshot = {
+  lastFiredMs: NOW - 2 * M, // fired 2 min ago (healthy cadence)
+  headUnchangedMs: 5 * M, // head advanced 5 min ago (committing)
+  lastError: null,
+  watchdogAlerted: false,
+};
+
+describe('evaluateGitSyncStall', () => {
+  it('healthy: firing + head advancing + no error ⇒ NOT stalled', () => {
+    const v = evaluateGitSyncStall(base, NOW);
+    expect(v.stalled).toBe(false);
+    expect(v.commitStale).toBe(false);
+    expect(v.fireStale).toBe(false);
+    expect(v.errorStall).toBe(false);
+    expect(v.reason).toBeNull();
+  });
+
+  it('commit-staleness (PRIMARY): HEAD frozen >2h while firing ⇒ stalled — the real signal', () => {
+    const v = evaluateGitSyncStall({ ...base, headUnchangedMs: 3 * H }, NOW);
+    expect(v.stalled).toBe(true);
+    expect(v.commitStale).toBe(true);
+    expect(v.fireStale).toBe(false);
+    expect(v.reason).toMatch(/HEAD has not advanced/);
+  });
+
+  it('commit-staleness is robust to a NULL last_error (the noisy secondary signal)', () => {
+    // The live stall had last_error momentarily null — commitStale must still catch it.
+    const v = evaluateGitSyncStall({ ...base, headUnchangedMs: 4 * H, lastError: null }, NOW);
+    expect(v.stalled).toBe(true);
+    expect(v.commitStale).toBe(true);
+    expect(v.errorStall).toBe(false);
+  });
+
+  it('just moved / first observation (headUnchangedMs 0 or null) ⇒ not commit-stale', () => {
+    expect(evaluateGitSyncStall({ ...base, headUnchangedMs: 0 }, NOW).commitStale).toBe(false);
+    expect(evaluateGitSyncStall({ ...base, headUnchangedMs: null }, NOW).commitStale).toBe(false);
+  });
+
+  it('error/reap (secondary): a non-null last_error ⇒ stalled when caught', () => {
+    const v = evaluateGitSyncStall(
+      { ...base, lastError: 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire' },
+      NOW,
+    );
+    expect(v.stalled).toBe(true);
+    expect(v.errorStall).toBe(true);
+    expect(v.reason).toMatch(/FAULT|reaper/i);
+  });
+
+  it('fire-staleness: active routine that has not fired in >3h ⇒ stalled', () => {
+    const v = evaluateGitSyncStall({ ...base, lastFiredMs: NOW - 4 * H }, NOW);
+    expect(v.stalled).toBe(true);
+    expect(v.fireStale).toBe(true);
+    expect(v.reason).toMatch(/not FIRED/);
+  });
+
+  it('never-fired (fresh seed) ⇒ never alarms on fire-staleness', () => {
+    const v = evaluateGitSyncStall({ ...base, lastFiredMs: null, headUnchangedMs: null, lastError: null }, NOW);
+    expect(v.stalled).toBe(false);
+    expect(v.fireStale).toBe(false);
+  });
+
+  it('blank/whitespace last_error is treated as no error', () => {
+    expect(evaluateGitSyncStall({ ...base, lastError: '   ' }, NOW).errorStall).toBe(false);
+    expect(evaluateGitSyncStall({ ...base, lastError: '' }, NOW).errorStall).toBe(false);
+  });
+
+  it('thresholds are overridable (headStaleMs / fireStaleMs)', () => {
+    const s = { ...base, headUnchangedMs: 30 * M, lastFiredMs: NOW - 30 * M };
+    expect(evaluateGitSyncStall(s, NOW).commitStale).toBe(false); // 30m < default 2h
+    expect(evaluateGitSyncStall(s, NOW, { headStaleMs: 10 * M }).commitStale).toBe(true);
+    expect(evaluateGitSyncStall(s, NOW, { fireStaleMs: 10 * M }).fireStale).toBe(true);
+  });
+
+  it('escalation body captures the commit-stall + is valid JSON', () => {
+    const v = evaluateGitSyncStall({ ...base, headUnchangedMs: 6 * H }, NOW);
+    const body = JSON.parse(
+      gitSyncStallEscalationBody({ installSlug: 'papercusp', verdict: v, lastFiredMs: base.lastFiredMs, headUnchangedMs: 6 * H, lastStatus: 'nothing', nowMs: NOW }),
+    );
+    expect(body.kind).toBe('git-sync-watchdog');
+    expect(body.harness_slug).toBe('papercusp');
+    expect(body.commitStale).toBe(true);
+    expect(body.headUnchangedHrs).toBe(6);
+    expect(String(body.detail)).toMatch(/deploy ships only committed HEAD|strand/i);
+  });
+});

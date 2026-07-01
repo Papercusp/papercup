@@ -43,7 +43,10 @@ const recordFire = vi.fn();
 vi.mock('../operator-api-base', () => ({ operatorApiBase: () => 'http://op' }));
 vi.mock('../autoloop', () => ({ recordFire: (...a: unknown[]) => recordFire(...a) }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
-vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: () => 'papercup-hive' }));
+const resolveHiveHomeSlug = vi.fn();
+vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: (...a: unknown[]) => resolveHiveHomeSlug(...a) }));
+const operatorHomeHarnessSlug = vi.fn();
+vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: (...a: unknown[]) => operatorHomeHarnessSlug(...a) }));
 
 import { handleOverwatchLaunch, setOverwatchLaunchFire, OVERWATCH_INVOKE_TIMEOUT_MS, type OverwatchLaunchFireInput } from './loop';
 import { getSystemAction } from '../harness/routines/system-actions';
@@ -55,6 +58,8 @@ const ctx = { installSlug: SLUG, workspaceId: WS, triggerConfig: {}, payloadTemp
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // (PAPERCUSP_HIVE_HOME_SLUG cross-file leak is scrubbed centrally in
+  // @papercusp/test-config setup-hermetic-env.ts — no per-file guard needed.)
   // The loop is fail-soft: degraded-brief + skip paths log warn/log. Silence them
   // (the repo's vitest-fail-on-console plugin fails any test that logs).
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -65,6 +70,8 @@ beforeEach(() => {
   computeOverwatchBrief.mockResolvedValue({ hiveSlug: SLUG, anomalies: [] });
   renderOverwatchBrief.mockReturnValue('RENDERED-BRIEF');
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
+  resolveHiveHomeSlug.mockReturnValue('papercup-hive');
+  operatorHomeHarnessSlug.mockReturnValue('papercusp');
   recordFire.mockResolvedValue(undefined);
   overwatchScorecardEndCheck.mockResolvedValue({ outcome: 'synthesized', reason: 'test backstop' });
   loopbackFetch.mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
@@ -135,6 +142,46 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
     expect(captured!.installSlug).toBe(SLUG);
   });
 
+  // EI-5842 regression: the meta-monitor was DEAD 5 days on HTTP 404 "unknown
+  // project". Root cause — a workspace-sentinel row (installSlug === workspaceId)
+  // resolved to resolveHiveHomeSlug(null,null), which returns NULL when
+  // PAPERCUSP_HIVE_HOME_SLUG is unset, so the `?? ctx.installSlug` chain
+  // re-produced the WORKSPACE ID as the invoke target → resolveProject 404. Now it
+  // must fall back to operatorHomeHarnessSlug() (never the workspace id).
+  it('sentinel row + null hive-home env falls back to operatorHomeHarnessSlug, NOT the workspace id (EI-5842)', async () => {
+    resolveHiveHomeSlug.mockReturnValue(null); // PAPERCUSP_HIVE_HOME_SLUG unset in the bg-host
+    operatorHomeHarnessSlug.mockReturnValue('papercusp');
+    let captured: OverwatchLaunchFireInput | null = null;
+    setOverwatchLaunchFire((input) => {
+      captured = input;
+    });
+    await handleOverwatchLaunch({
+      ...ctx,
+      installSlug: WS, // installSlug === workspaceId (the sentinel row)
+      payloadTemplate: { kickoff: 'sentinel wake' },
+    });
+    expect(captured!.installSlug).toBe('papercusp');
+    expect(captured!.installSlug).not.toBe(WS); // never the workspace id (the 404 slug)
+    expect(computeOverwatchBrief).toHaveBeenCalledWith(WS, 'papercusp', { wokeBy: 'sentinel wake' });
+  });
+
+  // EI-5842 regression: the second 404 row carried the `*` cross-workspace wildcard
+  // as its install slug. It skips the `installSlug === workspaceId` branch, so it
+  // must ALSO be treated as a sentinel and resolve to the concrete hive home.
+  it('a `*` cross-workspace wildcard install slug resolves to the hive home, not `*` (EI-5842)', async () => {
+    let captured: OverwatchLaunchFireInput | null = null;
+    setOverwatchLaunchFire((input) => {
+      captured = input;
+    });
+    await handleOverwatchLaunch({
+      ...ctx,
+      installSlug: '*',
+      payloadTemplate: { kickoff: 'wildcard wake' },
+    });
+    expect(captured!.installSlug).toBe(SLUG); // resolveHiveHomeSlug default → papercup-hive
+    expect(captured!.installSlug).not.toBe('*');
+  });
+
   it('a default kickoff is supplied when the payload has none', async () => {
     let captured: OverwatchLaunchFireInput | null = null;
     setOverwatchLaunchFire((input) => {
@@ -186,6 +233,22 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     });
     const [url] = loopbackFetch.mock.calls[0] as [string, unknown];
     expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=overwatch&ws=ws-1&bpkind=overwatch');
+  });
+
+  // EI-5842 regression at the wire: a sentinel row with a null hive-home env must
+  // NOT POST /api/harness/<workspaceId>/invoke — that is the exact URL that 404'd
+  // "unknown project" and gated the overwatch dark. It must target the home hive.
+  it('default fire for a sentinel row + null hive-home env posts to the home hive, not the workspace id (EI-5842)', async () => {
+    resolveHiveHomeSlug.mockReturnValue(null);
+    operatorHomeHarnessSlug.mockReturnValue('papercusp');
+    await handleOverwatchLaunch({
+      ...ctx,
+      installSlug: WS,
+      payloadTemplate: { kickoff: 'sentinel wake' },
+    });
+    const [url] = loopbackFetch.mock.calls[0] as [string, unknown];
+    expect(url).toBe('http://op/api/harness/papercusp/invoke?role=overwatch&ws=ws-1&bpkind=overwatch');
+    expect(url).not.toContain('/api/harness/ws-1/invoke');
   });
 
   it('omits overwatchBrief from the body when the brief degraded to null', async () => {

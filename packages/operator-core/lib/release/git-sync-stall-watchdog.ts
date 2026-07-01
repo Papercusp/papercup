@@ -1,0 +1,326 @@
+/**
+ * git-sync-stall-watchdog — the sibling of green-stall-watchdog, for the OTHER silent
+ * pipeline failure: git-sync FIRING but not COMMITTING.
+ *
+ * THE GAP (2026-06-30 incident): the papercusp git-sync routine kept firing every 3 min, but
+ * its DBOS fires got STUCK ("routineFire produced no DBOS operation output; executor reaper
+ * cancelled the stuck fire and requeued") — so no commit ever landed. Auto-commit of the main
+ * staging tree died at 15:00 and NOTHING alarmed for ~6h while ~100 source files stranded
+ * uncommitted (and thus un-deployable — a deploy ships only committed HEAD). The green-stall-
+ * watchdog is blind to this: it only watches `system:green-checkpoint`. git-sync RECORDS its
+ * health on the routine metadata (`head_sha` / `last_status` / `last_error`, set by
+ * recordOutcome) — but nothing READ it. This does.
+ *
+ * Process-level (NOT a DBOS routine) for the same reason as green-stall-watchdog: a routine-based
+ * watchdog queues on the very engine that wedges, so it can't fire when most needed.
+ *
+ * DETECTION — three signals, most-robust first:
+ *   1. commit-staleness (PRIMARY) — the tree HEAD (`metadata.head_sha`) has not advanced in
+ *      HEAD_STALE_MS while the routine is active. This is the robust signal: `last_error` is
+ *      NOISY (git-sync NULLS it on any healthy/`nothing` tick, so it flips null between reaps —
+ *      it was null when we first checked the live stall), but a FROZEN head directly means "no
+ *      commit is landing." The watchdog tracks head movement itself (`wd_head_sha` /
+ *      `wd_head_since_ms`), resetting the clock whenever head advances.
+ *   2. fire-staleness — an ACTIVE routine whose `last_fired_at` is older than FIRE_STALE_MS
+ *      (cron every 3 min, so 3h ⇒ the scheduler isn't running it).
+ *   3. error/reap — `last_error` is non-null AT sweep time (caught opportunistically; the reaper
+ *      writes it on a cancelled fire). Secondary because it's transient.
+ *
+ * On alarm: an urgent owner `notifyAttention` + a durable `harness_escalations` row (its OWN
+ * phase) + a fleet BROADCAST (severe-event-broadcast — every running agent sees it next turn,
+ * inject-only, so someone claims it). Recovery (head advances again / routine fires) clears the
+ * flag + escalation idempotently.
+ *
+ * Kill-switch: PAPERCUSP_GITSYNC_STALL_WATCHDOG='0'.
+ */
+import type { Sql } from 'postgres';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+
+/** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing. git-sync
+ *  runs every 3 min, so on an active box 2h of no new commit is a strong stall signal. Tunable;
+ *  the tradeoff is a genuinely idle tree (no edits) could alarm — low harm (a claimable
+ *  broadcast, not a page) and rare on an active dev box. */
+const DEFAULT_HEAD_STALE_MS = 2 * 60 * 60 * 1000; // 2h
+/** An ACTIVE git-sync that hasn't FIRED in this long ⇒ the scheduler isn't running it. */
+const DEFAULT_FIRE_STALE_MS = 3 * 60 * 60 * 1000; // 3h
+/** How often the watchdog sweeps. git-sync is every 3 min; 15m is ample + matches green-stall. */
+const DEFAULT_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000; // 15 min
+
+const WATCHDOG_PHASE = 'git-sync-watchdog';
+const WATCHDOG_KIND = 'git-sync-watchdog';
+
+export interface GitSyncStallThresholds {
+  headStaleMs?: number;
+  fireStaleMs?: number;
+}
+
+/** The bits of one git-sync routine the verdict is computed from. */
+export interface GitSyncStallSnapshot {
+  /** epoch ms of the routine's last fire (`last_fired_at`), or null if never fired. */
+  lastFiredMs: number | null;
+  /** ms the tree HEAD has been UNCHANGED (watchdog-tracked), or null if it just moved / first
+   *  observation (⇒ never commit-stale this pass). */
+  headUnchangedMs: number | null;
+  /** last recorded error/reap message (`metadata.last_error`) — NULL on a healthy tick. */
+  lastError: string | null;
+  /** the watchdog's own dedup flag (`metadata.watchdog_alerted`). */
+  watchdogAlerted: boolean;
+}
+
+export interface GitSyncStallVerdict {
+  stalled: boolean;
+  /** the tree HEAD has not advanced in headStaleMs while the routine is active (PRIMARY). */
+  commitStale: boolean;
+  /** the routine is active but hasn't fired in fireStaleMs (the scheduler is wedged). */
+  fireStale: boolean;
+  /** git-sync recorded a fault (error/reap) at sweep time (secondary — transient). */
+  errorStall: boolean;
+  /** human reason for the alarm body, or null when not stalled. */
+  reason: string | null;
+}
+
+const hrs = (ms: number): number => Math.round(ms / 3_600_000);
+
+/**
+ * Pure: decide whether one ACTIVE git-sync routine is in a silent stall. Exported for unit
+ * testing (the DB wiring + head-movement tracking is in checkGitSyncStall / integration-covered).
+ *
+ * A never-fired routine (`lastFiredMs === null`) is a fresh seed — never alarms on fire-staleness.
+ */
+export function evaluateGitSyncStall(
+  s: GitSyncStallSnapshot,
+  now: number,
+  opts: GitSyncStallThresholds = {},
+): GitSyncStallVerdict {
+  const headStaleMs = opts.headStaleMs ?? DEFAULT_HEAD_STALE_MS;
+  const fireStaleMs = opts.fireStaleMs ?? DEFAULT_FIRE_STALE_MS;
+
+  const commitStale = s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
+  const fireStale = s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
+  const errorStall = typeof s.lastError === 'string' && s.lastError.trim().length > 0;
+  const stalled = commitStale || fireStale || errorStall;
+
+  let reason: string | null = null;
+  if (stalled) {
+    const parts: string[] = [];
+    if (commitStale && s.headUnchangedMs != null) {
+      parts.push(
+        `the tree HEAD has not advanced in ~${hrs(s.headUnchangedMs)}h while the routine is active — commits are NOT landing (code strands uncommitted + un-deployable)`,
+      );
+    }
+    if (fireStale && s.lastFiredMs != null) {
+      parts.push(`the routine has not FIRED in ~${hrs(now - s.lastFiredMs)}h (active, cron every 3 min) — the scheduler/engine is not running it`);
+    }
+    if (errorStall) {
+      parts.push(`git-sync is recording a FAULT: "${s.lastError!.slice(0, 200)}"`);
+    }
+    reason = parts.join('; ');
+  }
+  return { stalled, commitStale, fireStale, errorStall, reason };
+}
+
+/** Pure: the `harness_escalations` body for a watchdog-detected git-sync stall (testable). */
+export function gitSyncStallEscalationBody(opts: {
+  installSlug: string;
+  verdict: GitSyncStallVerdict;
+  lastFiredMs: number | null;
+  headUnchangedMs: number | null;
+  lastStatus: string | null;
+  nowMs: number;
+}): string {
+  return JSON.stringify({
+    kind: WATCHDOG_KIND,
+    harness_slug: opts.installSlug,
+    commitStale: opts.verdict.commitStale,
+    fireStale: opts.verdict.fireStale,
+    errorStall: opts.verdict.errorStall,
+    lastFiredAt: opts.lastFiredMs != null ? new Date(opts.lastFiredMs).toISOString() : null,
+    headUnchangedHrs: opts.headUnchangedMs != null ? hrs(opts.headUnchangedMs) : null,
+    lastStatus: opts.lastStatus,
+    emitted_at: opts.nowMs,
+    detail:
+      `git-sync silent stall (watchdog): ${opts.verdict.reason}. The auto-commit of this checkout ` +
+      `is not landing, so edits strand uncommitted and CANNOT deploy (a deploy ships only committed ` +
+      `HEAD). Common root: a DBOS executor reaping stuck git-sync fires (bg-host/engine wedge — a ` +
+      `lock/restart won't fix it). First moves: check metadata.last_error on the routine; rescue-` +
+      `commit the stranded tree if urgent.`,
+  });
+}
+
+export interface GitSyncStallWatchdogResult {
+  alarmed: string[];
+  recovered: string[];
+}
+
+/**
+ * One watchdog pass: scan every ACTIVE git-sync routine, maintain the head-movement clock, alarm
+ * once per stall transition (cross-process exactly-once via a conditional flag flip), broadcast
+ * to the fleet, and clear the flag + escalation on recovery. Never throws.
+ */
+export async function checkGitSyncStall(
+  sql: Sql,
+  opts: GitSyncStallThresholds = {},
+): Promise<GitSyncStallWatchdogResult> {
+  const out: GitSyncStallWatchdogResult = { alarmed: [], recovered: [] };
+  try {
+    const rows = await sql<
+      {
+        install_slug: string;
+        workspace_id: string;
+        last_fired_ms: string | number | null;
+        head_sha: string | null;
+        wd_head_sha: string | null;
+        wd_head_since_ms: string | number | null;
+        last_status: string | null;
+        last_error: string | null;
+        watchdog_alerted: boolean | null;
+      }[]
+    >`
+      SELECT install_slug,
+             workspace_id,
+             extract(epoch from last_fired_at) * 1000 AS last_fired_ms,
+             metadata->>'head_sha' AS head_sha,
+             metadata->>'wd_head_sha' AS wd_head_sha,
+             (metadata->>'wd_head_since_ms')::bigint AS wd_head_since_ms,
+             metadata->>'last_status' AS last_status,
+             metadata->>'last_error' AS last_error,
+             COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted
+        FROM harness_shared.routines
+       WHERE target_role = 'system:git-sync'
+         AND active = true`;
+
+    const now = Date.now();
+    for (const row of rows) {
+      const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
+      const wdHeadSinceMs = row.wd_head_since_ms != null ? Number(row.wd_head_since_ms) : null;
+      const watchdogAlerted = row.watchdog_alerted ?? false;
+
+      // ── Head-movement clock: reset when HEAD advances (or first observation). ──
+      let headUnchangedMs: number | null;
+      if (row.head_sha == null) {
+        headUnchangedMs = null; // no head recorded yet ⇒ can't judge commit-staleness
+      } else if (row.wd_head_sha !== row.head_sha || wdHeadSinceMs == null) {
+        // HEAD advanced (or first time we've seen it) ⇒ record it + (re)start the clock.
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('wd_head_sha', ${row.head_sha}::text, 'wd_head_since_ms', ${now}::bigint),
+                 updated_at = now()
+           WHERE install_slug = ${row.install_slug}
+             AND target_role = 'system:git-sync'`;
+        headUnchangedMs = 0; // just moved ⇒ not commit-stale this pass
+      } else {
+        headUnchangedMs = now - wdHeadSinceMs;
+      }
+
+      const verdict = evaluateGitSyncStall(
+        { lastFiredMs, headUnchangedMs, lastError: row.last_error, watchdogAlerted },
+        now,
+        opts,
+      );
+
+      if (verdict.stalled) {
+        if (watchdogAlerted) continue; // already alarmed; one-shot until recovery
+        // Cross-process exactly-once: only the writer that flips watchdog_alerted false→true alarms.
+        const flip = await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":true}'::jsonb,
+                 updated_at = now()
+           WHERE install_slug = ${row.install_slug}
+             AND target_role = 'system:git-sync'
+             AND COALESCE((metadata->>'watchdog_alerted')::boolean, false) = false`;
+        if (flip.count !== 1) continue; // another process won the flip
+
+        const summary = `git-sync STALLED on ${row.install_slug} — firing but NOT committing; code is stranding uncommitted + un-deployable.`;
+        try {
+          const { notifyAttention } = await import('../attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            title: 'git-sync STALLED — commits not landing, code stranding',
+            body: `git-sync (${row.install_slug}) silent stall: ${verdict.reason}. Edits strand uncommitted + can't deploy. See routine metadata.last_error; rescue-commit if urgent.`,
+            importance: 'urgent',
+            workspaceId: row.workspace_id,
+            data: { commitStale: verdict.commitStale, fireStale: verdict.fireStale, errorStall: verdict.errorStall },
+          });
+        } catch (e) {
+          console.warn(`[git-sync-stall-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
+        }
+        // Fleet broadcast (owner-requested): inject-only (wake=false) so every running agent sees
+        // it next turn and someone can claim it, without a wake storm.
+        await broadcastSevereEvent({
+          summary,
+          body:
+            `${verdict.reason}\n\nWhy it matters: a deploy ships only COMMITTED HEAD, so stranded edits ` +
+            `can't reach :3070 until git-sync commits them. Likely a DBOS executor reaping stuck git-sync ` +
+            `fires (engine wedge — a lock/restart won't fix it). Claim it: inspect metadata.last_error on ` +
+            `the ${row.install_slug} git-sync routine, and rescue-commit the tree if the strand is urgent.`,
+          category: 'severe-event',
+        });
+        try {
+          await sql`
+            INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+            VALUES (${row.install_slug}, ${WATCHDOG_PHASE}, ${gitSyncStallEscalationBody({
+              installSlug: row.install_slug,
+              verdict,
+              lastFiredMs,
+              headUnchangedMs,
+              lastStatus: row.last_status,
+              nowMs: now,
+            })}, ${now}, ${row.workspace_id})
+            ON CONFLICT (harness_slug, phase)
+            DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+        } catch (e) {
+          console.warn(`[git-sync-stall-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
+        }
+        out.alarmed.push(row.install_slug);
+        console.warn(`[git-sync-stall-watchdog] ALARM ${row.install_slug}: ${verdict.reason}`);
+      } else if (watchdogAlerted) {
+        // Recovered. Clear the watchdog flag + escalation row, both idempotently.
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":false}'::jsonb,
+                 updated_at = now()
+           WHERE install_slug = ${row.install_slug}
+             AND target_role = 'system:git-sync'`;
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = NULL, mtime_ms = ${now}
+           WHERE harness_slug = ${row.install_slug}
+             AND phase = ${WATCHDOG_PHASE}
+             AND escalation IS NOT NULL`;
+        out.recovered.push(row.install_slug);
+      }
+    }
+    return out;
+  } catch (e) {
+    console.warn(`[git-sync-stall-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return out;
+  }
+}
+
+let watchdogTimer: ManagedHandle | null = null;
+
+/**
+ * Start the watchdog: an immediate boot check + a recurring process-level sweep. Idempotent.
+ * Kill-switch: PAPERCUSP_GITSYNC_STALL_WATCHDOG='0'.
+ */
+export function startGitSyncStallWatchdog(
+  sql: Sql,
+  opts: GitSyncStallThresholds & { intervalMs?: number } = {},
+): void {
+  if (process.env.PAPERCUSP_GITSYNC_STALL_WATCHDOG === '0') return;
+  const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
+
+  const run = (): void => {
+    void checkGitSyncStall(sql, opts).then((r) => {
+      if (r.alarmed.length > 0) {
+        console.warn(`[git-sync-stall-watchdog] alarmed on: ${r.alarmed.join(', ')}`);
+      }
+    });
+  };
+
+  run(); // boot check
+  if (watchdogTimer) watchdogTimer.stop();
+  watchdogTimer = managedSetInterval('git-sync-stall-watchdog', intervalMs, run, { category: 'watchdog' });
+}

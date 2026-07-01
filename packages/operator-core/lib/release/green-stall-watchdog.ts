@@ -38,6 +38,7 @@
  */
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -211,6 +212,17 @@ export async function checkGreenStall(
         } catch (e) {
           console.warn(`[green-stall-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
         }
+        // Fleet broadcast (owner-requested): inject-only (wake=false) so every running agent
+        // sees it next turn and someone can claim greening the gate, without a wake storm.
+        await broadcastSevereEvent({
+          summary: `green-checkpoint STALLED on ${row.install_slug} — no green verdicts; deploys frozen.`,
+          body:
+            `${verdict.reason}\n\nThe release gate isn't producing greens, so nothing new can deploy. ` +
+            `Claim it: fire-staleness ⇒ the routine engine/DBOS is wedged (a reaper should recover; ` +
+            `manual help if it persists); verdict-staleness ⇒ a failing suite. release:checkpoint-run ` +
+            `forces a fresh gate run.`,
+          category: 'severe-event',
+        });
         try {
           await sql`
             INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
