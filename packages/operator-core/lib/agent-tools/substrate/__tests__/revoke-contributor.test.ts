@@ -53,7 +53,7 @@ describe('substrate:revoke_contributor tool', () => {
     const result = { ok: true, deleted: true, branch: 'user/12345' };
     const revoke = vi.fn(async () => result);
     const tool = await loadTool(revoke);
-    const res = await tool.handler(VALID);
+    const res = await tool.handler(VALID, {} as never);
     expect(revoke).toHaveBeenCalledWith(VALID);
     expect(res).toEqual({ content: [{ type: 'text', text: JSON.stringify(result) }] });
   });
@@ -61,7 +61,7 @@ describe('substrate:revoke_contributor tool', () => {
   it('passes a not_admin failure through verbatim', async () => {
     const result = { ok: false, code: 'not_admin' };
     const tool = await loadTool(vi.fn(async () => result));
-    const res = await tool.handler(VALID);
+    const res = (await tool.handler(VALID, {} as never)) as { content: { text: string }[] };
     expect(JSON.parse(res.content[0].text)).toEqual(result);
   });
 
@@ -88,7 +88,7 @@ describe('substrate:revoke_contributor tool', () => {
     const hiveResult = { ok: true, revokedPubkeys: ['pk1', 'pk2'], live: false };
     const hiveRevoke = vi.fn(async () => hiveResult);
     const tool = await loadTool(harnessRevoke, hiveRevoke);
-    const res = await tool.handler(VALID_HIVE);
+    const res = (await tool.handler(VALID_HIVE, {} as never)) as { content: { text: string }[] };
     expect(hiveRevoke).toHaveBeenCalledWith({
       workspaceId: 'ws1',
       hiveHomeSlug: 'acme-hive',
