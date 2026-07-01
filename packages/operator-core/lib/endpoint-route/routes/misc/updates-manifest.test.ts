@@ -1,5 +1,21 @@
-import { describe, expect, it } from 'vitest';
-import { pickAssetUrl } from './updates-manifest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+
+vi.mock('../../../operator-state-pg', () => ({
+  readOperatorState: vi.fn(async () => ({ update_channel: 'stable' })),
+}));
+
+import route, { pickAssetUrl } from './updates-manifest';
+
+const mockFetch = vi.fn<typeof fetch>();
+vi.stubGlobal('fetch', mockFetch);
+
+async function manifestStatus(qs: string): Promise<number> {
+  const req = new Request(`http://127.0.0.1/api/updates/manifest${qs}`);
+  const res = (await (route as unknown as {
+    handler: (r: Request, c: unknown) => Promise<Response>;
+  }).handler(req, {})) as Response;
+  return res.status;
+}
 
 const release = {
   tag_name: 'desktop-v0.0.2-alpha',
@@ -74,5 +90,37 @@ describe('pickAssetUrl', () => {
     expect(pickAssetUrl(v2, 'darwin', 'x86_64')).toBe(
       'https://gh.test/Papercusp_universal.app.tar.gz',
     );
+  });
+});
+
+describe('GET /api/updates/manifest — graceful degradation when GitHub is unreachable', () => {
+  // The route intentionally warns server-side on a fetch failure (ops observability);
+  // spy it so the repo's fail-on-console guard is satisfied AND assert it fired.
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    mockFetch.mockReset();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warnSpy.mockRestore());
+
+  it('returns 204 (NOT 502) when GitHub rate-limits the releases fetch (403)', async () => {
+    // Unauthenticated polling hits GitHub's 60/hr per-IP cap → 403. Previously this
+    // 502'd and the Tauri updater logged "update endpoint did not respond with a
+    // successful status code" on every poll. It must degrade to 204 = "no update".
+    mockFetch.mockResolvedValue(new Response('rate limited', { status: 403 }));
+    expect(await manifestStatus('?target=linux&arch=x86_64&current_version=0.0.1')).toBe(204);
+    expect(warnSpy).toHaveBeenCalledOnce();
+  });
+
+  it('returns 204 when the releases fetch throws (network error)', async () => {
+    mockFetch.mockRejectedValue(new Error('network down'));
+    expect(await manifestStatus('?target=linux&arch=x86_64&current_version=0.0.1')).toBe(204);
+    expect(warnSpy).toHaveBeenCalledOnce();
+  });
+
+  it('returns 204 when GitHub 5xxs', async () => {
+    mockFetch.mockResolvedValue(new Response('boom', { status: 503 }));
+    expect(await manifestStatus('?target=linux&arch=x86_64&current_version=0.0.1')).toBe(204);
+    expect(warnSpy).toHaveBeenCalledOnce();
   });
 });

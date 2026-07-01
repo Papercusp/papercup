@@ -50,7 +50,6 @@ import * as path from 'node:path';
 // su-context-size-variants: the always-loaded core spine the codex 'trimmed' variant
 // advertises via ?tools= (the only trim lever codex has — it has no native discovery).
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
-import { modelCapabilityTier } from './model-tier';
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
@@ -600,43 +599,29 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const mcpUrl = new URL(`${resolveAgentMcpBaseUrl(input.operatorBaseUrl)}/api/mcp`);
   mcpUrl.searchParams.set('superuser', '1');
   mcpUrl.searchParams.set('workspace', input.workspaceId);
-  // su-context-size-variants + weak-model-tool-tier — advertise only the CORE SPINE
-  // (the ?tools= allowlist → filterListingsByAllowlist in the MCP handler) when a
-  // session should be trimmed. This is the ONLY reliable trim lever for EVERY client,
-  // claude included:
-  //   • claude does NOT usefully self-trim. Native ToolSearch defers tool SCHEMAS but
-  //     leaves all ~581 tool NAMES + DESCRIPTIONS inline (~165k tokens, MEASURED via
-  //     tools/list). That alone nearly fills a 200k-window model (sonnet) on boot, so
-  //     an unscoped `trimmed` claude died with "Prompt is too long" — trimmed was a
-  //     no-op for it. (It only ever "worked" on 1M-window opus, where 165k is fine.)
-  //   • codex + omp load the whole tools/list up-front (omp's `discoveryMode` is a
-  //     proven no-op — it ships all tools), so they always needed the hard-trim.
-  // A trimmed client is NOT crippled: the CORE SPINE includes `tools:find`, the
-  // intent-search front door to the full catalog — claude/codex call a discovered
-  // tool DIRECTLY (the ?tools= allowlist is a LISTING hint, it does NOT gate
-  // tools/call). WHEN to trim: an explicit `contextSize:'trimmed'` override on any
-  // tier, OR a weak model TIER (weak-model-tool-tier D-001) that can't parse the full
-  // catalog. A frontier model with no override → full catalog (zero regression for
-  // Claude/Opus/GPT sessions that don't opt in). The tier comes from the MODEL, never
-  // the client (D-004: OMP runs weak AND strong models). URLSearchParams encodes the
-  // colon/comma tool names; parseToolsAllowlist decodes them server-side.
-  // dynamic-tool-surface-2026-07-01: the `?tools=` core spine is now a SEED, not a
-  // hard cap — the server (getSessionSurface) treats it as a floor that GROWS on
-  // demand (tools:find → notifications/tools/list_changed → the client re-fetches
-  // tools/list), and the core spine carries BOTH tools:find (discover) AND
-  // tools:invoke (call anything by name without listing it — the universal
-  // reachability hatch). So seeding no longer strands the long tail.
-  //   • trimmed / weak → seed (as before): the surface a small model can wield.
-  //   • codex (D-004) → seed BY DEFAULT on ANY tier: codex loads the whole
-  //     tools/list up front (~140k tokens) on every model, so the seed is a pure
-  //     token-cost win now that reachability is preserved. `contextSize:'full'`
-  //     opts it back into the full catalog.
-  //   • claude → NOT default-seeded (D-001/D-005): it keeps native ToolSearch. It
-  //     still honors an explicit trimmed/weak seed via the first two conditions.
-  const wantsSeed =
-    input.contextSize === 'trimmed' ||
-    modelCapabilityTier(input.model) === 'weak' ||
-    (input.agent === 'codex' && input.contextSize !== 'full');
+  // dynamic-tool-surface-2026-07-01 (D-010, "default all to trimmed"): the small
+  // CORE-SPINE seed (`?tools=` → filterListingsByAllowlist in the MCP handler) is now
+  // the DEFAULT for EVERY client + tier. It's a SEED, not a hard cap — the server
+  // (getSessionSurface) treats it as a growable floor:
+  //   • tools:find (in the spine) surfaces the tail by intent → fires
+  //     notifications/tools/list_changed → a listChanged-capable client re-fetches
+  //     tools/list and calls the tool NATIVELY;
+  //   • tools:invoke (also in the spine) calls anything by name for a client that
+  //     doesn't re-fetch — the UNIVERSAL reachability fallback;
+  //   • a compact CAPABILITY MAP in the MCP initialize instructions
+  //     (mcpInstructionsForServer) gives the model the "menu" (categories) so it
+  //     knows WHAT exists to search for — discoverability at ~1-2k instead of ~165k.
+  // Net: ~165k→~10k tokens with reachability + discoverability preserved. The token
+  // cost of loading all ~581 tool names+descriptions up-front is pure waste (a session
+  // uses ~15-30), and it's WORST for claude — native ToolSearch defers SCHEMAS but
+  // leaves all names+descriptions inline (~165k MEASURED), which DOA'd sonnet-window
+  // sessions with "Prompt is too long". So claude is seeded too now.
+  //
+  // `contextSize:'full'` is the OPT-OUT escape hatch: eager-load the whole catalog for
+  // a latency-critical broad-tool task, a client that can't do dynamic expansion, or
+  // debugging. Everything else → seed. (URLSearchParams encodes the colon/comma tool
+  // names; parseToolsAllowlist decodes them server-side.)
+  const wantsSeed = input.contextSize !== 'full';
   if (wantsSeed) {
     mcpUrl.searchParams.set('tools', CORE_MCP_TOOL_NAMES.join(','));
   }

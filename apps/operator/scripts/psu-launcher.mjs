@@ -2758,28 +2758,22 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     if (advisory) console.error(advisory);
     const effectiveModel = args.model || ompDefaultModel();
     if (args.contextSize === 'full') {
+      // ESCAPE HATCH (dynamic-tool-surface D-010): --context-size=full opts OUT of the
+      // seed — eager-load the whole catalog with discovery OFF (latency-critical broad-tool
+      // task / debugging). Everything else defaults to the seed below.
       ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true });
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
-    } else if (args.contextSize === 'trimmed') {
-      // Seed the core spine (dynamic-tool-surface-2026-07-01). This is NO LONGER a hard
-      // trim: the server treats ?tools= as a growable FLOOR — tools:find surfaces the tail
-      // on demand (→ notifications/tools/list_changed → OMP re-fetches its tools/list,
-      // VERIFIED live 2026-07-01), and tools:invoke (also in the spine) calls anything by
-      // name without listing it. So the ~530-tool long tail stays fully reachable while the
-      // model boots on a focused ~21-tool surface.
+    } else {
+      // DEFAULT for EVERY model/tier (dynamic-tool-surface D-010, "default all to trimmed"):
+      // SEED the core spine. It's a growable FLOOR, not a cap — tools:find surfaces the tail
+      // on demand (→ notifications/tools/list_changed → OMP re-fetches tools/list, VERIFIED
+      // live), tools:invoke (also in the spine) calls anything by name, and the compact
+      // capability map (MCP initialize instructions) preserves discoverability. ~165k→~10k
+      // tokens with the whole catalog still reachable. --context-size=full opts out.
       ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
-      if (ompPiConfigDir) console.error(`psu: omp --context-size=trimmed — MCP surface seeded to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (long tail reachable on demand via tools:find/tools:invoke) via per-session config ${ompPiConfigDir}`);
-      else console.error('psu: omp --context-size=trimmed could not materialize a per-session config; using OMP default (full catalog).');
-    } else if (isWeakOmpModel(effectiveModel)) {
-      // Weak/local model DEFAULT → SEED the core spine (dynamic-tool-surface D-009 flip,
-      // 2026-07-01). A small model can't wield ~580 tools, and the tail is now reachable on
-      // demand (tools:find → list_changed re-fetch, VERIFIED; + tools:invoke), so seeding is
-      // the strict win over the old full-catalog+primer stopgap: focused surface, low tokens,
-      // AND full reachability. `--context-size=full` opts back into the whole catalog up-front.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
-      if (ompPiConfigDir) console.error(`psu: omp weak/local model (${effectiveModel}) — MCP surface seeded to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools; long tail reachable on demand (tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
-      else console.error(`psu: omp weak/local model (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
+      if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
+      else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }
   }
 
@@ -2802,15 +2796,15 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // su-context-size-variants: 'full' forces every tool schema loaded up-front by
       // disabling ToolSearch deferral (fine on a 1M-window model; the whole point of full).
       ...(res.agent === 'claude' && args.contextSize === 'full' ? { ENABLE_TOOL_SEARCH: 'false' } : {}),
-      // su-context-size-variants (claude trim FIX, 2026-07-01): claude does NOT usefully
-      // self-trim — native ToolSearch defers only tool SCHEMAS, leaving all ~581 tool
-      // names+descriptions (~165k, MEASURED) inline, which fills a 200k-window model (sonnet)
-      // on boot → "Prompt is too long" DOA. So a trimmed claude gets the SAME server-side
-      // ?tools= hard-trim codex/omp use: claude's user-level papercusp-su MCP url env-expands
-      // ${PAPERCUSP_TOOLS} (see buildClaudeMcpEntry), so exporting the ~19-tool CORE SPINE here
-      // makes the superuser MCP advertise ONLY the spine (~9k). The long tail stays reachable
-      // via tools:find (in the spine). Empty/unset ⇒ full catalog (no regression for full/omitted).
-      ...(res.agent === 'claude' && args.contextSize === 'trimmed'
+      // dynamic-tool-surface D-010 ("default all to trimmed"): claude is seeded BY DEFAULT
+      // too — native ToolSearch defers only tool SCHEMAS, leaving all ~581 tool
+      // names+descriptions (~165k, MEASURED) inline (that DOA'd sonnet-window sessions with
+      // "Prompt is too long"), so the up-front load is the waste. claude's user-level
+      // papercusp-su MCP url env-expands ${PAPERCUSP_TOOLS} (see buildClaudeMcpEntry), so
+      // exporting the CORE SPINE makes the superuser MCP advertise ONLY the spine (~9k). The
+      // tail stays reachable via tools:find/tools:invoke (in the spine) + the capability map.
+      // Only --context-size=full opts OUT (unset PAPERCUSP_TOOLS → full catalog + ToolSearch).
+      ...(res.agent === 'claude' && args.contextSize !== 'full'
         ? { PAPERCUSP_TOOLS: OMP_CORE_MCP_TOOL_NAMES.join(',') } : {}),
       // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
       // dir (home-relative) — 'full' with discovery off, or a WEAK model with the MCP surface

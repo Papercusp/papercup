@@ -336,16 +336,14 @@ describe('buildLaunchSpec — kind dispatch', () => {
   });
 });
 
-// su-context-size-variants + weak-model-tool-tier: EVERY client is hard-trimmed
-// SERVER-SIDE — the core-spine `?tools=` allowlist is baked into the superuser MCP
-// URL — when the session SHOULD be trimmed. "Should be trimmed" = a WEAK model tier
-// (weak-model-tool-tier D-001) OR an explicit contextSize:'trimmed'. claude is now
-// INCLUDED (the fix): its native ToolSearch defers only tool SCHEMAS and leaves all
-// ~581 tool names+descriptions (~165k, measured) inline, so an unscoped trimmed claude
-// was a no-op that died "Prompt is too long" on a 200k-window model (sonnet); it only
-// ever fit on 1M-window opus. The tier comes from the MODEL, not the client (D-004:
-// OMP runs weak AND strong models).
-describe('buildSuLaunchSpec — model-tier / contextSize ?tools= allowlist lever', () => {
+// dynamic-tool-surface D-010 ("default all to trimmed"): the core-spine `?tools=` SEED
+// is baked into the superuser MCP URL BY DEFAULT for EVERY client + tier. It's a
+// growable floor (tools:find → notifications/tools/list_changed re-fetch; + tools:invoke
+// fallback; + a compact capability map for discoverability), so seeding no longer strands
+// the tail — it's a ~165k→~10k token win everywhere. Only an explicit contextSize:'full'
+// opts OUT into the eager whole-catalog load (the escape hatch for latency-critical
+// broad-tool tasks / a client that can't do dynamic expansion / debugging).
+describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-default)', () => {
   async function suMcpUrl(
     agent: 'claude' | 'omp' | 'codex',
     opts: { contextSize?: 'full' | 'trimmed' | null; model?: string | null } = {},
@@ -398,8 +396,12 @@ describe('buildSuLaunchSpec — model-tier / contextSize ?tools= allowlist lever
     expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
   });
 
-  it('omp + FRONTIER model ⇒ NO tools= param (frontier gets the full catalog — zero regression)', async () => {
-    expect((await suMcpUrl('omp', { model: FRONTIER })).searchParams.has('tools')).toBe(false);
+  it('omp + FRONTIER model ⇒ tools= present (D-010: trimmed is the default on ALL tiers now)', async () => {
+    expect((await suMcpUrl('omp', { model: FRONTIER })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+  });
+
+  it('omp + full ⇒ NO tools= param (the escape hatch out of the seed)', async () => {
+    expect((await suMcpUrl('omp', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(false);
   });
 
   it('codex + WEAK model ⇒ tools= present (the tier gates it, not just the manual flag)', async () => {
@@ -422,8 +424,12 @@ describe('buildSuLaunchSpec — model-tier / contextSize ?tools= allowlist lever
     expect((await suMcpUrl('claude', { model: WEAK })).searchParams.has('tools')).toBe(true);
   });
 
-  it('claude + FRONTIER model, no override ⇒ NO tools= param (full catalog — zero regression for opus/frontier sessions that do not opt in)', async () => {
-    expect((await suMcpUrl('claude', { model: FRONTIER })).searchParams.has('tools')).toBe(false);
-    expect((await suMcpUrl('claude')).searchParams.has('tools')).toBe(false);
+  it('claude + FRONTIER model, no override ⇒ tools= present (D-010: claude defaults to trimmed too — the ~165k names+descriptions ToolSearch leaves inline are the waste)', async () => {
+    expect((await suMcpUrl('claude', { model: FRONTIER })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('claude')).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+  });
+
+  it('claude + full ⇒ NO tools= param (the escape hatch keeps native ToolSearch over the whole catalog)', async () => {
+    expect((await suMcpUrl('claude', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(false);
   });
 });

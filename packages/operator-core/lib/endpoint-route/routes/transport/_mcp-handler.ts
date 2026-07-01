@@ -69,6 +69,7 @@ import {
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
+import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
 import { maybeBatchNudge, maybeOrientDedupNudge, CODE_RUN_CAPABLE_ROLES } from '../../../code-run-batch-nudge';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
@@ -990,8 +991,12 @@ See the plans \`papercusp-su-memory-2026-05-25\` and
 \`tool-call-batching-wrappers-2026-06-21\`.`;
 
 function mcpInstructionsForServer(): string | undefined {
+  // dynamic-tool-surface D-011: append the compact CAPABILITY MAP so a trimmed session (the
+  // default now) knows WHAT exists to search for — discoverability at ~1-2k instead of the
+  // ~165k of full descriptions. Harmless for a `full`/eager session (it already sees every
+  // tool). Gated off with the memory injection kill-switch for parity.
   if (process.env.PAPERCUSP_SU_MEMORY_INJECTION === 'off') return undefined;
-  return PAPERCUSP_MCP_INSTRUCTIONS;
+  return `${PAPERCUSP_MCP_INSTRUCTIONS}\n\n${capabilityMapText()}`;
 }
 
 /**

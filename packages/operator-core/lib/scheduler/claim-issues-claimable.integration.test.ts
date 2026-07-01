@@ -74,12 +74,16 @@ const H = 'papercup';
 const WS = 'default'; // == DEFAULT_COORD_WORKSPACE; work_item_deps + issues live here
 let db: FreshPgDb;
 
-/** A feature-family row (item_kind feature) — claimable through the feature path. */
-async function seedFeature(id: string, opts: { createdTs?: number; status?: string } = {}) {
+/** A feature-FAMILY row (item_kind feature|research-task|chunk, default 'feature') —
+ *  claimable through the feature path at tier 1/2 of the WI-1407 ladder. */
+async function seedFeature(
+  id: string,
+  opts: { createdTs?: number; status?: string; kind?: string } = {},
+) {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
 }
 
 /** An issue-family row (bug/change/task) on the work_items base, scope harness:papercup ⇒
@@ -125,6 +129,17 @@ async function claimOne(assignee: string): Promise<string | null> {
     await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, taken_at = NULL WHERE feature_id = ${claimed}`;
   }
   return claimed;
+}
+
+/** Same as claimOne, but narrows the request to a single feature-family kind — the exact
+ *  caller shape the WI-1407 ladder is about (a kind-narrowed request must still widen
+ *  through tiers 2 and 3 instead of exiting on a drained tier 1). Does NOT release the
+ *  claim (tests assert the id then move on). */
+async function claimOneKind(
+  assignee: string,
+  kind: 'feature' | 'research-task' | 'chunk',
+): Promise<string | null> {
+  return (await wi.claimNextWorkItem({ harness: H, assignee, kind }))?.id ?? null;
 }
 
 beforeAll(async () => {
@@ -227,6 +242,56 @@ describe('SCHEDULER_ISSUES_CLAIMABLE — flag OFF: issues NOT claimable, byte-id
     await seedIssue('EI-11', { state: 'open', createdTs: 100 });
     // Even with an older open issue present, OFF ⇒ only the feature is claimable.
     expect(await claimOne('w-off-3')).toBe('F-ready');
+  });
+});
+
+describe('claimNextWorkItem fallback ladder — a kind-narrowed caller still widens through tiers (WI-1407)', () => {
+  // Regression: the OLD `!filter.kind` gate skipped the issue-family fallback ENTIRELY for
+  // any kind-narrowed caller (e.g. kind:'feature'), even with the flag ON and a claimable
+  // issue sitting there — killing the member instead of widening. These prove the fix.
+
+  it('tier 1 exact match wins when present (no widening needed)', async () => {
+    await seedFeature('F-exact', { createdTs: 100, kind: 'feature' });
+    await seedFeature('RT-older', { createdTs: 10, kind: 'research-task' }); // older, but wrong kind
+    expect(await claimOneKind('w-t1', 'feature')).toBe('F-exact');
+  });
+
+  it('tier 2: kind="feature" narrowed and DRY widens to a research-task item within the feature family', async () => {
+    await seedFeature('RT-1', { createdTs: 100, kind: 'research-task' });
+    expect(await claimOneKind('w-t2', 'feature')).toBe('RT-1');
+  });
+
+  it('tier 2: widening still honors the readiness floor — a blocked widened item is skipped', async () => {
+    await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'wip' });
+    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk' });
+    await blockEdge(`${H}#CH-blocked`, `${H}#CH-blocker`, 'feature', 'feature');
+    expect(await claimOneKind('w-t2b', 'feature')).toBeNull();
+    await db.sql`UPDATE harness_shared.work_items SET status='passed' WHERE feature_id='CH-blocker'`;
+    expect(await claimOneKind('w-t2c', 'feature')).toBe('CH-blocked');
+  });
+
+  it('tier 3: kind="feature" narrowed and the WHOLE feature family dry falls through to an OPEN issue when the flag is ON', async () => {
+    h.issuesClaimable = true;
+    await seedIssue('EI-t3-on', { state: 'open', createdTs: 100 });
+    expect(await claimOneKind('w-t3-on', 'feature')).toBe('EI-t3-on');
+  });
+
+  it('tier 3: the SAME kind-narrowed request stays dry when the flag is OFF (the gate, not the kind narrowing, controls it)', async () => {
+    // h.issuesClaimable defaults false (beforeEach) — this is the exact shape that used to be
+    // structurally blocked pre-WI-1407 regardless of the flag; confirm it now correctly
+    // resolves via the flag rather than via the (removed) `!filter.kind` short-circuit.
+    await seedIssue('EI-t3-off', { state: 'open', createdTs: 100 });
+    expect(await claimOneKind('w-t3-off', 'feature')).toBeNull();
+  });
+
+  it('tier 3: a BLOCKED issue is still skipped even after the feature family widens dry (readiness applies at every tier)', async () => {
+    h.issuesClaimable = true;
+    await seedIssue('EI-t3-blocker', { state: 'open', createdTs: 40, kind: 'change' });
+    await seedIssue('EI-t3-blocked', { state: 'open', createdTs: 100 });
+    await blockEdge('EI-t3-blocked', 'EI-t3-blocker', 'issue', 'issue');
+    expect(await claimOneKind('w-t3d', 'feature')).toBeNull();
+    await db.sql`UPDATE harness_shared.work_items SET status='resolved' WHERE feature_id='EI-t3-blocker'`;
+    expect(await claimOneKind('w-t3e', 'feature')).toBe('EI-t3-blocked');
   });
 });
 

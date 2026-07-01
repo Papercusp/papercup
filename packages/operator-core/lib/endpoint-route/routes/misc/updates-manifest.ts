@@ -138,10 +138,19 @@ export default defineTool({
     try {
       releases = await fetchReleases();
     } catch (e: unknown) {
-      return Response.json(
-        { error: `releases fetch: ${e instanceof Error ? e.message : String(e)}` },
-        { status: 502 },
+      // A TRANSIENT inability to reach GitHub — rate-limit (403: unauthenticated
+      // polling hits the 60/hr per-IP cap once the operator runs without a
+      // GITHUB_TOKEN), 5xx, or a network error — is NOT a client error. Returning
+      // 502 here made the Tauri updater log `update endpoint did not respond with a
+      // successful status code` on every poll (and surfaced a hard error from the
+      // manual check_for_update command). Degrade to 204 exactly like the 404 /
+      // no-candidate cases below — the updater treats 204 as "up to date" and stays
+      // quiet — while warning server-side so a persistent failure (e.g. a missing
+      // GITHUB_TOKEN) stays visible to ops rather than being silently swallowed.
+      console.warn(
+        `[updates/manifest] releases fetch failed — serving 204 (no update offered): ${e instanceof Error ? e.message : String(e)}`,
       );
+      return new Response(null, { status: 204 });
     }
     if (!releases) return new Response(null, { status: 204 });
 

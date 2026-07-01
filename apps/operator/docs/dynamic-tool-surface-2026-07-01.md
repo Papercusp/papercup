@@ -91,6 +91,28 @@ dissolves.
   19 core (tight focus). Strong model / Codex → core + a wider common set (token
   cost is the driver there, not focus). Tunable, seeded from the tier gate.
 
+- **D10 — "Default all to trimmed" (2026-07-01, supersedes D5/D7's frontier-full
+  default).** The small-seed dynamic surface is the DEFAULT for EVERY client + tier,
+  including frontier Claude/Codex/OMP. Rationale: the ~165k up-front tool-list cost is
+  almost entirely descriptions the model never reads (a session uses ~15–30 tools); the
+  discoverability downside is smallest for frontier models (they reason + intent-search
+  well) and is cheaply restored by the capability map (D11); reachability holds via
+  `tools:find`/`list_changed`/`tools:invoke`. `contextSize:'full'` becomes the OPT-OUT
+  escape hatch (eager whole-catalog load) for latency-critical broad-tool tasks, a client
+  that can't do dynamic expansion, or debugging. Gate: `wantsSeed = contextSize !== 'full'`
+  in `role-launch-spec.ts`; `psu-launcher.mjs` mirrors it for OMP + Claude. **Supersedes
+  D5** (Claude is now seeded too — ToolSearch defers only schemas, not the ~165k of
+  names+descriptions, which is the actual waste). Pending: an A/B eval (P-007) + live
+  Claude/Codex `list_changed` verification before this is considered proven, not just
+  shipped.
+
+- **D11 — Compact capability map preserves discoverability.** A ~2.2k-token category
+  menu (all ~555 tools grouped by namespace, with example names + a `tools:find`/`tools:invoke`
+  directive), generated from the registry (`capability-map.ts`) and injected into the MCP
+  `initialize.instructions` (`mcpInstructionsForServer`). It's the "menu" a seeded model
+  browses to know WHAT exists to search for — discoverability at ~1% of the ~165k full
+  descriptions. Harmless for `full`/eager sessions (seed-agnostic wording).
+
 ## 4. Phases / work items
 
 **Phase 0 — server-side mutable surface state**

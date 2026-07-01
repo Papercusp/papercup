@@ -69,6 +69,7 @@ interface SeedOpts {
   paths?: string[];
   riskTier?: string;
   estCost?: number;
+  kind?: string;
 }
 async function seedFeature(id: string, opts: SeedOpts = {}) {
   const payload =
@@ -79,11 +80,21 @@ async function seedFeature(id: string, opts: SeedOpts = {}) {
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
        created_ts, updated_ts, feature_order, tags, payload, expected_cost_cents)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, ${WS},
+    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, ${WS},
        ${opts.createdTs ?? 0}, 0, ${opts.featureOrder ?? null},
        ${opts.tags ? db.sql.json(opts.tags) : null},
        ${payload ? db.sql.json(JSON.parse(payload)) : null},
        ${opts.estCost ?? null})`;
+}
+
+/** An ISSUE-family row (bug|change|task) — NOT visible through harness_features_consolidated
+ *  (excluded by its WHERE), so this inserts on the work_items BASE table directly. Used by the
+ *  WI-1407 tier-3 fallback tests (getNextWorkItem widening past the whole feature family). */
+async function seedIssue(id: string, opts: { createdTs?: number; state?: string; kind?: string } = {}) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
 }
 
 async function blockByFeature(blockedId: string, blockerId: string) {
@@ -375,5 +386,108 @@ describe('get_next — DEFAULT_CLAIM_SPEC reproduces current ordering (D-003)', 
     await seedFeature('F-only', { createdTs: 10 });
     const r = await getNextWorkItemDefault(BEE, { harness: H });
     expect(r?.claimedUnder).toEqual({ specId: DEFAULT_CLAIM_SPEC.specId, revision: 0 });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// 5. Fallback ladder (fleet-backlog-lessons-2026-07-01 P-005, WI-1407): a spec narrowed to
+//    one feature-family `kind` widens PAST it (tier 2, widenPastKind) before falling through
+//    to the adjacent issue family (tier 3, gated by SCHEDULER_ISSUES_CLAIMABLE) — instead of
+//    exiting the moment its exact-kind tier reads empty.
+// ────────────────────────────────────────────────────────────────────────────
+describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue fallthrough (tier 3)', () => {
+  afterAll(() => {
+    setFlagOverridesForTest(null); // never leak an override past this describe block
+  });
+
+  it('tier 1: an exact kind match wins outright — no widening needed', async () => {
+    await seedFeature('F-exact', { createdTs: 100, kind: 'feature' });
+    await seedFeature('RT-older', { createdTs: 10, kind: 'research-task' }); // older, wrong kind
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'kind-feature',
+      revision: 1,
+      view: { filter: { field: 'kind', op: '=', value: 'feature' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-exact');
+  });
+
+  it('tier 2: kind="feature" narrowed and DRY widens (widenPastKind) to a research-task item', async () => {
+    await seedFeature('RT-1', { createdTs: 100, kind: 'research-task' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'kind-feature-widen',
+      revision: 1,
+      view: { filter: { field: 'kind', op: '=', value: 'feature' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('RT-1');
+    expect(r?.claimedUnder).toEqual({ specId: 'kind-feature-widen', revision: 1 }); // still the SAME spec's provenance
+  });
+
+  it('tier 2: a co-existing tags narrowing SURVIVES the widen (only the kind leaf is dropped)', async () => {
+    await seedFeature('RT-sync', { createdTs: 100, kind: 'research-task', tags: ['sync'] });
+    await seedFeature('RT-docs', { createdTs: 10, kind: 'research-task', tags: ['docs'] }); // older, wrong tag
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'kind-and-tag',
+      revision: 1,
+      view: {
+        filter: {
+          all: [
+            { field: 'kind', op: '=', value: 'feature' },
+            { field: 'tags', op: 'contains', value: 'sync' },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('RT-sync');
+  });
+
+  it('tier 2: widening still honors the readiness floor (D-002) — a blocked widened item is skipped', async () => {
+    await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'wip' });
+    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk' });
+    await blockByFeature('CH-blocked', 'CH-blocker');
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'kind-blocked-widen',
+      revision: 1,
+      view: { filter: { field: 'kind', op: '=', value: 'feature' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id='CH-blocker'`;
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('CH-blocked');
+  });
+
+  it('tier 3: kind="feature" narrowed and the WHOLE feature family dry falls through to an open issue when SCHEDULER_ISSUES_CLAIMABLE is ON', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-t3-on', { state: 'open', createdTs: 100 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'kind-feature-issue-fallthrough',
+      revision: 2,
+      view: { filter: { field: 'kind', op: '=', value: 'feature' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-t3-on');
+    expect(r?.claimedUnder).toEqual({ specId: 'kind-feature-issue-fallthrough', revision: 2 });
+  });
+
+  it('tier 3: the SAME kind-narrowed request stays dry when SCHEDULER_ISSUES_CLAIMABLE is OFF (the flag, not the kind narrowing, gates it — WI-1407 regression)', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false });
+    await seedIssue('EI-t3-off', { state: 'open', createdTs: 100 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'kind-feature-issue-gated-off',
+      revision: 1,
+      view: { filter: { field: 'kind', op: '=', value: 'feature' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
 });
