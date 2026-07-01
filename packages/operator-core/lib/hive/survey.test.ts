@@ -10,6 +10,7 @@ import type { PlanIndexRow } from '../agent-tools/plans/source';
 import {
   filterReadyFrontier,
   frontierInEligiblePlans,
+  notStopped,
   frontierRowToCandidate,
   planToCandidate,
   resolveHiveMembership,
@@ -376,6 +377,26 @@ describe('surveyHive (P-012 regression)', () => {
     expect(ids).not.toContain('WI-UNPLANNED'); // loose work turned off
   });
 
+  it('stoppedHarnesses withholds a STOPPED hive\'s frontier work, keeps others (stop-list)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { stoppedHarnesses: ['stopped-harness'] },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [
+          { slug: 'papercup', hive_slug: 'papercup-hive' },
+          { slug: 'stopped-harness', hive_slug: 'papercup-hive' },
+        ] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [
+          frontierRow({ feature_id: 'WI-LIVE', harness_slug: 'papercup', plan_slug: null }),
+          frontierRow({ feature_id: 'WI-OFF', harness_slug: 'stopped-harness', plan_slug: null }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).toContain('WI-LIVE'); // a not-stopped harness still places
+    expect(ids).not.toContain('WI-OFF'); // the stopped harness is withheld
+  });
+
   it('no eligiblePlans restriction keeps every frontier row regardless of source plan (P-008 no-op)', async () => {
     const survey = await surveyHive('default', 'papercup-hive', {
       scopeFilter: {},
@@ -523,5 +544,17 @@ describe('frontierInEligiblePlans (queen-steering-panel P-008 — the frontier p
     // With NO restriction, loose work still passes by default.
     expect(frontierInEligiblePlans(null, { eligiblePlans: [] })).toBe(true);
     expect(frontierInEligiblePlans(undefined, {})).toBe(true);
+  });
+});
+
+describe('notStopped (per-hive Stop stop-list, pure)', () => {
+  it('no stop-list ⇒ everything passes (never over-withholds)', () => {
+    expect(notStopped('h', undefined)).toBe(true);
+    expect(notStopped('h', {})).toBe(true);
+    expect(notStopped('h', { stoppedHarnesses: [] })).toBe(true);
+  });
+  it('withholds ONLY harnesses in the stop-list', () => {
+    expect(notStopped('stopped', { stoppedHarnesses: ['stopped'] })).toBe(false);
+    expect(notStopped('other', { stoppedHarnesses: ['stopped'] })).toBe(true); // standalone/other passes
   });
 });

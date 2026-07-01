@@ -27,6 +27,8 @@ import {
   forkUnsupportedMessage,
   forkBootstrapBody,
   freshSuBootstrapBody,
+  psuLaunchArgvRecord,
+  effectiveAutoMode,
   roleBootstrapBody,
   forkSeedPaths,
   findUntrackedSession,
@@ -290,6 +292,9 @@ describe('psu-launcher arg parsing', () => {
       fleetRole: null,
       fleetName: null,
       fleetScheme: null,
+      // fleet-auto-mode (WI-1356): null = no explicit --auto/--no-auto (effective
+      // default derived from --fleet by effectiveAutoMode).
+      auto: null,
       addDir: [],
       passthrough: [],
       setClaudeToken: false,
@@ -334,6 +339,7 @@ describe('psu-launcher arg parsing', () => {
       fleetRole: null,
       fleetName: null,
       fleetScheme: null,
+      auto: null,
       addDir: [],
       passthrough: [],
       setClaudeToken: false,
@@ -413,6 +419,14 @@ describe('psu-launcher arg parsing', () => {
     const a = parseArgs(['--add-dir', '/early', '--', '--add-dir', '/late']);
     expect(a.addDir).toEqual(['/early']);
     expect(a.passthrough).toEqual(['--add-dir', '/late']);
+  });
+
+  it('parses --auto / --no-auto (fleet-auto-mode WI-1356); defaults null', () => {
+    expect(parseArgs([]).auto).toBeNull();
+    expect(parseArgs(['--auto']).auto).toBe(true);
+    expect(parseArgs(['--no-auto']).auto).toBe(false);
+    // last one wins if both are (nonsensically) passed
+    expect(parseArgs(['--auto', '--no-auto']).auto).toBe(false);
   });
 
   it('parses --fork / --fork-session (resume-time branch); defaults false', () => {
@@ -563,6 +577,40 @@ describe('psu-launcher arg parsing', () => {
       account: 'codex-main',
       launch_context: '/tmp/kickoff.md',
     });
+  });
+
+  it('freshSuBootstrapBody records the reconstructed psu launch_argv (WI-1343)', () => {
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+    );
+    expect(body.launch_argv).toEqual(['psu', '--no-picker', '--agent=claude', '--workspace=ws1', '--harness=h1', '--plan=p1']);
+  });
+
+  it('freshSuBootstrapBody sets auto:true for a --fleet launch, and threads --fleet into launch_argv (WI-1343/WI-1356)', () => {
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: null },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--no-plan', '--fleet=shared-hive-testing']),
+    );
+    expect(body.auto).toBe(true);
+    expect(body.launch_argv).toContain('--fleet=shared-hive-testing');
+    expect(body.launch_argv).toContain('--auto');
+    expect(body.launch_argv).toContain('--no-plan');
+  });
+
+  it('freshSuBootstrapBody omits auto for a non-fleet launch, and honours --no-auto on a fleet launch (WI-1356)', () => {
+    const plain = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+    );
+    expect(plain).not.toHaveProperty('auto');
+    expect(plain.launch_argv).not.toContain('--auto');
+
+    const optedOut = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--fleet=x', '--no-auto']),
+    );
+    expect(optedOut).not.toHaveProperty('auto');
   });
 
   it('roleBootstrapBody folds a chosen account into role launches', () => {
@@ -1587,6 +1635,52 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
 // store) and the server RE-DERIVES it authoritatively (agent-fleets-store.ts).
 // The two carry a "MIRRORS … keep in sync" comment but no guard, so a divergence
 // would silently mislabel the picker's new-fleet preview. Pin them identical.
+describe('effectiveAutoMode (WI-1356 fleet-auto-mode)', () => {
+  it('defaults AUTO ON for a --fleet launch (member has no human at the keyboard)', () => {
+    expect(effectiveAutoMode(parseArgs(['--fleet=x']))).toBe(true);
+  });
+  it('is OFF for a plain (non-fleet) launch', () => {
+    expect(effectiveAutoMode(parseArgs(['--no-picker', '--agent=claude']))).toBe(false);
+  });
+  it('--auto forces it on even without a fleet; --no-auto forces it off even with a fleet', () => {
+    expect(effectiveAutoMode(parseArgs(['--auto']))).toBe(true);
+    expect(effectiveAutoMode(parseArgs(['--fleet=x', '--no-auto']))).toBe(false);
+  });
+});
+
+describe('psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)', () => {
+  it('reconstructs the canonical psu invocation from resolved selections', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']);
+    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args)).toEqual([
+      'psu', '--no-picker', '--agent=claude', '--workspace=ws1', '--harness=h1', '--plan=p1',
+    ]);
+  });
+  it('emits --no-plan when no plan is bound', () => {
+    const args = parseArgs(['--no-picker', '--agent=omp', '--harness=h1', '--no-plan']);
+    const argv = psuLaunchArgvRecord({ agent: 'omp', workspace: null, harness: 'h1', plan: null }, args);
+    expect(argv).toContain('--no-plan');
+    expect(argv).not.toContain('--workspace=null');
+  });
+  it('captures fleet, account, profile, context-size, model, add-dir and passthrough', () => {
+    const args = parseArgs([
+      '--no-picker', '--agent=claude', '--harness=h1', '--plan=p1',
+      '--fleet=shared-hive-testing', '--account=acct1', '--profile=power',
+      '--context-size=full', '--model=opus', '--add-dir=/x', '--', '--verbose',
+    ]);
+    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args);
+    expect(argv).toEqual(expect.arrayContaining([
+      '--fleet=shared-hive-testing', '--account=acct1', '--profile=power',
+      '--context-size=full', '--model=opus', '--add-dir=/x', '--auto', '--', '--verbose',
+    ]));
+  });
+  it('derives --fleet from a picker-entered fleet NAME', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']);
+    args.fleetName = 'My New Fleet';
+    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args);
+    expect(argv).toContain(`--fleet=${storeFleetSlugFromName('My New Fleet')}`);
+  });
+});
+
 describe('fleetSlugFromName client/server parity', () => {
   const NAMES = [
     'Ops Team',

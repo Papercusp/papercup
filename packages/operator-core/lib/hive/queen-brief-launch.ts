@@ -181,6 +181,26 @@ async function gatherOwnerSteering(
   }
 }
 
+/**
+ * The STOPPED registered hives in a workspace — those whose per-hive placement
+ * bit is NOT set (per-hive start-stop 2026-06-30). Feeds the survey's stop-list
+ * so a Stopped hive's frontier + plan work is withheld from the Queen. Fail-open
+ * per hive (a read error ⇒ treat as started/not-stopped, so we never
+ * over-withhold on a DB hiccup). A hive born with no started row reads stopped —
+ * consistent with "a hive is born paused" + the orchestrator placement gate.
+ */
+async function computeStoppedHiveSlugs(workspaceId: string): Promise<string[]> {
+  const [{ listHives }, { getHivePlacementStarted }] = await Promise.all([
+    import('../agent-tools/hive/_resolve'),
+    import('./started'),
+  ]);
+  const hives = await listHives(workspaceId).catch(() => [] as Array<{ slug: string }>);
+  const started = await Promise.all(
+    hives.map((h) => getHivePlacementStarted(workspaceId, h.slug).catch(() => true)),
+  );
+  return hives.filter((_, i) => !started[i]).map((h) => h.slug);
+}
+
 export async function computeQueenWakeBrief(
   workspaceId: string,
   installSlug: string,
@@ -195,22 +215,32 @@ export async function computeQueenWakeBrief(
     // built ONLY when steering actually constrains, so an un-steered Hive calls
     // surveyHive exactly as before (fully backward-compatible).
     const ownerSteering = await gatherOwnerSteering(workspaceId, installSlug);
+    // Per-hive Stop (per-hive start-stop 2026-06-30): the STOPPED registered hives
+    // whose frontier + plan work the Queen must withhold. A stop-list (not an
+    // allow-list) so standalone / unhived / started work is never regressed.
+    // Fail-open ([] on error). Independent of steering, so a Stop gates even when
+    // no other steering is active.
+    const stoppedHarnesses = await computeStoppedHiveSlugs(workspaceId).catch(() => [] as string[]);
+    const steeringActive = !!ownerSteering && (
+      ownerSteering.pauseNewWork ||
+      ownerSteering.pausedUntil != null ||
+      ownerSteering.eligiblePlans.length > 0 ||
+      ownerSteering.eligibleHives.length > 0 ||
+      ownerSteering.includeUnplannedWork === false
+    );
     const scopeFilter: ScopeFilter | undefined =
-      ownerSteering &&
-      (ownerSteering.pauseNewWork ||
-        ownerSteering.pausedUntil != null ||
-        ownerSteering.eligiblePlans.length > 0 ||
-        ownerSteering.eligibleHives.length > 0 ||
-        ownerSteering.includeUnplannedWork === false)
+      steeringActive || stoppedHarnesses.length > 0
         ? {
-            ...(ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
+            ...(ownerSteering && ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
             // Eligible Hives → the survey's allowedHarnesses scope (C-2, su-266): the
             // Queen may place only into these hives/harnesses (B-04 round-2).
-            ...(ownerSteering.eligibleHives.length > 0 ? { allowedHarnesses: ownerSteering.eligibleHives } : {}),
+            ...(ownerSteering && ownerSteering.eligibleHives.length > 0 ? { allowedHarnesses: ownerSteering.eligibleHives } : {}),
             // "Non-plan work items" toggle OFF → drop loose frontier work (decouple 2026-06-30).
-            ...(ownerSteering.includeUnplannedWork === false ? { includeUnplannedWork: false } : {}),
-            ...(ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),
-            ...(ownerSteering.pausedUntil != null ? { pausedUntil: ownerSteering.pausedUntil } : {}),
+            ...(ownerSteering && ownerSteering.includeUnplannedWork === false ? { includeUnplannedWork: false } : {}),
+            ...(ownerSteering && ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),
+            ...(ownerSteering && ownerSteering.pausedUntil != null ? { pausedUntil: ownerSteering.pausedUntil } : {}),
+            // Per-hive Stop: withhold explicitly-stopped hives' work (stop-list).
+            ...(stoppedHarnesses.length > 0 ? { stoppedHarnesses } : {}),
           }
         : undefined;
 

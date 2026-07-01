@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGitSync, type RunGit } from './run-git-sync';
+import { runGitSync, addFailureStrayPaths, type RunGit } from './run-git-sync';
 import type { ContentDetector } from '../../content-lint/registry';
 
 /** A test content detector that quarantines any matched file whose text contains BROKEN. */
@@ -62,6 +62,33 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(originLog()).toMatch(/auto-commit test/);
     // working tree is clean after sync
     expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('STRANDING GUARD (2026-06-30 root cause): a nested embedded git repo with NO commit does NOT strand the tree — excludes it + retries + commits the real work', async () => {
+    // The file that MUST reach origin.
+    writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
+    // A stray embedded git repo with NO commit — exactly what a green-checkpoint test tmpdir
+    // left under .papercusp/.vitest-tmpdir. A naive `git add -A` FATALs on it (exit 128,
+    // "does not have a commit checked out") → stages NOTHING → the whole tree strands.
+    const stray = join(repo, '.papercusp', '.vitest-tmpdir', 'green-STRAY');
+    mkdirSync(stray, { recursive: true });
+    git(stray, 'init', '-b', 'main'); // nested .git, NO commit
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    // Before the fix: status 'nothing', real-work.txt stranded forever. After: it recovers.
+    expect(out.status).toBe('synced');
+    expect(originLog()).toMatch(/auto-commit test/);
+    // the real file reached origin (was NOT stranded)
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
+  });
+
+  it('addFailureStrayPaths parses the embedded-repo fatal path(s) + strips trailing slash', () => {
+    const out =
+      "error: '.papercusp/.vitest-tmpdir/green-oQOrHU/' does not have a commit checked out\n" +
+      "error: 'other/nested/' does not have a commit checked out\nfatal: adding files failed";
+    expect(addFailureStrayPaths(out)).toEqual(['.papercusp/.vitest-tmpdir/green-oQOrHU', 'other/nested']);
+    expect(addFailureStrayPaths('nothing wrong here')).toEqual([]);
   });
 
   it('P-004 flag-ON (loadRoster supplied): peels a per-agent commit (intent + Co-Authored-By) before the catch-all', async () => {

@@ -1,0 +1,83 @@
+/**
+ * Unit tests for the bootstrap-su launch-argv + AUTO-mode helpers (WI-1343 / WI-1356).
+ *
+ * These are the pure, server-side pieces of the launch-path fixes:
+ *   - normalizeLaunchArgv  — validate/cap a caller-supplied launch_argv.
+ *   - reconstructPsuLaunchArgv — the server-side FALLBACK argv when the caller omits it.
+ *   - AUTO_MODE_DIRECTIVE  — the durable AUTO activation baked into the prompt + kickoff.
+ *
+ * The DB-touching sibling modules are mocked so importing the route doesn't reach for
+ * @papercusp/db-org (mirrors launch-su.test.ts).
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../../adv-sessions', () => ({
+  recordAdvSession: vi.fn(async () => 1),
+  markAdvSessionEnded: vi.fn(async () => {}),
+  reactivateAdvSession: vi.fn(async () => false),
+}));
+vi.mock('../../../agent-tools/coordination/presence', () => ({
+  setPendingFleet: vi.fn(() => {}),
+}));
+
+import {
+  normalizeLaunchArgv,
+  reconstructPsuLaunchArgv,
+  AUTO_MODE_DIRECTIVE,
+} from './bootstrap-su';
+
+describe('normalizeLaunchArgv (WI-1343)', () => {
+  it('accepts a clean string[] and returns it', () => {
+    expect(normalizeLaunchArgv(['psu', '--no-picker', '--agent=claude'])).toEqual([
+      'psu', '--no-picker', '--agent=claude',
+    ]);
+  });
+  it('returns null for a non-array or empty/all-non-string input', () => {
+    expect(normalizeLaunchArgv(undefined)).toBeNull();
+    expect(normalizeLaunchArgv('psu --no-picker')).toBeNull();
+    expect(normalizeLaunchArgv([])).toBeNull();
+    expect(normalizeLaunchArgv([1, 2, {}])).toBeNull();
+  });
+  it('drops non-string elements and caps element length + array length', () => {
+    expect(normalizeLaunchArgv(['psu', 42, '--agent=claude', null])).toEqual(['psu', '--agent=claude']);
+    const long = 'x'.repeat(5000);
+    expect(normalizeLaunchArgv([long])![0]!.length).toBe(2000);
+    const huge = Array.from({ length: 300 }, (_, i) => `--f${i}`);
+    expect(normalizeLaunchArgv(huge)!.length).toBe(128);
+  });
+});
+
+describe('reconstructPsuLaunchArgv (WI-1343 server-side fallback)', () => {
+  it('reconstructs a plan-bound claude launch', () => {
+    expect(reconstructPsuLaunchArgv({ agent: 'claude', harnessSlug: 'h1', planSlug: 'p1' })).toEqual([
+      'psu', '--no-picker', '--agent=claude', '--harness=h1', '--plan=p1',
+    ]);
+  });
+  it('emits --no-plan, and includes fleet/account/profile/context when set', () => {
+    expect(
+      reconstructPsuLaunchArgv({
+        agent: 'omp',
+        harnessSlug: null,
+        planSlug: null,
+        profile: 'power',
+        contextSize: 'full',
+        account: 'acct1',
+        fleet: 'shared-hive-testing',
+      }),
+    ).toEqual([
+      'psu', '--no-picker', '--agent=omp', '--no-plan',
+      '--profile=power', '--context-size=full', '--account=acct1', '--fleet=shared-hive-testing',
+    ]);
+  });
+  it('omits the default engineer profile', () => {
+    expect(reconstructPsuLaunchArgv({ agent: 'claude', profile: 'engineer' })).not.toContain('--profile=engineer');
+  });
+});
+
+describe('AUTO_MODE_DIRECTIVE (WI-1356)', () => {
+  it('names AUTO mode and the act/loop standing state', () => {
+    expect(AUTO_MODE_DIRECTIVE).toMatch(/AUTO mode is ON/i);
+    expect(AUTO_MODE_DIRECTIVE).toMatch(/do not stop to ask/i);
+    expect(AUTO_MODE_DIRECTIVE).toMatch(/loop continuously/i);
+  });
+});

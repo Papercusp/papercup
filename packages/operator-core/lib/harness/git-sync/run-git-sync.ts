@@ -220,6 +220,21 @@ function nothingToCommit(r: { stdout: string; stderr: string }): boolean {
   return /nothing to commit|no changes added to commit|nothing added to commit/i.test(`${r.stdout}\n${r.stderr}`);
 }
 
+/** Repo-relative paths that made `git add` FATAL because they are embedded git repos with no
+ *  commit ("error: '<path>' does not have a commit checked out"). Extracted so git-sync can
+ *  EXCLUDE them + retry rather than silently stranding the WHOLE tree (2026-06-30 root cause:
+ *  one nested no-commit .git under .papercusp/.vitest-tmpdir fatal-ed `git add -A`, so nothing
+ *  committed for ~7h). Exported for unit testing. */
+export function addFailureStrayPaths(output: string): string[] {
+  const out: string[] = [];
+  const re = /error: '([^']+)' does not have a commit checked out/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(output)) !== null) {
+    out.push(m[1].replace(/\/+$/, '')); // git prints a trailing slash for a dir; pathspec wants it clean
+  }
+  return [...new Set(out)];
+}
+
 /**
  * Recursively discover submodule paths (repo-relative), DEEPEST-FIRST. Dynamic —
  * reads the live submodule tree (`git submodule status --recursive`), never a
@@ -438,11 +453,37 @@ async function syncOneRepo(
     // Catch-all = today's single whole-tree commit: sweeps the unattributed remainder (or
     // EVERYTHING when no attribution), including anything a path-specific add missed (rename
     // origin-sides, etc.). Byte-identical to the pre-P-004 commit path.
-    const addArgs =
-      excludePaths.length === 0
-        ? ['add', '-A']
-        : ['add', '-A', '--', '.', ...excludePaths.map((p) => `:(exclude,literal)${p}`)];
-    await runGit(addArgs, repoPath);
+    const buildAddArgs = (extraExcludes: string[]): string[] => {
+      const ex = [...new Set([...excludePaths, ...extraExcludes])];
+      return ex.length === 0 ? ['add', '-A'] : ['add', '-A', '--', '.', ...ex.map((p) => `:(exclude,literal)${p}`)];
+    };
+    // STRANDING GUARD (2026-06-30 ROOT CAUSE): a stray EMBEDDED git repo with no commit
+    // ("error: '<path>' does not have a commit checked out") makes `git add -A` FATAL
+    // (exit 128) → stages NOTHING → `git commit` reports "nothing" → the WHOLE tree strands
+    // silently, every tick, for hours (a green-checkpoint test left a nested .git under
+    // .papercusp/.vitest-tmpdir/). The add's exit code was previously UNCHECKED, so the fatal
+    // was invisible. Now: check it; on that specific failure, parse the offending path(s),
+    // EXCLUDE them, and retry ONCE so one stray repo can't strand everyone's work; if it STILL
+    // fails, return a LOUD 'error' (caught by the git-sync-stall watchdog + escalation) instead
+    // of silently reporting 'nothing'.
+    let addRes = await runGit(buildAddArgs([]), repoPath);
+    if (addRes.code !== 0) {
+      const stray = addFailureStrayPaths(`${addRes.stdout}\n${addRes.stderr}`);
+      if (stray.length > 0) {
+        o.log(
+          `[git-sync] ${repoPath}: 'git add -A' FAILED on embedded/uncommitted repo(s) [${stray.join(', ')}] — excluding + retrying so the rest of the tree still commits (previously: silent strand)`,
+        );
+        addRes = await runGit(buildAddArgs(stray), repoPath);
+      }
+      if (addRes.code !== 0) {
+        return {
+          status: 'error',
+          message: `git add -A failed — the tree would strand uncommitted: ${(addRes.stderr || addRes.stdout).trim().slice(0, 300)}`,
+          oversized,
+          contentErrors,
+        };
+      }
+    }
     const c = await runGit(['commit', '--no-verify', '-m', message], repoPath);
     if (c.code === 0) {
       committedAny = true;

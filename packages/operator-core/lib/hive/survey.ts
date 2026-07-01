@@ -115,6 +115,11 @@ export async function resolveHiveMembership(
 export interface ScopeFilter {
   /** Restrict the survey to these harness slugs (frontier + plans). Omit/[] ⇒ all. */
   allowedHarnesses?: string[];
+  /** STOP-LIST: exclude frontier + plan work whose harness/hive is in this set —
+   *  the per-hive Stop (per-hive start-stop 2026-06-30). A stop-list (NOT an
+   *  allow-list) so standalone / unhived / started work is never regressed: only
+   *  work belonging to an explicitly-STOPPED hive is withheld. Omit/[] ⇒ none. */
+  stoppedHarnesses?: string[];
   /** Restrict the PLAN view to these plan slugs — the owner's `eligiblePlans`
    *  (owner-steering C-1): "pour bees only into these plans". Omit/[] ⇒ all. The
    *  frontier (new unplaced work) is gated by pause + allowedHarnesses, not this. */
@@ -143,6 +148,13 @@ export function isNewWorkPaused(f: ScopeFilter | undefined, now: number): boolea
 export function inAllowedHarness(harnessSlug: string, f: ScopeFilter | undefined): boolean {
   if (!f?.allowedHarnesses || f.allowedHarnesses.length === 0) return true;
   return f.allowedHarnesses.includes(harnessSlug);
+}
+
+/** Is `harnessSlug` NOT in the stop-list (a stopped hive)? per-hive Stop gate.
+ *  (pure; no list ⇒ pass — a stop-list only WITHHOLDS explicitly-stopped work.) */
+export function notStopped(harnessSlug: string, f: ScopeFilter | undefined): boolean {
+  if (!f?.stoppedHarnesses || f.stoppedHarnesses.length === 0) return true;
+  return !f.stoppedHarnesses.includes(harnessSlug);
 }
 
 /** Does `planSlug` pass the filter's eligible-plans list? (pure; no list ⇒ allow all) */
@@ -606,7 +618,7 @@ export async function surveyHive(
   const readyFrontierRows = paused
     ? []
     : readyFrontierRowsAll.filter(
-        (r) => inAllowedHarness(r.harness_slug, sf) && frontierInEligiblePlans(r.plan_slug, sf),
+        (r) => inAllowedHarness(r.harness_slug, sf) && notStopped(r.harness_slug, sf) && frontierInEligiblePlans(r.plan_slug, sf),
       );
   if (paused) {
     console.log(
@@ -616,7 +628,7 @@ export async function surveyHive(
   const frontierCandidates = readyFrontierRows.map((r) => frontierRowToCandidate(r, now));
 
   const [plans, frontier] = await Promise.all([
-    rankPlacements(planCandidates.filter((c) => inAllowedHarness(c.harness, sf) && inEligiblePlans(c.id, sf))),
+    rankPlacements(planCandidates.filter((c) => inAllowedHarness(c.harness, sf) && notStopped(c.harness, sf) && inEligiblePlans(c.id, sf))),
     rankPlacements(frontierCandidates),
   ]);
 

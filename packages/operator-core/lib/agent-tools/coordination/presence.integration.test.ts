@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
-import { sweepStalePresence, listPresence } from './presence';
+import { sweepStalePresence, sweepEndedPresence, listPresence } from './presence';
 import { fetchWakeability } from './presence-wakeability';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
@@ -105,6 +105,86 @@ describe('sweepStalePresence (real PG)', () => {
     const live = await listPresence();
     expect(live.map((r) => r.ownerId)).toContain('kept');
     expect(live.map((r) => r.ownerId)).not.toContain('gone');
+  });
+});
+
+/**
+ * sweepEndedPresence (the DEFECT-2 short-TTL reaper) against REAL Postgres. Unlike
+ * the blunt heartbeat-only `sweepStalePresence`, this evicts a row ONLY when it is
+ * BOTH stale-beyond-TTL AND not-wakeable (no live inbox-wake await = `ended`), so a
+ * PARKED (stale + live await) session and protected (on-desktop/viewer) owners are
+ * never touched. Seeds coord_presence heartbeat ages + event_awaits under a unique
+ * prefix (cleaned per test) so it never clobbers a concurrent suite's await rows.
+ */
+describe('sweepEndedPresence (real PG) — short-TTL ended-row reaper', () => {
+  const AW = 'endedreap-';
+  const own = (id: string) => `${AW}${id}`;
+
+  /** Seed a LIVE inbox-wake await for `ownerId` (makes the row `parked`, not `ended`). */
+  async function seedLiveAwait(ownerId: string): Promise<void> {
+    await admin`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, fired_at, cancelled_at, expires_ts)
+      VALUES (${ownerId}, ${`${COORD_INBOX_WAKE_PREFIX}${ownerId}`}, null, null, null)`;
+  }
+  async function cleanAwaits(): Promise<void> {
+    await admin`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${`${AW}%`}`;
+  }
+  beforeEach(cleanAwaits);
+  afterAll(cleanAwaits);
+
+  it('reaps a STALE + not-wakeable (ended) row on the short TTL; a fresh row survives', async () => {
+    await seed('ended-old', 3600); // 1h stale, no await → ended
+    await seed('fresh-now', 0);
+    const removed = await sweepEndedPresence({ ttlMs: 10 * 60 * 1000 });
+    expect(removed).toBe(1);
+    expect(await ownerIds()).toEqual(['fresh-now']);
+  });
+
+  it('SPARES a stale row that is still WAKEABLE (parked — a live inbox-wake await)', async () => {
+    const parked = own('parked');
+    await seed(parked, 3600); // stale heartbeat…
+    await seedLiveAwait(parked); // …but a live await → parked, never reaped here
+    await seed('ended', 3600); // stale + no await → ended
+    const removed = await sweepEndedPresence({ ttlMs: 10 * 60 * 1000 });
+    expect(removed).toBe(1);
+    expect(await ownerIds()).toEqual([parked]);
+  });
+
+  it('SPARES a protected owner (on-desktop/viewer) even when stale + not wakeable', async () => {
+    await seed('on-desktop', 3600);
+    await seed('other-dead', 3600);
+    const removed = await sweepEndedPresence({
+      ttlMs: 10 * 60 * 1000,
+      protectedOwners: new Set(['on-desktop']),
+    });
+    expect(removed).toBe(1);
+    expect(await ownerIds()).toEqual(['on-desktop']);
+  });
+
+  it('does not reap a row younger than the TTL, even if not wakeable', async () => {
+    await seed('recent-dead', 120); // 2m stale, below the 10m TTL
+    const removed = await sweepEndedPresence({ ttlMs: 10 * 60 * 1000 });
+    expect(removed).toBe(0);
+    expect(await ownerIds()).toEqual(['recent-dead']);
+  });
+
+  it('an EXPIRED await does not protect — the row is still ended → reaped', async () => {
+    const expired = own('expired');
+    await seed(expired, 3600);
+    await admin`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, expires_ts)
+      VALUES (${expired}, ${`${COORD_INBOX_WAKE_PREFIX}${expired}`}, ${new Date(Date.now() - 60_000)})`;
+    const removed = await sweepEndedPresence({ ttlMs: 10 * 60 * 1000 });
+    expect(removed).toBe(1);
+    expect(await ownerIds()).toEqual([]);
+  });
+
+  it('workspace scope reaps only that workspace\'s ended rows', async () => {
+    await seed('ws-a-dead', 3600, 'ws:a');
+    await seed('ws-b-dead', 3600, 'ws:b');
+    const removed = await sweepEndedPresence({ ttlMs: 10 * 60 * 1000, workspaceId: 'ws:a' });
+    expect(removed).toBe(1);
+    expect(await ownerIds()).toEqual(['ws-b-dead']);
   });
 });
 

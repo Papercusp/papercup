@@ -87,7 +87,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -186,6 +186,12 @@ export function parseArgs(argv) {
     // (→ leader) is only offered through the interactive picker.
     else if (a === '--fleet') pendingFleet = true;
     else if (a.startsWith('--fleet=')) { out.fleet = a.slice('--fleet='.length); out.fleetRole = 'member'; }
+    // fleet-auto-mode (WI-1356): start the session in AUTO mode (the persona's
+    // act/don't-ask/loop-until-done standing state). A fleet member has no human at
+    // its keyboard, so `--fleet` defaults AUTO ON (see effectiveAutoMode); `--auto`
+    // forces it on for any launch, `--no-auto` forces it off even for a fleet member.
+    else if (a === '--auto') out.auto = true;
+    else if (a === '--no-auto') out.auto = false;
     // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
     else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
@@ -2018,12 +2024,57 @@ export function forkBootstrapBody(session, account = null) {
   };
 }
 
+/**
+ * fleet-auto-mode (WI-1356): should this launch start in AUTO mode (the persona's
+ * act/don't-ask/loop-until-done standing state)? An explicit `--auto`/`--no-auto`
+ * wins; otherwise a `--fleet` launch defaults AUTO ON (a fleet MEMBER has no human at
+ * its keyboard). A new-fleet create via the interactive picker (fleetName → leader)
+ * does NOT default on — a leader already auto-enters AUTO via the persona rule, and
+ * it has a human present. Pure — exported for tests.
+ */
+export function effectiveAutoMode(args) {
+  return args.auto ?? Boolean(args.fleet);
+}
+
+/**
+ * launch-path-argv-reconstruction (WI-1343): the literal `psu …` invocation this
+ * fresh-SU launch reduces to — recorded on adv_sessions.launch_argv (via the
+ * bootstrap-su body) so a killed batch (e.g. a 14-agent fleet) can be reconstructed
+ * after the fact. Reconstructed from the RESOLVED selections + flags (so it is
+ * complete even for an interactive picker launch that passed no flags). Pure —
+ * exported for tests.
+ */
+export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
+  const argv = ['psu', '--no-picker', `--agent=${selections.agent}`];
+  if (selections.workspace) argv.push(`--workspace=${selections.workspace}`);
+  if (selections.harness) argv.push(`--harness=${selections.harness}`);
+  argv.push(selections.plan ? `--plan=${selections.plan}` : '--no-plan');
+  if (args.profile) argv.push(`--profile=${args.profile}`);
+  if (args.contextSize) argv.push(`--context-size=${args.contextSize}`);
+  if (args.model) argv.push(`--model=${args.model}`);
+  if (args.account) argv.push(`--account=${args.account}`);
+  // A joined fleet (--fleet=<slug>) or a new fleet's derived slug (picker → fleetName).
+  const fleetSlug = args.fleet || (args.fleetName ? fleetSlugFromName(args.fleetName) : null);
+  if (fleetSlug) argv.push(`--fleet=${fleetSlug}`);
+  if (effectiveAutoMode(args)) argv.push('--auto');
+  if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
+  for (const d of args.addDir || []) argv.push(`--add-dir=${d}`);
+  if (brain) argv.push('--brain');
+  if (args.passthrough?.length) argv.push('--', ...args.passthrough);
+  return argv;
+}
+
 export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
   return {
     agent: selections.agent,
     workspace: selections.workspace,
     harness_slug: selections.harness,
     plan_slug: selections.plan,
+    // WI-1343: the literal psu invocation → adv_sessions.launch_argv (traceability).
+    launch_argv: psuLaunchArgvRecord(selections, args, { brain }),
+    // WI-1356: start fleet/auto launches in AUTO mode — bootstrap-su bakes the durable
+    // AUTO directive into the system prompt + prepends it to the seeded kickoff.
+    ...(effectiveAutoMode(args) ? { auto: true } : {}),
     ...(args.profile ? { profile: args.profile } : {}),
     ...(args.contextSize ? { context_size: args.contextSize } : {}),
     ...(brain ? { brain: true } : {}),
@@ -2606,6 +2657,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     envelopeEnv: {
       ...res.envelopeEnv,
       ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+      // fleet-auto-mode (WI-1356): mark the running session as AUTO so the persona +
+      // hooks read it at runtime (the durable prompt directive + turn-1 kickoff come
+      // from bootstrap-su via the `auto` body field). Default on for `--fleet`.
+      ...(effectiveAutoMode(args) ? { PAPERCUSP_AUTO_MODE: '1' } : {}),
       // su-context-size-variants: Claude soft-trims its MCP surface natively via
       // ToolSearch (default-on = the trimmed variant). 'full' forces every tool
       // schema loaded up-front by disabling ToolSearch deferral. (codex/omp levers

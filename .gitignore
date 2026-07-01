@@ -82,3 +82,8 @@ apps/operator/docs/plans/**/*.md
 # fleet-wide. Regenerate with `npm run gen:openapi` / `npm run gen:lib-api`.
 .papercusp/openapi.json
 .papercusp/lib-api/
+
+# git-sync-embedded-repo-strand fix: transient dirs that get a nested .git (no commit) and
+# fatal `git add -A` (exit 128 → stages nothing → the whole tree strands uncommitted).
+.papercusp/.vitest-tmpdir/
+.papercusp/scratch/

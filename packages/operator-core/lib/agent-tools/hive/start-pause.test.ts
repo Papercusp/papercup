@@ -114,6 +114,22 @@ describe('hive:pause (P-005 / D-005 / P-013)', () => {
     const startedOrder = setHiveStarted.mock.invocationCallOrder[0];
     const clearOrder = clearHiveTimeWake.mock.invocationCallOrder[0];
     expect(startedOrder).toBeLessThan(clearOrder);
+    // Per-hive: the hive's OWN placement bit is cleared too.
+    expect(setHivePlacementStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false);
+  });
+
+  it('per-hive: keeps the workspace Queen loop running when ANOTHER hive is still started', async () => {
+    anyHivePlacementStarted.mockResolvedValue(true); // a sibling hive remains started
+    const out = await call(hivePause as never, { harness: 'my-hive' });
+    expect(out.ok).toBe(true);
+    expect(out.started).toBe(false); // THIS hive's placement is off…
+    expect(out.workspaceLoopIdle).toBe(false); // …but the workspace loop stays up
+    expect(out.wakeMode).toBe('auto');
+    expect(setHivePlacementStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false);
+    // The workspace loop is NOT idled: sentinel-off / wake-mode manual / time-wake clear all skipped.
+    expect(setHiveStarted).not.toHaveBeenCalled();
+    expect(setDefaultWakeMode).not.toHaveBeenCalled();
+    expect(clearHiveTimeWake).not.toHaveBeenCalled();
   });
 
   it('does not drain bees by default', async () => {
