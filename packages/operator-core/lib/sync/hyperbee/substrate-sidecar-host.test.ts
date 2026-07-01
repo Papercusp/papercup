@@ -330,3 +330,4 @@ describe('pipeWithMutualTeardown — replication-stream teardown (WI-1089 leak f
     expect(repl.destroyed).toBe(true);
   });
 });
+

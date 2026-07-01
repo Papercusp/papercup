@@ -51,11 +51,13 @@ function cacheKey(opts: HarnessStoreOpts): string {
  * footgun where CACHE=0 disables caching and hammers disk on every read).
  */
 const DEFAULT_CORESTORE_CACHE_BLOCKS = 256;
-/** Exported so EVERY Corestore-opening seam applies the same bound — the sidecar's
- *  store factory missed it (substrate-sidecar-host.ts) and its default 16 384-block
- *  caches grew the sidecar to 27.4 GB in ~12 min under peer sync (WI-1088, observed
- *  live 2026-07-01: ≈16 384 × 64 KB × 25 stores ≈ 26 GB — the arithmetic matches). */
-export function resolveCacheBlocks(): number {
+// ⚠ VERIFIED INERT on the CURRENT corestore/hypercore (2026-07-01, WI-1088 hunt): this
+// version's ctor consumes only `globalCache` (a Rache INSTANCE; corestore index.js:252,
+// hypercore lib/core.js:48 — default null ⇒ NO block cache at all), so the `{ cache: N }`
+// option below is silently ignored and the 16 384-block-default premise above is FALSE
+// for this version. Kept for a future corestore that re-adds the option; do NOT count on
+// it bounding anything today.
+function resolveCacheBlocks(): number {
   const env = Number(process.env.PAPERCUSP_CORESTORE_CACHE_BLOCKS);
   if (Number.isFinite(env) && env > 0) return Math.floor(env);
   return DEFAULT_CORESTORE_CACHE_BLOCKS;

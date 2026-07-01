@@ -171,7 +171,9 @@ export default defineTool({
       'For a full permission-annotated dump use agent_tools:list.',
     chaining:
       'tools:find("<intent>") activates the matches for your session → call the top tool directly. ' +
-      '(In omp, if it still reports the tool as unknown, search_tool_bm25("<name>") once to load it.)',
+      'If the direct call errors "tool not found", do NOT guess name variants: call ' +
+      'tools:invoke {name:"<tool>", args:{...}} — it runs any catalog tool without loading. ' +
+      '(In omp you can also search_tool_bm25("<name>") once to load it, then call it.)',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -238,8 +240,12 @@ export default defineTool({
             })),
             howToCall: activated
               ? 'The matched tools are now active for your session — call the one you want directly. ' +
-                '(In omp, if it still reports the tool as unknown, run search_tool_bm25("<name>") once to load it.)'
-              : 'Call the tool directly (Claude/Codex). In omp: search_tool_bm25("<tool name>") to load it, then call it.',
+                'If that errors "tool not found", do NOT guess name variants: call ' +
+                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — it runs any catalog tool ' +
+                'without loading. (In omp you can also run search_tool_bm25("<name>") once, then call it.)'
+              : 'Call the tool directly (Claude/Codex). If it reports unknown/not-found, call ' +
+                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — always works. ' +
+                '(In omp you can also search_tool_bm25("<tool name>") to load it first.)',
           }),
         },
       ],

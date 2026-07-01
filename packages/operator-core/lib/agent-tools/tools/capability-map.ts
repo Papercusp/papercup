@@ -62,6 +62,7 @@ export function capabilityMapText(): string {
     `- **\`tools:find("<what you want to do>")\`** — intent search; matched tools are activated so you can call them directly next.`,
     `- **\`tools:invoke({ name, args })\`** — call ANY tool by exact name without loading it (the universal fallback).`,
     `When you need a capability that isn't in your loaded set, SEARCH for it — don't assume it doesn't exist.`,
+    `If a found tool still errors "not found" when called directly, run it via \`tools:invoke\` — never guess alternative names.`,
     ``,
     `Capability map — the categories that exist (use \`tools:find\` within any):`,
     ...rows,

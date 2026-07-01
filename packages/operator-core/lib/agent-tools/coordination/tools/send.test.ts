@@ -25,11 +25,17 @@ vi.mock('../recipient-resolve', () => ({
 }));
 vi.mock('../../turn/interrupt', () => ({ forceEndTurn: vi.fn(async () => ({ ok: true })) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+// P-001 (cross-machine-coord-parity): the workspace shared-Hive scope resolver.
+// Default 'none' = today's local-only behavior for un-scoped senders.
+vi.mock('../federation-scope', () => ({
+  resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
+}));
 
 import { sendMessage, getMessageById } from '../messages';
 import { resolveRecipients } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
+import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { getFlag } from '@papercusp/flags/server';
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
@@ -37,11 +43,14 @@ const resolveM = vi.mocked(resolveRecipients);
 const wakeM = vi.mocked(wakeRecipients);
 const idleM = vi.mocked(reportIdleRecipients);
 const livenessM = vi.mocked(describeMissedRecipients);
+const fedScopeM = vi.mocked(resolveWorkspaceHiveScope);
 const flagM = vi.mocked(getFlag);
 const tool = (await import('./send')).default;
 
 type Out = { data: any };
 const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+const bodyWithCtx = async (args: unknown, ctx: unknown) =>
+  (((await tool.handler(args as never, ctx as never)) as Out).data);
 
 let n = 0;
 beforeEach(() => {
@@ -54,6 +63,8 @@ beforeEach(() => {
   // wake-on-reply flag ON by default; no original message by default
   flagM.mockResolvedValue(true as never);
   getByIdM.mockResolvedValue(null as never);
+  // P-001: no shared Hive in the workspace by default (un-scoped sends stay local)
+  fedScopeM.mockResolvedValue({ kind: 'none' } as never);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
@@ -222,5 +233,81 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).not.toHaveBeenCalled();
     expect(b.results[0].replyWake).toBeUndefined();
+  });
+});
+
+describe('coord:send federation scope (cross-machine-coord-parity P-001)', () => {
+  it('un-scoped sender + exactly one shared Hive → auto-stamps the home slug; result federated:true', async () => {
+    fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi' });
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBe('my-hive');
+    expect(b.results[0]).toMatchObject({ ok: true, federated: true, federationScope: 'my-hive' });
+  });
+
+  it('un-scoped sender + no shared Hive → stays local; result federated:false (never mistaken for delivery)', async () => {
+    const b = await body({ to: ['bee-1'], summary: 'hi' });
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBeUndefined();
+    expect(b.results[0]).toMatchObject({ ok: true, federated: false });
+    expect(b.results[0].federationScope).toBeUndefined();
+  });
+
+  it('harness-scoped sender (ctx.harnessSlug) stamps its own harness WITHOUT consulting the resolver', async () => {
+    const b = await bodyWithCtx({ to: ['bee-1'], summary: 'hi' }, { harnessSlug: 'h1' });
+    expect(fedScopeM).not.toHaveBeenCalled();
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBe('h1');
+    expect(b.results[0]).toMatchObject({ federated: true, federationScope: 'h1' });
+  });
+
+  it("scope:'local' keeps even a harness-scoped sender machine-local", async () => {
+    const b = await bodyWithCtx({ to: ['bee-1'], summary: 'hi', scope: 'local' }, { harnessSlug: 'h1' });
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBeUndefined();
+    expect(b.results[0]).toMatchObject({ federated: false });
+  });
+
+  it("scope:'hive' with NO shared Hive → loud no_hive_scope, nothing sent", async () => {
+    const b = await body({ to: ['bee-1'], summary: 'hi', scope: 'hive' });
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, to: ['bee-1'], error: 'no_hive_scope' });
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it("scope:'hive' with SEVERAL shared Hives → loud ambiguous_hive_scope naming candidates, nothing sent", async () => {
+    fedScopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] } as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi', scope: 'hive' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'ambiguous_hive_scope',
+      candidates: ['hive-a', 'hive-b'],
+    });
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('auto mode with SEVERAL shared Hives → ambiguity is never guessed; stays local, federated:false', async () => {
+    fedScopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] } as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi' });
+    expect(b.results[0]).toMatchObject({ ok: true, federated: false });
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBeUndefined();
+  });
+
+  it('per-item scope: one item local, one auto-federated, in a single items:[…] call', async () => {
+    fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    const b = await body({
+      items: [
+        { to: ['bee-1'], summary: 'federate me' },
+        { to: ['bee-2'], summary: 'keep me local', scope: 'local' },
+      ],
+    });
+    expect(b.counts).toEqual({ ok: 2, failed: 0 });
+    expect(b.results[0]).toMatchObject({ federated: true, federationScope: 'my-hive' });
+    expect(b.results[1]).toMatchObject({ federated: false });
+    const first = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    const second = sendM.mock.calls[1][1] as { harnessSlug?: string };
+    expect(first.harnessSlug).toBe('my-hive');
+    expect(second.harnessSlug).toBeUndefined();
   });
 });
