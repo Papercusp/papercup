@@ -206,7 +206,9 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     ]);
     expect(resumed.status).toBe('synced'); // committedLocal from the checkpoint
     if (resumed.status === 'synced') {
-      expect(resumed.pushed).toEqual([]); // nothing actually moved on the re-run
+      // The outcome reports the WHOLE fire's work: the replayed submodule checkpoint's
+      // push, but NOT a fresh superproject push — the re-run found nothing to move.
+      expect(resumed.pushed).toEqual(['libs/sub']);
     }
     expect(revCount(subOrigin)).toBe(subCount);
     expect(revCount(superOrigin)).toBe(superCount);

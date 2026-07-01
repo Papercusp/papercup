@@ -78,6 +78,17 @@ describe('clearStaleReaperLastError (real PG)', () => {
     expect(meta?.last_status).toBe('ok');
   });
 
+  it('WI-1416: also drops reaped_count (the consecutive-reap counter) — a completed dispatch disproves the reap verdict', async () => {
+    await seedRoutine('rt-reaped', { ...REAPER_ERR, reaped_count: 7, head_sha: 'abc123' });
+
+    await clearStaleReaperLastError(sql, 'rt-reaped');
+
+    const meta = await readMeta('rt-reaped');
+    expect(meta?.last_error).toBeUndefined();
+    expect(meta?.reaped_count).toBeUndefined();
+    expect(meta?.head_sha).toBe('abc123'); // unrelated keys survive
+  });
+
   it('PRESERVES a runner-sourced action error (a genuinely-throwing system action stays visible)', async () => {
     await seedRoutine('rt-runner', {
       last_error: 'action boom',

@@ -43,6 +43,21 @@ const envMs = (name: string, dflt: number): number => {
 /** Subcommands that touch the network (a hung remote must fail fast, not stall the fire). */
 const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', 'clone']);
 
+/** The git SUBCOMMAND in an argv — skipping leading global flags AND the separate
+ *  value a `-c`/`-C` option consumes (`['-c','x=y','fetch']` → 'fetch', not 'x=y'). */
+const gitSubcommand = (args: string[]): string => {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-c' || a === '-C') {
+      i++; // the option's value rides in the NEXT token
+      continue;
+    }
+    if (a.startsWith('-')) continue;
+    return a;
+  }
+  return '';
+};
+
 /**
  * WI-1416 hang guard: the ceiling for one git subprocess. A wedged git (typically a
  * network push/fetch against a stuck remote) used to hang the whole fire until the
@@ -52,7 +67,7 @@ const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', '
  * Env-tunable: PAPERCUSP_GIT_SYNC_NETWORK_TIMEOUT_MS / PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS.
  */
 export const gitTimeoutMsFor = (args: string[]): number =>
-  GIT_NETWORK_SUBCOMMANDS.has(args.find((a) => !a.startsWith('-')) ?? '')
+  GIT_NETWORK_SUBCOMMANDS.has(gitSubcommand(args))
     ? envMs('PAPERCUSP_GIT_SYNC_NETWORK_TIMEOUT_MS', 4 * 60_000)
     : envMs('PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS', 6 * 60_000);
 
