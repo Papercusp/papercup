@@ -27,6 +27,11 @@ export const accountsSetSessionOverrideTool = defineTool({
     when: 'Steering account selection for the current session — focus the fleet on one account, or route around a flaky/limited one — without removing it from the pool.',
     notWhen: "Permanently removing an account — accounts:remove. Clearing a rate-limit penalty — accounts:reset-rate. Pausing the hive — hive:pause.",
     chaining: 'accounts:set-session-override { excludeAccounts:["acct-b"] } → bees stop spawning on acct-b this session. clear:true resets.',
+    seeAlso: [
+      'accounts:get-session-override (read the current steering before changing it)',
+      'accounts:remove (permanently drop an account instead of session-excluding)',
+      'accounts:reset-rate (clear a rate-limit penalty instead of routing around it)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -31,6 +31,11 @@ export default defineTool({
     when: 'Adding a Claude Max subscription the Queen can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.',
     notWhen: 'Setting the operator API key (operator:credentials). A one-off local run (no deploy).',
     chaining: 'accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → bees route by cache-affinity + 5h-budget drain; deploy:hive binds an account per member.',
+    seeAlso: [
+      'accounts:link-start (register via one-click OAuth instead of a setup-token)',
+      'accounts:list (verify the pool after registering)',
+      'accounts:status (per-account budget + rate-limit health)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -82,6 +87,11 @@ export const accountsListTool = defineTool({
   guidance: {
     when: 'Seeing which accounts the Queen can draw from and what each is bound to.',
     notWhen: 'Wanting live headroom + sustained-limit flags — accounts:status.',
+    seeAlso: [
+      'accounts:status (live headroom + sustained-limit flags per account)',
+      'accounts:register (add another Max subscription)',
+      'accounts:set-session-override (steer or route around one)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -102,6 +112,10 @@ export const accountsRemoveTool = defineTool({
   guidance: {
     when: 'Retiring account(s) from the pool (e.g. subscriptions you no longer use). Retiring several at once? Pass them all via `ids`.',
     notWhen: 'Tearing down a deployed frame — deploy:teardown / deploy:teardown_hive.',
+    seeAlso: [
+      'accounts:set-session-override (temporarily exclude without removing from the pool)',
+      'accounts:list (confirm the pool after removal)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -142,6 +156,11 @@ export const accountsStatusTool = defineTool({
     "Per-account rate-limit status: availability (not currently paused), the sustained-limit flag (the scale-out trigger), the rate projection, and any LIVE local governor buckets keyed to the account. Returns {ok, accounts}.",
   guidance: {
     when: 'Checking which accounts have headroom before a deploy, or why an account auto-scaled out.',
+    seeAlso: [
+      'accounts:set-session-override (route the fleet around a limited account)',
+      'accounts:reset-rate (clear a stale rate-limit penalty)',
+      'accounts:scale_policy (tune when to scale out under sustained limiting)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -162,6 +181,10 @@ export const accountsResetRateTool = defineTool({
   guidance: {
     when: "Clearing a pool account's projected pause/penalty after a confirmed reset — the Accounts tab's per-account Reset button, or unsticking an account the drain selector is avoiding on a stale projection.",
     notWhen: 'Moving work off an exhausted account NOW — accounts:scale_out. Inspecting state — accounts:status.',
+    seeAlso: [
+      'accounts:status (see the rate-limit penalty before clearing it)',
+      'accounts:scale_out (move work off the account NOW instead)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -211,6 +234,11 @@ export const accountsScaleOutTool = defineTool({
   guidance: {
     when: "An account is rate-limited and you want to move its work onto a fresh account NOW (the same action the auto-scale-out takes; this is the manual lever).",
     notWhen: 'Just inspecting state — accounts:status. No fresh account is available (it will report no-fresh-account).',
+    seeAlso: [
+      'accounts:scale_policy (tune the scale-out threshold instead of provisioning now)',
+      'accounts:status (per-account sustained-limit state)',
+      'accounts:reset-rate (clear a stale penalty rather than scaling out)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

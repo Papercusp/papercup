@@ -22,6 +22,11 @@ export const accountsLinkStartTool = defineTool({
     when: 'Linking a new Max subscription into the pool via the one-click OAuth beta (vs the setup-token paste). Pair with accounts:link-complete.',
     notWhen: 'The reliable path — accounts:register with a `claude setup-token` (token:<path>) or a .credentials.json bundle. Inspecting the pool — accounts:list / accounts:status.',
     chaining: 'accounts:link-start { id } → owner authorizes the URL → accounts:link-complete { linkId, code } → registered.',
+    seeAlso: [
+      'accounts:link-complete (finish the OAuth link this started)',
+      'accounts:register (the reliable setup-token / credentials path)',
+      'accounts:list (verify the newly linked account)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -45,6 +50,10 @@ export const accountsLinkCompleteTool = defineTool({
   guidance: {
     when: 'Finishing an accounts:link-start flow — paste the `code` claude.ai showed after the owner authorized, with the linkId from link-start.',
     notWhen: 'Starting the flow — accounts:link-start. The reliable path — accounts:register.',
+    seeAlso: [
+      'accounts:link-start (begin the OAuth link first)',
+      'accounts:list (verify the newly linked account)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -21,6 +21,10 @@ export default defineTool({
     when: 'As soon as the subtree/directory work the lock guarded is done. Release several selected lock sets at once via lock_ids:[…].',
     notWhen: 'While still working under the lock. Release is owner-checked — you can only drop your own lock-set.',
     chaining: 'locks:acquire_granular → work → locks:release_granular { lock_id } or { lock_ids:[…] }.',
+    seeAlso: [
+      'locks:acquire_granular (the paired acquire)',
+      'locks:release (for per-file edit locks)',
+    ],
   },
   capability: 'locks:write',
   requirePrincipal: false,

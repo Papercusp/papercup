@@ -30,6 +30,11 @@ export default defineTool({
     when: 'During a provider rate-limit storm: raise the threshold to avoid over-provisioning paid machines on transient 429 bursts, or lower it to scale out earlier under sustained limiting — live, no redeploy.',
     notWhen: 'To actually provision now, use accounts:scale_out (owner-gated). To pause/exclude an account use the accounts:* session-override tools. EXHAUSTED_UTIL/DRAIN_FULL_UTIL are not covered (structural consts, follow-up).',
     chaining: 'accounts:status shows the per-account sustained-limit state; config:list-overrides shows the active override.',
+    seeAlso: [
+      'accounts:scale_out (provision now — this only tunes the threshold)',
+      'accounts:status (per-account sustained-limit state)',
+      'config:list-overrides (the active override this wrote)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

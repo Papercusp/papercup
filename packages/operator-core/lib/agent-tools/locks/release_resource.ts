@@ -35,6 +35,10 @@ export default defineTool({
     when: 'As soon as you are done using a shared resource, or immediately after an exclusive action (e.g. the dev-server restart) completes. Release several selected resource locks at once via lock_ids/resources/items.',
     notWhen: 'While still using the resource. Do not release another agent\'s lock — release is owner-checked and only drops your own rows.',
     chaining: 'locks:acquire_resource → use/act → locks:release_resource { lock_id } or { lock_ids:[…] }.',
+    seeAlso: [
+      'locks:acquire_resource (the paired acquire)',
+      'locks:heartbeat_resource (extend a long hold instead of releasing)',
+    ],
   },
   capability: 'locks:write',
   requirePrincipal: false,
