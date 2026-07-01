@@ -28,6 +28,7 @@ import {
 } from './blueprint-run-action';
 import { setLaunchBlueprintFire, type LaunchFireFn } from './launch-blueprint';
 import { setNegativeSpaceScanDeps } from '../blueprint-steps/ops/negative-space-scan';
+import { HarnessEndpointUnavailableError } from '../harness-ops/transport';
 
 const coding = loadBuiltinBlueprint('coding-factory').blueprint;
 const withDecider = (role: string): Blueprint => ({ ...coding, spine: { ...coding.spine, decider: role } });
@@ -218,6 +219,42 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
 
     expect(ranTick).toBe(true); // the deterministic step ran the miner tick inline
     expect(launchFired).toHaveLength(0); // a program blueprint never fires a decider/launch
+  });
+
+  it('WI-1087: a program whose op dispatches to a harness with NO endpoint is WITHHELD, not FAILED', async () => {
+    // A harness-provided cadence op (e.g. oddsmith-prospector) dispatched to a harness
+    // whose sidecar has no registered endpoint throws HarnessEndpointUnavailableError.
+    // runScheduledProgram must WITHHOLD it (the sidecar may register later) rather than
+    // log a per-tick FAILED that spams the journal.
+    setNegativeSpaceScanDeps({
+      flag: async () => true,
+      governorGate: async () => ({ allow: true, remainingUsd: 0 }),
+      tickDeps: {
+        readRows: async () => {
+          throw new HarnessEndpointUnavailableError(
+            'oddsmith',
+            "harness 'oddsmith' has no dispatch endpoint registered — the harness sidecar must advertise {host,port}",
+          );
+        },
+        persist: async (_ws, entries) => entries,
+        capture: async () => ({ created: false, possibleDuplicates: [], reason: 'stub' }) as never,
+        markFiled: async () => {},
+        log: () => {},
+      },
+    });
+    setLaunchBlueprintFire(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Distinct installSlug so the module-level withhold debounce (keyed installSlug:bpId)
+    // is not suppressed by any earlier test in this file.
+    await handleBlueprintRun(
+      ctx({ installSlug: 'wi1087-withhold-demo', payloadTemplate: { blueprintId: 'negative-space' } }),
+    );
+
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => /WITHHELD.*no dispatch endpoint registered/.test(l))).toBe(true);
+    expect(lines.some((l) => /program 'negative-space' FAILED/.test(l))).toBe(false);
+    warn.mockRestore();
   });
 
   // mode='work-item' touches getOrgPg().sql (the work_items base insert), so it is covered

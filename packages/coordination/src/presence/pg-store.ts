@@ -44,6 +44,8 @@ interface CoordPresenceDbRow {
   agent_role: string | null;
   hive_slug: string | null;
   compaction_limit: number | null;
+  context_tokens: number | null;
+  context_estimated_at: string | null;
   user_id: string | null;
   revoked_at: string | null;
 }
@@ -87,6 +89,8 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     agentRole: r.agent_role,
     hiveSlug: r.hive_slug,
     compactionLimit: r.compaction_limit,
+    contextTokens: r.context_tokens,
+    contextEstimatedAt: r.context_estimated_at,
     stale: now - new Date(r.heartbeat_at).getTime() > PRESENCE_STALE_MS,
     userId: r.user_id,
     revoked: r.revoked_at != null,
@@ -168,6 +172,19 @@ export class PgPresenceStore implements PresenceStore {
     `;
   }
 
+  async setContextEstimate(ownerId: string, tokens: number): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // Cached context-size estimate (agent-managed-compaction P-007/P-009) — written
+    // by the compaction-compliance watchdog on a cadence, read by the inbox usage
+    // signal. No-op when no row exists.
+    await sql`
+      UPDATE harness_shared.coord_presence
+         SET context_tokens = ${tokens}, context_estimated_at = now()
+       WHERE owner_id = ${ownerId}
+    `;
+  }
+
   async heartbeat(identity: PresenceIdentity): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -212,6 +229,7 @@ export class PgPresenceStore implements PresenceStore {
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
              cp.last_active_at, cp.agent_role, cp.hive_slug, cp.compaction_limit,
+             cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
         LEFT JOIN harness_shared.power_user_sessions pus
@@ -232,6 +250,7 @@ export class PgPresenceStore implements PresenceStore {
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
              cp.last_active_at, cp.agent_role, cp.hive_slug, cp.compaction_limit,
+             cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
         LEFT JOIN harness_shared.power_user_sessions pus
@@ -290,7 +309,9 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       last_active_at    timestamptz,
       agent_role        text,
       hive_slug         text,
-      compaction_limit  integer
+      compaction_limit  integer,
+      context_tokens    integer,
+      context_estimated_at timestamptz
     )
   `;
   // presence-v2 (migration 277) columns the store reads/writes — added in place
@@ -300,7 +321,9 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       ADD COLUMN IF NOT EXISTS last_active_at   timestamptz,
       ADD COLUMN IF NOT EXISTS agent_role       text,
       ADD COLUMN IF NOT EXISTS hive_slug        text,
-      ADD COLUMN IF NOT EXISTS compaction_limit integer
+      ADD COLUMN IF NOT EXISTS compaction_limit integer,
+      ADD COLUMN IF NOT EXISTS context_tokens   integer,
+      ADD COLUMN IF NOT EXISTS context_estimated_at timestamptz
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (

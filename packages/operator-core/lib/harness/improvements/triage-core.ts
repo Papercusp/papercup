@@ -63,7 +63,13 @@ export interface ApplyTriageResult {
 /** Injectable dependency seam (unit tests run without PG). */
 export interface TriageCoreDeps {
   getIssue: (id: string) => Promise<EngineerIssue | null>;
-  setIssueState: (id: string, state: 'open' | 'resolved' | 'closed', by?: string) => Promise<EngineerIssue | null>;
+  setIssueState: (
+    id: string,
+    state: 'open' | 'resolved' | 'closed',
+    by?: string,
+    completionRef?: string,
+    opts?: { skipCompletionGate?: boolean },
+  ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
 }
@@ -120,7 +126,10 @@ export async function applyTriageDecision(
 
   let closed = false;
   if (input.decision === 'reject') {
-    await deps.setIssueState(input.id, 'closed', by);
+    // Completion-integrity gate (WI-1403, contract C-1): a triage reject is a genuine,
+    // reasoned DECISION by a principal (`by`) — the durable rejection reason IS the
+    // completion evidence, so it carries a real completionRef rather than a skip.
+    await deps.setIssueState(input.id, 'closed', by, `Triage decision: reject — ${input.reason}`);
     closed = true;
   }
 

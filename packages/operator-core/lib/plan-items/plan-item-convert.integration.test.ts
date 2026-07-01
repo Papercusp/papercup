@@ -358,7 +358,7 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
     expect(first.status).toBe('converted');
     if (first.status !== 'converted') return;
-    await wi.setWorkItemState(first.workItem.id, 'resolved');
+    await wi.setWorkItemState(first.workItem.id, 'resolved', { by: 'sess-A', completionRef: 'test' });
     // In the real flow the reflect rules fire on work_items:complete — flipping the
     // plan item to done AND releasing the lease (plan-item-reflect:complete-releases-lease).
     // This is an ENGINE-level test (no tool dispatch → no reactions), so simulate the
@@ -422,7 +422,7 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
     expect(first.status).toBe('converted');
     if (first.status !== 'converted') return;
-    await wi.setWorkItemState(first.workItem.id, 'resolved');
+    await wi.setWorkItemState(first.workItem.id, 'resolved', { by: 'sess-A', completionRef: 'test' });
     await db.sql`DELETE FROM harness_shared.plan_item_claims WHERE item_id = 'P-001'`;
     await db.sql`DELETE FROM harness_shared.coord_links WHERE rel = ${convert.IMPLEMENTS_REL}`;
 

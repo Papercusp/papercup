@@ -139,6 +139,8 @@ export class InMemoryPresenceStore implements PresenceStore {
       agentRole: r.input.agentRole ?? null,
       hiveSlug: r.input.hiveSlug ?? null,
       compactionLimit: null,
+      contextTokens: null,
+      contextEstimatedAt: null,
       stale: now - r.heartbeatAt > PRESENCE_STALE_MS,
       userId: r.identity.userId ?? null,
       revoked: false,

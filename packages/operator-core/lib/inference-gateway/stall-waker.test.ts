@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { StallWaker, type StallEvent, type StallWakerDeps, type StallWakerOptions } from './stall-waker';
 
 function harness(opts: StallWakerOptions = {}) {
-  const state = { t: 1_000_000, beeIdle: true, capBack: true, woken: 1, unwedgeOk: true };
+  const state = { t: 1_000_000, beeIdle: true, capBack: true, woken: 1, unwedgeOk: true, unwedgeExpected: false };
   const queue: StallEvent[] = [];
   const logs: Array<{ level: 'info' | 'warn'; msg: string }> = [];
   const calls = { wake: [] as string[], cap: 0, unwedge: [] as string[] };
@@ -22,7 +22,7 @@ function harness(opts: StallWakerOptions = {}) {
     },
     unwedge: async (ownerId) => {
       calls.unwedge.push(ownerId);
-      return state.unwedgeOk;
+      return { ok: state.unwedgeOk, expected: state.unwedgeExpected };
     },
     now: () => state.t,
     log: (level, msg) => logs.push({ level, msg }),
@@ -150,12 +150,12 @@ test('FAST UN-WEDGE — not ESC-stormed within the cooldown, retried after it (s
 
 test('FAST UN-WEDGE — a REFUSED/failed ESC (e.g. storm-guard rate_limited) is NOT reported as success (root-cause fix, gateway-mass-outage-storm-guard-2026-07-01)', async () => {
   // Regression for the exact bug the user hit: `unwedge` used to be `Promise<void>` and
-  // `performInterrupt` never throws on a refusal (rate_limited / no-live-session come back as a
-  // normal `{ok:false}` value) — so tick() logged "un-wedged … reachable again" and reported
-  // success even when NOTHING was delivered. `unwedge` now returns a boolean; tick() must honor it.
+  // `performInterrupt` never throws on a refusal (rate_limited comes back as a normal `{ok:false}`
+  // value) — so tick() logged "un-wedged … reachable again" and reported success even when NOTHING
+  // was delivered. `unwedge` now returns `{ok, expected}`; tick() must honor `ok`.
   const h = harness();
   h.state.capBack = false;
-  h.state.unwedgeOk = false; // the ESC was refused (e.g. storm-guard) or found no live session
+  h.state.unwedgeOk = false; // a GENUINE refusal (e.g. storm-guard rate_limit) — NOT the expected no-live-session case
   h.pushStall({ soonestResetAt: h.state.t + 60_000 });
   const r = await h.w.tick();
   assert.deepEqual(h.calls.unwedge, ['bee-1'], 'the attempt still happens every cooldown window');
@@ -165,6 +165,26 @@ test('FAST UN-WEDGE — a REFUSED/failed ESC (e.g. storm-guard rate_limited) is 
     'a failed ESC is logged as a warning, not silently swallowed',
   );
   assert.equal(h.w.pendingCount, 1, 'still pending — not dropped just because the ESC failed');
+});
+
+test('FAST UN-WEDGE — an EXPECTED no-live-session ESC is a silent non-event (log-spam fix, 2026-07-01)', async () => {
+  // The dominant real-world outcome: the "stalled" owner has no live turn to ESC (idle / already ended) — it
+  // isn't wedged. unwedge returns { ok:false, expected:true }. tick() must NOT warn (this recurs every cooldown
+  // for the same gone owners and was ~27×/15min of `[stall-waker] … no live interruptible session` host-log
+  // spam) — but it also must NOT count it as a success.
+  const h = harness();
+  h.state.capBack = false;
+  h.state.unwedgeOk = false;
+  h.state.unwedgeExpected = true; // no live interruptible session — expected, non-actionable
+  h.pushStall({ soonestResetAt: h.state.t + 60_000 });
+  const r = await h.w.tick();
+  assert.deepEqual(h.calls.unwedge, ['bee-1'], 'the ESC attempt still happens');
+  assert.deepEqual(r.unwedged, [], 'an expected no-op ESC is NOT reported as unwedged');
+  assert.ok(
+    !h.logs.some((l) => /did NOT land|refused|no live interruptible session/.test(l.msg)),
+    'an EXPECTED no-live-session ESC must produce NO warn/log line',
+  );
+  assert.equal(h.w.pendingCount, 1, 'still pending — the capacity-gated wake path still owns the resume');
 });
 
 test('FAST UN-WEDGE — a self-recovered (never-idle) owner is NEVER force-ESC\'d', async () => {

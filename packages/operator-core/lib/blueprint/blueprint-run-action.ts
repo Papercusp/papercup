@@ -46,6 +46,7 @@ import '../blueprint-steps/index'; // register deterministic step-ops (P-010)
 import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner';
 import { buildCoordOpCtx } from '../coord-ops/prod-caps';
 import { registerHarnessOpProxies } from '../harness-ops/proxy';
+import { HarnessEndpointUnavailableError } from '../harness-ops/transport';
 import { runWithWorkspace } from '../workspace-als';
 
 const operatorBase = operatorApiBase;
@@ -288,6 +289,20 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
  * since the system action IS already one DBOS step (nested steps are illegal).
  * Never throws: a program failure logs + returns (the durable-step contract).
  */
+// WI-1087: a harness-provided cadence op whose sidecar has no dispatch endpoint
+// (e.g. `oddsmith-prospector` when the oddsmith sidecar isn't deployed on this host)
+// is WITHHELD, not FAILED — but the cadence fires every tick, so debounce the withhold
+// log to stay "visibly gated" without spamming the journal every ~10 min.
+const WITHHOLD_LOG_WINDOW_MS = 30 * 60_000;
+const lastEndpointWithholdLogAt = new Map<string, number>();
+function shouldLogEndpointWithhold(key: string): boolean {
+  const now = Date.now();
+  const prev = lastEndpointWithholdLogAt.get(key) ?? 0;
+  if (now - prev < WITHHOLD_LOG_WINDOW_MS) return false;
+  lastEndpointWithholdLogAt.set(key, now);
+  return true;
+}
+
 async function runScheduledProgram(
   bp: Blueprint,
   opts: { installSlug: string; workspaceId: string; payload?: Record<string, unknown> | null },
@@ -323,9 +338,26 @@ async function runScheduledProgram(
       `[blueprint-run] ${opts.installSlug}: ran program '${bp.id}' → ${outcome.outcome} (resolved=${outcome.resolved})`,
     );
   } catch (e) {
-    console.warn(
-      `[blueprint-run] ${opts.installSlug}: program '${bp.id}' FAILED: ${e instanceof Error ? e.message : e}`,
-    );
+    // WI-1087: a harness-provided cadence op (e.g. oddsmith-prospector) dispatched to a
+    // harness whose sidecar has no registered endpoint is NOT a program failure — the
+    // sidecar may register later and the cadence re-fires. WITHHOLD it (visibly gated,
+    // debounced) instead of a per-tick FAILED that spams the journal. (Typed-error keyed;
+    // message fallback in case a wrapper strips the class.)
+    const endpointUnavailable =
+      e instanceof HarnessEndpointUnavailableError ||
+      (e instanceof Error && e.message.includes('has no dispatch endpoint registered'));
+    if (endpointUnavailable) {
+      if (shouldLogEndpointWithhold(`${opts.installSlug}:${bp.id}`)) {
+        console.warn(
+          `[blueprint-run] ${opts.installSlug}: program '${bp.id}' WITHHELD — ${e instanceof Error ? e.message : e} ` +
+            `(will run when the sidecar registers; suppressing repeats ~30m)`,
+        );
+      }
+    } else {
+      console.warn(
+        `[blueprint-run] ${opts.installSlug}: program '${bp.id}' FAILED: ${e instanceof Error ? e.message : e}`,
+      );
+    }
   }
 }
 

@@ -11,7 +11,7 @@ import { defineTool } from "@papercusp/agent-mcp";
 import { resolveAgentIdentity } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
 import { readInbox, drainAndDeliverUserMailbox } from "../messages";
-import { heartbeatPresence } from "../presence";
+import { heartbeatPresence, getPresence } from "../presence";
 import { readWatermark, writeWatermark } from "../watermarks";
 import { emptyWatermark } from "@papercusp/coordination/core";
 import {
@@ -248,9 +248,21 @@ export default defineTool({
     } catch {
       rebootstrap = null;
     }
-    const injection = rebootstrap
-      ? `${rebootstrap}\n${coordInjection}`
-      : coordInjection;
+    // agent-managed-compaction (P-007): prepend the cached context-usage signal so the
+    // agent self-manages its own compaction. Cheap single-row PK read; best-effort — a
+    // failure/absence just omits the line, never breaks the inbox. The watchdog (P-009)
+    // refreshes context_tokens on a cadence, off this hot path.
+    let usageLine: string | null = null;
+    try {
+      const pres = await getPresence(identity.ownerId);
+      if (pres?.compactionLimit && pres.contextTokens != null) {
+        const pct = Math.round((pres.contextTokens / pres.compactionLimit) * 100);
+        usageLine = `context: ${pres.contextTokens}/${pres.compactionLimit} (${pct}%)`;
+      }
+    } catch {
+      usageLine = null;
+    }
+    const injection = [usageLine, rebootstrap, coordInjection].filter(Boolean).join('\n');
 
     // EI-1752: bound each entry's large content fields so an inbox read can't overflow
     // the agent result cap. The `max_body_chars` schema arg existed but was NEVER

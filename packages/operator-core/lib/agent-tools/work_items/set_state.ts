@@ -30,6 +30,14 @@ const itemSpec = z.object({
   state: z.string().min(1).max(40),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
   decision: decisionSpec.optional(),
+  completionRef: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe(
+      'Completion evidence (summary / commit / coord or plan-item ref) — REQUIRED alongside a terminal state (feature: passed|deprecated; issue: resolved|closed). Prefer work_items:complete for a structured completion record.',
+    ),
 });
 
 export default defineTool({
@@ -56,7 +64,13 @@ export default defineTool({
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
       decision: decisionSpec.optional().describe('P-114 risk/authority for the inline id / every id in `ids`'),
       ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('set MANY items to the same `state` (homogeneous)'),
-      items: z.array(itemSpec).min(1).max(200).optional().describe('set many work-items at once — each { id, state, harness?, decision? }'),
+      items: z.array(itemSpec).min(1).max(200).optional().describe('set many work-items at once — each { id, state, harness?, decision?, completionRef? }'),
+      completionRef: z
+        .string()
+        .min(1)
+        .max(2000)
+        .optional()
+        .describe('completion evidence applied to the inline id / every id in `ids` (see itemSpec.completionRef)'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.state) && ((a.ids?.length ?? 0) > 0 || Boolean(a.id))), {
       message: 'pass { id, state } for one, { ids:[…], state } for many of the same state, or items:[{ id, state }] for many',
@@ -66,8 +80,8 @@ export default defineTool({
     const list = args.items?.length
       ? args.items
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision }))
-        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision }];
+        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef }))
+        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef }];
     const env = await runBulk(
       list,
       async (it) => {
@@ -82,7 +96,7 @@ export default defineTool({
           harness,
           it.decision,
         ).catch(() => null);
-        const workItem = await setWorkItemState(it.id, it.state, { harness, by: ident.ownerId });
+        const workItem = await setWorkItemState(it.id, it.state, { harness, by: ident.ownerId, completionRef: it.completionRef });
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
         return workItem
           ? { ok: true as const, id: it.id, workItem }

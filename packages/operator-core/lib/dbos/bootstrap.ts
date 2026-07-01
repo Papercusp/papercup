@@ -228,6 +228,14 @@ export async function startDbos(): Promise<void> {
     // proxy). Kill-switch: PAPERCUSP_MCP_DARK_WATCHDOG='0'.
     const { startMcpDarkWatchdog } = await import('../system-health/mcp-dark-watchdog');
     startMcpDarkWatchdog(getOrgPg().sql);
+    // Sibling (agent-managed-compaction P-009): caches each limit-setting session's
+    // context-size estimate on coord_presence (feeds the coord:inbox usage signal, P-007)
+    // and logs sessions that ran past their own compaction_limit. Kill-switch:
+    // PAPERCUSP_COMPACTION_WATCHDOG='0'.
+    const { startCompactionComplianceWatchdog } = await import(
+      '../system-health/compaction-compliance-watchdog'
+    );
+    startCompactionComplianceWatchdog(getOrgPg().sql);
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }

@@ -106,6 +106,13 @@ export interface InterruptResult {
   channel?: 'pty-ctrl-c' | 'pty-esc' | 'sigint';
   delivered?: string;
   error?: string;
+  /**
+   * Stable discriminator for a `force` interrupt that found NOTHING to interrupt — no managed-pty control
+   * socket and no live session pid, i.e. the target is idle or already ended its turn. It is NOT wedged.
+   * Lets callers (e.g. the stall-waker) treat this as an EXPECTED non-event rather than a failure worth
+   * logging, without brittly string-matching `error`. Only ever set on the force-no-live-session path.
+   */
+  code?: 'no_live_session';
   reason?: string;
   held?: string[];
   critical_warning?: string;
@@ -175,6 +182,7 @@ export async function performInterrupt(input: InterruptInput, deps: InterruptDep
   // ── force ──
   let channel: 'pty-ctrl-c' | 'pty-esc' | 'sigint' | null = null;
   let err: string | null = null;
+  let noLiveSession = false;
 
   // (1) managed-pty keystroke over the session control socket (graceful for a TUI): ESC ('esc') aborts the
   //     turn back to the prompt; Ctrl+C ('sigint', default) interrupts. ESC is endTurn's choice (D-001).
@@ -190,6 +198,7 @@ export async function performInterrupt(input: InterruptInput, deps: InterruptDep
       if (ok) channel = 'sigint';
       else err = `SIGINT to pid ${pid} failed`;
     } else {
+      noLiveSession = true;
       err =
         'no live interruptible session (no managed-pty control socket and no live session pid) — nothing to force-interrupt; the peer may be idle (use a wake instead) or already ended its turn';
     }
@@ -204,7 +213,13 @@ export async function performInterrupt(input: InterruptInput, deps: InterruptDep
     return { ok: true, mode: 'force', channel, ...(warn ? { critical_warning: warn } : {}) };
   }
   await audit('turn.interrupt_failed', input.owner, { mode: 'force', error: err, critical }, input.workspaceId, input.actor);
-  return { ok: false, mode: 'force', error: err ?? 'force interrupt failed', ...(warn ? { critical_warning: warn } : {}) };
+  return {
+    ok: false,
+    mode: 'force',
+    error: err ?? 'force interrupt failed',
+    ...(noLiveSession ? { code: 'no_live_session' as const } : {}),
+    ...(warn ? { critical_warning: warn } : {}),
+  };
 }
 
 // ── real-dependency helpers (the production wiring) ──

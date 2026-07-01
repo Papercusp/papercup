@@ -184,7 +184,7 @@ describe('engineer issues surface (real PG)', () => {
     await backdate();
     expectFresh((await issues.updateIssue('EI-1', { title: 'edited' }))?.updatedAt);
     await backdate();
-    expectFresh((await issues.setIssueState('EI-1', 'resolved', 'agA'))?.updatedAt);
+    expectFresh((await issues.setIssueState('EI-1', 'resolved', 'agA', 'test'))?.updatedAt);
     await backdate();
     expectFresh((await issues.claimIssue('EI-1', 'agB'))?.updatedAt);
     await backdate();
@@ -234,7 +234,7 @@ describe('engineer issues surface (real PG)', () => {
     await subs.subscribe({ subscriber_id: 'agC', target_kind: 'topic', target_ref: 'area', delivery_mode: 'mention', created_ts: NOW });
     await issues.createIssue({ title: 't', topics: ['area'], createdBy: 'agA' });
     expect(await inboxOf('agC')).toHaveLength(0); // mention-mode: not notified of a normal create
-    const resolved = await issues.setIssueState('EI-1', 'resolved', 'agA');
+    const resolved = await issues.setIssueState('EI-1', 'resolved', 'agA', 'test');
     expect(resolved?.state).toBe('resolved');
     expect((await inboxOf('agC')).some((m) => m.notify_kind === 'issue_resolved')).toBe(true);
   });
@@ -284,7 +284,7 @@ describe('engineer issues surface (real PG)', () => {
     // a different plan is unaffected
     expect((await blocks.getBlockingIssuesForPlan('otherplan')).blockedItems.size).toBe(0);
     // closing the issue clears the block atomically
-    await issues.setIssueState('EI-1', 'closed', 'agA');
+    await issues.setIssueState('EI-1', 'closed', 'agA', 'test');
     info = await blocks.getBlockingIssuesForPlan('myplan');
     expect(info.blockedItems.has('P-003')).toBe(false);
   });
@@ -314,7 +314,7 @@ describe('engineer issues surface (real PG)', () => {
     expect(blockingIssues).toEqual({ 'P-003': ['EI-1'] });
 
     // closing EI-1 drops it from the batch map
-    await issues.setIssueState('EI-1', 'closed', 'agA');
+    await issues.setIssueState('EI-1', 'closed', 'agA', 'test');
     expect((await blocks.getAllBlockedPlanItems()).has('planA#P-003')).toBe(false);
   });
 
@@ -327,7 +327,7 @@ describe('engineer issues surface (real PG)', () => {
     // via featureRef(harness, id); a bare 'F-42' (the old convention) is NOT a key.
     expect(m.get(ref)).toEqual(['EI-1']);
     expect(m.has('F-42')).toBe(false);
-    await issues.setIssueState('EI-1', 'closed', 'agA');
+    await issues.setIssueState('EI-1', 'closed', 'agA', 'test');
     m = await blocks.getBlockedFeatures();
     expect(m.has(ref)).toBe(false);
   });

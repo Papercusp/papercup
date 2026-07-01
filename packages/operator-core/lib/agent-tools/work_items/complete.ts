@@ -98,11 +98,22 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
 
   // Optional explicit terminal transition. A failed state write must NEVER lose the
   // completion record (EI-24): catch, report it as `stateError`, still record + emit.
+  // Completion-integrity gate (WI-1403, contract C-1): a terminal `state` here rides
+  // the structured completion record itself as evidence — `completion.summary` is a
+  // required non-empty field, so it doubles as the gate's `completionRef` with zero
+  // extra caller ceremony (this is the natural, self-satisfying path to a terminal
+  // state; work_items:set_state is the bare lower-level op that needs its own explicit
+  // `completionRef`).
   let workItem = existing;
   let stateError: string | undefined;
   if (it.state) {
     try {
-      workItem = (await setWorkItemState(it.id, it.state, { harness: it.harness, by: ident.ownerId })) ?? existing;
+      workItem =
+        (await setWorkItemState(it.id, it.state, {
+          harness: it.harness,
+          by: ident.ownerId,
+          completionRef: it.completion.summary,
+        })) ?? existing;
     } catch (e) {
       stateError = e instanceof Error ? e.message : String(e);
     }

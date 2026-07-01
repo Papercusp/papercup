@@ -193,14 +193,14 @@ describe('work_item change fan-out — notify_kind mapping + actor exclusion', (
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
 
     fh.spy.mockClear();
-    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'test' });
     let call = fanoutCalls()[0];
     expect(call.ev.notify_kind).toBe('issue_resolved');
     expect(call.ev.isResolution).toBe(true);
     expect(call.opts.excludeId).toBe('agC');
 
     fh.spy.mockClear();
-    await wi.setWorkItemState(bug.id, 'closed', { by: 'agC' });
+    await wi.setWorkItemState(bug.id, 'closed', { by: 'agC', completionRef: 'test' });
     call = fanoutCalls()[0];
     expect(call.ev.notify_kind).toBe('issue_resolved');
     expect(call.ev.isResolution).toBe(true);
@@ -208,7 +208,7 @@ describe('work_item change fan-out — notify_kind mapping + actor exclusion', (
 
   it('a non-resolution state change (set_state open) fires issue_updated, not issue_resolved', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
-    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'test' });
     fh.spy.mockClear();
     await wi.setWorkItemState(bug.id, 'open', { by: 'agC' });
     const call = fanoutCalls()[0];

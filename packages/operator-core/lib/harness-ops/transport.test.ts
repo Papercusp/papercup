@@ -19,7 +19,9 @@ vi.mock('../harness-registry', async (importOriginal) => {
   return { ...actual, loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) };
 });
 
-const { harnessApiBase, harnessEndpointEnvVar } = await import('./transport.js');
+const { harnessApiBase, harnessEndpointEnvVar, HarnessEndpointUnavailableError } = await import(
+  './transport.js'
+);
 
 describe('harnessEndpointEnvVar', () => {
   it('normalizes a slug to an UPPER_SNAKE env var', () => {
@@ -77,5 +79,17 @@ describe('harnessApiBase resolution order', () => {
   it('throws a clear, actionable error when no endpoint is resolvable', async () => {
     // no env override, no frame, no workspace ⇒ no registry lookup ⇒ fail closed
     await expect(harnessApiBase('oddsmith-ops')).rejects.toThrow(/no dispatch endpoint registered/);
+  });
+
+  it('the no-endpoint throw is a TYPED HarnessEndpointUnavailableError carrying code + slug (WI-1087 withhold discriminant)', async () => {
+    // A cadence caller (blueprint-run) keys on the TYPE, not the message, to WITHHOLD
+    // the run (the sidecar may register later) instead of reporting a program FAILURE.
+    const err = await harnessApiBase('oddsmith-ops').then(
+      () => null,
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(HarnessEndpointUnavailableError);
+    expect(err.code).toBe('harness_endpoint_unavailable');
+    expect(err.harnessSlug).toBe('oddsmith-ops');
   });
 });

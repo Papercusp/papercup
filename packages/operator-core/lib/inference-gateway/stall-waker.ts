@@ -40,13 +40,16 @@ export interface StallWakerDeps {
    *  it back into a still-throttled pool (the capacity-gated `wake` below does the resume once budget returns).
    *  Optional — omit to keep only the legacy capacity-gated ESC+wake.
    *
-   *  MUST resolve `true` only when the ESC genuinely landed, `false` on ANY refusal/failure (storm-guard
-   *  rate-limit, no live interruptible session, etc.) — never throw to signal failure (root-cause fix,
+   *  Resolves `{ ok }` — `true` only when the ESC genuinely landed, `false` on ANY refusal/failure — plus an
+   *  `expected` flag: `true` when the ESC found NOTHING to interrupt (no live pty + no session pid — the owner
+   *  is idle or already ended its turn, i.e. NOT actually wedged). tick() uses `expected` to stay quiet for
+   *  that non-event (it recurs every cooldown for the same gone owners → host-log spam) while still warning
+   *  on a genuine refusal (e.g. storm-guard rate-limit). Never throw to signal failure (root-cause fix,
    *  2026-07-01, gateway-mass-outage-storm-guard: the underlying `turn:interrupt` core never throws, it
    *  returns `{ok:false, error:...}` as a normal value, so a `Promise<void>` shape here silently swallowed
    *  every refused/failed ESC — `tick()` logged "un-wedged … reachable again" and armed the cooldown even
    *  though nothing was delivered, masking the exact failures a correlated gateway outage produces). */
-  unwedge?: (ownerId: string) => Promise<boolean>;
+  unwedge?: (ownerId: string) => Promise<{ ok: boolean; expected?: boolean }>;
   now: () => number;
   log: (level: 'info' | 'warn', msg: string) => void;
 }
@@ -164,14 +167,20 @@ export class StallWaker {
         // no visible failure and no urgency to retry.
         this.lastUnwedgeAt.set(ownerId, now);
         try {
-          const ok = await this.deps.unwedge(ownerId);
-          if (ok) {
+          const res = await this.deps.unwedge(ownerId);
+          if (res.ok) {
             unwedged.push(ownerId);
             this.deps.log('info', `stall-waker: fast-ESC un-wedged ${ownerId} (turn died on a gateway error) — reachable again`);
+          } else if (res.expected) {
+            // EXPECTED non-event: the "stalled" owner has no live turn to ESC (idle, or already ended its turn)
+            // — it is NOT wedged. Non-actionable, and it recurs every cooldown for the same gone owners, so we
+            // DON'T log it (this was the ~27×/15min `[stall-waker] … no live interruptible session` host-log
+            // spam). A truly gone owner is dropped when its bee row / coord presence ages out; a resumable one
+            // is handled by the capacity-gated wake path below.
           } else {
             this.deps.log(
               'warn',
-              `stall-waker: unwedge(${ownerId}) did NOT land (refused or no live interruptible session) — owner stays wedged, retrying after the ${this.opt.unwedgeCooldownMs}ms cooldown`,
+              `stall-waker: unwedge(${ownerId}) did NOT land (refused — e.g. storm-guard rate-limit) — owner stays wedged, retrying after the ${this.opt.unwedgeCooldownMs}ms cooldown`,
             );
           }
         } catch (e) {

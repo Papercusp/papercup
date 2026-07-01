@@ -72,7 +72,13 @@ export interface ResolveImprovementResult {
 /** Injectable dependency seam (unit tests run without PG). */
 export interface ResolveDeps {
   getIssue: (id: string) => Promise<EngineerIssue | null>;
-  setIssueState: (id: string, state: IssueState, by?: string) => Promise<EngineerIssue | null>;
+  setIssueState: (
+    id: string,
+    state: IssueState,
+    by?: string,
+    completionRef?: string,
+    opts?: { skipCompletionGate?: boolean },
+  ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
   releaseIssue: (id: string) => Promise<EngineerIssue | null>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
@@ -147,7 +153,10 @@ export async function resolveImprovement(
       `Tests: ${input.testsRun}` +
       (input.commit ? `\nLanded: ${input.commit} (rides the release gate)` : '');
     await deps.commentIssue(input.id, evidence, by);
-    const updated = await deps.setIssueState(input.id, 'resolved', by);
+    // Completion-integrity gate (WI-1403, contract C-1): a genuine, VERIFIED completion
+    // (tests ran, evidence recorded above) — reuse that same evidence string as the
+    // gate's completionRef so a real fix is never indistinguishable from a dedup flip.
+    const updated = await deps.setIssueState(input.id, 'resolved', by, evidence);
     // Advance the idea lifecycle to 'applied' (self-learning P-031) — the decay
     // sweep then grades it verified/recurred from signature recurrence (P-013).
     // Permissive on the prior state: a legacy item without a lifecycle gets one

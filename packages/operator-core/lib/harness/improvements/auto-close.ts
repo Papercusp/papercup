@@ -173,7 +173,11 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
         `🟢 Auto-resolved by the watchdog: ${reason}. Signal \`${watchdogKey}\` stopped firing — no fix was dispatched; the underlying condition cleared on its own. Re-files automatically if it recurs (search-first dedup). (P-009)`,
         'watchdog-auto-close',
       );
-      await setIssueState(id, 'resolved', 'watchdog-auto-close');
+      // skipCompletionGate (WI-1403/WI-1404, contract C-1): the watchdog auto-close is a
+      // DEDUP marker, not a genuine completion — "no fix was dispatched; the underlying
+      // condition cleared on its own" is explicitly NOT evidence of completed work, so
+      // this flip must never satisfy C-1's genuine-completion criteria.
+      await setIssueState(id, 'resolved', 'watchdog-auto-close', undefined, { skipCompletionGate: true });
     },
     nowMs: () => Date.now(),
   };

@@ -201,6 +201,12 @@ export async function setCompactionLimit(ownerId: string, limit: number): Promis
   await store.setCompactionLimit(ownerId, limit);
 }
 
+/** Cache the compaction-compliance watchdog's context-size estimate (tokens) for a
+ *  session. No-op if the presence row does not exist. agent-managed-compaction. */
+export async function setContextEstimate(ownerId: string, tokens: number): Promise<void> {
+  await store.setContextEstimate(ownerId, tokens);
+}
+
 /** Ensure a presence row + bump heartbeat WITHOUT clobbering a declared
  *  intent — the read-driven liveness signal (piggybacked on coord:inbox).
  *  Makes coord:presence a complete live roster of active agents. */

@@ -142,7 +142,7 @@ describe('FB-14 end-to-end on a real migrated PG', () => {
       severity: 'minor',
       topics: [IMPROVEMENT_TOPIC],
       createdBy: 'su-test',
-    })).id, 'resolved', 'su-test');
+    })).id, 'resolved', 'su-test', 'test: decided deferral resolved');
     // Window create→resolve is sub-hour ⇒ the min-window floor drops it; the
     // refit must not crash on it and the deferral count must not include it.
     const before = await loadLatestDeferralModel(db.adminSql, WS);

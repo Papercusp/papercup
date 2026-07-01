@@ -89,6 +89,23 @@ export async function getHarnessLocalEndpoint(
 export type HarnessApiBaseSource = 'env' | 'frame' | 'local';
 
 /**
+ * Thrown by {@link resolveHarnessApiBase} when a harness has NO reachable dispatch
+ * endpoint (no env override, no deployed frame callablePort, no local registration).
+ * It is a distinct, recoverable state — the sidecar may register later — so callers
+ * that fire harness-op cadences (blueprint-run) key on it to WITHHOLD the run instead
+ * of reporting a program FAILURE, and it re-fires once the endpoint appears (WI-1087).
+ */
+export class HarnessEndpointUnavailableError extends Error {
+  readonly code = 'harness_endpoint_unavailable' as const;
+  readonly harnessSlug: string;
+  constructor(slug: string, message: string) {
+    super(message);
+    this.name = 'HarnessEndpointUnavailableError';
+    this.harnessSlug = slug;
+  }
+}
+
+/**
  * Resolve the base URL the operator dispatches harness ops to AND record which
  * resolution step provided it. See the module header for the resolution order.
  * `frame` may be passed (the caller already loaded the deployed frame) or omitted
@@ -127,8 +144,10 @@ export async function resolveHarnessApiBase(
     return { base: normalizeBase(`http://${local.host}:${local.port}`), source: 'local' };
   }
 
-  // 4. Fail closed with actionable guidance.
-  throw new Error(
+  // 4. Fail closed with actionable guidance. Typed so a cadence caller can WITHHOLD
+  // (the sidecar may register later) instead of reporting a hard program failure.
+  throw new HarnessEndpointUnavailableError(
+    slug,
     `harness '${slug}' has no dispatch endpoint registered — the harness sidecar must advertise ` +
       `{host,port} on boot (POST /harness/endpoint → registerHarnessLocalEndpoint), be DEPLOYED ` +
       `with a frame.callablePort, or set ${harnessEndpointEnvVar(slug)} to a base URL.`,

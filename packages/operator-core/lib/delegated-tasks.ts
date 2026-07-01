@@ -104,7 +104,10 @@ export async function recordDelegateTurn(
 /** Mark a delegated task done (open→resolved) — fans out the completion to the
  *  operator (D-003). Authored AS the delegate so the operator subscriber is notified. */
 export async function resolveDelegatedTask(workItemId: string, agentSessionId: string): Promise<void> {
-  await setWorkItemState(workItemId, 'resolved', { by: delegateAuthorId(agentSessionId) }).catch(() => {});
+  await setWorkItemState(workItemId, 'resolved', {
+    by: delegateAuthorId(agentSessionId),
+    completionRef: `Delegated task resolved by session ${agentSessionId}`,
+  }).catch(() => {});
 }
 
 // ── Session-shaped views over delegated-task work_items ─────────────────────────────
@@ -250,5 +253,8 @@ export async function getDelegatedSession(ref: string): Promise<DelegatedSession
 export async function archiveDelegatedSession(ref: string): Promise<void> {
   const session = await getDelegatedSession(ref);
   if (!session) return;
-  await setWorkItemState(session.id, 'closed', { by: OPERATOR_COORD_OWNER }).catch(() => {});
+  await setWorkItemState(session.id, 'closed', {
+    by: OPERATOR_COORD_OWNER,
+    completionRef: `Delegated session ${session.id} archived by operator`,
+  }).catch(() => {});
 }

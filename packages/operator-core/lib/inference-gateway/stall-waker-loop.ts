@@ -79,10 +79,14 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       // what happened to every owner past the storm guard's per-actor cap during a correlated gateway outage.
       // Surface the real outcome so tick() can tell the difference and log it instead of lying about it.
       const r = await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: 'gateway error — ESC to re-arm (un-wedge)' });
-      if (!r.ok) {
+      // `no_live_session` is the EXPECTED outcome (owner idle / already ended its turn — not wedged): non-
+      // actionable and it recurs every cooldown, so surface it as `expected` and DON'T warn. A genuine refusal
+      // (storm-guard rate-limit, SIGINT failure, etc.) still warns — a human may need to act on that.
+      const expected = r.code === 'no_live_session';
+      if (!r.ok && !expected) {
         console.warn(`[stall-waker] unwedge(${ownerId}) refused/failed: ${r.error ?? 'unknown'}${r.reason ? ` — ${r.reason}` : ''}`);
       }
-      return r.ok;
+      return { ok: r.ok, expected };
     },
     wake: async (ownerId, summary) => {
       // ESC-THEN-WAKE (coord-end-turn P-003): a bee whose turn DIED on a rate limit is stuck mid-errored —

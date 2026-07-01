@@ -596,7 +596,14 @@ export async function judgeRedundancyGroupLocal(
 
   // Adopt the winner: settle the item to `passed` (fires work-item:done). The winner's row
   // (status='winner', result=…) is the durable record of which replica was adopted.
-  await setWorkItemState(opts.workItemId, 'done', { harness: opts.harness });
+  // Completion-integrity gate (WI-1403, contract C-1): a genuine, evidence-backed
+  // completion — the judge scored N replicas and picked one — so it carries a real
+  // owner (the winning replica's producer) + a completionRef naming the judged winner.
+  await setWorkItemState(opts.workItemId, 'done', {
+    harness: opts.harness,
+    by: winnerVerdict.owner,
+    completionRef: `Redundancy judge picked replica #${winnerIndex} (composite ${winnerVerdict.composite.toFixed(3)}, ${judgedIndices.length} replicas judged)`,
+  });
 
   return {
     ok: true,

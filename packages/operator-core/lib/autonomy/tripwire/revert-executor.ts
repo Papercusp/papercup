@@ -30,7 +30,11 @@ import type { TripwireRow } from './store';
 
 /** The reverse-operations a built-in reverter may use (injected for testability). */
 export interface RevertHelpers {
-  setWorkItemState: (id: string, state: string, opts: { harness?: string; by?: string; allowNonCanonical?: boolean }) => Promise<unknown>;
+  setWorkItemState: (
+    id: string,
+    state: string,
+    opts: { harness?: string; by?: string; allowNonCanonical?: boolean; skipCompletionGate?: boolean },
+  ) => Promise<unknown>;
   setWorkItemPriority: (id: string, priority: number | null, opts: { harness?: string }) => Promise<unknown>;
 }
 
@@ -50,7 +54,16 @@ export const BUILTIN_REVERTERS: Readonly<Record<string, Reverter>> = {
     const harness = str(h.harness) ?? undefined;
     // allowNonCanonical: this restores a CAPTURED prior DB state (possibly a raw-SQL
     // pipeline phase), not agent input — it must bypass the P-011 agent-typo guard (D-010).
-    await helpers.setWorkItemState(id, priorState, { ...(harness ? { harness } : {}), by: 'autonomy-revert', allowNonCanonical: true });
+    // skipCompletionGate (WI-1403, contract C-1): a revert-to-prior-state is NOT a
+    // completion — even when priorState happens to be terminal, no genuine "who finished
+    // this + what proves it" claim applies here, so it must not (and structurally cannot,
+    // since it has no completionRef) satisfy the completion-integrity gate.
+    await helpers.setWorkItemState(id, priorState, {
+      ...(harness ? { harness } : {}),
+      by: 'autonomy-revert',
+      allowNonCanonical: true,
+      skipCompletionGate: true,
+    });
     return { reverted: true, note: `restored work-item ${id} → state '${priorState}'` };
   },
   'work-item-priority': async (h, helpers) => {

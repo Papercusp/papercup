@@ -721,6 +721,61 @@ test('the spawned-claude-code disallow ("subscription disabled for Claude Code")
   resetGovernorRegistry();
 });
 
+// PERSISTENT deactivation (2026-07-01): the 6h org-disallow pause lives ONLY in the gateway's in-memory
+// governor, so it resets on every gateway/bg-host restart → a genuinely org-disabled account (aviynw) kept
+// re-entering rotation and failing the next bee with "subscription disabled". onOrgDisallowed fires on the
+// first definitive 403 so the launch layer can PERSISTENTLY remove it from the pool (survives restarts).
+test('org-disallowed — the FIRST org/subscription-disqualified 403 fires onOrgDisallowed (persistent deactivate)', async () => {
+  resetGovernorRegistry();
+  const disallowed: { accountId: string; consecutive: number }[] = [];
+  upstream = await startUpstream((req, res) => {
+    if (req.headers['authorization'] === 'Bearer A-tok') {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    }
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200, onOrgDisallowed: (info) => disallowed.push(info) });
+  port = await gw.listen(0);
+  // A is hit once (then paused → B serves), and that FIRST org-disallow fires the persistent-deactivate hook.
+  for (let i = 0; i < 3; i++) {
+    const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(r.status, 200, 'org-disallow still fails over to B → 200 (unchanged)');
+  }
+  assert.equal(disallowed.length, 1, 'onOrgDisallowed fires EXACTLY once (A deactivated on its first definitive 403)');
+  assert.equal(disallowed[0].accountId, 'A');
+  assert.equal(disallowed[0].consecutive, 1, 'fires on the first hit — a resettable in-memory pause alone let A re-leak on every restart');
+  resetGovernorRegistry();
+});
+
+test('org-disallowed — a throwing onOrgDisallowed never breaks the request hot path (fire-and-forget)', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((req, res) => {
+    if (req.headers['authorization'] === 'Bearer A-tok') {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end('{"type":"error","error":{"type":"permission_error","message":"not allowed for this organization"}}');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    }
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200, onOrgDisallowed: () => { throw new Error('deactivate side-channel blew up'); } });
+  port = await gw.listen(0);
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'the request still fails over to B → 200 despite the throwing deactivate callback');
+  resetGovernorRegistry();
+});
+
 test('a NON-org 403 is forwarded unchanged (not treated as account-disqualifying)', async () => {
   resetGovernorRegistry();
   upstream = await startUpstream((_req, res) => {

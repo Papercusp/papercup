@@ -109,9 +109,9 @@ beforeEach(async () => {
 describe('per-family state normalization (EI-24)', () => {
   it("issue-family takes the canonical vocabulary: 'done'→resolved, 'dropped'→closed, 'todo'→open", async () => {
     const task = await wi.createWorkItem({ kind: 'task', title: 't', harness: 'papercup' });
-    expect((await wi.setWorkItemState(task.id, 'done'))?.state).toBe('resolved');
+    expect((await wi.setWorkItemState(task.id, 'done', { by: 'agA', completionRef: 'test' }))?.state).toBe('resolved');
     expect((await wi.setWorkItemState(task.id, 'todo'))?.state).toBe('open');
-    expect((await wi.setWorkItemState(task.id, 'dropped'))?.state).toBe('closed');
+    expect((await wi.setWorkItemState(task.id, 'dropped', { by: 'agA', completionRef: 'test' }))?.state).toBe('closed');
   });
 
   it('an unmappable issue-family state is a TYPED refusal naming the valid set — never a raw PG CHECK error', async () => {
@@ -123,9 +123,9 @@ describe('per-family state normalization (EI-24)', () => {
 
   it("feature-family maps 'done'→passed / 'dropped'→deprecated and passes pipeline states through", async () => {
     const f = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup' });
-    expect((await wi.setWorkItemState(f.id, 'done', { harness: 'papercup' }))?.state).toBe('passed');
+    expect((await wi.setWorkItemState(f.id, 'done', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('passed');
     expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup' }))?.state).toBe('validating');
-    expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup' }))?.state).toBe('deprecated');
+    expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('deprecated');
   });
 });
 
@@ -182,6 +182,86 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await expect(wi.setWorkItemState(bug.id, 'gibberish')).rejects.toThrow(/cannot take state 'gibberish'/);
     await expect(wi.setWorkItemState(feat.id, 'gibberish', { harness: 'papercup' })).rejects.toThrow(/cannot take state 'gibberish'/);
+  });
+});
+
+// WI-1403 — completion-integrity gate (work-item-completion-integrity-2026-07-01,
+// contract C-1): a work_item may reach a TERMINAL state (feature: passed|deprecated;
+// issue: resolved|closed) ONLY via a transition carrying BOTH an owner (`by`) and a
+// `completionRef`. This is the recurrence guard the Queen brief requires — it fails
+// if a terminal transition ever slips through without both, or if a
+// `skipCompletionGate` flip (the watchdog/system-sweep bypass, WI-1404) ever writes a
+// terminal_owner/terminal_completion_ref that would let it masquerade as genuine.
+describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
+  it('feature-family REJECTS a terminal transition missing both owner and completionRef', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await expect(wi.setWorkItemState(feat.id, 'passed', { harness: 'papercup' })).rejects.toThrow(
+      /completion-integrity:.*requires an owner/,
+    );
+    // unchanged in the DB (still todo) — a rejected gate must not half-apply the write.
+    expect(
+      (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status,
+    ).toBe('todo');
+  });
+
+  it('feature-family REJECTS a terminal transition with an owner but no completionRef', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await expect(wi.setWorkItemState(feat.id, 'deprecated', { harness: 'papercup', by: 'agA' })).rejects.toThrow(
+      /completion-integrity:.*requires a completionRef/,
+    );
+  });
+
+  it('feature-family ACCEPTS a terminal transition with both, and persists them readable via the unified WorkItem', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    const after = await wi.setWorkItemState(feat.id, 'passed', {
+      harness: 'papercup',
+      by: 'agA',
+      completionRef: 'shipped in migration 432',
+    });
+    expect(after?.state).toBe('passed');
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionRef).toBe('shipped in migration 432');
+    // Re-fetch through the plain read path (not just the write's return value).
+    const refetched = await wi.getWorkItem(feat.id, 'papercup');
+    expect(refetched?.terminalOwner).toBe('agA');
+    expect(refetched?.terminalCompletionRef).toBe('shipped in migration 432');
+  });
+
+  it('issue-family REJECTS a terminal transition missing both owner and completionRef', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await expect(wi.setWorkItemState(bug.id, 'resolved')).rejects.toThrow(/completion-integrity:.*requires an owner/);
+  });
+
+  it('issue-family REJECTS a terminal transition with an owner but no completionRef', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await expect(wi.setWorkItemState(bug.id, 'closed', { by: 'agA' })).rejects.toThrow(
+      /completion-integrity:.*requires a completionRef/,
+    );
+  });
+
+  it('issue-family ACCEPTS a terminal transition with both, and persists them readable via the unified WorkItem', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
+    expect(after?.state).toBe('resolved');
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionRef).toBe('fixed in PR #42');
+  });
+
+  it('a non-terminal transition is UNAFFECTED by the gate — no owner/completionRef required', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    const after = await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' });
+    expect(after?.state).toBe('in_progress');
+    expect(after?.terminalOwner).toBeNull();
+    expect(after?.terminalCompletionRef).toBeNull();
+  });
+
+  it('skipCompletionGate (WI-1404 watchdog/system-sweep bypass) allows a bare terminal flip, but it MUST NOT write a terminal_owner/terminal_completion_ref pair — the whole point is that this flip stays DISTINGUISHABLE from a genuine completion', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
+    expect(after?.state).toBe('resolved');
+    // `by` alone (no completionRef) is exactly the watchdog dedup shape — C-1 requires
+    // BOTH, so this must NOT read back as a genuine completion.
+    expect(after?.terminalCompletionRef).toBeNull();
   });
 });
 
@@ -286,7 +366,7 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
   it('releasing a TERMINAL (passed) feature keeps it terminal — not resurrected to todo (P-003)', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'done-feat', harness: 'papercup', createdBy: 'agA' });
     await wi.claimWorkItem(feat.id, 'agA');
-    await wi.setWorkItemState(feat.id, 'passed');
+    await wi.setWorkItemState(feat.id, 'passed', { by: 'agA', completionRef: 'test' });
     await wi.releaseWorkItem(feat.id);
     const after = (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
     expect(after.status).toBe('passed');
@@ -396,7 +476,7 @@ describe('unified work_items surface (real PG)', () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     expect((await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' }))?.state).toBe('in_progress');
-    expect((await wi.setWorkItemState(bug.id, 'resolved'))?.state).toBe('resolved');
+    expect((await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'test' }))?.state).toBe('resolved');
     expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status).toBe('in_progress');
     expect((await db.sql`SELECT state FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].state).toBe('resolved');
   });

@@ -351,7 +351,7 @@ function coerceGithubUserId(raw: number | string | null | undefined): number | n
 export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
   taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
-  origin, audit_verdict, verified_author_github_user_id`;
+  origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
@@ -948,8 +948,22 @@ export async function markFeatureProgress(harness: string, id: string): Promise<
 
 /** Lifecycle.setState — feature → status; issue → state. The requested state is
  *  normalized onto the family's native vocabulary first (EI-24); an unmappable
- *  state throws a typed error naming the valid set. */
-export async function setWorkItemState(id: string, state: string, opts: { harness?: string; by?: string; allowNonCanonical?: boolean } = {}): Promise<WorkItem | null> {
+ *  state throws a typed error naming the valid set.
+ *
+ * Completion-integrity gate (work-item-completion-integrity-2026-07-01 WI-1403,
+ * contract C-1): a transition INTO a terminal state (feature: passed|deprecated;
+ * issue: resolved|closed) must carry both `opts.by` (the claiming principal) and
+ * `opts.completionRef` (a completion summary / commit / coord / plan-item
+ * reference — any non-empty evidence string). Reject otherwise, so a bare/
+ * anonymous flip — e.g. a watchdog dedup marker — can never masquerade as a
+ * genuine completion. `opts.skipCompletionGate` is a narrow, explicit bypass for
+ * TRUSTED internal restore / system-sweep paths that are not completions at all
+ * (mirrors `setIssueState`'s identical gate/bypass shape). */
+export async function setWorkItemState(
+  id: string,
+  state: string,
+  opts: { harness?: string; by?: string; allowNonCanonical?: boolean; completionRef?: string; skipCompletionGate?: boolean } = {},
+): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   const norm = normalizeWorkItemState(wi.family, state);
@@ -968,21 +982,47 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
   }
   let result: WorkItem | null;
   if (wi.family === 'issue') {
-    const updated = await setIssueState(id, state as IssueState, opts.by);
+    const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
+      skipCompletionGate: opts.skipCompletionGate,
+    });
     result = updated ? issueToWorkItem(updated) : null;
   } else {
+    const isTerminal = FEATURE_TERMINAL_STATES.includes(state);
+    if (isTerminal && !opts.skipCompletionGate) {
+      if (!opts.by || !opts.by.trim()) {
+        throw new Error(
+          `completion-integrity: work_item '${id}' → '${state}' rejected — a terminal transition requires an owner (by)`,
+        );
+      }
+      if (!opts.completionRef || !opts.completionRef.trim()) {
+        throw new Error(
+          `completion-integrity: work_item '${id}' → '${state}' rejected — a terminal transition requires a completionRef`,
+        );
+      }
+    }
     const { sql } = getOrgPg();
     // D-007: a genuine terminal success/drop resets the stale-reclaim requeue
     // counter, so a later legitimate re-open starts fresh with the full cap.
-    const resetRequeue = FEATURE_TERMINAL_STATES.includes(state);
-    const rows = await sql<FeatureRowDb[]>`
+    const resetRequeue = isTerminal;
+    const rows = isTerminal
+      ? await sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
-             requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
+             requeue_count = 0,
              -- agent-activity-liveness-truth P-001 (D-001/D-004): a state transition is
              -- REAL item-scoped progress — bump last_progress_at so a held item reads as
              -- progressing, not stalled. Only for HELD rows (an unclaimed-row flip has
              -- no holder to credit, and a later claim resets the signal anyway).
+             last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
+             updated_ts = ${Date.now()},
+             terminal_owner = ${opts.by ?? null},
+             terminal_completion_ref = ${opts.completionRef ?? null}
+       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`
+      : await sql<FeatureRowDb[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET status = ${state},
+             requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
              last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}

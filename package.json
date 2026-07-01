@@ -90,6 +90,8 @@
     "gen:openapi": "tsx scripts/gen-openapi-spec.ts",
     "gen:openapi:check": "tsx scripts/gen-openapi-spec.ts --check",
     "gen:lib-api": "tsx scripts/gen-lib-api-docs.ts",
+    "gen:compaction": "tsx scripts/gen-compaction.ts",
+    "gen:compaction:check": "tsx scripts/gen-compaction.ts --check",
     "docs:preview": "npm run gen:openapi && npm run build:preview -w @papercupai/operator-docs",
     "docs:preview:serve": "npm run serve:preview -w @papercupai/operator-docs",
     "gen:doc-projections": "tsx scripts/gen-doc-projections.ts",

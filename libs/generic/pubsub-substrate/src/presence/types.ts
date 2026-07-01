@@ -67,6 +67,11 @@ export interface PresenceRecord {
    *  Optional: only the PG store (live presence) carries it; roster/snapshot
    *  transforms may omit it. */
   compactionLimit?: number | null;
+  /** Cached context-size estimate in tokens + when it was taken. The
+   *  compaction-compliance watchdog writes these on a cadence (off the hot path);
+   *  the coord:inbox usage signal reads them vs compactionLimit. */
+  contextTokens?: number | null;
+  contextEstimatedAt?: string | null;
   /** heartbeat older than PRESENCE_STALE_MS — the session is dead. */
   stale: boolean;
   /** Durable roster field — null for a non-roster (superuser) agent. */

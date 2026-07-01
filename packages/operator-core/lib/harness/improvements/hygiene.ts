@@ -168,7 +168,13 @@ export interface HygieneSweepResult {
 /** Injectable dependency seam (unit tests run without PG). */
 export interface HygieneSweepDeps {
   readItems: () => Promise<ImprovementCandidate[]>;
-  setIssueState: (id: string, state: 'open' | 'resolved' | 'closed', by?: string) => Promise<EngineerIssue | null>;
+  setIssueState: (
+    id: string,
+    state: 'open' | 'resolved' | 'closed',
+    by?: string,
+    completionRef?: string,
+    opts?: { skipCompletionGate?: boolean },
+  ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
 }
@@ -206,7 +212,10 @@ export async function runHygieneSweep(
         : current;
     await deps.mergeIssuePayload(a.id, { ideaLifecycle: lifecycle, decidedReason: a.reason });
     await deps.commentIssue(a.id, `🧹 ${a.reason}`, 'improvement-hygiene');
-    await deps.setIssueState(a.id, 'closed', 'improvement-hygiene');
+    // skipCompletionGate (WI-1403/WI-1404, contract C-1): an automated hygiene sweep
+    // closing a duplicate/aged-out idea is a housekeeping dedup, not a genuine
+    // completion — no principal did the work, so it must not satisfy C-1.
+    await deps.setIssueState(a.id, 'closed', 'improvement-hygiene', undefined, { skipCompletionGate: true });
     if (a.kind === 'dup-close') result.dupClosed += 1;
     else result.agedOut += 1;
   }
