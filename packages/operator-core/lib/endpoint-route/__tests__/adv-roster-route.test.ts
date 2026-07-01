@@ -90,6 +90,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   mergeRosterMock.mockResolvedValue({ active: [], orphanedClaims: [] });
   listEndedMock.mockResolvedValue([]);
+  // Unmocked vi.fn() resolves to undefined, which pendingLaunchesToRosterEntries
+  // (called unconditionally by the handler) then .map()s over and throws — every
+  // test in this file crashed on this until a default was added here.
+  listPendingMock.mockResolvedValue([]);
   getAgentDetailMock.mockResolvedValue({ ownerId: 'su-1', locks: {}, coord: {} });
 });
 
