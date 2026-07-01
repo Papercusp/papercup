@@ -153,12 +153,33 @@ export default function AgentInspectorModal({
           <strong style={{ color: 'var(--fg)' }}>{role}</strong>
           {' · '}<code style={{ fontSize: 11 }}>{runId}</code>
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {thinking ? <ThinkingDot size={7} /> : (
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor }} />
-          )}
-          <span style={{ color: thinking ? '#6aa84f' : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
-          <span style={{ color: 'var(--fg-mute)' }}>· {turns.length} turn{turns.length === 1 ? '' : 's'} · {events.length} event{events.length === 1 ? '' : 's'}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {focusTarget ? (
+            <button
+              type="button"
+              data-testid="focus-window-btn"
+              onClick={focusWindow}
+              disabled={focusState === 'busy'}
+              title="Bring this agent's terminal window to the front"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                font: 'inherit', fontSize: 11, cursor: focusState === 'busy' ? 'default' : 'pointer',
+                color: focusState === 'err' ? '#d97757' : 'var(--fg)',
+                background: 'var(--bg-1)', border: '1px solid var(--border)',
+                borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
+              }}
+            >
+              <span aria-hidden>⤢</span>
+              {focusState === 'busy' ? 'focusing…' : focusState === 'err' ? 'focus failed' : 'Focus window'}
+            </button>
+          ) : null}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {thinking ? <ThinkingDot size={7} /> : (
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor }} />
+            )}
+            <span style={{ color: thinking ? '#6aa84f' : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
+            <span style={{ color: 'var(--fg-mute)' }}>· {turns.length} turn{turns.length === 1 ? '' : 's'} · {events.length} event{events.length === 1 ? '' : 's'}</span>
+          </span>
         </span>
       </div>
       <div

@@ -6,7 +6,7 @@
  * modal renders the shared timeline (reused useAgentThinkingStream + Entry).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 type Handlers = Record<string, (data: string, ev?: unknown) => void>;
 let captured: { handlers: Handlers; onError?: (e: Error) => void } | null = null;
@@ -118,5 +118,24 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     act(() => { captured!.handlers.done!(''); });
     expect(screen.getByText('done')).toBeTruthy();
     expect(screen.getByText(/Run ended without producing any output/)).toBeTruthy();
+  });
+
+  it('shows a Focus-window button that POSTs to the focus endpoint when a focusTarget is given', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchSpy);
+    renderModal({ focusTarget: { advSessionId: 42, windowId: '0xabc', pid: 999 } });
+    const btn = screen.getByTestId('focus-window-btn');
+    expect(btn.textContent).toContain('Focus window');
+    fireEvent.click(btn);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/adv/sessions/focus');
+    expect(fetchSpy.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ id: 42, windowId: '0xabc', pid: 999 });
+    vi.unstubAllGlobals();
+  });
+
+  it('hides the Focus-window button when no focusTarget is given (never a dead button)', () => {
+    renderModal();
+    expect(screen.queryByTestId('focus-window-btn')).toBeNull();
   });
 });

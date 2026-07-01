@@ -33,7 +33,7 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, canFocusWindow, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -104,6 +104,14 @@ describe('fmtCompactAge (pure — last-active pill)', () => {
     expect(fmtCompactAge(undefined, base)).toBe('');
     expect(fmtCompactAge('nonsense', base)).toBe('');
     expect(fmtCompactAge('2026-07-01T12:00:05Z', base)).toBe('0s');
+  });
+});
+
+describe('canFocusWindow (pure — focus-button guard)', () => {
+  it('true only with a stored windowId; pid alone is NOT enough (shared server pid)', () => {
+    expect(canFocusWindow({ windowId: '0x0185e0d2' })).toBe(true);
+    expect(canFocusWindow({ windowId: null })).toBe(false);
+    expect(canFocusWindow({ windowId: undefined })).toBe(false);
   });
 });
 

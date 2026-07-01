@@ -20,6 +20,27 @@ import {
 import { scratchRoot } from '../scratch-uri';
 import type { DiskStorageCategory } from './categories';
 
+/**
+ * A wall-clock budget shared across a whole `computeStorageUsage` disk pass.
+ * `deadlineMs` is an absolute epoch-ms deadline; once it passes, the recursive
+ * sizing walk stops early (returning the partial total so far) and sets
+ * `truncated`, so the caller can note the size is partial.
+ *
+ * Why (EI-6045): the disk-sizing walk is SYNCHRONOUS and recursive, and was
+ * bounded only by an entries-per-dir cap (400k) — there was no wall-clock bound
+ * and no cap on the *number* of session dirs. On a large install (many
+ * per-session CLAUDE_CONFIG_DIR / codex homes) the aggregate walk blocks the
+ * event loop for minutes, so `storage:usage` never even emits a heartbeat and
+ * trips the 300s MCP idle abort. A shared deadline caps the whole disk phase to
+ * a fixed budget (sizes degrade to partial, ages by mtime are unaffected).
+ */
+export interface DiskWalkBudget {
+  /** absolute epoch-ms deadline; sizing stops once `Date.now() >= deadlineMs`. */
+  deadlineMs: number;
+  /** set by the walk when it stopped early — sizes are partial. */
+  truncated?: boolean;
+}
+
 /** A top-level entry under a disk store: the unit a trim considers. */
 export interface DiskEntry {
   /** absolute path of the entry (dir or file). */
@@ -58,13 +79,27 @@ function globRoot(rootKind: 'papercusp-home'): string {
  * (skips unreadable entries), and capped at `maxEntries` so a pathological tree
  * can never hang a settings read — a capped walk slightly under-counts, which is
  * acceptable for a usage display. A single file returns its own size.
+ *
+ * With a `budget` the walk is ALSO wall-clock bounded (EI-6045): the deadline is
+ * checked cheaply every few thousand iterations, and once it passes the walk
+ * stops early (returning the partial total) and marks `budget.truncated`. The
+ * budget is shared across a whole `computeStorageUsage` pass, so a box with
+ * thousands of session dirs can never block the event loop past the deadline.
  */
-export function dirSizeBytes(path: string, maxEntries = 400_000): number {
+export function dirSizeBytes(path: string, maxEntries = 400_000, budget?: DiskWalkBudget): number {
   let total = 0;
   let seen = 0;
+  let iters = 0;
   const stack: string[] = [path];
   while (stack.length > 0) {
     if (seen >= maxEntries) break;
+    // Wall-clock bound. Checked before any syscall, and only every 4096 iters so
+    // the Date.now() cost is negligible; an already-elapsed shared deadline makes
+    // this dir (and every later one) return near-instantly.
+    if (budget && (iters++ & 0xfff) === 0 && Date.now() >= budget.deadlineMs) {
+      budget.truncated = true;
+      break;
+    }
     const cur = stack.pop()!;
     let st: ReturnType<typeof statSync>;
     try {
@@ -100,12 +135,12 @@ export function dirSizeBytes(path: string, maxEntries = 400_000): number {
  * ONLY the prefix+suffix-matching files under the resolved root (never the whole
  * root — e.g. ~/.papercusp holds everything).
  */
-export function listDiskEntries(cat: DiskStorageCategory): DiskEntry[] {
+export function listDiskEntries(cat: DiskStorageCategory, budget?: DiskWalkBudget): DiskEntry[] {
   if (cat.store === 'session-dirs') {
     return discoverSessionDirCandidates(defaultSessionDirRoots()).map((c) => ({
       path: c.path,
       mtimeMs: c.mtimeMs,
-      sizeBytes: dirSizeBytes(c.path),
+      sizeBytes: dirSizeBytes(c.path, 400_000, budget),
       protectKey: c.key,
       protectKeyKind: c.keyKind,
     }));
@@ -148,7 +183,7 @@ export function listDiskEntries(cat: DiskStorageCategory): DiskEntry[] {
       const path = join(root, name);
       try {
         const st = statSync(path);
-        out.push({ path, mtimeMs: st.mtimeMs, sizeBytes: dirSizeBytes(path) });
+        out.push({ path, mtimeMs: st.mtimeMs, sizeBytes: dirSizeBytes(path, 400_000, budget) });
       } catch {
         continue; // raced removal — skip
       }

@@ -17,13 +17,25 @@ import {
   type StorageCategory,
   type StorageFederation,
 } from './categories';
-import { listDiskEntries } from './disk';
+import { listDiskEntries, type DiskWalkBudget } from './disk';
 
 /** The fixed "trim older than" thresholds (days) the page offers + projects. */
 export const TRIM_THRESHOLD_DAYS = [30, 90, 365] as const;
 
 /** Statement-timeout budget for the per-table age-distribution count (ms). */
 const BUCKET_TIMEOUT_MS = 4000;
+
+/**
+ * Wall-clock budget for the whole synchronous on-disk sizing pass (EI-6045).
+ * The per-table PG scans are already bounded (catalog size is instant; the
+ * age-distribution count runs under BUCKET_TIMEOUT_MS), so the only unbounded
+ * cost was the recursive `du`-style walk of every session dir — which blocked
+ * the event loop for minutes on a large install and tripped the 300s MCP idle
+ * abort. Cap the aggregate disk walk here; over-budget categories return partial
+ * sizes with a note. Comfortably under the 300s idle limit even with the PG
+ * phase (≤ ~6 × 4s).
+ */
+const DISK_BUDGET_MS = 20_000;
 
 /** A cumulative slice: rows/entries strictly older than `olderThanDays`. A null
  *  threshold is the TOTAL (everything — the "trim all" target). */
@@ -173,8 +185,11 @@ async function computePgUsage(
   return base;
 }
 
-function computeDiskUsage(cat: StorageCategory & { kind: 'disk' }): StorageUsageRow {
-  const entries = listDiskEntries(cat);
+function computeDiskUsage(
+  cat: StorageCategory & { kind: 'disk' },
+  budget?: DiskWalkBudget,
+): StorageUsageRow {
+  const entries = listDiskEntries(cat, budget);
   const now = Date.now();
   const totalBytes = entries.reduce((a, e) => a + e.sizeBytes, 0);
   const buckets: StorageAgeBucket[] = TRIM_THRESHOLD_DAYS.map((d) => {
@@ -199,6 +214,10 @@ function computeDiskUsage(cat: StorageCategory & { kind: 'disk' }): StorageUsage
     ageBuckets: buckets,
     minOlderThanDays: cat.minOlderThanDays,
     description: cat.description,
+    // Sizes are partial when the shared disk-walk budget was exhausted (EI-6045).
+    note: budget?.truncated
+      ? `disk sizes are partial (sizing budget of ${DISK_BUDGET_MS}ms exceeded on a large store)`
+      : undefined,
   };
 }
 
@@ -208,12 +227,16 @@ export async function computeStorageUsage(opts: { sizesOnly?: boolean } = {}): P
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql as unknown as Sql;
   const out: StorageUsageRow[] = [];
+  // One shared wall-clock budget for the whole synchronous disk-sizing pass so
+  // the aggregate `du` walk can never block the event loop past DISK_BUDGET_MS
+  // (EI-6045). Over-budget categories degrade to partial sizes with a note.
+  const diskBudget: DiskWalkBudget = { deadlineMs: Date.now() + DISK_BUDGET_MS };
   for (const cat of STORAGE_CATEGORIES) {
     if (cat.kind === 'pg') {
       out.push(await computePgUsage(sql, cat, opts));
     } else {
       try {
-        out.push(computeDiskUsage(cat));
+        out.push(computeDiskUsage(cat, diskBudget));
       } catch (err) {
         out.push({
           id: cat.id,
