@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { reapDeadExecutorWorkflows } from './dbos-executor-reaper';
+import { clearStaleReaperLastError, reapDeadExecutorWorkflows, REAPER_LAST_ERROR_SOURCE } from './dbos-executor-reaper';
 
 type Call = { text: string; values: unknown[] };
 
@@ -202,5 +202,34 @@ describe('reapDeadExecutorWorkflows', () => {
     });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('clearStaleReaperLastError', () => {
+  it('strips the three reaper marker keys with a SOURCE-SCOPED UPDATE (EI-5938)', async () => {
+    const { sql, calls } = fakeSql(() => ({ count: 1 }));
+
+    await clearStaleReaperLastError(sql, 'rt-loop-883');
+
+    expect(calls).toHaveLength(1);
+    const upd = calls[0];
+    expect(upd.text).toContain('UPDATE');
+    expect(upd.text).toContain('harness_shared.routines');
+    expect(upd.text).toContain("- 'last_error'");
+    expect(upd.text).toContain("- 'last_error_at'");
+    expect(upd.text).toContain("- 'last_error_source'");
+    // SAFETY: the clear is scoped to the reaper source ONLY — a `runner`-sourced action
+    // error and git-sync's own no-source error must be left intact, so a genuine wedge
+    // still surfaces. The routine id + the source value are the only bound params.
+    expect(upd.text).toContain("metadata->>'last_error_source' =");
+    expect(upd.values).toEqual(['rt-loop-883', REAPER_LAST_ERROR_SOURCE]);
+    expect(REAPER_LAST_ERROR_SOURCE).toBe('dbos-executor-reaper');
+  });
+
+  it('fails soft — never throws even if the UPDATE errors (it rides a live fire)', async () => {
+    const { sql } = fakeSql(() => {
+      throw new Error('pg unavailable');
+    });
+    await expect(clearStaleReaperLastError(sql, 'rt-x')).resolves.toBeUndefined();
   });
 });
