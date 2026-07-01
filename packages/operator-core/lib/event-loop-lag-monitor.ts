@@ -407,25 +407,43 @@ export async function captureHeapSnapshot(args: {
 
     const session = new inspector.Session();
     session.connect();
-    const chunks: string[] = [];
-    // Collect streamed snapshot chunks — V8 emits them as HeapProfiler.addHeapSnapshotChunk
-    // events as it serializes the heap; the final response arrives after all chunks.
+    // Stream snapshot chunks STRAIGHT TO DISK — V8 emits them as
+    // HeapProfiler.addHeapSnapshotChunk events as it serializes the heap. The
+    // original implementation buffered every chunk in a string[] and joined at
+    // the end: on the multi-GB heap this tool exists to diagnose, that buffer
+    // ~doubles RSS mid-capture and OOM-kills the process BEFORE the write — the
+    // capture itself accelerated the 2026-07-01 bg-host cgroup OOM and left the
+    // snapshot dir empty (WI-1088). Writing each chunk as it arrives keeps the
+    // capture's JS-side memory O(chunk), so it survives on the heaps that matter.
+    // The `.partial` name keeps a half-written file invisible to the analyzer
+    // (and to the pruner) until the rename marks it complete.
+    const stamp = `${Date.now()}-pid${process.pid}-rss_${Math.round(rssMb)}mb`;
+    const file = path.join(dir, `heap-${stamp}.heapsnapshot`);
+    const partial = `${file}.partial`;
+    const fsSync = await import('node:fs');
+    const out = fsSync.createWriteStream(partial);
+    const outFailed = new Promise<never>((_, reject) => out.once('error', reject));
     session.on(
       'HeapProfiler.addHeapSnapshotChunk',
       (message: { params: { chunk: string } }) => {
-        chunks.push(message.params.chunk);
+        out.write(message.params.chunk);
       },
     );
     try {
-      await new Promise<void>((resolve, reject) => {
-        session.post('HeapProfiler.takeHeapSnapshot', { reportProgress: false }, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-      const stamp = `${Date.now()}-pid${process.pid}-rss_${Math.round(rssMb)}mb`;
-      const file = path.join(dir, `heap-${stamp}.heapsnapshot`);
-      await fs.writeFile(file, chunks.join(''));
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
+          session.post('HeapProfiler.takeHeapSnapshot', { reportProgress: false }, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        }),
+        outFailed,
+      ]);
+      await Promise.race([
+        new Promise<void>((resolve) => out.end(resolve)),
+        outFailed,
+      ]);
+      await fs.rename(partial, file);
       log(
         '[heap-snapshot] captured heap snapshot on high RSS — load in Chrome DevTools Memory tab or run analyze-heap-snapshots.mjs',
         { rssMb: Math.round(rssMb), file },
