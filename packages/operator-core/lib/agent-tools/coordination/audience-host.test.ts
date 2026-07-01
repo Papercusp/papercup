@@ -13,7 +13,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./presence', () => ({ listPresence: vi.fn() }));
+vi.mock('./presence', async (importOriginal) => ({
+  // Spread the real module so PRESENCE_STALE_MS (consumed transitively via
+  // presence-wakeability.ts) survives; override only the fn we stub.
+  ...(await importOriginal<typeof import('./presence')>()),
+  listPresence: vi.fn(),
+}));
 
 import {
   audienceMode,

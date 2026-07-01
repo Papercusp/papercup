@@ -160,7 +160,6 @@ export default function AgentInspectorModal({
               data-testid="focus-window-btn"
               onClick={focusWindow}
               disabled={focusState === 'busy'}
-              title="Bring this agent's terminal window to the front"
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 font: 'inherit', fontSize: 11, cursor: focusState === 'busy' ? 'default' : 'pointer',

@@ -44,6 +44,7 @@ import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
+import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
 export type IssueSource = 'engineer' | 'su';
@@ -95,6 +96,15 @@ export interface EngineerIssue {
   rankWriter: 'bee' | 'queen' | null;
   /** When assigneeRank was last written. */
   rankUpdatedAt: string | null;
+  /** Completion-integrity gate (work-item-completion-integrity-2026-07-01 WI-1403):
+   *  the claiming principal who drove this issue to its CURRENT terminal state
+   *  (resolved|closed), or null if it has never reached one. Set only alongside
+   *  a terminal setIssueState transition — never cleared on reopen. */
+  terminalOwner: string | null;
+  /** Paired with terminalOwner: the completion evidence (summary / commit / coord
+   *  or plan-item ref) recorded for the CURRENT terminal state. Both are required
+   *  together — a terminal transition without either is rejected by setIssueState. */
+  terminalCompletionRef: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -196,6 +206,8 @@ interface IssueRowDb {
   assignee_rank: number | null;
   rank_writer: string | null;
   rank_updated_at: unknown;
+  terminal_owner: string | null;
+  terminal_completion_ref: string | null;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -229,6 +241,8 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     assigneeRank: r.assignee_rank,
     rankWriter: r.rank_writer === 'bee' || r.rank_writer === 'queen' ? r.rank_writer : null,
     rankUpdatedAt: tsIsoOrNull(r.rank_updated_at),
+    terminalOwner: r.terminal_owner,
+    terminalCompletionRef: r.terminal_completion_ref,
     createdAt: tsIso(r.created_at),
     updatedAt: tsIso(r.updated_at),
   };
@@ -236,7 +250,8 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 
 const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, payload, found_during, linked_feature_id, created_by,
-  signal_origin, assignee_rank, rank_writer, rank_updated_at, created_at, updated_at`;
+  signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
+  terminal_completion_ref, created_at, updated_at`;
 
 /** Allocate the next globally-unique EI-<n> id. */
 async function nextIssueId(sql = getOrgPg().sql): Promise<string> {
@@ -503,13 +518,50 @@ export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
   return issue;
 }
 
-/** Lifecycle.setState — close/resolve/reopen the issue. */
-export async function setIssueState(id: string, state: IssueState, by?: string): Promise<EngineerIssue | null> {
+/**
+ * Lifecycle.setState — close/resolve/reopen the issue.
+ *
+ * Completion-integrity gate (work-item-completion-integrity-2026-07-01 WI-1403):
+ * a transition INTO a terminal state (resolved|closed, per ISSUE_TERMINAL_STATUSES)
+ * must carry both `by` (the claiming principal) and `completionRef` (a completion
+ * summary / commit / coord / plan-item reference — any non-empty evidence string).
+ * Reject otherwise, so a bare/anonymous flip — e.g. a watchdog dedup marker — can
+ * never masquerade as a genuine completion. `opts.skipCompletionGate` is a narrow,
+ * explicit bypass for TRUSTED internal restore paths (e.g. the autonomy tripwire
+ * reverting to a captured prior state) that are not completions at all.
+ */
+export async function setIssueState(
+  id: string,
+  state: IssueState,
+  by?: string,
+  completionRef?: string,
+  opts: { skipCompletionGate?: boolean } = {},
+): Promise<EngineerIssue | null> {
+  const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
+  if (isTerminal && !opts.skipCompletionGate) {
+    if (!by || !by.trim()) {
+      throw new Error(
+        `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires an owner (by)`,
+      );
+    }
+    if (!completionRef || !completionRef.trim()) {
+      throw new Error(
+        `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires a completionRef`,
+      );
+    }
+  }
   const { sql } = getOrgPg();
-  const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
-    RETURNING ${sql.unsafe(ISSUE_COLS)}`;
+  const rows = isTerminal
+    ? await sql<IssueRowDb[]>`
+        UPDATE harness_shared.engineer_issues
+           SET state = ${state}, origin = 'local', updated_at = now(),
+               terminal_owner = ${by ?? null}, terminal_completion_ref = ${completionRef ?? null}
+         WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+        RETURNING ${sql.unsafe(ISSUE_COLS)}`
+    : await sql<IssueRowDb[]>`
+        UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
+         WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+        RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   const resolved = state === 'resolved' || state === 'closed';

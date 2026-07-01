@@ -130,6 +130,19 @@ if guide_marker in out:
     except (FileNotFoundError, OSError):
         section = ""
     out = out.replace(guide_marker, section)
+# agent-managed-compaction: splice the self-management compaction protocol at its
+# marker (before the generic PAPERCUSP-SU:* strip below would remove the leftover).
+compaction_marker = "<!-- PAPERCUSP-SU:COMPACTION -->"
+if compaction_marker in out:
+    protocol = ""
+    try:
+        import os
+        proto_path = os.path.join(os.path.dirname(base_path), "papercusp-compaction.protocol.md")
+        with open(proto_path) as pf:
+            protocol = pf.read().rstrip("\n")
+    except (FileNotFoundError, OSError):
+        protocol = ""
+    out = out.replace(compaction_marker, protocol)
 out = re.sub(r"<!-- PAPERCUSP-SU:[A-Z-]+ -->\n?", "", out)
 with open(dest_path, "w") as f:
     f.write(out)

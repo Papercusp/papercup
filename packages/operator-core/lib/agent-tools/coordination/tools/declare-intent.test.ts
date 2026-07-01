@@ -15,7 +15,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // ── module-seam mocks (arrow-deref so the hoisted vi.mock factory sees them) ──
 const writePresence = vi.fn(async () => {});
 const getPresence = vi.fn(async () => ({ ownerId: 'su-test', intent: 'x' }));
-vi.mock('../presence', () => ({
+vi.mock('../presence', async (importOriginal) => ({
+  // Spread the real module so PRESENCE_STALE_MS (consumed transitively by
+  // presence-wakeability.ts via fleet-roster) survives; override only the
+  // PG-touching fns we stub.
+  ...(await importOriginal<typeof import('../presence')>()),
   writePresence: (...a: unknown[]) => writePresence(...(a as [])),
   getPresence: (...a: unknown[]) => getPresence(...(a as [])),
 }));

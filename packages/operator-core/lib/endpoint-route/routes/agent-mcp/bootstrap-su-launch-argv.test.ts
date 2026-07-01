@@ -74,6 +74,29 @@ describe('reconstructPsuLaunchArgv (WI-1343 server-side fallback)', () => {
   });
 });
 
+describe('reconstructPsuLaunchArgv — role param (WI-1347, extended to bootstrap-role.ts)', () => {
+  it('emits --role= instead of --profile= for a role-scoped launch', () => {
+    expect(
+      reconstructPsuLaunchArgv({ agent: 'claude', harnessSlug: 'h1', planSlug: 'p1', role: 'engineer' }),
+    ).toEqual(['psu', '--no-picker', '--agent=claude', '--role=engineer', '--harness=h1', '--plan=p1']);
+  });
+
+  it('role and profile are mutually exclusive — role wins, profile is never emitted', () => {
+    const argv = reconstructPsuLaunchArgv({ agent: 'claude', role: 'reviewer', profile: 'power' });
+    expect(argv).toContain('--role=reviewer');
+    expect(argv).not.toContain('--profile=power');
+  });
+
+  it('omitting role is byte-identical to the pre-WI-1347 reconstruction', () => {
+    const withoutRole = reconstructPsuLaunchArgv({ agent: 'claude', harnessSlug: 'h1', planSlug: 'p1' });
+    const explicitNullRole = reconstructPsuLaunchArgv({
+      agent: 'claude', harnessSlug: 'h1', planSlug: 'p1', role: null,
+    });
+    expect(explicitNullRole).toEqual(withoutRole);
+    expect(withoutRole.some((a) => a.startsWith('--role='))).toBe(false);
+  });
+});
+
 describe('AUTO_MODE_DIRECTIVE (WI-1356)', () => {
   it('names AUTO mode and the act/loop standing state', () => {
     expect(AUTO_MODE_DIRECTIVE).toMatch(/AUTO mode is ON/i);

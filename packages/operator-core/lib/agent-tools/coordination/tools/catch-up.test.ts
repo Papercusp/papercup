@@ -56,7 +56,12 @@ vi.mock('../presence-fleet', () => ({
 
 // sendMessage fires the digest sidecar for @fleet: sends; stub it so seeding doesn't
 // reach getOrgPg in this in-memory test (its behavior is covered in fleet-delivery.test.ts).
-vi.mock('../fleet-delivery', () => ({ deliverFleetDigests: async () => 0 }));
+// audience-host.listFleetMembers now consults getFleetDeliveryOverrides during a
+// @fleet: send (delivery-mode filter); an empty Map = no overrides → all members.
+vi.mock('../fleet-delivery', () => ({
+  deliverFleetDigests: async () => 0,
+  getFleetDeliveryOverrides: async () => new Map(),
+}));
 
 import catchUp from './catch-up';
 import { sendMessage } from '../messages';
@@ -119,5 +124,62 @@ describe('coord:catch-up — membership gate', () => {
     const out = payload(res as { content: { text: string }[] });
     expect(out.audience).toBe('@fleet:backend-team');
     expect(out.rows.map((r: { summary: string }) => r.summary)).toContain('named-fleet note');
+  });
+});
+
+// presence-coord-unification P-003: coord:catch-up is the BLESSED audience-history
+// read, and its "audience stamps persist after agent death" guarantee. The membership
+// FACT death-survival (append-only fleet_membership_events + the coord_presence
+// re-materialize trigger) is covered at the DB layer by
+// libs/papercusp/libs/db/src/fleet-membership-append-only.integration.test.ts. These
+// tests lock the coord:catch-up READ-path half: the audience-keyed history is surfaced
+// by the message's PRESERVED audience stamp (on the append-only coord log), never by a
+// live-presence lookup of the sender — so it survives the sender's death — and the
+// member-side gate rides the projected fleet_slug that mig-430 re-materializes after death.
+describe('coord:catch-up — audience-stamp death-survival (P-003)', () => {
+  beforeEach(() => configureCoordLog(new InMemoryCoordLog()));
+  afterEach(() => {
+    resetCoordLog();
+    h.members = [];
+    h.callerFleet = null;
+  });
+
+  it("returns a fleet message after its SENDER has died — surfaced by the preserved audience stamp, not the sender's live membership", async () => {
+    // `q` (the sender) broadcast to @fleet:backend while it was a member, then died:
+    // it has NO presence row and is absent from the CURRENT member set. The only thing
+    // tying its message to the fleet is the audience stamp preserved on the coord-log
+    // envelope — a live-membership lookup of `q` would find nothing.
+    h.members = ['me']; // current members = only the live caller; the sender `q` is gone
+    h.callerFleet = 'backend'; // the caller is a member (its fleet_slug re-materialized)
+    await sendMessage(sender /* ownerId 'q' */, {
+      to: ['@fleet:backend'],
+      summary: 'steering note from a since-dead sender',
+    });
+
+    const res = await run({ audience: '@fleet:backend' });
+    expect(isError(res)).toBe(false);
+    const out = payload(res as { content: { text: string }[] });
+    // The dead sender's message survives — surfaced purely by the audience stamp.
+    expect(out.rows.map((r: { summary: string }) => r.summary)).toContain(
+      'steering note from a since-dead sender',
+    );
+    expect(out.rows.some((r: { from?: string }) => r.from === 'q')).toBe(true);
+  });
+
+  it('member-side gate rides the re-materialized fleet_slug: reaped (null) is denied, restored membership catches up on the preserved history', async () => {
+    await sendMessage(sender, { to: ['@fleet:backend'], summary: 'history to catch up on' });
+
+    // Reaped presence / not-yet-re-materialized fleet_slug: the gate reads null → denied.
+    h.callerFleet = null;
+    const denied = await run({ audience: '@fleet:backend' });
+    expect(isError(denied)).toBe(true);
+
+    // After re-register, the P-002 materialize trigger (mig 430) restores fleet_slug; the
+    // same member now passes the gate and reads the still-preserved audience history.
+    h.callerFleet = 'backend';
+    const allowed = await run({ audience: '@fleet:backend' });
+    expect(isError(allowed)).toBe(false);
+    const out = payload(allowed as { content: { text: string }[] });
+    expect(out.rows.map((r: { summary: string }) => r.summary)).toContain('history to catch up on');
   });
 });

@@ -98,6 +98,14 @@ export const AUTO_MODE_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
 export const COMPACTION_MARKER = '<!-- PAPERCUSP-SU:COMPACTION -->';
 
 /**
+ * Marker in papercusp-compaction.base.md where the per-client compaction overlay
+ * (papercusp-compaction.<client>.md) splices — the SUMMARIZER-instruction analog of
+ * CLIENT_TOOLING_OVERLAY_MARKER. Consumed by renderCompactionStrategy (the Claude
+ * floor: base+claude -> ~/.papercusp/compaction-strategy.md). agent-managed-compaction.
+ */
+export const COMPACTION_CLIENT_OVERLAY_MARKER = '<!-- PAPERCUSP-COMPACTION:CLIENT-OVERLAY -->';
+
+/**
  * Splice generated `content` into `base` at `marker`. Replaces ALL marker
  * occurrences; with an absent marker the content is appended (when non-empty);
  * an empty content with a present marker just removes it. Generalizes the

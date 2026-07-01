@@ -89,7 +89,11 @@ vi.mock('../../../events/await/store', () => ({
   cancelInboxWakeAwaits: () => cancelInboxWakeAwaits(),
   listActiveAwaitsForKey: (key: string) => listActiveAwaitsForKey(key),
 }));
-vi.mock('../presence', () => ({
+vi.mock('../presence', async (importOriginal) => ({
+  // Spread the real module so constants like PRESENCE_STALE_MS (consumed by
+  // presence-wakeability.ts via fleet-roster) survive the mock; override only
+  // the PG-touching fn we stub.
+  ...(await importOriginal<typeof import('../presence')>()),
   listPresence: () => listPresence(),
 }));
 vi.mock('../../../events/await/handle', () => ({

@@ -180,6 +180,15 @@ export interface WorkItem {
    * Feature-family only; issue-family items are not the dispatched backlog → always null.
    */
   priority: number | null;
+  /** Completion-integrity gate (work-item-completion-integrity-2026-07-01 WI-1403):
+   *  the claiming principal who drove this item to its CURRENT terminal state
+   *  (feature: passed|deprecated; issue: resolved|closed), or null if it has never
+   *  reached one. Set only alongside a terminal setWorkItemState transition. */
+  terminalOwner: string | null;
+  /** Paired with terminalOwner: the completion evidence (summary / commit / coord
+   *  or plan-item ref) recorded for the CURRENT terminal state. A terminal
+   *  transition without both is rejected by setWorkItemState / setIssueState. */
+  terminalCompletionRef: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -258,6 +267,8 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     rankWriter: i.rankWriter,
     rankUpdatedAt: i.rankUpdatedAt,
     priority: null, // issue-family (bug/change/task) isn't the dispatched backlog — no feature_order
+    terminalOwner: i.terminalOwner,
+    terminalCompletionRef: i.terminalCompletionRef,
     // Issue-family isn't auditor-gated (bug/change run inline, not autonomous remote
     // dispatch) — report 'local' so isAutoPickable treats them as pickable (unchanged).
     origin: 'local',
@@ -293,6 +304,8 @@ export interface FeatureRowDb {
   origin: string | null;
   audit_verdict: string | null;
   verified_author_github_user_id: number | string | null;
+  terminal_owner: string | null;
+  terminal_completion_ref: string | null;
 }
 export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   return {
@@ -320,6 +333,8 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     origin: r.origin ?? 'local',
     auditVerdict: r.audit_verdict,
     verifiedAuthorGithubUserId: coerceGithubUserId(r.verified_author_github_user_id),
+    terminalOwner: r.terminal_owner,
+    terminalCompletionRef: r.terminal_completion_ref,
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };

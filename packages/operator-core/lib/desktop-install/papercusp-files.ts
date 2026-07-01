@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER } from './splice-tooling-overlay';
+import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER } from './splice-tooling-overlay';
 import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
@@ -40,6 +40,9 @@ export interface InstallPaths {
   playbookPath: string;
   /** ~/.papercusp/papercusp-coord.ts — refreshed every call. */
   extensionPath: string;
+  /** ~/.papercusp/compaction-strategy.md — Claude compaction floor (base+claude
+   *  overlay), @import-ed by ~/.claude/CLAUDE.md's `# Compact Instructions`. */
+  compactionStrategyPath: string;
   /** ~/.papercusp/bin — user-writable dir for the on-PATH CLI shims. */
   binDir: string;
   /** ~/.papercusp/bin/psu — superuser launcher shim → the bundled psu.mjs. */
@@ -58,6 +61,8 @@ export interface InstallResult extends InstallPaths {
   playbookWritten: boolean;
   /** True when the extension source file was found and copied. */
   extensionWritten: boolean;
+  /** True when the compaction-strategy.md floor was rendered + written. */
+  compactionStrategyWritten: boolean;
   /** Where the playbook source was read from. Empty when not found. */
   playbookSource: string;
   /** Where the extension source was read from. Empty when not found. */
@@ -171,6 +176,65 @@ async function readCompactionProtocol(baseSrc: string, overlayDir?: string): Pro
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return '';
     throw e;
+  }
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Render the Claude compaction floor: papercusp-compaction.base.md with the
+ * papercusp-compaction.claude.md overlay spliced at COMPACTION_CLIENT_OVERLAY_MARKER,
+ * leading HTML comments stripped. Written to ~/.papercusp/compaction-strategy.md and
+ * @import-ed by CLAUDE.md's `# Compact Instructions`. Empty base -> '' (nothing to
+ * write). agent-managed-compaction-2026-07-01.
+ */
+export async function renderCompactionStrategy(promptsDir: string): Promise<string> {
+  const base = await readNonEmptyFile(path.join(promptsDir, 'papercusp-compaction.base.md'));
+  if (!base) return '';
+  const overlay = await readNonEmptyFile(path.join(promptsDir, 'papercusp-compaction.claude.md'));
+  const overlayBody = overlay ? overlay.replace(/^<!--[\s\S]*?-->\s*/, '').trim() : '';
+  const spliced = spliceAtMarker(base, COMPACTION_CLIENT_OVERLAY_MARKER, overlayBody);
+  const body = spliced.replace(/^<!--[\s\S]*?-->\s*/, '').trim();
+  // GENERATED artifact — stamp a do-not-hand-edit banner (drift guard, P-010).
+  const banner =
+    '<!-- GENERATED — do not hand-edit. Edit apps/operator/prompts/papercusp-compaction.base.md' +
+    ' (+ .claude.md overlay), then reinstall. agent-managed-compaction-2026-07-01. -->';
+  return `${banner}\n\n${body}`;
+}
+
+/**
+ * Ensure `<home>/.claude/CLAUDE.md` carries a managed `# Compact Instructions`
+ * stanza that @import-s the rendered compaction-strategy.md (the Claude compaction
+ * floor). Idempotent + marker-delimited so it never clobbers the owner's own
+ * CLAUDE.md; re-running replaces only the managed block. Best-effort — a failure
+ * never breaks the install. agent-managed-compaction-2026-07-01.
+ */
+async function ensureClaudeCompactImport(home: string, strategyPath: string): Promise<boolean> {
+  const claudeDir = path.join(home, '.claude');
+  const claudeMd = path.join(claudeDir, 'CLAUDE.md');
+  const BEGIN = '<!-- PAPERCUSP-COMPACTION:BEGIN (managed — do not edit) -->';
+  const END = '<!-- PAPERCUSP-COMPACTION:END -->';
+  const block = `${BEGIN}\n# Compact Instructions\n\n@${strategyPath}\n${END}`;
+  try {
+    await fs.mkdir(claudeDir, { recursive: true });
+    let existing = '';
+    try {
+      existing = await fs.readFile(claudeMd, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+    const re = new RegExp(`${escapeRe(BEGIN)}[\\s\\S]*?${escapeRe(END)}`);
+    const next = re.test(existing)
+      ? existing.replace(re, block)
+      : existing.replace(/\n+$/, '') + (existing.trim() ? '\n\n' : '') + block + '\n';
+    if (next !== existing) {
+      await fs.writeFile(claudeMd, next, { mode: 0o644 });
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -518,6 +582,7 @@ export function resolveInstallPaths(home: string): InstallPaths {
     agentIdPath: path.join(papercuspDir, 'su-agent-id'),
     playbookPath: path.join(papercuspDir, 'engineer-collaborator.md'),
     extensionPath: path.join(papercuspDir, 'papercusp-coord.ts'),
+    compactionStrategyPath: path.join(papercuspDir, 'compaction-strategy.md'),
     binDir,
     psuPath: path.join(binDir, 'psu'),
     ptoolPath: path.join(binDir, 'ptool'),
@@ -554,6 +619,20 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const playbookWritten = playbookSource ? await writeSplicedPlaybook(playbookSource, paths.playbookPath) : false;
   const extensionWritten = extensionSource ? await copyIfExists(extensionSource, paths.extensionPath) : false;
 
+  // agent-managed-compaction: render the Claude compaction floor (base + claude overlay)
+  // to ~/.papercusp/compaction-strategy.md and @import it from ~/.claude/CLAUDE.md's
+  // `# Compact Instructions` (the only supported persistent Claude compaction hook).
+  // Best-effort; never blocks install. The compaction .md files sit beside the playbook.
+  let compactionStrategyWritten = false;
+  if (playbookSource) {
+    const strategy = await renderCompactionStrategy(path.dirname(playbookSource));
+    if (strategy) {
+      await fs.writeFile(paths.compactionStrategyPath, strategy + '\n', { mode: 0o644 });
+      compactionStrategyWritten = true;
+      await ensureClaudeCompactImport(home, paths.compactionStrategyPath);
+    }
+  }
+
   // On-PATH CLI shims (psu-in-desktop-builds-2026-06-23 A2). Written only when
   // the launcher actually resolves — a dev repo or a packaged build that bundled
   // them. The native-console terminal prepends ~/.papercusp/bin to PATH (A2b),
@@ -582,6 +661,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     minted: { token: token.minted, agentId: agentId.minted },
     playbookWritten,
     extensionWritten,
+    compactionStrategyWritten,
     playbookSource: playbookWritten && playbookSource ? playbookSource : '',
     extensionSource: extensionWritten && extensionSource ? extensionSource : '',
     psuShimWritten,
