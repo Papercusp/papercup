@@ -386,11 +386,37 @@ export const ACCOUNT_PIN_HEADER = 'x-papercusp-account-pin';
  *  stale-`local`-pool fault), or it failed over off a paced/paused account. Not forwarded upstream
  *  (it's set on the response back to the client). */
 export const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
+/** WI-1073 last-resort opus→sonnet downgrade: set on the response back to the client when the gateway,
+ *  facing a pool-wide HARD opus wall it could not route/wait around, rewrote the request model to
+ *  sonnet so the call succeeds instead of hard-failing. Makes the silent-substitution VISIBLE to the
+ *  caller + observable in the journal. Value: `opus->sonnet`. Not forwarded upstream. */
+export const MODEL_DOWNGRADED_HEADER = 'x-papercusp-model-downgraded';
 /** Header a spawn sets carrying its coord ownerId (== spawnId), so the gateway can attribute a
  *  rate-limit shed back to THIS bee and a coordinator can wake it once the account recovers
  *  (gateway-rate-limit-stall-autowake P-001). Stripped before the upstream forward. */
 export const OWNER_HEADER = 'x-papercusp-owner';
 const ANTHROPIC_VERSION = '2023-06-01';
+
+/** WI-1073: the fleet-canonical SONNET api id the gateway substitutes for a walled OPUS request as a
+ *  last resort. `claude-sonnet-4-6` is the sonnet id used fleet-wide (omp-integration, gym, pr-host,
+ *  scout, replay), so it is a known-valid dated id the gateway can forward verbatim (a bare alias like
+ *  `claude-sonnet-4` 404s upstream). */
+const LAST_RESORT_SONNET_MODEL = 'claude-sonnet-4-6';
+
+/** WI-1073: rewrite the `model` field of a buffered `/v1/messages` request body to `newModel`, returning
+ *  the re-serialized body — or `null` when the body isn't JSON with a string `model` (⇒ the caller leaves
+ *  the request unchanged and forwards the original failure, byte-identical to today). Pure. */
+export function rewriteRequestModel(bodyBuf: Buffer, newModel: string): Buffer | null {
+  if (!bodyBuf.length) return null;
+  try {
+    const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: unknown };
+    if (typeof j.model !== 'string') return null;
+    j.model = newModel;
+    return Buffer.from(JSON.stringify(j), 'utf8');
+  } catch {
+    return null;
+  }
+}
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
 const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'x-papercusp-account-pin', 'x-papercusp-owner', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
@@ -606,6 +632,10 @@ export interface GatewayStats {
    *  (a fleet-wide bare-burst storm) — the request fell through to the bounded wait/absorb/shed instead of
    *  fanning out another upstream call. A climbing value = the gateway is actively damping a storm. */
   bareBurstRotateSuppressed: number;
+  /** WI-1073: count of requests the gateway last-resort DOWNGRADED opus→sonnet because opus was walled
+   *  pool-wide (a hard 403 org-disallow / usage-cap / unified-window rejection it could not route or wait
+   *  around). A non-zero value = the fleet is running critical work on sonnet because opus is exhausted. */
+  opusToSonnetDowngrades: number;
   /** The admission backlog cap that triggers load-shedding (0 = unbounded). */
   maxQueued: number;
   /** The CONFIGURED admission-concurrency cap (the AIMD ceiling). `admission.maxConcurrent` is the LIVE
@@ -1261,6 +1291,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let shed429 = 0; // load-shed: 429s returned because the admission queue was at maxQueued (backlog cap)
   let shedAllThrottled = 0; // fail-fast: 429s shed at admission because the whole pool was throttled (B-GW-1)
   let bareBurstRotateSuppressed = 0; // G1 (WI-649): bare-429 rotate-retries suppressed because ≥half the pool was out of rotation (fleet-wide storm)
+  let opusToSonnetDowngrades = 0; // WI-1073: last-resort opus→sonnet downgrades (opus walled pool-wide → sonnet-vs-nothing)
   let upstreamErrors = 0;
   let failovers = 0;
   let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
@@ -1472,6 +1503,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       shed429,
       shedAllThrottled,
       bareBurstRotateSuppressed,
+      opusToSonnetDowngrades,
       maxQueued,
       concurrencyCap: concurrency,
       aimd: aimd.snapshot(),
@@ -1552,8 +1584,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }
 
   async function proxy(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
-    const bodyBuf = await readBody(req);
+    // `let` (not const): WI-1073 may rewrite this to a sonnet body as a last resort when opus is walled
+    // pool-wide (see the downgrade hook in the internal-retry loop below).
+    let bodyBuf = await readBody(req);
     let model = 'claude-opus-4';
+    // WI-1073: at-most-once guard — we downgrade a walled OPUS request to sonnet only ONCE per request,
+    // so a failed sonnet retry forwards (never opus→sonnet→sonnet looping).
+    let opusDowngraded = false;
     let est = { inTok: 0, outTok: 1024 };
     // Streaming requests get the SHORT TTFB headers deadline (first byte in seconds); non-streaming the
     // generous one (headers only after the full generation). Default false → generous, so an unparseable
