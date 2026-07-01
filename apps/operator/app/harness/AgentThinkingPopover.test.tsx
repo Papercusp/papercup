@@ -16,10 +16,11 @@ import { act, cleanup, render, screen, fireEvent } from '@testing-library/react'
 type Handlers = Record<string, (data: string, ev?: unknown) => void>;
 let captured: { handlers: Handlers; onError?: (e: Error) => void } | null = null;
 const closeSpy = vi.fn();
+const reconnectSpy = vi.fn();
 vi.mock('@papercusp/sse', () => ({
   createResilientEventSource: (opts: { handlers: Handlers; onError?: (e: Error) => void }) => {
     captured = { handlers: opts.handlers, onError: opts.onError };
-    return { close: closeSpy };
+    return { close: closeSpy, reconnect: reconnectSpy };
   },
 }));
 
@@ -50,7 +51,7 @@ function renderPopover(over: Partial<React.ComponentProps<typeof AgentThinkingPo
   return { ...utils, onMouseEnter, onMouseLeave, onOpenInspector };
 }
 
-beforeEach(() => { captured = null; closeSpy.mockClear(); });
+beforeEach(() => { captured = null; closeSpy.mockClear(); reconnectSpy.mockClear(); });
 afterEach(cleanup);
 
 describe('AgentThinkingPopover (live agent thinking stream)', () => {
@@ -93,6 +94,32 @@ describe('AgentThinkingPopover (live agent thinking stream)', () => {
     expect(screen.getByText(/spawning worker/)).toBeTruthy();
     expect(screen.getByText('live')).toBeTruthy();
     expect(screen.getByText('2 events')).toBeTruthy();
+  });
+
+  it('self-heals a corrupted backfill via a bounded reconnect (the backfill is one-shot)', () => {
+    // A backfill that fails to parse (e.g. a stream that dropped mid-event and
+    // resumed) is unrecoverable in-band — the server only sends it once per
+    // connection. The hook must force a clean reconnect (which re-sends it)
+    // instead of silently wedging on "connecting…".
+    renderPopover();
+    act(() => { captured!.handlers.backfill!('[{"kind":"text","te…GARBAGE'); });
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    // Still connecting (not error) — the retry is in flight.
+    expect(screen.getByText('connecting…')).toBeTruthy();
+    // The reconnected stream re-sends a clean backfill → recovers to live.
+    act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'recovered' }])); });
+    expect(screen.getByText('recovered')).toBeTruthy();
+    expect(screen.getByText('live')).toBeTruthy();
+  });
+
+  it('gives up to the error state after repeated corrupted backfills (no eternal spinner)', () => {
+    renderPopover();
+    for (let i = 0; i < 4; i++) {
+      act(() => { captured!.handlers.backfill!('not json'); });
+    }
+    // 3 bounded retries, then error — never an unbounded reconnect storm.
+    expect(reconnectSpy).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('disconnected')).toBeTruthy();
   });
 
   it('appends a single streamed event onto the existing timeline', () => {

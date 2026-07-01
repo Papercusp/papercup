@@ -300,3 +300,4 @@
 [2026-07-01T21:35:00Z] overwatch -: A wake brief can still under-flag a live work-feed drift after a re-check, so grade watchdog determinism against the panels, not the anomaly list alone.
 [2026-07-01T21:40:03Z] bee F-FIX-043: hive placement status reads must derive `workingTracked` from LIVE work-item truth (non-terminal row + live holder), not raw `hive_placements.status='working'`, or terminal/dead-holder-cleaned items linger as phantom in-flight work in `hive.controlState`/`hive:status`.
 [2026-07-01T21:56:00Z] overwatch -: `coord:send` to `@role:queen` with `wake:'optimistic'` can return `ok` with `wake.targets:[]`/`woken:0`; treat that as the role-slot parked delivery path, not a failed nudge.
+[2026-07-01T21:57:03Z] bee F-FIX-043: terminal work-item transitions should clear their live claim fields immediately, or hive placement/accounting reads drift until reaper/watchdog cleanup.
