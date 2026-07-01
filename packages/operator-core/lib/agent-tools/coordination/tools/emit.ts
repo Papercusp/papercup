@@ -46,8 +46,12 @@ export default defineTool({
     /** The rendered detail body. */
     body: z.string().optional(),
     /** Recipients — may be concrete ownerIds, `'*'` (broadcast), `'human'`, OR
-     *  audience selectors (`@plan:`/`@topic:`/`@object:`/`@file:`) that sendMessage
-     *  expands to the watching ownerIds (coord-emit-subscription-scoping-2026-06-05).
+     *  audience selectors that sendMessage expands to the watching ownerIds:
+     *  `@plan:`/`@topic:`/`@object:`/`@file:` (coord-emit-subscription-scoping-2026-06-05)
+     *  and `@fleet:<slug>` (the live members of a named fleet — membership IS the
+     *  subscription, no tool call) / `@fleet-leader:<slug>` (escalate to the fleet's
+     *  lead). Whatever selector you use is ALSO preserved as the message's audience
+     *  KEY, so a member can later catch up on it via coord:catch-up.
      *  Omitted ⇒ broadcast `['*']` (legacy hand-call behavior). An explicit `[]`
      *  (or a selector that resolves to nobody) ⇒ record the lifecycle row but
      *  deliver to no inbox (D-004) — so it must be allowed through, hence no min. */

@@ -58,7 +58,7 @@ describe('projects:list', () => {
     // throwing, so the dispatcher surfaces the guidance text to the caller.
     const res = await tool.handler({}, MAKE_CTX({ harnessSlug: undefined })) as ErrorEnvelope;
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/slug_required|needs a specific harness/i);
+    expect(res.content[0].text).toMatch(/harness_required|needs a specific harness/i);
   });
 });
 

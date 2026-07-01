@@ -156,7 +156,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "psu --account: pin every member to this inference-gateway pool account (account ids from accounts:list / gateway:status). Use it to isolate or concentrate the fleet's model load on a chosen account; omit to use the pool default. (For a multi-account spread, launch in batches with different `account` values.)",
+        "psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet's load; no failover); \"auto\" → route through the gateway, which auto-selects an available account + fails over; \"default\" (or omit) → skip the gateway, use the system / CLI-login credential. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.",
       ),
     workspace: z
       .string()

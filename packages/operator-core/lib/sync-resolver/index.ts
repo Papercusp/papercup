@@ -3685,7 +3685,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'hive.controlState': {
     resolve: async () => {
       const { listHives } = await import('../agent-tools/hive/_resolve');
-      const { getHiveStarted } = await import('../hive/started');
+      const { getHivePlacementStarted } = await import('../hive/started');
       const { recentWatchdogFires } = await import('../hive/watchdog');
       const { summarizeOpenPlacements, latestQueenWakeAt } = await import('../hive/placement-watchdog');
       const { activeWorkspaceId } = await import('../workspace-registry');
@@ -3701,7 +3701,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const lastWakeAt = [realWake, hv.wake?.lastWakeAt ?? null].filter(Boolean).sort().at(-1) ?? null;
           return {
             slug: hv.slug,
-            started: await getHiveStarted(ws, hv.slug).catch(() => false),
+            started: await getHivePlacementStarted(ws, hv.slug).catch(() => false),
             nextFireAt: hv.wake?.nextFireAt ?? null,
             lastWakeAt,
             watchdogFires24h: await recentWatchdogFires(ws, hv.slug).catch(() => 0),

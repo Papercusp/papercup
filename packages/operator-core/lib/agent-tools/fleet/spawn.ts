@@ -67,6 +67,15 @@ export default defineTool({
       .describe('Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user\'s per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role\'s standing default. An unknown name fails loud listing the valid menu.'),
     model: z.string().max(80).optional()
       .describe('Direct per-spawn model spec `<modelId>[:<effort>]` (e.g. "opus:high") — operator/human escape hatch that bypasses the tier menu (still recorded on the nursery row). Prefer `tier`. When both are set, model wins.'),
+    account: z.string().min(1).max(120).optional()
+      .describe(
+        'account-routing-3-options: how THIS spawn\'s model calls are routed. One of three: ' +
+        'a POOL ACCOUNT ID → hard-pin to it via the inference gateway (no failover); ' +
+        '"auto" → route through the gateway, which auto-selects an available account + fails over; ' +
+        '"default" → skip the gateway entirely (system credential, direct egress). ' +
+        'Omit = the standing fleet behavior (gateway auto-route when the pool is on). ' +
+        'ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
+      ),
     extras: z.array(z.string().max(500)).max(16).optional()
       .describe('Extra KEY=value args passed to the child invoke.'),
     workspace: z.string().max(120).optional(),
@@ -187,6 +196,9 @@ export default defineTool({
       // a raw model spec from role=queen is ignored in favor of her tier.
       tier,
       modelSpec: ctx.role === 'queen' ? null : args.model ?? null,
+      // account-routing-3-options: explicit per-spawn routing (pool-id pin / auto / default). Honored
+      // for any caller role — the Queen places, but routing is operational, not a model lever.
+      accountOverride: args.account ?? null,
       extras: args.extras,
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',

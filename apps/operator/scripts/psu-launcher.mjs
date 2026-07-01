@@ -87,7 +87,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -169,11 +169,14 @@ export function parseArgs(argv) {
     // forwarded verbatim. See addDirArgs for the per-backend flag mapping.
     else if (a === '--add-dir') pendingAddDir = true;
     else if (a.startsWith('--add-dir=')) { const v = a.slice('--add-dir='.length); if (v) out.addDir.push(v); }
-    // psu-account-chooser P-001: pin this session to a specific pool account
-    // (`psu --account aviynw6` or `--account=aviynw6`). Threaded to bootstrap-su,
-    // which routes the session through the inference-gateway pinned to it
-    // (gatewaySpawnEnv); fail-soft to the default credential when the gateway is
-    // off or the id is unknown/disallowed.
+    // account-routing-3-options (P-001 + 2026-06-30): the ONE `--account` value picks ONE of three
+    // explicit routing modes (`psu --account <id|auto|default>`, space or `=` form):
+    //   • <pool-id> → pin this session to that account via the inference gateway (hard, no failover)
+    //   • auto      → route through the gateway with NO pin; it picks an available account + fails over
+    //   • default (or omitted) → skip the gateway, use the system / CLI-login credential (THE DEFAULT)
+    // Threaded to bootstrap-su (resolveAccountPin) for a fresh launch / tracked fork; resolved
+    // client-side (chooseResumeAccount) for an in-place resume. Fail-soft to the default credential
+    // when the gateway is off or the id is unknown/disallowed.
     else if (a === '--account') pendingAccount = true;
     else if (a.startsWith('--account=')) out.account = a.slice('--account='.length);
     // named-su-agent-fleets P-006: pin this session into a named fleet (`psu
@@ -866,6 +869,42 @@ export function gatewayPinEnv(account, provider = 'claude') {
   };
 }
 
+/**
+ * account-routing-3-options (owner, 2026-06-30): the ONE `account` value carries THREE explicit
+ * routing modes (mirrors the server's resolveAccountPin keyword handling exactly — kept in lockstep
+ * by a test):
+ *   - 'default' — '', null, `default`, `none`, `system` → skip the gateway, use the system / CLI
+ *                 login credential (THE DEFAULT).
+ *   - 'auto'    — `auto`, `gateway` → route through the inference gateway with NO account pin; it
+ *                 selects an available pool account and fails over.
+ *   - 'pin'     — any other value → a specific pool account id, pinned via the gateway (hard, no
+ *                 failover).
+ * Pure — exported for tests. The keywords are reserved, so a pool account literally named
+ * `auto`/`default`/`none`/`system`/`gateway` can't be pin-targeted (same tradeoff the server makes).
+ */
+export function accountRoutingMode(value) {
+  const v = (value == null ? '' : String(value)).trim().toLowerCase();
+  if (v === '' || v === 'default' || v === 'none' || v === 'system') return 'default';
+  if (v === 'auto' || v === 'gateway') return 'auto';
+  return 'pin';
+}
+
+/**
+ * The inference-gateway AUTO-route env, built CLIENT-SIDE. Pure — exported for tests. Mirrors the
+ * server's gatewaySpawnEnv(true, {}) for the no-account case: point the agent at the localhost
+ * gateway with NO `x-papercusp-account` header, so the gateway auto-selects an available pool
+ * account and fails over. Auto-routing is wired for claude only today (codex/omp route per-session
+ * config keyed off an EXPLICIT account id, so there is no "let the gateway pick" form for them) —
+ * returns `{}` for any other provider, matching resolveAccountPin's `auto gateway routing isn't
+ * wired for <agent> yet` guard.
+ */
+export function gatewayAutoEnv(provider = 'claude') {
+  if (provider !== 'claude') return {};
+  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  const port = Number.isFinite(p) && p > 0 ? p : 8788;
+  return { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
+}
+
 function tomlEscape(s) {
   return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
@@ -1193,6 +1232,31 @@ async function pickAgent() {
   });
 }
 
+// su-context-size-variants: the per-variant ~Nk figures shown in the picker —
+// parity with the operator UI's SU_CONTEXT_OPTIONS (AdvSessionsClient.tsx). STATIC
+// measured estimates (full ≈ ~141k catalog + ~38k prefix; trimmed ≈ ~9k core + ~38k).
+export const SU_CONTEXT_TOKEN_ESTIMATES = { full: '~180k', trimmed: '~50k' };
+
+// su-context-size-variants: the terminal-picker choices — the twin of the UI's
+// SU_CONTEXT_OPTIONS. Native maps to null (⇒ no --context-size flag ⇒ byte-identical
+// to the pre-feature launch); 'full'/'trimmed' match the flag values + the UI enum.
+export const SU_CONTEXT_CHOICES = [
+  { name: 'Native (default)', value: null },
+  { name: `Full · ${SU_CONTEXT_TOKEN_ESTIMATES.full}  (whole tool catalog up-front)`, value: 'full' },
+  { name: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}  (core spine, native soft-trim)`, value: 'trimmed' },
+];
+
+/** su-context-size-variants: choose the initial-context size for the SU session —
+ *  the terminal-picker twin of the operator UI's Full/Trimmed toggle. Native (null) ⇒
+ *  each client keeps its native default (byte-identical launch); 'full' loads the whole
+ *  tool catalog up-front; 'trimmed' uses the client's native soft-trim. Threads into
+ *  args.contextSize, honored per-agent in the launch tail (claude ENABLE_TOOL_SEARCH,
+ *  omp PI_CONFIG_DIR, codex/server via the bootstrap body's context_size). */
+async function pickContextSize() {
+  const { select } = await import('@inquirer/prompts');
+  return select({ message: 'Context size', default: null, choices: SU_CONTEXT_CHOICES });
+}
+
 /** Pick a workspace. Harnesses are workspace-scoped, so this comes
  *  before the harness picker. Auto-resolves (no prompt) when there's
  *  0 or 1 workspace. Returns the workspace id (or null → active). */
@@ -1287,16 +1351,24 @@ async function promptAccount(accounts) {
   // skipping the screen the dev box shows. (Was: hidden when pool empty.)
   const exclude = new Set(accounts?.excludeAccounts ?? []);
   const forced = new Set(accounts?.forcedAccounts ?? []);
+  // account-routing-3-options: the 'auto' (gateway auto-route + failover) row is offered only when
+  // the gateway pool is usable AND the provider supports it (claude — gatewayAutoEnv / resolveAccountPin
+  // don't wire auto for codex/omp yet). Its value `'auto'` flows through accountRoutingMode → 'auto'.
+  const provider = accounts?.provider ?? 'claude';
+  const showAuto = pool.length > 0 && provider === 'claude';
   const { select } = await import('@inquirer/prompts');
   const choices = [
-    { name: '· default — use the system / CLI login (no account pin)', value: null },
+    { name: '· default — use the system / CLI login (skip the inference gateway)', value: null },
+    ...(showAuto
+      ? [{ name: '· auto — route via the inference gateway (it picks a pool account + fails over)', value: 'auto' }]
+      : []),
     ...pool.map((id) => {
       const blocked = exclude.has(id) || (forced.size > 0 && !forced.has(id));
       const tag = exclude.has(id) ? '  (excluded)' : forced.size > 0 && !forced.has(id) ? '  (not in allow-list)' : '';
-      return { name: `${id}${tag}`, value: id, disabled: blocked ? '(blocked by session-override)' : false };
+      return { name: `${id}${tag}  (pin via the gateway)`, value: id, disabled: blocked ? '(blocked by session-override)' : false };
     }),
   ];
-  return select({ message: 'Account (inference-gateway pin)', default: null, choices });
+  return select({ message: 'Account routing', default: null, choices });
 }
 
 async function pickAccount(workspace, agent = 'claude') {
@@ -1363,9 +1435,13 @@ async function fetchFleetChoices(workspace) {
     if (workspace) params.set('workspace', workspace);
     const q = params.toString() ? `?${params.toString()}` : '';
     const resp = await api(`/api/agent-mcp/console/bootstrap-su/options${q}`);
-    return { fleets: Array.isArray(resp.fleets) ? resp.fleets : [], nextScheme: resp.nextScheme ?? null };
+    return {
+      fleets: Array.isArray(resp.fleets) ? resp.fleets : [],
+      nextScheme: resp.nextScheme ?? null,
+      schemes: Array.isArray(resp.schemes) ? resp.schemes : [],
+    };
   } catch {
-    return { fleets: [], nextScheme: null };
+    return { fleets: [], nextScheme: null, schemes: [] };
   }
 }
 
@@ -1379,7 +1455,7 @@ async function fetchFleetChoices(workspace) {
  * server, which creates the agent_fleets row + re-derives the slug authoritatively).
  */
 async function pickFleet(workspace) {
-  const { fleets, nextScheme } = await fetchFleetChoices(workspace);
+  const { fleets, nextScheme, schemes } = await fetchFleetChoices(workspace);
   const existing = Array.isArray(fleets) ? fleets : [];
   const NEW = '__new__';
   const { select, input } = await import('@inquirer/prompts');
@@ -1391,13 +1467,43 @@ async function pickFleet(workspace) {
     ...existing.map((f) => ({ name: `${colorSwatch(f.color)}${f.title || f.slug}`, value: f.slug })),
   ];
   const chosen = await select({ message: 'Fleet', default: null, choices });
-  if (chosen === null) return { slug: null, role: null, name: null };
+  if (chosen === null) return { slug: null, role: null, name: null, scheme: null };
   if (chosen === NEW) {
     const name = (await input({ message: 'New fleet name' })).trim();
-    if (!name) return { slug: null, role: null, name: null }; // empty name → no fleet
-    return { slug: fleetSlugFromName(name), role: 'leader', name };
+    if (!name) return { slug: null, role: null, name: null, scheme: null }; // empty name → no fleet
+    // fleet-color-schemes: pick the fleet's colour — the full catalog, each row a
+    // swatch in its own colour, defaulting to the next-unused scheme. The chosen
+    // NAME is threaded to the server (fleet_scheme), which forces it at create.
+    const scheme = await pickFleetScheme(schemes, nextScheme);
+    return { slug: fleetSlugFromName(name), role: 'leader', name, scheme };
   }
-  return { slug: chosen, role: 'member', name: null };
+  return { slug: chosen, role: 'member', name: null, scheme: null };
+}
+
+/** Offer the curated catalog as a colour picker for a NEW fleet — each row a swatch
+ *  (bg block) + the scheme name in its cursor accent, defaulting to the next-unused
+ *  scheme. Returns the chosen scheme NAME; falls back to nextScheme's name (else
+ *  null → server auto-allocates) when the catalog isn't available. */
+async function pickFleetScheme(schemes, nextScheme) {
+  const catalog = Array.isArray(schemes) ? schemes : [];
+  if (!catalog.length) return nextScheme?.name ?? null;
+  const { select } = await import('@inquirer/prompts');
+  const choices = catalog.map((s) => ({ name: `${colorSwatch(s)}${schemeNameInAccent(s)}`, value: s.name }));
+  return select({
+    message: 'Fleet color',
+    default: nextScheme?.name ?? catalog[0].name,
+    choices,
+    loop: false,
+  });
+}
+
+/** A scheme's name rendered in its own cursor accent (ANSI truecolor fg), or plain
+ *  when the colour is unparseable. Pure — for the fleet colour-picker rows; for tests. */
+export function schemeNameInAccent(scheme) {
+  const rgb = scheme && hexToRgb(scheme.cursor);
+  if (!rgb) return scheme?.name ?? '';
+  const [r, g, b] = rgb;
+  return `\x1b[38;2;${r};${g};${b}m${scheme.name}\x1b[0m`;
 }
 
 /** True if `id` is a pinnable account given the gateway choices (pool membership + session-override
@@ -1431,21 +1537,48 @@ export function accountProviderFromChoices(accounts, agent = 'claude') {
 async function chooseResumeAccount(session, args) {
   const plan = resumeAccountPlan(args);
   if (plan.source === 'none') return { id: null, env: {}, notice: null }; // --no-picker + no --account
+
+  // account-routing-3-options: the `default` keyword (or '' / none / system) is resolved by NAME —
+  // it deliberately skips the gateway, so it needs no pool fetch. (The picker path resolves its
+  // keyword AFTER fetching the choices, below.)
+  if (!plan.prompt && accountRoutingMode(plan.account) === 'default') {
+    return { id: null, env: {}, notice: 'using the default system account (inference gateway skipped).' };
+  }
+
   const accounts = await fetchAccountChoices(session.workspaceId, session.agent);
   if (!accounts?.gatewayOn || !(Array.isArray(accounts.pool) && accounts.pool.length)) {
-    // Pinning is a no-op (gateway off / empty pool) → default-credential resume, byte-identical.
+    // Gateway off / empty pool → both `auto` and a pool pin collapse to the default-credential resume.
     return {
       id: null,
       env: {},
       notice: plan.account ? `--account ${plan.account} ignored: inference gateway off / no pool — using the default credential.` : null,
     };
   }
-  const id = plan.prompt ? await promptAccount(accounts) : plan.account;
-  if (!id) return { id: null, env: {}, notice: null }; // chose "default credential"
+
+  const requested = plan.prompt ? await promptAccount(accounts) : plan.account;
+  const mode = accountRoutingMode(requested);
+  if (mode === 'default') return { id: null, env: {}, notice: requested ? 'using the default system account (inference gateway skipped).' : null };
+
+  const provider = accountProviderFromChoices(accounts, session.agent);
+
+  if (mode === 'auto') {
+    // Route through the gateway with NO pin — it selects an available account + fails over.
+    // Wired for claude only (gatewayAutoEnv returns {} otherwise); codex/omp have no "let the
+    // gateway pick" form, so fall back to the default credential with a clear notice.
+    if (provider !== 'claude') {
+      return { id: null, env: {}, notice: `--account auto ignored: gateway auto-routing isn't wired for ${session.agent} yet — using the default credential.` };
+    }
+    // `forward: 'auto'` is the value a TRACKED fork sends to the server (resolveAccountPin) so the
+    // fork re-derives the same auto-route — `id` is null here, so the fork's `id` fallback alone
+    // would silently drop the choice.
+    return { id: null, auto: true, forward: 'auto', provider, env: gatewayAutoEnv(provider), notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).' };
+  }
+
+  // mode === 'pin'
+  const id = requested;
   if (!accountPinnable(accounts, id)) {
     return { id: null, env: {}, notice: `--account ${id} ignored: not an allowed pool account — using the default credential.` };
   }
-  const provider = accountProviderFromChoices(accounts, session.agent);
   if (!provider) {
     return { id: null, env: {}, notice: `--account ${id} ignored: account routing is unsupported for ${session.agent} — using the default credential.` };
   }
@@ -1455,18 +1588,23 @@ async function chooseResumeAccount(session, args) {
 /** Sentinel for the "no feature" picker row (optional-feature roles). */
 const NO_FEATURE = '<no-feature>';
 
-/** Pick the role. 'su' (plain engineer) leads; the known pipeline roles
- *  follow. Returns { role, roles } so the caller reuses the consumes map. */
+/** Pick the role. Interactively, 'su' (plain engineer) is the ONLY selectable
+ *  choice — the pipeline roles (planner/worker/etc.) are deliberately NOT
+ *  offered here (psu-su-only-interactive-picker-2026-06-30): they're meant for
+ *  automated/scripted spawning (`psu --role=<role> --no-picker`, what the
+ *  harness pipeline actually uses), not for a human to pick by hand. That flag
+ *  path is untouched — it resolves `role` BEFORE this function is ever called
+ *  (see the `args.role || null` check at the call site) and still reaches
+ *  `roleFlow` exactly as before. `roles: known` is still returned (now always
+ *  `[]` from the picker path) so the caller's destructuring shape is unchanged.
+ *  Returns { role, roles } so the caller reuses the consumes map. */
 async function pickRole() {
   const { roles } = await api('/api/agent-mcp/console/bootstrap-su/options');
   const known = Array.isArray(roles) ? roles : [];
   const { select } = await import('@inquirer/prompts');
   const role = await select({
     message: 'Role',
-    choices: [
-      { name: 'su  — engineer collaborator (full SU catalog)', value: 'su' },
-      ...known.map((r) => ({ name: r.id, value: r.id })),
-    ],
+    choices: [{ name: 'su  — engineer collaborator (full SU catalog)', value: 'su' }],
   });
   return { role, roles: known };
 }
@@ -1838,6 +1976,21 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   if (!fork && session.id != null) {
     void reportSessionResumed(session.id);
   }
+  // IDENTITY-LEAK FIX (su-resume-inherits-role-mcp-json, 2026-06-30): a resumed SU claude/omp session
+  // PATH-DISCOVERS <cwd>/.mcp.json and the resume path adds NO --strict-mcp-config — so a role-scoped
+  // .mcp.json a co-located role spawn left in the session's cwd is inherited, giving the SU resume
+  // that role's principal (e.g. system:sentinel, read-only) instead of user-level papercusp-su. This
+  // is exactly the mis-launch that stranded session e424229c as system:sentinel. Park it for an SU
+  // (non-role) resume; a ROLE resume (coordOwnerId 'role-…') keeps its own config. parkRoleScopedMcpJson
+  // only moves ROLE-scoped files (leaves the SU's own papercusp-su alone) and role launches recreate
+  // .mcp.json fresh — so parking is safe + needs no restore. Mirrors the fresh-SU park above.
+  if (
+    (session.agent === 'claude' || session.agent === 'omp') &&
+    !String(session.coordOwnerId || '').startsWith('role-')
+  ) {
+    const parked = parkRoleScopedMcpJson(session.cwd);
+    if (parked) console.error(`psu: parked a stale role-scoped ${session.cwd}/.mcp.json (an SU resume must use user-level papercusp-su, not a co-located role server)`);
+  }
   console.error(`psu: ${fork ? 'forking' : 'resuming'} ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
   runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
 }
@@ -1881,12 +2034,13 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     ...(args.fleet ? { fleet: args.fleet } : {}),
     ...(args.fleetRole ? { fleet_role: args.fleetRole } : {}),
     ...(args.fleetName ? { fleet_name: args.fleetName } : {}),
+    ...(args.fleetScheme ? { fleet_scheme: args.fleetScheme } : {}),
     ...(args.launchContext ? { launch_context: args.launchContext } : {}),
     cwd: process.cwd(),
   };
 }
 
-export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet, fleetRole, fleetName } = {}) {
+export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet, fleetRole, fleetName, fleetScheme } = {}) {
   return {
     role,
     agent,
@@ -1898,6 +2052,7 @@ export function roleBootstrapBody({ role, agent, workspace, harness, feature, pl
     ...(fleet ? { fleet } : {}),
     ...(fleetRole ? { fleet_role: fleetRole } : {}),
     ...(fleetName ? { fleet_name: fleetName } : {}),
+    ...(fleetScheme ? { fleet_scheme: fleetScheme } : {}),
   };
 }
 
@@ -1953,7 +2108,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
   try {
     res = await api('/api/agent-mcp/console/bootstrap-su', {
       method: 'POST',
-      body: JSON.stringify(forkBootstrapBody(session, acct?.id ?? null)),
+      body: JSON.stringify(forkBootstrapBody(session, acct?.forward ?? acct?.id ?? null)),
     });
   } catch (e) {
     console.error(`psu: fork bootstrap failed (${e?.message ?? e}) — falling back to an UNTRACKED fork (resumable only by uuid).`);
@@ -2137,6 +2292,7 @@ async function roleFlow(args, role, rolesMeta) {
       args.fleet = f.slug;
       args.fleetRole = f.role;
       args.fleetName = f.name;
+      args.fleetScheme = f.scheme;
     }
     account = args.account || (await pickAccount(workspace, agent));
     harness = args.harness || (await pickHarnessRequired(workspace));
@@ -2166,7 +2322,7 @@ async function roleFlow(args, role, rolesMeta) {
 
   const res = await api('/api/agent-mcp/console/bootstrap-role', {
     method: 'POST',
-    body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet: args.fleet, fleetRole: args.fleetRole, fleetName: args.fleetName })),
+    body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet: args.fleet, fleetRole: args.fleetRole, fleetName: args.fleetName, fleetScheme: args.fleetScheme })),
   });
 
   // omp role sessions load the coordination extension (lock enforcement + coord +
@@ -2299,6 +2455,11 @@ async function main() {
     // Honor any flags as preselections; prompt only for what was omitted.
     const p = presetsFromArgs(args);
     const agent = p.needAgent ? await pickAgent() : p.agent;
+    // su-context-size-variants: prompt for the context-size variant right after the
+    // agent (the terminal twin of the UI's Full/Trimmed toggle). A --context-size=
+    // flag preselects + skips this, mirroring --fleet/--account. Native (null) ⇒ no
+    // flag ⇒ byte-identical to the pre-feature launch.
+    if (!args.contextSize) args.contextSize = await pickContextSize();
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
     const plan = p.needPlan ? planValue(await pickPlan(workspace, harness)) : p.plan;
@@ -2310,6 +2471,7 @@ async function main() {
       args.fleet = f.slug;
       args.fleetRole = f.role;
       args.fleetName = f.name;
+      args.fleetScheme = f.scheme;
     }
     // psu-account-chooser P-005: offer a pool-account pin when one is meaningful
     // (gateway on + a non-empty pool). pickAccount returns null — and prompts
@@ -2407,14 +2569,22 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // later SU omp launch hangs ~30s on a dead per-role MCP host ("papercusp timed
   // out"). Park it — the SU session needs only the user-level papercusp-su, and role
   // launchers recreate .mcp.json fresh, so parking is safe + needs no restore.
-  // omp-only: claude uses --strict-mcp-config, codex uses CODEX_HOME.
+  // BOTH claude AND omp path-discover <cwd>/.mcp.json (claude auto-loads a project .mcp.json;
+  // omp's mcp.discoveryMode) and NEITHER SU launch uses --strict-mcp-config (claude's papercusp-su
+  // is user-level ~/.claude.json; omp discovers) — so park for both. (Was omp-only on the false
+  // premise "claude uses --strict-mcp-config" — that holds for ROLE claude launches, not SU: an SU
+  // claude in a cwd where a role spawn left a stale role-scoped .mcp.json inherits that role's
+  // principal, e.g. system:sentinel. su-resume-inherits-role-mcp-json, 2026-06-30.) codex uses
+  // CODEX_HOME, exempt.
   // su-context-size-variants: OMP 'full' disables native tool-discovery so the whole
   // catalog loads up-front (inverse of its trimmed default) via a per-session PI_CONFIG_DIR.
   // Fail-safe: null ⇒ OMP keeps its native (trimmed) default.
   let ompFullPiConfigDir = null;
-  if (res.agent === 'omp') {
+  if (res.agent === 'omp' || res.agent === 'claude') {
     const parked = parkRoleScopedMcpJson(res.cwd);
-    if (parked) console.error(`psu: parked a stale role-scoped ${res.cwd}/.mcp.json (would hang omp MCP startup; role launches recreate it)`);
+    if (parked) console.error(`psu: parked a stale role-scoped ${res.cwd}/.mcp.json (an SU session uses user-level papercusp-su, not a co-located role server; role launches recreate it)`);
+  }
+  if (res.agent === 'omp') {
     const advisory = ompDefaultModelAdvisory();
     if (advisory) console.error(advisory);
     if (args.contextSize === 'full') {

@@ -158,6 +158,24 @@ vi.mock('../../deployment/account-session-override', () => ({
   getAccountOverride: (...a: unknown[]) => getAccountOverrideMock(...(a as [string])),
 }));
 
+// fleet-recolor-and-color-hardening P-002: mock ONLY the agent-fleets-store IO
+// (createFleetIfAbsent / getFleetScheme / listFleets) so resolveFleet's color-env
+// wiring is testable without PG. importActual keeps the REAL pure helpers
+// (fleetSlugFromName, resolveFleetScheme) so the test exercises genuine slug +
+// scheme resolution — i.e. it asserts the actual catalog hex reaches the env.
+const createFleetIfAbsentMock = vi.fn();
+const getFleetSchemeMock = vi.fn();
+const listFleetsMock = vi.fn(async () => [] as unknown[]);
+vi.mock('../../agent-fleets-store', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return {
+    ...actual,
+    createFleetIfAbsent: createFleetIfAbsentMock,
+    getFleetScheme: getFleetSchemeMock,
+    listFleets: listFleetsMock,
+  };
+});
+
 const CTX: RouteContext = {
   principal: null,
   input: undefined,
@@ -583,6 +601,55 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/pinned to account aviynw6/i);
   });
 
+  // account-routing-3-options (owner, 2026-06-30): the ONE `account` value carries 3 explicit modes.
+  it("explicit 'default'/'none'/'system' → skip the gateway entirely, even when it is ON", async () => {
+    getFlagMock.mockResolvedValue(true); // gateway ON — `default` must STILL skip it (the system-account escape hatch)
+    for (const kw of ['default', 'none', 'system', 'DEFAULT', ' System ']) {
+      const r = await pin(kw);
+      expect(r.env).toEqual({});
+      expect(r.accountId).toBeNull();
+      expect(r.notice).toMatch(/default system account.*inference gateway skipped/i);
+    }
+    // The pool is never consulted for a `default` route.
+    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+  });
+
+  it("'auto' (claude, gateway on) → gateway-routed with NO account pin (it auto-selects + fails over)", async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('auto');
+    expect(r.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+    // CRUCIALLY no account pin → the gateway active()/drain-selects + fails over (vs a hard pin).
+    expect(r.env.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('account');
+    expect(r.env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+    expect(r.accountId).toBeNull();
+    expect(r.provider).toBe('claude');
+    expect(r.notice).toMatch(/auto.*selects an available pool account and fails over/i);
+    // No pool membership lookup — auto means "let the gateway pick", not "validate an id".
+    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+  });
+
+  it("'gateway' is an alias for 'auto'", async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('gateway');
+    expect(r.accountId).toBeNull();
+    expect(r.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+    expect(r.notice).toMatch(/auto/i);
+  });
+
+  it("'auto' + gateway OFF → fail-soft to the default credential", async () => {
+    getFlagMock.mockResolvedValue(false);
+    const r = await pin('auto');
+    expect(r.env).toEqual({});
+    expect(r.notice).toMatch(/--account auto ignored.*gateway is off/i);
+  });
+
+  it("'auto' is not wired for codex yet → fail-soft notice (codex needs a per-session config + explicit id)", async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('auto', 'codex');
+    expect(r.env).toEqual({});
+    expect(r.notice).toMatch(/auto gateway routing isn't wired for codex yet/i);
+  });
+
   it('Codex account + codex agent → no Anthropic env, but carries account id for CODEX_HOME config', async () => {
     getFlagMock.mockResolvedValue(true);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'codex-main', provider: 'codex' }] });
@@ -669,5 +736,98 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     getFlagMock.mockResolvedValue(false);
     const json = await (await callGet()).json();
     expect(json.accounts).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [], provider: 'claude' });
+  });
+});
+
+// fleet-recolor-and-color-hardening P-002: regression guard for the psu-picker
+// fleet-color path. The reported bug — "create a new fleet in the psu menu and
+// the terminal isn't recolored" — is exactly resolveFleet failing to emit
+// PAPERCUSP_FLEET_BG/FG/CURSOR for a freshly-created fleet. Nothing guarded it.
+// These tests assert BOTH branches (create-new + join-existing) carry the color
+// env, and that the catalog's real hex reaches the env (real resolveFleetScheme).
+describe('resolveFleet — terminal color env (fleet-color-schemes)', () => {
+  let forest: { name: string; bg: string; fg: string; cursor: string };
+  beforeEach(async () => {
+    const { schemeByName } = await import('../../console-color-schemes');
+    forest = schemeByName('forest')!;
+  });
+
+  async function resolveFleet(
+    workspaceId: string,
+    opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; fleetScheme?: string | null; ownerId?: string },
+  ) {
+    const mod = await import('../routes/agent-mcp/bootstrap-su');
+    return mod.resolveFleet(workspaceId, opts);
+  }
+
+  it('a NEW fleet (fleetName) carries the fleet color env — the regressed case', async () => {
+    createFleetIfAbsentMock.mockResolvedValue({
+      record: {
+        workspaceId: 'default',
+        fleetSlug: 'my-fleet',
+        title: 'My Fleet',
+        description: null,
+        owner: 'su-1',
+        leaderOwnerId: 'su-1',
+        colorScheme: 'forest',
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      created: true,
+    });
+    const { env, fleetRole, fleetSlug } = await resolveFleet('default', { fleetName: 'My Fleet', ownerId: 'su-1' });
+    expect(fleetRole).toBe('leader');
+    expect(fleetSlug).toBe('my-fleet');
+    expect(env.PAPERCUSP_FLEET_SLUG).toBe('my-fleet');
+    expect(env.PAPERCUSP_FLEET_ROLE).toBe('leader');
+    // The actual catalog hex — not just "some value" — must reach the env.
+    expect(env.PAPERCUSP_FLEET_BG).toBe(forest.bg);
+    expect(env.PAPERCUSP_FLEET_FG).toBe(forest.fg);
+    expect(env.PAPERCUSP_FLEET_CURSOR).toBe(forest.cursor);
+  });
+
+  it('a chosen catalog scheme (fleetScheme) is FORCED at create; unknown/absent → auto-allocate (null)', async () => {
+    createFleetIfAbsentMock.mockResolvedValue({
+      record: {
+        workspaceId: 'default', fleetSlug: 'my-fleet', title: 'My Fleet', description: null,
+        owner: 'su-1', leaderOwnerId: 'su-1', colorScheme: 'forest', createdAt: 0, updatedAt: 0,
+      },
+      created: true,
+    });
+    // A valid catalog name is passed straight through as the forced colorScheme.
+    await resolveFleet('default', { fleetName: 'My Fleet', fleetScheme: 'royal-purple', ownerId: 'su-1' });
+    expect(createFleetIfAbsentMock).toHaveBeenCalledWith(expect.objectContaining({ colorScheme: 'royal-purple' }));
+    // An unknown name is rejected → null → the store auto-allocates the next unused.
+    createFleetIfAbsentMock.mockClear();
+    await resolveFleet('default', { fleetName: 'My Fleet', fleetScheme: 'not-a-real-scheme', ownerId: 'su-1' });
+    expect(createFleetIfAbsentMock).toHaveBeenCalledWith(expect.objectContaining({ colorScheme: null }));
+    // No scheme chosen → null (auto-allocate) — unchanged legacy behaviour.
+    createFleetIfAbsentMock.mockClear();
+    await resolveFleet('default', { fleetName: 'My Fleet', ownerId: 'su-1' });
+    expect(createFleetIfAbsentMock).toHaveBeenCalledWith(expect.objectContaining({ colorScheme: null }));
+  });
+
+  it('an EXISTING fleet (fleet slug) carries the fleet color env', async () => {
+    getFleetSchemeMock.mockResolvedValue({ name: 'forest', bg: forest.bg, fg: forest.fg, cursor: forest.cursor });
+    const { env, fleetRole } = await resolveFleet('default', { fleet: 'team', ownerId: 'su-1' });
+    expect(fleetRole).toBe('member');
+    expect(env.PAPERCUSP_FLEET_SLUG).toBe('team');
+    expect(env.PAPERCUSP_FLEET_BG).toBe(forest.bg);
+    expect(env.PAPERCUSP_FLEET_FG).toBe(forest.fg);
+    expect(env.PAPERCUSP_FLEET_CURSOR).toBe(forest.cursor);
+  });
+
+  it('no fleet ⇒ empty env (no color vars, byte-identical to today)', async () => {
+    const { env, fleetSlug, fleetRole } = await resolveFleet('default', {});
+    expect(env).toEqual({});
+    expect(fleetSlug).toBeNull();
+    expect(fleetRole).toBeNull();
+  });
+
+  it('an existing fleet with no resolvable scheme keeps slug/role but omits color vars', async () => {
+    getFleetSchemeMock.mockResolvedValue(null);
+    const { env } = await resolveFleet('default', { fleet: 'ghost' });
+    expect(env.PAPERCUSP_FLEET_SLUG).toBe('ghost');
+    expect(env.PAPERCUSP_FLEET_BG).toBeUndefined();
   });
 });

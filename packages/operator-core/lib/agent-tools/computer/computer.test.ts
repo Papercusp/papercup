@@ -166,4 +166,22 @@ describe('runComputerAction — capability:computer handler', () => {
     const xd = calls.find((c) => c.bin === 'xdotool');
     expect(xd?.env).toEqual({ DISPLAY: ':7' });
   });
+
+  // P-004: the operator/superuser '*' auto-default is NOT a real hive slug. Even
+  // a lease stored under the literal '*' key must not bind to an operator-scope
+  // call — resolveConcreteHarnessSlug rejects '*', so resolution falls through to
+  // the env display. (Pre-fix `(ctx.harnessSlug ?? '').trim()` left '*' truthy and
+  // consulted hiveDesktop('*').)
+  it("treats the operator '*' auto-default as NO concrete hive — skips the lease, uses env", async () => {
+    __setProvisionerForTests(async () => fakeLease(':152'));
+    await ensureHiveDesktop('*'); // a stray lease under the wildcard key
+    process.env.PAPERCUSP_COMPUTER_DISPLAY = ':99';
+
+    const { exec, calls } = recordingExec();
+    __setComputerExecForTests(exec);
+    await runComputerAction({ action: 'mouse_move', coordinate: [5, 5] }, { harnessSlug: '*' });
+
+    const xd = calls.find((c) => c.bin === 'xdotool');
+    expect(xd?.env).toEqual({ DISPLAY: ':99' }); // env fallback, NOT the '*' lease (:152)
+  });
 });

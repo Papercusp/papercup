@@ -46,6 +46,7 @@ describe('launchAgent', () => {
       resume_session_id: 's-42',
       kickoff: { kind: 'new-plan' },
       defer_spawn: false,
+      context_size: null,
     });
   });
 

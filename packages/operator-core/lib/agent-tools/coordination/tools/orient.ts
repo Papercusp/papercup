@@ -39,6 +39,8 @@ import { hardText, LIMITS } from '../../limits';
 const MEMORY_TEXT_CAP = 200;
 const MEMORY_HITS_CAP = 10;
 const PLAN_EVENTS_FOLD = 10;
+const FLEET_CATCHUP_FOLD = 8;
+const FLEET_CATCHUP_CAP = 25;
 /** Reuse-at-orient bounds (code-run-adoption): surface a few intent-relevant recipes so an
  *  agent reuses an EXISTING code:run script instead of hand-looping/re-authoring — kept tiny
  *  so it never re-enters context as bulk on later turns. */
@@ -72,6 +74,11 @@ export interface OrientArgs {
   includeRecipes?: boolean;
   /** Max relevant recipes to surface (default 3, hard-capped 5). */
   recipesLimit?: number;
+  /** Fold a bounded catch-up slice of YOUR fleet's audience-history when you belong to a
+   *  named fleet — the auto "what did my fleet say while I was away" at wake (default true). */
+  includeFleetCatchUp?: boolean;
+  /** Max fleet catch-up messages to fold (default 8, hard-capped 25). */
+  fleetCatchUpLimit?: number;
 }
 
 export interface OrientMemoryHit {
@@ -101,6 +108,10 @@ export interface OrientResult {
   /** Whether the optional coord:declare-intent succeeded (present only when
    *  `intent` was passed; false = the caller lacked coord:write). */
   intentDeclared?: boolean;
+  /** A bounded slice of the caller's fleet audience-history (coord:catch-up on
+   *  @fleet:<own slug>) — present only when the caller belongs to a fleet; null on a
+   *  failed fold. The auto-catch-up at wake. */
+  fleetCatchUp?: { fleet: string; total: number; recent: unknown[] } | null;
 }
 
 /**
@@ -184,6 +195,33 @@ export async function composeOrient(
       };
     } catch {
       result.planEvents = null;
+    }
+  }
+
+  // ── fleet catch-up — when the caller belongs to a named fleet, fold a bounded slice of
+  // that fleet's audience-keyed history so a freshly-joined/returning member auto-catches-up
+  // at wake (the pull counterpart to @fleet: broadcasts, which are NOT auto-polled). Gated +
+  // BEST-EFFORT: resolve the caller's fleet via coord:whoami, then coord:catch-up; a non-fleet
+  // caller or any failure degrades to absent/null. (fleet-messaging-integrate-and-land P-006)
+  if (args.includeFleetCatchUp !== false) {
+    try {
+      const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
+      const fleetSlug = who?.fleetSlug ?? null;
+      if (fleetSlug) {
+        const cuLimit = Math.min(args.fleetCatchUpLimit ?? FLEET_CATCHUP_FOLD, FLEET_CATCHUP_CAP);
+        const cu = (await call('coord:catch-up', {
+          audience: `@fleet:${fleetSlug}`,
+          limit: cuLimit,
+        })) as { total?: number; rows?: unknown[] } | undefined;
+        const rows = Array.isArray(cu?.rows) ? (cu!.rows as unknown[]) : [];
+        result.fleetCatchUp = {
+          fleet: fleetSlug,
+          total: typeof cu?.total === 'number' ? cu.total : rows.length,
+          recent: rows.slice(0, cuLimit),
+        };
+      }
+    } catch {
+      result.fleetCatchUp = null;
     }
   }
 
@@ -271,6 +309,7 @@ export default defineTool({
     'memory:search',
     'recipes:search',
     'coord:declare-intent',
+    'coord:catch-up',
   ],
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
@@ -294,6 +333,8 @@ export default defineTool({
     planEventsSince: z.string().optional().describe('Only plan-events strictly after this ISO timestamp.'),
     includeRecipes: z.boolean().optional().describe('Surface reusable code:run recipes relevant to `intent` (default true).'),
     recipesLimit: z.number().int().positive().max(5).optional().describe('Max relevant recipes to surface (default 3).'),
+    includeFleetCatchUp: z.boolean().optional().describe("Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true)."),
+    fleetCatchUpLimit: z.number().int().positive().max(25).optional().describe('Max fleet catch-up messages to fold (default 8).'),
   }),
   async handler(args, ctx) {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an

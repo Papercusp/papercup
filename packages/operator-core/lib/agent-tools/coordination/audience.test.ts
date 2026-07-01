@@ -17,6 +17,10 @@ function makeResolvers(opts: {
   presence?: ActivePresence[];
   /** `${objectKind}:${objectRef}` → topic slugs it is tagged to. */
   tagged?: Record<string, string[]>;
+  /** fleet slug → live member ownerIds. */
+  fleets?: Record<string, string[]>;
+  /** fleet slug → leader ownerId. */
+  fleetLeaders?: Record<string, string>;
 }): AudienceResolvers {
   return {
     async listTargetSubscribers(kind, ref) {
@@ -27,6 +31,13 @@ function makeResolvers(opts: {
     },
     async listTaggedTopics(kind, ref) {
       return opts.tagged?.[`${kind}:${ref}`] ?? [];
+    },
+    async listFleetMembers(slug) {
+      return opts.fleets?.[slug] ?? [];
+    },
+    async listFleetLeader(slug) {
+      const leader = opts.fleetLeaders?.[slug];
+      return leader ? [leader] : [];
     },
   };
 }
@@ -81,6 +92,52 @@ describe('expandAudience', () => {
     expect(await expandAudience(['@file:apps/tui/src/app.rs'], r)).toEqual(['editor']);
   });
 
+  it('@fleet = the live members of that named fleet', async () => {
+    const r = makeResolvers({ fleets: { backend: ['alice', 'bob'] } });
+    expect(new Set(await expandAudience(['@fleet:backend'], r))).toEqual(new Set(['alice', 'bob']));
+  });
+
+  it('@fleet with no live members resolves to empty — never a * fallback', async () => {
+    const r = makeResolvers({ fleets: {} });
+    expect(await expandAudience(['@fleet:paused-fleet'], r)).toEqual([]);
+  });
+
+  it('@fleet-leader = just the fleet leader (distinct from @fleet members)', async () => {
+    const r = makeResolvers({
+      fleets: { backend: ['alice', 'bob'] },
+      fleetLeaders: { backend: 'alice' },
+    });
+    expect(await expandAudience(['@fleet-leader:backend'], r)).toEqual(['alice']);
+    // @fleet-leader does NOT pull the whole roster.
+    expect(await expandAudience(['@fleet-leader:backend'], r)).not.toContain('bob');
+  });
+
+  it('@fleet-leader with no leader set resolves to no one', async () => {
+    const r = makeResolvers({ fleets: { backend: ['alice'] } });
+    expect(await expandAudience(['@fleet-leader:backend'], r)).toEqual([]);
+  });
+
+  it('@fleet and @fleet-leader compose with other selectors and dedup', async () => {
+    const r = makeResolvers({
+      fleets: { backend: ['alice', 'bob'] },
+      fleetLeaders: { backend: 'alice' },
+      subs: { 'topic:t': ['carol'] },
+    });
+    const out = await expandAudience(['@fleet:backend', '@fleet-leader:backend', '@topic:t', 'alice'], r);
+    expect(new Set(out)).toEqual(new Set(['alice', 'bob', 'carol']));
+    expect(out.filter((x) => x === 'alice')).toHaveLength(1);
+  });
+
+  it('broadcast mode collapses @fleet to * (the kill-switch widens, never narrows)', async () => {
+    const r = makeResolvers({ fleets: { backend: ['alice'] } });
+    expect(await expandAudience(['@fleet:backend'], r, 'broadcast')).toEqual(['*']);
+  });
+
+  it('an empty @fleet / @fleet-leader body resolves to no one', async () => {
+    const r = makeResolvers({ fleets: { '': ['x'] }, fleetLeaders: { '': 'y' } });
+    expect(await expandAudience(['@fleet:', '@fleet-leader:'], r)).toEqual([]);
+  });
+
   it('dedups across selectors and plain ids', async () => {
     const r = makeResolvers({ subs: { 'object:plan:p': ['dup'], 'topic:t': ['dup', 'uniq'] } });
     const out = await expandAudience(['dup', '@plan:p', '@topic:t'], r);
@@ -129,6 +186,12 @@ describe('expandAudience', () => {
         taggedCalls += 1;
         return [];
       },
+      async listFleetMembers() {
+        return [];
+      },
+      async listFleetLeader() {
+        return [];
+      },
     };
     expect(await expandAudience(['@object:plainref'], r)).toEqual(['direct']);
     expect(taggedCalls).toBe(0); // colon <= 0 → the tagged-topic branch is skipped
@@ -145,6 +208,12 @@ describe('expandAudience', () => {
         return [{ ownerId: 'p', planSlug: 'plan-a', files: ['f'] }];
       },
       async listTaggedTopics() {
+        return [];
+      },
+      async listFleetMembers() {
+        return [];
+      },
+      async listFleetLeader() {
         return [];
       },
     };

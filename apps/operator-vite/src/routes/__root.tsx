@@ -162,16 +162,6 @@ function RootComponent() {
     void import('@/app/_components/voice/voice-mode');
   }, []);
 
-  // The persistent env-bar "chrome" webview (plan persistent-env-bar-chrome-webview)
-  // loads the SPA at ?chrome=env-bar and renders ONLY the bar — no app shell. It lives
-  // OUTSIDE the navigable content webview, so switching envs can never unmount it.
-  if (
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('chrome') === 'env-bar'
-  ) {
-    return <EnvSwitcherBar chrome />;
-  }
-
   return (
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
@@ -198,12 +188,13 @@ function RootComponent() {
           <Suspense fallback={null}>
             <NuqsAdapter>
               <UiPresenceProvider />
-              {/* The env switcher now lives in a SEPARATE persistent "chrome" webview
-                  (plan persistent-env-bar-chrome-webview) rendered by the desktop shell
-                  OUTSIDE this navigable content webview — so an env switch can't unmount
-                  it. It's no longer rendered in-content here (that caused a double bar).
-                  Off-desktop (plain browser) there is no chrome webview; if we ever need
-                  the bar there, render <EnvSwitcherBar/> conditionally on !isTauri. */}
+              {/* Cross-platform env switcher — the single env bar on every platform
+                  (the Linux-only native GTK bar and the chrome-webview experiment were
+                  both removed). It sources the canonical env list from the desktop/Tauri
+                  side and never self-hides, so a misrouted /api or a bad target build can't
+                  make it vanish; a native global-shortcut + menu backstop (papercusp-desktop
+                  src-tauri) is the unkillable escape hatch if a target build white-screens. */}
+              <EnvSwitcherBar />
               {/* App-wide keyboard surfaces — mounted at the router root,
                   above ChromeShell, so Ctrl+P (palette) and Alt+Left/Right
                   (history nav) work on EVERY route, including /settings and

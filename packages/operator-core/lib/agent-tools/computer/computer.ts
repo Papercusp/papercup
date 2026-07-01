@@ -25,6 +25,7 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   assertSandboxDisplay,
   captureCommand,
@@ -114,8 +115,14 @@ export interface ComputerCtx {
  *      `DISPLAY`, which can leak a dev box's own `:0` session.
  */
 function resolveBoundDisplay(ctx: ComputerCtx): DesktopTarget {
-  // 1. The caller's hive lease (operator-process Map).
-  const hive = (ctx.harnessSlug ?? '').trim();
+  // 1. The caller's hive lease (operator-process Map). Route the ctx slug through
+  //    the fail-loud resolver (workspace-data-isolation-leaks P-004) so the
+  //    operator/superuser `'*'` auto-default (and an unset ctx) resolve to "no
+  //    concrete hive" → fall through to the env path, instead of consulting a
+  //    nonsense `'*'`-keyed lease. `(ctx.harnessSlug ?? '').trim()` left `'*'`
+  //    truthy, so an operator-scope call would have looked up `hiveDesktop('*')`
+  //    (`'*'` is the operator wildcard, never a real hive slug).
+  const hive = resolveConcreteHarnessSlug(undefined, ctx);
   if (hive) {
     const leased = hiveDesktop(hive);
     if (leased) {

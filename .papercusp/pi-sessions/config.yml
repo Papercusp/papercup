@@ -6,7 +6,7 @@ hindsight:
   autoRecall: true
   autoRetain: true
 modelRoles: 
-  default: ollama/maxwell1500/ornith-35b:IQ3_M
+  default: ollama/maxwell1500/ornith-35b:IQ3_M:xhigh
 symbolPreset: unicode
 theme: 
   dark: titanium

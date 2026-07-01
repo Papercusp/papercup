@@ -106,6 +106,26 @@ describe('roles:get', () => {
     expect((payload.role as { id: string }).id).toBe('architect');
     expect(payload.consumes).toEqual({ feature: 'required', plan: 'none' });
   });
+
+  it("normalizes the operator '*' auto-default to the global registry, not a literal '*' slug (P-004)", async () => {
+    const getRole = vi.fn(() => null);
+    const roleConsumes = vi.fn(() => ({ feature: 'none', plan: 'none' }));
+    vi.doMock('../../../role-registry', () => ({
+      listRoles: vi.fn(),
+      getRole,
+      rolesFiringOn: vi.fn(),
+      roleConsumes,
+    }));
+    const { default: tool } = await import('../get');
+    // No arg + the operator/superuser '*' ctx auto-default must resolve to the GLOBAL
+    // registry ('') — never a literal '*' slug that getRole/roleConsumes would treat
+    // as a nonexistent harness. (Pre-fix `?? ctx.harnessSlug ?? ''` left '*' truthy.)
+    await tool.handler({ id: 'architect' }, MAKE_CTX({ harnessSlug: '*' }));
+    expect(getRole).toHaveBeenCalledWith('architect', '');
+    expect(getRole).not.toHaveBeenCalledWith('architect', '*');
+    expect(roleConsumes).toHaveBeenCalledWith('architect', '');
+    expect(roleConsumes).not.toHaveBeenCalledWith('architect', '*');
+  });
 });
 
 describe('roles:firing_on', () => {
@@ -121,6 +141,17 @@ describe('roles:firing_on', () => {
     const payload = parseTextPayload(result as never);
     expect(payload.event).toBe('feature_completed');
     expect((payload.roles as Array<{ id: string }>)[0].id).toBe('match-feature_completed');
+  });
+
+  it("normalizes the operator '*' auto-default to the global registry, not a literal '*' slug (P-004)", async () => {
+    const rolesFiringOn = vi.fn(() => []);
+    vi.doMock('../../../role-registry', () => ({ listRoles: vi.fn(), getRole: vi.fn(), rolesFiringOn }));
+    const { default: tool } = await import('../firing_on');
+    // No arg + the operator/superuser '*' ctx auto-default resolves to the GLOBAL
+    // registry ('') — never a literal '*' slug rolesFiringOn would treat as a harness.
+    await tool.handler({ event: 'feature_completed' }, MAKE_CTX({ harnessSlug: '*' }));
+    expect(rolesFiringOn).toHaveBeenCalledWith('feature_completed', '');
+    expect(rolesFiringOn).not.toHaveBeenCalledWith('feature_completed', '*');
   });
 });
 

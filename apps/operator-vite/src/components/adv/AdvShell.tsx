@@ -35,6 +35,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
 import AdvNowRunning from './AdvNowRunning';
 import HivesRunningPill from './HivesRunningPill';
+import AgentsRunningPill from './AgentsRunningPill';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 import { useLexicon } from '@/lib/useLexicon';
@@ -504,6 +505,10 @@ export default function AdvShell({
               "N running" pill + click-to-expand per-hive start/stop, so hive
               state is visible/flippable from the header, not just inside a hive. */}
           <HivesRunningPill />
+          {/* Workspace-wide "N agents running" pill → fleet-grouped roster popover
+              (agents-running-roster). Replaces the overflowing per-agent pills once
+              there are more than a few agents. */}
+          <AgentsRunningPill />
           {/* Inline status: dot + label + pills + start/stop */}
           <AdvNowRunning slug={singleSlug} />
           <DiscordBadge slug={singleSlug} />

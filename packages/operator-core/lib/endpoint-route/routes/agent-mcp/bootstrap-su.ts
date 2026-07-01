@@ -26,6 +26,7 @@ import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspa
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../../../adv-sessions';
+import { setPendingFleet } from '../../../agent-tools/coordination/presence';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -175,16 +176,34 @@ export async function resolveAccountPin(
   // fleet's soft cache-affinity pin (which yields to liveness/load) is unchanged.
   hardPin: boolean = false,
 ): Promise<{ env: Record<string, string>; notice: string | null; accountId: string | null; provider: BackendAccountProvider | null }> {
-  const id = requested?.trim();
-  if (!id) return { env: {}, notice: null, accountId: null, provider: null };
+  const raw = requested?.trim();
+  const lower = (raw ?? '').toLowerCase();
+  // account-routing-3-options (owner, 2026-06-30): three explicit routing modes carried on the ONE
+  // `account` value — so a spawn (psu / fleet) picks exactly how its model calls are routed:
+  //  • '' / 'default' / 'none' / 'system' → skip the inference gateway entirely (system credential — the DEFAULT).
+  //  • 'auto' / 'gateway'                 → route THROUGH the gateway, which auto-selects an available pool
+  //                                         account and fails over (no account-pin header).
+  //  • <pool id>                          → pin to that specific account (HARD when hardPin — the PSU pin).
+  if (!raw || lower === 'default' || lower === 'none' || lower === 'system') {
+    return {
+      env: {},
+      notice: raw ? 'using the default system account (inference gateway skipped).' : null,
+      accountId: null,
+      provider: null,
+    };
+  }
+  const wantAuto = lower === 'auto' || lower === 'gateway';
+  const id = raw;
+  const label = wantAuto ? 'auto' : id;
   const fail = (why: string) => ({
     env: {} as Record<string, string>,
-    notice: `--account ${id} ignored: ${why} — using the default credential.`,
+    notice: `--account ${label} ignored: ${why} — using the default credential.`,
     accountId: null,
     provider: null as BackendAccountProvider | null,
   });
-  const accountGuard = backendFeatureGuard(agent, 'account-pinning');
-  if (!accountGuard.supported) return fail(`account pinning is unsupported for ${agent}: ${accountGuard.reason}`);
+  const accountGuard = backendFeatureGuard(agent, wantAuto ? 'gateway-routing' : 'account-pinning');
+  if (!accountGuard.supported)
+    return fail(`${wantAuto ? 'gateway routing' : 'account pinning'} is unsupported for ${agent}: ${accountGuard.reason}`);
   const gatewayGuard = backendFeatureGuard(agent, 'gateway-routing');
   if (!gatewayGuard.supported) return fail(`gateway routing is unsupported for ${agent}: ${gatewayGuard.reason}`);
   try {
@@ -192,6 +211,24 @@ export async function resolveAccountPin(
     const { FLAGS } = await import('@papercusp/flags');
     if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) {
       return fail('the inference gateway is off (INFERENCE_GATEWAY)');
+    }
+    // AUTO: route through the gateway with NO account pin — it selects an available account + fails over.
+    if (wantAuto) {
+      const expected = accountProviderForInteractiveBackend(agent);
+      if (!expected) return fail(`account routing is unsupported for ${agent}`);
+      if (expected === 'claude' && agent !== 'omp') {
+        const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
+        // ownerId → x-papercusp-owner (attribution + stall-wake); NO accountId → gateway active()/drain + failover.
+        return {
+          env: { ...gatewaySpawnEnv(true, { ownerId }) },
+          notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
+          accountId: null,
+          provider: expected,
+        };
+      }
+      // Codex/OMP auto-routing needs a per-session config pointing at a specific account (there is none here),
+      // so it is not wired interactively yet — fail-soft to the default credential, never block the launch.
+      return fail(`auto gateway routing isn't wired for ${agent} yet`);
     }
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
     const { accountProvider } = await import('../../../deployment/account-pool');
@@ -285,7 +322,7 @@ export async function resolveAccountChoices(
  */
 export async function resolveFleet(
   workspaceId: string,
-  opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; ownerId?: string } = {},
+  opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; fleetScheme?: string | null; ownerId?: string } = {},
 ): Promise<{ env: Record<string, string>; notice: string | null; fleetSlug: string | null; fleetRole: string | null }> {
   const name = opts.fleetName?.trim();
   const requested = opts.fleet?.trim();
@@ -305,12 +342,18 @@ export async function resolveFleet(
     if (name) {
       // A new fleet → create it (idempotent) with this agent as owner + leader.
       const fleetSlug = fleetSlugFromName(name);
+      // A scheme chosen in the psu picker forces that catalog colour; an unknown or
+      // absent name (a legacy launcher / no pick) leaves it null → the store
+      // auto-allocates the next unused scheme (createFleetIfAbsent: colorScheme ?? allocate).
+      const { schemeByName } = await import('../../../console-color-schemes');
+      const chosenScheme = schemeByName(opts.fleetScheme ?? undefined)?.name ?? null;
       const { record } = await createFleetIfAbsent({
         workspaceId,
         fleetSlug,
         title: name,
         owner: opts.ownerId ?? null,
         leaderOwnerId: opts.ownerId ?? null,
+        colorScheme: chosenScheme,
       });
       return {
         env: {
@@ -340,6 +383,59 @@ export async function resolveFleet(
   } catch (e: any) {
     return { env: {}, notice: `fleet selection skipped (${e?.message ?? e}).`, fleetSlug: null, fleetRole: null };
   }
+}
+
+/**
+ * fleet-auto-mode (WI-1356): the durable AUTO-mode activation a fleet/auto launch
+ * bakes into the session — a fleet member has no human at its keyboard, so it must
+ * start in the persona's "act, don't ask, loop until done" standing state. Injected
+ * into the assembled system prompt (survives compaction) AND prepended to the seeded
+ * turn-1 kickoff (so turn 1 enters AUTO). Shared so the two copies never drift.
+ */
+export const AUTO_MODE_DIRECTIVE =
+  'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
+  'loop continuously until the work is done. (The persona\'s AUTO-mode section governs; ' +
+  'the narrow irreversible-high-stakes brakes still apply.)';
+
+/**
+ * launch-path-argv-reconstruction (WI-1343): normalize a caller-supplied
+ * `launch_argv` (the literal `psu …` invocation the launcher built) into the
+ * string[] recorded on `adv_sessions.launch_argv`. Defensive: only strings,
+ * each length-capped, the array element-capped — an untrusted body must never
+ * bloat the row or poison the JSONB. Returns null when nothing usable was sent
+ * (the caller then falls back to a server-side reconstruction). Exported for tests.
+ */
+export function normalizeLaunchArgv(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const out = v.filter((x): x is string => typeof x === 'string').map((x) => x.slice(0, 2000));
+  return out.length ? out.slice(0, 128) : null;
+}
+
+/**
+ * launch-path-argv-reconstruction (WI-1343): the server-side FALLBACK argv for a
+ * bootstrap-su launch whose caller did not send an explicit `launch_argv` (a
+ * direct/web POST, or a launcher that predates the field). Reconstructs the
+ * canonical `psu …` invocation from the RESOLVED launch fields so a killed batch
+ * is still reconstructible. The psu launcher itself sends the literal argv (which
+ * wins); this is the belt-and-suspenders path. Pure — exported for tests.
+ */
+export function reconstructPsuLaunchArgv(o: {
+  agent: string;
+  harnessSlug?: string | null;
+  planSlug?: string | null;
+  profile?: string | null;
+  contextSize?: string | null;
+  account?: string | null;
+  fleet?: string | null;
+}): string[] {
+  const argv = ['psu', '--no-picker', `--agent=${o.agent}`];
+  if (o.harnessSlug) argv.push(`--harness=${o.harnessSlug}`);
+  argv.push(o.planSlug ? `--plan=${o.planSlug}` : '--no-plan');
+  if (o.profile && o.profile !== 'engineer') argv.push(`--profile=${o.profile}`);
+  if (o.contextSize) argv.push(`--context-size=${o.contextSize}`);
+  if (o.account) argv.push(`--account=${o.account}`);
+  if (o.fleet) argv.push(`--fleet=${o.fleet}`);
+  return argv;
 }
 
 const brainGet = defineTool({
@@ -438,9 +534,13 @@ const optionsGet = defineTool({
     type SchemeColor = { name: string; bg: string; fg: string; cursor: string };
     let fleets: Array<{ slug: string; title: string | null; scheme: string | null; color: SchemeColor }> = [];
     let nextScheme: SchemeColor | null = null;
+    // The full curated catalog (name + colours) so the psu picker can offer a
+    // scheme SELECTOR with per-row swatches when creating a new fleet.
+    let schemes: SchemeColor[] = [];
     try {
       const { listFleets, resolveFleetScheme } = await import('../../../agent-fleets-store');
-      const { allocateNextSchemeName, schemeByName } = await import('../../../console-color-schemes');
+      const { COLOR_SCHEMES, allocateNextSchemeName, schemeByName } = await import('../../../console-color-schemes');
+      schemes = COLOR_SCHEMES.map((s) => ({ name: s.name, bg: s.bg, fg: s.fg, cursor: s.cursor }));
       const rows = await listFleets(workspace);
       fleets = rows.map((f) => ({
         slug: f.fleetSlug,
@@ -455,7 +555,7 @@ const optionsGet = defineTool({
     } catch {
       /* fleet listing is optional — proceed without it */
     }
-    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts, fleets, nextScheme });
+    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts, fleets, nextScheme, schemes });
   },
 });
 
@@ -496,12 +596,26 @@ const post = defineTool({
        *  derives its slug (fleetSlugFromName) + creates the agent_fleets row, and
        *  this agent becomes the leader (D-002). */
       fleet_name?: string | null;
+      /** fleet-color-schemes: a catalog scheme NAME chosen in the psu picker for a
+       *  NEW fleet (with `fleet_name`). Forces that colour; an unknown/absent value
+       *  auto-allocates the next unused scheme. Ignored for an existing-fleet join. */
+      fleet_scheme?: string | null;
       /** Optional kickoff/launch-context file generated by the operator UI.
        * Claude/OMP receive this as an extra system prompt from the launcher;
        * Codex has no such flag, so bootstrap folds it into AGENTS.md. */
       launch_context?: string | null;
       /** su-context-size-variants: 'full' | 'trimmed' — the initial-context size. */
       context_size?: string | null;
+      /** launch-path-argv-reconstruction (WI-1343): the literal `psu …` argv the
+       *  launcher built, recorded on adv_sessions.launch_argv so a killed batch is
+       *  reconstructible. Validated + capped server-side (normalizeLaunchArgv);
+       *  omitted ⇒ the server reconstructs it from the resolved fields. */
+      launch_argv?: unknown;
+      /** fleet-auto-mode (WI-1356): start this session in AUTO mode (act/don't-ask/
+       *  loop). The launcher sets it for `--fleet` launches (default) or an explicit
+       *  `--auto`. When true, bake the durable AUTO directive into the system prompt
+       *  and prepend the AUTO activation to the seeded kickoff. */
+      auto?: boolean;
     } = {};
     try {
       const text = await req.text();
@@ -639,6 +753,23 @@ const post = defineTool({
       ? randomUUID()
       : null;
 
+    // launch-path-argv-reconstruction (WI-1343): the exact `psu …` invocation that
+    // launched this session — recorded on adv_sessions.launch_argv so a killed batch
+    // (e.g. a 14-agent fleet) can be reconstructed. The launcher sends the literal argv
+    // (normalizeLaunchArgv); a caller that omits it falls back to a server-side
+    // reconstruction from the resolved fields. Before this the column was always NULL.
+    const launchArgv =
+      normalizeLaunchArgv(body.launch_argv) ??
+      reconstructPsuLaunchArgv({
+        agent,
+        harnessSlug,
+        planSlug,
+        profile,
+        contextSize,
+        account: body.account?.trim() || null,
+        fleet: body.fleet?.trim() || body.fleet_name?.trim() || null,
+      });
+
     // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({
       planSlug,
@@ -649,6 +780,7 @@ const post = defineTool({
       label: body.label?.trim() || null,
       coordOwnerId: sid,
       sessionId: nativeSessionId,
+      launchArgv,
     });
 
     // launch-wakeability (turn-lifecycle-control): arm the standing inbox-wake NOW —
@@ -681,8 +813,31 @@ const post = defineTool({
       fleet: body.fleet,
       fleetRole: body.fleet_role,
       fleetName: body.fleet_name,
+      fleetScheme: body.fleet_scheme,
       ownerId: sid,
     });
+
+    // WI-1343 (psu-fleet-presence): STAMP the fleet membership onto coord_presence
+    // at boot. The env-fold in writePresence (deriveFleetMembership) reads the
+    // OPERATOR's process.env — NOT the agent's — so a psu `--fleet=<slug>` launch
+    // (which pins PAPERCUSP_FLEET_SLUG on the AGENT's process) never reached it, and
+    // the agent registered presence with fleet_slug=null → INVISIBLE to fleet:status
+    // (the "lost batch" bug). Register a PENDING placement keyed by this session's
+    // coord owner id (sid == coord_presence.owner_id), in this SAME operator process:
+    // the agent's FIRST presence write (coord:orient/declare-intent) applies it as an
+    // authoritative hard-set — the exact mechanism headless bees use (fleet:spawn),
+    // and the same effect as the agent running fleet:join. Best-effort + one-shot.
+    if (fleetPin.fleetSlug) {
+      setPendingFleet(sid, fleetPin.fleetSlug, fleetPin.fleetRole ?? 'member');
+    }
+
+    // Fleet-launched agents start AUTONOMOUS (WI-1356): a fleet member has no human
+    // at its keyboard, so `--fleet` (or an explicit `--auto`) launches it in AUTO
+    // mode. The launcher sends `auto` in the body; when set we (a) inject a DURABLE
+    // AUTO directive into the assembled system prompt (survives compaction) and
+    // (b) prepend the same activation to the seeded kickoff so turn 1 enters AUTO.
+    const autoMode = body.auto === true;
+
     const launchContextPath = body.launch_context?.trim() || null;
     let promptText = spec.promptText;
     if (agent === 'codex' && launchContextPath) {
@@ -694,6 +849,14 @@ const post = defineTool({
       } catch (e: any) {
         return jsonRes({ status: 'error', error: `read launch_context: ${e?.message}` }, 400);
       }
+    }
+
+    // fleet-auto-mode (WI-1356): bake the durable AUTO directive into the assembled
+    // system prompt so it survives compaction. promptText is the single source for
+    // every backend's launch context (claude/omp launch-context file + codex AGENTS.md),
+    // so injecting here covers all three.
+    if (autoMode) {
+      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n`;
     }
 
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
@@ -816,7 +979,15 @@ const post = defineTool({
     // instead of parking idle. The launcher GATES delivery (--no-picker + --plan,
     // unless --no-kickoff); the server just supplies the canonical text — shared with
     // plans:launch's headless kickoff via ./launch-prompt, so the two never drift.
-    const kickoffPrompt: string | null = planSlug ? deriveLaunchPromptText(null) : null;
+    //
+    // fleet-auto-mode (WI-1356): an AUTO launch ALSO prepends the AUTO activation so
+    // turn 1 enters AUTO — and gets a kickoff even with NO plan bound (a fleet member
+    // must start autonomous regardless), so the launcher's kickoffPositionalArgs
+    // (gated to --no-picker) submits it as the first turn.
+    const kickoffBase: string | null = planSlug ? deriveLaunchPromptText(null) : null;
+    const kickoffPrompt: string | null = autoMode
+      ? [AUTO_MODE_DIRECTIVE, kickoffBase].filter(Boolean).join('\n\n')
+      : kickoffBase;
 
     const result: BootstrapSuResult = {
       status: 'ok',

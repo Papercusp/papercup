@@ -1,0 +1,130 @@
+/**
+ * take-leadership.test.ts — fleet:take-leadership must RECOLOR the caller's terminal
+ * to the fleet's bound scheme, not just fleet-tag their presence (WI-1351).
+ *
+ * Before the fix, the handler called takeFleetLeadership (registry leader + presence
+ * + notify) but — unlike fleet:create / fleet:join — never called recolorCallerTerminal,
+ * so becoming a leader left the window its old color. This locks the recolor step: the
+ * handler emits the fleet scheme's OSC bytes to the caller's pty, reusing the shared
+ * oscRecolorSequence (no duplicated OSC logic — the WI-1276 drift-guard stays valid),
+ * and best-effort so a recolor miss never fails the (already-committed) transfer.
+ *
+ * The store / presence / coord / pty seams are mocked; the REAL takeFleetLeadership +
+ * recolorCallerTerminal orchestration runs over them, so this verifies the handler
+ * wiring end-to-end without PG or a live pty.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { oscRecolorSequence, schemeByName } from '../../console-color-schemes';
+import type { AgentFleetRecord } from '../../agent-fleets-store';
+
+/** A real catalog scheme — the recolor path must emit exactly its OSC bytes. */
+const FOREST = schemeByName('forest')!;
+
+const h = vi.hoisted(() => ({
+  getFleet: vi.fn(),
+  setFleetLeader: vi.fn(),
+  resolveFleetScheme: vi.fn(),
+  heartbeatPresence: vi.fn(),
+  setPresenceFleet: vi.fn(),
+  fetchPresenceFleet: vi.fn(),
+  sendMessage: vi.fn(),
+  resolveAgentIdentity: vi.fn(),
+  recolorViaPty: vi.fn(),
+}));
+
+vi.mock('../../agent-fleets-store', () => ({
+  getFleet: (...a: unknown[]) => h.getFleet(...a),
+  setFleetLeader: (...a: unknown[]) => h.setFleetLeader(...a),
+  resolveFleetScheme: (...a: unknown[]) => h.resolveFleetScheme(...a),
+}));
+vi.mock('../coordination/presence', () => ({
+  heartbeatPresence: (...a: unknown[]) => h.heartbeatPresence(...a),
+  setPresenceFleet: (...a: unknown[]) => h.setPresenceFleet(...a),
+}));
+vi.mock('../coordination/presence-fleet', () => ({
+  fetchPresenceFleet: (...a: unknown[]) => h.fetchPresenceFleet(...a),
+}));
+vi.mock('../coordination/messages', () => ({
+  sendMessage: (...a: unknown[]) => h.sendMessage(...a),
+}));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: (...a: unknown[]) => h.resolveAgentIdentity(...a),
+}));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
+vi.mock('../../events/await/psu-pty-discovery', () => ({
+  recolorViaPty: (...a: unknown[]) => h.recolorViaPty(...a),
+}));
+
+import takeLeadershipTool from './take-leadership';
+
+const CTX = { workspaceId: 'ws', role: 'operator' } as never;
+const parse = (res: { content: { text: string }[] }) => JSON.parse(res.content[0].text);
+const invoke = (args: Record<string, unknown>) =>
+  (takeLeadershipTool as unknown as { handler: (a: unknown, c: unknown) => Promise<{ content: { text: string }[] }> }).handler(args, CTX);
+
+function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
+  return {
+    workspaceId: 'ws',
+    fleetSlug: 'rocket',
+    title: null,
+    description: null,
+    owner: null,
+    leaderOwnerId: null,
+    colorScheme: 'forest',
+    createdAt: 0,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-bob', workspaceId: 'ws' });
+  h.getFleet.mockResolvedValue(fleet());
+  h.setFleetLeader.mockResolvedValue(undefined);
+  h.heartbeatPresence.mockResolvedValue(undefined);
+  h.setPresenceFleet.mockResolvedValue(undefined);
+  h.fetchPresenceFleet.mockResolvedValue(new Map());
+  h.sendMessage.mockResolvedValue({ msg_id: 'm1' });
+  h.resolveFleetScheme.mockReturnValue(FOREST);
+  h.recolorViaPty.mockResolvedValue(true);
+});
+
+describe('fleet:take-leadership — recolors the caller terminal (WI-1351), not just presence', () => {
+  it("emits the fleet scheme's OSC recolor bytes to the caller's pty", async () => {
+    const out = parse(await invoke({ fleet: 'rocket' }));
+    expect(out.ok).toBe(true);
+    // The recolor landed on the CALLER's pty with EXACTLY the fleet scheme's OSC bytes
+    // (reusing oscRecolorSequence — no duplicated OSC logic).
+    expect(h.recolorViaPty).toHaveBeenCalledTimes(1);
+    expect(h.recolorViaPty).toHaveBeenCalledWith('su-bob', oscRecolorSequence(FOREST));
+    expect(h.resolveFleetScheme).toHaveBeenCalledWith(expect.objectContaining({ fleetSlug: 'rocket' }));
+    // ...and the leadership transfer itself still happened.
+    expect(h.setFleetLeader).toHaveBeenCalledWith('ws', 'rocket', 'su-bob');
+    expect(h.setPresenceFleet).toHaveBeenCalledWith('ws', 'su-bob', 'rocket', 'leader');
+    expect(out).toMatchObject({ leader: 'su-bob', scheme: 'forest' });
+  });
+
+  it('a recolor miss (no live pty) never fails the leadership transfer', async () => {
+    h.recolorViaPty.mockResolvedValue(false); // headless / no-pty / non-psu caller
+    const out = parse(await invoke({ fleet: 'rocket' }));
+    expect(out.ok).toBe(true);
+    expect(out.leader).toBe('su-bob');
+    expect(h.setFleetLeader).toHaveBeenCalledWith('ws', 'rocket', 'su-bob');
+  });
+
+  it('a recolor THROW is swallowed — the transfer already committed', async () => {
+    h.recolorViaPty.mockRejectedValue(new Error('pty gone'));
+    const out = parse(await invoke({ fleet: 'rocket' }));
+    expect(out.ok).toBe(true);
+    expect(out.leader).toBe('su-bob');
+  });
+
+  it('does NOT recolor when the fleet does not exist', async () => {
+    h.getFleet.mockResolvedValue(null);
+    const out = parse(await invoke({ fleet: 'ghost' }));
+    expect(out.ok).toBe(false);
+    expect(h.recolorViaPty).not.toHaveBeenCalled();
+    expect(h.setFleetLeader).not.toHaveBeenCalled();
+  });
+});

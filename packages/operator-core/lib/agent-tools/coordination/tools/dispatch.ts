@@ -110,7 +110,10 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
   let wakeable: boolean | null = null;
   let presenceOwnerId: string | null = null;
   try {
-    const snapshot = await call('coord:presence', { scope: 'workspace' });
+    // Targeted `owner` lookup: the default roster now omits `ended` rows, but a
+    // dispatch target may well be dead — pass `owner` so an `ended`/parked target is
+    // still resolved (for the wakeable/recipient_dead pre-state) instead of missed.
+    const snapshot = await call('coord:presence', { scope: 'workspace', owner: args.to });
     const row = findPresenceRow(snapshot, args.to);
     if (row) {
       sessionState = row.sessionState;

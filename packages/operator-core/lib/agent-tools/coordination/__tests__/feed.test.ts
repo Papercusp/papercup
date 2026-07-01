@@ -10,7 +10,30 @@
  *   npx vitest run lib/agent-tools/coordination/__tests__/feed.test.ts
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Stub only the PG-backed audience RESOLVERS (so a selector send doesn't reach
+// getOrgPg in this in-memory unit test) — keep the REAL deriveAudienceKey /
+// canonicalizeAudienceSelector (pure) that messages.ts uses to preserve the
+// audience key on the envelope, which is exactly what these tests exercise.
+vi.mock('../audience-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../audience-host')>();
+  return {
+    ...actual,
+    hostAudienceResolvers: {
+      listTargetSubscribers: async () => [],
+      listActivePresence: async () => [],
+      listTaggedTopics: async () => [],
+      listFleetMembers: async () => [],
+      listFleetLeader: async () => [],
+    },
+    audienceMode: () => 'scoped' as const,
+  };
+});
+
+// sendMessage fires the fleet digest sidecar for @fleet: sends; stub it so seeding a
+// fleet broadcast here doesn't reach getOrgPg (its behavior lives in fleet-delivery.test.ts).
+vi.mock('../fleet-delivery', () => ({ deliverFleetDigests: async () => 0 }));
 
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 
@@ -200,5 +223,76 @@ describe('readCoordFeed — pagination', () => {
     expect(rows).toEqual([]);
     expect(total).toBe(0);
     expect(nextCursor).toBeNull();
+  });
+});
+
+describe('readCoordFeed — audience-keyed history (the catch-up read)', () => {
+  it('filters to envelopes addressed to a given audience selector', async () => {
+    await sendMessage(A, { to: ['@fleet:backend'], summary: 'fleet ping' });
+    await wait();
+    await sendMessage(A, { to: ['@topic:area-x'], summary: 'topic ping' });
+    await wait();
+    await sendMessage(A, { to: ['B'], summary: 'direct (no audience key)' });
+
+    const fleet = await readCoordFeed({ audience: '@fleet:backend', limit: 100 });
+    expect(fleet.rows.map((r) => r.summary)).toEqual(['fleet ping']);
+
+    const topic = await readCoordFeed({ audience: '@topic:area-x', limit: 100 });
+    expect(topic.rows.map((r) => r.summary)).toEqual(['topic ping']);
+  });
+
+  it('a late joiner reads fleet history even though their id was never in `to`', async () => {
+    // Resolvers are stubbed to NO live members, so `to` expands to [] — but the row
+    // still persists carrying the preserved audience key, so it is retrievable later.
+    await sendMessage(A, { to: ['@fleet:backend'], summary: 'sent before C joined' });
+    const got = await readCoordFeed({ audience: '@fleet:backend', limit: 100 });
+    expect(got.rows).toHaveLength(1);
+    expect(got.rows[0]!.summary).toBe('sent before C joined');
+    // The expanded recipient list is empty (no live members) — proving retrieval is by
+    // audience, not by recipient membership.
+    expect(got.rows[0]!.to).toEqual([]);
+  });
+
+  it('canonicalizes fleet names: @fleet:Backend Team keys the same history as @fleet:backend-team', async () => {
+    await sendMessage(A, { to: ['@fleet:Backend Team'], summary: 'human-named fleet' });
+    const got = await readCoordFeed({ audience: '@fleet:backend-team', limit: 100 });
+    expect(got.rows.map((r) => r.summary)).toEqual(['human-named fleet']);
+  });
+});
+
+describe('readCoordFeed — count + token bounds (paused-fleet catch-up)', () => {
+  it('limit caps the page and yields a cursor for the older page', async () => {
+    for (let i = 0; i < 5; i++) {
+      await sendMessage(A, { to: ['*'], summary: `b${i}` });
+      await wait();
+    }
+    const r = await readCoordFeed({ limit: 2 });
+    expect(r.rows).toHaveLength(2);
+    expect(r.nextCursor).not.toBeNull();
+  });
+
+  it('token_budget stops newest-first, always returns ≥1 row, and reports tokens', async () => {
+    for (let i = 0; i < 8; i++) {
+      await sendMessage(A, { to: ['*'], summary: `budget-row-${i}` });
+      await wait();
+    }
+    const full = await readCoordFeed({ limit: 100 });
+    expect(full.tokens).toBeGreaterThan(0);
+
+    // A 1-token budget can't fit even one row's cost, but at least one is always returned.
+    const tight = await readCoordFeed({ limit: 100, token_budget: 1 });
+    expect(tight.rows.length).toBeGreaterThanOrEqual(1);
+    expect(tight.rows.length).toBeLessThan(full.rows.length);
+    expect(tight.nextCursor).not.toBeNull();
+  });
+
+  it('stops at whichever of limit / token_budget is hit first', async () => {
+    for (let i = 0; i < 6; i++) {
+      await sendMessage(A, { to: ['*'], summary: `x${i}` });
+      await wait();
+    }
+    // Huge token budget but a hard count cap of 3 → exactly 3 rows.
+    const r = await readCoordFeed({ limit: 3, token_budget: 1_000_000 });
+    expect(r.rows).toHaveLength(3);
   });
 });

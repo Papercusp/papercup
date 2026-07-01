@@ -184,6 +184,28 @@ describe('mergeRosterEntries', () => {
     expect(withClaims.claims[0].id).toBe('P-001');
     expect(without.claims).toEqual([]);
   });
+
+  it('stamps fleetSlug + the fleet accent color from fleetByOwner; null when no fleet (#3 grouping)', () => {
+    const fleetByOwner = new Map([['su-1', { fleetSlug: 'atlas', fleetColor: '#86efac' }]]);
+    const [inFleet, noFleet] = mergeRosterEntries(
+      [presence({ ownerId: 'su-1' }), presence({ ownerId: 'su-2' })],
+      new Map(), // advByOwner
+      NOW,
+      new Map(), // claimsByOwner
+      new Map(), // sessionsByOwner
+      new Map(), // wakeModesByOwner
+      'auto', // defaultWakeMode
+      new Map(), // pendingWakesByOwner
+      new Map(), // nurseryByOwner
+      fleetByOwner,
+    );
+    // The pui Fleet tab groups by fleetSlug and paints the group header in fleetColor.
+    expect(inFleet.fleetSlug).toBe('atlas');
+    expect(inFleet.fleetColor).toBe('#86efac');
+    // An owner absent from the map = no fleet → both null (pui draws a neutral "No fleet" group).
+    expect(noFleet.fleetSlug).toBeNull();
+    expect(noFleet.fleetColor).toBeNull();
+  });
 });
 
 describe('dedupeEndedAgainstActive', () => {

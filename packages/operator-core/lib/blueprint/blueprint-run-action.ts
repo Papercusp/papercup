@@ -46,6 +46,7 @@ import '../blueprint-steps/index'; // register deterministic step-ops (P-010)
 import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner';
 import { buildCoordOpCtx } from '../coord-ops/prod-caps';
 import { registerHarnessOpProxies } from '../harness-ops/proxy';
+import { runWithWorkspace } from '../workspace-als';
 
 const operatorBase = operatorApiBase;
 
@@ -306,7 +307,18 @@ async function runScheduledProgram(
   // process. Idempotent + default-inert.
   registerHarnessOpProxies((bp.ops ?? []) as Parameters<typeof registerHarnessOpProxies>[0]);
   try {
-    const outcome = await runProgramCore({ blueprint: bp, payload, ctx, runOp: inlineRunOp });
+    // Run the program inside its install's WORKSPACE ALS scope (scout-gateway-egress-scope,
+    // 2026-06-30). The PG-backed flag-override store keys reads on `activeWorkspaceId()`
+    // (flag-bus.ts), so an op that evaluates a flag — e.g. Scout's in-process ideator path
+    // checking INFERENCE_GATEWAY to point PAPERCUSP_ANTHROPIC_URL at the localhost pool —
+    // would otherwise read the 'default' workspace (no override row) instead of this
+    // routine's workspace, resolve the flag OFF, and egress LLM calls DIRECT to
+    // api.anthropic.com on one rate-limited account → 180s ideator timeouts / 0 ideas. The
+    // routine fires with opts.workspaceId; making it the active ALS scope is what lets every
+    // op (scout/neologism/regret/…) see the per-workspace overrides + gateway routing.
+    const outcome = await runWithWorkspace(opts.workspaceId, () =>
+      runProgramCore({ blueprint: bp, payload, ctx, runOp: inlineRunOp }),
+    );
     console.log(
       `[blueprint-run] ${opts.installSlug}: ran program '${bp.id}' → ${outcome.outcome} (resolved=${outcome.resolved})`,
     );

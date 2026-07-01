@@ -1,0 +1,61 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/commands/registry.ts", {"importedNames":["register"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/client-navigation.ts", {"importedNames":["navigateClient"]});
+
+
+
+const NavigateArgs = __vite_ssr_import_0__.z.object({
+  path: __vite_ssr_import_0__.z.string().min(1).describe("Path within the operator app (e.g. /harness, /settings/voice).")
+});
+function navTo(path) {
+  if (typeof window === "undefined") throw new Error("navigate must run in browser");
+  const ws = new URL(window.location.href).searchParams.get("ws");
+  let target = path;
+  if (ws && !path.includes("?")) target = `${path}?ws=${encodeURIComponent(ws)}`;
+  else if (ws && path.includes("?") && !path.includes("ws=")) target = `${path}&ws=${encodeURIComponent(ws)}`;
+  (0,__vite_ssr_import_2__.navigateClient)(target);
+  return { path: target };
+}
+const navigate = {
+  id: "navigate",
+  kind: "command",
+  description: "Navigate the browser to a path within the operator app.",
+  promptDescription: 'Routes the user to the given path. Use for "take me to settings" / "go to the sheets harness". Common paths: /harness, /settings/voice, /settings/api-keys, /cupboard, /installed/harnesses.',
+  schema: NavigateArgs,
+  agents: ["oracle", "operator", "shortcut"],
+  browser: "required",
+  concurrent: "allow",
+  tier: "reflexive",
+  handler: async ({ path }) => navTo(path)
+};
+(0,__vite_ssr_import_1__.register)(navigate);
+const Empty = __vite_ssr_import_0__.z.object({}).strict();
+const FIXED_NAVS = [
+  { id: "nav.papercusp", path: "/harness", title: "Go to Harness", icon: "⌖", keywords: "harness dashboard" },
+  { id: "nav.cupboard", path: "/cupboard", title: "Go to Cupboard", icon: "⌖", keywords: "cupboard marketplace plugins templates" },
+  { id: "nav.installed-harnesses", path: "/installed/harnesses", title: "Go to Installed harnesses", icon: "⌖", keywords: "installed harnesses" },
+  { id: "nav.settings", path: "/settings", title: "Go to Settings", icon: "⌖", keywords: "settings" },
+  { id: "nav.settings-voice", path: "/settings/voice", title: "Go to Voice settings", icon: "⌖", keywords: "voice settings elevenlabs" },
+  { id: "nav.settings-api-keys", path: "/settings/api-keys", title: "Go to API keys", icon: "⌖", keywords: "api keys openai anthropic" },
+  { id: "nav.settings-shortcuts", path: "/settings/shortcuts", title: "Go to Keyboard shortcuts", icon: "⌖", keywords: "shortcuts keyboard" },
+  { id: "nav.docs", path: "/docs", title: "Go to Docs", icon: "⌖", keywords: "docs documentation" }
+];
+for (const f of FIXED_NAVS) {
+  const def = {
+    id: f.id,
+    kind: "command",
+    description: `Navigate to ${f.path}.`,
+    schema: Empty,
+    agents: ["oracle", "operator", "palette", "shortcut"],
+    browser: "required",
+    concurrent: "allow",
+    tier: "reflexive",
+    paletteEntry: { section: "Navigate", title: f.title, icon: f.icon, keywords: f.keywords },
+    handler: async () => navTo(f.path)
+  };
+  (0,__vite_ssr_import_1__.register)(def);
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBR0E7QUFDQTtBQUVBOzs7O0FBRUEsTUFBTSxlQUFlLHdCQUFFLE9BQU87QUFBQSxFQUM1QixNQUFNLHdCQUFFLE9BQU8sRUFBRSxJQUFJLENBQUMsRUFBRSxTQUFTLGdFQUFnRTtBQUNuRyxDQUFDO0FBRUQsU0FBUyxNQUFNLE1BQWdDO0FBQzdDLE1BQUksT0FBTyxXQUFXLFlBQWEsT0FBTSxJQUFJLE1BQU0sOEJBQThCO0FBQ2pGLFFBQU0sS0FBSyxJQUFJLElBQUksT0FBTyxTQUFTLElBQUksRUFBRSxhQUFhLElBQUksSUFBSTtBQUM5RCxNQUFJLFNBQVM7QUFDYixNQUFJLE1BQU0sQ0FBQyxLQUFLLFNBQVMsR0FBRyxFQUFHLFVBQVMsR0FBRyxJQUFJLE9BQU8sbUJBQW1CLEVBQUUsQ0FBQztBQUFBLFdBQ25FLE1BQU0sS0FBSyxTQUFTLEdBQUcsS0FBSyxDQUFDLEtBQUssU0FBUyxLQUFLLEVBQUcsVUFBUyxHQUFHLElBQUksT0FBTyxtQkFBbUIsRUFBRSxDQUFDO0FBQ3pHLDJDQUFlLE1BQU07QUFDckIsU0FBTyxFQUFFLE1BQU0sT0FBTztBQUN4QjtBQUVBLE1BQU0sV0FBcUQ7QUFBQSxFQUN6RCxJQUFJO0FBQUEsRUFDSixNQUFNO0FBQUEsRUFDTixhQUFhO0FBQUEsRUFDYixtQkFDRTtBQUFBLEVBR0YsUUFBUTtBQUFBLEVBQ1IsUUFBUSxDQUFDLFVBQVUsWUFBWSxVQUFVO0FBQUEsRUFDekMsU0FBUztBQUFBLEVBQ1QsWUFBWTtBQUFBLEVBQ1osTUFBTTtBQUFBLEVBQ04sU0FBUyxPQUFPLEVBQUUsS0FBSyxNQUFNLE1BQU0sSUFBSTtBQUN6QztHQUVBLGdDQUFTLFFBQVE7QUFFakIsTUFBTSxRQUFRLHdCQUFFLE9BQU8sQ0FBQyxDQUFDLEVBQUUsT0FBTztBQUVsQyxNQUFNLGFBQWlHO0FBQUEsRUFDckcsRUFBRSxJQUFJLGlCQUFpQixNQUFNLFlBQVksT0FBTyxpQkFBaUIsTUFBTSxLQUFLLFVBQVUsb0JBQW9CO0FBQUEsRUFDMUcsRUFBRSxJQUFJLGdCQUFnQixNQUFNLGFBQWEsT0FBTyxrQkFBa0IsTUFBTSxLQUFLLFVBQVUseUNBQXlDO0FBQUEsRUFDaEksRUFBRSxJQUFJLDJCQUEyQixNQUFNLHdCQUF3QixPQUFPLDZCQUE2QixNQUFNLEtBQUssVUFBVSxzQkFBc0I7QUFBQSxFQUM5SSxFQUFFLElBQUksZ0JBQWdCLE1BQU0sYUFBYSxPQUFPLGtCQUFrQixNQUFNLEtBQUssVUFBVSxXQUFXO0FBQUEsRUFDbEcsRUFBRSxJQUFJLHNCQUFzQixNQUFNLG1CQUFtQixPQUFPLHdCQUF3QixNQUFNLEtBQUssVUFBVSw0QkFBNEI7QUFBQSxFQUNySSxFQUFFLElBQUkseUJBQXlCLE1BQU0sc0JBQXNCLE9BQU8sa0JBQWtCLE1BQU0sS0FBSyxVQUFVLDRCQUE0QjtBQUFBLEVBQ3JJLEVBQUUsSUFBSSwwQkFBMEIsTUFBTSx1QkFBdUIsT0FBTyw0QkFBNEIsTUFBTSxLQUFLLFVBQVUscUJBQXFCO0FBQUEsRUFDMUksRUFBRSxJQUFJLFlBQVksTUFBTSxTQUFTLE9BQU8sY0FBYyxNQUFNLEtBQUssVUFBVSxxQkFBcUI7QUFDbEc7QUFFQSxXQUFXLEtBQUssWUFBWTtBQUMxQixRQUFNLE1BQXdDO0FBQUEsSUFDNUMsSUFBSSxFQUFFO0FBQUEsSUFDTixNQUFNO0FBQUEsSUFDTixhQUFhLGVBQWUsRUFBRSxJQUFJO0FBQUEsSUFDbEMsUUFBUTtBQUFBLElBQ1IsUUFBUSxDQUFDLFVBQVUsWUFBWSxXQUFXLFVBQVU7QUFBQSxJQUNwRCxTQUFTO0FBQUEsSUFDVCxZQUFZO0FBQUEsSUFDWixNQUFNO0FBQUEsSUFDTixjQUFjLEVBQUUsU0FBUyxZQUFZLE9BQU8sRUFBRSxPQUFPLE1BQU0sRUFBRSxNQUFNLFVBQVUsRUFBRSxTQUFTO0FBQUEsSUFDeEYsU0FBUyxZQUFZLE1BQU0sRUFBRSxJQUFJO0FBQUEsRUFDbkM7QUFDQSxxQ0FBUyxHQUFHO0FBQ2QiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIm5hdi50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIG5hdi4qIOKAlCBicm93c2VyIG5hdmlnYXRpb24uXG4gKi9cbmltcG9ydCB7IHogfSBmcm9tICd6b2QnO1xuaW1wb3J0IHsgcmVnaXN0ZXIgfSBmcm9tICcuLi9yZWdpc3RyeSc7XG5pbXBvcnQgdHlwZSB7IENvbW1hbmREZWYgfSBmcm9tICcuLi90eXBlcyc7XG5pbXBvcnQgeyBuYXZpZ2F0ZUNsaWVudCB9IGZyb20gJy4uLy4uL2NsaWVudC1uYXZpZ2F0aW9uJztcblxuY29uc3QgTmF2aWdhdGVBcmdzID0gei5vYmplY3Qoe1xuICBwYXRoOiB6LnN0cmluZygpLm1pbigxKS5kZXNjcmliZSgnUGF0aCB3aXRoaW4gdGhlIG9wZXJhdG9yIGFwcCAoZS5nLiAvaGFybmVzcywgL3NldHRpbmdzL3ZvaWNlKS4nKSxcbn0pO1xuXG5mdW5jdGlvbiBuYXZUbyhwYXRoOiBzdHJpbmcpOiB7IHBhdGg6IHN0cmluZyB9IHtcbiAgaWYgKHR5cGVvZiB3aW5kb3cgPT09ICd1bmRlZmluZWQnKSB0aHJvdyBuZXcgRXJyb3IoJ25hdmlnYXRlIG11c3QgcnVuIGluIGJyb3dzZXInKTtcbiAgY29uc3Qgd3MgPSBuZXcgVVJMKHdpbmRvdy5sb2NhdGlvbi5ocmVmKS5zZWFyY2hQYXJhbXMuZ2V0KCd3cycpO1xuICBsZXQgdGFyZ2V0ID0gcGF0aDtcbiAgaWYgKHdzICYmICFwYXRoLmluY2x1ZGVzKCc/JykpIHRhcmdldCA9IGAke3BhdGh9P3dzPSR7ZW5jb2RlVVJJQ29tcG9uZW50KHdzKX1gO1xuICBlbHNlIGlmICh3cyAmJiBwYXRoLmluY2x1ZGVzKCc/JykgJiYgIXBhdGguaW5jbHVkZXMoJ3dzPScpKSB0YXJnZXQgPSBgJHtwYXRofSZ3cz0ke2VuY29kZVVSSUNvbXBvbmVudCh3cyl9YDtcbiAgbmF2aWdhdGVDbGllbnQodGFyZ2V0KTtcbiAgcmV0dXJuIHsgcGF0aDogdGFyZ2V0IH07XG59XG5cbmNvbnN0IG5hdmlnYXRlOiBDb21tYW5kRGVmPHouaW5mZXI8dHlwZW9mIE5hdmlnYXRlQXJncz4+ID0ge1xuICBpZDogJ25hdmlnYXRlJyxcbiAga2luZDogJ2NvbW1hbmQnLFxuICBkZXNjcmlwdGlvbjogJ05hdmlnYXRlIHRoZSBicm93c2VyIHRvIGEgcGF0aCB3aXRoaW4gdGhlIG9wZXJhdG9yIGFwcC4nLFxuICBwcm9tcHREZXNjcmlwdGlvbjpcbiAgICAnUm91dGVzIHRoZSB1c2VyIHRvIHRoZSBnaXZlbiBwYXRoLiBVc2UgZm9yIFwidGFrZSBtZSB0byBzZXR0aW5nc1wiIC8gXCJnbyB0byB0aGUgJyArXG4gICAgJ3NoZWV0cyBoYXJuZXNzXCIuIENvbW1vbiBwYXRoczogL2hhcm5lc3MsIC9zZXR0aW5ncy92b2ljZSwgL3NldHRpbmdzL2FwaS1rZXlzLCAnICtcbiAgICAnL2N1cGJvYXJkLCAvaW5zdGFsbGVkL2hhcm5lc3Nlcy4nLFxuICBzY2hlbWE6IE5hdmlnYXRlQXJncyxcbiAgYWdlbnRzOiBbJ29yYWNsZScsICdvcGVyYXRvcicsICdzaG9ydGN1dCddLFxuICBicm93c2VyOiAncmVxdWlyZWQnLFxuICBjb25jdXJyZW50OiAnYWxsb3cnLFxuICB0aWVyOiAncmVmbGV4aXZlJyxcbiAgaGFuZGxlcjogYXN5bmMgKHsgcGF0aCB9KSA9PiBuYXZUbyhwYXRoKSxcbn07XG5cbnJlZ2lzdGVyKG5hdmlnYXRlKTtcblxuY29uc3QgRW1wdHkgPSB6Lm9iamVjdCh7fSkuc3RyaWN0KCk7XG5cbmNvbnN0IEZJWEVEX05BVlM6IEFycmF5PHsgaWQ6IHN0cmluZzsgcGF0aDogc3RyaW5nOyB0aXRsZTogc3RyaW5nOyBpY29uOiBzdHJpbmc7IGtleXdvcmRzOiBzdHJpbmcgfT4gPSBbXG4gIHsgaWQ6ICduYXYucGFwZXJjdXNwJywgcGF0aDogJy9oYXJuZXNzJywgdGl0bGU6ICdHbyB0byBIYXJuZXNzJywgaWNvbjogJ+KMlicsIGtleXdvcmRzOiAnaGFybmVzcyBkYXNoYm9hcmQnIH0sXG4gIHsgaWQ6ICduYXYuY3VwYm9hcmQnLCBwYXRoOiAnL2N1cGJvYXJkJywgdGl0bGU6ICdHbyB0byBDdXBib2FyZCcsIGljb246ICfijJYnLCBrZXl3b3JkczogJ2N1cGJvYXJkIG1hcmtldHBsYWNlIHBsdWdpbnMgdGVtcGxhdGVzJyB9LFxuICB7IGlkOiAnbmF2Lmluc3RhbGxlZC1oYXJuZXNzZXMnLCBwYXRoOiAnL2luc3RhbGxlZC9oYXJuZXNzZXMnLCB0aXRsZTogJ0dvIHRvIEluc3RhbGxlZCBoYXJuZXNzZXMnLCBpY29uOiAn4oyWJywga2V5d29yZHM6ICdpbnN0YWxsZWQgaGFybmVzc2VzJyB9LFxuICB7IGlkOiAnbmF2LnNldHRpbmdzJywgcGF0aDogJy9zZXR0aW5ncycsIHRpdGxlOiAnR28gdG8gU2V0dGluZ3MnLCBpY29uOiAn4oyWJywga2V5d29yZHM6ICdzZXR0aW5ncycgfSxcbiAgeyBpZDogJ25hdi5zZXR0aW5ncy12b2ljZScsIHBhdGg6ICcvc2V0dGluZ3Mvdm9pY2UnLCB0aXRsZTogJ0dvIHRvIFZvaWNlIHNldHRpbmdzJywgaWNvbjogJ+KMlicsIGtleXdvcmRzOiAndm9pY2Ugc2V0dGluZ3MgZWxldmVubGFicycgfSxcbiAgeyBpZDogJ25hdi5zZXR0aW5ncy1hcGkta2V5cycsIHBhdGg6ICcvc2V0dGluZ3MvYXBpLWtleXMnLCB0aXRsZTogJ0dvIHRvIEFQSSBrZXlzJywgaWNvbjogJ+KMlicsIGtleXdvcmRzOiAnYXBpIGtleXMgb3BlbmFpIGFudGhyb3BpYycgfSxcbiAgeyBpZDogJ25hdi5zZXR0aW5ncy1zaG9ydGN1dHMnLCBwYXRoOiAnL3NldHRpbmdzL3Nob3J0Y3V0cycsIHRpdGxlOiAnR28gdG8gS2V5Ym9hcmQgc2hvcnRjdXRzJywgaWNvbjogJ+KMlicsIGtleXdvcmRzOiAnc2hvcnRjdXRzIGtleWJvYXJkJyB9LFxuICB7IGlkOiAnbmF2LmRvY3MnLCBwYXRoOiAnL2RvY3MnLCB0aXRsZTogJ0dvIHRvIERvY3MnLCBpY29uOiAn4oyWJywga2V5d29yZHM6ICdkb2NzIGRvY3VtZW50YXRpb24nIH0sXG5dO1xuXG5mb3IgKGNvbnN0IGYgb2YgRklYRURfTkFWUykge1xuICBjb25zdCBkZWY6IENvbW1hbmREZWY8e30sIHsgcGF0aDogc3RyaW5nIH0+ID0ge1xuICAgIGlkOiBmLmlkLFxuICAgIGtpbmQ6ICdjb21tYW5kJyxcbiAgICBkZXNjcmlwdGlvbjogYE5hdmlnYXRlIHRvICR7Zi5wYXRofS5gLFxuICAgIHNjaGVtYTogRW1wdHksXG4gICAgYWdlbnRzOiBbJ29yYWNsZScsICdvcGVyYXRvcicsICdwYWxldHRlJywgJ3Nob3J0Y3V0J10sXG4gICAgYnJvd3NlcjogJ3JlcXVpcmVkJyxcbiAgICBjb25jdXJyZW50OiAnYWxsb3cnLFxuICAgIHRpZXI6ICdyZWZsZXhpdmUnLFxuICAgIHBhbGV0dGVFbnRyeTogeyBzZWN0aW9uOiAnTmF2aWdhdGUnLCB0aXRsZTogZi50aXRsZSwgaWNvbjogZi5pY29uLCBrZXl3b3JkczogZi5rZXl3b3JkcyB9LFxuICAgIGhhbmRsZXI6IGFzeW5jICgpID0+IG5hdlRvKGYucGF0aCksXG4gIH07XG4gIHJlZ2lzdGVyKGRlZik7XG59XG4iXSwiZmlsZSI6Ii9saWIvY29tbWFuZHMvZGVmcy9uYXYudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvY29tbWFuZHMvZGVmcy9uYXYudHMiLCIvbGliL2NvbW1hbmRzL2RlZnMvbmF2LnRzIixbXV0=

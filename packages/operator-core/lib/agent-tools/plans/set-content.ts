@@ -34,7 +34,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolveCtxHarnessSlug, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan, type ParsedPlan } from './parser';
@@ -42,7 +42,6 @@ import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const argsSchema = z.object({
   slug: z.string().min(1),
@@ -380,7 +379,7 @@ export default defineTool({
     // never counted as "waiting". Best-effort — plans:list self-heals on read.
     if (isTerminalPlanStatus(parsePlan(args.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
       try {
-        await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), args.slug);
+        await clearStartedForTerminalPlan(resolveEffectiveHarnessSlug(sctx), args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

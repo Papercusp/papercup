@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 542,
+  "count": 549,
   "tools": [
     {
       "name": "ablation:report",
@@ -3279,6 +3279,38 @@
       }
     },
     {
+      "name": "coord:catch-up",
+      "http": {
+        "path": "/api/agent-tools/coord/catch-up",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Catch up on the message HISTORY for an audience you belong to — everything broadcast to a @fleet:<slug> / @topic:<slug> (or @plan:/@object:/@file:/*) you're a member of, newest-first. This is how you get the backlog after JOINING a fleet/topic or WAKING from a pause: broadcasts are not auto-polled, and your inbox only shows messages whose recipient list named you at send time. Bound the read by `limit` (last N messages) and/or `token_budget` (as much as fits in ~N tokens); paginate older with before_ts/next_cursor. Returns { audience, count, total, tokens, next_cursor, rows }. You must currently belong to the audience (low-tier, membership-checked) — use coord:feed for the unscoped, high-tier firehose.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "You just joined a fleet/topic, or woke after being paused/offline, and want what was said to that audience while you were away. The pull counterpart to an @fleet:/@topic: broadcast.",
+        "notWhen": "For messages addressed to YOU personally use coord:inbox; for the all-agent firehose use coord:feed (audit:read). This is scoped to ONE audience you belong to."
+      }
+    },
+    {
       "name": "coord:declare-intent",
       "http": {
         "path": "/api/agent-tools/coord/declare-intent",
@@ -5486,6 +5518,31 @@
       }
     },
     {
+      "name": "dev:claude_session",
+      "http": {
+        "path": "/api/agent-tools/dev/claude_session",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Find / search / read local Claude Code chat transcripts — the Claude-Code analogue of dev:omp_session. Scans BOTH ~/.claude/projects AND the per-session isolation dirs ~/.papercusp/session-claude/<owner>/projects, so psu/su CONSOLE sessions are found too. op=list (sessions by cwd + recency, the reliable read), op=search (bounded content search — lossy, returns matchCount + snippet), op=read (one session as a compact bounded turn list). Pass filePath or sessionId to read.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Find or continue a prior Claude Code session: list by cwd to pin \"the operator-vite session from ~06-29\", or search content for a distinctive marker. Read a session to see where it left off.",
+        "notWhen": "For PRODUCTION agent runs the orchestrator owns sessions (dev:sessions / dev:session_detail). For OMP CLI sessions use dev:omp_session. To reconstruct \"where they left off\" the transcript is a LOSSY secondary — prefer the durable artifacts (git per-file history + the work-item/plan ledger), which are canonical.",
+        "chaining": "dev:claude_session { op:\"list\", cwd } → { op:\"read\", sessionId } (or op:\"search\" { query } when you have a distinctive marker)."
+      }
+    },
+    {
       "name": "dev:code_run_adoption",
       "http": {
         "path": "/api/agent-tools/dev/code_run_adoption",
@@ -5883,6 +5940,30 @@
       }
     },
     {
+      "name": "dev:resolve_owner",
+      "http": {
+        "path": "/api/agent-tools/dev/resolve_owner",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Resolve a coordination owner id (su-…/s-…/pus-…) to its session(s): the native resume session_id (claude/codex), omp_thread_id, spawn/run ids, plan, cwd, and per-turn telemetry activity. The owner↔session link the dev:sessions list lacks.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You have an agent OWNER id (from coord:presence, a plan-event's `from`, or coord:whoami) and need the session it ran in — e.g. the id to pass to `claude --resume`.",
+        "notWhen": "You already have a spawn_id — use `dev:session_detail`. For the session LIST, use `dev:sessions`."
+      }
+    },
+    {
       "name": "dev:restart",
       "http": {
         "path": "/api/agent-tools/dev/restart",
@@ -6111,7 +6192,7 @@
           "POST"
         ]
       },
-      "description": "Monitoring metrics for the operator-hosted worker:chunk-loop rollout (P-020): feature completion RATE + outcome DISTRIBUTION (completed/escalated/planning_failed/aborted), avg chunks-committed, avg replan-strikes — split by execution PATH (subprocess vs the operator-hosted op) — plus the op−subprocess completion-rate delta. Reads harness_shared.worker_chunk_loop_outcomes for the active workspace over a lookback window. EMPTY (zeroed) until the dark-launch (per-harness workerChunkLoop knob) has run real features through the op path. Use to diff op vs subprocess parity before/while ramping.",
+      "description": "Monitoring metrics for the operator-hosted worker:chunk-loop rollout (P-020), all six gate metrics: feature completion RATE, outcome DISTRIBUTION (completed/escalated/planning_failed/aborted), file-lock CONTENTION rate, replan FREQUENCY across all runs, crash-RESUME success rate, and per-chunk DURABILITY — split by execution PATH (subprocess vs the operator-hosted op) — plus the op−subprocess completion-rate delta. Reads harness_shared.worker_chunk_loop_outcomes for the active workspace over a lookback window. EMPTY (zeroed) until the dark-launch (per-harness workerChunkLoop knob) has run real features through the op path. Use to diff op vs subprocess parity before/while ramping.",
       "capabilities": [
         "intel:read"
       ],
@@ -6905,6 +6986,39 @@
       }
     },
     {
+      "name": "fleet:delivery",
+      "http": {
+        "path": "/api/agent-tools/fleet/delivery",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set YOUR delivery for a named fleet's @fleet:<slug> broadcasts: full (default — every message live) | digest (terse coalesced one-liner) | muted (no live delivery; still pullable via coord:catch-up). Turns a noisy cohort down without leaving the fleet — you stay a member and can always catch up on history. 'full' clears any override. Idempotent.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "A fleet you are in is broadcasting more than you need live — set digest (terse) or muted (silent; pull on demand). You remain a member.",
+        "notWhen": "To LEAVE a fleet entirely → fleet:leave. To read what you missed → coord:catch-up { audience: \"@fleet:<slug>\" }.",
+        "chaining": "fleet:delivery { fleet, mode:\"muted\" } → later coord:catch-up { audience:\"@fleet:<slug>\" } to read the backlog."
+      }
+    },
+    {
       "name": "fleet:drain",
       "http": {
         "path": "/api/agent-tools/fleet/drain",
@@ -6978,7 +7092,7 @@
           "POST"
         ]
       },
-      "description": "Join an existing fleet as a member — labels your presence with the fleet so you show up in its roster and count toward its availability. If you are already the fleet's leader, joining does not demote you.",
+      "description": "Join an existing fleet (pick one from fleet:list) — labels your presence with the fleet so you show up in its roster and count toward its availability. `as:'member'` (default) joins as a worker; `as:'leader'` TAKES OVER as the fleet's leader (same effect as fleet:take-leadership — installs you as leader and demotes + notifies the prior leader). If you are already the fleet's leader, a member-join does not demote you.",
       "capabilities": [
         "fleet:join"
       ],
@@ -6996,9 +7110,40 @@
         "bee"
       ],
       "guidance": {
-        "when": "Becoming a member of an existing fleet (pick one from fleet:list).",
-        "notWhen": "Creating a brand-new fleet → fleet:create. Taking over a fleet to drive its plan → fleet:take-leadership.",
+        "when": "Becoming a member of an existing fleet (as:'member'), or taking it over as leader in one call (as:'leader').",
+        "notWhen": "Creating a brand-new fleet → fleet:create.",
         "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) QUEEN/colony — work_items:create → the hive intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+      }
+    },
+    {
+      "name": "fleet:launch-on-plan",
+      "http": {
+        "path": "/api/agent-tools/fleet/launch-on-plan",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, brain, add-dir, plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
+      "capabilities": [
+        "capability:terminal"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Routing option (3) — \"spawn a new desktop fleet to work a plan\" — in ONE call instead of fleet:create + capability:terminal + a manual kickoff. Pass the plan slug + a fleet name; members open on the user's desktop and start working immediately.",
+        "notWhen": "You only need worker windows with no fleet/plan → capability:terminal. You only need to register a fleet (no terminals) → fleet:create. Authoring or starting the plan → plans:apply-plan-block / plans:start (do that FIRST; this tool does not create or start plans).",
+        "chaining": "plans:apply-plan-block (or plans:new + plans:add-item) → plans:start (optional, for Queen visibility) → fleet:launch-on-plan { name, plan, count }. As leader you then monitor via fleet:assignments + coord:presence."
       }
     },
     {
@@ -7123,6 +7268,37 @@
         "when": "You (the Queen) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping fleet:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm bees by affinity in one turn.",
         "notWhen": "Placing a SINGLE task (just fleet:spawn or coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.",
         "chaining": "work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot."
+      }
+    },
+    {
+      "name": "fleet:recolor",
+      "http": {
+        "path": "/api/agent-tools/fleet/recolor",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Rebind a fleet's color scheme — PERSIST the new scheme on the fleet registry row AND live-recolor every active session in the fleet (no relaunch). The scheme must be a NAME from the curated catalog; an invalid name returns the valid list. Use this to CHANGE a fleet's color (coloring is already automatic on fleet:create / fleet:join).",
+      "capabilities": [
+        "fleet:recolor"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Changing a fleet's color — updates both its persisted identity and all of its currently-open windows.",
+        "notWhen": "A brand-new fleet already gets a scheme at fleet:create, and joiners recolor at fleet:join — only use recolor to OVERRIDE an existing binding.",
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) QUEEN/colony — work_items:create → the hive intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
       }
     },
     {
@@ -7289,7 +7465,7 @@
           "POST"
         ]
       },
-      "description": "Take over an existing fleet: you become its leader (the per-fleet analog of the Queen — you own monitoring, coordination, and driving the plan to completion). Sets the registry leader to you, labels your presence the fleet's leader, and demotes the prior leader to a member. This IS how you \"hand a plan to a fleet\" — there is no separate routing tool.",
+      "description": "Take over an existing fleet: you become its leader (the per-fleet analog of the Queen — you own monitoring, coordination, and driving the plan to completion). Sets the registry leader to you, labels your presence the fleet's leader, demotes the prior leader to a member, and NOTIFIES the displaced leader — the returned { previousLeader, notified } tells you whom you displaced and that they were already told, so you don't double-message them. This IS how you \"hand a plan to a fleet\" — there is no separate routing tool. (Also the FIRST act when the owner designates you a fleet's leader: claim it, don't just assume it.)",
       "capabilities": [
         "fleet:take-leadership"
       ],
@@ -7307,8 +7483,8 @@
         "bee"
       ],
       "guidance": {
-        "when": "Routing option (2): handing a plan to an existing named fleet. Taking the leader role makes you its driver (D-002).",
-        "notWhen": "Just becoming a worker in a fleet → fleet:join. Creating a fresh fleet → fleet:create (you are already its leader).",
+        "when": "Routing option (2): handing a plan to an existing named fleet. Taking the leader role makes you its driver (D-002). Also the FIRST act when the owner designates you a fleet's leader — claim it (this is identity-establishing, not a confirm-gated write).",
+        "notWhen": "Just becoming a worker in a fleet → fleet:join. Creating a fresh fleet → fleet:create (you are already its leader). Joining-as-leader in one call → fleet:join { as:'leader' }.",
         "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) QUEEN/colony — work_items:create → the hive intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
       }
     },
@@ -7432,6 +7608,37 @@
         "when": "Your feature is the discovery half of a discover-then-act generative wave (the plan declares a `for_each: { from_feature: <you> }` wave) and you have produced the concrete list of items the downstream wave should fan out over.",
         "notWhen": "Your work has no downstream generative wave, or the item-set is already known at promote time (use a promote-time `items`/`glob`/`sql` resolver instead).",
         "chaining": "Call once near the end of your run, after the scan/enumeration is complete and verified."
+      }
+    },
+    {
+      "name": "git-sync:run",
+      "http": {
+        "path": "/api/agent-tools/git-sync/run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand (commit + push the current install's dirty tree) instead of waiting for the ≤3-min cron tick. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists): makes a (force-)deploy ship CURRENT staging, not stale. Same action a cron tick runs (lock, content-guard, attribution). release:deploy now fires this FIRST so it ships the latest agents' work.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.)",
+        "notWhen": "To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
+        "chaining": "git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
       }
     },
     {
@@ -15786,7 +15993,7 @@
           "POST"
         ]
       },
-      "description": "Manual deploy lever + \"why isn't my change live?\" diagnosis. op:status (read-only — gate red/green/stalled, release-fixer status, how far :3070 is behind the green pin, + a recommendation; call FIRST when a gate-clean change isn't live). op:trigger (expedite a GREEN-but-stalled deploy; refuses unless green code is ahead; dry-run unless confirm:true; audited). op:force (operator/queen/architect ONLY, loud+audited: deploy an UN-GREEN commit past a red gate — needs acknowledgeRedTests + reason; the rare no-users-window escape). Wraps the deploy-cli chokepoint, fired DETACHED.",
+      "description": "Manually FIRE / TRIGGER / RUN-NOW / deploy-on-demand: the manual lever to push a committed, green change LIVE to :3070 now instead of waiting for the ~half-hourly timer, plus \"why isn't my change live?\" diagnosis. (This is the DEPLOY trigger; git-sync, the auto-commit/push routine, has no fire-now verb.) op:status (read-only — gate red/green/stalled, release-fixer status, how far :3070 is behind the green pin, + a recommendation; call FIRST when a gate-clean change isn't live). op:trigger (expedite a GREEN-but-stalled deploy; refuses unless green code is ahead; dry-run unless confirm:true; audited). op:force (operator/queen/architect ONLY, loud+audited: deploy an UN-GREEN commit past a red gate — needs acknowledgeRedTests + reason; rare no-users-window escape). Fired DETACHED.",
       "capabilities": [
         "operator:write"
       ],
@@ -16229,7 +16436,7 @@
           "POST"
         ]
       },
-      "description": "Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), and in-process-periodic health sweeps (ephemeral tier). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError}. Read-only.",
+      "description": "Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), live managedSetInterval timers + in-process-periodic health sweeps (ephemeral tier), and bespoke separate-process timers (external-process: the inference gateway, its watchdog, the psu-launcher — listed for visibility, live fire-state pending federation). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError}. Read-only.",
       "capabilities": [
         "operator:read"
       ],

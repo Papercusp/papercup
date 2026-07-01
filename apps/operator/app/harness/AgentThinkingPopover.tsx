@@ -22,7 +22,7 @@ import { createResilientEventSource } from '@papercusp/sse';
  *   - The pill controls the open state via parent component (HarnessDashboard).
  */
 
-interface TimelineEntry {
+export interface TimelineEntry {
   kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result';
   text?: string;
   toolName?: string;
@@ -47,11 +47,81 @@ interface Props {
   onMouseLeave: () => void;
   /** Open the full AgentInspector modal (existing loadAgent flow). */
   onOpenInspector: () => void;
+  /** Run start (epoch-ms). Drives the elapsed counter + stall detection while
+   *  the timeline is still empty. Optional — when absent, no elapsed is shown. */
+  startedAtMs?: number;
+}
+
+/** How long a run may produce ZERO output before the card flags it as likely
+ *  stalled (an upstream gateway stall / rate-limit is the common cause). */
+export const STALL_AFTER_MS = 45_000;
+
+function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+/**
+ * The message shown while the timeline is EMPTY. Pure — exported for tests.
+ * Escalates a still-connected run that has produced no output for
+ * STALL_AFTER_MS from a hopeful "Waiting…" to a "likely stalled" warning, so a
+ * wedged agent stops reading as an eternal "live · 0 events".
+ */
+export function waitingMessage(
+  status: 'connecting' | 'live' | 'done' | 'error',
+  elapsedMs: number | null,
+): { text: string; stalled: boolean } {
+  if (status === 'connecting') return { text: 'Connecting…', stalled: false };
+  if (status === 'error') return { text: 'Disconnected before any output — retrying…', stalled: true };
+  if (status === 'done') return { text: 'Run ended without producing any output.', stalled: true };
+  if (elapsedMs != null && elapsedMs >= STALL_AFTER_MS) {
+    return {
+      text: `⚠ No output for ${fmtElapsed(elapsedMs)} — the agent may be stalled or rate-limited`,
+      stalled: true,
+    };
+  }
+  return {
+    text: `Waiting for first output from the agent…${elapsedMs != null ? ` (${fmtElapsed(elapsedMs)})` : ''}`,
+    stalled: false,
+  };
 }
 
 const POPOVER_WIDTH = 520;
 const POPOVER_MAX_HEIGHT = 360;
 const VIEWPORT_PAD = 12;
+
+/**
+ * Subscribe to a run's live thinking stream. Shared by the hover popover AND the
+ * pinned inspector modal (AgentInspectorModal) so both render the same timeline
+ * from one code path. Opens an EventSource on mount, replays `backfill` once,
+ * appends `event` deltas, and flips to done/error on the terminal events.
+ */
+export function useAgentThinkingStream(slug: string, phase: string, runId: string) {
+  const [events, setEvents] = useState<TimelineEntry[]>([]);
+  const [status, setStatus] = useState<'connecting' | 'live' | 'done' | 'error'>('connecting');
+  useEffect(() => {
+    setStatus('connecting');
+    setEvents([]);
+    const source = createResilientEventSource({
+      url: `/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`,
+      handlers: {
+        backfill: (data) => {
+          try { setEvents(JSON.parse(data) as TimelineEntry[]); setStatus('live'); } catch { /* ignore */ }
+        },
+        event: (data) => {
+          try { const e = JSON.parse(data) as TimelineEntry; setEvents((prev) => [...prev, e]); } catch { /* ignore */ }
+        },
+        done: () => setStatus('done'),
+      },
+      onError: () => setStatus('error'),
+    });
+    return () => { source.close(); };
+  }, [slug, phase, runId]);
+  return { events, status };
+}
 
 export default function AgentThinkingPopover({
   slug,
@@ -62,9 +132,10 @@ export default function AgentThinkingPopover({
   onMouseEnter,
   onMouseLeave,
   onOpenInspector,
+  startedAtMs,
 }: Props) {
-  const [events, setEvents] = useState<TimelineEntry[]>([]);
-  const [status, setStatus] = useState<'connecting' | 'live' | 'done' | 'error'>('connecting');
+  const { events, status } = useAgentThinkingStream(slug, phase, runId);
+  const [now, setNow] = useState(() => Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Position: above pill by default; flip below if it would clip the
@@ -88,31 +159,14 @@ export default function AgentThinkingPopover({
     return () => window.removeEventListener('scroll', onScroll, { capture: true });
   }, [onMouseLeave]);
 
-  // EventSource lifecycle.
+  // Tick a 1s clock ONLY while still waiting on the first output (empty timeline,
+  // not terminal) so the elapsed counter + the stall escalation update live —
+  // no timer runs once output arrives or the run ends.
   useEffect(() => {
-    setStatus('connecting');
-    const source = createResilientEventSource({
-      url: `/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`,
-      handlers: {
-        backfill: (data) => {
-          try {
-            const arr = JSON.parse(data) as TimelineEntry[];
-            setEvents(arr);
-            setStatus('live');
-          } catch { /* ignore */ }
-        },
-        event: (data) => {
-          try {
-            const entry = JSON.parse(data) as TimelineEntry;
-            setEvents((prev) => [...prev, entry]);
-          } catch { /* ignore */ }
-        },
-        done: () => setStatus('done'),
-      },
-      onError: () => setStatus('error'),
-    });
-    return () => { source.close(); };
-  }, [slug, phase, runId]);
+    if (events.length > 0 || status === 'done') return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [events.length, status]);
 
   // Auto-scroll to bottom on new events. We don't auto-scroll if the
   // user has manually scrolled up — preserve their scroll position.
@@ -135,11 +189,18 @@ export default function AgentThinkingPopover({
     return () => el.removeEventListener('scroll', onUserScroll);
   }, []);
 
-  const statusLabel = status === 'connecting' ? 'connecting…'
+  const elapsedMs = startedAtMs != null ? Math.max(0, now - startedAtMs) : null;
+  const waiting = waitingMessage(status, elapsedMs);
+  // A live run sitting on zero output past the stall threshold reads as
+  // "stalled?" in the header instead of a reassuring green "live".
+  const stalledNow = events.length === 0 && status === 'live' && waiting.stalled;
+  const statusLabel = stalledNow ? 'stalled?'
+    : status === 'connecting' ? 'connecting…'
     : status === 'live' ? 'live'
     : status === 'done' ? 'done'
     : 'disconnected';
-  const statusColor = status === 'live' ? '#6aa84f'
+  const statusColor = stalledNow ? '#d97757'
+    : status === 'live' ? '#6aa84f'
     : status === 'done' ? '#9a9a9a'
     : status === 'error' ? '#d97757'
     : '#9a9a9a';
@@ -200,8 +261,8 @@ export default function AgentThinkingPopover({
         }}
       >
         {events.length === 0 ? (
-          <div style={{ color: 'var(--fg-mute)', fontStyle: 'italic', padding: 4 }}>
-            {status === 'connecting' ? 'Connecting…' : 'Waiting for first output from the agent…'}
+          <div style={{ color: waiting.stalled ? '#d97757' : 'var(--fg-mute)', fontStyle: 'italic', padding: 4 }}>
+            {waiting.text}
           </div>
         ) : (
           events.map((e, i) => <Entry key={i} entry={e} />)
@@ -239,7 +300,7 @@ export default function AgentThinkingPopover({
   );
 }
 
-function Entry({ entry }: { entry: TimelineEntry }) {
+export function Entry({ entry }: { entry: TimelineEntry }) {
   if (entry.kind === 'text') {
     return (
       <pre style={{

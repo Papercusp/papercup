@@ -67,7 +67,7 @@ const PLANS = [
 ];
 
 function steering(over: Record<string, unknown> = {}) {
-  return { slug: 'papercup-hive', directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null, ...over };
+  return { slug: 'papercup-hive', directive: null, eligiblePlans: [], eligibleHives: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: null, ...over };
 }
 
 function setSteeringBody(): { name: string; args: Record<string, unknown> } {
@@ -147,6 +147,17 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     const { args } = setSteeringBody();
     expect(args.hive).toBe('papercup-hive');
     expect(args.eligiblePlans).toEqual(['plan-a']);
+  });
+
+  it('toggling Non-plan work items writes includeUnplannedWork + the home hive', async () => {
+    render(<QueenTab active={true} />, { wrapper: Wrap });
+    // Default view is "included" (checked) → clicking turns loose work OFF.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Work non-plan work items' }));
+    await waitFor(() => expect(wroteRunTool()).toBe(true));
+    const { name, args } = setSteeringBody();
+    expect(name).toBe('hive:set-steering');
+    expect(args.hive).toBe('papercup-hive');
+    expect(args.includeUnplannedWork).toBe(false);
   });
 
   it('writes pauseNewWork:true on Pause indefinitely', async () => {

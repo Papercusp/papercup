@@ -47,6 +47,32 @@ export function resolveCtxHarnessSlug(ctx: unknown): string | undefined {
   return raw;
 }
 
+/**
+ * Resolve the EFFECTIVE concrete harness slug for a plan WRITE that must name a
+ * single harness in PG — e.g. `clearStartedForTerminalPlan`'s `harness_slug = …`
+ * match, a `harness_plans` op-status / op-priority update, or the
+ * deprecate-learnings `sourceHive`. A concrete `ctx.harnessSlug` passes through;
+ * the operator / superuser `'*'` (or unset) scope resolves to the operator-home
+ * harness — because an operator-scope plan op operates on the operator's OWN
+ * plans, which live under the operator-home harness (the same resolution
+ * {@link ctxToPlanSourceOpts} applies, so the write targets the SAME partition
+ * the rest of the write path wrote to).
+ *
+ * This is the ONE canonical home for that operator-home plan-write default
+ * (workspace-data-isolation-leaks-2026-06-17 P-006 / D-003): plans handlers route
+ * through it instead of inlining `resolveCtxHarnessSlug(ctx) ?? operatorHomeHarnessSlug()`
+ * / `harnessSlug ?? operatorHomeHarnessSlug()` at every call site — the duplicated
+ * ad-hoc default whose drift caused the WI-374 plan-attribution leak. Pass a ctx
+ * that has already been through `harnessScopedCtx`, so an unresolvable scope has
+ * already thrown `harness_required` and only concrete / operator scope reaches here.
+ */
+export function resolveEffectiveHarnessSlug(ctx: unknown): string {
+  // allow-scope-default: no concrete harness in scope (operator/superuser '*' or
+  // unset) = the operator's OWN plans, which live under the operator-home harness —
+  // the documented, explicit operator-home default for plan writes, not a silent swallow.
+  return resolveCtxHarnessSlug(ctx) ?? operatorHomeHarnessSlug();
+}
+
 export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts> {
   const c = ctx as { harnessSlug?: string };
   const raw = c.harnessSlug?.trim();

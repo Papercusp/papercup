@@ -11,13 +11,13 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { collectScheduleInventory, summarizeInventory } from '../../schedule-inventory';
+import { collectScheduleInventory, summarizeInventory, SCHEDULE_SOURCES } from '../../schedule-inventory';
 
 export default defineTool({
   name: 'schedule:inventory',
   profile: 'engineer',
   description:
-    'Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), and in-process-periodic health sweeps (ephemeral tier). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError}. Read-only.',
+    'Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), live managedSetInterval timers + in-process-periodic health sweeps (ephemeral tier), and bespoke separate-process timers (external-process: the inference gateway, its watchdog, the psu-launcher — listed for visibility, live fire-state pending federation). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError}. Read-only.',
   capability: 'operator:read',
   guidance: {
     when: 'See ALL cadences in one place — what runs on a schedule and how often (DBOS crons, system routines, in-process sweeps) — before tuning/pausing one or diagnosing a missing tick.',
@@ -30,9 +30,9 @@ export default defineTool({
   rolesQuota: { operator: { perRun: 30 } },
   args: z.object({
     source: z
-      .enum(['dbos', 'routines', 'in-process', 'managed'])
+      .enum(SCHEDULE_SOURCES)
       .optional()
-      .describe('Filter to one source.'),
+      .describe('Filter to one source (dbos | routines | in-process | managed | external-process).'),
     tier: z
       .enum(['durable', 'ephemeral'])
       .optional()

@@ -22,6 +22,7 @@ const CORE = {
   'work_items:list': () => [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'todo' }],
   'coord:inbox': () => ({ summary: { total: 3 }, entries: [{ msg_id: 'm1' }] }),
   'coord:plan-events': () => ({ events: [{ kind: 'item_status_changed', plan: 'p1' }], total: 1, truncated: false }),
+  'coord:whoami': () => ({ fleetSlug: null }),
 };
 
 describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
@@ -43,6 +44,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'work_items:list',
       'coord:inbox',
       'coord:plan-events',
+      'coord:whoami',
     ]);
     expect(calls[0].args).toMatchObject({ agent: 'me', harness: 'h' });
     expect(calls[1].args).toMatchObject({ harness: 'h', state: 'todo', limit: 20 });
@@ -98,6 +100,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:inbox',
       'memory:search',
       'coord:plan-events',
+      'coord:whoami',
       'recipes:search',
       'coord:declare-intent',
     ]);
@@ -194,6 +197,39 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.memory).toBeNull();
     expect(r.intentDeclared).toBe(false);
     // core orientation still intact
+    expect(r.claimable).toHaveLength(2);
+  });
+
+  it('folds a fleet catch-up when the caller belongs to a fleet (P-006 auto-catch-up)', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ audience: '@fleet:backend', count: 2, total: 5, rows: [{ msg_id: 'f1' }, { msg_id: 'f2' }] }),
+    });
+    const r = await composeOrient({}, call, 'me');
+    expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 5, recent: [{ msg_id: 'f1' }, { msg_id: 'f2' }] });
+    // addressed the caller's OWN fleet, bounded by the default fold limit
+    expect(calls.find((c) => c.name === 'coord:catch-up')!.args).toMatchObject({ audience: '@fleet:backend', limit: 8 });
+  });
+
+  it('skips the fleet catch-up for a non-fleet caller (no catch-up call, field absent)', async () => {
+    const { call, calls } = fakeCall({ ...CORE }); // CORE whoami → fleetSlug null
+    const r = await composeOrient({}, call, 'me');
+    expect(calls.some((c) => c.name === 'coord:catch-up')).toBe(false);
+    expect(r.fleetCatchUp).toBeUndefined();
+  });
+
+  it('best-effort: a failing fleet catch-up degrades to null, not a thrown orient', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => {
+        throw new Error('capability: coord:read required');
+      },
+    });
+    const r = await composeOrient({}, call, 'me');
+    expect(r.ok).toBe(true);
+    expect(r.fleetCatchUp).toBeNull();
     expect(r.claimable).toHaveLength(2);
   });
 });

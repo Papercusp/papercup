@@ -72,6 +72,53 @@ export async function setHiveStarted(
   `;
 }
 
+/**
+ * The RAW per-hive started row (`hive_started:<ws>:<slug>`) — the PER-HIVE
+ * placement/display bit, IGNORING the workspace-sentinel collapse (per-hive
+ * start-stop 2026-06-30). Default false. This answers "is THIS hive's work
+ * placed", DISTINCT from {@link getHiveStarted} (sentinel-first = "is the
+ * workspace Queen loop running" under WORKSPACE_COORDINATION).
+ */
+export async function getHivePlacementStarted(workspaceId: string, installSlug: string): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT value FROM harness_shared.operator_settings WHERE key = ${key(workspaceId, installSlug)} LIMIT 1`;
+  return (rows[0] as { value?: string } | undefined)?.value === 'true';
+}
+
+/** Write the RAW per-hive started row (the per-hive placement/display bit). */
+export async function setHivePlacementStarted(
+  workspaceId: string,
+  installSlug: string,
+  started: boolean,
+): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
+    VALUES (
+      ${key(workspaceId, installSlug)},
+      ${started ? 'true' : 'false'},
+      ${'Per-hive Start/Stop placement bit (per-hive start-stop 2026-06-30). true = this hive\'s work is placed by the workspace Queen.'},
+      ${Date.now()}
+    )
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+  `;
+}
+
+/**
+ * Whether ANY hive in the workspace still has its per-hive placement bit set,
+ * EXCLUDING the workspace sentinel row (installSlug === workspaceId) and an
+ * optional just-stopped slug. hive:pause uses this to decide whether stopping
+ * THIS hive also idles the workspace Queen LOOP (sentinel off) — the one loop
+ * stays up while any other hive remains started.
+ */
+export async function anyHivePlacementStarted(workspaceId: string, excludeSlug?: string): Promise<boolean> {
+  const rows = await readStartedRows();
+  return rows.some(
+    (r) => r.workspaceId === workspaceId && r.installSlug !== workspaceId && r.installSlug !== excludeSlug,
+  );
+}
+
 /** Parse the raw `hive_started:<ws>:<install>` rows currently marked started. */
 async function readStartedRows(): Promise<Array<{ workspaceId: string; installSlug: string }>> {
   const { sql } = getOrgPg();

@@ -26,6 +26,7 @@
 import type { CoordEnvelope, CoordKind } from '@papercusp/coordination/core';
 import { compareByTsThenId } from '@papercusp/coordination/core';
 import { coordLog } from './log';
+import { estimateTokens } from './presence-cost';
 
 /** The four append-only channels that live in coord_event_log. */
 export type CoordSurface = 'messages' | 'escalations' | 'handoffs' | 'plan-events';
@@ -65,6 +66,13 @@ export interface ReadCoordFeedOpts {
   owner?: string;
   /** Restrict to one plan slug. */
   plan_slug?: string;
+  /** Restrict to envelopes addressed to this audience selector (`@fleet:<slug>` /
+   *  `@topic:<slug>` / `@plan:<slug>` / `@object:…` / `@file:…` / `*`), matched
+   *  against the preserved `audience` key. This is the audience-keyed HISTORY read:
+   *  a late/returning member catches up on everything sent to the fleet/topic even
+   *  though their ownerId was never in the resolved `to`. Fleet selectors should be
+   *  passed canonicalized (slug form) to match how they were stored. */
+  audience?: string;
   /** Case-insensitive substring over summary + body + from + to. */
   q?: string;
   /** Strictly-later-than this ISO ts (older bound). */
@@ -73,6 +81,13 @@ export interface ReadCoordFeedOpts {
   before_ts?: string;
   /** Max rows returned (newest kept). */
   limit?: number;
+  /** Token budget: accumulate rows newest-first until the estimated token cost of
+   *  the page would exceed this, then stop (at least one row is always returned).
+   *  The right knob for "give me as much history as fits in my context" — a fleet
+   *  paused for a week makes a time window useless, but `last N messages` (limit) or
+   *  `~N tokens` (this) is exactly what an agent wants. Bounds compose: the page
+   *  stops at whichever of `limit` or `token_budget` is hit first. */
+  token_budget?: number;
 }
 
 export const DEFAULT_FEED_LIMIT = 100;
@@ -92,6 +107,10 @@ function matchesOwner(env: CoordEnvelope, owner: string): boolean {
     if (env.to.includes('*')) return true; // a broadcast reaches the named owner
   }
   return false;
+}
+
+function matchesAudience(env: CoordEnvelope, audience: string): boolean {
+  return Array.isArray(env.audience) && env.audience.includes(audience);
 }
 
 function matchesText(env: CoordEnvelope, needle: string): boolean {
@@ -120,7 +139,7 @@ function matchesText(env: CoordEnvelope, needle: string): boolean {
  */
 export async function readCoordFeed(
   opts: ReadCoordFeedOpts = {},
-): Promise<{ rows: CoordFeedRow[]; nextCursor: string | null; total: number; byKind: Record<string, number> }> {
+): Promise<{ rows: CoordFeedRow[]; nextCursor: string | null; total: number; byKind: Record<string, number>; tokens: number }> {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_FEED_LIMIT), MAX_FEED_LIMIT);
 
   // Union every surface. Tag each envelope with its origin surface.
@@ -147,6 +166,7 @@ export async function readCoordFeed(
     if (kindSet && !kindSet.has(env.kind)) return false;
     if (opts.owner && !matchesOwner(env, opts.owner)) return false;
     if (opts.plan_slug && env.plan_slug !== opts.plan_slug) return false;
+    if (opts.audience && !matchesAudience(env, opts.audience)) return false;
     if (needle && !matchesText(env, needle)) return false;
     if (sinceMs !== null || beforeMs !== null) {
       const ms = new Date(env.ts).getTime();
@@ -164,8 +184,20 @@ export async function readCoordFeed(
   // Newest-first. compareByTsThenId is ascending; reverse for descending.
   filtered.sort((a, b) => compareByTsThenId(b, a));
 
-  const page = filtered.slice(0, limit);
-  const nextCursor = filtered.length > limit ? (page[page.length - 1]?.ts ?? null) : null;
+  // Build the page newest-first, bounded by BOTH limit (count) and token_budget —
+  // stop at whichever is hit first. At least one row is always returned (so a single
+  // over-budget envelope still comes back). Per-row token cost is estimated from the
+  // serialized envelope via estimateTokens (presence-cost; ~3.5–4 chars/token).
+  const tokenBudget = opts.token_budget && opts.token_budget > 0 ? opts.token_budget : null;
+  const page: CoordFeedRow[] = [];
+  let tokens = 0;
+  for (const row of filtered) {
+    page.push(row);
+    tokens += estimateTokens(JSON.stringify(row).length);
+    if (page.length >= limit) break;
+    if (tokenBudget !== null && tokens >= tokenBudget) break;
+  }
+  const nextCursor = filtered.length > page.length ? (page[page.length - 1]?.ts ?? null) : null;
 
-  return { rows: page, nextCursor, total: filtered.length, byKind };
+  return { rows: page, nextCursor, total: filtered.length, byKind, tokens };
 }

@@ -3,16 +3,22 @@
  * Uses temp paths OUTSIDE any git repo, so the file lock is uncoordinated and
  * guardFileLock runs the body directly (no PG) — the lock control-flow itself
  * is covered in locks/file-lock-guard.test.ts.
+ *
+ * The "outside any git repo" guarantee comes from `mkNonRepoTmpDir`, NOT a raw
+ * `mkdtempSync(os.tmpdir())`: when the suite runner's TMPDIR resolves inside this
+ * monorepo, a bare os.tmpdir() temp dir has the monorepo `.git` as an ancestor,
+ * so guardFileLock treats the path as coordinated and tries to resolve identity
+ * (no identity on the test ctx → throws). That is EI-5826 (the EI-5541 class).
  */
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import readTool from './read';
 import writeTool from './write';
 import editTool from './edit';
+import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
 
-const DIR = mkdtempSync(join(tmpdir(), 'cap-file-'));
+const DIR = mkNonRepoTmpDir('cap-file-');
 const ctx = {
   projectDir: DIR,
   stateDir: DIR,

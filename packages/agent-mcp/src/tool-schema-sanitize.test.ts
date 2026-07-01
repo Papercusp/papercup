@@ -10,7 +10,7 @@ describe('sanitizeToolSchema', () => {
     });
     expect(out).toEqual({
       type: 'object',
-      properties: { value: {}, name: { type: 'string' } },
+      properties: { value: { description: 'matches any value' }, name: { type: 'string' } },
       additionalProperties: false, // untouched
     });
   });
@@ -24,7 +24,7 @@ describe('sanitizeToolSchema', () => {
   it('objectifies a boolean items (z.array(z.unknown()) → items:true)', () => {
     expect(sanitizeToolSchema({ type: 'array', items: true })).toEqual({
       type: 'array',
-      items: {},
+      items: { description: 'matches any value' },
     });
   });
 
@@ -36,8 +36,20 @@ describe('sanitizeToolSchema', () => {
         cfg: { type: 'object', properties: { value: true } },
       },
     });
-    expect((out as any).properties.ops.items.properties.payload).toEqual({});
-    expect((out as any).properties.cfg.properties.value).toEqual({});
+    expect((out as any).properties.ops.items.properties.payload).toEqual({
+      description: 'matches any value',
+    });
+    expect((out as any).properties.cfg.properties.value).toEqual({ description: 'matches any value' });
+  });
+
+  it('the true-mapping is NEVER a literally-empty object (omp-ollama-tool-schema-investigation-2026-06-30): ' +
+    'OMP collapses a bare `{}` property/items schema back into the boolean `true` when it serializes its ' +
+    'own outbound request, re-introducing the construct Ollama 400s on. A non-empty-but-still-unconstrained ' +
+    'object dodges that re-collapse; this guards the fix from regressing back to `{}`.', () => {
+    const out = sanitizeToolSchema({ properties: { a: true }, items: true }) as Record<string, unknown>;
+    const a = (out.properties as Record<string, unknown>).a as Record<string, unknown>;
+    expect(Object.keys(a).length).toBeGreaterThan(0);
+    expect(Object.keys(out.items as Record<string, unknown>).length).toBeGreaterThan(0);
   });
 
   it('does NOT touch additionalProperties booleans (Ollama ignores; OpenAI strict needs literal false)', () => {

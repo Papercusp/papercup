@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkNonRepoTmpDir } from './non-repo-tmpdir';
 
 const h = vi.hoisted(() => ({
   tryAcquire: vi.fn(),
@@ -33,9 +34,14 @@ vi.mock('./in-workspace-txn', () => ({
 
 import { guardFileLock, toRepoRelative, withFileLock, fileLockedResult } from './file-lock-guard';
 
+// REPO creates its OWN `.git`, so findRepoRoot stops at it regardless of where
+// tmpdir() lives. NO_REPO must have NO `.git` ancestor, so it uses
+// mkNonRepoTmpDir (a bare os.tmpdir() temp dir inherits the monorepo `.git` when
+// the runner's TMPDIR is in-repo — EI-5826/EI-5541 — which would make the
+// "uncoordinated path" test wrongly hit the lock store).
 const REPO = mkdtempSync(join(tmpdir(), 'flg-repo-'));
 mkdirSync(join(REPO, '.git'));
-const NO_REPO = mkdtempSync(join(tmpdir(), 'flg-norepo-'));
+const NO_REPO = mkNonRepoTmpDir('flg-norepo-');
 const ctx = { projectDir: REPO, log: () => {} } as never;
 
 beforeEach(() => {

@@ -398,6 +398,16 @@ export interface OperatorSpawnInput {
   tier?: string | null;
   modelSpec?: string | null;
   /**
+   * Per-spawn account-routing override (account-routing-3-options, 2026-06-30) — the fleet:spawn
+   * `account` arg, mirroring the interactive psu path (resolveAccountPin). One of:
+   *   • '<pool-id>'               → HARD pin this spawn to that account via the inference gateway.
+   *   • 'auto' / 'gateway'        → gateway auto-route (it selects an available account + fails over).
+   *   • 'default' / 'none' / 'system' → skip the gateway entirely (system credential, direct egress).
+   * Unset → today's behavior (env pin → multi-account select → gateway active()). Threaded verbatim to
+   * resolveSpawnGatewayEnv, which interprets the mode.
+   */
+  accountOverride?: string | null;
+  /**
    * Per-spawn opus-budget criticality (B-GW-4). Overrides the role-derived default
    * (`classifyRoleCriticality`). When the fleet's aggregate 5h opus budget is tight, a
    * non-critical opus tier-escalation is shed to sonnet (background sheds first, then
@@ -1214,6 +1224,7 @@ export async function spawnAgentInHarness(
       backend,
       role, // gateway-priority-tiers: role → admission tier (flag-gated header)
       model: spawnModelSpec ?? undefined, // P-005/WI-951: per-role Claude model fidelity through the gateway
+      account: input.accountOverride ?? undefined, // account-routing-3-options: explicit pin/auto/default
     }),
   );
   // Start the stall-waker poll loop once the gateway is in play (idempotent + unref'd): it watches the

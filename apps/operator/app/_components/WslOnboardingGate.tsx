@@ -74,12 +74,16 @@ export default function WslOnboardingGate({ children }: Props) {
       const s = await wslStatus();
       setStatus(s);
     } catch (err) {
-      setStatus({
-        state: { kind: 'Error', message: String(err) },
-        wslExeAvailable: false,
-        distros: [],
-        defaultVersion: 0,
-      });
+      // FAIL SAFE. On the dev devUrl origin wsl_status resolves (NotSupported on
+      // Linux/macOS → handled above), so a THROW here means the invoke was
+      // denied — which happens on every NON-dev env origin, where Tauri's ACL
+      // blocks the app command ("wsl_status not allowed. Plugin not found").
+      // Treat that as "nothing to set up" and render the app; never trap the user
+      // behind the full-screen "Papercup setup — Windows" wizard they can't
+      // dismiss (the bug this fixes: that screen appeared on prod/staging/local —
+      // every env except dev).
+      console.warn('[wsl-gate] wsl_status unavailable; passing through:', err);
+      setStatus(null);
     }
   }, []);
 

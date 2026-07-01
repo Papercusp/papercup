@@ -26,7 +26,19 @@
  */
 
 function boolToSchema(b: boolean): Record<string, unknown> {
-  return b ? {} : { not: {} };
+  // `{}` (the literal empty-object spelling of "matches anything") gets a NON-EMPTY
+  // representation here. Root-caused 2026-06-30 (omp-ollama-tool-schema-investigation):
+  // OMP (oh-my-pi)'s own outbound request serialization collapses any literally-empty
+  // `{}` property/items schema BACK into the bare JSON-Schema boolean `true` when it
+  // builds the request it sends to the model provider — independent of papercusp,
+  // independent of which tool/field it came from. That re-introduces the exact
+  // construct Ollama's tool-schema parser rejects (the whole reason this file exists),
+  // even though `{}` itself is fully valid JSON Schema and is what THIS function used
+  // to emit. A `description`-only object is semantically identical ("matches anything"
+  // — description carries no constraint) but is no longer literally empty, so OMP has
+  // nothing to "optimize" back into a boolean. Verified directly: replaying a captured
+  // OMP request against Ollama 400s with the bare `{}` form and succeeds with this one.
+  return b ? { description: 'matches any value' } : { not: {} };
 }
 
 /**

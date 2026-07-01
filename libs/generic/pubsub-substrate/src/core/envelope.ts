@@ -45,6 +45,18 @@ export interface CoordEnvelope {
   from: string;
   /** Recipients. ['*'] = broadcast; ownerIds otherwise; ['human'] = surface to the user. */
   to: string[];
+  /**
+   * The ORIGINAL audience selectors (`@fleet:` / `@topic:` / `@plan:` / `@object:` /
+   * `@file:` / `@fleet-leader:`) and/or `*` this was addressed to, preserved BEFORE
+   * `expandAudience` resolved them to the concrete ownerIds now in `to`. This is the
+   * key that makes a broadcast queryable as audience-keyed HISTORY (coord:feed
+   * { audience }), so a late/returning fleet/topic member can catch up even though
+   * their id was never in the frozen `to`. Generalizes `plan_slug`; set on every
+   * selector/broadcast send (live AND retained by default — no opt-in flag). Fleet
+   * selectors are stored canonicalized to their slug. Absent on plain-id-only sends
+   * (already queryable by `to`).
+   */
+  audience?: string[];
   kind: CoordKind;
   summary?: string;
   body?: string;

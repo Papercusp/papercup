@@ -38,7 +38,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# `pwd -P` resolves symlinks so SCRIPT_DIR is the PHYSICAL path. The generated
+# psu/ptool shims `exec node "${SCRIPT_DIR}/<x>.mjs"`, and Node realpaths the main
+# module for `import.meta.url`; if SCRIPT_DIR kept a symlink (e.g. invoked via the
+# papercup→papercusp compat link), argv[1] != import.meta.url and the launcher's
+# `isMain` guard fails → psu/ptool exit 0 doing nothing. Canonicalize here.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
 

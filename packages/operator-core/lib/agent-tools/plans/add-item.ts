@@ -36,7 +36,13 @@ const PHASE = z
   .string()
   .min(1)
   .regex(
-    /^Phase\b/i,
+    // Fully anchored (^...$, not just a leading ^Phase\b) so the JSON-Schema
+    // `pattern` Zod 4 emits is grammar-compilable by strict consumers (Ollama's
+    // tool-calling grammar generator 400s the WHOLE catalog on any non-`^...$`
+    // pattern: "Pattern must start with '^' and end with '$'" — see
+    // packages/agent-mcp/src/tool-schema-sanitize.ts). Semantically identical to
+    // the old /^Phase\b/i: only the prefix is constrained, anything may follow.
+    /^Phase\b[\s\S]*$/i,
     'Phase heading must start with "Phase" (e.g. "Phase 1 — Tooling") — the plan parser only recognizes /^Phase\\b/i headings as phase sections, so anything else lint-warns as unphased.',
   )
   .describe('Phase heading text without the ## prefix and without numbering, e.g. "Phase 1 — Tooling".');

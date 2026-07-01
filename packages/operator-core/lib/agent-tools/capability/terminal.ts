@@ -46,6 +46,29 @@ import type { ColorScheme } from '../../console-color-schemes';
 const MAX_TERMINALS = 12;
 
 /**
+ * named-su-agent-fleets / EI-5835: when the caller passes an explicit `fleet`, a
+ * `psu …` launch inside a terminal command should JOIN that fleet — not merely
+ * inherit its colour. The `fleet` arg alone is COLOUR-ONLY (it tints the window);
+ * fleet MEMBERSHIP comes from psu's own `--fleet=<slug>` flag. Agents repeatedly
+ * set `fleet` and forget `--fleet`, so members spawn with `fleetSlug:null` AND miss
+ * the launcher's fleet auto-kickoff (they park). Auto-inject `--fleet=<slug>` into a
+ * psu command that lacks it so colour and membership can't diverge. Non-psu commands,
+ * and commands already carrying `--fleet`, are left untouched.
+ */
+export function injectFleetArg(
+  command: string,
+  fleetSlug: string | null,
+): { command: string; injected: boolean } {
+  if (!fleetSlug) return { command, injected: false };
+  if (/(^|\s)--fleet(=|\s|$)/.test(command)) return { command, injected: false };
+  // Only a `psu` invocation joins a fleet — match psu as a command token (start of
+  // line, or after whitespace / a shell separator), followed by whitespace.
+  const psuToken = /(^|[\s&;|(])psu(\s)/;
+  if (!psuToken.test(command)) return { command, injected: false };
+  return { command: command.replace(psuToken, `$1psu --fleet=${fleetSlug}$2`), injected: true };
+}
+
+/**
  * The operator's own base URL, used for the terminal's PAPERCUSP_OPERATOR_URL /
  * API-callback env. `PAPERCUSP_OPERATOR_URL` is commonly set to the full
  * `…/api/mcp` endpoint, so strip that suffix back to the bare origin.
@@ -146,11 +169,14 @@ export default defineTool({
     // Resolve the fleet's permanently-bound color scheme.
     // Precedence: explicit `fleet` arg → caller's shared_presence fleet_slug → null (plan-hash fallback).
     // Color is cosmetic — a lookup failure must never block the launch.
+    // Canonical slug for the explicit `fleet` arg — drives BOTH the colour lookup
+    // and the `--fleet` membership injection below, so they can never diverge.
+    const fleetSlug = args.fleet ? fleetSlugFromName(args.fleet) : null;
     let scheme: ColorScheme | null = null;
-    if (args.fleet) {
+    if (fleetSlug) {
       // Explicit fleet name wins.
       try {
-        scheme = await getFleetScheme(workspaceId, fleetSlugFromName(args.fleet));
+        scheme = await getFleetScheme(workspaceId, fleetSlug);
       } catch {
         scheme = null;
       }
@@ -173,23 +199,27 @@ export default defineTool({
     const opened: Array<{ command: string; cwd: string; terminal: string; pid: number | null }> = [];
     const failed: Array<{ command: string; error: string; code: number }> = [];
 
+    let fleetInjected = false;
     for (const item of items) {
       const cwd = item.cwd
         ? isAbsolute(item.cwd)
           ? item.cwd
           : resolvePath(base.cwd, item.cwd)
         : base.cwd;
+      // With an explicit `fleet`, a psu launch JOINS it (membership), not just colour.
+      const { command, injected } = injectFleetArg(item.command, fleetSlug);
+      if (injected) fleetInjected = true;
       // Override the greeting per terminal (runs the command, then drops to a shell).
       const result = spawnConsole({
-        envelope: { ...base, greetingCmd: item.command, cwd },
+        envelope: { ...base, greetingCmd: command, cwd },
         label: item.label ?? null,
         writeMcpJson: false,
         scheme,
       });
       if (result.status === 'ok') {
-        opened.push({ command: item.command, cwd, terminal: result.terminal, pid: result.pid });
+        opened.push({ command, cwd, terminal: result.terminal, pid: result.pid });
       } else {
-        failed.push({ command: item.command, error: result.error, code: result.code });
+        failed.push({ command, error: result.error, code: result.code });
       }
     }
 
@@ -203,6 +233,11 @@ export default defineTool({
       lines.push(`Opened ${opened.length} terminal${opened.length > 1 ? 's' : ''}${schemeNote}:`);
       for (const o of opened) {
         lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${o.cwd} — ${o.command}`);
+      }
+      if (fleetInjected) {
+        lines.push(
+          `  ↳ auto-added \`--fleet=${fleetSlug}\` to psu launch(es) so the spawned agents JOIN the fleet (membership, not just colour). EI-5835.`,
+        );
       }
     }
     if (failed.length) {

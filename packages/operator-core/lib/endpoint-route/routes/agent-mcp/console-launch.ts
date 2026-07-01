@@ -227,6 +227,11 @@ const post = defineTool({
       pid: result.pid,
       label: body.label ?? null,
       cwd: envelope.cwd,
+      // WI-1343: record the actual command run in the spawned terminal — the terminal
+      // binary + the envelope's greeting command (a resume `<cli> -r <id>`, `psu`, or
+      // the shell greeting). Before this, launch_argv was NULL for every console
+      // launch, so a spawned session could not be reconstructed after the fact.
+      launchArgv: [result.terminal, envelope.greetingCmd].filter((s): s is string => !!s),
     });
     attachExitWatcher(result.child, sessionPromise);
     console.log(`[console-launch] spawned ${result.terminal} pid=${result.pid} cwd=${envelope.cwd}`);

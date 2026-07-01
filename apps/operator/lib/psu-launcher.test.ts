@@ -8,6 +8,8 @@ import {
   parkRoleScopedMcpJson,
   ompDefaultModelAdvisory,
   writeOmpFullConfigDir,
+  SU_CONTEXT_CHOICES,
+  SU_CONTEXT_TOKEN_ESTIMATES,
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
@@ -15,6 +17,8 @@ import {
   resumeAccountPlan,
   buildResumeEnv,
   gatewayPinEnv,
+  gatewayAutoEnv,
+  accountRoutingMode,
   codexGatewayConfigPatch,
   accountPinnable,
   accountProviderFromChoices,
@@ -52,6 +56,7 @@ import {
   fleetSlugFromName as launcherFleetSlugFromName,
   hexToRgb,
   colorSwatch,
+  schemeNameInAccent,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
@@ -140,6 +145,35 @@ describe('ompDefaultModelAdvisory (P-004 first-turn overflow guard)', () => {
   it('no advisory when config.yml is absent', () => {
     rmSync(join(home, '.omp', 'agent', 'config.yml'), { force: true });
     expect(ompDefaultModelAdvisory(home)).toBe(null);
+  });
+});
+
+describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal picker prompt)', () => {
+  it('offers exactly Native/Full/Trimmed with the flag values, Native ⇒ null', () => {
+    expect(SU_CONTEXT_CHOICES.map((c) => c.value)).toEqual([null, 'full', 'trimmed']);
+    // The Native option maps to null so the picker emits NO --context-size flag —
+    // a byte-identical launch to the pre-feature behavior (the key non-regression).
+    const native = SU_CONTEXT_CHOICES[0];
+    expect(native.value).toBeNull();
+    expect(native.name).toMatch(/native/i);
+  });
+
+  it('labels embed the token estimates, in parity with the operator UI', () => {
+    const full = SU_CONTEXT_CHOICES.find((c) => c.value === 'full')!;
+    const trimmed = SU_CONTEXT_CHOICES.find((c) => c.value === 'trimmed')!;
+    expect(full.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.full);
+    expect(trimmed.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
+    // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx).
+    expect(SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~50k' });
+  });
+
+  it('picker values are a subset of the --context-size flag values parseArgs accepts', () => {
+    // Guards drift between the interactive picker and the flag path: every non-null
+    // picker value must be a value parseArgs(--context-size=…) yields.
+    for (const c of SU_CONTEXT_CHOICES) {
+      if (c.value === null) continue;
+      expect(parseArgs([`--context-size=${c.value}`]).contextSize).toBe(c.value);
+    }
   });
 });
 
@@ -255,6 +289,7 @@ describe('psu-launcher arg parsing', () => {
       fleet: null,
       fleetRole: null,
       fleetName: null,
+      fleetScheme: null,
       addDir: [],
       passthrough: [],
       setClaudeToken: false,
@@ -298,6 +333,7 @@ describe('psu-launcher arg parsing', () => {
       fleet: null,
       fleetRole: null,
       fleetName: null,
+      fleetScheme: null,
       addDir: [],
       passthrough: [],
       setClaudeToken: false,
@@ -644,6 +680,30 @@ describe('psu-launcher arg parsing', () => {
 
   it('gatewayPinEnv: codex pins are config-file based and only carry the account id in env', () => {
     expect(gatewayPinEnv('codex-main', 'codex')).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+  });
+
+  it('accountRoutingMode: the ONE --account value classifies into the 3 explicit routing modes', () => {
+    // account-routing-3-options (owner, 2026-06-30): default / auto / pin — mirrors the server's
+    // resolveAccountPin keyword handling (kept in lockstep). Case-insensitive + trimmed.
+    for (const v of [undefined, null, '', '  ', 'default', 'DEFAULT', ' none ', 'system', 'System'])
+      expect(accountRoutingMode(v)).toBe('default');
+    for (const v of ['auto', 'AUTO', ' gateway ', 'Gateway']) expect(accountRoutingMode(v)).toBe('auto');
+    // Anything else is a specific pool account id → pin.
+    for (const v of ['aviynw6', 'codex-main', 'team-pool-3']) expect(accountRoutingMode(v)).toBe('pin');
+  });
+
+  it('gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)', () => {
+    const env = gatewayAutoEnv('claude');
+    // Base URL points at the localhost gateway; crucially NO account header + NO PAPERCUSP_ACCOUNT_ID,
+    // so the gateway active()/drain-selects an available account and fails over (vs gatewayPinEnv).
+    expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+  });
+
+  it('gatewayAutoEnv: non-claude providers get {} (auto-routing wired for claude only — matches resolveAccountPin)', () => {
+    expect(gatewayAutoEnv('codex')).toEqual({});
+    expect(gatewayAutoEnv('omp')).toEqual({});
   });
 
   it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {
@@ -1571,5 +1631,13 @@ describe('picker color swatch (fleet-color-schemes)', () => {
     expect(colorSwatch(undefined)).toBe('');
     expect(colorSwatch({ bg: 'not-a-hex' })).toBe('');
     expect(colorSwatch({})).toBe('');
+  });
+  it('schemeNameInAccent renders the name in the cursor accent (truecolor fg), plain on bad color', () => {
+    // The scheme-picker row label: the name in the scheme's cursor accent.
+    expect(schemeNameInAccent({ name: 'forest', cursor: '#86efac' })).toBe('\x1b[38;2;134;239;172mforest\x1b[0m');
+    // Unparseable/absent color → plain name (still selectable, just uncolored).
+    expect(schemeNameInAccent({ name: 'forest', cursor: 'nope' })).toBe('forest');
+    expect(schemeNameInAccent(null)).toBe('');
+    expect(schemeNameInAccent({ name: 'x' })).toBe('x');
   });
 });

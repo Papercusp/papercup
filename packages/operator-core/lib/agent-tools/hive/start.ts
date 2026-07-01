@@ -21,7 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveHiveHomeSlug } from '../../hive/wake';
-import { setHiveStarted } from '../../hive/started';
+import { setHiveStarted, setHivePlacementStarted } from '../../hive/started';
 import { armDefaultHiveWakeSubscriptions } from '../../hive/wake-defaults';
 import { setDefaultWakeMode } from '../coordination/wake-mode';
 import { requestUrgentHiveWake } from '../../hive/urgent-wake';
@@ -68,6 +68,9 @@ export default defineTool({
       };
     }
 
+    // Per-hive start-stop (2026-06-30): mark THIS hive's placement bit so its work
+    // is placed, AND arm the workspace Queen LOOP (the sentinel) so she's running.
+    await setHivePlacementStarted(workspaceId, installSlug, true);
     await setHiveStarted(workspaceId, installSlug, true);
     // ENSURE (not replace): the Queen's runtime-tuned subscriptions survive a
     // Pause→Start cycle; only uncovered defaults are added (P-002 / D-001).

@@ -21,7 +21,21 @@ import { listDbosScheduledWorkflows, type DbosScheduledEntry } from './dbos/dbos
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
 import { listManaged, type ManagedEntry } from '@papercusp/scheduled-registry';
 
-export type ScheduleSource = 'dbos' | 'routines' | 'in-process' | 'managed' | 'external-process';
+/**
+ * Every source collectScheduleInventory can emit a row for. SINGLE source of truth:
+ * the `ScheduleSource` type is derived from it AND the schedule:inventory tool's `source`
+ * filter is built from it (z.enum(SCHEDULE_SOURCES)), so a NEW source can't be surfaced in
+ * the inventory yet stay silently un-filterable in the tool (the P-009 "no silent gaps" rule
+ * applied to the read surface itself).
+ */
+export const SCHEDULE_SOURCES = [
+  'dbos',
+  'routines',
+  'in-process',
+  'managed',
+  'external-process',
+] as const;
+export type ScheduleSource = (typeof SCHEDULE_SOURCES)[number];
 export type ScheduleScope = 'operator' | 'harness';
 /** Execution mechanism (D-006): durable = DBOS-backed; ephemeral = in-process setInterval. */
 export type ScheduleTier = 'durable' | 'ephemeral';
@@ -97,8 +111,9 @@ export interface ExternalProcessTimer {
 export const EXTERNAL_PROCESS_TIMERS: ExternalProcessTimer[] = [
   { process: 'inference-gateway', name: 'gateway-serviceable-admission-clamp', cadence: 'every ~2s', source: 'packages/operator-core/lib/inference-gateway/gateway.ts' },
   { process: 'inference-gateway', name: 'gateway-self-heal', cadence: 'every ~10s', source: 'packages/operator-core/lib/inference-gateway/gateway.ts' },
-  { process: 'inference-gateway', name: 'gateway-readiness-probe', cadence: '(external)', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
-  { process: 'inference-gateway', name: 'gateway-reload-check', cadence: '(external)', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
+  { process: 'inference-gateway', name: 'gateway-token-refresh', cadence: 'every ~45m', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
+  { process: 'inference-gateway', name: 'gateway-pool-reload', cadence: 'every ~60s', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
+  { process: 'inference-gateway', name: 'gateway-ratehint-pin-resync', cadence: 'every ~60s', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
   { process: 'gateway-watchdog', name: 'gateway-watchdog-poll', cadence: 'every ~15s', source: 'packages/operator-core/lib/inference-gateway/watchdog.mjs' },
   { process: 'psu-launcher', name: 'psu-supervisor-heartbeat', cadence: 'every ~60s', source: 'apps/operator/scripts/psu-launcher.mjs' },
 ];

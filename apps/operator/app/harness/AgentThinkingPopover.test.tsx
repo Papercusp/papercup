@@ -23,7 +23,7 @@ vi.mock('@papercusp/sse', () => ({
   },
 }));
 
-import AgentThinkingPopover from './AgentThinkingPopover';
+import AgentThinkingPopover, { waitingMessage, STALL_AFTER_MS } from './AgentThinkingPopover';
 
 function anchor(): DOMRect {
   // A rect well below the viewport top so the popover places "above".
@@ -63,6 +63,22 @@ describe('AgentThinkingPopover (live agent thinking stream)', () => {
     expect(screen.getByText('Connecting…')).toBeTruthy();
     // Footer: 0 events (pluralised).
     expect(screen.getByText('0 events')).toBeTruthy();
+  });
+
+  it('escalates a live run with zero output past the stall threshold', () => {
+    // Run started 60s ago (> STALL_AFTER_MS) and the backfill is empty → the
+    // card must flag it as stalled instead of an eternal "Waiting…".
+    renderPopover({ startedAtMs: Date.now() - 60_000 });
+    act(() => { captured!.handlers.backfill!(JSON.stringify([])); });
+    expect(screen.getByText('stalled?')).toBeTruthy();
+    expect(screen.getByText(/No output for/)).toBeTruthy();
+  });
+
+  it('shows a live elapsed counter before the stall threshold (not stalled)', () => {
+    renderPopover({ startedAtMs: Date.now() - 5_000 });
+    act(() => { captured!.handlers.backfill!(JSON.stringify([])); });
+    expect(screen.getByText('live')).toBeTruthy();
+    expect(screen.getByText(/Waiting for first output/)).toBeTruthy();
   });
 
   it('renders the backfill array and flips the status to live', () => {
@@ -159,5 +175,37 @@ describe('AgentThinkingPopover (live agent thinking stream)', () => {
     const { unmount } = renderPopover();
     unmount();
     expect(closeSpy).toHaveBeenCalled();
+  });
+});
+
+describe('waitingMessage (empty-timeline label)', () => {
+  it('connecting → Connecting…, never stalled', () => {
+    expect(waitingMessage('connecting', null)).toEqual({ text: 'Connecting…', stalled: false });
+    expect(waitingMessage('connecting', 999_999)).toEqual({ text: 'Connecting…', stalled: false });
+  });
+  it('live under the threshold → waiting + elapsed, not stalled', () => {
+    const r = waitingMessage('live', 5_000);
+    expect(r.stalled).toBe(false);
+    expect(r.text).toMatch(/Waiting for first output/);
+    expect(r.text).toMatch(/5s/);
+  });
+  it('live at/over the threshold → stalled warning', () => {
+    const r = waitingMessage('live', STALL_AFTER_MS + 1);
+    expect(r.stalled).toBe(true);
+    expect(r.text).toMatch(/No output for/);
+  });
+  it('done with no output → terminal message, stalled flag set', () => {
+    const r = waitingMessage('done', 90_000);
+    expect(r.stalled).toBe(true);
+    expect(r.text).toMatch(/Run ended/);
+  });
+  it('error → disconnected/retrying message', () => {
+    expect(waitingMessage('error', null).text).toMatch(/Disconnected/);
+  });
+  it('live with null elapsed (no startedAt) → plain waiting, no counter', () => {
+    expect(waitingMessage('live', null)).toEqual({
+      text: 'Waiting for first output from the agent…',
+      stalled: false,
+    });
   });
 });

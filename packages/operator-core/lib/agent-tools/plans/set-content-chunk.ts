@@ -15,14 +15,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolveCtxHarnessSlug, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { evaluateSetContent, type SetContentValue } from './set-content';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { parsePlan } from './parser';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const MAX_CHUNK_CHARS = 24_000;
 const DRAFT_ID = /^[a-zA-Z0-9_-]{8,80}$/;
@@ -382,7 +381,7 @@ export default defineTool({
     // plan is never counted as "waiting". Best-effort — plans:list self-heals.
     if (isTerminalPlanStatus(parsePlan(draft.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
       try {
-        await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), args.slug);
+        await clearStartedForTerminalPlan(resolveEffectiveHarnessSlug(sctx), args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

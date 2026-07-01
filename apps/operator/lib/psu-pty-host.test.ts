@@ -22,6 +22,8 @@ import {
   ACTIVITY_PERSIST_MS,
   PSU_PTY_DIR,
 } from '../scripts/psu-pty-host.mjs';
+import { oscRecolorSequence, COLOR_SCHEMES } from '@papercusp/operator-core/lib/console-color-schemes';
+import { buildConsoleOneliner } from '@papercusp/operator-core/lib/console-spawn';
 
 describe('sanitizeKey', () => {
   it('passes SID-shaped ids through unchanged', () => {
@@ -188,6 +190,48 @@ describe('fleetOscFromEnv (launch-time fleet recolor)', () => {
   });
   it('bg alone is enough; fg + cursor are optional', () => {
     expect(fleetOscFromEnv({ PAPERCUSP_FLEET_BG: '#166534' })).toBe('\x1b]11;#166534\x07');
+  });
+});
+
+// fleet-recolor-and-color-hardening P-003: the OSC 10/11/12 recolor bytes are
+// hand-written in THREE places that the source comments say must stay "in
+// lockstep" — console-color-schemes.oscRecolorSequence (operator-core raw bytes),
+// psu-pty-host.fleetOscFromEnv (this file's inline copy), and console-spawn's
+// shell prelude (the bee / capability:terminal path, reached via
+// buildConsoleOneliner). This guard fails the moment any of the three drifts on
+// an OSC number or a color value, for ANY catalog scheme.
+describe('OSC emitter drift guard (the 3 fleet-color emitters must agree)', () => {
+  // Extract every OSC 10/11/12 color directive ("]1N;#rrggbb") from a string —
+  // works on the raw-byte sequences AND the shell `printf '\033]1N;#rrggbb\007'`
+  // form. Returns { '10': fg, '11': bg, '12': cursor }.
+  function oscColorMap(s: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const m of s.matchAll(/\]1([012]);(#[0-9a-fA-F]{6})/g)) out[`1${m[1]}`] = m[2].toLowerCase();
+    return out;
+  }
+
+  it('all three emitters produce the same OSC 10/11/12 colors for every catalog scheme', () => {
+    for (const s of COLOR_SCHEMES) {
+      const expected = { '10': s.fg, '11': s.bg, '12': s.cursor };
+      // 1. operator-core raw bytes (the canonical recolor sequence)
+      expect(oscColorMap(oscRecolorSequence(s))).toEqual(expected);
+      // 2. psu-pty-host's inline copy from env — MUST be byte-identical to #1
+      expect(
+        fleetOscFromEnv({
+          PAPERCUSP_FLEET_BG: s.bg,
+          PAPERCUSP_FLEET_FG: s.fg,
+          PAPERCUSP_FLEET_CURSOR: s.cursor,
+        }),
+      ).toBe(oscRecolorSequence(s));
+      // 3. the console-spawn shell prelude (bee / capability:terminal window)
+      const oneliner = buildConsoleOneliner('/x', {}, 'true', {
+        mode: 'console',
+        planSlug: null,
+        label: null,
+        scheme: s,
+      });
+      expect(oscColorMap(oneliner)).toEqual(expected);
+    }
   });
 });
 

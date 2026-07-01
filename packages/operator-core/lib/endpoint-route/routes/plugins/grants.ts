@@ -18,6 +18,10 @@ const get = defineTool({
     const url = new URL(req.url);
     const plugin = url.searchParams.get('plugin') ?? '';
     const version = url.searchParams.get('version') ?? '';
+    // '' harness = the GLOBAL grant scope, not a swallowed missing scope: it is the
+    // documented sentinel for plugin-grants (GrantInput `harnessSlug: '' for global`),
+    // and getGrantsForPluginInHarness reads `harness_slug IN (harness, '')`. An absent
+    // `harness` param is therefore an explicit global read — no fail-loud gate needed.
     const harness = url.searchParams.get('harness') ?? '';
     if (!plugin || !version) {
       return Response.json({ error: 'plugin + version required' }, { status: 400 });
@@ -54,6 +58,10 @@ const post = defineTool({
     if (caps.length === 0) {
       return Response.json({ ok: false, error: 'capabilities[] required' }, { status: 400 });
     }
+    // As in the GET handler, an absent `body.harness` means the GLOBAL grant scope
+    // (`harnessSlug: '' for global`, documented in plugin-grants GrantInput) — the
+    // `body.harness ?? ''` below is that explicit global default, not a swallowed
+    // missing scope. A per-harness grant/revoke passes a concrete slug.
     const action = body.action ?? 'grant';
     if (action === 'revoke') {
       await revokeCapabilities({

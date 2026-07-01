@@ -17,7 +17,7 @@
  */
 
 import * as fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem, type PlanStatus } from './parser';
 import { hashPlanContent } from './content-hash';
@@ -38,9 +38,29 @@ export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
 const PAPERCUP_PLANS_REL = 'apps/operator/docs/plans';
 const DEFAULT_HARNESS_PLANS_REL = 'docs/plans';
 
+/**
+ * Normalize a path for a same-directory comparison, resolving symlinks.
+ *
+ * `path.resolve` is string-only (it never touches the filesystem), so it
+ * treats a symlink and its target as DIFFERENT paths — and the canonical
+ * checkout is reachable via a `papercup` symlink → `papercusp`, so two
+ * strings naming the SAME directory compare unequal. `fs.realpathSync`
+ * collapses the symlink, so the two forms match. Falls back to
+ * `path.resolve` when the path doesn't exist yet (realpath throws ENOENT),
+ * wrapped so a missing dir never crashes the caller (mirrors
+ * `realpathOrSelf` in file-lock-authority-wiring.ts).
+ */
+function realpathOrResolve(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 function plansRelFor(harnessPath: string): string {
   const detected = detectPapercupRoot();
-  if (detected && path.resolve(harnessPath) === path.resolve(detected)) {
+  if (detected && realpathOrResolve(harnessPath) === realpathOrResolve(detected)) {
     return PAPERCUP_PLANS_REL;
   }
   return DEFAULT_HARNESS_PLANS_REL;
@@ -486,7 +506,7 @@ export async function resolveHarnessPlansDir(
   if (!raw || raw === '*') {
     const detected = detectPapercupRoot();
     if (detected) {
-      project = reg.projects.find((p) => path.resolve(p.path) === path.resolve(detected));
+      project = reg.projects.find((p) => realpathOrResolve(p.path) === realpathOrResolve(detected));
     }
     project = project ?? reg.projects.find((p) => p.slug === operatorHomeHarnessSlug());
     if (!project) {
@@ -510,7 +530,12 @@ export async function resolveHarnessPlansDir(
   }
   if (resolved === operatorHomeHarnessSlug()) {
     const detected = detectPapercupRoot();
-    if (detected && path.resolve(project.path) !== path.resolve(detected)) {
+    // Compare realpath-normalized forms: the canonical checkout is reachable
+    // via a `papercup` → `papercusp` symlink, and string-only path.resolve
+    // treats the two identical dirs as a mismatch → the guard false-alarmed
+    // and broke fleet:launch-on-plan (WI-1341). realpathOrResolve collapses
+    // the symlink so a genuine registry mismatch still throws.
+    if (detected && realpathOrResolve(project.path) !== realpathOrResolve(detected)) {
       throw new Error(
         `P-014 runtime guard: papercup harness path '${project.path}' does not match ` +
           `detected repo root '${detected}'. The registry is out of sync.`,

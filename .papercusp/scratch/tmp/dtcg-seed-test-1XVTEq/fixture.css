@@ -1,0 +1,14 @@
+
+:root {
+  --color-primary: #1d4ed8;
+  --color-bg: #ffffff;
+  --space-md: 12px;
+  --transition-fast: 120ms;
+  --random-thing: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #111827;
+  }
+}

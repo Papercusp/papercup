@@ -171,3 +171,54 @@ describe('capability:terminal scheme resolution', () => {
     expect(text).toContain('royal-purple');
   });
 });
+
+// ── EI-5835: explicit `fleet` arg auto-injects psu --fleet (membership) ─────────
+describe('injectFleetArg (EI-5835: --fleet auto-join for psu launches)', () => {
+  it('injects --fleet into a psu launch when an explicit fleet slug is given', async () => {
+    const { injectFleetArg } = await import('./terminal');
+    const r = injectFleetArg(
+      'psu --no-picker --agent=claude --harness=oddsmith --plan=p --launch-context=/b.md',
+      'bet-pattern',
+    );
+    expect(r.injected).toBe(true);
+    expect(r.command).toBe(
+      'psu --fleet=bet-pattern --no-picker --agent=claude --harness=oddsmith --plan=p --launch-context=/b.md',
+    );
+  });
+
+  it('is a no-op when no fleet slug is given', async () => {
+    const { injectFleetArg } = await import('./terminal');
+    const r = injectFleetArg('psu --no-picker --plan=p', null);
+    expect(r.injected).toBe(false);
+    expect(r.command).toBe('psu --no-picker --plan=p');
+  });
+
+  it('does not double-inject when --fleet is already present', async () => {
+    const { injectFleetArg } = await import('./terminal');
+    const cmd = 'psu --fleet=already --no-picker --plan=p';
+    const r = injectFleetArg(cmd, 'other');
+    expect(r.injected).toBe(false);
+    expect(r.command).toBe(cmd);
+  });
+
+  it('leaves a non-psu command untouched', async () => {
+    const { injectFleetArg } = await import('./terminal');
+    const r = injectFleetArg('npm run dev', 'bet-pattern');
+    expect(r.injected).toBe(false);
+    expect(r.command).toBe('npm run dev');
+  });
+
+  it('injects after psu even with a leading `cd … &&` (shell-separator boundary)', async () => {
+    const { injectFleetArg } = await import('./terminal');
+    const r = injectFleetArg('cd /repo && psu --no-picker --plan=p', 'f1');
+    expect(r.injected).toBe(true);
+    expect(r.command).toBe('cd /repo && psu --fleet=f1 --no-picker --plan=p');
+  });
+
+  it('does not match psu as a substring of another token (mypsu)', async () => {
+    const { injectFleetArg } = await import('./terminal');
+    const r = injectFleetArg('mypsu --plan=p', 'f1');
+    expect(r.injected).toBe(false);
+    expect(r.command).toBe('mypsu --plan=p');
+  });
+});

@@ -15,6 +15,11 @@
  *                           `issue:<id>`) ∪ its tagged-topic subscribers
  *   @file:<path>          — active presence whose current_files includes <path>
  *                           (the file-collision signal, for intent/window)
+ *   @fleet:<slug>         — live (fresh-heartbeat) members of a named fleet
+ *                           (membership IS the subscription — the soft
+ *                           coord_presence.fleet_slug label, no rows to manage)
+ *   @fleet-leader:<slug>  — the named fleet's CURRENT leader (escalate-to-lead;
+ *                           the durable agent_fleets registry, liveness-independent)
  *
  * Plain ownerIds, `*` (broadcast), and `human` pass through untouched, so a
  * normal coord:send is zero-overhead (no `@` → no resolution).
@@ -44,6 +49,12 @@ export interface AudienceResolvers {
   listActivePresence(): Promise<ActivePresence[]>;
   /** Topic slugs a coord object (kind, ref) is tagged to (coord_links rel='tagged'). */
   listTaggedTopics(objectKind: string, objectRef: string): Promise<string[]>;
+  /** Live (fresh-heartbeat) members of a named fleet (by slug or human name — the
+   *  host slugifies) → ownerIds. Backs the `@fleet:` selector. */
+  listFleetMembers(fleetSlug: string): Promise<string[]>;
+  /** The named fleet's current leader → ownerId(s) (0 or 1; the durable registry,
+   *  liveness-independent). Backs the `@fleet-leader:` selector. */
+  listFleetLeader(fleetSlug: string): Promise<string[]>;
 }
 
 export type AudienceMode = 'scoped' | 'broadcast';
@@ -133,6 +144,19 @@ async function resolveSelector(
     const ids = new Set<string>();
     for (const p of await presenceOnce()) if (p.files.includes(path)) ids.add(p.ownerId);
     return [...ids];
+  }
+
+  // `@fleet-leader:` MUST be tested before `@fleet:` would be — though the
+  // prefixes don't actually collide (`@fleet-` vs `@fleet:`), keep the more
+  // specific one first for clarity.
+  if (selector.startsWith('@fleet-leader:')) {
+    const slug = selector.slice('@fleet-leader:'.length).trim();
+    return slug ? resolvers.listFleetLeader(slug) : [];
+  }
+
+  if (selector.startsWith('@fleet:')) {
+    const slug = selector.slice('@fleet:'.length).trim();
+    return slug ? resolvers.listFleetMembers(slug) : [];
   }
 
   // Unknown selector — deliver to no one (never broadcast on a typo).

@@ -20,13 +20,12 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolveCtxHarnessSlug, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -246,7 +245,7 @@ export default defineTool({
 
         if (isTerminalPlanStatus(status)) {
           try {
-            await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), slug);
+            await clearStartedForTerminalPlan(resolveEffectiveHarnessSlug(sctx), slug);
           } catch {
             /* recovered by reconcileStartStatus on the next plans:list read */
           }
@@ -264,7 +263,7 @@ export default defineTool({
               planSlug: slug,
               deprecatedBy,
               learnings: args.learnings as DeprecateLearnings,
-              sourceHive: args.sourceHive ?? harnessSlug ?? operatorHomeHarnessSlug(),
+              sourceHive: args.sourceHive ?? resolveEffectiveHarnessSlug(sctx),
               ...(args.evidence ? { evidence: args.evidence } : {}),
               createdBy: id.ownerId,
             });

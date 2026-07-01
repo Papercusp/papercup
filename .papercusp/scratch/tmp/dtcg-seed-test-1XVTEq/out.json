@@ -1,0 +1,37 @@
+{
+  "$schema": "https://design-tokens.org/schemas/v1.json",
+  "$description": "Seeded from harness.css custom properties. NOT a semantic naming — paths follow the original CSS var names. Step B of plan §17.5 is to rename these to semantic ids (color.bg.surface, space.gutter, …) and dedup before merging into design/tokens/base.json.",
+  "color": {
+    "primary": {
+      "$type": "color",
+      "$value": "#1d4ed8",
+      "$description": "from /home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/tmp/dtcg-seed-test-1XVTEq/fixture.css"
+    },
+    "bg": {
+      "$type": "color",
+      "$value": "#ffffff",
+      "$description": "from /home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/tmp/dtcg-seed-test-1XVTEq/fixture.css"
+    }
+  },
+  "space": {
+    "md": {
+      "$type": "dimension",
+      "$value": "12px",
+      "$description": "from /home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/tmp/dtcg-seed-test-1XVTEq/fixture.css"
+    }
+  },
+  "transition": {
+    "fast": {
+      "$type": "duration",
+      "$value": "120ms",
+      "$description": "from /home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/tmp/dtcg-seed-test-1XVTEq/fixture.css"
+    }
+  },
+  "random": {
+    "thing": {
+      "$type": "color",
+      "$value": "var(--accent)",
+      "$description": "from /home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/tmp/dtcg-seed-test-1XVTEq/fixture.css"
+    }
+  }
+}

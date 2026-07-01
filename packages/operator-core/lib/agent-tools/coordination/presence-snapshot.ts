@@ -19,7 +19,7 @@
 
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listRecordedLiveSessions } from '../../adv-sessions';
-import { listPresence, sweepStalePresence } from './presence';
+import { listPresence, sweepStalePresence, sweepEndedPresence, PRESENCE_ENDED_REAP_MS } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
@@ -75,8 +75,13 @@ export interface PresenceSnapshot {
     viewerAttached: number;
     byState: { live: number; parked: number; ended: number; recorded: number };
   };
+  /** The ACTIONABLE roster: live + parked + recorded rows (everything a
+   *  coordinator can dispatch to / wake) — `ended` rows are NEVER included here
+   *  (that full-stale dump was the payload footgun this replaced). A targeted
+   *  `owner` read returns the matched row(s) here EVEN IF `ended` (the "inspect /
+   *  wake one dead agent" path). Counts for the excluded `ended` rows still live
+   *  in `summary.byState.ended`. */
   active: Record<string, unknown>[];
-  stale?: Record<string, unknown>[];
 }
 
 /**
@@ -120,6 +125,19 @@ export async function resolvePresenceScope(
 }
 
 /**
+ * Match a roster row against a targeted `owner` needle for the `owner` lookup —
+ * exact ownerId or label, else a substring either-way (the same fuzz
+ * coord:dispatch's findPresenceRow + coord:send resolve), so a handle / id prefix
+ * still finds the agent. Pure + exported for unit coverage.
+ */
+export function matchesOwner(r: RosterRow, needle: string): boolean {
+  if (!needle) return false;
+  const id = String(r.ownerId ?? '');
+  const label = String((r as { ownerLabel?: unknown }).ownerLabel ?? '');
+  return id === needle || label === needle || (!!id && (id.includes(needle) || needle.includes(id)));
+}
+
+/**
  * Assemble the roster snapshot for a resolved scope. The federated roster
  * (cross-machine peers) is merged in (best-effort — [] on a single box). The
  * GC sweep runs concurrently so it adds no latency and never breaks the read.
@@ -128,10 +146,10 @@ export async function resolvePresenceScope(
  */
 export async function assemblePresenceSnapshot(
   resolved: ResolvedPresenceScope,
-  opts: { includeStale?: boolean; nowMs?: number; detail?: { coordinationDomain: string } } = {},
+  opts: { owner?: string; nowMs?: number; detail?: { coordinationDomain: string } } = {},
 ): Promise<PresenceSnapshot> {
   const { wsId, hiveId, scope, scopeNote } = resolved;
-  const [records, federated, recordedLive] = await Promise.all([
+  const [records, federated, recordedLive, onDesktopSet, viewerSet] = await Promise.all([
     listPresence({ workspaceId: wsId, hiveSlug: hiveId }),
     listFederatedPresence({ workspaceId: wsId, hiveSlug: hiveId }),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
@@ -144,8 +162,33 @@ export async function assemblePresenceSnapshot(
     hiveId == null
       ? listRecordedLiveSessions({ workspaceId: wsId })
       : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
-    sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
+    // On-desktop / viewer-attached owners — gathered here (not just for the
+    // enrichment below) so the presence reaper can spare them (both best-effort →
+    // empty on a headless box / DB hiccup, so a failure only ever spares MORE).
+    gatherOnDesktopSessions()
+      .then((s) => s.owners)
+      .catch(() => new Set<string>()),
+    gatherViewerAttachedOwners().catch(() => new Set<string>()),
   ]);
+
+  // Dead-row-retention reaper (runs on this always-on read path, not just the
+  // flag-gated routine): evict genuinely-ENDED rows on a SHORT TTL + the blunt 24h
+  // backstop, sparing parked (wakeable) + on-desktop/viewer sessions and scoped to
+  // this read. Skipped for a targeted `owner` read — that is a pure inspection of a
+  // (possibly dead) agent and must not mutate the row it is returning. Best-effort:
+  // a sweep failure must never break the roster read.
+  if (!opts.owner) {
+    const protectedOwners = new Set<string>([...onDesktopSet, ...viewerSet]);
+    await Promise.all([
+      sweepEndedPresence({
+        ttlMs: PRESENCE_ENDED_REAP_MS,
+        protectedOwners,
+        workspaceId: wsId,
+        hiveSlug: hiveId,
+      }).catch(() => 0),
+      sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
+    ]);
+  }
   // Reconcile the two liveness sources: a fresh presence row wins; a live
   // session-log record supersedes a STALE presence row (so a resumed-but-idle
   // session whose old heartbeat went stale is still surfaced, not shadowed); an
@@ -162,8 +205,11 @@ export async function assemblePresenceSnapshot(
   const localAllIds = all.filter((r) => !isFederated(r)).map((r) => r.ownerId);
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
-  let onDesktopOwners = new Set<string>();
-  let viewerAttachedOwners = new Set<string>();
+  // On-desktop (live OS window) + PTY-panel viewer owners were already gathered up
+  // front (so the reaper above could spare them); reuse them here for the row
+  // enrichment rather than re-reading.
+  const onDesktopOwners = onDesktopSet;
+  const viewerAttachedOwners = viewerSet;
   // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
   // (it does NOT ride the base PresenceRecord like hive_slug). Fetched for the WHOLE
   // local roster (active + stale) so a parked fleet member still shows its fleet.
@@ -178,22 +224,6 @@ export async function assemblePresenceSnapshot(
     fetchWakeability(localAllIds)
       .then((m) => {
         wakeability = m;
-      })
-      .catch(() => {}),
-    // On-desktop (live OS window) owners — best-effort, box-local (empty on a
-    // headless box). Independent of the other joins so a wmctrl hiccup never
-    // affects wakeability/tier-1, and vice-versa.
-    gatherOnDesktopSessions()
-      .then((s) => {
-        onDesktopOwners = s.owners;
-      })
-      .catch(() => {}),
-    // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) — the no-OS-window
-    // sibling of on-desktop. Best-effort + independent so a DB hiccup never affects
-    // the other joins.
-    gatherViewerAttachedOwners()
-      .then((s) => {
-        viewerAttachedOwners = s;
       })
       .catch(() => {}),
     // Named-fleet membership (P-005) — best-effort + independent of the other joins.
@@ -250,7 +280,22 @@ export async function assemblePresenceSnapshot(
   const staleEnriched = stale.map((r) =>
     withFleet(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow)))),
   );
-  let activeRows = activeEnriched.map(toStableRosterRow);
+
+  // The FULL enriched roster (fresh-heartbeat + stale), each carrying its derived
+  // sessionState. What we RETURN is a filtered view of it:
+  //   - a targeted `owner` read → the matched row(s), INCLUDING an `ended` one — the
+  //     "inspect / wake ONE dead agent" path that replaced the include_stale full dump.
+  //   - a default read → every ACTIONABLE row (live | parked | recorded | a
+  //     federated/unknown peer), but NEVER an `ended` row (the dead-row pile that
+  //     ballooned the payload; its count still surfaces in summary.byState.ended).
+  // Ordered by ownerId so the emitted list stays byte-stable (D-006).
+  const fullEnriched = [...activeEnriched, ...staleEnriched];
+  const selected = (
+    opts.owner
+      ? fullEnriched.filter((r) => matchesOwner(r, opts.owner!))
+      : fullEnriched.filter((r) => r.sessionState !== 'ended')
+  ).sort((a, b) => String(a.ownerId).localeCompare(String(b.ownerId)));
+  let activeRows = selected.map(toStableRosterRow);
 
   // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the
   // SEPARATE papercusp_su lock DB, so it is fetched ONLY when asked (opt-in,
@@ -299,7 +344,6 @@ export async function assemblePresenceSnapshot(
       byState,
     },
     active: activeRows,
-    ...(opts.includeStale ? { stale: staleEnriched.map(toStableRosterRow) } : {}),
   };
 }
 

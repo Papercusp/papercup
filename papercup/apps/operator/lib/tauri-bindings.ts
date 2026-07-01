@@ -108,6 +108,15 @@ export const commands = {
 	endpointCancel: (callId: number) => typedError<null, string>(__TAURI_INVOKE("endpoint_cancel", { callId })),
 	// Tauri command invoked from injected JS to deliver eval results back to Rust.
 	devBridgeResult: (id: string, value: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never }) => __TAURI_INVOKE<void>("__dev_bridge_result", { id, value }),
+	/**
+	 *  The canonical env set the in-webview `EnvSwitcherBar` renders — the
+	 *  AUTHORITATIVE source. The bar reads THIS (never a routable `/api` fetch), so
+	 *  it can't self-hide on a `/api` routing glitch. Dev-only: a packaged
+	 *  single-operator build has nothing to switch, so it returns `[]` (the bar then
+	 *  hides, correctly). Reachability is probed here because Rust can reach the
+	 *  sibling operators a webview can't (CORS).
+	 */
+	listEnvs: () => __TAURI_INVOKE<EnvInfo[]>("list_envs"),
 };
 
 /* Types */
@@ -149,6 +158,17 @@ data: string } |
 { kind: "done"; result: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never } } | 
 // Dispatch or handler failed (role gate, quota, timeout, throw).
 { kind: "error"; code: string; message: string };
+
+// One env button the in-webview bar renders. Serialized camelCase for JS.
+export type EnvInfo = {
+	id: string,
+	label: string,
+	port: number,
+	origin: string,
+	tooltip: string,
+	reachable: boolean,
+	isSelf: boolean,
+};
 
 export type NativeTerminalStatus = {
 	// One of glued-ghostty-x11 / new-window / embedded-* / disabled.

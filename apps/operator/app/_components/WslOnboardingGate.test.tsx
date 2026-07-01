@@ -69,6 +69,16 @@ describe('WslOnboardingGate', () => {
     expect(screen.queryByText(/Papercup setup/i)).toBeNull();
   });
 
+  it('fails safe to children when wsl_status throws (ACL denied on a non-dev env origin)', async () => {
+    // Switching to prod/staging/local lands on a remote origin where Tauri
+    // denies the app command ("wsl_status not allowed. Plugin not found"). The
+    // gate must render the app, NOT the un-dismissable "Papercup setup" wizard.
+    wslStatus.mockRejectedValue(new Error('wsl_status not allowed. Plugin not found'));
+    render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
+    await waitFor(() => expect(screen.getByText('app body')).toBeTruthy());
+    expect(screen.queryByText(/Papercup setup/i)).toBeNull();
+  });
+
   it('passes through to children on NotSupported', async () => {
     wslStatus.mockResolvedValue(mkStatus('NotSupported'));
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);

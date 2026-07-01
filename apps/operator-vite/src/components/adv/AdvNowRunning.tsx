@@ -4,6 +4,7 @@ import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
+import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { type PlanListRow } from '@/app/admin/plans/plans-api';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
@@ -168,6 +169,8 @@ export default function AdvNowRunning({ slug }: Props) {
   );
 
   const [hovered, setHovered] = useState<{ run: AgentRun; rect: DOMRect } | null>(null);
+  // The run pinned open in the full inspector modal (null = closed).
+  const [inspecting, setInspecting] = useState<AgentRun | null>(null);
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelClose = () => {
@@ -362,9 +365,21 @@ export default function AdvNowRunning({ slug }: Props) {
           runId={hovered.run.runId}
           role={hovered.run.role}
           anchorRect={hovered.rect}
+          startedAtMs={hovered.run.ts * 1000}
           onMouseEnter={cancelClose}
           onMouseLeave={scheduleClose}
-          onOpenInspector={() => setHovered(null)}
+          onOpenInspector={() => { if (hovered) setInspecting(hovered.run); setHovered(null); }}
+        />
+      )}
+
+      {inspecting && (
+        <AgentInspectorModal
+          slug={slug}
+          phase={PHASE}
+          runId={inspecting.runId}
+          role={inspecting.role}
+          open
+          onClose={() => setInspecting(null)}
         />
       )}
     </div>

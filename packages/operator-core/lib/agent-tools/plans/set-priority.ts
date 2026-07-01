@@ -14,9 +14,8 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { bulkContent, runBulk } from '../_bulk';
 
 const setPriorityItemSchema = z.object({
@@ -47,7 +46,7 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
+    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const items = args.items ?? [{ slug: args.slug, priority: args.priority }];
     const env = await runBulk(
       items,

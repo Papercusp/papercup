@@ -1,0 +1,7 @@
+{
+  "kind": "plugin",
+  "name": "bare",
+  "version": "0.1.0",
+  "papercusp": "^0.1.0",
+  "capabilities": []
+}

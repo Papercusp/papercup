@@ -46,9 +46,13 @@ export function fleetRoleFor(
 }
 
 /** PURE: should a take-leadership handoff demote the PRIOR leader's presence to `member`?
- *  Only when there was a distinct prior leader whose presence STILL labels them in this
- *  fleet (D-002: prior leader demoted to member, stays a member — never yanked out of a
- *  different fleet they have since joined, and a dead/no-row leader is left alone). */
+ *  ONE leader per fleet (D-002): a distinct prior leader is recorded as a `member` after
+ *  losing leadership — when they are STILL (presence-)labeled in this fleet, OR carry no
+ *  fleet label at all (a leader-of-record who never presence-joined, or an ended session).
+ *  setPresenceFleet is UPDATE-only, so the no-label case safely updates an existing row and
+ *  no-ops a truly-gone one. The ONLY skip is a prior leader who has since MOVED to a
+ *  DIFFERENT fleet — never yank them out of the fleet they are now in. (owner spec
+ *  2026-06-30 / EI-5705: the prior leader becomes a member even when they had no member row.) */
 export function shouldDemotePriorLeader(
   previousLeader: string | null,
   callerOwnerId: string,
@@ -58,7 +62,7 @@ export function shouldDemotePriorLeader(
   return (
     !!previousLeader &&
     previousLeader !== callerOwnerId &&
-    priorPresenceFleetSlug === targetFleetSlug
+    (priorPresenceFleetSlug === targetFleetSlug || priorPresenceFleetSlug === null)
   );
 }
 

@@ -20,7 +20,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { clearHiveTimeWake, resolveHiveHomeSlug } from '../../hive/wake';
-import { setHiveStarted } from '../../hive/started';
+import { setHiveStarted, setHivePlacementStarted, anyHivePlacementStarted } from '../../hive/started';
 import { setDefaultWakeMode } from '../coordination/wake-mode';
 
 export default defineTool({
@@ -69,14 +69,19 @@ export default defineTool({
     }
     const { sql } = getOrgPg();
 
-    // Order matters: started=false FIRST so no watchdog seam re-arms between
-    // the wake clear and the state flip (P-013's lifecycle coupling).
-    await setHiveStarted(workspaceId, installSlug, false);
-    await setDefaultWakeMode('manual');
-    // K1 (workspace-scoped-coordination P-003): thread the workspace so a Pause
-    // clears the workspace-sentinel wake routine when the flag is ON (OFF ⇒
-    // per-hive, unchanged).
-    await clearHiveTimeWake(sql, installSlug, { workspaceId });
+    // Per-hive Stop (per-hive start-stop 2026-06-30): clear THIS hive's placement
+    // bit FIRST (P-013 ordering — no watchdog seam re-arms between the wake clear
+    // and the state flip). This stops the workspace Queen placing THIS hive's work.
+    await setHivePlacementStarted(workspaceId, installSlug, false);
+    // Idle the workspace Queen LOOP (sentinel off + wake-mode manual + clear the
+    // pending time wake) ONLY when NO hive remains started — otherwise the single
+    // workspace Queen keeps running for the other started hives.
+    const loopIdle = !(await anyHivePlacementStarted(workspaceId, installSlug));
+    if (loopIdle) {
+      await setHiveStarted(workspaceId, installSlug, false);
+      await setDefaultWakeMode('manual');
+      await clearHiveTimeWake(sql, installSlug, { workspaceId });
+    }
     // Live UI reflection (P-006): the AdvShell harness-bar control
     // (AdvNowRunning) reads hive.controlState.
     void import('../../sync-sse')
@@ -113,8 +118,9 @@ export default defineTool({
             ok: true,
             harness: installSlug,
             started: false,
-            wakeMode: 'manual',
-            timeWakeCleared: true,
+            wakeMode: loopIdle ? 'manual' : 'auto',
+            workspaceLoopIdle: loopIdle,
+            timeWakeCleared: loopIdle,
             drainedBees: drained,
           }),
         },

@@ -61,6 +61,10 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('The placement SCOPE — hive/harness slugs the home Queen may place into (→ survey allowedHarnesses). [] = no restriction (default).'),
+    includeUnplannedWork: z
+      .boolean()
+      .optional()
+      .describe('Whether plan-LESS ("loose") work-items — those with no source plan — are placed. Default true; false ⇒ the Queen works ONLY plan-tied items. Independent of eligiblePlans (the "Non-plan work items" toggle).'),
     modelTiers: z
       .array(
         z.object({
@@ -142,6 +146,7 @@ export default defineTool({
     if (args.directive !== undefined) patch.directive = args.directive;
     if (args.eligiblePlans !== undefined) patch.eligiblePlans = args.eligiblePlans;
     if (args.eligibleHives !== undefined) patch.eligibleHives = args.eligibleHives;
+    if (args.includeUnplannedWork !== undefined) patch.includeUnplannedWork = args.includeUnplannedWork;
     if (args.modelTiers !== undefined) patch.modelTiers = args.modelTiers;
     if (args.tierCeilings !== undefined) patch.tierCeilings = args.tierCeilings;
     if (args.cadenceFloorSec !== undefined) patch.cadenceFloorSec = args.cadenceFloorSec;

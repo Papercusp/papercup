@@ -19,7 +19,7 @@ import { z } from "zod";
 import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
 import { withWorkspace } from "@papercusp/db-org";
 import { readPlanBySlug } from "./source";
-import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from "./_ctx-opts";
+import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from "./_ctx-opts";
 import { harnessArg, harnessScopedCtx } from "../_harness-scope";
 import { resolveEffectiveStatus } from "./effective-status";
 import { hashPlanContent } from "./content-hash";
@@ -29,7 +29,6 @@ import {
   type PlanItemTestStatus,
 } from "../../harness-test-rollup";
 import { overlayIssueBlocksForPlan } from "../../issue-blocks-merge";
-import { operatorHomeHarnessSlug } from "../../harness/operator-home-harness";
 import { boundRowField } from "../_bound-output";
 import { bulkContent, mergeIds, runBulk } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
@@ -288,8 +287,7 @@ export default defineTool({
 
             // P-006: Build a map of plan-item-id → { featureId, status } so the UI
             // can show live feature status badges next to each P-NNN item.
-            const harnessSlug =
-              resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
+            const harnessSlug = resolveEffectiveHarnessSlug(sctx);
             let linkedFeatures: Record<
               string,
               { featureId: string; status: string; harnessSlug: string }

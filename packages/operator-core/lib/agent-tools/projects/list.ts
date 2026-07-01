@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listProjectsForHarness } from '../../projects-data';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'projects:list',
@@ -26,21 +27,18 @@ export default defineTool({
     harnessSlug: z.string().optional(),
   }),
   async handler(args, ctx) {
-    let slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
-    // Under ?superuser=1 the spawn ctx supplies harnessSlug='*' as a
-    // workspace-wildcard. listProjectsForHarness then tries to set
-    // search_path to schema `harness_*`, which doesn't exist, and PG
-    // throws `relation "harness_features" does not exist`. Treat '*'
-    // the same as a missing slug — the caller has to pick a harness.
-    if (slug === '*') slug = '';
+    // Route through the fail-loud resolver (workspace-data-isolation-leaks P-004):
+    // a missing slug, the operator/superuser `'*'` auto-default, AND an explicit
+    // `all` (cross-harness scope is meaningless for a single-harness project list)
+    // all resolve to null → a `harness_required` error. The old
+    // `args.harnessSlug ?? ctx.harnessSlug ?? ''` guarded only by `if (!slug)` plus
+    // a hand-rolled `if (slug === '*')` — which still let an explicit `all` slip
+    // through to listProjectsForHarness('all'), setting search_path to a
+    // nonexistent `harness_all` schema (PG: `relation "harness_features" does not
+    // exist`) — a silent wrong-scope read instead of a clear, actionable error.
+    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
     if (!slug) {
-      return {
-        isError: true,
-        content: [{
-          type: 'text',
-          text: 'harness_slug_required: projects:list needs a specific harness. Pass {"harnessSlug":"<slug>"} (e.g. from harness:list first) or invoke from a harness-scoped spawn URL.',
-        }],
-      };
+      return harnessRequiredResult('projects:list');
     }
     const projects = await listProjectsForHarness(slug);
     return { content: [{ type: 'text', text: JSON.stringify({ harnessSlug: slug, projects }) }] };

@@ -1,0 +1,198 @@
+__vite_ssr_exportName__("ADMIN_COMMANDS", () => { try { return ADMIN_COMMANDS } catch {} });
+__vite_ssr_exportName__("getCommand", () => { try { return getCommand } catch {} });
+__vite_ssr_exportName__("listCommands", () => { try { return listCommands } catch {} });
+const SSH_MAC = "ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null aviweiss@127.0.0.1";
+const SSH_WIN = "ssh -i /home/marsh-office/.ssh/papercup-vm-win -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null User@127.0.0.1";
+const PAPERCUSP_DESKTOP = "/home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop";
+const PAPERCUSP_REPO = "/home/marsh-office/papercupai-workspace/papercusp";
+const ADMIN_COMMANDS = [
+  // ── Building ─────────────────────────────────────────────
+  {
+    id: "build-linux-prod",
+    label: "Linux Prod Build",
+    section: "building",
+    description: "Builds the Linux .deb / .rpm desktop bundles on this host. Audits the bundle for PostHog leaks at the end.",
+    command: `set -e
+echo "=== npm run build (tauri build)"
+npm run build 2>&1 | tail -200
+echo "=== audit-bundle.sh"
+DEB="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb"
+RPM="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/rpm/Papercusp-0.0.1-1.x86_64.rpm"
+[ -f "$DEB" ] && ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "$DEB"
+[ -f "$RPM" ] && ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "$RPM"
+echo "=== build + audit complete"`,
+    cwd: PAPERCUSP_DESKTOP
+  },
+  {
+    id: "build-mac-prod",
+    label: "Mac Prod Build",
+    section: "building",
+    description: "Rsyncs the canonical tree into the Mac VM (~/papercup-build-mac) and builds the UNIVERSAL .dmg via bin/mac-vm-build.sh (term shim + sidecar + tauri). ~30–45 min. Copies the .dmg back to /home/marsh-office/ and runs the privacy auditor.",
+    command: `set -e
+echo "=== rsync tree → VM:papercup-build-mac/papercup"
+rsync -az --delete --exclude .git --exclude node_modules --exclude target --exclude .turbo --exclude .next -e "ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" ${PAPERCUSP_REPO}/ aviweiss@127.0.0.1:papercup-build-mac/papercup/
+if [ -f /home/marsh-office/.papercusp/signing/papercusp.key ]; then
+  scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /home/marsh-office/.papercusp/signing/papercusp.key aviweiss@127.0.0.1:.papercusp-updater.key
+fi
+echo "=== mac build via ${SSH_MAC}"
+${SSH_MAC} 'bash -lc "set -e
+   cd ~/papercup-build-mac/papercup/papercusp-desktop
+   NODE_OPTIONS=--max-old-space-size=8192 npm install --legacy-peer-deps 2>&1 | tail -5
+   export TAURI_SIGNING_PRIVATE_KEY_PATH=\\$HOME/.papercusp-updater.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD=
+   bash bin/mac-vm-build.sh 2>&1 | tail -200"' 2>&1
+echo "=== scp dmg back"
+scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'aviweiss@127.0.0.1:papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg' /home/marsh-office/
+echo "=== audit"
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_*_universal.dmg
+echo "=== mac build + audit complete"`
+  },
+  {
+    id: "build-windows-prod",
+    label: "Windows Prod Build",
+    section: "building",
+    description: "Builds the Windows .msi / .exe inside the Windows VM (C:\\Users\\User\\papercupai\\papercusp-desktop). ~30–45 min. Copies the artifacts back to /home/marsh-office/ and runs the privacy auditor.",
+    command: `set -e
+echo "=== win build via ${SSH_WIN}"
+${SSH_WIN} "powershell -NoProfile -ExecutionPolicy Bypass -File win-build.ps1" 2>&1 | tail -200
+echo "=== scp msi+exe back"
+scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/msi/Papercusp_0.0.1_x64_en-US.msi' /home/marsh-office/
+scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/nsis/Papercusp_0.0.1_x64-setup.exe' /home/marsh-office/
+echo "=== audit"
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+echo "=== win build + audit complete"`
+  },
+  {
+    id: "rebuild-3070",
+    label: "Rebuild 3070 host",
+    section: "building",
+    description: "Runs bin/prod: builds the operator (Starlight docs + Vite SPA) and restarts the Hono host on :3070. Survives this stream — server keeps running after you Stop.",
+    command: "bin/prod 2>&1",
+    cwd: PAPERCUSP_REPO
+  },
+  // ── Running ──────────────────────────────────────────────
+  {
+    id: "install-linux-deb",
+    label: "Install + launch Linux .deb",
+    section: "running",
+    description: "Installs the latest local .deb (requires NOPASSWD sudo for dpkg) and launches the installed binary.",
+    command: `set -e; DEB="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb"; echo "==> installing $DEB"; sudo -n dpkg -i "$DEB" 2>&1; echo "==> launching Papercusp"; setsid /usr/bin/papercusp >/dev/null 2>&1 < /dev/null & echo "launched pid $!"`
+  },
+  {
+    id: "install-mac-dmg",
+    label: "Install + launch Mac .dmg",
+    section: "running",
+    description: "Mounts the DMG, copies Papercusp.app to /Applications, strips quarantine, and launches it in the Mac VM.",
+    command: `${SSH_MAC} 'bash -lc "set -e; DMG=~/Papercusp_0.0.1_x86_64.dmg; echo \\"==> mounting $DMG\\"; hdiutil attach \\"$DMG\\" -nobrowse; echo \\"==> copying to /Applications\\"; rm -rf /Applications/Papercusp.app; cp -R /Volumes/Papercusp/Papercusp.app /Applications/; hdiutil detach /Volumes/Papercusp; xattr -dr com.apple.quarantine /Applications/Papercusp.app; echo \\"==> launching\\"; open /Applications/Papercusp.app; echo done"' 2>&1`
+  },
+  {
+    id: "install-windows-msi",
+    label: "Install + launch Windows .msi",
+    section: "running",
+    description: "Runs msiexec /i silent + launches Papercusp.exe in the Windows VM.",
+    command: `${SSH_WIN} "powershell -NoProfile -Command \\"& { \\$msi = 'C:\\\\Users\\\\User\\\\papercusp-desktop\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\msi\\\\Papercusp_0.0.1_x64_en-US.msi' ; Write-Host '==> installing' \\$msi ; Start-Process -Wait msiexec -ArgumentList '/i', \\$msi, '/quiet' ; Write-Host '==> launching' ; Start-Process 'C:\\\\Program Files\\\\Papercusp\\\\Papercusp.exe' ; Write-Host 'done' }\\"" 2>&1`
+  },
+  {
+    id: "launch-linux-dev",
+    label: "Launch Linux Desktop DEV",
+    section: "running",
+    description: "Starts `npm run dev` in papercusp-desktop (Tauri dev mode against :3055). Server keeps running after you Stop the stream.",
+    command: `setsid bash -c 'cd ${PAPERCUSP_DESKTOP} && npm run dev' </dev/null >/tmp/papercusp-desktop-dev.log 2>&1 & disown; echo "==> launched pid $!"; echo "==> tailing /tmp/papercusp-desktop-dev.log"; sleep 1; tail -n+1 -F /tmp/papercusp-desktop-dev.log`
+  },
+  {
+    id: "restart-3055",
+    label: "Restart dev stack (3055 + 3070)",
+    section: "running",
+    description: "Restarts the operator dev stack — papercup-dev (Vite frontend on :3055) and papercup-dev-api (Hono on :3070). The /admin page goes offline for a few seconds while the Hono host re-imports; the Vite side comes back via HMR almost immediately.",
+    command: "bin/dev 2>&1",
+    cwd: PAPERCUSP_REPO
+  },
+  {
+    id: "audit-prod-bundles",
+    label: "Audit prod bundles for PostHog leaks",
+    section: "running",
+    description: "Runs bin/audit-bundle.sh against any prod artifacts present in /home/marsh-office/ + the local Linux .deb/.rpm. Fails loud if any artifact contains posthog.json, posthog-personal.json, or PAPERCUSP_POSTHOG_* env vars.",
+    command: `set -e
+ARTIFACTS=()
+DEB="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb"
+RPM="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/rpm/Papercusp-0.0.1-1.x86_64.rpm"
+DMG=/home/marsh-office/Papercusp_0.0.1_x86_64.dmg
+MSI=/home/marsh-office/Papercusp_0.0.1_x64_en-US.msi
+EXE=/home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+for a in "$DEB" "$RPM" "$DMG" "$MSI" "$EXE"; do
+  [ -f "$a" ] && ARTIFACTS+=("$a") && echo "found: $a ($(du -h "$a" | cut -f1))" || echo "missing: $a"
+done
+echo "---"
+if [ \${#ARTIFACTS[@]} -eq 0 ]; then echo "no artifacts to scan"; exit 1; fi
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`
+  },
+  {
+    id: "env-probe",
+    label: "Env probe",
+    section: "running",
+    description: `Prints a handful of env vars from your interactive shell config (NVM, BUN, COMPOSIO, HINDSIGHT_API_URL, CLOUDFLARE_API_TOKEN). Useful for diagnosing "command can't find X" issues.`,
+    command: 'echo "PATH=$PATH"; echo "NVM=$(type -t nvm 2>/dev/null)"; echo "NODE=$(which node)"; echo "BUN_INSTALL=$BUN_INSTALL"; echo "COMPOSIO_INSTALL_DIR=$COMPOSIO_INSTALL_DIR"; echo "HINDSIGHT_API_URL=$HINDSIGHT_API_URL"; echo "ELEVENLABS_API_KEY=$(test -n "$ELEVENLABS_API_KEY" && echo set || echo unset)"; echo "CLOUDFLARE_API_TOKEN=$(test -n "$CLOUDFLARE_API_TOKEN" && echo set || echo unset)"; echo "ANTHROPIC_API_KEY=$(test -n "$ANTHROPIC_API_KEY" && echo set || echo unset)"; echo "OPENAI_API_KEY=$(test -n "$OPENAI_API_KEY" && echo set || echo unset)"'
+  },
+  // ── Simulators ───────────────────────────────────────────
+  // ── Packaged build (wdio + tauri-driver against the shipped binary) ──
+  {
+    id: "wdio-install",
+    label: "Install wdio deps (one-time)",
+    section: "packaged-build",
+    description: "Runs `npm install` in tools/perf-test/wdio. Kept out of the pnpm workspace on purpose — wdio postinstall doesn't play nicely with hoisting.",
+    command: "npm install 2>&1",
+    cwd: `${PAPERCUSP_REPO}/tools/perf-test/wdio`
+  },
+  {
+    id: "wdio-test",
+    label: "Run wdio test against packaged binary",
+    section: "packaged-build",
+    description: "Spawns tauri-driver on :4445 and drives the latest packaged Tauri binary via WebDriver. Runs `specs/*.spec.ts`. Prereqs: `Linux Prod Build` produced an artifact, `webkit2gtk-driver` is installed (sudo apt), and `Install wdio deps` was run once.",
+    command: "npm test 2>&1",
+    cwd: `${PAPERCUSP_REPO}/tools/perf-test/wdio`
+  },
+  {
+    id: "wdio-webkit-driver-check",
+    label: "Check webkit2gtk-driver",
+    section: "packaged-build",
+    description: "Reports whether `WebKitWebDriver` is on PATH (required for tauri-driver on Linux). If missing: `sudo apt install webkit2gtk-driver`.",
+    command: `if command -v WebKitWebDriver >/dev/null 2>&1; then echo "WebKitWebDriver: $(WebKitWebDriver --version 2>&1 | head -1) at $(command -v WebKitWebDriver)"; else echo "WebKitWebDriver: MISSING — install with: sudo apt install webkit2gtk-driver"; exit 1; fi`
+  },
+  {
+    id: "launch-android-emulator",
+    label: "Launch Android emulator",
+    section: "simulators",
+    description: "Boots the papercusp-test AVD on this Linux host. Runs detached — survives Stop. After boot, `adb devices` shows emulator-5554.",
+    command: `setsid bash -c '$HOME/Android/Sdk/emulator/emulator -avd papercusp-test -no-snapshot-load -no-audio' </dev/null >/tmp/android-emulator.log 2>&1 & disown; echo "==> launched pid $!"; echo "==> avd=papercusp-test"; echo "==> tailing /tmp/android-emulator.log"; sleep 1; tail -n+1 -F /tmp/android-emulator.log`
+  },
+  {
+    id: "start-mac-vm",
+    label: "Start macOS VM",
+    section: "simulators",
+    description: "Boots the macOS VM (QEMU + SPICE on :5930). ~60–120s to be SSH-ready. Skip if it's already up.",
+    command: `if pgrep -f "qemu.*mac_hdd_ng" >/dev/null; then echo "==> macOS VM already running (pid $(pgrep -f 'qemu.*mac_hdd_ng'))"; exit 0; fi; systemctl --user start papercup-vm-mac.service && echo "==> started papercup-vm-mac.service (boot-sonoma-durable.sh)"; echo "==> SPICE: remote-viewer spice://127.0.0.1:5930"; echo "==> tailing qemu log (Stop when SSH is ready)"; sleep 2; tail -n+1 -F $HOME/macos-vm/OSX-KVM/logs/qemu-current.log`
+  },
+  {
+    id: "launch-ios-simulator",
+    label: "Launch iOS simulator (iPhone 16)",
+    section: "simulators",
+    description: 'SSH Mac VM → xcrun simctl boot "iPhone 16" + open Simulator.app. Requires the macOS VM running; view via `remote-viewer spice://127.0.0.1:5930`.',
+    command: `${SSH_MAC} 'bash -lc "set -e; DEVICE=\\"iPhone 16\\"; echo \\"==> booting $DEVICE\\"; xcrun simctl boot \\"$DEVICE\\" 2>&1 | grep -v \\"Booted\\" || true; echo \\"==> opening Simulator.app\\"; open -a Simulator; sleep 2; echo \\"==> booted devices:\\"; xcrun simctl list devices booted; echo \\"==> done — view via SPICE on :5930\\""' 2>&1`
+  },
+  {
+    id: "ios-simulator-list",
+    label: "List iOS simulator devices",
+    section: "simulators",
+    description: "Shows all available iOS simulator devices on the Mac VM. Use device names from here in custom xcrun simctl boot runs.",
+    command: `${SSH_MAC} "xcrun simctl list devices available iOS" 2>&1`
+  }
+];
+function getCommand(id) {
+  return ADMIN_COMMANDS.find((c) => c.id === id) ?? null;
+};
+function listCommands() {
+  return ADMIN_COMMANDS;
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,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QjtBQUFBLEVBQ0E7QUFBQSxJQUNFLElBQUk7QUFBQSxJQUNKLE9BQU87QUFBQSxJQUNQLFNBQVM7QUFBQSxJQUNULGFBQWE7QUFBQSxJQUNiLFNBQVM7QUFBQSxJQUNULEtBQUssR0FBRyxjQUFjO0FBQUEsRUFDeEI7QUFBQSxFQUNBO0FBQUEsSUFDRSxJQUFJO0FBQUEsSUFDSixPQUFPO0FBQUEsSUFDUCxTQUFTO0FBQUEsSUFDVCxhQUFhO0FBQUEsSUFDYixTQUFTO0FBQUEsRUFDWDtBQUFBLEVBRUE7QUFBQSxJQUNFLElBQUk7QUFBQSxJQUNKLE9BQU87QUFBQSxJQUNQLFNBQVM7QUFBQSxJQUNULGFBQWE7QUFBQSxJQUNiLFNBQVM7QUFBQSxFQUNYO0FBQUEsRUFDQTtBQUFBLElBQ0UsSUFBSTtBQUFBLElBQ0osT0FBTztBQUFBLElBQ1AsU0FBUztBQUFBLElBQ1QsYUFBYTtBQUFBLElBQ2IsU0FBUztBQUFBLEVBQ1g7QUFBQSxFQUNBO0FBQUEsSUFDRSxJQUFJO0FBQUEsSUFDSixPQUFPO0FBQUEsSUFDUCxTQUFTO0FBQUEsSUFDVCxhQUFhO0FBQUEsSUFDYixTQUFTLEdBQUcsT0FBTztBQUFBLEVBQ3JCO0FBQUEsRUFDQTtBQUFBLElBQ0UsSUFBSTtBQUFBLElBQ0osT0FBTztBQUFBLElBQ1AsU0FBUztBQUFBLElBQ1QsYUFBYTtBQUFBLElBQ2IsU0FBUyxHQUFHLE9BQU87QUFBQSxFQUNyQjtBQUNGO0FBR08sU0FBUyxXQUFXLElBQWlDO0FBQzFELFNBQU8sZUFBZSxLQUFLLENBQUMsTUFBTSxFQUFFLE9BQU8sRUFBRSxLQUFLO0FBQ3BEO0FBRU8sU0FBUyxlQUErQjtBQUM3QyxTQUFPO0FBQ1QiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImFkbWluLWNvbW1hbmRzLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogU2VydmVyLXNpZGUgYWxsb3dsaXN0IGZvciAvYWRtaW4gb3BzIGRhc2hib2FyZC5cbiAqXG4gKiBDbGllbnQgb25seSBzZW5kcyBhIGBjbWRgIGlkLiBTZXJ2ZXIgcmVzb2x2ZXMgdG8gdGhlIGFjdHVhbCBzaGVsbFxuICogY29tbWFuZC4gQWRkaW5nIGEgbmV3IGVudHJ5IGhlcmUgaXMgdGhlIG9ubHkgd2F5IHRvIGV4cG9zZSBhXG4gKiBjb21tYW5kIOKAlCB0aGVyZSdzIG5vIHBhdGggdGhhdCBsZXRzIHRoZSBjbGllbnQgcGFzcyByYXcgc2hlbGwuXG4gKi9cblxuZXhwb3J0IGludGVyZmFjZSBBZG1pbkNvbW1hbmQge1xuICBpZDogc3RyaW5nO1xuICBsYWJlbDogc3RyaW5nO1xuICBzZWN0aW9uOiAnYnVpbGRpbmcnIHwgJ3J1bm5pbmcnIHwgJ3NpbXVsYXRvcnMnIHwgJ3BhY2thZ2VkLWJ1aWxkJztcbiAgZGVzY3JpcHRpb24/OiBzdHJpbmc7XG4gIGNvbW1hbmQ6IHN0cmluZztcbiAgY3dkPzogc3RyaW5nO1xufVxuXG5jb25zdCBTU0hfTUFDID0gJ3NzaCAtaSAvaG9tZS9tYXJzaC1vZmZpY2UvLnNzaC9wYXBlcmN1cC12bS1tYWMgLXAgMjIyMiAtbyBTdHJpY3RIb3N0S2V5Q2hlY2tpbmc9bm8gLW8gVXNlcktub3duSG9zdHNGaWxlPS9kZXYvbnVsbCBhdml3ZWlzc0AxMjcuMC4wLjEnO1xuY29uc3QgU1NIX1dJTiA9ICdzc2ggLWkgL2hvbWUvbWFyc2gtb2ZmaWNlLy5zc2gvcGFwZXJjdXAtdm0td2luIC1wIDIyMjMgLW8gU3RyaWN0SG9zdEtleUNoZWNraW5nPW5vIC1vIFVzZXJLbm93bkhvc3RzRmlsZT0vZGV2L251bGwgVXNlckAxMjcuMC4wLjEnO1xuXG5jb25zdCBQQVBFUkNVU1BfREVTS1RPUCA9ICcvaG9tZS9tYXJzaC1vZmZpY2UvcGFwZXJjdXBhaS13b3Jrc3BhY2UvcGFwZXJjdXNwL3BhcGVyY3VzcC1kZXNrdG9wJztcbmNvbnN0IFBBUEVSQ1VTUF9SRVBPID0gJy9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AnO1xuXG5leHBvcnQgY29uc3QgQURNSU5fQ09NTUFORFM6IEFkbWluQ29tbWFuZFtdID0gW1xuICAvLyDilIDilIAgQnVpbGRpbmcg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSAXG4gIHtcbiAgICBpZDogJ2J1aWxkLWxpbnV4LXByb2QnLFxuICAgIGxhYmVsOiAnTGludXggUHJvZCBCdWlsZCcsXG4gICAgc2VjdGlvbjogJ2J1aWxkaW5nJyxcbiAgICBkZXNjcmlwdGlvbjogJ0J1aWxkcyB0aGUgTGludXggLmRlYiAvIC5ycG0gZGVza3RvcCBidW5kbGVzIG9uIHRoaXMgaG9zdC4gQXVkaXRzIHRoZSBidW5kbGUgZm9yIFBvc3RIb2cgbGVha3MgYXQgdGhlIGVuZC4nLFxuICAgIGNvbW1hbmQ6IGBzZXQgLWVcbmVjaG8gXCI9PT0gbnBtIHJ1biBidWlsZCAodGF1cmkgYnVpbGQpXCJcbm5wbSBydW4gYnVpbGQgMj4mMSB8IHRhaWwgLTIwMFxuZWNobyBcIj09PSBhdWRpdC1idW5kbGUuc2hcIlxuREVCPVwiJHtQQVBFUkNVU1BfREVTS1RPUH0vc3JjLXRhdXJpL3RhcmdldC9yZWxlYXNlL2J1bmRsZS9kZWIvUGFwZXJjdXNwXzAuMC4xX2FtZDY0LmRlYlwiXG5SUE09XCIke1BBUEVSQ1VTUF9ERVNLVE9QfS9zcmMtdGF1cmkvdGFyZ2V0L3JlbGVhc2UvYnVuZGxlL3JwbS9QYXBlcmN1c3AtMC4wLjEtMS54ODZfNjQucnBtXCJcblsgLWYgXCIkREVCXCIgXSAmJiAke1BBUEVSQ1VTUF9ERVNLVE9QfS9iaW4vYXVkaXQtYnVuZGxlLnNoIFwiJERFQlwiXG5bIC1mIFwiJFJQTVwiIF0gJiYgJHtQQVBFUkNVU1BfREVTS1RPUH0vYmluL2F1ZGl0LWJ1bmRsZS5zaCBcIiRSUE1cIlxuZWNobyBcIj09PSBidWlsZCArIGF1ZGl0IGNvbXBsZXRlXCJgLFxuICAgIGN3ZDogUEFQRVJDVVNQX0RFU0tUT1AsXG4gIH0sXG4gIHtcbiAgICBpZDogJ2J1aWxkLW1hYy1wcm9kJyxcbiAgICBsYWJlbDogJ01hYyBQcm9kIEJ1aWxkJyxcbiAgICBzZWN0aW9uOiAnYnVpbGRpbmcnLFxuICAgIGRlc2NyaXB0aW9uOiAnUnN5bmNzIHRoZSBjYW5vbmljYWwgdHJlZSBpbnRvIHRoZSBNYWMgVk0gKH4vcGFwZXJjdXAtYnVpbGQtbWFjKSBhbmQgYnVpbGRzIHRoZSBVTklWRVJTQUwgLmRtZyB2aWEgYmluL21hYy12bS1idWlsZC5zaCAodGVybSBzaGltICsgc2lkZWNhciArIHRhdXJpKS4gfjMw4oCTNDUgbWluLiBDb3BpZXMgdGhlIC5kbWcgYmFjayB0byAvaG9tZS9tYXJzaC1vZmZpY2UvIGFuZCBydW5zIHRoZSBwcml2YWN5IGF1ZGl0b3IuJyxcbiAgICBjb21tYW5kOiBgc2V0IC1lXG5lY2hvIFwiPT09IHJzeW5jIHRyZWUg4oaSIFZNOnBhcGVyY3VwLWJ1aWxkLW1hYy9wYXBlcmN1cFwiXG5yc3luYyAtYXogLS1kZWxldGUgLS1leGNsdWRlIC5naXQgLS1leGNsdWRlIG5vZGVfbW9kdWxlcyAtLWV4Y2x1ZGUgdGFyZ2V0IC0tZXhjbHVkZSAudHVyYm8gLS1leGNsdWRlIC5uZXh0IC1lIFwic3NoIC1pIC9ob21lL21hcnNoLW9mZmljZS8uc3NoL3BhcGVyY3VwLXZtLW1hYyAtcCAyMjIyIC1vIFN0cmljdEhvc3RLZXlDaGVja2luZz1ubyAtbyBVc2VyS25vd25Ib3N0c0ZpbGU9L2Rldi9udWxsXCIgJHtQQVBFUkNVU1BfUkVQT30vIGF2aXdlaXNzQDEyNy4wLjAuMTpwYXBlcmN1cC1idWlsZC1tYWMvcGFwZXJjdXAvXG5pZiBbIC1mIC9ob21lL21hcnNoLW9mZmljZS8ucGFwZXJjdXNwL3NpZ25pbmcvcGFwZXJjdXNwLmtleSBdOyB0aGVuXG4gIHNjcCAtaSAvaG9tZS9tYXJzaC1vZmZpY2UvLnNzaC9wYXBlcmN1cC12bS1tYWMgLVAgMjIyMiAtbyBTdHJpY3RIb3N0S2V5Q2hlY2tpbmc9bm8gLW8gVXNlcktub3duSG9zdHNGaWxlPS9kZXYvbnVsbCAvaG9tZS9tYXJzaC1vZmZpY2UvLnBhcGVyY3VzcC9zaWduaW5nL3BhcGVyY3VzcC5rZXkgYXZpd2Vpc3NAMTI3LjAuMC4xOi5wYXBlcmN1c3AtdXBkYXRlci5rZXlcbmZpXG5lY2hvIFwiPT09IG1hYyBidWlsZCB2aWEgJHtTU0hfTUFDfVwiXG4ke1NTSF9NQUN9ICdiYXNoIC1sYyBcInNldCAtZVxuICAgY2Qgfi9wYXBlcmN1cC1idWlsZC1tYWMvcGFwZXJjdXAvcGFwZXJjdXNwLWRlc2t0b3BcbiAgIE5PREVfT1BUSU9OUz0tLW1heC1vbGQtc3BhY2Utc2l6ZT04MTkyIG5wbSBpbnN0YWxsIC0tbGVnYWN5LXBlZXItZGVwcyAyPiYxIHwgdGFpbCAtNVxuICAgZXhwb3J0IFRBVVJJX1NJR05JTkdfUFJJVkFURV9LRVlfUEFUSD1cXFxcJEhPTUUvLnBhcGVyY3VzcC11cGRhdGVyLmtleSBUQVVSSV9TSUdOSU5HX1BSSVZBVEVfS0VZX1BBU1NXT1JEPVxuICAgYmFzaCBiaW4vbWFjLXZtLWJ1aWxkLnNoIDI+JjEgfCB0YWlsIC0yMDBcIicgMj4mMVxuZWNobyBcIj09PSBzY3AgZG1nIGJhY2tcIlxuc2NwIC1pIC9ob21lL21hcnNoLW9mZmljZS8uc3NoL3BhcGVyY3VwLXZtLW1hYyAtUCAyMjIyIC1vIFN0cmljdEhvc3RLZXlDaGVja2luZz1ubyAtbyBVc2VyS25vd25Ib3N0c0ZpbGU9L2Rldi9udWxsICdhdml3ZWlzc0AxMjcuMC4wLjE6cGFwZXJjdXAtYnVpbGQtbWFjL3BhcGVyY3VwL3BhcGVyY3VzcC1kZXNrdG9wL3NyYy10YXVyaS90YXJnZXQvdW5pdmVyc2FsLWFwcGxlLWRhcndpbi9yZWxlYXNlL2J1bmRsZS9kbWcvKi5kbWcnIC9ob21lL21hcnNoLW9mZmljZS9cbmVjaG8gXCI9PT0gYXVkaXRcIlxuJHtQQVBFUkNVU1BfREVTS1RPUH0vYmluL2F1ZGl0LWJ1bmRsZS5zaCAvaG9tZS9tYXJzaC1vZmZpY2UvUGFwZXJjdXNwXypfdW5pdmVyc2FsLmRtZ1xuZWNobyBcIj09PSBtYWMgYnVpbGQgKyBhdWRpdCBjb21wbGV0ZVwiYCxcbiAgfSxcbiAge1xuICAgIGlkOiAnYnVpbGQtd2luZG93cy1wcm9kJyxcbiAgICBsYWJlbDogJ1dpbmRvd3MgUHJvZCBCdWlsZCcsXG4gICAgc2VjdGlvbjogJ2J1aWxkaW5nJyxcbiAgICBkZXNjcmlwdGlvbjogJ0J1aWxkcyB0aGUgV2luZG93cyAubXNpIC8gLmV4ZSBpbnNpZGUgdGhlIFdpbmRvd3MgVk0gKEM6XFxcXFVzZXJzXFxcXFVzZXJcXFxccGFwZXJjdXBhaVxcXFxwYXBlcmN1c3AtZGVza3RvcCkuIH4zMOKAkzQ1IG1pbi4gQ29waWVzIHRoZSBhcnRpZmFjdHMgYmFjayB0byAvaG9tZS9tYXJzaC1vZmZpY2UvIGFuZCBydW5zIHRoZSBwcml2YWN5IGF1ZGl0b3IuJyxcbiAgICBjb21tYW5kOiBgc2V0IC1lXG5lY2hvIFwiPT09IHdpbiBidWlsZCB2aWEgJHtTU0hfV0lOfVwiXG4ke1NTSF9XSU59IFwicG93ZXJzaGVsbCAtTm9Qcm9maWxlIC1FeGVjdXRpb25Qb2xpY3kgQnlwYXNzIC1GaWxlIHdpbi1idWlsZC5wczFcIiAyPiYxIHwgdGFpbCAtMjAwXG5lY2hvIFwiPT09IHNjcCBtc2krZXhlIGJhY2tcIlxuc2NwIC1pIC9ob21lL21hcnNoLW9mZmljZS8uc3NoL3BhcGVyY3VwLXZtLXdpbiAtUCAyMjIzIC1vIFN0cmljdEhvc3RLZXlDaGVja2luZz1ubyAtbyBVc2VyS25vd25Ib3N0c0ZpbGU9L2Rldi9udWxsICdVc2VyQDEyNy4wLjAuMTpwYXBlcmN1cGFpL3BhcGVyY3VzcC1kZXNrdG9wL3NyYy10YXVyaS90YXJnZXQvcmVsZWFzZS9idW5kbGUvbXNpL1BhcGVyY3VzcF8wLjAuMV94NjRfZW4tVVMubXNpJyAvaG9tZS9tYXJzaC1vZmZpY2UvXG5zY3AgLWkgL2hvbWUvbWFyc2gtb2ZmaWNlLy5zc2gvcGFwZXJjdXAtdm0td2luIC1QIDIyMjMgLW8gU3RyaWN0SG9zdEtleUNoZWNraW5nPW5vIC1vIFVzZXJLbm93bkhvc3RzRmlsZT0vZGV2L251bGwgJ1VzZXJAMTI3LjAuMC4xOnBhcGVyY3VwYWkvcGFwZXJjdXNwLWRlc2t0b3Avc3JjLXRhdXJpL3RhcmdldC9yZWxlYXNlL2J1bmRsZS9uc2lzL1BhcGVyY3VzcF8wLjAuMV94NjQtc2V0dXAuZXhlJyAvaG9tZS9tYXJzaC1vZmZpY2UvXG5lY2hvIFwiPT09IGF1ZGl0XCJcbiR7UEFQRVJDVVNQX0RFU0tUT1B9L2Jpbi9hdWRpdC1idW5kbGUuc2ggL2hvbWUvbWFyc2gtb2ZmaWNlL1BhcGVyY3VzcF8wLjAuMV94NjRfZW4tVVMubXNpIC9ob21lL21hcnNoLW9mZmljZS9QYXBlcmN1c3BfMC4wLjFfeDY0LXNldHVwLmV4ZVxuZWNobyBcIj09PSB3aW4gYnVpbGQgKyBhdWRpdCBjb21wbGV0ZVwiYCxcbiAgfSxcbiAge1xuICAgIGlkOiAncmVidWlsZC0zMDcwJyxcbiAgICBsYWJlbDogJ1JlYnVpbGQgMzA3MCBob3N0JyxcbiAgICBzZWN0aW9uOiAnYnVpbGRpbmcnLFxuICAgIGRlc2NyaXB0aW9uOiAnUnVucyBiaW4vcHJvZDogYnVpbGRzIHRoZSBvcGVyYXRvciAoU3RhcmxpZ2h0IGRvY3MgKyBWaXRlIFNQQSkgYW5kIHJlc3RhcnRzIHRoZSBIb25vIGhvc3Qgb24gOjMwNzAuIFN1cnZpdmVzIHRoaXMgc3RyZWFtIOKAlCBzZXJ2ZXIga2VlcHMgcnVubmluZyBhZnRlciB5b3UgU3RvcC4nLFxuICAgIGNvbW1hbmQ6ICdiaW4vcHJvZCAyPiYxJyxcbiAgICBjd2Q6IFBBUEVSQ1VTUF9SRVBPLFxuICB9LFxuXG4gIC8vIOKUgOKUgCBSdW5uaW5nIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgFxuICB7XG4gICAgaWQ6ICdpbnN0YWxsLWxpbnV4LWRlYicsXG4gICAgbGFiZWw6ICdJbnN0YWxsICsgbGF1bmNoIExpbnV4IC5kZWInLFxuICAgIHNlY3Rpb246ICdydW5uaW5nJyxcbiAgICBkZXNjcmlwdGlvbjogJ0luc3RhbGxzIHRoZSBsYXRlc3QgbG9jYWwgLmRlYiAocmVxdWlyZXMgTk9QQVNTV0Qgc3VkbyBmb3IgZHBrZykgYW5kIGxhdW5jaGVzIHRoZSBpbnN0YWxsZWQgYmluYXJ5LicsXG4gICAgY29tbWFuZDogYHNldCAtZTsgREVCPVwiJHtQQVBFUkNVU1BfREVTS1RPUH0vc3JjLXRhdXJpL3RhcmdldC9yZWxlYXNlL2J1bmRsZS9kZWIvUGFwZXJjdXNwXzAuMC4xX2FtZDY0LmRlYlwiOyBlY2hvIFwiPT0+IGluc3RhbGxpbmcgJERFQlwiOyBzdWRvIC1uIGRwa2cgLWkgXCIkREVCXCIgMj4mMTsgZWNobyBcIj09PiBsYXVuY2hpbmcgUGFwZXJjdXNwXCI7IHNldHNpZCAvdXNyL2Jpbi9wYXBlcmN1c3AgPi9kZXYvbnVsbCAyPiYxIDwgL2Rldi9udWxsICYgZWNobyBcImxhdW5jaGVkIHBpZCAkIVwiYCxcbiAgfSxcbiAge1xuICAgIGlkOiAnaW5zdGFsbC1tYWMtZG1nJyxcbiAgICBsYWJlbDogJ0luc3RhbGwgKyBsYXVuY2ggTWFjIC5kbWcnLFxuICAgIHNlY3Rpb246ICdydW5uaW5nJyxcbiAgICBkZXNjcmlwdGlvbjogJ01vdW50cyB0aGUgRE1HLCBjb3BpZXMgUGFwZXJjdXNwLmFwcCB0byAvQXBwbGljYXRpb25zLCBzdHJpcHMgcXVhcmFudGluZSwgYW5kIGxhdW5jaGVzIGl0IGluIHRoZSBNYWMgVk0uJyxcbiAgICBjb21tYW5kOiBgJHtTU0hfTUFDfSAnYmFzaCAtbGMgXCJzZXQgLWU7IERNRz1+L1BhcGVyY3VzcF8wLjAuMV94ODZfNjQuZG1nOyBlY2hvIFxcXFxcIj09PiBtb3VudGluZyAkRE1HXFxcXFwiOyBoZGl1dGlsIGF0dGFjaCBcXFxcXCIkRE1HXFxcXFwiIC1ub2Jyb3dzZTsgZWNobyBcXFxcXCI9PT4gY29weWluZyB0byAvQXBwbGljYXRpb25zXFxcXFwiOyBybSAtcmYgL0FwcGxpY2F0aW9ucy9QYXBlcmN1c3AuYXBwOyBjcCAtUiAvVm9sdW1lcy9QYXBlcmN1c3AvUGFwZXJjdXNwLmFwcCAvQXBwbGljYXRpb25zLzsgaGRpdXRpbCBkZXRhY2ggL1ZvbHVtZXMvUGFwZXJjdXNwOyB4YXR0ciAtZHIgY29tLmFwcGxlLnF1YXJhbnRpbmUgL0FwcGxpY2F0aW9ucy9QYXBlcmN1c3AuYXBwOyBlY2hvIFxcXFxcIj09PiBsYXVuY2hpbmdcXFxcXCI7IG9wZW4gL0FwcGxpY2F0aW9ucy9QYXBlcmN1c3AuYXBwOyBlY2hvIGRvbmVcIicgMj4mMWAsXG4gIH0sXG4gIHtcbiAgICBpZDogJ2luc3RhbGwtd2luZG93cy1tc2knLFxuICAgIGxhYmVsOiAnSW5zdGFsbCArIGxhdW5jaCBXaW5kb3dzIC5tc2knLFxuICAgIHNlY3Rpb246ICdydW5uaW5nJyxcbiAgICBkZXNjcmlwdGlvbjogJ1J1bnMgbXNpZXhlYyAvaSBzaWxlbnQgKyBsYXVuY2hlcyBQYXBlcmN1c3AuZXhlIGluIHRoZSBXaW5kb3dzIFZNLicsXG4gICAgY29tbWFuZDogYCR7U1NIX1dJTn0gXCJwb3dlcnNoZWxsIC1Ob1Byb2ZpbGUgLUNvbW1hbmQgXFxcXFwiJiB7IFxcXFwkbXNpID0gJ0M6XFxcXFxcXFxVc2Vyc1xcXFxcXFxcVXNlclxcXFxcXFxccGFwZXJjdXNwLWRlc2t0b3BcXFxcXFxcXHNyYy10YXVyaVxcXFxcXFxcdGFyZ2V0XFxcXFxcXFxyZWxlYXNlXFxcXFxcXFxidW5kbGVcXFxcXFxcXG1zaVxcXFxcXFxcUGFwZXJjdXNwXzAuMC4xX3g2NF9lbi1VUy5tc2knIDsgV3JpdGUtSG9zdCAnPT0+IGluc3RhbGxpbmcnIFxcXFwkbXNpIDsgU3RhcnQtUHJvY2VzcyAtV2FpdCBtc2lleGVjIC1Bcmd1bWVudExpc3QgJy9pJywgXFxcXCRtc2ksICcvcXVpZXQnIDsgV3JpdGUtSG9zdCAnPT0+IGxhdW5jaGluZycgOyBTdGFydC1Qcm9jZXNzICdDOlxcXFxcXFxcUHJvZ3JhbSBGaWxlc1xcXFxcXFxcUGFwZXJjdXNwXFxcXFxcXFxQYXBlcmN1c3AuZXhlJyA7IFdyaXRlLUhvc3QgJ2RvbmUnIH1cXFxcXCJcIiAyPiYxYCxcbiAgfSxcbiAge1xuICAgIGlkOiAnbGF1bmNoLWxpbnV4LWRldicsXG4gICAgbGFiZWw6ICdMYXVuY2ggTGludXggRGVza3RvcCBERVYnLFxuICAgIHNlY3Rpb246ICdydW5uaW5nJyxcbiAgICBkZXNjcmlwdGlvbjogJ1N0YXJ0cyBgbnBtIHJ1biBkZXZgIGluIHBhcGVyY3VzcC1kZXNrdG9wIChUYXVyaSBkZXYgbW9kZSBhZ2FpbnN0IDozMDU1KS4gU2VydmVyIGtlZXBzIHJ1bm5pbmcgYWZ0ZXIgeW91IFN0b3AgdGhlIHN0cmVhbS4nLFxuICAgIGNvbW1hbmQ6IGBzZXRzaWQgYmFzaCAtYyAnY2QgJHtQQVBFUkNVU1BfREVTS1RPUH0gJiYgbnBtIHJ1biBkZXYnIDwvZGV2L251bGwgPi90bXAvcGFwZXJjdXNwLWRlc2t0b3AtZGV2LmxvZyAyPiYxICYgZGlzb3duOyBlY2hvIFwiPT0+IGxhdW5jaGVkIHBpZCAkIVwiOyBlY2hvIFwiPT0+IHRhaWxpbmcgL3RtcC9wYXBlcmN1c3AtZGVza3RvcC1kZXYubG9nXCI7IHNsZWVwIDE7IHRhaWwgLW4rMSAtRiAvdG1wL3BhcGVyY3VzcC1kZXNrdG9wLWRldi5sb2dgLFxuICB9LFxuICB7XG4gICAgaWQ6ICdyZXN0YXJ0LTMwNTUnLFxuICAgIGxhYmVsOiAnUmVzdGFydCBkZXYgc3RhY2sgKDMwNTUgKyAzMDcwKScsXG4gICAgc2VjdGlvbjogJ3J1bm5pbmcnLFxuICAgIGRlc2NyaXB0aW9uOiAnUmVzdGFydHMgdGhlIG9wZXJhdG9yIGRldiBzdGFjayDigJQgcGFwZXJjdXAtZGV2IChWaXRlIGZyb250ZW5kIG9uIDozMDU1KSBhbmQgcGFwZXJjdXAtZGV2LWFwaSAoSG9ubyBvbiA6MzA3MCkuIFRoZSAvYWRtaW4gcGFnZSBnb2VzIG9mZmxpbmUgZm9yIGEgZmV3IHNlY29uZHMgd2hpbGUgdGhlIEhvbm8gaG9zdCByZS1pbXBvcnRzOyB0aGUgVml0ZSBzaWRlIGNvbWVzIGJhY2sgdmlhIEhNUiBhbG1vc3QgaW1tZWRpYXRlbHkuJyxcbiAgICBjb21tYW5kOiAnYmluL2RldiAyPiYxJyxcbiAgICBjd2Q6IFBBUEVSQ1VTUF9SRVBPLFxuICB9LFxuICB7XG4gICAgaWQ6ICdhdWRpdC1wcm9kLWJ1bmRsZXMnLFxuICAgIGxhYmVsOiAnQXVkaXQgcHJvZCBidW5kbGVzIGZvciBQb3N0SG9nIGxlYWtzJyxcbiAgICBzZWN0aW9uOiAncnVubmluZycsXG4gICAgZGVzY3JpcHRpb246ICdSdW5zIGJpbi9hdWRpdC1idW5kbGUuc2ggYWdhaW5zdCBhbnkgcHJvZCBhcnRpZmFjdHMgcHJlc2VudCBpbiAvaG9tZS9tYXJzaC1vZmZpY2UvICsgdGhlIGxvY2FsIExpbnV4IC5kZWIvLnJwbS4gRmFpbHMgbG91ZCBpZiBhbnkgYXJ0aWZhY3QgY29udGFpbnMgcG9zdGhvZy5qc29uLCBwb3N0aG9nLXBlcnNvbmFsLmpzb24sIG9yIFBBUEVSQ1VTUF9QT1NUSE9HXyogZW52IHZhcnMuJyxcbiAgICBjb21tYW5kOiBgc2V0IC1lXG5BUlRJRkFDVFM9KClcbkRFQj1cIiR7UEFQRVJDVVNQX0RFU0tUT1B9L3NyYy10YXVyaS90YXJnZXQvcmVsZWFzZS9idW5kbGUvZGViL1BhcGVyY3VzcF8wLjAuMV9hbWQ2NC5kZWJcIlxuUlBNPVwiJHtQQVBFUkNVU1BfREVTS1RPUH0vc3JjLXRhdXJpL3RhcmdldC9yZWxlYXNlL2J1bmRsZS9ycG0vUGFwZXJjdXNwLTAuMC4xLTEueDg2XzY0LnJwbVwiXG5ETUc9L2hvbWUvbWFyc2gtb2ZmaWNlL1BhcGVyY3VzcF8wLjAuMV94ODZfNjQuZG1nXG5NU0k9L2hvbWUvbWFyc2gtb2ZmaWNlL1BhcGVyY3VzcF8wLjAuMV94NjRfZW4tVVMubXNpXG5FWEU9L2hvbWUvbWFyc2gtb2ZmaWNlL1BhcGVyY3VzcF8wLjAuMV94NjQtc2V0dXAuZXhlXG5mb3IgYSBpbiBcIiRERUJcIiBcIiRSUE1cIiBcIiRETUdcIiBcIiRNU0lcIiBcIiRFWEVcIjsgZG9cbiAgWyAtZiBcIiRhXCIgXSAmJiBBUlRJRkFDVFMrPShcIiRhXCIpICYmIGVjaG8gXCJmb3VuZDogJGEgKCQoZHUgLWggXCIkYVwiIHwgY3V0IC1mMSkpXCIgfHwgZWNobyBcIm1pc3Npbmc6ICRhXCJcbmRvbmVcbmVjaG8gXCItLS1cIlxuaWYgWyBcXCR7I0FSVElGQUNUU1tAXX0gLWVxIDAgXTsgdGhlbiBlY2hvIFwibm8gYXJ0aWZhY3RzIHRvIHNjYW5cIjsgZXhpdCAxOyBmaVxuJHtQQVBFUkNVU1BfREVTS1RPUH0vYmluL2F1ZGl0LWJ1bmRsZS5zaCBcIlxcJHtBUlRJRkFDVFNbQF19XCJgLFxuICB9LFxuICB7XG4gICAgaWQ6ICdlbnYtcHJvYmUnLFxuICAgIGxhYmVsOiAnRW52IHByb2JlJyxcbiAgICBzZWN0aW9uOiAncnVubmluZycsXG4gICAgZGVzY3JpcHRpb246ICdQcmludHMgYSBoYW5kZnVsIG9mIGVudiB2YXJzIGZyb20geW91ciBpbnRlcmFjdGl2ZSBzaGVsbCBjb25maWcgKE5WTSwgQlVOLCBDT01QT1NJTywgSElORFNJR0hUX0FQSV9VUkwsIENMT1VERkxBUkVfQVBJX1RPS0VOKS4gVXNlZnVsIGZvciBkaWFnbm9zaW5nIFwiY29tbWFuZCBjYW5cXCd0IGZpbmQgWFwiIGlzc3Vlcy4nLFxuICAgIGNvbW1hbmQ6ICdlY2hvIFwiUEFUSD0kUEFUSFwiOyBlY2hvIFwiTlZNPSQodHlwZSAtdCBudm0gMj4vZGV2L251bGwpXCI7IGVjaG8gXCJOT0RFPSQod2hpY2ggbm9kZSlcIjsgZWNobyBcIkJVTl9JTlNUQUxMPSRCVU5fSU5TVEFMTFwiOyBlY2hvIFwiQ09NUE9TSU9fSU5TVEFMTF9ESVI9JENPTVBPU0lPX0lOU1RBTExfRElSXCI7IGVjaG8gXCJISU5EU0lHSFRfQVBJX1VSTD0kSElORFNJR0hUX0FQSV9VUkxcIjsgZWNobyBcIkVMRVZFTkxBQlNfQVBJX0tFWT0kKHRlc3QgLW4gXCIkRUxFVkVOTEFCU19BUElfS0VZXCIgJiYgZWNobyBzZXQgfHwgZWNobyB1bnNldClcIjsgZWNobyBcIkNMT1VERkxBUkVfQVBJX1RPS0VOPSQodGVzdCAtbiBcIiRDTE9VREZMQVJFX0FQSV9UT0tFTlwiICYmIGVjaG8gc2V0IHx8IGVjaG8gdW5zZXQpXCI7IGVjaG8gXCJBTlRIUk9QSUNfQVBJX0tFWT0kKHRlc3QgLW4gXCIkQU5USFJPUElDX0FQSV9LRVlcIiAmJiBlY2hvIHNldCB8fCBlY2hvIHVuc2V0KVwiOyBlY2hvIFwiT1BFTkFJX0FQSV9LRVk9JCh0ZXN0IC1uIFwiJE9QRU5BSV9BUElfS0VZXCIgJiYgZWNobyBzZXQgfHwgZWNobyB1bnNldClcIicsXG4gIH0sXG5cbiAgLy8g4pSA4pSAIFNpbXVsYXRvcnMg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSAXG4gIC8vIOKUgOKUgCBQYWNrYWdlZCBidWlsZCAod2RpbyArIHRhdXJpLWRyaXZlciBhZ2FpbnN0IHRoZSBzaGlwcGVkIGJpbmFyeSkg4pSA4pSAXG4gIHtcbiAgICBpZDogJ3dkaW8taW5zdGFsbCcsXG4gICAgbGFiZWw6ICdJbnN0YWxsIHdkaW8gZGVwcyAob25lLXRpbWUpJyxcbiAgICBzZWN0aW9uOiAncGFja2FnZWQtYnVpbGQnLFxuICAgIGRlc2NyaXB0aW9uOiAnUnVucyBgbnBtIGluc3RhbGxgIGluIHRvb2xzL3BlcmYtdGVzdC93ZGlvLiBLZXB0IG91dCBvZiB0aGUgcG5wbSB3b3Jrc3BhY2Ugb24gcHVycG9zZSDigJQgd2RpbyBwb3N0aW5zdGFsbCBkb2VzblxcJ3QgcGxheSBuaWNlbHkgd2l0aCBob2lzdGluZy4nLFxuICAgIGNvbW1hbmQ6ICducG0gaW5zdGFsbCAyPiYxJyxcbiAgICBjd2Q6IGAke1BBUEVSQ1VTUF9SRVBPfS90b29scy9wZXJmLXRlc3Qvd2Rpb2AsXG4gIH0sXG4gIHtcbiAgICBpZDogJ3dkaW8tdGVzdCcsXG4gICAgbGFiZWw6ICdSdW4gd2RpbyB0ZXN0IGFnYWluc3QgcGFja2FnZWQgYmluYXJ5JyxcbiAgICBzZWN0aW9uOiAncGFja2FnZWQtYnVpbGQnLFxuICAgIGRlc2NyaXB0aW9uOiAnU3Bhd25zIHRhdXJpLWRyaXZlciBvbiA6NDQ0NSBhbmQgZHJpdmVzIHRoZSBsYXRlc3QgcGFja2FnZWQgVGF1cmkgYmluYXJ5IHZpYSBXZWJEcml2ZXIuIFJ1bnMgYHNwZWNzLyouc3BlYy50c2AuIFByZXJlcXM6IGBMaW51eCBQcm9kIEJ1aWxkYCBwcm9kdWNlZCBhbiBhcnRpZmFjdCwgYHdlYmtpdDJndGstZHJpdmVyYCBpcyBpbnN0YWxsZWQgKHN1ZG8gYXB0KSwgYW5kIGBJbnN0YWxsIHdkaW8gZGVwc2Agd2FzIHJ1biBvbmNlLicsXG4gICAgY29tbWFuZDogJ25wbSB0ZXN0IDI+JjEnLFxuICAgIGN3ZDogYCR7UEFQRVJDVVNQX1JFUE99L3Rvb2xzL3BlcmYtdGVzdC93ZGlvYCxcbiAgfSxcbiAge1xuICAgIGlkOiAnd2Rpby13ZWJraXQtZHJpdmVyLWNoZWNrJyxcbiAgICBsYWJlbDogJ0NoZWNrIHdlYmtpdDJndGstZHJpdmVyJyxcbiAgICBzZWN0aW9uOiAncGFja2FnZWQtYnVpbGQnLFxuICAgIGRlc2NyaXB0aW9uOiAnUmVwb3J0cyB3aGV0aGVyIGBXZWJLaXRXZWJEcml2ZXJgIGlzIG9uIFBBVEggKHJlcXVpcmVkIGZvciB0YXVyaS1kcml2ZXIgb24gTGludXgpLiBJZiBtaXNzaW5nOiBgc3VkbyBhcHQgaW5zdGFsbCB3ZWJraXQyZ3RrLWRyaXZlcmAuJyxcbiAgICBjb21tYW5kOiBgaWYgY29tbWFuZCAtdiBXZWJLaXRXZWJEcml2ZXIgPi9kZXYvbnVsbCAyPiYxOyB0aGVuIGVjaG8gXCJXZWJLaXRXZWJEcml2ZXI6ICQoV2ViS2l0V2ViRHJpdmVyIC0tdmVyc2lvbiAyPiYxIHwgaGVhZCAtMSkgYXQgJChjb21tYW5kIC12IFdlYktpdFdlYkRyaXZlcilcIjsgZWxzZSBlY2hvIFwiV2ViS2l0V2ViRHJpdmVyOiBNSVNTSU5HIOKAlCBpbnN0YWxsIHdpdGg6IHN1ZG8gYXB0IGluc3RhbGwgd2Via2l0Mmd0ay1kcml2ZXJcIjsgZXhpdCAxOyBmaWAsXG4gIH0sXG5cbiAge1xuICAgIGlkOiAnbGF1bmNoLWFuZHJvaWQtZW11bGF0b3InLFxuICAgIGxhYmVsOiAnTGF1bmNoIEFuZHJvaWQgZW11bGF0b3InLFxuICAgIHNlY3Rpb246ICdzaW11bGF0b3JzJyxcbiAgICBkZXNjcmlwdGlvbjogJ0Jvb3RzIHRoZSBwYXBlcmN1c3AtdGVzdCBBVkQgb24gdGhpcyBMaW51eCBob3N0LiBSdW5zIGRldGFjaGVkIOKAlCBzdXJ2aXZlcyBTdG9wLiBBZnRlciBib290LCBgYWRiIGRldmljZXNgIHNob3dzIGVtdWxhdG9yLTU1NTQuJyxcbiAgICBjb21tYW5kOiBgc2V0c2lkIGJhc2ggLWMgJyRIT01FL0FuZHJvaWQvU2RrL2VtdWxhdG9yL2VtdWxhdG9yIC1hdmQgcGFwZXJjdXNwLXRlc3QgLW5vLXNuYXBzaG90LWxvYWQgLW5vLWF1ZGlvJyA8L2Rldi9udWxsID4vdG1wL2FuZHJvaWQtZW11bGF0b3IubG9nIDI+JjEgJiBkaXNvd247IGVjaG8gXCI9PT4gbGF1bmNoZWQgcGlkICQhXCI7IGVjaG8gXCI9PT4gYXZkPXBhcGVyY3VzcC10ZXN0XCI7IGVjaG8gXCI9PT4gdGFpbGluZyAvdG1wL2FuZHJvaWQtZW11bGF0b3IubG9nXCI7IHNsZWVwIDE7IHRhaWwgLW4rMSAtRiAvdG1wL2FuZHJvaWQtZW11bGF0b3IubG9nYCxcbiAgfSxcbiAge1xuICAgIGlkOiAnc3RhcnQtbWFjLXZtJyxcbiAgICBsYWJlbDogJ1N0YXJ0IG1hY09TIFZNJyxcbiAgICBzZWN0aW9uOiAnc2ltdWxhdG9ycycsXG4gICAgZGVzY3JpcHRpb246ICdCb290cyB0aGUgbWFjT1MgVk0gKFFFTVUgKyBTUElDRSBvbiA6NTkzMCkuIH42MOKAkzEyMHMgdG8gYmUgU1NILXJlYWR5LiBTa2lwIGlmIGl0XFwncyBhbHJlYWR5IHVwLicsXG4gICAgY29tbWFuZDogYGlmIHBncmVwIC1mIFwicWVtdS4qbWFjX2hkZF9uZ1wiID4vZGV2L251bGw7IHRoZW4gZWNobyBcIj09PiBtYWNPUyBWTSBhbHJlYWR5IHJ1bm5pbmcgKHBpZCAkKHBncmVwIC1mICdxZW11LiptYWNfaGRkX25nJykpXCI7IGV4aXQgMDsgZmk7IHN5c3RlbWN0bCAtLXVzZXIgc3RhcnQgcGFwZXJjdXAtdm0tbWFjLnNlcnZpY2UgJiYgZWNobyBcIj09PiBzdGFydGVkIHBhcGVyY3VwLXZtLW1hYy5zZXJ2aWNlIChib290LXNvbm9tYS1kdXJhYmxlLnNoKVwiOyBlY2hvIFwiPT0+IFNQSUNFOiByZW1vdGUtdmlld2VyIHNwaWNlOi8vMTI3LjAuMC4xOjU5MzBcIjsgZWNobyBcIj09PiB0YWlsaW5nIHFlbXUgbG9nIChTdG9wIHdoZW4gU1NIIGlzIHJlYWR5KVwiOyBzbGVlcCAyOyB0YWlsIC1uKzEgLUYgJEhPTUUvbWFjb3Mtdm0vT1NYLUtWTS9sb2dzL3FlbXUtY3VycmVudC5sb2dgLFxuICB9LFxuICB7XG4gICAgaWQ6ICdsYXVuY2gtaW9zLXNpbXVsYXRvcicsXG4gICAgbGFiZWw6ICdMYXVuY2ggaU9TIHNpbXVsYXRvciAoaVBob25lIDE2KScsXG4gICAgc2VjdGlvbjogJ3NpbXVsYXRvcnMnLFxuICAgIGRlc2NyaXB0aW9uOiAnU1NIIE1hYyBWTSDihpIgeGNydW4gc2ltY3RsIGJvb3QgXCJpUGhvbmUgMTZcIiArIG9wZW4gU2ltdWxhdG9yLmFwcC4gUmVxdWlyZXMgdGhlIG1hY09TIFZNIHJ1bm5pbmc7IHZpZXcgdmlhIGByZW1vdGUtdmlld2VyIHNwaWNlOi8vMTI3LjAuMC4xOjU5MzBgLicsXG4gICAgY29tbWFuZDogYCR7U1NIX01BQ30gJ2Jhc2ggLWxjIFwic2V0IC1lOyBERVZJQ0U9XFxcXFwiaVBob25lIDE2XFxcXFwiOyBlY2hvIFxcXFxcIj09PiBib290aW5nICRERVZJQ0VcXFxcXCI7IHhjcnVuIHNpbWN0bCBib290IFxcXFxcIiRERVZJQ0VcXFxcXCIgMj4mMSB8IGdyZXAgLXYgXFxcXFwiQm9vdGVkXFxcXFwiIHx8IHRydWU7IGVjaG8gXFxcXFwiPT0+IG9wZW5pbmcgU2ltdWxhdG9yLmFwcFxcXFxcIjsgb3BlbiAtYSBTaW11bGF0b3I7IHNsZWVwIDI7IGVjaG8gXFxcXFwiPT0+IGJvb3RlZCBkZXZpY2VzOlxcXFxcIjsgeGNydW4gc2ltY3RsIGxpc3QgZGV2aWNlcyBib290ZWQ7IGVjaG8gXFxcXFwiPT0+IGRvbmUg4oCUIHZpZXcgdmlhIFNQSUNFIG9uIDo1OTMwXFxcXFwiXCInIDI+JjFgLFxuICB9LFxuICB7XG4gICAgaWQ6ICdpb3Mtc2ltdWxhdG9yLWxpc3QnLFxuICAgIGxhYmVsOiAnTGlzdCBpT1Mgc2ltdWxhdG9yIGRldmljZXMnLFxuICAgIHNlY3Rpb246ICdzaW11bGF0b3JzJyxcbiAgICBkZXNjcmlwdGlvbjogJ1Nob3dzIGFsbCBhdmFpbGFibGUgaU9TIHNpbXVsYXRvciBkZXZpY2VzIG9uIHRoZSBNYWMgVk0uIFVzZSBkZXZpY2UgbmFtZXMgZnJvbSBoZXJlIGluIGN1c3RvbSB4Y3J1biBzaW1jdGwgYm9vdCBydW5zLicsXG4gICAgY29tbWFuZDogYCR7U1NIX01BQ30gXCJ4Y3J1biBzaW1jdGwgbGlzdCBkZXZpY2VzIGF2YWlsYWJsZSBpT1NcIiAyPiYxYCxcbiAgfSxcbl07XG5cblxuZXhwb3J0IGZ1bmN0aW9uIGdldENvbW1hbmQoaWQ6IHN0cmluZyk6IEFkbWluQ29tbWFuZCB8IG51bGwge1xuICByZXR1cm4gQURNSU5fQ09NTUFORFMuZmluZCgoYykgPT4gYy5pZCA9PT0gaWQpID8/IG51bGw7XG59XG5cbmV4cG9ydCBmdW5jdGlvbiBsaXN0Q29tbWFuZHMoKTogQWRtaW5Db21tYW5kW10ge1xuICByZXR1cm4gQURNSU5fQ09NTUFORFM7XG59XG4iXSwiZmlsZSI6Ii9saWIvYWRtaW4tY29tbWFuZHMudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWRtaW4tY29tbWFuZHMudHMiLCIvbGliL2FkbWluLWNvbW1hbmRzLnRzIixbXV0=

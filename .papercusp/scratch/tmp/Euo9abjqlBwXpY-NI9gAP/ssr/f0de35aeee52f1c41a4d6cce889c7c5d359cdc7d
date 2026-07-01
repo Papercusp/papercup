@@ -1,0 +1,52 @@
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/zod/index.js", {"importedNames":["z"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/packages/agent-mcp/src/index.ts", {"importedNames":["defineTool","AGENT_ROLES"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/lib/agent-tools/locks/identity.ts", {"importedNames":["readIdentity"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/lib/agent-tools/locks/in-workspace-txn.ts", {"importedNames":["inWorkspaceTxn"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/lib/agent-tools/locks/su-lock-store.ts", {"importedNames":["tryCancelWait"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/lib/agent-tools/_bulk.ts", {"importedNames":["bulkContent","runBulk"]});
+
+
+
+
+
+
+const __vite_ssr_export_default__ = (0,__vite_ssr_import_1__.defineTool)({
+  name: "locks:cancel_wait",
+  description: "Abandon a queued waiter ticket. Returns cancelled=true if the wait was active; cancelled=false means a grant raced (you now hold a lock you didn't want — call locks:release immediately).",
+  guidance: {
+    when: "Mid-wait, when the user redirects you to other work or you decide a different approach.",
+    notWhen: "After you've already received an ok response from locks:acquire — there's no waiter to cancel.",
+    chaining: "On cancelled=false → locks:release { all_mine: true } to free the lock you got handed."
+  },
+  capability: "locks:write",
+  requirePrincipal: false,
+  agentRoles: [...__vite_ssr_import_1__.AGENT_ROLES],
+  args: __vite_ssr_import_0__.z.object({
+    ticket_id: __vite_ssr_import_0__.z.string().uuid().optional().describe("single waiter ticket to cancel"),
+    ticket_ids: __vite_ssr_import_0__.z.array(__vite_ssr_import_0__.z.string().uuid()).min(1).max(200).optional().describe("waiter tickets to cancel in one call")
+  }).refine((a) => Boolean(a.ticket_id) || (a.ticket_ids?.length ?? 0) > 0, {
+    message: "pass `ticket_id` or `ticket_ids`"
+  }),
+  async handler(args, ctx) {
+    const { ownerId, coordinationDomain } = (0,__vite_ssr_import_2__.readIdentity)(ctx);
+    const ticketIds = Array.from(/* @__PURE__ */ new Set([...args.ticket_id ? [args.ticket_id] : [], ...args.ticket_ids ?? []]));
+    const env = await (0,__vite_ssr_import_5__.runBulk)(
+      ticketIds,
+      async (ticketId) => {
+        const result = await (0,__vite_ssr_import_3__.inWorkspaceTxn)(
+          coordinationDomain,
+          ownerId,
+          async (tx) => (0,__vite_ssr_import_4__.tryCancelWait)(tx, ticketId, ownerId)
+        );
+        return { ok: true, ticket_id: ticketId, cancelled: result.cancelled };
+      },
+      { keyOf: (ticketId) => ({ ticket_id: ticketId }) }
+    );
+    return (0,__vite_ssr_import_5__.bulkContent)(env);
+  }
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQVFBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7Ozs7OztBQUVBLHVDQUFlLGtDQUFXO0FBQUEsRUFDeEIsTUFBTTtBQUFBLEVBQ04sYUFDRTtBQUFBLEVBQ0YsVUFBVTtBQUFBLElBQ1IsTUFBTTtBQUFBLElBQ04sU0FBUztBQUFBLElBQ1QsVUFBVTtBQUFBLEVBQ1o7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaLGtCQUFrQjtBQUFBLEVBQ2xCLFlBQVksQ0FBQyxHQUFHLGlDQUFXO0FBQUEsRUFDM0IsTUFBTSx3QkFDSCxPQUFPO0FBQUEsSUFDTixXQUFXLHdCQUFFLE9BQU8sRUFBRSxLQUFLLEVBQUUsU0FBUyxFQUFFLFNBQVMsZ0NBQWdDO0FBQUEsSUFDakYsWUFBWSx3QkFBRSxNQUFNLHdCQUFFLE9BQU8sRUFBRSxLQUFLLENBQUMsRUFBRSxJQUFJLENBQUMsRUFBRSxJQUFJLEdBQUcsRUFBRSxTQUFTLEVBQUUsU0FBUyxzQ0FBc0M7QUFBQSxFQUNuSCxDQUFDLEVBQ0EsT0FBTyxDQUFDLE1BQU0sUUFBUSxFQUFFLFNBQVMsTUFBTSxFQUFFLFlBQVksVUFBVSxLQUFLLEdBQUc7QUFBQSxJQUN0RSxTQUFTO0FBQUEsRUFDWCxDQUFDO0FBQUEsRUFDSCxNQUFNLFFBQVEsTUFBTSxLQUFLO0FBQ3ZCLFVBQU0sRUFBRSxTQUFTLG1CQUFtQixPQUFJLG9DQUFhLEdBQUc7QUFDeEQsVUFBTSxZQUFZLE1BQU0sS0FBSyxvQkFBSSxJQUFJLENBQUMsR0FBSSxLQUFLLFlBQVksQ0FBQyxLQUFLLFNBQVMsSUFBSSxDQUFDLEdBQUksR0FBSSxLQUFLLGNBQWMsQ0FBQyxDQUFFLENBQUMsQ0FBQztBQUMvRyxVQUFNLE1BQU0sU0FBTTtBQUFBLE1BQ2hCO0FBQUEsTUFDQSxPQUFPLGFBQWE7QUFDbEIsY0FBTSxTQUFTLFNBQU07QUFBQSxVQUFlO0FBQUEsVUFBb0I7QUFBQSxVQUFTLE9BQU8sVUFDdEUscUNBQWMsSUFBSSxVQUFVLE9BQU87QUFBQSxRQUNyQztBQUNBLGVBQU8sRUFBRSxJQUFJLE1BQWUsV0FBVyxVQUFVLFdBQVcsT0FBTyxVQUFVO0FBQUEsTUFDL0U7QUFBQSxNQUNBLEVBQUUsT0FBTyxDQUFDLGNBQWMsRUFBRSxXQUFXLFNBQVMsR0FBRztBQUFBLElBQ25EO0FBQ0EsY0FBTyxtQ0FBWSxHQUFHO0FBQUEsRUFDeEI7QUFDRixDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJjYW5jZWxfd2FpdC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIGxvY2tzOmNhbmNlbF93YWl0IOKAlCBhYmFuZG9uIGEgcXVldWVkIHdhaXRlciB0aWNrZXQuXG4gKlxuICogUGhhc2UgMTogc3R1Yi4gV2FpdGVyIHRpY2tldHMgYXJlIGNyZWF0ZWQgYnkgdGhlIHdhaXQgc3Vic3lzdGVtIGluXG4gKiBQaGFzZSAyOyB3aXRoIG5vIHdhaXQgcGF0aCwgdGhlcmUncyBub3RoaW5nIHRvIGNhbmNlbC4gVGhlIHRvb2wgaXNcbiAqIHJlZ2lzdGVyZWQgc28gdGhlIHN1cmZhY2UgaXMgc3RhYmxlIGFjcm9zcyBwaGFzZXMuXG4gKi9cblxuaW1wb3J0IHsgeiB9IGZyb20gJ3pvZCc7XG5pbXBvcnQgeyBkZWZpbmVUb29sLCBBR0VOVF9ST0xFUyB9IGZyb20gJ0BwYXBlcmN1c3AvYWdlbnQtbWNwJztcbmltcG9ydCB7IHJlYWRJZGVudGl0eSB9IGZyb20gJy4vaWRlbnRpdHknO1xuaW1wb3J0IHsgaW5Xb3Jrc3BhY2VUeG4gfSBmcm9tICcuL2luLXdvcmtzcGFjZS10eG4nO1xuaW1wb3J0IHsgdHJ5Q2FuY2VsV2FpdCB9IGZyb20gJy4vc3UtbG9jay1zdG9yZSc7XG5pbXBvcnQgeyBidWxrQ29udGVudCwgcnVuQnVsayB9IGZyb20gJy4uL19idWxrJztcblxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lVG9vbCh7XG4gIG5hbWU6ICdsb2NrczpjYW5jZWxfd2FpdCcsXG4gIGRlc2NyaXB0aW9uOlxuICAgICdBYmFuZG9uIGEgcXVldWVkIHdhaXRlciB0aWNrZXQuIFJldHVybnMgY2FuY2VsbGVkPXRydWUgaWYgdGhlIHdhaXQgd2FzIGFjdGl2ZTsgY2FuY2VsbGVkPWZhbHNlIG1lYW5zIGEgZ3JhbnQgcmFjZWQgKHlvdSBub3cgaG9sZCBhIGxvY2sgeW91IGRpZG5cXCd0IHdhbnQg4oCUIGNhbGwgbG9ja3M6cmVsZWFzZSBpbW1lZGlhdGVseSkuJyxcbiAgZ3VpZGFuY2U6IHtcbiAgICB3aGVuOiAnTWlkLXdhaXQsIHdoZW4gdGhlIHVzZXIgcmVkaXJlY3RzIHlvdSB0byBvdGhlciB3b3JrIG9yIHlvdSBkZWNpZGUgYSBkaWZmZXJlbnQgYXBwcm9hY2guJyxcbiAgICBub3RXaGVuOiAnQWZ0ZXIgeW91XFwndmUgYWxyZWFkeSByZWNlaXZlZCBhbiBvayByZXNwb25zZSBmcm9tIGxvY2tzOmFjcXVpcmUg4oCUIHRoZXJlXFwncyBubyB3YWl0ZXIgdG8gY2FuY2VsLicsXG4gICAgY2hhaW5pbmc6ICdPbiBjYW5jZWxsZWQ9ZmFsc2Ug4oaSIGxvY2tzOnJlbGVhc2UgeyBhbGxfbWluZTogdHJ1ZSB9IHRvIGZyZWUgdGhlIGxvY2sgeW91IGdvdCBoYW5kZWQuJyxcbiAgfSxcbiAgY2FwYWJpbGl0eTogJ2xvY2tzOndyaXRlJyxcbiAgcmVxdWlyZVByaW5jaXBhbDogZmFsc2UsXG4gIGFnZW50Um9sZXM6IFsuLi5BR0VOVF9ST0xFU10sXG4gIGFyZ3M6IHpcbiAgICAub2JqZWN0KHtcbiAgICAgIHRpY2tldF9pZDogei5zdHJpbmcoKS51dWlkKCkub3B0aW9uYWwoKS5kZXNjcmliZSgnc2luZ2xlIHdhaXRlciB0aWNrZXQgdG8gY2FuY2VsJyksXG4gICAgICB0aWNrZXRfaWRzOiB6LmFycmF5KHouc3RyaW5nKCkudXVpZCgpKS5taW4oMSkubWF4KDIwMCkub3B0aW9uYWwoKS5kZXNjcmliZSgnd2FpdGVyIHRpY2tldHMgdG8gY2FuY2VsIGluIG9uZSBjYWxsJyksXG4gICAgfSlcbiAgICAucmVmaW5lKChhKSA9PiBCb29sZWFuKGEudGlja2V0X2lkKSB8fCAoYS50aWNrZXRfaWRzPy5sZW5ndGggPz8gMCkgPiAwLCB7XG4gICAgICBtZXNzYWdlOiAncGFzcyBgdGlja2V0X2lkYCBvciBgdGlja2V0X2lkc2AnLFxuICAgIH0pLFxuICBhc3luYyBoYW5kbGVyKGFyZ3MsIGN0eCkge1xuICAgIGNvbnN0IHsgb3duZXJJZCwgY29vcmRpbmF0aW9uRG9tYWluIH0gPSByZWFkSWRlbnRpdHkoY3R4KTtcbiAgICBjb25zdCB0aWNrZXRJZHMgPSBBcnJheS5mcm9tKG5ldyBTZXQoWy4uLihhcmdzLnRpY2tldF9pZCA/IFthcmdzLnRpY2tldF9pZF0gOiBbXSksIC4uLihhcmdzLnRpY2tldF9pZHMgPz8gW10pXSkpO1xuICAgIGNvbnN0IGVudiA9IGF3YWl0IHJ1bkJ1bGsoXG4gICAgICB0aWNrZXRJZHMsXG4gICAgICBhc3luYyAodGlja2V0SWQpID0+IHtcbiAgICAgICAgY29uc3QgcmVzdWx0ID0gYXdhaXQgaW5Xb3Jrc3BhY2VUeG4oY29vcmRpbmF0aW9uRG9tYWluLCBvd25lcklkLCBhc3luYyAodHgpID0+XG4gICAgICAgICAgdHJ5Q2FuY2VsV2FpdCh0eCwgdGlja2V0SWQsIG93bmVySWQpLFxuICAgICAgICApO1xuICAgICAgICByZXR1cm4geyBvazogdHJ1ZSBhcyBjb25zdCwgdGlja2V0X2lkOiB0aWNrZXRJZCwgY2FuY2VsbGVkOiByZXN1bHQuY2FuY2VsbGVkIH07XG4gICAgICB9LFxuICAgICAgeyBrZXlPZjogKHRpY2tldElkKSA9PiAoeyB0aWNrZXRfaWQ6IHRpY2tldElkIH0pIH0sXG4gICAgKTtcbiAgICByZXR1cm4gYnVsa0NvbnRlbnQoZW52KTtcbiAgfSxcbn0pO1xuIl0sImZpbGUiOiIvbGliL2FnZW50LXRvb2xzL2xvY2tzL2NhbmNlbF93YWl0LnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvYWdlbnQtdG9vbHMvbG9ja3MvY2FuY2VsX3dhaXQudHMiLCIvbGliL2FnZW50LXRvb2xzL2xvY2tzL2NhbmNlbF93YWl0LnRzIixbXV0=

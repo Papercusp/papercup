@@ -22,10 +22,34 @@ import {
   reapZombieResumeProcs,
   reclaimDanglingInboxWakeAwaits,
 } from '../../idle-session-reaper';
+import { sweepEndedPresence, PRESENCE_ENDED_REAP_MS } from '../../agent-tools/coordination/presence';
+import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
+import { gatherViewerAttachedOwners } from '../../pty-viewer-heartbeat';
 
 registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const dryRun = cfg.dry_run === true;
+
+  // Presence-row reaper (dead-row-retention fix) — evict genuinely-ENDED
+  // coord_presence rows (stale beyond a short TTL + NO live inbox-wake await),
+  // sparing parked (wakeable) + on-desktop/viewer sessions. This ALSO runs on the
+  // always-on coord:presence read path; firing it here keeps the roster bounded even
+  // when nothing is reading it. Deleting a dead, not-wakeable row is non-destructive
+  // (a live owner re-creates its row on the next heartbeat), so — unlike the
+  // process-killing slices below — it needs no flag + no dry-run gate. Best-effort.
+  try {
+    const [onDesktop, viewers] = await Promise.all([
+      gatherOnDesktopSessions().then((s) => s.owners).catch(() => new Set<string>()),
+      gatherViewerAttachedOwners().catch(() => new Set<string>()),
+    ]);
+    const protectedOwners = new Set<string>([...onDesktop, ...viewers]);
+    const reaped = await sweepEndedPresence({ ttlMs: PRESENCE_ENDED_REAP_MS, protectedOwners });
+    if (reaped > 0) {
+      console.log(`[idle-session-reaper] presence-row reap: evicted ${reaped} ended coord_presence row(s)`);
+    }
+  } catch (e) {
+    console.warn('[idle-session-reaper] presence-row reap failed (non-fatal):', (e as Error)?.message ?? e);
+  }
 
   // Slice 3 (EI-1873) FIRST — the dominant fleet leak: ZOMBIE `claude --resume`
   // procs whose adv_session is ENDED but the process never exited (32 of them

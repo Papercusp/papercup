@@ -68,6 +68,15 @@ beforeAll(async () => {
       const ls = await links.listOut({ kind, ref }, { rel: 'tagged' });
       return ls.filter((l) => l.dst.kind === 'topic').map((l) => l.dst.ref);
     },
+    // Fleet resolution is unit-tested in audience.test.ts (pure branch wiring) and
+    // e2e in the plan's P-012 (real coord_presence + agent_fleets); this @plan/@topic/
+    // @object integration test stays scoped, so the fleet resolvers stub to empty.
+    async listFleetMembers() {
+      return [];
+    },
+    async listFleetLeader() {
+      return [];
+    },
   };
 });
 

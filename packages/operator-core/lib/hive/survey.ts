@@ -123,6 +123,13 @@ export interface ScopeFilter {
   pauseNewWork?: boolean;
   /** Timed pause: empty the frontier while `now < pausedUntil` (epoch ms). */
   pausedUntil?: number;
+  /** Whether plan-LESS ("loose") frontier work-items — directly-filed features,
+   *  benchmark/sandbox items, anything with no source plan — are placed. The
+   *  owner's "Non-plan work items" steering toggle. Default (undefined) ⇒ TRUE
+   *  (loose work is placed); set false to have the Queen work ONLY plan-tied
+   *  items. Independent of eligiblePlans: loose work is gated by THIS, plan-tied
+   *  work by eligiblePlans. */
+  includeUnplannedWork?: boolean;
 }
 
 /** Is NEW-work placement paused right now under this filter? (pure) */
@@ -145,27 +152,27 @@ export function inEligiblePlans(planSlug: string, f: ScopeFilter | undefined): b
 }
 
 /**
- * Frontier-row plan eligibility — the HARD filter (queen-steering-panel D-004 → P-008,
- * tightened to a STRICT scope by owner directive 2026-06-16). A frontier work-item
- * passes iff one of:
- *   - there is NO eligible-plans restriction (un-steered survey), OR
- *   - its source plan IS in the eligible set.
- * Under an eligible-plans restriction, a frontier item that carries NO source plan
- * (standalone/unplanned — a directly-filed feature, a benchmark/sandbox item) OR one
- * minted from a NON-eligible plan is DROPPED: "eligible plans" means ONLY those plans'
- * work, nothing else. Previously unplanned work bypassed this filter; the owner wants
- * eligibility to be a hard scope ("she should ONLY be picking up from eligible plans"),
- * so unplanned work is now gated too. Clearing eligible-plans (empty) restores the
- * full, unscoped frontier.
- * Distinct from {@link inEligiblePlans} (the PLAN view, where every candidate always
- * carries a plan slug). (pure; no list ⇒ allow all)
+ * Frontier-row work eligibility — two INDEPENDENT owner controls, so plan focus
+ * and loose-work handling no longer conflate (queen-steering-panel D-004 → P-008;
+ * decoupled by owner directive 2026-06-30). A frontier work-item passes iff:
+ *   - it is PLAN-LESS ("loose": a directly-filed feature, a benchmark/sandbox
+ *     item) → included IFF `includeUnplannedWork` (the "Non-plan work items"
+ *     toggle; default undefined ⇒ TRUE, i.e. loose work is placed); OR
+ *   - it is PLAN-TIED → passes when there is no eligiblePlans restriction, else
+ *     only when its source plan is in the eligible set.
+ * Before this the two were coupled: setting eligiblePlans silently DROPPED all
+ * loose work. Now the owner controls loose work explicitly (turn it off to have
+ * the Queen work ONLY plan-tied items), and eligiblePlans focuses only plan-tied
+ * work. Clearing both restores the full, unscoped frontier.
+ * Distinct from {@link inEligiblePlans} (the PLAN view, where every candidate
+ * always carries a plan slug). (pure)
  */
 export function frontierInEligiblePlans(
   planSlug: string | null | undefined,
   f: ScopeFilter | undefined,
 ): boolean {
-  if (!f?.eligiblePlans || f.eligiblePlans.length === 0) return true; // no restriction ⇒ all pass
-  if (!planSlug) return false; // under a restriction, unplanned work belongs to NO eligible plan ⇒ dropped
+  if (!planSlug) return f?.includeUnplannedWork !== false; // loose work: gated by the toggle (default include)
+  if (!f?.eligiblePlans || f.eligiblePlans.length === 0) return true; // plan-tied, no restriction ⇒ pass
   return f.eligiblePlans.includes(planSlug);
 }
 

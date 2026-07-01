@@ -105,31 +105,59 @@ export async function resolveSpawnGatewayEnv(opts: {
    *  gateway-routes to a Claude account, the bare Claude id is exposed + selected via the per-session
    *  models.yml (P-005/WI-951 per-role fidelity); a non-claude/local spec falls back to the wire default. */
   model?: string;
+  /** Explicit per-spawn account-routing override (account-routing-3-options, 2026-06-30) — the
+   *  fleet:spawn `account` arg. Mirrors the interactive psu path (resolveAccountPin):
+   *   • 'default' | 'none' | 'system' → skip the gateway entirely (direct egress, system credential).
+   *   • 'auto' | 'gateway'            → gateway auto-route (active()/drain-select + failover, NO pin).
+   *   • '<pool-id>'                   → HARD pin to that account via the gateway (no failover) — trusts
+   *                                      the id like the PAPERCUSP_SPAWN_ACCOUNT_PIN env path.
+   *  Omitted/'' → today's behavior (env pin → multi-account select → gateway active()). */
+  account?: string | null;
 }): Promise<Record<string, string>> {
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
   if (!gwOn) return {};
+  // account-routing-3-options: an explicit `account` override picks the routing MODE up-front.
+  // 'default'/'none'/'system' skips the gateway entirely (the operator's "use the system credential"
+  // escape hatch) — return before any pool work.
+  const acctOverride = (opts.account ?? '').trim();
+  const acctMode = acctOverride.toLowerCase();
+  if (acctMode === 'default' || acctMode === 'none' || acctMode === 'system') return {};
+  const wantAuto = acctMode === 'auto' || acctMode === 'gateway';
+  const explicitPin = acctOverride && !wantAuto ? acctOverride : undefined;
   const backend = interactiveBackendFromSpawnBackend(opts.backend ?? 'claude');
   const provider = accountProviderForInteractiveBackend(backend);
   if (!provider) return {};
   let accountId: string | undefined;
-  // Owner-directed dedicated-account pin (2026-06-23): when PAPERCUSP_SPAWN_ACCOUNT_PIN names a
-  // pool account, force it for the matching hive's spawns — so the queen→bee→scout→overwatch
-  // autonomous loop can be verified in a lane isolated from the shared-pool stall storm (the
-  // pinned account then carries only that hive's light load, not the whole fleet's). Scope with
-  // PAPERCUSP_SPAWN_ACCOUNT_PIN_SLUG (one install slug; pins ALL slugs when unset). This is
-  // operational ROUTING config (peer of ANTHROPIC_BASE_URL / PAPERCUSP_GATEWAY_PORT), NOT a
-  // feature toggle — reversible by unsetting the env, and a no-op everywhere the env is absent.
-  // Tradeoff: a pinned spawn does NOT fail over (it can only use the pinned account), so pin only
-  // a LIGHT, isolated workload — never the whole fleet.
-  const pinAccount = process.env.PAPERCUSP_SPAWN_ACCOUNT_PIN?.trim();
-  const pinSlug = process.env.PAPERCUSP_SPAWN_ACCOUNT_PIN_SLUG?.trim();
-  if (pinAccount && (!pinSlug || pinSlug === opts.slug)) {
-    accountId = pinAccount;
-  } else if (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system')) {
-    const { selectSpawnAccount } = await import('../deployment/account-pool-store');
-    accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
+  let hardPin = false;
+  if (explicitPin) {
+    // Operator-chosen specific account → HARD pin via the gateway (no failover). Trusts the id, the
+    // same as the PAPERCUSP_SPAWN_ACCOUNT_PIN env path below (no extra pool validation).
+    accountId = explicitPin;
+    hardPin = true;
+  } else if (wantAuto) {
+    // Explicit AUTO: leave accountId unset so the gateway active()/drain-selects + fails over (no pin
+    // header) — the gateway "does the auto-routing" the owner asked for, independent of MULTI_ACCOUNT.
+    accountId = undefined;
+  } else {
+    // Owner-directed dedicated-account pin (2026-06-23): when PAPERCUSP_SPAWN_ACCOUNT_PIN names a
+    // pool account, force it for the matching hive's spawns — so the queen→bee→scout→overwatch
+    // autonomous loop can be verified in a lane isolated from the shared-pool stall storm (the
+    // pinned account then carries only that hive's light load, not the whole fleet's). Scope with
+    // PAPERCUSP_SPAWN_ACCOUNT_PIN_SLUG (one install slug; pins ALL slugs when unset). This is
+    // operational ROUTING config (peer of ANTHROPIC_BASE_URL / PAPERCUSP_GATEWAY_PORT), NOT a
+    // feature toggle — reversible by unsetting the env, and a no-op everywhere the env is absent.
+    // Tradeoff: a pinned spawn does NOT fail over (it can only use the pinned account), so pin only
+    // a LIGHT, isolated workload — never the whole fleet.
+    const pinAccount = process.env.PAPERCUSP_SPAWN_ACCOUNT_PIN?.trim();
+    const pinSlug = process.env.PAPERCUSP_SPAWN_ACCOUNT_PIN_SLUG?.trim();
+    if (pinAccount && (!pinSlug || pinSlug === opts.slug)) {
+      accountId = pinAccount;
+    } else if (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system')) {
+      const { selectSpawnAccount } = await import('../deployment/account-pool-store');
+      accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
+    }
   }
   if (backend === 'omp') {
     // OMP routes via a per-session models.yml (P-005 connect / P-006 fleet): the gateway
@@ -185,7 +213,10 @@ export async function resolveSpawnGatewayEnv(opts: {
   // so flag-OFF emits NO new header (the bee's request stream stays byte-identical to today). The gateway
   // maps role → tier via GATEWAY_PRIORITY_MAP; an unknown role falls back to the default band there.
   const priority = opts.role && (await getFlag(FLAGS.GATEWAY_PRIORITY_TIERS, 'system')) ? opts.role.trim() || undefined : undefined;
-  const env = gatewaySpawnEnv(true, { accountId, ownerId: opts.ownerId, priority });
+  // hardPin only when the operator named a specific account (explicitPin) — a HARD pin tells the
+  // gateway to route to it with NO failover; auto/env-pin/multi-account selection stay soft (yield to
+  // liveness/load), unchanged from before.
+  const env = gatewaySpawnEnv(true, { accountId, ownerId: opts.ownerId, priority, hardPin });
   if (accountId) env.PAPERCUSP_ACCOUNT_ID = accountId;
   return env;
 }

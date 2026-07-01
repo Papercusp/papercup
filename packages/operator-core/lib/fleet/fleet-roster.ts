@@ -256,6 +256,27 @@ async function liveFleetMemberCounts(workspaceId: string): Promise<Map<string, n
 }
 
 /**
+ * IO seam: the LIVE members of ONE named fleet → their coord owner-ids. The
+ * id-only, single-fleet analog of liveFleetMemberCounts: presence rows carrying
+ * `fleetSlug` with a fresh heartbeat (within PRESENCE_STALE_MS), scoped to the
+ * workspace (fleet_slug is unique only per-workspace — mig 406). This is what the
+ * coord audience resolver calls to expand `@fleet:<slug>` to its currently-live
+ * recipients, with no roster enrichment (cheap enough for the per-send path).
+ */
+export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
+  const rows = await sql<{ owner_id: string }[]>`
+    SELECT owner_id
+      FROM harness_shared.coord_presence
+     WHERE workspace_id = ${workspaceId}
+       AND fleet_slug = ${fleetSlug}
+       AND heartbeat_at > now() - ${`${secs} seconds`}::interval
+  `;
+  return rows.map((r) => r.owner_id);
+}
+
+/**
  * Every persisted fleet in the workspace, annotated with its live-member count. The
  * registry rows persist with zero live members (D-003), so the caller decides what
  * "available" means — the standard predicate is `liveMemberCount > 0` (routing option 2

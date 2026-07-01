@@ -19,13 +19,12 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID, activeWorkspaceId } from '../../workspace-registry';
-import { resolveCtxHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
+import { resolveEffectiveHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
@@ -78,7 +77,7 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
+    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,

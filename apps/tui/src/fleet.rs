@@ -417,12 +417,52 @@ fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
             "  ↑/↓ or ←/→ switch pane · ⏎ enter · ",
         )
     };
-    let line = Line::from(vec![
-        Span::styled(marker, Theme::title_active()),
-        Span::styled(keys, Theme::info()),
-        Span::styled(toggle, Theme::info()),
-    ]);
+    // The roster cursor's agent leads the footer (WI-1355): its (shortened) id
+    // plus the fleet it belongs to, so "who is the cursor on, and which fleet
+    // are they in?" is answerable without leaving the roster. "—" when the
+    // agent is in no fleet. Sourced from the roster entry already in the model
+    // (RosterEntry.fleet_slug, stamped by adv-roster.ts).
+    let mut spans: Vec<Span> = Vec::new();
+    if let Some(sel) = app.selected_session() {
+        spans.push(Span::styled(
+            format!(" {} ", agent_id_fleet_label(sel)),
+            Theme::info(),
+        ));
+        spans.push(Span::styled("·", Theme::dim()));
+    }
+    spans.push(Span::styled(marker, Theme::title_active()));
+    spans.push(Span::styled(keys, Theme::info()));
+    spans.push(Span::styled(toggle, Theme::info()));
+    let line = Line::from(spans);
     f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
+}
+
+/// The selected agent's identity for the Fleet footer (WI-1355): its shortened
+/// owner id next to the fleet it belongs to — "—" when the agent is in no fleet
+/// (or the slug is empty). Pure so it's unit-tested.
+fn agent_id_fleet_label(entry: &crate::models::RosterEntry) -> String {
+    let fleet = entry
+        .fleet_slug
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("—");
+    format!("id: {}  ·  fleet: {}", short_owner(&entry.owner_id), fleet)
+}
+
+/// Owner-id short form for display — up to the 2nd `-` (e.g. `su-b8fe880c`),
+/// else the first 8 chars. Mirrors app.rs::short_owner so the footer id reads
+/// the same as the rest of the TUI's owner shortening.
+fn short_owner(owner: &str) -> String {
+    let mut n = 0usize;
+    for (i, c) in owner.char_indices() {
+        if c == '-' {
+            n += 1;
+            if n == 2 {
+                return owner[..i].to_string();
+            }
+        }
+    }
+    owner.chars().take(8).collect()
 }
 
 /// The comms sub-view (#3/#4): roster (left) | the selected agent's coord
@@ -781,6 +821,25 @@ fn parse_hex_color(hex: &str) -> Option<ratatui::style::Color> {
     Some(ratatui::style::Color::Rgb(r, g, b))
 }
 
+/// The fg colour for an agent's NAME (and glyph) in the fleet roster
+/// (fleet-color-schemes): the fleet's bound accent when the agent is in a fleet
+/// (so a fleet reads as one colour, independent of the per-type tint flag), else
+/// the per-type colour when the hive_agent_tabs tint is on, else None (plain).
+/// Precedence: fleet > type > none. Pure — unit-tested.
+fn agent_name_color(
+    fleet_fg: Option<ratatui::style::Color>,
+    hive_agent_tabs: bool,
+    kind: Option<crate::agent_pane_kind::AgentPaneKind>,
+) -> Option<ratatui::style::Color> {
+    fleet_fg.or_else(|| {
+        if hive_agent_tabs {
+            kind.map(|k| k.color())
+        } else {
+            None
+        }
+    })
+}
+
 /// The fleet a roster row groups under: its non-empty `fleet_slug`, else None
 /// ("No fleet"). (fleet-color-schemes #3)
 fn group_key(r: &crate::models::RosterEntry) -> Option<String> {
@@ -838,10 +897,15 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             // owner sessions read apart at a glance, same vocabulary as the pane
             // titles. Flag-on; flag-off keeps the legacy dot-only row.
             let kind = crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind);
+            // fleet-color-schemes: an agent IN a fleet shares its fleet's accent
+            // (the SAME colour as its group header) so the whole fleet reads as one
+            // colour block; unfleeted agents keep the per-type tint (P-010). The
+            // kind GLYPH still carries the type at a glance.
+            let fleet_fg = r.fleet_color.as_deref().and_then(parse_hex_color);
             let glyph_cell = match (app.hive_agent_tabs, kind) {
                 (true, Some(k)) => Span::styled(
                     format!("{} ", k.glyph()),
-                    ratatui::style::Style::default().fg(k.color()),
+                    ratatui::style::Style::default().fg(fleet_fg.unwrap_or_else(|| k.color())),
                 ),
                 (true, None) => Span::raw("  ".to_string()),
                 _ => Span::raw(String::new()),
@@ -865,11 +929,12 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             // Sentinel/Planner). zellij has no per-pane color (D-008), so pui draws
             // it here where it owns the chrome. Flag-off → plain (current).
             let agent_cell = format!(" {:<6} ", trunc(&agent, 6));
-            let agent_span = match (app.hive_agent_tabs, kind) {
-                (true, Some(k)) => {
-                    Span::styled(agent_cell, ratatui::style::Style::default().fg(k.color()))
-                }
-                _ => Span::raw(agent_cell),
+            // Name colour: the fleet accent when in a fleet (independent of the
+            // hive_agent_tabs flag that drives the per-type tint — matching the
+            // always-on group headers), else the per-type colour (P-010), else plain.
+            let agent_span = match agent_name_color(fleet_fg, app.hive_agent_tabs, kind) {
+                Some(c) => Span::styled(agent_cell, ratatui::style::Style::default().fg(c)),
+                None => Span::raw(agent_cell),
             };
             // P-008: flag-on, a wake-mode badge — `manual` is the notable (paused)
             // state; `auto` is the default → no badge, uncluttered. The staged-wake
@@ -1260,6 +1325,40 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn agent_name_color_precedence_fleet_over_type_over_plain() {
+        use crate::agent_pane_kind::AgentPaneKind;
+        use ratatui::style::Color;
+        let fleet = Color::Rgb(0x86, 0xef, 0xac); // a fleet's bound accent
+        // In a fleet → the fleet accent wins, regardless of type or the tint flag.
+        assert_eq!(
+            agent_name_color(Some(fleet), true, Some(AgentPaneKind::Bee)),
+            Some(fleet)
+        );
+        assert_eq!(
+            agent_name_color(Some(fleet), false, None),
+            Some(fleet),
+            "fleet colour applies even with the per-type tint flag OFF (matches the always-on group headers)"
+        );
+        // No fleet, tint flag ON → the per-type colour (P-010).
+        assert_eq!(
+            agent_name_color(None, true, Some(AgentPaneKind::Bee)),
+            Some(AgentPaneKind::Bee.color())
+        );
+        // No fleet, tint flag OFF → plain (None); no kind + flag on → plain.
+        assert_eq!(agent_name_color(None, false, Some(AgentPaneKind::Bee)), None);
+        assert_eq!(agent_name_color(None, true, None), None);
+    }
+
+    #[test]
+    fn parse_hex_color_parses_rrggbb_and_rejects_malformed() {
+        use ratatui::style::Color;
+        assert_eq!(parse_hex_color("#86efac"), Some(Color::Rgb(0x86, 0xef, 0xac)));
+        assert_eq!(parse_hex_color("86efac"), Some(Color::Rgb(0x86, 0xef, 0xac)));
+        assert_eq!(parse_hex_color("#fff"), None);
+        assert_eq!(parse_hex_color("nope!!"), None);
+    }
+
+    #[test]
     fn wake_badge_text_carries_the_pending_count() {
         // P-008: bare badge when nothing staged; the count rides on it otherwise.
         assert_eq!(wake_badge_text(0), " ⏸MANUAL");
@@ -1319,6 +1418,23 @@ mod tests {
             ],
         }));
         r
+    }
+
+    #[test]
+    fn agent_id_fleet_label_shows_id_and_fleet() {
+        // In a fleet → shortened id + the fleet slug (WI-1355).
+        let mut r = roster_entry("su-b8fe880c-8fd9-4550", false);
+        r.fleet_slug = Some("atlas-fleet".into());
+        assert_eq!(
+            agent_id_fleet_label(&r),
+            "id: su-b8fe880c  ·  fleet: atlas-fleet"
+        );
+        // No fleet → em-dash placeholder.
+        r.fleet_slug = None;
+        assert_eq!(agent_id_fleet_label(&r), "id: su-b8fe880c  ·  fleet: —");
+        // Empty-string slug reads as no fleet too.
+        r.fleet_slug = Some(String::new());
+        assert_eq!(agent_id_fleet_label(&r), "id: su-b8fe880c  ·  fleet: —");
     }
 
     #[test]

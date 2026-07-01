@@ -1,14 +1,26 @@
 /**
  * audience-host.test.ts — the PURE surface of the audience host adapter: the env-gated
- * audienceMode() kill-switch + the listActivePresence resolver's stale/revoked filter + mapping.
- * (The listTargetSubscribers/listTaggedTopics resolvers run live PG stores — covered by the
- * integration suite, not here.) ./presence is mocked so listPresence is fully controlled.
+ * audienceMode() kill-switch + the pure canonicalizeAudienceSelector / deriveAudienceKey
+ * (the write/read audience-key agreement) + the listActivePresence resolver's stale/revoked
+ * filter + mapping. (The listTargetSubscribers/listTaggedTopics resolvers run live PG stores
+ * — covered by the integration suite, not here.) ./presence is mocked so listPresence is
+ * fully controlled.
+ *
+ * NB: these import the REAL (unmocked) audience-host module — so a MISSING export regresses
+ * as an import failure here. This is the guard the tool-level catch-up.test.ts (which mocks
+ * ../audience-host) can't provide: it caught the WI-1352 crash where catch-up.ts imported
+ * canonicalizeAudienceSelector but the module hadn't exported it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./presence', () => ({ listPresence: vi.fn() }));
 
-import { audienceMode, hostAudienceResolvers } from './audience-host';
+import {
+  audienceMode,
+  canonicalizeAudienceSelector,
+  deriveAudienceKey,
+  hostAudienceResolvers,
+} from './audience-host';
 import { listPresence } from './presence';
 
 const mockListPresence = listPresence as unknown as ReturnType<typeof vi.fn>;
@@ -33,6 +45,64 @@ describe('audienceMode — the PAPERCUSP_COORD_EMIT_SCOPE kill-switch (D-005)', 
     expect(audienceMode()).toBe('scoped');
     process.env[KEY] = 'BROADCAST'; // case-sensitive — not the literal
     expect(audienceMode()).toBe('scoped');
+  });
+});
+
+describe('canonicalizeAudienceSelector — pure fleet-slugify / as-typed (D-003)', () => {
+  it('is a callable export (WI-1352 regression: catch-up.ts imports this)', () => {
+    expect(typeof canonicalizeAudienceSelector).toBe('function');
+  });
+
+  it('slugifies a @fleet: selector so a human name and its slug key the same history', () => {
+    expect(canonicalizeAudienceSelector('@fleet:Backend Team')).toBe('@fleet:backend-team');
+    expect(canonicalizeAudienceSelector('@fleet:shared-hive-testing')).toBe('@fleet:shared-hive-testing');
+  });
+
+  it('is idempotent on an already-slugified fleet selector', () => {
+    const once = canonicalizeAudienceSelector('@fleet:Backend Team');
+    expect(canonicalizeAudienceSelector(once)).toBe(once);
+  });
+
+  it('slugifies @fleet-leader: the same way as @fleet:', () => {
+    expect(canonicalizeAudienceSelector('@fleet-leader:Backend Team')).toBe('@fleet-leader:backend-team');
+  });
+
+  it('leaves an empty-bodied fleet selector untouched (nothing to slugify)', () => {
+    expect(canonicalizeAudienceSelector('@fleet:')).toBe('@fleet:');
+    expect(canonicalizeAudienceSelector('@fleet:   ')).toBe('@fleet:   ');
+  });
+
+  it('stores every non-fleet selector as-typed (trimmed)', () => {
+    expect(canonicalizeAudienceSelector('@topic:federation')).toBe('@topic:federation');
+    expect(canonicalizeAudienceSelector('  @topic:federation  ')).toBe('@topic:federation');
+    expect(canonicalizeAudienceSelector('@plan:my-plan')).toBe('@plan:my-plan');
+    expect(canonicalizeAudienceSelector('*')).toBe('*');
+    expect(canonicalizeAudienceSelector('alice')).toBe('alice');
+  });
+});
+
+describe('deriveAudienceKey — canonicalized selector provenance from a to[] (D-003)', () => {
+  it('is a callable export', () => {
+    expect(typeof deriveAudienceKey).toBe('function');
+  });
+
+  it('keeps only @-selectors + * (plain ownerIds are already queryable by `to`)', () => {
+    expect(deriveAudienceKey(['@fleet:Backend Team', 'alice', '@topic:federation'])).toEqual([
+      '@fleet:backend-team',
+      '@topic:federation',
+    ]);
+  });
+
+  it('canonicalizes + dedupes so a name and its slug collapse to one key', () => {
+    expect(deriveAudienceKey(['@fleet:Backend Team', '@fleet:backend-team'])).toEqual(['@fleet:backend-team']);
+  });
+
+  it('preserves * alongside selectors', () => {
+    expect(deriveAudienceKey(['*', '@topic:federation'])).toEqual(['*', '@topic:federation']);
+  });
+
+  it('is empty for a plain-id-only send (no selector provenance to retain)', () => {
+    expect(deriveAudienceKey(['alice', 'bob'])).toEqual([]);
   });
 });
 

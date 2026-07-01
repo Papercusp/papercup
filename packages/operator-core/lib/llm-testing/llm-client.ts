@@ -169,6 +169,13 @@ async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefin
 /**
  * One-shot completion via the `anthropic-direct` backend — the operator's
  * concrete implementation of the lib's injected `LlmCallFn` seam.
+ *
+ * GOTCHA (agent-insights: max-oauth-first-system-block-must-be-claude-code-identity): on the inference
+ * gateway every pool credential is a Claude MAX OAuth token, and Anthropic 429-shunts a request to a
+ * stricter (opus-prone) bucket UNLESS its FIRST `system` block is the Claude Code identifier. This path
+ * routes through `runAgentChat` → chat-stream `buildSystemParam`, which now ALWAYS prepends it — so
+ * in-process calls here are framed automatically. If you add a NEW anthropic-direct path that bypasses
+ * `buildSystemParam`, you MUST prepend `CLAUDE_CODE_IDENTIFIER` yourself or it will opus-429.
  */
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   const backend = backendForLlmCall(opts.model);

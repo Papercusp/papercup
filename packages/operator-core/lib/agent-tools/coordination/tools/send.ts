@@ -82,7 +82,7 @@ const endTurnArg = z
 const toArg = z
   .array(z.string().min(1), {
     error:
-      'coord:send needs `to`: recipient ids. Accepts the SHORT HANDLE shown in the [coord+N] injection / inbox (e.g. "93a38"), the "su-…" prefix, OR the full ownerId — all resolve against the live roster, so NO coord:presence lookup is needed to reply to a peer. ["*"] broadcasts, ["human"] surfaces to the user. (To make a peer who is waiting on your reply act NOW rather than on their next turn, set wake:"required" — a plain send only injects.)',
+      'coord:send needs `to`: recipient ids. Accepts the SHORT HANDLE shown in the [coord+N] injection / inbox (e.g. "93a38"), the "su-…" prefix, OR the full ownerId — all resolve against the live roster, so NO coord:presence lookup is needed to reply to a peer. ["*"] broadcasts, ["human"] surfaces to the user. AUDIENCE SELECTORS expand to a group: @fleet:<slug> (live members of a named fleet — the cohort an agent joins, no per-agent subscribe), @fleet-leader:<slug> (escalate to the fleet lead), @topic:<slug>, @plan:<slug>, @object:<kind>:<ref>, @file:<path>. The selector is preserved as the audience key, so members catch up later via coord:catch-up. (To make a peer who is waiting on your reply act NOW rather than on their next turn, set wake:"required" — a plain send only injects.)',
   })
   .min(1, 'coord:send needs at least one recipient in `to` — ["*"] broadcasts, ["human"] surfaces to the user.');
 

@@ -51,6 +51,7 @@ const CONCRETE_HARNESS_TOOLS: Array<{
   { name: 'cross_harness:inbox', importTool: () => import('../cross_harness/inbox'), args: {} },
   { name: 'cross_harness:outbox', importTool: () => import('../cross_harness/outbox'), args: {} },
   { name: 'cross_harness:supervisor_notes', importTool: () => import('../cross_harness/supervisor_notes'), args: {} },
+  { name: 'projects:list', importTool: () => import('../projects/list'), args: {} },
   { name: 'projects:get', importTool: () => import('../projects/get'), args: { id: 'P-1' } },
   { name: 'projects:spec_revision', importTool: () => import('../projects/spec_revision'), args: { projectId: 'P-1', revId: 1 } },
   { name: 'projects:spec_revisions', importTool: () => import('../projects/spec_revisions'), args: { projectId: 'P-1' } },

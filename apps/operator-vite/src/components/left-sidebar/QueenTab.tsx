@@ -66,6 +66,9 @@ export interface HiveSteeringRow {
   directive: string | null;
   eligiblePlans: string[];
   eligibleHives: string[];
+  /** Whether loose (non-plan) work-items are placed. Default true. The
+   *  "Non-plan work items" toggle (queen-steering decouple 2026-06-30). */
+  includeUnplannedWork: boolean;
   pauseNewWork: boolean;
   pausedUntil: number | null;
   /** Session model-tier override (D-006); null ⇒ workspace default. */
@@ -88,6 +91,7 @@ const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
   directive: null,
   eligiblePlans: [],
   eligibleHives: [],
+  includeUnplannedWork: true,
   pauseNewWork: false,
   pausedUntil: null,
   modelTiers: null,
@@ -344,6 +348,10 @@ export default function QueenTab({ active }: { active: boolean }) {
     overlay({ eligiblePlans: next });
     enqueue({ eligiblePlans: next });
   };
+  const setIncludeUnplannedWork = (on: boolean) => {
+    overlay({ includeUnplannedWork: on });
+    enqueue({ includeUnplannedWork: on });
+  };
   const togglePause = () => {
     const next = !live().pauseNewWork;
     overlay({ pauseNewWork: next, pausedUntil: null });
@@ -413,6 +421,7 @@ export default function QueenTab({ active }: { active: boolean }) {
       directive: null,
       eligiblePlans: [],
       eligibleHives: [],
+      includeUnplannedWork: true,
       pauseNewWork: false,
       pausedUntil: null,
       modelTiers: null,
@@ -539,12 +548,33 @@ export default function QueenTab({ active }: { active: boolean }) {
         onSave={onSaveDirective}
       />
 
-      {/* 3 — Model tiers (session override, D-006 / #4) */}
-      <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={controlsBusy} />
+      {/* Steering scope (moved ABOVE Model tiers, owner 2026-06-30) — WHAT WORK the
+          Queen may start. First the single non-plan (loose) work toggle, then the
+          plan focus. The nested hive→plan picker (P-002) makes the illegal "eligible
+          plan under an excluded hive" state unrepresentable; the flag-OFF fallback
+          is the legacy two flat lists. */}
+      <section className="pc-queen__section">
+        <div className="pc-queen__section-head">
+          <ListChecks size={12} aria-hidden />
+          <span className="pc-queen__section-title">Non-plan work items</span>
+          <span className="pc-queen__count">{view.includeUnplannedWork ? 'included' : 'excluded'}</span>
+        </div>
+        <label className="pc-queen__planlabel" style={{ cursor: 'pointer', padding: '2px 0' }}>
+          <Checkbox
+            className="pc-queen__check"
+            checked={view.includeUnplannedWork}
+            onChange={() => setIncludeUnplannedWork(!view.includeUnplannedWork)}
+            ariaLabel="Work non-plan work items"
+          />
+          <span className="pc-queen__planslug">Work loose items not tied to any plan</span>
+        </label>
+        <div className={`pc-queen__scope${view.includeUnplannedWork ? '' : ' pc-queen__scope--restricted'}`}>
+          {view.includeUnplannedWork
+            ? 'The Queen also places work-items with no plan (directly-filed features, ad-hoc items) — not just the eligible plans below.'
+            : 'The Queen works ONLY items from the eligible plans below — loose (non-plan) work is skipped.'}
+        </div>
+      </section>
 
-      {/* 4+5 — Steering scope. The nested hive→plan picker (P-002) makes the
-          illegal "eligible plan under an excluded hive" state unrepresentable;
-          the flag-OFF fallback is the legacy two flat lists. */}
       {steeringTreeOn ? (
         <HiveSteeringTree
           tree={steeringTree}
@@ -629,6 +659,9 @@ export default function QueenTab({ active }: { active: boolean }) {
           </section>
         </>
       )}
+
+      {/* Model tiers (session override, D-006 / #4) — now BELOW Steering scope (owner 2026-06-30) */}
+      <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={controlsBusy} />
 
       {/* 6 — Throttle knobs (P-007): cadence floor, max bees, model-tier pin (the
           bee role's tier ceiling), idle-activity gates, auto-scale-out. The live

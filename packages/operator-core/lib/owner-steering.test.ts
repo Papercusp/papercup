@@ -49,6 +49,24 @@ describe('getOwnerSteering — decode + defaults', () => {
     expect(await getOwnerSteering('ws', 'hive')).toEqual(DEFAULT_OWNER_STEERING);
   });
 
+  it('includeUnplannedWork: absent ⇒ true (loose work placed); explicit false ⇒ false', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    expect((await getOwnerSteering('ws', 'hive')).includeUnplannedWork).toBe(true);
+    listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.includeUnplannedWork]: false }));
+    expect((await getOwnerSteering('ws', 'hive')).includeUnplannedWork).toBe(false);
+    listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.includeUnplannedWork]: true }));
+    expect((await getOwnerSteering('ws', 'hive')).includeUnplannedWork).toBe(true);
+  });
+
+  it('setOwnerSteering persists includeUnplannedWork:false', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    await setOwnerSteering('ws', 'hive', { includeUnplannedWork: false });
+    expect(setHiveSetting).toHaveBeenCalledWith(
+      expect.objectContaining({ settingKey: OWNER_STEERING_KEYS.includeUnplannedWork, value: false }),
+      undefined,
+    );
+  });
+
   it('decodes a fully-set steering state', async () => {
     listHiveSettings.mockResolvedValue(
       rows({
@@ -62,6 +80,7 @@ describe('getOwnerSteering — decode + defaults', () => {
       directive: 'focus on the migration',
       eligiblePlans: ['plan-a', 'plan-b'],
       eligibleHives: [],
+      includeUnplannedWork: true,
       pauseNewWork: true,
       pausedUntil: 1_900_000_000_000,
       modelTiers: null,

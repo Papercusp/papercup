@@ -34,6 +34,7 @@ import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import {
   InMemoryEntitySubscriptionStore,
   type ResolvedSubscriber,
+  type DeliveryMode,
 } from '@papercusp/coordination/capabilities';
 import { configureCoordLog, resetCoordLog } from '../log';
 import { readInbox, sendMessage } from '../messages';
@@ -86,7 +87,7 @@ describe('Interest-routing bounds per-agent load (coordination is not broadcast)
     const rows: { writerKey: string; env: CoordEnvelope }[] = [];
     return { rows, sink: { async appendLine(_s, writerKey, env) { rows.push({ writerKey, env }); } } };
   }
-  const resolve = (r: { subscriber_id: string; delivery_mode: 'full' | 'digest' | 'mention' }): ResolvedSubscriber => ({
+  const resolve = (r: { subscriber_id: string; delivery_mode: DeliveryMode }): ResolvedSubscriber => ({
     subscriber_id: r.subscriber_id,
     delivery_mode: r.delivery_mode,
     via: 'object',

@@ -22,10 +22,10 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List coordination agents + whether each can TAKE WORK. Top-level `self`=your ownerId; your own row has `isSelf:true` (no coord:whoami needed). Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable=the dispatch target · ended=needs relaunch, NOT wake), and `onDesktop`/`viewerAttached` (a human is watching RIGHT NOW — a live OS window / the operator PTY panel — so it is hard-exempt from the idle-session reaper + the \"assign to the agent on screen\" target). Read `summary.wakeable`, not raw `active` (a fresh heartbeat can be ended). `intentStale:true` ⇒ declared intent/claims not progressing → its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen. Stale (>10min) rows summarised unless include_stale.",
+    "List coordination agents + whether each can TAKE WORK. `active` is the ACTIONABLE roster — live + parked + recorded rows only; DEAD (`ended`) rows are NOT listed (their count is in `summary.byState.ended`). To inspect/wake ONE dead agent, pass `owner:<id>` (a targeted lookup that DOES return an `ended` row) — never a global stale dump. Top-level `self`=your ownerId; your own row has `isSelf:true` (no coord:whoami needed). Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable=the dispatch target · ended=needs relaunch, NOT wake), and `onDesktop`/`viewerAttached` (a human is watching RIGHT NOW — a live OS window / the operator PTY panel — so it is hard-exempt from the idle-session reaper + the \"assign to the agent on screen\" target). Read `summary.wakeable`, not raw `active`. `intentStale:true` ⇒ declared intent/claims not progressing → its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen.",
   guidance: {
-    when: 'Before dispatch/handoff: "who can take work now, and on what?" Read `sessionState`/`wakeable` + `summary.wakeable`, not raw `active`. Dispatch a lane to a `parked` agent via coord:dispatch; an `ended` target needs relaunch. For the agent on your screen, filter `onDesktop`/`viewerAttached`.',
-    notWhen: 'A specific file\'s freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion; tail those.',
+    when: 'Before dispatch/handoff: "who can take work now, and on what?" Read `sessionState`/`wakeable` + `summary.wakeable`, not raw `active`. Dispatch a lane to a `parked` agent via coord:dispatch; an `ended` target needs relaunch. To inspect/wake a SPECIFIC dead agent, pass `owner:<id>` (returns it even if ended). For the agent on your screen, filter `onDesktop`/`viewerAttached`.',
+    notWhen: 'A specific file\'s freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion; tail those. The full ended-agent list — it is intentionally not returned (use `owner:<id>` for one, or read `summary.byState.ended` for the count).',
     chaining:
       'Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions. lastActiveSecAgo is point-in-time at as_of; the baseline re-injects after compaction.',
   },
@@ -45,10 +45,10 @@ export default defineTool({
       .string()
       .optional()
       .describe('Workspace id for workspace/hive scope; omit to use the caller\'s.'),
-    include_stale: z
-      .boolean()
+    owner: z
+      .string()
       .optional()
-      .describe('Also return the full stale roster (default false — stale is summarised only; the live answer is `active`).'),
+      .describe('TARGETED lookup: return ONLY the row(s) matching this agent id/label (exact, else a substring either-way) — and INCLUDE it even if `ended`. The replacement for the removed `include_stale` full dump: use it to inspect/wake ONE specific dead agent, never to expand the whole stale roster.'),
     include_detail: z
       .boolean()
       .optional()
@@ -81,7 +81,7 @@ export default defineTool({
       }
     }
     const snapshot = await assemblePresenceSnapshot(resolved, {
-      includeStale: args.include_stale,
+      ...(args.owner ? { owner: args.owner } : {}),
       ...(detail ? { detail } : {}),
     });
     // Self-identification overlay (caller-dependent, so applied HERE, after the
@@ -95,7 +95,6 @@ export default defineTool({
       ...snapshot,
       ...(self ? { self } : {}),
       active: markSelfRows(snapshot.active, self),
-      ...(snapshot.stale ? { stale: markSelfRows(snapshot.stale, self) } : {}),
     };
     return {
       content: [

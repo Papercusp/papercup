@@ -62,6 +62,10 @@ export default defineTool({
       .optional()
       .describe('An ownerId. Matches envelopes where this owner is the sender OR a recipient; broadcasts match any owner.'),
     plan_slug: z.string().optional().describe('Restrict to one plan slug.'),
+    audience: z
+      .string()
+      .optional()
+      .describe('Restrict to envelopes addressed to this audience selector (@fleet:<slug> / @topic:<slug> / @plan:<slug> / @object:… / @file:… / *) — the audience-keyed HISTORY read. Catches up on everything sent to a fleet/topic even though your id was never in the resolved recipient list. (Members use coord:catch-up for the low-tier, membership-checked version.)'),
     q: z.string().optional().describe('Case-insensitive substring over summary/body/from/to/plan_slug.'),
     since_ts: z.string().optional().describe('Strictly later than this ISO timestamp (older bound).'),
     before_ts: z
@@ -75,16 +79,24 @@ export default defineTool({
       .max(MAX_FEED_LIMIT)
       .optional()
       .describe(`Max rows (newest kept). Agent default ${AGENT_FEED_DEFAULT} (kept small because each row is a full envelope), max ${MAX_FEED_LIMIT}. Per-row body/summary are excerpted (body_truncated/_full_chars); paginate with before_ts/next_cursor for more.`),
+    token_budget: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe('Accumulate rows newest-first until ~this many tokens, then stop (≥1 row always returned). The "as much history as fits in my context" knob — useful for a long backlog where a row count is hard to guess. Composes with limit: stops at whichever is hit first.'),
   }),
   async handler(args) {
-    const { rows, nextCursor, total, byKind } = await readCoordFeed({
+    const { rows, nextCursor, total, byKind, tokens } = await readCoordFeed({
       kinds: args.kinds,
       owner: args.owner,
       plan_slug: args.plan_slug,
+      audience: args.audience,
       q: args.q,
       since_ts: args.since_ts,
       before_ts: args.before_ts,
       limit: args.limit ?? AGENT_FEED_DEFAULT,
+      token_budget: args.token_budget,
     });
     // EI-1597: excerpt the big per-row text fields so the firehose can't overflow the
     // agent result cap. The q-filter already ran (over full bodies) inside readCoordFeed,
@@ -98,6 +110,7 @@ export default defineTool({
           text: JSON.stringify({
             count: boundedRows.length,
             total,
+            tokens,
             by_kind: byKind,
             next_cursor: nextCursor,
             rows: boundedRows,

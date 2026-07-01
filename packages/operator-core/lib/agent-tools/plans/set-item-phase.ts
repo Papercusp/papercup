@@ -35,7 +35,9 @@ const PHASE = z
   .string()
   .min(1)
   .regex(
-    /^Phase\b/i,
+    // Fully anchored (^...$) so strict tool-schema consumers (Ollama's grammar
+    // compiler) can parse it — see the matching comment in plans/add-item.ts.
+    /^Phase\b[\s\S]*$/i,
     'Phase heading must start with "Phase" (e.g. "Phase 2 — Template mechanism") — the parser only recognizes /^Phase\\b/i headings as phase sections.',
   )
   .describe('Target phase heading text (no ## prefix, no numbering), e.g. "Phase 2 — Template mechanism". Created if it does not exist.');

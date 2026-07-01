@@ -3,9 +3,14 @@ import {
   collectScheduleInventory,
   humanInterval,
   summarizeInventory,
+  EXTERNAL_PROCESS_TIMERS,
+  SCHEDULE_SOURCES,
   type RoutineRow,
 } from './schedule-inventory';
 import type { DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its allow/baseline sets only.
+import { BASELINE, ALLOWLIST, ALLOWLIST_DIRS } from '../../../scripts/check-no-raw-setinterval.mjs';
 
 const dbos = (over: Partial<DbosScheduledEntry> = {}): DbosScheduledEntry => ({
   name: 'telemetryFlush',
@@ -191,5 +196,78 @@ describe('collectScheduleInventory', () => {
     expect(summary.total).toBe(3);
     expect(summary.bySource).toEqual({ dbos: 1, routines: 1, 'in-process': 1 });
     expect(summary.byTier).toEqual({ durable: 2, ephemeral: 1 });
+  });
+});
+
+/**
+ * P-009 reconcile (WI-919): diff the operator-host timer AUDIT against the live registry +
+ * the external-process manifest, asserting NO silent gaps. Two invariants, both durable:
+ *
+ *  1. The no-raw-setInterval guard BASELINE is EMPTY — every operator-host timer goes through
+ *     managedSetInterval, so it appears in listManaged() → the inventory's 'managed' source.
+ *     A non-empty BASELINE means a host timer is runtime-INVISIBLE (the silent gap P-007/P-008
+ *     closed); keeping it empty is the universal-visibility ratchet.
+ *  2. Every EXTERNAL_PROCESS_TIMERS source is allow-listed in that guard. This reconciles the two
+ *     audits: a timer we LOG as 'external-process' must be one the host guard intentionally
+ *     EXCLUDES (a separate process, not a host timer) — so no file is both expected-in-the-managed-
+ *     registry AND logged-as-external (no double-count), and no external-process timer silently
+ *     violates the host-setInterval guard. If the manifest and the allowlist drift apart, this fails.
+ */
+describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', () => {
+  it('the no-raw-setInterval BASELINE is empty — no operator-host timer is runtime-invisible', () => {
+    // The shrink-to-empty grandfather set (P-008 complete). A NEW bare setInterval is a hard guard
+    // failure, never a BASELINE addition — that is the whole "every host timer is in schedule:inventory"
+    // ratchet. If this fails, a host timer exists outside managedSetInterval ⇒ a silent inventory gap.
+    expect(BASELINE.size).toBe(0);
+  });
+
+  it('every external-process timer source is allow-listed in the host guard (audits agree, no gap)', () => {
+    const allowlisted = (source: string): boolean =>
+      ALLOWLIST.has(source) || ALLOWLIST_DIRS.some((dir: string) => source.startsWith(dir));
+    const orphans = EXTERNAL_PROCESS_TIMERS.filter((e) => !allowlisted(e.source));
+    // Each external-process timer file must be a separate-process site the host guard excludes.
+    // An orphan = a manifest entry the guard would FLAG (so it isn't truly separate-process) OR a
+    // typo'd path — either way the manifest and the guard have drifted.
+    expect(orphans.map((o) => o.source)).toEqual([]);
+  });
+
+  it('the manifest covers exactly the three separate-process owners (gateway, watchdog, psu-launcher)', () => {
+    const processes = new Set(EXTERNAL_PROCESS_TIMERS.map((e) => e.process));
+    expect(processes).toEqual(new Set(['inference-gateway', 'gateway-watchdog', 'psu-launcher']));
+    // Every entry carries a real repo source path + a cadence (no blank audit rows).
+    for (const e of EXTERNAL_PROCESS_TIMERS) {
+      expect(e.source).toMatch(/\.(ts|mjs)$/);
+      expect(e.cadence.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every source collectScheduleInventory emits is a filterable SCHEDULE_SOURCES value (tool ⇄ inventory parity)', async () => {
+    // Stub one row per source so the union exercises all of them; assert the emitted `source`
+    // set is a SUBSET of the tool's filter enum. This is what stops the exact drift WI-919 fixed —
+    // the inventory surfacing a source (e.g. external-process) the schedule:inventory tool can't filter.
+    const rows = await collectScheduleInventory({
+      getDbosSchedules: async () => [dbos()],
+      getRoutines: async () => [routine()],
+      getManaged: () => [
+        {
+          name: 'system-health',
+          category: 'global-sweep',
+          intervalMs: 30_000,
+          armedAt: 1,
+          lastFireAt: null,
+          lastError: null,
+          running: false,
+          instanced: false,
+          instances: 1,
+          fires: 0,
+          shed: false,
+        },
+      ],
+      getInProcessChecks: () => ({ checks: [{ name: 'service-health', intervalMs: 60_000 }], armed: true }),
+      // default getExternalProcess → the real EXTERNAL_PROCESS_TIMERS manifest
+    });
+    const emitted = new Set(rows.map((r) => r.source));
+    expect(emitted).toEqual(new Set(['dbos', 'routines', 'managed', 'in-process', 'external-process']));
+    for (const s of emitted) expect(SCHEDULE_SOURCES).toContain(s);
   });
 });

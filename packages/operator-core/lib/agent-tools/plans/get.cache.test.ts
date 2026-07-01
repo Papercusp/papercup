@@ -29,6 +29,7 @@ const M = vi.hoisted(() => ({
   })),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
   resolveCtxHarnessSlug: vi.fn(() => "papercup"),
+  resolveEffectiveHarnessSlug: vi.fn(() => "papercup"),
 }));
 
 vi.mock("./source", async (orig) => {
@@ -38,6 +39,7 @@ vi.mock("./source", async (orig) => {
 vi.mock("./_ctx-opts", () => ({
   ctxToPlanSourceOpts: M.ctxToPlanSourceOpts,
   resolveCtxHarnessSlug: M.resolveCtxHarnessSlug,
+  resolveEffectiveHarnessSlug: M.resolveEffectiveHarnessSlug,
 }));
 vi.mock("../../issue-blocks-merge", async (orig) => {
   const actual = await orig<typeof import("../../issue-blocks-merge")>();

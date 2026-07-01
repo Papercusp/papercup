@@ -62,6 +62,7 @@ import { renderOverwatchBrief } from "./brief-types";
 import { registerOverwatchWaker } from "./wake-bridge";
 import { agentProducedTurn } from "../fleet/invoke-outcome";
 import { resolveHiveHomeSlug } from "../hive/wake";
+import { operatorHomeHarnessSlug } from "../harness/operator-home-harness";
 
 const operatorBase = operatorApiBase;
 
@@ -120,17 +121,42 @@ function stringPayloadField(
  * sentinel (installSlug === workspaceId), but every agent-facing operation still
  * targets the concrete hive harness. New wake rows carry `hiveSlug`; old sentinel
  * rows fall back to the configured hive home so they recover after deploy.
+ *
+ * EI-5842 (overwatch dead 5 days): the fallback MUST resolve to a registered
+ * harness slug — never the workspace id or the `*` cross-workspace wildcard, which
+ * the invoke route's `resolveProject` can't find → HTTP 404 "unknown project" →
+ * the meta-monitor gates itself dark after 3 errors. Two paths produced a bad
+ * target: (1) a sentinel row (installSlug === workspaceId) fell to
+ * `resolveHiveHomeSlug(null, null)`, which returns NULL when
+ * `PAPERCUSP_HIVE_HOME_SLUG` is unset (unlike `operatorHomeHarnessSlug`, it lacks
+ * the legacy default), so the final `?? ctx.installSlug` re-produced the workspace
+ * id; (2) a `*` wildcard row skipped the sentinel branch entirely and fell to
+ * `ctx.installSlug === '*'`. Both are caught here by resolving any sentinel /
+ * wildcard install slug to the operator-home hive, which ALWAYS yields a
+ * registered slug (the env pointer canonicalized, else the legacy default).
  */
 function resolveOverwatchLaunchInstallSlug(ctx: SystemActionCtx): string {
-  return (
+  const fromPayload =
     stringPayloadField(ctx.payloadTemplate, "hiveSlug") ??
     stringPayloadField(ctx.payloadTemplate, "installSlug") ??
-    stringPayloadField(ctx.payloadTemplate, "harness") ??
-    (ctx.installSlug === ctx.workspaceId
-      ? resolveHiveHomeSlug(null, null)
-      : null) ??
-    ctx.installSlug
-  );
+    stringPayloadField(ctx.payloadTemplate, "harness");
+  if (fromPayload) return fromPayload;
+
+  // A sentinel (installSlug === workspaceId), a `*` cross-workspace wildcard, or a
+  // missing install slug carries no concrete hive: falling through to
+  // ctx.installSlug would POST the invoke route against a non-harness slug → 404.
+  // Resolve the operator-home hive instead. `resolveHiveHomeSlug(null, null)`
+  // canonicalizes the env pointer (retired-slug self-heal) but can be null;
+  // `operatorHomeHarnessSlug()` backstops that with the legacy default so the
+  // target is never null, never the workspace id, never `*`.
+  const isSentinel =
+    !ctx.installSlug ||
+    ctx.installSlug === ctx.workspaceId ||
+    ctx.installSlug === "*";
+  if (isSentinel) {
+    return resolveHiveHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+  }
+  return ctx.installSlug;
 }
 
 /**

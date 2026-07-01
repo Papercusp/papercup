@@ -32,6 +32,7 @@ import { PRESENCE_STALE_MS } from '@papercusp/pubsub-substrate/presence';
 import {
   InMemoryEntitySubscriptionStore,
   type ResolvedSubscriber,
+  type DeliveryMode,
 } from '@papercusp/coordination/capabilities';
 import { getTestPg } from '@papercusp/test-config';
 import { configureCoordLog, resetCoordLog } from '../log';
@@ -334,7 +335,7 @@ describeMaybe(pgOk)('subscribe→inject fan-out isolation (real PG sink)', () =>
     if (sql) await sql`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${WS}`;
   });
 
-  const resolve = (r: { subscriber_id: string; delivery_mode: 'full' | 'digest' | 'mention' }): ResolvedSubscriber => ({
+  const resolve = (r: { subscriber_id: string; delivery_mode: DeliveryMode }): ResolvedSubscriber => ({
     subscriber_id: r.subscriber_id,
     delivery_mode: r.delivery_mode,
     via: 'object',

@@ -51,9 +51,16 @@ public production?
 >   moderation/policy tests), so their live 2-peer DELIVERY has the SAME green-rig/red-binary risk as A-003/C-001/WI-280.
 >   Only **AK ban = witnessed live**. ⇒ a live witness of takedown-federation + cross-hive ask/grant delivery is a
 >   release-readiness gap to close before 🟢 **iff in v1 public-release scope** (cross-hive between distinct hives may be
->   post-v1 — scope UNCONFIRMED, pending a peer consult). Deferred until box headroom (runbook gate <~load 12; box is
->   storm-saturated now). The takedown/report leg rides the existing 2-instance rig; cross-hive needs a NEW 2-HIVE rig.
->   This is a coverage gap, NOT a newly-found bug.
+>   post-v1 — scope UNCONFIRMED, pending a peer consult). The takedown/report leg rides the existing 2-instance rig;
+>   cross-hive needs a NEW 2-HIVE rig. This is a coverage gap, NOT a newly-found bug.
+>   - **UPDATE (WI-283, 06-30): the moderation witness is now BUILT** — `two-instance-hive-from-repo-smoke.sh`
+>     `MODERATION_PROBE=1` rider: **LEG 1 takedown** (owner A `hive:takedown` → assert B receives the owner-signed
+>     `hive_policy.moderation.takedownList` origin=remote, policy_version bumped, ref present) + **LEG 2 report** (member
+>     B `hive:report` → assert it federates to A's `hive_reports` moderation queue origin=remote; reportable enabled via a
+>     seeded-claim → signed policy route). Both legs ride the A-003-proven hive-home-grained tables, so no C-001/WI-280
+>     dep. Static-verified (bash -n + real schema/tool refs); **the only thing still pending is the live green-rig run,
+>     which remains box-headroom-gated** (runbook <~load 12; box storm-saturated). Run:
+>     `MODERATION_PROBE=1 papercusp-desktop/bin/two-instance-hive-from-repo-smoke.sh` when the box is quiet.
 > **Net:** every blocker is found, filed, owned, and root-caused; C-001 sign-off is decoupled from the from-repo bug
 > and gated only on a quiet-box witness run. Remaining witness scope beyond C-001 = the moderation/cross-hive coverage
 > row above (iff v1-scoped). Lower section is the prior synthesis.

@@ -338,8 +338,9 @@ describe('surveyHive (P-012 regression)', () => {
     expect(ids).not.toContain('drop-plan');
   });
 
-  // ── eligiblePlans HARD-filters the FRONTIER too (queen-steering-panel P-008) ──
-  it('eligiblePlans is a STRICT scope: keeps ONLY eligible-plan frontier rows, drops ineligible AND unplanned (owner 2026-06-16)', async () => {
+  // ── eligiblePlans HARD-filters PLAN-TIED frontier rows; loose work is a SEPARATE
+  //    owner toggle (queen-steering-panel P-008; decoupled 2026-06-30) ──
+  it('eligiblePlans scopes plan-tied frontier rows; loose (unplanned) work is KEPT by default', async () => {
     const survey = await surveyHive('default', 'papercup-hive', {
       scopeFilter: { eligiblePlans: ['keep-plan'] },
       deps: depsFor({
@@ -354,8 +355,25 @@ describe('surveyHive (P-012 regression)', () => {
     });
     const ids = survey.frontier.map((c) => c.id);
     expect(ids).toContain('WI-KEEP'); // minted from the eligible plan
-    expect(ids).not.toContain('WI-UNPLANNED'); // unplanned work belongs to no eligible plan → dropped under a restriction
+    expect(ids).toContain('WI-UNPLANNED'); // loose work kept by default (includeUnplannedWork undefined ⇒ true)
     expect(ids).not.toContain('WI-DROP'); // minted from a non-eligible plan → dropped at the source
+  });
+
+  it('includeUnplannedWork:false drops loose frontier rows while keeping eligible-plan rows', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { eligiblePlans: ['keep-plan'], includeUnplannedWork: false },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [
+          frontierRow({ feature_id: 'WI-KEEP', harness_slug: 'papercup', plan_slug: 'keep-plan' }),
+          frontierRow({ feature_id: 'WI-UNPLANNED', harness_slug: 'papercup', plan_slug: null }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).toContain('WI-KEEP');
+    expect(ids).not.toContain('WI-UNPLANNED'); // loose work turned off
   });
 
   it('no eligiblePlans restriction keeps every frontier row regardless of source plan (P-008 no-op)', async () => {
@@ -495,10 +513,14 @@ describe('frontierInEligiblePlans (queen-steering-panel P-008 — the frontier p
     expect(frontierInEligiblePlans('drop', { eligiblePlans: ['keep'] })).toBe(false);
   });
 
-  it('DROPS an UNPLANNED row (null/undefined source plan) under a restriction — strict scope (owner 2026-06-16)', () => {
-    expect(frontierInEligiblePlans(null, { eligiblePlans: ['keep'] })).toBe(false);
-    expect(frontierInEligiblePlans(undefined, { eligiblePlans: ['keep'] })).toBe(false);
-    // ...but with NO restriction, unplanned work still passes:
+  it('loose (unplanned) rows are gated by includeUnplannedWork, independent of eligiblePlans (decoupled 2026-06-30)', () => {
+    // Default (undefined) ⇒ loose work IS placed, even under an eligiblePlans restriction.
+    expect(frontierInEligiblePlans(null, { eligiblePlans: ['keep'] })).toBe(true);
+    expect(frontierInEligiblePlans(undefined, { eligiblePlans: ['keep'] })).toBe(true);
+    // Explicitly off ⇒ loose work dropped, regardless of the plan restriction.
+    expect(frontierInEligiblePlans(null, { includeUnplannedWork: false })).toBe(false);
+    expect(frontierInEligiblePlans(null, { eligiblePlans: ['keep'], includeUnplannedWork: false })).toBe(false);
+    // With NO restriction, loose work still passes by default.
     expect(frontierInEligiblePlans(null, { eligiblePlans: [] })).toBe(true);
     expect(frontierInEligiblePlans(undefined, {})).toBe(true);
   });

@@ -818,7 +818,9 @@ pre, .pc-code {
 
 .pc-header {
   position: sticky;
-  top: 0;
+  /* Stick BELOW the dev env-switcher bar (see --pc-env-bar-h note at the
+     body:not(.papercusp-chromeless) rule); 0px fallback = flush-to-top. */
+  top: var(--pc-env-bar-h, 0px);
   z-index: 1300;
   /* Prioritize functional chrome over the decorative quote: the
      nav owns its max-content width, while the left quote lane absorbs
@@ -14071,7 +14073,12 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
 /* Global chrome: keep the primary navbar sticky on every chrome-enabled page. */
 body:not(.papercusp-chromeless) .pc-header {
   position: sticky;
-  top: 0;
+  /* Offset below the dev env-switcher bar. The operator-vite EnvSwitcherBar
+     publishes its measured height as --pc-env-bar-h on <html> while shown;
+     without this, the sticky header slides UNDER the fixed bar on scroll. The
+     var is unset everywhere else (plain browser, Next SSR), so the 0px fallback
+     keeps the header flush to the viewport top. */
+  top: var(--pc-env-bar-h, 0px);
   z-index: 1300;
   align-self: start;
 }
@@ -26868,4 +26875,16 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
 }
 .report-block-item-text {
   color: var(--fg);
+}
+
+/* --- Dev env-switcher bar: shift viewport-anchored side rails below the bar ---
+   The left sidebar (.pclsb) and dev-admin rail (.pcdar) are
+   position:fixed; top:0; bottom:0 with INLINE styles, so a normal rule can't
+   reach their `top`. !important overrides the inline top:0 so their tops sit
+   below the fixed EnvSwitcherBar instead of behind it. --pc-env-bar-h is set
+   only by the operator-vite EnvSwitcherBar (dev desktop); the 0px fallback is a
+   no-op everywhere else. bottom:0 is untouched, so the rails just get shorter. */
+.pclsb,
+.pcdar {
+  top: var(--pc-env-bar-h, 0px) !important;
 }

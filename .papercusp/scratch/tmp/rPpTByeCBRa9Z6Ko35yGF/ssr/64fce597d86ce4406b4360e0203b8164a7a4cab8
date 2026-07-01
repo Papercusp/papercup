@@ -1,0 +1,33 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/home/marsh-office/papercupai-workspace/papercusp/node_modules/vitest/dist/index.js", {"importedNames":["describe","it","expect"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/lib/harness/git-sync/run-git-sync.ts", {"importedNames":["rejectedNonFastForward"]});
+
+
+const out = (stderr, stdout = "") => ({ stdout, stderr });
+(0,__vite_ssr_import_0__.describe)("rejectedNonFastForward — real git non-FF push rejections", () => {
+  const shouldMatch = [
+    ["classic non-fast-forward", " ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs to 'origin'"],
+    ["fetch first variant", " ! [rejected]          main -> main (fetch first)"],
+    ["Updates were rejected hint", "hint: Updates were rejected because the remote contains work that you do\nhint: not have locally."],
+    ["bare [rejected] token", "To github.com:org/repo.git\n ! [rejected]        HEAD -> main"]
+  ];
+  for (const [name, stderr] of shouldMatch) {
+    (0,__vite_ssr_import_0__.it)(`matches: ${name}`, () => (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.rejectedNonFastForward)(out(stderr))).toBe(true));
+  };
+  const shouldNotMatch = [
+    ["auth failure", "fatal: Authentication failed for 'https://github.com/org/repo.git/'"],
+    ["no remote", "fatal: could not read from remote repository"],
+    ["bad refspec", "error: src refspec main does not match any"],
+    ["up to date", "Everything up-to-date"],
+    ["empty", ""]
+  ];
+  for (const [name, stderr] of shouldNotMatch) {
+    (0,__vite_ssr_import_0__.it)(`does NOT match (must escalate, not retry): ${name}`, () => (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.rejectedNonFastForward)(out(stderr))).toBe(false));
+  };
+  (0,__vite_ssr_import_0__.it)("inspects stdout as well as stderr", () => {
+    (0,__vite_ssr_import_0__.expect)((0,__vite_ssr_import_1__.rejectedNonFastForward)(out("", " ! [rejected] (non-fast-forward)"))).toBe(true);
+  });
+});
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTs7O0FBUUEsTUFBTSxNQUFNLENBQUMsUUFBZ0IsU0FBUyxRQUFRLEVBQUUsUUFBUSxPQUFPO0dBRS9ELGdDQUFTLDREQUE0RCxNQUFNO0FBQ3pFLFFBQU0sY0FBdUM7QUFBQSxJQUMzQyxDQUFDLDRCQUE0QixtR0FBcUc7QUFBQSxJQUNsSSxDQUFDLHVCQUF1QixtREFBbUQ7QUFBQSxJQUMzRSxDQUFDLDhCQUE4QixtR0FBbUc7QUFBQSxJQUNsSSxDQUFDLHlCQUF5QiwrREFBK0Q7QUFBQSxFQUMzRjtBQUNBLGFBQVcsQ0FBQyxNQUFNLE1BQU0sS0FBSyxhQUFhO0FBQ3hDLGlDQUFHLFlBQVksSUFBSSxJQUFJLFNBQU0saUNBQU8sOENBQXVCLElBQUksTUFBTSxDQUFDLENBQUMsRUFBRSxLQUFLLElBQUksQ0FBQztBQUFBLEVBQ3JGO0FBRUEsUUFBTSxpQkFBMEM7QUFBQSxJQUM5QyxDQUFDLGdCQUFnQixxRUFBdUU7QUFBQSxJQUN4RixDQUFDLGFBQWEsOENBQThDO0FBQUEsSUFDNUQsQ0FBQyxlQUFlLDRDQUE0QztBQUFBLElBQzVELENBQUMsY0FBYyx1QkFBdUI7QUFBQSxJQUN0QyxDQUFDLFNBQVMsRUFBRTtBQUFBLEVBQ2Q7QUFDQSxhQUFXLENBQUMsTUFBTSxNQUFNLEtBQUssZ0JBQWdCO0FBQzNDLGlDQUFHLDhDQUE4QyxJQUFJLElBQUksU0FDdkQsaUNBQU8sOENBQXVCLElBQUksTUFBTSxDQUFDLENBQUMsRUFBRSxLQUFLLEtBQUssQ0FBQztBQUFBLEVBQzNEO0FBRUEsK0JBQUcscUNBQXFDLE1BQU07QUFDNUMsd0NBQU8sOENBQXVCLElBQUksSUFBSSxrQ0FBa0MsQ0FBQyxDQUFDLEVBQUUsS0FBSyxJQUFJO0FBQUEsRUFDdkYsQ0FBQztBQUNILENBQUMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbInJ1bi1naXQtc3luYy1ub24tZmYudGVzdC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBkZXNjcmliZSwgaXQsIGV4cGVjdCB9IGZyb20gJ3ZpdGVzdCc7XG5pbXBvcnQgeyByZWplY3RlZE5vbkZhc3RGb3J3YXJkIH0gZnJvbSAnLi9ydW4tZ2l0LXN5bmMnO1xuXG4vLyBHMjEgKHRlc3QtY292ZXJhZ2UtZ2FwKTogdGhlIG5vbi1GRiByZWplY3Rpb24gZGV0ZWN0b3IgaXMgcHJvdmVuIG9ubHlcbi8vIGVtcGlyaWNhbGx5IHZpYSBpbnRlZ3JhdGlvbiByYWNlcy4gVGhpcyB0YWJsZSB0ZXN0IHBpbnMgaXQgYWdhaW5zdCByZWFsIGdpdFxuLy8gb3V0cHV0IHN0cmluZ3Mgc28gYSBmdXR1cmUgZ2l0IHdvcmRpbmcgY2hhbmdlIEZBSUxTIGEgdGVzdCBpbnN0ZWFkIG9mIHNpbGVudGx5XG4vLyB0dXJuaW5nIGEgcmV0cmlhYmxlIG5vbi1mYXN0LWZvcndhcmQgcmVqZWN0aW9uIGludG8gYSBoYXJkIGVzY2FsYXRpb25cbi8vIChydW4tZ2l0LXN5bmMudHM6MzY2IHJldHJpZXMgaWZmIHRoaXMgcmV0dXJucyB0cnVlKS5cblxuY29uc3Qgb3V0ID0gKHN0ZGVycjogc3RyaW5nLCBzdGRvdXQgPSAnJykgPT4gKHsgc3Rkb3V0LCBzdGRlcnIgfSk7XG5cbmRlc2NyaWJlKCdyZWplY3RlZE5vbkZhc3RGb3J3YXJkIOKAlCByZWFsIGdpdCBub24tRkYgcHVzaCByZWplY3Rpb25zJywgKCkgPT4ge1xuICBjb25zdCBzaG91bGRNYXRjaDogQXJyYXk8W3N0cmluZywgc3RyaW5nXT4gPSBbXG4gICAgWydjbGFzc2ljIG5vbi1mYXN0LWZvcndhcmQnLCAnICEgW3JlamVjdGVkXSAgICAgICAgbWFpbiAtPiBtYWluIChub24tZmFzdC1mb3J3YXJkKVxcbmVycm9yOiBmYWlsZWQgdG8gcHVzaCBzb21lIHJlZnMgdG8gXFwnb3JpZ2luXFwnJ10sXG4gICAgWydmZXRjaCBmaXJzdCB2YXJpYW50JywgJyAhIFtyZWplY3RlZF0gICAgICAgICAgbWFpbiAtPiBtYWluIChmZXRjaCBmaXJzdCknXSxcbiAgICBbJ1VwZGF0ZXMgd2VyZSByZWplY3RlZCBoaW50JywgJ2hpbnQ6IFVwZGF0ZXMgd2VyZSByZWplY3RlZCBiZWNhdXNlIHRoZSByZW1vdGUgY29udGFpbnMgd29yayB0aGF0IHlvdSBkb1xcbmhpbnQ6IG5vdCBoYXZlIGxvY2FsbHkuJ10sXG4gICAgWydiYXJlIFtyZWplY3RlZF0gdG9rZW4nLCAnVG8gZ2l0aHViLmNvbTpvcmcvcmVwby5naXRcXG4gISBbcmVqZWN0ZWRdICAgICAgICBIRUFEIC0+IG1haW4nXSxcbiAgXTtcbiAgZm9yIChjb25zdCBbbmFtZSwgc3RkZXJyXSBvZiBzaG91bGRNYXRjaCkge1xuICAgIGl0KGBtYXRjaGVzOiAke25hbWV9YCwgKCkgPT4gZXhwZWN0KHJlamVjdGVkTm9uRmFzdEZvcndhcmQob3V0KHN0ZGVycikpKS50b0JlKHRydWUpKTtcbiAgfVxuXG4gIGNvbnN0IHNob3VsZE5vdE1hdGNoOiBBcnJheTxbc3RyaW5nLCBzdHJpbmddPiA9IFtcbiAgICBbJ2F1dGggZmFpbHVyZScsICdmYXRhbDogQXV0aGVudGljYXRpb24gZmFpbGVkIGZvciBcXCdodHRwczovL2dpdGh1Yi5jb20vb3JnL3JlcG8uZ2l0L1xcJyddLFxuICAgIFsnbm8gcmVtb3RlJywgJ2ZhdGFsOiBjb3VsZCBub3QgcmVhZCBmcm9tIHJlbW90ZSByZXBvc2l0b3J5J10sXG4gICAgWydiYWQgcmVmc3BlYycsICdlcnJvcjogc3JjIHJlZnNwZWMgbWFpbiBkb2VzIG5vdCBtYXRjaCBhbnknXSxcbiAgICBbJ3VwIHRvIGRhdGUnLCAnRXZlcnl0aGluZyB1cC10by1kYXRlJ10sXG4gICAgWydlbXB0eScsICcnXSxcbiAgXTtcbiAgZm9yIChjb25zdCBbbmFtZSwgc3RkZXJyXSBvZiBzaG91bGROb3RNYXRjaCkge1xuICAgIGl0KGBkb2VzIE5PVCBtYXRjaCAobXVzdCBlc2NhbGF0ZSwgbm90IHJldHJ5KTogJHtuYW1lfWAsICgpID0+XG4gICAgICBleHBlY3QocmVqZWN0ZWROb25GYXN0Rm9yd2FyZChvdXQoc3RkZXJyKSkpLnRvQmUoZmFsc2UpKTtcbiAgfVxuXG4gIGl0KCdpbnNwZWN0cyBzdGRvdXQgYXMgd2VsbCBhcyBzdGRlcnInLCAoKSA9PiB7XG4gICAgZXhwZWN0KHJlamVjdGVkTm9uRmFzdEZvcndhcmQob3V0KCcnLCAnICEgW3JlamVjdGVkXSAobm9uLWZhc3QtZm9yd2FyZCknKSkpLnRvQmUodHJ1ZSk7XG4gIH0pO1xufSk7XG4iXSwiZmlsZSI6Ii9saWIvaGFybmVzcy9naXQtc3luYy9ydW4tZ2l0LXN5bmMtbm9uLWZmLnRlc3QudHMifQ==
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZX0sIi9ob21lL21hcnNoLW9mZmljZS9wYXBlcmN1cGFpLXdvcmtzcGFjZS9wYXBlcmN1c3AvcGFja2FnZXMvb3BlcmF0b3ItY29yZS9saWIvaGFybmVzcy9naXQtc3luYy9ydW4tZ2l0LXN5bmMtbm9uLWZmLnRlc3QudHMiLCIvbGliL2hhcm5lc3MvZ2l0LXN5bmMvcnVuLWdpdC1zeW5jLW5vbi1mZi50ZXN0LnRzIixbXV0=

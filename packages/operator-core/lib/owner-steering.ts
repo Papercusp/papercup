@@ -53,6 +53,10 @@ export const OWNER_STEERING_KEYS = {
   directive: 'owner-steering:directive',
   eligiblePlans: 'owner-steering:eligible-plans',
   eligibleHives: 'owner-steering:eligible-hives',
+  // queen-steering decouple 2026-06-30: whether plan-LESS ("loose") frontier work
+  // is placed — the "Non-plan work items" toggle. Absent ⇒ TRUE (loose work is
+  // placed, today's default); `false` ⇒ the Queen works ONLY plan-tied items.
+  includeUnplannedWork: 'owner-steering:include-unplanned-work',
   pauseNewWork: 'owner-steering:pause-new-work',
   pausedUntil: 'owner-steering:paused-until',
   // queen-steering-panel D-006 (model-tier session override): a SESSION-NOW
@@ -106,6 +110,11 @@ export interface OwnerSteering {
   /** The placement SCOPE — hives/harnesses the home Queen may place into (→
    *  scopeFilter.allowedHarnesses, C-2). Empty ⇒ no restriction. (B-04 round-2.) */
   eligibleHives: string[];
+  /** Whether plan-LESS ("loose") frontier work-items are placed — the owner's
+   *  "Non-plan work items" toggle (queen-steering decouple 2026-06-30). Default
+   *  TRUE (loose work placed); false ⇒ the Queen works ONLY plan-tied items.
+   *  Independent of eligiblePlans (which scopes plan-tied work). */
+  includeUnplannedWork: boolean;
   /** Pause starting NEW work (the Queen drives existing placements to terminal then idles). */
   pauseNewWork: boolean;
   /** Epoch ms the pause auto-expires at, or null. A future value pauses like `pauseNewWork`. */
@@ -144,6 +153,7 @@ export const DEFAULT_OWNER_STEERING: OwnerSteering = {
   directive: null,
   eligiblePlans: [],
   eligibleHives: [],
+  includeUnplannedWork: true,
   pauseNewWork: false,
   pausedUntil: null,
   modelTiers: null,
@@ -251,6 +261,8 @@ export async function getOwnerSteering(
     directive: typeof directiveVal === 'string' && directiveVal.trim() ? directiveVal : null,
     eligiblePlans: asStringArray(byKey.get(OWNER_STEERING_KEYS.eligiblePlans)),
     eligibleHives: asStringArray(byKey.get(OWNER_STEERING_KEYS.eligibleHives)),
+    // Default TRUE — only an explicit stored `false` turns loose work off.
+    includeUnplannedWork: byKey.get(OWNER_STEERING_KEYS.includeUnplannedWork) !== false,
     pauseNewWork: byKey.get(OWNER_STEERING_KEYS.pauseNewWork) === true,
     pausedUntil: asFiniteNumber(byKey.get(OWNER_STEERING_KEYS.pausedUntil)),
     modelTiers: asModelTiers(byKey.get(OWNER_STEERING_KEYS.modelTiers)),
@@ -269,6 +281,8 @@ export interface OwnerSteeringPatch {
   directive?: string | null;
   eligiblePlans?: string[];
   eligibleHives?: string[];
+  /** Whether loose (plan-less) work is placed (default true); false ⇒ only plan-tied. */
+  includeUnplannedWork?: boolean;
   pauseNewWork?: boolean;
   pausedUntil?: number | null;
   /** Session model-tier menu override (D-006); null / [] clears it. */
@@ -320,6 +334,9 @@ export async function setOwnerSteering(
   }
   if (patch.eligibleHives !== undefined) {
     writes.push([OWNER_STEERING_KEYS.eligibleHives, asStringArray(patch.eligibleHives)]);
+  }
+  if (patch.includeUnplannedWork !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.includeUnplannedWork, patch.includeUnplannedWork === true]);
   }
   if (patch.modelTiers !== undefined) {
     writes.push([OWNER_STEERING_KEYS.modelTiers, asModelTiers(patch.modelTiers)]);

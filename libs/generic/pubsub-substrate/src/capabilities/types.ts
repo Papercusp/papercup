@@ -30,13 +30,20 @@ export type { ObjectRef, TaggableStore } from '@papercusp/linkable-edges';
 /** Delivery tiering for a subscription (D-006 — mandatory noise control).
  *   full    — every change, rendered in full
  *   digest  — coalesced count + one-line summary
- *   mention — only when @-addressed or on resolution */
-export type DeliveryMode = 'full' | 'digest' | 'mention';
+ *   mention — only when @-addressed or on resolution
+ *   muted   — suppress live delivery entirely (the audience-history is still
+ *             retained + pullable, e.g. coord:catch-up). Used by the per-member
+ *             fleet delivery override (fleet-delivery-override-mute-digest-2026-06-30
+ *             D-001): a 'fleet' subscription row downgrades a derived fleet member. */
+export type DeliveryMode = 'full' | 'digest' | 'mention' | 'muted';
 
-export const DELIVERY_MODES: readonly DeliveryMode[] = ['full', 'digest', 'mention'];
+export const DELIVERY_MODES: readonly DeliveryMode[] = ['full', 'digest', 'mention', 'muted'];
 
-/** What a subscription follows. */
-export type SubscriptionTargetKind = 'topic' | 'object';
+/** What a subscription follows. `fleet` is the per-member delivery OVERRIDE on a
+ *  named fleet (target_ref = fleet slug) — NOT a positive subscription (fleet
+ *  membership is derived from coord_presence); the row only ever DOWNGRADES a
+ *  member's delivery (digest/muted). No row = the derived default (full). */
+export type SubscriptionTargetKind = 'topic' | 'object' | 'fleet';
 
 /** Encode an object as a subscription target_ref (`<kind>:<ref>`). Topic targets
  *  use the bare topic slug, so this is only for target_kind='object'. */
@@ -210,7 +217,9 @@ export interface ResolvedSubscriber {
   via: string;
 }
 
-const MODE_RANK: Record<DeliveryMode, number> = { full: 3, digest: 2, mention: 1 };
+// muted = least verbose (0): when a subscriber reaches a target via more than one
+// path, any live mode outranks a muted one (mute never wins a merge).
+const MODE_RANK: Record<DeliveryMode, number> = { full: 3, digest: 2, mention: 1, muted: 0 };
 
 /** Merge a candidate subscriber into the resolved map, keeping the most-verbose
  *  mode and preferring a direct ('object') match for the `via` attribution. */

@@ -162,3 +162,80 @@ describe('HiveEpochCrypto v1 — wrap/unwrap + the CUT-OFF', () => {
     await expect(c.unwrapEpochKey(blob, 'device-NEVER-REGISTERED')).rejects.toThrow();
   });
 });
+
+describe('HiveEpochCrypto v1 — P-007 threat-model battery (remaining-member convergence + all-post-removal-content cut-off)', () => {
+  it('MULTIPLE remaining members CONVERGE on the same post-boundary content; the removed peer is cut off', async () => {
+    const c = createHiveEpochCrypto();
+    const remaining1 = await makeDevice('device-remaining-1');
+    const remaining2 = await makeDevice('device-remaining-2');
+    const removed = await makeDevice('device-removed');
+
+    // Boundary: epoch advances to 2. The owner mints the fresh epoch-2 key and wraps it to
+    // the REMAINING members only — the removed peer is never wrapped to.
+    const epoch2 = await c.deriveEpochKey('hive-1', 2);
+    const ad = AD({ epoch: 2, opId: 'plans:p2:owner' });
+    const ciphertext = await c.encryptOp(Buffer.from('post-boundary shared content'), epoch2, ad);
+    const wrap1 = await c.wrapKeyToMember(epoch2, remaining1.pubkeyBase64);
+    const wrap2 = await c.wrapKeyToMember(epoch2, remaining2.pubkeyBase64);
+
+    // Each remaining member independently unwraps ITS OWN sealed blob and decrypts the SAME
+    // federated op. The wrapped blobs differ (sealed to different devices)…
+    expect(Buffer.from(wrap1).equals(Buffer.from(wrap2))).toBe(false);
+    const k1 = await c.unwrapEpochKey(wrap1, remaining1.keychainId);
+    const k2 = await c.unwrapEpochKey(wrap2, remaining2.keychainId);
+    // …but both recover the IDENTICAL epoch key, so the post-boundary view CONVERGES.
+    expect(Buffer.from(k1).equals(Buffer.from(k2))).toBe(true);
+    const pt1 = await c.decryptOp(ciphertext, k1, ad);
+    const pt2 = await c.decryptOp(ciphertext, k2, ad);
+    expect(Buffer.from(pt1).toString()).toBe('post-boundary shared content');
+    expect(
+      Buffer.from(pt1).equals(Buffer.from(pt2)),
+      'remaining members read identical plaintext — the surviving membership converges',
+    ).toBe(true);
+
+    // The removed peer holds neither member's device secret → it can open NEITHER blob.
+    await expect(c.unwrapEpochKey(wrap1, removed.keychainId)).rejects.toThrow();
+    await expect(c.unwrapEpochKey(wrap2, removed.keychainId)).rejects.toThrow();
+  });
+
+  it('a removed peer HOLDING ITS OLD KEY gets undecryptable ciphertext for ALL post-removal content', async () => {
+    const c = createHiveEpochCrypto();
+    const remaining = await makeDevice('device-remaining');
+    const removed = await makeDevice('device-removed');
+
+    // Pre-boundary epoch 1: the soon-to-be-removed peer is a legitimate member and is wrapped
+    // the epoch-1 key — this is the "removed peer holding old key" of the threat model. It
+    // unwraps + retains that stale key (the only key it will EVER hold).
+    const epoch1 = await c.deriveEpochKey('hive-1', 1);
+    const removedOldKey = await c.unwrapEpochKey(
+      await c.wrapKeyToMember(epoch1, removed.pubkeyBase64),
+      removed.keychainId,
+    );
+    expect(Buffer.from(removedOldKey).equals(Buffer.from(epoch1))).toBe(true);
+
+    // Boundary → epoch 2: the fresh key is wrapped to the REMAINING member only; the removed
+    // peer is never wrapped to, so it can never advance past its stale epoch-1 key.
+    const epoch2 = await c.deriveEpochKey('hive-1', 2);
+    const wrap2ForRemaining = await c.wrapKeyToMember(epoch2, remaining.pubkeyBase64);
+    const remainingKey = await c.unwrapEpochKey(wrap2ForRemaining, remaining.keychainId);
+
+    // ALL post-removal content: a batch of distinct epoch-2 ops the owner writes after the
+    // boundary. The removed peer replicates every ciphertext (it holds the topic) but decrypts
+    // NONE with its old epoch-1 key; the remaining member decrypts every one (non-vacuous).
+    const postRemovalOps = ['F-10:owner', 'plans:p3:owner', 'issues:i7:owner', 'features:F-2:bob'];
+    for (const opId of postRemovalOps) {
+      const ad = AD({ epoch: 2, opId });
+      const ct = await c.encryptOp(Buffer.from(`secret for ${opId}`), epoch2, ad);
+      // Remaining member: reads it (proves the content is genuinely readable, not garbage).
+      expect(Buffer.from(await c.decryptOp(ct, remainingKey, ad)).toString()).toBe(`secret for ${opId}`);
+      // Removed peer holding ONLY the stale epoch-1 key: cannot decrypt ANY post-removal op.
+      await expect(
+        c.decryptOp(ct, removedOldKey, ad),
+        `removed peer must not read post-removal op ${opId} with its stale epoch-1 key`,
+      ).rejects.toThrow();
+    }
+
+    // …and it never obtains the epoch-2 key, because it was never wrapped to.
+    await expect(c.unwrapEpochKey(wrap2ForRemaining, removed.keychainId)).rejects.toThrow();
+  });
+});

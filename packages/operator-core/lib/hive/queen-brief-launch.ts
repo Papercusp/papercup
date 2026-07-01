@@ -171,6 +171,7 @@ async function gatherOwnerSteering(
       !!s.directive ||
       s.eligiblePlans.length > 0 ||
       s.eligibleHives.length > 0 ||
+      s.includeUnplannedWork === false || // loose-work turned off is an active scope
       pausedNow ||
       hasActiveThrottle(s); // P-006/P-009: a throttle-only steering still surfaces in the brief
     if (!active) return undefined;
@@ -199,12 +200,15 @@ export async function computeQueenWakeBrief(
       (ownerSteering.pauseNewWork ||
         ownerSteering.pausedUntil != null ||
         ownerSteering.eligiblePlans.length > 0 ||
-        ownerSteering.eligibleHives.length > 0)
+        ownerSteering.eligibleHives.length > 0 ||
+        ownerSteering.includeUnplannedWork === false)
         ? {
             ...(ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
             // Eligible Hives → the survey's allowedHarnesses scope (C-2, su-266): the
             // Queen may place only into these hives/harnesses (B-04 round-2).
             ...(ownerSteering.eligibleHives.length > 0 ? { allowedHarnesses: ownerSteering.eligibleHives } : {}),
+            // "Non-plan work items" toggle OFF → drop loose frontier work (decouple 2026-06-30).
+            ...(ownerSteering.includeUnplannedWork === false ? { includeUnplannedWork: false } : {}),
             ...(ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),
             ...(ownerSteering.pausedUntil != null ? { pausedUntil: ownerSteering.pausedUntil } : {}),
           }

@@ -20,7 +20,8 @@ import {
 } from '@papercusp/coordination/core';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
 import { hasAudienceSelector, expandAudience } from './audience';
-import { hostAudienceResolvers, audienceMode } from './audience-host';
+import { hostAudienceResolvers, audienceMode, deriveAudienceKey } from './audience-host';
+import { deliverFleetDigests } from './fleet-delivery';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
 import { parkSlotMessage, drainUserMailbox } from './slot-parked-store';
 import type { AgentIdentity } from './identity';
@@ -70,6 +71,11 @@ export async function sendMessage(
   // B2 / park-for-slot: @role:/@wave:/@feature: entries address a SLOT that may
   // have no agent yet — split them off so they PARK (below) instead of resolving
   // to live ownerIds; only the non-slot addressees are delivered now.
+  // Capture the durable audience KEY from the ORIGINAL `to`, BEFORE expansion
+  // discards the selectors. This makes every broadcast queryable as audience-keyed
+  // history (coord:feed { audience }) — the generalization of plan_slug, live +
+  // retained by default. (fleet-broadcast-audience-history-integration-2026-06-30 D-003)
+  const audienceKey = deriveAudienceKey(opts.to);
   const slots = slotSelectorsIn(opts.to);
   const liveAddrs = slots.length
     ? opts.to.filter((t) => parseSlotSelector(t) === null)
@@ -88,6 +94,7 @@ export async function sendMessage(
     to,
     kind: opts.kind ?? 'message',
   };
+  if (audienceKey.length) env.audience = audienceKey;
   if (opts.summary !== undefined) env.summary = opts.summary;
   if (opts.body !== undefined) env.body = opts.body;
   if (opts.category !== undefined) env.category = opts.category;
@@ -126,6 +133,13 @@ export async function sendMessage(
   // delivered by the park alone.
   if (liveAddrs.length > 0 || slots.length === 0) {
     await coordLog.appendLine('messages', identity.ownerId, env);
+  }
+  // Fleet DIGEST sidecar (fleet-delivery-override-mute-digest D-001): a `@fleet:`
+  // broadcast's digest members were dropped from the live `to` (listFleetMembers), so
+  // deliver each a terse `digest:true` notify (the inbox hook coalesces it). Best-effort,
+  // side-effect only, guarded on a `@fleet:` selector — a normal send pays nothing.
+  if (opts.to.some((t) => t.startsWith('@fleet:'))) {
+    await deliverFleetDigests(opts.to, env, to).catch(() => {});
   }
   return env;
 }

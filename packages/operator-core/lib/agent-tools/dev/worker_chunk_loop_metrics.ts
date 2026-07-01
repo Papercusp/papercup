@@ -3,15 +3,25 @@
  * `worker:chunk-loop` rollout (worker-chunk-loop-operator-hosted-2026-06-14 P-020).
  *
  * Reads the per-run outcome records (harness_shared.worker_chunk_loop_outcomes, migration
- * 394) and returns feature COMPLETION RATE + outcome DISTRIBUTION
- * (completed/escalated/planning_failed/aborted) split by execution PATH — the subprocess
- * path vs the operator-hosted op — plus the op−subprocess completion-rate delta. This is
- * what the Phase-1 dark-launch parity diff reads and what the Phase-2 ramp gates on
- * (advance only when op metrics are at-or-better than the subprocess baseline).
+ * 397 + 428) and returns ALL SIX P-020 metrics split by execution PATH — the subprocess
+ * path vs the operator-hosted op — plus the op−subprocess completion-rate delta:
+ *   1. feature COMPLETION RATE
+ *   2. outcome DISTRIBUTION (completed/escalated/planning_failed/aborted)
+ *   3. file-lock CONTENTION (lockContentionCount/Rate — aborted runs that hit
+ *      CHUNK_LOCK_TIMEOUT_MS waiting on a chunk's file claim)
+ *   4. REPLAN frequency across ALL runs, not just escalated ones (avgTotalReplans,
+ *      replanRate — the share of runs needing >=1 replan)
+ *   5. crash-RESUME success (resumedCount, resumedCompletionRate — completion rate
+ *      among runs that resumed a persisted plan after a crash/restart)
+ *   6. per-chunk DURABILITY (perChunkDurability — committed/planned chunk ratio across
+ *      every run that reported a plan size, even ones that didn't fully complete)
+ * This is what the Phase-1 dark-launch parity diff reads and what the Phase-2 ramp gates
+ * on (advance only when op metrics are at-or-better than the subprocess baseline).
  *
  * Best-effort / degrade-clean: pre-migration (table absent, 42P01) returns the zeroed
  * empty metrics, not an error — so the tool is safe to call before the dark-launch has
- * produced any rows.
+ * produced any rows. Rows written before migration 428 simply read null/0 for the three
+ * newer metrics rather than skewing the ratios.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -27,7 +37,7 @@ import {
 export default defineTool({
   name: 'dev:worker_chunk_loop_metrics',
   description:
-    'Monitoring metrics for the operator-hosted worker:chunk-loop rollout (P-020): feature completion RATE + outcome DISTRIBUTION (completed/escalated/planning_failed/aborted), avg chunks-committed, avg replan-strikes — split by execution PATH (subprocess vs the operator-hosted op) — plus the op−subprocess completion-rate delta. Reads harness_shared.worker_chunk_loop_outcomes for the active workspace over a lookback window. EMPTY (zeroed) until the dark-launch (per-harness workerChunkLoop knob) has run real features through the op path. Use to diff op vs subprocess parity before/while ramping.',
+    'Monitoring metrics for the operator-hosted worker:chunk-loop rollout (P-020), all six gate metrics: feature completion RATE, outcome DISTRIBUTION (completed/escalated/planning_failed/aborted), file-lock CONTENTION rate, replan FREQUENCY across all runs, crash-RESUME success rate, and per-chunk DURABILITY — split by execution PATH (subprocess vs the operator-hosted op) — plus the op−subprocess completion-rate delta. Reads harness_shared.worker_chunk_loop_outcomes for the active workspace over a lookback window. EMPTY (zeroed) until the dark-launch (per-harness workerChunkLoop knob) has run real features through the op path. Use to diff op vs subprocess parity before/while ramping.',
   guidance: {
     when: 'Watch worker:chunk-loop dark-launch / ramp health — is the operator-hosted op at parity with the subprocess path on completion-rate + outcome distribution? Read before approving a ramp step.',
     notWhen: 'Live rate-limit pacing — dev:rate_governor_status. Per-feature chunk progress — the harness UI / harness_chunk_plans. Whether the op path is ROUTED on a harness — check the per-harness workerChunkLoop config knob.',

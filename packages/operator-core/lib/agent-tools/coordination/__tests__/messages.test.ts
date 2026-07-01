@@ -25,14 +25,20 @@ import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 // subscribers and no active presence → resolves to [] (the zero-recipient case
 // P2-15 exercises). audienceMode stays 'scoped' so selectors are honoured, not
 // collapsed to broadcast.
-vi.mock('../audience-host', () => ({
-  hostAudienceResolvers: {
-    listTargetSubscribers: async () => [],
-    listActivePresence: async () => [],
-    listTaggedTopics: async () => [],
-  },
-  audienceMode: () => 'scoped' as const,
-}));
+vi.mock('../audience-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../audience-host')>();
+  return {
+    ...actual, // keep the real, pure deriveAudienceKey / canonicalizeAudienceSelector
+    hostAudienceResolvers: {
+      listTargetSubscribers: async () => [],
+      listActivePresence: async () => [],
+      listTaggedTopics: async () => [],
+      listFleetMembers: async () => [],
+      listFleetLeader: async () => [],
+    },
+    audienceMode: () => 'scoped' as const,
+  };
+});
 
 import { configureCoordLog, resetCoordLog, coordLog } from '../log';
 import { appendAck, readInbox, readOutbox, readThread, sendMessage } from '../messages';
