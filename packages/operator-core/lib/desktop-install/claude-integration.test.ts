@@ -39,7 +39,10 @@ describe('buildClaudeMcpEntry', () => {
     expect(e.type).toBe('http');
     expect(e.url).toBe(
       '${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}/api/mcp?superuser=1' +
-        '&client=${PAPERCUSP_SID:-agent-1}&workspace=${PAPERCUSP_WORKSPACE:-}&profile=${PAPERCUSP_PROFILE:-}',
+        '&client=${PAPERCUSP_SID:-agent-1}&workspace=${PAPERCUSP_WORKSPACE:-}&profile=${PAPERCUSP_PROFILE:-}' +
+        // su-context-size-variants: the ?tools= trim lever — empty default (full catalog) until
+        // psu exports PAPERCUSP_TOOLS = CORE spine for a --context-size=trimmed claude.
+        '&tools=${PAPERCUSP_TOOLS:-}',
     );
     expect(e.headers.Authorization).toBe('Bearer TOK');
   });

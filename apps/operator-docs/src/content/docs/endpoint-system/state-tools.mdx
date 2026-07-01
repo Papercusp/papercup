@@ -57,7 +57,7 @@ The on-the-wire event name differs by transport adapter. The chat-surface route 
 
 ## Declaring a state-shaped tool
 
-Add `state: ZodType<S>` to `defineTool`. The schema is the source of truth for the snapshot shape:
+Add `state: StandardSchemaV1` to `defineTool` — any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …), not just Zod, since the core stopped being Zod-locked (P-020). The schema is the source of truth for the snapshot shape:
 
 ```ts
 defineTool({
@@ -79,7 +79,7 @@ Tools that declare `state` automatically:
 ctx.publishState(snapshot)
 ```
 
-- **Validated** against `tool.state` at publish time. Bad shapes throw synchronously.
+- **Validated** against `tool.state` at publish time via the schema's `~standard.validate` (Standard Schema, P-020) — synchronously, since `publishState` is fire-and-forget and can't await an async validator. Bad shapes throw synchronously.
 - **Replaces** the run's current snapshot (v1 is snapshot-only).
 - **Reactive** — every call bumps the run's `version` and re-emits to subscribed clients.
 

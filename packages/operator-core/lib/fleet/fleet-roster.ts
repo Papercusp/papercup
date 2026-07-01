@@ -23,6 +23,12 @@ import {
   fetchPresenceTier1,
   type PresenceTier1Joins,
 } from '../agent-tools/coordination/presence-tier1';
+import {
+  fetchWakeability,
+  deriveSessionState,
+  type SessionState,
+  type WakeabilitySignals,
+} from '../agent-tools/coordination/presence-wakeability';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
 import { listFleets, type AgentFleetRecord } from '../agent-fleets-store';
 import { getOrgPg } from '@papercusp/db-org';
@@ -62,6 +68,11 @@ export interface FleetRosterEntry extends AgentAssignment {
   fleetRole: string | null;
   userId: string | null;
   federated: boolean;
+  /** EI-5858: the coordinator-facing session state (live | parked | ended | recorded),
+   *  derived from wakeability the SAME way coord:presence does — so fleet:status no
+   *  longer masks an `ended` (dead) session behind a still-warm heartbeat. null for a
+   *  federated peer / when the wakeability read is unavailable (state unknown). */
+  sessionState: SessionState | null;
   // ── Tier-1 (P-003) — populated for local agents; null/empty for federated peers
   lastActiveSecAgo: number | null;
   claimedItems: string[];
@@ -130,6 +141,7 @@ export function foldFleetRoster(
   assignments: AgentAssignment[],
   tier1: Map<string, PresenceTier1Joins>,
   nowMs: number,
+  wakeability: Map<string, WakeabilitySignals> = new Map(),
 ): FleetRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -139,8 +151,22 @@ export function foldFleetRoster(
     const p = presById.get(id) ?? null;
     const base = asgById.get(id) ?? (p ? assignmentFromPresence(p) : null);
     if (!base) continue;
+    // EI-5858: derive the coordinator-facing sessionState from wakeability the SAME
+    // way coord:presence does, and GATE `alive` on it. `fleet:status.alive` used to
+    // be pure heartbeat-freshness, so a cleanly-`ended` session read `alive:true` for
+    // the ~10-min stale window (a leader treated 6 dead agents as working). A row with
+    // no wakeability entry (a federated peer, or the read unavailable) keeps its
+    // heartbeat-derived `alive` and a null sessionState (state unknown).
+    const w = wakeability.get(id);
+    const stale = p ? p.stale : !base.alive;
+    const sessionState: SessionState | null = w
+      ? deriveSessionState({ stale, wakeable: w.wakeable, liveTurn: w.liveTurn })
+      : null;
+    const alive = sessionState === 'ended' ? false : base.alive;
     out.push({
       ...base,
+      alive,
+      sessionState,
       ownerLabel: p?.ownerLabel ?? base.label,
       source: p?.source ?? null,
       host: p?.host ?? null,
@@ -216,12 +242,16 @@ export async function listFleetRoster(opts: ListFleetRosterOpts): Promise<FleetR
   const presence = filterPresenceToFleet(presenceAll, fleetSlug, includeUnattributed);
   const inFleet = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
-  const [tier1, rows] = await Promise.all([
+  const [tier1, rows, wakeability] = await Promise.all([
     fetchPresenceTier1(localIds),
     listFleetAssignments({ workspaceId }),
+    // EI-5858: wakeability drives the `ended` gate on `alive` + surfaces sessionState.
+    // Best-effort — a query failure degrades to heartbeat-only `alive` (today's
+    // behavior), never breaks the roster read.
+    fetchWakeability(localIds).catch(() => new Map<string, WakeabilitySignals>()),
   ]);
   const assignments = groupByAgent(rows).filter((a) => inFleet.has(a.agentId));
-  return foldFleetRoster(presence, assignments, tier1, Date.now());
+  return foldFleetRoster(presence, assignments, tier1, Date.now(), wakeability);
 }
 
 /** A persisted fleet annotated with its live-member count (the "available" signal). */
