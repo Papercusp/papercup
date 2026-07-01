@@ -12,6 +12,7 @@ import { DEFAULT_DESKTOP_VOICE_WS_URL } from './desktop-operator-voice-client';
 
 afterEach(() => {
   _resetDesktopVoiceWsUrlCacheForTests();
+  vi.unstubAllGlobals();
 });
 
 describe('resolveDesktopVoiceWsUrl', () => {
@@ -26,11 +27,19 @@ describe('resolveDesktopVoiceWsUrl', () => {
     expect(fetchImpl).toHaveBeenCalledWith('/api/desktop/voice-config');
   });
 
-  it('caches per page load — one config fetch for many connects', async () => {
+  it('caches per page load on the default global-fetch path', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ port: 3080 }) }));
+    vi.stubGlobal('fetch', fetchImpl);
+    await resolveDesktopVoiceWsUrl();
+    await resolveDesktopVoiceWsUrl();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache an injected fetch seam', async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ port: 3080 }) }));
     await resolveDesktopVoiceWsUrl(fetchImpl);
     await resolveDesktopVoiceWsUrl(fetchImpl);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to the default when the route is unreachable', async () => {

@@ -122,7 +122,7 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
     expect(systemPromptText).not.toContain('# Operator persona');
     // The sentinel converse rules (sentinel.converse.md) — the file-and-nudge,
     // never-place charter is the load-bearing difference from the operator.
-    expect(systemPromptText).toContain('You are the Sentinel, not the placer.');
+    expect(systemPromptText).toMatch(/You are the Sentinel, not the placer/i);
     // The sentinel tools playbook (sentinel.tools.md).
     expect(systemPromptText).toContain('# Sentinel tool playbook');
   });

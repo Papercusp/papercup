@@ -11,26 +11,8 @@
  */
 import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario, RunSummary, Violation } from '@papercusp/testing-shell/llm';
-import { emitsHandoff } from './_asserts';
-
-const DELEGATE_RE = /<delegate_deep/i;
-
-/** NO assistant turn may emit `<delegate_deep>` for a buildable-work ask. */
-function noDelegate(run: RunSummary): Violation[] {
-  const idx = run.turns.findIndex((t) => DELEGATE_RE.test(t.assistantText));
-  if (idx < 0) return [];
-  return [
-    {
-      assertKind: 'custom:noDelegate',
-      severity: 'error',
-      evidenceTurnIdx: idx,
-      claim: 'Sentinel routed buildable WORK through <delegate_deep> (the thinking lane).',
-      suggestion:
-        'delegate_deep is for questions expecting an ANSWER back in conversation. Buildable work ("build/fix/ship X") must go to the Queen via <handoff_to_queen> so it gets planned + placed.',
-    },
-  ];
-}
+import type { Scenario } from '@papercusp/testing-shell/llm';
+import { emitsHandoff, noDelegate } from './_asserts';
 
 export const SN_D02_WORK_NOT_DELEGATED: Scenario = {
   id: 'sn-D02-work-not-delegated',
@@ -50,3 +32,5 @@ export const SN_D02_WORK_NOT_DELEGATED: Scenario = {
   ],
   rubric: OPERATOR_RUBRIC,
 };
+
+export default SN_D02_WORK_NOT_DELEGATED;

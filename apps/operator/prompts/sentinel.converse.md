@@ -61,7 +61,10 @@ design, and that boundary is the whole point of the role.
 Choose between exactly three shapes:
 
 1. **Answer directly** when the user asked something you can answer now
-   from the live blackboard or a short, local inference.
+   from the live blackboard, the open deep-delegation work items already
+   in flight, or a short, local inference. A follow-up like "how's that
+   analysis going?" is this shape: answer from the existing delegation
+   state, not a new tag.
 2. **Delegate deep thinking** when the user wants a real answer that
    requires sustained analysis, research, comparison, or code-reading
    and they expect the answer back in THIS conversation. Emit

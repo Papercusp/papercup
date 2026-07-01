@@ -29,6 +29,11 @@ import {
   type SessionStateMsg,
   type VoiceControlOp,
 } from '@papercusp/operator-core/lib/voice-node/operator-voice-bus';
+import {
+  DEFAULT_DESKTOP_VOICE_WS_URL,
+  resolveDesktopVoiceWsUrl,
+  type FetchLike,
+} from './resolve-desktop-voice-ws-url';
 
 /**
  * The operator's desktop voice bridge (desktop-voice-ws) listens on
@@ -37,7 +42,7 @@ import {
  * surface; until that lands the common default is correct (the walk only
  * triggers when 3076 is taken). Mirrors `desktop-video-protocol`'s default.
  */
-export const DEFAULT_DESKTOP_VOICE_WS_URL = 'ws://127.0.0.1:3076/api/desktop/voice';
+export { DEFAULT_DESKTOP_VOICE_WS_URL } from './resolve-desktop-voice-ws-url';
 
 /** Minimal WebSocket surface (satisfied by the browser WebSocket). */
 export interface WsLike {
@@ -86,8 +91,10 @@ export interface ConnectDesktopOperatorVoiceOpts extends DesktopOperatorVoiceCal
   /** This client's id — its voice-lease owner id (e.g. the desktop tab id). */
   clientId: string;
   label?: string;
-  /** WS URL; defaults to the operator desktop voice bridge on :3076. */
+  /** WS URL; otherwise resolve the live bridge from /api/desktop/voice-config. */
   url?: string;
+  /** Test seam for runtime-config discovery. */
+  fetchImpl?: FetchLike;
   /** Test/override seam. */
   wsFactory?: (url: string) => WsLike;
 }
@@ -101,8 +108,14 @@ function toU8(data: unknown): Uint8Array | null {
 
 export function connectDesktopOperatorVoice(
   opts: ConnectDesktopOperatorVoiceOpts,
-): DesktopOperatorVoiceSession {
-  const url = opts.url ?? DEFAULT_DESKTOP_VOICE_WS_URL;
+): Promise<DesktopOperatorVoiceSession> {
+  return connectDesktopOperatorVoiceResolved(opts);
+}
+
+async function connectDesktopOperatorVoiceResolved(
+  opts: ConnectDesktopOperatorVoiceOpts,
+): Promise<DesktopOperatorVoiceSession> {
+  const url = opts.url ?? (await resolveDesktopVoiceWsUrl(opts.fetchImpl));
   const wsFactory = opts.wsFactory ?? ((u: string) => new WebSocket(u) as unknown as WsLike);
 
   const ws = wsFactory(url);

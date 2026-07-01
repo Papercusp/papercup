@@ -51,6 +51,7 @@ import { SN_H07_MULTI_ITEM_HANDOFF } from './sentinel/SN-H07-multi-item-handoff'
 // three-way routing split (answer now / delegate_deep thinking / handoff work).
 import { SN_D01_DELEGATE_HARD_THINKING } from './sentinel/SN-D01-delegate-hard-thinking';
 import { SN_D02_WORK_NOT_DELEGATED } from './sentinel/SN-D02-work-not-delegated';
+import { SN_D03_EXISTING_DELEGATION_STATUS } from './sentinel/SN-D03-existing-delegation-status';
 // M1–M12: operator-behavior-tests-2026-05-14 (brain-emission contracts)
 import { M1_CONTINUE_PAIRED_WITH_SAY } from './operator/M1-continue-paired-with-say';
 import { M2_MUTEX_CARD_VS_CONTINUE } from './operator/M2-mutex-card-vs-continue';
@@ -191,6 +192,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   // deep-delegation routing split (SN-D01–D02)
   SN_D01_DELEGATE_HARD_THINKING,
   SN_D02_WORK_NOT_DELEGATED,
+  SN_D03_EXISTING_DELEGATION_STATUS,
   // Phase 1 (sentinel-voice-flow-testing): operator chat-hygiene contracts
   // mirrored onto the SENTINEL brain (same role-keyed converse) so the voice
   // front-door upholds the same voice/question/format discipline. Single source

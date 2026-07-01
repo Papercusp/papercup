@@ -10,6 +10,7 @@
 import type { RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
 const HANDOFF_RE = /<handoff_to_queen/i;
+const DELEGATE_RE = /<delegate_deep/i;
 
 /** SOME assistant turn must emit `<handoff_to_queen>` (work routed to the Queen). */
 export function emitsHandoff(run: RunSummary): Violation[] {
@@ -38,6 +39,22 @@ export function noHandoff(run: RunSummary): Violation[] {
       claim: 'Sentinel handed a quick, directly-answerable request off to the Queen.',
       suggestion:
         'Reserve <handoff_to_queen> for substantial multi-step work; answer status / quick-recall directly — a handoff spams the Queen.',
+    },
+  ];
+}
+
+/** NO assistant turn may emit `<delegate_deep>` (the ask should stay local / answered directly). */
+export function noDelegate(run: RunSummary): Violation[] {
+  const idx = run.turns.findIndex((t) => DELEGATE_RE.test(t.assistantText));
+  if (idx < 0) return [];
+  return [
+    {
+      assertKind: 'custom:noDelegate',
+      severity: 'error',
+      evidenceTurnIdx: idx,
+      claim: 'Sentinel routed the ask through <delegate_deep> instead of answering from existing delegation state.',
+      suggestion:
+        'Use <delegate_deep> only for NEW hard-thinking work. A follow-up on an existing analysis should be answered from the open delegation work-item state.',
     },
   ];
 }

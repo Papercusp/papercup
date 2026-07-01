@@ -9,7 +9,7 @@
  * surfaces whatever scope label it is given.
  */
 import { describe, it, expect } from 'vitest';
-import { sentinelScopeLabel, renderSentinelContext } from './sentinel-context';
+import { sentinelScopeLabel, renderSentinelContext, gatherSentinelContext } from './sentinel-context';
 
 describe('sentinelScopeLabel', () => {
   it('OFF → the primary hive slug (byte-identical to today)', () => {
@@ -52,5 +52,42 @@ describe('renderSentinelContext heading scoping', () => {
     const block = renderSentinelContext({ hiveSlug: 'papercusp' });
     expect(block).toContain('## Live system status — papercusp');
     expect(block).toContain('_no anomalies — system healthy._');
+  });
+
+  it('renders open deep delegations as a dedicated follow-up-status section', () => {
+    const block = renderSentinelContext({
+      hiveSlug: 'papercusp',
+      delegations: [
+        {
+          id: 'WI-301',
+          harness: 'papercusp',
+          title: 'Deep dive: compare the migration strategies',
+          state: 'todo',
+          claimed: true,
+          lastActivityAt: '2026-07-01T22:00:00.000Z',
+        },
+      ],
+    });
+    expect(block).toContain('### Open deep delegations');
+    expect(block).toContain('WI-301 [papercusp] todo, claimed');
+    expect(block).toContain('compare the migration strategies');
+  });
+});
+
+describe('gatherSentinelContext', () => {
+  it('carries open delegations through the gathered input', async () => {
+    const ctx = await gatherSentinelContext({
+      signals: async () => [],
+      anomalies: async () => [],
+      patterns: async () => ({ patterns: [], headline: 'all quiet' }),
+      bees: async () => [],
+      delegations: async () => [
+        { id: 'WI-301', title: 'Deep dive: root-cause the flake', state: 'todo', claimed: true, lastActivityAt: '2026-07-01T22:00:00.000Z' },
+      ],
+    });
+    expect(ctx.headline).toBe('all quiet');
+    expect(ctx.delegations).toEqual([
+      { id: 'WI-301', title: 'Deep dive: root-cause the flake', state: 'todo', claimed: true, lastActivityAt: '2026-07-01T22:00:00.000Z' },
+    ]);
   });
 });

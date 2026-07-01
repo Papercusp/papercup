@@ -75,6 +75,17 @@ export interface SentinelBee {
   alive: boolean;
 }
 
+/** One open deep-thinking delegation the Sentinel can answer follow-ups from
+ *  without re-delegating or waking the Queen again. */
+export interface SentinelDelegation {
+  id: string;
+  title: string;
+  harness?: string | null;
+  state: string;
+  claimed: boolean;
+  lastActivityAt?: string | null;
+}
+
 /** The system-status snapshot the Sentinel walks in with. Every field optional /
  *  empty-tolerant — a degraded gather still renders a coherent (smaller) block. */
 export interface SentinelContextInput {
@@ -88,6 +99,8 @@ export interface SentinelContextInput {
   patterns?: readonly SentinelPattern[];
   /** Live agent load + liveness (fleet:assignments) — the progress floor. */
   bees?: readonly SentinelBee[];
+  /** Open deep-thinking delegations already in flight for the conversation lane. */
+  delegations?: readonly SentinelDelegation[];
   /** The state-of-hive one-line headline (the digest's own rollup). */
   headline?: string | null;
   /** Override the default per-section caps. */
@@ -100,6 +113,7 @@ export interface SentinelContextCaps {
   anomalies: number;
   patterns: number;
   bees: number;
+  delegations: number;
 }
 
 export const DEFAULT_SENTINEL_CONTEXT_CAPS: SentinelContextCaps = {
@@ -107,6 +121,7 @@ export const DEFAULT_SENTINEL_CONTEXT_CAPS: SentinelContextCaps = {
   anomalies: 10,
   patterns: 8,
   bees: 16,
+  delegations: 6,
 };
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -146,6 +161,13 @@ function renderAnomalyLine(a: Anomaly): string {
   const verb = ACTION_VERB[act.type];
   const target = act.target ? ` ${act.target}` : '';
   return `- [${a.severity}] ${a.kind} — ${a.subject}: ${a.detail} → ${verb}${target}`;
+}
+
+function renderDelegationLine(d: SentinelDelegation): string {
+  const where = d.harness ? ` [${d.harness}]` : '';
+  const claim = d.claimed ? 'claimed' : 'unclaimed';
+  const activity = d.lastActivityAt ? `, last activity ${d.lastActivityAt}` : '';
+  return `- ${d.id}${where} ${d.state}, ${claim}${activity} — ${d.title}`;
 }
 
 /**
@@ -202,6 +224,17 @@ export function renderSentinelContext(input: SentinelContextInput): string {
     (input.signals ?? []).map(renderSignalLine),
     caps.signals,
     'curation:feed to drill down',
+  );
+
+  // OPEN DELEGATIONS — hard-thinking work already in flight. Follow-up questions
+  // ("how's that analysis going?") should be answered from THESE items rather than
+  // re-delegated or handed to the Queen again.
+  section(
+    out,
+    'Open deep delegations — answer follow-up status questions from these items first',
+    (input.delegations ?? []).map(renderDelegationLine),
+    caps.delegations,
+    'work_items:get to drill down',
   );
 
   // STANDING PATTERNS — what keeps biting (the corpus digest meta-patterns).
@@ -265,6 +298,8 @@ export interface SentinelContextDeps {
   patterns(): Promise<{ patterns: readonly SentinelPattern[]; headline?: string | null }>;
   /** The live fleet (fleet:assignments). */
   bees(): Promise<readonly SentinelBee[]>;
+  /** Open deep-thinking delegations already in flight. */
+  delegations(): Promise<readonly SentinelDelegation[]>;
 }
 
 /** Run a digest leg, swallowing any error to a fallback — one flaky source can't
@@ -287,7 +322,7 @@ export async function gatherSentinelContext(
   deps: SentinelContextDeps,
   opts: { hiveSlug?: string; caps?: Partial<SentinelContextCaps> } = {},
 ): Promise<SentinelContextInput> {
-  const [signals, anomalies, patternBundle, bees] = await Promise.all([
+  const [signals, anomalies, patternBundle, bees, delegations] = await Promise.all([
     safe(() => deps.signals(), [] as readonly SentinelSignal[], 'signals'),
     safe(() => deps.anomalies(), [] as readonly Anomaly[], 'anomalies'),
     safe(
@@ -296,6 +331,7 @@ export async function gatherSentinelContext(
       'patterns',
     ),
     safe(() => deps.bees(), [] as readonly SentinelBee[], 'bees'),
+    safe(() => deps.delegations(), [] as readonly SentinelDelegation[], 'delegations'),
   ]);
   return {
     hiveSlug: opts.hiveSlug,
@@ -304,6 +340,7 @@ export async function gatherSentinelContext(
     patterns: patternBundle.patterns,
     headline: patternBundle.headline ?? null,
     bees,
+    delegations,
     caps: opts.caps,
   };
 }
@@ -364,6 +401,37 @@ export function buildSentinelContextDeps(workspaceId: string, hiveSlug: string):
         doing: a.doing ? a.doing.title || a.doing.id || null : null,
         load: a.load,
         alive: a.alive,
+      }));
+    },
+    async delegations() {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { sql } = getOrgPg();
+      const rows = await sql<Array<{
+        feature_id: string;
+        harness_slug: string | null;
+        title: string | null;
+        status: string | null;
+        taken_by: string | null;
+        last_progress_at: unknown;
+        updated_ts: unknown;
+      }>>`
+        SELECT feature_id, harness_slug, title, status, taken_by, last_progress_at, updated_ts
+          FROM harness_shared.harness_features_consolidated
+         WHERE workspace_id = ${workspaceId}
+           AND item_kind = 'research-task'
+           AND status <> ALL(ARRAY['passed', 'deprecated']::text[])
+           AND payload->>'deep_delegation' = 'true'
+         ORDER BY COALESCE(last_progress_at, updated_ts) DESC NULLS LAST, feature_id ASC
+         LIMIT ${DEFAULT_SENTINEL_CONTEXT_CAPS.delegations}`;
+      const tsIso = (v: unknown): string | null =>
+        v == null ? null : v instanceof Date ? v.toISOString() : String(v);
+      return rows.map((r) => ({
+        id: r.feature_id,
+        harness: r.harness_slug,
+        title: r.title ?? '(untitled deep delegation)',
+        state: r.status ?? 'todo',
+        claimed: !!r.taken_by,
+        lastActivityAt: tsIso(r.last_progress_at) ?? tsIso(r.updated_ts),
       }));
     },
   };

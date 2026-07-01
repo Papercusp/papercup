@@ -9,16 +9,16 @@
  * helper resolves it once per page load and falls back to the common default
  * when the route is unreachable (the walk only triggers when 3076 is taken).
  */
-import { DEFAULT_DESKTOP_VOICE_WS_URL } from './desktop-operator-voice-client';
+
+export const DEFAULT_DESKTOP_VOICE_WS_PATH = '/api/desktop/voice';
+export const DEFAULT_DESKTOP_VOICE_WS_URL = 'ws://127.0.0.1:3076/api/desktop/voice';
 
 interface DesktopVoiceConfig {
   port?: unknown;
   path?: unknown;
 }
 
-type FetchLike = (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
-
-const DEFAULT_PATH = '/api/desktop/voice';
+export type FetchLike = (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
 
 let cached: Promise<string> | null = null;
 
@@ -33,7 +33,8 @@ async function resolveOnce(fetchImpl: FetchLike): Promise<string> {
     if (res.ok) {
       const cfg = (await res.json().catch(() => null)) as DesktopVoiceConfig | null;
       if (cfg && typeof cfg.port === 'number' && Number.isFinite(cfg.port)) {
-        const path = typeof cfg.path === 'string' && cfg.path ? cfg.path : DEFAULT_PATH;
+        const path =
+          typeof cfg.path === 'string' && cfg.path ? cfg.path : DEFAULT_DESKTOP_VOICE_WS_PATH;
         return `ws://127.0.0.1:${cfg.port}${path}`;
       }
     }
@@ -45,8 +46,9 @@ async function resolveOnce(fetchImpl: FetchLike): Promise<string> {
 
 /** Resolve the operator-voice WS URL (cached per page load). */
 export function resolveDesktopVoiceWsUrl(
-  fetchImpl: FetchLike = (u) => fetch(u) as unknown as ReturnType<FetchLike>,
+  fetchImpl?: FetchLike,
 ): Promise<string> {
-  if (!cached) cached = resolveOnce(fetchImpl);
+  if (fetchImpl) return resolveOnce(fetchImpl);
+  if (!cached) cached = resolveOnce((u) => fetch(u) as unknown as ReturnType<FetchLike>);
   return cached;
 }

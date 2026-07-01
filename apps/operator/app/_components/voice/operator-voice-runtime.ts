@@ -14,7 +14,6 @@
  * the P-011 verification pass (it can't be exercised without a real mic +
  * speaker). Kept thin + declarative so that pass is the only thing it gates.
  */
-import { resolveDesktopVoiceWsUrl } from './resolve-desktop-voice-ws-url';
 import {
   connectDesktopOperatorVoice,
   type DesktopOperatorVoiceSession,
@@ -118,14 +117,12 @@ export async function startDesktopOperatorVoice(
   }
 
   // ── the session bus client ─────────────────────────────────────────────────
-  // Port discovery (P-009): the bridge may have walked off :3076 (EADDRINUSE),
-  // so resolve the live port via /api/desktop/voice-config unless the caller
-  // pinned a URL. Cached per page load; falls back to the common default.
-  const wsUrl = opts.url ?? (await resolveDesktopVoiceWsUrl());
-  const session: DesktopOperatorVoiceSession = connectDesktopOperatorVoice({
+  // The client owns port discovery now, so every caller gets walked-port
+  // resolution unless it pins an explicit URL.
+  const session: DesktopOperatorVoiceSession = await connectDesktopOperatorVoice({
     clientId: opts.clientId,
     label: opts.label,
-    url: wsUrl,
+    url: opts.url,
     onInputTranscript: opts.onInputTranscript,
     onResponseTranscript: opts.onResponseTranscript,
     onResponseTag: opts.onResponseTag,
