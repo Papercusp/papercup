@@ -1779,11 +1779,19 @@ describe('assertFleetJoined (WI-1408 fleet-join-startup-assertion)', () => {
 
   it('fleet requested (join) but response fleetSlug is null ⇒ throws — never a silent unfleeted launch', () => {
     expect(() => assertFleetJoined('shared-hive-testing', { fleetSlug: null })).toThrow(/shared-hive-testing/);
-    expect(() => assertFleetJoined('shared-hive-testing', {})).toThrow(/did not register a fleetSlug/);
   });
 
   it('fleet requested via a fresh --fleet-name create but response fleetSlug is null ⇒ throws', () => {
     expect(() => assertFleetJoined('My New Fleet', { fleetSlug: null })).toThrow(/My New Fleet/);
+  });
+
+  // Staging-launcher / release-server skew: a pre-WI-1408 operator registers the
+  // membership (env + pending-fleet row) but does not echo `fleetSlug` at all.
+  // Killing the member then is wrong (the 2026-07-01 10-member wipeout) — the
+  // hard-fail is reserved for a server that SPEAKS the field and says null.
+  it('fleet requested but the response predates the fleetSlug field entirely ⇒ warns, does not throw', () => {
+    expect(() => assertFleetJoined('shared-hive-testing', {})).not.toThrow();
+    expect(() => assertFleetJoined('shared-hive-testing', { status: 'ok', fleetNotice: 'joined fleet shared-hive-testing as member.' })).not.toThrow();
   });
 });
 

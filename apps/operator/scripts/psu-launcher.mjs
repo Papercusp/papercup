@@ -2152,11 +2152,26 @@ export function effectiveAutoMode(args) {
  * fleet join that failed server-side, so this never fires in the happy path —
  * it's the last line of defense against a FUTURE regression that silently
  * returns `status: 'ok'` with `fleetSlug: null`: exactly the "colour-only,
- * membership forgotten" bug this whole feature exists to prevent. Pure —
- * exported for tests.
+ * membership forgotten" bug this whole feature exists to prevent.
+ *
+ * Skew tolerance: this launcher always runs from the STAGING tree while the
+ * operator it bootstraps against runs the GREEN release pin — which can lag by
+ * hours (or, wedged, weeks). A pre-WI-1408 server registers the membership
+ * correctly (env PAPERCUSP_FLEET_SLUG + the pending-fleet row) but simply does
+ * not echo `fleetSlug` in the response. So the hard-fail keys on the field
+ * being PRESENT-BUT-NULL (a new server that genuinely failed the join); a
+ * response with the field ABSENT means an old server — warn loudly and
+ * continue rather than killing a correctly-fleeted member (the 2026-07-01
+ * 10-member wipeout). Pure — exported for tests.
  */
 export function assertFleetJoined(requestedFleet, res) {
   if (!requestedFleet) return;
+  if (res && !('fleetSlug' in res)) {
+    console.error(
+      `psu: ⚠ --fleet was requested (${requestedFleet}) but the operator's bootstrap response predates the fleetSlug field (an older release build) — cannot verify the join client-side. The join was still applied server-side; confirm with fleet:status once up.`,
+    );
+    return;
+  }
   if (!res?.fleetSlug) {
     throw new Error(
       `psu: --fleet was requested (${requestedFleet}) but the launch did not register a fleetSlug — refusing to start an unfleeted member. This should never happen (bootstrap-su/-role hard-fail server-side); if you see this, it's a regression.`,

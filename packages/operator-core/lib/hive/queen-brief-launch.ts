@@ -192,7 +192,7 @@ async function gatherOwnerSteering(
  * hive born with no started row reads stopped — consistent with "a hive is
  * born paused" + the orchestrator placement gate.
  */
-async function computeHivePlacementSplit(
+export async function computeHivePlacementSplit(
   workspaceId: string,
 ): Promise<{ started: string[]; stopped: string[] }> {
   const [{ listHives }, { getHivePlacementStarted }] = await Promise.all([
