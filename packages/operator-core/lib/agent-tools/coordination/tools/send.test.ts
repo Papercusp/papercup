@@ -22,6 +22,8 @@ vi.mock('../inbox-wake', () => ({
 vi.mock('../recipient-resolve', () => ({
   isSelectorOrWildcard: vi.fn((id: string) => id === '*' || id === 'human'),
   resolveRecipients: vi.fn(),
+  // P-007: remote session ids empty by default (single-box behavior unchanged)
+  remoteSessionOwnerIds: vi.fn(async () => new Set<string>()),
 }));
 vi.mock('../../turn/interrupt', () => ({ forceEndTurn: vi.fn(async () => ({ ok: true })) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
@@ -32,7 +34,7 @@ vi.mock('../federation-scope', () => ({
 }));
 
 import { sendMessage, getMessageById } from '../messages';
-import { resolveRecipients } from '../recipient-resolve';
+import { resolveRecipients, remoteSessionOwnerIds } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
@@ -40,6 +42,7 @@ import { getFlag } from '@papercusp/flags/server';
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
 const resolveM = vi.mocked(resolveRecipients);
+const remoteIdsM = vi.mocked(remoteSessionOwnerIds);
 const wakeM = vi.mocked(wakeRecipients);
 const idleM = vi.mocked(reportIdleRecipients);
 const livenessM = vi.mocked(describeMissedRecipients);
@@ -65,6 +68,8 @@ beforeEach(() => {
   getByIdM.mockResolvedValue(null as never);
   // P-001: no shared Hive in the workspace by default (un-scoped sends stay local)
   fedScopeM.mockResolvedValue({ kind: 'none' } as never);
+  // P-007: no remote sessions by default
+  remoteIdsM.mockResolvedValue(new Set<string>() as never);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
@@ -309,5 +314,29 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
     const second = sendM.mock.calls[1][1] as { harnessSlug?: string };
     expect(first.harnessSlug).toBe('my-hive');
     expect(second.harnessSlug).toBeUndefined();
+  });
+});
+
+describe('coord:send remote-homed wake misses (P-007)', () => {
+  it('a required-wake miss on a REMOTE-homed recipient reports recipient_remote (not dead) with the federation note', async () => {
+    fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    remoteIdsM.mockResolvedValue(new Set(['su-remote-1']) as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
+    idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never); // no local watcher — but it is REMOTE
+    const b = await body({ to: ['su-remote-1'], summary: 'cross-machine ping', wake: 'required' });
+    expect(b.results[0].wake.recipient_remote).toEqual(['su-remote-1']);
+    expect(b.results[0].wake.recipient_dead).toBeUndefined();
+    expect(b.results[0].wake.note).toMatch(/REMOTE machine|federates|EI-279/i);
+    expect(b.results[0].federated).toBe(true);
+  });
+
+  it('a remote-homed recipient on a NON-federated send gets the loud scope hint (it will never arrive)', async () => {
+    // no shared hive → the send stays local, but the recipient is remote-only
+    remoteIdsM.mockResolvedValue(new Set(['su-remote-1']) as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
+    idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never);
+    const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
+    expect(b.results[0].federated).toBe(false);
+    expect(b.results[0].wake.note).toMatch(/did NOT federate|scope:'hive'/i);
   });
 });

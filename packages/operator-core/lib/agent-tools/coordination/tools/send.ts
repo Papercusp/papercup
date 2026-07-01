@@ -286,6 +286,10 @@ async function sendOne(
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
          *  dispatch black-holes until they are re-spawned. A LOUD miss the sender must handle. */
         recipient_dead?: string[];
+        /** P-007 (cross-machine-coord-parity): missed targets homed on a REMOTE
+         *  machine of this hive — not dead, elsewhere. Delivery + wake continue
+         *  via federation when the send is hive-scoped (federated:true). */
+        recipient_remote?: string[];
         /** FF#3: each missed addressee's FRESH session state (ended/parked/…) at the
          *  transfer moment — the un-ignorable "this agent ended" fact in the result. */
         recipient_liveness?: MissedRecipientLiveness[];
