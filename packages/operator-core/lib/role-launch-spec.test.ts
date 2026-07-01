@@ -336,27 +336,34 @@ describe('buildLaunchSpec — kind dispatch', () => {
   });
 });
 
-// su-context-size-variants (WI-1282): codex has NO native tool discovery, so a
-// 'trimmed' codex SU session is hard-trimmed SERVER-SIDE by baking the core-spine
-// allowlist into the superuser MCP URL as `?tools=`. claude/omp soft-trim natively,
-// so the lever is gated to codex; 'full'/omitted advertise the whole catalog.
-describe("buildSuLaunchSpec — codex 'trimmed' ?tools= allowlist lever", () => {
+// su-context-size-variants + weak-model-tool-tier: codex + omp load the whole
+// tools/list up-front (omp's native `discoveryMode` is a proven no-op), so they are
+// hard-trimmed SERVER-SIDE — the core-spine `?tools=` allowlist is baked into the
+// superuser MCP URL — when the session SHOULD be trimmed. "Should be trimmed" = a
+// WEAK model tier (weak-model-tool-tier D-001) OR an explicit contextSize:'trimmed'.
+// claude self-trims via native ToolSearch, so it is NEVER hard-trimmed here. The tier
+// comes from the MODEL, not the client (D-004: OMP runs weak AND strong models).
+describe('buildSuLaunchSpec — model-tier / contextSize ?tools= allowlist lever', () => {
   async function suMcpUrl(
     agent: 'claude' | 'omp' | 'codex',
-    contextSize?: 'full' | 'trimmed' | null,
+    opts: { contextSize?: 'full' | 'trimmed' | null; model?: string | null } = {},
   ): Promise<URL> {
     const spec = await buildLaunchSpec({
       kind: 'su',
       agent,
       workspaceId: 'default',
       operatorBaseUrl: 'http://localhost:3070',
-      contextSize,
+      contextSize: opts.contextSize,
+      model: opts.model,
     });
     return new URL(spec.mcpUrl);
   }
 
+  const WEAK = 'ollama/maxwell1500/ornith-35b:IQ3_M';
+  const FRONTIER = 'anthropic/claude-opus-4-8';
+
   it('codex + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES (URL-decoded)', async () => {
-    const u = await suMcpUrl('codex', 'trimmed');
+    const u = await suMcpUrl('codex', { contextSize: 'trimmed' });
     // URLSearchParams.get decodes the %3A/%2C-encoded colon/comma tool names.
     expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
     // …and that round-trips back to the exact list the server allowlist decodes.
@@ -367,22 +374,36 @@ describe("buildSuLaunchSpec — codex 'trimmed' ?tools= allowlist lever", () => 
   });
 
   it('codex + full ⇒ NO tools= param (whole catalog advertised)', async () => {
-    const u = await suMcpUrl('codex', 'full');
-    expect(u.searchParams.has('tools')).toBe(false);
+    expect((await suMcpUrl('codex', { contextSize: 'full' })).searchParams.has('tools')).toBe(false);
   });
 
-  it('codex + omitted/null ⇒ NO tools= param (native default)', async () => {
+  it('codex + omitted, no model ⇒ NO tools= param (frontier default)', async () => {
     expect((await suMcpUrl('codex')).searchParams.has('tools')).toBe(false);
-    expect((await suMcpUrl('codex', null)).searchParams.has('tools')).toBe(false);
+    expect((await suMcpUrl('codex', { contextSize: null })).searchParams.has('tools')).toBe(false);
   });
 
-  it('claude + trimmed ⇒ NO tools= param (claude soft-trims natively)', async () => {
-    const u = await suMcpUrl('claude', 'trimmed');
-    expect(u.searchParams.has('tools')).toBe(false);
+  // weak-model-tool-tier: when contextSize is omitted, the tier is derived from the MODEL.
+  it('omp + WEAK model ⇒ tools= present (THE OMP FIX — its native discovery is a no-op)', async () => {
+    const u = await suMcpUrl('omp', { model: WEAK });
+    expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
   });
 
-  it('omp + trimmed ⇒ NO tools= param (omp soft-trims natively)', async () => {
-    const u = await suMcpUrl('omp', 'trimmed');
-    expect(u.searchParams.has('tools')).toBe(false);
+  it('omp + FRONTIER model ⇒ NO tools= param (frontier gets the full catalog — zero regression)', async () => {
+    expect((await suMcpUrl('omp', { model: FRONTIER })).searchParams.has('tools')).toBe(false);
+  });
+
+  it('codex + WEAK model ⇒ tools= present (the tier gates it, not just the manual flag)', async () => {
+    expect((await suMcpUrl('codex', { model: WEAK })).searchParams.has('tools')).toBe(true);
+  });
+
+  it('omp + FRONTIER model + explicit trimmed ⇒ tools= present (explicit override on any tier)', async () => {
+    expect(
+      (await suMcpUrl('omp', { model: FRONTIER, contextSize: 'trimmed' })).searchParams.has('tools'),
+    ).toBe(true);
+  });
+
+  it('claude is NEVER hard-trimmed here — it self-trims via ToolSearch (weak model OR explicit trimmed)', async () => {
+    expect((await suMcpUrl('claude', { model: WEAK })).searchParams.has('tools')).toBe(false);
+    expect((await suMcpUrl('claude', { contextSize: 'trimmed' })).searchParams.has('tools')).toBe(false);
   });
 });
