@@ -138,6 +138,7 @@ export class InMemoryPresenceStore implements PresenceStore {
       lastActiveAt: r.lastActiveAt != null ? new Date(r.lastActiveAt).toISOString() : null,
       agentRole: r.input.agentRole ?? null,
       hiveSlug: r.input.hiveSlug ?? null,
+      compactionLimit: null,
       stale: now - r.heartbeatAt > PRESENCE_STALE_MS,
       userId: r.identity.userId ?? null,
       revoked: false,

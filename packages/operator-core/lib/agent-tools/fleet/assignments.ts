@@ -10,7 +10,7 @@
  * is for messages addressed to you — not for deriving fleet state (D-001).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
@@ -39,11 +39,28 @@ export default defineTool({
       'You want to be notified of future changes (subscribe the fleet_assignment change-feed) or you need full message history (coord:inbox).',
     chaining:
       'fleet:assignments { plan } → an orphaned/stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release, or pick it up yourself; never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging an agent about its work.',
-    seeAlso: [
-      'coord:roster { view:"claims" } (the unified who-on-what-item lens)',
-      'work_items:release (free an orphaned/stalled claim you find)',
-      'fleet:status (the fleet\'s leader + live members)',
-    ],
+    // Result-aware (D-003): the work_items:release pointer surfaces with a REAL
+    // count ONLY when there are orphaned/stalled claims to reclaim — dynamically
+    // gated so a clean fleet pays no "See also:" bloat. The two adjacent-lens
+    // pointers are always relevant, so they stay static in the returned list.
+    seeAlso: (result) => {
+      const j = readJsonResult<{
+        summary?: { orphaned_claims?: number; stalled_claims?: number };
+      }>(result);
+      const reclaimable =
+        (j?.summary?.orphaned_claims ?? 0) + (j?.summary?.stalled_claims ?? 0);
+      const out: SeeAlsoEntry[] = [
+        'coord:roster { view:"claims" } (the unified who-on-what-item lens)',
+        'fleet:status (the fleet\'s leader + live members)',
+      ];
+      if (reclaimable > 0) {
+        out.unshift({
+          tool: 'work_items:release',
+          reason: `free ${reclaimable} orphaned/stalled claim${reclaimable === 1 ? '' : 's'}`,
+        });
+      }
+      return out;
+    },
   },
   capability: 'work_items:read',
   requirePrincipal: false,
