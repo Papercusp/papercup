@@ -178,3 +178,74 @@ describe('listStartedWorkspaceLoops — de-duped Queen-liveness loop (P-003)', (
     expect(loops.map((l) => l.workspaceId).sort()).toEqual(['other-ws', WS].sort());
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-hive placement bit — the HONEST per-hive Start/Stop read/write (WI-1324,
+// per-hive start-stop 2026-06-30). The bug: getHiveStarted is sentinel-first, so
+// under WORKSPACE_COORDINATION every registered hive read the SAME workspace
+// sentinel → the pill showed "N hives running" though all were dormant, and
+// hive:pause wrote the shared sentinel (harness discarded) so "Stop hive X"
+// stopped the whole workspace. getHivePlacementStarted / setHivePlacementStarted
+// are the RAW per-(ws,install) row: they IGNORE the sentinel collapse entirely
+// (no flag read), so each hive reports its own honest state and hive.controlState
+// (which now reads getHivePlacementStarted) drives one honest control per hive.
+// ---------------------------------------------------------------------------
+describe('getHivePlacementStarted / setHivePlacementStarted — raw per-hive bit (WI-1324)', () => {
+  it('reads the RAW per-hive row, IGNORING the workspace sentinel (kills the phantom "N running")', async () => {
+    // Even with the collapse flag ON and the workspace sentinel started (the Queen
+    // LOOP is running)...
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    h.kv.set(`hive_started:${WS}:${WS}`, 'true');
+    // ...a hive with NO per-hive placement bit is NOT placed → reads false.
+    expect(await getHivePlacementStarted(WS, 'forms')).toBe(false);
+    expect(await getHivePlacementStarted(WS, 'sheets')).toBe(false);
+  });
+
+  it('writes the per-(ws,install) row REGARDLESS of the flag (harness never discarded)', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true); // even with the collapse flag ON...
+    await setHivePlacementStarted(WS, 'forms', true);
+    // ...the write targets the REAL hive slug, not the sentinel row.
+    expect(h.upserts).toEqual([{ key: `hive_started:${WS}:forms`, value: 'true' }]);
+    expect(await getHivePlacementStarted(WS, 'forms')).toBe(true);
+    expect(await getHivePlacementStarted(WS, 'sheets')).toBe(false); // a sibling stays untouched
+  });
+
+  it('"Stop hive X" flips ONLY X (round-trip): start two, stop one → the other stays started', async () => {
+    await setHivePlacementStarted(WS, 'forms', true);
+    await setHivePlacementStarted(WS, 'sheets', true);
+    await setHivePlacementStarted(WS, 'forms', false); // "Stop hive forms"
+    expect(await getHivePlacementStarted(WS, 'forms')).toBe(false);
+    expect(await getHivePlacementStarted(WS, 'sheets')).toBe(true);
+  });
+
+  it('default false when the hive was never started per-hive', async () => {
+    expect(await getHivePlacementStarted(WS, 'never-started')).toBe(false);
+  });
+});
+
+describe('anyHivePlacementStarted — the sentinel-idle gate for hive:pause (WI-1324)', () => {
+  // hive:pause idles the workspace Queen LOOP (sentinel off) ONLY when NO OTHER
+  // hive remains started (excludeSlug = the just-stopped hive), so the single loop
+  // keeps running for the other started hives.
+  it('true when another hive remains started → keep the workspace loop running', async () => {
+    h.kv.set(`hive_started:${WS}:forms`, 'true');
+    h.kv.set(`hive_started:${WS}:sheets`, 'true');
+    // Stopping `forms` — `sheets` is still started.
+    expect(await anyHivePlacementStarted(WS, 'forms')).toBe(true);
+  });
+
+  it('false when the just-stopped hive is the last one → idle the loop', async () => {
+    h.kv.set(`hive_started:${WS}:forms`, 'true');
+    expect(await anyHivePlacementStarted(WS, 'forms')).toBe(false);
+  });
+
+  it('EXCLUDES the workspace sentinel row (installSlug === workspaceId) — it is a loop bit, not a hive', async () => {
+    h.kv.set(`hive_started:${WS}:${WS}`, 'true'); // only the sentinel/loop bit
+    expect(await anyHivePlacementStarted(WS)).toBe(false);
+  });
+
+  it('scopes to the workspace — a started hive in ANOTHER workspace does not keep this loop up', async () => {
+    h.kv.set(`hive_started:other-ws:forms`, 'true');
+    expect(await anyHivePlacementStarted(WS, 'anything')).toBe(false);
+  });
+});
