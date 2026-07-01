@@ -2033,8 +2033,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
           token = await withDeadline(active.token(), tokenTimeoutMs, `token refresh '${active.accountId}'`);
         } catch (e) {
           upstreamErrors++;
-          log('error', `inference-gateway: token refresh failed on '${active.accountId}': ${(e as Error).message} — penalizing account + 503`);
-          gov.penalize({ retryAfterMs: bare429FailoverBackoffMs, resetAt: Date.now() + bare429FailoverBackoffMs });
+          // TRANSPORT-vs-real-penalty split (2026-07-01, root-cause of "API errors across all accounts,
+          // penaltyCount inflating on a genuinely QUIET account" — same class of bug account-pool-store.ts's
+          // `if (ev.source === 'transport') return` guard exists for, but this call site never set the flag).
+          // withDeadline throws its OWN distinct "... timed out after Nms" Error when the DEADLINE fires
+          // (see withDeadline above) vs re-throwing active.token()'s own rejection when the refresh itself
+          // failed fast. A deadline timeout means the network round-trip to refresh the OAuth token didn't
+          // complete in tokenTimeoutMs — a TRANSPORT symptom (a flaky egress proxy / transient network blip),
+          // not evidence the account's quota or credential is bad. Without this split every such timeout hit
+          // `gov.penalize()` with the default (non-transport) source, so account-pool-store counted it toward
+          // `sustainedPenaltyThreshold` and eventually parked an account with 0% utilization — the exact
+          // failure mode the 2026-06-22 aviynw incident's transport-exemption was built for, just reached via
+          // a different call site that this account's flaky proxy also happens to go through for token
+          // refresh. A genuine active.token() rejection (e.g. a revoked/invalid credential) is NOT a timeout
+          // message, so it keeps the real (non-transport) penalty — that account really is broken.
+          const isTimeout = /timed out after \d+ms$/.test((e as Error).message ?? '');
+          log(
+            'error',
+            `inference-gateway: token refresh ${isTimeout ? 'TIMED OUT (transport)' : 'failed'} on '${active.accountId}': ${(e as Error).message} — penalizing account + 503`,
+          );
+          gov.penalize({
+            retryAfterMs: bare429FailoverBackoffMs,
+            resetAt: Date.now() + bare429FailoverBackoffMs,
+            ...(isTimeout ? { transport: true } : {}),
+          });
           if (!res.headersSent) {
             beeTokenStall++;
             // P-002 autowake-coverage (2026-06-22): record a stall so the stall-waker re-wakes an IDENTIFIED bee
