@@ -20,6 +20,10 @@ export default defineTool({
   guidance: {
     when: 'topics:list shows two topics that mean the same thing — fold the lesser-used into the better one.',
     notWhen: 'The two topics are genuinely distinct areas — keep both.',
+    seeAlso: [
+      'topics:list (review both topics before merging)',
+      'topics:tag (retag objects instead of merging topics)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

@@ -24,6 +24,11 @@ export default defineTool({
     when: 'You have one or more conversation_ids (from coord:ask, conversations:list, or an inbox notice) and want the full thread. Pass every id you need at once via `ids` instead of calling per id.',
     notWhen: 'Browsing many → conversations:list.',
     chaining: 'conversations:get { ids:[…] } → conversations:answer / conversations:post / conversations:join / conversations:resolve.',
+    seeAlso: [
+      'conversations:answer (answer the question)',
+      'conversations:post (reply to the thread)',
+      'conversations:promote (turn it into a tracked work-item)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

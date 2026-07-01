@@ -147,7 +147,7 @@ export default function AgentThinkingPopover({
   onOpenInspector,
   startedAtMs,
 }: Props) {
-  const { events, status } = useAgentThinkingStream(slug, phase, runId);
+  const { events, status, thinking } = useAgentThinkingStream(slug, phase, runId);
   const [now, setNow] = useState(() => Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -255,11 +255,13 @@ export default function AgentThinkingPopover({
           {' · '}<code style={{ fontSize: 10 }}>{runId.slice(0, 24)}</code>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: '50%', background: statusColor,
-            boxShadow: status === 'live' ? `0 0 6px ${statusColor}` : 'none',
-          }} />
-          <span style={{ color: statusColor }}>{statusLabel}</span>
+          {thinking ? <ThinkingDot size={6} /> : (
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%', background: statusColor,
+              boxShadow: status === 'live' ? `0 0 6px ${statusColor}` : 'none',
+            }} />
+          )}
+          <span style={{ color: thinking ? '#6aa84f' : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
         </span>
       </div>
       <div
@@ -339,7 +341,73 @@ function EntryTime({ ts }: { ts?: string }) {
   );
 }
 
+/** A pulsing dot — the "actively thinking" indicator, shared by the thinking pane
+ *  header, the hover popover, and the agents roster. Self-contained (ships its own
+ *  keyframe). */
+export function ThinkingDot({ size = 7, color = '#6aa84f', title = 'thinking' }: { size?: number; color?: string; title?: string }) {
+  return (
+    <span
+      role="img"
+      aria-label={title}
+      title={title}
+      style={{
+        display: 'inline-block', width: size, height: size, borderRadius: '50%',
+        background: color, animation: 'pcThinkPulse 1.1s ease-in-out infinite',
+      }}
+    >
+      <style>{`@keyframes pcThinkPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.66)}}`}</style>
+    </span>
+  );
+}
+
+/** One TURN — a wake/prompt and the agent's activity in response to it. Entries
+ *  before the first prompt form a leading partial turn (prompt: null). */
+export interface Turn {
+  seq: number;
+  prompt: TimelineEntry | null;
+  entries: TimelineEntry[];
+  startTs?: string;
+  endTs?: string;
+}
+
+/**
+ * Group a flat timeline into TURNS on `prompt` (wake) boundaries — each real
+ * user/wake message starts a new turn; the entries after it are that turn's
+ * activity. Entries before the first prompt become a leading partial turn.
+ * Chronological (the pane reverses it for newest-first display). Pure — for tests.
+ */
+export function groupEntriesIntoTurns(entries: readonly TimelineEntry[]): Turn[] {
+  const turns: Turn[] = [];
+  for (const e of entries) {
+    if (e.kind === 'prompt') {
+      turns.push({ seq: turns.length, prompt: e, entries: [], startTs: e.ts, endTs: e.ts });
+      continue;
+    }
+    let cur = turns[turns.length - 1];
+    if (!cur) {
+      cur = { seq: 0, prompt: null, entries: [], startTs: e.ts, endTs: e.ts };
+      turns.push(cur);
+    }
+    cur.entries.push(e);
+    if (e.ts) cur.endTs = e.ts;
+  }
+  return turns;
+}
+
 export function Entry({ entry }: { entry: TimelineEntry }) {
+  if (entry.kind === 'prompt') {
+    return (
+      <div style={{ margin: '0 0 8px', padding: '4px 8px', background: 'color-mix(in srgb, var(--accent), transparent 88%)', borderLeft: '2px solid var(--accent, #38bdf8)', borderRadius: 3 }}>
+        <div style={{ color: 'var(--accent-strong, #7dd3fc)', fontSize: 10, marginBottom: 2, letterSpacing: '0.04em' }}>
+          <EntryTime ts={entry.ts} />
+          ⟩ prompt
+        </div>
+        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', color: 'var(--fg)' }}>
+          {entry.text}
+        </pre>
+      </div>
+    );
+  }
   if (entry.kind === 'text') {
     return (
       <div style={{ margin: '0 0 8px' }}>

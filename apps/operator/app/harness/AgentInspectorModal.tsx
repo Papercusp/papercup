@@ -1,8 +1,16 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
-import { useAgentThinkingStream, Entry, waitingMessage } from './AgentThinkingPopover';
+import {
+  useAgentThinkingStream,
+  Entry,
+  waitingMessage,
+  groupEntriesIntoTurns,
+  ThinkingDot,
+  fmtEntryTime,
+  type Turn,
+} from './AgentThinkingPopover';
 
 /**
  * AgentInspectorModal — the pinned, full-height view of a run's live thinking

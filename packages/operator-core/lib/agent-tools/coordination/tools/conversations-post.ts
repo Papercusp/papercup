@@ -26,6 +26,11 @@ export default defineTool({
       'A factual question → coord:ask (it tries knowledge first). To accept an answer + close a question → conversations:resolve.',
     chaining:
       'conversations:post (start) → others conversations:post (reply) / conversations:join. conversations:get to read the thread.',
+    seeAlso: [
+      'conversations:join (participate in an existing thread)',
+      'conversations:answer (a definitive answer, not just a reply)',
+      'conversations:list (find a thread to post to)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

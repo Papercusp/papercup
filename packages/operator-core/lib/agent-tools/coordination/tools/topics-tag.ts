@@ -35,6 +35,10 @@ export default defineTool({
     when: 'You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic. Tag several at once via items:[…].',
     notWhen: "The topic does not exist yet — topics:create it first (prefer an existing one). For an issue you can also use work_items:tag.",
     chaining: 'topics:list → topics:tag { object_kind, object_ref, topic } → topics:feed { topic }.',
+    seeAlso: [
+      'topics:feed (see the topic\'s tagged objects)',
+      'topics:list (find the right topic to tag with)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

@@ -40,6 +40,10 @@ export default defineTool({
       'To follow an AREA (not one thread), use topics:subscribe. For a one-time read, just conversations:get.',
     chaining:
       'conversations:list / conversations:get → conversations:join.',
+    seeAlso: [
+      'conversations:list (find a conversation to join)',
+      'conversations:post (contribute after joining)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

@@ -18,6 +18,11 @@ export default defineTool({
       'Browsing for open questions you could answer, or finding a conversation by topic/harness. For updates pushed to you, subscribe to a topic instead.',
     notWhen: 'You already have a conversation_id → conversations:get.',
     chaining: 'conversations:list → conversations:get → conversations:answer / conversations:join.',
+    seeAlso: [
+      'conversations:get (full detail on one conversation)',
+      'conversations:join (participate in one)',
+      'conversations:post (start a new one)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

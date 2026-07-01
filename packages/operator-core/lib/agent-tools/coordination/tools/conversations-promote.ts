@@ -42,6 +42,11 @@ export default defineTool({
       'A question that just needs an answer → conversations:resolve (captures the answer). An open discussion still in progress → leave it. To file a fresh issue unrelated to a conversation → work_items:create.',
     chaining:
       'conversations:get → conversations:promote → work_items:get / work_items:claim. The issue keeps the conversation\'s thread; further discussion uses work_items:comment.',
+    seeAlso: [
+      'conversations:get (inspect the conversation before promoting)',
+      'work_items:claim (take the promoted work-item)',
+      'conversations:resolve (close it with an answer instead of promoting)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

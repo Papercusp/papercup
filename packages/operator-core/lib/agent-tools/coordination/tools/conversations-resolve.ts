@@ -40,6 +40,10 @@ export default defineTool({
       'Still gathering answers → leave it open. For an open-ended discussion that just ran its course, this still works (capture is skippable with capture:none).',
     chaining:
       'conversations:answer → conversations:resolve { id, accepted_post_id }. Provide accepted_answer to write a synthesized answer instead of quoting a single post.',
+    seeAlso: [
+      'conversations:answer (the answers this resolves against)',
+      'conversations:promote (turn it into tracked work instead of resolving)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

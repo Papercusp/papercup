@@ -37,6 +37,11 @@ export default defineTool({
       'For a non-answer comment/clarification, use conversations:post. To accept your own/another answer and close the question, use conversations:resolve.',
     chaining:
       'conversations:answer → the asker conversations:resolve (accepts it, captures it to the knowledge layer for the next asker).',
+    seeAlso: [
+      'conversations:resolve (the asker accepts your answer)',
+      'conversations:get (read the question first)',
+      'conversations:post (a discussion reply rather than a definitive answer)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,
