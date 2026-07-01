@@ -54,7 +54,7 @@ federation is done.
 | NAT / firewall / cross-region diversity | 🟡 **Partially exercised** | Base proven on easy public-IP same-region topology only (Brief 8 in progress) |
 | Long-running node stability (bg-host listener/handle leak) | 🔴 **Open** | WI-1088/1089 (Brief 10) — degrades multi-day federated nodes |
 | LWW convergence under clock skew | 🔴 **Known S0** | HLC-fold vs fed_ts-guard divergence (Brief D finding) |
-| Revocation **read** cut-off | 🟡 **Write+discovery-plane only** | A revoked member keeps reading until re-key (C-001) or dissolve (Brief C finding) |
+| Revocation **read** cut-off | 🟡 **Re-key K-cut now default-ON; cross-machine LIVE proof pending** | Read-cut rides the epoch re-key (`papercusp-hive-rekey`, now default-ON, no longer dark); a removed member keeps reading only until that re-key or a dissolve (C-001). LIVE K-cut proof = Brief 3; in-process only today |
 
 ---
 
