@@ -107,6 +107,19 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
     expect(seq(a, ['--tmpfs', '/tmp'])).toBe(true);
   });
 
+  it('orders `--tmpfs /tmp` BEFORE the cwd bind (else a cwd under /tmp is shadowed → bwrap --chdir fails)', () => {
+    // Regression guard: a `--tmpfs /tmp` applied AFTER `--bind cwd cwd` mounts an
+    // empty tmpfs OVER a cwd that lives under /tmp (e.g. TMPDIR=/tmp/pcv → a mkdtemp
+    // working dir), so bwrap aborts with `Can't chdir … No such file or directory`.
+    // The tmpfs must come first so the cwd bind lands on top of it and survives.
+    // (Presence alone is not enough — the earlier assertions don't pin order.)
+    const tmpfsIdx = seqIndex(d.argv, ['--tmpfs', '/tmp']);
+    const bindIdx = seqIndex(d.argv, ['--bind', CWD, CWD]);
+    expect(tmpfsIdx).toBeGreaterThanOrEqual(0);
+    expect(bindIdx).toBeGreaterThanOrEqual(0);
+    expect(tmpfsIdx).toBeLessThan(bindIdx);
+  });
+
   it('isolates process namespaces + dies with the parent', () => {
     for (const f of ['--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup-try', '--die-with-parent']) {
       expect(d.argv).toContain(f);
@@ -196,8 +209,13 @@ describe('credential-mask parity with the fleet sandbox', () => {
 
 /** True if `needle` appears as a contiguous subsequence of `hay`. */
 function seq(hay: string[], needle: string[]): boolean {
+  return seqIndex(hay, needle) >= 0;
+}
+
+/** Start index of `needle` as a contiguous subsequence of `hay`, or -1 if absent. */
+function seqIndex(hay: string[], needle: string[]): number {
   for (let i = 0; i + needle.length <= hay.length; i++) {
-    if (needle.every((n, j) => hay[i + j] === n)) return true;
+    if (needle.every((n, j) => hay[i + j] === n)) return i;
   }
-  return false;
+  return -1;
 }
