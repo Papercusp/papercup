@@ -39,6 +39,11 @@ export default defineTool({
     when: 'Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.',
     notWhen: 'A single harness — deploy:harness. Tearing one down — deploy:teardown_hive.',
     chaining: 'deploy:hive { hiveId, members, swarm } → deploy:teardown_hive when done.',
+    seeAlso: [
+      'deploy:teardown_hive (tear down the deployed hive when done)',
+      'deploy:status (check deployment state)',
+      'hive:get (the hive being deployed)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -62,6 +67,11 @@ export const deployTeardownHiveTool = defineTool({
     'Tear down a Hive — DESTROY every member execution frame + the Queen control frame (ends all billing). Pass the same hiveId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.',
   guidance: {
     when: 'Done with a deployed Hive (or to stop all its billing). Frames are cattle — destroy + redeploy is the model.',
+    seeAlso: [
+      'deploy:hive (re-deploy the hive)',
+      'hive:dissolve (permanently tear down the hive itself, not just its deployment)',
+      'deploy:status (confirm what is deployed)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

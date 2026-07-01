@@ -36,6 +36,11 @@ export default defineTool({
     when: 'Tune the placement watchdog live — e.g. raise breakerThreshold to give a flapping unit more recovery attempts before cursing it, or shorten recoveryDebounceMs to re-place stalled work faster during an incident.',
     notWhen: 'For placement AFFINITY weights use hive:set-steering (D-005). For stale-claim reclaim use work_items:reclaim_config; for session reaping use coord:session_reaper_config.',
     chaining: 'config:list-overrides shows the active override; config:reset-overrides reverts it.',
+    seeAlso: [
+      'hive:set-steering (placement AFFINITY weights, not watchdog tuning)',
+      'work_items:reclaim_config (stale-claim reclaim tuning)',
+      'config:list-overrides (the active override this wrote)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

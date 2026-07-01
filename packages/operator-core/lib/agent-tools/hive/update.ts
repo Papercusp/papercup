@@ -30,6 +30,10 @@ export default defineTool({
     notWhen:
       'Waking/pausing the Queen — hive:wake / hive:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.',
     chaining: 'hive:get { slug } to see the current config; deploy:hive to act on a changed deployment target.',
+    seeAlso: [
+      'hive:get (see the current config before updating)',
+      'deploy:hive (act on a changed deployment target)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

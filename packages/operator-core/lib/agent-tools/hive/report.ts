@@ -29,6 +29,11 @@ export default defineTool({
     notWhen:
       'You ARE the owner taking action — use hive:takedown (hide content) / hive:ban_member (ban a member). Reporting is the member→owner signal, not the owner action.',
     chaining: 'hive:report (member flags) → owner reviews hive:moderation_queue → hive:moderation_resolve / hive:takedown / hive:ban_member.',
+    seeAlso: [
+      'hive:moderation_queue (where the owner reviews your flag)',
+      'hive:takedown (owner action: hide the content)',
+      'hive:ban_member (owner action: ban the member)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

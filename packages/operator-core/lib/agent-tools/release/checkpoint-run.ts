@@ -33,6 +33,10 @@ export default defineTool({
       'To retune/pause the checkpoint cadence use routines:set. To SHIP an already-green pin use release:deploy op:trigger (checkpoint-run produces green; it does not deploy). To force an UN-green deploy use release:deploy op:force.',
     chaining:
       'fix/quarantine reds → release:checkpoint-run → (watch /admin/git for advanced/green) → release:deploy { op:status } → op:trigger { confirm:true }.',
+    seeAlso: [
+      'release:deploy (deploy the now-green pin — op:status then op:trigger)',
+      'release:checkpoint-config (tune the checkpoint gate)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

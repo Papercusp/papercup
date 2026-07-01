@@ -56,6 +56,10 @@ export default defineTool({
     when: 'You are the hive/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.',
     notWhen: 'To fire the hive right now — that is hive:wake.',
     chaining: 'hive:status to inspect the current declaration; hive:wake for an immediate manual fire.',
+    seeAlso: [
+      'hive:status (inspect the current wake declaration)',
+      'hive:wake (fire an immediate manual wake instead of scheduling)',
+    ],
   },
   capability: 'routines:write',
   requirePrincipal: false,

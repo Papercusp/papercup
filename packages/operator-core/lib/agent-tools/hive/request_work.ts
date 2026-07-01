@@ -33,6 +33,11 @@ export default defineTool({
       'Asking a QUESTION (use hive:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Hive (that is the inbound hive:cross_grant).',
     chaining:
       'discovery:hives (find the peer Hive pubkey) → hive:request_work { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with hive:asks.',
+    seeAlso: [
+      'hive:asks (review outstanding requests + replies)',
+      'hive:ask (ask a QUESTION instead of requesting work)',
+      'discovery:hives (find the peer Hive to request from)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

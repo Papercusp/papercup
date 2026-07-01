@@ -50,12 +50,13 @@ const SHARED_SCHEMA_DDL = `
   -- seeds no consolidated rows, so the JOIN yields NULL → features are treated as
   -- local/pickable. Minimal stub with just the join-referenced columns.
   CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    workspace_id   TEXT,
-    harness_slug   TEXT        NOT NULL,
-    feature_id     TEXT        NOT NULL,
-    status         TEXT,
-    origin         TEXT        NOT NULL DEFAULT 'local',
-    audit_verdict  TEXT,
+    workspace_id     TEXT,
+    harness_slug     TEXT        NOT NULL,
+    feature_id       TEXT        NOT NULL,
+    status           TEXT,
+    origin           TEXT        NOT NULL DEFAULT 'local',
+    audit_verdict    TEXT,
+    source_plan_slug TEXT,
     PRIMARY KEY (harness_slug, feature_id)
   );
 `;

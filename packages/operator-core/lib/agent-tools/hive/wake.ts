@@ -47,6 +47,10 @@ export default defineTool({
     when: 'The user asks to wake/kick the operator now, or an event-wake rule fires (it targets this tool automatically).',
     notWhen: 'To schedule a future wake — that is hive:declare-wake.',
     chaining: 'hive:status to see the last/next wake; hive:declare-wake to schedule.',
+    seeAlso: [
+      'hive:status (see the last / next wake)',
+      'hive:declare-wake (schedule a recurring wake instead of firing now)',
+    ],
   },
   capability: 'routines:write',
   requirePrincipal: false,

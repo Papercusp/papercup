@@ -91,6 +91,7 @@ describe('DBOS happy-path smoke — real-PG reads do not throw (D-008/D-014 regr
         feature_id TEXT NOT NULL,
         origin TEXT,
         audit_verdict TEXT,
+        source_plan_slug TEXT,
         PRIMARY KEY (harness_slug, feature_id)
       );
       CREATE TABLE harness_shared.harness_chunk_plans (

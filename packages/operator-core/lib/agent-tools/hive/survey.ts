@@ -52,6 +52,11 @@ export default defineTool({
     notWhen: 'You already hold a specific work-item id and just need to place it — go straight to fleet:spawn / the batch placement.',
     chaining:
       'hive:survey → place the top frontier items (fleet:spawn / batch placement) and steer plan order (work_items:set_priority / plans:set-priority); hive:status to inspect the wake declaration.',
+    seeAlso: [
+      'hive:status (inspect the wake declaration)',
+      'work_items:set_priority (steer the frontier order surveyed)',
+      'fleet:assignments (who is already placed on the frontier)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

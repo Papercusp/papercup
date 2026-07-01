@@ -26,6 +26,11 @@ export default defineTool({
     when: 'Moving a cloud-configured harness onto a real frame so its agents run remotely (distinct IP, own Claude sub) while state federates to the local view.',
     notWhen: 'A local harness (no cloud deployment). Tearing one down — deploy:teardown. Checking status — deploy:status.',
     chaining: 'harness:create { …, deployment:{target:"latitude", desktop:true, …} } → deploy:harness { slug } → deploy:status / deploy:teardown.',
+    seeAlso: [
+      'deploy:status (check where the harness runs after deploying)',
+      'deploy:teardown (tear down the deployed harness)',
+      'deploy:hive (deploy a hive to a Swarm instead)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -50,6 +55,11 @@ export const deployTeardownTool = defineTool({
   guidance: {
     when: 'Done with a cloud harness (or to stop its billing). Teardown destroys the machine so it stops costing money.',
     notWhen: 'Pausing temporarily — there is no stop; destroy + redeploy is the model (frames are cattle).',
+    seeAlso: [
+      'deploy:status (confirm what is deployed before tearing down)',
+      'deploy:harness (re-deploy)',
+      'deploy:teardown_hive (tear down a deployed HIVE, not a harness)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -98,6 +108,11 @@ export const deployStatusTool = defineTool({
     "Report a harness's deployment: its `deployment` config + the live frame handle (id/host/region) if deployed. Returns {ok, deployment, frame|null}.",
   guidance: {
     when: 'Checking where a harness runs (local vs which cloud frame) and the frame\'s reachable host.',
+    seeAlso: [
+      'deploy:harness (deploy a harness to a frame)',
+      'deploy:hive (deploy a hive to a Swarm)',
+      'deploy:teardown (tear down a deployment)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

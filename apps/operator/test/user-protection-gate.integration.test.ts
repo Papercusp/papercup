@@ -57,15 +57,16 @@ describe('User-protection gate — live readFrontierFeatures G2 gate (real PG, P
       db = await createFreshPgDb('dbos_protect');
       await db.sql.unsafe(`
         CREATE TABLE harness_shared.harness_features_consolidated (
-          workspace_id   TEXT,
-          harness_slug   TEXT NOT NULL,
-          feature_id     TEXT NOT NULL,
-          status         TEXT,
-          feature_order  INT,
-          metadata       JSONB,
-          item_kind      TEXT NOT NULL DEFAULT 'feature',
-          origin         TEXT NOT NULL DEFAULT 'local',
-          audit_verdict  TEXT,
+          workspace_id     TEXT,
+          harness_slug     TEXT NOT NULL,
+          feature_id       TEXT NOT NULL,
+          status           TEXT,
+          feature_order    INT,
+          metadata         JSONB,
+          item_kind        TEXT NOT NULL DEFAULT 'feature',
+          origin           TEXT NOT NULL DEFAULT 'local',
+          audit_verdict    TEXT,
+          source_plan_slug TEXT,
           PRIMARY KEY (harness_slug, feature_id)
         );
         CREATE TABLE harness_shared.harness_plans (

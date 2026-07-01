@@ -13,6 +13,7 @@
 import { join } from 'node:path';
 import { statSync, readFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { sseResponse } from '@papercusp/sse';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { resolvePhasedProject, harnessDir, parseFeatures, tailFile } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import {
@@ -582,13 +583,17 @@ const logStream = defineTool({
 });
 
 /**
- * GET /api/adv/session/thinking?sessionId=<id> — a snapshot of an INTERACTIVE
- * (non-bee) Claude session's thinking timeline, for the agents-roster inspector.
- * Unlike a spawned bee (whose harness run-log the /agents/:runId/stream reads), an
- * su/queen/sentinel session keeps its timeline in its transcript jsonl; we resolve
- * that by sessionId (findSessionTranscript), parse the tail with the SAME timeline
- * parser bees use, and emit it as one `backfill` then `done` — a snapshot (no live
- * follow yet). Empty backfill when the session id is unknown/unreadable.
+ * GET /api/adv/session/thinking?sessionId=<id> — a LIVE-FOLLOWED view of an
+ * INTERACTIVE (non-bee) Claude session's thinking timeline, for the agents-roster
+ * inspector. Unlike a spawned bee (whose harness run-log the /agents/:runId/stream
+ * reads), an su/queen/sentinel session keeps its timeline in its transcript jsonl;
+ * we resolve that by sessionId (findSessionTranscript), parse the tail with the
+ * SAME timeline parser bees use, emit it as one `backfill`, then POLL the file for
+ * appended records — emitting each new entry as `event` (the current turn streams
+ * in live) plus a `thinking` status ({active}) when the agent starts/stops writing.
+ * It does NOT emit `done` while the session merely goes idle (only if the transcript
+ * vanishes); the client closes the stream when the pane closes. Empty backfill +
+ * `done` when the session id is unknown/unreadable.
  *
  * SECURITY (auth: 'loopback'): an interactive session's transcript carries the
  * FULL agent reasoning + tool inputs/results (which can hold file contents +
@@ -618,37 +623,84 @@ const sessionThinkingStream = defineTool({
       signal: req.signal,
       heartbeatMs: 15_000,
       setup: async (sink) => {
-        const parser = createAgentTimelineParser();
-        const entries: AgentTimelineEntry[] = [];
+        const { findSessionTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
+        const path = sessionId ? await findSessionTranscript(sessionId, { owner }) : null;
+        if (!path) { sink.event('backfill', []); sink.done({}); return; }
+
+        // ── 1) Backfill: the last 1 MiB tail as a snapshot ──
+        let pos = 0;
+        let initialActive = false;
         try {
-          const { findSessionTranscript } = await import('../../../claude-sessions');
-          const path = sessionId ? await findSessionTranscript(sessionId, { owner }) : null;
-          if (path) {
-            const stat = statSync(path);
-            // Tail the last 1 MiB so a long session doesn't blow the response.
-            const tailBytes = 1024 * 1024;
-            const start = Math.max(0, stat.size - tailBytes);
-            const len = stat.size - start;
+          const stat = statSync(path);
+          const tailBytes = 1024 * 1024;
+          const start = Math.max(0, stat.size - tailBytes);
+          const len = stat.size - start;
+          const buf = Buffer.alloc(len);
+          const fd = openSync(path, 'r');
+          try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
+          let chunk = buf.toString('utf8');
+          if (start > 0) {
+            const firstNl = chunk.indexOf('\n');
+            if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+          }
+          const parser = createAgentTimelineParser();
+          const entries: AgentTimelineEntry[] = [];
+          for (const rawLine of chunk.split('\n')) {
+            const line = rawLine.trim();
+            if (!line) continue;
+            for (const e of parser.parseLine(line)) entries.push(e);
+          }
+          entries.push(...parser.flush());
+          const capped = entries.length > 200 ? entries.slice(-200) : entries;
+          sink.event('backfill', capped);
+          pos = stat.size;
+          initialActive = Date.now() - stat.mtimeMs < SESSION_THINKING_ACTIVE_MS;
+        } catch { sink.event('backfill', []); }
+
+        // ── 2) Live-follow the CURRENT turn: poll for appended records, emit each
+        //       as `event`, and a `thinking` status when the agent starts/stops
+        //       writing. Unlike a bee run this never emits `done` on its own — an
+        //       interactive session's transcript just goes quiet when idle; the
+        //       client closes the stream when the pane closes (onClose → stop). ──
+        let lineBuf = '';
+        let lastActive: boolean | null = null;
+        let lastAppendMs = Date.now();
+        let handle: ManagedHandle | null = null;
+        const followParser = createAgentTimelineParser();
+        const emitThinking = (active: boolean) => {
+          if (active !== lastActive) { lastActive = active; sink.event('thinking', { active }); }
+        };
+        emitThinking(initialActive);
+
+        const tick = () => {
+          if (sink.closed) { handle?.stop(); return; }
+          let stat;
+          try { stat = statSync(path); } catch { sink.done({}); handle?.stop(); return; }
+          if (stat.size > pos) {
+            const len = stat.size - pos;
             const buf = Buffer.alloc(len);
             const fd = openSync(path, 'r');
-            try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
-            let chunk = buf.toString('utf8');
-            if (start > 0) {
-              const firstNl = chunk.indexOf('\n');
-              if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
-            }
-            for (const rawLine of chunk.split('\n')) {
-              const line = rawLine.trim();
+            try { readSync(fd, buf, 0, len, pos); } finally { closeSync(fd); }
+            pos = stat.size;
+            lineBuf += buf.toString('utf8');
+            let nl: number;
+            while ((nl = lineBuf.indexOf('\n')) !== -1) {
+              const line = lineBuf.slice(0, nl).trim();
+              lineBuf = lineBuf.slice(nl + 1);
               if (!line) continue;
-              for (const e of parser.parseLine(line)) entries.push(e);
+              for (const e of followParser.parseLine(line)) sink.event('event', e);
             }
-            entries.push(...parser.flush());
+            lastAppendMs = Date.now();
+            emitThinking(true);
+          } else if (Date.now() - lastAppendMs >= SESSION_THINKING_ACTIVE_MS) {
+            emitThinking(false);
           }
-        } catch { /* unreadable / not found → empty backfill */ }
-        const capped = entries.length > 200 ? entries.slice(-200) : entries;
-        sink.event('backfill', capped);
-        sink.event('done', {});
-        sink.close();
+        };
+        handle = managedSetInterval('adv-session-thinking-follow', 1000, tick, {
+          category: 'lifecycle',
+          instanced: true,
+        });
+        sink.onClose(() => handle?.stop());
       },
     });
   },
