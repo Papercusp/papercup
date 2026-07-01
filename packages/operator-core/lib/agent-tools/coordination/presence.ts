@@ -195,6 +195,12 @@ export async function touchActivity(ownerId: string): Promise<void> {
   await store.touchActivity(ownerId);
 }
 
+/** Set the caller's per-session SOFT compaction limit in tokens. No-op if the
+ *  presence row does not exist. agent-managed-compaction-2026-07-01. */
+export async function setCompactionLimit(ownerId: string, limit: number): Promise<void> {
+  await store.setCompactionLimit(ownerId, limit);
+}
+
 /** Ensure a presence row + bump heartbeat WITHOUT clobbering a declared
  *  intent — the read-driven liveness signal (piggybacked on coord:inbox).
  *  Makes coord:presence a complete live roster of active agents. */

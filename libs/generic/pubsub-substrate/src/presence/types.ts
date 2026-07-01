@@ -62,6 +62,9 @@ export interface PresenceRecord {
   agentRole: string | null;
   /** The agent's home Hive slug (null = standalone / no hive). */
   hiveSlug: string | null;
+  /** Per-session SOFT compaction limit in tokens (agent-managed-compaction).
+   *  null ⇒ use the per-model default. Set via config:set-compaction-limit. */
+  compactionLimit: number | null;
   /** heartbeat older than PRESENCE_STALE_MS — the session is dead. */
   stale: boolean;
   /** Durable roster field — null for a non-roster (superuser) agent. */

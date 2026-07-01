@@ -23,7 +23,7 @@ import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snap
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { readIdentity } from '../../locks/identity';
 import { COORD_ROLES } from '../roles';
-import { listFleetAssignments, groupByAgent, orphanedClaims, stalledClaims } from '../../fleet/assignments';
+import { listFleetAssignments, groupByAgent, orphanedClaims, stalledClaims } from '../../../fleet/assignments';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
 
