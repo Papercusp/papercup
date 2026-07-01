@@ -34,11 +34,20 @@ function boolToSchema(b: boolean): Record<string, unknown> {
   // independent of which tool/field it came from. That re-introduces the exact
   // construct Ollama's tool-schema parser rejects (the whole reason this file exists),
   // even though `{}` itself is fully valid JSON Schema and is what THIS function used
-  // to emit. A `description`-only object is semantically identical ("matches anything"
-  // — description carries no constraint) but is no longer literally empty, so OMP has
-  // nothing to "optimize" back into a boolean. Verified directly: replaying a captured
-  // OMP request against Ollama 400s with the bare `{}` form and succeeds with this one.
-  return b ? { description: 'matches any value' } : { not: {} };
+  // to emit.
+  //
+  // A `description`-only object defeats the literal-`{}` case, but 2026-07-01 found a
+  // SECOND OMP collapse: any `properties[*]` sub-schema that carries no `type` keyword
+  // — description-only included — gets re-collapsed to bare `true` when OMP flattens a
+  // tool whose args are a Zod discriminated union (multiple `anyOf` branches merged into
+  // one object for Ollama, which the raw MCP request capture showed OMP doing client-side;
+  // papercusp itself never flattens unions). Giving the "matches anything" schema a real
+  // `type: 'object'` (the one JSON-Schema type every field in this catalog already uses
+  // successfully against Ollama) survives BOTH collapses: it is never empty and it always
+  // carries `type`. Narrows z.unknown()/z.any() from "any JSON value" to "any object" —
+  // an acceptable trade for every current caller (all pass object payloads here) against
+  // "the whole catalog 400s on every turn".
+  return b ? { type: 'object', additionalProperties: true, description: 'matches any object value' } : { not: {} };
 }
 
 /**

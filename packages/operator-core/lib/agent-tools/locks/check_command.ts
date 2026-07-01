@@ -22,6 +22,10 @@ export default defineTool({
     when: 'A hook (or you) wants to know if a destructive command would collide with an in-flight exclusive hold before running it.',
     notWhen: 'Acquiring a named-resource lock — use locks:acquire_resource. File edits — use locks:acquire.',
     chaining: 'block → wait / coordinate; warn → proceed with care; allow → run.',
+    seeAlso: [
+      'locks:acquire_resource (take the exclusive hold the command needs)',
+      'locks:queue (see who holds the conflicting lock)',
+    ],
   },
   capability: 'locks:read',
   requirePrincipal: false,

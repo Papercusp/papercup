@@ -49,6 +49,10 @@ export default defineTool({
     when: 'Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining.',
     notWhen: 'File-lock contention — that is locks:queue.',
     chaining: 'locks:list → locks:acquire_resource { resource, mode }.',
+    seeAlso: [
+      'locks:acquire_resource (acquire a resource you found)',
+      'locks:queue (file-lock contention, not named resources)',
+    ],
   },
   capability: 'locks:read',
   requirePrincipal: false,

@@ -88,6 +88,11 @@ export default defineTool({
       'Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release (it duplicates the hook + churns the lock). Explicit locks are the fallback for unhooked Codex.',
     chaining:
       'On ok: make your edits → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake turn carries your lock_id + TTL (already running) — edit, then release. Only block (wait) when you need the lock within THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait to retract a queued wake.',
+    seeAlso: [
+      'locks:acquire_granular (a directory/subtree, not a single file set)',
+      'locks:acquire_resource (a named shared resource — dev server, db schema)',
+      'locks:release (drop the lock after committing)',
+    ],
   },
   capability: 'locks:write',
   // Framework default per-tool timeoutSec is 60s. wait.max_sec can

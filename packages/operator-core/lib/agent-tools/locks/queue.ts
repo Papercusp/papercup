@@ -16,6 +16,10 @@ export default defineTool({
   guidance: {
     when: 'Diagnostics — "what are the other agents doing?" or "why am I blocked?". Cheap, MVCC read.',
     notWhen: 'Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.',
+    seeAlso: [
+      'locks:list (named-resource holders, not file-lock contention)',
+      'coord:roster { view:"live" } (what the other agents are doing overall)',
+    ],
   },
   capability: 'locks:read',
   requirePrincipal: false,

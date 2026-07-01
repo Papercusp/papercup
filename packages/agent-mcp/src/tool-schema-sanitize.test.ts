@@ -10,7 +10,10 @@ describe('sanitizeToolSchema', () => {
     });
     expect(out).toEqual({
       type: 'object',
-      properties: { value: { description: 'matches any value' }, name: { type: 'string' } },
+      properties: {
+        value: { type: 'object', additionalProperties: true, description: 'matches any object value' },
+        name: { type: 'string' },
+      },
       additionalProperties: false, // untouched
     });
   });
@@ -24,7 +27,7 @@ describe('sanitizeToolSchema', () => {
   it('objectifies a boolean items (z.array(z.unknown()) → items:true)', () => {
     expect(sanitizeToolSchema({ type: 'array', items: true })).toEqual({
       type: 'array',
-      items: { description: 'matches any value' },
+      items: { type: 'object', additionalProperties: true, description: 'matches any object value' },
     });
   });
 
@@ -37,9 +40,15 @@ describe('sanitizeToolSchema', () => {
       },
     });
     expect((out as any).properties.ops.items.properties.payload).toEqual({
-      description: 'matches any value',
+      type: 'object',
+      additionalProperties: true,
+      description: 'matches any object value',
     });
-    expect((out as any).properties.cfg.properties.value).toEqual({ description: 'matches any value' });
+    expect((out as any).properties.cfg.properties.value).toEqual({
+      type: 'object',
+      additionalProperties: true,
+      description: 'matches any object value',
+    });
   });
 
   it('the true-mapping is NEVER a literally-empty object (omp-ollama-tool-schema-investigation-2026-06-30): ' +
@@ -50,6 +59,15 @@ describe('sanitizeToolSchema', () => {
     const a = (out.properties as Record<string, unknown>).a as Record<string, unknown>;
     expect(Object.keys(a).length).toBeGreaterThan(0);
     expect(Object.keys(out.items as Record<string, unknown>).length).toBeGreaterThan(0);
+  });
+
+  it('the true-mapping always carries a `type` keyword (2026-07-01 second OMP collapse): a description-only ' +
+    'object (no `type`) survives the empty-`{}` collapse above but STILL gets re-collapsed to bare `true` when ' +
+    'OMP flattens a discriminated-union tool (multiple anyOf branches merged into one object for Ollama) — ' +
+    'observed live on operator:voice_debug\'s `detail` field. A real `type` keyword survives both collapses.', () => {
+    const out = sanitizeToolSchema({ properties: { a: true } }) as Record<string, unknown>;
+    const a = (out.properties as Record<string, unknown>).a as Record<string, unknown>;
+    expect(a.type).toBeTruthy();
   });
 
   it('does NOT touch additionalProperties booleans (Ollama ignores; OpenAI strict needs literal false)', () => {

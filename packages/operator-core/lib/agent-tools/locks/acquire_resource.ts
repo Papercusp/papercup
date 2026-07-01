@@ -44,6 +44,11 @@ export default defineTool({
     when: 'Before relying on a shared resource (mode shared), or before a destructive action on it like restarting the dev server (mode exclusive). Registered resources only — check locks:list.',
     notWhen: 'File edits — use locks:acquire only for deliberate multi-file claims or when hook diagnostics say the per-edit hook is unavailable. An unregistered ad-hoc name — register it first (locks are useless if names diverge).',
     chaining: 'shared: acquire_resource{mode:shared} → use it → release_resource. exclusive restart: acquire_resource{mode:exclusive,wait:{max_drain_sec}} → on ok+held do the restart → release_resource (signals it is back up).',
+    seeAlso: [
+      'locks:list (find the exact registered resource name + rule first)',
+      'locks:release_resource (release after use / after a restart)',
+      'locks:heartbeat_resource (keep a long hold alive past its TTL)',
+    ],
   },
   capability: 'locks:write',
   // exclusive wait can block up to max_drain_sec; bump past it with margin.

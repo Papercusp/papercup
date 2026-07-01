@@ -26,6 +26,11 @@ export default defineTool({
     when: 'Immediately after the edit is committed. Release several selected lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything.',
     notWhen: 'Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.',
     chaining: 'locks:acquire → edit → locks:release { lock_id } or { lock_ids:[…] }. Or: session-end → locks:release { all_mine: true }.',
+    seeAlso: [
+      'locks:release_granular (for a subtree/directory lock)',
+      'locks:release_resource (for a named-resource lock)',
+      'locks:heartbeat (extend a long edit instead of releasing early)',
+    ],
   },
   capability: 'locks:write',
   requirePrincipal: false,

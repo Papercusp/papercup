@@ -31,6 +31,11 @@ export default defineTool({
     when: 'A directory/subtree refactor (mode X on the dir), reading a whole subtree (S), or coordinating file-vs-harness-level work the per-edit lock is too fine for. Use "" as the path to take/contend the harness root.',
     notWhen: 'A single-file edit — rely on the per-edit hook when diagnostics show it is active, or use locks:acquire for that file if hooks are unavailable. Cross-resource coordination (dev-server / db-schema) — use locks:acquire_resource.',
     chaining: 'locks:acquire_granular { path, mode:"X" } → on ok do the work → locks:release_granular { lock_id }. On conflict, inspect the returned conflicts and pivot/retry.',
+    seeAlso: [
+      'locks:acquire (a single deliberate multi-file claim, not a subtree)',
+      'locks:acquire_resource (a registered resource, not a path)',
+      'locks:release_granular (drop the subtree lock)',
+    ],
   },
   capability: 'locks:write',
   requirePrincipal: false,
