@@ -26,6 +26,10 @@ export default defineTool({
   guidance: {
     when: 'You claimed work-item(s) but are no longer working them. Release several at once via ids:[…].',
     chaining: 'work_items:claim → … → work_items:release.',
+    seeAlso: [
+      'work_items:set_state { state:"blocked" } (park it with a reason instead of silently releasing)',
+      'work_items:claim (re-take it later)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

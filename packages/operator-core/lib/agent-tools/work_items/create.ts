@@ -62,6 +62,11 @@ export default defineTool({
     when: 'You want to track unit(s) of work an agent will do. Pick the kind: bug (broken), change (DX ask / one-off), feature (pipeline work-unit), research-task, or chunk (sub-unit, pass `parent`). File several at once via items:[…] instead of a round-trip each.',
     notWhen: 'A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.',
     chaining: 'work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
+    seeAlso: [
+      'work_items:list (dedup against existing items before filing)',
+      'work_items:promote (give a filed bug/change a pipeline run)',
+      'work_items:claim (self-assign the new item at creation via { assignee })',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

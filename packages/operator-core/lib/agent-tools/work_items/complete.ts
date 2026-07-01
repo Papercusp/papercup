@@ -155,6 +155,11 @@ export default defineTool({
     when: 'You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Finish several at once via items:[…].',
     notWhen: 'For a contextual aside that is not a completion (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step (self-learning loop): file a friction marker via improvements:capture if one bit you, else nothing.',
+    seeAlso: [
+      'work_items:set_state (change state without recording a completion)',
+      'coord:send (a note/question that is not a completion)',
+      'improvements:capture (file the friction the reflect step surfaced)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

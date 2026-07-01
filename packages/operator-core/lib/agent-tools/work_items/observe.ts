@@ -22,6 +22,10 @@ export default defineTool({
   guidance: {
     when: 'Inspect one or more work-items\' claimability before deciding to claim — read without taking. Pass every id you are weighing at once.',
     chaining: 'work_items:observe → work_items:claim (if available).',
+    seeAlso: [
+      'work_items:claim (take it once you confirm it is free)',
+      'work_items:claim_next (let the queue hand you the next one instead)',
+    ],
   },
   capability: 'work_items:read',
   requirePrincipal: false,

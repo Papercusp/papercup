@@ -35,6 +35,11 @@ export default defineTool({
       "Ranking a bee's queue (work_items:reorder) or sending a specific item to a specific agent (work_items:claim). Co-location is about WHICH SWARM, not which bee.",
     chaining:
       'fleet:assignments (see where collaborators run) → work_items:co_locate { workItem, coLocateWith } → the affined Swarm claims it under the lease.',
+    seeAlso: [
+      'work_items:reorder (rank a single bee\'s claimed queue — not swarm placement)',
+      'work_items:set_priority (GLOBAL backlog order)',
+      'work_items:claim (send a specific item to a specific agent instead)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

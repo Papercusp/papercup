@@ -40,6 +40,11 @@ export default defineTool({
   guidance: {
     when: 'You moved one or more work-items along the lifecycle (started, resolved, etc.). Flip a whole wave at once via { ids:[…], state } or items:[…].',
     chaining: 'work_items:claim → … → work_items:set_state { state }.',
+    seeAlso: [
+      'work_items:complete (terminal state WITH a structured completion record)',
+      'work_items:release (drop a claim without changing state)',
+      'work_items:set_priority (steer backlog order, not lifecycle state)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

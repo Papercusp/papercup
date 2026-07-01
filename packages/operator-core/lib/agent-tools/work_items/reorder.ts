@@ -41,6 +41,11 @@ export default defineTool({
       'You only want to START an item (work_items:claim) or change its lifecycle state (work_items:set_state). Reorder changes ORDER, not ownership or state.',
     chaining:
       'work_items:claim → work_items:reorder → fleet:assignments { agent } to see the ordered queue. The Queen: fleet:assignments → work_items:reorder { writer:"queen", items:[…] }.',
+    seeAlso: [
+      'work_items:set_priority (GLOBAL backlog order, pre-claim — not a per-assignee rank)',
+      'work_items:co_locate (pin work to a Swarm rather than order a queue)',
+      'fleet:assignments (view the ordered queue you just reranked)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

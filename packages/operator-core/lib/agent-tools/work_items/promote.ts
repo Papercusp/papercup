@@ -30,6 +30,10 @@ export default defineTool({
     when: 'A filed bug/change is ready to be worked by the pipeline — for one item or several at once.',
     notWhen: 'It is a passing idea (leave it filed) or already a feature.',
     chaining: 'work_items:create { kind:"bug" } → work_items:promote { harness } → the pipeline picks up the feature.',
+    seeAlso: [
+      'work_items:create (file the bug/change first)',
+      'work_items:claim_next (the pipeline agent self-selects the promoted feature)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

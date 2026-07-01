@@ -76,6 +76,11 @@ export default defineTool({
     when: 'You are starting work on work-item(s) — claim so peers do not duplicate. Claim a swath at once via { ids:[…] }.',
     notWhen: 'A per-item `claim_conflict` means a LIVE peer holds it — coordinate with the `holder` (coord:send) or pick another item; do not blind-retry. (If the holder is dead, the stale-claim reclaim lane frees it.)',
     chaining: 'work_items:list → work_items:claim → work_items:set_state → work_items:release/close.',
+    seeAlso: [
+      'work_items:claim_next (self-select the next claimable item instead of naming an id)',
+      'work_items:observe (check claimability before taking)',
+      'work_items:release (drop the claim if you stop working it)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

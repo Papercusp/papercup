@@ -36,6 +36,11 @@ export default defineTool({
       "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
     chaining:
       "work_items:list → work_items:get { ids:[…] } for detail on the ones you care about.",
+    seeAlso: [
+      'work_items:observe (claimability of these ids without taking them)',
+      'work_items:comment (post an update on one)',
+      'work_items:link (record a dependency between two)',
+    ],
   },
   capability: "work_items:read",
   requirePrincipal: false,

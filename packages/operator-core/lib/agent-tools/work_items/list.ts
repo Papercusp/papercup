@@ -88,6 +88,11 @@ export default defineTool({
     when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog's order in one call before steering it with work_items:set_priority.",
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
+    seeAlso: [
+      'work_items:set_priority (steer the backlog order you just read)',
+      'work_items:get (full detail on specific ids)',
+      'work_items:claim_next (take the next claimable item)',
+    ],
   },
   capability: "work_items:read",
   requirePrincipal: false,

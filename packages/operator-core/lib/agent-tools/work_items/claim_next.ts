@@ -27,6 +27,11 @@ export default defineTool({
     when: 'You are an idle agent picking up work — prefer this self-selection over waiting to be assigned. Returns the oldest claimable feature-family item, now yours.',
     notWhen: 'When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception — it deliberately bypasses the status/readiness floors self-select enforces, so an item claimable by id can still legitimately miss here).',
     chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a MISS, read `drained`: drained:true means the queue is empty (message leader + idle); drained:false means work exists but is currently blocked/gated (pendingUnclaimed>0) — do NOT idle, re-check shortly or help unblock the backlog rather than reporting the queue drained.',
+    seeAlso: [
+      'work_items:claim (by-id / named-assignee claim — the exception to self-select)',
+      'work_items:list (on a drained:false miss, see which items are blocked/gated)',
+      'work_items:set_state (advance the item you just claimed)',
+    ],
   },
   capability: 'work_items:write',
   // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: atomic self-select

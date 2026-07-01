@@ -50,7 +50,7 @@ vi.mock('../../harness/primitives', () => ({
 }));
 vi.mock('../../harness/TrustBadge', () => ({ TrustBadge: () => <span />, trustBadgeState: () => null }));
 
-import WorkItemsPanel from './WorkItemsPanel';
+import WorkItemsPanel, { workItemCountLabel } from './WorkItemsPanel';
 import type { WorkItemRow } from './WorkItemsPanel';
 
 function row(over: Partial<WorkItemRow> & { id: string }): WorkItemRow {

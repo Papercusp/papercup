@@ -5,7 +5,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { VirtualGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
-import { readListTotal, listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { IssueStatusPill, KindPill, SeverityPill, StatusPill } from '../../harness/primitives';
@@ -61,6 +61,40 @@ const CELL_TRUNCATE: CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+/**
+ * Count label for the work-items pane — disambiguates the THREE numbers the old
+ * bare "N of M" conflated (the "905 of 1674 — of what?" confusion):
+ *   • shown  = rows after the column filters + quick-search
+ *   • loaded = rows actually downloaded (a CAPPED read shows fewer than exist)
+ *   • total  = the true store count for this harness (row[0]._meta.total)
+ * Returns a short `title` (for the cramped panel tab) + an explicit, worded
+ * `summary` (for the in-pane badge), and whether the read was `capped` (⇒ the
+ * filters only searched the `loaded` subset, not the full `total`). Pure —
+ * exported for tests.
+ */
+export function workItemCountLabel(
+  shown: number,
+  loaded: number,
+  total: number,
+  filtered: boolean,
+): { title: string; summary: string; capped: boolean } {
+  const capped = total > loaded;
+  if (filtered) {
+    return {
+      title: `${shown} of ${loaded}`,
+      summary: capped
+        ? `${shown} match · ${loaded} loaded of ${total} total`
+        : `${shown} of ${total} match`,
+      capped,
+    };
+  }
+  return {
+    title: capped ? `${loaded} of ${total}` : `${total}`,
+    summary: capped ? `${loaded} loaded of ${total} total` : `${total} item${total === 1 ? '' : 's'}`,
+    capped,
+  };
+}
+
 export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   // The per-column filters (kind/state/severity/priority/…) live in ONE nuqs param
@@ -106,9 +140,6 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // back to the downloaded length. listCountLabel shows "N of TOTAL" only when the
   // read was actually capped, so the count is never a downloaded-length lie.
   const total = readListTotal(items);
-  useEffect(() => {
-    if (items) api.setTitle(`Work items · ${slug} (${listCountLabel(items.length, total)})`);
-  }, [items, total, slug, api]);
 
   const columns: ColumnDef<WorkItemRow>[] = [
     {
@@ -276,6 +307,16 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     );
   }, [cf.rows, search]);
 
+  // The counts drive BOTH the tab title and the in-pane badge — filter-aware, so
+  // narrowing the list now shows how many rows matched (shown of loaded), not the
+  // stale unfiltered loaded count.
+  const isFiltered = cf.hasActive || search.trim() !== '';
+  const counts = items ? workItemCountLabel(filtered.length, items.length, total, isFiltered) : null;
+  const titleCount = counts?.title;
+  useEffect(() => {
+    if (titleCount != null) api.setTitle(`Work items · ${slug} (${titleCount})`);
+  }, [titleCount, slug, api]);
+
   if (!slug) return <div className="pc-advpanel__empty">Pick a harness to view its work items.</div>;
 
   return (
@@ -295,6 +336,32 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           hasActive={cf.hasActive}
           clearAll={cf.clearAll}
         />
+        {counts ? (
+          <Tooltip
+            label={
+              counts.capped
+                ? 'Read is capped: the filter + search only see the loaded rows, not the full store total.'
+                : isFiltered
+                  ? 'Rows matching the current filter / search, out of the store total.'
+                  : 'Total work items for this harness.'
+            }
+          >
+            <span
+              className="pc-advpanel__count"
+              data-testid="wi-count"
+              aria-live="polite"
+              style={{
+                marginLeft: 'auto',
+                fontSize: 11,
+                color: 'var(--fg-mute)',
+                whiteSpace: 'nowrap',
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              {counts.summary}{counts.capped ? ' ⚠' : ''}
+            </span>
+          </Tooltip>
+        ) : null}
         <Tooltip label="Refresh work items">
           <button
             type="button"
