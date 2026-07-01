@@ -62,48 +62,117 @@ interface RunResult {
   stderr: string;
 }
 
+/** Memory cap (GiB) for the ISOLATED green-checkpoint scope (see `runScript` isolate).
+ *  Sized to the suite's real working set (2 vitest forks × 4 GB heap + tsx/npm +
+ *  testcontainers helpers) with headroom — the point is not to squeeze the suite but
+ *  to keep its OOM inside its OWN cgroup, away from the bg-host cage. */
+const CHECKPOINT_SCOPE_MEMORY_MAX_G = 16;
+
+/** systemd-run launch failures that mean "the SCOPE could not start" (no bus, no
+ *  binary, no permission) — retry the payload DIRECT rather than failing the gate.
+ *  A payload failure inside a healthy scope must NOT match (it exits with the
+ *  payload's own code/stderr, usually well past the launch window). */
+const SCOPE_LAUNCH_FAILURE_RE =
+  /Failed to connect to bus|Failed to start transient scope|Interactive authentication required|No such file or directory/i;
+
+/** Build the systemd-run argv that runs `base` in a transient user SCOPE with its own
+ *  memory cap. `--scope` (NOT `--unit`): the payload stays OUR CHILD — stdio piped
+ *  (the result-marker parse needs stdout), process-group kill + full env inheritance
+ *  intact (PAPERCUSP_PARTIAL_GREEN_GATE etc.) — but lands in its own cgroup OUTSIDE
+ *  papercup-bg-host.service's MemoryMax. Before this, the hourly suite's multi-GB
+ *  vitest forks counted against the bg-host cage, and a combined peak OOM-killed the
+ *  WHOLE cgroup — queen, bees, and git-sync included (the 2026-07-01 40 G OOM
+ *  crash-loop). MemorySwapMax=0 mirrors the bg-host policy (50-cgroup-memory.conf:
+ *  swap-thrash IS the event-loop freeze). Exported for tests. */
+export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number): string[] {
+  return [
+    'systemd-run',
+    '--user',
+    '--scope',
+    '--quiet',
+    '--collect',
+    `--property=MemoryMax=${memoryMaxG}G`,
+    '--property=MemorySwapMax=0',
+    ...base,
+  ];
+}
+
 function runScript(
   root: string,
   relScript: string,
   args: string[],
   timeoutMs: number,
   extraEnv: Record<string, string> = {},
+  isolate?: { memoryMaxG: number },
 ): Promise<RunResult> {
-  return new Promise((resolve) => {
-    // P-007: detached → the child is its own process-GROUP leader, so on the timeout we
-    // can SIGTERM the WHOLE group (tsx → npm → vitest workers), not just the tsx parent.
-    // Killing only the parent orphaned the test workers, which kept loading the shared
-    // box past the cap and manufactured the very load-flakes the gate then has to absorb.
-    const child = spawn(tsxBin(root), [path.join(root, relScript), ...args], {
-      cwd: root,
-      env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: root, ...extraEnv },
-      detached: true,
+  const base = [tsxBin(root), path.join(root, relScript), ...args];
+  // Isolation kill-switch: PAPERCUSP_CHECKPOINT_SCOPE=0 forces the pre-2026-07-01
+  // direct spawn (ops escape hatch, peer of PAPERCUSP_GATEWAY_RPM_SMOOTH).
+  const wantScope = !!isolate && process.env.PAPERCUSP_CHECKPOINT_SCOPE !== '0';
+  const attempt = (argv: string[], fallback: (() => Promise<RunResult>) | null): Promise<RunResult> =>
+    new Promise((resolve) => {
+      const startedAt = Date.now();
+      // P-007: detached → the child is its own process-GROUP leader, so on the timeout we
+      // can SIGTERM the WHOLE group (tsx → npm → vitest workers), not just the tsx parent.
+      // Killing only the parent orphaned the test workers, which kept loading the shared
+      // box past the cap and manufactured the very load-flakes the gate then has to absorb.
+      // (Under the scope wrapper the group leader is systemd-run; the payload inherits
+      // its pgid, so the group kill covers the same tree.)
+      const child = spawn(argv[0], argv.slice(1), {
+        cwd: root,
+        env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: root, ...extraEnv },
+        detached: true,
+      });
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      let sigkiller: NodeJS.Timeout | undefined;
+      const killGroup = (sig: NodeJS.Signals) => {
+        try {
+          if (child.pid) process.kill(-child.pid, sig); // negative pid → the whole group
+        } catch {
+          /* group already gone */
+        }
+      };
+      const killer = setTimeout(() => {
+        killGroup('SIGTERM');
+        // Escalate if a wedged worker ignores SIGTERM, so the group can't linger.
+        sigkiller = setTimeout(() => killGroup('SIGKILL'), 15_000);
+      }, timeoutMs);
+      const finish = (r: RunResult): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killer);
+        if (sigkiller) clearTimeout(sigkiller);
+        resolve(r);
+      };
+      // Scope-launch failure (spawn error / fast systemd-run exit with a launch-shaped
+      // stderr) → retry DIRECT once, so a box without a reachable user bus degrades to
+      // the old same-cgroup behavior instead of red-pinning the gate.
+      const finishOrFallback = (r: RunResult, launchFailed: boolean): void => {
+        if (settled) return;
+        if (fallback && launchFailed) {
+          settled = true;
+          clearTimeout(killer);
+          if (sigkiller) clearTimeout(sigkiller);
+          resolve(fallback());
+          return;
+        }
+        finish(r);
+      };
+      child.stdout.on('data', (d) => (stdout += d.toString()));
+      child.stderr.on('data', (d) => (stderr += d.toString()));
+      child.on('error', (e) => finishOrFallback({ code: 1, stdout, stderr: stderr + String(e) }, true));
+      child.on('close', (code) =>
+        finishOrFallback(
+          { code: code ?? 1, stdout, stderr },
+          code !== 0 && Date.now() - startedAt < 5_000 && SCOPE_LAUNCH_FAILURE_RE.test(stderr),
+        ),
+      );
     });
-    let stdout = '';
-    let stderr = '';
-    let sigkiller: NodeJS.Timeout | undefined;
-    const killGroup = (sig: NodeJS.Signals) => {
-      try {
-        if (child.pid) process.kill(-child.pid, sig); // negative pid → the whole group
-      } catch {
-        /* group already gone */
-      }
-    };
-    const killer = setTimeout(() => {
-      killGroup('SIGTERM');
-      // Escalate if a wedged worker ignores SIGTERM, so the group can't linger.
-      sigkiller = setTimeout(() => killGroup('SIGKILL'), 15_000);
-    }, timeoutMs);
-    const finish = (r: RunResult): void => {
-      clearTimeout(killer);
-      if (sigkiller) clearTimeout(sigkiller);
-      resolve(r);
-    };
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
-    child.on('error', (e) => finish({ code: 1, stdout, stderr: stderr + String(e) }));
-    child.on('close', (code) => finish({ code: code ?? 1, stdout, stderr }));
-  });
+  return wantScope
+    ? attempt(buildIsolatedScopeArgv(base, isolate.memoryMaxG), () => attempt(base, null))
+    : attempt(base, null);
 }
 
 /**
@@ -162,6 +231,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     [],
     GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
     routing.extraEnv,
+    // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
+    // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.
+    { memoryMaxG: CHECKPOINT_SCOPE_MEMORY_MAX_G },
   );
   if (r.code !== 0) {
     console.warn(`[green-checkpoint] exited ${r.code}: ${(r.stderr || r.stdout).slice(-500)}`);

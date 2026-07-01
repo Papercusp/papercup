@@ -39,6 +39,7 @@ import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
 import './release-actions';
 import {
+  buildIsolatedScopeArgv,
   shouldAutoServe,
   shouldBackOff,
   gateStallEscalationBody,
