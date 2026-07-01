@@ -34,13 +34,18 @@ export const FLAGS = {
   // the transition to offline. Infra failures escalate; they don't queue.
   LEARNING_INFRA_HEALTH: "papercusp-learning-infra-health",
   // holepunch-video-shared-harnesses-2026-06-05: gates the desktop P2P video
-  // channel (the participant-grid VideoGrid). OFF by default — ships dark until
-  // the live two-instance camera E2E (P-010) passes on the real Tauri webview.
+  // channel (the participant-grid VideoGrid). Runtime default ON (derived
+  // FLAG_DEFAULTS — not in DARK_FLAGS), made DELIBERATE by
+  // voice-unified-sentinel-pipeline-2026-07-01 P-011: voice/video are the
+  // product surface under active completion; flip OFF via /admin/features to
+  // go dark.
   VIDEO_CHANNELS: "papercusp-video-channels",
   // holepunch-voice-channels-2026-06-05 (P-015/D-014): gates the desktop P2P
   // VOICE-channel surface (VoiceChannelPanel — channel list/join/mute/meter +
-  // mic capture/mix playback over the desktop voice bridge). OFF by default —
-  // ships dark until the supervised live Tauri+mic pass (D-014) lands.
+  // mic capture/mix playback over the desktop voice bridge). Runtime default ON
+  // (derived FLAG_DEFAULTS — not in DARK_FLAGS), made DELIBERATE by
+  // voice-unified-sentinel-pipeline-2026-07-01 P-011; flip OFF via
+  // /admin/features to go dark.
   VOICE_CHANNELS: "papercusp-voice-channels",
   // the-hive-lexicon-2026-06-06: selects the active brand pack for the
   // user-facing LEXICON layer (display strings only — code/DB/MCP/repos are
@@ -760,25 +765,25 @@ export const FLAGS = {
   // sentinel-as-herald-2026-06-21: gates the SENTINEL role — a new always-on
   // autonomous system-health supervisor (sibling to the Queen, mirrors OVERWATCH).
   // The flag gates (a) the `sentinel` role registration, (b) the autonomous wake-loop +
-  // its routine/rule, and (c) the Sentinel UI pane. DEFAULT OFF —
-  // DELIBERATE (NOT the alpha flags-default-on policy): a brand-new, not-yet-proven
-  // AUTONOMOUS role that nudges the running fleet. A confused sentinel must not be
-  // able to thrash the system it protects, so it ships dark until its first live run
-  // on staging proves it. The owner flips it ON after that proof — surfaced loudly in
-  // the plan's ## Now + every lane report.
+  // its routine/rule, and (c) the Sentinel UI pane. Runtime default ON: the
+  // live-run proof landed (sentinel-herald ## Now, verified live 2026-06-24) and
+  // the flag was live-enabled; with the derived FLAG_DEFAULTS inversion it is
+  // ON-by-default and voice-unified-sentinel-pipeline-2026-07-01 P-011 makes
+  // that DELIBERATE — the Sentinel pane is now the one voice brain, so a dark
+  // sentinel means a dead voice product. Flip OFF via /admin/features to go dark.
   SENTINEL: "papercusp-sentinel",
   // sentinel-as-herald-2026-06-21 Phase 5 (P-018..P-022): gates the SERVER-SIDE
   // proactive "decide to speak" sweep — the voice-host periodic tick that lets the
   // Sentinel Herald speak out-of-band (a role:'sentinel' converse turn with trigger
   // 'sentinel_scan', TTS'd + pushed via broadcastOpVoice) with NO desktop UI open,
   // or routes a salient alert via attention-push + hindsight when no live voice
-  // session exists. DEFAULT OFF — DELIBERATE (mirrors SENTINEL; NOT the alpha
-  // flags-default-on policy): a brand-new autonomous speak loop that must not thrash
-  // the user. Triple-gated on top of the flag: humanFacingRole==='sentinel' AND not
-  // DND/paused/over-budget AND the voice-host owns the lease (single-owner). OFF ⇒
-  // the sweep no-ops every tick (live voice + browser-provider proactive ticks are
-  // byte-for-byte unchanged). The owner flips it ON after its first live staging run.
-  // KNOWN_DARK_FLAGS.
+  // session exists. Runtime default ON (derived FLAG_DEFAULTS — live-enabled at
+  // sentinel-herald ship, made DELIBERATE by voice-unified-sentinel-pipeline
+  // P-011). Safe despite being an autonomous speak loop because it is
+  // triple-gated on top of the flag: humanFacingRole==='sentinel' AND not
+  // DND/paused/over-budget AND the voice-host owns the lease (single-owner) —
+  // most ticks are a flag read + no-op. Flip OFF via /admin/features to silence
+  // proactive speech entirely.
   SENTINEL_PROACTIVE: "papercusp-sentinel-proactive",
   // scheduled-recurring-plans-2026-06-16 (P-028 → D-019): the global master switch for
   // the scheduled-plan EXECUTION path — the system:plan-run action + arming. DEFAULT ON

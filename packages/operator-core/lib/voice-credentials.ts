@@ -21,7 +21,6 @@ interface CredentialsPayload {
   cartesia?: { apiKey: string };
   deepgram?: { apiKey: string };
   picovoice?: { apiKey: string };
-  google?: { apiKey: string };
 }
 
 async function readAll(): Promise<CredentialsPayload> {
@@ -96,13 +95,3 @@ export async function writePicovoiceKey(apiKey: string | null): Promise<void> {
   await writeAll(all);
 }
 
-export async function readGoogleKey(): Promise<string | null> {
-  return (await readAll()).google?.apiKey ?? null;
-}
-
-export async function writeGoogleKey(apiKey: string | null): Promise<void> {
-  const all = await readAll();
-  if (apiKey === null) delete all.google;
-  else all.google = { ...all.google, apiKey };
-  await writeAll(all);
-}
