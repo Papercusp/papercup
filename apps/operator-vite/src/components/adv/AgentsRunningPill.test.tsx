@@ -170,7 +170,11 @@ describe('<AgentsRunningPill>', () => {
     fireEvent.click(screen.getByTestId('agent-row-q1'));
     const modal = screen.getByTestId('inspector-modal');
     expect(modal.getAttribute('data-run')).toBe('sess-abc');
-    expect(modal.getAttribute('data-url')).toContain('/api/adv/session/thinking?sessionId=sess-abc');
+    const url = modal.getAttribute('data-url') ?? '';
+    expect(url).toContain('/api/adv/session/thinking?sessionId=sess-abc');
+    // The owner hint lets the backend jump straight to the session's isolation
+    // dir instead of sweeping all of them (the ~3s → ms fix).
+    expect(url).toContain('&owner=q1');
   });
 
   it('clicking the ROW opens thinking for an agent with a run; pins for one without', () => {

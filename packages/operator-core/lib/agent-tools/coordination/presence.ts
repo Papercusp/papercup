@@ -22,6 +22,10 @@ import {
 } from '@papercusp/coordination/presence';
 import { deriveAgentRole, deriveFleetMembership, type AgentIdentity } from './identity';
 import { writeSessionBrief } from '../../session-brief';
+import {
+  appendFleetMembershipEvent,
+  appendFleetMembershipIfAbsent,
+} from '../../fleet-membership-store';
 
 export { PRESENCE_STALE_MS };
 export type { PresenceInput, PresenceRecord };
