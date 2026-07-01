@@ -186,6 +186,11 @@ const USAGE_LIMIT_DEFAULT_PAUSE_MS = 60 * 60 * 1000;
  *  fail over — instead of forwarding the 403, which hard-fails the bee AND, when the account is
  *  active(), 403-blocks the WHOLE fleet (the avi-storewolf incident, 2026-06-18). */
 const ORG_DISALLOW_PAUSE_MS = 6 * 60 * 60 * 1000;
+/** Consecutive org-disallowed 403s from ONE account that trigger PERSISTENT deactivation (`onOrgDisallowed`).
+ *  Default 1: org-disable is a DEFINITIVE Anthropic-side permission_error (not a transient throttle), AND the
+ *  account is PAUSED out of rotation on the first hit — so a higher streak could never accumulate (it is never
+ *  re-selected; the in-memory streak also resets on restart). Deactivate on the first hit. Tunable via deps. */
+const DEFAULT_ORG_DISALLOWED_DEACTIVATE_THRESHOLD = 1;
 /** Body signatures of an org/subscription disqualification (403). Covers both observed forms: the
  *  OAuth-org disallow ("OAuth authentication is currently not allowed for this organization") and the
  *  spawned-claude-code disallow ("Claude subscription disabled for Claude Code"). */
@@ -598,6 +603,16 @@ export interface GatewayDeps {
   /** Consecutive-401 streak that marks a credential DEAD (vs stale-cached) → fires `onCredentialDead`.
    *  Default `DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD` (3); tests inject a small value. ≤0 disables the alert. */
   credential401DeadThreshold?: number;
+  /** ORG-DISALLOWED persistent deactivation. Fired FIRE-AND-FORGET the first time an account returns
+   *  `orgDisallowedDeactivateThreshold` consecutive org/subscription-disqualified 403s ("not allowed for this
+   *  organization" / "subscription disabled for claude code") — a PERMANENT Anthropic-side disable the 6h
+   *  in-memory pause can't cure (it resets on every gateway restart, re-exposing the dead account — aviynw,
+   *  2026-07-01). The launch layer wires this to PERSISTENTLY remove the account from the pool (survives
+   *  restarts, never re-selected) + a loud escalation. The per-account streak resets on the next 2xx. */
+  onOrgDisallowed?(info: { accountId: string; consecutive: number }): void;
+  /** Consecutive org-disallowed 403s that trigger `onOrgDisallowed` deactivation. Default
+   *  `DEFAULT_ORG_DISALLOWED_DEACTIVATE_THRESHOLD` (1 — fire on the first definitive hit). ≤0 disables. */
+  orgDisallowedDeactivateThreshold?: number;
 }
 
 export interface GatewayStats {
@@ -927,6 +942,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
   const bare429FailoverBackoffMs = deps.bare429FailoverBackoffMs ?? BARE_429_FAILOVER_BACKOFF_MS;
   const credential401DeadThreshold = deps.credential401DeadThreshold ?? DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD;
+  const orgDisallowedDeactivateThreshold =
+    deps.orgDisallowedDeactivateThreshold ?? DEFAULT_ORG_DISALLOWED_DEACTIVATE_THRESHOLD;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   // Default OFF: the LAUNCH layer (startGatewayService) opts production in from the env (like priorityTiers).
   // Off-by-default keeps every direct-construction unit test byte-identical (their tiny maxQueueWaitMs is
@@ -1155,6 +1172,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  fire the loud `onCredentialDead` side-channel ONCE per episode. RESET on the next successful auth (a 2xx
    *  for that account — see the 2xx success path), which re-arms the alert for a later episode. */
   const credential401Streak = new Map<string, number>();
+  const orgDisallowedStreak = new Map<string, number>();
   // ── Per-account egress IP POOL rotation (gateway-per-account-egress-ip-pool-2026-06-30) ──────────────
   // An account can carry a POOL of egress IPs (ActiveAccount.egressPool). The gateway round-robins an
   // account's upstream across its IPs, and a bare-burst 429 (Cloudflare per-IP edge throttle) / transport
@@ -2483,7 +2501,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
               const resetAt = Date.now() + ORG_DISALLOW_PAUSE_MS;
               gov.penalize({ resetAt });
               internalRetry = { rotate: true, backoffMs: 0, exhaustResetAt: resetAt };
-              log('warn', `inference-gateway: account '${active.accountId}' org/subscription-disallowed (403) → pausing ${Math.round(ORG_DISALLOW_PAUSE_MS / 3600000)}h + failover to a healthy account`);
+              // PERMANENT disqualification, NOT a transient throttle: this 6h pause is IN-MEMORY, so it resets on
+              // every gateway restart, re-exposing the dead account (aviynw org-disabled its OAuth 2026-07-01; the
+              // pause cleared on each bg-host restart so the next bee kept hitting "subscription disabled"). On a
+              // short consecutive streak, fire the persistent-deactivate side-channel ONCE so the launch layer
+              // removes it from the pool for good. The streak resets on the next 2xx for this account (below).
+              const orgStreak = (orgDisallowedStreak.get(active.accountId) ?? 0) + 1;
+              orgDisallowedStreak.set(active.accountId, orgStreak);
+              if (orgDisallowedDeactivateThreshold > 0 && orgStreak === orgDisallowedDeactivateThreshold) {
+                log('error', `inference-gateway: account '${active.accountId}' PERMANENTLY org/subscription-disallowed (${orgStreak} consecutive 403s) → deactivating it from the pool + failover`);
+                try {
+                  deps.onOrgDisallowed?.({ accountId: active.accountId, consecutive: orgStreak });
+                } catch {
+                  /* fire-and-forget: the deactivate side-channel must NEVER throw into the request hot path */
+                }
+              } else {
+                log('warn', `inference-gateway: account '${active.accountId}' org/subscription-disallowed (403) → pausing ${Math.round(ORG_DISALLOW_PAUSE_MS / 3600000)}h + failover (org-disallowed streak ${orgStreak}/${orgDisallowedDeactivateThreshold})`);
+              }
             }
           }
         } else if (up.status === 401) {
@@ -2713,6 +2747,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // its consecutive-401 streak so a later dead-credential episode re-arms a fresh alert (and a
           // recovered-but-previously-flapping credential never carries a stale streak into a false alert).
           if (credential401Streak.has(active.accountId)) credential401Streak.delete(active.accountId);
+          if (orgDisallowedStreak.has(active.accountId)) orgDisallowedStreak.delete(active.accountId);
           // BARE-429 PERSISTENCE CIRCUIT: a 2xx means this account's egress IP is serving again → clear its
           // bare-429 streak so a recovered IP rejoins rotation at the base 15s pace (no stale escalation).
           if (bare429Streak.has(active.accountId)) bare429Streak.delete(active.accountId);

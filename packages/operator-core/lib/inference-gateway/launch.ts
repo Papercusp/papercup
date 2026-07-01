@@ -230,6 +230,70 @@ function makeCredentialHealthAlert(
   };
 }
 
+/**
+ * Build the gateway `onOrgDisallowed` side-channel. The gateway calls this FIRE-AND-FORGET the first time an
+ * account returns a short streak of org/subscription-disqualified 403s ("not allowed for this organization" /
+ * "subscription disabled for claude code") — a PERMANENT Anthropic-side disable the 6h in-memory pause can't
+ * cure (it resets on every gateway restart, re-exposing the dead account: aviynw, 2026-07-01). We PERSISTENTLY
+ * remove the account from the pool (survives restarts, never re-selected) + surface a LOUD transition-only
+ * escalation + fleet broadcast. Best-effort: every IO failure is swallowed (must never throw into the gateway).
+ */
+function makeOrgDisallowedDeactivator(
+  ws: string | undefined,
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void,
+): (info: { accountId: string; consecutive: number }) => void {
+  const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
+  return ({ accountId, consecutive }) => {
+    void (async () => {
+      const summary = `Inference account '${accountId}' is org/subscription-DISABLED for Claude Code — removed from the pool`;
+      const body =
+        `Account '${accountId}' returned ${consecutive} consecutive org/subscription-disqualified 403s ("not allowed for this organization" / "subscription disabled for claude code") — a PERMANENT Anthropic-side disable, NOT a throttle. The gateway's 6h pause only lived in memory + reset on every restart, so the dead account kept re-entering rotation and failing spawns. It has now been PERSISTENTLY removed from the pool. ` +
+        `To restore it: re-enable OAuth API / Claude Code access in that account's Anthropic organization, then re-register it (accounts:register).`;
+      // 1. PERSISTENTLY remove the dead account (survives gateway/bg-host restarts; the in-memory pause did not).
+      try {
+        const [{ loadAccountPool, saveAccountPool }, { removeAccount }] = await Promise.all([
+          import('../deployment/account-pool-store'),
+          import('../deployment/account-pool'),
+        ]);
+        const pool = await loadAccountPool(ws);
+        if (pool.accounts.some((a) => a.id === accountId)) {
+          await saveAccountPool(removeAccount(pool, accountId), ws);
+          log('error', `inference-gateway: PERSISTENTLY removed org-disabled account '${accountId}' from the pool (${consecutive} consecutive org-disallowed 403s)`);
+        }
+      } catch (e) {
+        log('warn', `org-disallowed persistent removal of '${accountId}' failed: ${(e as Error).message}`);
+      }
+      // 2. Durable, transition-only escalation (idempotent per dead account).
+      try {
+        const { openEscalation, listEscalations } = await import('../agent-tools/coordination/escalations');
+        const open = await listEscalations({ status: 'open' });
+        const already = open.some(
+          (e) =>
+            (e as Record<string, unknown>).source === 'account-org-disallowed' &&
+            (e as Record<string, unknown>).deadAccountId === accountId,
+        );
+        if (!already) {
+          await openEscalation(identity, {
+            severity: 'blocker',
+            summary,
+            body,
+            meta: { source: 'account-org-disallowed', deadAccountId: accountId, consecutive },
+          });
+        }
+      } catch (e) {
+        log('warn', `org-disallowed escalation failed for '${accountId}': ${(e as Error).message}`);
+      }
+      // 3. Loud fleet broadcast (best-effort, independent of the escalation).
+      try {
+        const { sendMessage } = await import('../agent-tools/coordination/messages');
+        await sendMessage(identity, { to: ['*'], summary, body, category: 'service-health' });
+      } catch (e) {
+        log('warn', `org-disallowed broadcast failed for '${accountId}': ${(e as Error).message}`);
+      }
+    })();
+  };
+}
+
 function createOptionalFailoverPool(
   entries: readonly ActiveAccount[],
   opts: FailoverPoolOptions = {},
@@ -357,6 +421,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     onResponse: makeWindowProjector(opts.workspace, log),
     // #5 PART A: a DEAD credential (consecutive 401s despite refresh) fires a loud escalation + broadcast.
     onCredentialDead: makeCredentialHealthAlert(opts.workspace, log),
+    // org-disable is a PERMANENT Anthropic-side disqualification, not a throttle — the gateway's in-memory
+    // pause resets on restart, so persistently REMOVE the dead account from the pool (+ loud escalation).
+    onOrgDisallowed: makeOrgDisallowedDeactivator(opts.workspace, log),
     // B-HOT-2: expose the live config + on-demand hot-reload over /admin/config + /admin/reload.
     // `reloadPool` is a hoisted function declaration; `configVersion`/`accounts` are read lazily at
     // request time (after their initialisers run), so referencing them here is safe.
