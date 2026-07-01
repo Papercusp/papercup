@@ -126,6 +126,36 @@ export function filterTscOutputToPaths(
   return { matchedErrors: matchedLines.length, totalErrors, matchedLines };
 }
 
+// EI-6073: the papercusp-su MCP transport hard-caps a tool call at ~55s. A FOREGROUND
+// typecheck/test on a large package (operator-core's tsc runs 60-90s) is killed by the
+// transport with an opaque `request_timeout` BEFORE this handler can respond — so the agent
+// never learns the durable fix is a detached run, and the very capability that exists to
+// remove the "shell out + poll" friction pushes them back to it. Clamp the FOREGROUND command
+// timeout safely below the cap so the tool ALWAYS self-times-out first (status:'timed_out')
+// and returns an actionable "re-run with run_in_background" hint. A background run is uncapped
+// (it returns a bash_id immediately), so it is never clamped.
+export const MCP_TRANSPORT_CAP_MS = 55_000;
+/** Foreground ceiling — below the transport cap, with ~5s headroom to serialize the response. */
+export const FOREGROUND_TIMEOUT_CEILING_MS = 50_000;
+
+/** Clamp a FOREGROUND command timeout below the MCP transport cap (EI-6073). Background is uncapped. */
+export function clampForegroundTimeoutMs(requestedMs: number): number {
+  return Math.min(requestedMs, FOREGROUND_TIMEOUT_CEILING_MS);
+}
+
+/**
+ * The actionable hint appended when a FOREGROUND run hit the clamped ceiling (EI-6073) — turns an
+ * opaque timeout into "this is too large to verify inline; re-run detached and poll". Empty for a
+ * completed/failed run. Pure + exported for unit testing.
+ */
+export function foregroundTimeoutHint(status: string, timeoutMs: number): string {
+  if (status !== 'timed_out') return '';
+  return (
+    `\n⏱ hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (kept below the ~55s MCP transport limit so this returns a hint instead of an opaque request_timeout). ` +
+    `This target is too large to verify inline — re-run detached: capability:inspect { …same args…, run_in_background: true }, then poll capability:bash_output.`
+  );
+}
+
 export default defineTool({
   name: 'capability:inspect',
   description:
@@ -177,7 +207,9 @@ export default defineTool({
       .positive()
       .max(MAX_TIMEOUT_MS)
       .optional()
-      .describe(`Wall-clock timeout in ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}).`),
+      .describe(
+        `Wall-clock timeout in ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}). A FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms (below the ~55s MCP transport cap) so it returns a hint instead of an opaque request_timeout — for a longer run pass run_in_background:true (uncapped).`,
+      ),
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
@@ -185,12 +217,14 @@ export default defineTool({
     if (!resolved.ok) return err(resolved.reason, resolved.message);
     const { command, cwd } = resolved;
 
-    const timeoutMs = args.timeout ?? DEFAULT_TIMEOUT_MS;
+    const requestedTimeoutMs = args.timeout ?? DEFAULT_TIMEOUT_MS;
     // Reuse the capability:bash OS sandbox (P-022/D-008) on the operator-side exec.
     const sandboxEnabled = await capabilityExecSandboxEnabled();
 
     if (args.run_in_background) {
-      const job = startBackground({ command, cwd, stateDir: ctx.stateDir, sandboxEnabled }, timeoutMs);
+      // Background is uncapped by the MCP transport (returns a bash_id immediately), so it
+      // honors the full requested timeout.
+      const job = startBackground({ command, cwd, stateDir: ctx.stateDir, sandboxEnabled }, requestedTimeoutMs);
       return {
         content: [
           {
@@ -210,6 +244,10 @@ export default defineTool({
       };
     }
 
+    // EI-6073: clamp the foreground timeout below the ~55s MCP transport cap so the tool
+    // returns a graceful timeout + hint instead of being hard-killed with an opaque
+    // request_timeout (the friction on large packages like operator-core).
+    const timeoutMs = clampForegroundTimeoutMs(requestedTimeoutMs);
     const r = await runForeground(
       { command, cwd, stateDir: ctx.stateDir, onChunk: (chunk) => ctx.emit('output', chunk), sandboxEnabled },
       ctx.signal,
@@ -228,7 +266,7 @@ export default defineTool({
         `${f.matchedErrors} matching error(s) of ${f.totalErrors} total` +
         (r.truncated ? ` · ⚠ output truncated (${r.totalBytes} bytes) → ${r.logPath}; the filter saw the head only` : '');
       const body = f.matchedLines.length > 0 ? f.matchedLines.join('\n') : '(no tsc errors in the specified paths)';
-      return { content: [{ type: 'text' as const, text: `${summary}\n${body}` }], isError: false };
+      return { content: [{ type: 'text' as const, text: `${summary}${foregroundTimeoutHint(r.status, timeoutMs)}\n${body}` }], isError: false };
     }
 
     const header =
@@ -238,7 +276,7 @@ export default defineTool({
       (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '');
 
     return {
-      content: [{ type: 'text' as const, text: `${header}\n${r.output || '(no output)'}` }],
+      content: [{ type: 'text' as const, text: `${header}${foregroundTimeoutHint(r.status, timeoutMs)}\n${r.output || '(no output)'}` }],
       isError: r.status === 'failed' && r.exitCode === null,
     };
   },
