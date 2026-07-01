@@ -18,6 +18,9 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: H.ac
 vi.mock('@/app/coord/presence-ui', () => ({
   LivenessDot: ({ liveness }: { liveness: string }) => <span data-testid={`dot-${liveness}`} />,
 }));
+vi.mock('@/app/harness/AgentInspectorModal', () => ({
+  default: ({ runId }: { runId: string }) => <div data-testid="inspector-modal" data-run={runId} />,
+}));
 
 const nuqs = vi.hoisted(() => ({ open: false, set: vi.fn() }));
 vi.mock('nuqs', () => ({
@@ -133,5 +136,27 @@ describe('<AgentsRunningPill>', () => {
     render(<Pill />);
     fireEvent.click(screen.getByTestId('agent-row-q1'));
     expect(screen.getByTestId('agent-detail').textContent).toContain('pinned');
+  });
+
+  it('shows a Live-thinking action ONLY for an agent with a resolvable run (guarded — no dead button)', () => {
+    H.active = [
+      agent({ ownerId: 'bee1', role: 'bee', runId: 'launch-123', harnessSlug: 'papercusp' }),
+      agent({ ownerId: 'su1', role: 'su' }), // no runId → no action
+    ];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-bee1'));
+    expect(screen.getByTestId('agent-inspect-btn')).toBeTruthy();
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-su1'));
+    expect(screen.queryByTestId('agent-inspect-btn')).toBeNull();
+  });
+
+  it('clicking Live thinking opens the inspector for that run', () => {
+    H.active = [agent({ ownerId: 'bee1', role: 'bee', runId: 'launch-xyz', harnessSlug: 'papercusp' })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-bee1'));
+    fireEvent.click(screen.getByTestId('agent-inspect-btn'));
+    expect(screen.getByTestId('inspector-modal').getAttribute('data-run')).toBe('launch-xyz');
   });
 });
