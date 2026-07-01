@@ -88,6 +88,16 @@ export default function LocalHivesControl() {
           </button>
         </div>
       ))}
+      {hives.length > 0 && (
+        <div
+          className="pclsb-panel__hint"
+          data-testid="queen-tab-pointer"
+          style={{ padding: '6px 8px 4px', fontSize: 11, color: 'var(--fg-mute)', lineHeight: 1.45, borderTop: '1px solid var(--border)' }}
+        >
+          ▸ Start/Stop chooses <em>which hives run</em>. Pick each hive's{' '}
+          <strong>plan focus &amp; work-item steering</strong> in the 👑 Queen tab (left sidebar).
+        </div>
+      )}
     </div>
   );
 }

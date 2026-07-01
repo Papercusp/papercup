@@ -165,7 +165,7 @@ export async function assemblePresenceSnapshot(
   opts: { owner?: string; nowMs?: number; detail?: { coordinationDomain: string } } = {},
 ): Promise<PresenceSnapshot> {
   const { wsId, hiveId, scope, scopeNote } = resolved;
-  const [records, federated, recordedLive, onDesktopSet, viewerSet] = await Promise.all([
+  const [records, federated, recordedLive] = await Promise.all([
     listPresence({ workspaceId: wsId, hiveSlug: hiveId }),
     listFederatedPresence({ workspaceId: wsId, hiveSlug: hiveId }),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
@@ -178,33 +178,13 @@ export async function assemblePresenceSnapshot(
     hiveId == null
       ? listRecordedLiveSessions({ workspaceId: wsId })
       : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
-    // On-desktop / viewer-attached owners — gathered here (not just for the
-    // enrichment below) so the presence reaper can spare them (both best-effort →
-    // empty on a headless box / DB hiccup, so a failure only ever spares MORE).
-    gatherOnDesktopSessions()
-      .then((s) => s.owners)
-      .catch(() => new Set<string>()),
-    gatherViewerAttachedOwners().catch(() => new Set<string>()),
+    // Blunt 24h GC of long-dead rows (the pre-existing backstop). NOTE: ended-row
+    // retention is otherwise handled READ-SIDE only — `selectRosterRows` excludes
+    // `ended` rows from the default payload WITHOUT deleting them, so their history
+    // survives for the presence-coord-unification append-only log (P-002). No new
+    // short-TTL deletion is added here until that log preserves the history first.
+    sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
   ]);
-
-  // Dead-row-retention reaper (runs on this always-on read path, not just the
-  // flag-gated routine): evict genuinely-ENDED rows on a SHORT TTL + the blunt 24h
-  // backstop, sparing parked (wakeable) + on-desktop/viewer sessions and scoped to
-  // this read. Skipped for a targeted `owner` read — that is a pure inspection of a
-  // (possibly dead) agent and must not mutate the row it is returning. Best-effort:
-  // a sweep failure must never break the roster read.
-  if (!opts.owner) {
-    const protectedOwners = new Set<string>([...onDesktopSet, ...viewerSet]);
-    await Promise.all([
-      sweepEndedPresence({
-        ttlMs: PRESENCE_ENDED_REAP_MS,
-        protectedOwners,
-        workspaceId: wsId,
-        hiveSlug: hiveId,
-      }).catch(() => 0),
-      sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
-    ]);
-  }
   // Reconcile the two liveness sources: a fresh presence row wins; a live
   // session-log record supersedes a STALE presence row (so a resumed-but-idle
   // session whose old heartbeat went stale is still surfaced, not shadowed); an
