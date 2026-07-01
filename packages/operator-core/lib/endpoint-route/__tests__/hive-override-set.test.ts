@@ -8,11 +8,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
-const setPromptMock = vi.fn(async () => {});
-const deletePromptMock = vi.fn(async () => true);
-const setConfigMock = vi.fn(async () => {});
-const deleteConfigMock = vi.fn(async () => true);
-const invalidateMock = vi.fn(async () => {});
+const setPromptMock = vi.fn(async (..._a: unknown[]) => {});
+const deletePromptMock = vi.fn(async (..._a: unknown[]) => true);
+const setConfigMock = vi.fn(async (..._a: unknown[]) => {});
+const deleteConfigMock = vi.fn(async (..._a: unknown[]) => true);
+const invalidateMock = vi.fn(async (..._a: unknown[]) => {});
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'w' }));
 vi.mock('../../hive-settings-store', () => ({

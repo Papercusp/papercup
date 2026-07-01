@@ -14,7 +14,7 @@ const mkBoundary = (
   workspaceId: string,
   hiveSlug: string,
   drainImpl: () => Promise<{ delivered: number; pending: number; failedPeers: string[]; backedOffPeers: string[] }>,
-) => ({ workspaceId, hiveSlug, drain: vi.fn(drainImpl) }) as never;
+) => ({ workspaceId, hiveSlug, drain: vi.fn(drainImpl) });
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.restoreAllMocks());
