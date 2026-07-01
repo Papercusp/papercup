@@ -310,6 +310,8 @@ draining peers first is the polite default on a busy box. Design:
 
 <!-- PAPERCUSP-SU:AUTO-MODE -->
 
+<!-- PAPERCUSP-SU:COMPACTION -->
+
 ## Looping — recur via the ENGINE loop, not Claude /loop
 
 To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("put

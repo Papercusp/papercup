@@ -620,8 +620,24 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // Claude/Opus/GPT sessions that don't opt in). The tier comes from the MODEL, never
   // the client (D-004: OMP runs weak AND strong models). URLSearchParams encodes the
   // colon/comma tool names; parseToolsAllowlist decodes them server-side.
-  const wantsTrim = input.contextSize === 'trimmed' || modelCapabilityTier(input.model) === 'weak';
-  if (wantsTrim) {
+  // dynamic-tool-surface-2026-07-01: the `?tools=` core spine is now a SEED, not a
+  // hard cap — the server (getSessionSurface) treats it as a floor that GROWS on
+  // demand (tools:find → notifications/tools/list_changed → the client re-fetches
+  // tools/list), and the core spine carries BOTH tools:find (discover) AND
+  // tools:invoke (call anything by name without listing it — the universal
+  // reachability hatch). So seeding no longer strands the long tail.
+  //   • trimmed / weak → seed (as before): the surface a small model can wield.
+  //   • codex (D-004) → seed BY DEFAULT on ANY tier: codex loads the whole
+  //     tools/list up front (~140k tokens) on every model, so the seed is a pure
+  //     token-cost win now that reachability is preserved. `contextSize:'full'`
+  //     opts it back into the full catalog.
+  //   • claude → NOT default-seeded (D-001/D-005): it keeps native ToolSearch. It
+  //     still honors an explicit trimmed/weak seed via the first two conditions.
+  const wantsSeed =
+    input.contextSize === 'trimmed' ||
+    modelCapabilityTier(input.model) === 'weak' ||
+    (input.agent === 'codex' && input.contextSize !== 'full');
+  if (wantsSeed) {
     mcpUrl.searchParams.set('tools', CORE_MCP_TOOL_NAMES.join(','));
   }
   const mcpUrlStr = mcpUrl.toString();

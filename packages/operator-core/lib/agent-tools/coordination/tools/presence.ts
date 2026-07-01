@@ -13,7 +13,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
 import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
@@ -28,11 +28,27 @@ export default defineTool({
     notWhen: 'A specific file\'s freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion. The full ended-agent list is not returned (use `owner:<id>`, or `summary.byState.ended` for the count).',
     chaining:
       'Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions.',
-    seeAlso: [
-      'coord:roster { view:"live" } (the unified presence/roster door with lenses)',
-      'coord:glance (one-line fleet headline for a status surface)',
-      'coord:dispatch (wake/dispatch a parked agent you spotted)',
-    ],
+    // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
+    // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
+    // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
+    // relevant, so they stay static in the returned list.
+    seeAlso: (result) => {
+      const j = readJsonResult<{ summary?: { byState?: { ended?: number } } }>(result);
+      const ended = j?.summary?.byState?.ended ?? 0;
+      const out: SeeAlsoEntry[] = [
+        'coord:roster { view:"live" } (the unified presence/roster door with lenses)',
+        'coord:glance (one-line fleet headline for a status surface)',
+        'coord:dispatch (wake/dispatch a parked agent you spotted)',
+      ];
+      if (ended > 0) {
+        out.push({
+          tool: 'coord:roster',
+          selector: '{ view:"history" }',
+          reason: `${ended} ended — who-was-ever-here`,
+        });
+      }
+      return out;
+    },
   },
   capability: 'coord:read',
   requirePrincipal: false,

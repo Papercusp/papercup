@@ -87,6 +87,17 @@ export const PROJECT_GUIDE_MARKER = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
 export const AUTO_MODE_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
 
 /**
+ * Marker for the agent self-management compaction protocol
+ * (agent-managed-compaction-2026-07-01) — the soft-limit / 90%–125% /
+ * set_compaction_limit / session:request_compaction contract the AGENT follows to
+ * manage its own context. Canonical source is the projected file
+ * apps/operator/prompts/papercusp-compaction.protocol.md; spliced by
+ * renderSuPlaybook / writeSplicedPlaybook. Same contract: absent marker leaves the
+ * section out; an empty file removes the marker (never shipped literally).
+ */
+export const COMPACTION_MARKER = '<!-- PAPERCUSP-SU:COMPACTION -->';
+
+/**
  * Splice generated `content` into `base` at `marker`. Replaces ALL marker
  * occurrences; with an absent marker the content is appended (when non-empty);
  * an empty content with a present marker just removes it. Generalizes the

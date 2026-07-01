@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER } from './splice-tooling-overlay';
+import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER } from './splice-tooling-overlay';
 import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
@@ -160,6 +160,20 @@ async function readAgentOverlay(baseSrc: string, agent: string, overlayDir?: str
   }
 }
 
+/** Read the agent self-management compaction protocol
+ *  (`papercusp-compaction.protocol.md`) beside the base playbook; missing → ''
+ *  (the marker is still removed, never shipped literally). Client-neutral — the
+ *  same protocol for every agent. agent-managed-compaction-2026-07-01. */
+async function readCompactionProtocol(baseSrc: string, overlayDir?: string): Promise<string> {
+  const p = path.join(overlayDir ?? path.dirname(baseSrc), 'papercusp-compaction.protocol.md');
+  try {
+    return (await fs.readFile(p, 'utf8')).replace(/\n+$/, '');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw e;
+  }
+}
+
 /**
  * Wrap the project guide (the repo's `CLAUDE.md`) for splicing into a psu
  * playbook (psu-isolation P-001 / D-002). Empty guide → '' so the marker is
@@ -273,6 +287,8 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   // invent-vs-patch switch and the AUTO×IDEATE composition table) — profile-agnostic, so both
   // engineer + power get the one canonical clause spliced here at the (still-named) AUTO marker.
   out = spliceGeneratedSection(out, AUTO_MODE_MARKER, renderModesPolicy());
+  // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
+  out = spliceGeneratedSection(out, COMPACTION_MARKER, await readCompactionProtocol(baseSrc));
   out = injectSharedBaseNotes(out);
   // Project guide (P-001): engineer-profile install splices the repo's CLAUDE.md.
   if (out.includes(PROJECT_GUIDE_MARKER)) {
@@ -656,9 +672,15 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // every interactive su surface), so splice them BEFORE the engineer-only shared-base notes —
   // both engineer + power carry the marker and get the one canonical clause.
   const withAuto = spliceGeneratedSection(withPromo, AUTO_MODE_MARKER, renderModesPolicy());
+  // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
+  const withCompaction = spliceGeneratedSection(
+    withAuto,
+    COMPACTION_MARKER,
+    await readCompactionProtocol(baseSource, input.overlayDir),
+  );
   // Only the ENGINEER profile works the Papercusp repo (where this pipeline + its green gate live);
   // the power profile manages an EXTERNAL repo, so the Papercusp-specific note does not apply there.
-  const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withAuto) : withAuto;
+  const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withCompaction) : withCompaction;
   // Project guide (P-001 / D-002): splice the repo's CLAUDE.md so a psu session
   // gets the full project conventions via psu, not client auto-load. Only read
   // the (large) guide file when the base actually carries the marker.

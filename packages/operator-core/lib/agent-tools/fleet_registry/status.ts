@@ -7,7 +7,7 @@
  * fleet and exactly what each is doing", the per-fleet analog of coord:presence.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
 import { listFleetRoster } from '../../fleet/fleet-roster';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';

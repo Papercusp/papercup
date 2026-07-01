@@ -375,13 +375,21 @@ describe('buildSuLaunchSpec — model-tier / contextSize ?tools= allowlist lever
     expect(u.searchParams.get('workspace')).toBe('default');
   });
 
-  it('codex + full ⇒ NO tools= param (whole catalog advertised)', async () => {
+  it('codex + full ⇒ NO tools= param (explicit opt-out into the whole catalog)', async () => {
     expect((await suMcpUrl('codex', { contextSize: 'full' })).searchParams.has('tools')).toBe(false);
   });
 
-  it('codex + omitted, no model ⇒ NO tools= param (frontier default)', async () => {
-    expect((await suMcpUrl('codex')).searchParams.has('tools')).toBe(false);
-    expect((await suMcpUrl('codex', { contextSize: null })).searchParams.has('tools')).toBe(false);
+  // dynamic-tool-surface D-004: codex now SEEDS the core spine BY DEFAULT (any tier)
+  // for the token-cost win — the seed is a growable floor (tools:find → list_changed
+  // re-fetch) + tools:invoke reaches the tail, so nothing is stranded. Only an
+  // explicit contextSize:'full' opts codex back into the ~140k-token full catalog.
+  it('codex + omitted, no model ⇒ tools= present (seed-by-default, D-004 token win)', async () => {
+    expect((await suMcpUrl('codex')).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('codex', { contextSize: null })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+  });
+
+  it('codex + FRONTIER model ⇒ tools= present (seed-by-default holds on strong models too)', async () => {
+    expect((await suMcpUrl('codex', { model: FRONTIER })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
   });
 
   // weak-model-tool-tier: when contextSize is omitted, the tier is derived from the MODEL.

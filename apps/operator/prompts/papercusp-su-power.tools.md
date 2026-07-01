@@ -591,6 +591,8 @@ identical on every client.
 
 <!-- PAPERCUSP-SU:AUTO-MODE -->
 
+<!-- PAPERCUSP-SU:COMPACTION -->
+
 **To RECUR on a cadence, declare an ENGINE loop — do NOT self-pace with your
 client's native `/loop` / `ScheduleWakeup`.** When you and the user want to keep
 working a plan/goal **warm** on a recurring cadence ("put this on a loop"), call
