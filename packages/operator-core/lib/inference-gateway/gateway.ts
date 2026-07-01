@@ -46,6 +46,15 @@ import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } fr
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
 import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
+import {
+  codexCliResponsesBody,
+  extractResponsesInputText,
+  parseBridgeModel,
+  runCodexCliCompletion,
+  type CodexCliAccount,
+  type CodexCliRunOpts,
+  type CodexCliRunResult,
+} from './codex-cli-bridge';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey } from './egress-dispatcher';
@@ -494,6 +503,14 @@ export interface GatewayDeps {
   /** Codex/OpenAI-compatible account pool. When present, non-Anthropic `/v1/*` routes
    *  (for example `/v1/responses`) are forwarded through this pool with bearer injection. */
   codexPool?: AccountPool;
+  /** ChatGPT-SUBSCRIPTION codex accounts (credentialRef `codex-cli:<CODEX_HOME>`) served by
+   *  DRIVING the codex CLI instead of HTTP-with-a-bearer (codex-cli-bridge.ts). A getter so the
+   *  launch layer's account hot-reload applies without a gateway restart. Selection: an explicit
+   *  `x-papercusp-account` pin to one of these ids, or the FALLBACK when no bearer pool exists /
+   *  the bearer pool has no available account. */
+  codexCliAccounts?: () => CodexCliAccount[];
+  /** Test seam: the codex-CLI completion runner (default runCodexCliCompletion). */
+  codexCliRun?: (opts: CodexCliRunOpts) => Promise<CodexCliRunResult>;
   /** Upstream base URL. Default `https://api.anthropic.com`; a fake in tests. */
   upstreamBase?: string;
   /** OpenAI-compatible upstream base URL. Default `https://api.openai.com`. */
@@ -975,6 +992,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     ...(tierLayer ? { tiers: tierLayer.config } : {}),
   });
   const codexConcurrency = Math.max(1, Math.floor(deps.codexConcurrency ?? DEFAULT_CODEX_CONCURRENCY));
+  // ChatGPT-subscription bridge (codex-cli-bridge.ts): CLI-served codex accounts + the runner.
+  const codexCliAccounts = () => deps.codexCliAccounts?.() ?? [];
+  const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
   const codexQueue = new PriorityAdmissionQueue({
     maxConcurrent: codexConcurrency,
     agingIntervalMs: deps.agingIntervalMs,
@@ -2855,28 +2875,117 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
-  async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
-    const adapter = providerAdapters.codex;
-    if (!adapter.pool || !adapter.upstreamBase) {
-      req.resume();
-      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: adapter.unavailableMessage ?? 'inference-gateway: Codex provider unavailable' }, gateway: true });
+  /** Serve one `/v1/responses` request by driving the codex CLI on a ChatGPT-subscription
+   *  account (codex-cli-bridge.ts). Non-streaming only; runs INSIDE the codex admission
+   *  queue (same slot accounting as the bearer path), so concurrent CLI spawns are bounded
+   *  by codexConcurrency. */
+  async function serveCodexCliBridge(req: http.IncomingMessage, res: http.ServerResponse, cli: CodexCliAccount) {
+    totalRequests++;
+    codexRequests++;
+    let bodyBuf: Buffer;
+    try {
+      bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
+    } catch {
+      try {
+        req.destroy();
+      } catch {
+        /* already torn down */
+      }
+      if (!res.headersSent) {
+        sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex-cli request body read stalled; retry shortly' }, gateway: true });
+      }
       return;
     }
-    const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
-    let active: ActiveAccount;
+    let body: { model?: unknown; input?: unknown; instructions?: unknown; stream?: unknown } = {};
     try {
-      const pinned = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
-      active = pinned ?? adapter.pool.active();
-    } catch (e) {
-      req.resume();
-      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable' }, gateway: true });
+      body = JSON.parse(bodyBuf.toString('utf8')) as typeof body;
+    } catch {
+      sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: codex-cli bridge needs a JSON /v1/responses body' }, gateway: true });
       return;
+    }
+    if (body.stream === true) {
+      sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: the codex-cli (ChatGPT subscription) bridge is non-streaming — send stream:false' }, gateway: true });
+      return;
+    }
+    const { id: model, effort } = parseBridgeModel(typeof body.model === 'string' ? body.model : undefined);
+    const inputText = extractResponsesInputText(body.input);
+    if (!inputText.trim()) {
+      sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: codex-cli bridge got no input text' }, gateway: true });
+      return;
+    }
+    const instructions = typeof body.instructions === 'string' ? body.instructions.trim() : '';
+    const prompt = instructions ? `${instructions}\n\n${inputText}` : inputText;
+    // Abort the CLI when the downstream hangs up so a dead scout call can't hold the slot.
+    const ac = new AbortController();
+    const onGone = () => ac.abort();
+    res.once('close', onGone);
+    res.setTimeout(downstreamIdleMs, () => res.destroy());
+    try {
+      const r = await codexCliRun({
+        home: cli.home,
+        model,
+        effort,
+        prompt,
+        timeoutMs: requestCeilingMs,
+        signal: ac.signal,
+      });
+      if (!res.headersSent) sendJson(res, 200, codexCliResponsesBody({ model, ...r }), { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+    } catch (e) {
+      codexUpstreamErrors++;
+      log('error', `inference-gateway: codex-cli bridge failed on '${cli.accountId}': ${(e as Error).message}`);
+      if (!res.headersSent) {
+        sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex-cli bridge failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+      } else {
+        res.destroy();
+      }
+    } finally {
+      res.removeListener('close', onGone);
+    }
+  }
+
+  async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+    const adapter = providerAdapters.codex;
+    const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
+    // ChatGPT-subscription bridge resolution (codex-cli-bridge.ts): an explicit pin to a
+    // CLI account wins; otherwise the CLI list is the FALLBACK when there is no bearer
+    // pool at all, or the bearer pool momentarily resolves no available account. Bearer
+    // accounts keep priority when both exist (cheaper per call, streams supported).
+    const cliList = codexCliAccounts();
+    let cli: CodexCliAccount | null = wantAccount ? (cliList.find((a) => a.accountId === wantAccount) ?? null) : null;
+    // Definite-assignment assertion: every path below either assigns `active`, serves via
+    // the CLI bridge and returns, or 503s and returns.
+    let active!: ActiveAccount;
+    if (!cli) {
+      if (!adapter.pool || !adapter.upstreamBase) {
+        cli = cliList[0] ?? null;
+        if (!cli) {
+          req.resume();
+          sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: adapter.unavailableMessage ?? 'inference-gateway: Codex provider unavailable' }, gateway: true });
+          return;
+        }
+      } else {
+        try {
+          const pinned = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
+          active = pinned ?? adapter.pool.active();
+        } catch (e) {
+          cli = cliList[0] ?? null;
+          if (!cli) {
+            req.resume();
+            sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable' }, gateway: true });
+            return;
+          }
+        }
+      }
     }
     if (req.method === 'GET' && url.startsWith('/v1/models')) {
       req.resume();
       totalRequests++;
       codexRequests++;
-      sendJson(res, 200, codexModelsResponse(), { [ROUTED_ACCOUNT_HEADER]: active.accountId });
+      sendJson(res, 200, codexModelsResponse(), { [ROUTED_ACCOUNT_HEADER]: cli ? cli.accountId : active.accountId });
+      return;
+    }
+    if (cli) {
+      await serveCodexCliBridge(req, res, cli);
       return;
     }
 
