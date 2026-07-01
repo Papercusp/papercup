@@ -16,8 +16,9 @@
  * remaining budgets, but the question that actually gates the next opus call is *"is there ANY
  * account with headroom?"* — and the account we'd route opus to is the lowest-utilization available
  * one (`selectAccountByDrain` picks min effective util). So the fleet's opus PRESSURE is the
- * **minimum `effectiveDrainUtil` across available (not-paused) accounts** — the best account we
- * could still route to. While one account has a fresh 5h window, opus IS available there (pressure
+ * **minimum `effectiveDrainUtil` across available (not-paused), OPUS-CAPABLE (Claude) accounts** —
+ * the best account we could still route opus to. A `codex`/non-Claude account cannot serve opus, so
+ * it is excluded from this signal (else its opus-irrelevant 0-util would read as false headroom). While one account has a fresh 5h window, opus IS available there (pressure
  * low, correct); only when EVERY available account climbs toward its cap together does pressure
  * approach 1.0. We use `effectiveDrainUtil` (max of the 5h and 7d windows) so a fleet near its
  * WEEKLY cap paces too (the 7d "aviynw2 trap").
@@ -165,8 +166,16 @@ export function classifyRoleCriticality(role: string | null | undefined): WorkCr
  */
 export function aggregateOpusUtil(pool: AccountPool, now: number, staleMs = DRAIN_UTIL_STALE_MS): number | null {
   if (pool.accounts.length === 0) return null;
-  const available = pool.accounts.filter((a) => isAvailable(a, now));
-  if (available.length === 0) return 1; // every account paused → no opus headroom anywhere
+  // Only OPUS-CAPABLE (Claude) accounts factor into opus pressure. A `codex`/non-Claude account cannot
+  // serve Claude opus, so counting its (opus-irrelevant, usually 0) drain util as the MIN reads as a
+  // false "opus headroom" and suppresses shedding while Claude opus is actually exhausted pool-wide —
+  // the observed WI-1073 failure: a codex account in the pool pinned aggregateUtil to 0 (zone
+  // `headroom`) even though every Claude account was near its 5h/7d cap, so the governor never shed
+  // background/normal opus → sonnet and the fleet 429-looped. Legacy rows without `provider` are Claude.
+  const opusCapable = pool.accounts.filter((a) => (a.provider ?? 'claude') === 'claude');
+  if (opusCapable.length === 0) return null; // no Claude accounts → no opus signal → governor no-op
+  const available = opusCapable.filter((a) => isAvailable(a, now));
+  if (available.length === 0) return 1; // every Claude account paused → no opus headroom anywhere
   let min = Infinity;
   for (const a of available) {
     const u = effectiveOpusUtilFresh(a, now, staleMs);

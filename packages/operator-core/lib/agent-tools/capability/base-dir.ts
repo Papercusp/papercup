@@ -21,10 +21,41 @@
  * (so the env's presence in a bee's inherited environment is irrelevant); the env is
  * ONLY consulted when projectDir is absent (the superuser case this fixes). An empty /
  * whitespace env is treated as unset.
+ *
+ * SYMLINK RESOLUTION (EI-5912): -->IMPORT_ANCHOR<-- the resolved base dir is often reached via a symlink
+ * (the canonical tree `.../papercup` is a symlink to `.../papercusp`, and
+ * `PAPERCUSP_INTEGRATION_ROOT` points at the symlink). The capability exec-sandbox
+ * (`buildCapabilitySandboxCommand` / srt `buildFleetSrtSettings`) makes the cwd
+ * WRITABLE at the exact path we hand it — but node resolves a write UNDER the cwd
+ * through the symlink to the REAL path, which sits under the sandbox's read-only `/`
+ * bind → `EROFS` (e.g. vitest writing its config bundle to
+ * `<cwd>/node_modules/.vite-temp/*.mjs`, so `capability:inspect { check:'test' }`
+ * could never bootstrap vitest under the sandbox). Resolving the base dir to its
+ * REAL path makes the intended-writable cwd actually writable. `realpathSync`
+ * is FAIL-SOFT here: a path that can't be resolved (missing dir) is returned as-is,
+ * never throwing — the selection semantics above are unchanged, only the final path
+ * is canonicalized.
  */
 export function resolveCapabilityBaseDir(ctx: { projectDir?: string }): string {
+  return realpathSoft(pickCapabilityBaseDir(ctx));
+}
+
+/** The raw base-dir selection (projectDir → PAPERCUSP_INTEGRATION_ROOT → cwd),
+ *  before symlink resolution. Exported for unit tests of the selection order. */
+export function pickCapabilityBaseDir(ctx: { projectDir?: string }): string {
   if (ctx.projectDir) return ctx.projectDir;
   const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
   if (integrationRoot) return integrationRoot;
   return process.cwd();
+}
+
+/** `realpathSync` that never throws: an unresolvable path (missing dir) is returned
+ *  unchanged. Canonicalizes a symlinked tree so the exec-sandbox's writable-cwd bind
+ *  matches where node actually writes (EI-5912). Exported for unit testing. */
+export function realpathSoft(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
