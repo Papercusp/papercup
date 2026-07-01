@@ -1467,6 +1467,33 @@ test('a STALLED OAuth token refresh fails FAST with a retryable 503 + releases t
   assert.equal(stats.inFlight, 0, 'admission slot released after the token timeout (wedge signature is inFlight stuck at max)');
 });
 
+test('a STALLED OAuth token refresh penalizes as TRANSPORT, not a real rate-limit penalty (2026-07-01 root-cause fix)', async () => {
+  // Root cause of "API errors across all accounts, penaltyCount inflating on a genuinely QUIET account":
+  // a token-refresh TIMEOUT (a flaky egress proxy / transient network blip on the OAuth round-trip) used to
+  // call gov.penalize() with the DEFAULT (non-transport) source, so account-pool-store.ts's
+  // `if (ev.source === 'transport') return` exemption — built for exactly this class of false signal after
+  // the 2026-06-22 aviynw incident — never caught it. It counted toward sustainedPenaltyThreshold and could
+  // park a healthy, 0%-utilization account for tens of minutes. Assert the pause this call site raises is
+  // tagged 'transport' so the exemption actually applies.
+  const pauses: Array<{ pausedUntil: number; source: string }> = [];
+  const governor = new RateLimitGovernor({ maxConcurrent: 20 }, { onPause: (ev) => pauses.push(ev) });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { token: () => new Promise<string>(() => {}) /* never resolves */, tokenTimeoutMs: 50 },
+    governor,
+  );
+  const res = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 503);
+  assert.ok(pauses.length > 0, 'the token-refresh timeout must raise a pause');
+  assert.ok(
+    pauses.every((p) => p.source === 'transport'),
+    `every pause from a token-refresh TIMEOUT must be tagged 'transport', got: ${JSON.stringify(pauses)}`,
+  );
+});
+
 test('a NON-DRAINING client cannot pin a slot — the downstream-idle guard tears it down (2026-06-20 wedge #2)', async () => {
   // Reproduce the wedge: upstream COMPLETES a large streamed body, but the client never reads it.
   // Pre-fix, res could never 'finish' (backpressured — can't flush) nor 'close' (half-open), and
