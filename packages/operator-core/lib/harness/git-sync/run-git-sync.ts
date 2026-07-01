@@ -35,8 +35,34 @@ import {
 
 export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
 
-/** Spawn `git <args>` in `cwd`, capturing exit code + output (never throws). */
-const defaultRunGit: RunGit = (args, cwd) =>
+const envMs = (name: string, dflt: number): number => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : dflt;
+};
+
+/** Subcommands that touch the network (a hung remote must fail fast, not stall the fire). */
+const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', 'clone']);
+
+/**
+ * WI-1416 hang guard: the ceiling for one git subprocess. A wedged git (typically a
+ * network push/fetch against a stuck remote) used to hang the whole fire until the
+ * executor reaper cancelled it — an opaque reap instead of a recorded error. Bounded,
+ * the call fails FAST with a "timed out" stderr that flows into the outcome's
+ * errors[] → routine metadata.last_error (git-sync-stall-watchdog-visible).
+ * Env-tunable: PAPERCUSP_GIT_SYNC_NETWORK_TIMEOUT_MS / PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS.
+ */
+export const gitTimeoutMsFor = (args: string[]): number =>
+  GIT_NETWORK_SUBCOMMANDS.has(args.find((a) => !a.startsWith('-')) ?? '')
+    ? envMs('PAPERCUSP_GIT_SYNC_NETWORK_TIMEOUT_MS', 4 * 60_000)
+    : envMs('PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS', 6 * 60_000);
+
+/** Spawn `git <args>` in `cwd`, capturing exit code + output, bounded by `timeoutMs`
+ *  (never throws, never hangs). Exported so the hang guard is directly testable. */
+export const runGitBounded = (
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
     // P-011 (git-sync-dx-hardening): pin a C/English locale so git's human-readable
     // output (push-rejection markers like "[rejected]" / "non-fast-forward", merge text)
@@ -56,11 +82,37 @@ const defaultRunGit: RunGit = (args, cwd) =>
     });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, stdout, stderr });
+    };
+    // WI-1416 hang guard: SIGTERM first (git traps it and cleans its lock files),
+    // SIGKILL after a grace, and a last-resort resolve in case 'close' never fires.
+    // All timers unref'd so a pending guard never keeps the process alive.
+    const term = setTimeout(() => {
+      stderr += `${stderr ? '\n' : ''}git ${args.join(' ')} timed out after ${timeoutMs}ms — killed by the git-sync hang guard`;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
+      setTimeout(() => finish(-1), 20_000).unref?.();
+    }, timeoutMs);
+    term.unref?.();
     child.stdout.on('data', (d) => (stdout += String(d)));
     child.stderr.on('data', (d) => (stderr += String(d)));
-    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    child.on('error', (e) => {
+      clearTimeout(term);
+      stderr += String(e);
+      finish(-1);
+    });
+    child.on('close', (code) => {
+      clearTimeout(term);
+      finish(code ?? -1);
+    });
   });
+
+/** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
+const defaultRunGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));
 
 /** GitHub hard-rejects blobs ≥100MB (pre-receive) — a committed oversized blob makes
  *  the whole unpushed range PERMANENTLY unpushable (EI-18: 10.4GB of Rust target/
@@ -140,11 +192,30 @@ export type GitSyncOutcome = {
   | { status: 'error'; errors: RepoError[]; pushed: string[]; merged: string[] }
 );
 
+/**
+ * WI-1416: the seam a durable caller (git-sync-action inside a DBOS routineFire)
+ * threads checkpointing through. Each pipeline PHASE (`git-sync:submodules` →
+ * `git-sync:pointer-bump` → `git-sync:push`) runs under `step(name, fn)` so the
+ * workflow records one operation_output per phase: the executor reaper sees genuine
+ * progress (function_id > 0), and a crashed/resumed fire REPLAYS completed phases
+ * from their checkpoints instead of re-running them. Defaults to a passthrough
+ * (unit tests / fireGitSyncNow outside any workflow).
+ *
+ * REPLAY SAFETY (the hard constraint): every phase is idempotent against a re-run —
+ * a replayed commit finds a clean tree (`nothing to commit` is benign), a replayed
+ * push is `Everything up-to-date`, a replayed merge re-fetches — so neither a DBOS
+ * step retry nor a reaped-and-requeued fire can double-commit.
+ */
+export type GitSyncStepRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
+
 export interface RunGitSyncOpts {
   /** Override the repo path (tests); else resolved via `projectDirForSlug(slug)`. */
   repoPath?: string;
   /** Inject the git runner (tests). */
   runGit?: RunGit;
+  /** WI-1416: run each pipeline phase as a checkpointed durable step (see
+   *  GitSyncStepRunner). Default: plain passthrough execution. */
+  step?: GitSyncStepRunner;
   config?: GitSyncConfig;
   /** Override submodule discovery (tests). Repo-relative paths. */
   submodulePaths?: string[];

@@ -263,11 +263,36 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped.summary).toEqual({ done: true });
   });
 
-  it('keeps the full plannedMutations echo under dryRun (it IS the preview the agent inspects)', () => {
+  it('keeps the full plannedMutations echo under dryRun when the preview is still bounded', () => {
     const pm = [{ tool: 'plans:set-now', args: { slug: 's', state: 'x' } }];
     const shaped = shapeMutationEcho({ ...base, dryRun: true, plannedMutations: pm }) as Record<string, unknown>;
     expect(shaped.plannedMutations).toEqual(pm);
     expect(shaped.mutations).toBeUndefined();
+  });
+
+  it('summarizes a large dryRun preview so the plan stays reviewable instead of truncating', () => {
+    const pm = Array.from({ length: 160 }, (_, i) => ({
+      tool: i % 2 === 0 ? 'work_items:set_priority' : 'plans:set-now',
+      args: {
+        id: `WI-${i}`,
+        priority: i,
+        detail: 'x'.repeat(220),
+      },
+    }));
+    const shaped = shapeMutationEcho({ ...base, dryRun: true, plannedMutations: pm }) as Record<string, unknown>;
+    expect(shaped.plannedMutations).toBeUndefined();
+    expect(shaped.mutations).toEqual({
+      dryRunPreview: true,
+      count: 160,
+      byTool: { 'work_items:set_priority': 80, 'plans:set-now': 80 },
+      sample: expect.arrayContaining([
+        expect.objectContaining({ tool: 'work_items:set_priority' }),
+        expect.objectContaining({ tool: 'plans:set-now' }),
+      ]),
+      sampleOmittedCount: expect.any(Number),
+      note: expect.stringContaining('reviewable'),
+    });
+    expect((shaped.mutations as { sample: unknown[] }).sample.length).toBeLessThan(pm.length);
   });
 
   it('leaves a read-only (no-write) committing run unchanged (already tiny)', () => {

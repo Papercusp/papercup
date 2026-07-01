@@ -11,6 +11,7 @@
  * Deps are injectable so the composition is hermetically testable without PG / `~/.claude`.
  */
 import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
+import { CODEX_CLI_REF_PREFIX, parseCodexCliRef, type CodexCliAccount } from './codex-cli-bridge';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
 import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type AccountPool, type ActiveAccount, type InferenceGateway } from './gateway';
@@ -379,12 +380,30 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   );
 
   const pool = createFailoverPool(built0.entries, { log });
-  const buildBearerEntries = (accts: ResolvedAccount[]) =>
-    accts.map((a) => {
-      const resolver = makeBearerCredentialResolver(a.credentialRef);
-      return { accountId: a.accountId, token: () => resolver.current(), invalidateToken: () => resolver.invalidate(), egress: a.egress, egressPool: a.egressPool };
+  // ChatGPT-subscription bridge (codex-cli-bridge.ts): a codex account whose credentialRef is
+  // `codex-cli:<CODEX_HOME>` has NO API bearer — it is served by driving the codex CLI. Keep such
+  // accounts OUT of the bearer pool (makeBearerCredentialResolver would throw on the scheme) and
+  // hand them to the gateway as the CLI list. `codexAccounts` is reassigned by reloadPool, so the
+  // getter below stays hot-reload-fresh for free.
+  const cliAccountsOf = (accts: ResolvedAccount[]): CodexCliAccount[] =>
+    accts.flatMap((a) => {
+      const home = parseCodexCliRef(a.credentialRef);
+      return home ? [{ accountId: a.accountId, home }] : [];
     });
+  const buildBearerEntries = (accts: ResolvedAccount[]) =>
+    accts
+      .filter((a) => !a.credentialRef.startsWith(CODEX_CLI_REF_PREFIX))
+      .map((a) => {
+        const resolver = makeBearerCredentialResolver(a.credentialRef);
+        return { accountId: a.accountId, token: () => resolver.current(), invalidateToken: () => resolver.invalidate(), egress: a.egress, egressPool: a.egressPool };
+      });
   const codexPool = createOptionalFailoverPool(buildBearerEntries(codexAccounts), { log });
+  {
+    const cli0 = cliAccountsOf(codexAccounts);
+    if (cli0.length) {
+      log('info', `inference-gateway: codex-cli (ChatGPT subscription) bridge accounts [${cli0.map((a) => a.accountId).join(', ')}]`);
+    }
+  }
   const unobserve = observePool(primary.accountId, opts.workspace, log);
 
   // Priority-TIER admission config (gateway-priority-tiers-2026-06-22) — flag-gated; null (omitted) under
@@ -407,6 +426,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   const gateway = createInferenceGateway({
     pool,
     codexPool,
+    // Getter (not a snapshot) so a reloadPool() that adds/removes a codex-cli account
+    // applies to the very next /v1/responses request without a gateway restart.
+    codexCliAccounts: () => cliAccountsOf(codexAccounts),
     upstreamBase: opts.upstreamBase,
     openaiUpstreamBase: process.env.OPENAI_BASE_URL_UPSTREAM || undefined,
     concurrency: opts.concurrency,

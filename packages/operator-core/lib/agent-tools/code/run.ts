@@ -254,20 +254,55 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
 
 type OrchestrationRunResult = Awaited<ReturnType<typeof runToolOrchestration>>;
 
+const DRY_RUN_MUTATION_PREVIEW_CHAR_BUDGET = 20_000;
+const DRY_RUN_MUTATION_SAMPLE_LIMIT = 12;
+const DRY_RUN_MUTATION_SAMPLE_PER_TOOL_LIMIT = 3;
+
 /**
- * WI-1377: shape the mutation echo for the agent-facing result envelope. The full
+ * WI-1377 / WI-1410: shape the mutation echo for the agent-facing result envelope. The full
  * `plannedMutations` array (every effect:write call's tool + FULL args) is the decision-useful
- * PREVIEW under dryRun — but on a REAL (committing) run those calls already executed, so echoing
- * their args back is pure waste that overflows the 100k result cap on a large batch (e.g. 600+
- * set_priority calls) even when the script's own `summary` is tiny. So: a dryRun result, or a run
- * that made no writes (empty array — already tiny), is returned UNCHANGED; a committing run with
- * ≥1 write drops `plannedMutations` for a compact `{ count, byTool }` summary. Pure + exported for
- * tests.
+ * PREVIEW under dryRun — until it gets so large that the preview itself overflows/truncates and is
+ * no longer reviewable. On a REAL (committing) run those calls already executed, so echoing their
+ * args back is pure waste. So: an empty array stays unchanged; a committing run with ≥1 write drops
+ * `plannedMutations` for a compact `{ count, byTool }` summary; a dryRun keeps the full preview only
+ * while it is still bounded, then swaps to a summarized dry-run preview with per-tool counts and a
+ * representative sample.
  */
 export function shapeMutationEcho(
   result: OrchestrationRunResult,
 ): OrchestrationRunResult | Record<string, unknown> {
-  if (result.dryRun || result.plannedMutations.length === 0) return result;
+  if (result.plannedMutations.length === 0) return result;
+  if (result.dryRun) {
+    const serialized = JSON.stringify(result.plannedMutations);
+    if (serialized.length <= DRY_RUN_MUTATION_PREVIEW_CHAR_BUDGET) return result;
+
+    const { plannedMutations, ...rest } = result;
+    const byTool: Record<string, number> = {};
+    const samplesPerTool: Record<string, number> = {};
+    const sample: typeof plannedMutations = [];
+    for (const m of plannedMutations) {
+      byTool[m.tool] = (byTool[m.tool] ?? 0) + 1;
+      if (sample.length >= DRY_RUN_MUTATION_SAMPLE_LIMIT) continue;
+      const toolSamples = samplesPerTool[m.tool] ?? 0;
+      if (toolSamples >= DRY_RUN_MUTATION_SAMPLE_PER_TOOL_LIMIT) continue;
+      sample.push(m);
+      samplesPerTool[m.tool] = toolSamples + 1;
+    }
+
+    return {
+      ...rest,
+      mutations: {
+        dryRunPreview: true,
+        count: plannedMutations.length,
+        byTool,
+        sample,
+        sampleOmittedCount: plannedMutations.length - sample.length,
+        note:
+          'dryRun preview summarized to keep the result bounded and reviewable; sample shows a few representative writes per tool',
+      },
+    };
+  }
+
   const { plannedMutations, ...rest } = result;
   const byTool: Record<string, number> = {};
   for (const m of plannedMutations) byTool[m.tool] = (byTool[m.tool] ?? 0) + 1;

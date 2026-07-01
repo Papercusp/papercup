@@ -2545,3 +2545,183 @@ test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs 
   resetGovernorRegistry();
 });
 
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Codex-CLI bridge (ChatGPT subscription) — codex-cli-bridge.ts + proxyOpenAi
+// resolution: CLI accounts serve /v1/responses when pinned, or as the fallback
+// when no bearer pool exists / the bearer pool resolves no account.
+// ───────────────────────────────────────────────────────────────────────────────
+
+test('[codex-cli] with NO bearer pool, /v1/responses is served by the CLI runner (subscription path)', async () => {
+  resetGovernorRegistry();
+  const runs: Array<{ home: string; model: string; effort: string; prompt: string }> = [];
+  await boot(
+    (_req, res) => {
+      res.writeHead(500);
+      res.end('the HTTP upstream must never be hit on the CLI path');
+    },
+    {
+      codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
+      codexCliRun: async (o) => {
+        runs.push({ home: o.home, model: o.model, effort: o.effort, prompt: o.prompt });
+        return { text: 'BRIDGED', inputTokens: 11, outputTokens: 3 };
+      },
+    },
+  );
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.4:high', input: 'hello', instructions: 'SYS', stream: false }),
+  });
+  assert.equal(res.status, 200, 'CLI bridge served the request');
+  assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
+  const body = (await res.json()) as { output_text: string; usage: { input_tokens: number; output_tokens: number }; gateway_codex_cli: boolean };
+  assert.equal(body.output_text, 'BRIDGED');
+  assert.equal(body.usage.input_tokens, 11);
+  assert.equal(body.gateway_codex_cli, true, 'reply is marked as CLI-served');
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].home, '/tmp/sub-home', 'CODEX_HOME comes from the account credentialRef');
+  assert.equal(runs[0].model, 'gpt-5.4', 'model spec normalized to the bare id');
+  assert.equal(runs[0].effort, 'high', ':effort suffix mapped to codex reasoning effort');
+  assert.equal(runs[0].prompt, 'SYS\n\nhello', 'instructions prepended to the input');
+});
+
+test('[codex-cli] stream:true is rejected 400 (the bridge is non-streaming)', async () => {
+  resetGovernorRegistry();
+  await boot(
+    (_req, res) => {
+      res.writeHead(500);
+      res.end();
+    },
+    {
+      codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
+      codexCliRun: async () => ({ text: 'x', inputTokens: 0, outputTokens: 0 }),
+    },
+  );
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.4', input: 'hello', stream: true }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error: { message: string } };
+  assert.match(body.error.message, /non-streaming/);
+});
+
+test('[codex-cli] an explicit x-papercusp-account pin to a CLI account WINS over an existing bearer pool', async () => {
+  resetGovernorRegistry();
+  let upstreamHits = 0;
+  const bearer: ActiveAccount = { accountId: 'cdx-bearer', token: async () => 'tokB' };
+  await boot(
+    (_req, res) => {
+      upstreamHits++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ servedBy: 'bearer' }));
+    },
+    {
+      codexPool: createFailoverPool([bearer]),
+      codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
+      codexCliRun: async () => ({ text: 'CLI-PINNED', inputTokens: 1, outputTokens: 1 }),
+    },
+  );
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'chatgpt-sub' },
+    body: JSON.stringify({ model: 'gpt-5.4', input: 'hi' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { output_text?: string };
+  assert.equal(body.output_text, 'CLI-PINNED', 'the pin routed to the CLI bridge');
+  assert.equal(upstreamHits, 0, 'bearer upstream untouched');
+});
+
+test('[codex-cli] bearer pool keeps PRIORITY when both exist and no pin names the CLI account', async () => {
+  resetGovernorRegistry();
+  const bearer: ActiveAccount = { accountId: 'cdx-bearer', token: async () => 'tokB' };
+  let cliRuns = 0;
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ servedBy: 'bearer' }));
+    },
+    {
+      codexPool: createFailoverPool([bearer]),
+      codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
+      codexCliRun: async () => {
+        cliRuns++;
+        return { text: 'x', inputTokens: 0, outputTokens: 0 };
+      },
+    },
+  );
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5', input: 'hi' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { servedBy?: string };
+  assert.equal(body.servedBy, 'bearer', 'the API-bearer path served it (cheaper per call)');
+  assert.equal(cliRuns, 0);
+});
+
+test('[codex-cli] a CLI runner failure surfaces as a 502 with the routed account', async () => {
+  resetGovernorRegistry();
+  await boot(
+    (_req, res) => {
+      res.writeHead(500);
+      res.end();
+    },
+    {
+      codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
+      codexCliRun: async () => {
+        throw new Error('codex exited 1: auth expired');
+      },
+    },
+  );
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.4', input: 'hi' }),
+  });
+  assert.equal(res.status, 502);
+  assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
+  const body = (await res.json()) as { error: { message: string } };
+  assert.match(body.error.message, /codex-cli bridge failed/);
+});
+
+test('[codex-cli] GET /v1/models works with ONLY a CLI account (no bearer pool)', async () => {
+  resetGovernorRegistry();
+  await boot(
+    (_req, res) => {
+      res.writeHead(500);
+      res.end();
+    },
+    {
+      codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
+      codexCliRun: async () => ({ text: 'x', inputTokens: 0, outputTokens: 0 }),
+    },
+  );
+  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+    headers: { 'x-papercusp-account': 'chatgpt-sub' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
+  const body = (await res.json()) as { models: Array<{ slug: string }> };
+  assert.ok(body.models.length > 0, 'the synthesized model catalog is served');
+});
+
+test('[codex-cli] no bearer pool + no CLI accounts → the 503 is unchanged (pre-bridge behavior)', async () => {
+  resetGovernorRegistry();
+  await boot((_req, res) => {
+    res.writeHead(500);
+    res.end();
+  });
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5', input: 'hi' }),
+  });
+  assert.equal(res.status, 503);
+  const body = (await res.json()) as { error: { message: string } };
+  assert.match(body.error.message, /no Codex account pool configured/);
+});
