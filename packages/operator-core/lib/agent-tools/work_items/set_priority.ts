@@ -57,13 +57,13 @@ export default defineTool({
   name: 'work_items:set_priority',
   profile: 'engineer',
   description:
-    "The Queen's steer-don't-dispatch lever: set one OR many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }. Many: items:[{ workItem, priority?, position?, harness?, decision? }]. Each item: set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder (one bee's already-claimed work-list). Returns { ok, results:[{ ok, workItem, mode, written, … | error }], counts } — correlate by workItem. IMPORTANT for bulk re-prioritizers: `ok:true` only means the request was processed; check the `written` boolean to confirm feature_order actually PERSISTED — it is false for a steering-lease proposal (proposed:true; this Swarm isn't the lease holder) and for an inapplicable issue-family item, both of which return ok:true yet write nothing.",
+    "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }. Many: items:[{ workItem, priority?, position?, harness?, decision? }]. Set an explicit { priority } integer, bump { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder (one bee's claimed work-list). Returns { ok, results:[{ ok, workItem, mode, written, … | error }], counts }. IMPORTANT: `ok:true` only means the request was processed — check `written` to confirm feature_order actually PERSISTED (false for a non-lease-holder proposal or an inapplicable issue-family item; both return ok:true but write nothing).",
   guidance: {
-    when: "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next — position:'top'/'bottom' for most/least urgent, or an explicit integer; reprioritize several at once via items:[…]. In a multi-Swarm Hive only the steering-lease holder commits; a non-holder's set returns proposed:true (recorded for the holding Queen to dispose; local placement is unaffected).",
+    when: "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits — others get proposed:true for the holder to dispose.",
     notWhen:
       "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
     chaining:
-      "curation:change-feed (what shipped / where momentum is) + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
+      "curation:change-feed + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
   },
   capability: 'work_items:write',
   requirePrincipal: false,
