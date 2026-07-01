@@ -33,7 +33,7 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -91,6 +91,22 @@ describe('displayName / shortOwner (pure — the name fix)', () => {
   });
 });
 
+describe('fmtCompactAge (pure — last-active pill)', () => {
+  const base = Date.parse('2026-07-01T12:00:00Z');
+  it('formats seconds/minutes/hours/days compactly', () => {
+    expect(fmtCompactAge('2026-07-01T11:59:57Z', base)).toBe('3s');
+    expect(fmtCompactAge('2026-07-01T11:58:00Z', base)).toBe('2m');
+    expect(fmtCompactAge('2026-07-01T08:00:00Z', base)).toBe('4h');
+    expect(fmtCompactAge('2026-06-29T12:00:00Z', base)).toBe('2d');
+  });
+  it('empty for missing/invalid; clamps a slightly-future ts to 0s', () => {
+    expect(fmtCompactAge('', base)).toBe('');
+    expect(fmtCompactAge(undefined, base)).toBe('');
+    expect(fmtCompactAge('nonsense', base)).toBe('');
+    expect(fmtCompactAge('2026-07-01T12:00:05Z', base)).toBe('0s');
+  });
+});
+
 describe('agentGlyph (pure)', () => {
   it('maps kind/role to the colony glyph, · for unknown', () => {
     expect(agentGlyph({ agentPaneKind: 'queen', role: null })).toBe('♛');
@@ -118,6 +134,14 @@ describe('<AgentsRunningPill>', () => {
     nuqs.open = true;
     render(<Pill />);
     expect(screen.getAllByTestId('thinking-dot').length).toBeGreaterThan(0);
+  });
+
+  it('shows a compact last-active pill next to the liveness dot', () => {
+    H.active = [agent({ ownerId: 'a1', heartbeatAt: new Date(Date.now() - 5_000).toISOString() })];
+    nuqs.open = true;
+    render(<Pill />);
+    const row = screen.getByTestId('agent-row-a1');
+    expect(row.querySelector('.pc-agents-roster__age')?.textContent).toMatch(/^\d+s$/);
   });
 
   it('shows the running count excluding stale rows', () => {

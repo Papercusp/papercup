@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: `List workspaces the operator can switch between — used by the workspace switcher.`,
     notWhen: `For the CURRENT workspace's harnesses, use \`harness:list\`. multi_workspace is the workspace enumerator.`,
+    seeAlso: [
+      'harness:list (the current workspace\'s harnesses)',
+      'operator:preferences (operator-level prefs)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

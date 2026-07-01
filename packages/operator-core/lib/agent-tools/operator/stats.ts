@@ -24,6 +24,10 @@ export default defineTool({
   guidance: {
     when: `Aggregate operator stats — scans/day, dispatches/day, mode-flip counts. For dashboards / status reports.`,
     notWhen: `For LIVE state, use the specific dedicated tool. stats is historical aggregates.`,
+    seeAlso: [
+      'operator:budget (spend / budget rollup)',
+      'dev:telemetry (live observability datapoints)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

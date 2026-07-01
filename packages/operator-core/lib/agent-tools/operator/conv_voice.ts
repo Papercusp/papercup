@@ -18,6 +18,10 @@ export default defineTool({
   guidance: {
     when: `Read voice-conversation state (mode, engine, transcript). Diagnostic for the voice-converse pipeline.`,
     notWhen: `For voice PREFS (defaults), use \`operator:voice_prefs\`. conv_voice is runtime, not config.`,
+    seeAlso: [
+      'operator:voice_prefs (voice defaults / prefs)',
+      'operator:voice_debug (voice engine debug snapshot)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect'],

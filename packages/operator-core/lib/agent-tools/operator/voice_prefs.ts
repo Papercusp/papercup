@@ -17,6 +17,11 @@ export default defineTool({
   guidance: {
     when: `Read/set voice preferences — engine, wake word, autostart, persona name.`,
     notWhen: `For runtime state of an active session, use \`operator:conv_voice\`. voice_prefs is user-set config.`,
+    seeAlso: [
+      'operator:conv_voice (runtime state of an active session)',
+      'operator:voice_debug (voice engine debug snapshot)',
+      'operator:preferences (non-voice operator prefs)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect'],

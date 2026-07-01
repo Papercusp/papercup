@@ -18,6 +18,10 @@ export default defineTool({
   guidance: {
     when: `Read recent voice transcripts — what STT heard, what TTS spoke. Useful for "what did I just say?" / debugging mishears.`,
     notWhen: `For TEXT chat history, that lives in operator_turns. voice_utterance_log is voice-only.`,
+    seeAlso: [
+      'operator:voice_spend_summary (voice spend rollup)',
+      'operator:voice_debug (runtime voice session state)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'worker'],

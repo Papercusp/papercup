@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: `Check whether a suggestion / scan candidate duplicates a recent one before committing it to the panel.`,
     notWhen: `For listing existing scans, use \`operator:scans_list\`.`,
+    seeAlso: [
+      'operator:scans_list (list existing scans)',
+      'operator:trigger_state (scan trigger state)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

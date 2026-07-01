@@ -22,6 +22,10 @@ export default defineTool({
   guidance: {
     when: `Read or update operator-level preferences (scan cadence, autoAccept tier, persona name, etc.).`,
     notWhen: `For VOICE prefs specifically, use \`operator:voice_prefs\`. For workspace-level config, use \`multi_workspace\`/\`papercusp:list_workspaces\`.`,
+    seeAlso: [
+      'operator:voice_prefs (voice-specific preferences)',
+      'operator:multi_workspace (workspace-level switching)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

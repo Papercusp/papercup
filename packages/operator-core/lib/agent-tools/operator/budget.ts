@@ -16,6 +16,10 @@ export default defineTool({
   guidance: {
     when: `Read operator daily-spend status — todaySpendUsd, capUsd, exceeded flag.`,
     notWhen: `For voice-specific spend, use \`operator:voice_spend_summary\`. For raising the cap, use /settings/operator.`,
+    seeAlso: [
+      'operator:voice_spend_summary (voice-specific spend)',
+      'operator:stats (broader operator stats)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

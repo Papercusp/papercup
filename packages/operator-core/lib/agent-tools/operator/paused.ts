@@ -19,6 +19,10 @@ export default defineTool({
   guidance: {
     when: `Read/set the global operator-pause flag — silences scans + scanner-triggered cards across the workspace.`,
     notWhen: `For per-harness autoloop pause, use \`autoloop:control\`. paused is operator-global; autoloop is harness-scoped.`,
+    seeAlso: [
+      'autoloop:control (per-harness autoloop pause)',
+      'operator:preferences (operator-level config)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

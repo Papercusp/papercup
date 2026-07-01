@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: `List standing approvals — pre-authorized actions the user said "go ahead" to once.`,
     notWhen: `For one-off pending reviews, use \`harness:pending_reviews\`. Standing approvals are session-persistent autoaccepts.`,
+    seeAlso: [
+      'operator:standing_approvals_decide (approve / deny one)',
+      'operator:standing_approval_mark_shown (mark a banner surfaced)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

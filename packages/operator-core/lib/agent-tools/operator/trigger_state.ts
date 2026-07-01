@@ -17,6 +17,10 @@ export default defineTool({
   guidance: {
     when: `Read scanner trigger state — when the next scan fires, what's pending.`,
     notWhen: `For LIVE scan results, use \`operator:last_scan\` or \`operator:scans_list\`.`,
+    seeAlso: [
+      'operator:last_scan (live scan results)',
+      'operator:dedup_check (dedup a scan candidate)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

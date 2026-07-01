@@ -18,6 +18,10 @@ export default defineTool({
   guidance: {
     when: `Read recent toast notifications shown to the user — for "did I miss anything?" / replay.`,
     notWhen: `For PERSISTENT inbox items, use \`messages:inbox\`. Notifications are ephemeral toasts.`,
+    seeAlso: [
+      'messages:inbox (persistent inbox items)',
+      'operator:nudge (send a transient toast)',
+    ],
   },
   requirePrincipal: false,
   // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads

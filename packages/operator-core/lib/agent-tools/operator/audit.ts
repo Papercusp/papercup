@@ -40,6 +40,11 @@ export default defineTool({
   guidance: {
     when: `Operator-scoped audit feed — every operator action (scans fired, cards dispatched, mode flips).`,
     notWhen: `For workspace-wide audit including non-operator actors, use \`audit:list\`. operator:audit is the narrower operator-only stream.`,
+    seeAlso: [
+      'actions:recent (recent user-facing actions)',
+      'audit:list (workspace-wide audit incl non-operator actors)',
+      'operator:decisions (operator-policy decision log)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'scoper', 'worker', 'debugger', 'curator'],

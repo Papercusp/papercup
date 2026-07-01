@@ -26,6 +26,10 @@ export default defineTool({
   guidance: {
     when: `Debug snapshot of the voice engine state — engine in use, last connection, transcript queue. Diagnostic only.`,
     notWhen: `For voice preferences, use \`operator:voice_prefs\`. voice_debug is read-only diagnostic.`,
+    seeAlso: [
+      'operator:voice_prefs (voice preferences / defaults)',
+      'operator:conv_voice (live conversational voice state)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'reviewer'],

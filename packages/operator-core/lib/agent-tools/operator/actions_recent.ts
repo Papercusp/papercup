@@ -19,6 +19,11 @@ export default defineTool({
   guidance: {
     when: `User asks "what have I been doing?", "recent actions". Read-only feed from the actions log.`,
     notWhen: `For workspace-wide audit (cross-harness), use \`cross_harness:recent_activity\` or \`audit:list\`.`,
+    seeAlso: [
+      'operator:audit (operator-scoped audit feed)',
+      'cross_harness:recent_activity (workspace-wide cross-harness audit)',
+      'audit:list (full audit trail)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

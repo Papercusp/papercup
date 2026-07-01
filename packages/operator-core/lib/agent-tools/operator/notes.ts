@@ -24,6 +24,10 @@ export default defineTool({
   guidance: {
     when: `Read or update the operator's free-form note buffer — long-running scratch the user adds via /settings.`,
     notWhen: `For cross-agent memory, use \`memory:search\` / \`memory:remember\`. Notes is operator-only, user-editable.`,
+    seeAlso: [
+      'memory:search (cross-agent shared memory)',
+      'memory:remember (persist a durable fact instead of a local note)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

@@ -22,6 +22,10 @@ export default defineTool({
   guidance: {
     when: `User answered yes/no to a standing-approval prompt — record the decision so the autoaccept rule applies / doesn't.`,
     notWhen: `For ONE-OFF dispatch confirmation, just call \`panel_dispatch_card\` after the user yes/nos verbally. standing_approvals_decide is for the persistent rule.`,
+    seeAlso: [
+      'operator:standing_approvals_list (list pending approvals)',
+      'harness:pending_reviews (one-off pending reviews)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],

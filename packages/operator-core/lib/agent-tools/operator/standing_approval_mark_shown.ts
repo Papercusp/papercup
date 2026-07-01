@@ -16,6 +16,10 @@ export default defineTool({
   guidance: {
     when: `Mark a standing-approval banner as shown so it doesn't re-flash. Internal UI bookkeeping.`,
     notWhen: `For listing approvals, use \`operator:standing_approvals_list\`. For deciding, \`operator:standing_approvals_decide\`.`,
+    seeAlso: [
+      'operator:standing_approvals_list (list approvals)',
+      'operator:standing_approvals_decide (approve / deny)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect'],

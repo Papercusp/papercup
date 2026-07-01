@@ -23,6 +23,10 @@ export default defineTool({
   guidance: {
     when: `Send a one-shot toast to the user — "checkpoint?", "smoke failed", etc. Use sparingly; chat is the primary channel.`,
     notWhen: `For conversation, just speak in your reply. nudge is for non-conversational status only.`,
+    seeAlso: [
+      'operator:converse (speak in a normal reply)',
+      'notifications:recent (recent transient toasts)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect'],

@@ -20,6 +20,10 @@ export default defineTool({
   guidance: {
     when: `Read the operator decision log — what flips, dispatches, and autoaccepts happened and why.`,
     notWhen: `For action audit (user-action style), use \`actions:recent\` or \`operator:audit\`. decisions is the operator-policy view.`,
+    seeAlso: [
+      'actions:recent (user-action style audit)',
+      'operator:audit (full operator audit feed)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

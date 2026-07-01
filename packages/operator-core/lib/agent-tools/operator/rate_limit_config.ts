@@ -45,6 +45,11 @@ export default defineTool({
     when: 'Throttle/open the fleet ("drop to 2 agents while I use Claude"), tune a provider\'s static rpm floor live (providerFloors.anthropic.rpm), or reshape the AIMD curve (slower recovery / gentler backoff) during a rate-limit incident — all without a deploy.',
     notWhen: 'READ the live pacing/pause/usage state — dev:rate_governor_status (this tool reads the persisted CONFIG, not the live bucket state). Per-TOOL call quotas → quota:set_tool.',
     chaining: 'After a set, dev:rate_governor_status shows the new floors/cap take effect; config:list-overrides shows every active override.',
+    seeAlso: [
+      'dev:rate_governor_status (the live pacing / cap after a set)',
+      'config:list-overrides (every active override)',
+      'quota:set_tool (per-tool call quotas)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

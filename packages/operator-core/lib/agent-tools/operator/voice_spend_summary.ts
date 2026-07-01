@@ -83,6 +83,10 @@ export default defineTool({
   guidance: {
     when: `Read aggregated voice-engine spend (EL minutes, OpenAI tokens) for budget visibility.`,
     notWhen: `For operator daily budget across all surfaces, use \`operator:budget\`. voice_spend_summary is the voice slice.`,
+    seeAlso: [
+      'operator:budget (daily budget across all surfaces)',
+      'operator:voice_utterance_log (per-utterance voice log)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
