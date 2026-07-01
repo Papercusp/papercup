@@ -54,6 +54,11 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   'papercusp-auth-config-overrides',
   'papercusp-external-bench',
   'papercusp-test-completion-gate',
+  // Added AFTER the snapshot (deliberate new dark flags, not inversion drift):
+  // 2026-07-01 — presence-off-log gossip cutover (cross-machine-coord-parity
+  // P-004 D-008): every hive peer must carry the gossip READER before a writer
+  // flips, so it ships dark until the 2-machine verify.
+  'papercusp-presence-gossip',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -156,10 +161,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     expect(orphanSnapshot, `PRE_INVERSION_DEFAULT_OFF references unregistered flag(s)`).toEqual([]);
   });
 
-  it('the default-OFF COUNT is unchanged from the pre-inversion snapshot (9)', () => {
+  it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
-    expect(offCount).toBe(9);
+    expect(offCount).toBe(10); // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover)
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

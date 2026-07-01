@@ -96,8 +96,10 @@ export interface CreateTopicGossipOpts<Frame> {
   /** Protomux protocol id — one gossip family per id (e.g.
    *  'papercusp/hive-directory', 'papercusp/hive-presence'). */
   protocol: string;
-  /** Handle an inbound frame. */
-  onFrame: (frame: Frame) => void | Promise<unknown>;
+  /** Handle an inbound frame. `topicHex` is the topic whose channel carried it
+   *  (pairing scoping guarantees the sender joined that topic) — consumers that
+   *  gate per-topic (e.g. presence's per-hive membership check) key on it. */
+  onFrame: (frame: Frame, topicHex: string) => void | Promise<unknown>;
   /** The frames to send a freshly-paired peer on ONE topic (the late-joiner
    *  hello/snapshot) — scoped to that topic so a scoped pair only ever
    *  receives that topic's frames. */
@@ -211,7 +213,7 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
         encoding: c.json,
         onmessage: (frame: Frame) => {
           try {
-            void Promise.resolve(opts.onFrame(frame)).catch(() => {});
+            void Promise.resolve(opts.onFrame(frame, topicHex)).catch(() => {});
           } catch {
             /* synchronous throw — swallow */
           }

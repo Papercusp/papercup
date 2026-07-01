@@ -1,14 +1,11 @@
 'use client';
 
 /**
- * Voice → operator:converse bridge for app-level voice mode.
+ * Voice ingress bridge for app-level voice mode.
  *
  * When voice mode is enabled, a final spoken utterance is routed into the
- * SAME operator:converse conversation the Sentinel TUI text chat drives,
- * via the provider's `sendUserMessage` (published to the voice→converse
- * bridge singleton). The provider generates the assistant turn AND speaks
- * the reply — restoring "voice ≡ text on one brain"
- * (sentinel-tui-shared-backend-and-cards Phase 1, Decision A).
+ * live Sentinel voice path after wake-word intent handling and consumer
+ * arbitration.
  *
  * This bridge:
  *   - Subscribes to voice utterances when voice mode is on.
@@ -16,8 +13,7 @@
  *     which short-circuits before any conversation routing.
  *   - Yields to a higher-priority registered voice consumer (e.g. a
  *     background-toast "say cancel" handler) when one is active.
- *   - Otherwise hands the transcript to operator:converse via
- *     routeVoiceUtteranceToConverse().
+ *   - Otherwise hands the transcript to the Sentinel pane bridge.
  *
  * The previous Oracle fallback (POST /api/oracle/chat) was removed
  * 2026-06-22: Oracle is a separate concierge brain (not the conversation)
@@ -245,21 +241,11 @@ export function VoiceAppBridge(): null {
       }
       if (hasHigherPriorityConsumer()) return;
 
-      // Route the spoken utterance into the operator:converse brain — the
-      // SAME backend the Sentinel TUI text chat drives — via the provider's
-      // sendUserMessage (published to the voice→converse bridge singleton).
-      // The provider generates the assistant turn AND speaks the reply
-      // (it owns the spokenReply→speak() path), so the bridge just hands
-      // off the transcript and stops. This restores "voice ≡ text on one
-      // brain" (sentinel-tui-shared-backend-and-cards Phase 1, Decision A).
-      //
       // Phase C (sentinel-as-claude-tui-2026-06-22): route the final transcript
       // to the dock's 🛡 Sentinel pane (a psu/Claude-Code TUI) by POSTing
       // /api/operator/sentinel-input, which writes it into the pane's stdin.
-      // LOCAL APP USER ONLY — not the P2P voice channels. (Supersedes the old
-      // voice→operator:converse route; routeVoiceUtteranceToConverse stays in
-      // voice-converse-bridge for the webview chat pending the converse-fate
-      // decision. If the dock isn't up the POST fails and the turn drops.)
+      // LOCAL APP USER ONLY — not the P2P voice channels. If the dock isn't up
+      // the POST fails and the turn drops.
       //
       // Guard: when a full-agent engine owns the session it is the brain
       // (the EL/Realtime paths feed their own turn handlers), so don't

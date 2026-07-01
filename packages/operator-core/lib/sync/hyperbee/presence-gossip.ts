@@ -218,10 +218,10 @@ export interface CreatePresenceGossipOpts {
   /** The shared process swarm (getSharedSwarm()); a fake in tests. */
   swarm: HyperswarmLike;
   /** Membership admission (the WI-259 gate's gossip twin): is this device a
-   *  CURRENT member of the hive whose topic the frame arrived on? Injected —
-   *  production binds hive_members (classifySameHiveMember's device set);
-   *  false/throw ⇒ frame dropped. */
-  isMemberDevice: (devicePubkey: string) => boolean | Promise<boolean>;
+   *  CURRENT member of the hive whose TOPIC the frame arrived on? Injected —
+   *  production binds hive_members (attested device pubkeys minus the revoked
+   *  union) keyed by the topic's registered hive; false/throw ⇒ frame dropped. */
+  isMemberDevice: (devicePubkey: string, topicHex: string) => boolean | Promise<boolean>;
   /** Apply an admitted put (bind to the shared_presence projection's writeToPg —
    *  same LWW/ts guards as the log path). */
   applyPut: (row: SharedPresenceRow, frameTs: number) => void | Promise<unknown>;
@@ -255,6 +255,7 @@ export type PresenceFrameDisposition = 'applied' | 'bad-frame' | 'not-member' | 
  */
 export async function handleInboundPresenceFrame(
   frame: SignedPresenceFrame,
+  topicHex: string,
   opts: Pick<
     CreatePresenceGossipOpts,
     'isMemberDevice' | 'applyPut' | 'applyDel' | 'frameWindowMs' | 'now'
@@ -269,9 +270,9 @@ export async function handleInboundPresenceFrame(
     ) {
       return 'bad-frame';
     }
-    const admitted = await Promise.resolve(opts.isMemberDevice(frame.device_pubkey)).catch(
-      () => false,
-    );
+    const admitted = await Promise.resolve(
+      opts.isMemberDevice(frame.device_pubkey, topicHex),
+    ).catch(() => false);
     if (!admitted) return 'not-member';
     if (frame.kind === 'put' && frame.row) {
       await Promise.resolve(opts.applyPut(frame.row, frame.ts));
@@ -299,6 +300,6 @@ export function createPresenceGossip(opts: CreatePresenceGossipOpts): PresenceGo
     fastWindowMs: opts.fastWindowMs,
     slowRefreshMs: opts.slowRefreshMs,
     getHelloFrames: opts.getHelloFrames,
-    onFrame: (frame) => void handleInboundPresenceFrame(frame, opts),
+    onFrame: (frame, topicHex) => void handleInboundPresenceFrame(frame, topicHex, opts),
   });
 }

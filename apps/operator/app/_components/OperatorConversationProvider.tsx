@@ -60,7 +60,6 @@ import {
   type ParsedReport,
 } from '@papercusp/operator-core/lib/operator-converse-tags';
 import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
-import { setVoiceConverseHandler } from './voice/voice-converse-bridge';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
@@ -1950,7 +1949,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // turn so the model sees what the user actually said. State hasn't
       // committed yet on this tick; reading state.messages would miss it.
       const nextHistory = [...stateRef.current.messages, userMsg];
-      // A spoken turn (voice → converse bridge) speaks its reply back.
+      // Voice-initiated turns request spoken replies.
       void runGeneration(trigger, {
         messagesOverride: nextHistory,
         spokenReply: sendOpts?.spoken === true,
@@ -1958,16 +1957,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     },
     [runGeneration, persistTurn, cancelNudgeGraceTimer, resetContinueChain],
   );
-
-  // Publish sendUserMessage to the voice→converse bridge singleton so a
-  // spoken final-utterance (routed by VoiceAppBridge, outside the React
-  // tree) drives THIS operator:converse conversation — the same brain the
-  // TUI text chat drives. Cleared on unmount so a stale handler can't fire
-  // after the provider is gone. (sentinel-tui-shared-backend Phase 1.)
-  useEffect(() => {
-    setVoiceConverseHandler((text, opts) => sendUserMessage(text, opts));
-    return () => setVoiceConverseHandler(null);
-  }, [sendUserMessage]);
 
   const generateIdeas = useCallback(() => {
     // Explicit user request — reset the chain (it's a new ask) and

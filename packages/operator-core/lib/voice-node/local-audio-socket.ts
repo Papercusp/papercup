@@ -327,11 +327,18 @@ export interface VoiceSocketInfo {
   discoveryPath: string;
 }
 
+/** Root for the voice socket dir + discovery file. `PAPERCUSP_VOICE_IPC_DIR` is a
+ *  launch-time/test config override (hermetic tests must not reap the REAL
+ *  ~/.papercusp/sockets or overwrite the live voice-ipc.json); prod uses ~/.papercusp. */
+function voiceIpcRoot(): string {
+  return process.env.PAPERCUSP_VOICE_IPC_DIR || join(homedir(), '.papercusp');
+}
+
 export function startLocalVoiceSocket(): VoiceSocketInfo {
   if (server && socketPath) {
-    return { socketPath, discoveryPath: join(homedir(), '.papercusp', 'voice-ipc.json') };
+    return { socketPath, discoveryPath: join(voiceIpcRoot(), 'voice-ipc.json') };
   }
-  const dir = join(homedir(), '.papercusp', 'sockets');
+  const dir = join(voiceIpcRoot(), 'sockets');
   mkdirSync(dir, { recursive: true });
   // EI-3290: reap orphaned voice-<pid>.sock files from dead operators before adding
   // ours, so ~/.papercusp/sockets/ doesn't grow unbounded across restarts/crashes.

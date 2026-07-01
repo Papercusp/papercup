@@ -118,10 +118,14 @@ export function __resetClaudeSessionCaches(): void {
  * FAST PATH (`owner` hint): interactive sessions live under a per-owner isolation
  * root `~/.papercusp/session-claude/<owner>/projects/…`, and the caller (the
  * agents-roster) already knows the agent's coord `owner`. Given it, we scan ONLY
- * that ONE root (1 readdir + a stat per project dir) instead of the FULL
- * `claudeProjectsRoots()` sweep — which readdir's EVERY isolation owner dir
- * (12k+ on a long-lived box ⇒ ~3s per click). A path cache + a global-scan
- * fallback keep it CORRECT when the hint is absent, wrong, or the file has moved.
+ * that root plus the global `~/.claude/projects` — NEVER the FULL
+ * `claudeProjectsRoots()` sweep, which readdir's EVERY isolation owner dir
+ * (13k+ on a long-lived box). The hint is authoritative for isolation roots
+ * (launch keys CLAUDE_CONFIG_DIR and coord_owner_id from the same sid), so an
+ * owner-hinted miss is a REAL miss — typically a live session that hasn't taken
+ * its first turn yet — and re-sweeping every owner dir for it per roster push
+ * was the CPU storm that pegged the desktop operator. Hint-ABSENT callers keep
+ * the full sweep; a path cache keeps repeat hits at one stat.
  *
  * A targeted stat-only walk (readdir the project dirs, stat the one target file).
  * Powers the agents-roster live-thinking view for INTERACTIVE (non-bee) sessions,
@@ -186,6 +190,24 @@ export async function findSessionTranscript(
     if (hit) {
       transcriptPathCache.set(sessionId, hit);
       return hit;
+    }
+    // An owner hint is AUTHORITATIVE for the isolation roots (unified keying:
+    // the launch's CLAUDE_CONFIG_DIR and coord_owner_id derive from the SAME
+    // sid), so this session's transcript cannot live under ANOTHER owner's
+    // isolation root — on a miss, check only the GLOBAL root (one cheap
+    // readdir) and stop. Falling into the every-owner sweep here is not just
+    // wasted work, it's the CPU storm that pegged the desktop operator: the
+    // roster fires this per agent per push, a just-launched session has no
+    // transcript until its first turn, and each miss re-walked 13k+ owner
+    // dirs. (Explicit `roots` callers below keep their deterministic scan.)
+    if (!opts.roots) {
+      const globalHit = await scan(defaultClaudeProjectsRoot());
+      if (globalHit) {
+        transcriptPathCache.set(sessionId, globalHit);
+        return globalHit;
+      }
+      if (useResolutionCaches) rememberTranscriptMiss(sessionId, now);
+      return null;
     }
   }
 
