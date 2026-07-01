@@ -92,9 +92,12 @@ export async function resolveHiveSwarmBinding(
 export async function hiveHomeSlugForHarness(
   workspaceId: string,
   harnessSlug: string,
+  // WI-1378: forwarded to loadHarnessRegistry so a { fresh:true } resolve bypasses
+  // the cross-process-stale registry cache (see joinerHiveHomeSlug / boot.ts).
+  opts?: { fresh?: boolean },
 ): Promise<string | null> {
   if (await getHiveBySlug(workspaceId, harnessSlug)) return harnessSlug;
-  const reg = await loadHarnessRegistry(workspaceId);
+  const reg = await loadHarnessRegistry(workspaceId, opts);
   const member = reg.projects.find((x) => x.slug === harnessSlug);
   return member?.hive_slug ?? null;
 }
@@ -125,10 +128,18 @@ export async function hiveHomeSlugForHarness(
 export async function joinerHiveHomeSlug(
   workspaceId: string,
   harnessSlug: string,
+  // WI-1378 (federation roster-empty, no-restart): pass { fresh:true } on the
+  // in-place-rekey resolve so the registry read bypasses the operator-state cache.
+  // The rekey runs in the substrate SIDECAR process (SUBSTRATE_SIDECAR), a different
+  // process from join-hive's registry write, so the writer's same-process cache
+  // invalidation never reached here — a warm-stale read returned null → the rekey
+  // rebind (and its forceReFold re-fold) never engaged → the member-slug binding
+  // latched → the owner's roster rows dropped forever (empty until restart).
+  opts?: { fresh?: boolean },
 ): Promise<string | null> {
-  const home = await hiveHomeSlugForHarness(workspaceId, harnessSlug);
+  const home = await hiveHomeSlugForHarness(workspaceId, harnessSlug, opts);
   if (!home) return null;
-  const reg = await loadHarnessRegistry(workspaceId);
+  const reg = await loadHarnessRegistry(workspaceId, opts);
   const isRemoteJoined = reg.projects.find((p) => p.slug === home)?.remote_hive === true;
   return isRemoteJoined ? home : null;
 }
