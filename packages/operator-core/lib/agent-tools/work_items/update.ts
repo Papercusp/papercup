@@ -34,11 +34,44 @@ const FIELDS = {
   linkedFeatureId: z.string().max(80).nullable().optional(),
 };
 
-const itemSpec = z.object({
-  id: z.string().min(1),
-  harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
-  ...FIELDS,
-});
+// EI-6060: `status` / `state` are NOT update fields — a work-item's lifecycle state
+// changes through work_items:set_state, not here. Zod's default object() SILENTLY
+// STRIPS any unknown key, so `update({ id, state:'resolved' })` parsed clean, ran the
+// handler with every field undefined, and returned ok:true with an UNCHANGED item — a
+// silent no-op the caller reads as success (the exact reported defect). Capture the two
+// footgun keys explicitly so a superRefine can ERROR with a pointer to set_state instead
+// of stripping them. (status/state are `unknown` because ANY provided value is a misuse.)
+const STATE_FOOTGUN_FIELDS = {
+  status: z.unknown().optional(),
+  state: z.unknown().optional(),
+};
+
+function rejectStateFootguns(a: { status?: unknown; state?: unknown }, ctx: z.RefinementCtx): void {
+  if (a.status !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['status'],
+      message:
+        'work_items:update does not change status — use work_items:set_state { id, state } (issue-family: open|resolved|closed; feature-family: passed|failing|deprecated|…).',
+    });
+  }
+  if (a.state !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['state'],
+      message: 'work_items:update does not change lifecycle state — use work_items:set_state { id, state }.',
+    });
+  }
+}
+
+const itemSpec = z
+  .object({
+    id: z.string().min(1),
+    harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
+    ...FIELDS,
+    ...STATE_FOOTGUN_FIELDS,
+  })
+  .superRefine(rejectStateFootguns);
 
 export default defineTool({
   name: 'work_items:update',
@@ -57,11 +90,18 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single-update shorthand: the work-item id'),
       ...FIELDS,
+      ...STATE_FOOTGUN_FIELDS,
       items: z.array(itemSpec).min(1).max(200).optional().describe('update many work-items at once — each { id, …fields }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })
-    .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
-      message: 'pass { id, …fields } for one, or items:[{ id, …fields }] for many',
+    .superRefine((a, ctx) => {
+      if (!((a.items?.length ?? 0) > 0 || Boolean(a.id))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'pass { id, …fields } for one, or items:[{ id, …fields }] for many',
+        });
+      }
+      rejectStateFootguns(a, ctx);
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);

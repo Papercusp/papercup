@@ -44,6 +44,11 @@ import { broadcastSevereEvent } from '../severe-event-broadcast';
 const DEFAULT_HEAD_STALE_MS = 2 * 60 * 60 * 1000; // 2h
 /** An ACTIVE git-sync that hasn't FIRED in this long ⇒ the scheduler isn't running it. */
 const DEFAULT_FIRE_STALE_MS = 3 * 60 * 60 * 1000; // 3h
+/** WI-1416: this many CONSECUTIVE executor-reaper cancels (`metadata.reaped_count` —
+ *  incremented per reap, reset by a completed fire) ⇒ the fire loop is thrashing:
+ *  fires start (`fire_started_at` advances) but never complete a commit. Sturdier
+ *  than last_error (which flips null on any healthy tick) for the WI-1415 loop. */
+const DEFAULT_PERSISTENT_REAP_MIN = 3;
 /** How often the watchdog sweeps. git-sync is every 3 min; 15m is ample + matches green-stall. */
 const DEFAULT_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000; // 15 min
 
@@ -53,6 +58,8 @@ const WATCHDOG_KIND = 'git-sync-watchdog';
 export interface GitSyncStallThresholds {
   headStaleMs?: number;
   fireStaleMs?: number;
+  /** WI-1416: consecutive reaps that count as a persistent reap-loop (default 3). */
+  persistentReapMin?: number;
 }
 
 /** The bits of one git-sync routine the verdict is computed from. */
@@ -66,6 +73,10 @@ export interface GitSyncStallSnapshot {
   lastError: string | null;
   /** the watchdog's own dedup flag (`metadata.watchdog_alerted`). */
   watchdogAlerted: boolean;
+  /** WI-1416: consecutive executor-reaper cancels since the last COMPLETED fire
+   *  (`metadata.reaped_count`; the reaper increments it, recordOutcome resets it).
+   *  Optional — absent reads as 0. */
+  reapedCount?: number;
 }
 
 export interface GitSyncStallVerdict {
@@ -76,6 +87,9 @@ export interface GitSyncStallVerdict {
   fireStale: boolean;
   /** git-sync recorded a fault (error/reap) at sweep time (secondary — transient). */
   errorStall: boolean;
+  /** WI-1416: the executor reaper has cancelled ≥ persistentReapMin consecutive fires —
+   *  fires start but never complete (the WI-1415 reap→requeue→restart loop). */
+  persistentReap: boolean;
   /** human reason for the alarm body, or null when not stalled. */
   reason: string | null;
 }
@@ -95,11 +109,13 @@ export function evaluateGitSyncStall(
 ): GitSyncStallVerdict {
   const headStaleMs = opts.headStaleMs ?? DEFAULT_HEAD_STALE_MS;
   const fireStaleMs = opts.fireStaleMs ?? DEFAULT_FIRE_STALE_MS;
+  const persistentReapMin = opts.persistentReapMin ?? DEFAULT_PERSISTENT_REAP_MIN;
 
   const commitStale = s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
   const fireStale = s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   const errorStall = typeof s.lastError === 'string' && s.lastError.trim().length > 0;
-  const stalled = commitStale || fireStale || errorStall;
+  const persistentReap = (s.reapedCount ?? 0) >= persistentReapMin;
+  const stalled = commitStale || fireStale || errorStall || persistentReap;
 
   let reason: string | null = null;
   if (stalled) {
@@ -112,12 +128,17 @@ export function evaluateGitSyncStall(
     if (fireStale && s.lastFiredMs != null) {
       parts.push(`the routine has not FIRED in ~${hrs(now - s.lastFiredMs)}h (active, cron every 3 min) — the scheduler/engine is not running it`);
     }
+    if (persistentReap) {
+      parts.push(
+        `the DBOS executor reaper has cancelled ${s.reapedCount} consecutive git-sync fire(s) — fires start but never complete a commit (reap→requeue→restart loop; WI-1415)`,
+      );
+    }
     if (errorStall) {
       parts.push(`git-sync is recording a FAULT: "${s.lastError!.slice(0, 200)}"`);
     }
     reason = parts.join('; ');
   }
-  return { stalled, commitStale, fireStale, errorStall, reason };
+  return { stalled, commitStale, fireStale, errorStall, persistentReap, reason };
 }
 
 /** Pure: the `harness_escalations` body for a watchdog-detected git-sync stall (testable). */
@@ -135,6 +156,7 @@ export function gitSyncStallEscalationBody(opts: {
     commitStale: opts.verdict.commitStale,
     fireStale: opts.verdict.fireStale,
     errorStall: opts.verdict.errorStall,
+    persistentReap: opts.verdict.persistentReap,
     lastFiredAt: opts.lastFiredMs != null ? new Date(opts.lastFiredMs).toISOString() : null,
     headUnchangedHrs: opts.headUnchangedMs != null ? hrs(opts.headUnchangedMs) : null,
     lastStatus: opts.lastStatus,
@@ -175,6 +197,7 @@ export async function checkGitSyncStall(
         last_status: string | null;
         last_error: string | null;
         watchdog_alerted: boolean | null;
+        reaped_count: number | null;
       }[]
     >`
       SELECT install_slug,
@@ -185,7 +208,8 @@ export async function checkGitSyncStall(
              (metadata->>'wd_head_since_ms')::bigint AS wd_head_since_ms,
              metadata->>'last_status' AS last_status,
              metadata->>'last_error' AS last_error,
-             COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted
+             COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
+             COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count
         FROM harness_shared.routines
        WHERE target_role = 'system:git-sync'
          AND active = true`;
@@ -215,7 +239,13 @@ export async function checkGitSyncStall(
       }
 
       const verdict = evaluateGitSyncStall(
-        { lastFiredMs, headUnchangedMs, lastError: row.last_error, watchdogAlerted },
+        {
+          lastFiredMs,
+          headUnchangedMs,
+          lastError: row.last_error,
+          watchdogAlerted,
+          reapedCount: row.reaped_count != null ? Number(row.reaped_count) : 0,
+        },
         now,
         opts,
       );
@@ -241,7 +271,7 @@ export async function checkGitSyncStall(
             body: `git-sync (${row.install_slug}) silent stall: ${verdict.reason}. Edits strand uncommitted + can't deploy. See routine metadata.last_error; rescue-commit if urgent.`,
             importance: 'urgent',
             workspaceId: row.workspace_id,
-            data: { commitStale: verdict.commitStale, fireStale: verdict.fireStale, errorStall: verdict.errorStall },
+            data: { commitStale: verdict.commitStale, fireStale: verdict.fireStale, errorStall: verdict.errorStall, persistentReap: verdict.persistentReap },
           });
         } catch (e) {
           console.warn(`[git-sync-stall-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);

@@ -147,22 +147,33 @@ export async function reapDeadExecutorWorkflows(
     //   - a non-terminal routinesTick older than the scheduler silence window, and
     //   - a routineFire whose creation time is older than the longer first-output
     //     window and that has not checkpointed any DBOS step output, OR an
-    //     orphaned routineFire older than the scheduler silence window that has
-    //     neither an action-step output nor a live queue row, and
+    //     ENQUEUED routineFire older than the fast-orphan window whose queue row is
+    //     GONE (never dequeued yet un-queued — a genuine anomaly, see below), and
     //   - any non-terminal workflow past its explicit DBOS deadline.
     //
     // operation_outputs is a checkpoint/output table, not a live "step entered"
     // table. function_id=0 is only routine-fire-start; it proves claim context was
     // recorded, not that the target action is running. A legitimate long first
-    // step (Scout's budgeted cycle is the proven case) may have only that start
-    // row until it completes or records its own timeout/error, so routineFire
-    // usually uses a LONGER first-action-output window than the scheduler tick.
-    // The exception is no-action-output/no-queue: if no workflow_queue row exists,
-    // DBOS is not actively executing that long first step, so holding the routine
-    // dedup for 25 minutes only masks an orphaned fire. Use created_at, not
-    // started_at_epoch_ms or updated_at: DBOS recovery can refresh BOTH timestamps
-    // on a row it still has not checkpointed, and that heartbeat must not keep a
-    // wedged dedup pin alive indefinitely.
+    // step (green-checkpoint's ~55m suite is the proven case) may have only that
+    // start row until it completes or records its own timeout/error, so routineFire
+    // uses the LONGER first-action-output window than the scheduler tick.
+    //
+    // QUEUE-ROW SEMANTICS — CORRECTED (WI-1416, verified live 2026-07-01): our DBOS
+    // version DELETES the workflow_queue row at DEQUEUE time, so every actively-
+    // EXECUTING PENDING workflow has NO live queue row. "No queue row" therefore
+    // means "executing OR orphaned", NOT "orphaned" — the old fast path built on the
+    // opposite reading cancelled ANY healthy fire whose first step outlived the 90s
+    // scheduler window (git-sync on the big tree: reaped + requeued every 2-min pass
+    // → restart-from-scratch loop → ~1 commit/40min, WI-1415). The fast path now
+    // only reaps the state that IS anomalous under the corrected semantics: an
+    // ENQUEUED row (never dequeued) with no live queue row — e.g. a crash between
+    // the queue delete and the status flip, or a prior partial reap — after its own
+    // longer, env-tunable orphan window. A PENDING no-output fire is left to the 60m
+    // no-output window, its explicit deadline, or the dead-executor branch.
+    //
+    // Use created_at, not started_at_epoch_ms or updated_at: DBOS recovery can
+    // refresh BOTH timestamps on a row it still has not checkpointed, and that
+    // heartbeat must not keep a wedged dedup pin alive indefinitely.
     const stale = await sql<{ workflow_uuid: string; requeue_routine_id: string | null }[]>`
       SELECT workflow_uuid,
              CASE
@@ -171,7 +182,8 @@ export async function reapDeadExecutorWorkflows(
                 AND (
                   created_at < ${staleRoutineFireNoOutputAt}
                   OR (
-                    created_at < ${staleSchedulerAt}
+                    status = 'ENQUEUED'
+                    AND created_at < ${staleRoutineFireOrphanAt}
                     AND NOT EXISTS (
                       SELECT 1
                         FROM dbos.workflow_queue q
@@ -211,7 +223,8 @@ export async function reapDeadExecutorWorkflows(
              AND (
                created_at < ${staleRoutineFireNoOutputAt}
                OR (
-                 created_at < ${staleSchedulerAt}
+                 status = 'ENQUEUED'
+                 AND created_at < ${staleRoutineFireOrphanAt}
                  AND NOT EXISTS (
                    SELECT 1
                      FROM dbos.workflow_queue q
@@ -248,6 +261,10 @@ export async function reapDeadExecutorWorkflows(
         /* queue purge is best-effort */
       }
       if (requeueRoutineIds.length > 0) {
+        // WI-1416: `reaped_count` counts CONSECUTIVE reaps — a completed fire resets
+        // it (git-sync's recordOutcome, and the clear below drops it) — so persistent
+        // reaping is a durable, queryable signal the git-sync-stall-watchdog alarms on
+        // (paired with the fire_started_at breadcrumb the fire stamps at its top).
         await sql`
           UPDATE harness_shared.routines
              SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now()),
@@ -258,7 +275,9 @@ export async function reapDeadExecutorWorkflows(
                         'last_error_at',
                         now()::text,
                         'last_error_source',
-                        'dbos-executor-reaper'
+                        'dbos-executor-reaper',
+                        'reaped_count',
+                        COALESCE((metadata->>'reaped_count')::int, 0) + 1
                       ),
                  updated_at = now()
            WHERE id = ANY(${requeueRoutineIds})
@@ -317,9 +336,11 @@ export const REAPER_LAST_ERROR_SOURCE = 'dbos-executor-reaper';
  * Fail-soft: a clear failure must never fail the fire it rides.
  */
 export async function clearStaleReaperLastError(sql: Sql, routineId: string): Promise<void> {
+  // WI-1416: `reaped_count` is the reaper's consecutive-reap counter — a completed
+  // dispatch disproves the reap verdict exactly like the marker keys, so drop it too.
   await sql`
     UPDATE harness_shared.routines
-       SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
+       SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source' - 'reaped_count',
            updated_at = now()
      WHERE id = ${routineId}
        AND metadata->>'last_error_source' = ${REAPER_LAST_ERROR_SOURCE}`.catch(() => {});
@@ -340,6 +361,7 @@ export function startExecutorReaper(
     livenessThresholdMs?: number;
     staleSchedulerMs?: number;
     staleRoutineFireNoOutputMs?: number;
+    staleRoutineFireOrphanMs?: number;
   } = {},
 ): void {
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
@@ -351,6 +373,7 @@ export function startExecutorReaper(
       opts.livenessThresholdMs,
       opts.staleSchedulerMs,
       opts.staleRoutineFireNoOutputMs,
+      opts.staleRoutineFireOrphanMs,
     ).then((r) => {
       if (r.cancelled > 0 || r.queuePurged > 0) {
         console.warn(
