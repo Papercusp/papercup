@@ -439,6 +439,10 @@ import './fleet_registry/recolor';
 // agent-coordination-architecture-v2-2026-05-20.md
 import './coordination/tools/whoami';
 import './coordination/tools/presence';
+// Unified presence/roster reader (presence-coord-unification P-001 / D-001): one door
+// with four view lenses (live/members/claims/history) that consolidates coord:presence,
+// fleet:assignments, coord:glance, etc. — replaces "which of 5 tools do I call".
+import './coordination/tools/roster';
 import './coordination/tools/declare-intent';
 // Per-agent wake mode + staged-wake review — the pause/edit gate's control surface
 // (hive-agent-tabs-psu-tui-2026-06-09 P-008/P-009 / D-005). The stage-vs-fire
