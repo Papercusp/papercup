@@ -241,6 +241,11 @@ export default defineTool({
       'You only want to read a plan (plans:get) or edit it yourself (the plans:set-* verbs). Resuming an existing run is a continue call, not a fresh launch.',
     chaining:
       'plans:list / plans:get → plans:launch { slug } → the run streams; plans:runs lists past launches.',
+    seeAlso: [
+      'fleet:launch-on-plan (launch a whole FLEET on the plan, not one agent)',
+      'plans:start (mark started without dispatching an agent)',
+      'plans:runs (watch / list the launched runs)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

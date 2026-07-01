@@ -44,6 +44,11 @@ export default defineTool({
     notWhen:
       'The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.',
     chaining: 'plans:list to find the slug, then plans:start { slug }.',
+    seeAlso: [
+      'plans:launch (have an agent autonomously advance the started plan)',
+      'plans:set-status (manually move items along once started)',
+      'plans:pause (suspend a started plan)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

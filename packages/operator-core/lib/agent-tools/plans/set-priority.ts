@@ -38,6 +38,11 @@ export default defineTool({
     when: 'User drags a started plan to a new position in the Plans rail, or explicitly asks "do plan A before plan B".',
     notWhen: 'For pausing a plan, use plans:pause. For the run lifecycle, use plans:set-run-status.',
     chaining: 'plans:list to see started plans and their current priorities.',
+    seeAlso: [
+      'plans:set-importance (rank ITEMS within a plan, not whole plans)',
+      'plans:pause (stop a plan instead of reordering it)',
+      'plans:set-run-status (the run lifecycle, not the rail order)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

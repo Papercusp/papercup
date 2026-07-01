@@ -99,6 +99,11 @@ export default defineTool({
       'Per-item flip — that\'s plans:set-status. Or a decision — that\'s plans:add-decision.',
     chaining:
       'plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — if either overflows, trim it and offload the detail to plans:set-content / set-content-chunk rather than retrying a too-long Now.',
+    seeAlso: [
+      'plans:set-status (flip an item\'s lifecycle, not the narration)',
+      'plans:add-decision (record a durable decision, not a now-note)',
+      'plans:set-content (offload overflow detail out of the Now)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

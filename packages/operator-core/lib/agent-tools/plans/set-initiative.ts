@@ -77,6 +77,11 @@ export default defineTool({
     notWhen:
       'Transferring ownership / co-owners — plans:transfer-owner. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter. A whole-document raw edit — plans:set-content.',
     chaining: 'plans:list to see existing initiative labels → plans:set-initiative per plan → plans:list to confirm the facet.',
+    seeAlso: [
+      'plans:set-priority (order plans within the rail)',
+      'plans:transfer-owner (change ownership, not the initiative label)',
+      'plans:set-frontmatter (convert a legacy no-frontmatter plan first)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

@@ -202,6 +202,11 @@ export default defineTool({
       'You want to edit an existing plan — use plans:set-status / set-now / add-decision / add-item.',
     chaining:
       'plans:new → plans:set-now (replace placeholder Now) → plans:add-item to populate Phase 1.',
+    seeAlso: [
+      'plans:add-item (populate the plan with work items)',
+      'plans:set-frontmatter (fill/adjust the templated frontmatter)',
+      'plans:start (begin the plan once it is filled in)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

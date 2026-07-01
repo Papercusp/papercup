@@ -196,6 +196,10 @@ export default defineTool({
     notWhen:
       "Setting importance when creating an item — that's plans:add-item's required arg. Changing lifecycle status — plans:set-status.",
     chaining: 'plans:items (sorted urgent→low) → plans:set-importance to re-rank what the human sees first.',
+    seeAlso: [
+      'plans:set-priority (order whole PLANS in the rail, not items within one)',
+      'plans:set-status (change an item\'s lifecycle state, not its rank)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

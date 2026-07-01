@@ -310,6 +310,11 @@ export default defineTool({
       "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:
       'plans:add-item → plans:set-status to flip newly added items off `todo` when work starts.',
+    seeAlso: [
+      'plans:set-status (advance an item you just added off todo)',
+      'plans:set-importance (re-rank the new item vs its siblings)',
+      'plans:set-item-blocked-by (record a dependency on another item)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,

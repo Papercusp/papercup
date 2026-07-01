@@ -492,6 +492,11 @@ export default defineTool({
       'You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.',
     chaining:
       'plans:items { actionable: true } → plans:set-status { itemId, status: "wip" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On a per-item claim_conflict: coord:send the holder or pick another item.',
+    seeAlso: [
+      'plans:set-now (narrate the state change for the human-facing Now)',
+      'plans:add-item (add a brand-new item rather than flip an existing one)',
+      'plans:set-importance (re-rank an item without changing its status)',
+    ],
   },
   capability: 'plans:write',
   requirePrincipal: false,
