@@ -93,6 +93,10 @@ export default defineTool({
       'You do not know what to search for — call docs:outline first. For PG-stored prose (chats, escalations) use search:fulltext. To search another harness from outside, use cross_harness:docs_search.',
     chaining:
       'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading).',
+    seeAlso: [
+      'docs:outline (browse the full section tree when the term is unknown)',
+      'docs:get (read a matched page)',
+    ],
   },
   capability: 'docs:read',
   requirePrincipal: false,

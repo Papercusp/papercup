@@ -68,6 +68,10 @@ export default defineTool({
     notWhen:
       'For a human-authored manual doc, use harness_docs:anchor instead (it sets a verify baseline, not a generated baseline). Do not call for docs you only read.',
     chaining: 'Write the .md file(s) → harness_docs:record { docId, documents } (or items:[…]). The freshness sweep then tracks them against future commits.',
+    seeAlso: [
+      'harness_docs:anchor (drift-track a HUMAN-authored doc — a verify baseline, not generated)',
+      'harness_docs:list (review provenance + freshness)',
+    ],
   },
   capability: 'docs:write',
   requirePrincipal: false,

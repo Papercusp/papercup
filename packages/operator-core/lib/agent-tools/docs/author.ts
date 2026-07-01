@@ -191,6 +191,11 @@ export default defineTool({
       'For a quick personal fact use memory:remember (not a doc). To EDIT an existing doc use capability:write/edit then harness_docs:verify. To only declare a subject_ref on an already-written doc use harness_docs:anchor.',
     chaining:
       'docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }.',
+    seeAlso: [
+      'docs:get (read the current page before rewriting it)',
+      'docs:outline (find where the page belongs)',
+      'harness_docs:list (per-harness PROJECT docs live in a different surface)',
+    ],
   },
   capability: 'docs:write',
   requirePrincipal: false,

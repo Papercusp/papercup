@@ -41,6 +41,11 @@ export default defineTool({
     when: 'A manual doc was flagged for re-verify (its subject code changed) and you confirmed it\'s still accurate — or you just edited it to match. Verify several at once via docIds:[…] or items:[…].',
     notWhen: 'For a generated doc use harness_docs:regenerate. To set the anchor in the first place use harness_docs:anchor.',
     chaining: 'harness_docs:list (find review docs) → read → harness_docs:verify { docIds:[…] }.',
+    seeAlso: [
+      'harness_docs:regenerate (a GENERATED doc — verify is for manual ones)',
+      'harness_docs:anchor (set the anchor in the first place)',
+      'harness_docs:list (find docs flagged for review)',
+    ],
   },
   capability: 'docs:write',
   requirePrincipal: false,

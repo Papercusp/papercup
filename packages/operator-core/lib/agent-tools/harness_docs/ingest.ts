@@ -22,6 +22,10 @@ export default defineTool({
     when: 'After this harness has existing docs/*.md that predate the typed model, to make the ones with a declared/inferable subject drift-tracked.',
     notWhen: 'Record-less docs already show as "not drift-tracked" via the merged read — ingest is only needed to anchor docs that declare a subject. No need to run repeatedly.',
     chaining: 'harness_docs:ingest → harness_docs:list (review which anchored) → harness_docs:anchor (fix any wrong/missing anchors).',
+    seeAlso: [
+      'harness_docs:list (review which docs got anchored)',
+      'harness_docs:anchor (fix a wrong/missing anchor)',
+    ],
   },
   capability: 'docs:write',
   requirePrincipal: false,

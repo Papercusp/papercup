@@ -66,6 +66,10 @@ export default defineTool({
     when: 'A generated doc is accurate but missing the human "why"/caveats you want preserved across regenerations. Add it as an overlay rather than hand-editing the generated body (which a regen would lose). Set several at once via items:[…].',
     notWhen: 'To change the generated body itself, fix the code/feature and regenerate. For a fully human doc, author it as a manual doc.',
     chaining: 'harness_docs:list → harness_docs:set_overlay { overlay } (or items:[…]).',
+    seeAlso: [
+      'harness_docs:regenerate (change the generated body via the code, not an overlay)',
+      'harness_docs:list (see which docs carry overlays)',
+    ],
   },
   capability: 'docs:write',
   requirePrincipal: false,

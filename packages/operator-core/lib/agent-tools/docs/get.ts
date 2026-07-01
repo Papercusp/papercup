@@ -122,6 +122,10 @@ export default defineTool({
       'You do not yet know the slug — call docs:outline first. To fetch another harness\'s docs from outside, use cross_harness:docs_get.',
     chaining:
       'docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads.',
+    seeAlso: [
+      'docs:outline (find slugs to read)',
+      'docs:search (locate the right page by term first)',
+    ],
   },
   capability: 'docs:read',
   requirePrincipal: false,

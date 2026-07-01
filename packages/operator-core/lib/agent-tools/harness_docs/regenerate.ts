@@ -41,6 +41,11 @@ export default defineTool({
     when: 'A generated doc is stale (its subject code changed) and you want it refreshed. Regenerate several at once via docIds:[…] or items:[…].',
     notWhen: 'For a manual doc use harness_docs:verify. To preserve human nuance across the regen, add it via harness_docs:set_overlay first.',
     chaining: 'harness_docs:list (find stale generated) → harness_docs:regenerate { docIds:[…] }.',
+    seeAlso: [
+      'harness_docs:verify (a MANUAL doc — regenerate is for generated ones)',
+      'harness_docs:set_overlay (preserve human nuance across the regen first)',
+      'harness_docs:list (find stale generated docs)',
+    ],
   },
   capability: 'docs:write',
   requirePrincipal: false,

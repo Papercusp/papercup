@@ -53,6 +53,11 @@ export default defineTool({
     when: 'A human-authored doc should be drift-tracked: declare what code it covers. Run after writing/editing the doc, or to fix a wrong anchor. Anchor several at once via items:[…].',
     notWhen: 'For a generated doc use harness_docs:record (it sets a generated baseline). To only re-confirm currency use harness_docs:verify.',
     chaining: 'harness_docs:anchor { documents } → (later, on a drift nudge) harness_docs:verify.',
+    seeAlso: [
+      'harness_docs:record (set a GENERATED baseline instead of anchoring a human doc)',
+      'harness_docs:verify (re-confirm currency later)',
+      'harness_docs:list (see what is anchored + its freshness)',
+    ],
   },
   capability: 'docs:write',
   requirePrincipal: false,

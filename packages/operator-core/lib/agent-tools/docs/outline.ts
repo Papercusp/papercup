@@ -100,6 +100,10 @@ export default defineTool({
       'You already called docs:outline this run — cached. For prose recall (chats, escalations, brainstorms) use search:fulltext. To explore another harness from outside, use cross_harness:docs_outline.',
     chaining:
       'docs:outline → docs:get { slugs: [...] }. Use { slug, heading } when only one section of a long page is relevant.',
+    seeAlso: [
+      'docs:search (find a page by specific term instead of browsing the tree)',
+      'docs:get (read the slugs the outline lists)',
+    ],
   },
   capability: 'docs:read',
   requirePrincipal: false,

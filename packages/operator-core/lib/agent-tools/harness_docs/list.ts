@@ -23,6 +23,11 @@ export default defineTool({
     when: 'You want a harness\'s project docs WITH provenance + freshness — which are generated vs human, which are stale, which are not drift-tracked.',
     notWhen: 'For Papercusp framework docs use docs:get/outline. For raw markdown without metadata the old project-docs endpoint still exists but is superseded.',
     chaining: 'harness_docs:list → harness_docs:regenerate (stale generated) / harness_docs:verify (stale manual) / harness_docs:set_overlay (add human nuance).',
+    seeAlso: [
+      'harness_docs:regenerate (refresh a stale GENERATED doc)',
+      'harness_docs:verify (re-confirm a stale MANUAL doc)',
+      'docs:outline (Papercusp FRAMEWORK docs live in the docs:* surface)',
+    ],
   },
   capability: 'docs:read',
   requirePrincipal: false,
