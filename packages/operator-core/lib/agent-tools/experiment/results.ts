@@ -18,6 +18,10 @@ export default defineTool({
     when: 'Reviewing how past experiments performed — which arms won, at what cost, and whether they were applied. Filter by testId to a single test kind.',
     notWhen: 'Running a new experiment (experiment:run). Discovering test kinds (experiment:catalog).',
     chaining: 'experiment:run → experiment:results (read back the recorded outcomes).',
+    seeAlso: [
+      'experiment:run (run a new experiment)',
+      'experiment:catalog (discover test kinds)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

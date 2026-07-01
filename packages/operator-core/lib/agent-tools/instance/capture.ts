@@ -18,6 +18,10 @@ export default defineTool({
     when: 'Capture a reproducible descriptor of a live harness/instance — its blueprint + git SHA + deployment + genome — to boot or vary an identical one. The replacement for the retired snapshot clone path.',
     notWhen: 'For a full state backup (code+data), git + PG already cover it. To create a fresh harness from scratch, use `harness:create`.',
     chaining: 'instance:capture → instance:boot (identical) or instance:clone (with a genome delta).',
+    seeAlso: [
+      'instance:boot (boot an identical harness from the spec)',
+      'instance:clone (capture + vary + boot in one call)',
+    ],
   },
   description: 'Capture an InstanceSpec (blueprintRef + repoSha + deploymentConfig + genome) from a live harness, for reproducible boot/vary.',
   capability: 'harness:read',

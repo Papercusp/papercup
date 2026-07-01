@@ -22,6 +22,11 @@ export default defineTool({
     when: 'Choosing which test to run against a knob change — list the catalog to see what kinds exist, which tier each runs at (offline replay is the cheap default screen), and which knobs each can vary. Filter by kind/tier.',
     notWhen: 'Running an experiment (experiment:run). Scoring one gym run’s deterministic guardrails (gym:signals). Subjective quality scoring (gym:judge).',
     chaining: 'experiment:catalog → pick a testId + read its knobSlice → experiment:run with arms addressing only that slice.',
+    seeAlso: [
+      'experiment:run (run a chosen test)',
+      'experiment:results (past outcomes)',
+      'gym:signals (deterministic guardrails for one gym run)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

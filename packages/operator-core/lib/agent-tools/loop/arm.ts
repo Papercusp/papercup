@@ -51,6 +51,11 @@ export default defineTool({
       "Wall-clock recurrence (a fixed time each day) — that is a SCHEDULE (plans:set-schedule). A single future wake — events:await / a one-shot. The autonomous queen/bee/scout loop — that is its OWN system (hive:declare-wake / overwatch:declare-wake); never loop:arm from an autonomous-fleet agent. Do NOT self-pace with Claude's native /loop — declare an engine loop here instead (it is tracked + pauseable).",
     chaining:
       'loop:arm { intervalSec, goal, costCapCents? } → end your turn → the engine re-wakes you each iteration with the wakeup prompt (create + self-assign your work_items, work them, set_state) → loop:end to stop. loop:status to inspect.',
+    seeAlso: [
+      'loop:end (stop the loop)',
+      'loop:status (inspect it)',
+      'plans:set-schedule (wall-clock recurrence instead)',
+    ],
   },
   capability: 'routines:write',
   requirePrincipal: false,

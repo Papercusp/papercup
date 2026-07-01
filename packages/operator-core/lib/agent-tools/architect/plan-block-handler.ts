@@ -297,6 +297,11 @@ export default defineTool({
     notWhen:
       'The plan already exists — use plans:set-content or the individual write verbs instead.',
     chaining: 'Returns { ok, slug }. Follow with plans:get to read the created plan.',
+    seeAlso: [
+      'plans:get (read the created plan)',
+      'plans:set-content (edit an existing plan instead)',
+      'plans:new (create a plan directly)',
+    ],
   },
   capability: 'plans:write',
   // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: applies a

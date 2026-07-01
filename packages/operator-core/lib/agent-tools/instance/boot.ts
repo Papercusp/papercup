@@ -18,6 +18,11 @@ export default defineTool({
     when: 'Instantiate a NEW harness identical to a captured InstanceSpec (same blueprint + SHA + deployment + genome).',
     notWhen: 'To create a fresh harness from scratch, use `harness:create`. To clone-and-vary in one call, use `instance:clone`.',
     chaining: 'instance:capture → instance:boot.',
+    seeAlso: [
+      'instance:capture (capture the spec to boot from)',
+      'instance:clone (clone-and-vary in one call)',
+      'harness:create (a fresh harness from scratch)',
+    ],
   },
   description: 'Boot a new harness from an InstanceSpec, reproducing the captured instance. Reuses harness:create.',
   capability: 'harness:write',

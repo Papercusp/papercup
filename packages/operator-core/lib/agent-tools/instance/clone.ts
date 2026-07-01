@@ -20,6 +20,11 @@ export default defineTool({
     when: 'Clone a live harness into a new identical one, or a same-origin variant (pass a genomeDelta). The reproducible-clone replacement for the retired snapshot fork.',
     notWhen: 'For a fresh harness from scratch, use `harness:create`. To capture a spec without booting, use `instance:capture`.',
     chaining: 'instance:clone = instance:capture → (vary) → instance:boot in one call.',
+    seeAlso: [
+      'instance:capture (capture a spec without booting)',
+      'instance:boot (boot an identical one)',
+      'harness:create (a fresh harness from scratch)',
+    ],
   },
   description: 'Capture a harness → optionally apply a genome delta → boot an identical / same-origin clone.',
   capability: 'harness:write',

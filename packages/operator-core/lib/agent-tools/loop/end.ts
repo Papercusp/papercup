@@ -21,6 +21,11 @@ export default defineTool({
     notWhen:
       'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is hive:pause.',
     chaining: 'loop:arm to start; loop:status to check; loop:end to stop.',
+    seeAlso: [
+      'loop:arm (start a loop)',
+      'loop:status (check it)',
+      'autoloop:control (pause the whole autoloop engine)',
+    ],
   },
   capability: 'routines:write',
   requirePrincipal: false,

@@ -23,6 +23,11 @@ export default defineTool({
     when: 'Testing how a knob change performs before adopting it — screen a policy/prompt overlay against a battery on the cheap offline replay tier; the result ranks arms vs the baseline.',
     notWhen: 'Discovery (experiment:catalog). Scoring one gym run (gym:judge/gym:signals). Applying a winner to live prompts — that rides commit→reproject + graduation (D-006), never here.',
     chaining: 'experiment:catalog → pick testId + read knobSlice → experiment:run → (winner is a proposal).',
+    seeAlso: [
+      'experiment:catalog (discover test kinds + knob slices)',
+      'experiment:results (read back recorded outcomes)',
+      'gym:judge (subjective quality scoring of one run)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
