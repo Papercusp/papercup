@@ -20,6 +20,10 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS, type PresenceRecord } from '@papercusp/coordination/presence';
+import {
+  listLiveSessionPresence,
+  type SessionPresenceRowOut,
+} from '../../sync/hyperbee/session-presence-store';
 
 /** A presence record that may originate from the federated swarm. Extends the
  *  local PresenceRecord with the federation-only attributes. */
@@ -32,6 +36,12 @@ export interface UnifiedPresenceRecord extends PresenceRecord {
   harnessSlug?: string;
   /** The peer's current view (the federated analogue of currentPlanSlug). */
   currentView?: string | null;
+  /** P-006 (cross-machine-coord-parity): true for a SESSION-GRAIN row from
+   *  shared_session_presence — a remote AGENT with its REAL ownerId (directly
+   *  addressable), not a per-(user,machine) aggregate. */
+  remoteSession?: boolean;
+  /** The remote session's machine label (where it is homed). */
+  machineLabel?: string;
 }
 
 interface SharedPresenceDbRow {

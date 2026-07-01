@@ -194,7 +194,12 @@ export async function assemblePresenceSnapshot(
   // session-log record supersedes a STALE presence row (so a resumed-but-idle
   // session whose old heartbeat went stale is still surfaced, not shadowed); an
   // owner with only a live record gets a synthesized 'recorded' row. CLI-agnostic.
-  const all: RosterRow[] = reconcileRosterSources([...records, ...federated], recordedLive);
+  // P-006 (cross-machine-coord-parity): LOCAL WINS on ownerId collision — a
+  // session homed HERE must never be shadowed (or duplicated) by its own
+  // federated echo, and a remote peer claiming a local ownerId is dropped.
+  const localOwnerIds = new Set(records.map((r) => r.ownerId));
+  const fedDeduped = federated.filter((f) => !localOwnerIds.has(f.ownerId));
+  const all: RosterRow[] = reconcileRosterSources([...records, ...fedDeduped], recordedLive);
   const active = all.filter((r) => !r.stale);
   const stale = all.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();

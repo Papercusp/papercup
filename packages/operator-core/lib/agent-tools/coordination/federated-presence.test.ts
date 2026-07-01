@@ -4,7 +4,7 @@
  * and the query is exercised with an injected fake sql.
  */
 import { describe, expect, it } from 'vitest';
-import { mapSharedPresenceRow, queryFederatedPresenceRows } from './federated-presence';
+import { mapSharedPresenceRow, mapSessionPresenceRow, queryFederatedPresenceRows } from './federated-presence';
 
 const NOW = 1_700_000_000_000;
 
@@ -78,5 +78,40 @@ describe('queryFederatedPresenceRows — filtering', () => {
   it('filters by workspace AND harness', async () => {
     const r = await queryFederatedPresenceRows(fakeSql(rows), { workspaceId: 'ws-1', harnessSlug: 'a' });
     expect(r.map((x) => x.github_user_id)).toEqual([1]);
+  });
+});
+
+describe('mapSessionPresenceRow (P-006 session-grain roster leg)', () => {
+  const row = {
+    workspace_id: 'ws1',
+    hive_slug: 'hive-home',
+    harness_slug: 'hive-home',
+    owner_id: 'su-abc12345-6789',
+    kind: 'su',
+    intent: 'building P-006',
+    plan_slug: 'my-plan-2026-07-01',
+    github_user_id: 42,
+    machine_label: 'laptop',
+    device_pubkey: 'devA',
+    last_seen_ms: 1_700_000_000_000,
+  };
+
+  it('carries the REAL ownerId (addressable), remoteSession + plan mapping', () => {
+    const r = mapSessionPresenceRow(row, { now: 1_700_000_010_000, staleMs: 60_000 });
+    expect(r.ownerId).toBe('su-abc12345-6789'); // never a synthetic fed: id
+    expect(r.remoteSession).toBe(true);
+    expect(r.federated).toBe(true);
+    expect(r.currentPlanSlug).toBe('my-plan-2026-07-01');
+    expect(r.agentRole).toBe('su');
+    expect(r.hiveSlug).toBe('hive-home');
+    expect(r.machineLabel).toBe('laptop');
+    expect(r.stale).toBe(false);
+  });
+
+  it('stale computation respects the window', () => {
+    const fresh = mapSessionPresenceRow(row, { now: row.last_seen_ms + 30_000, staleMs: 60_000 });
+    const stale = mapSessionPresenceRow(row, { now: row.last_seen_ms + 120_000, staleMs: 60_000 });
+    expect(fresh.stale).toBe(false);
+    expect(stale.stale).toBe(true);
   });
 });

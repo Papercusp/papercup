@@ -15,6 +15,8 @@
 
 import { listPresence } from './presence';
 import { listRecordedLiveSessions } from '../../adv-sessions';
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
+import { listLiveSessionPresence } from '../../sync/hyperbee/session-presence-store';
 
 /** Wildcards + audience selectors that bypass concrete-recipient validation —
  *  sendMessage expands these itself (`*`/`human` broadcast; `@plan:`/`@role:`/
@@ -67,10 +69,32 @@ export function resolveRecipientsAgainst(
   return { resolved, unknown, ambiguous };
 }
 
+/** Remote (federated session-grain) ownerIds — P-007 (cross-machine-coord-
+ *  parity): remote agents resolve exactly like local ones. Wide window (4x
+ *  stale) keeps a quiet-but-alive remote session addressable (a message
+ *  injects; wake honesty is the receipts leg, P-008). Best-effort: empty on
+ *  error / no workspace (mig 434 not applied, single box). */
+export async function remoteSessionOwnerIds(workspaceId?: string | null): Promise<Set<string>> {
+  if (!workspaceId) return new Set();
+  try {
+    const rows = await listLiveSessionPresence({
+      workspaceId,
+      staleMs: PRESENCE_STALE_MS * 4,
+    });
+    return new Set(rows.map((r) => r.owner_id));
+  } catch {
+    return new Set();
+  }
+}
+
 async function readKnownOwnerIds(workspaceId?: string | null): Promise<string[]> {
-  const [presenceRes, recordedRes] = await Promise.allSettled([
+  const [presenceRes, recordedRes, remoteRes] = await Promise.allSettled([
     listPresence({ workspaceId }),
     listRecordedLiveSessions({ workspaceId }),
+    // P-007: the unified-roster leg — remote su-/bee ownerIds from
+    // shared_session_presence, so direct addressing, prefix, AND short-handle
+    // resolution all work cross-machine (the parity ask). Best-effort.
+    remoteSessionOwnerIds(workspaceId),
   ]);
   const ids = new Set<string>();
   if (presenceRes.status === 'fulfilled') {
@@ -81,14 +105,17 @@ async function readKnownOwnerIds(workspaceId?: string | null): Promise<string[]>
       if (s.coordOwnerId) ids.add(s.coordOwnerId);
     }
   }
+  if (remoteRes.status === 'fulfilled') {
+    for (const id of remoteRes.value) ids.add(id);
+  }
   return [...ids];
 }
 
-/** Host-bound wrapper: resolve `to` against the live presence roster (all known
- *  agents in the workspace, live + idle). Local-roster scoped — a cross-instance
- *  federated recipient is not in the local roster, so callers that support
- *  federation must treat `unknown` as advisory there (single-instance: it's a
- *  hard error). */
+/** Host-bound wrapper: resolve `to` against the UNIFIED roster (local presence
+ *  + recorded live sessions + P-007 federated session-grain presence), so a
+ *  remote hive peer's su-/bee ownerId resolves exactly like a local one. An
+ *  `unknown` is therefore a hard error everywhere: nobody local OR remote
+ *  claims the id. */
 export async function resolveRecipients(
   to: readonly string[],
   workspaceId?: string | null,

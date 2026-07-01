@@ -21,7 +21,7 @@ import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { sendMessage, getMessageById } from '../messages';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
-import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
+import { resolveRecipients, isSelectorOrWildcard, remoteSessionOwnerIds } from '../recipient-resolve';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
@@ -322,16 +322,33 @@ async function sendOne(
         // genuinely dead and the inject black-holes. Classify the dead ones (same non-firing
         // probe the no-wake path uses) and report them LOUDLY + truthfully.
         let dead: string[] = [];
+        // P-007 (cross-machine-coord-parity): a REMOTE-homed recipient has no
+        // local watcher by definition — it is not dead, it is elsewhere. Split
+        // it out of the dead set and report it truthfully (below).
+        let remoteHomed: string[] = [];
         try {
           const report = await reportIdleRecipients(fan.targets, {
             workspaceId: identity.workspaceId ?? undefined,
           });
           dead = report.idle;
+          const remote = await remoteSessionOwnerIds(identity.workspaceId);
+          remoteHomed = fan.targets.filter((t) => remote.has(t));
+          dead = dead.filter((d) => !remote.has(d));
         } catch {
           /* fail-soft: keep the generic miss note below */
         }
         const optimisticNoBackstop = wakeMode === 'optimistic';
-        if (dead.length > 0) {
+        if (remoteHomed.length > 0 && dead.length === 0) {
+          wake.recipient_remote = remoteHomed;
+          wake.note = harnessSlug
+            ? `recipient(s) ${remoteHomed.join(', ')} are homed on a REMOTE machine of this hive — no local ` +
+              'session to wake here. The message FEDERATES (federated:true) and the remote machine fires ' +
+              'the wake fan when it arrives (EI-279). Confirm pickup via their reply (wakeOnReply) or ' +
+              'coord:inbox — cross-machine delivery receipts land with P-008.'
+            : `recipient(s) ${remoteHomed.join(', ')} are homed on a REMOTE machine, but this send did NOT ` +
+              "federate (federated:false — no hive scope). It will NEVER reach them: re-send with scope:'hive' " +
+              'so the message rides the hive topic.';
+        } else if (dead.length > 0) {
           wake.recipient_dead = dead;
           wake.note =
             (optimisticNoBackstop
