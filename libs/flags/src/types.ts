@@ -901,6 +901,17 @@ export const FLAGS = {
   // are reconcile-covered (P-005). Reversible (OFF = local SELECT … FOR UPDATE SKIP LOCKED).
   // Read SYNC-cached (deep in the claim path) via work-item-claim-lease-wiring.ts.
   WORKITEM_CLAIM_LEASE: "papercusp-workitem-claim-lease",
+  // cross-machine-coord-parity-and-trust-2026-07-01 P-004 (D-002/D-008): presence rides
+  // the EPHEMERAL gossip channel (presence-gossip.ts, papercusp/hive-presence frames)
+  // instead of appending beats to the append-only peer-log — beat-like data immortalized
+  // in logs is the 256×10 scaling wall (heartbeats ≈ half the hive's write budget).
+  // OFF = today's log-append announce loop (wire-presence.ts), byte-identical. ON = the
+  // announce loop broadcasts device-signed gossip frames; hive:leave publishes a signed
+  // del tombstone frame. CUTOVER flag: every peer must carry the gossip READER before a
+  // writer flips (a gossip-only announcer is invisible to a log-only reader), so it ships
+  // dark until both dogfood machines updated; owner flips after a 2-machine verify.
+  // Listed in KNOWN_DARK_FLAGS (cutover).
+  PRESENCE_GOSSIP: "papercusp-presence-gossip",
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (PHASE 1): scope the routines
   // upsert's ON CONFLICT to (workspace_id, install_slug, name) so a hive in workspace
   // B can no longer CLOBBER a same-named routine in workspace A (the latent leak — 0
@@ -1219,6 +1230,8 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
     [FLAGS.TEST_COMPLETION_GATE, { case: 'incomplete', reason: 'the test-completion gate can REFUSE a real work_items:complete; dark until the done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion byte-identical; FAIL-OPEN even when ON.' }],
     [FLAGS.PER_HIVE_RELEASE_GATE, { case: 'incomplete', reason: 'the per-hive staging→main green-checkpoint + release-trigger seeding is unverified on the live pipeline; OFF leaves the live :3070 pipeline untouched. Owner flips ON only after a canary-hive (oddsmith-hive) verify.' }],
+    // cutover — the flip needs every peer on the new wire first
+    [FLAGS.PRESENCE_GOSSIP, { case: 'cutover', reason: 'presence moves off the peer-log onto ephemeral gossip (P-004, cross-machine-coord-parity). A gossip-only announcer is INVISIBLE to a log-only reader, so every hive peer must carry the reader before a writer flips. Owner flips after both dogfood machines update + a 2-machine presence-federation verify.' }],
     // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
     [FLAGS.OPEN_SIGNUP, { case: 'owner-authority', reason: 'SECURITY: /auth/signup is internet-reachable (cloudflared tunnel) — open signup mints real accounts. The zero-active-users bootstrap path keeps fresh installs working; owner flips ON after the auth-tier rollout.' }],
     [FLAGS.AUTH_CONFIG_OVERRIDES, { case: 'owner-authority', reason: 'OWNER-AUTHORITY escalation surface — auth:set_full_access_roles can WIDEN the all-gates bypass set. OFF ⇒ the auth-config sync-cache stays empty ⇒ every surface uses its baked literal (byte-identical); owner flips ON to ratify the dials.' }],
