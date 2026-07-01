@@ -6,8 +6,11 @@
  * fallback can NEVER override it (even if a bee inherits PAPERCUSP_INTEGRATION_ROOT);
  * the env is consulted ONLY for the projectDir-undefined superuser case.
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { resolveCapabilityBaseDir } from './base-dir';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveCapabilityBaseDir, realpathSoft } from './base-dir';
 
 describe('EI-1754 — resolveCapabilityBaseDir', () => {
   const orig = process.env.PAPERCUSP_INTEGRATION_ROOT;
@@ -35,5 +38,33 @@ describe('EI-1754 — resolveCapabilityBaseDir', () => {
   it('empty / whitespace env is treated as unset → process.cwd()', () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = '   ';
     expect(resolveCapabilityBaseDir({})).toBe(process.cwd());
+  });
+});
+
+describe('EI-5912 — symlink resolution so the exec-sandbox writable-cwd bind matches the real path', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'papercusp-basedir-'));
+  });
+  afterEach(() => {
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it('resolves a symlinked base dir to its REAL path (the papercup→papercusp case)', () => {
+    const real = join(root, 'papercusp');
+    const link = join(root, 'papercup');
+    mkdirSync(real);
+    symlinkSync(real, link);
+    // node resolves a write UNDER the cwd through the symlink to `real`; the sandbox
+    // binds the path we hand it writable, so the base dir MUST be the real path or a
+    // write to <cwd>/node_modules/.vite-temp EROFSes under the read-only `/` bind.
+    expect(realpathSoft(link)).toBe(realpathSync(real));
+    expect(resolveCapabilityBaseDir({ projectDir: link })).toBe(realpathSync(real));
+  });
+
+  it('a non-existent base dir is returned unchanged (fail-soft, never throws)', () => {
+    const missing = join(root, 'does', 'not', 'exist');
+    expect(realpathSoft(missing)).toBe(missing);
+    expect(resolveCapabilityBaseDir({ projectDir: missing })).toBe(missing);
   });
 });

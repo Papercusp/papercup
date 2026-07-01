@@ -22,7 +22,7 @@
  * ONLY consulted when projectDir is absent (the superuser case this fixes). An empty /
  * whitespace env is treated as unset.
  *
- * SYMLINK RESOLUTION (EI-5912): -->IMPORT_ANCHOR<-- the resolved base dir is often reached via a symlink
+ * SYMLINK RESOLUTION (EI-5912): the resolved base dir is often reached via a symlink
  * (the canonical tree `.../papercup` is a symlink to `.../papercusp`, and
  * `PAPERCUSP_INTEGRATION_ROOT` points at the symlink). The capability exec-sandbox
  * (`buildCapabilitySandboxCommand` / srt `buildFleetSrtSettings`) makes the cwd
@@ -36,6 +36,8 @@
  * never throwing — the selection semantics above are unchanged, only the final path
  * is canonicalized.
  */
+import { realpathSync } from 'node:fs';
+
 export function resolveCapabilityBaseDir(ctx: { projectDir?: string }): string {
   return realpathSoft(pickCapabilityBaseDir(ctx));
 }

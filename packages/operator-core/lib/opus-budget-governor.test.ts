@@ -20,10 +20,12 @@ function acct(
     util7d?: number;
     utilizationAt?: number;
     pausedUntil?: number;
+    provider?: ClaudeAccount['provider'];
   } = {},
 ): ClaudeAccount {
   return {
     id,
+    ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
     credentialRef: `token:/creds/${id}`,
     addedAt: NOW - 1_000_000,
     boundTo: [],
@@ -82,6 +84,37 @@ describe('aggregateOpusUtil — the fleet opus-pressure signal', () => {
   it('a paused near-full account does not drag down an available fresh account', () => {
     const p = pool(acct('a', { util: 0.99, pausedUntil: NOW + 60_000 }), acct('b', { util: 0.2 }));
     expect(aggregateOpusUtil(p, NOW)).toBeCloseTo(0.2);
+  });
+
+  it('WI-1073: a low-util CODEX account does NOT drag the opus aggregate down (it cannot serve opus)', () => {
+    // aviynw_codex reproduction: a codex account reads effectiveDrainUtil 0 (no Claude util) but cannot
+    // serve Claude opus, so it must be EXCLUDED from the opus-pressure MIN. Before the fix that 0 pinned
+    // the aggregate to the `headroom` zone while every Claude account was near its 5h/7d cap, so the
+    // governor never shed opus → sonnet and the fleet 429-looped.
+    const p = pool(
+      acct('claude-a', { util: 0.9, util7d: 0.96 }),
+      acct('claude-b', { util: 0.92 }),
+      acct('codex', { provider: 'codex' }), // no Claude util → effectiveDrainUtil 0
+    );
+    // aggregate is the CLAUDE min — claude-a eff = max(0.9, 0.96)=0.96, claude-b = 0.92 → 0.92 —
+    // NOT the codex 0 → the governor correctly sees exhaustion.
+    expect(aggregateOpusUtil(p, NOW)).toBeCloseTo(0.92);
+  });
+
+  it('WI-1073: a pool of ONLY codex accounts yields null (no Claude opus signal → governor no-op)', () => {
+    const p = pool(acct('codex-a', { provider: 'codex' }), acct('codex-b', { provider: 'codex', util: 0.1 }));
+    expect(aggregateOpusUtil(p, NOW)).toBeNull();
+  });
+
+  it('WI-1073: all Claude accounts paused → exhausted (1) even with an available codex account present', () => {
+    // opus is exhausted because every CLAUDE account is paused; the available codex account can't serve opus.
+    const p = pool(acct('claude-a', { util: 0.1, pausedUntil: NOW + 60_000 }), acct('codex', { provider: 'codex' }));
+    expect(aggregateOpusUtil(p, NOW)).toBe(1);
+  });
+
+  it('a legacy account without a provider is treated as Claude (opus-capable)', () => {
+    // provider omitted ⇒ claude (per the account model), so it participates in the opus signal.
+    expect(aggregateOpusUtil(pool(acct('legacy', { util: 0.3 })), NOW)).toBeCloseTo(0.3);
   });
 });
 

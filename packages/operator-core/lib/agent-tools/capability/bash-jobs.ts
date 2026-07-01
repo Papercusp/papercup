@@ -41,6 +41,18 @@ export const MAX_TIMEOUT_MS = 600_000;
 /** Keep at most this many finished jobs around for late `bash_output` reads. */
 const MAX_RETAINED_JOBS = 64;
 
+/**
+ * A temp dir given to every capability-exec'd child, overriding whatever ephemeral
+ * `TMPDIR` the operator inherited (EI-5912). The capability exec-sandbox (srt / the
+ * bwrap `--tmpfs /tmp`) mounts a FRESH writable `/tmp`, so an inherited per-session
+ * `TMPDIR=/tmp/claude/<runid>` does NOT exist inside the sandbox — a tool that does
+ * `mkdir $TMPDIR/<x>` (vitest's SSR dir) then ENOENTs and the SANCTIONED test runner
+ * (`capability:inspect { check:'test' }`) is unusable, forcing agents back to raw
+ * bash. `/tmp` (the sandbox tmpfs root) always exists + is writable there (verified),
+ * and is the sensible default TMPDIR unsandboxed too. Injected BEFORE the caller's
+ * explicit `env`, so a caller that deliberately sets TMPDIR still wins. */
+export const CAPABILITY_SANDBOX_TMPDIR = '/tmp';
+
 export type BashStatus = 'running' | 'completed' | 'failed' | 'killed' | 'timed_out';
 
 export interface BashJob {
@@ -103,7 +115,17 @@ function spawnShell(
     // (DISPLAY=:0 / gdm XAUTHORITY) so a bee shell can NEVER inherit the seat. A GUI
     // command only reaches a display when the caller (bash.ts) explicitly bound a
     // LEASED sandbox DISPLAY in `env`; with no lease there is no DISPLAY at all.
-    env: { ...stripHostX(process.env), ...(env ?? {}), PATH: spawnPath },
+    // TMPDIR/TMP/TEMP → a dir that EXISTS inside the exec-sandbox (EI-5912): after
+    // stripHostX (which keeps the inherited, possibly-ephemeral TMPDIR) but BEFORE
+    // the caller's explicit `env`, so a deliberate caller override still wins.
+    env: {
+      ...stripHostX(process.env),
+      TMPDIR: CAPABILITY_SANDBOX_TMPDIR,
+      TMP: CAPABILITY_SANDBOX_TMPDIR,
+      TEMP: CAPABILITY_SANDBOX_TMPDIR,
+      ...(env ?? {}),
+      PATH: spawnPath,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     // OWN PROCESS GROUP (capability-bash-orphan-kill-2026-06-21): `detached:true`
     // makes the child (bash, or the bwrap wrapper) a process-group leader
