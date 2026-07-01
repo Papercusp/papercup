@@ -1,0 +1,9 @@
+{
+  "actor": "s-1782941534352-bd631191",
+  "feature_id": "F-FIX-043",
+  "field": "__created",
+  "id": 959,
+  "new_value": "{\"id\":\"F-FIX-043\",\"title\":\"Queen placement accounting drifts after work completes or bees die\",\"sourceIssueId\":\"EI-6109\"}",
+  "old_value": "null",
+  "ts": 1782941674015
+}
