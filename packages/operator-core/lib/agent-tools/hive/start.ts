@@ -37,6 +37,10 @@ export default defineTool({
     notWhen:
       'To wake the Queen once without changing the started state — hive:wake. To start one plan — plans:start. To create a hive — hive:create.',
     chaining: 'hive:status to verify (started, subscriptions, next wake); hive:pause to suspend.',
+    seeAlso: [
+      'hive:status (verify started + next wake)',
+      'hive:pause (suspend autonomous operation)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

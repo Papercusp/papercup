@@ -25,6 +25,11 @@ export default defineTool({
     notWhen:
       'Browsing joinable hives across the P2P network — that is discovery:hives. The raw per-agent fleet view — fleet:assignments. One hive in depth — hive:get.',
     chaining: 'hive:get { slug } to drill into one; hive:create to add one; hive:dissolve to tear one down.',
+    seeAlso: [
+      'hive:get (drill into one hive in depth)',
+      'hive:create (stand up a new hive)',
+      'fleet:assignments (the raw per-agent view across the workspace)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

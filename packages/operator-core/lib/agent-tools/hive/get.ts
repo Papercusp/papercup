@@ -26,6 +26,11 @@ export default defineTool({
     notWhen: 'A list of all hives — hive:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
     chaining:
       'hive:list to find the slug; hive:wake to fire the Queen now; hive:declare-wake to change the cadence; hive:dissolve to tear it down.',
+    seeAlso: [
+      'hive:list (all hives at a glance)',
+      'fleet:assignments (the raw per-agent fleet view)',
+      'hive:status (next-wake schedule detail)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

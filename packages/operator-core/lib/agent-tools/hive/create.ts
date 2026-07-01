@@ -33,6 +33,11 @@ export default defineTool({
       'Deploying an EXISTING hive to a cloud frame — deploy:hive. A plain non-hive harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).',
     chaining:
       'hive:get { slug } to inspect; hive:declare-wake to set the cadence; deploy:hive to place it on a Swarm; hive:dissolve to tear it down.',
+    seeAlso: [
+      'hive:create_from_repo (onboard a GitHub repo as a hive instead)',
+      'hive:start (boot the new hive into autonomous operation)',
+      'hive:dissolve (tear it down)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

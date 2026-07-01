@@ -32,6 +32,10 @@ export const exportTool = defineTool({
     notWhen: 'Installing or browsing packs — learning_packs:list/install.',
     chaining:
       "After the files are committed + pushed by the project's normal flow, learning_packs:publish lists the pack on the Comb (it publishes PENDING — operator approval gates public visibility, D-007).",
+    seeAlso: [
+      'learning_packs:publish (list the pack on the Comb after export + push)',
+      'learning_packs:list (browse / install packs instead)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({
@@ -74,6 +78,10 @@ export const publishTool = defineTool({
     when: 'After learning_packs:export and the files are pushed to the GitHub repo.',
     notWhen: 'The pack files are not on GitHub yet — publish points at the repo; export first, push, then publish.',
     chaining: 'The response carries review_status pending — the submitter sees it on their own listing; operators approve at /admin/cupboard-moderation.',
+    seeAlso: [
+      'learning_packs:export (run first — export, push, then publish)',
+      'learning_packs:list (browse published packs)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({

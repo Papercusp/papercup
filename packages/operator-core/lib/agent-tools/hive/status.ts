@@ -28,6 +28,11 @@ export default defineTool({
   guidance: {
     when: 'To see when/whether the operator will wake next, or to verify a hive:declare-wake landed.',
     chaining: 'hive:declare-wake to change the declaration; hive:wake to fire now.',
+    seeAlso: [
+      'hive:declare-wake (change the wake declaration)',
+      'hive:wake (fire the Queen now)',
+      'hive:get (full hive detail — bees, load, queued work)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

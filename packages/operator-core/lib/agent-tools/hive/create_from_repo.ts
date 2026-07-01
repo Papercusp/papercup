@@ -33,6 +33,11 @@ export default defineTool({
       'The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less hive — hive:create. Adding a repo into an EXISTING hive — harness:create { hive } after cloning (the into-hive picker mode).',
     chaining:
       'hive:create_from_repo { githubUrl } → on {existing} drive the join (POST /api/harness/join-link per member link) → on {created} hive:get / discovery:set_hive to edit the listing.',
+    seeAlso: [
+      'hive:create (stand up a hive without a repo)',
+      'hive:get (inspect / edit the created hive)',
+      'discovery:set_hive (edit the public listing)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

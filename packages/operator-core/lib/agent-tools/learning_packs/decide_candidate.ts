@@ -50,6 +50,10 @@ export default defineTool({
       'To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via learning_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.',
     chaining:
       'learning_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → learning_packs:upgrade { hive, pack: "fleet-lessons" }; others via learning_packs:install. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+    seeAlso: [
+      'learning_packs:candidates (the candidate pool + drafts)',
+      'learning_packs:upgrade (hives adopt the accepted item)',
+    ],
   },
   crossWorkspace: true,
   args: z
