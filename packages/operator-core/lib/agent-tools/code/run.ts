@@ -144,14 +144,22 @@ export default defineTool({
         ? buildFacadeHelp(result.unknownRefs, all, allowed)
         : undefined;
 
+    // WI-1377: keep the full plannedMutations echo ONLY under dryRun (the mutation preview the
+    // agent inspects before committing). On a REAL run the writes already executed, so echoing
+    // every call's full args back is pure waste that overflows the 100k result cap on a large
+    // batch (e.g. 600+ set_priority calls) — even when the script's own `summary` is tiny — and
+    // forces the agent to split one logical write across many code:run calls. shapeMutationEcho
+    // swaps it for a compact { count, byTool } summary on a committing run.
+    const shownResult = shapeMutationEcho(result);
+
     const payload =
       similarRecipes.length > 0 || facadeHelp
         ? {
-            ...result,
+            ...shownResult,
             ...(similarRecipes.length > 0 ? { similarRecipes } : {}),
             ...(facadeHelp ? { facadeHelp } : {}),
           }
-        : result;
+        : shownResult;
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });
