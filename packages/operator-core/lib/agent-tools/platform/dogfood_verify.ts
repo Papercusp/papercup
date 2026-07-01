@@ -38,6 +38,10 @@ export default defineTool({
       'Opening the PR — platform:contribute. Listing PRs — the PRs tab. Tidying forks — platform:fork_gc.',
     chaining:
       'platform:enable → platform:contribute {kind:\'pr\'} → (the system:pr-poll daemon reviews/merges) → platform:dogfood_verify { prUrl } to assert ok:true.',
+    seeAlso: [
+      'platform:contribute (open the PR this verifies)',
+      'platform:fork_gc (tidy the fork after)',
+    ],
   },
   capability: 'harness:read',
   crossWorkspace: true,

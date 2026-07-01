@@ -21,6 +21,11 @@ export default defineTool({
     when: 'Checking which hives currently hold a sandbox desktop — after provisioning, before a VNC view, or auditing for leaks.',
     notWhen: 'Driving a desktop (capability:computer) or standing one up (computer:provision_desktop).',
     chaining: 'computer:provision_desktop → computer:list_desktops (verify) → computer:release_desktop.',
+    seeAlso: [
+      'computer:provision_desktop (stand one up)',
+      'computer:release_desktop (reclaim one)',
+      'capability:computer (drive a desktop)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

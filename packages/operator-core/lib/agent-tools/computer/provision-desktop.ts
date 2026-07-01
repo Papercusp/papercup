@@ -33,6 +33,11 @@ export default defineTool({
       'For scriptable work (files/CLIs/APIs) no desktop is needed — bees use capability:bash. On a deployed desktop FRAME the per-slot Xvfb is leased by the frame bootstrap (acquireAgentDisplay), not this tool.',
     chaining:
       'computer:provision_desktop { hive, apps } → spawn/let a bee in that hive call capability:computer → computer:list_desktops to inspect → computer:release_desktop when done.',
+    seeAlso: [
+      'capability:computer (drive the provisioned desktop)',
+      'computer:list_desktops (verify it stood up)',
+      'computer:release_desktop (reclaim when done)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -41,6 +41,11 @@ export default defineTool({
       'Onboarding an ARBITRARY repo as a hive — hive:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a learning-pack) — platform:contribute (the separate, gated path).',
     chaining:
       'platform:enable → improvements:learning_loops to see the armed (dark) layer-3 loops → arm the watchdog via the routines admin → platform:contribute to send an improvement upstream.',
+    seeAlso: [
+      'platform:contribute (send an improvement upstream)',
+      'improvements:learning_loops (see the armed layer-3 loops)',
+      'hive:create_from_repo (onboard an arbitrary repo instead)',
+    ],
   },
   capability: 'harness:write',
   // The flag flip writes the operator-level override store (no workspace_id on

@@ -51,6 +51,11 @@ export default defineTool({
       'Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — learning_packs:export + learning_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.',
     chaining:
       'platform:enable (stand up the self-hive) → set the self-hive member\'s fork_remote (for kind:\'pr\') → platform:contribute (prepared) → review the plan/needs → platform:contribute { confirm:true } to send.',
+    seeAlso: [
+      'platform:enable (stand up the self-hive first)',
+      'platform:dogfood_verify (confirm the PR loop closed)',
+      'learning_packs:publish (publish a pack for a non-platform hive)',
+    ],
   },
   capability: 'harness:write',
   // The contribution resolves the self-hive member from the workspace registry +

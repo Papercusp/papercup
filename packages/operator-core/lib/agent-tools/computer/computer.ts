@@ -229,6 +229,11 @@ export default defineTool({
     notWhen:
       'Anything scriptable (create files, run a program, hit an API) → capability:bash. A web page → a browser tool (DOM automation is more reliable + cheaper than pixel-clicking). Never use this to operate the host machine — it only drives the agent\'s leased sandbox desktop.',
     chaining: 'screenshot → inspect the image → left_click/type/key at the coordinates you see → screenshot to confirm. Repeat.',
+    seeAlso: [
+      'capability:bash (anything scriptable — files / CLIs / APIs)',
+      'computer:provision_desktop (stand up the sandbox desktop first)',
+      'computer:list_desktops (which desktops are leased)',
+    ],
   },
   capability: 'capability:computer',
   requirePrincipal: false,
