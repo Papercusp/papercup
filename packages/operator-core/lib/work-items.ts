@@ -1063,6 +1063,29 @@ export async function setWorkItemState(
         ),
       )
       .catch(() => {});
+    // voice-unified-sentinel-pipeline P-006: when a SETTLED item is a deep-thinking
+    // delegation (carries the `deep-delegation` topic), inject its completion
+    // summary back into the Sentinel pane as `[deep-answer WI-NNN] …` so the
+    // answer is presented + spoken through the one pipeline. Same fire-and-forget
+    // + lazy-import shape; the watch gates on the topic and no-ops otherwise.
+    void import('./sentinel/sentinel-deep-watch')
+      .then((m) =>
+        m.injectDeepAnswerIfTracked(
+          {
+            id: settled.id,
+            title: settled.title,
+            state: settled.state,
+            harness: settled.harness,
+            terminalCompletionRef:
+              (settled as { terminalCompletionRef?: string | null }).terminalCompletionRef ?? null,
+          },
+          async (wid, harness) => {
+            const detail = await getWorkItemDetail(wid, harness ?? undefined);
+            return detail?.topics ?? [];
+          },
+        ),
+      )
+      .catch(() => {});
   }
   // plugin-system-hive-port P-004: a transition INTO `blocked` fires
   // `work-item:blocked:<id>` (notifying the delegator) so blocked work is a

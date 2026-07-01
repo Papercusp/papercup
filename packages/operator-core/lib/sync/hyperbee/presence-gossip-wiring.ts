@@ -35,8 +35,10 @@ import {
   createPresenceGossip,
   buildPresencePutFrame,
   buildPresenceDelFrame,
+  buildSessionsFrame,
   type PresenceGossipHandle,
   type PresenceDelKey,
+  type SessionPresenceEntry,
 } from './presence-gossip';
 import { getSharedSwarm } from './swarm';
 import { applySessionPresenceSet } from './session-presence-store';
@@ -54,6 +56,10 @@ export interface PresenceGossipWriter {
   sign: (bytes: Buffer) => Promise<Buffer>;
   /** This device's raw-32 base64 pubkey (frame identity for del frames). */
   devicePubkey: string;
+  /** Identity legs for SESSIONS frames (P-005). */
+  githubUserId: number;
+  machineLabel: string;
+  hiveSlug: string | null;
 }
 
 interface TopicBinding {
@@ -222,6 +228,37 @@ export async function broadcastPresencePut(topicHex: string, row: SharedPresence
     const writer = s.bindings.get(topicHex)?.writer;
     if (!writer) return false;
     const frame = await buildPresencePutFrame(row, Date.now(), writer.sign);
+    s.gossip.broadcast(topicHex, frame);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Broadcast THIS machine's full current session set (P-005 — the session-grain
+ * roster beat). Receivers replace the device's previous set. Returns false when
+ * the gossip/writer is unavailable (a skipped beat; the TTL absorbs it).
+ */
+export async function broadcastSessions(
+  topicHex: string,
+  sessions: SessionPresenceEntry[],
+): Promise<boolean> {
+  try {
+    const s = await ensureState();
+    const writer = s.bindings.get(topicHex)?.writer;
+    if (!writer) return false;
+    const frame = await buildSessionsFrame(
+      {
+        devicePubkey: writer.devicePubkey,
+        githubUserId: writer.githubUserId,
+        machineLabel: writer.machineLabel,
+        hiveSlug: writer.hiveSlug,
+      },
+      sessions,
+      Date.now(),
+      writer.sign,
+    );
     s.gossip.broadcast(topicHex, frame);
     return true;
   } catch {

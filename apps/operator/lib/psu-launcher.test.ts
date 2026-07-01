@@ -1233,6 +1233,18 @@ describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
     expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5', resumeSession: 's-3' })).toEqual(['-m', 'gpt-5.5', 'resume', 's-3']);
   });
 
+  // The claude CLI takes effort as its own flag — a verbatim `<model>:<effort>` spec
+  // silently drops the effort and the session falls back to the box's saved default
+  // (the 2026-07-01 sonnet-5:high fleet that came up at xhigh).
+  it('claude: splits a recognized `<model>:<effort>` spec into --model + --effort', () => {
+    expect(suWrapperExtraArgs('claude', { model: 'claude-sonnet-5:high' })).toEqual(['--model', 'claude-sonnet-5', '--effort', 'high']);
+    expect(suWrapperExtraArgs('claude', { model: 'opus:max' })).toEqual(['--model', 'opus', '--effort', 'max']);
+    // A non-effort `:` segment (e.g. a bedrock `…-v2:0` id) passes through verbatim.
+    expect(suWrapperExtraArgs('claude', { model: 'anthropic.claude-3-5-sonnet-20241022-v2:0' })).toEqual(['--model', 'anthropic.claude-3-5-sonnet-20241022-v2:0']);
+    // omp keeps the suffixed spec verbatim — it parses `<model>[:<effort>]` natively.
+    expect(suWrapperExtraArgs('omp', { model: 'opus:high' })).toEqual(['--model', 'opus:high']);
+  });
+
   it('emits nothing when neither model nor resume is set', () => {
     expect(suWrapperExtraArgs('omp', {})).toEqual([]);
     expect(suWrapperExtraArgs('omp')).toEqual([]);

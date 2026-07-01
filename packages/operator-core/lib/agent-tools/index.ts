@@ -95,6 +95,7 @@ import './voice/status';
 import './voice/agent';
 import './voice/transcript';
 import './voice/say';
+import './voice/delegate-deep';
 // Shared operator_conversations thread (sentinel-as-claude-tui Phase B):
 import './conversation/recent';
 import './conversation/append';

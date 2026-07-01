@@ -213,7 +213,17 @@ export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
   const args = [];
   if (model) {
     if (agent === 'codex') args.push('-m', model);
-    else args.push('--model', model); // claude + omp
+    else if (agent === 'claude') {
+      // psu's model spec is `<model>[:<effort>]` (e.g. claude-sonnet-5:high), but the
+      // claude CLI takes effort as its OWN flag — a verbatim suffixed spec sets the
+      // model and silently DROPS the effort, so the session falls back to the box's
+      // saved default (how a sonnet-5:high fleet came up at xhigh, 2026-07-01). Split
+      // a recognized effort tail into `--effort`; anything else (a bare id, or a
+      // non-effort `:` segment like bedrock's `…-v2:0`) passes through verbatim.
+      const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(model);
+      if (m) args.push('--model', m[1], '--effort', m[2]);
+      else args.push('--model', model);
+    } else args.push('--model', model); // omp understands the `<model>[:<effort>]` spec natively
   }
   if (resumeSession) {
     if (agent === 'omp' || agent === 'claude') args.push('-r', resumeSession);

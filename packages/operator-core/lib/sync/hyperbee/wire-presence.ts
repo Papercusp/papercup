@@ -157,8 +157,60 @@ export async function wirePresenceAnnounceForHarness(
         )),
   });
   handle.registerCloseHook(() => loop.stop());
+
+  // ── P-005: the SESSION-GRAIN announcer (gossip-only). Every tick reads this
+  // machine's LOCAL live-session roster and broadcasts it as one signed
+  // 'sessions' frame (full-set semantics — receivers replace our previous set).
+  // A change-hash short-circuits identical sets so a quiet machine costs one
+  // frame per SESSION_ANNOUNCE_REFRESH_MS keep-alive, not one per tick.
+  // Gossip-writer-gated: no flag, no frames (log-path behavior byte-identical).
+  if (gossipWriterOn && gossipTopicHex) {
+    const setIv = opts.setIntervalFn ?? setInterval;
+    const clearIv = opts.clearIntervalFn ?? clearInterval;
+    let lastHash = '';
+    let lastSentMs = 0;
+    const tickSessions = async (): Promise<void> => {
+      try {
+        // Dynamic import (the EI-279 layering idiom): the local roster lives in
+        // agent-tools/coordination; sync/hyperbee must not import it statically.
+        const { listPresence } = await import('../../agent-tools/coordination/presence');
+        const records = await listPresence({ workspaceId: handle.workspaceId });
+        const nowMs = (opts.now ?? Date.now)();
+        const sessions = (records ?? [])
+          .filter((r) => typeof r?.ownerId === 'string' && r.ownerId.length > 0)
+          .slice(0, 128)
+          .map((r) => ({
+            owner_id: r.ownerId,
+            kind: r.ownerId.startsWith('su-') ? 'su' : r.ownerId.startsWith('s-') ? 'bee' : 'agent',
+            intent: r.intent ?? null,
+            plan_slug: (r as { currentPlanSlug?: string | null }).currentPlanSlug ?? null,
+            harness_slug: handle.harnessSlug,
+            last_active_ms: nowMs,
+          }));
+        const hash = JSON.stringify(sessions.map((s) => [s.owner_id, s.intent, s.plan_slug]));
+        if (hash === lastHash && nowMs - lastSentMs < SESSION_ANNOUNCE_REFRESH_MS) return;
+        const { broadcastSessions } = await import('./presence-gossip-wiring');
+        if (await broadcastSessions(gossipTopicHex, sessions)) {
+          lastHash = hash;
+          lastSentMs = nowMs;
+        }
+      } catch (err) {
+        opts.onError?.(err);
+      }
+    };
+    const sessTimer = setIv(() => void tickSessions(), SESSION_ANNOUNCE_TICK_MS);
+    handle.registerCloseHook(() => clearIv(sessTimer));
+  }
+
   return loop;
 }
+
+/** Session-announcer cadence: tick (change-detect) + keep-alive refresh. The
+ *  refresh must stay well under the roster's staleness window so a live remote
+ *  session never ages out while its machine is up. */
+const SESSION_ANNOUNCE_TICK_MS = Number(process.env.PAPERCUSP_SESSION_ANNOUNCE_TICK_MS) || 10_000;
+const SESSION_ANNOUNCE_REFRESH_MS =
+  Number(process.env.PAPERCUSP_SESSION_ANNOUNCE_REFRESH_MS) || 30_000;
 
 /** Build the gossip WRITER half for this booted handle (P-004): the device
  *  signer + this machine's current-row provider (the hello snapshot + each
@@ -173,15 +225,19 @@ async function buildGossipWriter(
   try {
     const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
     const now = opts.now ?? Date.now;
+    const machineLabel = machineFingerprint();
     return {
       devicePubkey: id.devicePubkeyBase64,
       sign: (bytes) => signWithDeviceKey(id.keychainId, bytes),
+      githubUserId: id.githubUserId,
+      machineLabel,
+      hiveSlug,
       getOwnRow: async () =>
         buildPresenceAnnounceRow(
           {
             githubUserId: id.githubUserId,
             devicePubkey: id.devicePubkeyBase64,
-            machineLabel: machineFingerprint(),
+            machineLabel,
           },
           getState(),
           now(),
