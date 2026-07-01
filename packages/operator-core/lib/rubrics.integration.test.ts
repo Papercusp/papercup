@@ -21,6 +21,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { runWithWorkspace } from './workspace-als';
+import { activeWorkspaceId } from './workspace-registry';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
