@@ -310,3 +310,72 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     expect(res.hiveSlug).toBe('shop-hive');
   });
 });
+
+describe('self-echo guard (2026-07-01 owner split-brain: directory re-announce of an OWNED hive)', () => {
+  const OWNED = { slug: 'shop-hive', path: '/local/own-hive', harness_kind: 'hive', self_repo: true };
+
+  it('discovered hive whose pubkey matches a locally-OWNED hive → no-op self_hive, zero side effects', async () => {
+    const { deps, calls } = fakes([OWNED, { slug: 'shop', path: '/local/shop', github_repository_id: 100 }]);
+    deps.getLocalHive = async () => ({ pubkeyBase64: HIVE_PUBKEY });
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res).toMatchObject({ ok: true, hiveSlug: 'shop-hive', self_hive: true, members: [] });
+    expect(calls.joined).toEqual([]); // no member re-join
+    expect(calls.dirs).toEqual([]); // no view dir
+    // the phantom -2 view never materializes and the member's hive_slug is untouched
+    expect(calls.registry.find((p) => p.slug === 'shop-hive-2')).toBeUndefined();
+    expect(calls.registry.find((p) => p.slug === 'shop')!.hive_slug).toBeUndefined();
+  });
+
+  it('pubkey resolved via the directory (announce carried none) still triggers the guard', async () => {
+    const { deps, calls } = fakes([OWNED]);
+    deps.getLocalHive = async () => ({ pubkeyBase64: HIVE_PUBKEY });
+    // fixture resolveHivePubkey already returns HIVE_PUBKEY
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.self_hive).toBe(true);
+    expect(calls.joined).toEqual([]);
+  });
+
+  it('a DISTINCT hive that merely shares the name (pubkey mismatch) still joins — suffixed view', async () => {
+    const { deps, calls } = fakes([OWNED]);
+    deps.getLocalHive = async () => ({ pubkeyBase64: 'x'.repeat(43) + '=' }); // different identity
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(res.self_hive).toBeUndefined();
+    expect(res.hiveSlug).toBe('shop-hive-2');
+    expect(calls.registry.find((p) => p.slug === 'shop-hive-2')!).toMatchObject({ remote_hive: true });
+  });
+
+  it('no pubkey resolvable anywhere → slug-equality fallback treats the OWNED hive as self', async () => {
+    const { deps, calls } = fakes([OWNED]);
+    deps.resolveHivePubkey = async () => null;
+    deps.getLocalHive = async () => null;
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res).toMatchObject({ ok: true, hiveSlug: 'shop-hive', self_hive: true });
+    expect(calls.joined).toEqual([]);
+  });
+
+  it('a remote_hive VIEW with the same name does NOT trigger the guard (idempotent re-join keeps working)', async () => {
+    const { deps, calls } = fakes([
+      { slug: 'shop-hive', path: '/remote-hives/shop-hive', harness_kind: 'hive', remote_hive: true },
+    ]);
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.self_hive).toBeUndefined();
+    expect(res.hiveSlug).toBe('shop-hive'); // reused view
+    expect(calls.joined.map((j) => j.slug)).toEqual(['shop']);
+  });
+});

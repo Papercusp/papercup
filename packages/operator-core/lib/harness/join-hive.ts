@@ -79,6 +79,9 @@ export interface JoinHiveResult {
   hiveSlug?: string;
   members: JoinedMember[];
   error?: string;
+  /** The join was a NO-OP because the discovered hive IS a locally-owned hive
+   *  (the directory self-echo guard); hiveSlug is the LOCAL owned slug. */
+  self_hive?: true;
 }
 
 export interface JoinHiveDeps {
@@ -114,6 +117,12 @@ export interface JoinHiveDeps {
    *  moves them onto the OWNER's Hive-pubkey topic WITHOUT a reboot (a reboot
    *  breaks the owner's corestore serving of its own log). Never fails the join. */
   rekeyHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
+  /** Resolve a LOCALLY-OWNED hive's identity record for the self-echo guard
+   *  (default: hive-store's getHiveBySlug). Only pubkeyBase64 is read. */
+  getLocalHive?: (
+    workspaceId: string,
+    homeSlug: string,
+  ) => Promise<{ pubkeyBase64: string } | null>;
 }
 
 /** Resolve a discovered Hive's HIVE-identity pubkey from the local directory's
@@ -181,6 +190,42 @@ export async function joinHiveAsView(
   }
 
   const reg = await loadRegistry(opts.workspaceId);
+
+  // ── Self-echo guard (2026-07-01 live Brief-3 owner split-brain) ──────────────
+  // The hive directory re-announces hives THIS box owns (its own published
+  // beacon), so a fresh owner re-discovers its own hive minutes after creating
+  // it and — without this guard — joins it as a REMOTE view: the local slug is
+  // taken, freeSlug suffixes a phantom `<hive>-2` view, and the member-stamping
+  // below REBINDS the owner's own member harnesses' hive_slug onto the phantom
+  // (their repos count as `already_registered` joins). Roster/content ops then
+  // split across two home bindings and owner→joiner federation silently breaks
+  // (observed live: deb-hetzner-revocation baseline INCOMPLETE ×2). Identity is
+  // the HIVE PUBKEY when resolvable (hive ids are display names — two distinct
+  // hives may legitimately share one); slug equality is only the no-pubkey
+  // fallback for a locally-OWNED hive entry.
+  const resolveHivePubkey = deps.resolveHivePubkey ?? defaultResolveHivePubkey;
+  const getLocalHive =
+    deps.getLocalHive ??
+    (async (ws: string, slug: string) => (await import('../hive-store')).getHiveBySlug(ws, slug));
+  const localOwnedHives = reg.projects.filter(
+    (p) => p.harness_kind === 'hive' && p.remote_hive !== true,
+  );
+  if (localOwnedHives.length > 0) {
+    const announcedPubkey =
+      (typeof opts.hivePubkey === 'string' && opts.hivePubkey.trim()
+        ? opts.hivePubkey.trim()
+        : null) ?? (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
+    for (const local of localOwnedHives) {
+      if (announcedPubkey) {
+        const rec = await getLocalHive(opts.workspaceId, local.slug).catch(() => null);
+        if (rec?.pubkeyBase64 === announcedPubkey) {
+          return { ok: true, hiveSlug: local.slug, members: [], self_hive: true };
+        }
+      } else if (local.slug === opts.hiveId) {
+        return { ok: true, hiveSlug: local.slug, members: [], self_hive: true };
+      }
+    }
+  }
 
   // The view slug: reuse an EXISTING remote view for this hive (idempotent
   // re-join); otherwise pick a free slug (a LOCAL harness owning the name is
@@ -287,7 +332,6 @@ export async function joinHiveAsView(
   //      remote:* plus the old pre-EI-681 polluted shape for THIS remote view
   //      (`hive:<workspace>:<remote-view>`). A real OWNED identity outside this
   //      registry-proven remote view still wins unchanged.
-  const resolveHivePubkey = deps.resolveHivePubkey ?? defaultResolveHivePubkey;
   const upsertHiveIdentity =
     deps.upsertHiveIdentity ??
     ((input: { workspaceId: string; homeSlug: string; pubkeyBase64: string; keychainId: string }) =>
