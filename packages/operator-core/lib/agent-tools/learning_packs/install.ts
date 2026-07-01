@@ -26,6 +26,11 @@ export default defineTool({
       'At hive creation (hive:create seeds automatically). To re-adopt a newer version of an already-installed pack — learning_packs:upgrade.',
     chaining:
       "learning_packs:list { hive } first (what's installed); after install, learning.hive invalidates so the Learnings view refreshes.",
+    seeAlso: [
+      'learning_packs:list (browse available packs first)',
+      'learning_packs:set_enabled (try / quarantine without uninstalling)',
+      'learning_packs:uninstall (remove it entirely)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({

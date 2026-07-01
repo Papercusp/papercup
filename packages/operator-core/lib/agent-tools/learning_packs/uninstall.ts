@@ -17,6 +17,10 @@ export default defineTool({
     notWhen:
       'To temporarily mute a pack — learning_packs:set_enabled { enabled: false } keeps the rows and just stops injecting them.',
     chaining: 'learning_packs:list { hive } shows what remains; kept edited rows are listed in the response.',
+    seeAlso: [
+      'learning_packs:set_enabled (quarantine instead of removing)',
+      'learning_packs:list (see what remains after)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({

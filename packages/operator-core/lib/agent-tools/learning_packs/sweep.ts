@@ -18,6 +18,10 @@ export default defineTool({
       'Periodic hygiene (a Queen idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.',
     notWhen: 'At install time — learning_packs:install runs its own per-item review.',
     chaining: 'Resolve a reported pair deliberately: memory:forget the wrong side, or memory:update it to reconcile.',
+    seeAlso: [
+      'memory:forget (drop the wrong side of a reported contradiction)',
+      'memory:update (reconcile the pair instead of dropping)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({

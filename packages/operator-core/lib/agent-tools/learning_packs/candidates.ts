@@ -22,6 +22,10 @@ export default defineTool({
       "To read a hive's installed learnings (learning_packs:list / memory:list) or the pack catalog (learning_packs:list).",
     chaining:
       'learning_packs:decide_candidate { id, action } to adopt into the fleet-lessons pack or dismiss; after an adopt, hives pick the item up via learning_packs:install/upgrade.',
+    seeAlso: [
+      'learning_packs:decide_candidate (adopt or dismiss a candidate)',
+      'learning_packs:upgrade (hives pick up an adopted item)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({

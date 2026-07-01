@@ -19,6 +19,10 @@ export default defineTool({
     when: 'learning_packs:list shows updateAvailable for an installed pack.',
     notWhen: 'First-time install — learning_packs:install.',
     chaining: 'The response reports installedVersions vs availableVersion + the adoptable-new-items review.',
+    seeAlso: [
+      'learning_packs:list (see which packs show updateAvailable)',
+      'learning_packs:install (first-time install, not an upgrade)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({

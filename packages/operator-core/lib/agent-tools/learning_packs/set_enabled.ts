@@ -37,6 +37,10 @@ export default defineTool({
     when: 'Trying out whether a pack helps, or quarantining one that seems to misdirect agents — before reaching for uninstall. Flip several at once via packs:[…] or items:[…].',
     notWhen: 'Permanently removing a pack — learning_packs:uninstall.',
     chaining: 'learning_packs:list { hive } shows enabled state per installed pack. Bulk: single | items[] (or packs) → { ok, results, counts }; correlate by hive+pack not position; one failure never fails the rest.',
+    seeAlso: [
+      'learning_packs:uninstall (permanently remove instead of disabling)',
+      'learning_packs:list (enabled state per installed pack)',
+    ],
   },
   crossWorkspace: true,
   args: z

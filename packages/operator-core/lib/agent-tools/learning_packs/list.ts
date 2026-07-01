@@ -19,6 +19,11 @@ export default defineTool({
       'To read the actual learning texts — learning.hive backs the Learnings UI, and memory:list { hive_slug } returns the rows.',
     chaining:
       'learning_packs:install { hive, pack } to add one; learning_packs:upgrade when updateAvailable; learning_packs:set_enabled to mute a pack without uninstalling.',
+    seeAlso: [
+      'learning_packs:install (add a pack)',
+      'learning_packs:upgrade (when a pack shows updateAvailable)',
+      'learning_packs:set_enabled (mute a pack without uninstalling)',
+    ],
   },
   crossWorkspace: true,
   args: z.object({
