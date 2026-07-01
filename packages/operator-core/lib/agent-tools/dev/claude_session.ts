@@ -33,6 +33,10 @@ export default defineTool({
     notWhen:
       'For PRODUCTION agent runs the orchestrator owns sessions (dev:sessions / dev:session_detail). For OMP CLI sessions use dev:omp_session. To reconstruct "where they left off" the transcript is a LOSSY secondary — prefer the durable artifacts (git per-file history + the work-item/plan ledger), which are canonical.',
     chaining: 'dev:claude_session { op:"list", cwd } → { op:"read", sessionId } (or op:"search" { query } when you have a distinctive marker).',
+    seeAlso: [
+      'dev:sessions (production orchestrator sessions)',
+      'dev:omp_session (OMP CLI session inspector)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

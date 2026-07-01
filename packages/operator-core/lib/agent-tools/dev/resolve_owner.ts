@@ -22,6 +22,10 @@ export default defineTool({
   guidance: {
     when: `You have an agent OWNER id (from coord:presence, a plan-event's \`from\`, or coord:whoami) and need the session it ran in — e.g. the id to pass to \`claude --resume\`.`,
     notWhen: `You already have a spawn_id — use \`dev:session_detail\`. For the session LIST, use \`dev:sessions\`.`,
+    seeAlso: [
+      'dev:session_detail (drill into the resolved spawn)',
+      'dev:sessions (the session list)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],
