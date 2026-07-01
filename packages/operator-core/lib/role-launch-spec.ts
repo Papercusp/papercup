@@ -50,6 +50,7 @@ import * as path from 'node:path';
 // su-context-size-variants: the always-loaded core spine the codex 'trimmed' variant
 // advertises via ?tools= (the only trim lever codex has — it has no native discovery).
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
+import { modelCapabilityTier } from './model-tier';
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
