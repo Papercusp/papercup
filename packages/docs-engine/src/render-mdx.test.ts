@@ -93,6 +93,29 @@ describe('renderMdxToMarkdown — EI-5860 resilience (a malformed doc must not t
     expect(out).not.toMatch(/^import /m); // import wiring stripped
     expect(out).toContain('prose survives'); // prose kept → keyword-searchable
   });
+
+  it('EI-5861: a bare <owner> in the frontmatter description of a whole-raw doc must not throw', async () => {
+    // The EI-5861 repro: docs:search threw workspace-wide with
+    // "Expected a closing tag for `<owner>` (3:103)" — a frontmatter `description:`
+    // holding a bare `<owner>`. The generic-fs adapter renders the WHOLE raw doc
+    // (frontmatter NOT pre-stripped), so remark-mdx parses that description line as
+    // a paragraph with an unclosed JSX tag. Must degrade to the raw-text fallback,
+    // not throw and blind the whole corpus for search/outline.
+    const mdx =
+      [
+        '---',
+        'title: Owner cursor',
+        'description: Resume the session keyed by the coordination <owner> id so the fleet can find the transcript later on',
+        '---',
+        '',
+        '# Owner cursor',
+        '',
+        'The coordination cursor lives in a per-owner file the fleet reads.',
+      ].join('\n') + '\n';
+    const out = await render(mdx);
+    expect(out).not.toContain('description:'); // frontmatter (with the bad tag) stripped by the fallback
+    expect(out).toContain('per-owner file'); // body prose kept → keyword-searchable
+  });
 });
 
 describe('withPreamble', () => {

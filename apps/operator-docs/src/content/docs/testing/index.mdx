@@ -220,6 +220,16 @@ fail at module-import time because the pure-Vitest config doesn't load
 the testcontainers global setup. This is intentional — the pattern
 mismatch surfaces as a clear error, not silent slowdown.
 
+> **The `.repro.` sub-contract — the one class the import-time guard rail
+> misses.** A `*.repro.test.ts` reproduces an *unfixed* bug and fails **by
+> design**, and a spawned-sidecar/real-swarm repro test doesn't import the
+> testcontainers setup — so under the unit config it doesn't fail at import, it
+> just **runs** and reds the deploy-gate (this red-gated all fleet deploys ~73h;
+> WI-1053). A repro/heavy test MUST therefore be `*.repro.integration.test.ts`,
+> enforced by `findMisroutedReproTests` + the `repro-test-naming-guard.test.ts`
+> meta-test. See
+> [Repro tests must be *.repro.integration.test.ts](/internal/docs/agent-insights/repro-test-naming-contract).
+
 **A fourth Vitest mode — `browser`.** Alongside unit and integration,
 the shared config supports a `browser` layer for component tests run in
 real browser mode (`*.browser.test.ts` under `vitest.browser.config.ts`,
