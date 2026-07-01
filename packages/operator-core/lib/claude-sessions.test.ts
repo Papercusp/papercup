@@ -17,6 +17,7 @@ import {
   readClaudeSession,
   allClaudeSessionMetas,
   claudeProjectsRoots,
+  findSessionTranscript,
 } from './claude-sessions';
 
 describe('pure helpers', () => {
@@ -144,6 +145,61 @@ describe('isolation-dir scanning (EI-5790)', () => {
   it('claudeProjectsRoots fail-soft to global-only when the isolation base is absent', async () => {
     const roots = await claudeProjectsRoots('/tmp/dne-global-xyz', '/tmp/dne-iso-base-xyz');
     expect(roots).toEqual(['/tmp/dne-global-xyz']);
+  });
+
+  it('findSessionTranscript fast-path: resolves via the owner isolation root (no full sweep)', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'find-sess-owner-'));
+    const isoBase = join(base, 'session-claude');
+    const owner = 'su-owner-fast';
+    const projDir = join(isoBase, owner, 'projects', '-home-x-proj');
+    await fs.mkdir(projDir, { recursive: true });
+    const sid = 'fastpath-abc123';
+    const target = join(projDir, `${sid}.jsonl`);
+    await fs.writeFile(target, '{}\n');
+    try {
+      // roots:[] proves the resolution came from the owner fast path, not a sweep.
+      expect(await findSessionTranscript(sid, { owner, isolationBase: isoBase, roots: [] })).toBe(target);
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('findSessionTranscript fallback: resolves via the full root sweep with no owner hint', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'find-sess-fallback-'));
+    const projDir = join(base, 'projects', '-home-x-proj');
+    await fs.mkdir(projDir, { recursive: true });
+    const sid = 'fallback-def456';
+    const target = join(projDir, `${sid}.jsonl`);
+    await fs.writeFile(target, '{}\n');
+    try {
+      expect(await findSessionTranscript(sid, { roots: [join(base, 'projects')] })).toBe(target);
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('findSessionTranscript: unknown → null; malformed id → null', async () => {
+    expect(await findSessionTranscript('zzz-unknown-999', { roots: [] })).toBeNull();
+    expect(await findSessionTranscript('bad', { roots: [] })).toBeNull(); // < 6 chars → rejected
+  });
+
+  it('findSessionTranscript caches a resolved path (later lookup short-circuits the walk)', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'find-sess-cache-'));
+    const isoBase = join(base, 'session-claude');
+    const projDir = join(isoBase, 'su-owner-cache', 'projects', '-home-x-proj');
+    await fs.mkdir(projDir, { recursive: true });
+    const sid = 'cachehit-ghi789';
+    const target = join(projDir, `${sid}.jsonl`);
+    await fs.writeFile(target, '{}\n');
+    try {
+      // First resolve caches the path...
+      expect(await findSessionTranscript(sid, { owner: 'su-owner-cache', isolationBase: isoBase, roots: [] })).toBe(target);
+      // ...so a second lookup with NO way to re-resolve (bad owner + empty roots)
+      // still returns it — the cache bypassed the walk entirely.
+      expect(await findSessionTranscript(sid, { owner: 'nope', isolationBase: '/tmp/dne-xyz', roots: [] })).toBe(target);
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
   });
 
   it('allClaudeSessionMetas merges sessions across roots (global + isolation), newest-first', async () => {
