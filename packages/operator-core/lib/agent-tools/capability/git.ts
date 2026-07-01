@@ -28,6 +28,10 @@ export default defineTool({
     when: 'Inspect or stage git state — status, diff, log, show, add, commit (within a worktree). Prefer this over capability:bash for git so the action is gated as git, not arbitrary shell.',
     notWhen: 'Pushing (refused — git-sync owns push). Arbitrary shell — use capability:bash.',
     chaining: 'capability:git { args: ["status","--porcelain"] } → inspect → capability:git { args: ["add","-A"] } etc.',
+    seeAlso: [
+      'capability:bash (run an arbitrary shell command)',
+      'dev:pipeline_position (where a committed edit is in the pipeline)',
+    ],
   },
   capability: 'capability:git',
   requirePrincipal: false,

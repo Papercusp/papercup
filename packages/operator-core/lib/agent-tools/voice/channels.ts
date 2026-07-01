@@ -11,6 +11,10 @@ export default defineTool({
     when: `Manage the voice-channel registry — list what channels exist, create one before joining it, or remove a stale one.`,
     notWhen: `To enter/exit a channel use \`voice:join\` / \`voice:leave\`; for who's in a channel right now use \`voice:status\`.`,
     chaining: `voice:channels {op:'create'} → voice:join {channel} → voice:status.`,
+    seeAlso: [
+      'voice:join (enter a channel)',
+      'voice:status (who is in a channel right now)',
+    ],
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald manages its voice channels.

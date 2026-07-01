@@ -29,6 +29,10 @@ export default defineTool({
   guidance: {
     when: `Check which API credentials (EL, OpenAI, etc.) are configured + valid. Used in onboarding + diagnostics.`,
     notWhen: `For SETTING credentials, use the /settings UI directly — agents shouldn't paste secrets.`,
+    seeAlso: [
+      'accounts:status (per-account credential / rate status)',
+      'accounts:list (registered accounts)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

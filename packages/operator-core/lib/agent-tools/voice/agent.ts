@@ -18,6 +18,11 @@ export default defineTool({
     when: `Toggle the agent's ears ({op:'enable'|'disable'}), its auto-reply brain ({op:'brain', on}), read {op:'status'}, or speak into the channel ({op:'say', text}).`,
     notWhen: `Joining/leaving the channel itself is \`voice:join\`/\`voice:leave\`; this controls only the agent's listen/think/speak behaviors on top.`,
     chaining: `voice:join → voice:agent {op:'brain', on:true} (ears + auto-reply: peer speech → operator-converse → spoken reply). For manual control use {op:'enable'} then {op:'say', text:'…'}.`,
+    seeAlso: [
+      'voice:join (join a channel first)',
+      'voice:transcript (hear peers WITHOUT auto-reply)',
+      'voice:say (speak one line manually)',
+    ],
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the sentinel is the voice-first Herald, so it drives the

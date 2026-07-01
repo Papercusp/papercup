@@ -2761,10 +2761,24 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true });
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
-    } else if (isWeakOmpModel(effectiveModel) || args.contextSize === 'trimmed') {
+    } else if (args.contextSize === 'trimmed') {
+      // OPT-IN trim (weak-model-tool-tier). ⚠ TRADE-OFF — verified 2026-07-01: OMP's
+      // search_tool_bm25 can only activate tools it RECEIVED in tools/list, so narrowing to
+      // the core spine makes the ~530 non-core tools UNREACHABLE for this session (a trimmed
+      // session's search returns ONLY core tools). Great for a focused weak-model run over the
+      // common spine; do NOT use it for work that needs the long tail. The weak DEFAULT (below)
+      // keeps the full catalog + the discovery primer — the verified-working, tail-reachable path.
+      // Deliberately NOT auto-applied on weak-model tier: silently stranding the tail is worse
+      // than a heavy-but-complete catalog. Flip to focus-by-default only on an explicit owner call.
       ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
-      if (ompPiConfigDir) console.error(`psu: omp weak/local model (${effectiveModel ?? 'default'}) — MCP surface trimmed to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (rest via tools:find) via per-session config ${ompPiConfigDir}`);
-      else console.error(`psu: omp weak-model trim could not materialize a per-session config; using OMP default (full ~580-tool surface).`);
+      if (ompPiConfigDir) console.error(`psu: omp --context-size=trimmed — MCP surface trimmed to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (⚠ the ~530-tool long tail is NOT reachable via search this session) via per-session config ${ompPiConfigDir}`);
+      else console.error('psu: omp --context-size=trimmed could not materialize a per-session config; using OMP default (full catalog).');
+    } else if (isWeakOmpModel(effectiveModel)) {
+      // Weak/local model on the DEFAULT path: full catalog + the session-start discovery primer
+      // (the verified-working weak setup — the long tail stays reachable via search_tool_bm25).
+      // The 400 that plagued weak models is fixed independently (the sanitizing proxy); the trim
+      // is a separate, OPT-IN focus lever, not needed to make a weak model functional.
+      console.error(`psu: omp weak/local model (${effectiveModel}) — full catalog + discovery primer (long tail stays reachable). For a focused ${OMP_CORE_MCP_TOOL_NAMES.length}-tool surface, add --context-size=trimmed (⚠ that strands the long tail).`);
     }
   }
 

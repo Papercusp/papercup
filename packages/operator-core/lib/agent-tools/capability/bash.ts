@@ -36,6 +36,11 @@ export default defineTool({
       'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For git, prefer capability:git.',
     chaining:
       'run_in_background:true → returns a bash_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused).',
+    seeAlso: [
+      'capability:bash_output (read a backgrounded run\'s output)',
+      'capability:bash_kill (kill a backgrounded run)',
+      'capability:git (git actions, gated as git not shell)',
+    ],
   },
   capability: 'capability:bash',
   requirePrincipal: false,

@@ -16,6 +16,10 @@ export default defineTool({
     when: 'Stop a background job you no longer need (a dev server, a runaway build).',
     notWhen: 'A job that already finished — capability:bash_output already shows its terminal status.',
     chaining: 'capability:bash { run_in_background:true } → … → capability:bash_kill { bash_id }.',
+    seeAlso: [
+      'capability:bash (start the command)',
+      'capability:bash_output (read its output first)',
+    ],
   },
   capability: 'capability:bash',
   requirePrincipal: false,

@@ -11,6 +11,11 @@ export default defineTool({
     when: `Enter a voice channel (by id or name from \`voice:channels\`). One active channel at a time; joining another leaves the current one.`,
     notWhen: `Don't poll this — \`voice:status\` reads the live state; the local voice socket pushes status events to UI clients.`,
     chaining: `voice:channels {op:'list'} → voice:join → speak via the local voice socket (pui/desktop) → voice:leave.`,
+    seeAlso: [
+      'voice:channels (list / create channels)',
+      'voice:leave (leave the channel)',
+      'voice:status (live channel presence)',
+    ],
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald drives the voice channel.

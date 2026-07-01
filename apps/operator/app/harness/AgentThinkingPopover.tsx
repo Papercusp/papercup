@@ -398,7 +398,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
   if (entry.kind === 'prompt') {
     return (
       <div style={{ margin: '0 0 8px', padding: '4px 8px', background: 'color-mix(in srgb, var(--accent), transparent 88%)', borderLeft: '2px solid var(--accent, #38bdf8)', borderRadius: 3 }}>
-        <div style={{ color: 'var(--accent-strong, #7dd3fc)', fontSize: 10, marginBottom: 2, letterSpacing: '0.04em' }}>
+        <div style={{ color: 'var(--accent-strong, #7dd3fc)', fontSize: 10, marginBottom: 2 }}>
           <EntryTime ts={entry.ts} />
           ⟩ prompt
         </div>

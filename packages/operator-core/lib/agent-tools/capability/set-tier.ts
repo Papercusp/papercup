@@ -37,6 +37,10 @@ export default defineTool({
     when: 'A capability is mis-tiered (e.g. a cheap read classified medium/high, inflating its watchdog timeout or decision-ledger posture) and you want to correct it live. Requires papercusp-auth-config-overrides ON. op:get to read the active overrides.',
     notWhen: 'To grant/deny a capability to a role use the capability/envelope tools (tier is risk CLASSIFICATION, not access). A re-tier reaches the endpoint-auth exposure gate + watchdog only after an operator restart (it re-stamps tools at boot).',
     chaining: 'config:list-overrides shows the active capability-tier-overrides; config:reset-overrides reverts to the baked table.',
+    seeAlso: [
+      'capability_envelope:set_role (grant / deny access — tier is classification, not access)',
+      'config:list-overrides (active capability-tier overrides)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

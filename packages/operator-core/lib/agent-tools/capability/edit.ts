@@ -20,6 +20,11 @@ export default defineTool({
     when: 'Make a targeted in-place change to an existing file. Include enough surrounding context in old_string to make it unique, or set replace_all.',
     notWhen: 'Creating a file or replacing it wholesale — use capability:write. Reading — use capability:read.',
     chaining: 'capability:read → capability:edit. On a file_locked result, wait/pivot/coordinate with the holder.',
+    seeAlso: [
+      'capability:read (read / get the exact string first)',
+      'capability:write (overwrite or create a whole file)',
+      'capability:inspect (typecheck / test to verify the edit)',
+    ],
   },
   capability: 'capability:fs-write',
   requirePrincipal: false,

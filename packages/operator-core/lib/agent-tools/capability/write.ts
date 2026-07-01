@@ -22,6 +22,10 @@ export default defineTool({
     when: 'Create a new file, or fully replace an existing one. For a partial change to an existing file prefer capability:edit.',
     notWhen: 'A small in-place change — use capability:edit (exact string replacement). Reading first — use capability:read.',
     chaining: 'capability:read (if overwriting) → capability:write. On a file_locked result, wait/pivot/coordinate with the holder.',
+    seeAlso: [
+      'capability:read (read before overwriting)',
+      'capability:edit (surgical edit instead of overwrite)',
+    ],
   },
   capability: 'capability:fs-write',
   requirePrincipal: false,

@@ -136,6 +136,11 @@ export default defineTool({
       'To READ a file use capability:read; to SEARCH use the Grep tool. To run an arbitrary or mutating command you need capability:bash (gated — escalate if you truly need it). This tool runs ONLY tsc --noEmit / tests, never a free-form command.',
     chaining:
       'capability:read / Grep (inspect) → capability:inspect (typecheck/test to CONFIRM) → report a VERIFIED diagnosis. For a long suite pass run_in_background:true and poll capability:bash_output.',
+    seeAlso: [
+      'capability:read (raw file content)',
+      'capability:bash (arbitrary / mutating command — gated)',
+      'capability:bash_output (poll a long suite)',
+    ],
   },
   capability: 'capability:code-inspect',
   requirePrincipal: false,

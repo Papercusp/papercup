@@ -58,6 +58,10 @@ export default defineTool({
     when: 'Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
     notWhen: 'For a foreground command — its output is in the capability:bash result directly.',
     chaining: 'capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early.',
+    seeAlso: [
+      'capability:bash (start the command)',
+      'capability:bash_kill (kill the backgrounded run)',
+    ],
   },
   capability: 'capability:bash',
   requirePrincipal: false,

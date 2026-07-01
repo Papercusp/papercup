@@ -61,9 +61,9 @@ export default defineTool({
   guidance: {
     when: "The Queen steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
     notWhen:
-      "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
+      "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
     chaining:
-      "curation:change-feed + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
+      "work_items:list (the backlog) → set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
     seeAlso: [
       'work_items:reorder (a single bee\'s already-claimed work-list order, post-claim)',
       'work_items:co_locate (pin work to a Swarm)',

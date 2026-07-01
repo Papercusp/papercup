@@ -25,6 +25,10 @@ export default defineTool({
     when: 'Walk back a runtime capability grant — confine a role after a grant proves too broad, or clean up grants. Reducing privilege, so always safe.',
     notWhen: 'To GRANT a cap, use capability:grant_role. To wipe ALL runtime grants at once (incident), use config:reset-overrides on the role-capability-grants concern.',
     chaining: 'config:list-overrides shows the active grants before/after.',
+    seeAlso: [
+      'capability:grant_role (grant a role capability)',
+      'config:reset-overrides (wipe ALL runtime grants at once)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

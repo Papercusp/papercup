@@ -35,6 +35,11 @@ export default defineTool({
     when: 'A role is blocked from its job for lack of a capability and you (operator/architect/queen) need to grant it live, instead of editing role-principal-caps.ts + redeploying.',
     notWhen: 'To REMOVE a cap, use capability:revoke_role. The protected floor (secrets:*, processes:kill) can never be granted. While the papercusp-capability-grant-tool flag is off this refuses (the grant surface is owner-ratified, D-007).',
     chaining: 'config:list-overrides shows active grants (concern role-capability-grants); config:reset-overrides wipes them.',
+    seeAlso: [
+      'capability:revoke_role (revoke a granted role)',
+      'capability_envelope:set_role (set the whole role envelope)',
+      'config:list-overrides (see active grants)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

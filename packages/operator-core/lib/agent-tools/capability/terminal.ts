@@ -109,6 +109,10 @@ export default defineTool({
       'For headless command execution with captured output / exit code, use capability:bash. This tool returns as soon as the terminals are spawned and CANNOT capture output (they are interactive and detached).',
     chaining:
       'Returns immediately after spawning — it does NOT wait for the commands and has no output channel. Use EITHER `command` (single) or `terminals` (bulk, max 12), not both.',
+    seeAlso: [
+      'capability:bash (headless execution with captured output / exit code)',
+      'fleet:launch-on-plan (spawn desktop fleet members that auto-join + kickoff)',
+    ],
   },
   capability: 'capability:terminal',
   requirePrincipal: false,

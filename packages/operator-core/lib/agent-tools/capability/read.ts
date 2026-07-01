@@ -23,6 +23,11 @@ export default defineTool({
     when: 'Read a source/text file before editing it, or to inspect content. Use offset+limit to page through a large file.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
     chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
+    seeAlso: [
+      'capability:edit (exact-string edit)',
+      'capability:write (overwrite / create)',
+      'capability:bash (grep / rg to search across files)',
+    ],
   },
   capability: 'capability:fs-read',
   requirePrincipal: false,
