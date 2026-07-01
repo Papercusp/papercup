@@ -66,6 +66,11 @@ export const mdxDetector: ContentDetector = {
     return `MDX compile error at ${at}: ${hit.reason}`;
   },
   fixerRole: CONTENT_FIXER_ROLE,
+  // WI-276: the deterministic pre-pass — escape a bare `<`+digit / `<word>` placeholder
+  // (the single most common MDX offender) so the guard auto-repairs + commits it this tick
+  // instead of quarantining it for 5 ticks. Applied only to an already-failing file, then
+  // the guard re-runs `detect`; anything still broken falls through to the LLM fixer.
+  autoFix: autoFixMdxAngles,
 };
 
 /** The curly-quote-as-code detector — tracked .ts/.tsx (check-smart-quotes.mjs). */
