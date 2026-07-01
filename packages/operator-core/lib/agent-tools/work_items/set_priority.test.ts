@@ -87,7 +87,7 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
     setM.mockResolvedValue(null as never);
     const out = await env({ workItem: 'F-404', priority: 1 });
     expect(out.ok).toBe(true);
-    expect(out.counts).toEqual({ ok: 0, failed: 1 });
+    expect(out.counts).toEqual({ ok: 0, failed: 1, written: 0, proposed: 0 });
     expect(out.results[0]).toMatchObject({ ok: false, workItem: 'F-404' });
     expect(String(out.results[0].error)).toMatch(/F-404.*not found/i);
     expect(commitArmM).not.toHaveBeenCalled();
@@ -127,7 +127,9 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
       ],
     });
     expect(out.ok).toBe(true);
-    expect(out.counts).toEqual({ ok: 3, failed: 1 });
+    // WI-1376 rollup: F-S (set) + F-B (bump) both persisted (written:true) → written:2;
+    // F-R is a read (no write attempt), F-X not-found → failed:1; no proposals.
+    expect(out.counts).toEqual({ ok: 3, failed: 1, written: 2, proposed: 0 });
     expect(out.results.map((r: { workItem: string; ok: boolean; mode?: string }) => [r.workItem, r.ok, r.mode])).toEqual([
       ['F-R', true, 'read'],
       ['F-S', true, 'set'],
@@ -144,5 +146,25 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
     setM.mockRejectedValue(new Error('pg down'));
     const out = await env({ workItem: 'F-1', priority: 1 });
     expect(out.results[0]).toEqual({ ok: false, workItem: 'F-1', error: 'pg down' });
+  });
+
+  it('WI-1376 bulk rollup: a non-lease-holder run looks clean on counts.ok but counts.proposed exposes the miss', async () => {
+    // The exact report scenario: a bulk re-prioritization of feature-family items by
+    // a Swarm that does NOT hold the steering lease. Every item returns ok:true (a
+    // proposal), so counts.ok === total and a caller gating on counts.ok is fooled —
+    // but counts.written:0 / counts.proposed:3 makes the silent no-op loud.
+    setM.mockImplementation(async (id: string) => ({ id, priority: 1, applicable: true, proposed: true, steeringHolder: 'queen-home' } as never));
+    const out = await env({
+      harness: 'papercusp',
+      items: [
+        { workItem: 'WI-1' },
+        { workItem: 'WI-2' },
+        { workItem: 'WI-3' },
+      ].map((x) => ({ ...x, priority: 1 })),
+    });
+    expect(out.counts).toEqual({ ok: 3, failed: 0, written: 0, proposed: 3 });
+    expect(out.results.every((r: { written?: boolean; proposed?: boolean }) => r.written === false && r.proposed === true)).toBe(true);
+    // No proposal committed the auto-revert arm (nothing was written to revert).
+    expect(commitArmM).not.toHaveBeenCalled();
   });
 });

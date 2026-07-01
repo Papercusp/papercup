@@ -57,7 +57,7 @@ export default defineTool({
   name: 'work_items:set_priority',
   profile: 'engineer',
   description:
-    "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[{ ok, workItem, mode, written, … | error }], counts }. NB: check `written` (not just `ok`) — a non-lease-holder proposal or issue-family item returns ok:true but writes nothing.",
+    "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[{ ok, workItem, mode, written, … | error }], counts:{ ok, failed, written, proposed } }. NB: gate on `written` per item — or the `counts.written`/`counts.proposed` rollup — NOT `ok`/`counts.ok`: a non-lease-holder proposal or an issue-family item returns ok:true but writes nothing (counts.proposed>0 or written<attempts means the miss is real).",
   guidance: {
     when: "The Queen steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
     notWhen:
