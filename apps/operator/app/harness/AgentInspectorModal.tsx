@@ -196,8 +196,12 @@ function TurnBlock({ turn, live }: { turn: Turn; live: boolean }) {
         {time ? <span style={{ color: 'var(--fg-mute)', marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{time}</span> : null}
       </div>
       <div style={{ padding: 8 }}>
-        {turn.prompt ? <Entry entry={turn.prompt} /> : null}
-        {turn.entries.map((e, i) => <Entry key={i} entry={e} />)}
+        {/* Newest-first WITHIN the turn too, so the current streamed line is the
+            highest thing in the (top) live turn — not buried at the bottom. The
+            prompt is the oldest event of the turn, so it falls to the foot. */}
+        {[...(turn.prompt ? [turn.prompt, ...turn.entries] : turn.entries)]
+          .reverse()
+          .map((e, i) => <Entry key={i} entry={e} />)}
       </div>
     </div>
   );

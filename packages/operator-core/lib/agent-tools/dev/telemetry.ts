@@ -18,6 +18,11 @@ export default defineTool({
   guidance: {
     when: `Read recent telemetry datapoints (errors, slow requests). For the /dev/telemetry dashboard.`,
     notWhen: `For per-agent audit, use \`audit:list\`. telemetry is observability-shaped, not action-shaped.`,
+    seeAlso: [
+      'dev:tool_cooccurrence (which tools co-occur in a spawn)',
+      'dev:code_run_adoption (code:run adoption metrics)',
+      'audit:list (per-agent audit trail)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

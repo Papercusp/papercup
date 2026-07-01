@@ -21,6 +21,10 @@ export default defineTool({
   guidance: {
     when: `Inspect an OMP CLI session's state — useful when debugging long-running CLI flows.`,
     notWhen: `For PRODUCTION agent runs, the orchestrator owns sessions. dev:omp_session is the CLI-tool inspector.`,
+    seeAlso: [
+      'dev:claude_session (Claude Code session inspector)',
+      'dev:sessions (production orchestrator sessions)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

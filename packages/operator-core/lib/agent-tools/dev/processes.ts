@@ -20,6 +20,10 @@ export default defineTool({
   guidance: {
     when: `List tracked processes (delegates, plugin subprocesses, orchestrator children) for the /dev panel.`,
     notWhen: `For ACTIVE spawns, use \`orchestrator.list_active\`. For delegates, use \`delegates:list\`. dev:processes is the unified diagnostic view.`,
+    seeAlso: [
+      'dev:sessions (the dev session list)',
+      'dev:restart (restart a wedged service)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

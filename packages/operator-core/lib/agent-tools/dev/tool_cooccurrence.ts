@@ -23,6 +23,10 @@ export default defineTool({
     when: `Find which agent tools are invoked TOGETHER in the same turn (spawn), ranked by support / confidence / lift — to spot bundle/wrapper candidates and feed code-recipes candidate generation. Analytical / offline; MCP-transport calls only.`,
     notWhen: `For per-tool counts or latency use \`dev:telemetry\`; for a forensic per-agent timeline use \`audit:list\`. A high lift on tiny support is spurious — keep a support floor (minSupport), and remember lift != determinism: this NOMINATES pairs, a human/gate judges whether the steps are mechanical before wrapping.`,
     chaining: `dev:tool_cooccurrence (find bonded pairs) → judge determinism → wrap as a composite (e.g. extend coord:orient) or feed code-recipes promotion.`,
+    seeAlso: [
+      'dev:telemetry (raw per-tool call counts)',
+      'dev:code_run_adoption (adoption view built on co-occurrence)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

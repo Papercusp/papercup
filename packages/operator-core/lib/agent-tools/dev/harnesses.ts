@@ -16,6 +16,10 @@ export default defineTool({
   guidance: {
     when: `Dev-panel harness enumeration with diagnostic columns (active connections, recent errors).`,
     notWhen: `For ordinary list, use \`harness:list\`. dev:harnesses is the diagnostic projection.`,
+    seeAlso: [
+      'harness:list (the ordinary harness list)',
+      'dev:build_status (per-harness build / smoke status)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect'],

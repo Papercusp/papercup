@@ -15,6 +15,10 @@ export default defineTool({
   guidance: {
     when: `Diagnostic feed of recent workspace activity — for dashboards and debugging. Lower-detail than \`audit:list\`.`,
     notWhen: `For agent action audit, use \`audit:list\`. dev:activity is for the /dev panel, not for analysis.`,
+    seeAlso: [
+      'audit:list (per-agent action audit)',
+      'dev:audit (the dev-panel audit view)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

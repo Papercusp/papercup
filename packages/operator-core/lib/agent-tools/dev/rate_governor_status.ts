@@ -20,6 +20,11 @@ export default defineTool({
   guidance: {
     when: 'Diagnose whether agent spawns / stateless LLM calls are being paced or paused by the rate-limit governor (e.g. "why are runs slow / stalled?"), or read the fleet cap / effective concurrency / usage% the top-bar shows.',
     notWhen: 'Service up/down — dev:service_health. Migration drift — db:check_drift. EDITING the cap — operator:rate_limit_config.',
+    seeAlso: [
+      'dev:worker_chunk_loop_metrics (per-feature chunk-loop pacing)',
+      'dev:service_health (service up / down)',
+      'operator:rate_limit_config (edit the cap)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

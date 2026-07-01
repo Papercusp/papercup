@@ -89,6 +89,11 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     const older = screen.getByTestId('turn-0');
     expect(older.textContent).toContain('wake one');
     expect(live.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Newest-first WITHIN the turn too: the latest activity ("answer two") is above
+    // its prompt ("wake two") — the current streamed line is the highest thing.
+    const answer = screen.getByText('answer two');
+    const promptEl = screen.getByText('wake two');
+    expect(answer.compareDocumentPosition(promptEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('escalates a live run with zero output past the stall threshold', () => {

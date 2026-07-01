@@ -17,6 +17,10 @@ export default defineTool({
   guidance: {
     when: `Read recent build status from the dev panel — pass/fail per harness.`,
     notWhen: `For ONE harness's smoke tests, use harness-specific tools. dev:build_status is the cross-harness dev panel feed.`,
+    seeAlso: [
+      'dev:service_health (live service health)',
+      'dev:pipeline_position (where an edit is in the deploy pipeline)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

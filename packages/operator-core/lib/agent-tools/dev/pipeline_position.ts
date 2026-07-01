@@ -22,6 +22,10 @@ export default defineTool({
     when: 'After leaving an edit in the tree (git-sync owns commit/push), to confirm it reached origin/staging, passed the green gate into main, and deployed to the live :3070 operator — or to see WHY it is stuck (gate red/stalled).',
     notWhen: 'To PAUSE sync (use locks:acquire_resource on git-sync:<slug>). For the whole-pipeline dashboard use the /admin Git tab; this is the targeted per-path/sha probe.',
     chaining: 'Edit a file → (git-sync commits within minutes) → dev:pipeline_position{path} to confirm it reached staging/main/:3070.',
+    seeAlso: [
+      'dev:build_status (deploy / build status)',
+      'release:deploy (force or inspect the deploy)',
+    ],
   },
   requirePrincipal: false,
   // Read-only (intel:read) "where is my change + is the gate stalled" probe. Available to

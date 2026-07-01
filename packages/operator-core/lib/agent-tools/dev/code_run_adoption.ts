@@ -31,6 +31,10 @@ export default defineTool({
       'recipes-at-orient are moving adoption. Returns the fleet rate + a ready rating + the per-role/day breakdown.',
     notWhen:
       'Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence).',
+    seeAlso: [
+      'dev:telemetry (raw per-tool call counts)',
+      'dev:tool_cooccurrence (which tools co-occur in a spawn)',
+    ],
   },
   requirePrincipal: false,
   // ALL roles — a read-only metric the whole fleet (esp. the Overwatch grading tool-utilization) can pull.

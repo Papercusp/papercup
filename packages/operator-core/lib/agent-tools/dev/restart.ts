@@ -43,6 +43,10 @@ export default defineTool({
     when: 'You need to restart the dev server (e.g. to pick up a lib/** edit). Run dry first to see who is using it; then confirm to drain + restart.',
     notWhen: 'Just probing the server — that needs no restart. Never restart casually on a shared box; it disrupts every agent using the app.',
     chaining: 'dev:restart (dry) → review holders → dev:restart { confirm: true, max_drain_sec } → connection drops as it restarts.',
+    seeAlso: [
+      'dev:service_health (check what is down first)',
+      'dev:processes (see the running processes)',
+    ],
   },
   capability: 'locks:write',
   timeoutSec: MAX_DRAIN_SEC + 30,

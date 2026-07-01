@@ -41,6 +41,10 @@ export default defineTool({
   guidance: {
     when: 'Watch worker:chunk-loop dark-launch / ramp health — is the operator-hosted op at parity with the subprocess path on completion-rate + outcome distribution? Read before approving a ramp step.',
     notWhen: 'Live rate-limit pacing — dev:rate_governor_status. Per-feature chunk progress — the harness UI / harness_chunk_plans. Whether the op path is ROUTED on a harness — check the per-harness workerChunkLoop config knob.',
+    seeAlso: [
+      'dev:rate_governor_status (live rate-limit pacing)',
+      'dev:telemetry (aggregate observability)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

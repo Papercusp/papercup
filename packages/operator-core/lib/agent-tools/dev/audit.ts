@@ -16,6 +16,10 @@ export default defineTool({
   guidance: {
     when: `Dev-panel audit view — filtered + paginated for UI display.`,
     notWhen: `For analysis or LLM consumption, use \`audit:list\` directly. dev:audit is a UI-shaped projection.`,
+    seeAlso: [
+      'audit:list (analysis / LLM-consumption view)',
+      'dev:activity (the lower-detail dev activity feed)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger'],

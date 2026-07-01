@@ -16,6 +16,11 @@ export default defineTool({
   guidance: {
     when: 'Confirm which dev services are up before testing against one; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
     notWhen: 'File/lock contention — that is locks:queue. Migration drift — db:check_drift.',
+    seeAlso: [
+      'dev:restart (restart a down service)',
+      'dev:pg_health (Postgres health specifically)',
+      'dev:build_status (build / smoke status)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,

@@ -28,6 +28,10 @@ export default defineTool({
   guidance: {
     when: 'Measure coord-lifecycle automation progress — how much free-text coord is predictable lifecycle vs genuinely contextual.',
     notWhen: 'To read your inbox use coord:inbox; this is an aggregate measurement over the whole corpus, not a feed.',
+    seeAlso: [
+      'coord:inbox (read your actual inbox)',
+      'dev:telemetry (other aggregate measures)',
+    ],
   },
   capability: 'intel:read',
   requirePrincipal: false,
