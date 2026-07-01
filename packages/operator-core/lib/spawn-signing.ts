@@ -142,9 +142,11 @@ export async function signSpawnParams(
   params: URLSearchParams,
   opts: { ttlSec?: number; nowMs?: number } = {},
 ): Promise<SignedSpawnParams> {
-  const ttlSec = opts.ttlSec ?? 24 * 60 * 60;
+  // PERMANENT by default (exp=0 sentinel) — no time-based re-minting (owner directive
+  // 2026-07-01). A POSITIVE ttlSec still mints a bounded URL for callers that explicitly want one.
+  const ttlSec = opts.ttlSec ?? 0;
   const nowMs = opts.nowMs ?? Date.now();
-  const exp = Math.floor(nowMs / 1000) + ttlSec;
+  const exp = ttlSec > 0 ? Math.floor(nowMs / 1000) + ttlSec : 0;
 
   params.set('exp', String(exp));
   // Strip any inbound `sig` before canonicalizing.
@@ -177,8 +179,12 @@ export async function verifySpawnParams(input: URL | string): Promise<VerifyResu
   if (!expRaw) return { ok: false, reason: 'missing_exp' };
 
   const exp = Number(expRaw);
-  if (!Number.isFinite(exp) || exp <= 0) return { ok: false, reason: 'invalid_exp' };
-  if (exp < Math.floor(Date.now() / 1000)) return { ok: false, reason: 'expired' };
+  // exp === 0 is the PERMANENT sentinel (no time-based expiry). The sig still covers exp, so a
+  // role-escalation rewrite still fails verification; only the TIME check is skipped. (2026-07-01:
+  // the 24h TTL made agents' MCP URLs die daily and forced a re-mint that churned .mcp.json →
+  // Claude Code re-approval → dark sessions. Revocation is now key-rotation, not expiry.)
+  if (!Number.isFinite(exp) || exp < 0) return { ok: false, reason: 'invalid_exp' };
+  if (exp !== 0 && exp < Math.floor(Date.now() / 1000)) return { ok: false, reason: 'expired' };
 
   const c = canonicalize(u.searchParams);
   if (!c.ok) return { ok: false, reason: c.reason };

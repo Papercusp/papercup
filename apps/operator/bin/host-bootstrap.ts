@@ -140,6 +140,33 @@ export function runBootstrap(): void {
     })();
   }
 
+  // [systemic-federation-activation 2026-07-01, owner-directed] Publish the canonical
+  // `papercusp` hive's owner identity gist + announce it on EVERY operator boot — NOT
+  // only PAPERCUSP_DESKTOP installs. The desktop-only bootstrap above meant a canonical
+  // hive OWNED by a HEADLESS server operator (the dev/staging/prod backend that actually
+  // holds the hive private key) never ran the Solution-C share path, so its identity gist
+  // was never published and NO install could federate its content — a joiner with no gist
+  // to adopt mints its own empty per-device hive (dogfood-silent-canonical-hive-join;
+  // proven live 2026-07-01: owner `papercusp` hive with ~1.6k work items but no gist →
+  // fresh install federated 0 items). shareExistingHive() is fully SELF-GATING and safe to
+  // call on any box: it no-ops unless (a) DOGFOOD_PAPERCUSP_HIVE_SHARE is on, (b) `gh` is
+  // signed in, AND (c) this box OWNS the hive (goSharedHive's first-device path returns
+  // when it can't load the hive private key from the keychain); a gist/pubkey divergence
+  // also self-skips. Idempotent (re-announces each boot), fire-and-forget + non-fatal.
+  void (async () => {
+    try {
+      const { shareExistingHive } = await import(
+        '@papercusp/operator-core/lib/harness/papercusp-hive-share'
+      );
+      await shareExistingHive();
+    } catch (e) {
+      console.warn(
+        '[papercusp-hive] owner-side share failed (non-fatal):',
+        (e as Error)?.message ?? e,
+      );
+    }
+  })();
+
   // [dogfood-silent-canonical-hive-join P-017 / D-006/D-007/D-009] Install-time
   // provisioning of the LOCAL env operators (dev :3270 / prod :3070 / staging :3170)
   // from the already-cloned `papercup` source, so the cross-platform env switcher
