@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  CAPABILITY_SANDBOX_TMPDIR,
   INLINE_OUTPUT_CAP,
   __resetBashJobs,
   getJob,
@@ -110,6 +111,36 @@ describe('background jobs', () => {
 
   it('reports unknown ids as undefined', () => {
     expect(getJob('does-not-exist')).toBeUndefined();
+  });
+});
+
+describe('TMPDIR is normalized to a sandbox-writable dir (EI-5912)', () => {
+  it('overrides an inherited ephemeral TMPDIR so the child gets an existing temp dir', async () => {
+    const prev = process.env.TMPDIR;
+    // The ephemeral pattern the Claude harness sets — absent inside the fresh sandbox /tmp.
+    process.env.TMPDIR = '/tmp/claude/nonexistent-run-xyz';
+    try {
+      const r = await runForeground(
+        { command: 'printf "T=%s|X=%s|E=%s" "$TMPDIR" "$TMP" "$TEMP"', cwd: STATE, stateDir: STATE },
+        never,
+        10_000,
+      );
+      expect(r.output).toContain(`T=${CAPABILITY_SANDBOX_TMPDIR}`);
+      expect(r.output).toContain(`X=${CAPABILITY_SANDBOX_TMPDIR}`);
+      expect(r.output).toContain(`E=${CAPABILITY_SANDBOX_TMPDIR}`);
+    } finally {
+      if (prev === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prev;
+    }
+  });
+
+  it('a caller-supplied env.TMPDIR still wins (explicit override)', async () => {
+    const r = await runForeground(
+      { command: 'printf "%s" "$TMPDIR"', cwd: STATE, stateDir: STATE, env: { TMPDIR: STATE } },
+      never,
+      10_000,
+    );
+    expect(r.output).toContain(STATE);
   });
 });
 
