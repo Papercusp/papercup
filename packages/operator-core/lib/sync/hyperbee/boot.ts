@@ -714,7 +714,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         resolved = (await opts.joinerHiveHomeSlugOverride(opts.workspaceId, opts.harnessSlug)) ?? undefined;
       } else {
         const { joinerHiveHomeSlug } = await import('../../hive-federation');
-        resolved = (await joinerHiveHomeSlug(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+        // WI-1378 (federation roster-empty, no-restart path): read the registry FRESH
+        // (bypass the 2s operator-state cache). This resolve runs on the in-place rekey
+        // inside the substrate SIDECAR process (SUBSTRATE_SIDECAR) — a DIFFERENT process
+        // from the join-hive registry write, so the writer's same-process cache
+        // invalidation never reached here. A warm-stale cache made joinerHiveHomeSlug
+        // return null at rekey → next===prev(null) → the rebind block below skipped →
+        // forceReFold never fired → the member-slug projection binding latched → the
+        // owner's hive_members rows dropped forever (roster empty until a restart
+        // cold-read). A fresh read sees the committed remote_hive/hive_slug (join-hive
+        // awaits the mutateRegistry commit before the rekey RPC), so the rebind +
+        // forceReFold re-fold engage on the no-restart path. Rare path — the hot
+        // loadHarnessRegistry callers keep the cache; only this resolve reads fresh.
+        resolved =
+          (await joinerHiveHomeSlug(opts.workspaceId, opts.harnessSlug, { fresh: true })) ?? undefined;
       }
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
         // eslint-disable-next-line no-console
