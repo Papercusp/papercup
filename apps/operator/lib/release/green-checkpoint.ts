@@ -1162,7 +1162,14 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // suite is green (a red suite already holds `main`; no point building).
       let buildOut = '';
       let buildOk = true;
-      if (r.code === 0) {
+      // The SPA build is the platform operator SPA (@papercusp/operator-vite by default).
+      // A per-hive SUBJECT repo with no operator SPA sets cfg.spaBuildWorkspace='' (via
+      // PAPERCUSP_SPA_BUILD_WORKSPACE in its env overlay): there is nothing to build, so
+      // SKIP it and let the gate = the hive's test suite. Hardcoding the workspace here
+      // made `npm --workspace @papercusp/operator-vite run build` die with "No workspaces
+      // found" on every per-hive gate, holding that hive's `main` forever (oddsmith).
+      const spaWorkspace = cfg.spaBuildWorkspace;
+      if (r.code === 0 && spaWorkspace) {
         // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a
         // cryptic CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such
         // markers in globals.css (a bad git-sync auto-merge — the live-merge resolver

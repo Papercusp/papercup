@@ -29,6 +29,17 @@ export interface ReleaseConfig {
   /** Command (run in a clean checkout) that defines "green". */
   greenCmd: string;
   /**
+   * The npm workspace whose `run build` the green-checkpoint builds as PART of "green"
+   * (P-005 — a build break must hold `main` before it ever reaches the deploy swap).
+   * Defaults to the platform operator SPA `@papercusp/operator-vite`. A per-hive SUBJECT
+   * repo that has no operator SPA sets this to '' (empty) — via PAPERCUSP_SPA_BUILD_WORKSPACE
+   * in its env overlay — and the SPA build is SKIPPED (its gate = its test suite only).
+   * Without this seam the hardcoded `@papercusp/operator-vite` build died with npm's
+   * "No workspaces found" on every per-hive gate, holding that hive's `main` forever
+   * (oddsmith: 3+ consecutive reds, green-checkpoint-stall).
+   */
+  spaBuildWorkspace: string;
+  /**
    * Dir the green-checkpoint persists per-run full suite output to. Overridable
    * (caller > PAPERCUSP_CHECKPOINT_LOG_DIR env > homedir default) so tests +
    * throwaway runs don't pollute the REAL ~/.papercusp/checkpoint-logs/ — fixture
@@ -99,6 +110,10 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
       process.env.PAPERCUSP_HEALTH_URL ??
       `http://127.0.0.1:${port}/api/health`,
     greenCmd: overrides.greenCmd ?? process.env.PAPERCUSP_GREEN_CMD ?? 'npm run test:affected',
+    // Empty string is a MEANINGFUL value (skip the SPA build), so it must survive the
+    // precedence chain — `?? default` only fills a nullish env, never an explicit ''.
+    spaBuildWorkspace:
+      overrides.spaBuildWorkspace ?? process.env.PAPERCUSP_SPA_BUILD_WORKSPACE ?? '@papercusp/operator-vite',
     checkpointLogDir:
       overrides.checkpointLogDir ??
       process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ??
