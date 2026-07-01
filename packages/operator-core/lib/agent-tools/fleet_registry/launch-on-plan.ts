@@ -71,6 +71,7 @@ export interface MemberLaunchOpts {
   feature?: string;
   launchContext?: string;
   profile?: string;
+  contextSize?: 'full' | 'trimmed';
   brain?: boolean;
   addDir?: string[];
   extraArgs?: string[];
@@ -105,6 +106,8 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.feature) parts.push(`--feature=${shq(opts.feature)}`);
   if (opts.launchContext) parts.push(`--launch-context=${shq(opts.launchContext)}`);
   if (opts.profile) parts.push(`--profile=${shq(opts.profile)}`);
+  // su-context-size-variants: enum-constrained ('full'|'trimmed'), so no shq needed.
+  if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
   if (opts.brain) parts.push('--brain');
   for (const d of opts.addDir ?? []) if (d) parts.push(`--add-dir=${shq(d)}`);
   for (const a of opts.extraArgs ?? []) if (a) parts.push(shq(a));
@@ -118,7 +121,7 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, brain, add-dir, plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
+    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, context-size (full|trimmed), brain, add-dir, plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
   guidance: {
     when: 'Routing option (3) — "spawn a new desktop fleet to work a plan" — in ONE call instead of fleet:create + capability:terminal + a manual kickoff. Pass the plan slug + a fleet name; members open on the user\'s desktop and start working immediately.',
     notWhen:
@@ -178,6 +181,12 @@ export default defineTool({
       .optional()
       .describe("psu --launch-context: path to a brief/markdown file injected as each member's launch context."),
     profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
+    contextSize: z
+      .enum(['full', 'trimmed'])
+      .optional()
+      .describe(
+        "psu --context-size: initial-context size variant for EVERY member — 'full' (~180k, whole tool catalog loaded up-front, native soft-trim OFF) or 'trimmed' (~50k, core spine + the client's native soft-trim). Omit for each backend's native default (byte-identical to no flag).",
+      ),
     brain: z.boolean().optional().describe('psu --brain: launch each member in brain mode.'),
     addDir: z
       .array(z.string())
@@ -277,6 +286,7 @@ export default defineTool({
       feature: args.feature?.trim() || undefined,
       launchContext: args.launchContext?.trim() || undefined,
       profile: args.profile?.trim() || undefined,
+      contextSize: args.contextSize,
       brain: args.brain || undefined,
       addDir: args.addDir,
       extraArgs: args.extraArgs,
